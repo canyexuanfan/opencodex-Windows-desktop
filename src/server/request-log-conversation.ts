@@ -9,12 +9,20 @@ export const LOG_CONVERSATION_ID_INPUT_MAX = 4096;
 /** Persisted / filterable form is always a 32-char hex digest. */
 export const LOG_CONVERSATION_ID_LEN = 32;
 
+function hasControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 function sanitizeConversationIdInput(raw: string | undefined | null): string | undefined {
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   // Reject control characters that would break JSONL / UI paste.
-  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
+  if (hasControlChars(trimmed)) return undefined;
   if (trimmed.length > LOG_CONVERSATION_ID_INPUT_MAX) return undefined;
   return trimmed;
 }
