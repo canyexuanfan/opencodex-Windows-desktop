@@ -582,6 +582,8 @@ export function npmSelfUpdateRestartEvidence(
  * only prints `ocx start` and never brings the proxy back, so waiting would always burn
  * the full health timeout. Skipping also requires update-correlated evidence (PID change
  * and/or target version) so a surviving pre-update process cannot look like success.
+ * After an explicit npm restart the same evidence is required again — health alone is
+ * not enough when a no-op restart or failed port reclaim leaves the old proxy up.
  */
 export async function finishGuiUpdateRestart(
   job: UpdateJobState,
@@ -619,7 +621,59 @@ export async function finishGuiUpdateRestart(
   }
   const restartFn = io.restartAfterUpdateFn ?? restartAfterUpdate;
   await restartFn(job, captured, io);
-  return confirmRestartedProxy(job, captured, io);
+  if (installer !== "npm") {
+    // Bun/source: health alone remains enough unless a richer identity probe is supplied.
+    if (!io.probeProxyIdentity) return confirmRestartedProxy(job, captured, io);
+  }
+  return confirmNpmExplicitRestart(job, captured, io);
+}
+
+/**
+ * After an explicit npm (or identity-aware) restart, require update-correlated
+ * evidence — not merely a healthy OpenCodex listener. A no-op restart or a
+ * failed port reclaim can leave the pre-update process on the captured port;
+ * `confirmRestartedProxy` alone would treat that as success.
+ */
+async function confirmNpmExplicitRestart(
+  job: UpdateJobState,
+  captured: { port: number; hostname: string; oldPid?: number },
+  io: RestartIo = {},
+): Promise<boolean> {
+  const healthy = await awaitRestartedProxyHealthy(job, captured, io);
+  if (!healthy.ok) {
+    const port = captured.port;
+    const hostname = captured.hostname;
+    const error = healthy.reason === "flapped"
+      ? `proxy restart became unhealthy on ${hostname}:${port}`
+      : `proxy restart never became healthy on ${hostname}:${port}`;
+    updateJob(job, {
+      status: "failed",
+      restarted: false,
+      error,
+    }, restartFailureHint(port));
+    return false;
+  }
+
+  const identity = await (io.probeProxyIdentity ?? defaultProbeProxyIdentity)(
+    captured.port,
+    captured.hostname,
+  );
+  const evidence = npmSelfUpdateRestartEvidence(job, captured, identity);
+  if (!evidence.ok) {
+    updateJob(job, {
+      status: "failed",
+      restarted: false,
+      error: `proxy restart did not show update-correlated identity (${evidence.reason})`,
+    }, restartFailureHint(captured.port));
+    return false;
+  }
+
+  updateJob(
+    job,
+    {},
+    `Proxy restart confirmed on ${captured.hostname}:${captured.port} (${evidence.detail}).`,
+  );
+  return true;
 }
 
 export async function runGuiUpdateWorker(jobId: string, channel: Channel, restart: boolean): Promise<void> {

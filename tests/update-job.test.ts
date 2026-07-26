@@ -407,7 +407,7 @@ describe("GUI update execution decisions", () => {
     )).toBe(true);
   });
 
-  test("npm finish does not skip when a healthy proxy is still the pre-update PID", async () => {
+  test("npm finish fails when stale PID survives a no-op explicit restart", async () => {
     let now = 0;
     let restartCalls = 0;
     const job: UpdateJobState = {
@@ -431,7 +431,7 @@ describe("GUI update execution decisions", () => {
       "npm",
       {
         serviceInstalledFn: () => true,
-        // Soft probe stays healthy (old process). Explicit restart then confirms.
+        // Soft probe stays healthy (old process). Explicit restart is a no-op.
         probeProxy: async () => true,
         probeProxyIdentity: async () => ({ pid: 111, version: "2.7.40" }),
         now: () => now,
@@ -442,10 +442,106 @@ describe("GUI update execution decisions", () => {
         },
       },
     );
-    expect(ok).toBe(true);
+    expect(ok).toBe(false);
     expect(restartCalls).toBe(1);
+    expect(readUpdateJob(job.id)).toMatchObject({
+      status: "failed",
+      restarted: false,
+    });
+    expect(readUpdateJob(job.id)?.error).toContain("still the pre-update PID");
     expect(readUpdateJob(job.id)?.log.some(line =>
       line.includes("still the pre-update PID") && line.includes("performing explicit restart"),
+    )).toBe(true);
+  });
+
+  test("npm finish succeeds when explicit restart yields a new PID at the target version", async () => {
+    let now = 0;
+    let restartCalls = 0;
+    let livePid = 111;
+    let liveVersion = "2.7.40";
+    const job: UpdateJobState = {
+      id: "npm-explicit-replaced",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.40",
+      latestVersion: "2.7.41",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      releaseNotesUrl: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await finishGuiUpdateRestart(
+      job,
+      { port: 10100, hostname: "127.0.0.1", oldPid: 111 },
+      "npm",
+      {
+        serviceInstalledFn: () => true,
+        probeProxy: async () => true,
+        probeProxyIdentity: async () => ({ pid: livePid, version: liveVersion }),
+        now: () => now,
+        sleepMs: async (ms) => { now += ms; },
+        restartAfterUpdateFn: async () => {
+          restartCalls += 1;
+          livePid = 222;
+          liveVersion = "2.7.41";
+          now = 0;
+        },
+      },
+    );
+    expect(ok).toBe(true);
+    expect(restartCalls).toBe(1);
+    expect(readUpdateJob(job.id)?.status).not.toBe("failed");
+    expect(readUpdateJob(job.id)?.log.some(line =>
+      line.includes("Proxy restart confirmed") && line.includes("pid changed"),
+    )).toBe(true);
+  });
+
+  test("npm finish fails when port reclaim leaves the pre-update proxy healthy", async () => {
+    let now = 0;
+    const job: UpdateJobState = {
+      id: "npm-reclaim-stale",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.40",
+      latestVersion: "2.7.41",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      releaseNotesUrl: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await finishGuiUpdateRestart(
+      job,
+      { port: 10100, hostname: "127.0.0.1", oldPid: 111 },
+      "npm",
+      {
+        // Direct path: reclaim failure returns without spawning a replacement.
+        serviceInstalledFn: () => false,
+        waitForPort: async () => false,
+        spawnStart: () => {
+          throw new Error("must not spawn when reclaim failed");
+        },
+        probeProxy: async () => true,
+        probeProxyIdentity: async () => ({ pid: 111, version: "2.7.40" }),
+        now: () => now,
+        sleepMs: async (ms) => { now += ms; },
+      },
+    );
+    expect(ok).toBe(false);
+    expect(readUpdateJob(job.id)).toMatchObject({
+      status: "failed",
+      restarted: false,
+    });
+    expect(readUpdateJob(job.id)?.error).toContain("still the pre-update PID");
+    expect(readUpdateJob(job.id)?.log.some(line =>
+      line.includes("still busy") && line.includes("not starting on another port"),
     )).toBe(true);
   });
 
@@ -474,6 +570,9 @@ describe("GUI update execution decisions", () => {
         // Only becomes healthy after the explicit restart (launcher printed `ocx start` only).
         return restartCalls > 0;
       },
+      probeProxyIdentity: async () => (
+        restartCalls > 0 ? { pid: 333, version: "2.7.41" } : null
+      ),
       now: () => now,
       sleepMs: async (ms) => { now += ms; },
       restartAfterUpdateFn: async () => {
@@ -512,6 +611,9 @@ describe("GUI update execution decisions", () => {
       serviceInstalledFn: () => true,
       // Soft probe times out (proxy down after npm update); confirm after explicit restart succeeds.
       probeProxy: async () => restartCalls > 0,
+      probeProxyIdentity: async () => (
+        restartCalls > 0 ? { pid: 444, version: "2.7.41" } : null
+      ),
       now: () => now,
       sleepMs: async (ms) => { now += ms; },
       restartAfterUpdateFn: async () => {
