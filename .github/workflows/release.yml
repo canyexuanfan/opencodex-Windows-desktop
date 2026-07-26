@@ -299,7 +299,7 @@ jobs:
             exit 1
           fi
 
-          # Generate notes against the previous tag from the same release channel.
+          # Channel previous tag (stable↔stable / preview↔preview) for the Full Changelog link.
           if [[ "$RELEASE_VERSION" == *-preview.* ]]; then
             previous_tag="$(
               git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname |
@@ -329,47 +329,81 @@ jobs:
           # tag need not exist yet. Preflight already rejects an existing GitHub Release for
           # non-dry runs, so this step only creates.
           notes_file="$(mktemp)"
-          pr_notes=""
-          if [ -n "$previous_tag" ]; then
+          carried_file="$(mktemp)"
+          delta_file="$(mktemp)"
+          commits_file="$(mktemp)"
+          : > "$carried_file"
+          : > "$delta_file"
+          : > "$commits_file"
+
+          # Stable releases after a matching preview: copy that preview changelog, then only
+          # generate-notes / commits for the preview→latest delta. Preview tags often are not
+          # ancestors of main, so match by version prefix (not --merged).
+          notes_range_start="$previous_tag"
+          if [[ "$RELEASE_VERSION" != *-preview.* ]]; then
+            preview_carry_tag="$(
+              git tag --list "v${RELEASE_VERSION}-preview.*" --sort=-v:refname |
+                head -n 1 || true
+            )"
+            if [ -n "$preview_carry_tag" ]; then
+              if gh release view "$preview_carry_tag" --json body --jq .body > "${carried_file}.raw" 2>/dev/null; then
+                bun scripts/release-notes.ts strip-carried "${carried_file}.raw" > "$carried_file"
+                notes_range_start="$preview_carry_tag"
+                echo "::notice::Carrying preview release notes from ${preview_carry_tag} into ${release_tag}"
+              else
+                echo "::notice::Matching preview tag ${preview_carry_tag} has no GitHub Release; using channel notes only"
+                : > "$carried_file"
+              fi
+            fi
+          fi
+
+          if [ -n "$notes_range_start" ]; then
             generate_notes_api=(
               "repos/${GITHUB_REPOSITORY}/releases/generate-notes"
               -f "tag_name=${release_tag}"
               -f "target_commitish=${GITHUB_SHA}"
-              -f "previous_tag_name=${previous_tag}"
+              -f "previous_tag_name=${notes_range_start}"
             )
             # Fail closed: missing PR categories is a broken release note, not a soft skip.
             pr_notes="$(gh api "${generate_notes_api[@]}" --jq '.body')"
             # Drop generate-notes' trailing compare link; we re-append it after the commit list.
-            pr_notes="$(printf '%s\n' "$pr_notes" | sed '/^\*\*Full Changelog\*\*:/d')"
+            printf '%s\n' "$pr_notes" | sed '/^\*\*Full Changelog\*\*:/d' > "$delta_file"
           else
             # First release on this channel: never call generate-notes without previous_tag_name.
             # GitHub would baseline the newest repo tag, which may belong to the other channel.
             echo "::notice::No previous channel tag; skipping generate-notes (commits-only notes)"
           fi
 
-          if [ -n "$previous_tag" ]; then
-            commit_range="${previous_tag}..${GITHUB_SHA}"
-            commits="$(git log --pretty=format:'- %s (%h)' "$commit_range")"
+          if [ -n "$notes_range_start" ]; then
+            commit_range="${notes_range_start}..${GITHUB_SHA}"
+            git log --pretty=format:'- %s (%h)' "$commit_range" > "$commits_file"
+            # git log may omit a trailing newline; normalize empty output for assemble.
+            if [ ! -s "$commits_file" ]; then
+              : > "$commits_file"
+            fi
           else
             # First release on a channel has no previous tag; cap history so the notes
             # body stays within GitHub release size limits.
-            commits="$(git log --pretty=format:'- %s (%h)' --max-count=100 "$GITHUB_SHA")"
+            git log --pretty=format:'- %s (%h)' --max-count=100 "$GITHUB_SHA" > "$commits_file"
           fi
 
-          {
-            printf '%s\n\n' "$npm_metadata"
-            if [ -n "$(printf '%s' "$pr_notes" | tr -d '[:space:]')" ]; then
-              printf '%s\n\n' "$pr_notes"
-            fi
-            if [ -n "$commits" ]; then
-              printf '## Commits\n\n'
-              printf '%s\n\n' "$commits"
-            fi
-            if [ -n "$previous_tag" ]; then
-              printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-                "$GITHUB_REPOSITORY" "$previous_tag" "$release_tag"
-            fi
-          } > "$notes_file"
+          assemble_args=(
+            bun scripts/release-notes.ts assemble
+            --npm-metadata "$npm_metadata"
+            --carried "$carried_file"
+            --delta "$delta_file"
+            --commits "$commits_file"
+            --out "$notes_file"
+            --compare-to "$release_tag"
+            --repository "$GITHUB_REPOSITORY"
+          )
+          # Prefer the stable-channel previous tag for the compare link when present.
+          if [ -n "$previous_tag" ]; then
+            assemble_args+=(--compare-from "$previous_tag")
+          elif [ -n "$notes_range_start" ]; then
+            assemble_args+=(--compare-from "$notes_range_start")
+          fi
+          "${assemble_args[@]}"
 
           if [ -z "$existing_tag_sha" ]; then
             git tag "$release_tag" "$GITHUB_SHA"

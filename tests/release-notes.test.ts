@@ -1,0 +1,113 @@
+import { describe, expect, test } from "bun:test";
+import {
+  assembleReleaseNotes,
+  hasNonWhitespace,
+  matchingPreviewTag,
+  stripCarriedReleaseNotes,
+  stripGenerateNotesCompareLink,
+} from "../scripts/release-notes";
+
+describe("matchingPreviewTag", () => {
+  test("picks the newest matching preview tag for a stable version", () => {
+    expect(matchingPreviewTag("2.7.39", [
+      "v2.7.38-preview.20260724",
+      "v2.7.39-preview.20260724",
+      "v2.7.39-preview.20260725",
+      "v2.7.40-preview.20260725",
+      "v2.7.39",
+    ])).toBe("v2.7.39-preview.20260725");
+  });
+
+  test("returns null for preview versions and when no match exists", () => {
+    expect(matchingPreviewTag("2.7.39-preview.1", ["v2.7.39-preview.1"])).toBeNull();
+    expect(matchingPreviewTag("2.7.41", ["v2.7.40-preview.20260725"])).toBeNull();
+  });
+});
+
+describe("stripCarriedReleaseNotes", () => {
+  test("keeps PR categories and drops npm blurb, commits, and compare link", () => {
+    const body = [
+      "Published to npm as `@bitkyc08/opencodex@2.7.39-preview.20260724` with dist-tag `preview`.",
+      "",
+      "<!-- Release notes generated using configuration in .github/release.yml at abc -->",
+      "",
+      "## What's Changed",
+      "### Bug Fixes",
+      "* fix(release): full channel changelog by @Wibias in https://example.test/pull/364",
+      "",
+      "## New Contributors",
+      "* @someone made their first contribution",
+      "",
+      "## Commits",
+      "",
+      "- release: v2.7.39-preview.20260724 (8894e40e)",
+      "- Merge branch 'dev' into preview (9077f7c1)",
+      "",
+      "**Full Changelog**: https://github.com/lidge-jun/opencodex/compare/v2.7.38-preview.20260724...v2.7.39-preview.20260724",
+      "",
+    ].join("\n");
+
+    expect(stripCarriedReleaseNotes(body)).toBe([
+      "<!-- Release notes generated using configuration in .github/release.yml at abc -->",
+      "",
+      "## What's Changed",
+      "### Bug Fixes",
+      "* fix(release): full channel changelog by @Wibias in https://example.test/pull/364",
+      "",
+      "## New Contributors",
+      "* @someone made their first contribution",
+    ].join("\n"));
+  });
+});
+
+describe("assembleReleaseNotes", () => {
+  test("copies preview notes and appends only the since-preview delta", () => {
+    const notes = assembleReleaseNotes({
+      npmMetadata: "Published to npm as `@bitkyc08/opencodex@2.7.39` with dist-tag `latest`.",
+      carriedPreviewNotes: "## What's Changed\n### Bug Fixes\n* fix A",
+      deltaPrNotes: "## What's Changed\n### Bug Fixes\n* fix B",
+      commits: "- release: v2.7.39 (357acee6)",
+      compareFrom: "v2.7.37",
+      compareTo: "v2.7.39",
+      repository: "lidge-jun/opencodex",
+    });
+
+    expect(notes).toContain("dist-tag `latest`");
+    expect(notes).toContain("## What's Changed\n### Bug Fixes\n* fix A");
+    expect(notes).toContain("## Since preview\n\n## What's Changed\n### Bug Fixes\n* fix B");
+    expect(notes).toContain("## Commits\n\n- release: v2.7.39 (357acee6)");
+    expect(notes).toContain("**Full Changelog**: https://github.com/lidge-jun/opencodex/compare/v2.7.37...v2.7.39");
+  });
+
+  test("omits empty generate-notes delta that is only the config comment", () => {
+    const notes = assembleReleaseNotes({
+      npmMetadata: "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
+      carriedPreviewNotes: "## What's Changed\n* fix A",
+      deltaPrNotes: "<!-- Release notes generated using configuration in .github/release.yml at abc -->\n\n\n**Full Changelog**: https://example/compare/a...b\n",
+      commits: "- release: v1.0.0 (abc)",
+      compareFrom: "v0.9.0",
+      compareTo: "v1.0.0",
+      repository: "acme/pkg",
+    });
+
+    expect(notes).toContain("* fix A");
+    expect(notes).not.toContain("## Since preview");
+    expect(notes).not.toContain("Full Changelog**: https://example/compare/a...b");
+  });
+
+  test("falls back to channel notes when no preview body is carried", () => {
+    const notes = assembleReleaseNotes({
+      npmMetadata: "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
+      deltaPrNotes: "## What's Changed\n* feat X\n\n**Full Changelog**: https://example/compare/a...b",
+      commits: "- feat X (abc1234)",
+      compareFrom: "v0.9.0",
+      compareTo: "v1.0.0",
+      repository: "acme/pkg",
+    });
+
+    expect(notes).not.toContain("## Since preview");
+    expect(notes).toContain("## What's Changed\n* feat X");
+    expect(notes).not.toContain("https://example/compare/a...b");
+    expect(hasNonWhitespace("")).toBe(false);
+  });
+});

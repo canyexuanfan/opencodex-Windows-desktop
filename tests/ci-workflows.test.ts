@@ -126,28 +126,35 @@ describe("GitHub Actions hardening", () => {
 
     // Release notes must include PR categories and the full channel commit range
     // (branch merges + direct commits). Preflight forbids an existing release, so
-    // only create (not edit) is wired.
+    // only create (not edit) is wired. Stable releases also carry matching preview notes.
     expect(workflow).toContain("releases/generate-notes");
-    expect(workflow).toContain("## Commits");
     expect(workflow).toContain("git log --pretty=format:'- %s (%h)'");
-    expect(workflow).toContain('commit_range="${previous_tag}..${GITHUB_SHA}"');
-    expect(workflow).toContain('previous_tag_name=${previous_tag}');
+    expect(workflow).toContain('commit_range="${notes_range_start}..${GITHUB_SHA}"');
+    expect(workflow).toContain('previous_tag_name=${notes_range_start}');
     expect(workflow).toContain("skipping generate-notes (commits-only notes)");
+    expect(workflow).toContain("bun scripts/release-notes.ts strip-carried");
+    expect(workflow).toContain("bun scripts/release-notes.ts assemble");
+    expect(workflow).toContain("--commits");
+    expect(workflow).toContain('git tag --list "v${RELEASE_VERSION}-preview.*"');
+    expect(workflow).toContain("Carrying preview release notes from");
+    const releaseNotesHelper = await readText("scripts/release-notes.ts");
+    expect(releaseNotesHelper).toContain("## Commits");
+    expect(releaseNotesHelper).toContain("## Since preview");
     expect(workflow).toMatch(/gh release create[\s\S]*?--notes-file "\$notes_file"/);
     expect(workflow).not.toContain("gh release edit");
     expect(workflow).not.toContain("--generate-notes");
-    // Fail closed when generate-notes fails (no soft skip).
-    expect(workflow).not.toMatch(/generate-notes[\s\S]*?\|\| true/);
     // Notes must be assembled before tagging so a notes API failure does not leave
     // a remote tag that blocks release retries at preflight.
     const createStep = workflow.split("- name: Create GitHub release")[1]!.split(/\n {6}- name:/)[0]!;
+    // Fail closed when generate-notes fails (no soft skip on the API call itself).
+    expect(createStep).not.toMatch(/pr_notes="\$\(gh api[\s\S]*?\|\| true\)"/);
     expect(createStep.indexOf("gh api")).toBeGreaterThan(-1);
     expect(createStep.indexOf('git tag "$release_tag"')).toBeGreaterThan(-1);
     expect(createStep.indexOf("gh api")).toBeLessThan(createStep.indexOf('git tag "$release_tag"'));
-    // First-channel releases must not call generate-notes without an explicit channel baseline
+    // First-channel releases must not call generate-notes without an explicit baseline
     // (GitHub would otherwise pick the newest repo tag, possibly from the other channel).
     expect(createStep).toMatch(
-      /if \[ -n "\$previous_tag" \]; then[\s\S]*previous_tag_name=\$\{previous_tag\}[\s\S]*else[\s\S]*skipping generate-notes/,
+      /if \[ -n "\$notes_range_start" \]; then[\s\S]*previous_tag_name=\$\{notes_range_start\}[\s\S]*else[\s\S]*skipping generate-notes/,
     );
   });
 
