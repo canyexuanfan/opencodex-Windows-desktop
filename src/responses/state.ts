@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, truncateSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
 import type { OcxProviderContinuationState } from "../types";
@@ -95,19 +95,22 @@ function snapshotPath(): string {
 export interface ResponseStateTempRecoveryResult {
   matched: number;
   removed: number;
-  scrubbed: number;
   failed: number;
   bytesRemoved: number;
 }
 
 interface ResponseStateTempRecoveryIO {
   now: () => number;
-  list: (dir: string) => string[];
+  list: (dir: string) => Iterable<string>;
   inspect: (path: string) => { isFile: boolean; mtimeMs: number; size: number };
   isProcessAlive: (pid: number) => boolean;
-  truncate: (path: string) => void;
   unlink: (path: string) => void;
 }
+
+type ResponseStateTempRecoveryOptions = Partial<ResponseStateTempRecoveryIO> & {
+  maxCandidates?: number;
+  maxCleanups?: number;
+};
 
 function processIsAlive(pid: number): boolean {
   if (pid === process.pid) return true;
@@ -123,41 +126,48 @@ function processIsAlive(pid: number): boolean {
 
 const responseStateTempRecoveryIO: ResponseStateTempRecoveryIO = {
   now: Date.now,
-  list: dir => readdirSync(dir),
+  list: function* list(dir) {
+    const handle = opendirSync(dir);
+    try {
+      for (let entry = handle.readSync(); entry; entry = handle.readSync()) yield entry.name;
+    } finally {
+      handle.closeSync();
+    }
+  },
   inspect: path => {
     const stat = lstatSync(path);
     return { isFile: stat.isFile() && !stat.isSymbolicLink(), mtimeMs: stat.mtimeMs, size: stat.size };
   },
   isProcessAlive: processIsAlive,
-  truncate: path => truncateSync(path, 0),
   unlink: unlinkSync,
 };
 
 /**
  * Recover only abandoned response-state atomic-write files. The exact basename,
  * regular-file check, age gate, and PID liveness check protect unrelated/active files.
- * Cleanup is capped and best-effort because continuation state is only a cache.
+ * Cleanup is capped and best-effort because continuation state is only a cache. Removal
+ * deliberately uses unlink only: path-based truncation could follow a replacement symlink.
  */
 export function recoverStaleResponseStateTemps(
   dir = getConfigDir(),
-  overrides: Partial<ResponseStateTempRecoveryIO> = {},
+  options: ResponseStateTempRecoveryOptions = {},
 ): ResponseStateTempRecoveryResult {
+  const { maxCandidates = STALE_TEMP_MAX_CANDIDATES, maxCleanups = STALE_TEMP_MAX_CLEANUPS, ...overrides } = options;
   const io = { ...responseStateTempRecoveryIO, ...overrides };
   const result: ResponseStateTempRecoveryResult = {
     matched: 0,
     removed: 0,
-    scrubbed: 0,
     failed: 0,
     bytesRemoved: 0,
   };
-  let names: string[];
+  let names: Iterable<string>;
   try { names = io.list(dir); } catch { return result; }
   let candidates = 0;
   for (const name of names) {
     const match = RESPONSE_STATE_TEMP_NAME.exec(name);
     if (!match) continue;
     candidates += 1;
-    if (candidates > STALE_TEMP_MAX_CANDIDATES || result.removed + result.failed >= STALE_TEMP_MAX_CLEANUPS) break;
+    if (candidates > maxCandidates || result.removed + result.failed >= maxCleanups) break;
     result.matched += 1;
     const pid = Number(match[1]);
     const sequence = Number(match[2]);
@@ -168,21 +178,14 @@ export function recoverStaleResponseStateTemps(
     if (!file.isFile || io.now() - file.mtimeMs < STALE_TEMP_GRACE_MS) continue;
     if (pid === process.pid || io.isProcessAlive(pid)) continue;
 
-    let scrubbed = false;
-    try {
-      io.truncate(path);
-      scrubbed = true;
-      result.scrubbed += 1;
-    } catch { /* unlink may still remove the sensitive snapshot */ }
     try {
       io.unlink(path);
       result.removed += 1;
       result.bytesRemoved += file.size;
     } catch {
-      // A zero-byte residual is harmless privacy-wise but should still count as a
-      // cleanup failure so a later startup can retry its removal.
+      // Locked files remain for a later startup. Do not truncate by path: a same-user
+      // replacement could turn that fallback into an arbitrary symlink-target write.
       result.failed += 1;
-      if (!scrubbed) continue;
     }
   }
   return result;
@@ -198,9 +201,13 @@ export function recoverStaleResponseStateTemps(
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  const path = snapshotPath();
   try {
-    const path = snapshotPath();
     recoverStaleResponseStateTemps(dirname(path));
+  } catch {
+    /* best-effort cleanup only; snapshot loading must remain independent */
+  }
+  try {
     if (!existsSync(path)) return;
     const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };
     if ((raw.version !== 1 && raw.version !== 2) || !Array.isArray(raw.states)) return;

@@ -653,7 +653,8 @@ describe("Responses previous_response_id state", () => {
 
   test("recovers only old response-state temps owned by dead processes", () => {
     const old = new Date(Date.now() - 60 * 60 * 1_000);
-    const stale = join(home, "responses-state.json.ocx.4242.1.tmp");
+    const deadPid = process.pid === 4242 ? 4243 : 4242;
+    const stale = join(home, `responses-state.json.ocx.${deadPid}.1.tmp`);
     const live = join(home, "responses-state.json.ocx.5252.2.tmp");
     const current = join(home, `responses-state.json.ocx.${process.pid}.3.tmp`);
     const young = join(home, "responses-state.json.ocx.6262.4.tmp");
@@ -667,26 +668,54 @@ describe("Responses previous_response_id state", () => {
       isProcessAlive: pid => pid === 5252,
     });
 
-    expect(result).toMatchObject({ matched: 5, removed: 1, scrubbed: 1, failed: 0 });
+    expect(result).toMatchObject({ matched: 5, removed: 1, failed: 0 });
     expect(result.bytesRemoved).toBe("private state".length);
     expect(existsSync(stale)).toBe(false);
     for (const path of [live, current, young, unrelated, directory]) expect(existsSync(path)).toBe(true);
   });
 
-  test("stale temp recovery is best-effort when scrub and unlink both fail", () => {
-    const path = join(home, "responses-state.json.ocx.4242.1.tmp");
+  test("stale temp recovery is best-effort when unlink fails", () => {
+    const deadPid = process.pid === 4242 ? 4243 : 4242;
+    const path = join(home, `responses-state.json.ocx.${deadPid}.1.tmp`);
     writeFileSync(path, "private state");
     const old = new Date(Date.now() - 60 * 60 * 1_000);
     utimesSync(path, old, old);
 
     const result = recoverStaleResponseStateTemps(home, {
       isProcessAlive: () => false,
-      truncate: () => { throw new Error("locked"); },
       unlink: () => { throw new Error("locked"); },
     });
 
-    expect(result).toMatchObject({ matched: 1, removed: 0, scrubbed: 0, failed: 1, bytesRemoved: 0 });
+    expect(result).toMatchObject({ matched: 1, removed: 0, failed: 1, bytesRemoved: 0 });
     expect(readFileSync(path, "utf-8")).toBe("private state");
+  });
+
+  test("stale temp recovery stops at injectable candidate and cleanup caps", () => {
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const first = "responses-state.json.ocx.7001.1.tmp";
+    const second = "responses-state.json.ocx.7002.2.tmp";
+    for (const name of [first, second]) {
+      const path = join(home, name);
+      writeFileSync(path, "private state");
+      utimesSync(path, old, old);
+    }
+
+    const candidateBound = recoverStaleResponseStateTemps(home, {
+      list: () => [first, second],
+      isProcessAlive: pid => pid === 7001,
+      maxCandidates: 1,
+    });
+    expect(candidateBound).toMatchObject({ matched: 1, removed: 0, failed: 0 });
+    expect(existsSync(join(home, second))).toBe(true);
+
+    const cleanupBound = recoverStaleResponseStateTemps(home, {
+      list: () => [first, second],
+      isProcessAlive: () => false,
+      maxCleanups: 1,
+    });
+    expect(cleanupBound).toMatchObject({ matched: 1, removed: 1, failed: 0 });
+    expect(existsSync(join(home, first))).toBe(false);
+    expect(existsSync(join(home, second))).toBe(true);
   });
 
   test("v1 Cursor snapshot migrates to versioned provider state", () => {
