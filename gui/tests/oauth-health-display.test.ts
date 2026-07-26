@@ -6,7 +6,7 @@ import {
   oauthHealthShowsDoctor,
   oauthHealthShowsReauth,
 } from "../src/oauth-health-display";
-import { maskAccountId } from "../src/lib/privacy";
+import { displayAccountId, maskAccountId } from "../src/lib/privacy";
 
 describe("oauth health badge helpers", () => {
   test("maps statuses to badge tones and classes", () => {
@@ -35,5 +35,14 @@ describe("oauth health badge helpers", () => {
     expect(masked).toBe("account-…2222");
     expect(masked).not.toBe(raw);
     expect(masked!.includes(raw)).toBe(false);
+  });
+
+  test("displayAccountId never falls back to the raw id", () => {
+    const raw = "acct_raw_should_not_leak";
+    expect(displayAccountId(raw)).toBe("account-…leak");
+    expect(displayAccountId(raw)).not.toBe(raw);
+    expect(displayAccountId(null)).toBe("account-…");
+    expect(displayAccountId("")).toBe("account-…");
+    expect(displayAccountId("   ")).toBe("account-…");
   });
 });

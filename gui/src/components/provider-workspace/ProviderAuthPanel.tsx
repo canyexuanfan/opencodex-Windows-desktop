@@ -8,7 +8,7 @@ import { useT } from "../../i18n/shared";
 import { IconLock, IconExternal, IconTrash } from "../../icons";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { oauthAccountDisplayLabel, providerAuthSurface } from "../../provider-workspace/auth";
-import { maskAccountId } from "../../lib/privacy";
+import { displayAccountId } from "../../lib/privacy";
 import {
   oauthHealthBadgeClass,
   oauthHealthIsCooldown,
@@ -170,7 +170,7 @@ export default function ProviderAuthPanel({
                   const showReauth = Boolean(account.needsReauth) || oauthHealthShowsReauth(healthStatus);
                   const showDoctor = oauthHealthShowsDoctor(healthStatus);
                   const inCooldown = oauthHealthIsCooldown(healthStatus);
-                  const maskedId = maskAccountId(account.id) ?? account.id;
+                  const maskedId = displayAccountId(account.id);
                   const copyDoctor = () => {
                     navigator.clipboard.writeText(DOCTOR_CMD).then(() => {
                       setCopiedDoctorFor(account.id);

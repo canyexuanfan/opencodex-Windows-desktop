@@ -9,5 +9,5 @@ export function maskAccountId(value: string | null | undefined): string | null {
 
 /** Never fall back to a raw account id in UI labels. */
 export function displayAccountId(value: string | null | undefined): string {
-  return maskAccountId(value) ?? "account-…";
+  return maskAccountId(value) ?? `account-…`;
 }
