@@ -7,6 +7,7 @@ import {
   emptyDraft,
   filterCombos,
   groupCombos,
+  intersectComboEfforts,
   isValidComboId,
   parseComboList,
   toPutBody,
@@ -157,6 +158,27 @@ describe("combo-workspace-data", () => {
     expect(filterCombos(items, "combo/free").map((item) => item.id)).toEqual(["free"]);
     expect(filterCombos(items, "openai").map((item) => item.id)).toEqual(["balanced"]);
     expect(filterCombos(items, "gpt-balanced").map((item) => item.id)).toEqual(["balanced"]);
+  });
+
+  test("intersectComboEfforts keeps only common advertised efforts (#488)", () => {
+    const map = new Map<string, readonly string[] | undefined>([
+      ["a/m1", ["low", "medium", "high", "ultra"]],
+      ["b/m2", ["medium", "high", "xhigh"]],
+    ]);
+    expect(intersectComboEfforts(
+      [{ provider: "a", model: "m1" }, { provider: "b", model: "m2" }],
+      map,
+    )).toEqual(["medium", "high"]);
+  });
+
+  test("intersectComboEfforts treats unknown members as having no selectable efforts", () => {
+    const map = new Map<string, readonly string[] | undefined>([
+      ["a/m1", ["low", "medium"]],
+    ]);
+    expect(intersectComboEfforts(
+      [{ provider: "a", model: "m1" }, { provider: "b", model: "unknown" }],
+      map,
+    )).toEqual([]);
   });
 
   test("attention flags zero-target and one-target defensive rows", () => {
