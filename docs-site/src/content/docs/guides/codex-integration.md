@@ -95,6 +95,12 @@ checks for a single Windows Codex Desktop home at `/mnt/c/Users/*/.codex/config.
 one candidate exists, it uses that directory so WSL app-server mode and Windows Codex Desktop share
 the same config and auth files. Set `CODEX_HOME` explicitly to override this detection.
 
+On Windows, an Orca shell can set both `CODEX_HOME` and `ORCA_CODEX_HOME` to Orca's bundled runtime
+home while the ChatGPT/Codex app still reads `%USERPROFILE%\\.codex`. `ocx status` and `ocx doctor`
+warn about this exact mismatch and print redacted target paths. If a background service was installed
+from that Orca shell, uninstall it from the original shell first, then set `CODEX_HOME` to the app
+home, unset `ORCA_CODEX_HOME`, rerun sync/restore, and install the service again.
+
 In dedicated-provider mode, `requires_openai_auth = true` keeps Codex App/TUI account-gated surfaces
 aligned with native Codex. opencodex also serves `/v1/responses` over WebSocket. The dedicated
 provider advertises `supports_websockets = true` only when `"websockets": true`; on loopback Codex's

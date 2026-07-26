@@ -93,6 +93,12 @@ WSL에서는 `CODEX_HOME`이 없고 Linux 쪽 `~/.codex/config.toml`도 없을 �
 정확히 하나면 그 디렉터리를 사용하므로 WSL app-server mode와 Windows Codex Desktop이 같은 config와
 auth 파일을 공유합니다. 이 탐지를 덮어쓰려면 `CODEX_HOME`을 명시하세요.
 
+Windows의 Orca 셸은 `CODEX_HOME`과 `ORCA_CODEX_HOME`을 Orca 번들 런타임 home으로 설정할 수 있지만,
+ChatGPT/Codex 앱은 계속 `%USERPROFILE%\\.codex`를 읽습니다. `ocx status`와 `ocx doctor`는 이 정확한
+불일치를 탐지해 사용자 경로를 가린 상태로 대상 home을 표시합니다. 해당 Orca 셸에서 백그라운드 서비스를
+설치했다면 먼저 원래 셸에서 서비스를 제거하고, 앱 home으로 `CODEX_HOME`을 설정하고
+`ORCA_CODEX_HOME`을 해제한 뒤 동기화/복원 및 서비스 설치를 다시 실행하세요.
+
 전용 프로바이더 모드의 `requires_openai_auth = true`는 Codex App/TUI의 계정 게이트 UI가 네이티브
 Codex와 같은 조건으로 동작하게 합니다. opencodex는 `/v1/responses` WebSocket도 제공합니다. 전용
 프로바이더는 `"websockets": true`일 때만 `supports_websockets = true`를 광고합니다. loopback에서는

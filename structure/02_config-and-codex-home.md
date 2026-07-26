@@ -19,8 +19,11 @@ OpenCodex never overrides an explicit `CODEX_HOME`. On Windows, `ocx doctor` and
 nevertheless diagnose the high-confidence Orca dual-home case: both `CODEX_HOME` and
 `ORCA_CODEX_HOME` select Orca's `orca/codex-runtime-home/home`, while the ChatGPT/Codex app uses the
 default `%USERPROFILE%\\.codex`. Sync and restore output always prints the exact target Codex home;
-the diagnostic tells users to invoke OpenCodex with the app home explicitly rather than silently
-claiming that an unrelated app was configured.
+display and JSON paths redact the OS username. The diagnostic tells users to invoke OpenCodex with
+the app home explicitly rather than silently claiming that an unrelated app was configured. If a
+service was installed under the Orca home, it must first be uninstalled from that original Orca
+environment and then reinstalled under the app home; changing only the current shell cannot migrate
+the recorded service ownership.
 
 [Decision Log]
 - 목적과 의도: Make multi-home injection truthful without taking ownership of user environment variables.

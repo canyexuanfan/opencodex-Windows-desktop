@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "n
 import { homedir } from "node:os";
 import { join, posix, resolve, win32 } from "node:path";
 import { expandUserPath } from "../config";
+import { redactUserPath } from "../lib/redact";
 
 export type CodexHomeDeps = {
   env?: NodeJS.ProcessEnv;
@@ -186,17 +187,20 @@ export function collectOrcaCodexHomeDiagnostic(deps: OrcaCodexHomeDeps = {}): Or
     && normalizedEffective === normalizedOrca
     && /(?:^|\\)orca\\codex-runtime-home\\home$/i.test(normalizedOrca);
   const mismatch = applicable && normalizedEffective !== normalizedApp;
+  const displayEffective = redactUserPath(effectiveCodexHome);
+  const displayApp = redactUserPath(appCodexHome);
+  const displayOrca = orcaCodexHome ? redactUserPath(orcaCodexHome) : null;
   return {
     applicable,
     mismatch,
-    effectiveCodexHome,
-    appCodexHome,
-    orcaCodexHome,
+    effectiveCodexHome: displayEffective,
+    appCodexHome: displayApp,
+    orcaCodexHome: displayOrca,
     warning: mismatch
-      ? `CODEX_HOME targets Orca's runtime home (${effectiveCodexHome}), while the Windows ChatGPT/Codex app uses ${appCodexHome}; OpenCodex injection will not reach that app.`
+      ? `CODEX_HOME targets Orca's runtime home (${displayEffective}), while the Windows ChatGPT/Codex app uses ${displayApp}; OpenCodex injection will not reach that app.`
       : null,
     action: mismatch
-      ? `Run ocx for the app with CODEX_HOME=${appCodexHome} and ORCA_CODEX_HOME unset.`
+      ? `If a service was installed from Orca, run 'ocx service uninstall' in that original Orca shell first. Then unset ORCA_CODEX_HOME, set CODEX_HOME=${displayApp}, rerun the command, and reinstall with 'ocx service install'.`
       : null,
   };
 }
