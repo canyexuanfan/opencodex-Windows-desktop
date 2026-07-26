@@ -89,3 +89,70 @@ gh issue list --state open --limit 60
 ```
 
 종료 시점에 열린 PR은 보안보류 8건 + 이번에 다루지 않은 건만 남아야 한다.
+
+---
+
+# 실행 영수증
+
+## 통합 (dev push 완료)
+
+| WP | PR | 통합 커밋 | 원저자 | 결과 |
+|---|---|---|---|---|
+| WP1 | #437 | `803807a4` | CooperSheroy | closed |
+| WP3 | #460 | `74ddd96d` | mushikingh | closed |
+| WP5 | #468 | `bcaf029e` (후속 테스트) | Wibias | 동료 머지 후 보강 |
+| WP7 | #431 | `82a47dbe` | H-H-E | closed |
+| WP8 | #405 | `be16c1d8` | HaydernCenterpoint | closed |
+
+WP0 로드맵 `895b0f4f`, WP2 보류 문서 `d6ef2f42`.
+
+## 상황 변경으로 무효화
+
+- **WP4 (#466)** — 동료가 `d9e5102a`로 직접 머지. 우리가 지적한 결함 3·5를
+  `971e0564`·`3616d2ae`가 동일 방향으로 해소했다.
+- **WP6 (#467)** — 동료가 `5cb3a11f`로 머지. `clientKey` DTO 누출과 dialog dismissal을
+  `76a0fc13`이 해소했다.
+
+두 건 모두 우리 분석과 동료 수정이 같은 결론에 도달했다.
+
+## close
+
+- 통합 close 4건: #437 #460 #431 #405
+- 통합 없이 close 1건: #459 (설계 충돌, #457은 OPEN 유지)
+- 이슈 close: **0건.** dev에서 이미 고쳐졌는데 안 닫힌 이슈가 없었고,
+  통합 대상 중 closing keyword를 가진 PR도 없었다.
+
+## 보안 보류 — 리뷰만 게시
+
+| PR | 신규 발견 |
+|---|---|
+| #429 | shell 실행 도구 입력 경계로 재분류 (WP2에서 게시) |
+| #355 | `images.ts:48-165`가 저장 `baseUrl`을 써서 Google OAuth 토큰이 임의 호스트로 전송 가능 |
+| #424 | 유료 브리지가 기본 ON(`=== false`만 차단), xAI 자격증명 목적지 미고정 |
+| #408 | `windowsSchedulerTaskInstalled()`가 query 실패를 부재로 접어 설치 락이 풀림 |
+| #403 | 본인 작성 — 4분할 요청 + 결함 6건. 타 maintainer 승인 필요 |
+
+#469 #445 #461 #464 #426은 이번 배치 전에 이미 상세 리뷰를 게시해 재게시하지 않았다.
+
+## 최종 게이트
+
+```
+$ git rev-list --left-right --count dev...origin/dev
+0	0
+$ bun x tsc --noEmit           (pass)
+$ bun run lint:gui             (pass)
+$ bun scripts/privacy-scan.ts  Privacy scan passed
+```
+
+## 배운 것
+
+A-gate가 매 사이클 3~5라운드를 돌았고, 반복된 근본 원인은 하나였다 —
+**계획 문서에 테스트 본문이나 코드를 적을 때 실물 소스를 확인하지 않은 것.**
+존재하지 않는 헬퍼(`configWithMiniMax`), 없는 enum 값(`"verified"`),
+틀린 파일 경로(`cursor-protobuf.test.ts`), 잘못 인용한 5개 조건 중 2개만 적은 가드가
+전부 그렇게 나왔다. "B 단계에서 확인"으로 미룬 항목은 예외 없이 다음 라운드 blocker가 됐다.
+
+가장 값진 감사는 WP3이었다. 리뷰어가 계획의 테스트를 PR head에서 **실제로 실행해**
+제안한 분기가 도달조차 못 한다는 것을 밝혔다. truncation sniffer가 switch 이전에
+`MAX_TOKENS`를 가로채고 있었다. 그대로 구현했다면 통과하는 테스트와 함께
+아무 효과 없는 코드를 머지할 뻔했다.
