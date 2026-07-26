@@ -1,5 +1,11 @@
 import { maskAccountId } from "../lib/privacy";
-import type { OAuthAccountHealth, OAuthHealthEntry } from "../oauth/health";
+import {
+  CODEX_HEALTH_UNAVAILABLE_NOTE,
+  MASKED_ACCOUNT_FALLBACK,
+  type OAuthAccountHealth,
+  type OAuthCliHealthReport,
+  type OAuthHealthEntry,
+} from "../oauth/health";
 
 function describeHealth(health: OAuthAccountHealth): string {
   switch (health.status) {
@@ -19,12 +25,15 @@ function describeHealth(health: OAuthAccountHealth): string {
           return "metadata mismatch";
         case "stale_credentials":
           return "stale credentials";
+        default:
+          return "warning";
       }
+    default:
+      return "unknown";
   }
 }
 
-/** Human-readable OAuth health block for `ocx status` (redacted account ids, no tokens). */
-export function formatOAuthHealthForStatus(entries: OAuthHealthEntry[]): string {
+function formatEntryBlock(entries: OAuthHealthEntry[]): string {
   if (entries.length === 0) return "";
 
   const notable = entries.filter((entry) => entry.health.status !== "healthy");
@@ -32,11 +41,28 @@ export function formatOAuthHealthForStatus(entries: OAuthHealthEntry[]): string 
 
   const lines = ["OAuth health: warning"];
   for (const entry of notable) {
-    const masked = maskAccountId(entry.accountId) ?? "account-…????";
+    const masked = maskAccountId(entry.accountId) ?? MASKED_ACCOUNT_FALLBACK;
     lines.push(`  ${entry.provider}  ${masked}  ${describeHealth(entry.health)}`);
     if (entry.action) {
       lines.push(`    Action: ${entry.action}`);
     }
   }
   return lines.join("\n");
+}
+
+/** Human-readable OAuth health block for `ocx status` (redacted account ids, no tokens). */
+export function formatOAuthHealthForStatus(
+  input: OAuthHealthEntry[] | OAuthCliHealthReport,
+): string {
+  const report: OAuthCliHealthReport = Array.isArray(input)
+    ? { entries: input, codexHealthSource: "management-api" }
+    : input;
+
+  const parts: string[] = [];
+  if (report.codexHealthSource === "unavailable") {
+    parts.push(CODEX_HEALTH_UNAVAILABLE_NOTE);
+  }
+  const oauthBlock = formatEntryBlock(report.entries);
+  if (oauthBlock) parts.push(oauthBlock);
+  return parts.join("\n");
 }

@@ -36,6 +36,12 @@ describe("logOAuthEvent", () => {
         token: "secret-token-value",
         accessToken: "secret-accessToken-value",
         refreshToken: "secret-refreshToken-value",
+        access_token: "secret-access_token-value",
+        refresh_token: "secret-refresh_token-value",
+        id_token: "secret-id_token-value",
+        client_secret: "secret-client_secret-value",
+        oauth_code: "secret-oauth_code-value",
+        "client-secret": "secret-client-secret-value",
         safe: "visible",
       });
     } finally {
@@ -53,9 +59,15 @@ describe("logOAuthEvent", () => {
       "token",
       "accessToken",
       "refreshToken",
+      "access_token",
+      "refresh_token",
+      "id_token",
+      "client_secret",
+      "oauth_code",
+      "client-secret",
     ]) {
       expect(line).not.toContain(`${key}=`);
-      expect(line).not.toContain(`secret-${key}-value`);
     }
+    expect(line).not.toContain("secret-");
   });
 });

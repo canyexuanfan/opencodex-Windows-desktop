@@ -1063,6 +1063,7 @@ export const zh: Record<TKey, string> = {
   "pws.healthCooldownHint": "请等到冷却结束。暂时不要探测此账户。",
   "pws.doctorCopyUnavailable": "剪贴板不可用",
   "pws.healthLabel.rateLimited": "已限速",
+  "pws.healthLabel.quotaLimited": "配额受限",
   "pws.healthLabel.reauthRequired": "需要重新认证",
   "pws.healthLabel.refreshFailed": "刷新失败",
   "pws.healthLabel.metadataMismatch": "元数据不匹配",

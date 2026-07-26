@@ -14,4 +14,13 @@ describe("maskAccountId", () => {
   test("short ids still redact without leaking full value when length > 4", () => {
     expect(maskAccountId("abcdef")).toBe("account-…cdef");
   });
+
+  test("ids of four characters or fewer never include the source identifier", () => {
+    for (const id of ["a", "ab", "abc", "abcd"]) {
+      const masked = maskAccountId(id);
+      expect(masked).toBe("account-…");
+      expect(masked!.endsWith(id)).toBe(false);
+      expect(masked).not.toBe(id);
+    }
+  });
 });

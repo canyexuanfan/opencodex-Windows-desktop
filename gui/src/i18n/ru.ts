@@ -827,6 +827,7 @@ export const ru: Record<TKey, string> = {
   "pws.healthCooldownHint": "Дождитесь окончания паузы. Пока не проверяйте эту учётную запись.",
   "pws.doctorCopyUnavailable": "Буфер обмена недоступен",
   "pws.healthLabel.rateLimited": "Ограничение частоты",
+  "pws.healthLabel.quotaLimited": "Ограничение квоты",
   "pws.healthLabel.reauthRequired": "Требуется повторная аутентификация",
   "pws.healthLabel.refreshFailed": "Ошибка обновления",
   "pws.healthLabel.metadataMismatch": "Несоответствие метаданных",

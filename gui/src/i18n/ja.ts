@@ -782,6 +782,7 @@ export const ja: Record<TKey, string> = {
   "pws.healthCooldownHint": "クールダウンが終わるまで待ってください。まだこのアカウントをプローブしないでください。",
   "pws.doctorCopyUnavailable": "クリップボードを利用できません",
   "pws.healthLabel.rateLimited": "レート制限中",
+  "pws.healthLabel.quotaLimited": "クォータ制限中",
   "pws.healthLabel.reauthRequired": "再認証が必要です",
   "pws.healthLabel.refreshFailed": "更新に失敗しました",
   "pws.healthLabel.metadataMismatch": "メタデータの不一致",

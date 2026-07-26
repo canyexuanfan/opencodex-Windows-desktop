@@ -313,7 +313,7 @@ export function getCodexAccountCooldownUntil(accountId: string, now = Date.now()
 /** Read-only cooldown snapshot for shared OAuth health projection (no write side effects). */
 export function getCodexAccountHealthSnapshot(accountId: string, now = Date.now()): {
   cooldownUntil?: number;
-  cooldownSource?: "retry-after" | "reset-derived" | "default";
+  cooldownSource?: CodexCooldownSource;
 } | null {
   const cooldownUntil = getCodexAccountCooldownUntil(accountId, now);
   if (cooldownUntil === null) return null;

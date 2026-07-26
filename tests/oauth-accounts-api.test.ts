@@ -81,6 +81,7 @@ describe("multiauth accounts API", () => {
           health?: { status: string };
           healthLabel?: string;
           healthSummary?: string;
+          healthAction?: string;
         }>;
       };
       expect(body.accounts.length).toBe(2);
@@ -96,6 +97,51 @@ describe("multiauth accounts API", () => {
       const healthy = body.accounts.find(a => a.id === "aaaa1111");
       expect(healthy?.health?.status).toBe("healthy");
       expect(healthy?.healthLabel).toBe("Healthy");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("GET projects needsReauth health with action and redacted summary", async () => {
+    writeFileSync(join(testDir, "auth.json"), JSON.stringify({
+      anthropic: {
+        activeAccountId: "aaaa1111",
+        accounts: [
+          {
+            id: "aaaa1111",
+            needsReauth: true,
+            credential: {
+              access: "t1",
+              refresh: "r1",
+              expires: 9999999999999,
+              email: "first@example.com",
+              accountId: "acct-1",
+            },
+          },
+        ],
+      },
+    }), { mode: 0o600 });
+
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/api/oauth/accounts?provider=anthropic", server.url));
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        accounts: Array<{
+          id: string;
+          health?: { status: string; reason?: string };
+          healthLabel?: string;
+          healthSummary?: string;
+          healthAction?: string;
+        }>;
+      };
+      const account = body.accounts[0]!;
+      expect(account.health?.status).toBe("reauth_required");
+      expect(account.healthLabel).toMatch(/Reauthentication|Refresh/);
+      expect(account.healthSummary).toMatch(/account-…/);
+      expect(account.healthSummary).not.toContain("aaaa1111");
+      expect(account.healthSummary).not.toContain("first@example.com");
+      expect(account.healthAction).toContain("ocx login anthropic");
     } finally {
       await server.stop(true);
     }

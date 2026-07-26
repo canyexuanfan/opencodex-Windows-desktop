@@ -18,6 +18,8 @@ import { resolveProviderTransport } from "../providers/xai-transport";
 import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 import { logOAuthEvent } from "./log";
 export {
+  CODEX_HEALTH_UNAVAILABLE_NOTE,
+  MASKED_ACCOUNT_FALLBACK,
   collectOAuthHealthEntries,
   collectOAuthHealthEntriesForCli,
   detectOAuthWarning,
@@ -27,8 +29,10 @@ export {
   projectCodexAccountHealth,
   projectOAuthAccountHealth,
   projectStoredOAuthAccountHealth,
+  type CodexHealthSource,
   type OAuthAccountHealth,
   type OAuthAccountHealthFields,
+  type OAuthCliHealthReport,
   type OAuthHealthEntry,
   type OAuthHealthLabel,
 } from "./health";

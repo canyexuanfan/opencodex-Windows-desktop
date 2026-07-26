@@ -3,8 +3,10 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CODEX_HEALTH_UNAVAILABLE_NOTE,
   CODEX_REAUTH_ACTION,
   collectOAuthHealthEntries,
+  collectOAuthHealthEntriesForCli,
   projectOAuthAccountHealth,
 } from "../src/oauth/health";
 import { getAccountSet, markAccountNeedsReauth, saveCredential } from "../src/oauth/store";
@@ -19,6 +21,7 @@ import {
   recordCodexUpstreamOutcome,
 } from "../src/codex/routing";
 import type { OcxConfig } from "../src/types";
+import { formatOAuthHealthForStatus } from "../src/cli/status-oauth";
 
 const origHome = process.env.HOME;
 const origOcxHome = process.env.OPENCODEX_HOME;
@@ -126,7 +129,7 @@ describe("collectOAuthHealthEntries", () => {
     expect(entry!.action).not.toContain("ocx login codex");
   });
 
-  test("kiro access-only credentials are not stale_credentials", async () => {
+  test("kiro manual access-only unexpired credentials are healthy", async () => {
     await saveCredential("kiro", {
       access: "kiro-access-only",
       refresh: "",
@@ -137,6 +140,89 @@ describe("collectOAuthHealthEntries", () => {
     const entries = collectOAuthHealthEntries();
     const entry = entries.find(e => e.provider === "kiro" && e.accountId === accountId);
     expect(entry?.health).toEqual({ status: "healthy" });
+  });
+
+  test("kiro environment access-only unexpired credentials are healthy", async () => {
+    await saveCredential("kiro", {
+      access: "kiro-env-access",
+      refresh: "",
+      expires: Date.now() + 3_600_000,
+      source: "environment",
+    });
+    const accountId = getAccountSet("kiro")!.activeAccountId;
+    const entry = collectOAuthHealthEntries().find(e => e.provider === "kiro" && e.accountId === accountId);
+    expect(entry?.health).toEqual({ status: "healthy" });
+  });
+
+  test("kiro access-only expired credentials are stale_credentials", async () => {
+    await saveCredential("kiro", {
+      access: "kiro-expired",
+      refresh: "",
+      expires: Date.now() - 1_000,
+      source: "manual",
+    });
+    const accountId = getAccountSet("kiro")!.activeAccountId;
+    const entry = collectOAuthHealthEntries().find(e => e.provider === "kiro" && e.accountId === accountId);
+    expect(entry?.health).toEqual({ status: "warning", reason: "stale_credentials" });
+  });
+});
+
+describe("collectOAuthHealthEntriesForCli", () => {
+  test("uses management API Codex health and does not read CLI process maps", async () => {
+    markCodexAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+    const report = await collectOAuthHealthEntriesForCli(Date.now(), {
+      findLiveProxyImpl: async () => ({ hostname: "127.0.0.1", port: 19191, pid: null }),
+      fetchImpl: async () =>
+        new Response(JSON.stringify({
+          accounts: [{
+            id: "proxy-codex-acct",
+            health: {
+              status: "cooldown",
+              until: "2026-07-23T14:30:00.000Z",
+              reason: "rate_limit",
+            },
+          }],
+        }), { status: 200 }),
+    });
+    expect(report.codexHealthSource).toBe("management-api");
+    expect(report.entries.some(e => e.accountId === MAIN_CODEX_ACCOUNT_ID)).toBe(false);
+    const remote = report.entries.find(e => e.accountId === "proxy-codex-acct");
+    expect(remote?.health).toEqual({
+      status: "cooldown",
+      until: "2026-07-23T14:30:00.000Z",
+      reason: "rate_limit",
+    });
+    expect(remote?.action).toContain("wait until");
+  });
+
+  test("labels unavailable fallback and omits process-local Codex maps", async () => {
+    markCodexAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+    const report = await collectOAuthHealthEntriesForCli(Date.now(), {
+      findLiveProxyImpl: async () => null,
+    });
+    expect(report.codexHealthSource).toBe("unavailable");
+    expect(report.entries.some(e => e.provider === "codex")).toBe(false);
+    const text = formatOAuthHealthForStatus(report);
+    expect(text).toContain(CODEX_HEALTH_UNAVAILABLE_NOTE);
+    expect(text).not.toContain(MAIN_CODEX_ACCOUNT_ID);
+  });
+
+  test("malformed remote health is re-derived instead of rendering undefined", async () => {
+    const report = await collectOAuthHealthEntriesForCli(Date.now(), {
+      findLiveProxyImpl: async () => ({ hostname: "127.0.0.1", port: 19191, pid: null }),
+      fetchImpl: async () =>
+        new Response(JSON.stringify({
+          accounts: [{
+            id: "skewed-acct",
+            needsReauth: true,
+            health: { status: "not-a-real-status" },
+          }],
+        }), { status: 200 }),
+    });
+    const entry = report.entries.find(e => e.accountId === "skewed-acct");
+    expect(entry?.health).toEqual({ status: "reauth_required", reason: "refresh_failed" });
+    const text = formatOAuthHealthForStatus(report);
+    expect(text).not.toContain("undefined");
   });
 });
 

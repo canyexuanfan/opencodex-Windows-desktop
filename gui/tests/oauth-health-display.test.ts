@@ -46,6 +46,8 @@ describe("oauth health badge helpers", () => {
     expect(formatOAuthHealthLabel(t, { status: "healthy" })).toBeNull();
     expect(formatOAuthHealthLabel(t, { status: "cooldown", reason: "rate_limit", until: "2026-07-26T00:00:00.000Z" }))
       .toBe("pws.healthLabel.rateLimited");
+    expect(formatOAuthHealthLabel(t, { status: "cooldown", reason: "quota", until: "2026-07-26T00:00:00.000Z" }))
+      .toBe("pws.healthLabel.quotaLimited");
     expect(formatOAuthHealthLabel(t, { status: "warning", reason: "refresh_conflict" }))
       .toBe("pws.healthLabel.credentialConflict");
     expect(formatOAuthHealthSummary(t, "xai", "acct_abcd1234", { status: "reauth_required", reason: "refresh_failed" }))

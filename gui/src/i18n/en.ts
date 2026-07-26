@@ -828,6 +828,7 @@ export const en = {
   "pws.doctorCopyUnavailable": "Clipboard unavailable",
   "pws.healthCooldownHint": "Wait until the cooldown ends. Do not probe this account yet.",
   "pws.healthLabel.rateLimited": "Rate limited",
+  "pws.healthLabel.quotaLimited": "Quota limited",
   "pws.healthLabel.reauthRequired": "Reauthentication required",
   "pws.healthLabel.refreshFailed": "Refresh failed",
   "pws.healthLabel.metadataMismatch": "Metadata mismatch",

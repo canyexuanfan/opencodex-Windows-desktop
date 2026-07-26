@@ -67,6 +67,15 @@ describe("formatOAuthHealthForStatus", () => {
     expect(text).not.toContain("acct_healthy_zzzz");
     expect(text).not.toContain("account-…");
   });
+
+  test("labels Codex health unavailable when proxy is down", () => {
+    const text = formatOAuthHealthForStatus({
+      entries: [],
+      codexHealthSource: "unavailable",
+    });
+    expect(text).toContain("Codex health: unavailable");
+    expect(text).toContain("management API");
+  });
 });
 
 describe("collectOAuthHealthEntries via status formatter", () => {
@@ -90,5 +99,6 @@ describe("collectOAuthHealthEntries via status formatter", () => {
     expect(text).not.toContain(set!.activeAccountId);
     expect(text).not.toContain("access-token");
     expect(text).not.toContain("refresh-token");
+    expect(text).not.toContain("person@example.test");
   });
 });

@@ -414,7 +414,7 @@ export function getCodexAccountHealthSnapshot(accountId: string, now = Date.now(
 Map `retry-after` → `rate_limit`, others → `quota` for health reason. Do **not** change `recordCodexUpstreamOutcome`.
 
 Set `action` strings:
-- reauth: `run \`ocx auth login <provider>\``
+- reauth: `run \`ocx login <provider>\``
 - cooldown: `wait until <local time> or start a new session with another eligible account`
 - warning refresh_conflict: `re-run \`ocx doctor\` after ensuring only one proxy process writes the credential store`
 
@@ -460,7 +460,7 @@ test("formats reauthentication required", () => {
     provider: "openai",
     accountId: "acct_abcdefghijklmnopqrstuvwxyz",
     health: { status: "reauth_required", reason: "refresh_failed" },
-    action: "run `ocx auth login openai`",
+    action: "run `ocx login openai`",
   }]);
   expect(text).toContain("OAuth health: warning");
   expect(text).toContain("account-…wxyz");
@@ -509,7 +509,7 @@ EOF
 - Produces: doctor rows like:
   - `[OK] OAuth credential storage is writable.`
   - `[OK] Token refresh single-flight is active.`
-  - `[WARN] Account account-…42 requires reauthentication. Action: run \`ocx auth login <provider>\``
+  - `[WARN] Account account-…42 requires reauthentication. Action: run \`ocx login <provider>\``
   - `[WARN] Account account-…17 is rate limited until … Action: …`
   - `[OK] No fabricated official-client metadata detected.` (static OK for Codex forward path unless a runtime detector exists; do not invent a false positive scanner)
 

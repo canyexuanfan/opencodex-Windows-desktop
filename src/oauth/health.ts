@@ -1,4 +1,4 @@
-import { getCodexAccountHealthSnapshot } from "../codex/routing";
+import { getCodexAccountHealthSnapshot, type CodexCooldownSource } from "../codex/routing";
 import { isAccountNeedsReauth } from "../codex/account-runtime-state";
 import { getCodexAccountCredential, listCodexAccountIds } from "../codex/account-store";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
@@ -17,10 +17,14 @@ export type OAuthAccountHealth =
 export type OAuthHealthLabel =
   | "Healthy"
   | "Rate limited"
+  | "Quota limited"
   | "Reauthentication required"
   | "Refresh failed"
   | "Metadata mismatch"
   | "Credential conflict";
+
+/** Shared masked-id fallback when `maskAccountId` returns nullish. */
+export const MASKED_ACCOUNT_FALLBACK = "account-…????";
 
 export type OAuthHealthEntry = {
   provider: string;
@@ -86,8 +90,8 @@ function actionFor(provider: string, health: OAuthAccountHealth): string | undef
     return `run \`ocx login ${provider}\``;
   }
   if (health.status === "cooldown") {
-    const local = new Date(health.until).toLocaleString();
-    return `wait until ${local} or start a new session with another eligible account`;
+    // Keep the transported deadline machine-readable (ISO); presentation layers localize/format.
+    return `wait until ${health.until} or start a new session with another eligible account`;
   }
   if (health.status === "warning" && health.reason === "refresh_conflict") {
     return "re-run `ocx doctor` after ensuring only one proxy process writes the credential store";
@@ -100,7 +104,7 @@ export function oauthHealthLabel(health: OAuthAccountHealth): OAuthHealthLabel {
     case "healthy":
       return "Healthy";
     case "cooldown":
-      return "Rate limited";
+      return health.reason === "rate_limit" ? "Rate limited" : "Quota limited";
     case "reauth_required":
       return health.reason === "refresh_failed" ? "Refresh failed" : "Reauthentication required";
     case "warning":
@@ -115,13 +119,18 @@ export function oauthHealthLabel(health: OAuthAccountHealth): OAuthHealthLabel {
   }
 }
 
+function displayAccountForHealth(accountId: string): string {
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) return "main account";
+  return maskAccountId(accountId) ?? MASKED_ACCOUNT_FALLBACK;
+}
+
 export function oauthHealthSummary(
   provider: string,
   accountId: string,
   health: OAuthAccountHealth,
   action?: string,
 ): string {
-  const masked = maskAccountId(accountId) ?? "account-…????";
+  const masked = displayAccountForHealth(accountId);
   let summary: string;
   switch (health.status) {
     case "healthy":
@@ -168,7 +177,7 @@ export function projectStoredOAuthAccountHealth(
   return projectOAuthAccountHealth({
     needsReauth: account.needsReauth === true,
     reauthReason: account.needsReauth === true ? "refresh_failed" : undefined,
-    warningReason: detectOAuthWarning(provider, account, opts.observeOnly === true),
+    warningReason: detectOAuthWarning(provider, account, opts.observeOnly === true, now),
     now,
   });
 }
@@ -191,12 +200,14 @@ export function projectCodexAccountHealth(input: {
 
 /**
  * Incomplete credentials warning. Kiro may intentionally store an empty refresh
- * when authenticated via KIRO_ACCESS_TOKEN or a pasted access-only token.
+ * when authenticated via KIRO_ACCESS_TOKEN or a pasted access-only token, as long
+ * as the access token is still unexpired.
  */
 export function detectOAuthWarning(
   provider: string,
   account: ProviderAccount,
   observeOnly = false,
+  now = Date.now(),
 ): OAuthWarningReason | undefined {
   const intent = observeOnly
     ? peekOAuthRefreshIntent(provider, account.id)
@@ -205,14 +216,21 @@ export function detectOAuthWarning(
   const cred = account.credential;
   if (!cred?.access) return "stale_credentials";
   if (!cred.refresh) {
-    if (provider === "kiro") return undefined;
+    if (
+      provider === "kiro"
+      && typeof cred.expires === "number"
+      && Number.isFinite(cred.expires)
+      && cred.expires > now
+    ) {
+      return undefined;
+    }
     return "stale_credentials";
   }
   return undefined;
 }
 
 function cooldownReasonFromSource(
-  source: "retry-after" | "reset-derived" | "default" | undefined,
+  source: CodexCooldownSource | undefined,
 ): "rate_limit" | "quota" | undefined {
   if (!source) return undefined;
   return source === "retry-after" ? "rate_limit" : "quota";
@@ -266,12 +284,7 @@ export function collectOAuthHealthEntries(
 
   for (const [provider, set] of Object.entries(store)) {
     for (const account of set.accounts) {
-      const health = projectOAuthAccountHealth({
-        needsReauth: account.needsReauth === true,
-        reauthReason: account.needsReauth === true ? "refresh_failed" : undefined,
-        warningReason: detectOAuthWarning(provider, account, observeOnly),
-        now,
-      });
+      const health = projectStoredOAuthAccountHealth(provider, account, now, { observeOnly });
       pushEntry(entries, provider, account.id, health);
     }
   }
@@ -288,6 +301,18 @@ type ProxyCodexAccountHealth = {
   health?: OAuthAccountHealth;
   needsReauth?: boolean;
 };
+
+const KNOWN_HEALTH_STATUSES = new Set(["healthy", "cooldown", "reauth_required", "warning"]);
+
+function coerceRemoteAccountHealth(
+  account: ProxyCodexAccountHealth,
+): OAuthAccountHealth {
+  const raw = account.health;
+  if (raw && typeof raw === "object" && KNOWN_HEALTH_STATUSES.has((raw as { status?: string }).status ?? "")) {
+    return raw;
+  }
+  return projectOAuthAccountHealth({ needsReauth: account.needsReauth === true });
+}
 
 async function fetchCodexHealthFromLiveProxy(
   fetchImpl: typeof fetch = fetch,
@@ -309,9 +334,7 @@ async function fetchCodexHealthFromLiveProxy(
     const entries: OAuthHealthEntry[] = [];
     for (const account of json.accounts) {
       if (!account?.id || typeof account.id !== "string") continue;
-      const health = account.health
-        ?? projectOAuthAccountHealth({ needsReauth: account.needsReauth === true });
-      pushEntry(entries, "codex", account.id, health);
+      pushEntry(entries, "codex", account.id, coerceRemoteAccountHealth(account));
     }
     return entries;
   } catch {
@@ -319,9 +342,21 @@ async function fetchCodexHealthFromLiveProxy(
   }
 }
 
+/** How CLI/doctor obtained Codex cooldown/reauth (proxy memory only lives in the proxy). */
+export type CodexHealthSource = "management-api" | "unavailable";
+
+export type OAuthCliHealthReport = {
+  entries: OAuthHealthEntry[];
+  codexHealthSource: CodexHealthSource;
+};
+
+/** Shown by `ocx status` / `ocx doctor` when the proxy management API is unreachable. */
+export const CODEX_HEALTH_UNAVAILABLE_NOTE =
+  "Codex health: unavailable (proxy not running; live cooldown/reauth requires the management API)";
+
 /**
- * CLI/doctor collector: observe-only OAuth store reads, and Codex health from the
- * running proxy process when reachable (cooldowns/reauth live in proxy memory).
+ * CLI/doctor collector: observe-only OAuth store reads, and Codex health only from the
+ * running proxy management API. Never reads proxy process-local maps from the CLI process.
  */
 export async function collectOAuthHealthEntriesForCli(
   now = Date.now(),
@@ -329,13 +364,12 @@ export async function collectOAuthHealthEntriesForCli(
     fetchImpl?: typeof fetch;
     findLiveProxyImpl?: typeof findLiveProxy;
   } = {},
-): Promise<OAuthHealthEntry[]> {
+): Promise<OAuthCliHealthReport> {
   const entries = collectOAuthHealthEntries(now, { observeOnly: true, includeLocalCodex: false });
   const remote = await fetchCodexHealthFromLiveProxy(deps.fetchImpl, deps.findLiveProxyImpl);
   if (remote) {
     for (const entry of remote) entries.push(entry);
-  } else {
-    for (const entry of collectLocalCodexEntries(now)) entries.push(entry);
+    return { entries, codexHealthSource: "management-api" };
   }
-  return entries;
+  return { entries, codexHealthSource: "unavailable" };
 }

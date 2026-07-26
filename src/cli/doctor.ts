@@ -27,7 +27,7 @@ import {
   resolveAndPersistCodexRuntime,
   resolveCodexRuntime,
 } from "../codex/runtime";
-import { CODEX_REAUTH_ACTION, collectOAuthHealthEntriesForCli, type OAuthHealthEntry } from "../oauth/health";
+import { CODEX_REAUTH_ACTION, collectOAuthHealthEntriesForCli, MASKED_ACCOUNT_FALLBACK, type OAuthHealthEntry } from "../oauth/health";
 import { getAuthRefreshIntentLockPath, getAuthStorePath } from "../oauth/store";
 export { resolveCodexHomeDir } from "../codex/home";
 
@@ -35,7 +35,8 @@ export type OAuthDoctorCheck = { level: "OK" | "WARN"; message: string };
 
 function pathIsWritable(path: string): boolean {
   try {
-    accessSync(path, constants.W_OK);
+    // Directories need execute/search as well as write for create+rename.
+    accessSync(path, constants.W_OK | constants.X_OK);
     return true;
   } catch {
     return false;
@@ -86,7 +87,7 @@ function actionForDoctorEntry(entry: OAuthHealthEntry): string {
 }
 
 function describeDoctorHealth(entry: OAuthHealthEntry): string {
-  const masked = maskAccountId(entry.accountId) ?? "account-…????";
+  const masked = maskAccountId(entry.accountId) ?? MASKED_ACCOUNT_FALLBACK;
   const health = entry.health;
   switch (health.status) {
     case "reauth_required":
@@ -120,12 +121,12 @@ export async function collectOAuthDoctorChecks(
   const checks: OAuthDoctorCheck[] = [];
 
   if (isOAuthCredentialStorageWritable()) {
-    checks.push({ level: "OK", message: "OAuth credential storage is writable." });
+    checks.push({ level: "OK", message: "OAuth credential storage directory is writable for atomic auth.json updates." });
   } else {
     checks.push({
       level: "WARN",
       message:
-        "OAuth credential storage is not writable. Action: fix permissions on OPENCODEX_HOME so ocx can write auth.json",
+        "OAuth credential storage directory is not writable. Action: fix permissions on OPENCODEX_HOME so ocx can create temp files and rename auth.json",
     });
   }
 
@@ -139,7 +140,15 @@ export async function collectOAuthDoctorChecks(
     });
   }
 
-  for (const entry of await collectOAuthHealthEntriesForCli(now, deps)) {
+  const report = await collectOAuthHealthEntriesForCli(now, deps);
+  if (report.codexHealthSource === "unavailable") {
+    checks.push({
+      level: "WARN",
+      message:
+        "Codex account health unavailable (proxy not running). Action: start the proxy and re-run `ocx doctor` to inspect live cooldown/reauth",
+    });
+  }
+  for (const entry of report.entries) {
     if (entry.health.status === "healthy") continue;
     const action = actionForDoctorEntry(entry);
     checks.push({
@@ -148,8 +157,11 @@ export async function collectOAuthDoctorChecks(
     });
   }
 
-  // Static integrity note for the Codex forward path (no runtime scanner).
-  checks.push({ level: "OK", message: "No fabricated official-client metadata detected." });
+  // Build-time / architecture note — not a runtime fabrication scanner.
+  checks.push({
+    level: "OK",
+    message: "Codex forward path uses pass-through client metadata (build-time invariant; not a runtime scan).",
+  });
 
   return checks;
 }

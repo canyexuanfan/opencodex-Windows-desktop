@@ -3,8 +3,9 @@ export function maskAccountId(value: string | null | undefined): string | null {
   if (!value) return null;
   const id = value.trim();
   if (!id) return null;
-  const suffix = id.length <= 4 ? id : id.slice(-4);
-  return `account-…${suffix}`;
+  // Short IDs would disclose the entire identifier via the suffix; use a non-identifying placeholder.
+  if (id.length <= 4) return "account-…";
+  return `account-…${id.slice(-4)}`;
 }
 
 /** Never fall back to a raw account id in UI labels. */

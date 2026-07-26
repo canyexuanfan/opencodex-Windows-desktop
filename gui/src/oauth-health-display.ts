@@ -58,7 +58,11 @@ export function oauthHealthShowsDoctor(status: OAuthHealthStatus | undefined): b
 
 export function oauthHealthLabelKey(health: OAuthHealthView | undefined): TKey | null {
   if (!health || health.status === "healthy") return null;
-  if (health.status === "cooldown") return "pws.healthLabel.rateLimited";
+  if (health.status === "cooldown") {
+    return health.reason === "rate_limit"
+      ? "pws.healthLabel.rateLimited"
+      : "pws.healthLabel.quotaLimited";
+  }
   if (health.status === "reauth_required") {
     return health.reason === "refresh_failed"
       ? "pws.healthLabel.refreshFailed"
@@ -88,7 +92,7 @@ export function formatOAuthHealthSummary(
   health: OAuthHealthView | undefined,
 ): string | null {
   if (!health || health.status === "healthy") return null;
-  const account = displayAccountId(accountId);
+  const account = accountId === "__main__" ? t("codexAuth.mainAccount") : displayAccountId(accountId);
   if (health.status === "cooldown") {
     const until = health.until ? new Date(health.until).toLocaleString() : "";
     return t(

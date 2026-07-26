@@ -144,12 +144,14 @@ describe("Codex metadata integrity", () => {
     const adapter = createResponsesPassthroughAdapter(provider);
     const request = adapter.buildRequest(minimalParsed(), {
       headers: new Headers({
+        authorization: "Bearer caller-token",
         originator: "codex_cli_rs",
         session_id: "sess-real-2",
         "thread-id": "thread-real-2",
       }),
     });
     const sync = request as { headers: Record<string, string> };
+    expect(sync.headers.authorization).toBe("Bearer caller-token");
     expect(sync.headers.originator).toBe("codex_cli_rs");
     expect(sync.headers.session_id).toBe("sess-real-2");
     expect(sync.headers["thread-id"]).toBe("thread-real-2");

@@ -1063,6 +1063,7 @@ export const ko: Record<TKey, string> = {
   "pws.healthCooldownHint": "쿨다운이 끝날 때까지 기다리세요. 지금은 이 계정을 프로브하지 마세요.",
   "pws.doctorCopyUnavailable": "클립보드를 사용할 수 없음",
   "pws.healthLabel.rateLimited": "요청 한도 초과",
+  "pws.healthLabel.quotaLimited": "할당량 제한",
   "pws.healthLabel.reauthRequired": "재인증 필요",
   "pws.healthLabel.refreshFailed": "새로고침 실패",
   "pws.healthLabel.metadataMismatch": "메타데이터 불일치",

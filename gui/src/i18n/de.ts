@@ -1043,6 +1043,7 @@ export const de: Record<TKey, string> = {
   "pws.healthCooldownHint": "Warten Sie, bis die Abkühlzeit endet. Prüfen Sie dieses Konto noch nicht.",
   "pws.doctorCopyUnavailable": "Zwischenablage nicht verfügbar",
   "pws.healthLabel.rateLimited": "Ratelimit",
+  "pws.healthLabel.quotaLimited": "Kontingent begrenzt",
   "pws.healthLabel.reauthRequired": "Erneute Anmeldung erforderlich",
   "pws.healthLabel.refreshFailed": "Aktualisierung fehlgeschlagen",
   "pws.healthLabel.metadataMismatch": "Metadaten stimmen nicht überein",
