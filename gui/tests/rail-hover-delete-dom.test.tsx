@@ -13,6 +13,8 @@ import { LanguageProvider } from "../src/i18n/provider";
  */
 
 const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT"] as const;
+/** Survives afterEach restore so a late React 19 dispatchSetState can read window.event. */
+const WINDOW_EVENT_STUB: { event: undefined } = { event: undefined };
 let previous: Record<(typeof globals)[number], unknown>;
 let win: Window;
 let host: HTMLElement;
@@ -61,12 +63,34 @@ afterEach(async () => {
     await act(async () => { current.unmount(); });
     root = null;
   }
-  // Flush React 19 scheduler work (setImmediate/MessageChannel) while window still
-  // exists. Restoring globals first lets a late dispatchSetState hit undefined
-  // window.event and fail the suite as an unhandled error between tests (macOS CI).
-  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  // Drain React 19 scheduler work (setImmediate/MessageChannel) while happy-dom is
+  // still installed. ProviderWorkspaceShell defers setState via window.setTimeout(0)
+  // + fetch; on slow macOS CI one tick is not enough and a late dispatchSetState
+  // then evaluates window.event after globals were restored to undefined.
+  await act(async () => {
+    for (let i = 0; i < 5; i++) {
+      await new Promise<void>((r) => setTimeout(r, 0));
+      await Promise.resolve();
+    }
+  });
   for (const key of globals) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: previous[key] });
+    let value = previous[key];
+    if (key === "window") {
+      if (value == null || typeof value !== "object") {
+        value = WINDOW_EVENT_STUB;
+      } else if (!Object.prototype.hasOwnProperty.call(value, "event")) {
+        try {
+          Object.defineProperty(value, "event", {
+            configurable: true,
+            writable: true,
+            value: undefined,
+          });
+        } catch {
+          value = WINDOW_EVENT_STUB;
+        }
+      }
+    }
+    Object.defineProperty(globalThis, key, { configurable: true, value });
   }
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: originalFetch });
 });
