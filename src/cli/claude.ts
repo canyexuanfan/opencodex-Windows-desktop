@@ -14,10 +14,18 @@ import { refreshGatewayModelCacheFromProxy } from "../claude/gateway-cache";
 import { commandInvocation } from "../lib/win-exec";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
+import { PROXY_MARKER, defaultAuthDetectDeps, detectClaudeAuth, type AuthDetectDeps } from "../claude/auth-detect";
+import { resolveClaudeAuthMode } from "../claude/auth-mode";
 
 export interface ClaudeLaunchEnv {
   [key: string]: string | undefined;
 }
+
+/**
+ * Injectable IO for tests. `env` is deliberately NOT injectable: it is bound to the
+ * launch base so detection and the spawned process can never disagree (audit R3-3).
+ */
+export type ClaudeEnvDeps = { authDetect?: Omit<Partial<AuthDetectDeps>, "env"> };
 
 /**
  * Pure env assembly (unit-tested): never sets ANTHROPIC_API_KEY (setting both
@@ -25,8 +33,20 @@ export interface ClaudeLaunchEnv {
  * overrides variables the user already exported, apart from stale loopback
  * ANTHROPIC_BASE_URL values owned by a previous opencodex launch.
  */
-export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaunchEnv, contextWindows: Record<string, number> = {}): ClaudeLaunchEnv {
+export function buildClaudeEnv(
+  config: OcxConfig,
+  port: number,
+  base: ClaudeLaunchEnv,
+  contextWindows: Record<string, number> = {},
+  deps: ClaudeEnvDeps = {},
+): ClaudeLaunchEnv {
   const env: ClaudeLaunchEnv = { ...base };
+  // Step 1 — strip OUR OWN dummy from the inherited environment before anything reads
+  // or writes the token slot. setDefault below preserves any non-empty value, so a
+  // stale marker left in place would suppress the admission key and then be removed,
+  // leaving the child with no token at all (audit R2-1). It is opencodex state, never
+  // user auth, so dropping it unconditionally is safe.
+  if (env.ANTHROPIC_AUTH_TOKEN === PROXY_MARKER) delete env.ANTHROPIC_AUTH_TOKEN;
   const setDefault = (name: string, value: string | undefined) => {
     if (value === undefined || value.length === 0) return;
     if (env[name] !== undefined && env[name] !== "") return; // user wins
@@ -55,8 +75,19 @@ export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaun
   if ((config.apiKeys?.length ?? 0) > 0) {
     setDefault("ANTHROPIC_AUTH_TOKEN", config.apiKeys![0].key);
   }
-  if (!env.ANTHROPIC_AUTH_TOKEN && config.claudeCode?.authMode === "proxy") {
-    env.ANTHROPIC_AUTH_TOKEN = "opencodex-proxy";
+  // Detection reads the SAME base env this launch will use, so the resolver and the
+  // spawned process cannot disagree. Injected deps are spread FIRST and `env` bound
+  // LAST, and the injection type excludes `env`, so a test fake cannot break that.
+  const resolved = resolveClaudeAuthMode(config, detectClaudeAuth({
+    ...defaultAuthDetectDeps(base as NodeJS.ProcessEnv),
+    ...(deps.authDetect ?? {}),
+    env: () => base as NodeJS.ProcessEnv,
+  }));
+  if (!env.ANTHROPIC_AUTH_TOKEN && resolved.markerMode === "proxy") {
+    env.ANTHROPIC_AUTH_TOKEN = PROXY_MARKER;
+  }
+  if (resolved.origin === "auto-unknown") {
+    console.error("⚠ Claude 인증을 확인하지 못했습니다 — 구독 방식으로 진행합니다. GUI에서 인증 모드를 직접 지정하면 이 판단을 덮어쓸 수 있습니다.");
   }
   // NOTE: do NOT set _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL here. While it enables
   // Design/Remote Control, it DISABLES gateway model discovery (Claude Code's eligibility
