@@ -100,6 +100,7 @@ import {
   usageFromResponsesPayload,
   type RequestLogContext,
 } from "../request-log";
+import { conversationIdFromResponsesRequest } from "../request-log-conversation";
 import type { AttemptRecoveryKind } from "../../usage/log";
 import {
   consumeForInspection,
@@ -691,6 +692,8 @@ export async function handleComboResponses(
     const childLog: RequestLogContext = {
       model: pick.target.model,
       provider: pick.target.provider,
+      ...(logCtx.conversationId ? { conversationId: logCtx.conversationId } : {}),
+      ...(logCtx.surface ? { surface: logCtx.surface } : {}),
     };
     const targetRoute = routeModel(config, `${pick.target.provider}/${pick.target.model}`);
     const childBody = concreteComboRequestBody(
@@ -893,6 +896,12 @@ export async function handleResponses(
   } catch (err) {
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
+  logCtx.conversationId = conversationIdFromResponsesRequest({
+    clientThreadId: parsed._clientThreadId,
+    sessionIdHeader: req.headers.get("session_id"),
+    threadIdHeader: req.headers.get("thread-id"),
+    cursorConversationId: parsed._cursorConversationId,
+  });
   logCtx.requestedModel = parsed.modelId;
   logCtx.requestedEffort = parsed.options.reasoning;
   logCtx.requestedServiceTier = parsed.options.serviceTier;

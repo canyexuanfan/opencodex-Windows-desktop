@@ -42,6 +42,8 @@ export interface PersistedUsageEntry {
   provider: string;
   model: string;
   surface?: "claude" | "claude-desktop" | "grok";
+  /** Best-effort chat/session correlation for Logs grouping (#330). */
+  conversationId?: string;
   resolvedModel?: string;
   requestedModel?: string;
   /** Reasoning effort / service-tier metadata for GUI Logs after restart. */
@@ -258,6 +260,9 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
     provider: entry.provider,
     model: entry.model,
     ...(isKnownUsageSurface(entry.surface) ? { surface: entry.surface } : {}),
+    ...(typeof entry.conversationId === "string" && entry.conversationId.trim()
+      ? { conversationId: entry.conversationId.trim().slice(0, 128) }
+      : {}),
     ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
     ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
     ...(typeof entry.requestedEffort === "string" && entry.requestedEffort

@@ -30,6 +30,7 @@ import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
 import { readJsonRequestBody } from "./request-decompress";
 import { addFinalRequestLog, httpStatusForTerminalStatus, recordFirstOutput, type RequestLogContext, type RequestLogEntry } from "./request-log";
+import { conversationIdFromClaudeCacheKey } from "./request-log-conversation";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 
@@ -562,6 +563,11 @@ export async function handleClaudeMessages(
     const translation = anthropicToResponsesTranslation(anthropicBody, config.claudeCode);
     internalBody = translation.body;
     cacheKeySource = translation.cacheKeySource;
+    const claudeConversationId = conversationIdFromClaudeCacheKey(
+      cacheKeySource,
+      typeof internalBody.prompt_cache_key === "string" ? internalBody.prompt_cache_key : undefined,
+    );
+    if (claudeConversationId) logCtx.conversationId = claudeConversationId;
   } catch (err) {
     const status = err instanceof AnthropicRequestError ? 400 : 500;
     if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, { closeReason: "non_stream" });
