@@ -325,6 +325,7 @@ function readExactly(fd: number, length: number, position: number): Buffer | nul
 }
 
 function usageLogRevision(path: string, stat: ReturnType<typeof fstatSync>): UsageLogRevision {
+  if (!stat.isFile()) throw new Error("usage log is not a regular file");
   return {
     path,
     dev: Number(stat.dev),
