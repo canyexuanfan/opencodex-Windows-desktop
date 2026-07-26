@@ -47,7 +47,7 @@ export function CodexAccountResetModal({
       onCancel={handleCancel}
      
     >
-      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} onClick={onClose} />
+      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={onClose} />
       <div className="modal-card" onClick={e => e.stopPropagation()} role="document">
         {!resetConfirm ? (
           <>

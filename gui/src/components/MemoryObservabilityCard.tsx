@@ -115,13 +115,17 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
       if (inFlight) return;
       inFlight = true;
       // Bound each poll so a hung request cannot pin inFlight forever and
-      // starve the unavailable fallback. AbortSignal.timeout avoids a manual
-      // setTimeout that the effect-cleanup detector cannot always see.
+      // starve the unavailable fallback. Prefer AbortSignal.timeout; fall back
+      // to a manual timer when the browser lacks AbortSignal.any/timeout.
       const controller = new AbortController();
       activeController = controller;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       const signal = typeof AbortSignal !== "undefined" && "any" in AbortSignal && "timeout" in AbortSignal
         ? AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)])
-        : controller.signal;
+        : (() => {
+          timeoutId = setTimeout(() => controller.abort(), 10_000);
+          return controller.signal;
+        })();
       try {
         const res = await fetch(`${apiBase}/api/system/memory`, { signal });
         if (!res.ok) throw new Error("memory unavailable");
@@ -134,6 +138,7 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
         // Old servers (pre-#314) 404 this route; degrade to a quiet unavailable note.
         if (!cancelled) setUnavailable(true);
       } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
         if (activeController === controller) activeController = null;
         inFlight = false;
       }

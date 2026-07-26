@@ -40,7 +40,7 @@ export function CodexAccountSwitchModal({
       onCancel={handleCancel}
      
     >
-      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} onClick={onCancel} />
+      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={onCancel} />
       <div className="modal-card" onClick={e => e.stopPropagation()} role="document">
         <h3 id="codex-switch-title">{accountModeState === "direct"
           ? t("codexAuth.preparePoolTitle")

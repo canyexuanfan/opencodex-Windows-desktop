@@ -12,7 +12,7 @@ import {
   ClaudeCodeSettingsCard,
 } from "./claude-code-sections";
 import { serializeSidecarOverride } from "./claude-code-sidecar";
-import { formatCompactWindow, type ClaudeCodeState, type MapRow } from "./claude-code-types";
+import { formatCompactWindow, newClientId, type ClaudeCodeState, type MapRow } from "./claude-code-types";
 import { SmallFastModelSetting } from "./claude-code-settings";
 
 export { AutoConnectSetting, SmallFastModelSetting } from "./claude-code-settings";
@@ -50,7 +50,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         injectAgents: r.injectAgents !== false,
         effectiveModelEnv: r.effectiveModelEnv ?? {},
       });
-      setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ id: crypto.randomUUID(), from, to: String(to) })));
+      setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ id: newClientId(), from, to: String(to) })));
     } catch (error) {
       setOk(false);
       setStatus(error instanceof Error && error.message ? error.message : t("claude.loadFail"));

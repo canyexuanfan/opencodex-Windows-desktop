@@ -95,7 +95,10 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       const mode = codexAccountModeState(config);
       setBannerState(mode);
       setAccountModeState(mode);
-    } catch { /* banner degrades to no badge */ }
+    } catch {
+      setBannerState(null);
+      setAccountModeState(null);
+    }
   }, [apiBase]);
 
   useEffect(() => {

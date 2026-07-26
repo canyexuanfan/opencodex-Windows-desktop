@@ -10,6 +10,7 @@ import {
 } from "./claude-code-sidecar";
 import { AutoConnectSetting, SettingToggle } from "./claude-code-settings";
 import type { ClaudeCodeState, MapRow } from "./claude-code-types";
+import { newClientId } from "./claude-code-types";
 
 export function ClaudeCodeSettingsCard({
   state,
@@ -221,7 +222,7 @@ export function ClaudeCodeModelMapSection({
         ))}
       </div>
       <div style={{ marginTop: 8 }}>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => onRowsChange([...rows, { id: crypto.randomUUID(), from: "", to: "" }])}>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => onRowsChange([...rows, { id: newClientId(), from: "", to: "" }])}>
           <IconPlus /> {t("claude.addMapping")}
         </button>
       </div>

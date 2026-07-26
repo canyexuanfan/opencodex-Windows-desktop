@@ -236,13 +236,13 @@ export default function ProviderModels({
       ) : models.length === 0 ? (
         <p className="muted" role="status">{t("pws.noModelMatch")}</p>
       ) : (
-        <div className="pws-model-list">
+        <ul className="pws-model-list">
           {visibleModels.map(modelId => {
             const isDefault = modelId === item.defaultModel;
             const isSelected = selectedSet.has(modelId);
             const copied = copiedId === modelId;
             return (
-              <div key={modelId} className="pws-model-chip">
+              <li key={modelId} className="pws-model-chip">
                 <button
                   type="button"
                   className="pws-model-chip-main"
@@ -254,10 +254,10 @@ export default function ProviderModels({
                 </button>
                 {isDefault ? <span className="badge badge-muted pws-model-flag">{t("prov.defaultBadge")}</span> : null}
                 {isSelected ? <span className="badge badge-accent pws-model-flag">{t("pws.selected")}</span> : null}
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
       {capped && (
         <p className="muted text-label" style={{ marginTop: 10 }}>

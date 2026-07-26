@@ -322,14 +322,14 @@ export default function ProviderWorkspaceShell({
               className={`pws-filter-btn${filterActive || filterOpen ? " pws-filter-btn--active" : ""}`}
               onClick={() => setFilterOpen(open => !open)}
               aria-label={t("pws.filterAria")}
-              aria-haspopup="menu"
               aria-expanded={filterOpen}
+              aria-controls="pws-provider-filters"
             >
               <IconFilter width={18} height={18} aria-hidden="true" />
               {filterActive && <span className="pws-filter-dot" aria-hidden="true" />}
             </button>
             {filterOpen && (
-              <div className="pws-filter-menu" role="group" aria-label={t("pws.providerFiltersAria")}>
+              <div id="pws-provider-filters" className="pws-filter-menu" role="group" aria-label={t("pws.providerFiltersAria")}>
                 <div className="pws-filter-title">{t("pws.filters")}</div>
                 <div className="pws-filter-head">{t("pws.filterStatus")}</div>
                 {statusFilterOptions.map(({ key, label, count }) => (

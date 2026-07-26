@@ -200,9 +200,14 @@
   min-width: 0;
 }
 
-.models-provider-head > span.text-body {
+.models-provider-head > span.text-body,
+.models-provider-toggle > span.text-body {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.models-provider-toggle {
+  min-width: 0;
 }
 
 .models-provider-actions {
