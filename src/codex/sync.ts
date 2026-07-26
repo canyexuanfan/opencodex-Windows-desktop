@@ -3,6 +3,7 @@ import { printProjectCodexConfigWarnings, groupProjectCodexConfigWarningsByPath,
 import { refreshCodexModelCatalog } from "./refresh";
 import { applyProxyEnv, loadConfig } from "../config";
 import type { OcxConfig } from "../types";
+import { collectOrcaCodexHomeDiagnostic } from "./home";
 
 export interface CodexSyncResult {
   ok: boolean;
@@ -27,6 +28,16 @@ const defaultDeps: CodexSyncDeps = {
   injectCodexConfig,
 };
 
+function reportCodexHomeTarget(log: Pick<Console, "log" | "error"> | null): void {
+  if (!log) return;
+  const target = collectOrcaCodexHomeDiagnostic();
+  log.log(`   Target Codex home: ${target.effectiveCodexHome}`);
+  if (target.warning) {
+    log.error(`WARNING: ${target.warning}`);
+    log.error(`Action: ${target.action}`);
+  }
+}
+
 export async function syncModelsToCodex(
   port?: number,
   config: OcxConfig = loadConfig(),
@@ -38,6 +49,7 @@ export async function syncModelsToCodex(
   if (externalProvider) {
     const result = await deps.injectCodexConfig(p, config, {});
     log?.log(result.message);
+    reportCodexHomeTarget(log);
     return {
       ok: result.success,
       added: 0,
@@ -76,6 +88,7 @@ export async function syncModelsToCodex(
 
   const result = await deps.injectCodexConfig(p, config, { catalogPath: catalogPathForInjection });
   log?.log(result.message);
+  reportCodexHomeTarget(log);
   const projectConfigWarnings = printProjectCodexConfigWarnings(log, { cwd: process.cwd() });
   return {
     ok: result.success,

@@ -15,7 +15,7 @@ import { gracefulStopHost } from "../lib/process-control";
 import { maskAccountId } from "../lib/privacy";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
 import { readCodexTokens } from "../codex/auth-collision";
-import { resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
+import { collectOrcaCodexHomeDiagnostic, resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 import { collectProjectCodexConfigWarnings, formatProjectCodexConfigWarningsForDoctor } from "../codex/project-config-warnings";
@@ -634,6 +634,16 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     const flags = [fs.fstype !== "n/a" ? `fs=${fs.fstype}` : null, fs.isDrvfs || fs.isMntDrive ? "WSL /mnt drive" : null]
       .filter(Boolean).join(", ");
     console.log(`  ${row.exists ? "ok " : "-- "} ${row.label}: ${row.path}${flags ? `  (${flags})` : ""}`);
+  }
+
+  const orcaHome = collectOrcaCodexHomeDiagnostic();
+  console.log("\nCodex app home targeting");
+  console.log(`  ${orcaHome.mismatch ? "!! " : "ok "} Effective Codex home: ${orcaHome.effectiveCodexHome}`);
+  if (orcaHome.mismatch) {
+    console.log(`  !!  ${orcaHome.warning}`);
+    console.log(`      Action: ${orcaHome.action}`);
+  } else {
+    console.log("      No Orca-owned CODEX_HOME mismatch detected.");
   }
 
   const doctorConfig = readConfigDiagnostics().config;

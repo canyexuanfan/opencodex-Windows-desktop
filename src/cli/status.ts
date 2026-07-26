@@ -9,6 +9,7 @@ import { getCodexRoutingKind } from "../codex/inject";
 import { diagnoseCodexShim } from "../codex/shim";
 import { displayCodexRuntimePath, effortClampAppliesToRuntime, loadLastEffortClamp, resolveCodexRuntime } from "../codex/runtime";
 import { redactSecretString, redactUserPath } from "../lib/redact";
+import { collectOrcaCodexHomeDiagnostic, type OrcaCodexHomeDiagnostic } from "../codex/home";
 
 type HealthCheck = {
   ok: boolean;
@@ -65,6 +66,7 @@ export type CliStatusJson = {
       runtimeVersion: string | null;
     };
   };
+  codexHome: OrcaCodexHomeDiagnostic;
 };
 
 export type CliStatusView = {
@@ -163,6 +165,7 @@ export async function collectStatus(): Promise<CliStatusView> {
   })();
   const lastClamp = loadLastEffortClamp();
   const clampActive = effortClampAppliesToRuntime(lastClamp, resolvedRuntime.runtime);
+  const codexHome = collectOrcaCodexHomeDiagnostic();
   const warningParts: string[] = [];
   if (
     resolvedRuntime.replacedConfigured
@@ -256,6 +259,7 @@ export async function collectStatus(): Promise<CliStatusView> {
       codexShim: { summary: codexShimSummary },
       codexPlugins,
       codexRuntime,
+      codexHome,
     },
   };
 }

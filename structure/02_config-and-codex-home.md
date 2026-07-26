@@ -15,6 +15,21 @@ $CODEX_HOME/models_cache.json
 Never assume macOS-only paths. Windows, service installs, and app-launched Codex can all depend on
 the resolved `CODEX_HOME`.
 
+OpenCodex never overrides an explicit `CODEX_HOME`. On Windows, `ocx doctor` and `ocx status`
+nevertheless diagnose the high-confidence Orca dual-home case: both `CODEX_HOME` and
+`ORCA_CODEX_HOME` select Orca's `orca/codex-runtime-home/home`, while the ChatGPT/Codex app uses the
+default `%USERPROFILE%\\.codex`. Sync and restore output always prints the exact target Codex home;
+the diagnostic tells users to invoke OpenCodex with the app home explicitly rather than silently
+claiming that an unrelated app was configured.
+
+[Decision Log]
+- 목적과 의도: Make multi-home injection truthful without taking ownership of user environment variables.
+- 기존 구현 및 제약 조건: CODEX_HOME is an intentional override, but Orca exports it for its own bundled runtime and the Windows app reads a different home.
+- 검토한 주요 대안: Rewrite CODEX_HOME automatically, warn for every custom home, or detect only the Orca-owned signature and report the target path.
+- 선택한 방식: Preserve the override, add a narrow Windows/Orca diagnostic, and qualify sync/restore success output with the effective home.
+- 다른 대안 대신 이 방식을 선택한 이유: It fixes the silent failure while avoiding destructive or noisy behavior for intentional custom homes.
+- 장점, 단점 및 영향: Orca users get an actionable warning; other multi-home products remain unchanged until they have an equally reliable signature.
+
 `atomicWriteFile` uses a temp file named `{path}.ocx.{pid}.{seq}.tmp` (process ID + incrementing
 sequence number) to avoid collisions when concurrent writers (e.g. `ocx stop` and the proxy's own
 shutdown handler) both restore Codex config simultaneously. The temp is renamed atomically into place.

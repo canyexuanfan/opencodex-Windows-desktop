@@ -17,6 +17,7 @@ import {
   resolveCodexHomeDir,
   type ServiceMemoryData,
 } from "../src/cli/doctor";
+import { collectOrcaCodexHomeDiagnostic } from "../src/codex/home";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-doctor-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -75,6 +76,36 @@ describe("doctor", () => {
   test("resolveCodexHomeDir expands ~ like the hardened runtime paths", () => {
     process.env.CODEX_HOME = "~/custom-codex";
     expect(resolveCodexHomeDir()).toBe(join(homedir(), "custom-codex"));
+  });
+
+  test("Orca home diagnostic warns only for the Windows Orca runtime mismatch", () => {
+    const appHome = "C:\\Users\\alice\\.codex";
+    const orcaHome = "C:\\Users\\alice\\AppData\\Roaming\\orca\\codex-runtime-home\\home";
+    const mismatch = collectOrcaCodexHomeDiagnostic({
+      platform: "win32",
+      env: { CODEX_HOME: orcaHome, ORCA_CODEX_HOME: orcaHome },
+      effectiveCodexHome: orcaHome,
+      appCodexHome: appHome,
+    });
+    expect(mismatch.mismatch).toBe(true);
+    expect(mismatch.warning).toContain("OpenCodex injection will not reach that app");
+    expect(mismatch.action).toContain(appHome);
+
+    const matching = collectOrcaCodexHomeDiagnostic({
+      platform: "win32",
+      env: { CODEX_HOME: appHome, ORCA_CODEX_HOME: orcaHome },
+      effectiveCodexHome: appHome,
+      appCodexHome: appHome,
+    });
+    expect(matching.mismatch).toBe(false);
+
+    const intentionalCustom = collectOrcaCodexHomeDiagnostic({
+      platform: "win32",
+      env: { CODEX_HOME: "D:\\codex-work" },
+      effectiveCodexHome: "D:\\codex-work",
+      appCodexHome: appHome,
+    });
+    expect(intentionalCustom.mismatch).toBe(false);
   });
 
   test("resolveCodexHomeDir discovers a single Windows Codex Desktop home from WSL", () => {
