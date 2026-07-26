@@ -139,6 +139,8 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("git merge-base --is-ancestor");
     expect(workflow).toContain("operational error, not a missing release");
     expect(workflow).toContain("not an ancestor");
+    expect(workflow).toContain("newest_carried_preview_tag");
+    expect(workflow).not.toMatch(/newest_preview_tag="\$preview_carry_tag"/);
     expect(workflow).toContain("--commits");
     expect(workflow).toContain('git tag --list "v${RELEASE_VERSION}-preview.*"');
     expect(workflow).toContain("Carrying preview release notes from");
@@ -147,6 +149,7 @@ describe("GitHub Actions hardening", () => {
     expect(releaseNotesHelper).toContain("## Since preview");
     expect(releaseNotesHelper).toContain("matchingPreviewTags");
     expect(releaseNotesHelper).toContain("hasMeaningfulCarriedNotes");
+    expect(releaseNotesHelper).toContain("selectNewestCarriedPreviewTag");
     expect(workflow).toMatch(/gh release create[\s\S]*?--notes-file "\$notes_file"/);
     expect(workflow).not.toContain("gh release edit");
     expect(workflow).not.toContain("--generate-notes");

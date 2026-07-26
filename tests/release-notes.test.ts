@@ -6,6 +6,7 @@ import {
   joinCarriedPreviewNotes,
   matchingPreviewTag,
   matchingPreviewTags,
+  selectNewestCarriedPreviewTag,
   stripCarriedReleaseNotes,
   stripGenerateNotesCompareLink,
 } from "../scripts/release-notes";
@@ -101,6 +102,48 @@ describe("joinCarriedPreviewNotes", () => {
       "## What's Changed\n* fix B",
     ]);
     expect(joined).toBe("## What's Changed\n* fix A\n\n## What's Changed\n* fix B");
+  });
+});
+
+describe("selectNewestCarriedPreviewTag", () => {
+  const meaningfulBody = [
+    "Published to npm as `@pkg@1.0.0-preview.1` with dist-tag `preview`.",
+    "",
+    "## What's Changed",
+    "* fix from preview.1",
+    "",
+    "## Commits",
+    "- release preview.1",
+  ].join("\n");
+
+  const emptyBody = [
+    "Published to npm as `@pkg@1.0.0-preview.2` with dist-tag `preview`.",
+    "",
+    "<!-- Release notes generated using configuration in .github/release.yml at abc -->",
+    "",
+    "## Commits",
+    "- release preview.2",
+    "",
+    "**Full Changelog**: https://example/compare/a...b",
+  ].join("\n");
+
+  test("keeps preview.1 as baseline when preview.2 is missing or empty", () => {
+    expect(selectNewestCarriedPreviewTag([
+      { tag: "v1.0.0-preview.1", releaseBody: meaningfulBody },
+      { tag: "v1.0.0-preview.2", releaseBody: null },
+    ])).toBe("v1.0.0-preview.1");
+
+    expect(selectNewestCarriedPreviewTag([
+      { tag: "v1.0.0-preview.1", releaseBody: meaningfulBody },
+      { tag: "v1.0.0-preview.2", releaseBody: emptyBody },
+    ])).toBe("v1.0.0-preview.1");
+  });
+
+  test("advances to preview.2 only when its body is meaningful", () => {
+    expect(selectNewestCarriedPreviewTag([
+      { tag: "v1.0.0-preview.1", releaseBody: meaningfulBody },
+      { tag: "v1.0.0-preview.2", releaseBody: "## What's Changed\n* fix from preview.2" },
+    ])).toBe("v1.0.0-preview.2");
   });
 });
 

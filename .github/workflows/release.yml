@@ -338,20 +338,19 @@ jobs:
 
           # Stable releases after matching previews: aggregate every matching preview
           # changelog (oldest→newest; each preview body is incremental), then only
-          # generate-notes / commits for the post-preview delta when the newest preview
-          # tag is an ancestor of this commit. Preview tags often are not ancestors of
-          # main, so we never use a divergent preview tag as a two-dot baseline.
+          # generate-notes / commits for the post-preview delta when the newest
+          # *successfully carried* preview tag is an ancestor of this commit. Never
+          # advance the baseline to a later preview that is missing/empty — that would
+          # drop the gap between the last carried preview and that later tag.
           notes_range_start="$previous_tag"
           if [[ "$RELEASE_VERSION" != *-preview.* ]]; then
             preview_carry_tags="$(
               git tag --list "v${RELEASE_VERSION}-preview.*" |
                 bun scripts/release-notes.ts matching-preview-tags "$RELEASE_VERSION"
             )"
-            newest_preview_tag=""
-            carried_any=false
+            newest_carried_preview_tag=""
             while IFS= read -r preview_carry_tag; do
               [ -n "$preview_carry_tag" ] || continue
-              newest_preview_tag="$preview_carry_tag"
               view_err="$(mktemp)"
               set +e
               gh release view "$preview_carry_tag" --json body --jq .body > "${carried_file}.raw" 2>"$view_err"
@@ -364,10 +363,10 @@ jobs:
                     printf '\n\n' >> "$carried_file"
                   fi
                   cat "${carried_file}.one" >> "$carried_file"
-                  carried_any=true
+                  newest_carried_preview_tag="$preview_carry_tag"
                   echo "::notice::Carrying preview release notes from ${preview_carry_tag} into ${release_tag}"
                 else
-                  echo "::notice::Preview release ${preview_carry_tag} has no usable changelog after strip; leaving channel baseline unchanged for this tag"
+                  echo "::notice::Preview release ${preview_carry_tag} has no usable changelog after strip; leaving carried baseline unchanged for this tag"
                 fi
               elif grep -qiE 'could not find|not found|HTTP[[:space:]]*404|Not Found' "$view_err"; then
                 echo "::notice::Matching preview tag ${preview_carry_tag} has no GitHub Release; skipping"
@@ -378,12 +377,12 @@ jobs:
               fi
             done <<< "$preview_carry_tags"
 
-            if [ "$carried_any" = true ] && [ -n "$newest_preview_tag" ]; then
-              if git merge-base --is-ancestor "$newest_preview_tag" "$GITHUB_SHA"; then
-                notes_range_start="$newest_preview_tag"
-                echo "::notice::Using preview tag ${newest_preview_tag} as notes/commits baseline (ancestor of ${GITHUB_SHA})"
+            if [ -n "$newest_carried_preview_tag" ]; then
+              if git merge-base --is-ancestor "$newest_carried_preview_tag" "$GITHUB_SHA"; then
+                notes_range_start="$newest_carried_preview_tag"
+                echo "::notice::Using preview tag ${newest_carried_preview_tag} as notes/commits baseline (ancestor of ${GITHUB_SHA})"
               else
-                echo "::notice::Preview tag ${newest_preview_tag} is not an ancestor of ${GITHUB_SHA}; keeping channel baseline ${previous_tag:-none} for generate-notes/commits"
+                echo "::notice::Preview tag ${newest_carried_preview_tag} is not an ancestor of ${GITHUB_SHA}; keeping channel baseline ${previous_tag:-none} for generate-notes/commits"
               fi
             fi
           fi

@@ -101,6 +101,24 @@ export function joinCarriedPreviewNotes(parts: string[]): string {
     .trim();
 }
 
+/**
+ * Newest preview tag whose GitHub Release body strips to a meaningful changelog.
+ * Missing releases (`releaseBody === null`) and empty/commits-only bodies must not
+ * advance the baseline — otherwise a later empty preview.2 would hide the
+ * preview.1→preview.2 gap from both carried notes and the generated delta.
+ */
+export function selectNewestCarriedPreviewTag(
+  entries: Array<{ tag: string; releaseBody: string | null }>,
+): string | null {
+  let newest: string | null = null;
+  for (const entry of entries) {
+    if (entry.releaseBody === null) continue;
+    const stripped = stripCarriedReleaseNotes(entry.releaseBody);
+    if (hasMeaningfulCarriedNotes(stripped)) newest = entry.tag;
+  }
+  return newest;
+}
+
 export function assembleReleaseNotes(input: {
   npmMetadata: string;
   carriedPreviewNotes?: string;
