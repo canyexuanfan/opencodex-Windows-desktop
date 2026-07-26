@@ -173,6 +173,34 @@ export async function fetchAllModels(config: OcxConfig): Promise<CatalogModel[]>
   return gatherRoutedModels(config);
 }
 
+export interface GrokCandidateModel {
+  id: string;
+  contextWindow?: number;
+  native: boolean;
+}
+
+/**
+ * The model list `syncGrokConfig` would inject, BEFORE the user's exclusions. The Grok
+ * page needs this to show a switch for a model the user has already excluded — such a
+ * model is absent from the fence, so readGrokStatus alone could never list it. Built
+ * from the same two sources as the sync so the two can never disagree.
+ */
+export async function fetchGrokCandidateModels(config: OcxConfig): Promise<GrokCandidateModel[]> {
+  const { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } = await import("../../codex/catalog");
+  const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
+  return [
+    ...visibleNativeSlugs(config).map(id => {
+      const contextWindow = nativeOpenAiContextWindow(id);
+      return { id, native: true, ...(contextWindow !== undefined ? { contextWindow } : {}) };
+    }),
+    ...routed.map(m => ({
+      id: m.alias ?? `${m.provider}/${m.id}`,
+      native: false,
+      ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+    })),
+  ];
+}
+
 export function stripRegistryOnlyStaticHeaders(name: string, provider: OcxProviderConfig): OcxProviderConfig {
   const entry = getProviderRegistryEntry(name);
   if (!entry?.staticHeaders || !provider.headers) return provider;

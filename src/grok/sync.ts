@@ -55,8 +55,12 @@ export async function syncGrokConfig(
       message: `Grok config sync skipped: model catalog unavailable (${err instanceof Error ? err.message : String(err)})`,
     };
   }
+  // Pass the FULL list plus the exclusion set: the writer allocates aliases over
+  // everything and emits only what is switched on, so a model's alias never depends on
+  // its neighbours' switches. Absent/empty selection keeps today's behaviour exactly.
   return deps.injectGrokConfig(port, models, {
     ...(opts.hostname !== undefined ? { hostname: opts.hostname } : {}),
     ...(opts.grokHome !== undefined ? { grokHome: opts.grokHome } : {}),
+    excluded: new Set(config.grokExcludedModels ?? []),
   });
 }

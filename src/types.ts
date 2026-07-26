@@ -493,6 +493,16 @@ export interface OcxConfig {
    */
   injectionEffort?: string;
   /**
+   * Model ids the user has EXCLUDED from the Grok Build managed block. Absent or empty
+   * means "everything visible", which is the historical behaviour — so an existing
+   * config keeps the fence it already had.
+   *
+   * Exclusion list rather than an inclusion list on purpose: a newly added provider
+   * model should appear in Grok by default, exactly as it does today. An inclusion list
+   * would silently hide every future model behind a switch nobody knew to flip.
+   */
+  grokExcludedModels?: string[];
+  /**
    * When true, OpenAI-routed requests include `service_tier: "priority"` (fast inference).
    * When false, service_tier is stripped so requests use default speed.
    * Undefined = passthrough (don't modify what the client sends).

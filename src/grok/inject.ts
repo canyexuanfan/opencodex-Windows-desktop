@@ -127,7 +127,18 @@ function errorResult(action: string, error: unknown): GrokInjectResult {
   return { ok: false, changed: false, message: `Could not ${action} Grok config: ${detail}` };
 }
 
-export function buildGrokManagedBlock(port: number, models: GrokInjectModel[], hostname?: string, reservedAliases?: ReadonlySet<string>): string {
+export function buildGrokManagedBlock(
+  port: number,
+  models: GrokInjectModel[],
+  hostname?: string,
+  reservedAliases?: ReadonlySet<string>,
+  /**
+   * Ids to allocate an alias for but NOT emit. Alias numbering must not depend on which
+   * models the user switched off, or excluding one colliding model would rename another
+   * model's alias out from under a grok config that already uses it.
+   */
+  excluded?: ReadonlySet<string>,
+): string {
   const host = providerBaseHost(hostname);
   const baseUrl = `http://${host}:${port}/v1`;
   const lines = [
@@ -148,6 +159,9 @@ export function buildGrokManagedBlock(port: number, models: GrokInjectModel[], h
     }
     aliasCounts.set(baseAlias, count);
     taken.add(alias);
+    // Slot consumed, table not written: this is what keeps every other alias stable
+    // across selection changes.
+    if (excluded?.has(model.id)) continue;
     const isFirst = lines.length === 1;
     lines.push(
       ...(isFirst ? [] : [""]),
@@ -174,7 +188,7 @@ export function buildGrokManagedBlock(port: number, models: GrokInjectModel[], h
 export function injectGrokConfig(
   port: number,
   models: GrokInjectModel[],
-  opts: { grokHome?: string; hostname?: string } = {},
+  opts: { grokHome?: string; hostname?: string; excluded?: ReadonlySet<string> } = {},
 ): GrokInjectResult {
   const grokHome = resolveGrokHome(opts.grokHome);
   if (!isDirectory(grokHome)) {
@@ -220,7 +234,7 @@ export function injectGrokConfig(
     const region = findManagedRegion(content);
     if (region?.orphaned) return orphanedMarkerResult("injection");
 
-    const block = buildGrokManagedBlock(port, models, opts.hostname, userModelAliases(content, region));
+    const block = buildGrokManagedBlock(port, models, opts.hostname, userModelAliases(content, region), opts.excluded);
     let nextContent: string;
     if (region) {
       nextContent = content.slice(0, region.start) + block + content.slice(region.end);
