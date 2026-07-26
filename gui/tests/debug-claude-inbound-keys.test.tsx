@@ -47,46 +47,60 @@ test("Claude inbound rows with identical at/endpoint/model stay distinct via cap
     { ...shared, id: 12, thinkingType: "enabled", thinkingBudgetTokens: 10000 },
   ];
 
+  // Row content alone does not prove unique keys: with a colliding composite key React still
+  // renders both rows correctly here and only complains on the console. Capture that channel
+  // so the assertion fails for the reason this test exists.
+  const consoleErrors: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => { consoleErrors.push(args.map(String).join(" ")); };
+
   let root!: Root;
-  await act(async () => {
-    root = createRoot(container);
-    root.render(
-      <LanguageProvider>
-        <DebugClaudeInboundPanel entries={entries} />
-      </LanguageProvider>,
-    );
-  });
+  try {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <LanguageProvider>
+          <DebugClaudeInboundPanel entries={entries} />
+        </LanguageProvider>,
+      );
+    });
 
-  const rows = container.querySelectorAll("tbody tr");
-  expect(rows).toHaveLength(2);
-  expect(rows[0]?.textContent).toContain("adaptive");
-  expect(rows[0]?.textContent).toContain("max");
-  expect(rows[1]?.textContent).toContain("enabled");
-  expect(rows[1]?.textContent).toContain("10000");
+    const rows = container.querySelectorAll("tbody tr");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain("adaptive");
+    expect(rows[0]?.textContent).toContain("max");
+    expect(rows[1]?.textContent).toContain("enabled");
+    expect(rows[1]?.textContent).toContain("10000");
 
-  // Update the second row only — unique keys must keep the first row intact.
-  await act(async () => {
-    root.render(
-      <LanguageProvider>
-        <DebugClaudeInboundPanel
-          entries={[
-            entries[0]!,
-            { ...entries[1]!, thinkingType: "disabled", thinkingBudgetTokens: undefined },
-          ]}
-        />
-      </LanguageProvider>,
-    );
-  });
+    // Update the second row only — unique keys must keep the first row intact.
+    await act(async () => {
+      root.render(
+        <LanguageProvider>
+          <DebugClaudeInboundPanel
+            entries={[
+              entries[0]!,
+              { ...entries[1]!, thinkingType: "disabled", thinkingBudgetTokens: undefined },
+            ]}
+          />
+        </LanguageProvider>,
+      );
+    });
 
-  const updated = container.querySelectorAll("tbody tr");
-  expect(updated).toHaveLength(2);
-  expect(updated[0]?.textContent).toContain("adaptive");
-  expect(updated[0]?.textContent).toContain("max");
-  expect(updated[1]?.textContent).toContain("disabled");
-  expect(updated[1]?.textContent).not.toContain("10000");
+    const updated = container.querySelectorAll("tbody tr");
+    expect(updated).toHaveLength(2);
+    expect(updated[0]?.textContent).toContain("adaptive");
+    expect(updated[0]?.textContent).toContain("max");
+    expect(updated[1]?.textContent).toContain("disabled");
+    expect(updated[1]?.textContent).not.toContain("10000");
 
-  await act(async () => {
-    root.unmount();
-  });
+    // The decisive assertion: colliding keys make React warn here.
+    expect(consoleErrors.join("\n")).not.toContain("Encountered two children with the same key");
+
+    await act(async () => {
+      root.unmount();
+    });
+  } finally {
+    console.error = originalConsoleError;
+  }
   container.remove();
 });

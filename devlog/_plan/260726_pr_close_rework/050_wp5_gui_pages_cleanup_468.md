@@ -1,27 +1,102 @@
 # WP5 — PR #468 Startup/Debug/Storage/Usage 정리
 
-대상: PR #468 (Wibias), head `8b7c73fd`. `git merge-tree` clean (tree `744ca7e4`).
-**선행: WP4(#466).** `client-resource.ts`와 `intl-formatters.ts`를 import하고,
-WP4의 캐시 정리·비중첩 폴링 수정에 의존한다.
+대상: PR #468 (Wibias). `git merge-tree` clean.
 
-## 범위
+## 상황 변경 — rework에서 verify-and-integrate로
+
+계획 작성 이후 두 가지가 바뀌었다.
+
+**1. 선행 조건 소멸.** WP4(#466)는 동료가 `d9e5102a`로 dev에 직접 머지했다.
+따라서 "`9c7e922e` 기준 delta만 적용" 지시는 무효다. dev에 이미 기반이 있다.
+
+**2. 기여자가 결함 5건을 모두 수정했다.** head가
+`8b7c73fd` → `46bef6cf` → `fd5ad596`으로 두 번 움직였고, 커밋 제목이
+`restore request ownership for misc react-doctor pages`와
+`close Startup/Storage/Usage abort and Debug PUT races`다.
+
+| 결함 | 최초 계획 | 기여자 수정 |
+|---|---|---|
+| 1-3 abort 후 loading 무조건 해제 | `if (!signal?.aborted)` | `if (generation === loadGenerationRef.current)` — generation 소유권 |
+| 4 `debugBusy` 제거 | 상태 복원 + PUT 응답 주입 | `Debug.tsx:21,184`에 복원 |
+| 5 행 key 충돌 | `${entry.at}-${index}` | `entry.id` + `inbound-debug.ts`에 monotonic `nextCaptureId` |
+
+결함 5의 기여자 해법이 **우리 제안보다 낫다.** index 기반 key는 링 버퍼가
+재정렬되면 여전히 흔들리는데, 생산자 측 단조 증가 ID는 그 문제가 없다.
+
+신규 테스트도 3+1개 추가됐다: `gui/tests/storage-loading-race.test.tsx`,
+`gui/tests/debug-mutation-busy.test.tsx`, `gui/tests/debug-claude-inbound-keys.test.tsx`,
+`tests/claude-inbound-debug.test.ts`.
+
+**따라서 이 work-phase는 rework가 아니라 verify-and-integrate다.**
+아래 결함 서술은 기여자 수정을 검증할 기준으로만 남긴다. 우리가 다시 구현하지 않는다.
+검증 대상은 (a) 각 수정이 실제로 올바른지, (b) 신규 테스트가 수정 전 실패하는 진짜
+회귀인지, (c) +1456/-569 추출 리팩터가 동작 보존인지다.
+
+## 통합 절차 (A-gate blocker 1 — 최초 안은 무효)
+
+최초 안은 `9c7e922e`(구 #466 head) 기준 delta에서 GUI 10파일만 골라 적용했다.
+그 절차를 따르면 `src/claude/inbound-debug.ts`와 테스트 4개가 통째로 빠져
+행 key가 `undefined`가 되고 결함 5가 그대로 재현된다.
+
+현재 dev(`74ddd96d`)에는 #466이 이미 머지돼 있으므로 부분 적용이 필요 없다.
+**PR head 전체를 적용한다.**
 
 ```bash
-git fetch origin pull/468/head:pr-468
-git diff 9c7e922ebea660f9ea7c94e438416fa407983f5e..pr-468 -- \
-  gui/src/pages/Debug.tsx \
-  gui/src/pages/Startup.tsx \
-  gui/src/pages/Storage.tsx \
-  gui/src/pages/Usage.tsx \
-  gui/src/pages/debug-claude-inbound-panel.tsx \
-  gui/src/pages/debug-log-viewer.tsx \
-  gui/src/pages/debug-settings-panel.tsx \
-  gui/src/pages/debug-shared.ts \
-  gui/src/pages/startup-sections.tsx \
-  gui/src/pages/startup-shared.ts | git apply -3
+PRE_APPLY_HEAD=fd5ad59634cd8ffff49b259d6434b65550c1dc9f
+git fetch origin pull/468/head:pr-468 --force
+test "$(git rev-parse pr-468)" = "$PRE_APPLY_HEAD" || { echo "head moved — restart WP5"; exit 1; }
+git diff dev..."$PRE_APPLY_HEAD" | git apply -3
 ```
 
-`9c7e922e`(=#466 head) 기준 delta만 취해 상속된 `gui/src/api.ts`가 재생되지 않게 한다.
+적용 대상 15파일 전수:
+
+| 구분 | 파일 |
+|---|---|
+| GUI 페이지 (4) | `Debug.tsx` `Startup.tsx` `Storage.tsx` `Usage.tsx` |
+| 추출 모듈 (6) | `debug-claude-inbound-panel.tsx` `debug-log-viewer.tsx` `debug-settings-panel.tsx` `debug-shared.ts` `startup-sections.tsx` `startup-shared.ts` |
+| 백엔드 (1) | `src/claude/inbound-debug.ts` — **누락 시 결함 5 재현** |
+| 테스트 (4) | `gui/tests/storage-loading-race.test.tsx` `gui/tests/debug-mutation-busy.test.tsx` `gui/tests/debug-claude-inbound-keys.test.tsx` `tests/claude-inbound-debug.test.ts` |
+
+`gui/src/api.ts` 회피 조항은 불필요해졌다. 그 파일은 #466 머지 시 `afc99ec6`·`138751f7`로
+이미 별도 처리됐다.
+
+## 보강할 테스트 (A-gate blocker 2-4)
+
+기여자 구현 5건은 리뷰어가 전부 정확하다고 확인했다. 다만 테스트 4건 중 일부가
+결함을 실제로 잡지 못한다. 통합과 함께 아래를 보강한다.
+
+### (a) `gui/tests/debug-claude-inbound-keys.test.tsx` — false confidence
+
+행 내용만 검사해서 **중복 key 구현에서도 통과한다.** React가 duplicate-key 경고를
+내지만 테스트가 그걸 보지 않는다. `console.error`를 캡처해 경고 부재를 단언한다.
+
+```tsx
+const errors: string[] = [];
+const originalError = console.error;
+console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+try {
+  // ...render...
+  expect(errors.join("\n")).not.toContain("Encountered two children with the same key");
+} finally {
+  console.error = originalError;
+}
+```
+
+`tests/claude-inbound-debug.test.ts`도 3건만 캡처해 링 버퍼 wraparound를 넘지 않는다.
+20건을 초과해 캡처한 뒤 잔존 항목의 `id`가 여전히 유일하고 내림차순인지 확인한다.
+
+### (b) Startup / Usage 경합 회귀 부재
+
+`storage-loading-race.test.tsx`는 진짜 회귀지만 Storage만 덮는다.
+`Startup.tsx:116-130`과 `Usage.tsx:608-623`은 독립적으로 퇴행할 수 있다.
+같은 형태(교체 요청 시작 후 이전 요청 지연 reject)로 두 페이지 테스트를 추가한다.
+
+### (c) Debug 응답 설치 순서 미증명
+
+`debug-mutation-busy.test.tsx`의 두 흐름 모두 최종 상태가 초기 상태(`usage=false`)와
+같아서, `setClientResourceData()`를 빼도 최종 UI 단언이 통과한다.
+`false → true`로 바뀌는 PUT을 지연시킨 뒤, 컨트롤이 다시 활성화되는 시점에
+`aria-pressed="true"`인지 확인하는 케이스를 하나 추가한다.
 
 ## 결함 1-3 — abort된 요청이 후속 요청의 loading을 해제
 
@@ -165,7 +240,8 @@ A-gate blocker 3 반영: 최초 안은 `installPendingFetch` / `render` / `refre
 정의 없이 참조했다. 세 헬퍼 모두 `dev`·#466·#467·#468 어디에도 없다. 컴파일 자체가
 불가능했으므로 전체 파일 계약을 아래에 확정한다.
 
-NEW: `gui/tests/react-doctor-pages.test.tsx`
+NEW(폐기): `gui/tests/react-doctor-pages.test.tsx` — 기여자가 동등 범위를 세 파일로
+이미 제공하므로 작성하지 않는다. 아래 테스트 설계는 보강 케이스의 참고용으로만 남긴다.
 
 ### 파일 상단 — import와 전역 하네스 (필수, 생략 금지)
 
@@ -481,10 +557,16 @@ Co-authored-by: Wibias <37517432+Wibias@users.noreply.github.com>
 ## 검증
 
 ```bash
-cd gui && bun test tests/react-doctor-pages.test.tsx && cd ..
+# 기여자 테스트 3건 + 우리 보강분
+cd gui && bun test tests/storage-loading-race.test.tsx tests/debug-mutation-busy.test.tsx \
+  tests/debug-claude-inbound-keys.test.tsx && cd ..
+bun test tests/claude-inbound-debug.test.ts
 bun run typecheck
 bun run lint:gui
 ```
+
+`react-doctor-pages.test.tsx`는 **작성하지 않는다.** 기여자가 같은 범위를 세 파일로
+이미 커버했다. 우리는 위 blocker 2-4의 보강만 얹는다.
 
 `gui/src/pages/Usage.tsx`는 dev에서도 최근 레이아웃/접근성 작업이 있었다.
 merge 결과에서 양쪽 변경이 모두 살아남았는지 확인한다.
