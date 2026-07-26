@@ -8,7 +8,7 @@ M 시리즈 모델명과 context window를 확인했다
 
 ## 범위 축소 (STRICT)
 
-DO NOT TAKE — 런타임 동작에 불필요하고 OAuth/자격증명/safe-DTO 리뷰 표면을 만든다:
+DO NOT TAKE — 런타임 동작에 불필요한 중복 전파:
 
 ```
 src/oauth/index.ts
@@ -16,9 +16,39 @@ src/oauth/login-cli.ts
 src/server/auth-cors.ts
 ```
 
-불필요한 이유: `routeModel()`이 매 라우팅마다 registry capability를 backfill하고,
-`enrichProviderFromRegistry()`가 저장된 config를 커버하며, GUI는 현재
-`reasoningSplitModels`를 편집하지 않는다.
+### 제외 근거 정정 (A-gate blocker)
+
+최초 안은 이 세 파일을 "OAuth/자격증명/safe-DTO 리뷰 표면을 만든다"는 이유로 제외했다.
+**이 근거는 과한 해석이었다.** 세 훅은 각각 기존 필드 목록에 문자열
+`"reasoningSplitModels"` 하나를 더하는 한 줄이다.
+
+| 파일 | 변경 | 실제 성격 |
+|---|---|---|
+| `src/oauth/index.ts:495` | `OAUTH_RECONCILE_FIELDS`에 이름 추가 | 비밀이 아닌 capability 목록 조정 |
+| `src/oauth/login-cli.ts:89` | 복사 필드 목록에 추가 | 모델 ID 복사. API 키 취급 무변경 |
+| `src/server/auth-cors.ts:323` | `safeConfigDTO` 허용 목록에 추가 | 공개 모델 식별자만 노출 |
+
+이웃 필드 `preserveReasoningContentModels`와 `autoToolChoiceOnlyModels`가 이미
+세 곳 모두에 동일하게 존재한다. 파일 위치만으로 신뢰 경계 변경이 되지는 않는다.
+WP2(#429)를 보안 경계로 재분류한 것은 모델 생성 인자가 **shell 실행 도구**로
+진입하는 지점이었기 때문이고, 여기에는 그런 성격이 없다.
+
+제외하는 진짜 이유는 **런타임에 불필요**하기 때문이다.
+
+- MiniMax는 OAuth provider가 아니다(`registry.ts:930-951`에서 `authKind: "key"`).
+  `reconcileOAuthProviders`는 이 provider를 아예 건너뛴다. 게다가 목록에 없는 필드는
+  건드리지 않으므로 저장된 값이 삭제되지도 않는다.
+- `routeModel()`이 매 라우팅마다 registry seed를 union해 되살린다
+  (`router.ts:151-153,205-207`). 리뷰어가 저장 필드를 일부러 제거하고도
+  `reasoning_split: true`가 나오는 것을 실행으로 확인했다.
+- GUI에 `reasoningSplitModels` 소비자가 없고, 전체 config PUT은 405로 막혀 있으며
+  provider PATCH는 언급되지 않은 필드를 보존한다.
+
+다만 `login-cli.ts` 제외에는 실제 대가가 있다: `ocx login minimax`가 저장하는 config에
+이 필드가 빠진다. 런타임은 안전하지만 **저장 형태의 완결성은 떨어진다.**
+이웃 필드와의 일관성을 생각하면 포함하는 편이 낫다는 판단도 가능하다.
+이번 통합은 최소 범위 원칙에 따라 제외하되, 이것이 무해해서가 아니라
+런타임 영향이 없어서임을 기록해 둔다.
 
 TAKE:
 
@@ -173,6 +203,34 @@ APPEND: `tests/minimax-reasoning-split.test.ts`의 `describe("MiniMax split reas
 RED→GREEN 근거: 수정 전에는 `body.reasoning_split`이 항상 `undefined`라 첫 테스트의
 `toMatchObject`가 실패한다. 두 번째 테스트는 게이트가 무분별하게 켜지지 않음을 잠그는
 음성 대조군이며 수정 전후 모두 통과해야 한다 — 수정 후에도 통과해야 의미가 있다.
+
+## 범위 한정 — `reasoning_details` 미지원 (A-gate blocker)
+
+MiniMax 공식 문서는 멀티턴 tool 루프에서 **완전한 `reasoning_details` 필드**를 히스토리에
+보존하도록 요구한다. 이 PR은 합성된 `reasoning_content`만 파싱·재생하고,
+저장소 전체에 `reasoning_details` 파서·타입·재생 경로·테스트가 **하나도 없다**
+(`rg reasoning_details src/ tests/` 결과 0건).
+
+따라서 이 통합이 실제로 보장하는 범위는 다음과 같다.
+
+| 보장됨 | 미보장 |
+|---|---|
+| 추론 텍스트가 별도 채널로 노출됨 | 멀티턴 tool 루프에서의 interleaved-thinking 연속성 |
+| 요청에 `reasoning_split: true` 전송 | `reasoning_details` 왕복 |
+| 응답 순서(reasoning → content) | 상류가 `reasoning_content`만으로 continuation을 수락하는지 |
+
+`tests/minimax-reasoning-split.test.ts:87`의
+`expect(requestBody.messages[1]?.reasoning_content).toBe("prior reasoning")`이
+히스토리 재생을 검증하지만, 이는 우리가 만든 픽스처를 우리가 다시 읽는 구조라
+**상류 계약을 증명하지 못한다.**
+
+이번 통합에서는 `reasoning_details`를 구현하지 않는다. 대신 위 한계를 커밋 메시지와
+PR close 코멘트에 명시하고, 후속 후보로 기록한다. 근거 없는 계약 주장을 코드로 옮기는
+것보다, 범위를 정확히 말하고 남기는 편이 낫다.
+
+구현을 시도한다면 필요한 것: 내부 표현에 `reasoning_details` 보존, 재생 경로 추가,
+그리고 **캡처된 실제 wire 픽스처**로 멀티턴 회귀를 잠그는 것. 우리에게 그 wire 캡처가
+없으므로 지금은 할 수 없다.
 
 ## 활성화 시나리오
 
