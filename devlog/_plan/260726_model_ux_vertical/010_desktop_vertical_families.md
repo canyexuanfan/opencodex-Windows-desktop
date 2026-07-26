@@ -108,32 +108,53 @@ export function defaultCollapsedFamilies(counts: Record<string, number>): Set<st
 +import { IconChevron } from "../icons";
 ```
 
-Next to the existing `laneSearch`/`laneLimit` state (currently `:118-119`):
+Next to the existing `laneSearch`/`laneLimit` state (currently `:118-119`), with
+`const FAMILY_COLLAPSE = makeCollapseStore("ocx.claudeDesktop.collapsedFamilies.v1");`
+at module scope:
 
 ```diff
 +  // View state only — see the lane comment above: collapse must never narrow the
 +  // source arrays that effectiveDefaults reads.
-+  const [storedCollapse, setStoredCollapse] = useState<Set<string> | null>(() => FAMILY_COLLAPSE.read());
++  const [collapsedFamilies, setCollapsedFamilies] = useState<Set<string>>(() => FAMILY_COLLAPSE.read() ?? new Set());
 ```
 
-with `const FAMILY_COLLAPSE = makeCollapseStore("ocx.claudeDesktop.collapsedFamilies.v1");`
-at module scope, and the effective set derived rather than stored, so the data-driven
-default keeps working until the user expresses a preference:
+**Snapshot, not derive (WP1 focused audit, blocker 1).** An earlier draft derived the
+set on every render from the current family counts. That is wrong: `modelsByFamily`
+depends on `[data, profile]` (`ClaudeDesktop.tsx:153-158`) and `profile` changes on
+every move (`:179-195`) and on import (`:245-255`), so moving the last model out of a
+family would fold it under the user's cursor and opening the target family would look
+like a glitch. The default is therefore computed ONCE, when a load resolves, and only
+when the user has no stored preference:
 
-```tsx
-const collapsedFamilies = storedCollapse
-  ?? defaultCollapsedFamilies(Object.fromEntries(FAMILIES.map(f => [f, modelsByFamily[f].length])));
+```diff
+       const normalized = normalizeProfile(payload);
+       setData(payload);
+       setProfile(normalized);
++      // Fold empty families on FIRST load only. After this the set is user-owned, so a
++      // move or an import can never re-fold a section the user opened.
++      if (FAMILY_COLLAPSE.read() === null) {
++        const counts = {} as Record<Family, number>;
++        for (const family of FAMILIES) counts[family] = 0;
++        for (const model of payload.models) {
++          counts[normalized.assignments[model.route]?.family ?? "opus"] += 1;
++        }
++        setCollapsedFamilies(defaultCollapsedFamilies(counts));
++      }
 ```
 
-and the toggle, next to `moveModel`:
+A reload re-runs it, which is correct: a fresh page with no stored preference should
+again show the compact index. Import does NOT reset it — an imported profile is an edit,
+not a new session.
+
+The toggle, next to `moveModel`:
 
 ```diff
 +  const toggleFamily = (family: Family) => {
-+    // First interaction promotes the derived default into a stored preference, so a
-+    // later catalog change cannot silently re-fold what the user just opened.
++    // The first toggle also persists, so the derived first-load default becomes a real
++    // preference the moment the user disagrees with it.
 +    const next = toggleInSet(collapsedFamilies, family);
 +    FAMILY_COLLAPSE.write(next);
-+    setStoredCollapse(next);
++    setCollapsedFamilies(next);
 +  };
 ```
 

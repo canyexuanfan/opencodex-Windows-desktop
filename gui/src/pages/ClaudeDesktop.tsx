@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { LANE_PAGE, laneView } from "./claude-desktop-lane";
+import { LANE_PAGE, defaultCollapsedFamilies, laneView } from "./claude-desktop-lane";
+import { makeCollapseStore, toggleInSet } from "./collapse-store";
+import { IconChevron } from "../icons";
 import { EmptyState, Notice } from "../ui";
 import { useT, type TFn, type TKey } from "../i18n";
 
 const FAMILIES = ["opus", "fable", "sonnet", "haiku"] as const;
 type Family = typeof FAMILIES[number];
+
+/**
+ * Family collapse lives under its own key: the Models page collapses PROVIDERS, and a
+ * shared key would make folding "opus" here fold a provider of the same name there.
+ */
+const FAMILY_COLLAPSE = makeCollapseStore("ocx.claudeDesktop.collapsedFamilies.v1");
 
 interface Assignment {
   family: Family;
@@ -117,6 +125,10 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
   // the effective default, turning a view filter into a data mutation.
   const [laneSearch, setLaneSearch] = useState<Record<string, string>>({});
   const [laneLimit, setLaneLimit] = useState<Record<string, number>>({});
+  // Collapse is view state too. It is a plain user-owned Set rather than something
+  // derived per render: modelsByFamily changes on every move, so deriving would fold a
+  // section under the user's cursor the moment they moved the last model out of it.
+  const [collapsedFamilies, setCollapsedFamilies] = useState<Set<string>>(() => FAMILY_COLLAPSE.read() ?? new Set());
   const importRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -133,6 +145,14 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
       setProfile(normalized);
       setSavedProfile(cloneProfile(normalized));
       setDestinations(Object.fromEntries(payload.models.map(model => [model.route, normalized.assignments[model.route]?.family ?? "opus"])));
+      // Fold empty families on load, but only while the user has no stored preference.
+      // Doing it here rather than per render means a later move or import can never
+      // re-fold a section the user opened.
+      if (FAMILY_COLLAPSE.read() === null) {
+        const counts = Object.fromEntries(FAMILIES.map(family => [family, 0])) as Record<Family, number>;
+        for (const model of payload.models) counts[normalized.assignments[model.route]?.family ?? "opus"] += 1;
+        setCollapsedFamilies(defaultCollapsedFamilies(counts));
+      }
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : t("claudeDesktop.loadFail"));
     } finally {
@@ -194,6 +214,14 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
     });
     setDestinations(current => ({ ...current, [route]: family }));
     setAnnouncement(t("claudeDesktop.moved", { route, family: t(FAMILY_KEYS[family]) }));
+  };
+
+  const toggleFamily = (family: Family) => {
+    // The first toggle also persists, so the load-time default becomes a real preference
+    // the moment the user disagrees with it.
+    const next = toggleInSet(collapsedFamilies, family);
+    FAMILY_COLLAPSE.write(next);
+    setCollapsedFamilies(next);
   };
 
   const save = async (applyAfter: boolean) => {
@@ -318,31 +346,59 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
         <EmptyState title={t("claudeDesktop.emptyTitle")}>{t("claudeDesktop.emptyHint")}</EmptyState>
       )}
 
-      <div className="claude-lanes" aria-label={t("claudeDesktop.assignmentsLabel")}>
+      <div className="ocx-group-stack" aria-label={t("claudeDesktop.assignmentsLabel")}>
         {FAMILIES.map(family => {
           // Render-only narrowing: the lane header, effectiveDefaults and every assignment keep
           // reading the full list, so filtering can never change what Claude Desktop resolves.
           const all = modelsByFamily[family];
           const lane = laneView(all, laneSearch[family] ?? "", laneLimit[family] ?? LANE_PAGE);
+          const isCollapsed = collapsedFamilies.has(family);
+          const familyDefault = effectiveDefaults[family];
           return (
           <section
             key={family}
-            className="claude-lane"
+            className={`ocx-group${isCollapsed ? " collapsed" : ""}`}
             aria-labelledby={`claude-lane-${family}`}
             onDragOver={event => event.preventDefault()}
             onDrop={event => dropOnLane(event, family)}
           >
-            <header className="claude-lane-head">
-              <div>
-                <h3 id={`claude-lane-${family}`}>{t(FAMILY_KEYS[family])}</h3>
-                <span>{t(modelsByFamily[family].length === 1 ? "claudeDesktop.modelCountOne" : "claudeDesktop.modelCountMany", { count: modelsByFamily[family].length })}</span>
-              </div>
-              {modelsByFamily[family].length > 0 && profile.defaults[family] === null && <span className="claude-default-needed">{t("claudeDesktop.chooseDefault")}</span>}
-              {effectiveDefaults[family] && effectiveDefaults[family] !== profile.defaults[family] && (
-                <span className="claude-default-needed" title={effectiveDefaults[family]!}>{t("claudeDesktop.temporaryDefault")}</span>
+            <header className={`ocx-group-head${isCollapsed ? "" : " open"}`}>
+              {/* The button goes INSIDE the heading: a heading is not phrasing content, so
+                  nesting it the other way round is invalid. This keeps the family in the
+                  a11y tree and gives the toggle its name. */}
+              <h3 id={`claude-lane-${family}`} className="ocx-group-heading">
+                <button
+                  type="button"
+                  className="ocx-group-toggle"
+                  aria-expanded={!isCollapsed}
+                  aria-controls={`claude-lane-body-${family}`}
+                  onClick={() => toggleFamily(family)}
+                >
+                  <IconChevron
+                    className="ocx-chevron"
+                    width={14}
+                    height={14}
+                    aria-hidden="true"
+                    style={{ transform: isCollapsed ? "none" : "rotate(90deg)" }}
+                  />
+                  <span className="ocx-group-name">{t(FAMILY_KEYS[family])}</span>
+                  <span className="ocx-group-count">
+                    {t(all.length === 1 ? "claudeDesktop.modelCountOne" : "claudeDesktop.modelCountMany", { count: all.length })}
+                  </span>
+                  {/* Collapsed legibility: the resolved default is what a user opens a
+                      family to check, so it stays readable while folded. */}
+                  {familyDefault && <code className="claude-lane-default" title={familyDefault}>{familyDefault}</code>}
+                </button>
+              </h3>
+              {/* Warnings stay outside the fold — never hide state the user must act on. */}
+              {all.length > 0 && profile.defaults[family] === null && <span className="claude-default-needed">{t("claudeDesktop.chooseDefault")}</span>}
+              {familyDefault && familyDefault !== profile.defaults[family] && (
+                <span className="claude-default-needed" title={familyDefault}>{t("claudeDesktop.temporaryDefault")}</span>
               )}
             </header>
 
+            {!isCollapsed && (
+            <div id={`claude-lane-body-${family}`}>
             {lane.showSearch && (
               <input
                 className="input claude-lane-search"
@@ -441,6 +497,8 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
                 </button>
               )}
             </div>
+            </div>
+            )}
           </section>
           );
         })}

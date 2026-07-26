@@ -48,3 +48,15 @@ export function laneView<T extends LaneModel>(models: T[], search: string, limit
     noMatch: models.length > 0 && ordered.length === 0,
   };
 }
+
+/**
+ * Which families start folded when the user has expressed no preference yet.
+ *
+ * Data-driven rather than a fixed list: every model can be assigned to any family, so
+ * hard-coding "only Opus is open" would be wrong the moment someone fills Sonnet. On a
+ * fresh install this still yields "Opus open, three empty families folded", which is the
+ * shape the vertical stack was designed around.
+ */
+export function defaultCollapsedFamilies(counts: Readonly<Record<string, number>>): Set<string> {
+  return new Set(Object.keys(counts).filter(family => counts[family] === 0));
+}
