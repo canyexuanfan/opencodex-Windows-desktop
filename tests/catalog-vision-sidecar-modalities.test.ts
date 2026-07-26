@@ -2,6 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { applyProviderConfigHints, gatherRoutedModels } from "../src/codex/catalog";
 import { clearModelCache } from "../src/codex/model-cache";
 import type { OcxProviderConfig } from "../src/types";
+import { deriveComboCatalogModel } from "../src/codex/catalog";
+import { PROVIDER_REGISTRY } from "../src/providers/registry";
+import type { CatalogModel } from "../src/types";
 
 const base: OcxProviderConfig = {
   adapter: "openai-chat",
@@ -140,5 +143,61 @@ describe("vision-sidecar custom-model override (#349/#344)", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("vision-capable provider models feed combo modalities", () => {
+  // Regression: xAI declared no modelInputModalities, so xai/grok-4.5 reached
+  // deriveComboCatalogModel with inputModalities undefined. The combo aggregator
+  // defaults an undefined member to ["text"], so every combo containing an xAI
+  // target was advertised to Codex as text-only and the app refused image
+  // attachments client-side before any request was made.
+  test("xAI grok chat models declare image input in the registry", () => {
+    const xai = PROVIDER_REGISTRY.find(entry => entry.id === "xai");
+    expect(xai?.modelInputModalities?.["grok-4.5"]).toEqual(["text", "image"]);
+    // Text-only members stay out of the vision map (they are already in noVisionModels).
+    expect(xai?.modelInputModalities?.["grok-build-0.1"]).toBeUndefined();
+    expect(xai?.noVisionModels).toContain("grok-build-0.1");
+  });
+
+  test("a combo of two vision-capable members still advertises image", () => {
+    const member = (provider: string, contextWindow: number): CatalogModel => ({
+      provider,
+      id: "grok-4.5",
+      contextWindow,
+      inputModalities: ["text", "image"],
+    } as CatalogModel);
+    const derived = deriveComboCatalogModel(
+      "xai_grok_fallback",
+      {
+        targets: [
+          { provider: "xai", model: "grok-4.5" },
+          { provider: "cursor", model: "grok-4.5" },
+        ],
+        defaultEffort: "high",
+      } as never,
+      [member("xai", 500_000), member("cursor", 200_000)],
+    );
+    expect(derived?.inputModalities).toEqual(["text", "image"]);
+  });
+
+  test("a member with unknown modalities still narrows the combo to text", () => {
+    // Intersection semantics are intentional: a member we cannot prove is
+    // vision-capable must not let the combo advertise image input.
+    const derived = deriveComboCatalogModel(
+      "mixed",
+      {
+        targets: [
+          { provider: "xai", model: "grok-4.5" },
+          { provider: "other", model: "text-only" },
+        ],
+        defaultEffort: "high",
+      } as never,
+      [
+        { provider: "xai", id: "grok-4.5", contextWindow: 500_000, inputModalities: ["text", "image"] } as CatalogModel,
+        { provider: "other", id: "text-only", contextWindow: 100_000 } as CatalogModel,
+      ],
+    );
+    expect(derived?.inputModalities).toEqual(["text"]);
   });
 });
