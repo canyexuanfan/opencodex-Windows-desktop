@@ -66,8 +66,10 @@ mechanism — the backup, the collision policy for occupied destination keys, th
 re-point the references) survived every round intact.
 
 That is the signature of a phase carrying more than one decision. The rewriter
-is a pure function over a config object, independently verifiable and
-independently useful, so the seam is real rather than a scheduling convenience.
+is a deterministic function over a single config object — it mutates in place
+rather than returning a copy, so it is isolated but not pure — and it is both
+independently verifiable and independently useful, so the seam is real rather
+than a scheduling convenience.
 
 Research and implementation are separate documents (LEXICO-SPLIT-01): `001` and
 `002` carry the investigation and the rejected alternatives; `010`, `020` and
