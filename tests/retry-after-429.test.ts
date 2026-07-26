@@ -140,11 +140,63 @@ describe("formatPassthroughUpstreamError Retry-After (#507)", () => {
     expect(response.headers.get("Retry-After")).toBe(DEFAULT_RETRYABLE_429_RETRY_AFTER_SEC);
   });
 
-  test("preserves Retry-After: 0 on non-empty 429", () => {
+  test("removes malformed Retry-After on quota-exhausted non-empty 429 (no synthetic 2)", async () => {
+    const body = JSON.stringify({ error: { message: "exceeded your current quota" } });
+    const headers = new Headers({
+      "retry-after": "not-a-delay",
+      "content-type": "application/json",
+      "x-pool-retry-test": "keep-me",
+    });
+    const response = formatPassthroughUpstreamError(429, body, {
+      statusText: "Too Many Requests",
+      headers,
+    });
+    expect(response.status).toBe(429);
+    expect(response.statusText).toBe("Too Many Requests");
+    expect(response.headers.get("Retry-After")).toBeNull();
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(response.headers.get("x-pool-retry-test")).toBe("keep-me");
+    expect(await response.text()).toBe(body);
+  });
+
+  test("removes expired Retry-After on quota-exhausted non-empty 429 (no synthetic 2)", async () => {
+    const now = Date.UTC(2026, 6, 26, 12, 0, 0);
+    const expired = new Date(now - 60_000).toUTCString();
+    const body = JSON.stringify({ error: { message: "exceeded your current quota" } });
+    const headers = new Headers({
+      "retry-after": expired,
+      "content-type": "application/json",
+      "x-pool-retry-test": "keep-me",
+    });
+    const response = formatPassthroughUpstreamError(429, body, {
+      statusText: "Too Many Requests",
+      headers,
+      now,
+    });
+    expect(response.status).toBe(429);
+    expect(response.statusText).toBe("Too Many Requests");
+    expect(response.headers.get("Retry-After")).toBeNull();
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(response.headers.get("x-pool-retry-test")).toBe("keep-me");
+    expect(await response.text()).toBe(body);
+  });
+
+  test("preserves valid Retry-After: 0 and unrelated headers on non-empty 429", async () => {
     const body = JSON.stringify({ error: { message: "Too many requests" } });
-    const headers = new Headers({ "retry-after": "0", "content-type": "application/json" });
-    const response = formatPassthroughUpstreamError(429, body, { headers });
+    const headers = new Headers({
+      "retry-after": "0",
+      "content-type": "application/json",
+      "x-pool-retry-test": "keep-me",
+    });
+    const response = formatPassthroughUpstreamError(429, body, {
+      statusText: "Too Many Requests",
+      headers,
+    });
+    expect(response.status).toBe(429);
+    expect(response.statusText).toBe("Too Many Requests");
     expect(response.headers.get("Retry-After")).toBe("0");
+    expect(response.headers.get("x-pool-retry-test")).toBe("keep-me");
+    expect(await response.text()).toBe(body);
   });
 });
 

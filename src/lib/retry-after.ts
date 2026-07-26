@@ -4,7 +4,14 @@ import { classifyError, parseRetryAfterFromMessage } from "./errors";
 /** Small default when a retryable 429 has no upstream Retry-After (#507). */
 export const DEFAULT_RETRYABLE_429_RETRY_AFTER_SEC = "2";
 
-function sanitizedRetryAfterHeader(value: string | null | undefined, now: number): string | undefined {
+/**
+ * Validate a raw upstream Retry-After for client exposure.
+ * Instant-retry `"0"` is kept even though cooldown parsers reject it.
+ */
+export function validateClientRetryAfterHeader(
+  value: string | null | undefined,
+  now: number,
+): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed || trimmed.length > 128) return undefined;
   // Instant-retry "0" is a valid client directive but rejected by cooldown parsers
@@ -31,7 +38,7 @@ export function resolveClientRetryAfter(opts: {
   includeDefault?: boolean;
 }): string | undefined {
   const now = opts.now ?? Date.now();
-  const fromHeader = sanitizedRetryAfterHeader(opts.upstreamRetryAfter, now);
+  const fromHeader = validateClientRetryAfterHeader(opts.upstreamRetryAfter, now);
   if (fromHeader) return fromHeader;
 
   const message = opts.message ?? "";
