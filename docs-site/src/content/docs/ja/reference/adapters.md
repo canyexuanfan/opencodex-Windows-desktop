@@ -73,6 +73,27 @@ interface ProviderAdapter {
   block を送ります。
 - `application/vnd.amazon.eventstream` をデコードして text/thinking/tool イベントを復元し、途切れたツール JSON を検出します。上流がトークン数を返さないため使用量は推定します。
 - `fetchResponse` で限られた回数だけリトライし、エラーを分類/マスクします。非ストリーミングパーサーはウェブ検索ループのために同じイベントストリームを最後まで消費します。
+### 完了とネイティブ stop reason
+
+Kiro のアシスタントテキストには、それ自体で end-turn を示す信頼できる区別がありません。ただし終端の
+`metadataEvent` がネイティブの `stopReason` を運ぶことがあります。`END_TURN` または `STOP_SEQUENCE` は
+権威ある終了とみなし、そのテキストを最終回答として送出します。追加のモデル往復は行いません。
+
+互換パスに入るのは stop reason が**存在しない**場合だけです。明示的な理由はすでに上流で推論を終了させて
+いるため、もう一度モデルに投げ直すのではなくそのまま報告します。出力トークン上限は継続可能な incomplete、
+コンテキストウィンドウの枯渇は再試行不可の context-length エラー、フィルタリングやガードレールによる停止は
+filtered incomplete になります。実際のツール呼び出しを伴わない `TOOL_USE` は進捗ではなく矛盾として扱います。
+
+stop reason がまったく無い場合のみ、opencodex は非公開の `codex_kiro_final_answer` ツールを追加して
+一度だけ継続します。重複抑制は空白を正規化した完全一致に限定します。言い換えられた状態更新は結果そのものを
+変えることがあり（「保留中」から「完了」へ）、その一文を失うほうが、体裁上の繰り返しを表示するより有害です。
+
+### Reasoning effort
+
+`gpt-5.6-sol` と `claude-opus-5` はネイティブ effort をサポートし、リクエストフィールド名が異なります。
+`low` / `medium` / `high` / `xhigh` / `max` は、前者では
+`additionalModelRequestFields.reasoning.effort`、後者では `output_config.effort` として送信されます。
+
 
 ## `cursor`
 
