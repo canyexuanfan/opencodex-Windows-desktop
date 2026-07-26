@@ -667,3 +667,69 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
     expect(body.tools.some(t => t.type === "function" && t.name === "image_gen.imagegen")).toBe(true);
   });
 });
+
+describe("OpenAI Responses forward-mode unsupported param stripping", () => {
+  const meta = { headers: new Headers({ authorization: "Bearer token" }) };
+  const rawBody = {
+    model: "gpt-5.6-sol",
+    input: [{ role: "user", content: [{ type: "input_text", text: "ping" }] }],
+    stream: true,
+    store: false,
+    max_output_tokens: 32000,
+    metadata: { user_id: "u-1" },
+    reasoning: { effort: "low" },
+  };
+
+  test("forward mode strips max_output_tokens and metadata", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { ...rawBody },
+    }, meta);
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+
+    expect(body).not.toHaveProperty("max_output_tokens");
+    expect(body).not.toHaveProperty("metadata");
+    expect(body.reasoning).toEqual({ effort: "low" });
+    expect(body.model).toBe("gpt-5.6-sol");
+  });
+
+  test("forward mode is a no-op when neither field is present", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const { max_output_tokens: _m, metadata: _d, ...codexBody } = rawBody;
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { ...codexBody },
+    }, meta);
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+
+    expect(body.reasoning).toEqual({ effort: "low" });
+    expect(body.store).toBe(false);
+  });
+
+  test("key-auth mode preserves max_output_tokens and metadata", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.example/v1",
+      authMode: "key",
+      apiKey: "sk-test",
+    });
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { ...rawBody },
+    }, { headers: new Headers() });
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+
+    expect(body.max_output_tokens).toBe(32000);
+    expect(body.metadata).toEqual({ user_id: "u-1" });
+  });
+});
