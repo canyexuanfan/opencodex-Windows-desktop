@@ -1,5 +1,6 @@
 import { IconLink } from "../icons";
 import { useT } from "../i18n";
+import type { StatusTone } from "./add-codex-account-reducer";
 
 export function AddCodexAccountWaitingStep({
   reauthAccountId,
@@ -24,7 +25,7 @@ export function AddCodexAccountWaitingStep({
   manualCodeBusy: boolean;
   manualCodeWaiting: boolean;
   statusNotice: string;
-  statusTone: "ok" | "warn";
+  statusTone: StatusTone;
   flowId: string | null;
   error: string;
   onCopyLoginLink: () => void;

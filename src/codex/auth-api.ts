@@ -143,9 +143,16 @@ function safeResetCreditsDto(input: unknown): { credits: { granted_at: string; e
   };
 }
 
-function safeResetCreditConsumeDto(input: unknown): { code: string } {
+function safeResetCreditConsumeDto(input: unknown): { code: string; remaining?: number } {
   const obj = typeof input === "object" && input !== null ? input as Record<string, unknown> : {};
-  return { code: typeof obj.code === "string" ? obj.code : "unknown" };
+  const code = typeof obj.code === "string" ? obj.code : "unknown";
+  const rawRemaining = obj.remaining
+    ?? obj.available_count
+    ?? (obj.rate_limit_reset_credits as { available_count?: unknown } | null | undefined)?.available_count;
+  return {
+    code,
+    ...(typeof rawRemaining === "number" && Number.isFinite(rawRemaining) ? { remaining: rawRemaining } : {}),
+  };
 }
 
 export function isUnverifiedCodexImportEnabled(): boolean {

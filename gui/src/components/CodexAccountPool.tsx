@@ -194,6 +194,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         setResetConfirm(false);
       }
       if (result.toast) {
+        setToastError(!result.ok);
         setToast(result.toast);
         setTimeout(() => setToast(""), 5000);
       }

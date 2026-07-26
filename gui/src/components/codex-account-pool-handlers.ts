@@ -2,6 +2,14 @@ import type { TFn } from "../i18n";
 import { readJsonIfOk } from "../fetch-json";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 
+function remainingCreditsToast(
+  t: TFn,
+  remaining: number | undefined,
+): string {
+  if (remaining === undefined) return t("codexAuth.resetSuccessGeneric");
+  return t("codexAuth.resetSuccess", { remaining: String(remaining) });
+}
+
 export async function redeemResetCredit(
   apiBase: string,
   accountId: string,
@@ -15,24 +23,34 @@ export async function redeemResetCredit(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accountId }),
     });
-    if (!resp.ok) { alert(t("codexAuth.resetError")); return { ok: false }; }
-    const result = await readJsonIfOk<{ code: string }>(resp);
-    if (!result) { alert(t("codexAuth.resetError")); return { ok: false }; }
+    const result = await readJsonIfOk<{ code: string; remaining?: number }>(resp);
+    if (!result) return { ok: false, toast: t("codexAuth.resetError") };
     if (result.code === "reset" || result.code === "already_redeemed") {
-      const prevCredits = resetPopup?.quota?.resetCredits ?? 1;
       await load(true);
+      const serverRemaining =
+        typeof result.remaining === "number" && Number.isFinite(result.remaining)
+          ? Math.max(0, result.remaining)
+          : undefined;
+      const knownCredits = resetPopup?.quota?.resetCredits;
+      // Prefer server remaining. Never invent a decrement for already_redeemed / unknown counts.
+      const remaining =
+        serverRemaining
+        ?? (result.code === "already_redeemed"
+          ? (typeof knownCredits === "number" ? knownCredits : undefined)
+          : (typeof knownCredits === "number" ? Math.max(0, knownCredits - 1) : undefined));
       return {
         ok: true,
         close: true,
-        toast: t("codexAuth.resetSuccess", { remaining: String(Math.max(0, prevCredits - 1)) }),
+        toast: result.code === "already_redeemed" && remaining === undefined
+          ? t("codexAuth.resetAlreadyRedeemed")
+          : remainingCreditsToast(t, remaining),
       };
     }
-    if (result.code === "nothing_to_reset") alert(t("codexAuth.resetNothingToReset"));
-    else if (result.code === "no_credit") alert(t("codexAuth.resetNoCredit"));
-    else alert(t("codexAuth.resetError"));
-    return { ok: false };
+    const key = result.code === "nothing_to_reset" ? "codexAuth.resetNothingToReset"
+      : result.code === "no_credit" ? "codexAuth.resetNoCredit"
+      : "codexAuth.resetError";
+    return { ok: false, close: true, toast: t(key) };
   } catch {
-    alert(t("codexAuth.resetError"));
-    return { ok: false };
+    return { ok: false, toast: t("codexAuth.resetError") };
   }
 }

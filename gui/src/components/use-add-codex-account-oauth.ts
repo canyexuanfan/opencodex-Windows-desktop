@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch } from "react";
-import type { AddCodexAccountUiAction } from "./add-codex-account-reducer";
+import type {
+  AddCodexAccountStep,
+  AddCodexAccountUiAction,
+  ManualCodeState,
+} from "./add-codex-account-reducer";
 import type { TFn } from "../i18n";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 
@@ -14,8 +18,8 @@ export function useAddCodexAccountOAuth({
   apiBase: string;
   reauthAccountId?: string;
   ui: {
-    step: string;
-    manualCodeState: string;
+    step: AddCodexAccountStep;
+    manualCodeState: ManualCodeState;
     manualCode: string;
     authUrl: string;
     flowId: string | null;
@@ -25,6 +29,7 @@ export function useAddCodexAccountOAuth({
 }) {
   const aliveRef = useRef(true);
   const pollErrorStreakRef = useRef(0);
+  const pollInFlightRef = useRef(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flowRef = useRef<string | null>(null);
@@ -156,8 +161,10 @@ export function useAddCodexAccountOAuth({
           ? `${apiBase}/api/codex-auth/login-status?flowId=${encodeURIComponent(fid)}${accountId ? `&accountId=${encodeURIComponent(accountId)}` : ""}${reauthQuery}`
           : `${apiBase}/api/codex-auth/login-status`;
         pollRef.current = setInterval(async () => {
+          if (pollInFlightRef.current) return;
+          pollInFlightRef.current = true;
           try {
-            const stRes = await fetch(statusUrl);
+            const stRes = await fetch(statusUrl, { signal: AbortSignal.timeout(10_000) });
             const st = await readJsonIfOk<{ status: string; error?: string }>(stRes);
             if (!aliveRef.current) return;
             if (!st) {
@@ -188,7 +195,7 @@ export function useAddCodexAccountOAuth({
               dispatch({ type: "set-flow-id", flowId: null });
               if (aliveRef.current) {
                 if (!reauthAccountId) dispatch({ type: "set-step", step: "pick" });
-                dispatch({ type: "set-error", error: st.error ?? "Login failed" });
+                dispatch({ type: "set-error", error: st.error ?? t("codexAuth.loginFailed") });
               }
             }
           } catch {
@@ -197,6 +204,8 @@ export function useAddCodexAccountOAuth({
             if (pollErrorStreakRef.current >= 3) {
               dispatch({ type: "set-status-notice", statusNotice: t("codexAuth.oauthStatusRetrying"), statusTone: "warn" });
             }
+          } finally {
+            pollInFlightRef.current = false;
           }
         }, 2000);
         timeoutRef.current = setTimeout(() => {

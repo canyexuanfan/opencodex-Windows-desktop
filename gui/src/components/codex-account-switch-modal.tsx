@@ -50,7 +50,7 @@ export function CodexAccountSwitchModal({
             : confirm.id === "__main__" ? t("codexAuth.switchBackDesc") : t("codexAuth.switchDesc")}
         </p>
         <div className="card" style={{ margin: "12px 0" }}>
-          <strong>{confirm.id === "__main__" ? mainEmail : confirm.email}</strong>
+          <strong>{confirm.id === "__main__" ? (mainEmail || t("codexAuth.codexApp")) : confirm.email}</strong>
           {confirm.plan && <span className="badge badge-green" style={{ marginLeft: 8 }}>{confirm.plan}</span>}
         </div>
         {confirm.id !== "__main__" && (

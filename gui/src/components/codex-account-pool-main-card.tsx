@@ -25,9 +25,10 @@ export function CodexAccountPoolMainCard({
   onSwitch: (entry: CodexAccountEntry) => void;
   onOpenReset: (account: CodexAccountEntry) => void;
 }) {
+  const mainFallbackLabel = t("codexAuth.codexApp");
   const mainSwitchEntry: CodexAccountEntry = {
     id: "__main__",
-    email: main?.email ?? "Codex App",
+    email: main?.email || mainFallbackLabel,
     plan: main?.plan,
     isMain: true,
     hasCredential: true,
@@ -55,7 +56,7 @@ export function CodexAccountPoolMainCard({
         )}
         <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
       </div>
-      <div className="card-sub">{main?.email ?? "Codex App login"}{main?.plan ? ` · ${main.plan}` : ""}</div>
+      <div className="card-sub">{main?.email || t("codexAuth.appLogin")}{main?.plan ? ` · ${main.plan}` : ""}</div>
       {main?.needsReauth
         ? <div className="card-sub faint">{t("codexAuth.mainTokenExpired")}</div>
         : main?.quota && <QuotaBars quota={main.quota} plan={main.plan} threshold={threshold} t={t} />}
