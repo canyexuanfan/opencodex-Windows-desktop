@@ -114,7 +114,7 @@ npm 警告里给出的缩写命令缺少包名，会把当前目录重新安装�
 ## 亮点
 
 - **在 Codex 中使用任意 LLM。** 5 种协议 adapter 覆盖 Anthropic Messages、Google Gemini、Azure、OpenAI Responses 直通，以及所有 OpenAI 兼容 Chat Completions 端点 —— 即开箱即用的 **40+ provider**。
-- **在 Claude Code 中也能使用任意 LLM。** 同一个守护进程提供 Anthropic Messages API（`/v1/messages` + `count_tokens`）：`ocx claude` 启动完全接线的 Claude Code，路由模型通过网关模型发现出现在原生 `/model` 选择器中（`claude-ocx-<provider>--<model>` 别名，Claude Code 2.1.129+）。槽位和模型映射在仪表盘的 Claude 页面配置。
+- **在 Claude 中也能使用任意 LLM。** `ocx claude` 可通过代理启动 Claude Code。Claude 仪表盘还提供独立的 Desktop 配置，可管理 Opus、Fable、Sonnet、Haiku 四个系列，并支持拖放、键盘操作和 JSON 导入/导出。
 - **安全地池化 ChatGPT 账户。** 现有 Codex 线程保持在一个账户上，而新会话可以从池中自动挑选使用量更低的账户，并带有配额刷新和非 PII 请求标签。
 - **登录一次，免填 API key。** xAI、Anthropic、Kimi 支持 OAuth，可用现有账户认证，token 自动刷新。也可以转发 `codex login`、粘贴 API key，或使用 `${ENV_VAR}` 引用 —— 随你选择。
 - **Codex 在哪里能用，它就在哪里能用。** 自动注入 Codex CLI、TUI、App 和 SDK。路由模型像原生模型一样出现在 Codex 的模型选择器里。
@@ -250,10 +250,33 @@ ocx logout <provider>          # 移除已保存的登录
 ocx account <list|current|use> # 查看/切换账号与 API-key pool（脱敏；含 refresh/auto-switch/remove/add-key）
 ocx gui                        # 打开 Web 仪表盘
 ocx claude [args...]           # 启动接入代理的 Claude Code（模型发现已开启）
+ocx claude desktop             # 保存并应用 Claude Desktop 四系列配置
 ocx codex-shim install         # 运行 codex 时自动启动代理
 ocx service [install|start|stop|status|uninstall]   # 安装/更新/启动后台服务
 ocx update [--tag preview]     # 更新 opencodex；preview 安装保持 @preview
 ```
+
+### Claude Desktop 配置
+
+仪表盘的 **Claude → Desktop** 页面把路由分为 Opus、Fable、Sonnet、Haiku 四个系列。新路由
+默认放入 Opus，第一个 Opus 路由是应用的初始默认模型。每个非空系列都有一个默认路由。你可以
+拖动路由，也可以用鼠标、触控或键盘操作每一行中可见的移动控件。点击 **保存并应用到 Desktop**
+后，配置会写入 Claude Desktop。还可以通过 JSON 导入/导出来备份配置，或迁移到另一台机器。
+
+```bash
+ocx claude desktop [apply]                         # 保存并应用当前配置
+ocx claude desktop show [--json]                   # 查看路由、系列和默认值
+ocx claude desktop move <route> <family> [--default]
+ocx claude desktop default <family> <route|none>
+ocx claude desktop export <path|->                 # 使用 - 将 JSON 输出到 stdout
+ocx claude desktop import <path> [--apply]         # 验证后保存，可选择立即应用
+```
+
+`family` 可取 `opus`、`fable`、`sonnet`、`haiku`。非 Anthropic 路由会获得带有合成 2026 日期
+槽位的稳定 Claude 格式别名；该日期是内部槽位，不是模型发布日期。真正的 Anthropic Claude
+路由保留原始模型 id。`none` 只能用于空系列；非空系列始终需要一个默认值。旧的应用方式
+`ocx claude desktop --static`、`--hybrid` 和
+`--discovery-only` 仍然受支持。
 
 ### 自动启动：service vs shim
 

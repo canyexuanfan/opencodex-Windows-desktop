@@ -48,7 +48,8 @@ import {
   setDebugSettings,
   type DebugFlag,
 } from "../lib/debug-settings";
-import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../types";
+import type { OcxClaudeCodeConfig, OcxClaudeDesktopProfile, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../types";
+import type { DesktopProfileModel } from "../claude/desktop-profile";
 import { drainAndShutdown } from "./lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "./request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../usage/cost";
@@ -172,4 +173,4 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 }
 
 
-export { fetchAllModels } from "./management/shared";
+export { buildClaudeDesktopState, fetchAllModels } from "./management/shared";

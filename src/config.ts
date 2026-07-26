@@ -15,6 +15,7 @@ import {
   type OcxProviderConfig,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider } from "./providers/openai-tiers";
+import { parseDesktopProfile } from "./claude/desktop-profile";
 
 let _atomicSeq = 0;
 
@@ -490,6 +491,20 @@ const configSchema = z.object({
   // path below and wipe providers/pool accounts. Warning emitted in loadConfig.
   streamMode: z.enum(["auto", "legacy-tee", "eager-relay"]).optional().catch(undefined),
 }).passthrough().superRefine((config, ctx) => {
+  const claudeCode = (config as { claudeCode?: unknown }).claudeCode;
+  if (claudeCode !== undefined && (!claudeCode || typeof claudeCode !== "object" || Array.isArray(claudeCode))) {
+    ctx.addIssue({ code: "custom", path: ["claudeCode"], message: "claudeCode must be an object" });
+  } else if (claudeCode && "desktopProfile" in claudeCode && (claudeCode as { desktopProfile?: unknown }).desktopProfile !== undefined) {
+    try {
+      parseDesktopProfile((claudeCode as { desktopProfile?: unknown }).desktopProfile);
+    } catch (error) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["claudeCode", "desktopProfile"],
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   for (const name of Object.keys(config.providers)) {
     if (!isValidProviderName(name)) {
       ctx.addIssue({

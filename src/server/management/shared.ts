@@ -48,7 +48,8 @@ import {
   setDebugSettings,
   type DebugFlag,
 } from "../../lib/debug-settings";
-import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../../types";
+import type { OcxClaudeCodeConfig, OcxClaudeDesktopProfile, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../../types";
+import type { DesktopProfileModel } from "../../claude/desktop-profile";
 import { drainAndShutdown } from "../lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "../request-log";
 import { estimateComboCost, estimateRequestCost, effectiveServiceTier, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
@@ -184,3 +185,43 @@ export function stripRegistryOnlyStaticHeaders(name: string, provider: OcxProvid
   return rest;
 }
 
+/** Shared Desktop profile DTO builder for the management API and CLI. */
+export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxClaudeDesktopProfile) {
+  const { filterCatalogVisibleModels, visibleNativeSlugs } = await import("../../codex/catalog");
+  const { reconcileDesktopProfile, renderDesktopProfile } = await import("../../claude/desktop-profile");
+  const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
+  const profileModels: DesktopProfileModel[] = [
+    ...visibleNativeSlugs(config).map(id => ({ route: `native/${id}`, label: `${id} (native)` })),
+    ...routed.map(model => ({
+      route: `${model.provider}/${model.id}`,
+      label: `${model.id} (${model.provider})`,
+      ...(typeof model.contextWindow === "number" ? { contextWindow: model.contextWindow } : {}),
+    })),
+  ];
+  const profile = reconcileDesktopProfile(stored ?? config.claudeCode?.desktopProfile, profileModels);
+  const available = new Set(profileModels.map(model => model.route));
+  const modelByRoute = new Map(profileModels.map(model => [model.route, model]));
+  // Effort support: routed models with a non-empty reasoningEfforts ladder support effort;
+  // native models always support it (Anthropic native effort).
+  const effortByRoute = new Map<string, boolean>();
+  for (const m of routed) {
+    effortByRoute.set(`${m.provider}/${m.id}`, Array.isArray(m.reasoningEfforts) && m.reasoningEfforts.length > 0);
+  }
+  for (const id of visibleNativeSlugs(config)) {
+    effortByRoute.set(`native/${id}`, true);
+  }
+  const models = Object.keys(profile.assignments).sort().map(route => ({
+    route,
+    label: modelByRoute.get(route)?.label ?? route,
+    available: available.has(route),
+    ...(modelByRoute.get(route)?.contextWindow ? { contextWindow: modelByRoute.get(route)!.contextWindow } : {}),
+    effortSupported: effortByRoute.get(route) ?? false,
+    assignment: profile.assignments[route]!,
+  }));
+  return {
+    profile,
+    models,
+    rendered: renderDesktopProfile(profile, profileModels),
+    port: config.port,
+  };
+}

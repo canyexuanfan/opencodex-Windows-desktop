@@ -10,7 +10,7 @@ import Usage from "./pages/Usage";
 import Storage from "./pages/Storage";
 import CodexAuth from "./pages/CodexAuth";
 import ApiKeys from "./pages/ApiKeys";
-import ClaudeCode from "./pages/ClaudeCode";
+import Claude from "./pages/Claude";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
@@ -304,7 +304,7 @@ export default function App() {
             {page === "storage" && <Storage apiBase={API_BASE} />}
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
             {page === "api" && <ApiKeys apiBase={API_BASE} />}
-            {page === "claude" && <ClaudeCode apiBase={API_BASE} />}
+            {page === "claude" && <Claude apiBase={API_BASE} />}
           </ErrorBoundary>
         </div>
       </main>
