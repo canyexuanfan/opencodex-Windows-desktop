@@ -81,8 +81,22 @@ export function UnsavedLeaveDialog({
         <h3 id="cwi-unsaved-title" className="pwi-json-unsaved-title">{t("cws.unsavedTitle")}</h3>
         <p className="muted pwi-json-unsaved-desc">{t("cws.unsavedDesc")}</p>
         <div className="pwi-json-unsaved-actions">
-          <button type="button" className="btn btn-ghost" onClick={onKeep}>{t("cws.keepEditing")}</button>
-          <button type="button" className="btn btn-danger" onClick={onDiscard}>{t("common.discard")}</button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            data-testid="cwi-unsaved-keep"
+            onClick={onKeep}
+          >
+            {t("cws.keepEditing")}
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger"
+            data-testid="cwi-unsaved-discard"
+            onClick={onDiscard}
+          >
+            {t("common.discard")}
+          </button>
         </div>
       </div>
     </dialog>

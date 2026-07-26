@@ -1,10 +1,10 @@
 import { useState } from "react";
 import type { ComboEffort, ComboStrategy, ComboTarget } from "../combo-workspace-data";
 import { COMBO_EFFORTS, newComboTarget } from "../combo-workspace-data";
-import { IconGrip, IconPlus, IconTrash } from "../icons";
+import { IconArrowDown, IconArrowUp, IconGrip, IconPlus, IconTrash } from "../icons";
 import { useT } from "../i18n/shared";
 import type { ModelOption, ProviderOption } from "./combo-workspace-types";
-import { enabledProviders, modelsForProvider } from "./combo-workspace-utils";
+import { clampedNumberInput, enabledProviders, modelsForProvider } from "./combo-workspace-utils";
 
 export function StrategySeg({
   value,
@@ -151,6 +151,26 @@ export function TargetEditor({
             >
               <IconGrip width={14} height={14} aria-hidden="true" />
             </button>
+            <div className="cwi-target-reorder">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={index === 0}
+                aria-label={t("cws.target.moveUp")}
+                onClick={() => reorder(index, index - 1)}
+              >
+                <IconArrowUp width={14} height={14} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={index === targets.length - 1}
+                aria-label={t("cws.target.moveDown")}
+                onClick={() => reorder(index, index + 1)}
+              >
+                <IconArrowDown width={14} height={14} aria-hidden="true" />
+              </button>
+            </div>
             <select
               className="input"
               value={row.provider}
@@ -195,10 +215,8 @@ export function TargetEditor({
                 value={row.weight ?? 1}
                 aria-label={t("cws.target.weight")}
                 onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === "") return;
-                  const weight = Number(raw);
-                  if (!Number.isFinite(weight)) return;
+                  const weight = clampedNumberInput(e.target.value, 1, 10000);
+                  if (weight === undefined) return;
                   update(index, { weight });
                 }}
               />

@@ -119,9 +119,8 @@ test("Strict Mode: edit, revert, and unsaved navigation keep dirty state coheren
   });
   expect(container.querySelector("#cwi-unsaved-title")).toBeTruthy();
 
-  const keepButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
-    .find((button) => button.textContent?.trim() === "Keep editing");
-  expect(keepButton).toBeDefined();
+  const keepButton = container.querySelector<HTMLButtonElement>('[data-testid="cwi-unsaved-keep"]');
+  expect(keepButton).toBeTruthy();
   await act(async () => {
     keepButton!.click();
   });
@@ -133,9 +132,8 @@ test("Strict Mode: edit, revert, and unsaved navigation keep dirty state coheren
   });
   expect(container.querySelector("#cwi-unsaved-title")).toBeTruthy();
 
-  const discardButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
-    .find((button) => button.textContent?.trim() === "Discard");
-  expect(discardButton).toBeDefined();
+  const discardButton = container.querySelector<HTMLButtonElement>('[data-testid="cwi-unsaved-discard"]');
+  expect(discardButton).toBeTruthy();
   await act(async () => {
     discardButton!.click();
   });

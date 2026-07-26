@@ -10,6 +10,7 @@ import { useT } from "../i18n/shared";
 import { Notice } from "../ui";
 import type { ModelOption, ProviderOption } from "./combo-workspace-types";
 import { EffortSelect, StrategySeg, TargetEditor } from "./combo-workspace-controls";
+import { clampedNumberInput } from "./combo-workspace-utils";
 
 export function AddComboModal({
   existingIds,
@@ -168,7 +169,11 @@ export function AddComboModal({
                 max={100}
                 value={draft.stickyLimit}
                 disabled={busy}
-                onChange={(e) => setDraft((d) => ({ ...d, stickyLimit: Number(e.target.value) }))}
+                onChange={(e) => {
+                  const stickyLimit = clampedNumberInput(e.target.value, 1, 100);
+                  if (stickyLimit === undefined) return;
+                  setDraft((d) => ({ ...d, stickyLimit }));
+                }}
               />
               <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>
                 {t("cws.field.stickyLimitHint")}

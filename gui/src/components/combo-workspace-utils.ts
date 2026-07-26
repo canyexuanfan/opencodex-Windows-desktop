@@ -6,6 +6,17 @@ export function enabledProviders(providers: ProviderOption[]): ProviderOption[] 
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Parse a number input and clamp to [min, max]. Empty / non-finite values return
+ * `undefined` so callers can ignore the keystroke without writing NaN.
+ */
+export function clampedNumberInput(raw: string, min: number, max: number): number | undefined {
+  if (raw === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(max, Math.max(min, n));
+}
+
 /** ChatGPT passthrough has no /models catalog — GPT slugs are listed under provider "openai". */
 export function isChatGptForwardOption(p: ProviderOption | undefined): boolean {
   if (!p) return false;

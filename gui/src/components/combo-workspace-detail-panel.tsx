@@ -11,6 +11,7 @@ import { useT } from "../i18n/shared";
 import { Notice } from "../ui";
 import type { ModelOption, ProviderOption } from "./combo-workspace-types";
 import { EffortSelect, StrategySeg, TargetEditor } from "./combo-workspace-controls";
+import { clampedNumberInput } from "./combo-workspace-utils";
 
 type DetailTab = "config" | "about";
 
@@ -232,7 +233,11 @@ export function DetailPanel({
                   max={100}
                   value={draft.stickyLimit}
                   disabled={busy}
-                  onChange={(e) => updateDraft((d) => ({ ...d, stickyLimit: Number(e.target.value) }))}
+                  onChange={(e) => {
+                    const stickyLimit = clampedNumberInput(e.target.value, 1, 100);
+                    if (stickyLimit === undefined) return;
+                    updateDraft((d) => ({ ...d, stickyLimit }));
+                  }}
                 />
               </div>
             )}
