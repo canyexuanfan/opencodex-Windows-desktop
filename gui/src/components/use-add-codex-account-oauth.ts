@@ -32,6 +32,7 @@ export function useAddCodexAccountOAuth({
   const pollInFlightRef = useRef(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
   const flowRef = useRef<string | null>(null);
   const manualCodeStateRef = useRef(ui.manualCodeState);
   const loginAbortRef = useRef<AbortController | null>(null);
@@ -52,6 +53,9 @@ export function useAddCodexAccountOAuth({
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+    pollAbortRef.current?.abort();
+    pollAbortRef.current = null;
+    pollInFlightRef.current = false;
   }, []);
 
   const clearManualCode = useCallback(() => {
@@ -76,19 +80,20 @@ export function useAddCodexAccountOAuth({
     }).catch(() => {});
   }, [apiBase, clearManualCode, dispatch, stopPolling]);
 
-  // Replay-safe under StrictMode: remount must revive aliveRef after the first cleanup.
+  // Replay-safe under StrictMode: remount must revive aliveRef and clear the
+  // reauth latch so the remounted effect can start OAuth again.
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       clearManualCode();
       aliveRef.current = false;
+      startedReauthRef.current = null;
       loginAbortRef.current?.abort();
       loginAbortRef.current = null;
       const flowId = flowRef.current;
       flowRef.current = null;
       dispatch({ type: "set-flow-id", flowId: null });
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-      if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+      stopPolling();
       if (flowId) {
         void fetch(`${apiBase}/api/codex-auth/login/cancel`, {
           method: "POST",
@@ -97,7 +102,7 @@ export function useAddCodexAccountOAuth({
         }).catch(() => {});
       }
     };
-  }, [apiBase, clearManualCode, dispatch]);
+  }, [apiBase, clearManualCode, dispatch, stopPolling]);
 
   const bindCallbacks = useCallback((onAdded: () => void, onClose: () => void) => {
     onAddedRef.current = onAdded;
@@ -160,13 +165,20 @@ export function useAddCodexAccountOAuth({
         const statusUrl = fid
           ? `${apiBase}/api/codex-auth/login-status?flowId=${encodeURIComponent(fid)}${accountId ? `&accountId=${encodeURIComponent(accountId)}` : ""}${reauthQuery}`
           : `${apiBase}/api/codex-auth/login-status`;
+        const pollSession = new AbortController();
+        pollAbortRef.current = pollSession;
         pollRef.current = setInterval(async () => {
-          if (pollInFlightRef.current) return;
+          if (pollInFlightRef.current || pollSession.signal.aborted) return;
           pollInFlightRef.current = true;
+          // Bound each tick and abort it when stopPolling/cleanup cancels the session.
+          const tickSignal = AbortSignal.any([
+            pollSession.signal,
+            AbortSignal.timeout(10_000),
+          ]);
           try {
-            const stRes = await fetch(statusUrl, { signal: AbortSignal.timeout(10_000) });
+            const stRes = await fetch(statusUrl, { signal: tickSignal });
             const st = await readJsonIfOk<{ status: string; error?: string }>(stRes);
-            if (!aliveRef.current) return;
+            if (!aliveRef.current || pollSession.signal.aborted) return;
             if (!st) {
               pollErrorStreakRef.current += 1;
               if (pollErrorStreakRef.current >= 3) {
@@ -198,8 +210,9 @@ export function useAddCodexAccountOAuth({
                 dispatch({ type: "set-error", error: st.error ?? t("codexAuth.loginFailed") });
               }
             }
-          } catch {
-            if (!aliveRef.current) return;
+          } catch (e) {
+            if (!aliveRef.current || pollSession.signal.aborted) return;
+            if (e instanceof Error && e.name === "AbortError") return;
             pollErrorStreakRef.current += 1;
             if (pollErrorStreakRef.current >= 3) {
               dispatch({ type: "set-status-notice", statusNotice: t("codexAuth.oauthStatusRetrying"), statusTone: "warn" });
