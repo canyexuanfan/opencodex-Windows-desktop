@@ -118,12 +118,13 @@ test("PUT round-trips settings and persists to config", async () => {
   }
 });
 
-test("PUT round-trips authMode (proxy persists, subscription clears — devlog 260720)", async () => {
+test("PUT round-trips three-state authMode (devlog 260720 + 260726_claude_auth_auto)", async () => {
   const server = startServer(0);
   try {
-    // Default: absent config key reads back as subscription.
+    // An absent config key is AUTO, not subscription: the old coercion turned every
+    // save into a sticky manual subscription (devlog 260726_claude_auth_auto/002 §3).
     let get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
-    expect(get.authMode).toBe("subscription");
+    expect(get.authMode).toBe("auto");
 
     // proxy persists to config and reads back.
     const put = await fetch(new URL("/api/claude-code", server.url), {
@@ -136,14 +137,75 @@ test("PUT round-trips authMode (proxy persists, subscription clears — devlog 2
     expect(get.authMode).toBe("proxy");
     expect(loadConfig().claudeCode?.authMode).toBe("proxy");
 
-    // subscription clears the stored key (type only allows "proxy").
+    // subscription now stores the literal so an explicit choice survives auth changes.
     const back = await fetch(new URL("/api/claude-code", server.url), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ authMode: "subscription" }),
     });
     expect(back.status).toBe(200);
+    expect(loadConfig().claudeCode?.authMode).toBe("subscription");
+    get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.authMode).toBe("subscription");
+
+    // "auto" is the return path: it deletes the key so detection drives the mode again.
+    const auto = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ authMode: "auto" }),
+    });
+    expect(auto.status).toBe(200);
     expect(loadConfig().claudeCode?.authMode).toBeUndefined();
+    get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.authMode).toBe("auto");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("GET exposes the resolved marker mode and its provenance", async () => {
+  const server = startServer(0);
+  try {
+    const get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(["proxy", "subscription"]).toContain(get.markerMode);
+    expect(["manual", "auto-present", "auto-absent", "auto-unknown"]).toContain(get.authModeOrigin);
+    expect(typeof get.admissionKeyActive).toBe("boolean");
+    // The badge must say it is daemon-side: a terminal-exported key is invisible here.
+    expect(get.detectionScope).toBe("daemon");
+  } finally {
+    server.stop(true);
+  }
+});
+
+// The auto-kill regression: saving an unrelated field must not convert auto into a
+// sticky manual mode (devlog 260726_claude_auth_auto/002 §3).
+test("an unrelated PUT leaves an auto config on auto", async () => {
+  const server = startServer(0);
+  try {
+    expect(loadConfig().claudeCode?.authMode).toBeUndefined();
+    const put = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(put.status).toBe(200);
+    expect(loadConfig().claudeCode?.authMode).toBeUndefined();
+    const get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.authMode).toBe("auto");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("PUT rejects an unknown authMode value", async () => {
+  const server = startServer(0);
+  try {
+    const bad = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ authMode: "passthrough" }),
+    });
+    expect(bad.status).toBe(400);
   } finally {
     server.stop(true);
   }

@@ -610,11 +610,28 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models);
     const webSearchOverride = config.claudeCode?.webSearchSidecar;
     const visionOverride = config.claudeCode?.visionSidecar;
+    // Auto is a RESOLUTION, recomputed per request — never stored state. Detection is
+    // daemon-side, so it cannot see a key exported only in the user's terminal; the
+    // GUI labels the badge with detectionScope for exactly that reason.
+    const { defaultAuthDetectDeps, detectClaudeAuth } = await import("../../claude/auth-detect");
+    const { authModeIntent, resolveClaudeAuthMode } = await import("../../claude/auth-mode");
+    const authDetection = detectClaudeAuth(defaultAuthDetectDeps());
+    const resolvedAuthMode = resolveClaudeAuthMode(config, authDetection);
     return jsonResponse({
       enabled: config.claudeCode?.enabled !== false,
-      // Round-trip contract with the GUI auth-mode select (devlog 260720_claude_authmode_persist):
-      // absent config key = subscription (OcxClaudeCodeConfig.authMode is typed `"proxy"` only).
-      authMode: config.claudeCode?.authMode === "proxy" ? "proxy" : "subscription",
+      // Three-state intent (devlog 260726_claude_auth_auto): an absent key is AUTO, not
+      // subscription. The old coercion made every save convert an untouched auto config
+      // into a sticky manual subscription with no way back.
+      authMode: authModeIntent(config),
+      /** Does the opencodex dummy marker get injected — NOT a claim about native auth. */
+      markerMode: resolvedAuthMode.markerMode,
+      authModeOrigin: resolvedAuthMode.origin,
+      ...(resolvedAuthMode.foundBy ? { authFoundBy: resolvedAuthMode.foundBy } : {}),
+      authDetectionUnknown: authDetection.presence === "unknown",
+      // Separate axis: with an admission key configured a token is injected regardless
+      // of mode, so the GUI must never present subscription as "no token anywhere".
+      admissionKeyActive: (config.apiKeys?.length ?? 0) > 0,
+      detectionScope: "daemon",
       model: config.claudeCode?.model ?? "",
       smallFastModel: config.claudeCode?.smallFastModel ?? "",
       tierModels: config.claudeCode?.tierModels ?? {},
@@ -691,15 +708,16 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       next.enabled = body.enabled;
     }
     if (body.authMode !== undefined) {
-      // "proxy" stores the key; "subscription" (the default) deletes it —
-      // OcxClaudeCodeConfig.authMode is typed `"proxy"` only (src/types.ts).
-      // Previously this field was silently dropped, so the GUI select reverted to
-      // Subscription on every reload (devlog 260720_claude_authmode_persist).
-      if (body.authMode !== "proxy" && body.authMode !== "subscription") {
-        return jsonResponse({ error: "authMode must be \"proxy\" or \"subscription\"" }, 400);
+      // Three-state intent: "proxy" and "subscription" are stored literally and stick
+      // forever; "auto" DELETES the key so the mode is resolved from detected Claude
+      // auth on every launch. The 260720 round-trip contract survives as a superset —
+      // storing "subscription" literally is also backward-safe, since older readers
+      // only ever recognised "proxy".
+      if (body.authMode !== "proxy" && body.authMode !== "subscription" && body.authMode !== "auto") {
+        return jsonResponse({ error: "authMode must be \"auto\", \"proxy\", or \"subscription\"" }, 400);
       }
-      if (body.authMode === "proxy") next.authMode = "proxy";
-      else delete next.authMode;
+      if (body.authMode === "auto") delete next.authMode;
+      else next.authMode = body.authMode;
     }
     if (body.systemEnv !== undefined) {
       if (typeof body.systemEnv !== "boolean") return jsonResponse({ error: "systemEnv must be a boolean" }, 400);
