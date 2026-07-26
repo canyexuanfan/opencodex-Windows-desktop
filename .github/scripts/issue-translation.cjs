@@ -546,6 +546,76 @@ function isPreparedSourceStillCurrent({ preparedHash, liveTitle, liveBody }) {
   return liveHash === preparedHash;
 }
 
+/** Stable title key so comment hashes never collide with issue title+body hashes. */
+function commentSourceTitle(commentId) {
+  return `comment:${commentId}`;
+}
+
+/**
+ * Hard skips before rate-limit / hash checks.
+ * @returns {string | null} skip reason, or null when eligible for shouldTranslate
+ */
+function shouldSkipCommentTranslation(comment, issue = null) {
+  if (issue?.pull_request) return "pull_request";
+  const login = String(comment?.user?.login || "");
+  const userType = String(comment?.user?.type || "");
+  if (userType === "Bot" || /\[bot\]$/i.test(login) || login === BOT_LOGIN) {
+    return "bot_author";
+  }
+  const body = String(comment?.body || "");
+  if (body.includes(CONTROL_MARKER)) return "control_comment";
+  return null;
+}
+
+/**
+ * Decide whether a user issue comment should be sent to the translator.
+ * Reuses issue rate limits via the shared per-issue control comment.
+ */
+function shouldTranslateComment({
+  comment,
+  issue = null,
+  priorState = null,
+  now = Date.now(),
+  rateLimit = DEFAULT_RATE_LIMIT,
+}) {
+  const skip = shouldSkipCommentTranslation(comment, issue);
+  if (skip) return { ok: false, reason: skip };
+
+  const commentId = comment?.id;
+  if (!Number.isSafeInteger(commentId) || commentId <= 0) {
+    return { ok: false, reason: "invalid_comment_id" };
+  }
+
+  const sourceBody = stripTranslationBlock(comment.body || "");
+  const decision = shouldTranslate({
+    sourceTitle: commentSourceTitle(commentId),
+    sourceBody,
+    priorState,
+    now,
+    rateLimit,
+  });
+  if (!decision.ok) return decision;
+  return {
+    ...decision,
+    sourceBody,
+    sourceTitle: commentSourceTitle(commentId),
+    commentId,
+  };
+}
+
+/**
+ * Build the in-place comment body: original + folded English translation.
+ */
+function buildTranslatedCommentBody(sourceBody, translatedBody, detectedLanguage) {
+  const lang = scrubDetectedLanguage(detectedLanguage);
+  const translationText = [
+    `*Original language: ${lang}*`,
+    "",
+    String(translatedBody || ""),
+  ].join("\n");
+  return appendTranslationBlock(sourceBody, translationText);
+}
+
 function shouldTranslate({
   sourceTitle = "",
   sourceBody,
@@ -669,6 +739,10 @@ module.exports = {
   persistTranslationControlState,
   shouldOmitVisibleBookkeeping,
   isPreparedSourceStillCurrent,
+  commentSourceTitle,
+  shouldSkipCommentTranslation,
+  shouldTranslateComment,
+  buildTranslatedCommentBody,
   shouldTranslate,
   sanitizeTranslationBody,
   scrubDetectedLanguage,

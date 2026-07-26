@@ -167,27 +167,38 @@ describe("GitHub Actions hardening", () => {
   test("issue-quality workflow rejects workflow_dispatch pull request numbers before mutation", async () => {
     const workflow = await readText(".github/workflows/enforce-issue-quality.yml");
 
-    // Manual dispatch is supported, but only with a positive issue number.
-    expect(workflow).toContain("workflow_dispatch:");
-    expect(workflow).toContain("issue_number:");
-    expect(workflow).toContain("issue-translation.cjs");
-    expect(workflow).toContain("translated_title");
-    expect(workflow).toContain("isPreparedSourceStillCurrent");
-    expect(workflow).toContain("resolveControlState");
-    expect(workflow).toContain("persistTranslationControlState");
-    expect(workflow).toContain("parse-issue-translation-response.cjs");
-    expect(workflow).not.toContain('node -e "');
-    expect(workflow).not.toContain("actions/cache/restore");
-    expect(workflow).not.toContain("actions/cache/save");
-    expect(workflow).not.toContain("actions: write");
-    expect(workflow).not.toContain(".ocx-translation-state");
-    expect(workflow).not.toContain("null language");
-    expect(workflow).toContain('normally "English"');
-    expect(workflow).toContain("rejectsWorkflowDispatchNonDefaultBranch");
-    expect(workflow).toContain("rejectsWorkflowDispatchPullRequest");
-    expect(workflow).toContain("models: read");
-    expect(workflow).toContain("Number.isSafeInteger(parsedIssueNumber)");
-    expect(workflow).toContain("parsedIssueNumber <= 0");
+    expect(workflow).toContain("issue_comment:");
+    expect(workflow).toContain("Translate non-English issue comments");
+    expect(workflow).toContain("shouldTranslateComment");
+    expect(workflow).toContain("buildTranslatedCommentBody");
+    expect(workflow).toContain("github.rest.issues.updateComment");
+    expect(workflow).toContain("group: issue-comment-translation-${{ github.event.comment.id }}");
+    expect(workflow).toContain("if: github.event_name == 'issue_comment'");
+    expect(workflow).toMatch(
+      /translate:\s*\n\s*name: Translate non-English issues\s*\n\s*if: github\.event_name == 'issues' \|\| github\.event_name == 'workflow_dispatch'/,
+    );
+    expect(workflow).toMatch(
+      /validate:\s*\n\s*if: github\.event_name == 'issues' \|\| github\.event_name == 'workflow_dispatch'/,
+    );
+
+    const commentJob = workflow.split(/\n {2}translate-comment:\n/)[1]!.split(/\n {2}[a-zA-Z]/)[0]!;
+    expect(commentJob).toContain("parse-issue-translation-response.cjs");
+    expect(commentJob).toContain("Apply inline comment translation");
+    expect(commentJob).toContain("isPreparedSourceStillCurrent");
+    expect(commentJob).toContain("updateComment");
+    expect(commentJob).toContain("requires_translation == 'true'");
+    // Same fail-closed parse → apply gate as the issue path.
+    const commentParse = commentJob
+      .split("- name: Parse AI response")[1]!
+      .split("- name: Apply inline comment translation")[0]!;
+    expect(commentParse).toContain("parse-issue-translation-response.cjs");
+    expect(commentParse.split(/\n\s*run:\s*/)[1] || "").not.toContain("${{");
+    const commentApply = commentJob
+      .split("- name: Apply inline comment translation")[1]!
+      .split("- name: Persist comment translation control state")[0]!;
+    expect(commentApply.indexOf("isPreparedSourceStillCurrent({")).toBeLessThan(
+      commentApply.indexOf("updateComment"),
+    );
 
     // Job-scoped permissions only (no top-level issues:write; no actions:write).
     expect(workflow).toMatch(

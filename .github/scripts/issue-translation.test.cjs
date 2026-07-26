@@ -25,6 +25,10 @@ const {
   upsertTranslationControlComment,
   isPreparedSourceStillCurrent,
   shouldTranslate,
+  commentSourceTitle,
+  shouldSkipCommentTranslation,
+  shouldTranslateComment,
+  buildTranslatedCommentBody,
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   isEnglishDetectedLanguage,
@@ -1133,5 +1137,105 @@ describe("appendTranslationBlock", () => {
     const next = appendTranslationBlock(big, fitted);
     assert.ok(next.length <= ISSUE_BODY_MAX);
     assert.match(fitted, /truncated to fit GitHub issue body limit/);
+  });
+});
+
+describe("issue comment translation", () => {
+  const koreanComment = "관련: #508 (같은 Kiro adapter의 컨텍스트 토큰 보고 문제).";
+
+  it("skips bots, control comments, and pull-request threads", () => {
+    assert.equal(
+      shouldSkipCommentTranslation({ user: { login: "github-actions[bot]", type: "Bot" }, body: koreanComment }),
+      "bot_author",
+    );
+    assert.equal(
+      shouldSkipCommentTranslation({ user: { login: "human", type: "User" }, body: CONTROL_MARKER + "\nx" }),
+      "control_comment",
+    );
+    assert.equal(
+      shouldSkipCommentTranslation(
+        { id: 1, user: { login: "human", type: "User" }, body: koreanComment },
+        { pull_request: { url: "https://example/pr/1" } },
+      ),
+      "pull_request",
+    );
+    assert.equal(
+      shouldSkipCommentTranslation({ id: 1, user: { login: "human", type: "User" }, body: koreanComment }),
+      null,
+    );
+  });
+
+  it("hashes comments under comment:<id> so they do not collide with issue hashes", () => {
+    const issueHash = hashTranslationSource({ title: "t", body: koreanComment });
+    const commentHash = hashTranslationSource({
+      title: commentSourceTitle(99),
+      body: koreanComment,
+    });
+    assert.notEqual(issueHash, commentHash);
+    assert.equal(commentSourceTitle(99), "comment:99");
+  });
+
+  it("allows a meaningful non-English comment and builds an in-place translation block", () => {
+    const decision = shouldTranslateComment({
+      comment: { id: 5084167162, user: { login: "jhste102lab", type: "User" }, body: koreanComment },
+      issue: { number: 507 },
+      priorState: null,
+      now: Date.now(),
+    });
+    assert.equal(decision.ok, true);
+    assert.equal(decision.sourceBody, koreanComment);
+    assert.equal(decision.sourceTitle, "comment:5084167162");
+
+    const next = buildTranslatedCommentBody(
+      decision.sourceBody,
+      "Related: #508 (same Kiro adapter context-token reporting issue).",
+      "Korean",
+    );
+    assert.ok(next.startsWith(koreanComment));
+    assert.ok(next.includes(MARKER));
+    assert.ok(next.includes("Translated Message"));
+    assert.ok(next.includes("Original language: Korean"));
+    assert.equal(stripTranslationBlock(next), koreanComment);
+  });
+
+  it("skips unchanged comment bodies via source hash", () => {
+    const comment = { id: 7, user: { login: "human", type: "User" }, body: koreanComment };
+    const first = shouldTranslateComment({ comment, priorState: null, now: 1_700_000_000_000 });
+    assert.equal(first.ok, true);
+    const second = shouldTranslateComment({
+      comment,
+      priorState: {
+        v: 2,
+        sourceHash: first.sourceHash,
+        attemptedAt: 1_700_000_000_000 - 120_000,
+        recent: [1_700_000_000_000 - 120_000],
+        requiresTranslation: true,
+        detectedLanguage: "Korean",
+      },
+      now: 1_700_000_000_000,
+    });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "unchanged_source");
+  });
+
+  it("stale-guards comment edits with isPreparedSourceStillCurrent", () => {
+    const title = commentSourceTitle(42);
+    const prepared = hashTranslationSource({ title, body: koreanComment });
+    assert.equal(
+      isPreparedSourceStillCurrent({
+        preparedHash: prepared,
+        liveTitle: title,
+        liveBody: koreanComment,
+      }),
+      true,
+    );
+    assert.equal(
+      isPreparedSourceStillCurrent({
+        preparedHash: prepared,
+        liveTitle: title,
+        liveBody: koreanComment + " edited",
+      }),
+      false,
+    );
   });
 });

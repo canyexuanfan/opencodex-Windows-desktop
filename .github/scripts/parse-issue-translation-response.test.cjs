@@ -86,6 +86,31 @@ describe("parseAiResponse", () => {
       '{"a":"Kiro\'s"}',
     );
   });
+
+  it("keeps requires_translation=true for issue and comment payloads with invalid escapes", () => {
+    // Build explicitly so the fixture contains the illegal \' sequence.
+    const issueRaw =
+      '{"requires_translation":true,"detected_language":"Korean",' +
+      '"translated_title":"[Bug] Throttling","translated_body":"Kiro\\\'s mid-stream 429"}';
+    const commentRaw =
+      '{"requires_translation":true,"detected_language":"Korean",' +
+      '"translated_title":"","translated_body":"Related: #508 (Kiro\\\'s adapter)."}';
+
+    for (const [label, raw] of [
+      ["issue", issueRaw],
+      ["comment", commentRaw],
+    ]) {
+      const parsed = parseAiResponse(raw);
+      assert.equal(parsed?.requires_translation, true, label);
+      assert.ok(parsed.translated_body.includes("Kiro's"), label);
+      // Process path must emit apply-gate outputs (never silent false).
+      const { status, output } = runParser(raw);
+      assert.equal(status, 0, label);
+      const out = parseOutputs(output);
+      assert.equal(out.requires_translation, "true", label);
+      assert.ok(out.translated_body.includes("Kiro's"), label);
+    }
+  });
 });
 
 describe("parse-issue-translation-response process", () => {
