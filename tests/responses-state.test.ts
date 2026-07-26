@@ -690,7 +690,7 @@ describe("Responses previous_response_id state", () => {
     expect(readFileSync(path, "utf-8")).toBe("private state");
   });
 
-  test("stale temp recovery stops at injectable candidate and cleanup caps", () => {
+  test("stale temp recovery stops at injectable enumeration and cleanup caps", () => {
     const old = new Date(Date.now() - 60 * 60 * 1_000);
     const first = "responses-state.json.ocx.7001.1.tmp";
     const second = "responses-state.json.ocx.7002.2.tmp";
@@ -700,12 +700,12 @@ describe("Responses previous_response_id state", () => {
       utimesSync(path, old, old);
     }
 
-    const candidateBound = recoverStaleResponseStateTemps(home, {
-      list: () => [first, second],
-      isProcessAlive: pid => pid === 7001,
-      maxCandidates: 1,
+    const enumerationBound = recoverStaleResponseStateTemps(home, {
+      list: () => ["unrelated.txt", second],
+      isProcessAlive: () => false,
+      maxEntries: 1,
     });
-    expect(candidateBound).toMatchObject({ matched: 1, removed: 0, failed: 0 });
+    expect(enumerationBound).toMatchObject({ matched: 0, removed: 0, failed: 0 });
     expect(existsSync(join(home, second))).toBe(true);
 
     const cleanupBound = recoverStaleResponseStateTemps(home, {

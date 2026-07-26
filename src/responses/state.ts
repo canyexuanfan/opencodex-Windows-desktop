@@ -15,7 +15,7 @@ const MAX_STORED_RESPONSE_BYTES = 64 * 1024 * 1024;
 const SNAPSHOT_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const SNAPSHOT_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
 const STALE_TEMP_GRACE_MS = 15 * 60 * 1_000;
-const STALE_TEMP_MAX_CANDIDATES = 4_096;
+const STALE_TEMP_MAX_ENTRIES = 4_096;
 const STALE_TEMP_MAX_CLEANUPS = 512;
 const RESPONSE_STATE_TEMP_NAME = /^responses-state\.json\.ocx\.(\d+)\.(\d+)\.tmp$/;
 
@@ -108,7 +108,7 @@ interface ResponseStateTempRecoveryIO {
 }
 
 type ResponseStateTempRecoveryOptions = Partial<ResponseStateTempRecoveryIO> & {
-  maxCandidates?: number;
+  maxEntries?: number;
   maxCleanups?: number;
 };
 
@@ -152,7 +152,7 @@ export function recoverStaleResponseStateTemps(
   dir = getConfigDir(),
   options: ResponseStateTempRecoveryOptions = {},
 ): ResponseStateTempRecoveryResult {
-  const { maxCandidates = STALE_TEMP_MAX_CANDIDATES, maxCleanups = STALE_TEMP_MAX_CLEANUPS, ...overrides } = options;
+  const { maxEntries = STALE_TEMP_MAX_ENTRIES, maxCleanups = STALE_TEMP_MAX_CLEANUPS, ...overrides } = options;
   const io = { ...responseStateTempRecoveryIO, ...overrides };
   const result: ResponseStateTempRecoveryResult = {
     matched: 0,
@@ -162,12 +162,12 @@ export function recoverStaleResponseStateTemps(
   };
   let names: Iterable<string>;
   try { names = io.list(dir); } catch { return result; }
-  let candidates = 0;
+  let scanned = 0;
   for (const name of names) {
+    scanned += 1;
+    if (scanned > maxEntries || result.removed + result.failed >= maxCleanups) break;
     const match = RESPONSE_STATE_TEMP_NAME.exec(name);
     if (!match) continue;
-    candidates += 1;
-    if (candidates > maxCandidates || result.removed + result.failed >= maxCleanups) break;
     result.matched += 1;
     const pid = Number(match[1]);
     const sequence = Number(match[2]);
