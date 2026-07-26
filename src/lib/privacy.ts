@@ -9,3 +9,11 @@ export function maskEmail(value: string | null | undefined): string | null {
   if (local.length === 2) return `${local[0]}*@${domain}`;
   return `${local[0]}***${local[local.length - 1]}@${domain}`;
 }
+
+export function maskAccountId(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const id = value.trim();
+  if (!id) return null;
+  const suffix = id.length <= 4 ? id : id.slice(-4);
+  return `account-…${suffix}`;
+}
