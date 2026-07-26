@@ -270,6 +270,9 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       );
       if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
       if (next.disabled === false) delete next.disabled;
+      // Canonical openai never uses private-network opt-in; drop a stale flag that
+      // was ignored for the DNS probe so it cannot linger on the live row.
+      delete next.allowPrivateNetwork;
     }
 
     const { saveConfig: save } = await import("../../config");

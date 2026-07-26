@@ -130,6 +130,24 @@ describe("provider dashboard payload", () => {
     }
   });
 
+  test("missing openai preset seed maps to a stable i18n key", async () => {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/provider-presets") {
+        return Response.json({ providers: [{ id: "openai" }] });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    try {
+      await ensureOpenAiProvider("http://localhost:10100", "absent", fetchImpl);
+      expect.unreachable("expected OpenAiEnableError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(OpenAiEnableError);
+      expect((error as OpenAiEnableError).i18nKey).toBe("codexAuth.openaiPresetUnavailable");
+    }
+  });
+
   test("persists explicit API-key mode for built-in OAuth providers", () => {
     expect(buildProviderPayload({
       name: "xai",

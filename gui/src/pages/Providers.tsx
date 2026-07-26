@@ -432,6 +432,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
 
   const onAccountLogin = async (provider: string) => {
     if (provider === "openai") {
+      if (busy === "openai") return;
       const configured = config.providers.openai;
       const state = openAiAccountProviderState(configured);
       if (state === "invalid") {
@@ -439,6 +440,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         return;
       }
       if (state === "absent" || state === "disabled") {
+        setBusy("openai");
         try {
           await ensureOpenAiProvider(apiBase, state);
           await fetchConfig();
@@ -449,6 +451,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             notify(error instanceof Error ? error.message : t("prov.saveFailed"), false);
           }
           return;
+        } finally {
+          if (aliveRef.current) setBusy(current => current === "openai" ? null : current);
         }
       }
       setCodexLoginOpen(true);

@@ -152,8 +152,12 @@ export default function ProviderCatalog({
                       <a className="btn btn-ghost" href={row.href ?? "#codex-auth"}>{t("modal.accountManage")}</a>
                     )}
                     {onLogin && (
-                      <button className={loggedIn ? "btn btn-ghost" : "btn btn-primary"} onClick={() => onLogin(row.id)}>
-                        {loggedIn ? t("modal.accountAdd") : t("modal.accountLogin")}
+                      <button
+                        className={loggedIn ? "btn btn-ghost" : "btn btn-primary"}
+                        disabled={busy}
+                        onClick={() => { if (!busy) onLogin(row.id); }}
+                      >
+                        {busy ? t("codexAuth.enablingOpenai") : loggedIn ? t("modal.accountAdd") : t("modal.accountLogin")}
                       </button>
                     )}
                   </>

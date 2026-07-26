@@ -1362,6 +1362,58 @@ describe("provider management validation", () => {
     }
   });
 
+  test("disabled OpenAI recovery strips allowPrivateNetwork after successful re-enable", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "extra",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          allowPrivateNetwork: true,
+          disabled: true,
+        },
+        extra: {
+          adapter: "openai-chat",
+          baseUrl: "https://extra.example.test/v1",
+          liveModels: false,
+          models: ["extra-model"],
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError")
+      .mockResolvedValue(null);
+
+    try {
+      const request = new Request("http://127.0.0.1/api/providers?name=openai", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ disabled: false }),
+      });
+      const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
+        refreshCodexCatalog: async () => undefined,
+      });
+      expect(response?.status).toBe(200);
+      expect(liveConfig.providers.openai).toEqual({
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "pool",
+      });
+      expect(Object.hasOwn(liveConfig.providers.openai as object, "allowPrivateNetwork")).toBe(false);
+      expect(Object.hasOwn(loadConfig().providers.openai as object, "allowPrivateNetwork")).toBe(false);
+    } finally {
+      resolvedError.mockRestore();
+    }
+  });
+
   for (const [label, baseUrl] of [
     ["uppercase host", "https://CHATGPT.com/backend-api/codex"],
     ["explicit :443 port", "https://chatgpt.com:443/backend-api/codex"],
