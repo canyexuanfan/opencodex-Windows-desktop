@@ -1290,6 +1290,10 @@ export async function* parseKiroStream(
   }
 
   yield { type: "heartbeat" };
+  // First attempt already flushed deferred progress before this point. Gate fallback
+  // setup/HTTP failures the same way as the second-stream catch so a replay cannot
+  // duplicate visible commentary (#520).
+  const priorEmittedOutput = Boolean(firstResult.assistantText.trim()) || firstResult.sawReasoning;
   let fallback: KiroFallbackAttempt;
   try {
     fallback = await fallbackFactory(
@@ -1303,7 +1307,7 @@ export async function* parseKiroStream(
       message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)),
       status: err instanceof Error && err.name === "TimeoutError" ? 504 : 502,
       errorType: "upstream_error",
-      retryable: true,
+      retryable: !priorEmittedOutput,
       usage: firstResult.usage,
     };
     return;
@@ -1317,7 +1321,7 @@ export async function* parseKiroStream(
       status: failure.status,
       errorType: failure.errorType,
       code: failure.code,
-      retryable: failure.retryable,
+      retryable: priorEmittedOutput ? false : failure.retryable,
       usage: firstResult.usage,
     };
     return;
@@ -1335,7 +1339,7 @@ export async function* parseKiroStream(
     fallback.contextInputEstimate,
     // First attempt already flushed deferred progress to the client before this fallback.
     // A zero-output transport failure here must stay non-retryable to avoid duplicating that text.
-    Boolean(firstResult.assistantText.trim()) || firstResult.sawReasoning,
+    priorEmittedOutput,
   );
   let secondNext = await second.next();
   while (!secondNext.done) {

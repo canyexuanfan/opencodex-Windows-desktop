@@ -670,7 +670,8 @@ describe("kiro adapter — parseStream", () => {
 
     expect(fetches).toBe(2);
     expect(fallbackSignal?.aborted).toBe(true);
-    expect(events.at(-1)).toMatchObject({ type: "error", retryable: true });
+    // First attempt already flushed reasoning; aborting the fallback must not look replay-safe.
+    expect(events.at(-1)).toMatchObject({ type: "error", retryable: false });
   });
 
   test("real tools never trigger the fallback and always leave endTurn false", async () => {
@@ -1071,6 +1072,60 @@ describe("kiro adapter — parseStream", () => {
       type: "error",
       code: "kiro_stream_protocol_error",
       retryable: false,
+    });
+  });
+
+  test("fallback setup throw after first-attempt commentary stays non-retryable (#520)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("fetch failed refreshToken=rt-secret-fallback");
+    }) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
+
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "I am checking." }),
+      eventFrame({ conversationId: "returned-conversation-fallback-throw" }),
+    ))));
+
+    expect(events.some(event =>
+      event.type === "text_delta" && event.text === "I am checking.",
+    )).toBe(true);
+    const terminal = events.at(-1);
+    expect(terminal).toMatchObject({
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      retryable: false,
+    });
+    if (terminal?.type === "error") {
+      expect(terminal.message).toContain("Kiro upstream error");
+      expect(terminal.message).not.toContain("rt-secret-fallback");
+      expect(terminal.usage).toEqual(expect.objectContaining({}));
+    }
+  });
+
+  test("retryable fallback HTTP after first-attempt commentary stays non-retryable (#520)", async () => {
+    globalThis.fetch = (async () => new Response("{\"message\":\"temporarily unavailable\"}", {
+      status: 503,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
+
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "I am checking." }),
+      eventFrame({ conversationId: "returned-conversation-fallback-http" }),
+    ))));
+
+    expect(events.some(event =>
+      event.type === "text_delta" && event.text === "I am checking.",
+    )).toBe(true);
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      status: 503,
+      code: "server_is_overloaded",
+      retryable: false,
+      usage: expect.objectContaining({}),
     });
   });
 
