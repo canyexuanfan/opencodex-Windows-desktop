@@ -1,0 +1,287 @@
+#!/usr/bin/env bun
+/**
+ * Pure helpers for GitHub release note assembly.
+ * Used by `.github/workflows/release.yml` so stable (latest) releases can carry
+ * matching preview changelogs, plus any delta since the last carried preview.
+ *
+ * CLI:
+ *   bun scripts/release-notes.ts strip-carried <body-file>
+ *   bun scripts/release-notes.ts matching-preview-tag <version>
+ *   bun scripts/release-notes.ts matching-preview-tags <version>
+ *   bun scripts/release-notes.ts has-meaningful [body-file]
+ *   bun scripts/release-notes.ts assemble --npm-metadata ... --out ...
+ */
+
+/** Newest matching preview tag for a stable version, or null. */
+export function matchingPreviewTag(version: string, tags: string[]): string | null {
+  const matches = matchingPreviewTags(version, tags);
+  return matches.length === 0 ? null : matches[matches.length - 1]!;
+}
+
+/**
+ * All matching preview tags for a stable version, oldest → newest.
+ * Each preview's notes are incremental vs the previous preview, so stable
+ * releases must aggregate in this order to avoid dropping earlier preview work.
+ */
+export function matchingPreviewTags(version: string, tags: string[]): string[] {
+  if (!version || version.includes("-")) return [];
+  const prefix = `v${version}-preview.`;
+  const matches = tags
+    .map(tag => tag.trim())
+    .filter(tag => tag.startsWith(prefix));
+  matches.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  return matches;
+}
+
+/** Drop npm blurb, Commits section, and Full Changelog link from a prior release body. */
+export function stripCarriedReleaseNotes(body: string): string {
+  const lines = body.replace(/\r\n/g, "\n").split("\n");
+  const kept: string[] = [];
+  let inCommits = false;
+
+  for (const line of lines) {
+    if (/^Published to npm as /.test(line)) continue;
+    if (/^\*\*Full Changelog\*\*:/.test(line)) continue;
+    if (/^## Commits\s*$/.test(line)) {
+      inCommits = true;
+      continue;
+    }
+    if (inCommits) {
+      if (/^## /.test(line)) {
+        inCommits = false;
+      } else {
+        continue;
+      }
+    }
+    kept.push(line);
+  }
+
+  return kept.join("\n").replace(/^\n+/, "").replace(/\n+$/, "").trim();
+}
+
+/** Drop generate-notes trailing compare link (workflow re-appends its own). */
+export function stripGenerateNotesCompareLink(body: string): string {
+  return body
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter(line => !/^\*\*Full Changelog\*\*:/.test(line))
+    .join("\n")
+    .replace(/\n+$/, "")
+    .trim();
+}
+
+/** True when generate-notes returned only the config comment / blank lines. */
+export function isEmptyGeneratedNotes(body: string): boolean {
+  const withoutComment = stripGenerateNotesCompareLink(body)
+    .split("\n")
+    .filter(line => !/^<!--.*-->$/.test(line.trim()))
+    .join("\n");
+  return !hasNonWhitespace(withoutComment);
+}
+
+/**
+ * True when stripped carried notes contain a usable changelog (not blank /
+ * comment-only). Commits-only preview releases strip down to empty and must not
+ * move the stable notes baseline.
+ */
+export function hasMeaningfulCarriedNotes(stripped: string): boolean {
+  return !isEmptyGeneratedNotes(stripped);
+}
+
+export function hasNonWhitespace(text: string): boolean {
+  return text.replace(/\s+/g, "").length > 0;
+}
+
+/** Join multiple stripped preview bodies in chronological order. */
+export function joinCarriedPreviewNotes(parts: string[]): string {
+  return parts
+    .map(part => part.trim())
+    .filter(part => hasMeaningfulCarriedNotes(part))
+    .join("\n\n")
+    .trim();
+}
+
+/**
+ * Newest preview tag whose GitHub Release body strips to a meaningful changelog.
+ * Missing releases (`releaseBody === null`) and empty/commits-only bodies must not
+ * advance the baseline — otherwise a later empty preview.2 would hide the
+ * preview.1→preview.2 gap from both carried notes and the generated delta.
+ */
+export function selectNewestCarriedPreviewTag(
+  entries: Array<{ tag: string; releaseBody: string | null }>,
+): string | null {
+  let newest: string | null = null;
+  for (const entry of entries) {
+    if (entry.releaseBody === null) continue;
+    const stripped = stripCarriedReleaseNotes(entry.releaseBody);
+    if (hasMeaningfulCarriedNotes(stripped)) newest = entry.tag;
+  }
+  return newest;
+}
+
+export function assembleReleaseNotes(input: {
+  npmMetadata: string;
+  carriedPreviewNotes?: string;
+  deltaPrNotes?: string;
+  commits?: string;
+  compareFrom?: string | null;
+  compareTo?: string;
+  repository?: string;
+}): string {
+  const parts: string[] = [];
+  parts.push(input.npmMetadata.trim());
+
+  const carried = (input.carriedPreviewNotes ?? "").trim();
+  if (hasNonWhitespace(carried)) {
+    parts.push(carried);
+  }
+
+  const deltaRaw = (input.deltaPrNotes ?? "").trim();
+  const delta = isEmptyGeneratedNotes(deltaRaw) ? "" : stripGenerateNotesCompareLink(deltaRaw);
+  if (hasNonWhitespace(delta)) {
+    if (hasNonWhitespace(carried)) {
+      parts.push("## Since preview\n\n" + delta);
+    } else {
+      parts.push(delta);
+    }
+  }
+
+  const commits = (input.commits ?? "").trim();
+  if (commits) {
+    parts.push("## Commits\n\n" + commits);
+  }
+
+  const from = input.compareFrom?.trim();
+  const to = input.compareTo?.trim();
+  const repo = input.repository?.trim();
+  if (from && to && repo) {
+    parts.push(`**Full Changelog**: https://github.com/${repo}/compare/${from}...${to}`);
+  }
+
+  return parts.join("\n\n").replace(/\n+$/, "") + "\n";
+}
+
+async function readStdinOrFile(path: string | undefined): Promise<string> {
+  if (path && path !== "-") {
+    return await Bun.file(path).text();
+  }
+  return await new Response(Bun.stdin).text();
+}
+
+async function main(argv: string[]): Promise<void> {
+  const [cmd, ...rest] = argv;
+  if (cmd === "strip-carried") {
+    const stripped = stripCarriedReleaseNotes(await readStdinOrFile(rest[0]));
+    process.stdout.write(stripped.endsWith("\n") ? stripped : stripped + "\n");
+    return;
+  }
+
+  if (cmd === "has-meaningful") {
+    const stripped = (await readStdinOrFile(rest[0])).trim();
+    process.exit(hasMeaningfulCarriedNotes(stripped) ? 0 : 1);
+  }
+
+  if (cmd === "join-carried") {
+    let out: string | undefined;
+    const files: string[] = [];
+    for (let i = 0; i < rest.length; i += 1) {
+      const arg = rest[i];
+      if (arg === "--out") {
+        const value = rest[i + 1];
+        if (!value || value.startsWith("--")) {
+          console.error("Missing value for --out");
+          process.exit(1);
+        }
+        out = value;
+        i += 1;
+        continue;
+      }
+      if (arg?.startsWith("--")) {
+        console.error(`Unknown flag: ${arg}`);
+        process.exit(1);
+      }
+      if (arg) files.push(arg);
+    }
+    if (!out || files.length === 0) {
+      console.error("Usage: bun scripts/release-notes.ts join-carried --out <file> <part-file>...");
+      process.exit(1);
+    }
+    const parts = await Promise.all(files.map(path => Bun.file(path).text()));
+    const joined = joinCarriedPreviewNotes(parts);
+    await Bun.write(out, joined ? joined + "\n" : "");
+    return;
+  }
+
+  if (cmd === "matching-preview-tag" || cmd === "matching-preview-tags") {
+    const version = rest[0];
+    if (!version) {
+      console.error(`Usage: bun scripts/release-notes.ts ${cmd} <version>`);
+      process.exit(1);
+    }
+    const tagsText = await new Response(Bun.stdin).text();
+    const tags = tagsText.split(/\r?\n/);
+    if (cmd === "matching-preview-tag") {
+      const tag = matchingPreviewTag(version, tags);
+      if (tag) process.stdout.write(tag + "\n");
+      return;
+    }
+    for (const tag of matchingPreviewTags(version, tags)) {
+      process.stdout.write(tag + "\n");
+    }
+    return;
+  }
+
+  if (cmd === "assemble") {
+    const args = new Map<string, string>();
+    for (let i = 0; i < rest.length; i += 1) {
+      const key = rest[i];
+      if (!key?.startsWith("--")) continue;
+      const value = rest[i + 1];
+      if (!value || value.startsWith("--")) {
+        console.error(`Missing value for ${key}`);
+        process.exit(1);
+      }
+      args.set(key.slice(2), value);
+      i += 1;
+    }
+
+    const npmMetadata = args.get("npm-metadata");
+    const out = args.get("out");
+    if (!npmMetadata || !out) {
+      console.error("Usage: bun scripts/release-notes.ts assemble --npm-metadata <text> --out <file> [--carried <file>] [--delta <file>] [--commits <file>] [--compare-from <tag>] [--compare-to <tag>] [--repository <owner/name>]");
+      process.exit(1);
+    }
+
+    const readOptional = async (name: string): Promise<string> => {
+      const path = args.get(name);
+      if (!path) return "";
+      return await Bun.file(path).text();
+    };
+
+    const notes = assembleReleaseNotes({
+      npmMetadata,
+      carriedPreviewNotes: await readOptional("carried"),
+      deltaPrNotes: await readOptional("delta"),
+      commits: await readOptional("commits"),
+      compareFrom: args.get("compare-from") ?? null,
+      compareTo: args.get("compare-to"),
+      repository: args.get("repository"),
+    });
+    await Bun.write(out, notes);
+    return;
+  }
+
+  console.error(`Unknown command: ${cmd ?? "(none)"}
+Usage:
+  bun scripts/release-notes.ts strip-carried [body-file]
+  bun scripts/release-notes.ts has-meaningful [body-file]
+  bun scripts/release-notes.ts join-carried --out <file> <part-file>...
+  bun scripts/release-notes.ts matching-preview-tag <version>   # tags on stdin
+  bun scripts/release-notes.ts matching-preview-tags <version>  # tags on stdin, oldest→newest
+  bun scripts/release-notes.ts assemble --npm-metadata ... --out ...`);
+  process.exit(1);
+}
+
+if (import.meta.main) {
+  await main(process.argv.slice(2));
+}
