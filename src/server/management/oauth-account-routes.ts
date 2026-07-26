@@ -158,7 +158,24 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const status = getLoginStatus(provider);
-    return jsonResponse({ activeAccountId: status.activeAccountId ?? null, accounts: status.accounts ?? [] });
+    const { getAccountSet } = await import("../../oauth/store");
+    const {
+      oauthAccountHealthFields,
+      projectOAuthAccountHealth,
+      projectStoredOAuthAccountHealth,
+    } = await import("../../oauth/health");
+    const set = getAccountSet(provider);
+    const accounts = (status.accounts ?? []).map(summary => {
+      const full = set?.accounts.find(account => account.id === summary.id);
+      const health = full
+        ? projectStoredOAuthAccountHealth(provider, full)
+        : projectOAuthAccountHealth({
+          needsReauth: summary.needsReauth === true,
+          reauthReason: summary.needsReauth === true ? "refresh_failed" : undefined,
+        });
+      return { ...summary, ...oauthAccountHealthFields(provider, summary.id, health) };
+    });
+    return jsonResponse({ activeAccountId: status.activeAccountId ?? null, accounts });
   }
   if (url.pathname === "/api/oauth/accounts/active" && req.method === "PUT") {
     const body = await req.json().catch(() => ({})) as { provider?: string; accountId?: string };

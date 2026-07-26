@@ -310,6 +310,20 @@ export function getCodexAccountCooldownUntil(accountId: string, now = Date.now()
   return typeof cooldownUntil === "number" && Number.isFinite(cooldownUntil) && cooldownUntil > now ? cooldownUntil : null;
 }
 
+/** Read-only cooldown snapshot for shared OAuth health projection (no write side effects). */
+export function getCodexAccountHealthSnapshot(accountId: string, now = Date.now()): {
+  cooldownUntil?: number;
+  cooldownSource?: CodexCooldownSource;
+} | null {
+  const cooldownUntil = getCodexAccountCooldownUntil(accountId, now);
+  if (cooldownUntil === null) return null;
+  const source = upstreamHealth.get(accountId)?.cooldownSource;
+  return {
+    cooldownUntil,
+    ...(source ? { cooldownSource: source } : {}),
+  };
+}
+
 export function isCodexAccountInCooldown(accountId: string, now = Date.now()): boolean {
   return getCodexAccountCooldownUntil(accountId, now) !== null;
 }

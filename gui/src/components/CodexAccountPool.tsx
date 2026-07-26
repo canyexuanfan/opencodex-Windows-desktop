@@ -15,9 +15,12 @@ import { CodexAccountResetModal } from "./codex-account-reset-modal";
 import { CodexAccountPoolLoadStates, CodexAccountPoolMainCard, CodexAccountPoolPageHead } from "./codex-account-pool-main-card";
 import { redeemResetCredit } from "./codex-account-pool-handlers";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
+import { accountNeedsReauth, copyTextToClipboard, type DoctorCopyFeedback } from "../oauth-health-display";
 
 // Single definition lives with the controller that owns this data (WP3).
 export type { CodexAccountEntry } from "../hooks/useCodexAccountPool";
+
+const DOCTOR_CMD = "ocx doctor";
 
 /**
  * Global ChatGPT / Codex account pool (main + extras), extracted from the Codex
@@ -50,7 +53,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   // but stays inert (no load, no polling) whenever a shared controller was injected.
   const ownController = useCodexAccountPool(apiBase, !injectedController);
   const controller = injectedController ?? ownController;
-  const { accounts, activeId, loadState, switchingId, activeNeedsReauth, load } = controller;
+  const { accounts, activeId, loadState, switchingId, load } = controller;
   const [confirm, setConfirm] = useState<CodexAccountEntry | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [reauthId, setReauthId] = useState<string | null>(null);
@@ -62,6 +65,20 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const [redeeming, setRedeeming] = useState(false);
   const [creditDetails, setCreditDetails] = useState<{ granted_at: string; expires_at: string }[] | null>(null);
   const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
+  const [copiedDoctorFor, setCopiedDoctorFor] = useState<DoctorCopyFeedback | null>(null);
+
+  const copyDoctor = useCallback((accountId: string) => {
+    void copyTextToClipboard(DOCTOR_CMD).then((ok) => {
+      const feedback: DoctorCopyFeedback = {
+        accountId,
+        outcome: ok ? "copied" : "unavailable",
+      };
+      setCopiedDoctorFor(feedback);
+      setTimeout(() => setCopiedDoctorFor(current => (
+        current?.accountId === accountId && current.outcome === feedback.outcome ? null : current
+      )), 2500);
+    });
+  }, []);
 
   // The controller owns loading and polling. This surface only feeds the auto-switch
   // threshold observer and leases a pause while an OAuth modal is open.
@@ -93,10 +110,11 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const activePoolAccount = activeId && activeId !== "__main__"
     ? accounts.find(a => a.id === activeId)
     : null;
+  const activePoolNeedsReauth = accountNeedsReauth(activePoolAccount);
 
   useEffect(() => {
-    onActiveNeedsReauthChange?.(activeNeedsReauth);
-  }, [activeNeedsReauth, onActiveNeedsReauthChange]);
+    onActiveNeedsReauthChange?.(activePoolNeedsReauth);
+  }, [activePoolNeedsReauth, onActiveNeedsReauthChange]);
 
   const openReauth = useCallback((id: string) => {
     setReauthId(id);
@@ -237,6 +255,8 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         switchActionLabel={switchActionLabel}
         onSwitch={setConfirm}
         onOpenReset={openResetPopup}
+        onCopyDoctor={copyDoctor}
+        copiedDoctorFor={copiedDoctorFor}
       />
 
       <div className="section-sep">
@@ -247,7 +267,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         </button>
       </div>
 
-      {activePoolAccount?.needsReauth && (
+      {activePoolNeedsReauth && activePoolAccount && (
         <CodexAccountPoolReauthBanner onReauth={() => openReauth(activePoolAccount.id)} />
       )}
 
@@ -264,6 +284,8 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         onReauth={openReauth}
         onEditAlias={editAlias}
         onRemove={remove}
+        onCopyDoctor={copyDoctor}
+        copiedDoctorFor={copiedDoctorFor}
       />
 
       <CodexAutoSwitchSetting

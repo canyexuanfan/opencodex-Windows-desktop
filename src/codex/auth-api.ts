@@ -48,6 +48,12 @@ import type { CodexAccount, OcxConfig } from "../types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 import { providerCodexAccountMode } from "../providers/registry";
 import { readBoundedResponseBody } from "../lib/bounded-body";
+import {
+  oauthAccountHealthFields,
+  projectCodexAccountHealth,
+  type OAuthAccountHealth,
+  type OAuthHealthLabel,
+} from "../oauth/health";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -90,6 +96,8 @@ function poolAccountDto(
   hasCredential: boolean,
 ): CodexAuthAccountDto {
   const quota = quotaForPlan(quotaResult.quota, account.plan);
+  const needsReauth = !hasCredential || quotaResult.needsReauth || isAccountNeedsReauth(account.id);
+  const health = projectCodexAccountHealth({ accountId: account.id, needsReauth });
   return {
     id: account.id,
     email: maskEmail(account.email) ?? account.email,
@@ -98,8 +106,9 @@ function poolAccountDto(
     ...(account.logLabel !== undefined ? { logLabel: account.logLabel } : {}),
     isMain: false,
     quota: quota ? { ...quota } : null,
-    needsReauth: !hasCredential || quotaResult.needsReauth || isAccountNeedsReauth(account.id),
+    needsReauth,
     hasCredential,
+    ...oauthAccountHealthFields("codex", account.id, health),
   };
 }
 
@@ -364,6 +373,10 @@ export interface CodexAuthAccountDto {
   quota: (StoredAccountQuota | (Omit<StoredAccountQuota, "updatedAt"> & { updatedAt: number })) | null;
   needsReauth?: boolean;
   hasCredential: boolean;
+  health: OAuthAccountHealth;
+  healthLabel: OAuthHealthLabel;
+  healthSummary: string;
+  healthAction?: string;
 }
 
 async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, configuredPlan?: string): Promise<PoolQuotaResult> {
@@ -469,14 +482,20 @@ export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = fa
     return poolAccountDto(a, quotaResult, !!cred);
   });
   const hasMainCredential = readCodexTokens() !== null;
+  const mainNeedsReauth = !hasMainCredential || isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+  const mainHealth = projectCodexAccountHealth({
+    accountId: MAIN_CODEX_ACCOUNT_ID,
+    needsReauth: mainNeedsReauth,
+  });
   const main: CodexAuthAccountDto = {
     id: MAIN_CODEX_ACCOUNT_ID,
     email: maskEmail(mainInfo.email) ?? "Codex App login",
     plan: mainInfo.plan,
     isMain: true,
     hasCredential: hasMainCredential,
-    needsReauth: !hasMainCredential || isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID),
+    needsReauth: mainNeedsReauth,
     quota: mainInfo.quota ? { ...quotaForPlan({ ...mainInfo.quota, updatedAt: Date.now() }, mainInfo.plan) } : null,
+    ...oauthAccountHealthFields("codex", MAIN_CODEX_ACCOUNT_ID, mainHealth),
   };
   return [main, ...withQuota];
 }

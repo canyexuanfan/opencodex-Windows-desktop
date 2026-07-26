@@ -125,9 +125,14 @@ loopback; configured `corsAllowOrigins` entries extend the local-origin allowlis
 
 OAuth implementations live in `oauth/`; access tokens are loaded or refreshed immediately before a
 routed call, while `oauth/token-guardian.ts` can proactively refresh only providers whose policy
-allows it. Codex/ChatGPT pool credentials and thread affinity live under `codex/` and are kept out of
-management responses. Request usage is normalized to `OcxUsage`, surfaced in Responses terminal
-events, and aggregated by `usage/` for the dashboard and optional JSONL diagnostics.
+allows it. Refresh is coordinated with in-process single-flight, a per-account file lock, and
+generation CAS so concurrent writers cannot clobber a newer credential. A shared health projection
+(`oauth/health.ts`) feeds `ocx status`, `ocx doctor`, the management API, and the dashboard.
+Codex/ChatGPT pool credentials and process-local thread affinity live under `codex/` and are kept out
+of management responses; affinity clears on `401` / `403` / `429` (not pinned through rate limits)
+and is not persisted across restarts. Request usage is normalized to `OcxUsage`, surfaced in
+Responses terminal events, and aggregated by `usage/` for the dashboard and optional JSONL
+diagnostics.
 
 ## Transport and compaction
 

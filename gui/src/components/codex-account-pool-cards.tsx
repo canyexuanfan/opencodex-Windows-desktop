@@ -1,9 +1,20 @@
 import { useT } from "../i18n/shared";
 import { IconAlert, IconX } from "../icons";
+import { displayAccountId } from "../lib/privacy";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 import type { CodexAccountModeState } from "../codex-multi-state";
 import QuotaBars from "./QuotaBars";
 import { CodexTicketBadge } from "./codex-account-pool-helpers";
+import {
+  doctorCopyButtonLabel,
+  formatOAuthHealthLabel,
+  formatOAuthHealthSummary,
+  oauthHealthBadgeClass,
+  oauthHealthIsCooldown,
+  oauthHealthShowsDoctor,
+  oauthHealthShowsReauth,
+  type DoctorCopyFeedback,
+} from "../oauth-health-display";
 
 export function CodexAccountPoolCards({
   pool,
@@ -16,6 +27,8 @@ export function CodexAccountPoolCards({
   onReauth,
   onEditAlias,
   onRemove,
+  onCopyDoctor,
+  copiedDoctorFor,
 }: {
   pool: CodexAccountEntry[];
   activeId: string | null;
@@ -27,35 +40,51 @@ export function CodexAccountPoolCards({
   onReauth: (id: string) => void;
   onEditAlias: (account: CodexAccountEntry) => void;
   onRemove: (id: string) => void;
+  onCopyDoctor?: (accountId: string) => void;
+  copiedDoctorFor?: DoctorCopyFeedback | null;
 }) {
   const t = useT();
   const isNext = (id: string) => activeId === id;
 
   return (
     <>
-      {pool.map(a => (
+      {pool.map(a => {
+        const healthStatus = a.health?.status;
+        const showReauth = Boolean(a.needsReauth) || oauthHealthShowsReauth(healthStatus);
+        const inCooldown = oauthHealthIsCooldown(healthStatus);
+        const healthLabel = formatOAuthHealthLabel(t, a.health);
+        const healthSummary = formatOAuthHealthSummary(t, "codex", a.id, a.health);
+        return (
         <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`} style={{ marginBottom: 8 }}>
           <div className="card-head">
-            <span className={`dot ${a.needsReauth ? "dot-amber" : isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
+            <span className={`dot ${showReauth ? "dot-amber" : isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
             <strong>{a.alias ?? a.email}</strong>
             <span className="card-badges">
               {a.plan && <span className="badge badge-green">{a.plan}</span>}
               <CodexTicketBadge t={t} account={a} onClick={() => onOpenReset(a)} />
-              {a.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
-              {isNext(a.id) && !a.needsReauth && (
+              {healthLabel && (
+                <span className={oauthHealthBadgeClass(healthStatus)}>{healthLabel}</span>
+              )}
+              {showReauth && !healthLabel && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
+              {isNext(a.id) && !showReauth && !inCooldown && (
                 <span className="badge badge-primary">
                   {t(accountModeState === "direct" ? "codexAuth.poolPrepared" : "codexAuth.nextSession")}
                 </span>
               )}
             </span>
-            {!isNext(a.id) && !a.needsReauth && (
+            {!isNext(a.id) && !showReauth && !inCooldown && (
               <button type="button" className="btn btn-ghost btn-sm codex-account-switch" onClick={() => onSwitch(a)}>
                 {switchActionLabel}
               </button>
             )}
-            {a.needsReauth && (
+            {showReauth && (
               <button type="button" className="btn btn-primary btn-sm" onClick={() => onReauth(a.id)}>
                 {t("codexAuth.reauthenticate")}
+              </button>
+            )}
+            {onCopyDoctor && oauthHealthShowsDoctor(healthStatus) && (
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => onCopyDoctor(a.id)}>
+                {doctorCopyButtonLabel(t, copiedDoctorFor, a.id)}
               </button>
             )}
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onEditAlias(a)}>
@@ -71,12 +100,19 @@ export function CodexAccountPoolCards({
               <IconX width={14} />
             </button>
           </div>
-          <div className="card-sub">{a.email}{a.plan ? ` · ${a.plan}` : ""} · {t("prov.accountId")}: {a.id}</div>
-          {a.needsReauth
+          <div className="card-sub">{a.email}{a.plan ? ` · ${a.plan}` : ""} · {t("prov.accountId")}: {displayAccountId(a.id)}</div>
+          {healthSummary && (
+            <div className="card-sub faint">{healthSummary}</div>
+          )}
+          {inCooldown && (
+            <div className="card-sub faint">{t("pws.healthCooldownHint")}</div>
+          )}
+          {showReauth
             ? <div className="card-sub faint">{t("codexAuth.tokenExpired")}</div>
-            : <QuotaBars quota={a.quota} plan={a.plan} threshold={threshold} t={t} />}
+            : !inCooldown && <QuotaBars quota={a.quota} plan={a.plan} threshold={threshold} t={t} />}
         </div>
-      ))}
+        );
+      })}
     </>
   );
 }

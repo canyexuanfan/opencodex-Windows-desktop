@@ -5,6 +5,16 @@ import { CodexTicketBadge } from "./codex-account-pool-helpers";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 import type { CodexAccountModeState } from "../codex-multi-state";
 import type { TFn } from "../i18n/shared";
+import {
+  doctorCopyButtonLabel,
+  formatOAuthHealthLabel,
+  formatOAuthHealthSummary,
+  oauthHealthBadgeClass,
+  oauthHealthIsCooldown,
+  oauthHealthShowsDoctor,
+  oauthHealthShowsReauth,
+  type DoctorCopyFeedback,
+} from "../oauth-health-display";
 
 export function CodexAccountPoolMainCard({
   t,
@@ -15,6 +25,8 @@ export function CodexAccountPoolMainCard({
   switchActionLabel,
   onSwitch,
   onOpenReset,
+  onCopyDoctor,
+  copiedDoctorFor,
 }: {
   t: TFn;
   main: CodexAccountEntry | undefined;
@@ -24,8 +36,11 @@ export function CodexAccountPoolMainCard({
   switchActionLabel: string;
   onSwitch: (entry: CodexAccountEntry) => void;
   onOpenReset: (account: CodexAccountEntry) => void;
+  onCopyDoctor?: (accountId: string) => void;
+  copiedDoctorFor?: DoctorCopyFeedback | null;
 }) {
   const mainFallbackLabel = t("codexAuth.codexApp");
+  const mainId = main?.id ?? "__main__";
   const mainSwitchEntry: CodexAccountEntry = {
     id: "__main__",
     email: main?.email || mainFallbackLabel,
@@ -34,32 +49,52 @@ export function CodexAccountPoolMainCard({
     hasCredential: true,
     quota: main?.quota ?? null,
   };
+  const showReauth = Boolean(main?.needsReauth) || oauthHealthShowsReauth(main?.health?.status);
+  const inCooldown = oauthHealthIsCooldown(main?.health?.status);
+  const healthLabel = formatOAuthHealthLabel(t, main?.health);
+  const healthSummary = main
+    ? formatOAuthHealthSummary(t, "codex", mainId, main.health)
+    : null;
 
   return (
     <div className={`card ${isMainActive ? "card-active" : ""}`} style={{ marginBottom: 12 }}>
       <div className="card-head">
-        <span className={`dot ${main?.needsReauth ? "dot-amber" : "dot-green"}`} />
+        <span className={`dot ${showReauth ? "dot-amber" : "dot-green"}`} />
         <strong>{t("codexAuth.mainAccount")}</strong>
         <span className="card-badges">
           {main && <CodexTicketBadge t={t} account={{ ...main, id: "__main__" } as CodexAccountEntry} onClick={() => onOpenReset({ ...main, id: "__main__" } as CodexAccountEntry)} />}
-          {main?.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
+          {healthLabel && (
+            <span className={oauthHealthBadgeClass(main?.health?.status)}>{healthLabel}</span>
+          )}
+          {showReauth && !healthLabel && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
           <span className={`badge ${isMainActive ? "badge-primary" : "badge-muted"}`}>
             {isMainActive
               ? t(accountModeState === "direct" ? "codexAuth.poolPrepared" : "codexAuth.nextSession")
               : t("codexAuth.current")}
           </span>
         </span>
-        {!isMainActive && (
+        {!isMainActive && !showReauth && !inCooldown && (
           <button type="button" className="btn btn-ghost btn-sm codex-account-switch" onClick={() => onSwitch(mainSwitchEntry)}>
             {switchActionLabel}
+          </button>
+        )}
+        {onCopyDoctor && oauthHealthShowsDoctor(main?.health?.status) && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onCopyDoctor(mainId)}>
+            {doctorCopyButtonLabel(t, copiedDoctorFor, mainId)}
           </button>
         )}
         <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
       </div>
       <div className="card-sub">{main?.email || t("codexAuth.appLogin")}{main?.plan ? ` · ${main.plan}` : ""}</div>
-      {main?.needsReauth
+      {healthSummary && (
+        <div className="card-sub faint">{healthSummary}</div>
+      )}
+      {inCooldown && (
+        <div className="card-sub faint">{t("pws.healthCooldownHint")}</div>
+      )}
+      {showReauth
         ? <div className="card-sub faint">{t("codexAuth.mainTokenExpired")}</div>
-        : main?.quota && <QuotaBars quota={main.quota} plan={main.plan} threshold={threshold} t={t} />}
+        : !inCooldown && main?.quota && <QuotaBars quota={main.quota} plan={main.plan} threshold={threshold} t={t} />}
     </div>
   );
 }
