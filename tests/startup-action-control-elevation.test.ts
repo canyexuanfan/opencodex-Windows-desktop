@@ -79,6 +79,26 @@ describe("startup install elevation retry", () => {
     expect(getStartupInstallState().status).toBe("idle");
   });
 
+  test("UAC cancellation during elevated retry surfaces and leaves the lock idle", async () => {
+    failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
+    finalizeMock.mockRejectedValue(
+      new Error("Windows administrator approval was required, but the UAC prompt was cancelled or denied."),
+    );
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/UAC prompt was cancelled/);
+    expect(finalizeMock).toHaveBeenCalledTimes(1);
+    expect(getStartupInstallState().status).toBe("idle");
+  });
+
+  test("elevated success that cannot prove the task is present does not leave a false idle install", async () => {
+    failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
+    finalizeMock.mockRejectedValue(
+      new Error("Elevated Task Scheduler registration did not produce a conflict-free install. Task Scheduler task is not installed."),
+    );
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/not installed/);
+    expect(finalizeMock).toHaveBeenCalledTimes(1);
+    expect(getStartupInstallState().status).toBe("idle");
+  });
+
   test("retries when the create-access-denied marker is on stdout and stderr has noise", async () => {
     failCliStreams(
       `Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`,
@@ -259,8 +279,7 @@ describe("startup install elevation retry", () => {
 
     await expect(runStartupInstallAction("install-service")).rejects.toThrow(/may still be running/);
     rejectReconciliation(new Error("reconciliation boom"));
-    await Promise.resolve();
-    await Promise.resolve();
+    await reconciliation.catch(() => {});
     expect(getStartupInstallState()).toMatchObject({
       status: "blocked",
       reason: "partial-elevated-install",

@@ -20,7 +20,6 @@ import { randomUUID } from "node:crypto";
 import {
   ELEVATION_REQUEST_TIMEOUT_MS,
   OCX_ELEVATED_PROTOCOL_FAILED,
-  classifyElevatedSchedulerExitCode,
   raceWithTimeout,
   resolveTrustedWindowsSchtasksExe,
   startElevatedSchtasksCreateAndRun,
@@ -335,8 +334,16 @@ function windowsWscript(): string {
   return existsSync(candidate) ? candidate : "wscript.exe";
 }
 
+let querySchtasksForTests: ((args: string[]) => string) | null = null;
+
 function querySchtasks(args: string[]): string {
+  if (querySchtasksForTests) return querySchtasksForTests(args);
   return runFile(windowsSchtasks(), args);
+}
+
+/** Test-only seam for Task Scheduler query used by presence probes. */
+export function setQuerySchtasksForTests(next: ((args: string[]) => string) | null): void {
+  querySchtasksForTests = next;
 }
 
 function schtasks(args: string[]): string {
@@ -593,7 +600,7 @@ async function applyElevatedSchedulerResult(
   if (!attemptStillOwned(options)) {
     return;
   }
-  const outcome: ElevatedSchedulerOutcome = result.outcome ?? classifyElevatedSchedulerExitCode(result.exitCode);
+  const outcome: ElevatedSchedulerOutcome = result.outcome;
 
   if (outcome === "create-failed") {
     throw new Error("Elevated schtasks /create failed. The Task Scheduler task was not registered.");
@@ -611,9 +618,8 @@ async function applyElevatedSchedulerResult(
       "Installation state was not written.",
     ]);
   }
-  if (outcome === "protocol-failed" || outcome !== "success") {
+  if (outcome !== "success") {
     await reconcileUnknownElevatedOutcome(result.exitCode);
-    return;
   }
 
   const verification = (finalizeHooks?.verify ?? verifyWindowsSchedulerInstall)();
@@ -824,15 +830,6 @@ export function evaluateSchedulerInstallRestartReconciliation(inputs: {
       status: "stale-install-state",
       detail: "Scheduler install state is present but the Task Scheduler task is absent.",
     };
-  }
-  if (
-    inputs.taskInstalled
-    && inputs.registrationHealthy
-    && inputs.assetsHealthy
-    && inputs.nativeStatus === "nonexistent"
-    && inputs.installStateBackend === "scheduler"
-  ) {
-    return { status: "healthy", detail: "ok" };
   }
   return { status: "healthy", detail: "ok" };
 }

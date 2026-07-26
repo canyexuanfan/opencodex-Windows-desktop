@@ -105,6 +105,11 @@ function assertTrustedSystemExecutable(candidate: string, label: string): string
   return resolved;
 }
 
+/** Test-only access to the trusted-path containment check. */
+export function assertTrustedSystemExecutableForTests(candidate: string, label: string): string {
+  return assertTrustedSystemExecutable(candidate, label);
+}
+
 type ElevationExeOverrides = { powershell?: string; schtasks?: string };
 let elevationExeOverridesForTests: ElevationExeOverrides | null = null;
 

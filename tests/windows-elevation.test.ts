@@ -1,13 +1,21 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER,
   WindowsSchtasksError,
+  assertTrustedSystemExecutableForTests,
   buildWindowsElevatedArgumentList,
   formatWindowsSchtasksError,
   isWindowsAccessDenied,
   isWindowsAccessDeniedError,
   isWindowsSchtasksCreateAccessDenied,
+  resolveTrustedWindowsPowerShellExe,
+  resolveTrustedWindowsSchtasksExe,
   schtasksOperationFromArgs,
+  setTrustedWindowsElevationExecutablesForTests,
+  setTrustedWindowsSystemDirectoryResolverForTests,
   toWindowsSchtasksError,
   windowsCmdQuote,
 } from "../src/lib/windows-elevation";
@@ -16,6 +24,7 @@ describe("windows elevation helpers", () => {
   test("detects English and German access-denied text", () => {
     expect(isWindowsAccessDenied("FEHLER: Zugriff verweigert")).toBe(true);
     expect(isWindowsAccessDenied("ERROR: Access is denied.")).toBe(true);
+    expect(isWindowsAccessDenied("Windows denied access while running Task Scheduler.")).toBe(true);
     expect(isWindowsAccessDenied("service installed")).toBe(false);
   });
 
@@ -101,39 +110,49 @@ describe("windows elevation helpers", () => {
     expect(formatWindowsSchtasksError(error, ["/query"])).toBe("schtasks is unavailable");
   });
 
-  test("elevated executables ignore a hostile SystemRoot", () => {
-    if (process.platform !== "win32") return;
+  test("elevated executables ignore a hostile SystemRoot and enforce path containment", () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
 
-    const {
-      resolveTrustedWindowsPowerShellExe,
-      resolveTrustedWindowsSchtasksExe,
-      setTrustedWindowsSystemDirectoryResolverForTests,
-      setTrustedWindowsElevationExecutablesForTests,
-    } = require("../src/lib/windows-elevation") as typeof import("../src/lib/windows-elevation");
+    const trustedRoot = mkdtempSync(join(tmpdir(), "ocx-trusted-sys-"));
+    const trustedSystem32 = join(trustedRoot, "System32");
+    mkdirSync(join(trustedSystem32, "WindowsPowerShell", "v1.0"), { recursive: true });
+    writeFileSync(join(trustedSystem32, "schtasks.exe"), "");
+    writeFileSync(join(trustedSystem32, "WindowsPowerShell", "v1.0", "powershell.exe"), "");
+
+    const evilRoot = mkdtempSync(join(tmpdir(), "ocx-evil-sys-"));
+    const evilSystem32 = join(evilRoot, "System32");
+    mkdirSync(join(evilSystem32, "WindowsPowerShell", "v1.0"), { recursive: true });
+    writeFileSync(join(evilSystem32, "schtasks.exe"), "evil");
+    writeFileSync(join(evilSystem32, "WindowsPowerShell", "v1.0", "powershell.exe"), "evil");
 
     const previousSystemRoot = process.env.SystemRoot;
     const previousWindir = process.env.WINDIR;
-    process.env.SystemRoot = "C:\\Users\\Public\\evil-root";
-    process.env.WINDIR = "C:\\Users\\Public\\evil-root";
+    process.env.SystemRoot = evilRoot;
+    process.env.WINDIR = evilRoot;
     try {
-      // Prove the production GetSystemDirectoryW path ignores env even when poisoned.
       setTrustedWindowsElevationExecutablesForTests(null);
-      setTrustedWindowsSystemDirectoryResolverForTests(null);
+      setTrustedWindowsSystemDirectoryResolverForTests(() => trustedSystem32);
+
       const powershell = resolveTrustedWindowsPowerShellExe();
       const schtasks = resolveTrustedWindowsSchtasksExe();
-      const evil = "evil-root";
-      expect(powershell.toLowerCase().includes(evil)).toBe(false);
-      expect(schtasks.toLowerCase().includes(evil)).toBe(false);
-      expect(powershell.toLowerCase().endsWith("\\system32\\windowspowershell\\v1.0\\powershell.exe")).toBe(true);
-      expect(schtasks.toLowerCase().endsWith("\\system32\\schtasks.exe")).toBe(true);
+      expect(powershell.toLowerCase().includes("ocx-evil-sys")).toBe(false);
+      expect(schtasks.toLowerCase().includes("ocx-evil-sys")).toBe(false);
+      expect(powershell.toLowerCase()).toContain(trustedSystem32.toLowerCase());
+      expect(schtasks.toLowerCase()).toContain(trustedSystem32.toLowerCase());
 
-      // Fail closed when a hostile resolver returns an untrusted directory.
-      setTrustedWindowsSystemDirectoryResolverForTests(() => "C:\\Users\\Public\\evil-root\\System32");
-      expect(() => resolveTrustedWindowsPowerShellExe()).toThrow(/not found|unusable|outside the trusted/i);
-      expect(() => resolveTrustedWindowsSchtasksExe()).toThrow(/not found|unusable|outside the trusted/i);
+      // Containment must reject an existing executable outside the trusted system directory
+      // (not merely a missing-file failure).
+      expect(() => assertTrustedSystemExecutableForTests(join(evilSystem32, "schtasks.exe"), "schtasks.exe"))
+        .toThrow(/outside the trusted/i);
+      expect(() => assertTrustedSystemExecutableForTests(
+        join(evilSystem32, "WindowsPowerShell", "v1.0", "powershell.exe"),
+        "PowerShell",
+      )).toThrow(/outside the trusted/i);
     } finally {
       setTrustedWindowsSystemDirectoryResolverForTests(null);
       setTrustedWindowsElevationExecutablesForTests(null);
+      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
       if (previousSystemRoot === undefined) delete process.env.SystemRoot;
       else process.env.SystemRoot = previousSystemRoot;
       if (previousWindir === undefined) delete process.env.WINDIR;
