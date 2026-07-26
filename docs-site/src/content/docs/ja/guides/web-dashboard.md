@@ -104,7 +104,7 @@ GUI はプロキシの JSON 管理 API を使うシンクライアントです�
 | `GET /api/key-providers` · `GET /api/oauth/providers` | API キーおよび OAuth プロバイダーカタログを読みます。 |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | プロバイダー OAuth ログインを開始し完了可否を確認します。 |
 | `GET /api/codex-auth/accounts?refresh=1` | メインおよびプールアカウントを参照しクォータを強制更新し、メインの `hasCredential` / terminal `needsReauth` 状態を返します。 |
-| `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 次回セッションアカウントとプールルーティングポリシーを設定します。 |
+| `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 次のリクエストで使うアカウントとプールルーティングポリシーを設定します。 |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | ブラウザログインでプールアカウントを追加します。 |
 | `GET /api/logs?tail=50&provider=...&status=5xx` | tail、プロバイダー、正確な状態コードまたは状態等級で最近のリクエストメタデータを参照します。 |
 | `GET` / `PUT /api/subagent-models` | `spawn_agent` に優先公開するモデル 5 つを読むか設定します。 |

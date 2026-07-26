@@ -57,7 +57,7 @@ function displayId(id: string): string {
 
 function statusText(row: AccountRow): string {
   const parts: string[] = [];
-  if (row.active) parts.push(row.type === "codex" ? "next session" : "active");
+  if (row.active) parts.push(row.type === "codex" ? "selected" : "active");
   if (row.needsReauth) parts.push("needs-reauth");
   return parts.join(" ");
 }

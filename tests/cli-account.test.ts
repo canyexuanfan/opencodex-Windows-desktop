@@ -396,7 +396,7 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("chatgpt_1");
     expect(result.stdout).toContain("pro");
-    expect(result.stdout).toContain("next session");
+    expect(result.stdout).toContain("selected");
   });
 
   test("5: current openai explains automatic selection when active is null", async () => {
@@ -585,7 +585,7 @@ describe("ocx account CLI (issue #180 matrix)", () => {
 
     expect(table).toContain("main");
     expect(table).not.toContain("__main__");
-    expect(table).toContain("next session");
+    expect(table).toContain("selected");
   });
 
   test("18: refresh openai forces quota refresh and distinguishes unknown quota", async () => {

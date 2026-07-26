@@ -1099,6 +1099,7 @@ describe("codex-auth API", () => {
     });
     const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
     expect(resp!.status).toBe(200);
+    expect(await resp!.json()).toMatchObject({ activeCodexAccountId: "pool-next", appliesImmediately: true });
     expect(config.activeCodexAccountId).toBe("pool-next");
   });
 

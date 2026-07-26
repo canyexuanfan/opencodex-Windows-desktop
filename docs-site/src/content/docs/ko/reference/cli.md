@@ -250,7 +250,7 @@ API 오류는 종료 코드 1입니다. 자격 증명 필드는 management API�
 프로바이더를 생략하면 Codex pool, OAuth 계정, 설정된 API-key pool을 모두 나열합니다. 빈
 프로바이더는 `--all`을 지정하지 않으면 건너뛰며, 프로바이더를 지정하면 해당 자격 증명 family만
 조회합니다. 일반 출력 열은 `PROVIDER TYPE ID PLAN/LABEL STATUS`이고 고정된 Codex 행에는
-`next session`이 표시됩니다. 저장된 Kiro 계정이 있으면 로그인 슬롯이 하나이며 다시 로그인하면 현재 계정이
+`selected`가 표시됩니다. 저장된 Kiro 계정이 있으면 로그인 슬롯이 하나이며 다시 로그인하면 현재 계정이
 교체된다는 안내가 나옵니다. 결과가 비어 있어도 성공입니다. `--json`은 다음을 반환합니다.
 
 ```text

@@ -51,7 +51,7 @@ namespaced selected id를 bare id로 바꿉니다.
 | `codexShimAutoRestore?` | `boolean` | `true` | 완료된 외부 Codex 업데이트가 이전에 설치한 shim을 교체하면 자동으로 복구합니다. 끄려면 `false`로 설정하거나 프로세스에 `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`을 설정합니다. |
 | `syncResumeHistory?` | `boolean` | `true` | 되돌릴 수 있는 Codex App 기록 호환 모드. opencodex가 원래 Codex thread metadata를 백업하고, 예전 OpenAI interactive row를 `opencodex`로 재매핑하며, opencodex가 만든 `exec` row를 App에 보이는 source로 잠시 승격합니다. `ocx stop` / `ocx restore`는 백업한 OpenAI row를 복원하고 남은 opencodex user thread를 OpenAI로 돌려 네이티브 Codex가 `config.toml`에서 프록시를 제거한 뒤에도 이어서 열 수 있게 합니다. 끄려면 `false`로 설정합니다. |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | Codex Auth 대시보드에서 관리하는 ChatGPT/Codex pool 계정 metadata. secret은 `codex-accounts.json`에 따로 둡니다. |
-| `activeCodexAccountId?` | `string` | — | 다음 새 Codex thread에 쓸 pool 계정. 기존 thread affinity는 원래 계정을 유지합니다. |
+| `activeCodexAccountId?` | `string` | — | 수동으로 선택한 pool 계정. 선택 시 기존 thread affinity를 지우고 다음 요청부터 적용하며, 진행 중인 요청은 기존 계정을 유지합니다. |
 | `autoSwitchThreshold?` | `number` | `80` | 새 세션 자동 전환용 사용량 백분율 threshold. 알려진 5시간, 주간, 30일 quota window 중 가장 높은 점수를 씁니다. `0`이면 quota 자동 전환을 끕니다. |
 | `upstreamFailoverThreshold?` | `number` | `3` | 일시적인 업스트림 실패가 연속으로 발생한 뒤, 이후 새 세션을 다른 적합한 pool 계정으로 failover할 횟수. `0`이면 실패 기반 failover를 끕니다. |
 | `modelCacheTtlMs?` | `number` | `300000` | 프로바이더별 `/models` 캐시의 유효 기간(5분). |
