@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { injectGrokConfig } from "../src/grok/inject";
 import { syncGrokConfig } from "../src/grok/sync";
+import { nativeOpenAiContextWindow, visibleNativeSlugs } from "../src/codex/catalog";
 import type { CatalogModel } from "../src/codex/catalog";
 import type { OcxConfig } from "../src/types";
 
@@ -34,6 +35,46 @@ describe("syncGrokConfig", () => {
       expect(content).toContain("[model.ocx-cursor-grok-4-5]");
       expect(content).toContain("context_window = 500000");
       expect(content).toContain('base_url = "http://127.0.0.1:10190/v1"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Native slugs used to be injected as a bare { id }, so no `context_window` line was written
+  // and Grok fell back to its own 200k default — understating gpt-5.6-sol, which is 372k. The
+  // window comes from the same accessor the dashboard uses, so the two surfaces agree.
+  test("native slugs carry their real context window, not Grok's 200k default", async () => {
+    const { root, grokHome } = tempGrokHome();
+    try {
+      const result = await syncGrokConfig(10190, baseConfig, { grokHome }, {
+        fetchAllModels: async () => [],
+        injectGrokConfig,
+      });
+      expect(result).toMatchObject({ ok: true, changed: true });
+      const content = readFileSync(join(grokHome, "config.toml"), "utf8");
+
+      const solBlock = content.slice(content.indexOf("[model.ocx-gpt-5-6-sol]"));
+      expect(solBlock).toContain(`context_window = ${nativeOpenAiContextWindow("gpt-5.6-sol")}`);
+      expect(nativeOpenAiContextWindow("gpt-5.6-sol")).toBe(372_000);
+
+      // Each native block carries a window exactly when the catalog knows one. gpt-5.4-mini has
+      // none recorded, and inject.ts deliberately omits the line rather than writing a
+      // placeholder — asserting "every block has one" would encode a bug as a requirement.
+      const windowBySlug = visibleNativeSlugs(baseConfig).map(slug => {
+        const header = `[model.ocx-${slug.replace(/\./g, "-")}]`;
+        const start = content.indexOf(header);
+        if (start < 0) return `${slug}: MISSING BLOCK`;
+        const rest = content.slice(start + header.length);
+        const next = rest.indexOf("[model.");
+        const block = next >= 0 ? rest.slice(0, next) : rest;
+        const line = /context_window = (\d+)/.exec(block);
+        return `${slug}: ${line ? line[1] : "none"}`;
+      });
+      const expectedBySlug = visibleNativeSlugs(baseConfig).map(slug => {
+        const window = nativeOpenAiContextWindow(slug);
+        return `${slug}: ${window ?? "none"}`;
+      });
+      expect(windowBySlug).toEqual(expectedBySlug);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

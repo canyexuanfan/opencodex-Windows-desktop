@@ -6,7 +6,7 @@
  *
  * Deps are injectable (mirrors src/codex/sync.ts) so tests can run without a live proxy.
  */
-import { visibleNativeSlugs, filterCatalogVisibleModels, type CatalogModel } from "../codex/catalog";
+import { visibleNativeSlugs, filterCatalogVisibleModels, nativeOpenAiContextWindow, type CatalogModel } from "../codex/catalog";
 import type { OcxConfig } from "../types";
 import { injectGrokConfig, type GrokInjectModel, type GrokInjectResult } from "./inject";
 
@@ -36,7 +36,13 @@ export async function syncGrokConfig(
   try {
     const routed = filterCatalogVisibleModels(await deps.fetchAllModels(config), config);
     models = [
-      ...visibleNativeSlugs(config).map(id => ({ id })),
+      // Native slugs carry their context window too. Without it Grok falls back to its own
+      // default (200k) and understates models like gpt-5.6-sol, which is 372k. This is the same
+      // accessor the dashboard's native rows use, so the two cannot disagree.
+      ...visibleNativeSlugs(config).map(id => {
+        const contextWindow = nativeOpenAiContextWindow(id);
+        return { id, ...(contextWindow !== undefined ? { contextWindow } : {}) };
+      }),
       ...routed.map(m => ({
         id: m.alias ?? `${m.provider}/${m.id}`,
         ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
