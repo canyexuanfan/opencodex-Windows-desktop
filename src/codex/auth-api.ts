@@ -10,7 +10,7 @@ import {
   TokenRefreshError,
 } from "./account-store";
 import { deleteCodexAccount, reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
-import { clearCodexAccountCooldown } from "./routing";
+import { clearCodexAccountCooldown, resetCodexRoutingForManualSelection } from "./routing";
 import { checkAccountIdCollision, getMainChatgptAccountId, readCodexTokens, readCodexTokensResult } from "./auth-collision";
 export { checkAccountIdCollision, getMainChatgptAccountId } from "./auth-collision";
 export { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
@@ -607,8 +607,9 @@ export async function handleCodexAuthAPI(
       if (!exists) return jsonResponse({ error: "Account not found" }, 400);
     }
     runtimeConfig.activeCodexAccountId = body.accountId ?? undefined;
+    resetCodexRoutingForManualSelection(body.accountId ?? MAIN_CODEX_ACCOUNT_ID);
     saveRuntimeConfig(config, runtimeConfig);
-    return jsonResponse({ ok: true, activeCodexAccountId: body.accountId });
+    return jsonResponse({ ok: true, activeCodexAccountId: body.accountId, appliesImmediately: true });
   }
 
   if (url.pathname === "/api/codex-auth/active" && req.method === "GET") {

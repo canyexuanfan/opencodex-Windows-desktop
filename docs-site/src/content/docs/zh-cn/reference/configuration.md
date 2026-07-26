@@ -49,7 +49,7 @@ no-replace 方式创建 `config.json.pre-openai-tiers-v2.bak`，并把已知旧 
 | `codexShimAutoRestore?` | `boolean` | `true` | 已完成的外部 Codex 更新替换此前安装的 shim 时自动恢复。若要关闭，请设为 `false`，或为进程设置 `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`。 |
 | `syncResumeHistory?` | `boolean` | `true` | 可逆的 Codex App 历史兼容模式。opencodex 会备份原始 Codex thread metadata，把旧 OpenAI interactive row 重映射到 `opencodex`，并暂时把 opencodex 创建的 `exec` row 提升成 App 可见 source。`ocx stop` / `ocx restore` 会恢复已备份的 OpenAI row，并把剩余 opencodex user thread 转回 OpenAI，使原生 Codex 在从 `config.toml` 移除代理后仍能继续这些 thread。设为 `false` 可退出该模式。 |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | Codex Auth 仪表盘管理的 ChatGPT/Codex pool account metadata。secret 单独存放在 `codex-accounts.json`。 |
-| `activeCodexAccountId?` | `string` | — | 下一个新 Codex thread 使用的 pool account。已有 thread affinity 继续保留原账号。 |
+| `activeCodexAccountId?` | `string` | — | 手动选择的 pool account。选择时清除已有 thread affinity，并从下一次请求开始生效；进行中的请求保留原账号。 |
 | `autoSwitchThreshold?` | `number` | `80` | 新 session 自动切换的 usage 百分比 threshold。分数取已知 5 小时、周或 30 天 quota window 中最高的一项。设为 `0` 可禁用 quota 自动切换。 |
 | `upstreamFailoverThreshold?` | `number` | `3` | 连续发生多少次临时上游失败后，让后续新 session failover 到其他合格 pool account。设为 `0` 可禁用失败切换。 |
 | `modelCacheTtlMs?` | `number` | `300000` | 每个 provider 的 `/models` 缓存新鲜度窗口（5 分钟）。 |

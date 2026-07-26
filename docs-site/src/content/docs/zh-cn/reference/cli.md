@@ -240,7 +240,7 @@ OAuth 账号显示为 `Account N`，plan/label 列按 plan → 脱敏邮箱 → 
 
 不指定 provider 时，会列出 Codex pool、OAuth 账号和已配置的 API-key pool。除非传入 `--all`，
 否则跳过空 provider；指定 provider 时只读取对应凭据 family。普通输出的列为
-`PROVIDER TYPE ID PLAN/LABEL STATUS`，已 pin 的 Codex 行标记为 `next session`。当存在已保存的
+`PROVIDER TYPE ID PLAN/LABEL STATUS`，手动选择的 Codex 行标记为 `selected`。当存在已保存的
 Kiro 账号时，输出会说明它只有一个登录 slot，再次登录会替换当前账号。结果为空仍算成功。`--json` 返回：
 
 ```text

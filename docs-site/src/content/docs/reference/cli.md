@@ -255,7 +255,7 @@ Codex App login in the `openai` account pool, OAuth accounts without an email ap
 
 Without a provider, lists the Codex pool, OAuth accounts, and configured API-key pools. Empty
 providers are skipped unless `--all` is present. With a provider, lists only that credential family.
-Human output uses `PROVIDER TYPE ID PLAN/LABEL STATUS`; a pinned Codex row is marked `next session`.
+Human output uses `PROVIDER TYPE ID PLAN/LABEL STATUS`; a manually chosen Codex row is marked `selected`.
 When a stored Kiro account exists, the output notes that Kiro has one login slot and that signing in
 again replaces the current account. An empty result is still success. `--json` returns:
 
