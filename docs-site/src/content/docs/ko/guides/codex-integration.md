@@ -124,6 +124,20 @@ Codex는 디스크의 카탈로그(기본값 `$CODEX_HOME/opencodex-catalog.json
 프로바이더와 모델 메타데이터에 따라 Codex의 `low | medium | high | xhigh | max | ultra` 단계를 사용하며,
 업스트림이 지원하지 않는 값은 요청을 보내기 전에 매핑하거나 지원 범위로 낮춥니다.
 
+## 프록시 연결 오류
+
+Codex가 재시도 끝에 `stream disconnected before completion: error sending request for url (http://127.0.0.1:10100/v1/responses)`
+같은 오류를 내거나 Claude Code에서 비슷한 연결 실패가 뜨면, opencodex 프록시가 꺼져 있는 것입니다.
+설정된 포트에 리스너가 없으면 클라이언트가 그 날것의 연결 오류를 그대로 보여줍니다. 프록시를 다시 시작하세요:
+
+```bash
+ocx start              # 포그라운드
+ocx service install    # 상주: 로그인 시 자동 시작, 크래시 시 자동 재시작
+```
+
+`ocx status`는 프록시 실행 여부를 보여주고, 꺼져 있을 때 같은 재시작 안내를 함께 출력합니다.
+`ocx doctor`는 재시작 안전성(서비스/심 커버리지)을 알려줍니다.
+
 ## 서브에이전트 선택기
 
 Codex의 `spawn_agent`는 우선순위로 정렬한 뒤 **선택기에 표시되는 첫 5개 카탈로그 모델**을 내보냅니다.

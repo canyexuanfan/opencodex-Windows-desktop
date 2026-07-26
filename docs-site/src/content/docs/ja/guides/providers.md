@@ -80,7 +80,7 @@ ocx logout <provider>
 | `xai` | `openai-chat` | `https://api.x.ai/v1` | ライブ一覧を優先し、フォールバックのデフォルトモデルは `grok-4.5`。 |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude モデル; ライブモデル一覧は `/v1/models` から取得。 |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 コーディングモデル。 |
-| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | インストール済み `kiro-cli` ログインを優先取得。 |
+| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | インストール済み `kiro-cli` ログインを優先取得。Kiro CLI のインストール(`curl -fsSL https://cli.kiro.dev/install | bash`)と `kiro-cli login` が必要。 |
 | `google-antigravity` | `google` | `https://daily-cloudcode-pa.googleapis.com` | Google OAuth を Cloud Code Assist wire で使用。 |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | 実験的 PKCE ログイン、HTTP/2 トランスポート、アカウント別モデル探索をサポート。 |
 

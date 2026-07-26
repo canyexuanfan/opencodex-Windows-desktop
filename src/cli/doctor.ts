@@ -579,6 +579,23 @@ export function formatServiceMemoryLines(report: ServiceMemoryReport): string[] 
   return lines;
 }
 
+/**
+ * Actionable hint for the most common confusion: Codex/Claude clients fail with raw
+ * connection errors (e.g. "error sending request for url (http://127.0.0.1:10100/...)")
+ * when the proxy is simply not running. Returns null when a live proxy was found.
+ */
+export function proxyDownRestartHint(input: {
+  proxyRunning: boolean;
+  port: number;
+  serviceViable: boolean;
+}): string | null {
+  if (input.proxyRunning) return null;
+  const restart = input.serviceViable
+    ? "Restart it with 'ocx service start' (service installed) or 'ocx start'."
+    : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
+  return `The ocx proxy is not running. Codex/Claude clients pinned to 127.0.0.1:${input.port} fail with errors like "error sending request for url (http://127.0.0.1:${input.port}/v1/responses)". ${restart}`;
+}
+
 export async function runDoctor(args: string[] = []): Promise<void> {
   if (args.includes("--fix-codex-runtime")) {
     const resolved = resolveCodexRuntime();
@@ -619,7 +636,8 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     console.log(`  ${row.exists ? "ok " : "-- "} ${row.label}: ${row.path}${flags ? `  (${flags})` : ""}`);
   }
 
-  const startup = collectStartupHealth(readConfigDiagnostics().config);
+  const doctorConfig = readConfigDiagnostics().config;
+  const startup = collectStartupHealth(doctorConfig);
   console.log("\nCodex restart safety");
   console.log(`  ${startup.rebootSafe ? "ok " : "!! "} ${startupHealthSummary(startup)}`);
   console.log(`       routing=${startup.routingKind}, service=${startup.serviceViable ? "viable" : startup.serviceInstalled ? "installed-but-unhealthy" : "absent"}, shim=${startup.shimHealthy ? "healthy" : startup.shimInstalled ? "stale" : "absent"}`);
@@ -680,10 +698,13 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   // #314: service-process memory/runtime identity via the authed management
   // endpoint. readPid() FIRST (liveness), then the pid-scoped runtime record —
   // readRuntimePort alone can serve a stale file pointing at a foreign port.
+  // Hoisted out of the block below: the Hints section reuses the same liveness pair
+  // for the proxy-down restart hint.
+  const livePid = readPid();
+  const liveRuntime = livePid ? readRuntimePort(livePid) : null;
   console.log("\nMemory / runtime");
   {
-    const livePid = readPid();
-    const runtime = livePid ? readRuntimePort(livePid) : null;
+    const runtime = liveRuntime;
     if (!runtime) {
       console.log(`  --     doctor process Bun ${Bun.version} (this is NOT the service process)`);
       console.log("  --     no running ocx proxy found (no live pid/runtime record)");
@@ -746,6 +767,12 @@ export async function runDoctor(args: string[] = []): Promise<void> {
 
   // Hints, not fixes.
   const hints: string[] = [];
+  const proxyDown = proxyDownRestartHint({
+    proxyRunning: Boolean(livePid && liveRuntime),
+    port: doctorConfig.port ?? 10100,
+    serviceViable: startup.serviceViable,
+  });
+  if (proxyDown) hints.push(proxyDown);
   const anyDrvfs = paths.some(p => detectFsType(p.path, mounts).isDrvfs || detectFsType(p.path, mounts).isMntDrive);
   const noProxy = currentProxyEnv.every(p => !p.present) && !configuredProxy.present;
   if (!startup.rebootSafe) {

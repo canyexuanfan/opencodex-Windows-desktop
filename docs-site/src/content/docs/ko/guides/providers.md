@@ -80,7 +80,7 @@ ocx logout <provider>
 | `xai` | `openai-chat` | `https://api.x.ai/v1` | 실시간 목록을 우선 사용하며, 폴백 기본 모델은 `grok-4.5`입니다. |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude 모델; 실시간 모델 목록은 `/v1/models`에서 가져옵니다. |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 코딩 모델. |
-| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | 설치된 `kiro-cli` 로그인을 먼저 가져옵니다. |
+| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | 설치된 `kiro-cli` 로그인을 먼저 가져옵니다. Kiro CLI 설치(`curl -fsSL https://cli.kiro.dev/install | bash`)와 `kiro-cli login`이 필요합니다. |
 | `google-antigravity` | `google` | `https://daily-cloudcode-pa.googleapis.com` | Google OAuth를 Cloud Code Assist wire로 사용합니다. |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | 실험적 PKCE 로그인, HTTP/2 전송, 계정별 모델 탐색을 지원합니다. |
 

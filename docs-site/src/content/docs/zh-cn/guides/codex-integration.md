@@ -119,6 +119,21 @@ Codex 显示的模型来自一个磁盘上的目录（默认为 `$CODEX_HOME/ope
 使用 Codex 的 `low | medium | high | xhigh | max | ultra` 档位；上游不支持的值会在发送请求前完成
 映射或下调。
 
+## 代理连接错误
+
+如果 Codex 重试后报出类似
+`stream disconnected before completion: error sending request for url (http://127.0.0.1:10100/v1/responses)`
+的错误（或 Claude Code 出现类似的连接失败），说明 opencodex 代理没有在运行：
+配置端口上没有任何监听，客户端只能显示原始的连接错误。请重启代理：
+
+```bash
+ocx start              # 前台运行
+ocx service install    # 常驻：登录时自动启动，崩溃后自动重启
+```
+
+`ocx status` 可查看代理是否在运行，未运行时也会给出同样的重启提示；
+`ocx doctor` 会报告重启安全性（service/shim 覆盖情况）。
+
 ## subagent 选择器
 
 Codex 的 `spawn_agent` 会按优先级排序，然后展示**前 5 个在选择器中可见的目录模型**。

@@ -598,6 +598,10 @@ async function handleStatus() {
     console.log(`❌ Proxy: ${status.proxyLabel}`);
   }
   console.log(`   Health: ${status.healthLabel}`);
+  if (!(status.json.proxy.pid || status.json.proxy.health.ok)) {
+    console.log("   ↳ Not running — Codex/Claude requests will fail with connection errors.");
+    console.log("     Restart with 'ocx start', or install the persistent service: 'ocx service install'.");
+  }
   console.log(`   Dashboard: ${status.json.dashboard.url}`);
   console.log(`   Config: ${status.json.paths.config}`);
   console.log(`   PID file: ${status.json.paths.pid}`);
@@ -664,9 +668,14 @@ switch (command) {
   case "start":
     await handleStart();
     break;
-  case "stop":
-    await handleStop();
+  case "stop": {
+    // Downtime warning lives HERE, not in handleStop: `restart`/tray-restart callers
+    // re-start the proxy immediately, so warning there would contradict the next line.
+    if (await handleStop()) {
+      console.log("⚠️  Codex/Claude requests through the proxy will fail until it is restarted ('ocx start' or 'ocx service start').");
+    }
     break;
+  }
   case "restore":
   case "eject": {
     if (args[1] === "back") {

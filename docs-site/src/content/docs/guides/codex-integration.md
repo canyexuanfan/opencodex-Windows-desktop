@@ -196,6 +196,22 @@ proxy is running, stop or reconfigure the competing writers, then run `ocx sync`
 external-writer hazard, not a confirmed opencodex defect.
 :::
 
+## Proxy connection errors
+
+If Codex retries and then fails with an error like
+`stream disconnected before completion: error sending request for url (http://127.0.0.1:10100/v1/responses)`
+— or Claude Code reports a similar connection failure — the opencodex proxy is not
+running: nothing is listening on the configured port, so the client renders that raw
+connection error itself. Restart the proxy:
+
+```bash
+ocx start              # foreground
+ocx service install    # persistent: auto-starts on login and respawns on crash
+```
+
+`ocx status` shows whether the proxy is running and prints the same restart hint when
+it is not; `ocx doctor` reports restart safety (service/shim coverage).
+
 ## The subagent picker
 
 Codex's `spawn_agent` advertises the first **5 picker-visible catalog models** after sorting by

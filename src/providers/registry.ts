@@ -493,7 +493,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://runtime.us-east-1.kiro.dev",
     authKind: "oauth",
     oauthId: "kiro",
-    note: "Import-first: reuses your installed kiro-cli login (no browser). Experimental third-party harness — see Kiro ToS.",
+    note: "Import-first: reuses your installed Kiro CLI login — requires kiro-cli installed and signed in (`kiro-cli login`). Experimental third-party harness — see Kiro ToS.",
     models: KIRO_MODELS,
     defaultModel: "kiro-auto",
     // Kiro speaks CodeWhisperer wire, not OpenAI-style GET /models. Keep the static

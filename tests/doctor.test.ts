@@ -13,6 +13,7 @@ import {
   formatServiceMemoryLines,
   parseProcessEnvBlock,
   probeWham,
+  proxyDownRestartHint,
   resolveCodexHomeDir,
   type ServiceMemoryData,
 } from "../src/cli/doctor";
@@ -373,5 +374,25 @@ describe("service memory section (#314 WP4)", () => {
     const unreachable = formatServiceMemoryLines({ status: "unreachable", error: "ECONNREFUSED" });
     expect(unreachable.some(l => l.includes("not reachable"))).toBe(true);
     expect(unreachable.some(l => l.includes("service pid"))).toBe(false);
+  });
+
+  test("proxyDownRestartHint is null while a live proxy exists", () => {
+    expect(proxyDownRestartHint({ proxyRunning: true, port: 10100, serviceViable: false })).toBeNull();
+    expect(proxyDownRestartHint({ proxyRunning: true, port: 10100, serviceViable: true })).toBeNull();
+  });
+
+  test("proxyDownRestartHint names the symptom and both restart paths", () => {
+    const hint = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false });
+    expect(hint).toContain("error sending request for url");
+    expect(hint).toContain("127.0.0.1:10100");
+    expect(hint).toContain("ocx start");
+    expect(hint).toContain("ocx service install");
+  });
+
+  test("proxyDownRestartHint prefers 'ocx service start' when a service is installed", () => {
+    const hint = proxyDownRestartHint({ proxyRunning: false, port: 12000, serviceViable: true });
+    expect(hint).toContain("ocx service start");
+    expect(hint).toContain("127.0.0.1:12000");
+    expect(hint).not.toContain("ocx service install");
   });
 });

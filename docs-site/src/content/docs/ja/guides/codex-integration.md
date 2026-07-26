@@ -125,6 +125,20 @@ Codex はディスクのカタログ(デフォルト `$CODEX_HOME/opencodex-cata
 プロバイダーとモデルメタデータに応じて Codex の `low | medium | high | xhigh | max | ultra` 段階を使い、
 上流がサポートしない値はリクエスト送信前にマッピングまたはサポート範囲に下げます。
 
+## プロキシ接続エラー
+
+Codex がリトライの末に `stream disconnected before completion: error sending request for url (http://127.0.0.1:10100/v1/responses)`
+のようなエラーを出す場合(Claude Code で同様の接続失敗が出る場合も同じ)、opencodex プロキシが起動していません。
+設定ポートにリスナーがないため、クライアントが生の接続エラーをそのまま表示します。プロキシを再起動してください:
+
+```bash
+ocx start              # フォアグラウンド
+ocx service install    # 常駐: ログイン時に自動起動し、クラッシュ時に自動再起動
+```
+
+`ocx status` はプロキシの稼働状態を表示し、停止時には同じ再起動ヒントも表示します。
+`ocx doctor` は再起動の安全性(サービス/シムのカバレッジ)を報告します。
+
 ## サブエージェントピッカー
 
 Codex の `spawn_agent` は優先度でソートした後**ピッカーに表示される最初の 5 つのカタログモデル**を送出します。
