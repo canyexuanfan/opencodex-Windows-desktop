@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { LANE_PAGE, LANE_SEARCH_MIN, laneView, type LaneModel } from "../src/pages/claude-desktop-lane";
+import { LANE_PAGE, LANE_SEARCH_MIN, laneView, rowStartsOpen, type LaneModel } from "../src/pages/claude-desktop-lane";
 
 function models(count: number, overrides: Partial<Record<number, Partial<LaneModel>>> = {}): LaneModel[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -64,4 +64,12 @@ test("a lane with models but no matches is distinguishable from an empty lane", 
   expect(laneView(models(5), "nothing-matches-this", LANE_PAGE).noMatch).toBe(true);
   expect(laneView([], "", LANE_PAGE).noMatch).toBe(false);
   expect(laneView(models(5), "", LANE_PAGE).noMatch).toBe(false);
+});
+
+// Row disclosure starts the family default open — that is the row a user opens the page
+// to change — and everything else closed. A family with no default opens nothing.
+test("rowStartsOpen opens only the family's resolved default", () => {
+  expect(rowStartsOpen("prov/first", "prov/first")).toBe(true);
+  expect(rowStartsOpen("prov/second", "prov/first")).toBe(false);
+  expect(rowStartsOpen("prov/first", null)).toBe(false);
 });
