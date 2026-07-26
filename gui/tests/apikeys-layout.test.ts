@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 
+async function apiKeysSources(): Promise<string> {
+  const page = await Bun.file(new URL("../src/pages/ApiKeys.tsx", import.meta.url)).text();
+  const panels = await Bun.file(new URL("../src/pages/api-keys-panels.tsx", import.meta.url)).text();
+  return `${page}\n${panels}`;
+}
+
 test("ApiKeys renders the single stacked layout (no layout toggle, no workspace rail)", async () => {
   const page = await Bun.file(new URL("../src/pages/ApiKeys.tsx", import.meta.url)).text();
+  const src = await apiKeysSources();
   const app = await Bun.file(new URL("../src/App.tsx", import.meta.url)).text();
   const css = await Bun.file(new URL("../src/styles.css", import.meta.url)).text();
 
@@ -19,12 +26,13 @@ test("ApiKeys renders the single stacked layout (no layout toggle, no workspace 
   expect(css).toContain(".api-auth-list");
   expect(css).toContain(".api-test-note--ok");
   expect(css).toContain(".api-test-note--error");
-  expect(page).toContain('className="api-auth-list');
-  expect(page).toContain("api-test-note--ok");
+  expect(src).toContain('className="api-auth-list');
+  expect(src).toContain("api-test-note--ok");
 });
 
 test("ApiKeys stacked layout keeps endpoint, generate, keys table, and usage panels", async () => {
-  const src = await Bun.file(new URL("../src/pages/ApiKeys.tsx", import.meta.url)).text();
+  const src = await apiKeysSources();
+  const page = await Bun.file(new URL("../src/pages/ApiKeys.tsx", import.meta.url)).text();
 
   const order = [
     't("api.endpointsTitle")',
@@ -51,15 +59,15 @@ test("ApiKeys stacked layout keeps endpoint, generate, keys table, and usage pan
   expect(between).not.toContain('t("api.usageChatTitle")');
   expect(between).not.toContain('t("api.usageResponsesTitle")');
   expect(src).toContain("gatewayInboundProtocols(claudeCodeEnabled)");
-  expect(src).toContain("classifyExternalModel(row)");
-  expect(src).toContain('from "../api-access-models"');
+  expect(page).toContain("classifyExternalModel(row)");
+  expect(page).toContain('from "../api-access-models"');
 
   // Inline per-row delete confirmation, not a workspace detail pane.
   expect(src).toContain("confirmDelete === k.id");
   expect(src).toContain('t("api.noKeys")');
   expect(src).toContain('t("api.colKey")');
   // Double-create guard kept from the workspace era.
-  expect(src).toContain("if (creatingRef.current) return false");
+  expect(page).toContain("if (creatingRef.current) return false");
 });
 
 test("retired apikeys workspace i18n keys stay removed from every locale", async () => {

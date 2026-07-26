@@ -26,14 +26,19 @@ const CREDIT_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
 });
 
 export function formatCreditDate(iso: string): string {
-  return CREDIT_DATE_FORMAT.format(new Date(iso));
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "\u2014";
+  return CREDIT_DATE_FORMAT.format(date);
 }
 
 /** Format a USD cost estimate for display. Returns "—" when unavailable. */
 export function formatEstimatedUsdValue(value: number, locale?: string): string {
   if (!Number.isFinite(value) || value < 0) return "\u2014";
-  return `~$${cachedNumberFormat(locale, {
+  const formatted = cachedNumberFormat(locale, {
+    style: "currency",
+    currency: "USD",
     minimumFractionDigits: 4,
     maximumFractionDigits: 4,
-  }).format(value)}`;
+  }).format(value);
+  return `~${formatted}`;
 }

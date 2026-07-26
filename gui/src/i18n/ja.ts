@@ -1022,6 +1022,9 @@ export const ja: Record<TKey, string> = {
   "api.confirm": "確認",
   "api.deleteAria": "API キーを削除",
   "api.usageSampleInput": "こんにちは、世界！",
+  "api.keysLoadFailed": "APIキーを読み込めませんでした。",
+  "api.createFailed": "APIキーを作成できませんでした。",
+  "api.deleteFailed": "APIキーを削除できませんでした。",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Claude Code 内で GPT、Gemini などのモデルを使用します。",
@@ -1073,6 +1076,7 @@ export const ja: Record<TKey, string> = {
   "claude.removeMapping": "ルールを削除",
   "claude.aliases": "利用可能なモデル",
   "claude.aliasesHint": "Claude Code の /model メニューに表示されるモデル。",
+  "claude.aliasProviderOther": "その他",
   "claude.loading": "読み込み中…",
   "claude.loadFail": "Claude 設定の読み込みに失敗しました",
   "claude.saved": "保存しました。",

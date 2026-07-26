@@ -765,6 +765,9 @@ export const de: Record<TKey, string> = {
   "api.confirm": "Bestätigen",
   "api.deleteAria": "API-Schlüssel löschen",
   "api.usageSampleInput": "Hallo, Welt!",
+  "api.keysLoadFailed": "API-Schlüssel konnten nicht geladen werden.",
+  "api.createFailed": "API-Schlüssel konnte nicht erstellt werden.",
+  "api.deleteFailed": "API-Schlüssel konnte nicht gelöscht werden.",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "GPT, Gemini und andere Modelle in Claude Code verwenden.",
@@ -815,6 +818,7 @@ export const de: Record<TKey, string> = {
   "claude.removeMapping": "Regel entfernen",
   "claude.aliases": "Verfügbare Modelle",
   "claude.aliasesHint": "Modelle, die im /model-Menü von Claude Code erscheinen.",
+  "claude.aliasProviderOther": "Sonstiges",
   "claude.loading": "Lädt…",
   "claude.loadFail": "Claude-Einstellungen konnten nicht geladen werden",
   "claude.saved": "Gespeichert.",

@@ -1068,6 +1068,9 @@ export const en = {
   "api.usageResponsesTitle": "Responses example",
   "api.usageMessagesTitle": "Messages example",
   "api.usageSampleInput": "Hello, world!",
+  "api.keysLoadFailed": "Could not load API keys.",
+  "api.createFailed": "Could not create API key.",
+  "api.deleteFailed": "Could not delete API key.",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Use GPT, Gemini, and other models inside Claude Code.",
@@ -1119,6 +1122,7 @@ export const en = {
   "claude.removeMapping": "Remove rule",
   "claude.aliases": "Available models",
   "claude.aliasesHint": "Models that appear in Claude Code's /model menu.",
+  "claude.aliasProviderOther": "Other",
   "claude.loading": "Loading…",
   "claude.loadFail": "Failed to load Claude settings",
   "claude.saved": "Saved.",

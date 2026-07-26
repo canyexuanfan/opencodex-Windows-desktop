@@ -203,7 +203,9 @@ describe("max_concurrent_threads_per_session reader/writer", () => {
     expect(transitionMultiAgentV2(true, flipPrefixFlag, { configPath: prefixOnly }).ok).toBe(true);
     expect(readFileSync(prefixOnly, "utf8")).toContain("backup_max_concurrent_threads_per_session = 7");
     expect(getMaxConcurrentThreads(prefixOnly)).toBe(100);
-  });
+    // Two transitions × several atomic writes; on Windows each write runs icacls and
+    // can exceed bun's 5s default under CI load.
+  }, { timeout: 20_000 });
 });
 
 describe("thread-limit-preserving v1/v2 transition", () => {

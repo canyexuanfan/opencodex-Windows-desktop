@@ -785,6 +785,9 @@ export const zh: Record<TKey, string> = {
   "api.confirm": "确认",
   "api.deleteAria": "删除 API 密钥",
   "api.usageSampleInput": "你好，世界！",
+  "api.keysLoadFailed": "无法加载 API 密钥。",
+  "api.createFailed": "无法创建 API 密钥。",
+  "api.deleteFailed": "无法删除 API 密钥。",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "在 Claude Code 中使用 GPT、Gemini 等其他模型。",
@@ -835,6 +838,7 @@ export const zh: Record<TKey, string> = {
   "claude.removeMapping": "删除规则",
   "claude.aliases": "可用模型",
   "claude.aliasesHint": "Claude Code 的 /model 菜单中显示的模型列表。",
+  "claude.aliasProviderOther": "其他",
   "claude.loading": "加载中…",
   "claude.loadFail": "加载 Claude 设置失败",
   "claude.saved": "已保存。",
