@@ -66,8 +66,8 @@ Idempotently ensure a background proxy is running, then sync its live model cata
 
 Print a read-only diagnostic summary: proxy PID, `/healthz` reachability, dashboard URL,
 config path, default provider, Codex autostart setting, service state, shim state, and the redacted
-effective Codex home. A Windows Orca/App home mismatch adds an actionable warning; it never changes
-`CODEX_HOME` automatically.
+effective Codex home. Only the explicit, high-confidence Windows Orca runtime-home signature adds an
+actionable App-home mismatch warning; it never changes `CODEX_HOME` automatically.
 
 Human output also includes an **OAuth health** block after the OAuth logins summary: `OAuth health:
 ok` when every known account is healthy, or `OAuth health: warning` with one redacted line per

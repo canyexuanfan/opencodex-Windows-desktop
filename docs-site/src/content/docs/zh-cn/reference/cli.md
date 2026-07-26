@@ -63,8 +63,8 @@ ocx eject back
 ### `ocx status [--json]`
 
 打印只读诊断摘要：代理 PID、`/healthz` 可达性、仪表盘 URL、配置路径、默认 provider、Codex
-自动启动设置、服务状态、shim 状态以及隐藏用户名后的实际 Codex home。确认 Windows Orca/App
-home 不一致时会给出可执行警告，但不会自动修改 `CODEX_HOME`。
+自动启动设置、服务状态、shim 状态以及隐藏用户名后的实际 Codex home。仅当命中明确的高置信度
+Windows Orca runtime-home 特征时，才会针对 App home 不一致给出可执行警告，但不会自动修改 `CODEX_HOME`。
 
 使用 `--json` 可获得机器可读的只读诊断契约：
 

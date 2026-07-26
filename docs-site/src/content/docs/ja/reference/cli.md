@@ -63,7 +63,7 @@ ocx eject back
 
 プロキシ PID、`/healthz` 接続状態、ダッシュボード URL、設定ファイルパス、デフォルトプロバイダー、Codex 自動起動
 設定、サービス状態、shim 状態、ユーザー名をマスクした実効 Codex home を読み取り専用の診断要約として出力します。
-Windows Orca/App home の不一致が確認された場合は実行可能な警告を追加し、`CODEX_HOME` は自動変更しません。
+明示的で信頼度の高い Windows Orca runtime-home パターンに一致した場合のみ、App home との不一致に対する実行可能な警告を追加し、`CODEX_HOME` は自動変更しません。
 
 機械が読める読み取り専用の診断契約は `--json` で受け取ります。
 

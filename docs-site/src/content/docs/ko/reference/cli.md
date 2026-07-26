@@ -66,7 +66,7 @@ ocx eject back
 
 프록시 PID, `/healthz` 연결 상태, 대시보드 URL, 설정 파일 경로, 기본 프로바이더, Codex 자동 시작
 설정, 서비스 상태, shim 상태와 사용자 이름을 가린 실제 Codex home을 읽기 전용 진단 요약으로 출력합니다.
-Windows Orca/App home 불일치가 확인되면 조치 가능한 경고를 추가하며 `CODEX_HOME`을 자동으로 바꾸지는 않습니다.
+명시적인 고신뢰 Windows Orca runtime-home 패턴이 확인될 때만 App home 불일치에 대한 조치 가능한 경고를 추가하며 `CODEX_HOME`을 자동으로 바꾸지는 않습니다.
 
 기계가 읽을 수 있는 읽기 전용 진단 계약은 `--json`으로 받습니다.
 
