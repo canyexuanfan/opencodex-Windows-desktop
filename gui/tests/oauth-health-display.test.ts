@@ -4,6 +4,7 @@ import {
   doctorCopyButtonLabel,
   formatOAuthHealthLabel,
   formatOAuthHealthSummary,
+  accountNeedsReauth,
   oauthHealthBadgeClass,
   oauthHealthBadgeTone,
   oauthHealthIsCooldown,
@@ -40,6 +41,15 @@ describe("oauth health badge helpers", () => {
     expect(oauthHealthShowsDoctor("cooldown")).toBe(false);
     expect(oauthHealthIsCooldown("cooldown")).toBe(true);
     expect(oauthHealthIsCooldown("healthy")).toBe(false);
+  });
+
+  test("accountNeedsReauth combines legacy flag with health-only reauth", () => {
+    expect(accountNeedsReauth(undefined)).toBe(false);
+    expect(accountNeedsReauth({ needsReauth: true })).toBe(true);
+    expect(accountNeedsReauth({ health: { status: "reauth_required" } })).toBe(true);
+    expect(accountNeedsReauth({ needsReauth: false, health: { status: "healthy" } })).toBe(false);
+    expect(accountNeedsReauth({ health: { status: "cooldown" } })).toBe(false);
+    expect(accountNeedsReauth({ health: { status: "warning" } })).toBe(false);
   });
 
   test("localizes labels and summaries from structured health", () => {

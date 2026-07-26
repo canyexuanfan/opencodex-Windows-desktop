@@ -181,6 +181,7 @@ describe("workspace account integration seam", () => {
       Bun.file("gui/src/components/codex-account-pool-main-card.tsx").text(),
     ]);
     expect(page).toContain("codexActiveNeedsReauth");
+    expect(page).toContain("buildActiveAccountNeedsReauthMap");
     expect(page).toContain("map.openai = true");
 
     // WP3: reauth health is DERIVED from the shared controller. The page used to keep a
@@ -191,6 +192,10 @@ describe("workspace account integration seam", () => {
     expect(page).not.toContain("codexReauthGenerationRef");
     expect(page).not.toContain("setCodexActiveNeedsReauth");
 
+    // Health-only reauth_required must reach both aggregate surfaces.
+    expect(pool).toContain("onActiveNeedsReauthChange?.(activePoolNeedsReauth)");
+    expect(hook).toContain("accountNeedsReauth(activePoolAccount ?? mainAccount)");
+    expect(page).toContain("accountNeedsReauth(active)");
     // WP3: background refresh pauses through a token lease, not a boolean read of the
     // modal flag. Two holders must both release before polling resumes.
     expect(pool).toContain("controller.pauseRefresh()");

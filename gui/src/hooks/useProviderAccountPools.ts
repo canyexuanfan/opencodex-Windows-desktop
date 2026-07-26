@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { AccountLoadState } from "../components/provider-workspace/types";
+import { accountNeedsReauth } from "../oauth-health-display";
 import { oauthAccountDisplayLabel } from "../provider-workspace/auth";
 
 export interface Config {
@@ -22,6 +23,20 @@ export interface OAuthAccount {
   healthAction?: string;
 }
 export interface ApiKeyEntry { id: string; label?: string; masked: string; active: boolean }
+
+/** Pure aggregate map used by Providers overview / rail attention state. */
+export function buildActiveAccountNeedsReauthMap(
+  accountSets: Record<string, { activeAccountId: string | null; accounts: OAuthAccount[] }>,
+  codexActiveNeedsReauth = false,
+): Record<string, boolean> {
+  const map: Record<string, boolean> = {};
+  for (const [provider, set] of Object.entries(accountSets)) {
+    const active = set.accounts.find(a => a.active) ?? set.accounts.find(a => a.id === set.activeAccountId);
+    if (accountNeedsReauth(active)) map[provider] = true;
+  }
+  if (codexActiveNeedsReauth) map.openai = true;
+  return map;
+}
 
 export function useProviderAccountPools(deps: {
   apiBase: string;
@@ -211,15 +226,10 @@ export function useProviderAccountPools(deps: {
     return () => window.clearTimeout(timeout);
   }, [fetchKeyPools, keyCardProviders]);
 
-  const activeAccountNeedsReauth = useMemo(() => {
-    const map: Record<string, boolean> = {};
-    for (const [provider, set] of Object.entries(accountSets)) {
-      const active = set.accounts.find(a => a.active) ?? set.accounts.find(a => a.id === set.activeAccountId);
-      if (active?.needsReauth) map[provider] = true;
-    }
-    if (codexActiveNeedsReauth) map.openai = true;
-    return map;
-  }, [accountSets, codexActiveNeedsReauth]);
+  const activeAccountNeedsReauth = useMemo(
+    () => buildActiveAccountNeedsReauthMap(accountSets, codexActiveNeedsReauth),
+    [accountSets, codexActiveNeedsReauth],
+  );
 
   return {
     accountSets, accountLoadStates, switchingAccount, openAccounts, keyPools, addingKeyFor, newKeyValue,

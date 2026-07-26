@@ -46,6 +46,16 @@ export function oauthHealthShowsReauth(status: OAuthHealthStatus | undefined): b
   return status === "reauth_required";
 }
 
+/**
+ * Aggregate/row reauth gate: legacy `needsReauth` OR canonical health projection.
+ * Health-only `reauth_required` must still demote Providers overview attention state.
+ */
+export function accountNeedsReauth(
+  account: { needsReauth?: boolean; health?: { status?: OAuthHealthStatus } | null } | null | undefined,
+): boolean {
+  return Boolean(account?.needsReauth) || oauthHealthShowsReauth(account?.health?.status);
+}
+
 /** Cooldown: show wait copy; do not urge probing or immediate retry. */
 export function oauthHealthIsCooldown(status: OAuthHealthStatus | undefined): boolean {
   return status === "cooldown";

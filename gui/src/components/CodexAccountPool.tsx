@@ -15,7 +15,7 @@ import { CodexAccountResetModal } from "./codex-account-reset-modal";
 import { CodexAccountPoolLoadStates, CodexAccountPoolMainCard, CodexAccountPoolPageHead } from "./codex-account-pool-main-card";
 import { redeemResetCredit } from "./codex-account-pool-handlers";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
-import { copyTextToClipboard, oauthHealthShowsReauth, type DoctorCopyFeedback } from "../oauth-health-display";
+import { accountNeedsReauth, copyTextToClipboard, type DoctorCopyFeedback } from "../oauth-health-display";
 
 // Single definition lives with the controller that owns this data (WP3).
 export type { CodexAccountEntry } from "../hooks/useCodexAccountPool";
@@ -53,7 +53,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   // but stays inert (no load, no polling) whenever a shared controller was injected.
   const ownController = useCodexAccountPool(apiBase, !injectedController);
   const controller = injectedController ?? ownController;
-  const { accounts, activeId, loadState, switchingId, activeNeedsReauth, load } = controller;
+  const { accounts, activeId, loadState, switchingId, load } = controller;
   const [confirm, setConfirm] = useState<CodexAccountEntry | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [reauthId, setReauthId] = useState<string | null>(null);
@@ -110,12 +110,11 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const activePoolAccount = activeId && activeId !== "__main__"
     ? accounts.find(a => a.id === activeId)
     : null;
-  const activePoolNeedsReauth = Boolean(activePoolAccount?.needsReauth)
-    || oauthHealthShowsReauth(activePoolAccount?.health?.status);
+  const activePoolNeedsReauth = accountNeedsReauth(activePoolAccount);
 
   useEffect(() => {
-    onActiveNeedsReauthChange?.(activeNeedsReauth);
-  }, [activeNeedsReauth, onActiveNeedsReauthChange]);
+    onActiveNeedsReauthChange?.(activePoolNeedsReauth);
+  }, [activePoolNeedsReauth, onActiveNeedsReauthChange]);
 
   const openReauth = useCallback((id: string) => {
     setReauthId(id);
