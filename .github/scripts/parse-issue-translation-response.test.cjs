@@ -8,7 +8,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const SCRIPT = path.join(__dirname, "parse-issue-translation-response.cjs");
-const { parseAiResponse, scrubLine } = require("./parse-issue-translation-response.cjs");
+const { parseAiResponse, scrubLine, repairInvalidJsonStringEscapes } = require("./parse-issue-translation-response.cjs");
 
 function runParser(aiResponse) {
   const outFile = path.join(
@@ -70,6 +70,21 @@ describe("parseAiResponse", () => {
     assert.equal(parseAiResponse(""), null);
     assert.equal(parseAiResponse("{"), null);
     assert.equal(parseAiResponse("[1]"), null);
+  });
+
+  it("repairs JS-style apostrophe escapes that models put in JSON strings", () => {
+    // Regression: run 30208536337 — gpt-4o-mini emitted Kiro\'s and the parser
+    // fail-closed, skipping Apply inline translation despite a full translation.
+    const raw =
+      '{"requires_translation":true,"detected_language":"Korean",' +
+      '"translated_title":"Title","translated_body":"with Kiro\\\'s mid-stream 429"}';
+    const parsed = parseAiResponse(raw);
+    assert.equal(parsed.requires_translation, true);
+    assert.equal(parsed.translated_body, "with Kiro's mid-stream 429");
+    assert.equal(
+      repairInvalidJsonStringEscapes('{"a":"Kiro\\\'s"}'),
+      '{"a":"Kiro\'s"}',
+    );
   });
 });
 

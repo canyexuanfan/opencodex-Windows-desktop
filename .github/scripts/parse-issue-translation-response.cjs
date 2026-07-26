@@ -11,27 +11,68 @@ function scrubLine(value, max) {
     .slice(0, max);
 }
 
+/**
+ * Models often emit JS-style escapes inside JSON strings (especially `\'`).
+ * Those are invalid JSON and used to make long Korean/Japanese issue translations
+ * fail closed even when the payload is otherwise complete.
+ */
+function repairInvalidJsonStringEscapes(text) {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      if ('"\\/bfnrt'.includes(ch)) {
+        out += "\\" + ch;
+      } else if (ch === "u") {
+        out += "\\u";
+      } else {
+        // Drop the invalid backslash; keep the character (e.g. `\'` → `'`).
+        out += ch;
+      }
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') inString = false;
+    out += ch;
+  }
+  if (escaped) out += "\\";
+  return out;
+}
+
+function tryParseJsonObject(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function parseAiResponse(raw) {
   const text = String(raw || "").trim();
   if (!text) return null;
 
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    try {
-      parsed = JSON.parse(
-        text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim(),
-      );
-    } catch {
-      return null;
-    }
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-  return parsed;
+  const unfenced = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  return (
+    tryParseJsonObject(text) ||
+    tryParseJsonObject(unfenced) ||
+    tryParseJsonObject(repairInvalidJsonStringEscapes(text)) ||
+    tryParseJsonObject(repairInvalidJsonStringEscapes(unfenced))
+  );
 }
 
 function writeOutput(key, value) {
@@ -87,6 +128,7 @@ if (require.main === module) {
 
 module.exports = {
   scrubLine,
+  repairInvalidJsonStringEscapes,
   parseAiResponse,
   main,
 };
