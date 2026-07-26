@@ -23,6 +23,10 @@ import {
 import type { OcxConfig } from "../src/types";
 import type { WsData } from "../src/server/ws-bridge";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
+import {
+  reconcileMainCodexAccountRuntimeState,
+  resetMainCodexAccountIdentityTrackingForTests,
+} from "../src/codex/account-lifecycle";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -114,6 +118,7 @@ beforeEach(() => {
   clearAccountQuota();
   clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
   clearCodexWebSocketRegistry();
+  resetMainCodexAccountIdentityTrackingForTests();
 });
 
 afterEach(() => {
@@ -728,6 +733,8 @@ describe("codex-auth API", () => {
   test("reset-credit consume omits remaining when refreshed quota has no credit count", async () => {
     const config = makeConfig();
     seedPoolAccount(config, { id: "pool-nocount", email: "nocount@example.test" });
+    // Stale cached count must not leak into the response when WHAM omits the field.
+    updateAccountQuota("pool-nocount", undefined, undefined, undefined, undefined, 7);
     const originalFetch = globalThis.fetch;
     try {
       globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -751,6 +758,148 @@ describe("codex-auth API", () => {
       const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
       expect(resp!.status).toBe(200);
       expect(await resp!.json()).toEqual({ code: "reset" });
+      // Cache may still preserve the prior credit count for other callers.
+      expect(getAccountQuota("pool-nocount")?.resetCredits).toBe(7);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reset-credit consume omits remaining when pool WHAM refresh is non-2xx", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-wham-fail", email: "whamfail@example.test" });
+    updateAccountQuota("pool-wham-fail", undefined, undefined, undefined, undefined, 5);
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/backend-api/wham/rate-limit-reset-credits/consume")) {
+          return Response.json({ code: "reset" });
+        }
+        if (url.includes("/backend-api/wham/usage")) {
+          return new Response("upstream busy", { status: 503 });
+        }
+        return originalFetch(input);
+      }) as typeof fetch;
+
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: "pool-wham-fail" }),
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      expect(resp!.status).toBe(200);
+      expect(await resp!.json()).toEqual({ code: "reset" });
+      expect(getAccountQuota("pool-wham-fail")?.resetCredits).toBe(5);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reset-credit consume omits remaining when main WHAM refresh is non-2xx", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-reset-fail", account_id: "acct-main-reset-fail" },
+    }));
+    // Stabilize identity tracking so seeding stale quota is not purged by reconcile.
+    reconcileMainCodexAccountRuntimeState();
+    updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, undefined, undefined, undefined, undefined, 4);
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/backend-api/wham/rate-limit-reset-credits/consume")) {
+          return Response.json({ code: "already_redeemed" });
+        }
+        if (url.includes("/backend-api/wham/usage")) {
+          return new Response("timeout", { status: 504 });
+        }
+        return originalFetch(input);
+      }) as typeof fetch;
+
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: MAIN_CODEX_ACCOUNT_ID }),
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      expect(resp!.status).toBe(200);
+      expect(await resp!.json()).toEqual({ code: "already_redeemed" });
+      expect(getAccountQuota(MAIN_CODEX_ACCOUNT_ID)?.resetCredits).toBe(4);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reset-credit consume omits remaining when main WHAM omits rate_limit_reset_credits", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-reset-omit", account_id: "acct-main-reset-omit" },
+    }));
+    reconcileMainCodexAccountRuntimeState();
+    updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, undefined, undefined, undefined, undefined, 6);
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/backend-api/wham/rate-limit-reset-credits/consume")) {
+          return Response.json({ code: "reset" });
+        }
+        if (url.includes("/backend-api/wham/usage")) {
+          return Response.json({
+            email: "main@example.test",
+            plan_type: "pro",
+            rate_limit: { primary_window: { used_percent: 12, reset_at: 1782000000 } },
+          });
+        }
+        return originalFetch(input);
+      }) as typeof fetch;
+
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: MAIN_CODEX_ACCOUNT_ID }),
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      expect(resp!.status).toBe(200);
+      expect(await resp!.json()).toEqual({ code: "reset" });
+      expect(getAccountQuota(MAIN_CODEX_ACCOUNT_ID)?.resetCredits).toBe(6);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reset-credit consume returns remaining from fresh main WHAM credits", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-reset-ok", account_id: "acct-main-reset-ok" },
+    }));
+    reconcileMainCodexAccountRuntimeState();
+    updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, undefined, undefined, undefined, undefined, 9);
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/backend-api/wham/rate-limit-reset-credits/consume")) {
+          return Response.json({ code: "reset", remaining: 99 });
+        }
+        if (url.includes("/backend-api/wham/usage")) {
+          return Response.json({
+            email: "main@example.test",
+            plan_type: "pro",
+            rate_limit: { primary_window: { used_percent: 8, reset_at: 1782000000 } },
+            rate_limit_reset_credits: { available_count: 1 },
+          });
+        }
+        return originalFetch(input);
+      }) as typeof fetch;
+
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: MAIN_CODEX_ACCOUNT_ID }),
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      expect(resp!.status).toBe(200);
+      expect(await resp!.json()).toEqual({ code: "reset", remaining: 1 });
+      expect(getAccountQuota(MAIN_CODEX_ACCOUNT_ID)?.resetCredits).toBe(1);
     } finally {
       globalThis.fetch = originalFetch;
     }

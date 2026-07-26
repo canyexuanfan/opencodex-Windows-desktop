@@ -259,8 +259,15 @@ async function isTerminalMainAuthResponse(resp: Response): Promise<boolean> {
   }
 }
 
+interface MainAccountInfoFetchResult {
+  info: MainAccountInfo;
+  /** Present only when this call's WHAM response included `rate_limit_reset_credits.available_count`. */
+  freshResetCredits?: number;
+}
+
 export async function fetchMainAccountInfo(forceRefresh = false): Promise<MainAccountInfo> {
-  return fetchMainAccountInfoAttempt(forceRefresh, 1);
+  const { info } = await fetchMainAccountInfoAttempt(forceRefresh, 1);
+  return info;
 }
 
 const EMPTY_MAIN_ACCOUNT_INFO: MainAccountInfo = { email: null, plan: null, quota: null };
@@ -268,16 +275,16 @@ const EMPTY_MAIN_ACCOUNT_INFO: MainAccountInfo = { email: null, plan: null, quot
 async function retryMainAccountInfoIfIdentityChanged(
   requestAccountId: string | null,
   retriesRemaining: number,
-): Promise<MainAccountInfo | null> {
+): Promise<MainAccountInfoFetchResult | null> {
   const currentAccountId = getMainChatgptAccountId();
   if (currentAccountId === null || currentAccountId === requestAccountId) return null;
   reconcileMainCodexAccountRuntimeState();
   return retriesRemaining > 0
     ? fetchMainAccountInfoAttempt(true, retriesRemaining - 1)
-    : EMPTY_MAIN_ACCOUNT_INFO;
+    : { info: EMPTY_MAIN_ACCOUNT_INFO };
 }
 
-async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaining: number): Promise<MainAccountInfo> {
+async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaining: number): Promise<MainAccountInfoFetchResult> {
   reconcileMainCodexAccountRuntimeState();
   const tokenRead = readCodexTokensResult();
   if (tokenRead.status !== "ok") {
@@ -288,13 +295,13 @@ async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaini
     // routing stays fail-closed because getMainAccountToken() re-reads the file itself, and the
     // account DTO still reports hasCredential=false while the file is unreadable.
     const preserved = getMainAccountInfoCache();
-    return preserved ?? EMPTY_MAIN_ACCOUNT_INFO;
+    return { info: preserved ?? EMPTY_MAIN_ACCOUNT_INFO };
   }
   const tokens = tokenRead.tokens;
   const requestAccountId = extractAccountId(tokens.id_token, tokens.access_token) ?? (tokens.account_id || null);
   const cached = getMainAccountInfoCache();
   if (!forceRefresh && cached && Date.now() - cached.ts < MAIN_CACHE_TTL) {
-    return cached;
+    return { info: cached };
   }
   try {
     const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
@@ -309,15 +316,17 @@ async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaini
         clearMainAccountInfoCache();
         markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
       }
-      return EMPTY_MAIN_ACCOUNT_INFO;
+      return { info: EMPTY_MAIN_ACCOUNT_INFO };
     }
     const data = (await resp.json()) as WhamUsageResponse;
     const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining);
     if (retried) return retried;
+    const quota = parseUsageQuota(data);
+    const freshResetCredits = quota?.resetCredits;
     const result = {
       email: data.email ?? null,
       plan: data.plan_type ?? null,
-      quota: parseUsageQuota(data),
+      quota,
       ts: Date.now(),
     };
     setMainAccountInfoCache(result);
@@ -328,16 +337,21 @@ async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaini
     if (result.quota) {
       setAccountQuotaFromParsed(MAIN_CODEX_ACCOUNT_ID, result.quota);
     }
-    return result;
+    return {
+      info: result,
+      ...(freshResetCredits !== undefined ? { freshResetCredits } : {}),
+    };
   } catch {
     const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining);
-    return retried ?? EMPTY_MAIN_ACCOUNT_INFO;
+    return retried ?? { info: EMPTY_MAIN_ACCOUNT_INFO };
   }
 }
 
 interface PoolQuotaResult {
   quota: StoredAccountQuota | null;
   needsReauth: boolean;
+  /** Present only when this call's WHAM response included `rate_limit_reset_credits.available_count`. */
+  freshResetCredits?: number;
 }
 
 export interface CodexAuthAccountDto {
@@ -366,9 +380,14 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, co
     if (!resp.ok) return { quota: existing ?? null, needsReauth: resp.status === 401 };
     const data = (await resp.json()) as WhamUsageResponse;
     const quota = parseUsageQuota({ ...data, plan_type: data.plan_type ?? configuredPlan });
+    const freshResetCredits = quota?.resetCredits;
     if (!quota) return { quota: existing ?? null, needsReauth: false };
     setAccountQuotaFromParsed(accountId, quota);
-    return { quota: getAccountQuota(accountId), needsReauth: false };
+    return {
+      quota: getAccountQuota(accountId),
+      needsReauth: false,
+      ...(freshResetCredits !== undefined ? { freshResetCredits } : {}),
+    };
   } catch (e) {
     if (e instanceof CodexCredentialGenerationConflictError || e instanceof CodexCredentialRefreshLockTimeoutError) return { quota: existing ?? null, needsReauth: false };
     if (e instanceof TokenRefreshError) return { quota: existing ?? null, needsReauth: true };
@@ -652,20 +671,21 @@ export async function handleCodexAuthAPI(
       }
       const result = safeResetCreditConsumeDto(await resp.json());
       // After a successful redeem (or an idempotent already_redeemed), refresh WHAM usage
-      // and return the authoritative remaining credit count from stored quota — never from
-      // the consume payload or a GUI modal snapshot.
+      // and return remaining only when that refresh freshly parsed available_count.
+      // Do not fall back to a preserved cached resetCredits (failed/omitted refresh).
       if (result.code === "reset" || result.code === "already_redeemed") {
-        const quotaAccountId = auth.isMain ? MAIN_CODEX_ACCOUNT_ID : body.accountId;
+        let freshResetCredits: number | undefined;
         if (auth.isMain) {
-          await fetchMainAccountInfo(true);
+          ({ freshResetCredits } = await fetchMainAccountInfoAttempt(true, 1));
         } else {
           const account = configuredPoolAccount(getRuntimeConfig(config), body.accountId);
-          await fetchPoolAccountQuota(body.accountId, true, account?.plan);
+          ({ freshResetCredits } = await fetchPoolAccountQuota(body.accountId, true, account?.plan));
         }
-        const remaining = getAccountQuota(quotaAccountId)?.resetCredits;
         return jsonResponse({
           code: result.code,
-          ...(typeof remaining === "number" && Number.isFinite(remaining) ? { remaining } : {}),
+          ...(typeof freshResetCredits === "number" && Number.isFinite(freshResetCredits)
+            ? { remaining: freshResetCredits }
+            : {}),
         });
       }
       return jsonResponse(result);
