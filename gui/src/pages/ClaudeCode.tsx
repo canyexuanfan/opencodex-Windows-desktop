@@ -11,6 +11,7 @@ import {
   ClaudeCodeQuickstartSection,
   ClaudeCodeSettingsCard,
 } from "./claude-code-sections";
+import { serializeSidecarOverride } from "./claude-code-sidecar";
 import { formatCompactWindow, type ClaudeCodeState, type MapRow } from "./claude-code-types";
 import { SmallFastModelSetting } from "./claude-code-settings";
 
@@ -102,12 +103,8 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
           injectAgents: state.injectAgents,
           smallFastModel: state.smallFastModel,
           modelMap,
-          webSearchSidecar: state.webSearchSidecar
-            ? { backend: state.webSearchSidecar.backend ?? null, model: state.webSearchSidecar.model ?? "" }
-            : null,
-          visionSidecar: state.visionSidecar
-            ? { backend: state.visionSidecar.backend ?? null, model: state.visionSidecar.model ?? "" }
-            : null,
+          webSearchSidecar: serializeSidecarOverride(state.webSearchSidecar),
+          visionSidecar: serializeSidecarOverride(state.visionSidecar),
         }),
       });
       await readJsonOrThrow(r, t("claude.saveFailed"));

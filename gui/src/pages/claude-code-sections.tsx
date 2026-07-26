@@ -2,7 +2,12 @@ import { IconPlus, IconX } from "../icons";
 import { useT } from "../i18n/shared";
 import { Trans } from "../i18n/provider";
 import { Select } from "../ui";
-import type { SidecarBackend } from "./claude-manual-env";
+import {
+  applySidecarBackendChange,
+  applySidecarModelChange,
+  sidecarSelectValue,
+  type SidecarSelectValue,
+} from "./claude-code-sidecar";
 import { AutoConnectSetting, SettingToggle } from "./claude-code-settings";
 import type { ClaudeCodeState, MapRow } from "./claude-code-types";
 
@@ -119,11 +124,7 @@ export function ClaudeCodeSettingsCard({
             </div>
             <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
               <Select
-                value={
-                  !override || (!override.backend && !(override.model?.trim()))
-                    ? "inherit"
-                    : override.backend ?? "auto"
-                }
+                value={sidecarSelectValue(override)}
                 options={[
                   { value: "inherit", label: t("claude.useMainSetting") },
                   { value: "auto", label: t("dash.backendAuto") },
@@ -131,24 +132,11 @@ export function ClaudeCodeSettingsCard({
                   { value: "anthropic", label: t("dash.backendAnthropic") },
                 ]}
                 onChange={value => {
-                  // Empty Auto ({ backend: undefined, model: "" }) is deleted by the
-                  // management API and reloads as inherit — don't offer a distinct
-                  // non-persistable Auto state.
-                  if (value === "inherit") {
-                    onStateChange({ ...state, [key]: undefined });
-                    return;
-                  }
-                  if (value === "auto") {
-                    const model = override?.model?.trim();
-                    onStateChange({
-                      ...state,
-                      [key]: model ? { model: override!.model, backend: undefined } : undefined,
-                    });
-                    return;
-                  }
+                  // Auto may exist as an empty in-memory draft so the model input
+                  // stays enabled; empty Auto serializes to null on save.
                   onStateChange({
                     ...state,
-                    [key]: { ...override, backend: value as SidecarBackend },
+                    [key]: applySidecarBackendChange(override, value as SidecarSelectValue),
                   });
                 }}
                 label={t("dash.sidecarBackend")}
@@ -158,14 +146,10 @@ export function ClaudeCodeSettingsCard({
                 className="input mono"
                 value={override?.model ?? ""}
                 onChange={e => {
-                  const model = e.target.value;
-                  // Clearing the only field of an Auto override collapses to inherit
-                  // (same persist semantics as an empty sidecar object).
-                  if (!model.trim() && !override?.backend) {
-                    onStateChange({ ...state, [key]: undefined });
-                    return;
-                  }
-                  onStateChange({ ...state, [key]: { ...override, model } });
+                  onStateChange({
+                    ...state,
+                    [key]: applySidecarModelChange(override, e.target.value),
+                  });
                 }}
                 placeholder={t("claude.sidecarModelPlaceholder")}
                 disabled={!override}
