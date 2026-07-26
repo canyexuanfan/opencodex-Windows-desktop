@@ -95,6 +95,7 @@ describe("doctor", () => {
     expect(mismatch.action).toContain("ocx service install");
     expect(mismatch.action).toContain("%USERPROFILE%\\.codex");
     expect(mismatch.action).toContain("Remove-Item Env:ORCA_CODEX_HOME");
+    expect(mismatch.action).toContain("SilentlyContinue; $env:CODEX_HOME");
     expect(mismatch.action).not.toContain("C:\\Users\\[USER]");
 
     const matching = collectOrcaCodexHomeDiagnostic({
