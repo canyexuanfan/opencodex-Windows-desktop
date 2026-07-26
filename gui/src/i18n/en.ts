@@ -340,10 +340,10 @@ export const en = {
   "prov.openaiApiSetup": "Set up API key",
 
   // models
-  "models.subtitle": "Toggle which models Codex sees — native GPT passthrough and routed providers, grouped by provider (click a header to collapse). Disabled models are hidden from the catalog + model picker. Changes apply on the next Codex turn — opencodex invalidates Codex's 5-min model cache so no restart is needed.",
+  "models.subtitle": "Toggle which models Codex sees — native GPT passthrough and routed providers, grouped by provider (click a header to collapse). Hidden models stay off the catalog + model picker but remain directly callable by exact id. Changes apply on the next Codex turn — opencodex invalidates Codex's 5-min model cache so no restart is needed.",
   "models.nativeGroupLabel": "OpenAI native",
   "models.nativeHint": "Passthrough models use the Pool or Direct account option selected on Providers. Toggling one off hides it from the Codex picker (the catalog entry is kept, so re-enabling restores it exactly).",
-  "models.active": "{active}/{total} active",
+  "models.active": "{active}/{total} visible",
   "models.workspace.providers": "Providers",
   "models.workspace.allProviders": "All providers",
   "models.workspace.mainAria": "Model details",
@@ -1218,7 +1218,9 @@ export const en = {
   "cws.field.stickyLimitHint": "Retain the selected target for this many successful requests before the weighted selector advances.",
   "cws.field.defaultEffort": "Default reasoning",
   "cws.field.defaultEffortNone": "None (target default)",
-  "cws.field.defaultEffortHint": "Used only when the client omits reasoning effort. Client effort wins, and each target applies its own capability handling.",
+  "cws.field.defaultEffortHint": "Used only when the client omits reasoning effort. Options are the intersection of the selected targets' advertised efforts.",
+  "cws.field.defaultEffortUnsupported": "This effort is not in the targets' common ladder — it will be ignored or snapped at request time.",
+  "cws.field.defaultEffortUnsupportedOption": "not in intersection",
   "cws.targets": "Targets",
   "cws.targets.failoverHint": "Order matters — first is primary.",
   "cws.targets.roundRobinHint": "Weights control deterministic relative selection; order breaks ties in the rotation ring.",

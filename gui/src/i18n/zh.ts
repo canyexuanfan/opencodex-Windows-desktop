@@ -334,10 +334,10 @@ export const zh: Record<TKey, string> = {
   "prov.openaiApiSetup": "设置 API 密钥",
 
   // models
-  "models.subtitle": "开关 Codex 可见的模型 — 原生 GPT passthrough 与已路由模型按提供方分组（点击标题可折叠）。已禁用的模型会从目录和模型选择器中隐藏。更改在下一个 Codex 回合生效 — opencodex 会使 Codex 的 5 分钟模型缓存失效，因此无需重启。",
+  "models.subtitle": "开关 Codex 可见的模型 — 原生 GPT passthrough 与已路由模型按提供方分组（点击标题可折叠）。隐藏的模型不会出现在目录和模型选择器中，但仍可按精确 id 直接调用。更改在下一个 Codex 回合生效 — opencodex 会使 Codex 的 5 分钟模型缓存失效，因此无需重启。",
   "models.nativeGroupLabel": "OpenAI 原生",
   "models.nativeHint": "Passthrough 模型使用在提供方页面选择的账户池或直连选项。关闭后会从 Codex 选择器中隐藏（目录条目保留，重新开启即可完整恢复）。",
-  "models.active": "{active}/{total} 已启用",
+  "models.active": "{active}/{total} 可见",
   "models.workspace.providers": "提供方",
   "models.workspace.allProviders": "所有提供方",
   "models.workspace.mainAria": "模型详情",
@@ -1216,7 +1216,9 @@ export const zh: Record<TKey, string> = {
   "cws.field.stickyLimitHint": "加权选择器推进前，将所选目标保留这么多次成功请求。",
   "cws.field.defaultEffort": "默认推理级别",
   "cws.field.defaultEffortNone": "无（使用目标默认）",
-  "cws.field.defaultEffortHint": "仅在客户端未指定推理级别时使用。客户端值优先，每个目标会按自身能力进行处理。",
+  "cws.field.defaultEffortHint": "仅在客户端未指定推理级别时使用。选项为所选目标已公布努力级别的交集。",
+  "cws.field.defaultEffortUnsupported": "该级别不在目标的公共阶梯中 — 请求时会被忽略或就近映射。",
+  "cws.field.defaultEffortUnsupportedOption": "不在交集中",
   "cws.targets": "目标",
   "cws.targets.failoverHint": "顺序很重要 — 第一个为主。",
   "cws.targets.roundRobinHint": "权重控制确定性的相对选择；顺序用于打破轮换环中的平局。",

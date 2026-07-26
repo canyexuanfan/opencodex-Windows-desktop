@@ -331,10 +331,10 @@ export const ja: Record<TKey, string> = {
   "prov.openaiApiSetup": "API キーを設定",
 
   // models
-  "models.subtitle": "Codex に表示するモデルを切り替えます — ネイティブ GPT パススルーとルーティングプロバイダー、プロバイダー別(ヘッダーをクリックで折りたたみ)。無効化されたモデルはカタログ + モデルピッカーから隠されます。変更は次回の Codex ターンで適用 — opencodex は Codex の 5 分間モデルキャッシュを無効化するので再起動は不要です。",
+  "models.subtitle": "Codex に表示するモデルを切り替えます — ネイティブ GPT パススルーとルーティングプロバイダー、プロバイダー別(ヘッダーをクリックで折りたたみ)。非表示モデルはカタログとピッカーから外れますが、正確な id での直接呼び出しは可能です。変更は次回の Codex ターンで適用 — opencodex は Codex の 5 分間モデルキャッシュを無効化するので再起動は不要です。",
   "models.nativeGroupLabel": "OpenAI ネイティブ",
   "models.nativeHint": "パススルーモデルはプロバイダーで選択したプールまたはダイレクトアカウントオプションを使用します。一つオフにすると Codex ピッカーから隠します(カタログエントリは保持されるので、再有効化で正確に復元されます)。",
-  "models.active": "{active}/{total} アクティブ",
+  "models.active": "{active}/{total} 表示中",
   "models.workspace.providers": "プロバイダー",
   "models.workspace.allProviders": "すべてのプロバイダー",
   "models.workspace.mainAria": "モデルの詳細",
@@ -1257,7 +1257,9 @@ export const ja: Record<TKey, string> = {
   "cws.field.stickyLimitHint": "重み付きセレクタが進む前に、選んだターゲットをこの回数の成功リクエスト分保持します。",
   "cws.field.defaultEffort": "デフォルトの推論",
   "cws.field.defaultEffortNone": "なし(ターゲットのデフォルト)",
-  "cws.field.defaultEffortHint": "クライアントが推論負荷を省略した場合のみ使用されます。クライアントの負荷が優先され、各ターゲットは自身の能力処理を適用します。",
+  "cws.field.defaultEffortHint": "クライアントが推論負荷を省略した場合のみ使用されます。選択肢は選択ターゲットが広告する負荷の交差です。",
+  "cws.field.defaultEffortUnsupported": "この負荷はターゲット共通の階段にありません — リクエスト時に無視またはスナップされます。",
+  "cws.field.defaultEffortUnsupportedOption": "交差に含まれない",
   "cws.targets": "ターゲット",
   "cws.targets.failoverHint": "順序が重要 — 最初がプライマリです。",
   "cws.targets.roundRobinHint": "重みが決定論的な相対選択を制御し、順序がローテーションリングの同点を解消します。",

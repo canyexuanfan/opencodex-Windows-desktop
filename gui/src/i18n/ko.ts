@@ -334,10 +334,10 @@ export const ko: Record<TKey, string> = {
   "prov.openaiApiSetup": "API 키 설정",
 
   // models
-  "models.subtitle": "Codex가 보는 모델을 켜고 끕니다 — 네이티브 GPT passthrough와 라우팅된 모델을 프로바이더별로 묶어 보여줍니다(헤더를 클릭하면 접힘). 비활성화된 모델은 카탈로그와 모델 선택기에서 숨겨집니다. 변경 사항은 다음 Codex 턴에 적용됩니다 — opencodex가 Codex의 5분 모델 캐시를 무효화하므로 재시작이 필요 없습니다.",
+  "models.subtitle": "Codex가 보는 모델을 켜고 끕니다 — 네이티브 GPT passthrough와 라우팅된 모델을 프로바이더별로 묶어 보여줍니다(헤더를 클릭하면 접힘). 숨긴 모델은 카탈로그와 선택기에서 빠지지만 정확한 id로 직접 호출할 수 있습니다. 변경 사항은 다음 Codex 턴에 적용됩니다 — opencodex가 Codex의 5분 모델 캐시를 무효화하므로 재시작이 필요 없습니다.",
   "models.nativeGroupLabel": "OpenAI 네이티브",
   "models.nativeHint": "프로바이더에서 선택한 풀 또는 직접 계정 옵션으로 서빙되는 passthrough 모델입니다. 끄면 Codex 선택기에서 숨겨지고, 카탈로그 항목은 유지되므로 다시 켜면 그대로 복원됩니다.",
-  "models.active": "{active}/{total} 활성",
+  "models.active": "{active}/{total} 표시",
   "models.workspace.providers": "프로바이더",
   "models.workspace.allProviders": "모든 프로바이더",
   "models.workspace.mainAria": "모델 세부정보",
@@ -1216,7 +1216,9 @@ export const ko: Record<TKey, string> = {
   "cws.field.stickyLimitHint": "가중 선택기가 다음 대상으로 진행하기 전에 선택된 대상을 이 성공 요청 횟수만큼 유지합니다.",
   "cws.field.defaultEffort": "기본 추론 수준",
   "cws.field.defaultEffortNone": "없음 (대상 기본값)",
-  "cws.field.defaultEffortHint": "클라이언트가 추론 수준을 생략한 경우에만 사용합니다. 클라이언트 값이 우선하며 각 대상이 자체 기능에 맞게 처리합니다.",
+  "cws.field.defaultEffortHint": "클라이언트가 추론 수준을 생략한 경우에만 사용합니다. 옵션은 선택한 대상이 광고하는 수준의 교집합입니다.",
+  "cws.field.defaultEffortUnsupported": "이 수준은 대상의 공통 사다리에 없습니다 — 요청 시 무시되거나 스냅됩니다.",
+  "cws.field.defaultEffortUnsupportedOption": "교집합에 없음",
   "cws.targets": "대상",
   "cws.targets.failoverHint": "순서가 중요합니다 — 첫 번째가 기본입니다.",
   "cws.targets.roundRobinHint": "가중치는 결정적 상대 선택을 제어하고, 순서는 회전 고리의 동률을 결정합니다.",

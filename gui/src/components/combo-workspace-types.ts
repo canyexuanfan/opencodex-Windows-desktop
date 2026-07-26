@@ -8,7 +8,12 @@ export type ProviderOption = {
   adapter?: string;
   baseUrl?: string;
 };
-export type ModelOption = { provider: string; id: string; namespaced?: string };
+export type ModelOption = {
+  provider: string;
+  id: string;
+  namespaced?: string;
+  reasoningEfforts?: string[];
+};
 
 export interface ComboWorkspaceProps {
   combos: ComboItem[];
