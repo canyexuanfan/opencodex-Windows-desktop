@@ -16,6 +16,7 @@ import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers
 import { effectiveGoogleMode } from "../providers/registry";
 import { resolveProviderTransport } from "../providers/xai-transport";
 import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
+import { logOAuthEvent } from "./log";
 
 const REFRESH_SKEW_MS = 60_000;
 export interface OAuthAccessSnapshot {
@@ -30,6 +31,7 @@ const XAI_PERMANENT_FAILURE_TTL_MS=30_000;
 const permanentRefreshFailures=new Map<string,number>();
 interface XaiRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; now?:()=>number; afterPrePersistRead?:()=>void|Promise<void> }
 interface AnthropicRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; now?:()=>number; afterPrePersistRead?:()=>void|Promise<void> }
+interface GenericRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; afterPrePersistRead?:()=>void|Promise<void> }
 function verdictKey(p:string,a:string,c:OAuthCredentials){return `${p}\0${a}\0${credentialGeneration(c)}`;}
 function cached(p:string,a:string,c:OAuthCredentials,now:()=>number){const k=verdictKey(p,a,c),u=permanentRefreshFailures.get(k);if(u===undefined)return false;if(u<=now()){permanentRefreshFailures.delete(k);return false;}return true;}
 
@@ -195,7 +197,10 @@ async function resolveAccessSnapshotForAccount(
 
   const key = `${provider}\u0000${accountId}`;
   const existing = tokenRefreshes.get(key);
-  if (existing) return existing;
+  if (existing) {
+    logOAuthEvent("OAuth refresh joined existing operation", { provider, accountId });
+    return existing;
+  }
 
   const refresh = (async (): Promise<OAuthAccessSnapshot> => {
     const accessToken = await refreshAndPersistAccessToken(provider, accountId, def, cred);
@@ -349,6 +354,48 @@ export async function refreshAnthropicAccountWithLock(
   }
 }
 
+export async function refreshGenericAccountWithLock(
+  provider: string,
+  accountId: string,
+  def: OAuthProviderDef,
+  callerCredential: OAuthCredentials,
+  deps: GenericRefreshDeps = {},
+): Promise<string> {
+  logOAuthEvent("OAuth refresh started", { provider, accountId });
+  const guard = await (deps.intentLock ?? createOAuthRefreshIntentLock(provider, accountId)).acquire();
+  try {
+    const stored = getAccountCredential(provider, accountId);
+    if (!stored) throw new OAuthLoginRequiredError(provider);
+    if (
+      credentialGeneration(stored) !== credentialGeneration(callerCredential)
+      && stored.expires > Date.now() + REFRESH_SKEW_MS
+    ) {
+      logOAuthEvent("OAuth refresh joined existing operation", { provider, accountId });
+      return stored.access;
+    }
+    const generation = credentialGeneration(stored);
+    try {
+      const fresh = merged(await def.refresh(stored.refresh), stored);
+      const outcome = await mergeAccountCredential(provider, accountId, fresh, {
+        expectedGeneration: generation,
+        afterPrePersistRead: deps.afterPrePersistRead,
+      });
+      if (outcome.superseded) {
+        if (outcome.stored.expires > Date.now() + REFRESH_SKEW_MS) return outcome.stored.access;
+        throw new OAuthLoginRequiredError(provider);
+      }
+      logOAuthEvent("OAuth credentials rotated and persisted", { provider, accountId });
+      return fresh.access;
+    } catch (error) {
+      if (!isTerminalRefreshError(error)) throw error;
+      await markAccountNeedsReauthIfGeneration(provider, accountId, generation);
+      throw new OAuthLoginRequiredError(provider);
+    }
+  } finally {
+    guard.release();
+  }
+}
+
 async function refreshAndPersistAccessToken(
   provider: string,
   accountId: string,
@@ -368,23 +415,7 @@ async function refreshAndPersistAccessToken(
   if (provider === "xai") return refreshXaiAccountWithLock(provider, accountId, def, cred);
   if (provider === "anthropic") return refreshAnthropicAccountWithLock(provider, accountId, def, cred);
   try {
-    const fresh = await def.refresh(cred.refresh);
-    const detachedLocalCli = provider === "xai" && cred.source === "local-cli";
-    if (detachedLocalCli) console.warn(XAI_LOCAL_CLI_DETACH_WARNING);
-    // Persist to THIS account (rotation-safe: new refresh token hits disk before use) without
-    // touching activeAccountId.
-    await saveAccountCredential(provider, accountId, {
-      ...fresh,
-      source: detachedLocalCli ? "oauth" : fresh.source ?? cred.source ?? "oauth",
-      // Preserve a previously-discovered project id when a refresh-time re-discovery comes back empty
-      // (e.g. a transient network blip), so Antigravity does not lose its CCA project across refresh.
-      ...(fresh.projectId === undefined && cred.projectId ? { projectId: cred.projectId } : {}),
-      ...(fresh.apiBaseUrl === undefined && cred.apiBaseUrl ? { apiBaseUrl: cred.apiBaseUrl } : {}),
-      // Preserve identity fields the refresh response may omit, so identity matching stays stable.
-      ...(fresh.email === undefined && cred.email ? { email: cred.email } : {}),
-      ...(fresh.accountId === undefined && cred.accountId ? { accountId: cred.accountId } : {}),
-    });
-    return fresh.access;
+    return await refreshGenericAccountWithLock(provider, accountId, def, cred);
   } catch (err) {
     if (provider === "kiro" && isActive) {
       const imported = readFreshKiroCliCredential();
@@ -392,10 +423,6 @@ async function refreshAndPersistAccessToken(
         await saveCredential(provider, imported);
         return imported.access;
       }
-    }
-    if (isTerminalRefreshError(err)) {
-      await markAccountNeedsReauth(provider, accountId, true);
-      throw new OAuthLoginRequiredError(provider);
     }
     throw err;
   }
