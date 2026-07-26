@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, useEffect, useState } from "react";
 import type { Root } from "react-dom/client";
-import { useClientResource } from "../src/client-resource";
+import { useClientResource, useKeyedClientResource } from "../src/client-resource";
 
 const globals = ["document", "window", "navigator", "IS_REACT_ACT_ENVIRONMENT"] as const;
 let previousGlobals: Record<(typeof globals)[number], unknown>;
@@ -25,6 +25,16 @@ afterEach(() => {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
   }
 });
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
+    await act(async () => {
+      await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 10));
+    });
+  }
+}
 
 test("after the latest subscriber unmounts, polling continues with the surviving loader", async () => {
   const { createRoot } = await import("react-dom/client");
@@ -72,19 +82,14 @@ test("after the latest subscriber unmounts, polling continues with the surviving
   });
 
   // Initial subscribe fetch(es) from both subscribers sharing one store (first only fetches).
-  await act(async () => {
-    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 10));
-  });
-  expect(calls.length).toBeGreaterThanOrEqual(1);
+  await waitFor(() => calls.length >= 1);
   const beforeUnmount = calls.length;
 
   await act(async () => {
     (window as unknown as { __dropLatest: () => void }).__dropLatest();
   });
 
-  await act(async () => {
-    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 130));
-  });
+  await waitFor(() => calls.length > beforeUnmount);
 
   const afterUnmount = calls.slice(beforeUnmount);
   expect(afterUnmount.length).toBeGreaterThan(0);
@@ -154,10 +159,7 @@ test("unmounting the subscriber that owns an in-flight request must not overwrit
     root.render(<Harness />);
   });
 
-  await act(async () => {
-    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 20));
-  });
-  expect(api.readA()).toBe("from-A");
+  await waitFor(() => api.readA() === "from-A");
 
   await act(async () => {
     api.refreshB();
@@ -169,9 +171,9 @@ test("unmounting the subscriber that owns an in-flight request must not overwrit
 
   await act(async () => {
     resolveB("from-B");
-    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 20));
   });
-
+  // Settle so a buggy late write would have time to land.
+  await waitFor(() => api.readA() === "from-A");
   expect(api.readA()).toBe("from-A");
 
   await act(async () => {
@@ -248,11 +250,66 @@ test("when the in-flight owner unmounts with no cache, a remaining subscriber re
     api.dropB();
   });
 
-  await act(async () => {
-    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 30));
-  });
+  await waitFor(() => api.read().data === "from-A" && api.read().loading === false);
 
   expect(api.read()).toEqual({ data: "from-A", loading: false });
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("keyed deps changes force loading while retaining previous data until refetch completes", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `keyed-deps-${Date.now()}`;
+  let resolveNext!: (value: string) => void;
+  let nextValue = new Promise<string>((resolve) => {
+    resolveNext = resolve;
+  });
+
+  type Snap = { data: string | undefined; loading: boolean };
+  let snap: Snap = { data: undefined, loading: false };
+  let setFilter!: (value: string) => void;
+
+  function Page() {
+    const [filter, setFilterState] = useState("one");
+    setFilter = setFilterState;
+    const resource = useKeyedClientResource(
+      KEY,
+      [filter],
+      async () => {
+        if (filter === "one") return "data-one";
+        return nextValue;
+      },
+    );
+    useEffect(() => {
+      snap = { data: resource.data, loading: resource.loading };
+    }, [resource.data, resource.loading]);
+    return <span />;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+
+  await waitFor(() => snap.data === "data-one" && snap.loading === false);
+
+  await act(async () => {
+    setFilter("two");
+  });
+
+  await waitFor(() => snap.loading === true && snap.data === "data-one");
+
+  await act(async () => {
+    resolveNext("data-two");
+  });
+  await waitFor(() => snap.data === "data-two" && snap.loading === false);
 
   await act(async () => {
     root.unmount();

@@ -34,8 +34,21 @@ afterEach(() => {
 
 test("installApiAuthFetch deletes legacy sessionStorage token without reading it", () => {
   sessionStorage.setItem(LEGACY_TOKEN_KEY, "legacy-secret");
-  installApiAuthFetch();
-  expect(sessionStorage.getItem(LEGACY_TOKEN_KEY)).toBeNull();
+  let getItemCalls = 0;
+  const storage = sessionStorage;
+  const originalGetItem = storage.getItem.bind(storage);
+  storage.getItem = ((key: string) => {
+    getItemCalls += 1;
+    return originalGetItem(key);
+  }) as typeof storage.getItem;
+
+  try {
+    installApiAuthFetch();
+    expect(getItemCalls).toBe(0);
+    expect(originalGetItem(LEGACY_TOKEN_KEY)).toBeNull();
+  } finally {
+    storage.getItem = originalGetItem;
+  }
 });
 
 test("prompted API tokens stay memory-only and are not written to sessionStorage", async () => {

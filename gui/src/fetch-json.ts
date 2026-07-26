@@ -4,17 +4,18 @@
  * (`fetch` resolves on HTTP 4xx/5xx).
  */
 
-async function readJsonBody<T>(res: Response): Promise<T> {
-  if (res.status === 204) return undefined as T;
+/** Parse an OK response body; 204 / empty bodies yield `undefined`. */
+async function readJsonBody<T>(res: Response): Promise<T | undefined> {
+  if (res.status === 204) return undefined;
   const text = await res.text();
-  if (!text.trim()) return undefined as T;
+  if (!text.trim()) return undefined;
   return JSON.parse(text) as T;
 }
 
 export async function readJsonOrThrow<T>(
   res: Response,
   fallbackMessage = `HTTP ${res.status}`,
-): Promise<T> {
+): Promise<T | undefined> {
   if (!res.ok) {
     let message = fallbackMessage;
     try {
@@ -28,7 +29,7 @@ export async function readJsonOrThrow<T>(
   return readJsonBody<T>(res);
 }
 
-export async function readJsonIfOk<T>(res: Response): Promise<T | null> {
+export async function readJsonIfOk<T>(res: Response): Promise<T | null | undefined> {
   if (!res.ok) return null;
   return readJsonBody<T>(res);
 }

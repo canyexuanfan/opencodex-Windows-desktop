@@ -15,6 +15,8 @@ type Store<T> = {
   fetcherByListener: Map<() => void, (signal: AbortSignal) => Promise<T>>;
   subscriberCount: number;
   pollTimer: ReturnType<typeof setInterval> | null;
+  /** Currently scheduled poll interval; avoids resetting the countdown on churn. */
+  pollIntervalMs: number | undefined;
   inflight: AbortController | null;
   /** Subscriber that started the current in-flight request (if any). */
   inflightOwner: (() => void) | null;
@@ -39,6 +41,7 @@ function getStore<T>(key: string): Store<T> {
       fetcherByListener: new Map(),
       subscriberCount: 0,
       pollTimer: null,
+      pollIntervalMs: undefined,
       inflight: null,
       inflightOwner: null,
       generation: 0,
@@ -57,6 +60,7 @@ function clearPollTimer<T>(store: Store<T>) {
     clearInterval(store.pollTimer);
     store.pollTimer = null;
   }
+  store.pollIntervalMs = undefined;
 }
 
 /** Prefer a polling subscriber's fetcher; otherwise any remaining subscriber. */
@@ -77,13 +81,18 @@ function pickFetcherEntry<T>(
 
 /** Honor the most aggressive (smallest positive) poll interval among subscribers. */
 function recomputePoll<T>(store: Store<T>) {
-  clearPollTimer(store);
   let pollMs: number | undefined;
   for (const ms of store.pollByListener.values()) {
     if (typeof ms === "number" && ms > 0) {
       pollMs = pollMs === undefined ? ms : Math.min(pollMs, ms);
     }
   }
+  // Keep the existing countdown when the effective interval is unchanged.
+  if (pollMs === store.pollIntervalMs && (pollMs === undefined || store.pollTimer !== null)) {
+    return;
+  }
+  clearPollTimer(store);
+  store.pollIntervalMs = pollMs;
   if (pollMs === undefined) return;
   store.pollTimer = setInterval(() => {
     const entry = pickFetcherEntry(store);
@@ -96,7 +105,7 @@ function recomputePoll<T>(store: Store<T>) {
 async function runFetch<T>(
   store: Store<T>,
   fetcher: (signal: AbortSignal) => Promise<T>,
-  options?: { replaceInflight?: boolean; owner?: (() => void) | null },
+  options?: { replaceInflight?: boolean; owner?: (() => void) | null; forceLoading?: boolean },
 ) {
   const replaceInflight = options?.replaceInflight !== false;
   if (store.inflight && !replaceInflight) return;
@@ -107,8 +116,8 @@ async function runFetch<T>(
   store.inflightOwner = options?.owner ?? null;
   const gen = ++store.generation;
 
-  // Only treat missing cache as "empty" — falsy values (false/0/null/"") are valid data.
-  if (store.snapshot.data === undefined) {
+  // Falsy cached values stay visible during polls; forceLoading is for identity changes (deps).
+  if (store.snapshot.data === undefined || options?.forceLoading) {
     store.snapshot = { ...store.snapshot, loading: true };
     emit(store);
   }
@@ -186,7 +195,7 @@ export function useClientResource<T>(
   key: string,
   fetcher: (signal: AbortSignal) => Promise<T>,
   options?: { pollMs?: number; enabled?: boolean },
-): ResourceSnapshot<T> & { refresh: () => void } {
+): ResourceSnapshot<T> & { refresh: (opts?: { forceLoading?: boolean }) => void } {
   const enabled = options?.enabled !== false;
   const pollMs = options?.pollMs;
   const fetcherRef = useRef(fetcher);
@@ -219,11 +228,12 @@ export function useClientResource<T>(
 
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback((opts?: { forceLoading?: boolean }) => {
     if (!enabled) return;
     void runFetch(getStore<T>(key), stableFetcher, {
       replaceInflight: true,
       owner: listenerRef.current,
+      forceLoading: opts?.forceLoading,
     });
   }, [key, stableFetcher, enabled]);
 
@@ -243,13 +253,15 @@ function depsChanged(prev: readonly unknown[] | null, next: readonly unknown[]):
  * Like `useClientResource`, but refetches when `deps` change (element-wise
  * `Object.is`), even if the cache `key` stays the same. Callers may allocate a
  * fresh deps array each render — identity of the array is ignored.
+ * Deps changes force `loading: true` while retaining previous data until the
+ * new response arrives (unlike quiet poll refreshes).
  */
 export function useKeyedClientResource<T>(
   key: string,
   deps: readonly unknown[],
   load: (signal: AbortSignal) => Promise<T>,
   options?: { pollMs?: number; enabled?: boolean },
-): ResourceSnapshot<T> & { refresh: () => void } {
+): ResourceSnapshot<T> & { refresh: (opts?: { forceLoading?: boolean }) => void } {
   const resource = useClientResource(key, load, options);
   const prevDepsRef = useRef<readonly unknown[] | null>(null);
 
@@ -257,7 +269,7 @@ export function useKeyedClientResource<T>(
     const prev = prevDepsRef.current;
     prevDepsRef.current = deps;
     if (!depsChanged(prev, deps)) return;
-    resource.refresh();
+    resource.refresh({ forceLoading: true });
   });
 
   return resource;
