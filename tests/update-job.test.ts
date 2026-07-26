@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   checkForUpdate,
   confirmRestartAfterUpdateForTests,
+  finishGuiUpdateRestart,
   readUpdateJob,
   restartCommand,
   restartAfterUpdateForTests,
@@ -364,6 +365,98 @@ describe("GUI update execution decisions", () => {
     });
     expect(ok).toBe(true);
     expect(readUpdateJob(job.id)?.log.some(line => line.includes("stayed healthy for 15s after restart"))).toBe(true);
+  });
+
+  test("npm finish skips redundant restart when self-update already left the proxy healthy", async () => {
+    let now = 0;
+    let restartCalls = 0;
+    const job: UpdateJobState = {
+      id: "npm-skip-redundant",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.40",
+      latestVersion: "2.7.41",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await finishGuiUpdateRestart(job, { port: 10100, hostname: "127.0.0.1" }, "npm", {
+      probeProxy: async () => true,
+      now: () => now,
+      sleepMs: async (ms) => { now += ms; },
+      restartAfterUpdateFn: async () => { restartCalls += 1; },
+    });
+    expect(ok).toBe(true);
+    expect(restartCalls).toBe(0);
+    expect(readUpdateJob(job.id)?.log.some(line =>
+      line.includes("skipping redundant restart") && line.includes("10100"),
+    )).toBe(true);
+  });
+
+  test("npm finish falls back to explicit restart when self-update left the proxy down", async () => {
+    let now = 0;
+    let restartCalls = 0;
+    const job: UpdateJobState = {
+      id: "npm-fallback-restart",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.40",
+      latestVersion: "2.7.41",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await finishGuiUpdateRestart(job, { port: 10100, hostname: "127.0.0.1" }, "npm", {
+      // Soft probe times out (proxy down after npm update); confirm after explicit restart succeeds.
+      probeProxy: async () => restartCalls > 0,
+      now: () => now,
+      sleepMs: async (ms) => { now += ms; },
+      restartAfterUpdateFn: async () => {
+        restartCalls += 1;
+        now = 0; // reset clock so post-restart health wait has a fresh window
+      },
+    });
+    expect(ok).toBe(true);
+    expect(restartCalls).toBe(1);
+    expect(readUpdateJob(job.id)?.log.some(line =>
+      line.includes("performing explicit restart"),
+    )).toBe(true);
+  });
+
+  test("bun finish always runs explicit restart even if a proxy is already healthy", async () => {
+    let now = 0;
+    let restartCalls = 0;
+    const job: UpdateJobState = {
+      id: "bun-always-restart",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.40",
+      latestVersion: "2.7.41",
+      channel: "latest",
+      installer: "bun",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await finishGuiUpdateRestart(job, { port: 10100, hostname: "127.0.0.1" }, "bun", {
+      probeProxy: async () => true,
+      now: () => now,
+      sleepMs: async (ms) => { now += ms; },
+      restartAfterUpdateFn: async () => { restartCalls += 1; },
+    });
+    expect(ok).toBe(true);
+    expect(restartCalls).toBe(1);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("skipping redundant restart"))).toBe(false);
   });
 
   test("a running job prevents a second update job", () => {
