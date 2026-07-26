@@ -184,6 +184,56 @@ describe("Grok orphan adoption (#511)", () => {
     expect(content.replace(/\r\n/g, "")).not.toContain("\n");
   });
 
+
+  // The state a REAL machine reached (#511 field evidence): Grok re-serialized the file
+  // into its own format and dropped our marker COMMENTS entirely. findManagedRegion then
+  // returns null, so the whole file is in scope and the ownership predicate is the only
+  // thing standing between the sweep and the user's own models.
+  test("still adopts safely when Grok has dropped the markers entirely", () => {
+    writeFileSync(configPath, [
+      "[ui]",
+      'fork_secondary_model = "grok-build"',
+      "",
+      "[models]",
+      'default = "ocx-gpt-5-6-sol"',
+      "",
+      "[model.ocx-gpt-5-6-sol]",            // stale: no context_window
+      'model = "gpt-5.6-sol"',
+      'base_url = "http://127.0.0.1:10100/v1"',
+      'api_key = "opencodex-loopback"',
+      "",
+      "[model.ocx-gpt-5-6-sol-2]",          // the correct duplicate, also unfenced now
+      'model = "gpt-5.6-sol"',
+      'base_url = "http://127.0.0.1:10100/v1"',
+      'api_key = "opencodex-loopback"',
+      "context_window = 372000",
+      "",
+      "[model.ocx-gpt-5-6-sol-2.extra_headers]",
+      'x-opencodex-grok = "1"',
+      "",
+      "[model.hand-written]",               // must survive
+      'model = "mine"',
+      'base_url = "http://127.0.0.1:10100/v1"',
+      'api_key = "not-ours"',
+      "",
+    ].join("\n"));
+
+    const result = injectGrokConfig(10100, MODELS, { grokHome });
+    expect(result).toMatchObject({ ok: true, changed: true });
+
+    const content = readFileSync(configPath, "utf8");
+    // Both opencodex duplicates collapse into the single regenerated entry.
+    expect(modelTables(content).filter(alias => alias.startsWith("ocx-"))).toHaveLength(1);
+    expect(content).toContain("context_window = 372000");
+    // The user's model and settings are untouched.
+    expect(content).toContain("[model.hand-written]");
+    expect(content).toContain('api_key = "not-ours"');
+    expect(content).toContain('fork_secondary_model = "grok-build"');
+    // default still resolves.
+    const survivor = /^default = "([^"]+)"/m.exec(content)?.[1];
+    expect(content).toContain(`[model.${survivor}]`);
+  });
+
   // F8: an ambiguous fence must refuse BEFORE the sweep, or "outside the region" could
   // mean the entire file.
   test("refuses to sweep when the end marker is missing", () => {

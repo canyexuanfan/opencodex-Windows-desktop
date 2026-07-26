@@ -186,10 +186,21 @@ function findOpencodexOrphans(content: string, region: ManagedRegion | null): Or
     if (header.array || header.segments.length !== 2 || header.segments[0] !== "model") continue;
     // Inside the fence the regular splice already owns it.
     if (region && header.index >= region.start && header.index < region.end) continue;
-    const end = headers[position + 1]?.index ?? content.length;
-    const keys = tableBodyKeys(content.slice(header.index + header.length, end));
+    const bodyEnd = headers[position + 1]?.index ?? content.length;
+    const keys = tableBodyKeys(content.slice(header.index + header.length, bodyEnd));
     if (keys.get("api_key") !== OPENCODEX_API_KEY) continue;
     if (!isLoopbackBaseUrl(keys.get("base_url"))) continue;
+    // Swallow the entry's OWN sub-tables (`[model.<alias>.extra_headers]`). Grok writes
+    // them when it re-serializes the file, and leaving one behind keeps the alias
+    // reserved by `userModelAliases` — so the sweep would remove the parent and STILL
+    // allocate a suffixed duplicate, which is the exact #511 loop we came to close.
+    let end = bodyEnd;
+    for (let next = position + 1; next < headers.length; next += 1) {
+      const child = headers[next]!;
+      if (child.segments.length <= 2) break;
+      if (child.segments[0] !== "model" || child.segments[1] !== header.segments[1]) break;
+      end = headers[next + 1]?.index ?? content.length;
+    }
     orphans.push({ alias: header.segments[1]!, modelId: keys.get("model"), start: header.index, end });
   }
   return orphans;
