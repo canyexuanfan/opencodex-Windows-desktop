@@ -42,10 +42,12 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   }, [load]);
 
   const toggle = (m: string) => {
+    if (busy) return;
     setStatus("");
     setChosen(prev => prev.includes(m) ? prev.filter(x => x !== m) : (prev.length >= 5 ? prev : [...prev, m]));
   };
   const move = (i: number, dir: -1 | 1) => {
+    if (busy) return;
     setChosen(prev => {
       const next = [...prev];
       const j = i + dir;
@@ -72,6 +74,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
         return;
       }
       const d = await r.json() as { applied?: string[] };
+      if (d.applied) setChosen(d.applied);
       setOk(true);
       setStatus(t("sub.saved", { n: d.applied?.length ?? 0, cmd: "ocx sync" }));
     } catch {
@@ -111,13 +114,13 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
             <div key={m} className="card panel-accent row" style={{ padding: "8px 12px", gap: 10 }}>
               <span className="mono font-bold" style={{ width: 18, color: "var(--accent)" }}>{i + 1}</span>
               <code className="mono" style={{ flex: 1, color: "var(--text)" }}>{modelLabel(m)}</code>
-              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t("sub.moveUp", { m })}>
+              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, -1)} disabled={busy || i === 0} aria-label={t("sub.moveUp", { m })}>
                 <IconArrowUp />
               </button>
-              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, 1)} disabled={i === chosen.length - 1} aria-label={t("sub.moveDown", { m })}>
+              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, 1)} disabled={busy || i === chosen.length - 1} aria-label={t("sub.moveDown", { m })}>
                 <IconArrowDown />
               </button>
-              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => toggle(m)} aria-label={t("sub.removeAria", { m })} style={{ color: "var(--red)" }}>
+              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => toggle(m)} disabled={busy} aria-label={t("sub.removeAria", { m })} style={{ color: "var(--red)" }}>
                 <IconX />
               </button>
             </div>
@@ -151,9 +154,9 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
               type="button"
               className={`card row${sel ? " panel-accent" : ""}`}
               onClick={() => toggle(m)}
-              disabled={full}
+              disabled={busy || full}
               aria-pressed={sel}
-              style={{ width: "100%", opacity: full ? 0.45 : 1, cursor: full ? "not-allowed" : "pointer" }}
+              style={{ width: "100%", opacity: full || busy ? 0.45 : 1, cursor: full || busy ? "not-allowed" : "pointer" }}
             >
               <span style={{ width: 16, height: 16, flexShrink: 0, color: "var(--accent)", display: "inline-flex" }}>
                 {sel && <IconCheck style={{ width: 16, height: 16 }} />}

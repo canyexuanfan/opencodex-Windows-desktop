@@ -128,6 +128,8 @@ export default function App() {
     fetchClaudeEnabled,
   );
   const claudeEnabled = claudePoll.data ?? null;
+  const claudeToggleInFlight = useRef(false);
+  const [claudeTogglePending, setClaudeTogglePending] = useState(false);
 
   useEffect(() => {
     if (!navOpen) return;
@@ -158,7 +160,9 @@ export default function App() {
   }, []);
 
   const toggleClaude = async () => {
-    if (claudeEnabled === null) return;
+    if (claudeEnabled === null || claudeToggleInFlight.current) return;
+    claudeToggleInFlight.current = true;
+    setClaudeTogglePending(true);
     const next = !claudeEnabled;
     setClientResourceData(`app-claude-code:${API_BASE}`, next);
     try {
@@ -170,6 +174,9 @@ export default function App() {
       if (!res.ok) setClientResourceData(`app-claude-code:${API_BASE}`, !next);
     } catch {
       setClientResourceData(`app-claude-code:${API_BASE}`, !next);
+    } finally {
+      claudeToggleInFlight.current = false;
+      setClaudeTogglePending(false);
     }
   };
   const handleStop = async () => {
@@ -229,7 +236,12 @@ export default function App() {
                 <Icon /> {t(tkey)}
               </button>
               {id === "claude" && claudeEnabled !== null && (
-                <Switch on={claudeEnabled} onClick={() => void toggleClaude()} label={t("claude.toggleAria")} />
+                <Switch
+                  on={claudeEnabled}
+                  onClick={() => void toggleClaude()}
+                  disabled={claudeTogglePending}
+                  label={t("claude.toggleAria")}
+                />
               )}
             </div>
           ))}
