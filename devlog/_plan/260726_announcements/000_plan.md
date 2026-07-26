@@ -117,6 +117,7 @@ in the previous unit.
 | WP-B | `010_announcement_core.md` | Catalog, baseline, seen/dismiss state, API | — |
 | WP-C | `020_announcement_surface.md` | GUI badge/panel/modal by kind | WP-B |
 | WP-D | `030_onboarding_steps.md` | 1–5 step onboarding on the same substrate | WP-B |
+| — | `031_guided_tour_draft.md` | Game-style guided tour — DRAFT, deferred to a later release | WP-D |
 | WP-E | `040_final_gates.md` | Full gates and close-out | WP-B–WP-D |
 
 WP-D is deliberately last among the feature phases: onboarding content is a
