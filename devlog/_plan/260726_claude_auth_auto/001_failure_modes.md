@@ -78,8 +78,10 @@ API key keeps `ANTHROPIC_AUTH_TOKEN` unset in auto mode.
 auto-connect shell-env file and the launchctl env both inject it, and both key on a
 stored `"proxy"` (`system-env.ts:32-35`, `:241-255`). An auto+absent user therefore
 gets nothing when they type plain `claude` — the feature would look broken for the
-exact population it exists to help. Owned by WP2; the GUI manual-env snippet is
-generated from the same resolution so the copy-paste block cannot disagree.
+exact population it exists to help. Owned by **WP3b** (`035`) after the round-2 split.
+The GUI manual-env snippet is generated from the same resolution — but it is a
+DAEMON-side snapshot, so it can still differ from a terminal that exports its own key;
+that divergence is labelled rather than denied (002 R3-1).
 
 ## F6 — stale gateway model cache / picker
 

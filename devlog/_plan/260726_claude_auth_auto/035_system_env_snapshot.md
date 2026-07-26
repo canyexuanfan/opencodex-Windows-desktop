@@ -1,6 +1,8 @@
 # 035 — WP3b: system-env / launchctl marker lifecycle (audit §4 + R2-4)
 
-Split out of WP2 after round 2 judged that phase too broad. Depends on WP2's resolver.
+Split out of WP2 after round 2 judged that phase too broad. Depends on WP2 (resolver),
+**WP2b** (the GET payload it consumes) and **WP3** (the state mapping that carries
+`detectionScope`) — corrected in round 3 (002 R3-1).
 
 ## Why this phase exists
 
@@ -42,10 +44,19 @@ cost. Instead the promise is narrowed and made visible:
 - the GUI's existing save already triggers the refresh, so "it did not update" has a
   one-click answer instead of a mystery.
 
-## GUI manual-env snippet
+## GUI manual-env snippet — a daemon snapshot, labelled as such
 
 `gui/src/pages/claude-manual-env.ts:36-45` is generated from the GET payload's
-`markerMode`, so the copy-paste block and the real launch cannot disagree.
+`markerMode`. The earlier claim that it "cannot disagree" with the real launch was
+FALSE and is retracted (002 R3-1): daemon-side detection cannot see an
+`ANTHROPIC_API_KEY` exported only in the user's terminal, so a daemon auto-absent
+snapshot can say proxy while `ocx claude` in that terminal resolves subscription.
+
+So the snippet ships with the same `detectionScope: "daemon"` caveat the badge
+carries: it reflects what the daemon can see, and `ocx claude` remains authoritative
+because it resolves against the launch environment itself. A copy-paste block that
+quietly contradicted the CLI is precisely the confusing-report class this unit exists
+to remove; saying so is cheaper and truer than pretending the two are identical.
 
 ## TESTS — `tests/claude-system-env-auto.test.ts` (NEW)
 
@@ -55,6 +66,10 @@ cost. Instead the promise is narrowed and made visible:
 - manual proxy → marker regardless of detection; manual subscription → none;
 - launchctl path follows the same four cases;
 - the "is this ours?" check uses `PROXY_MARKER`, so a user-set token is never unset.
+
+`gui/tests/claude-manual-env*.test.*` gains: the snippet renders the daemon-scope
+caveat, and a terminal-only key scenario is documented as a KNOWN divergence rather
+than asserted away.
 
 ## Verification (C)
 

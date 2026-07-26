@@ -105,7 +105,7 @@ Round 2 judged the original WP2 too broad and split it (`002` R2 tail):
 | WP2 | `020_auto_resolution.md` | Resolver + CLI marker/admission ordering | WP1, WP1b |
 | WP2b | `020` §GET/PUT | Management three-state contract | WP2 |
 | WP3 | `030_gui_effective_mode.md` | Three-state select + reason line (presentation) | WP2b |
-| WP3b | `035_system_env_snapshot.md` | system-env / launchctl marker lifecycle + snapshot semantics | WP2 |
+| WP3b | `035_system_env_snapshot.md` | system-env / launchctl marker lifecycle + snapshot semantics | WP2b, WP3 |
 | WP4 | `040_hardening.md` | Save wrapper, hijack verification, review, gates, live smoke | WP2, WP3b |
 
 ## Accept criteria

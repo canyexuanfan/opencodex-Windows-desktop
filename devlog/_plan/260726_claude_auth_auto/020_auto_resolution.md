@@ -1,7 +1,8 @@
 # 020 — WP2: auto resolution — CLI env, effective-mode endpoint, sticky manual
 
-Depends on WP1. Contract from `000`/`001`; audit fold-backs from `002` (blockers 1,
-2, 3) — the feedback loop, the admission-key axis, and three-state intent.
+Depends on WP1 (detector) and WP1b (migration — the resolver must not read a config
+the migration has not yet normalized). Contract from `000`/`001`; audit fold-backs
+from `002` — the feedback loop, the admission-key axis, and three-state intent.
 
 ## What the resolver answers (exactly one question)
 
@@ -89,7 +90,15 @@ if ((config.apiKeys?.length ?? 0) > 0) setDefault("ANTHROPIC_AUTH_TOKEN", config
 
 // 3. Detection reads the SAME base env the launch will use, so the two can never
 //    disagree; then the dummy goes back only if nothing else claimed the slot.
-const detection = detectClaudeAuth({ ...defaultAuthDetectDeps(), env: () => base, ...(deps?.authDetect ?? {}) });
+// Injected deps spread FIRST; the env binding is applied LAST so a test fake can
+// never silently break the "detection sees the launch env" invariant (002 R3-3).
+// The injection type is Omit<Partial<AuthDetectDeps>, "env"> so this is also a
+// compile-time guarantee, not just an ordering convention.
+const detection = detectClaudeAuth({
+  ...defaultAuthDetectDeps(),
+  ...(deps?.authDetect ?? {}),
+  env: () => base,
+});
 const resolved = resolveClaudeAuthMode(config, detection);
 if (!env.ANTHROPIC_AUTH_TOKEN && resolved.markerMode === "proxy") {
   env.ANTHROPIC_AUTH_TOKEN = PROXY_MARKER;

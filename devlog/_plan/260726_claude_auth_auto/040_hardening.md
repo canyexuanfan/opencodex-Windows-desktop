@@ -7,29 +7,42 @@ the full gates, and the live smoke. Audit fold-backs from `002` §6 and §8.
 
 `src/config.ts`:
 
+The snapshot is bound to the CONFIG INSTANCE, not a module global (002 R3-2): a
+second `loadConfig()` elsewhere must not refresh the baseline that a long-lived
+server config is judged against, or a later stale save would look like "our change".
+
 ```ts
-// Snapshot of the claudeCode subtree as last read/written by US (structural clone).
-let lastKnownClaudeCode: unknown = undefined;
-let snapshotArmed = false;                       // false until loadConfig sets it once
+/** Per-config-instance baseline; no cross-instance leakage. */
+const claudeCodeBaseline = new WeakMap<OcxConfig, unknown>();
+
+/** Called once where the long-lived server config is created (startServer). */
+export function armClaudeCodeBaseline(config: OcxConfig): void {
+  claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
+}
 
 export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
   const onDisk = readRawConfigJson();            // literal file, no schema merge
-  if (snapshotArmed && onDisk !== undefined) {
-    const diskChanged = !deepEqual(onDisk.claudeCode, lastKnownClaudeCode);
-    const weChanged = !deepEqual(config.claudeCode, lastKnownClaudeCode);
+  const armed = claudeCodeBaseline.has(config);
+  if (armed && onDisk !== undefined) {
+    const baseline = claudeCodeBaseline.get(config);
+    const diskChanged = !deepEqual(onDisk.claudeCode, baseline);
+    const weChanged = !deepEqual(config.claudeCode, baseline);
     if (diskChanged && !weChanged) {
-      // Someone hand-edited claudeCode while we ran and we have no own change to
-      // defend: their edit wins instead of being clobbered.
+      // Hand-edited while we ran and we have no own change to defend: their edit wins.
       config.claudeCode = onDisk.claudeCode as OcxConfig["claudeCode"];
     }
-    // diskChanged && weChanged -> our change wins and the snapshot rebases below.
+    // diskChanged && weChanged -> our change wins and the baseline rebases below.
     // Documented conflict policy; a three-way merge is out of scope (002 §6).
   }
   saveConfig(config);
-  lastKnownClaudeCode = structuredClone(config.claudeCode);
-  snapshotArmed = true;
+  claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
 }
 ```
+
+**Arming is mandatory, not lazy** (002 R3-2): `startServer` calls
+`armClaudeCodeBaseline(config)` immediately after it loads the config, so the FIRST
+service save is already guarded. A lazy "arm on first save" would lose exactly the
+edit made before that first save — the case the guard exists for.
 
 `deepEqual` is a structural compare on the PARSED subtrees, not `JSON.stringify` —
 key order must not decide whether a user's hand edit survives (002 §8).
@@ -47,6 +60,23 @@ combo migration (`combo-routes.ts:164-182`) and CLI Desktop
 (`claude-desktop.ts:117-119`, `:135-138`) — as well as the direct `claudeCode`
 mutators (claude-code PUT, Desktop auto-apply `agent-settings-routes.ts:95-96`,
 Desktop profile routes `:498-499`, `:510-511`, `:531-532`).
+
+### The conversion is mechanical, and enforced (002 R3-2)
+
+"Every service-time save" is a claim until something checks it. The conversion
+boundary is: **any module under `src/server/management/` plus the CLI commands that
+operate on a running service** replaces `saveConfig(config)` with the wrapper. Known
+call sites to convert include `model-routes.ts:127-128` and `:227`,
+`provider-routes.ts:112-119`, `combo-routes.ts:164-182`, the agent-settings writers
+above, and the CLI Desktop commands. Dynamic `await import("../../config")` forms
+count — a grep for `saveConfig` alone would miss them if only static imports were
+considered.
+
+Enforcement is a test, not a promise: `tests/config-save-boundary.test.ts` walks
+`src/server/management/**` and asserts no module calls bare `saveConfig(` (the
+wrapper is the only permitted entry point), mirroring the writer-boundary test this
+repo already uses for the Grok fence. Startup migrations in `src/server/index.ts` are
+the documented exception — they run before the server is serving requests.
 
 Explicitly **out of scope**: preserving non-`claudeCode` subtrees. A hand edit to
 `providers` is still clobbered — the earlier "preserved naturally" claim was false and
@@ -69,6 +99,10 @@ Tests (`tests/config-user-edits.test.ts`, NEW):
 - **the R2-5 integration case**: hand-edit `claudeCode`, then invoke an UNRELATED
   model-visibility PUT → the hand edit survives (this is the test that would have
   failed under the per-writer design);
+- **first-save case (R3-2)**: hand-edit BEFORE the service's first save → the edit
+  still survives, proving the baseline was armed at startup rather than lazily;
+- **instance isolation (R3-2)**: an unrelated `loadConfig()` elsewhere does not
+  refresh the server instance's baseline;
 - in-memory change to `authMode` + disk edit → in-memory wins, snapshot rebases, and
   the NEXT hand edit starts from the new baseline;
 - key-order-only difference on disk → treated as EQUAL (structural compare), so no

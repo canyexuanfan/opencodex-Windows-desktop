@@ -235,3 +235,48 @@ WP2 was too broad. New map:
 | WP3 | GUI select + reason line (presentation only) |
 | WP3b | system-env / launchctl snapshot semantics + documented refresh |
 | WP4 | hardening: save wrapper, hijack verification, review, gates, live smoke |
+
+---
+
+# Round 3 — `VERDICT: GO-WITH-FIXES (blockers=3)` @ `7bcb2087`
+
+### R3-1. High — WP3b dependency order + a false "cannot disagree" claim. ACCEPTED.
+
+WP3b consumes the GET payload (WP2b) and the state mapping that carries
+`detectionScope` (WP3), so its dependency is `WP2b, WP3`, not `WP2`. And the manual
+snippet CAN disagree with `ocx claude`: daemon detection cannot see a terminal-only
+`ANTHROPIC_API_KEY`, so a daemon auto-absent snapshot says proxy while that terminal
+resolves subscription. The claim is retracted in `035`; the snippet carries the same
+daemon-scope caveat as the badge. Denying a real divergence would manufacture exactly
+the confusing report this unit exists to remove.
+
+### R3-2. High — snapshot ownership and an unenforced conversion. ACCEPTED.
+
+Two real defects in my guard:
+
+- A module-global baseline is wrong when another `loadConfig()` refreshes it while the
+  server holds an older object — a later stale save then looks like "our change".
+  Fixed: `WeakMap<OcxConfig, Snapshot>` keyed on the config INSTANCE, armed by
+  `armClaudeCodeBaseline(config)` in `startServer`. Arming is eager, so the FIRST
+  service save is already guarded (a lazy arm loses precisely the edit made before it).
+- "Every service-time save" was a claim with nothing checking it. Fixed: a stated
+  conversion boundary (`src/server/management/**` plus running-service CLI commands,
+  including dynamic `await import("../../config")` forms) and a boundary TEST that
+  walks those modules and rejects bare `saveConfig(` — the same shape as this repo's
+  Grok writer-boundary test. Startup migrations in `src/server/index.ts` are the
+  documented exception.
+
+### R3-3. Medium — injected deps could override the env binding. ACCEPTED.
+
+My own new defect: `{ ...defaults, env: () => base, ...injected }` lets a test fake
+replace `env` and silently break the invariant I had just added. Fixed by spreading
+injected deps FIRST and binding `env` LAST, plus typing the injection as
+`Omit<Partial<AuthDetectDeps>, "env">` so it is a compile-time guarantee.
+
+### Non-blocking, accepted
+
+`020` header now names WP1b as a dependency; F8 in `001` is reassigned from WP2 to
+WP3b; the sentinel test validates type/value, not truthiness. Reviewer confirmed
+R2-1's ordering, R2-3's sentinel placement (PUT spreads `{ ...config.claudeCode }` at
+`agent-settings-routes.ts:672` and `ocx init` never creates the block), and the
+launchctl predicate swap.

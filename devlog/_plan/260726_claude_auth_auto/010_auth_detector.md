@@ -46,7 +46,9 @@ export interface AuthDetectDeps {
   /**
    * The environment to inspect for S5. The CLI passes the SAME base env the launch
    * will use, so detection and the spawned process can never disagree (002 R2-2):
-   *   detectClaudeAuth({ ...defaultAuthDetectDeps(), env: () => base })
+   *   detectClaudeAuth({ ...defaultAuthDetectDeps(), ...injected, env: () => base })
+   * Callers inject with `Omit<Partial<AuthDetectDeps>, "env">` so a test fake cannot
+   * replace this binding (002 R3-3).
    */
   env(): NodeJS.ProcessEnv;
 }
