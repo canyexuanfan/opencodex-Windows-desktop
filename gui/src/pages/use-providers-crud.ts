@@ -82,7 +82,9 @@ export function useProvidersCrud({
         const data = await res.json().catch(() => ({})) as { error?: string };
         return { ok: false, error: data.error || "Update failed" };
       }
-      fetchConfig();
+      // Await refresh so callers (e.g. notes editor) only leave edit mode once
+      // item.note reflects the saved value.
+      await fetchConfig();
       return { ok: true };
     } catch {
       return { ok: false, error: "Network error" };
