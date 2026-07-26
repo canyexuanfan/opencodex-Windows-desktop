@@ -5,10 +5,10 @@ import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
 import { type ComboItem, parseComboList } from "../combo-workspace-data";
+import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import {
   buildProviderModelGroups,
   type ConfiguredProviderSummary,
-  type ProviderDiscoverySummary,
   type ProviderModelGroup,
 } from "../models-groups";
 import {
@@ -20,75 +20,27 @@ import {
   type ModelVisibilityScope,
   type ModelVisibilityTarget,
 } from "../model-visibility";
-
-interface ModelRow {
-  provider: string;
-  id: string;
-  namespaced: string;
-  disabled: boolean;
-  native?: boolean;
-  custom?: boolean;
-  customId?: string;
-  displayName?: string;
-  inputModalities?: string[];
-  contextWindow?: number;
-  contextCap?: number;
-  contextCapped?: boolean;
-}
-
-interface ProviderContextCapsResponse {
-  cap?: number;
-  value?: number;
-  caps?: Record<string, number>;
-}
-
-interface V2Status {
-  enabled: boolean;
-  agentsMaxThreadsConflict: boolean;
-  maxConcurrentThreadsPerSession?: number | null;
-  multiAgentMode?: "v1" | "default" | "v2";
-}
-
-interface ShadowCallData {
-  enabled: boolean;
-  model: string;
-}
-
-const CAP_OPTIONS = Array.from({ length: 18 }, (_, i) => 100_000 + i * 50_000); // 100k … 950k
-const CAP_OPTION_SET = new Set(CAP_OPTIONS);
-const CUSTOM_OPTION = "custom";
-const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128, 256, 500, 1000];
-const THREAD_OPTION_SET = new Set(THREAD_OPTIONS);
-const PAGE = 60; // rows rendered per provider before a "show more" (keeps 1000s-of-models providers usable)
-
-/** Compact token display (350k) — unit is technical, not prose. */
-function fmtK(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return String(n);
-  return n % 1000 === 0 ? `${n / 1000}k` : n.toLocaleString();
-}
-
-function collectDisabledNamespaced(rows: ModelRow[]): Set<string> {
-  const next = new Set<string>();
-  for (const m of rows) {
-    if (m.disabled) next.add(m.namespaced);
-  }
-  return next;
-}
-
-function activeModelOptions(
-  models: ModelRow[],
-  disabled: Set<string>,
-  selected: ProviderModelMap,
-): { value: string; label: string }[] {
-  const options: { value: string; label: string }[] = [];
-  for (const m of models) {
-    const blocked = disabled.has(m.id) || disabled.has(m.namespaced);
-    if (modelVisible(selected, m.provider, m.id, m.native === true, blocked)) {
-      options.push({ value: m.namespaced, label: m.namespaced });
-    }
-  }
-  return options;
-}
+import {
+  activeModelOptions,
+  CAP_OPTION_SET,
+  CAP_OPTIONS,
+  collectDisabledNamespaced,
+  CUSTOM_OPTION,
+  fmtK,
+  PAGE,
+  readCollapsedProviders,
+  readCombosOpen,
+  THREAD_OPTION_SET,
+  THREAD_OPTIONS,
+  writeCollapsedProviders,
+  writeCombosOpen,
+  discoveryFailureLabel,
+  type ModelRow,
+  type ProviderContextCapsResponse,
+  type ShadowCallData,
+  type V2Status,
+} from "./models-shared";
+import { EmptyProviderHint } from "./models-provider-hints";
 
 export default function Models({ apiBase }: { apiBase: string }) {
   const t: TFn = useT();
@@ -102,12 +54,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [contextCapValue, setContextCapValue] = useState(350_000);
   const [customCap, setCustomCap] = useState("");
   const [showCustom, setShowCustom] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem("ocx-models-collapsed");
-      return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
-    } catch { return new Set(); }
-  });
+  const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsedProviders);
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -142,26 +89,33 @@ export default function Models({ apiBase }: { apiBase: string }) {
   // an API error must never masquerade as "no combos configured").
   const [combos, setCombos] = useState<ComboItem[] | null>(null);
   const [combosError, setCombosError] = useState(false);
-  const [combosOpen, setCombosOpen] = useState(() => {
-    try { return localStorage.getItem("ocx-models-combos-open") === "1"; } catch { return false; }
-  });
+  const [combosOpen, setCombosOpen] = useState(readCombosOpen);
 
   // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const toggleCombosOpen = () => {
-    setCombosOpen(prev => {
-      const next = !prev;
-      try { localStorage.setItem("ocx-models-combos-open", next ? "1" : "0"); } catch { /* ignore */ }
-      return next;
-    });
+    const next = !combosOpen;
+    writeCombosOpen(next);
+    setCombosOpen(next);
   };
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`${apiBase}/api/combos`)
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
-      .then((j: unknown) => { if (!cancelled) { setCombos(parseComboList(j)); setCombosError(false); } })
-      .catch(() => { if (!cancelled) { setCombos(null); setCombosError(true); } });
+    void (async () => {
+      try {
+        const r = await fetch(`${apiBase}/api/combos`);
+        const j = await readJsonOrThrow<unknown>(r);
+        if (!cancelled) {
+          setCombos(parseComboList(j));
+          setCombosError(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setCombos(null);
+          setCombosError(true);
+        }
+      }
+    })();
     return () => { cancelled = true; };
   }, [apiBase]);
 
@@ -177,7 +131,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const loadShadowCall = useCallback(async () => {
     try {
       const r = await fetch(`${apiBase}/api/shadow-call-settings`);
-      if (r.ok) setShadowCall(await r.json() as ShadowCallData);
+      const data = await readJsonIfOk<ShadowCallData>(r);
+      if (data) setShadowCall(data);
     } catch { /* old server / network: keep the section disabled */ }
   }, [apiBase]);
 
@@ -186,16 +141,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
     if (v2BusyRef.current) return;
     try {
       const r = await fetch(`${apiBase}/api/v2`);
-      if (!r.ok || !(r.headers.get("content-type") ?? "").includes("application/json")) { setV2(null); return; }
-      const data = await r.json() as V2Status;
-      if (typeof data.enabled === "boolean") {
-        setV2({
-          enabled: data.enabled,
-          agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
-          maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
-          multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
-        });
-      }
+      if (!(r.headers.get("content-type") ?? "").includes("application/json")) { setV2(null); return; }
+      const data = await readJsonIfOk<V2Status>(r);
+      if (!data || typeof data.enabled !== "boolean") { setV2(null); return; }
+      setV2({
+        enabled: data.enabled,
+        agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
+        maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
+        multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
+      });
     } catch {
       setV2(null); // old server / network: hide the section instead of guessing
     }
@@ -206,14 +160,20 @@ export default function Models({ apiBase }: { apiBase: string }) {
     loadPendingRef.current = true;
     const generation = ++loadGenerationRef.current;
     try {
-      const [data, capsData] = await Promise.all([
-        fetch(`${apiBase}/api/models`).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status)))) as Promise<ModelRow[]>,
-        fetch(`${apiBase}/api/provider-context-caps`).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status)))) as Promise<ProviderContextCapsResponse>,
-      ]);
-      const [providerData, selectionData] = await Promise.all([
-        fetch(`${apiBase}/api/providers`).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status)))) as Promise<ConfiguredProviderSummary[]>,
+      const [modelsRes, capsRes, providersRes, selectionData] = await Promise.all([
+        fetch(`${apiBase}/api/models`),
+        fetch(`${apiBase}/api/provider-context-caps`),
+        fetch(`${apiBase}/api/providers`),
         fetchSelectedModels(apiBase),
       ]);
+      const [data, capsData, providerData] = await Promise.all([
+        readJsonOrThrow<ModelRow[]>(modelsRes),
+        readJsonOrThrow<ProviderContextCapsResponse>(capsRes),
+        readJsonOrThrow<ConfiguredProviderSummary[]>(providersRes),
+      ]);
+      if (data === undefined || capsData === undefined || providerData === undefined) {
+        throw new Error("models payload missing");
+      }
       if (!shouldApplyLoadGeneration(generation, loadGenerationRef.current)) return false;
       void loadV2(); // best-effort, independent of the models fetch
       void loadShadowCall();
@@ -320,15 +280,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider, enabled }),
       });
-      if (r.ok) {
-        const data = (await r.json()) as ProviderContextCapsResponse;
-        setContextCaps(data.caps ?? {});
+      try {
+        const data = await readJsonOrThrow<ProviderContextCapsResponse>(r, t("models.capSaveFailed"));
+        setContextCaps(data?.caps ?? {});
         setOk(true);
         setStatus(t("models.capApplied"));
         await load(true);
-      } else {
+      } catch (e) {
         setOk(false);
-        setStatus(t("models.capSaveFailed"));
+        setStatus(e instanceof Error ? e.message : t("models.capSaveFailed"));
       }
     } catch {
       setOk(false); setStatus(t("models.networkError"));
@@ -341,14 +301,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
     setCollapsed(prev => {
       const n = new Set(prev);
       if (n.has(p)) n.delete(p); else n.add(p);
-      try { localStorage.setItem("ocx-models-collapsed", JSON.stringify([...n])); } catch { /* quota */ }
+      writeCollapsedProviders(n);
       return n;
     });
   };
   const setAllCollapsed = (collapse: boolean) => {
     setCollapsed(() => {
       const n = collapse ? new Set(groups.map(group => group.provider)) : new Set<string>();
-      try { localStorage.setItem("ocx-models-collapsed", JSON.stringify([...n])); } catch { /* quota */ }
+      writeCollapsedProviders(n);
       return n;
     });
   };
@@ -363,16 +323,16 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (r.ok) {
-        const data = (await r.json()) as ProviderContextCapsResponse;
-        if (typeof data.value === "number" && Number.isFinite(data.value) && data.value > 0) setContextCapValue(data.value);
-        setContextCaps(data.caps ?? {});
+      try {
+        const data = await readJsonOrThrow<ProviderContextCapsResponse>(r, t("models.capSaveFailed"));
+        if (typeof data?.value === "number" && Number.isFinite(data.value) && data.value > 0) setContextCapValue(data.value);
+        setContextCaps(data?.caps ?? {});
         setOk(true);
         setStatus(t("models.capApplied"));
         await load(true);
-      } else {
+      } catch (e) {
         setOk(false);
-        setStatus(t("models.capSaveFailed"));
+        setStatus(e instanceof Error ? e.message : t("models.capSaveFailed"));
       }
     } catch {
       setOk(false); setStatus(t("models.networkError"));
@@ -439,15 +399,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ multiAgentMode: mode }),
       });
-      const data = await r.json().catch(() => null) as V2Status & { warnings?: string[]; error?: string } | null;
-      if (r.ok && data) {
+      try {
+        const data = await readJsonOrThrow<V2Status & { warnings?: string[] }>(r, t("models.saveFailed"));
         void loadV2();
         setOk(true);
         setStatus(t("models.v2Applied"));
-        setV2Note((data.warnings ?? []).join(" "));
-      } else {
+        setV2Note((data?.warnings ?? []).join(" "));
+      } catch (e) {
         setOk(false);
-        setStatus(data?.error ?? t("models.saveFailed"));
+        setStatus(e instanceof Error ? e.message : t("models.saveFailed"));
       }
     } catch {
       setOk(false); setStatus(t("models.networkError"));
@@ -474,9 +434,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ maxConcurrentThreadsPerSession: value }),
       });
-      const data = await r.json().catch(() => null) as V2Status & { warnings?: string[]; error?: string } | null;
-      if (r.ok && data && typeof data.enabled === "boolean") {
-      setV2({
+      try {
+        const data = await readJsonOrThrow<V2Status & { warnings?: string[] }>(r, t("models.saveFailed"));
+        if (!data || typeof data.enabled !== "boolean") {
+          setOk(false);
+          setStatus(t("models.saveFailed"));
+          return;
+        }
+        setV2({
           enabled: data.enabled,
           agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
           maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
@@ -485,9 +450,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
         setOk(true);
         setStatus(t("models.v2ThreadsApplied"));
         setShowThreadsCustom(false);
-      } else {
+      } catch (e) {
         setOk(false);
-        setStatus(data?.error ?? t("models.saveFailed"));
+        setStatus(e instanceof Error ? e.message : t("models.saveFailed"));
       }
     } catch {
       setOk(false); setStatus(t("models.networkError"));
@@ -539,14 +504,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider, modelId, displayName, contextWindow, inputModalities }),
       });
-      if (r.ok) {
+      try {
+        await readJsonOrThrow(r, t("models.customSaveFailed"));
         setCustomModalOpen(false);
         setOk(true);
         setStatus(t("models.customAdded"));
         await load(true);
-      } else {
-        const data = await r.json().catch(() => null) as { error?: string } | null;
-        setCustomError(data?.error ?? t("models.customSaveFailed"));
+      } catch (e) {
+        setCustomError(e instanceof Error ? e.message : t("models.customSaveFailed"));
       }
     } catch {
       setCustomError(t("models.networkError"));
@@ -564,14 +529,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       });
-      if (r.ok) {
+      try {
+        await readJsonOrThrow(r, t("models.customSaveFailed"));
         setCustomModalOpen(false);
         setOk(true);
         setStatus(t("models.customUpdated"));
         await load(true);
-      } else {
-        const data = await r.json().catch(() => null) as { error?: string } | null;
-        setCustomError(data?.error ?? t("models.customSaveFailed"));
+      } catch (e) {
+        setCustomError(e instanceof Error ? e.message : t("models.customSaveFailed"));
       }
     } catch {
       setCustomError(t("models.networkError"));
@@ -655,7 +620,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
            <span
              className="badge badge-amber"
              role="status"
-             title={discoveryFailureReason(t, discoveryFailure)}
+             title={discoveryFailureLabel(t, discoveryFailure)}
            >
              {t("models.discoveryFailedBadge")}
            </span>
@@ -1299,49 +1264,4 @@ export default function Models({ apiBase }: { apiBase: string }) {
     </div>
   );
 
-}
-
-function discoveryFailureReason(
-  t: ReturnType<typeof useT>,
-  discovery: Extract<ProviderDiscoverySummary, { status: "failed" }>,
-): string {
-  switch (discovery.reason) {
-    case "http":
-      return t("models.discoveryFailedHttp", { status: discovery.httpStatus });
-    case "blocked":
-      return t("models.discoveryFailedBlocked");
-    case "invalid_response":
-      return t("models.discoveryFailedInvalidResponse");
-    case "network":
-      return t("models.discoveryFailedNetwork");
-    case "provider":
-      return t("models.discoveryFailedProvider");
-    default:
-      return t("models.discoveryFailedGeneric");
-  }
-}
-
-export function EmptyProviderHint({
-  liveModels,
-  discovery,
-  showFailureBadge = true,
-}: {
-  liveModels: boolean;
-  discovery?: ProviderDiscoverySummary;
-  showFailureBadge?: boolean;
-}) {
-  const t = useT();
-  const failed = liveModels && discovery?.status === "failed" ? discovery : undefined;
-  return (
-    <div className="row muted text-label leading-body" role="status" style={{ alignItems: "flex-start", gap: 8, padding: "6px 0" }}>
-      <IconInfo width={15} height={15} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
-      <span>
-        {failed && showFailureBadge && <><span className="badge badge-amber">{t("models.discoveryFailedBadge")}</span>{" "}</>}
-        {failed
-          ? `${discoveryFailureReason(t, failed)} `
-          : `${t(liveModels ? "models.emptyDiscovery" : "models.emptyDiscoveryDisabled")} `}
-        <a href="#providers">{t("models.openProviderSettings")}</a>
-      </span>
-    </div>
-  );
 }
