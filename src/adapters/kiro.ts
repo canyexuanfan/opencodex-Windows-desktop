@@ -599,6 +599,19 @@ function retryableKiroIncomplete(
 }
 
 /**
+ * Catch-path retryability for #519: only transport/socket failures with no emitted output
+ * are replay-safe. Malformed event payloads (`invalid Kiro …`) and any post-output failure
+ * stay terminal — same spirit as cursor's emittedOutput gate.
+ */
+export function isRetryableKiroStreamCatchError(err: unknown, emittedOutput: boolean): boolean {
+  if (emittedOutput) return false;
+  const message = err instanceof Error ? err.message : String(err);
+  if (/^invalid Kiro\b/i.test(message)) return false;
+  return /socket connection was closed|connection(?: was)? closed unexpectedly|ECONNRESET|EPIPE|UND_ERR_|fetch failed|decoder failed|premature close|other side closed|unexpected EOF|network connection lost|terminated/i
+    .test(message);
+}
+
+/**
  * Suppress only a whitespace-normalized exact repeat. Semantic/fuzzy matching was rejected
  * during review: two long near-identical messages can differ by a single status word
  * ("is still pending" -> "is now complete") and still clear every similarity threshold, so
@@ -1195,6 +1208,20 @@ async function* parseKiroAttemptEvents(
       },
     };
   } catch (err) {
+    // Mid-stream socket closes after response.created / heartbeats only must stay retryable:
+    // nothing was relayed to the client, so a string-body replay is safe (see #519 / cursor's
+    // emittedOutput gate). Once any assistant text, reasoning, tool, or deferred content exists,
+    // fail closed — the client may already have partial output. Protocol parse throws stay
+    // non-retryable even with zero output.
+    const emittedOutput = sawText
+      || sawReasoning
+      || sawRealTool
+      || assistantText.length > 0
+      || deferred.length > 0
+      || completionAnswer !== undefined
+      || completionCalls > 0
+      || open !== null
+      || fallbackEvents.length > 0;
     return {
       assistantText,
       sawReasoning,
@@ -1204,7 +1231,7 @@ async function* parseKiroAttemptEvents(
         status: 502,
         errorType: "server_error",
         code: "kiro_stream_protocol_error",
-        retryable: false,
+        retryable: isRetryableKiroStreamCatchError(err, emittedOutput),
         usage: usage(),
       },
     };

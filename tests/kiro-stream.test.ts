@@ -970,15 +970,57 @@ describe("kiro adapter — parseStream", () => {
         throw new Error("decoder failed refreshToken=rt-secret clientSecret=client-secret /Users/example/private/file.json");
       },
     });
-    const errors: string[] = [];
+    const errors: Array<{ message: string; retryable?: boolean }> = [];
     for await (const e of createKiroAdapter(provider).parseStream(new Response(broken))) {
-      if (e.type === "error") errors.push(e.message);
+      if (e.type === "error") errors.push({ message: e.message, retryable: e.retryable });
     }
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("Kiro upstream error");
-    expect(errors[0]).not.toContain("rt-secret");
-    expect(errors[0]).not.toContain("client-secret");
-    expect(errors[0]).not.toContain("/Users/example");
+    expect(errors[0]?.message).toContain("Kiro upstream error");
+    expect(errors[0]?.message).not.toContain("rt-secret");
+    expect(errors[0]?.message).not.toContain("client-secret");
+    expect(errors[0]?.message).not.toContain("/Users/example");
+    // No content was emitted — safe to replay (#519).
+    expect(errors[0]?.retryable).toBe(true);
+  });
+
+  test("socket close after heartbeats-only / zero output is retryable (#519)", async () => {
+    const broken = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(eventFrame({ conversationId: "kiro-conv-heartbeat-only" }));
+      },
+      pull() {
+        throw new Error("The socket connection was closed unexpectedly. For more information, pass verbose: true in the second argument to fetch()");
+      },
+    });
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(broken)));
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      code: "kiro_stream_protocol_error",
+      status: 502,
+      retryable: true,
+      usage: expect.objectContaining({ outputTokens: 0 }),
+    });
+  });
+
+  test("socket close after assistant text is not retryable (#519)", async () => {
+    const frames = [eventFrame({ content: "partial answer" })];
+    let i = 0;
+    const broken = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (i < frames.length) {
+          controller.enqueue(frames[i++]!);
+          return;
+        }
+        throw new Error("The socket connection was closed unexpectedly");
+      },
+    });
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(broken)));
+    expect(events.some(event => event.type === "text_delta")).toBe(true);
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      code: "kiro_stream_protocol_error",
+      retryable: false,
+    });
   });
 
   test("leading thinking block is emitted as raw reasoning, not visible text", async () => {
