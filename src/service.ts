@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort } from "./config";
 import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex/inject";
+import { stripGrokConfig } from "./grok/inject";
 import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
@@ -160,13 +161,42 @@ export function serviceReinstallArgs(): string[] {
   return readServiceBackend() === "native" ? ["service", "install", "--native"] : ["service", "install"];
 }
 
+/**
+ * The service was installed under a different CODEX_HOME/OPENCODEX_HOME, so this process may not
+ * touch it. Distinct from "stop failed": the manager was never even contacted, which means the
+ * installed service is still live and shared state (native Codex config, the Grok fence) must be
+ * left alone — tearing it down would strip config out from under a running service.
+ */
+export class ServiceOwnershipError extends Error {
+  readonly code = "service-ownership-mismatch" as const;
+}
+
+export function isServiceOwnershipError(err: unknown): err is ServiceOwnershipError {
+  return err instanceof ServiceOwnershipError;
+}
+
+/**
+ * True when no installed service exists, or the installed one belongs to THIS
+ * CODEX_HOME/OPENCODEX_HOME. Callers use it to decide whether they may tear down shared state
+ * (native Codex config, the Grok fence) that a foreign service would still be relying on.
+ */
+export function serviceEnvironmentOwnedHere(): boolean {
+  try {
+    assertServiceEnvironmentMatchesInstall();
+    return true;
+  } catch (err) {
+    if (isServiceOwnershipError(err)) return false;
+    return true; // unrelated failure: fall back to the previous behavior rather than wedging
+  }
+}
+
 export function assertServiceEnvironmentMatchesInstall(): void {
   const state = readServiceInstallState();
   if (!state) return;
   const expected = normalizePathForCompare(state.codexHome);
   const actual = normalizePathForCompare(currentCodexHome());
   if (expected !== actual) {
-    throw new Error(
+    throw new ServiceOwnershipError(
       `Service was installed with CODEX_HOME=${state.codexHome}, but current CODEX_HOME=${currentCodexHome()}. ` +
         "Run the service command from the same Codex home so native Codex restore updates the correct config.",
     );
@@ -174,7 +204,7 @@ export function assertServiceEnvironmentMatchesInstall(): void {
   const expectedOpenCodexHome = normalizePathForCompare(state.opencodexHome);
   const actualOpenCodexHome = normalizePathForCompare(currentOpenCodexHome());
   if (expectedOpenCodexHome !== actualOpenCodexHome) {
-    throw new Error(
+    throw new ServiceOwnershipError(
       `Service was installed with OPENCODEX_HOME=${state.opencodexHome}, but current OPENCODEX_HOME=${currentOpenCodexHome()}. ` +
         "Run the service command from the same OpenCodex home so service state and secrets match.",
     );
@@ -1148,12 +1178,19 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       break;
     case "stop":
       assertServiceEnvironmentMatchesInstall();
-      ops.stop();
+      // Only stop what is actually installed. The unguarded call ran a real `launchctl unload`
+      // (and its Windows/Linux twins) even with nothing installed.
+      if (ops.status() !== null || isServiceInstalled()) ops.stop();
       await stopTrackedProxyForServiceCommand();
       {
         const restore = restoreNativeCodex();
         if (restore.success) console.log("✅ service stopped + native Codex restored.");
         else console.error(`⚠️ service stopped, but native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` (or check $CODEX_HOME/config.toml) before using native Codex.`);
+        // The Grok fence is the other managed config this command owns. Leaving it behind
+        // pointed grok at a dead endpoint while native Codex was already restored.
+        const grok = stripGrokConfig();
+        if (grok.changed) console.log(`↩️  ${grok.message}`);
+        else if (!grok.ok) console.error(`⚠️  ${grok.message}`);
       }
       break;
     case "status": {
@@ -1181,6 +1218,9 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
         if (!restore.success) {
           console.error(`⚠️ native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` before using native Codex.`);
         }
+        const grok = stripGrokConfig();
+        if (grok.changed) console.log(`↩️  ${grok.message}`);
+        else if (!grok.ok) console.error(`⚠️  ${grok.message}`);
       }
       removeServiceInstallState();
       try { if (existsSync(serviceApiTokenFilePath())) unlinkSync(serviceApiTokenFilePath()); } catch { /* best-effort */ }

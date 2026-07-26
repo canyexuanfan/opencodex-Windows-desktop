@@ -46,14 +46,21 @@ export function gracefulStopHost(hostname: string | undefined): string {
 }
 
 /**
+ * Outcome of a graceful stop attempt. `"refused"` is distinct from failure: the proxy answered
+ * that it must NOT be stopped from here, so callers must not escalate to a forced kill.
+ */
+export type GracefulStopResult = boolean | "refused";
+
+/**
  * Ask a running proxy to stop itself via the management API (`POST /api/stop`), which
  * drains in-flight turns, restores native Codex, and cleans its pid/runtime files.
  * This is the only way to get a GRACEFUL stop on Windows, where the POSIX
  * SIGTERM-then-SIGKILL ladder does not exist and `taskkill /F` gives the proxy no
  * chance to run its shutdown handlers. Returns false when the proxy can't be reached
- * or doesn't exit in time — callers fall back to {@link killProxy}.
+ * or doesn't exit in time — callers fall back to {@link killProxy}. Returns `"refused"`
+ * when the proxy declines the stop (HTTP 409), which callers must NOT force past.
  */
-export async function stopProxyGracefully(pid: number, io: GracefulStopIo = {}): Promise<boolean> {
+export async function stopProxyGracefully(pid: number, io: GracefulStopIo = {}): Promise<GracefulStopResult> {
   const readRuntime = io.readRuntime ?? readRuntimePort;
   const runtime = readRuntime(pid);
   if (!runtime?.port) return false;
@@ -71,6 +78,11 @@ export async function stopProxyGracefully(pid: number, io: GracefulStopIo = {}):
       // longer than a health poll so we prefer drain over taskkill /F.
       signal: AbortSignal.timeout(io.exitTimeoutMs ? Math.min(io.exitTimeoutMs, 10_000) : 10_000),
     });
+    // 409 is the proxy REFUSING to stop (a service installed under another home owns it and
+    // would respawn it anyway). That is a policy answer, not a dead endpoint — escalating to
+    // SIGTERM here would run the daemon's cleanup and strip shared config out from under the
+    // still-running service. Report the refusal instead of forcing.
+    if (res.status === 409) return "refused";
     if (!res.ok) return false;
   } catch {
     return false;
@@ -94,7 +106,16 @@ function drainDeadlineMs(): number {
 export async function stopProxy(pid: number): Promise<void> {
   if (!isProcessAlive(pid)) return;
   const runtime = readRuntimePort(pid);
-  if (await stopProxyGracefully(pid)) {
+  const graceful = await stopProxyGracefully(pid);
+  if (graceful === "refused") {
+    // The proxy refused on purpose (foreign service owns it). Forcing would strip shared
+    // config while that service keeps the proxy alive.
+    throw new Error(
+      "The running proxy refused to stop: a service installed under a different "
+      + "CODEX_HOME/OPENCODEX_HOME owns it. Run the stop from that home.",
+    );
+  }
+  if (graceful) {
     await waitForStoppedPort(runtime, pid);
     return;
   }
