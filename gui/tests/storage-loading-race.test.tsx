@@ -126,3 +126,85 @@ test("an aborted Storage fetch must not clear loading while its replacement is i
   });
   container.remove();
 });
+
+test("effect cleanup invalidates generation before abort so loading stays owned across the deferred replacement gap", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  type Gate = {
+    resolve: (body: unknown) => void;
+    reject: (reason?: unknown) => void;
+  };
+  const gates: Gate[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("/api/storage")) return new Response(null, { status: 404 });
+    const signal = init?.signal;
+    const body = await new Promise<unknown>((resolve, reject) => {
+      const gate: Gate = { resolve, reject };
+      gates.push(gate);
+      if (signal?.aborted) {
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+        return;
+      }
+      signal?.addEventListener("abort", () => {
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      }, { once: true });
+    });
+    return Response.json(body);
+  }) as typeof fetch;
+
+  function Harness() {
+    const [apiBase, setApiBase] = useState("http://old");
+    (window as unknown as { __bumpApiBase?: () => void }).__bumpApiBase = () => setApiBase("http://new");
+    return (
+      <LanguageProvider>
+        <Storage apiBase={apiBase} />
+      </LanguageProvider>
+    );
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Harness />);
+  });
+  await act(async () => {
+    await new Promise<void>(resolve => testWindow.setTimeout(resolve, 0));
+  });
+  await waitFor(() => gates.length === 1);
+
+  // Cleanup aborts + invalidates generation; replacement is still deferred (setTimeout 0).
+  await act(async () => {
+    (window as unknown as { __bumpApiBase: () => void }).__bumpApiBase();
+  });
+
+  // Flush abort rejection / finally microtasks without running the deferred fetch.
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  const refresh = container.querySelector<HTMLButtonElement>("button.btn");
+  expect(gates.length).toBe(1);
+  expect(container.textContent).toContain("Scanning storage");
+  expect(refresh?.disabled).toBe(true);
+
+  await act(async () => {
+    await new Promise<void>(resolve => testWindow.setTimeout(resolve, 0));
+  });
+  await waitFor(() => gates.length === 2);
+
+  await act(async () => {
+    gates[1]!.resolve(REPORT_B);
+    await Promise.resolve();
+  });
+  await waitFor(() => (container.textContent ?? "").includes("/tmp/b"));
+  expect(refresh?.disabled).toBe(false);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});

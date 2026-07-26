@@ -160,27 +160,23 @@ test("rapid Debug flag/reset keeps controls busy and applies only the latest mut
     (btn.textContent ?? "").includes("Clear runtime overrides"),
   );
 
-  // Fire flag + reset before the first busy paint can serialize them.
+  // Fire flag + reset before the first busy paint can serialize them via disabled controls.
   await act(async () => {
     usageSwitch()?.click();
     resetBtn()?.click();
   });
-  await waitFor(() => putGates.length >= 2);
-
+  // Serialized: only the first PUT is in flight until it settles.
+  await waitFor(() => putGates.length === 1);
+  expect(putBodies).toEqual([{ usage: true }]);
   expect(usageSwitch()?.disabled).toBe(true);
   expect(resetBtn()?.disabled).toBe(true);
-  expect(putBodies[0]).toEqual({ usage: true });
-  expect(putBodies[1]).toEqual({ reset: true });
 
-  // Older usage response lands first — must not stick after reset settles.
   await act(async () => {
     putGates[0]!.resolve();
     await Promise.resolve();
   });
-  await act(async () => {
-    await new Promise<void>(resolve => testWindow.setTimeout(resolve, 0));
-  });
-  expect(usageSwitch()?.getAttribute("aria-pressed")).toBe("false");
+  await waitFor(() => putGates.length === 2);
+  expect(putBodies[1]).toEqual({ reset: true });
   expect(usageSwitch()?.disabled).toBe(true);
 
   await act(async () => {
@@ -190,6 +186,131 @@ test("rapid Debug flag/reset keeps controls busy and applies only the latest mut
   await waitFor(() => usageSwitch()?.disabled === false);
   expect(usageSwitch()?.getAttribute("aria-pressed")).toBe("false");
   expect(resetBtn()?.disabled).toBe(false);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("Debug PUTs are serialized so reverse-order response settlement cannot leave server ahead of UI", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  type Gate = { resolve: () => void };
+  const putGates: Gate[] = [];
+  const putStartOrder: string[] = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let serverSettings: DebugSettings = { ...BASE_SETTINGS, runtimeOverride: {}, env: { ...BASE_SETTINGS.env } };
+  const serverSnapshots: DebugSettings[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/api/debug/logs") || url.includes("/api/debug/usage-logs") || url.includes("/api/debug/injection-logs")) {
+      return Response.json([]);
+    }
+    if (url.endsWith("/api/debug") && method === "GET") {
+      return Response.json(serverSettings);
+    }
+    if (url.endsWith("/api/debug") && method === "PUT") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      putStartOrder.push(body.reset === true ? "reset" : Object.keys(body).sort().join(","));
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        await new Promise<void>(resolve => {
+          putGates.push({ resolve });
+        });
+        // Apply when the response settles. Concurrent PUTs + reverse resolve
+        // order (reset, then usage) would leave usage=true on the server while
+        // browser generation checks show the reset UI — serialization prevents that.
+        if (body.reset === true) {
+          serverSettings = {
+            ...BASE_SETTINGS,
+            enabled: false,
+            usage: false,
+            injection: false,
+            claude: false,
+            runtimeOverride: {},
+            env: { ...BASE_SETTINGS.env },
+          };
+        } else {
+          serverSettings = {
+            ...serverSettings,
+            enabled: body.debug === undefined ? serverSettings.enabled : body.debug === true,
+            usage: body.usage === undefined ? serverSettings.usage : body.usage === true,
+            injection: body.injection === undefined ? serverSettings.injection : body.injection === true,
+            claude: body.claude === undefined ? serverSettings.claude : body.claude === true,
+            runtimeOverride: {
+              ...serverSettings.runtimeOverride,
+              ...(body.debug === undefined ? {} : { debug: body.debug === true }),
+              ...(body.usage === undefined ? {} : { usage: body.usage === true }),
+              ...(body.injection === undefined ? {} : { injection: body.injection === true }),
+              ...(body.claude === undefined ? {} : { claude: body.claude === true }),
+            },
+          };
+        }
+        serverSnapshots.push({
+          ...serverSettings,
+          runtimeOverride: { ...serverSettings.runtimeOverride },
+          env: { ...serverSettings.env },
+        });
+        return Response.json(serverSettings);
+      } finally {
+        inFlight -= 1;
+      }
+    }
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <Debug apiBase="http://localhost" />
+      </LanguageProvider>,
+    );
+  });
+  await waitFor(() => container.querySelector('button.switch[aria-label="Usage extraction"]') != null);
+
+  const usageSwitch = () => container.querySelector<HTMLButtonElement>('button.switch[aria-label="Usage extraction"]');
+  const resetBtn = () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(btn =>
+    (btn.textContent ?? "").includes("Clear runtime overrides"),
+  );
+
+  await act(async () => {
+    usageSwitch()?.click();
+    resetBtn()?.click();
+  });
+
+  await waitFor(() => putGates.length === 1);
+  expect(putStartOrder).toEqual(["usage"]);
+  // Attempt reverse-order settlement: only the in-flight PUT can resolve.
+  // A concurrent implementation would have putGates[1] available here.
+  expect(putGates[1]).toBeUndefined();
+  await act(async () => {
+    putGates[0]!.resolve();
+    await Promise.resolve();
+  });
+  await waitFor(() => putGates.length === 2);
+  expect(putStartOrder).toEqual(["usage", "reset"]);
+  expect(serverSnapshots[0]?.usage).toBe(true);
+
+  await act(async () => {
+    putGates[1]!.resolve();
+    await Promise.resolve();
+  });
+  await waitFor(() => usageSwitch()?.disabled === false);
+
+  expect(maxInFlight).toBe(1);
+  expect(serverSettings.usage).toBe(false);
+  expect(serverSettings.runtimeOverride).toEqual({});
+  expect(usageSwitch()?.getAttribute("aria-pressed")).toBe("false");
+  expect(serverSnapshots.at(-1)?.usage).toBe(false);
 
   await act(async () => {
     root.unmount();

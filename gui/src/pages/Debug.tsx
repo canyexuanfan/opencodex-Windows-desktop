@@ -25,6 +25,7 @@ export default function Debug({ apiBase, embedded }: { apiBase: string; embedded
   const [refreshing, setRefreshing] = useState(false);
   const afterRef = useRef(0);
   const mutationGenerationRef = useRef(0);
+  const mutationQueueRef = useRef<Promise<void> | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const debugPoll = useKeyedClientResource(
@@ -131,17 +132,27 @@ export default function Debug({ apiBase, embedded }: { apiBase: string; embedded
   const runDebugMutation = async (body: Record<string, unknown>) => {
     const generation = ++mutationGenerationRef.current;
     setDebugBusy(true);
+    // Serialize PUTs so server writes follow user-action order. Latest-wins
+    // response filtering alone cannot prevent out-of-order server state.
+    const run = async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/debug`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) return;
+        const next = await res.json() as DebugSettings;
+        if (generation !== mutationGenerationRef.current) return;
+        setClientResourceData(debugSettingsKey(apiBase), next);
+      } catch { /* ignore */ }
+    };
+    const previous = mutationQueueRef.current ?? Promise.resolve();
+    const queued = previous.then(run, run);
+    mutationQueueRef.current = queued.then(() => undefined, () => undefined);
     try {
-      const res = await fetch(`${apiBase}/api/debug`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) return;
-      const next = await res.json() as DebugSettings;
-      if (generation !== mutationGenerationRef.current) return;
-      setClientResourceData(debugSettingsKey(apiBase), next);
-    } catch { /* ignore */ } finally {
+      await queued;
+    } finally {
       if (generation === mutationGenerationRef.current) setDebugBusy(false);
     }
   };

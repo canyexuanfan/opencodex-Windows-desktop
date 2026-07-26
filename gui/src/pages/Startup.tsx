@@ -125,6 +125,9 @@ export default function Startup({ apiBase }: { apiBase: string }) {
     const timer = window.setTimeout(() => { void refresh(controller.signal); }, 0);
     return () => {
       window.clearTimeout(timer);
+      // Invalidate before abort so a superseded request's finally cannot clear
+      // loading in the gap before the deferred replacement increments generation.
+      loadGenerationRef.current += 1;
       controller.abort();
     };
   }, [refresh]);

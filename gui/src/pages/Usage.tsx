@@ -616,6 +616,9 @@ export default function Usage({ apiBase }: { apiBase: string }) {
     }, 0);
     return () => {
       window.clearTimeout(timeout);
+      // Invalidate before abort so a superseded request's finally cannot clear
+      // loading in the gap before the deferred replacement increments generation.
+      loadGenerationRef.current += 1;
       controller.abort();
     };
   }, [fetchUsage, range, surface]);
