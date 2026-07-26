@@ -28,8 +28,9 @@ test("Dashboard workspace pane is a labelled section, not a nested main landmark
 });
 
 test("multi-agent guidance gates injection controls and Active badge on the enabled flag", async () => {
-  const src = await Bun.file(new URL("../src/pages/dashboard-overview-sections.tsx", import.meta.url)).text();
-  expect(src).toContain("!multiAgentGuidanceEnabled");
-  expect(src).toContain("multiAgentGuidanceEnabled &&");
-  expect(src).toContain("models.v2Mode_");
+  const sections = await Bun.file(new URL("../src/pages/dashboard-overview-sections.tsx", import.meta.url)).text();
+  const head = await Bun.file(new URL("../src/pages/dashboard-overview-head.tsx", import.meta.url)).text();
+  expect(sections).toContain("!multiAgentGuidanceEnabled");
+  expect(sections).toContain("multiAgentGuidanceEnabled &&");
+  expect(head).toContain("models.v2Mode_");
 });

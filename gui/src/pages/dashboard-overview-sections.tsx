@@ -1,7 +1,6 @@
 import { IconAlert, IconExternal, IconInfo, IconRefresh } from "../icons";
-import { readJsonOrThrow } from "../fetch-json";
 import { Select } from "../ui";
-import { EFFORT_CAP_LEVELS, sidecarBackendForModel, updateJobLabel } from "./dashboard-shared";
+import { EFFORT_CAP_LEVELS, requireJson, sidecarBackendForModel, updateJobLabel } from "./dashboard-shared";
 import type { useDashboardData } from "./use-dashboard-data";
 
 type Dash = ReturnType<typeof useDashboardData>;
@@ -49,7 +48,7 @@ export function DashboardEffortCapPanel({ apiBase, d }: { apiBase: string; d: Da
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ effortCap: v || null }),
               });
-              const data = await readJsonOrThrow<{ ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null }>(res);
+              const data = await requireJson<{ ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null }>(res);
               setEffortCap(data.effortCap ?? "");
               setSubagentEffortCap(data.subagentEffortCap ?? "");
             } catch { /* ignore */ }
@@ -73,7 +72,7 @@ export function DashboardEffortCapPanel({ apiBase, d }: { apiBase: string; d: Da
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ subagentEffortCap: v || null }),
               });
-              const data = await readJsonOrThrow<{ ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null }>(res);
+              const data = await requireJson<{ ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null }>(res);
               setEffortCap(data.effortCap ?? "");
               setSubagentEffortCap(data.subagentEffortCap ?? "");
             } catch { /* ignore */ }
@@ -114,7 +113,7 @@ export function DashboardInjectionPanel({ apiBase, d }: { apiBase: string; d: Da
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ model: v || null, effort: injectionEffort || null }),
               });
-              const data = await readJsonOrThrow<{ model?: string | null; effort?: string | null }>(res);
+              const data = await requireJson<{ model?: string | null; effort?: string | null }>(res);
               setInjectionModel(data.model ?? "");
               setInjectionEffort(data.effort ?? "");
             } catch { /* ignore */ }
@@ -139,7 +138,7 @@ export function DashboardInjectionPanel({ apiBase, d }: { apiBase: string; d: Da
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ model: injectionModel || null, effort: v || null }),
                 });
-                const data = await readJsonOrThrow<{ model?: string | null; effort?: string | null }>(res);
+                const data = await requireJson<{ model?: string | null; effort?: string | null }>(res);
                 setInjectionModel(data.model ?? "");
                 setInjectionEffort(data.effort ?? "");
               } catch { /* ignore */ }
@@ -169,7 +168,7 @@ export function DashboardInjectionPanel({ apiBase, d }: { apiBase: string; d: Da
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ multiAgentGuidanceEnabled: !multiAgentGuidanceEnabled }),
               });
-              const data = await readJsonOrThrow<{ multiAgentGuidanceEnabled?: boolean }>(res);
+              const data = await requireJson<{ multiAgentGuidanceEnabled?: boolean }>(res);
               setMultiAgentGuidanceEnabled(data.multiAgentGuidanceEnabled !== false);
             } catch { /* ignore */ }
             finally { setInjectionSaving(false); }

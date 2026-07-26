@@ -1,5 +1,6 @@
 import type { RefObject } from "react";
 import { useEffect, useRef } from "react";
+import { readJsonOrThrow } from "../fetch-json";
 import type { TKey } from "../i18n/shared";
 import type { StartupHealthStatus } from "../startup-health-ui";
 
@@ -15,6 +16,13 @@ export function readDashboardSectionFromHash(): DashboardSection {
 /** Overview is the bare `#dashboard`; the other sections carry a suffix. */
 export function dashboardHashForSection(section: DashboardSection): string {
   return section === "overview" ? "dashboard" : `dashboard/${section}`;
+}
+
+/** Like readJsonOrThrow, but rejects empty/204 bodies that would otherwise yield undefined. */
+export async function requireJson<T>(res: Response, fallbackMessage?: string): Promise<T> {
+  const data = await readJsonOrThrow<T>(res, fallbackMessage);
+  if (data === undefined) throw new Error(fallbackMessage ?? "empty response");
+  return data;
 }
 
 export interface HealthData { status: string; version: string; uptime: number }

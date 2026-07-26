@@ -1,19 +1,20 @@
-import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
+import { readJsonIfOk } from "../fetch-json";
 import {
   settingsPollMayCommit,
   beginPollEpochs,
   mapStartupHealthProbe,
   type StartupHealthStatus,
 } from "../startup-health-ui";
-import type {
-  HealthData,
-  ModelInfo,
-  ProjectCodexConfigGroup,
-  ProviderInfo,
-  SettingsData,
-  ShadowCallData,
-  SidecarData,
-  UsageSummary30d,
+import {
+  requireJson,
+  type HealthData,
+  type ModelInfo,
+  type ProjectCodexConfigGroup,
+  type ProviderInfo,
+  type SettingsData,
+  type ShadowCallData,
+  type SidecarData,
+  type UsageSummary30d,
 } from "./dashboard-shared";
 
 export type InjectionPoll = {
@@ -83,9 +84,9 @@ export async function fetchProjectConfigDiagnostics(
 
 export async function fetchDashboardModels(apiBase: string, signal: AbortSignal): Promise<ModelInfo[]> {
   const response = await fetch(`${apiBase}/api/models`, { signal });
-  // Throw on non-OK so client-resource retains the prior snapshot instead of
+  // Throw on non-OK / empty so client-resource retains the prior snapshot instead of
   // treating an HTTP error as a successful empty list.
-  return readJsonOrThrow<ModelInfo[]>(response);
+  return requireJson<ModelInfo[]>(response);
 }
 
 export async function fetchDashboardCore(
@@ -129,9 +130,9 @@ export async function fetchDashboardCore(
       fetch(`${apiBase}/api/usage?range=30d`, { signal }),
     ]);
 
-    const health = await readJsonOrThrow<HealthData>(hRes);
-    const providers = await readJsonOrThrow<ProviderInfo[]>(pRes);
-    const nextSettings = await readJsonOrThrow<SettingsData>(sRes);
+    const health = await requireJson<HealthData>(hRes);
+    const providers = await requireJson<ProviderInfo[]>(pRes);
+    const nextSettings = await requireJson<SettingsData>(sRes);
     let settings: SettingsData | null = null;
     let startupHealthSeed: SettingsData["startupHealth"] | null | undefined = undefined;
     if (settingsPollMayCommit(
@@ -146,7 +147,7 @@ export async function fetchDashboardCore(
       startupHealthSeed = nextSettings.startupHealth;
     }
 
-    const sidecar = await readJsonOrThrow<SidecarData>(scRes);
+    const sidecar = await requireJson<SidecarData>(scRes);
     let shadowCall: ShadowCallData | null | undefined = undefined;
     try {
       if (shRes.ok) {
@@ -175,10 +176,10 @@ export async function fetchDashboardCore(
       }
     }
 
-    // Usage is best-effort: a malformed body must not mark the whole dashboard offline.
+    // Usage is best-effort: a malformed/empty body must not mark the whole dashboard offline.
     let usage30d: UsageSummary30d | null = null;
     try {
-      usage30d = await readJsonIfOk<UsageSummary30d>(uRes);
+      usage30d = (await readJsonIfOk<UsageSummary30d>(uRes)) ?? null;
     } catch {
       usage30d = null;
     }

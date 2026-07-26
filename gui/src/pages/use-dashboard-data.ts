@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyedClientResource } from "../client-resource";
-import { readJsonOrThrow } from "../fetch-json";
 import { useI18n } from "../i18n/shared";
 import {
   PROJECT_CONFIG_DIAGNOSTICS_POLL_MS,
@@ -34,6 +33,7 @@ import {
   defaultUpdateChannel,
   mergeSidecarSetting,
   readDashboardSectionFromHash,
+  requireJson,
   sidecarModelOptions,
   useModalDialog,
 } from "./dashboard-shared";
@@ -228,13 +228,13 @@ export function useDashboardData(apiBase: string) {
       const targetVersion = updateJob.latestVersion;
       try {
         const res = await fetch(`${apiBase}/api/update/status?jobId=${encodeURIComponent(updateJob.id)}`, { signal });
-        const statusData = await readJsonOrThrow<{ job?: UpdateJob }>(res);
+        const statusData = await requireJson<{ job?: UpdateJob }>(res);
         if (statusData.job) {
           if (statusData.job.status === "failed") return { job: statusData.job, reconnecting: false as const };
           if (targetVersion) {
             try {
               const healthRes = await fetch(`${apiBase}/healthz`, { cache: "no-store", signal });
-              const healthData = await readJsonOrThrow<HealthData>(healthRes);
+              const healthData = await requireJson<HealthData>(healthRes);
               if (healthData.version === targetVersion) {
                 return { job: statusData.job, reconnecting: false as const, reload: true as const };
               }
@@ -294,7 +294,7 @@ export function useDashboardData(apiBase: string) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       });
-      const data = await readJsonOrThrow<SidecarData>(res, "save failed");
+      const data = await requireJson<SidecarData>(res, "save failed");
       setSidecar({ webSearch: data.webSearch, vision: data.vision });
     } catch {
       setSidecar(previous);
@@ -316,7 +316,7 @@ export function useDashboardData(apiBase: string) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       });
-      await readJsonOrThrow(res, "shadow-call save failed");
+      if (!res.ok) throw new Error("shadow-call save failed");
       shadowCallMutationEpochRef.current += 1;
     } catch {
       setShadowCall(previous);
@@ -352,7 +352,7 @@ export function useDashboardData(apiBase: string) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ codexAutoStart: next }),
       });
-      const data = await readJsonOrThrow<{ codexAutoStart: boolean; startupHealth?: SettingsData["startupHealth"] }>(res, "save failed");
+      const data = await requireJson<{ codexAutoStart: boolean; startupHealth?: SettingsData["startupHealth"] }>(res, "save failed");
       settingsMutationEpochRef.current += 1;
       setSettings(prev => prev ? { ...prev, codexAutoStart: data.codexAutoStart, startupHealth: data.startupHealth ?? prev.startupHealth } : prev);
     } catch {
@@ -371,7 +371,7 @@ export function useDashboardData(apiBase: string) {
     setSyncError(null);
     try {
       const res = await fetch(`${apiBase}/api/sync`, { method: "POST" });
-      const data = await readJsonOrThrow<SyncResult & { projectConfigGrouped?: ProjectCodexConfigGroup[] }>(res, "sync failed");
+      const data = await requireJson<SyncResult & { projectConfigGrouped?: ProjectCodexConfigGroup[] }>(res, "sync failed");
       setSyncResult(data);
       if (data.projectConfigGrouped) setProjectConfigWarnings(data.projectConfigGrouped);
     } catch (err) {
@@ -393,7 +393,7 @@ export function useDashboardData(apiBase: string) {
     setUpdateCheck(null);
     try {
       const res = await fetch(`${apiBase}/api/update/check?tag=${channel}`);
-      const check = await readJsonOrThrow<UpdateCheckData>(res, "update check failed");
+      const check = await requireJson<UpdateCheckData>(res, "update check failed");
       if (requestEpoch !== updateRequestEpochRef.current) return;
 
       setUpdateCheck(check);
@@ -452,7 +452,7 @@ export function useDashboardData(apiBase: string) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tag: updateChannel, restart: updateRestart }),
       });
-      const data = await readJsonOrThrow<{ job?: UpdateJob }>(res, "update failed to start");
+      const data = await requireJson<{ job?: UpdateJob }>(res, "update failed to start");
       if (!data.job) throw new Error("update failed to start");
       setUpdateJob(data.job);
       setReconnecting(false);
