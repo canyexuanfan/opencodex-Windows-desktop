@@ -462,6 +462,23 @@ function stripPreviousResponseId(body: unknown, strip: boolean): unknown {
 }
 
 /**
+ * Remove top-level parameters the ChatGPT backend (`authMode: "forward"`) rejects
+ * with `{"detail":"Unsupported parameter: …"}` (strict allowlist). Codex CLI never
+ * sends these — it controls output length via `reasoning.effort` — but third-party
+ * Responses API clients (GJC, SDK wrappers) include `max_output_tokens` per the
+ * public spec. `metadata` is likewise absent from the allowlist. No-op when the
+ * body carries neither field, keeping the common Codex path allocation-free.
+ */
+function stripUnsupportedForwardParams(body: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  const hasMot = Object.prototype.hasOwnProperty.call(body, "max_output_tokens");
+  const hasMeta = Object.prototype.hasOwnProperty.call(body, "metadata");
+  if (!hasMot && !hasMeta) return body;
+  const { max_output_tokens: _mot, metadata: _meta, ...rest } = body;
+  return rest;
+}
+
+/**
  * Hosted tool types whose server-side function names collide with the client tools Codex
  * declares for the matching app skill. Codex sends BOTH (e.g. hosted `image_generation` plus a
  * declared `image_gen.imagegen` function/namespace tool for the imagegen skill). The ChatGPT
@@ -644,6 +661,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       );
       if (forward) {
         outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
+        outBody = stripUnsupportedForwardParams(outBody);
       }
       else outBody = stripConflictingHostedTools(outBody);
       if (forward || parsed._previousResponseInputExpanded === true) {
