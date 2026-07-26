@@ -1,5 +1,5 @@
 import { IconExternal, IconKey } from "../icons";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import type { CatalogPreset } from "./provider-catalog/provider-presets";
 import type { ProviderPayloadForm } from "../provider-payload";
 import { AddProviderField } from "./add-provider-modal-field";

@@ -1,6 +1,7 @@
 import type { SidecarOverride } from "./claude-manual-env";
 
 export interface MapRow {
+  id: string;
   from: string;
   to: string;
 }

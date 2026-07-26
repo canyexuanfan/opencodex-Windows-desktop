@@ -50,7 +50,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         injectAgents: r.injectAgents !== false,
         effectiveModelEnv: r.effectiveModelEnv ?? {},
       });
-      setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
+      setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ id: crypto.randomUUID(), from, to: String(to) })));
     } catch (error) {
       setOk(false);
       setStatus(error instanceof Error && error.message ? error.message : t("claude.loadFail"));

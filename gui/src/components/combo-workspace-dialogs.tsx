@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useT } from "../i18n/shared";
 
-function dismissIfBackdrop(e: React.MouseEvent<HTMLDialogElement>, onDismiss: () => void) {
-  if (e.target === e.currentTarget) onDismiss();
-}
-
 export function RemoveComboDialog({
   model,
   onCancel,
@@ -33,8 +29,8 @@ export function RemoveComboDialog({
       className="modal-overlay"
       aria-labelledby="cwi-remove-title"
       onCancel={handleCancel}
-      onClick={(e) => dismissIfBackdrop(e, onCancel)}
     >
+      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={onCancel} />
       <div className="modal-card pwi-remove-confirm-card" onClick={(e) => e.stopPropagation()}>
         <h3 id="cwi-remove-title" className="pwi-remove-confirm-title">
           {t("cws.removeConfirmTitle", { model })}
@@ -75,8 +71,8 @@ export function UnsavedLeaveDialog({
       className="modal-overlay"
       aria-labelledby="cwi-unsaved-title"
       onCancel={handleCancel}
-      onClick={(e) => dismissIfBackdrop(e, onKeep)}
     >
+      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={onKeep} />
       <div className="modal-card pwi-json-unsaved-card" onClick={(e) => e.stopPropagation()}>
         <h3 id="cwi-unsaved-title" className="pwi-json-unsaved-title">{t("cws.unsavedTitle")}</h3>
         <p className="muted pwi-json-unsaved-desc">{t("cws.unsavedDesc")}</p>

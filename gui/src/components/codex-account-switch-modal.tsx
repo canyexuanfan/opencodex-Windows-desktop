@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import { IconAlert } from "../icons";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 import type { CodexAccountModeState } from "../codex-multi-state";
@@ -38,8 +38,9 @@ export function CodexAccountSwitchModal({
       className="modal-overlay"
       aria-labelledby="codex-switch-title"
       onCancel={handleCancel}
-      onClick={onCancel}
+     
     >
+      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} onClick={onCancel} />
       <div className="modal-card" onClick={e => e.stopPropagation()} role="document">
         <h3 id="codex-switch-title">{accountModeState === "direct"
           ? t("codexAuth.preparePoolTitle")

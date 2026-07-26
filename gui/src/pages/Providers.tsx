@@ -6,7 +6,7 @@ import { ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } f
 import { oauthTosRisk } from "../oauth-tos-risk";
 import { Notice } from "../ui";
 import { IconPlus } from "../icons";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import { formatProviderDisplayName } from "../provider-icons";
 import { useProviderAccountPools } from "../hooks/useProviderAccountPools";
 import { useCodexAccountPool } from "../hooks/useCodexAccountPool";
@@ -178,7 +178,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       <div className="page-head">
         <h2>{t("nav.providers")}</h2>
         <div className="row">
-          <button className="btn btn-primary" onClick={() => setAdding(true)}><IconPlus />{t("prov.add")}</button>
+          <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}><IconPlus />{t("prov.add")}</button>
         </div>
       </div>
       {status && <Notice tone={statusOk ? "ok" : "err"}>{status}</Notice>}

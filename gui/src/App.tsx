@@ -14,7 +14,7 @@ import ClaudeCode from "./pages/ClaudeCode";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
-import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
+import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n/shared";
 import { Select, Switch } from "./ui";
 import { installApiAuthFetch } from "./api";
 import { readJsonIfOk } from "./fetch-json";

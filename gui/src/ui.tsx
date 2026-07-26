@@ -260,7 +260,8 @@ export function Tooltip({ content, children, side = "top", maxWidth = 280 }: {
   useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
 
   return (
-    <span
+    <button
+      type="button"
       className="ocx-tooltip"
       onMouseEnter={show}
       onMouseLeave={hide}
@@ -270,7 +271,7 @@ export function Tooltip({ content, children, side = "top", maxWidth = 280 }: {
         if (event.key === "Escape") hide();
       }}
       aria-describedby={open ? tipId : undefined}
-      tabIndex={0}
+      style={{ display: "inline", border: 0, background: "transparent", padding: 0, margin: 0, color: "inherit", font: "inherit", cursor: "inherit" }}
     >
       {children}
       {open && (
@@ -278,6 +279,6 @@ export function Tooltip({ content, children, side = "top", maxWidth = 280 }: {
           {content}
         </span>
       )}
-    </span>
+    </button>
   );
 }

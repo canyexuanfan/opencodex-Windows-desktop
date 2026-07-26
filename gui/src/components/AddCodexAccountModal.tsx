@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import {
   addCodexAccountUiReducer,
   initialAddCodexAccountUiState,

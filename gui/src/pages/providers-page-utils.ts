@@ -16,8 +16,8 @@ export function buildAddModalAccountRows(
         kind: "codex" as const,
         href: "#codex-auth",
       })),
-    ...[...oauthProviders]
-      .sort((a, b) => a.localeCompare(b))
+    ...oauthProviders
+      .toSorted((a, b) => a.localeCompare(b))
       .map(id => ({ id, label: oauthLabel(id), kind: "oauth" as const })),
   ];
 }

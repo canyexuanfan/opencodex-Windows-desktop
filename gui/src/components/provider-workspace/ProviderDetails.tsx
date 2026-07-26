@@ -3,7 +3,7 @@
  * and composes the Overview/Models/Usage/Settings panels.
  */
 import { useCallback, useMemo, useRef, useState } from "react";
-import { useT } from "../../i18n";
+import { useT } from "../../i18n/shared";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatProviderDisplayName } from "../../provider-icons";
 import { isFreeProvider } from "../../provider-workspace/catalog";

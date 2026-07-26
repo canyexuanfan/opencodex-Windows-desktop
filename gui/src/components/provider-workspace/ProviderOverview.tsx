@@ -3,7 +3,7 @@
  * (STATS + Notes). Phase 030 of workspace design parity.
  */
 import { useCallback, useState, type ReactNode } from "react";
-import { useT, useI18n } from "../../i18n";
+import { useT, useI18n } from "../../i18n/shared";
 import { IconAlert, IconCheck } from "../../icons";
 import { binProviderStatus, type WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatRelativeTime, relativeTimeLabelsFromT, formatRequestCount, formatTokenCount } from "../../provider-workspace/usage";
@@ -205,9 +205,12 @@ function NotesSection({ item, onUpdateProvider }: {
       return;
     }
     setSaving(true);
-    await onUpdateProvider(item.name, { note: trimmed || undefined });
-    setSaving(false);
-    setEditing(false);
+    try {
+      await onUpdateProvider(item.name, { note: trimmed || undefined });
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
   }, [draft, item.name, item.note, onUpdateProvider, saving]);
 
   if (!editing) {
@@ -242,7 +245,6 @@ function NotesSection({ item, onUpdateProvider }: {
           if (e.key === "Escape") { setDraft(item.note ?? ""); setEditing(false); }
         }}
         placeholder={t("pws.notePlaceholder")}
-        autoFocus
         rows={3}
         disabled={saving}
       />

@@ -1248,3 +1248,15 @@ button.prov-account-row.active { cursor: default; }
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+
+/* Invisible full-area control for native <dialog> backdrop dismiss (a11y). */
+.modal-backdrop-dismiss {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}

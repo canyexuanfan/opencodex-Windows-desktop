@@ -3,7 +3,7 @@
  * per-model cost breakdown table, and rate-limit windows on QuotaBars.
  */
 import { useMemo, useState } from "react";
-import { useT, useI18n } from "../../i18n";
+import { useT, useI18n } from "../../i18n/shared";
 import QuotaBars from "../QuotaBars";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatRelativeTime, relativeTimeLabelsFromT, formatRequestCount, formatTokenCount, formatCostUsd } from "../../provider-workspace/usage";
@@ -26,7 +26,7 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
 
   const sortedModels = useMemo(() => {
     if (!modelUsage?.length) return [];
-    return [...modelUsage].sort((a, b) => b.totalTokens - a.totalTokens);
+    return modelUsage.toSorted((a, b) => b.totalTokens - a.totalTokens);
   }, [modelUsage]);
 
   const providerCost = useMemo(() => {
@@ -89,7 +89,21 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
                   const isExpanded = expandedModel === key;
                   return (
                     <>
-                      <tr key={key} className="pws-model-row" onClick={() => setExpandedModel(isExpanded ? null : key)} style={{ cursor: "pointer" }}>
+                      <tr
+                        key={key}
+                        className="pws-model-row"
+                        onClick={() => setExpandedModel(isExpanded ? null : key)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setExpandedModel(isExpanded ? null : key);
+                          }
+                        }}
+                        tabIndex={0}
+                        role="button"
+                        aria-expanded={isExpanded}
+                        style={{ cursor: "pointer" }}
+                      >
                         <td className="mono">{row.model}</td>
                         <td className="num mono">{formatCostUsd(row.estimatedCostUsd, locale)}</td>
                         <td className="num mono">{formatTokenCount(row.totalTokens, locale)}</td>

@@ -140,8 +140,8 @@ export function DashboardDialogs(d: Dash) {
         style={{ display: maHelpOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
         aria-labelledby="multi-agent-help-title"
         onCancel={event => { event.preventDefault(); setMaHelpOpen(false); }}
-        onClick={event => { if (event.target === event.currentTarget) setMaHelpOpen(false); }}
       >
+        <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={() => setMaHelpOpen(false)} />
         <div className="modal-card" onClick={e => e.stopPropagation()}>
           <div className="modal-head">
             <h3 id="multi-agent-help-title">{t("dash.multiAgent")}</h3>
@@ -168,8 +168,8 @@ export function DashboardDialogs(d: Dash) {
         style={{ display: effortCapHelpOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
         aria-labelledby="effort-cap-help-title"
         onCancel={event => { event.preventDefault(); setEffortCapHelpOpen(false); }}
-        onClick={event => { if (event.target === event.currentTarget) setEffortCapHelpOpen(false); }}
       >
+        <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={() => setEffortCapHelpOpen(false)} />
         <div className="modal-card" onClick={e => e.stopPropagation()}>
           <div className="modal-head">
             <h3 id="effort-cap-help-title">{t("dash.effortCapLabel")}</h3>
@@ -191,8 +191,8 @@ export function DashboardDialogs(d: Dash) {
         style={{ display: shadowCallHelpOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
         aria-labelledby="shadow-call-help-title"
         onCancel={event => { event.preventDefault(); setShadowCallHelpOpen(false); }}
-        onClick={event => { if (event.target === event.currentTarget) setShadowCallHelpOpen(false); }}
       >
+        <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={() => setShadowCallHelpOpen(false)} />
         <div className="modal-card" onClick={e => e.stopPropagation()}>
           <div className="modal-head">
             <h3 id="shadow-call-help-title">{t("dash.shadowCallIntercept")}</h3>

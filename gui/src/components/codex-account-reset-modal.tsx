@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import { IconAlert, IconTicket } from "../icons";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 import { CodexCreditItem } from "./codex-account-pool-helpers";
@@ -45,8 +45,9 @@ export function CodexAccountResetModal({
       className="modal-overlay"
       aria-labelledby="codex-reset-title"
       onCancel={handleCancel}
-      onClick={onClose}
+     
     >
+      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} onClick={onClose} />
       <div className="modal-card" onClick={e => e.stopPropagation()} role="document">
         {!resetConfirm ? (
           <>

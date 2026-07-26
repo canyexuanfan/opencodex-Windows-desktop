@@ -4,7 +4,7 @@
  * handlers via props-down; no internal auth machinery.
  */
 import { useState } from "react";
-import { useT } from "../../i18n";
+import { useT } from "../../i18n/shared";
 import { IconLock, IconExternal, IconTrash } from "../../icons";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { oauthAccountDisplayLabel, providerAuthSurface } from "../../provider-workspace/auth";
@@ -68,9 +68,12 @@ export default function ProviderAuthPanel({
     const key = newKey.trim();
     if (!key) return;
     setKeyBusy(true);
-    const ok = await authHandlers.onAddApiKey(item.name, key);
-    setKeyBusy(false);
-    if (ok) { setNewKey(""); setAddingKey(false); }
+    try {
+      const ok = await authHandlers.onAddApiKey(item.name, key);
+      if (ok) { setNewKey(""); setAddingKey(false); }
+    } finally {
+      setKeyBusy(false);
+    }
   };
 
   return (
@@ -149,12 +152,12 @@ export default function ProviderAuthPanel({
               </div>
             )}
             {accounts.length > 0 && (
-              <div className="pwi-auth-list" role="list">
+              <ul className="pwi-auth-list">
                 {accounts.map(account => {
                   const label = oauthAccountDisplayLabel(accounts, account, t);
                   const switching = switchingAccountId === account.id;
                   return (
-                  <div key={account.id} className={`pwi-auth-row${account.active ? " pwi-auth-row--active" : ""}`} role="listitem">
+                  <li key={account.id} className={`pwi-auth-row${account.active ? " pwi-auth-row--active" : ""}`}>
                     <button type="button" className="pwi-auth-row-main"
                       onClick={() => { if (!account.active && !account.needsReauth && !switchingAccountId) void authHandlers.onSwitchAccount(item.name, account); }}
                       aria-current={account.active ? "true" : undefined}
@@ -190,10 +193,10 @@ export default function ProviderAuthPanel({
                       onClick={() => void authHandlers.onRemoveAccount(item.name, account)}>
                       <IconTrash style={{ width: 13, height: 13 }} aria-hidden="true" />
                     </button>
-                  </div>
+                  </li>
                   );
                 })}
-              </div>
+              </ul>
             )}
             {accountLoadState === "ready" && loggedIn && accounts.length === 0 && (
               <div className="pwi-auth-state pwi-auth-state--empty">{t("pws.noAccounts")}</div>
@@ -210,9 +213,9 @@ export default function ProviderAuthPanel({
         {isKeyAuth && (
           <>
             {keys.length > 0 && (
-              <div className="pwi-auth-list" role="list">
+              <ul className="pwi-auth-list">
                 {keys.map(entry => (
-                  <div key={entry.id} className={`pwi-auth-row${entry.active ? " pwi-auth-row--active" : ""}`} role="listitem">
+                  <li key={entry.id} className={`pwi-auth-row${entry.active ? " pwi-auth-row--active" : ""}`}>
                     <button type="button" className="pwi-auth-row-main"
                       onClick={() => void authHandlers.onSwitchApiKey(item.name, entry)}
                       disabled={entry.active}>
@@ -233,9 +236,9 @@ export default function ProviderAuthPanel({
                       onClick={() => void authHandlers.onRemoveApiKey(item.name, entry)}>
                       <IconTrash style={{ width: 13, height: 13 }} aria-hidden="true" />
                     </button>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
             {addingKey ? (
               <div className="pwi-auth-add-key">

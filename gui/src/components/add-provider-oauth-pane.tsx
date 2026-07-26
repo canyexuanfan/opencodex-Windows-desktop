@@ -1,5 +1,5 @@
 import { IconLock } from "../icons";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import type { CatalogPreset } from "./provider-catalog/provider-presets";
 
 export function AddProviderOAuthPane({

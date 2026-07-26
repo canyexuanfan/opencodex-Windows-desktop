@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { TFn } from "../i18n";
+import type { TFn } from "../i18n/shared";
 import type { ProviderUpdatePatch } from "../components/provider-workspace/types";
 import { apiErrorMessage } from "../api-error";
 

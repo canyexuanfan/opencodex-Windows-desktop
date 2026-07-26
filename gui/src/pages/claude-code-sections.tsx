@@ -195,7 +195,7 @@ export function ClaudeCodeModelMapSection({
       <p className="muted text-label" style={{ margin: "0 0 8px" }}>{t("claude.modelMapHint")}</p>
       <div className="stack" style={{ gap: 8 }}>
         {rows.map((row, i) => (
-          <div key={i} className="row" style={{ gap: 8 }}>
+          <div key={row.id} className="row" style={{ gap: 8 }}>
             <input
               className="input mono"
               value={row.from}
@@ -221,7 +221,7 @@ export function ClaudeCodeModelMapSection({
         ))}
       </div>
       <div style={{ marginTop: 8 }}>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => onRowsChange([...rows, { from: "", to: "" }])}>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => onRowsChange([...rows, { id: crypto.randomUUID(), from: "", to: "" }])}>
           <IconPlus /> {t("claude.addMapping")}
         </button>
       </div>
