@@ -162,8 +162,14 @@ export function recoverStaleResponseStateTemps(
   };
   let names: Iterable<string>;
   try { names = io.list(dir); } catch { return result; }
+  let iterator: Iterator<string>;
+  try { iterator = names[Symbol.iterator](); } catch { return result; }
   let scanned = 0;
-  for (const name of names) {
+  for (;;) {
+    let next: IteratorResult<string>;
+    try { next = iterator.next(); } catch { return result; }
+    if (next.done) break;
+    const name = next.value;
     scanned += 1;
     if (scanned > maxEntries || result.removed + result.failed >= maxCleanups) break;
     const match = RESPONSE_STATE_TEMP_NAME.exec(name);

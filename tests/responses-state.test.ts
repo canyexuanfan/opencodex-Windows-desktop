@@ -718,6 +718,17 @@ describe("Responses previous_response_id state", () => {
     expect(existsSync(join(home, second))).toBe(true);
   });
 
+  test("stale temp recovery remains best-effort when enumeration fails", () => {
+    const result = recoverStaleResponseStateTemps(home, {
+      list: function* () {
+        yield "unrelated.txt";
+        throw new Error("directory read failed");
+      },
+    });
+
+    expect(result).toEqual({ matched: 0, removed: 0, failed: 0, bytesRemoved: 0 });
+  });
+
   test("v1 Cursor snapshot migrates to versioned provider state", () => {
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, "responses-state.json"), JSON.stringify({
