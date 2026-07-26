@@ -12,6 +12,19 @@ export interface ComboTarget {
   provider: string;
   model: string;
   weight?: number;
+  /** UI-only stable key for React lists; never sent to the API. */
+  clientKey?: string;
+}
+
+let comboTargetKeySeq = 0;
+
+export function newComboTarget(partial: Partial<ComboTarget> = {}): ComboTarget {
+  return {
+    provider: partial.provider ?? "",
+    model: partial.model ?? "",
+    ...(partial.weight !== undefined ? { weight: partial.weight } : {}),
+    clientKey: partial.clientKey ?? `ct-${++comboTargetKeySeq}`,
+  };
 }
 
 export interface ComboItem {
@@ -101,7 +114,7 @@ export function parseComboList(payload: unknown): ComboItem[] {
       const model = typeof tr.model === "string" ? tr.model.trim() : "";
       if (!provider || !model) continue;
       const weight = normalizeWeight(tr.weight);
-      targets.push(weight !== undefined ? { provider, model, weight } : { provider, model });
+      targets.push(weight !== undefined ? newComboTarget({ provider, model, weight }) : newComboTarget({ provider, model }));
     }
     out.push({
       id,
@@ -275,6 +288,6 @@ export function emptyDraft(id = ""): ComboItem {
     strategy: "failover",
     stickyLimit: 1,
     defaultEffort: null,
-    targets: [{ provider: "", model: "" }],
+    targets: [newComboTarget()],
   };
 }

@@ -88,7 +88,7 @@ describe("combo-workspace-data", () => {
         strategy: "failover",
         stickyLimit: 1,
         defaultEffort: null,
-        targets: [{ provider: "a", model: "m1", weight: 1 }],
+        targets: [{ provider: "a", model: "m1", weight: 1, clientKey: expect.stringMatching(/^ct-\d+$/) }],
       },
       {
         id: "weighted",
@@ -98,11 +98,14 @@ describe("combo-workspace-data", () => {
         stickyLimit: 4,
         defaultEffort: "high",
         targets: [
-          { provider: "a", model: "m1", weight: 3 },
-          { provider: "b", model: "m2", weight: 1 },
+          { provider: "a", model: "m1", weight: 3, clientKey: expect.stringMatching(/^ct-\d+$/) },
+          { provider: "b", model: "m2", weight: 1, clientKey: expect.stringMatching(/^ct-\d+$/) },
         ],
       },
     ]);
+    // UI-only keys must be unique across the parsed list.
+    const keys = items.flatMap((item) => item.targets.map((t) => t.clientKey));
+    expect(new Set(keys).size).toBe(keys.length);
     expect(parseComboList([])).toEqual([]);
     expect(parseComboList({ combos: "invalid" })).toEqual([]);
   });
@@ -257,6 +260,14 @@ describe("combo-workspace-data", () => {
     });
     expect("stickyLimit" in failoverBody.combo).toBe(false);
     expect("weight" in failoverBody.combo.targets[0]!).toBe(false);
+    // clientKey is UI-only — never serialize it upstream even when present on the draft.
+    const withClientKeys = toPutBody(combo({
+      targets: [
+        { provider: "a", model: "m1", clientKey: "ct-ui-1" },
+        { provider: "b", model: "m2", clientKey: "ct-ui-2" },
+      ],
+    }));
+    expect(withClientKeys.combo.targets.every((t) => !("clientKey" in t))).toBe(true);
   });
 
   test("preserves an unset effort through parse, draft, and PUT", () => {
