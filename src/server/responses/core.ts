@@ -92,6 +92,8 @@ import {
   inspectResponseLogJson,
   noteAttemptSend,
   readConfiguredCodexServiceTier,
+  recordAdapterReasoning,
+  recordAttemptRequestedEffort,
   requestLogSpeedLabel,
   sealRequestAttemptIdentity,
   usageFromResponsesPayload,
@@ -593,6 +595,7 @@ async function applyFinalRouteRequestNormalization(args: {
       logCtx.requestedEffort = `${logCtx.requestedEffort ?? "max"}->${clamped}`;
     }
   }
+  recordAttemptRequestedEffort(logCtx);
   logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(
     route.modelId,
     logCtx.requestedServiceTier ?? logCtx.configuredServiceTier,
@@ -622,6 +625,19 @@ export async function handleComboResponses(
   if (!combo) {
     return formatErrorResponse(404, "invalid_request_error", `Unknown combo: ${comboId}`);
   }
+  const adoptFailedChildLog = (childLog: RequestLogContext): void => {
+    // Attempts remain the complete physical history; the logical row mirrors the most recent
+    // failed target so an exhausted combo still has useful top-level reasoning diagnostics.
+    Object.assign(logCtx, childLog, {
+      requestedModel,
+      model: requestedModel,
+      provider: "combo",
+      comboId,
+      attempts: logCtx.attempts,
+      activeAttempt: undefined,
+      activeAttemptStartedAt: undefined,
+    });
+  };
 
   const unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
     (rawBody as { input?: unknown } | undefined)?.input,
@@ -792,25 +808,19 @@ export async function handleComboResponses(
     if (comboFailureDecision(failure.response.status, failure.classificationText, {
       code: failure.upstreamCode,
     }) === "stop") {
-      Object.assign(logCtx, childLog, {
-        requestedModel,
-        model: requestedModel,
-        provider: "combo",
-        comboId,
-        attempts: logCtx.attempts,
-        activeAttempt: undefined,
-        activeAttemptStartedAt: undefined,
-      });
+      adoptFailedChildLog(childLog);
       return lastFailure;
     }
     console.warn(
       `[combo] ${comboId}: ${targetKey(pick.target)} failed with ${response.status} after ${Date.now() - started}ms`,
     );
-    pick = advanceComboAfterFailure(config, pick, {
+    const nextPick = advanceComboAfterFailure(config, pick, {
       retryAfter: failure.retryAfter,
       now: Date.now(),
       eligible: payloadEligible,
     });
+    if (!nextPick) adoptFailedChildLog(childLog);
+    pick = nextPick;
   }
   return lastFailure!;
 }
@@ -1124,6 +1134,7 @@ export async function handleResponses(
       );
     }
     let request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+    recordAdapterReasoning(logCtx, request);
     const passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
       ? request.usageLog.inputTokens
       : undefined;
@@ -1213,6 +1224,7 @@ export async function handleResponses(
           config.cacheRetention,
         );
         request = await retryAdapter.buildRequest(parsed, { headers: retryHeaders });
+        recordAdapterReasoning(logCtx, request);
 
         await upstreamResponse.body?.cancel().catch(() => undefined);
         authCtx = retryAuthCtx;
@@ -1614,6 +1626,7 @@ export async function handleResponses(
       forceEmptyResponseId: true,
       abortSignal: options.abortSignal,
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
+      onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
       onUsage: usage => {
         logCtx.usageFromBridge = true;
         if (usage) {
@@ -1658,6 +1671,7 @@ export async function handleResponses(
   let activeAdapter = adapter;
 
   const request = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+  recordAdapterReasoning(logCtx, request);
   const inputTokenEstimate = typeof request.usageLog?.inputTokens === "number"
     ? request.usageLog.inputTokens
     : undefined;
@@ -1710,6 +1724,7 @@ export async function handleResponses(
         headers: selectedForwardHeaders,
         ...(imageTierBias > 0 ? { imageTierBias } : {}),
       });
+      recordAdapterReasoning(logCtx, retryRequest);
       const retryEstimate = typeof retryRequest.usageLog?.inputTokens === "number"
         ? retryRequest.usageLog.inputTokens
         : undefined;
@@ -1850,6 +1865,7 @@ export async function handleResponses(
           headers: selectedForwardHeaders,
           ...(imageTierBias > 0 ? { imageTierBias } : {}),
         });
+        recordAdapterReasoning(logCtx, continuationRequest);
         const continuationEstimate = typeof continuationRequest.usageLog?.inputTokens === "number"
           ? continuationRequest.usageLog.inputTokens
           : undefined;

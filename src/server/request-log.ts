@@ -8,6 +8,7 @@ import {
 import { CODEX_CONFIG_PATH, readRootTomlString } from "../codex/paths";
 import { readCodexCatalogPath } from "../codex/catalog";
 import type { OcxUsage } from "../types";
+import type { AdapterRequest } from "../adapters/base";
 import { redactSecretString } from "../lib/redact";
 import {
   appendUsageEntry,
@@ -39,6 +40,9 @@ export interface RequestLogContext {
   /** Internal structural combo identity; omitted from RequestLogEntry/JSONL. */
   comboId?: string;
   requestedEffort?: string;
+  effectiveEffort?: string;
+  reasoningWireField?: string;
+  reasoningWireValue?: string | number;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -85,6 +89,9 @@ export interface RequestLogEntry {
   surface?: "claude" | "claude-desktop" | "grok";
   requestedModel?: string;
   requestedEffort?: string;
+  effectiveEffort?: string;
+  reasoningWireField?: string;
+  reasoningWireValue?: string | number;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -148,6 +155,9 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
     ...(isKnownUsageSurface(entry.surface) ? { surface: entry.surface } : {}),
     ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
     ...(entry.requestedEffort ? { requestedEffort: entry.requestedEffort } : {}),
+    ...(entry.effectiveEffort ? { effectiveEffort: entry.effectiveEffort } : {}),
+    ...(entry.reasoningWireField ? { reasoningWireField: entry.reasoningWireField } : {}),
+    ...(entry.reasoningWireValue !== undefined ? { reasoningWireValue: entry.reasoningWireValue } : {}),
     ...(entry.requestedServiceTier ? { requestedServiceTier: entry.requestedServiceTier } : {}),
     ...(entry.requestedSpeedLabel ? { requestedSpeedLabel: entry.requestedSpeedLabel } : {}),
     ...(entry.configuredServiceTier ? { configuredServiceTier: entry.configuredServiceTier } : {}),
@@ -225,6 +235,9 @@ export function addRequestLog(entry: RequestLogEntry) {
       ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
       ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
       ...(entry.requestedEffort ? { requestedEffort: entry.requestedEffort } : {}),
+      ...(entry.effectiveEffort ? { effectiveEffort: entry.effectiveEffort } : {}),
+      ...(entry.reasoningWireField ? { reasoningWireField: entry.reasoningWireField } : {}),
+      ...(entry.reasoningWireValue !== undefined ? { reasoningWireValue: entry.reasoningWireValue } : {}),
       ...(entry.requestedServiceTier ? { requestedServiceTier: entry.requestedServiceTier } : {}),
       ...(entry.requestedSpeedLabel ? { requestedSpeedLabel: entry.requestedSpeedLabel } : {}),
       ...(entry.configuredServiceTier ? { configuredServiceTier: entry.configuredServiceTier } : {}),
@@ -269,6 +282,71 @@ export function recordFirstOutput(
   if (logCtx.activeAttempt && logCtx.activeAttempt.firstOutputMs === undefined) {
     const attemptStartedAt = logCtx.activeAttemptStartedAt ?? requestStartedAt;
     logCtx.activeAttempt.firstOutputMs = Math.max(0, now - attemptStartedAt);
+  }
+}
+
+/** Snapshot target-specific requested effort even for runTurn adapters with no AdapterRequest. */
+export function recordAttemptRequestedEffort(logCtx: RequestLogContext): void {
+  const attempt = logCtx.activeAttempt;
+  if (!attempt) return;
+  delete attempt.requestedEffort;
+  try {
+    if (typeof logCtx.requestedEffort === "string" && logCtx.requestedEffort) {
+      attempt.requestedEffort = redactSecretString(logCtx.requestedEffort).slice(0, 64);
+    }
+  } catch {
+    // Request logging is best-effort and must not affect request delivery.
+  }
+}
+
+/** Copy the adapter's exact outbound reasoning parameter into the durable request log. */
+export function recordAdapterReasoning(
+  logCtx: RequestLogContext,
+  request: AdapterRequest,
+): void {
+  delete logCtx.effectiveEffort;
+  delete logCtx.reasoningWireField;
+  delete logCtx.reasoningWireValue;
+  const attempt = logCtx.activeAttempt;
+  if (attempt) {
+    delete attempt.effectiveEffort;
+    delete attempt.reasoningWireField;
+    delete attempt.reasoningWireValue;
+  }
+  recordAttemptRequestedEffort(logCtx);
+
+  // Diagnostics must never make an otherwise valid upstream request fail. Config files
+  // written by older versions (or edited by hand) can contain values that violate the
+  // current TypeScript shape, so validate the runtime object before redacting strings.
+  try {
+    const raw: unknown = request.reasoningLog;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+    const reasoning = raw as Record<string, unknown>;
+    if (typeof reasoning.effectiveEffort !== "string" || !reasoning.effectiveEffort
+      || (reasoning.wireField !== "reasoning_effort"
+        && reasoning.wireField !== "thinking_budget"
+        && reasoning.wireField !== "thinking.type")
+      || (!(typeof reasoning.wireValue === "string" && reasoning.wireValue)
+        && !(typeof reasoning.wireValue === "number"
+          && Number.isFinite(reasoning.wireValue)
+          && reasoning.wireValue >= 0))) {
+      return;
+    }
+
+    const effectiveEffort = redactSecretString(reasoning.effectiveEffort).slice(0, 64);
+    const wireValue = typeof reasoning.wireValue === "string"
+      ? redactSecretString(reasoning.wireValue).slice(0, 64)
+      : reasoning.wireValue;
+    logCtx.effectiveEffort = effectiveEffort;
+    logCtx.reasoningWireField = reasoning.wireField;
+    logCtx.reasoningWireValue = wireValue;
+    if (attempt) {
+      attempt.effectiveEffort = effectiveEffort;
+      attempt.reasoningWireField = reasoning.wireField;
+      attempt.reasoningWireValue = wireValue;
+    }
+  } catch {
+    // Request logging is best-effort and must not affect request delivery.
   }
 }
 
@@ -585,6 +663,9 @@ export function addFinalRequestLog(
     ...(logCtx.surface ? { surface: logCtx.surface } : {}),
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
     ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
+    ...(logCtx.effectiveEffort ? { effectiveEffort: logCtx.effectiveEffort } : {}),
+    ...(logCtx.reasoningWireField ? { reasoningWireField: logCtx.reasoningWireField } : {}),
+    ...(logCtx.reasoningWireValue !== undefined ? { reasoningWireValue: logCtx.reasoningWireValue } : {}),
     ...(logCtx.requestedServiceTier ? { requestedServiceTier: logCtx.requestedServiceTier } : {}),
     ...(logCtx.requestedSpeedLabel ? { requestedSpeedLabel: logCtx.requestedSpeedLabel } : {}),
     ...(logCtx.configuredServiceTier ? { configuredServiceTier: logCtx.configuredServiceTier } : {}),
