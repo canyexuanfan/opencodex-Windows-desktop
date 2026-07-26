@@ -16,6 +16,8 @@ const TRAILING_ORPHAN_BODY_STATE_RE =
 const ISSUE_BODY_MAX = 65536;
 const BOT_LOGIN = "github-actions[bot]";
 const SOURCE_HASH_RE = /^[a-f0-9]{16}$/;
+const ISSUE_SOURCE_KEY = "issue";
+const MAX_SOURCE_HASHES = 64;
 const MAX_RECENT = 32;
 /** Allow small clock skew; far-future timestamps are rejected. */
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
@@ -170,6 +172,55 @@ function encodeControlState(state) {
   return Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
 }
 
+function isValidSourceKey(key) {
+  return key === ISSUE_SOURCE_KEY || /^comment:[1-9][0-9]*$/.test(String(key || ""));
+}
+
+/**
+ * Per-source completed hashes. Legacy flat `sourceHash` maps only to the issue key.
+ */
+function migrateSourceHashes(state) {
+  if (!state || typeof state !== "object") return {};
+  const out = {};
+  if (state.sourceHashes && typeof state.sourceHashes === "object" && !Array.isArray(state.sourceHashes)) {
+    for (const [key, value] of Object.entries(state.sourceHashes)) {
+      if (isValidSourceKey(key) && typeof value === "string" && SOURCE_HASH_RE.test(value)) {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+  if (
+    typeof state.sourceHash === "string"
+    && SOURCE_HASH_RE.test(state.sourceHash)
+    && state.sourceHash !== "0000000000000000"
+  ) {
+    out[ISSUE_SOURCE_KEY] = state.sourceHash;
+  }
+  return out;
+}
+
+function completedHashFor(state, sourceKey) {
+  const key = isValidSourceKey(sourceKey) ? sourceKey : ISSUE_SOURCE_KEY;
+  const hashes = migrateSourceHashes(state);
+  return hashes[key] || null;
+}
+
+function withCompletedSourceHash(hashes, sourceKey, sourceHash) {
+  const next = { ...hashes };
+  if (isValidSourceKey(sourceKey) && typeof sourceHash === "string" && SOURCE_HASH_RE.test(sourceHash)) {
+    next[sourceKey] = sourceHash;
+  }
+  const keys = Object.keys(next);
+  if (keys.length <= MAX_SOURCE_HASHES) return next;
+  // Prefer keeping the issue key; drop oldest-inserted comment keys first.
+  const commentKeys = keys.filter((k) => k !== ISSUE_SOURCE_KEY);
+  while (Object.keys(next).length > MAX_SOURCE_HASHES && commentKeys.length) {
+    delete next[commentKeys.shift()];
+  }
+  return next;
+}
+
 function validateControlState(parsed, now = Date.now()) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   if (parsed.v !== 2) return null;
@@ -194,6 +245,7 @@ function validateControlState(parsed, now = Date.now()) {
   return {
     v: 2,
     sourceHash: parsed.sourceHash,
+    sourceHashes: migrateSourceHashes(parsed),
     attemptedAt: parsed.attemptedAt,
     recent,
     requiresTranslation: parsed.requiresTranslation,
@@ -275,6 +327,7 @@ function buildTranslationControlComment(state) {
   const safe = validateControlState(state) || {
     v: 2,
     sourceHash: "0000000000000000",
+    sourceHashes: {},
     attemptedAt: Date.now(),
     recent: [],
     requiresTranslation: false,
@@ -325,8 +378,9 @@ function collectMergedRecentFromComments(comments, priorState = null, now = Date
  * Record a new attempt. Far-future poisoned prior state is ignored/healed.
  * New attemptedAt always uses wall-clock `now` so skew cannot stick forever.
  *
- * `sourceHash` on persisted state is the last *completed* source only.
- * Rate-limit fields (`attemptedAt`, `recent`) update on every attempt.
+ * Completed hashes are stored per `sourceKey` (`issue` vs `comment:<id>`) so
+ * issue and comment paths do not clobber each other's unchanged_source checks.
+ * Rate-limit fields (`attemptedAt`, `recent`) stay shared across the issue.
  * Pass `sourceComplete: true` only after a valid no-translation decision or a
  * successful issue/comment translation apply — never for invalid/empty model
  * output or GitHub update failures (those must remain retryable after cooldown).
@@ -337,22 +391,32 @@ function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.n
     prior = {
       ...priorState,
       recent: (priorState.recent || []).filter((ts) => isValidControlTimestamp(ts, now)),
+      sourceHashes: migrateSourceHashes(priorState),
     };
   }
 
   const priorRecent = pruneRecent(prior?.recent, now);
   const recent = pruneRecent([...priorRecent, now], now);
   const sourceComplete = attempt?.sourceComplete === true;
-  const completedHash = sourceComplete && typeof attempt.sourceHash === "string"
+  const sourceKey = isValidSourceKey(attempt?.sourceKey) ? attempt.sourceKey : ISSUE_SOURCE_KEY;
+  let sourceHashes = migrateSourceHashes(prior);
+  let completedHash = prior?.sourceHash && SOURCE_HASH_RE.test(prior.sourceHash)
+    ? prior.sourceHash
+    : "0000000000000000";
+
+  if (
+    sourceComplete
+    && typeof attempt.sourceHash === "string"
     && SOURCE_HASH_RE.test(attempt.sourceHash)
-    ? attempt.sourceHash
-    : (prior?.sourceHash && SOURCE_HASH_RE.test(prior.sourceHash)
-      ? prior.sourceHash
-      : "0000000000000000");
+  ) {
+    sourceHashes = withCompletedSourceHash(sourceHashes, sourceKey, attempt.sourceHash);
+    completedHash = attempt.sourceHash;
+  }
 
   return {
     v: 2,
     sourceHash: completedHash,
+    sourceHashes,
     attemptedAt: now,
     recent,
     requiresTranslation: Boolean(attempt.requiresTranslation),
@@ -498,6 +562,7 @@ async function persistTranslationControlState({
         v: 2,
         // Incomplete synthetic prior: do not treat the current attempt hash as completed.
         sourceHash: "0000000000000000",
+        sourceHashes: {},
         attemptedAt: Math.min(...mergedRecent),
         recent: mergedRecent,
         requiresTranslation: false,
@@ -611,6 +676,7 @@ function shouldTranslateComment({
   const decision = shouldTranslate({
     sourceTitle: commentSourceTitle(commentId),
     sourceBody,
+    sourceKey: commentSourceTitle(commentId),
     priorState,
     now,
     // Length already enforced on the body; title is namespace-only.
@@ -641,6 +707,7 @@ function buildTranslatedCommentBody(sourceBody, translatedBody, detectedLanguage
 function shouldTranslate({
   sourceTitle = "",
   sourceBody,
+  sourceKey = ISSUE_SOURCE_KEY,
   priorState = null,
   now = Date.now(),
   rateLimit = DEFAULT_RATE_LIMIT,
@@ -654,8 +721,9 @@ function shouldTranslate({
     return { ok: false, reason: "source_too_short" };
   }
 
+  const key = isValidSourceKey(sourceKey) ? sourceKey : ISSUE_SOURCE_KEY;
   const sourceHash = hashTranslationSource({ title, body });
-  if (priorState?.sourceHash === sourceHash) {
+  if (completedHashFor(priorState, key) === sourceHash) {
     return { ok: false, reason: "unchanged_source" };
   }
 
@@ -672,7 +740,7 @@ function shouldTranslate({
     return { ok: false, reason: "rate_limited_hourly" };
   }
 
-  return { ok: true, sourceHash, recent };
+  return { ok: true, sourceHash, sourceKey: key, recent };
 }
 
 function sanitizeTranslationBody(raw, maxChars = 60000) {
@@ -738,6 +806,7 @@ module.exports = {
   CONTROL_MARKER,
   BOT_LOGIN,
   ISSUE_BODY_MAX,
+  ISSUE_SOURCE_KEY,
   DEFAULT_RATE_LIMIT,
   MAX_CLOCK_SKEW_MS,
   hashTranslationSource,
@@ -766,6 +835,8 @@ module.exports = {
   shouldTranslateComment,
   buildTranslatedCommentBody,
   shouldTranslate,
+  completedHashFor,
+  migrateSourceHashes,
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   isEnglishDetectedLanguage,

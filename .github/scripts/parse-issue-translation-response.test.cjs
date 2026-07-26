@@ -114,6 +114,18 @@ describe("parseAiResponse", () => {
     assert.equal(parsed.translated_body, "path C:\\Users regex \\d+ code \\x41");
   });
 
+  it("repairs invalid or truncated unicode escapes instead of keeping bare \\u", () => {
+    const invalid = String.raw`{"requires_translation":true,"detected_language":"Korean","translated_title":"T","translated_body":"bad \uZZZZ and \u12"}`;
+    const repaired = repairInvalidJsonStringEscapes(invalid);
+    assert.match(repaired, /bad \\\\uZZZZ and \\\\u12/);
+    const parsed = parseAiResponse(invalid);
+    assert.equal(parsed.requires_translation, true);
+    assert.equal(parsed.translated_body, "bad \\uZZZZ and \\u12");
+
+    const valid = String.raw`{"requires_translation":true,"detected_language":"Korean","translated_title":"T","translated_body":"ok \u0041"}`;
+    assert.equal(parseAiResponse(valid).translated_body, "ok A");
+  });
+
   it("keeps requires_translation=true for issue and comment payloads with invalid escapes", () => {
     // Build explicitly so the fixture contains the illegal \' sequence.
     const issueRaw =

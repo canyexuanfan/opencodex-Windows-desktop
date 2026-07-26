@@ -34,7 +34,7 @@ function repairInvalidJsonStringEscapes(text) {
     if (escaped) {
       if ('"\\/bfnrt'.includes(ch)) {
         out += "\\" + ch;
-      } else if (ch === "u") {
+      } else if (ch === "u" && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 1, i + 5))) {
         out += "\\u";
       } else if (ch === "'") {
         // JS-style apostrophe escape → plain apostrophe in JSON.

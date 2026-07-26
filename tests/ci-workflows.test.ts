@@ -172,7 +172,8 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("shouldTranslateComment");
     expect(workflow).toContain("buildTranslatedCommentBody");
     expect(workflow).toContain("github.rest.issues.updateComment");
-    expect(workflow).toContain("group: issue-comment-translation-${{ github.event.comment.id }}");
+    expect(workflow).toContain("group: issue-translation-${{ github.event.issue.number }}");
+    expect(workflow).not.toContain("issue-comment-translation-${{ github.event.comment.id }}");
     expect(workflow).toContain("if: github.event_name == 'issue_comment'");
     expect(workflow).toMatch(
       /translate:\s*\n\s*name: Translate non-English issues\s*\n\s*if: github\.event_name == 'issues' \|\| github\.event_name == 'workflow_dispatch'/,
@@ -187,18 +188,25 @@ describe("GitHub Actions hardening", () => {
     expect(commentJob).toContain("isPreparedSourceStillCurrent");
     expect(commentJob).toContain("updateComment");
     expect(commentJob).toContain("requires_translation == 'true'");
+    expect(commentJob).toContain("group: issue-translation-${{ github.event.issue.number }}");
+    expect(commentJob).toContain("# Required to rewrite the triggering issue comment in place.");
+    expect(commentJob).toContain("sourceKey:");
     // Same fail-closed parse → apply gate as the issue path.
     const commentParse = commentJob
       .split("- name: Parse AI response")[1]!
       .split("- name: Apply inline comment translation")[0]!;
     expect(commentParse).toContain("parse-issue-translation-response.cjs");
-    expect(commentParse.split(/\n\s*run:\s*/)[1] || "").not.toContain("${{");
+    const commentRun = commentParse.split(/\n\s*run:\s*/)[1];
+    expect(commentRun).toBeDefined();
+    expect(commentRun!).not.toContain("${{");
     const commentApply = commentJob
       .split("- name: Apply inline comment translation")[1]!
       .split("- name: Persist comment translation control state")[0]!;
-    expect(commentApply.indexOf("isPreparedSourceStillCurrent({")).toBeLessThan(
-      commentApply.indexOf("updateComment"),
-    );
+    const guardAt = commentApply.indexOf("isPreparedSourceStillCurrent({");
+    const updateAt = commentApply.indexOf("updateComment");
+    expect(guardAt).toBeGreaterThanOrEqual(0);
+    expect(updateAt).toBeGreaterThanOrEqual(0);
+    expect(guardAt).toBeLessThan(updateAt);
 
     // Job-scoped permissions only (no top-level issues:write; no actions:write).
     expect(workflow).toMatch(

@@ -307,6 +307,7 @@ jobs:
                   priorState,
                   attempt: {
                     sourceHash: process.env.SOURCE_HASH,
+                    sourceKey: "issue",
                     requiresTranslation: true,
                     detectedLanguage: lang,
                     sourceComplete,
@@ -367,6 +368,7 @@ jobs:
                 priorState,
                 attempt: {
                   sourceHash: process.env.SOURCE_HASH,
+                  sourceKey: "issue",
                   requiresTranslation: false,
                   detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
                   // Invalid/empty AI JSON sets source_complete=false and stays retryable.
@@ -395,11 +397,16 @@ jobs:
     if: github.event_name == 'issue_comment'
     runs-on: ubuntu-latest
     concurrency:
-      group: issue-comment-translation-${{ github.event.comment.id }}
+      # Shares the per-issue queue with the `translate` job: both jobs RMW the
+      # single per-issue control comment (attemptedAt / recent / sourceHashes).
+      group: issue-translation-${{ github.event.issue.number }}
       cancel-in-progress: false
     permissions:
+      # Read-only checkout of trusted scripts from the default branch.
       contents: read
+      # Required to rewrite the triggering issue comment in place.
       issues: write
+      # Required by actions/ai-inference; untrusted comment text reaches the model.
       models: read
     steps:
       - name: Checkout trusted workflow code
@@ -575,6 +582,7 @@ jobs:
                   priorState,
                   attempt: {
                     sourceHash: process.env.SOURCE_HASH,
+                    sourceKey: sourceTitle || `comment:${comment_id}`,
                     requiresTranslation: true,
                     detectedLanguage: lang,
                     sourceComplete,
@@ -600,6 +608,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           SOURCE_HASH: ${{ steps.prepare.outputs.source_hash }}
+          SOURCE_TITLE: ${{ steps.prepare.outputs.source_title }}
           DETECTED_LANG: ${{ steps.parse.outputs.detected_language }}
           SOURCE_COMPLETE: ${{ steps.parse.outputs.source_complete }}
         with:
@@ -627,6 +636,7 @@ jobs:
                 priorState,
                 attempt: {
                   sourceHash: process.env.SOURCE_HASH,
+                  sourceKey: process.env.SOURCE_TITLE || "issue",
                   requiresTranslation: false,
                   detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
                   sourceComplete: process.env.SOURCE_COMPLETE === "true",

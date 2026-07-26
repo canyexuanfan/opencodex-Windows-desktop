@@ -718,6 +718,7 @@ describe("bot-owned control state", () => {
     const state = {
       v: 2,
       sourceHash: HASH_A,
+      sourceHashes: { issue: HASH_A },
       attemptedAt: 1,
       recent: [1],
       requiresTranslation: true,
@@ -735,6 +736,7 @@ describe("bot-owned control state", () => {
     const older = {
       v: 2,
       sourceHash: HASH_A,
+      sourceHashes: { issue: HASH_A },
       attemptedAt: 1,
       recent: [1],
       requiresTranslation: true,
@@ -743,6 +745,7 @@ describe("bot-owned control state", () => {
     const newer = {
       v: 2,
       sourceHash: HASH_B,
+      sourceHashes: { issue: HASH_B },
       attemptedAt: 2,
       recent: [1, 2],
       requiresTranslation: true,
@@ -1211,24 +1214,95 @@ describe("issue comment translation", () => {
     assert.equal(stripTranslationBlock(next), koreanComment);
   });
 
+  it("rejects comments without a usable numeric id", () => {
+    for (const id of [undefined, null, "5084167162", 0, -1, 1.5]) {
+      const decision = shouldTranslateComment({
+        comment: { id, user: { login: "human", type: "User" }, body: koreanComment },
+        priorState: null,
+        now: 1_700_000_000_000,
+      });
+      assert.equal(decision.ok, false, String(id));
+      assert.equal(decision.reason, "invalid_comment_id", String(id));
+    }
+  });
+
   it("skips unchanged comment bodies via source hash", () => {
     const comment = { id: 7, user: { login: "human", type: "User" }, body: koreanComment };
     const first = shouldTranslateComment({ comment, priorState: null, now: 1_700_000_000_000 });
     assert.equal(first.ok, true);
-    const second = shouldTranslateComment({
-      comment,
-      priorState: {
-        v: 2,
+    const completed = mergeTranslationAttemptState({
+      priorState: null,
+      attempt: {
         sourceHash: first.sourceHash,
-        attemptedAt: 1_700_000_000_000 - 120_000,
-        recent: [1_700_000_000_000 - 120_000],
+        sourceKey: first.sourceKey,
         requiresTranslation: true,
         detectedLanguage: "Korean",
+        sourceComplete: true,
       },
+      now: 1_700_000_000_000 - 120_000,
+    });
+    const second = shouldTranslateComment({
+      comment,
+      priorState: completed,
       now: 1_700_000_000_000,
     });
     assert.equal(second.ok, false);
     assert.equal(second.reason, "unchanged_source");
+  });
+
+  it("keeps issue and comment completed hashes independent", () => {
+    const now = 1_700_000_000_000;
+    const issueTitle = "Meaningful German title for translation";
+    const issueBody = "Ein ausreichend langer deutscher Issue-Text für den Test.";
+    const issueHash = hashTranslationSource({ title: issueTitle, body: issueBody });
+    const commentKey = commentSourceTitle(42);
+    const commentHash = hashTranslationSource({ title: commentKey, body: koreanComment });
+
+    const afterIssue = mergeTranslationAttemptState({
+      priorState: null,
+      attempt: {
+        sourceHash: issueHash,
+        sourceKey: "issue",
+        requiresTranslation: true,
+        detectedLanguage: "German",
+        sourceComplete: true,
+      },
+      now,
+    });
+    assert.equal(afterIssue.sourceHashes.issue, issueHash);
+
+    const afterComment = mergeTranslationAttemptState({
+      priorState: afterIssue,
+      attempt: {
+        sourceHash: commentHash,
+        sourceKey: commentKey,
+        requiresTranslation: true,
+        detectedLanguage: "Korean",
+        sourceComplete: true,
+      },
+      now: now + 120_000,
+    });
+    assert.equal(afterComment.sourceHashes.issue, issueHash);
+    assert.equal(afterComment.sourceHashes[commentKey], commentHash);
+
+    assert.equal(
+      shouldTranslate({
+        sourceTitle: issueTitle,
+        sourceBody: issueBody,
+        sourceKey: "issue",
+        priorState: afterComment,
+        now: now + 240_000,
+      }).reason,
+      "unchanged_source",
+    );
+    assert.equal(
+      shouldTranslateComment({
+        comment: { id: 42, user: { login: "human", type: "User" }, body: koreanComment },
+        priorState: afterComment,
+        now: now + 240_000,
+      }).reason,
+      "unchanged_source",
+    );
   });
 
   it("enforces minSourceChars on stripped comment body only", () => {
@@ -1347,6 +1421,7 @@ describe("sourceComplete vs rate-limit attempts", () => {
       priorState: null,
       attempt: {
         sourceHash: hash,
+        sourceKey: "issue",
         requiresTranslation: false,
         detectedLanguage: "English",
         sourceComplete: true,
@@ -1354,6 +1429,7 @@ describe("sourceComplete vs rate-limit attempts", () => {
       now,
     });
     assert.equal(english.sourceHash, hash);
+    assert.equal(english.sourceHashes.issue, hash);
     assert.equal(
       shouldTranslate({
         sourceTitle: TITLE,
