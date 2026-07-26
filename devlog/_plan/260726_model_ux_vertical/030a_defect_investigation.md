@@ -148,8 +148,8 @@ blank. Wrong on both counts. Real provider metadata pins `200_000`:
   `glm-5`, `minimax-m2.5`, `minimax-m2.1` all `= 200_000`
   (`src/providers/kiro-models.ts:36-44`);
 - Kimi: `k3` = `262_144` and `k3[1m]` = `1_048_576`
-  (`KIMI_K3_STANDARD_CONTEXT_WINDOW` / `KIMI_K3_1M_CONTEXT_WINDOW` at
-  `src/providers/registry.ts:266-268`);
+  (constants `KIMI_K3_STANDARD_CONTEXT_WINDOW` / `KIMI_K3_1M_CONTEXT_WINDOW` at
+  `src/providers/registry.ts:266-268`, assigned per model at `:313-315`);
 - and `AUTO_CONTEXT_FLOOR = 200_000` (`src/claude/context-windows.ts:19`).
 
 An absent window produces `null` and is omitted by `{context && ...}` — it cannot render
@@ -165,7 +165,7 @@ is a separate per-route metadata correction at its provider source.
 | Defect | Is | Is not |
 |--------|----|--------|
 | D1a | A rounding/format fix in two `formatContext*` helpers | A data problem — catalog values are correct |
-| D1b | Pass an existing accessor into one map | A new metadata source |
+| D1b | Pass an existing accessor into the DTO AND every desktop-3p writer path (apply, auto-apply, CLI) | A new metadata source |
 | D1c | Surface existing `supports1m` as a read-only chip | A toggle yet — the profile has no preference field (follow-up) |
 | D2 | Label normalization + a write-path schema guard | A request-path guard (already exists); a `[1m]` name leak (names are hashed) |
 | D3 | Fix the codex bucket swallowing claude-desktop, widen surfaces, label Grok via a dedicated header | Just widening a TS union (serializers drop it); attribution from a static fence key |
