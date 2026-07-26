@@ -261,6 +261,14 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       if (next.codexAccountMode !== "pool" && next.codexAccountMode !== "direct") {
         next.codexAccountMode = "pool";
       }
+      // Same DNS gate as POST: Clash fake-IP only. Never honor a persisted
+      // allowPrivateNetwork on this path — it must not bypass the built-in guard.
+      const resolvedError = await providerDestinationResolvedError(
+        "openai",
+        { baseUrl: CODEX_FORWARD_BASE_URL },
+        { allowBenchmarkAddresses: true },
+      );
+      if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
       if (next.disabled === false) delete next.disabled;
     }
 

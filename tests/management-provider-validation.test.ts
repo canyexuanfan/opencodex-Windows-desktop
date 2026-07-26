@@ -1192,6 +1192,176 @@ describe("provider management validation", () => {
     }
   });
 
+  test("disabled OpenAI recovery accepts pure Clash fake-IP via destination check", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "extra",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          disabled: true,
+        },
+        extra: {
+          adapter: "openai-chat",
+          baseUrl: "https://extra.example.test/v1",
+          liveModels: false,
+          models: ["extra-model"],
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError")
+      .mockImplementation(async (_name, provider, options) => {
+        expect(provider).toEqual({ baseUrl: "https://chatgpt.com/backend-api/codex" });
+        expect(options).toEqual({ allowBenchmarkAddresses: true });
+        return null; // pure 198.18/19 allowed by the policy opt-in
+      });
+
+    try {
+      const request = new Request("http://127.0.0.1/api/providers?name=openai", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ disabled: false }),
+      });
+      const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
+        refreshCodexCatalog: async () => undefined,
+      });
+      expect(response?.status).toBe(200);
+      expect(resolvedError).toHaveBeenCalledTimes(1);
+      expect(liveConfig.providers.openai?.disabled).toBeUndefined();
+    } finally {
+      resolvedError.mockRestore();
+    }
+  });
+
+  test("disabled OpenAI recovery rejects loopback, RFC1918, and metadata and stays disabled", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const disabledCanonical = {
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward",
+      disabled: true,
+    } as const;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "extra",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...disabledCanonical },
+        extra: {
+          adapter: "openai-chat",
+          baseUrl: "https://extra.example.test/v1",
+          liveModels: false,
+          models: ["extra-model"],
+        },
+      },
+    };
+    saveConfig(liveConfig);
+
+    const failures = [
+      "baseUrl hostname chatgpt.com resolves to a loopback address (127.0.0.1); set allowPrivateNetwork:true only for intentionally local/self-hosted providers",
+      "baseUrl hostname chatgpt.com resolves to a private-network address (10.0.0.5); set allowPrivateNetwork:true only for intentionally local/self-hosted providers",
+      "baseUrl hostname chatgpt.com resolves to a blocked metadata endpoint (169.254.169.254)",
+    ];
+    const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError");
+
+    try {
+      for (const error of failures) {
+        liveConfig.providers.openai = { ...disabledCanonical };
+        saveConfig(liveConfig);
+        resolvedError.mockResolvedValueOnce(error);
+
+        const request = new Request("http://127.0.0.1/api/providers?name=openai", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ disabled: false }),
+        });
+        const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
+          refreshCodexCatalog: async () => undefined,
+        });
+        expect(response?.status).toBe(400);
+        expect(await response?.json()).toMatchObject({ error });
+        expect(liveConfig.providers.openai).toEqual(disabledCanonical);
+        expect(loadConfig().providers.openai).toMatchObject({ disabled: true });
+      }
+      expect(resolvedError).toHaveBeenCalledTimes(failures.length);
+      expect(resolvedError).toHaveBeenCalledWith(
+        "openai",
+        { baseUrl: "https://chatgpt.com/backend-api/codex" },
+        { allowBenchmarkAddresses: true },
+      );
+    } finally {
+      resolvedError.mockRestore();
+    }
+  });
+
+  test("disabled OpenAI recovery ignores persisted allowPrivateNetwork for DNS guard", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "extra",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          allowPrivateNetwork: true,
+          disabled: true,
+        },
+        extra: {
+          adapter: "openai-chat",
+          baseUrl: "https://extra.example.test/v1",
+          liveModels: false,
+          models: ["extra-model"],
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError")
+      .mockImplementation(async (_name, provider, options) => {
+        expect(provider).toEqual({ baseUrl: "https://chatgpt.com/backend-api/codex" });
+        expect(Object.hasOwn(provider as object, "allowPrivateNetwork")).toBe(false);
+        expect(options).toEqual({ allowBenchmarkAddresses: true });
+        return "baseUrl hostname chatgpt.com resolves to a private-network address (10.0.0.5); set allowPrivateNetwork:true only for intentionally local/self-hosted providers";
+      });
+
+    try {
+      const request = new Request("http://127.0.0.1/api/providers?name=openai", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ disabled: false }),
+      });
+      const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
+        refreshCodexCatalog: async () => undefined,
+      });
+      expect(response?.status).toBe(400);
+      expect(liveConfig.providers.openai).toMatchObject({
+        disabled: true,
+        allowPrivateNetwork: true,
+      });
+      expect(loadConfig().providers.openai).toMatchObject({
+        disabled: true,
+        allowPrivateNetwork: true,
+      });
+    } finally {
+      resolvedError.mockRestore();
+    }
+  });
+
   for (const [label, baseUrl] of [
     ["uppercase host", "https://CHATGPT.com/backend-api/codex"],
     ["explicit :443 port", "https://chatgpt.com:443/backend-api/codex"],
