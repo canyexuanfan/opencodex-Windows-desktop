@@ -9,7 +9,18 @@ export interface Config {
 }
 
 export interface OAuthStatus { loggedIn: boolean; email?: string; error?: string; done?: boolean; needsReauth?: boolean; activeAccountId?: string | null }
-export interface OAuthAccount { id: string; alias?: string; email?: string; active: boolean; needsReauth?: boolean; expiresAt?: number }
+export interface OAuthAccount {
+  id: string;
+  alias?: string;
+  email?: string;
+  active: boolean;
+  needsReauth?: boolean;
+  expiresAt?: number;
+  health?: { status: "healthy" | "cooldown" | "reauth_required" | "warning"; reason?: string; until?: string };
+  healthLabel?: string;
+  healthSummary?: string;
+  healthAction?: string;
+}
 export interface ApiKeyEntry { id: string; label?: string; masked: string; active: boolean }
 
 export function useProviderAccountPools(deps: {

@@ -19,9 +19,16 @@ import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, i
 import { logOAuthEvent } from "./log";
 export {
   collectOAuthHealthEntries,
+  oauthAccountHealthFields,
+  oauthHealthLabel,
+  oauthHealthSummary,
+  projectCodexAccountHealth,
   projectOAuthAccountHealth,
+  projectStoredOAuthAccountHealth,
   type OAuthAccountHealth,
+  type OAuthAccountHealthFields,
   type OAuthHealthEntry,
+  type OAuthHealthLabel,
 } from "./health";
 
 const REFRESH_SKEW_MS = 60_000;

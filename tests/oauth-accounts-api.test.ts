@@ -70,6 +70,37 @@ describe("multiauth accounts API", () => {
     }
   });
 
+  test("GET includes projected health with redacted healthSummary", async () => {
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/api/oauth/accounts?provider=anthropic", server.url));
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        accounts: Array<{
+          id: string;
+          health?: { status: string };
+          healthLabel?: string;
+          healthSummary?: string;
+        }>;
+      };
+      expect(body.accounts.length).toBe(2);
+      for (const account of body.accounts) {
+        expect(account.health).toBeDefined();
+        expect(account.health?.status).toBeTruthy();
+        expect(typeof account.healthLabel).toBe("string");
+        expect(account.healthLabel!.length).toBeGreaterThan(0);
+        expect(typeof account.healthSummary).toBe("string");
+        expect(account.healthSummary!.includes(account.id)).toBe(false);
+        expect(account.healthSummary!).toMatch(/account-…/);
+      }
+      const healthy = body.accounts.find(a => a.id === "aaaa1111");
+      expect(healthy?.health?.status).toBe("healthy");
+      expect(healthy?.healthLabel).toBe("Healthy");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("PUT active switches; unknown account 404; unknown provider 400", async () => {
     const server = startServer(0);
     try {

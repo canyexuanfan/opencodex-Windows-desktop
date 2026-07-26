@@ -23,6 +23,10 @@ export interface CodexAccountEntry {
   hasCredential: boolean;
   quota: AccountQuota | null;
   needsReauth?: boolean;
+  health?: { status: "healthy" | "cooldown" | "reauth_required" | "warning"; reason?: string; until?: string };
+  healthLabel?: string;
+  healthSummary?: string;
+  healthAction?: string;
 }
 
 export type CodexAccountLoadState = "loading" | "ready" | "error";

@@ -15,9 +15,12 @@ import { CodexAccountResetModal } from "./codex-account-reset-modal";
 import { CodexAccountPoolLoadStates, CodexAccountPoolMainCard, CodexAccountPoolPageHead } from "./codex-account-pool-main-card";
 import { redeemResetCredit } from "./codex-account-pool-handlers";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
+import { oauthHealthShowsReauth } from "../oauth-health-display";
 
 // Single definition lives with the controller that owns this data (WP3).
 export type { CodexAccountEntry } from "../hooks/useCodexAccountPool";
+
+const DOCTOR_CMD = "ocx doctor";
 
 /**
  * Global ChatGPT / Codex account pool (main + extras), extracted from the Codex
@@ -62,6 +65,14 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const [redeeming, setRedeeming] = useState(false);
   const [creditDetails, setCreditDetails] = useState<{ granted_at: string; expires_at: string }[] | null>(null);
   const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
+  const [copiedDoctorFor, setCopiedDoctorFor] = useState<string | null>(null);
+
+  const copyDoctor = useCallback((accountId: string) => {
+    navigator.clipboard.writeText(DOCTOR_CMD).then(() => {
+      setCopiedDoctorFor(accountId);
+      setTimeout(() => setCopiedDoctorFor(current => current === accountId ? null : current), 2500);
+    }).catch(() => {});
+  }, []);
 
   // The controller owns loading and polling. This surface only feeds the auto-switch
   // threshold observer and leases a pause while an OAuth modal is open.
@@ -93,6 +104,8 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const activePoolAccount = activeId && activeId !== "__main__"
     ? accounts.find(a => a.id === activeId)
     : null;
+  const activePoolNeedsReauth = Boolean(activePoolAccount?.needsReauth)
+    || oauthHealthShowsReauth(activePoolAccount?.health?.status);
 
   useEffect(() => {
     onActiveNeedsReauthChange?.(activeNeedsReauth);
@@ -237,6 +250,8 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         switchActionLabel={switchActionLabel}
         onSwitch={setConfirm}
         onOpenReset={openResetPopup}
+        onCopyDoctor={copyDoctor}
+        doctorCopied={copiedDoctorFor === (main?.id ?? "__main__")}
       />
 
       <div className="section-sep">
@@ -247,7 +262,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         </button>
       </div>
 
-      {activePoolAccount?.needsReauth && (
+      {activePoolNeedsReauth && activePoolAccount && (
         <CodexAccountPoolReauthBanner onReauth={() => openReauth(activePoolAccount.id)} />
       )}
 
@@ -264,6 +279,8 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         onReauth={openReauth}
         onEditAlias={editAlias}
         onRemove={remove}
+        onCopyDoctor={copyDoctor}
+        copiedDoctorFor={copiedDoctorFor}
       />
 
       <CodexAutoSwitchSetting

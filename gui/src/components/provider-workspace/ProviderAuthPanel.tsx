@@ -8,9 +8,18 @@ import { useT } from "../../i18n/shared";
 import { IconLock, IconExternal, IconTrash } from "../../icons";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { oauthAccountDisplayLabel, providerAuthSurface } from "../../provider-workspace/auth";
+import { maskAccountId } from "../../lib/privacy";
+import {
+  oauthHealthBadgeClass,
+  oauthHealthIsCooldown,
+  oauthHealthShowsDoctor,
+  oauthHealthShowsReauth,
+} from "../../oauth-health-display";
 import CodexAccountPool from "../CodexAccountPool";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
 import type { AccountLoadState, OAuthAccountRow, ApiKeyRow, LoginHint, ProviderAuthHandlers } from "./types";
+
+const DOCTOR_CMD = "ocx doctor";
 
 export default function ProviderAuthPanel({
   item, apiBase, oauth, accounts = [], keys = [], accountLoadState = "ready",
@@ -36,6 +45,7 @@ export default function ProviderAuthPanel({
   const [newKey, setNewKey] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
+  const [copiedDoctorFor, setCopiedDoctorFor] = useState<string | null>(null);
 
   const surface = providerAuthSurface({ ...item, hasApiKey: item.hasApiKey || keys.length > 0 });
   const isOauth = surface === "oauth-accounts";
@@ -156,23 +166,43 @@ export default function ProviderAuthPanel({
                 {accounts.map(account => {
                   const label = oauthAccountDisplayLabel(accounts, account, t);
                   const switching = switchingAccountId === account.id;
+                  const healthStatus = account.health?.status;
+                  const showReauth = Boolean(account.needsReauth) || oauthHealthShowsReauth(healthStatus);
+                  const showDoctor = oauthHealthShowsDoctor(healthStatus);
+                  const inCooldown = oauthHealthIsCooldown(healthStatus);
+                  const maskedId = maskAccountId(account.id) ?? account.id;
+                  const copyDoctor = () => {
+                    navigator.clipboard.writeText(DOCTOR_CMD).then(() => {
+                      setCopiedDoctorFor(account.id);
+                      setTimeout(() => setCopiedDoctorFor(current => current === account.id ? null : current), 2500);
+                    }).catch(() => {});
+                  };
                   return (
                   <li key={account.id} className={`pwi-auth-row${account.active ? " pwi-auth-row--active" : ""}`}>
                     <button type="button" className="pwi-auth-row-main"
-                      onClick={() => { if (!account.active && !account.needsReauth && !switchingAccountId) void authHandlers.onSwitchAccount(item.name, account); }}
+                      onClick={() => { if (!account.active && !showReauth && !inCooldown && !switchingAccountId) void authHandlers.onSwitchAccount(item.name, account); }}
                       aria-current={account.active ? "true" : undefined}
                       aria-label={`${label}${account.active ? ` — ${t("pws.accountCurrent")}` : ""}`}
-                      disabled={Boolean(account.needsReauth || (switchingAccountId && !switching))}>
-                      <span className={`pwi-auth-dot ${account.needsReauth ? "pwi-auth-dot--warn" : account.active ? "pwi-auth-dot--ok" : "pwi-auth-dot--off"}`} aria-hidden="true" />
+                      disabled={Boolean(showReauth || inCooldown || (switchingAccountId && !switching))}>
+                      <span className={`pwi-auth-dot ${showReauth ? "pwi-auth-dot--warn" : account.active ? "pwi-auth-dot--ok" : "pwi-auth-dot--off"}`} aria-hidden="true" />
                       <span className="pwi-auth-row-copy">
                         <span className="pwi-auth-row-label">{label}</span>
-                        <span className="pwi-auth-row-secondary">{[account.email, `${t("prov.accountId")}: ${account.id}`].filter(Boolean).join(" · ")}</span>
+                        <span className="pwi-auth-row-secondary">{[account.email, `${t("prov.accountId")}: ${maskedId}`].filter(Boolean).join(" · ")}</span>
+                        {account.healthSummary && account.healthLabel !== "Healthy" && (
+                          <span className="pwi-auth-row-secondary faint">{account.healthSummary}</span>
+                        )}
+                        {inCooldown && (
+                          <span className="pwi-auth-row-secondary faint">{t("pws.healthCooldownHint")}</span>
+                        )}
                       </span>
-                      {account.needsReauth && <span className="badge badge-amber">{t("pws.reauth")}</span>}
+                      {account.healthLabel && account.healthLabel !== "Healthy" && (
+                        <span className={oauthHealthBadgeClass(healthStatus)}>{account.healthLabel}</span>
+                      )}
+                      {showReauth && !account.healthLabel && <span className="badge badge-amber">{t("pws.reauth")}</span>}
                       {account.active && <span className="badge badge-primary">{t("prov.accountActive")}</span>}
                       {switching && <span className="badge badge-muted">{t("pws.accountSwitching")}</span>}
                     </button>
-                    {account.needsReauth && (
+                    {showReauth && (
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm"
@@ -180,6 +210,11 @@ export default function ProviderAuthPanel({
                         onClick={() => void authHandlers.onReauth(item.name, account.id)}
                       >
                         {t("pws.reauthenticate")}
+                      </button>
+                    )}
+                    {showDoctor && (
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={copyDoctor}>
+                        {copiedDoctorFor === account.id ? t("pws.doctorCopied") : t("pws.copyDoctor")}
                       </button>
                     )}
                     <button type="button" className="btn btn-ghost btn-sm"
