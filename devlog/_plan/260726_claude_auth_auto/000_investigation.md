@@ -99,7 +99,7 @@ Round 2 judged the original WP2 too broad and split it (`002` R2 tail):
 
 | WP | Doc | Slice | Depends on |
 |----|-----|-------|------------|
-| WP0 | `000` + `001` + `002` | Investigation, failure modes, audit synthesis (2 rounds) | — |
+| WP0 | `000` + `001` + `002` | Investigation, failure modes, audit synthesis (4 rounds) | — |
 | WP1 | `010_auth_detector.md` | 3-value detector, 4 sources, `staleProxyMarker` | — |
 | WP1b | `015_authmode_migration.md` | One-time migration so a legacy explicit Subscription is not silently converted | WP1 |
 | WP2 | `020_auto_resolution.md` | Resolver + CLI marker/admission ordering | WP1, WP1b |
