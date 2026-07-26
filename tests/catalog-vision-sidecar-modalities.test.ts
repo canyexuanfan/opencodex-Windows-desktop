@@ -4,6 +4,7 @@ import { clearModelCache } from "../src/codex/model-cache";
 import type { OcxProviderConfig } from "../src/types";
 import { deriveComboCatalogModel } from "../src/codex/catalog";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
+import { enrichProviderFromRegistry } from "../src/providers/derive";
 import type { CatalogModel } from "../src/types";
 
 const base: OcxProviderConfig = {
@@ -154,10 +155,19 @@ describe("vision-capable provider models feed combo modalities", () => {
   // attachments client-side before any request was made.
   test("xAI grok chat models declare image input in the registry", () => {
     const xai = PROVIDER_REGISTRY.find(entry => entry.id === "xai");
-    expect(xai?.modelInputModalities?.["grok-4.5"]).toEqual(["text", "image"]);
+    for (const model of [
+      "grok-4.5",
+      "grok-4.3",
+      "grok-4.20-0309-reasoning",
+      "grok-4.20-0309-non-reasoning",
+    ]) {
+      expect(xai?.modelInputModalities?.[model]).toEqual(["text", "image"]);
+    }
     // Text-only members stay out of the vision map (they are already in noVisionModels).
-    expect(xai?.modelInputModalities?.["grok-build-0.1"]).toBeUndefined();
-    expect(xai?.noVisionModels).toContain("grok-build-0.1");
+    for (const model of ["grok-build-0.1", "grok-composer-2.5-fast"]) {
+      expect(xai?.modelInputModalities?.[model]).toBeUndefined();
+      expect(xai?.noVisionModels).toContain(model);
+    }
   });
 
   test("a combo of two vision-capable members still advertises image", () => {
@@ -199,5 +209,24 @@ describe("vision-capable provider models feed combo modalities", () => {
       ],
     );
     expect(derived?.inputModalities).toEqual(["text"]);
+  });
+
+  test("a partial user modality map does not hide registry vision defaults", () => {
+    // Regression: enrichProviderFromRegistry filled modelInputModalities all-or-nothing, so a
+    // single customized model suppressed the registry's knowledge about every other model and
+    // left vision-capable ids advertising no image support (collapsing combos to text-only).
+    // Routing already merged these maps per key; catalog enrichment must match.
+    const prov = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.x.ai/v1",
+      modelInputModalities: { "grok-4.3": ["text"] },
+    } as OcxProviderConfig;
+    enrichProviderFromRegistry("xai", prov);
+    // The user's explicit narrowing still wins.
+    expect(prov.modelInputModalities?.["grok-4.3"]).toEqual(["text"]);
+    // Registry defaults fill in beneath it instead of being skipped wholesale.
+    expect(prov.modelInputModalities?.["grok-4.5"]).toEqual(["text", "image"]);
+    const hinted = applyProviderConfigHints("xai", prov, { provider: "xai", id: "grok-4.5" });
+    expect(hinted.inputModalities).toEqual(["text", "image"]);
   });
 });
