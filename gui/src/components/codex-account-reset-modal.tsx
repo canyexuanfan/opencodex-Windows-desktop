@@ -82,7 +82,7 @@ export function CodexAccountResetModal({
           <>
             <div style={{ textAlign: "center", padding: "12px 0" }}>
               <div className="confirm-icon"><IconAlert width={22} /></div>
-              <h3>{t("codexAuth.confirmResetTitle")}</h3>
+              <h3 id="codex-reset-title">{t("codexAuth.confirmResetTitle")}</h3>
               <p className="modal-desc">{t("codexAuth.confirmResetDesc", { count: String(resetPopup.quota?.resetCredits ?? 0) })}</p>
               {creditDetails && creditDetails[0] && (
                 <p className="faint text-label">

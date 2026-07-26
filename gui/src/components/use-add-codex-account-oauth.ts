@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch } from "react";
 import type { AddCodexAccountUiAction } from "./add-codex-account-reducer";
 import type { TFn } from "../i18n";
-import { readJsonIfOk } from "../fetch-json";
+import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 
 export function useAddCodexAccountOAuth({
   apiBase,
@@ -71,23 +71,27 @@ export function useAddCodexAccountOAuth({
     }).catch(() => {});
   }, [apiBase, clearManualCode, dispatch, stopPolling]);
 
-  useEffect(() => () => {
-    clearManualCode();
-    aliveRef.current = false;
-    loginAbortRef.current?.abort();
-    loginAbortRef.current = null;
-    const flowId = flowRef.current;
-    flowRef.current = null;
-    dispatch({ type: "set-flow-id", flowId: null });
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
-    if (flowId) {
-      void fetch(`${apiBase}/api/codex-auth/login/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ flowId }),
-      }).catch(() => {});
-    }
+  // Replay-safe under StrictMode: remount must revive aliveRef after the first cleanup.
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      clearManualCode();
+      aliveRef.current = false;
+      loginAbortRef.current?.abort();
+      loginAbortRef.current = null;
+      const flowId = flowRef.current;
+      flowRef.current = null;
+      dispatch({ type: "set-flow-id", flowId: null });
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+      if (flowId) {
+        void fetch(`${apiBase}/api/codex-auth/login/cancel`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ flowId }),
+        }).catch(() => {});
+      }
+    };
   }, [apiBase, clearManualCode, dispatch]);
 
   const bindCallbacks = useCallback((onAdded: () => void, onClose: () => void) => {
@@ -123,7 +127,6 @@ export function useAddCodexAccountOAuth({
       });
       type LoginResponse = { url?: string; flowId?: string; error?: string; status?: string };
       let resp = await requestLogin();
-      let data = await readJsonIfOk<LoginResponse>(resp);
       if (!aliveRef.current) return;
       if (resp.status === 409) {
         await fetch(`${apiBase}/api/codex-auth/login/cancel`, {
@@ -133,16 +136,14 @@ export function useAddCodexAccountOAuth({
         });
         if (!aliveRef.current || controller.signal.aborted) return;
         resp = await requestLogin();
-        data = await readJsonIfOk<LoginResponse>(resp);
         if (resp.status === 409) {
           dispatch({ type: "set-error", error: t("codexAuth.oauthAlreadyInProgress") });
           return;
         }
       }
-      if (!data) {
-        dispatch({ type: "set-error", error: t("modal.networkError") });
-        return;
-      }
+      // Preserve structured `{ error }` bodies on non-2xx instead of collapsing to networkError.
+      const data = await readJsonOrThrow<LoginResponse>(resp, t("modal.networkError"));
+      if (!aliveRef.current) return;
       if (data.url) {
         flowRef.current = data.flowId ?? null;
         dispatch({ type: "set-flow-id", flowId: data.flowId ?? null });
@@ -212,7 +213,7 @@ export function useAddCodexAccountOAuth({
       if (data.error && !data.url) dispatch({ type: "set-error", error: data.error });
     } catch (e) {
       if (aliveRef.current && !(e instanceof Error && e.name === "AbortError")) {
-        dispatch({ type: "set-error", error: String(e) });
+        dispatch({ type: "set-error", error: e instanceof Error ? e.message : String(e) });
       }
     }
   }, [apiBase, cancelLogin, clearManualCode, dispatch, reauthAccountId, stopPolling, t]);
