@@ -15,19 +15,18 @@ export function intersectComboEfforts(
 ): ComboEffort[] {
   const complete = targets.filter((t) => t.provider.trim() && t.model.trim());
   if (complete.length === 0) return [...COMBO_EFFORTS];
-  let common: Set<string> | null = null;
+  let common: string[] | null = null;
   for (const target of complete) {
     const key = `${target.provider.trim()}/${target.model.trim()}`;
     const listed = modelEfforts.get(key);
-    const member = listed === undefined
-      ? COMBO_EFFORTS
-      : listed.filter((effort): effort is ComboEffort => (COMBO_EFFORTS as string[]).includes(effort));
-    const next = new Set(member);
+    const member: string[] = listed === undefined
+      ? [...COMBO_EFFORTS]
+      : listed.filter((effort) => (COMBO_EFFORTS as readonly string[]).includes(effort));
     common = common === null
-      ? next
-      : new Set([...common].filter((effort) => next.has(effort)));
+      ? member
+      : common.filter((effort) => member.includes(effort));
   }
-  return COMBO_EFFORTS.filter((effort) => common?.has(effort));
+  return COMBO_EFFORTS.filter((effort) => common?.includes(effort) === true);
 }
 
 export interface ComboTarget {
