@@ -24,7 +24,7 @@ stops coercing — it takes the server's value verbatim (the coercion is the aut
 bug). `ClaudeCodeState` also gains:
 
 ```ts
-effectiveAuthMode?: "proxy" | "subscription";
+markerMode?: "proxy" | "subscription";
 authModeOrigin?: "manual" | "auto-present" | "auto-absent" | "auto-unknown";
 authFoundBy?: string;
 authDetectionUnknown?: boolean;
@@ -63,7 +63,6 @@ the badge lie (002 §2).
 | `claude.authSource.claude-json-oauth` | `Claude account` | `Claude 계정` |
 | `claude.authSource.claude-credentials-file` | `Claude credentials file` | `Claude 자격 증명 파일` |
 | `claude.authSource.macos-keychain` | `macOS Keychain` | `macOS 키체인` |
-| `claude.authSource.ocx-anthropic-oauth` | `opencodex Anthropic login` | `opencodex Anthropic 로그인` |
 | `claude.authSource.exported-env` | `environment variable` | `환경 변수` |
 | `claude.authModeAuto` | `Auto (detect Claude auth)` | `자동 (Claude 인증 감지)` |
 | `claude.effectiveMode.admissionKey` | `API key required by this proxy is still sent` | `이 프록시의 API 키는 계속 전송됩니다` |

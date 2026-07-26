@@ -37,16 +37,21 @@ export interface AuthSourceResult {
 }
 
 export interface AuthDetectDeps {
-  /** Returns parsed ~/.claude.json, undefined when missing, throws on corrupt. */
+  /** Parsed <CLAUDE_CONFIG_DIR|~>/.claude.json, undefined when missing, throws on corrupt. */
   readClaudeJson(): Record<string, unknown> | undefined;
-  /** true/false for ~/.claude/.credentials.json, throws on read error. */
+  /** true/false for .credentials.json in the same directory, throws on read error. */
   credentialsFileExists(): boolean;
   /** present/absent/unknown for the macOS keychain probe; absent on non-Darwin. */
   keychainProbe(): AuthPresence;
-  /** true when opencodex itself holds an anthropic OAuth credential. */
-  hasOcxAnthropicCredential(): boolean;
+  /**
+   * The environment to inspect for S5. The CLI passes the SAME base env the launch
+   * will use, so detection and the spawned process can never disagree (002 R2-2):
+   *   detectClaudeAuth({ ...defaultAuthDetectDeps(), env: () => base })
+   */
   env(): NodeJS.ProcessEnv;
 }
+
+// NOTE: no `hasOcxAnthropicCredential` — S4 was removed by the audit (002 §5).
 
 export interface AuthDetectResult {
   /** Aggregate: present if ANY source is present; unknown if none present but ANY unknown. */
@@ -60,6 +65,9 @@ export interface AuthDetectResult {
   staleProxyMarker: boolean;
 }
 
+/** The one owned value. Exported so the CLI, system-env and tests share it. */
+export const PROXY_MARKER = "opencodex-proxy";
+
 export function detectClaudeAuth(deps: AuthDetectDeps): AuthDetectResult;
 ```
 
@@ -67,12 +75,16 @@ Aggregation rule (the safety contract, c-detect):
 
 ```ts
 const results = collectSources(deps); // each catches its own errors -> "unknown"
+const staleProxyMarker = deps.env().ANTHROPIC_AUTH_TOKEN === PROXY_MARKER;
 if (results.some(r => r.presence === "present")) {
-  return { presence: "present", foundBy: results.find(r => r.presence === "present")!.source, sources: results };
+  return { presence: "present", foundBy: results.find(r => r.presence === "present")!.source, sources: results, staleProxyMarker };
 }
-if (results.some(r => r.presence === "unknown")) return { presence: "unknown", sources: results };
-return { presence: "absent", sources: results };
+if (results.some(r => r.presence === "unknown")) return { presence: "unknown", sources: results, staleProxyMarker };
+return { presence: "absent", sources: results, staleProxyMarker };
 ```
+
+`staleProxyMarker` rides EVERY branch — a result that omitted it on one path would be
+the same class of half-applied guard the audit caught (002 R2-2).
 
 Per-source rules:
 
@@ -105,7 +117,10 @@ Default IO wiring (same module, exported as `defaultAuthDetectDeps()`): real pat
   → absent for the source AND `staleProxyMarker: true`;
 - the keychain probe command contains no `-g` or `-w` flag (string assertion);
 - aggregate: any present wins over unknowns; unknown beats absent; all-absent → absent;
-- **the F1 invariant**: every-unknown → `unknown`, NEVER `absent`.
+- **the F1 invariant**: every-unknown → `unknown`, NEVER `absent`;
+- `staleProxyMarker` is set on all three aggregate branches;
+- the CLI's production call binds `env` to its launch base (default-dependency path
+  exercised, not only an injected fake).
 
 ## Verification (C)
 

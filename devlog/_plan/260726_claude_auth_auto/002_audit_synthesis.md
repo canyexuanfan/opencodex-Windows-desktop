@@ -131,3 +131,107 @@ disclosure. WP3 grows: the select is three-state with a "return to auto" path. W
 grows: system-env/launchctl honour the resolution, and H1's writer enumeration +
 conflict policy are explicit. WP1 shrinks: S4 is gone. Every growth is folded into
 the decade docs before B.
+
+---
+
+# Round 2 — `VERDICT: GO-WITH-FIXES (blockers=5)` @ `201de404`
+
+### R2-1. Critical — marker cleanup ordered AFTER admission injection. ACCEPTED.
+
+`setDefault` preserves any existing non-empty token (`cli/claude.ts:31-33`), so with
+`base.ANTHROPIC_AUTH_TOKEN="opencodex-proxy"` AND `config.apiKeys` configured, the
+admission key is skipped at `:55-57` — and then my subscription cleanup deletes the
+dummy, leaving the child with NO token at all. That is a worse failure than the one I
+was fixing.
+
+Fixed ordering, now normative in `020`:
+
+1. strip an owned dummy from the base env (unconditionally — it is our state, not the
+   user's, and it must never shadow a real token);
+2. inject the admission key when `config.apiKeys` is non-empty;
+3. inject the dummy only when no token remains AND the marker mode resolves proxy.
+
+New test: `stale marker + apiKeys + detected auth` → admission key present, dummy
+gone.
+
+Also accepted: `effectiveAuthMode` is a misleading name for "does the dummy marker
+get injected", because native passthrough needs an `sk-ant-` credential on the
+incoming request (`claude-messages.ts:85-96`). Renamed to **`markerMode`**
+(`"proxy" | "subscription"`) end to end — payload, resolver, GUI reason line.
+
+### R2-2. High — the "same base env" claim is not expressed by the call contract. ACCEPTED.
+
+`010`/`020` disagreed with themselves. Fixed: the CLI calls
+`detectClaudeAuth({ ...defaultAuthDetectDeps(), env: () => base })` so detection and
+the launch read the same environment by construction; `010` drops the removed S4
+dependency `hasOcxAnthropicCredential()` and carries `staleProxyMarker` in every
+aggregation branch. The two-launch regression drives the DEFAULT dependency path, not
+only a fake.
+
+### R2-3. High — legacy explicit-subscription intent is unmigrated. ACCEPTED.
+
+Old subscription selection DELETED the key (`agent-settings-routes.ts:693-703`), so a
+pre-upgrade user who deliberately chose Subscription is byte-identical to one who
+never chose. Converting both to auto would flip the former into proxy when their
+credentials are absent — a silent behaviour change for an explicit choice.
+
+Decision: a one-time, version-sentinel migration. `claudeCode.authModeMigratedAt`
+(absent = pre-upgrade config) is written once at startup: an existing config whose
+`claudeCode` key EXISTS but has no `authMode` is migrated to the literal
+`"subscription"` (preserving the old effective behaviour); a config with no
+`claudeCode` key at all, or a fresh install, gets auto. New work-phase WP1b owns it,
+with a test for each of the three pre-states.
+
+### R2-4. High — system-env is a snapshot; GET cannot see terminal-local S5. ACCEPTED.
+
+The shell file only changes when `injectSystemEnv` runs (`cli/index.ts:269-273`,
+`:315-321`, settings PUT `agent-settings-routes.ts:816-818`), so logging into Claude
+after an auto-absent write leaves the marker until an unrelated refresh. And a
+daemon-side GET cannot observe an `ANTHROPIC_API_KEY` exported only in the user's
+terminal.
+
+Decision: narrow the promise rather than build a watcher (out of scope for this
+unit).
+
+- `ocx claude` resolves LIVE every launch — that is the authoritative path and it
+  already re-reads everything.
+- The shell-env file is documented as a snapshot refreshed by `ocx ensure`, restart,
+  or a settings save; a settings save already triggers `applySystemEnvToggle`
+  (`:816-818`), so the GUI has a working "re-apply now" affordance.
+- The GUI badge labels itself as daemon-side and EXCLUDES process-local S5 from its
+  reason, with a note that a terminal-exported key is only visible to `ocx claude`.
+  A badge that silently disagrees with the CLI is exactly the report class this unit
+  exists to kill.
+
+### R2-5. High — H1 protects the wrong set: ANY route's stale save clobbers claudeCode. ACCEPTED.
+
+Decisive: `model-routes.ts:226-227` changes only `disabledModels` and calls
+`saveConfig(config)`, which serializes the WHOLE object (`config.ts:847-859`) — so an
+unrelated model toggle overwrites a hand-edited `claudeCode`. Guarding only the
+`claudeCode` mutators cannot work.
+
+Decision: the guard moves to a **save wrapper used by every service-time save**, not
+per-route. `saveConfigPreservingClaudeCode` becomes the single entry point for routes
+holding server config, and the integration test is the reviewer's: hand-edit
+`claudeCode`, invoke an unrelated model PUT, assert the hand edit survives. The
+missed direct writers (combo migration `combo-routes.ts:164-182`, CLI Desktop
+`claude-desktop.ts:117-119`, `:135-138`) are covered by the same wrapper.
+
+### Non-blocking, accepted
+
+Obsolete `claude.authSource.ocx-anthropic-oauth` locale key removed from `030`;
+baselines restated as `201de404`.
+
+### WP2 split (reviewer's suggestion, accepted)
+
+WP2 was too broad. New map:
+
+| WP | Slice |
+|----|-------|
+| WP1 | detector (3-value, 4 sources, staleProxyMarker) |
+| WP1b | config migration + version sentinel |
+| WP2 | resolver + CLI marker/admission ordering |
+| WP2b | management GET/PUT three-state contract |
+| WP3 | GUI select + reason line (presentation only) |
+| WP3b | system-env / launchctl snapshot semantics + documented refresh |
+| WP4 | hardening: save wrapper, hijack verification, review, gates, live smoke |

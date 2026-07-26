@@ -34,22 +34,25 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
 `deepEqual` is a structural compare on the PARSED subtrees, not `JSON.stringify` —
 key order must not decide whether a user's hand edit survives (002 §8).
 
-**Writers in scope** (every current mutator of `config.claudeCode`, enumerated
-because the audit found the first list incomplete):
+**The guard cannot be per-writer** (audit R2-5). The decisive counterexample:
+`model-routes.ts:226-227` changes only `disabledModels` and calls `saveConfig(config)`,
+which serializes the WHOLE object (`config.ts:847-859`) — so an unrelated model toggle
+clobbers a hand-edited `claudeCode`. Enumerating `claudeCode` mutators protects
+nothing against that.
 
-| Writer | Location |
-|--------|----------|
-| claude-code PUT | `agent-settings-routes.ts` (settings round-trip) |
-| Desktop auto-apply | `agent-settings-routes.ts:95-96` |
-| Desktop profile PUT / apply / status | `agent-settings-routes.ts:498-499`, `:510-511`, `:531-532` |
-| CLI Desktop commands | `src/cli/claude-desktop.ts:34-35`, `:107-108` |
+So the guard sits in **one save wrapper used by every service-time save**:
+`saveConfigPreservingClaudeCode` becomes the entry point for routes and CLI commands
+that hold a long-lived server config, including the writers the first list missed —
+combo migration (`combo-routes.ts:164-182`) and CLI Desktop
+(`claude-desktop.ts:117-119`, `:135-138`) — as well as the direct `claudeCode`
+mutators (claude-code PUT, Desktop auto-apply `agent-settings-routes.ts:95-96`,
+Desktop profile routes `:498-499`, `:510-511`, `:531-532`).
 
-All four switch to the guarded save. Explicitly **out of scope**: preserving
-non-`claudeCode` subtrees. `saveConfig` serializes the whole object
-(`src/config.ts:847-859`), so a hand edit to `providers` is still clobbered by any
-stale save — the earlier claim that unrelated subtrees are "preserved naturally" was
-false and is retracted. Widening the guard to the whole config is a separate unit;
-this one records the residual.
+Explicitly **out of scope**: preserving non-`claudeCode` subtrees. A hand edit to
+`providers` is still clobbered — the earlier "preserved naturally" claim was false and
+is retracted. Widening the wrapper to reconcile the whole config is a separate unit;
+this one records the residual and asserts it in a test so it cannot drift into an
+assumed guarantee.
 
 Edge semantics, chosen deliberately:
 
@@ -63,6 +66,9 @@ Tests (`tests/config-user-edits.test.ts`, NEW):
 
 - hand-edit `claudeCode` on disk while the service holds memory → guarded save keeps
   the hand edit;
+- **the R2-5 integration case**: hand-edit `claudeCode`, then invoke an UNRELATED
+  model-visibility PUT → the hand edit survives (this is the test that would have
+  failed under the per-writer design);
 - in-memory change to `authMode` + disk edit → in-memory wins, snapshot rebases, and
   the NEXT hand edit starts from the new baseline;
 - key-order-only difference on disk → treated as EQUAL (structural compare), so no

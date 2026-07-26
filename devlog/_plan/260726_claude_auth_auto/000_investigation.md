@@ -95,15 +95,24 @@ subscription with no way back (`002` §3).
 
 ## Work-phase map
 
+Round 2 judged the original WP2 too broad and split it (`002` R2 tail):
+
 | WP | Doc | Slice | Depends on |
 |----|-----|-------|------------|
-| WP0 | `000` + `001` + `002` | Investigation, failure modes, audit synthesis | — |
-| WP1 | `010_auth_detector.md` | 3-value detector, per-source + aggregate | — |
-| WP2 | `020_auto_resolution.md` | Shared resolver; CLI env + marker cleanup; GET/PUT three-state; system-env + launchctl | WP1 |
-| WP3 | `030_gui_effective_mode.md` | Three-state select + effective-mode reason, locales | WP2 |
-| WP4 | `040_hardening.md` | config-overwrite protection, hijack verification, review, gates, live smoke | WP2 |
+| WP0 | `000` + `001` + `002` | Investigation, failure modes, audit synthesis (2 rounds) | — |
+| WP1 | `010_auth_detector.md` | 3-value detector, 4 sources, `staleProxyMarker` | — |
+| WP1b | `015_authmode_migration.md` | One-time migration so a legacy explicit Subscription is not silently converted | WP1 |
+| WP2 | `020_auto_resolution.md` | Resolver + CLI marker/admission ordering | WP1, WP1b |
+| WP2b | `020` §GET/PUT | Management three-state contract | WP2 |
+| WP3 | `030_gui_effective_mode.md` | Three-state select + reason line (presentation) | WP2b |
+| WP3b | `035_system_env_snapshot.md` | system-env / launchctl marker lifecycle + snapshot semantics | WP2 |
+| WP4 | `040_hardening.md` | Save wrapper, hijack verification, review, gates, live smoke | WP2, WP3b |
 
 ## Accept criteria
 
 Mirrored into the goalplan: c-docs, c-detect, c-auto, c-sticky, c-253, c-gui, c-i18n,
 c-hardening, c-gates, c-smoke.
+
+Round 2 added two criteria: **c-migration** (a legacy explicit Subscription survives
+the upgrade; a fresh install gets auto) and **c-ordering** (a stale marker never
+suppresses the admission key).
