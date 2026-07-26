@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
+import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { dlopen, ptr, type Pointer } from "bun:ffi";
 
 type ElevationSpawn = (
@@ -91,12 +91,23 @@ export function resolveTrustedWindowsSystemDirectory(): string {
   throw new Error("GetSystemDirectoryW required a system directory path larger than expected.");
 }
 
+/**
+ * True when `candidatePath` is the trusted directory itself, or a contained child.
+ * Uses path.relative so containment works with host-native separators (Linux/macOS CI
+ * hosts fake win32 with `/tmp/...` paths; a literal `\\` prefix check rejects them).
+ */
+function isPathInsideTrustedDirectory(trustedDirectory: string, candidatePath: string): boolean {
+  const relativePath = relative(trustedDirectory, candidatePath);
+  return (
+    relativePath === "" ||
+    (!isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${sep}`))
+  );
+}
+
 function assertTrustedSystemExecutable(candidate: string, label: string): string {
   const systemDir = resolveTrustedWindowsSystemDirectory();
   const resolved = resolvePath(candidate);
-  const systemPrefix = systemDir.toLowerCase().replace(/[/\\]+$/, "") + "\\";
-  const resolvedLower = resolved.toLowerCase();
-  if (resolvedLower !== systemDir.toLowerCase() && !resolvedLower.startsWith(systemPrefix)) {
+  if (!isPathInsideTrustedDirectory(systemDir, resolved)) {
     throw new Error(`${label} resolved outside the trusted Windows system directory.`);
   }
   if (!existsSync(resolved)) {
