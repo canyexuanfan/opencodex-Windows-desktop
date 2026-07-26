@@ -362,11 +362,26 @@ export interface OcxClaudeCodeConfig {
    */
   systemEnv?: boolean;
   /**
-   * Auth mode for Claude Code inbound requests. "proxy" injects a dummy
-   * ANTHROPIC_AUTH_TOKEN so Claude Code routes through the proxy without a
-   * real Anthropic key. Default: undefined (no token injection).
+   * Auth mode for Claude Code inbound requests — a THREE-state intent.
+   *
+   * "proxy": inject the dummy ANTHROPIC_AUTH_TOKEN so Claude Code routes through the
+   * proxy without a real Anthropic key. "subscription": never inject it. UNSET means
+   * AUTO: the mode is resolved from detected Claude auth on every launch and every
+   * status read (src/claude/auth-mode.ts), so registering a Claude login switches the
+   * behaviour with no migration and no stored state.
+   *
+   * An explicit value always wins over detection and is never rewritten by the auto
+   * logic — that is what makes a manual choice stick (devlog 260726_claude_auth_auto).
    */
-  authMode?: "proxy";
+  authMode?: "proxy" | "subscription";
+  /**
+   * ISO timestamp of the one-time authMode migration. Before auto existed, choosing
+   * "Subscription" DELETED the key, so a pre-upgrade config cannot distinguish an
+   * explicit subscription choice from "never chose". Its ABSENCE identifies a
+   * pre-upgrade block; the migration writes it once and never re-runs, so a user who
+   * later picks Auto (which deletes authMode) is not silently converted back.
+   */
+  authModeMigratedAt?: string;
   /**
    * Context-window override for Claude Code/Desktop clients (devlog 136 B6):
    * injected as CLAUDE_CODE_MAX_CONTEXT_TOKENS + DISABLE_COMPACT=1 (the official

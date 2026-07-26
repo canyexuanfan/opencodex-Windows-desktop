@@ -123,6 +123,7 @@ import { handleClaudeCountTokens, handleClaudeMessages } from "./claude-messages
 import { handleChatCompletions } from "./chat-completions";
 import { anthropicErrorResponse } from "../claude/outbound";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
+import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
 import { handleImages } from "./images";
 import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
 import { handleSearch } from "./search";
@@ -249,6 +250,11 @@ export function startServer(port?: number) {
     config.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
     saveConfig(config);
   }
+  // authMode migration (devlog 260726_claude_auth_auto/015): before "auto" existed,
+  // choosing Subscription DELETED the key, so a pre-upgrade block with no authMode is
+  // indistinguishable from "never chose". Pin those to subscription once so an upgrade
+  // never silently moves a deliberate subscriber onto proxy.
+  if (runClaudeAuthModeMigration(config)) saveConfig(config);
   // Sidecar model migration (KST 2026-07-10 06:00 = UTC 2026-07-09 21:00): auto-migrate the old
   // gpt-5.4-mini default to gpt-5.6-luna for both search and vision sidecars. Only touches configs
   // still on the old default — explicit user choices are preserved.
