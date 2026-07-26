@@ -67,9 +67,16 @@ Idempotently ensure a background proxy is running, then sync its live model cata
 Print a read-only diagnostic summary: proxy PID, `/healthz` reachability, dashboard URL,
 config path, default provider, Codex autostart setting, service state, and shim state.
 
+Human output also includes an **OAuth health** block after the OAuth logins summary: `OAuth health:
+ok` when every known account is healthy, or `OAuth health: warning` with one redacted line per
+non-healthy account (provider, masked account id, status such as reauthentication required / rate or
+quota limited / refresh conflict) plus an optional `Action:` hint. Account ids are redacted; tokens
+and emails are never printed. The `--json` contract does not currently include this health block.
+
 Use `--json` for a machine-readable, read-only diagnostics contract:
 
 ```bash
+ocx status
 ocx status --json
 ```
 
@@ -327,8 +334,13 @@ credentials under `~/.opencodex/`; API-key login providers open their key dashbo
 key, validate it when possible, and save the resulting provider config. The command prints the
 currently accepted OAuth and API-key provider ids when the name is missing or unknown.
 
+Use the same command to **reauthenticate** after `ocx status` / `ocx doctor` reports
+reauthentication required or a terminal refresh failure (or use Reauthenticate in the dashboard).
+For Codex pool accounts, complete ChatGPT / Codex login again so the stored credential is replaced.
+
 ```bash
 ocx login xai
+ocx login anthropic
 ```
 
 ### `ocx logout <provider>`
@@ -403,6 +415,11 @@ lightweight, on-demand startup without a daemon — the proxy starts only when `
 Run read-only environment and connectivity diagnostics: state paths and filesystem type, WSL dual
 installs, proxy environment/config, ChatGPT reachability, Codex plugin and project-config warnings,
 and pending history migration. It prints repair hints but does not apply them.
+
+The **OAuth reliability** section reports whether credential storage is writable, whether refresh
+single-flight / lock files can be created under `OPENCODEX_HOME`, non-healthy OAuth or Codex pool
+accounts (redacted ids) with a recovery `Action:`, and a static OK that the Codex forward path does
+not fabricate official-client metadata. Doctor never mutates credentials or applies repairs.
 
 ### `ocx debug [provider|usage …]`
 

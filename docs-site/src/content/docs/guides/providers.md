@@ -100,6 +100,45 @@ active account without logging the others out. Identity-less Kimi and Kiro crede
 active slot, while `chatgpt` is always single-slot because Codex pool accounts have a separate ledger.
 Tokens stay in `~/.opencodex/auth.json`; `/api/oauth/accounts` returns masked metadata only.
 
+### OAuth reliability
+
+opencodex coordinates token refresh and Codex pool routing so concurrent requests do not race the
+credential store. This is reliability and diagnostics work — it does **not** guarantee protection
+from provider enforcement, rate limits, or account actions.
+
+**Refresh coordination.** Before a routed call, an expired access token is refreshed once per
+`(provider, account)`:
+
+1. In-process single-flight — concurrent callers share one refresh promise.
+2. Per-account file lock — cross-process writers serialize on the same account.
+3. Generation CAS — persist only when the stored credential generation still matches; a newer writer
+   wins, and an older refresh result cannot overwrite it.
+
+Terminal refresh failures mark the account as needing reauthentication instead of retrying forever.
+
+**Cooldowns (Codex pool).** Upstream `429` / quota responses set a hard cooldown from
+`Retry-After`, quota `reset` headers (capped), or a short default backoff. Accounts on an explicit
+`Retry-After` cooldown are not probed early; reset-derived cooldowns may receive a paced probe lease
+so recovery can be detected without flooding the provider.
+
+**Session affinity.** Codex thread→account affinity is process-local (in-memory only; not persisted
+across proxy restarts). On credential failures (`401` / `403`) the account is quarantined for
+reauth and affinities for that account are cleared. On `429`, the account enters cooldown, affinities
+are cleared, and pool selection may rotate — threads are not pinned through a rate-limit response.
+
+**Codex client metadata.** The ChatGPT forward path passes through the curated `FORWARD_HEADERS`
+allowlist (authorization, `chatgpt-account-id`, originator, session/thread ids, and related Codex
+headers — see [Adapters](/reference/adapters/)). Pool mode overwrites only auth and
+`chatgpt-account-id` to match the selected credential. opencodex does **not** fabricate official
+client identity (for example `originator`, session, or thread headers) when the caller did not send
+them.
+
+**Diagnostics and reauth.** Human `ocx status` prints an OAuth health block (redacted account ids,
+no tokens). `ocx doctor` adds an OAuth reliability section with writable-store / single-flight checks
+and WARN rows that include a recovery Action. When an account needs reauthentication, run
+`ocx login <provider>` (or use Reauthenticate in the dashboard). See
+[`ocx status` / `ocx doctor`](/reference/cli/) in the CLI reference.
+
 ### Kiro credential import
 
 `ocx login kiro` searches the platform Kiro CLI stores and opens SQLite databases read-only. Two
