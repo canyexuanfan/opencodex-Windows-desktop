@@ -61,22 +61,34 @@ combo migration (`combo-routes.ts:164-182`) and CLI Desktop
 mutators (claude-code PUT, Desktop auto-apply `agent-settings-routes.ts:95-96`,
 Desktop profile routes `:498-499`, `:510-511`, `:531-532`).
 
-### The conversion is mechanical, and enforced (002 R3-2)
+### The conversion is mechanical, and enforced (002 R3-2, widened by R4-1)
 
-"Every service-time save" is a claim until something checks it. The conversion
-boundary is: **any module under `src/server/management/` plus the CLI commands that
-operate on a running service** replaces `saveConfig(config)` with the wrapper. Known
-call sites to convert include `model-routes.ts:127-128` and `:227`,
-`provider-routes.ts:112-119`, `combo-routes.ts:164-182`, the agent-settings writers
-above, and the CLI Desktop commands. Dynamic `await import("../../config")` forms
-count — a grep for `saveConfig` alone would miss them if only static imports were
-considered.
+"Every service-time save" is a claim until something checks it. The boundary is
+**every writer that saves a LIVE server config**, which round 4 showed is wider than
+the management routes:
+
+| Area | Examples |
+|------|----------|
+| Management routes | `model-routes.ts:127-128`, `:227`, `provider-routes.ts:112-119`, `combo-routes.ts:164-182`, the agent-settings writers |
+| **Request-path runtime writers** | `providers/key-failover.ts:115` (429 rotation, reached from `server/responses/fetch-helpers.ts:68`), `providers/api-keys.ts:90`, `:101`, `:113`, `:131` |
+| Running-service CLI commands | `cli/claude-desktop.ts:117-119`, `:135-138` |
+
+The request-path case is the one that would have escaped: a 429 during an ordinary
+turn rotates a key and saves the whole config, clobbering a hand-edited `claudeCode`
+with no user action at all. Those helpers take the live config, so they take the
+guarded saver the same way — either the wrapper directly or an injected saver, since
+`key-failover.ts` already receives its dependencies as parameters.
+
+Dynamic `await import("../../config")` forms count — a grep for a static import alone
+would miss them.
 
 Enforcement is a test, not a promise: `tests/config-save-boundary.test.ts` walks
-`src/server/management/**` and asserts no module calls bare `saveConfig(` (the
-wrapper is the only permitted entry point), mirroring the writer-boundary test this
-repo already uses for the Grok fence. Startup migrations in `src/server/index.ts` are
-the documented exception — they run before the server is serving requests.
+`src/server/management/**` AND the runtime writers named above, asserting no live-config
+module calls bare `saveConfig(` (the wrapper is the only permitted entry point) —
+mirroring the writer-boundary test this repo already uses for the Grok fence. Startup
+migrations (`src/server/index.ts`, `providers/*-startup.ts`) are the documented
+exception: they run before the server serves requests, against a config nobody else
+holds.
 
 Explicitly **out of scope**: preserving non-`claudeCode` subtrees. A hand edit to
 `providers` is still clobbered — the earlier "preserved naturally" claim was false and
@@ -103,6 +115,8 @@ Tests (`tests/config-user-edits.test.ts`, NEW):
   still survives, proving the baseline was armed at startup rather than lazily;
 - **instance isolation (R3-2)**: an unrelated `loadConfig()` elsewhere does not
   refresh the server instance's baseline;
+- **the R4-1 request-path case**: hand-edit `claudeCode`, then drive a 429 key
+  rotation through `rotateKeyOn429` with the live config → the hand edit survives;
 - in-memory change to `authMode` + disk edit → in-memory wins, snapshot rebases, and
   the NEXT hand edit starts from the new baseline;
 - key-order-only difference on disk → treated as EQUAL (structural compare), so no

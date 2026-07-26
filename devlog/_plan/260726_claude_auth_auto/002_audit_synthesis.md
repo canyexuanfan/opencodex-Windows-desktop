@@ -280,3 +280,26 @@ WP3b; the sentinel test validates type/value, not truthiness. Reviewer confirmed
 R2-1's ordering, R2-3's sentinel placement (PUT spreads `{ ...config.claudeCode }` at
 `agent-settings-routes.ts:672` and `ocx init` never creates the block), and the
 launchctl predicate swap.
+
+---
+
+# Round 4 — `VERDICT: GO-WITH-FIXES (blockers=1)` @ `7d24e7ff`
+
+### R4-1. High — the save boundary missed request-path runtime writers. ACCEPTED.
+
+`providers/key-failover.ts:115` saves the LIVE config during a 429 rotation, reached
+from `server/responses/fetch-helpers.ts:68` — i.e. during an ordinary turn, with no
+user action. `providers/api-keys.ts:90,101,113,131` is the same class. My boundary
+test scanned only `src/server/management/**`, so a hand-edited `claudeCode` could
+still be clobbered by a rate-limit event.
+
+Fixed in `040`: the boundary is defined as **every writer that saves a live server
+config**, tabulated across management routes, request-path runtime writers, and
+running-service CLI commands; the enforcement test covers the runtime writers too;
+and a new regression drives `rotateKeyOn429` against a hand-edited `claudeCode`.
+Startup migrations (`server/index.ts`, `providers/*-startup.ts`) are the documented
+exception because they run before the server serves requests.
+
+Reviewer confirmed the three R3 amendments themselves are sound (WP3b dependencies,
+the honest daemon-scope divergence, the protected env binding, and the WeakMap
+baseline avoiding first-save and cross-instance loss).
