@@ -4,7 +4,7 @@ description: ~/.opencodex/config.json 的所有字段 —— 顶层选项、prov
 ---
 
 opencodex 使用 `~/.opencodex/config.json` 配置。`ocx init` 和仪表盘会写入该文件，你也可以直接
-编辑；代理会在启动时重新加载。如果文件无法解析（例如被截断或不是有效 JSON），opencodex 会将
+编辑；代理会在启动时重新加载。**服务运行期间请优先停止代理或改用仪表盘/管理 API 再手改**：进程会把配置放在内存里，中途保存可能用内存快照覆盖磁盘。自 v2.7.41 起，手改的 `claudeCode` 子树在这些保存中会被保留；其他键（例如 `providers`）仍可能被覆盖。如果文件无法解析（例如被截断或不是有效 JSON），opencodex 会将
 其备份为 `config.json.invalid-<timestamp>`，在 console 中警告，再以默认值启动。文件缺失时也会
 回退到默认配置（单个 `openai` forward provider）。
 
