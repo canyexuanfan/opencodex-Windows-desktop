@@ -13,6 +13,22 @@ project is trying to kill. **Design answer:** three-value detection; `unknown`
 resolves to subscription (the historical default) with a warning. Owned by WP1/WP2,
 criterion c-detect + c-auto.
 
+A second false-absent path the audit found (`002` §7): a user on an alternate profile
+via `CLAUDE_CONFIG_DIR` would read as absent under a fixed `~/.claude` path. The
+detector honours that variable, matching `src/oauth/local-token-detect.ts:64-68`.
+
+## F1b — the marker feedback loop (audit Critical, `002` §1)
+
+Worse than a false absent: a false PRESENT caused by our own dummy. opencodex writes
+`ANTHROPIC_AUTH_TOKEN=opencodex-proxy` into the shell env file and the launch env
+(`src/server/system-env.ts:30-35`, `src/cli/claude.ts:58-60`). A naive S5 reads that
+on the next launch as "user auth present" → resolves subscription → skips injection —
+while the stale marker still rides the spawn env and still triggers the host-managed
+assertion (`cli/claude.ts:79-81`). Reported mode and real environment diverge, which
+is precisely a "작동 안 된다" report nobody can diagnose. **Design answer:** the exact
+marker value is opencodex-owned state, never user auth; a subscription resolution
+DELETES a stale marker before injection is considered. Owned by WP1 + WP2.
+
 ## F2 — running service silently overwrites hand-edited config.json (#488 item 1)
 
 The service holds config in memory and every `saveConfig` writes the whole object.
@@ -42,8 +58,10 @@ flag without a token (that reintroduces F4).
 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1` without a host token makes a valid
 subscription look logged out. Guard exists (`cli/claude.ts:79-81` injects the flag
 only when `ANTHROPIC_AUTH_TOKEN` is set) with regression tests in
-`tests/claude-cli.test.ts`. The auto mode must preserve this invariant on every new
-path: auto→subscription must never emit the flag. Owned by WP2, criterion c-253.
+`tests/claude-cli.test.ts:44-65`. The auto mode must preserve this invariant on every
+new path: auto→subscription with no admission key must never emit the flag. Note the
+interaction with F1b — before the marker-cleanup rule, a stale marker could satisfy
+the token check and re-open exactly this failure. Owned by WP2, criterion c-253.
 
 ## F5 — auth-conflict warning from coexisting token vars
 
@@ -53,6 +71,15 @@ auth-conflict warning. The auto resolver treats a user-exported `ANTHROPIC_API_K
 as auth-present (S5) — which conveniently also means no proxy token is injected for
 that user. Owned by WP2 (detector source S5) — verify with a test that an exported
 API key keeps `ANTHROPIC_AUTH_TOKEN` unset in auto mode.
+
+## F8 — auto never reaches ordinary `claude` launches (audit High, `002` §4)
+
+`ocx claude` is not the only path that produces the proxy marker: the macOS
+auto-connect shell-env file and the launchctl env both inject it, and both key on a
+stored `"proxy"` (`system-env.ts:32-35`, `:241-255`). An auto+absent user therefore
+gets nothing when they type plain `claude` — the feature would look broken for the
+exact population it exists to help. Owned by WP2; the GUI manual-env snippet is
+generated from the same resolution so the copy-paste block cannot disagree.
 
 ## F6 — stale gateway model cache / picker
 
@@ -74,3 +101,7 @@ The user asked 수동 변환 시 설정이 계속되도록. Three layers, all mu
    value is never "helpfully" updated when auth appears or disappears.
 3. A hand-edit of config.json survives the running service (F2) — at least for the
    `claudeCode` subtree.
+4. The GUI must be able to express all three intents. Today the select has two
+   options and every save sends one of them, so an untouched auto config becomes
+   sticky subscription the moment the user changes anything else (`002` §3). Fixed in
+   WP3 by an `Auto` option plus the removal of the GET/GUI coercion.

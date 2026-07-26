@@ -1,6 +1,18 @@
 # 020 — WP2: auto resolution — CLI env, effective-mode endpoint, sticky manual
 
-Depends on WP1. Contract from `000`/`001` (F1, F4, F5, and the sticky-manual rule).
+Depends on WP1. Contract from `000`/`001`; audit fold-backs from `002` (blockers 1,
+2, 3) — the feedback loop, the admission-key axis, and three-state intent.
+
+## What the resolver answers (exactly one question)
+
+**Does the proxy-mode dummy marker (`ANTHROPIC_AUTH_TOKEN=opencodex-proxy`) get
+injected?** That is the whole of `effectiveAuthMode`.
+
+The admission-key axis is SEPARATE and unchanged: when `config.apiKeys` is non-empty,
+`buildClaudeEnv` injects `config.apiKeys[0].key` as `ANTHROPIC_AUTH_TOKEN` regardless
+of mode (pre-existing behaviour, `cli/claude.ts:55-57`, documented at `:50-54`). The
+GET payload exposes both axes (`admissionKeyActive`) so the GUI never presents
+"subscription" as "no token anywhere".
 
 ## NEW — `src/claude/auth-mode.ts`
 
@@ -34,8 +46,8 @@ export function resolveClaudeAuthMode(config: OcxConfig, detection: AuthDetectRe
   if (config.claudeCode?.authMode === "proxy") {
     return { effective: "proxy", origin: "manual", detection };
   }
-  if (config.claudeCode?.authModeExplicitSubscription === true) {
-    // see "config shape" below — an explicit subscription must survive auth flips too
+  if (config.claudeCode?.authMode === "subscription") {
+    // Literal "subscription" (002 §3): an explicit choice must survive auth flips too.
     return { effective: "subscription", origin: "manual", detection };
   }
   switch (detection.presence) {
@@ -46,15 +58,14 @@ export function resolveClaudeAuthMode(config: OcxConfig, detection: AuthDetectRe
 }
 ```
 
-### Config shape — the explicit-subscription gap
+### Config shape — three-state intent, literal strings
 
-Today `authMode?: "proxy"` cannot distinguish "user chose subscription" from "never
-chose anything" — both are `undefined`, and under auto they must behave differently
-(the first is sticky, the second resolves). Add ONE optional boolean to
-`OcxClaudeCodeConfig` (`src/types.ts`), `authModeExplicitSubscription?: boolean`, set
-by the PUT route when the user picks subscription explicitly; `"proxy"` keeps its
-existing storage. `configSchema` is `.passthrough()` but gets the field for contract
-clarity.
+The audit's simpler alternative wins over the boolean: `authMode?: "proxy" |
+"subscription"` — unset = auto. Literal `"subscription"` is self-describing and
+backward-safe: old readers map any non-"proxy" value to "subscription" anyway
+(`agent-settings-routes.ts:615-617`), so an old proxy reading a new config keeps the
+user's explicit choice instead of silently dropping it. Widen the type in
+`src/types.ts` and add the enum to `configSchema` in `src/config.ts`.
 
 ## MODIFY — `src/cli/claude.ts` (`buildClaudeEnv`)
 
@@ -65,6 +76,12 @@ Replace the `authMode === "proxy"` check with the resolver:
 -    env.ANTHROPIC_AUTH_TOKEN = "opencodex-proxy";
 -  }
 +  const resolved = resolveClaudeAuthMode(config, detectClaudeAuth(deps.authDetectDeps ?? defaultAuthDetectDeps()));
++  // Feedback-loop guard (002 §1): OUR stale marker is not auth. On a subscription
++  // resolution it must not ride the spawn env, or the launch stays de-facto proxy
++  // while the badge and the CLI both report subscription.
++  if (resolved.effective === "subscription" && env.ANTHROPIC_AUTH_TOKEN === PROXY_MARKER) {
++    delete env.ANTHROPIC_AUTH_TOKEN;
++  }
 +  if (!env.ANTHROPIC_AUTH_TOKEN && resolved.effective === "proxy") {
 +    env.ANTHROPIC_AUTH_TOKEN = "opencodex-proxy";
 +  }
@@ -73,29 +90,61 @@ Replace the `authMode === "proxy"` check with the resolver:
 +  }
 ```
 
+Ordering matters: the marker deletion runs BEFORE the injection check, so a stale
+marker cannot satisfy `!env.ANTHROPIC_AUTH_TOKEN` and keep the launch in de-facto
+proxy mode.
+
 `buildClaudeEnv` gains an optional trailing `deps` parameter (defaults to real IO) so
 tests inject the detector without touching the real home — same pattern as
-`contextWindows`. The F4 invariant is untouched: `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`
-still ships only when an AUTH_TOKEN exists, which under auto→subscription never
-happens. F5 falls out: an exported `ANTHROPIC_API_KEY` makes detection present, so no
-proxy token is injected.
+`contextWindows`. Detection reads the SAME base env the launch will use (`base`, not
+`process.env`), so the two can never disagree (002 §1).
+
+The F4 invariant is untouched: `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` still ships
+only when an AUTH_TOKEN exists. Under auto→subscription with no admission key that
+is now genuinely never — previously a stale marker could have satisfied it. With an
+admission key configured the flag DOES ship, which is correct: opencodex really does
+own authentication on that deployment (002 §2).
 
 ## MODIFY — GET `/api/claude-code` (`agent-settings-routes.ts:605-640`)
 
-Add to the payload (computed per request — auto is a resolution, not state):
+`authMode` stops coercing absent → `"subscription"`: absent now means auto, and the
+coercion is exactly what silently killed auto on every save (002 §3).
 
 ```ts
 const detection = detectClaudeAuth(defaultAuthDetectDeps());
 const resolved = resolveClaudeAuthMode(config, detection);
 // ...
+authMode: config.claudeCode?.authMode ?? "auto",
 effectiveAuthMode: resolved.effective,
 authModeOrigin: resolved.origin,
 ...(resolved.foundBy ? { authFoundBy: resolved.foundBy } : {}),
 authDetectionUnknown: detection.presence === "unknown",
+// The SEPARATE admission axis (002 §2): with an admission key configured a token is
+// injected regardless of mode, so the GUI must never present subscription as
+// "no token anywhere".
+admissionKeyActive: (config.apiKeys?.length ?? 0) > 0,
 ```
 
-PUT: when `authMode === "subscription"` also set
-`next.authModeExplicitSubscription = true`; when `"proxy"` delete that flag too.
+PUT accepts all three intents: `"proxy"` stores `"proxy"`, `"subscription"` stores
+the literal `"subscription"`, and `"auto"` DELETES the key — the return-to-auto path
+the current two-option select cannot express. Validation widens to
+`"auto" | "proxy" | "subscription"`; anything else still 400s.
+
+## MODIFY — `src/server/system-env.ts` + launchctl (002 §4)
+
+Today the shell-env file and the launchctl env inject the marker only for a stored
+`"proxy"` (`system-env.ts:32-35`, `:241-255`), so an auto+absent user gets nothing on
+an ordinary `claude` launch — the "작동 안 된다" report in its purest form. Both
+writers move behind the same resolution:
+
+- compute `resolveClaudeAuthMode(config, detectClaudeAuth(defaultAuthDetectDeps()))`
+  at (re)write time;
+- resolution proxy (manual OR auto-absent) → write the marker line;
+- resolution subscription → do NOT write it, and REMOVE a previously written marker
+  line so the file cannot strand the user in proxy mode;
+- the GUI manual-env snippet (`gui/src/pages/claude-manual-env.ts:36-45`) is built
+  from the GET payload's `effectiveAuthMode`, so the copy-paste block and the real
+  launch can never disagree.
 
 ## TESTS
 
@@ -105,15 +154,25 @@ PUT: when `authMode === "subscription"` also set
   with origin auto-unknown;
 - **c-sticky**: manual proxy survives presence flips (present→absent→present) — same
   result every time; manual explicit subscription likewise;
+- **the feedback loop (002 §1)**: base env carrying
+  `ANTHROPIC_AUTH_TOKEN=opencodex-proxy` with auth now PRESENT → the marker is
+  deleted, the mode resolves subscription, and no host flag ships;
+- **admission axis (002 §2)**: detected credential + `config.apiKeys` → effective
+  subscription AND the admission token still injected AND the host flag present;
 - **c-253**: `buildClaudeEnv` under auto→subscription emits NO
   `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`; under auto→absent it emits the proxy token
   AND the flag;
 - **F5**: env carrying `ANTHROPIC_API_KEY` resolves present, and
   `ANTHROPIC_AUTH_TOKEN` stays unset;
-- GET returns `effectiveAuthMode`/`authModeOrigin` consistent with the resolver
-  (extend `tests/claude-management-api.test.ts` style harness);
-- PUT subscription sets the explicit flag; PUT proxy clears it; GET authMode output
-  unchanged from the 260720 contract.
+- GET returns `authMode: "auto"` for an unset key (NO coercion) plus
+  `effectiveAuthMode` / `authModeOrigin` / `admissionKeyActive`;
+- PUT `"subscription"` stores the literal, `"auto"` deletes the key, `"proxy"`
+  unchanged, invalid values still 400 — the 260720 round-trip contract survives as a
+  superset;
+- **the auto-kill regression (002 §3)**: GET(auto) → PUT that changes only an
+  unrelated field → the stored intent is still auto;
+- system-env: auto-absent writes the marker; auto-present does not AND removes a
+  stale marker line; launchctl path follows the same rule.
 
 ## Verification (C)
 

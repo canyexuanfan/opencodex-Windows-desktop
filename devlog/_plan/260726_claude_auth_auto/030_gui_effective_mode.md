@@ -1,21 +1,41 @@
-# 030 — WP3: Claude tab effective-mode badge + reason
+# 030 — WP3: Claude tab three-state select + effective-mode reason
 
-Depends on WP2 (the GET payload fields). Small surface, mounted-tested.
+Depends on WP2 (the GET payload fields). Audit fold-back from `002` §3: the select
+itself must become three-state, or every save silently kills auto and there is no way
+back.
+
+## MODIFY — the auth-mode select (`gui/src/pages/claude-code-sections.tsx:38-48`)
+
+```diff
+           options={[
++            { value: "auto", label: t("claude.authModeAuto") },
+             { value: "subscription", label: t("claude.authModeSubscription") },
+             { value: "proxy", label: t("claude.authModeProxy") },
+           ]}
+```
+
+`auto` is FIRST and is what an unset config now reports, so opening the page on a
+fresh install shows the truth instead of a coerced "Subscription".
 
 ## MODIFY — `gui/src/pages/ClaudeCode.tsx` state type
 
-`ClaudeCodeState` gains:
+`authMode` widens to `"auto" | "proxy" | "subscription"` and the mapping at `:42-45`
+stops coercing — it takes the server's value verbatim (the coercion is the auto-kill
+bug). `ClaudeCodeState` also gains:
 
 ```ts
 effectiveAuthMode?: "proxy" | "subscription";
 authModeOrigin?: "manual" | "auto-present" | "auto-absent" | "auto-unknown";
 authFoundBy?: string;
 authDetectionUnknown?: boolean;
+admissionKeyActive?: boolean;
 ```
 
-mapped from the GET payload alongside the existing `authMode` mapping (`:44`).
+mapped from the GET payload alongside the `authMode` mapping (`:44`). The save body
+(`:95-110`) sends the state's `authMode` unchanged — now that the value round-trips
+as `"auto"`, an unrelated edit no longer converts the user to sticky subscription.
 
-## MODIFY — `gui/src/pages/claude-code-sections.tsx` (auth-mode row)
+## The reason line (same row)
 
 Under the existing select, one muted line that answers "what will actually happen on
 the next `ocx claude` run":
@@ -27,8 +47,9 @@ the next `ocx claude` run":
 - auto-unknown → `t("claude.effectiveMode.autoUnknown")` rendered with the warning
   tone (amber), because the user should know detection failed.
 
-The select itself is unchanged — manual persistence is already proven; this phase only
-makes the resolution VISIBLE.
+When `admissionKeyActive` is true, append `t("claude.effectiveMode.admissionKey")` —
+a subscription resolution still ships the admission token, and hiding that would make
+the badge lie (002 §2).
 
 ## Locale keys — NEW (all six)
 
@@ -44,6 +65,8 @@ makes the resolution VISIBLE.
 | `claude.authSource.macos-keychain` | `macOS Keychain` | `macOS 키체인` |
 | `claude.authSource.ocx-anthropic-oauth` | `opencodex Anthropic login` | `opencodex Anthropic 로그인` |
 | `claude.authSource.exported-env` | `environment variable` | `환경 변수` |
+| `claude.authModeAuto` | `Auto (detect Claude auth)` | `자동 (Claude 인증 감지)` |
+| `claude.effectiveMode.admissionKey` | `API key required by this proxy is still sent` | `이 프록시의 API 키는 계속 전송됩니다` |
 
 ja/zh/de/ru in the same commit.
 
@@ -55,6 +78,11 @@ ja/zh/de/ru in the same commit.
 - auto-present with foundBy macos-keychain → the subscription line names the keychain;
 - auto-absent → the proxy line renders;
 - auto-unknown → the warning line renders and carries the warning styling hook;
+- **the auto-kill regression (002 §3)**: mount with `authMode: "auto"`, change an
+  unrelated control, save → the PUT body carries `authMode: "auto"`, never
+  `"subscription"`;
+- selecting `Auto` from a stored proxy sends `authMode: "auto"` (return-to-auto path);
+- `admissionKeyActive: true` appends the admission note to a subscription reason;
 - every new key resolves in all six locales.
 
 ## Verification (C)
