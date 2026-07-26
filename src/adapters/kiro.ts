@@ -586,13 +586,14 @@ function retryableKiroIncomplete(
   message: string,
   usage: OcxUsage,
   providerState: { kiro: { conversationId: string } } | undefined,
+  retryable = true,
 ): AdapterEvent {
   return {
     type: "incomplete",
     reason,
     message,
     usage,
-    retryable: true,
+    retryable,
     endTurn: false,
     ...(providerState ? { providerState } : {}),
   };
@@ -767,6 +768,8 @@ async function* parseKiroAttemptEvents(
         message,
         usage(),
         providerState(),
+        // First-attempt progress was already flushed before this bounded fallback (#520).
+        !priorEmittedOutput,
       );
     }
     return {
@@ -1126,6 +1129,8 @@ async function* parseKiroAttemptEvents(
             : "Kiro produced no final answer on its bounded completion retry",
           finalUsage,
           finalProviderState,
+          // First-attempt progress was already flushed before this bounded fallback (#520).
+          !priorEmittedOutput,
         ),
       };
     }
@@ -1368,12 +1373,17 @@ export async function* parseKiroStream(
       mergeKiroUsage(firstResult.usage, secondResult.usage, Boolean(firstResult.assistantText))
         ?? { inputTokens, outputTokens: 0, estimated: true },
       secondResult.providerState ?? firstResult.providerState,
+      !priorEmittedOutput,
     );
     return;
   }
   if (secondResult.terminal.type === "done" || secondResult.terminal.type === "incomplete") {
     yield {
       ...secondResult.terminal,
+      // Belt-and-suspenders: never advertise a replay-safe incomplete after flushed progress.
+      ...(secondResult.terminal.type === "incomplete" && priorEmittedOutput
+        ? { retryable: false as const }
+        : {}),
       usage: mergeKiroUsage(firstResult.usage, secondResult.terminal.usage, Boolean(firstResult.assistantText)),
       providerState: secondResult.terminal.providerState ?? firstResult.providerState,
     };

@@ -737,7 +737,7 @@ describe("kiro adapter — parseStream", () => {
   test.each([
     ["empty", [] as Uint8Array[], "empty_kiro_fallback"],
     ["reasoning-only", [eventFrame({ content: "<thinking>still working</thinking>" })], "reasoning_only_kiro_fallback"],
-  ])("%s fallback is retryable incomplete and never starts a third attempt", async (_label, fallbackFrames, reason) => {
+  ])("%s fallback is non-retryable incomplete after first-attempt output (#520)", async (_label, fallbackFrames, reason) => {
     let fetches = 0;
     globalThis.fetch = (async () => {
       fetches++;
@@ -749,7 +749,7 @@ describe("kiro adapter — parseStream", () => {
       eventFrame({ content: "<thinking>Working.</thinking>" }),
     ))));
     expect(fetches).toBe(1);
-    expect(events.at(-1)).toMatchObject({ type: "incomplete", reason, retryable: true, endTurn: false });
+    expect(events.at(-1)).toMatchObject({ type: "incomplete", reason, retryable: false, endTurn: false });
     expect(events.some(event => event.type === "done")).toBe(false);
   });
 
@@ -769,7 +769,7 @@ describe("kiro adapter — parseStream", () => {
   test.each([
     ["empty answer", JSON.stringify({ answer: "   " })],
     ["malformed JSON", "{\"answer\":"],
-  ])("fallback rejects %s completion as retryable incomplete", async (_label, input) => {
+  ])("fallback rejects %s completion as non-retryable incomplete after first-attempt output (#520)", async (_label, input) => {
     globalThis.fetch = (async () => new Response(streamOf(
       eventFrame({ name: KIRO_COMPLETION_TOOL_NAME, toolUseId: "complete-bad" }),
       eventFrame({ input, name: KIRO_COMPLETION_TOOL_NAME, toolUseId: "complete-bad" }),
@@ -780,7 +780,12 @@ describe("kiro adapter — parseStream", () => {
     const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
       eventFrame({ content: "<thinking>Working.</thinking>" }),
     ))));
-    expect(events.at(-1)).toMatchObject({ type: "incomplete", reason: "malformed_kiro_completion", retryable: true });
+    expect(events.at(-1)).toMatchObject({
+      type: "incomplete",
+      reason: "malformed_kiro_completion",
+      retryable: false,
+      endTurn: false,
+    });
     expect(JSON.stringify(events)).not.toContain(KIRO_COMPLETION_TOOL_NAME);
   });
 
