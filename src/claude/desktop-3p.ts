@@ -10,6 +10,7 @@ import {
   type DesktopProfileModel,
 } from "./desktop-profile";
 import { nativeOpenAiContextWindow } from "../codex/catalog";
+import { assertDesktop3pModelsValid } from "./desktop-3p-guard";
 
 export interface Desktop3pModelEntry {
   name: string;
@@ -106,11 +107,14 @@ export function legacyDesktop3pAlias(provider: string, modelId: string): string 
 
 function displayModelId(modelId: string): string {
   return modelId
+    // Capability markers like [1m] are not name text: strip the brackets so the label
+    // reads "K3 1M", never "K3[1m]".
+    .replace(/\[([^\]]+)\]/g, "-$1")
     .split(/[-_]+/)
     .filter(Boolean)
     .map(part => {
       const lower = part.toLowerCase();
-      if (lower === "gpt" || lower === "glm" || lower === "ai") return lower.toUpperCase();
+      if (lower === "gpt" || lower === "glm" || lower === "ai" || lower === "1m") return lower.toUpperCase();
       return part.charAt(0).toUpperCase() + part.slice(1);
     })
     .join(" ");
@@ -278,7 +282,13 @@ export function generateDesktop3pConfig(
   return {
     ...base,
     modelDiscoveryEnabled: mode === "hybrid",
-    inferenceModels: generateDesktop3pModels(nativeSlugs, routedModels, profile),
+    inferenceModels: (() => {
+      const models = generateDesktop3pModels(nativeSlugs, routedModels, profile);
+      // Fail loud at the write boundary rather than ship a config Desktop rejects:
+      // the output counterpart of the request-path guards.
+      assertDesktop3pModelsValid(models);
+      return models;
+    })(),
   };
 }
 
