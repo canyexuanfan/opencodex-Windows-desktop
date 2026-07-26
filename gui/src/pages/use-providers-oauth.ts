@@ -89,7 +89,9 @@ export function useProvidersOAuth({
         await new Promise(r => setTimeout(r, 2000));
         if (oauthLoginGenerationRef.current.get(provider) !== generation || !aliveRef.current) return;
         const sRes = await fetch(`${apiBase}/api/oauth/status?provider=${provider}`).catch(() => null);
-        const s: (OAuthStatus & { accounts?: OAuthAccount[] }) | null = sRes ? await readJsonIfOk(sRes) : null;
+        const s: (OAuthStatus & { accounts?: OAuthAccount[] }) | null = sRes
+          ? ((await readJsonIfOk<OAuthStatus & { accounts?: OAuthAccount[] }>(sRes)) ?? null)
+          : null;
         if (!s) continue;
         if (s.error) {
           setOauthStatus(prev => ({ ...prev, [provider]: s }));

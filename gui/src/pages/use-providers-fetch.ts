@@ -24,7 +24,7 @@ export function useProvidersFetch({
     try {
       const res = await fetch(`${apiBase}/api/config`);
       const data = await readJsonOrThrow<ProvidersConfig>(res);
-      setConfig(data);
+      setConfig(data ?? null);
     } catch {
       notify(t("prov.loadConfigFail"), false);
     }
@@ -34,7 +34,7 @@ export function useProvidersFetch({
     try {
       const provRes = await fetch(`${apiBase}/api/oauth/providers`);
       const provData = await readJsonOrThrow<{ providers?: string[] }>(provRes);
-      const provs: string[] = provData.providers ?? [];
+      const provs: string[] = provData?.providers ?? [];
       setOauthProviders(provs);
       const [oauthEntries, codexAccounts, codexActive] = await Promise.all([
         Promise.all(provs.map(async p => {
