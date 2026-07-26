@@ -1,11 +1,11 @@
 import type { ComboItem } from "../combo-workspace-data";
 import { buildComboAttention, groupCombos } from "../combo-workspace-data";
 import { IconAlert, IconChevron, IconPlus } from "../icons";
-import { useT } from "../i18n/shared";
+import { useT, type TFn } from "../i18n/shared";
 
 function attentionCopy(
   reason: "empty-targets" | "few-targets" | "catalog-omitted",
-  t: (key: string) => string,
+  t: TFn,
 ): string {
   if (reason === "empty-targets") return t("cws.attention.empty");
   if (reason === "catalog-omitted") return t("cws.attention.catalogOmitted");
