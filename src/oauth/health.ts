@@ -67,7 +67,7 @@ export function projectOAuthAccountHealth(input: {
 
 function actionFor(provider: string, health: OAuthAccountHealth): string | undefined {
   if (health.status === "reauth_required") {
-    return `run \`ocx auth login ${provider}\``;
+    return `run \`ocx login ${provider}\``;
   }
   if (health.status === "cooldown") {
     const local = new Date(health.until).toLocaleString();

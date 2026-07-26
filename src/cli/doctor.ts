@@ -75,10 +75,10 @@ function isOAuthRefreshSingleFlightReady(): boolean {
 function actionForDoctorEntry(entry: OAuthHealthEntry): string {
   if (entry.action) return entry.action;
   if (entry.health.status === "warning" && entry.health.reason === "stale_credentials") {
-    return `run \`ocx auth login ${entry.provider}\``;
+    return `run \`ocx login ${entry.provider}\``;
   }
   if (entry.health.status === "warning" && entry.health.reason === "metadata_mismatch") {
-    return `run \`ocx auth login ${entry.provider}\` to refresh credentials`;
+    return `run \`ocx login ${entry.provider}\` to refresh credentials`;
   }
   return `run \`ocx doctor\` again after fixing OAuth state for ${entry.provider}`;
 }

@@ -102,7 +102,7 @@ describe("collectOAuthHealthEntries", () => {
       provider: "kimi",
       accountId,
       health: { status: "reauth_required", reason: "refresh_failed" },
-      action: "run `ocx auth login kimi`",
+      action: "run `ocx login kimi`",
     });
   });
 });

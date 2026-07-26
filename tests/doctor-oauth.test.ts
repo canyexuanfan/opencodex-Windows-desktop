@@ -44,7 +44,7 @@ describe("collectOAuthDoctorChecks", () => {
     );
     expect(warn).toBeTruthy();
     expect(warn!.message).toContain("Action:");
-    expect(warn!.message).toContain("ocx auth login openai");
+    expect(warn!.message).toContain("ocx login openai");
     expect(warn!.message).toContain("account-…");
     expect(warn!.message).not.toContain(accountId);
     expect(warn!.message).not.toContain("access-token");

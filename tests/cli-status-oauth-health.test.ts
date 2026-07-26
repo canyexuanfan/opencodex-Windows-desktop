@@ -31,7 +31,7 @@ describe("formatOAuthHealthForStatus", () => {
       provider: "openai",
       accountId: "acct_abcdefghijklmnopqrstuvwxyz",
       health: { status: "reauth_required", reason: "refresh_failed" },
-      action: "run `ocx auth login openai`",
+      action: "run `ocx login openai`",
     }]);
     expect(text).toContain("OAuth health: warning");
     expect(text).toContain("account-…wxyz");
