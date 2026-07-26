@@ -287,23 +287,247 @@ export function appendUsageEntry(entry: PersistedUsageEntry): void {
   try { chmodSync(path, 0o600); } catch { /* best-effort on platforms that ignore chmod */ }
 }
 
-export function readUsageEntries(): PersistedUsageEntry[] {
-  const path = usageLogPath();
-  if (!existsSync(path)) return [];
-  const lines = readFileSync(path, "utf-8").split(/\r?\n/);
+type UsageReadCache = {
+  path: string;
+  dev: number;
+  ino: number;
+  birthtimeMs: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  endedWithNewline: boolean;
+  tailSignature: Buffer;
+  entries: PersistedUsageEntry[];
+};
+
+const USAGE_CACHE_SIGNATURE_BYTES = 64;
+let usageReadCache: UsageReadCache | null = null;
+let usageReadCacheStats = { fullReads: 0, tailReads: 0, parsedLines: 0 };
+let managementUsageReadInflight: { path: string; promise: Promise<PersistedUsageEntry[]> } | null = null;
+
+/** Test-only observability for proving that unchanged prefixes are not reparsed. */
+export function usageReadCacheStatsForTests(): Readonly<typeof usageReadCacheStats> {
+  return { ...usageReadCacheStats };
+}
+
+export function resetUsageReadCacheForTests(): void {
+  usageReadCache = null;
+  usageReadCacheStats = { fullReads: 0, tailReads: 0, parsedLines: 0 };
+  managementUsageReadInflight = null;
+}
+
+function parseUsageText(text: string): PersistedUsageEntry[] {
+  const lines = text.split(/\r?\n/);
+  usageReadCacheStats.parsedLines += lines.filter(line => line.trim()).length;
+  return parseUsageLines(lines);
+}
+
+function sameUsageFile(cache: UsageReadCache, stat: ReturnType<typeof fstatSync>): boolean {
+  const dev = Number(stat.dev);
+  const ino = Number(stat.ino);
+  if (cache.dev !== dev) return false;
+  // Node exposes a stable inode on the supported Windows and Unix runtimes. Keep a
+  // birth-time fallback for filesystems that report zero for every inode.
+  if (cache.ino !== 0 || ino !== 0) return cache.ino === ino;
+  return cache.birthtimeMs === Number(stat.birthtimeMs);
+}
+
+function readExactly(fd: number, length: number, position: number): Buffer | null {
+  const output = Buffer.allocUnsafe(length);
+  let offset = 0;
+  while (offset < length) {
+    const read = readSync(fd, output, offset, length - offset, position + offset);
+    if (read === 0) return null;
+    offset += read;
+  }
+  return output;
+}
+
+function usageTailSignature(bytes: Buffer): Buffer {
+  return bytes.subarray(Math.max(0, bytes.length - USAGE_CACHE_SIGNATURE_BYTES)).subarray(0);
+}
+
+function readUsageEntriesFull(path: string, fd: number, stat: ReturnType<typeof fstatSync>): PersistedUsageEntry[] {
+  const size = Number(stat.size);
+  const bytes = readExactly(fd, size, 0);
+  if (bytes === null) {
+    usageReadCache = null;
+    return [];
+  }
+  const entries = parseUsageText(bytes.toString("utf-8"));
+  usageReadCacheStats.fullReads += 1;
+  usageReadCache = {
+    path,
+    dev: Number(stat.dev),
+    ino: Number(stat.ino),
+    birthtimeMs: Number(stat.birthtimeMs),
+    size,
+    mtimeMs: Number(stat.mtimeMs),
+    ctimeMs: Number(stat.ctimeMs),
+    endedWithNewline: bytes.length === 0 || bytes[bytes.length - 1] === 0x0a,
+    tailSignature: usageTailSignature(bytes),
+    entries,
+  };
+  return entries.slice();
+}
+
+async function parseUsageTextCooperatively(text: string): Promise<PersistedUsageEntry[]> {
+  const lines = text.split(/\r?\n/);
+  usageReadCacheStats.parsedLines += lines.filter(line => line.trim()).length;
   const entries: PersistedUsageEntry[] = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const parsed = JSON.parse(line) as PersistedUsageEntry;
-      if (parsed && typeof parsed === "object" && typeof parsed.requestId === "string") {
-        entries.push(normalizeUsageEntry(parsed));
-      }
-    } catch {
-      /* keep reading after a partially written or hand-edited line */
+  const batchSize = 1_000;
+  for (let offset = 0; offset < lines.length; offset += batchSize) {
+    entries.push(...parseUsageLines(lines.slice(offset, offset + batchSize)));
+    if (offset + batchSize < lines.length) {
+      // JSON parsing dominates large-log startup. Yield between bounded batches so
+      // Bun can continue serving health and settings requests on the same thread.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
   }
   return entries;
+}
+
+async function readUsageEntriesFullCooperatively(path: string): Promise<PersistedUsageEntry[]> {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const stat = fstatSync(fd);
+    const size = Number(stat.size);
+    const bytes = readExactly(fd, size, 0);
+    if (bytes === null) return [];
+    const entries = await parseUsageTextCooperatively(bytes.toString("utf-8"));
+    usageReadCacheStats.fullReads += 1;
+    // A different OPENCODEX_HOME may have become active while the cooperative parse
+    // yielded. Return this snapshot to its caller without poisoning the new path cache.
+    if (usageLogPath() === path) {
+      usageReadCache = {
+        path,
+        dev: Number(stat.dev),
+        ino: Number(stat.ino),
+        birthtimeMs: Number(stat.birthtimeMs),
+        size,
+        mtimeMs: Number(stat.mtimeMs),
+        ctimeMs: Number(stat.ctimeMs),
+        endedWithNewline: bytes.length === 0 || bytes[bytes.length - 1] === 0x0a,
+        tailSignature: usageTailSignature(bytes),
+        entries,
+      };
+    }
+    return entries.slice();
+  } catch {
+    if (usageReadCache?.path === path) usageReadCache = null;
+    return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function usageCacheNeedsFullRead(path: string): boolean {
+  const cache = usageReadCache;
+  if (!cache || cache.path !== path) return true;
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const stat = fstatSync(fd);
+    const size = Number(stat.size);
+    if (!sameUsageFile(cache, stat) || size < cache.size) return true;
+    if (size === cache.size) {
+      return Number(stat.mtimeMs) !== cache.mtimeMs || Number(stat.ctimeMs) !== cache.ctimeMs;
+    }
+    if (!cache.endedWithNewline) return true;
+    const signatureStart = Math.max(0, cache.size - cache.tailSignature.length);
+    const signature = readExactly(fd, cache.tailSignature.length, signatureStart);
+    return signature === null || !signature.equals(cache.tailSignature);
+  } catch {
+    return true;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Management API reader: full rebuilds yield between parse batches, while the steady
+ * append-only path stays synchronous and only processes the small new tail.
+ */
+export async function readUsageEntriesForManagement(): Promise<PersistedUsageEntry[]> {
+  const path = usageLogPath();
+  if (!existsSync(path)) return [];
+  if (!usageCacheNeedsFullRead(path)) return readUsageEntries();
+  if (managementUsageReadInflight?.path === path) {
+    return (await managementUsageReadInflight.promise).slice();
+  }
+  const promise = readUsageEntriesFullCooperatively(path);
+  managementUsageReadInflight = { path, promise };
+  try {
+    return await promise;
+  } finally {
+    if (managementUsageReadInflight?.promise === promise) managementUsageReadInflight = null;
+  }
+}
+
+export function readUsageEntries(): PersistedUsageEntry[] {
+  const path = usageLogPath();
+  if (!existsSync(path)) {
+    if (usageReadCache?.path === path) usageReadCache = null;
+    return [];
+  }
+
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const stat = fstatSync(fd);
+    const size = Number(stat.size);
+    const mtimeMs = Number(stat.mtimeMs);
+    const ctimeMs = Number(stat.ctimeMs);
+    const cache = usageReadCache;
+    if (!cache || cache.path !== path || !sameUsageFile(cache, stat) || size < cache.size) {
+      return readUsageEntriesFull(path, fd, stat);
+    }
+
+    if (size === cache.size) {
+      if (mtimeMs !== cache.mtimeMs || ctimeMs !== cache.ctimeMs) {
+        return readUsageEntriesFull(path, fd, stat);
+      }
+      return cache.entries.slice();
+    }
+
+    // A writer may truncate and rewrite the same inode between polls. Verify the old
+    // suffix before trusting a larger size as an append; this costs at most 64 bytes.
+    const signatureStart = Math.max(0, cache.size - cache.tailSignature.length);
+    const currentSignature = readExactly(fd, cache.tailSignature.length, signatureStart);
+    if (
+      !cache.endedWithNewline
+      || currentSignature === null
+      || !currentSignature.equals(cache.tailSignature)
+    ) {
+      return readUsageEntriesFull(path, fd, stat);
+    }
+
+    const appended = readExactly(fd, size - cache.size, cache.size);
+    if (appended === null) return readUsageEntriesFull(path, fd, stat);
+    const appendedEntries = parseUsageText(appended.toString("utf-8"));
+    usageReadCacheStats.tailReads += 1;
+    const entries = [...cache.entries, ...appendedEntries];
+    const combinedTail = Buffer.concat([cache.tailSignature, appended]);
+    usageReadCache = {
+      path,
+      dev: Number(stat.dev),
+      ino: Number(stat.ino),
+      birthtimeMs: Number(stat.birthtimeMs),
+      size,
+      mtimeMs,
+      ctimeMs,
+      endedWithNewline: appended.length === 0 || appended[appended.length - 1] === 0x0a,
+      tailSignature: usageTailSignature(combinedTail),
+      entries,
+    };
+    return entries.slice();
+  } catch {
+    usageReadCache = null;
+    return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function parseUsageLines(lines: string[]): PersistedUsageEntry[] {

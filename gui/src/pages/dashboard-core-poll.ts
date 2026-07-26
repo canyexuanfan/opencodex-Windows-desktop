@@ -38,7 +38,6 @@ export type DashboardCorePoll = {
   startupHealthSeed: SettingsData["startupHealth"] | null | undefined;
   sidecar: SidecarData | null;
   shadowCall: ShadowCallData | null | undefined;
-  usage30d: UsageSummary30d | null;
   maMode: "v1" | "default" | "v2";
   maModeResolved: boolean;
   /** Absent when the optional endpoint failed — callers must keep prior UI state. */
@@ -89,6 +88,14 @@ export async function fetchDashboardModels(apiBase: string, signal: AbortSignal)
   return requireJson<ModelInfo[]>(response);
 }
 
+export async function fetchDashboardUsage(apiBase: string, signal: AbortSignal): Promise<UsageSummary30d> {
+  const response = await fetch(`${apiBase}/api/usage?range=30d`, { signal });
+  // Usage can be expensive on an older server. Keeping it in its own resource means
+  // it cannot delay health/provider/settings commits, and a failed refresh retains
+  // the last good usage snapshot.
+  return requireJson<UsageSummary30d>(response);
+}
+
 export async function fetchDashboardCore(
   apiBase: string,
   signal: AbortSignal,
@@ -112,7 +119,6 @@ export async function fetchDashboardCore(
     startupHealthSeed: undefined,
     sidecar: null,
     shadowCall: undefined,
-    usage30d: null,
     maMode: "default",
     maModeResolved: true,
     injection: undefined,
@@ -121,13 +127,12 @@ export async function fetchDashboardCore(
   };
 
   try {
-    const [hRes, pRes, sRes, scRes, shRes, uRes] = await Promise.all([
+    const [hRes, pRes, sRes, scRes, shRes] = await Promise.all([
       fetch(`${apiBase}/healthz`, { signal }),
       fetch(`${apiBase}/api/providers`, { signal }),
       fetch(`${apiBase}/api/settings`, { signal }),
       fetch(`${apiBase}/api/sidecar-settings`, { signal }),
       fetch(`${apiBase}/api/shadow-call-settings`, { signal }),
-      fetch(`${apiBase}/api/usage?range=30d`, { signal }),
     ]);
 
     const health = await requireJson<HealthData>(hRes);
@@ -174,14 +179,6 @@ export async function fetchDashboardCore(
       )) {
         shadowCall = null;
       }
-    }
-
-    // Usage is best-effort: a malformed/empty body must not mark the whole dashboard offline.
-    let usage30d: UsageSummary30d | null = null;
-    try {
-      usage30d = (await readJsonIfOk<UsageSummary30d>(uRes)) ?? null;
-    } catch {
-      usage30d = null;
     }
 
     let maMode: "v1" | "default" | "v2" = "default";
@@ -236,7 +233,6 @@ export async function fetchDashboardCore(
       startupHealthSeed,
       sidecar,
       shadowCall,
-      usage30d,
       maMode,
       maModeResolved,
       injection,

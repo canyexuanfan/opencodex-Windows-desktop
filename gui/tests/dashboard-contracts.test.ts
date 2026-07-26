@@ -19,6 +19,18 @@ test("Dashboard wires a single project-config diagnostics owner outside the sett
   expect(coreBody).not.toContain("diagnostics/project-config");
 });
 
+test("Dashboard usage polling cannot delay core health and settings", async () => {
+  const core = await Bun.file(new URL("../src/pages/dashboard-core-poll.ts", import.meta.url)).text();
+  const hook = await Bun.file(new URL("../src/pages/use-dashboard-data.ts", import.meta.url)).text();
+  const coreFnStart = core.indexOf("export async function fetchDashboardCore");
+  const usageFnStart = core.indexOf("export async function fetchDashboardUsage");
+  expect(coreFnStart).toBeGreaterThan(-1);
+  expect(usageFnStart).toBeGreaterThan(-1);
+  expect(core.slice(coreFnStart)).not.toContain("/api/usage?range=30d");
+  expect(hook).toContain("dashboard-usage:${apiBase}");
+  expect(hook).toContain("fetchDashboardUsage(apiBase, signal)");
+});
+
 test("Dashboard workspace pane is a labelled section, not a nested main landmark", async () => {
   const src = await Bun.file(new URL("../src/pages/Dashboard.tsx", import.meta.url)).text();
   expect(src).toContain("dashboard-workspace-main");

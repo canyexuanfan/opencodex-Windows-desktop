@@ -8,6 +8,7 @@ import {
 } from "../startup-health-ui";
 import {
   fetchDashboardCore,
+  fetchDashboardUsage,
   fetchDashboardModels,
   fetchProjectConfigDiagnostics,
   fetchStartupHealth,
@@ -147,6 +148,13 @@ export function useDashboardData(apiBase: string) {
     { pollMs: 5000 },
   );
 
+  const usagePoll = useKeyedClientResource(
+    `dashboard-usage:${apiBase}`,
+    [apiBase],
+    (signal) => fetchDashboardUsage(apiBase, signal),
+    { pollMs: 5000 },
+  );
+
   const diagnosticsPoll = useKeyedClientResource(
     `dashboard-diagnostics:${apiBase}`,
     [apiBase],
@@ -188,7 +196,6 @@ export function useDashboardData(apiBase: string) {
     }
     if (data.sidecar) setSidecar(data.sidecar);
     if (data.shadowCall !== undefined) setShadowCall(data.shadowCall);
-    setUsage30d(data.usage30d);
     setMaMode(data.maMode);
     setMaModeResolved(data.maModeResolved);
     if (data.injection) {
@@ -204,6 +211,10 @@ export function useDashboardData(apiBase: string) {
     }
     setError(data.error);
   }, [corePoll.data]);
+
+  useEffect(() => {
+    if (usagePoll.data !== undefined) setUsage30d(usagePoll.data);
+  }, [usagePoll.data]);
 
   useEffect(() => {
     if (diagnosticsPoll.data) setProjectConfigWarnings(diagnosticsPoll.data);

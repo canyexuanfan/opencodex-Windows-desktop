@@ -34,7 +34,7 @@ import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { resolveCodexHomeDir } from "../../codex/home";
 import { scanStorage } from "../../storage/scanner";
-import { readUsageEntries } from "../../usage/log";
+import { readUsageEntriesForManagement } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
@@ -123,7 +123,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     const surface = parseUsageSurface(url.searchParams.get("surface"));
     const now = Date.now();
     try {
-      return jsonResponse(summarizeUsage(readUsageEntries(), range, now, surface));
+      return jsonResponse(summarizeUsage(await readUsageEntriesForManagement(), range, now, surface));
     } catch {
       return jsonResponse({
         range,

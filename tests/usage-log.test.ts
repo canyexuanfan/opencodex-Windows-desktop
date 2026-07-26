@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendUsageEntry,
   readRecentUsageEntries,
   readUsageEntries,
+  readUsageEntriesForManagement,
+  resetUsageReadCacheForTests,
   usageForFinalLog,
   usageLogPath,
   usageStatusForFinalLog,
   usageTotalTokens,
+  usageReadCacheStatsForTests,
 } from "../src/usage/log";
 
 let testDir = "";
@@ -19,6 +22,7 @@ beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
   testDir = mkdtempSync(join(tmpdir(), "ocx-usage-"));
   process.env.OPENCODEX_HOME = testDir;
+  resetUsageReadCacheForTests();
 });
 
 afterEach(() => {
@@ -28,6 +32,59 @@ afterEach(() => {
 });
 
 describe("usage log", () => {
+  const persistedLine = (requestId: string) => JSON.stringify({
+    requestId,
+    timestamp: 1,
+    provider: "openai",
+    model: "gpt-5.5",
+    status: 200,
+    durationMs: 1,
+    usageStatus: "reported",
+    usage: { inputTokens: 1, outputTokens: 1 },
+    totalTokens: 2,
+  });
+
+  test("caches unchanged prefixes and parses only appended JSONL rows", () => {
+    writeFileSync(usageLogPath(), `${persistedLine("a")}\n${persistedLine("b")}\n`);
+    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["a", "b"]);
+    expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2 });
+
+    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["a", "b"]);
+    expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2 });
+
+    appendFileSync(usageLogPath(), `${persistedLine("c")}\n`);
+    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["a", "b", "c"]);
+    expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 1, parsedLines: 3 });
+  });
+
+  test("invalidates the incremental cache after truncate or in-place rewrite", () => {
+    writeFileSync(usageLogPath(), `${persistedLine("old-a")}\n${persistedLine("old-b")}\n`);
+    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["old-a", "old-b"]);
+
+    writeFileSync(usageLogPath(), `${persistedLine("new")}\n`);
+    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["new"]);
+    expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+
+    // Grow the same inode with a different prefix. The suffix signature prevents this
+    // from being mistaken for an append that could retain old entries.
+    writeFileSync(usageLogPath(), `${persistedLine("replacement-a")}\n${persistedLine("replacement-b")}\n`);
+    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["replacement-a", "replacement-b"]);
+    expect(usageReadCacheStatsForTests().fullReads).toBe(3);
+  });
+
+  test("management full reads yield while parsing a large existing log", async () => {
+    writeFileSync(
+      usageLogPath(),
+      `${Array.from({ length: 2_100 }, (_, index) => persistedLine(`row-${index}`)).join("\n")}\n`,
+    );
+    let timerRan = false;
+    setTimeout(() => { timerRan = true; }, 0);
+    const entries = await readUsageEntriesForManagement();
+    expect(entries).toHaveLength(2_100);
+    expect(timerRan).toBe(true);
+    expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2_100 });
+  });
+
   test("persists only canonical ordered attempt fields", () => {
     appendUsageEntry({
       requestId: "ocx-attempts",
