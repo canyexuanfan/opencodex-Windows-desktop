@@ -8,6 +8,7 @@ const {
   CONTROL_MARKER,
   BOT_LOGIN,
   ISSUE_BODY_MAX,
+  DEFAULT_RATE_LIMIT,
   hashTranslationSource,
   splitTranslationBlock,
   stripTranslationBlock,
@@ -308,6 +309,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
+        sourceComplete: true,
       },
       now: 100,
     });
@@ -343,6 +345,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
+        sourceComplete: true,
       },
       now: 200,
     });
@@ -364,6 +367,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: true,
         detectedLanguage: "German",
+        sourceComplete: true,
       },
       now: 100,
     });
@@ -385,6 +389,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_B,
         requiresTranslation: true,
         detectedLanguage: "French",
+        sourceComplete: true,
       },
       now: 200,
     });
@@ -464,7 +469,8 @@ describe("bot-owned control state", () => {
           sourceHash: HASH_A,
           requiresTranslation: false,
           detectedLanguage: "English",
-        },
+        sourceComplete: true,
+      },
       }),
       /persistence failed/,
     );
@@ -527,7 +533,8 @@ describe("bot-owned control state", () => {
           sourceHash: HASH_A,
           requiresTranslation: false,
           detectedLanguage: "English",
-        },
+        sourceComplete: true,
+      },
         now: 200,
       }),
       /persistence failed/,
@@ -566,6 +573,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
+        sourceComplete: true,
       },
       now: 300,
     });
@@ -609,6 +617,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
+        sourceComplete: true,
       },
       now: 300,
     });
@@ -670,6 +679,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
+        sourceComplete: true,
       },
       now: 1_000,
     });
@@ -698,6 +708,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
+        sourceComplete: true,
       },
     });
     assert.ok(!calls.some((c) => c[0] === "issueUpdate"));
@@ -827,6 +838,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
+        sourceComplete: true,
       },
       now,
     });
@@ -901,6 +913,7 @@ describe("bot-owned control state", () => {
         sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
+        sourceComplete: true,
       },
       now,
     });
@@ -1218,6 +1231,36 @@ describe("issue comment translation", () => {
     assert.equal(second.reason, "unchanged_source");
   });
 
+  it("enforces minSourceChars on stripped comment body only", () => {
+    const shortBody = "관련: #508"; // shorter than default minSourceChars (20)
+    assert.ok(shortBody.length < DEFAULT_RATE_LIMIT.minSourceChars);
+    assert.ok(commentSourceTitle(999999999).length >= 8);
+
+    const decision = shouldTranslateComment({
+      comment: { id: 999999999, user: { login: "human", type: "User" }, body: shortBody },
+      issue: { number: 507 },
+      priorState: null,
+      now: Date.now(),
+    });
+    assert.equal(decision.ok, false);
+    assert.equal(decision.reason, "source_too_short");
+  });
+
+  it("short comments do not become eligible via comment:<id> namespace padding", () => {
+    // Namespace alone is long enough to satisfy a naive title+body length check.
+    const id = 123456789012345;
+    const title = commentSourceTitle(id);
+    assert.ok((title + "\nx").length >= DEFAULT_RATE_LIMIT.minSourceChars);
+
+    const decision = shouldTranslateComment({
+      comment: { id, user: { login: "human", type: "User" }, body: "ok" },
+      priorState: null,
+      now: Date.now(),
+    });
+    assert.equal(decision.ok, false);
+    assert.equal(decision.reason, "source_too_short");
+  });
+
   it("stale-guards comment edits with isPreparedSourceStillCurrent", () => {
     const title = commentSourceTitle(42);
     const prepared = hashTranslationSource({ title, body: koreanComment });
@@ -1237,5 +1280,160 @@ describe("issue comment translation", () => {
       }),
       false,
     );
+  });
+});
+
+describe("sourceComplete vs rate-limit attempts", () => {
+  const TITLE = "Meaningful German title for translation";
+  const BODY = "Ein ausreichend langer deutscher Issue-Text für den Test.";
+
+  function attemptOutcome({ sourceComplete, sourceHash = HASH_A, now = 1_000 }) {
+    return mergeTranslationAttemptState({
+      priorState: null,
+      attempt: {
+        sourceHash,
+        requiresTranslation: true,
+        detectedLanguage: "Korean",
+        sourceComplete,
+      },
+      now,
+    });
+  }
+
+  it("incomplete attempts count toward rate limits but stay retryable after cooldown", () => {
+    const now = 1_700_000_000_000;
+    const hash = hashTranslationSource({ title: TITLE, body: BODY });
+
+    for (const label of ["invalid_json", "empty_translation_body", "update_failure"]) {
+      const incomplete = mergeTranslationAttemptState({
+        priorState: null,
+        attempt: {
+          sourceHash: hash,
+          requiresTranslation: label === "invalid_json" ? false : true,
+          detectedLanguage: label === "invalid_json" ? "unknown" : "Korean",
+          sourceComplete: false,
+        },
+        now,
+      });
+      assert.equal(incomplete.sourceHash, "0000000000000000", label);
+      assert.equal(incomplete.attemptedAt, now, label);
+      assert.ok(incomplete.recent.includes(now), label);
+
+      const duringCooldown = shouldTranslate({
+        sourceTitle: TITLE,
+        sourceBody: BODY,
+        priorState: incomplete,
+        now: now + 10_000,
+      });
+      assert.equal(duringCooldown.ok, false, label);
+      assert.equal(duringCooldown.reason, "rate_limited_interval", label);
+
+      const afterCooldown = shouldTranslate({
+        sourceTitle: TITLE,
+        sourceBody: BODY,
+        priorState: incomplete,
+        now: now + 120_000,
+      });
+      assert.equal(afterCooldown.ok, true, label);
+      assert.equal(afterCooldown.sourceHash, hash, label);
+    }
+  });
+
+  it("completed no-translation and successful apply mark the source hash", () => {
+    const now = 1_700_000_000_000;
+    const hash = hashTranslationSource({ title: TITLE, body: BODY });
+
+    const english = mergeTranslationAttemptState({
+      priorState: null,
+      attempt: {
+        sourceHash: hash,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+        sourceComplete: true,
+      },
+      now,
+    });
+    assert.equal(english.sourceHash, hash);
+    assert.equal(
+      shouldTranslate({
+        sourceTitle: TITLE,
+        sourceBody: BODY,
+        priorState: english,
+        now: now + 120_000,
+      }).reason,
+      "unchanged_source",
+    );
+
+    const applied = attemptOutcome({ sourceComplete: true, sourceHash: hash, now: now + 200_000 });
+    assert.equal(applied.sourceHash, hash);
+    assert.equal(
+      shouldTranslate({
+        sourceTitle: TITLE,
+        sourceBody: BODY,
+        priorState: applied,
+        now: now + 320_000,
+      }).reason,
+      "unchanged_source",
+    );
+  });
+
+  it("incomplete issue and comment attempts preserve a prior completed hash", async () => {
+    const now = 1_700_000_000_000;
+    const issueHash = hashTranslationSource({ title: TITLE, body: BODY });
+    const commentBody = "관련: #508 (같은 Kiro adapter의 컨텍스트 토큰 보고 문제).";
+    const commentHash = hashTranslationSource({
+      title: commentSourceTitle(42),
+      body: commentBody,
+    });
+
+    const completedIssue = mergeTranslationAttemptState({
+      priorState: null,
+      attempt: {
+        sourceHash: issueHash,
+        requiresTranslation: true,
+        detectedLanguage: "German",
+        sourceComplete: true,
+      },
+      now,
+    });
+
+    const failedCommentApply = mergeTranslationAttemptState({
+      priorState: completedIssue,
+      attempt: {
+        sourceHash: commentHash,
+        requiresTranslation: true,
+        detectedLanguage: "Korean",
+        sourceComplete: false,
+      },
+      now: now + 120_000,
+    });
+    assert.equal(failedCommentApply.sourceHash, issueHash);
+    assert.equal(failedCommentApply.attemptedAt, now + 120_000);
+
+    const retryComment = shouldTranslateComment({
+      comment: { id: 42, user: { login: "human", type: "User" }, body: commentBody },
+      priorState: failedCommentApply,
+      now: now + 240_000,
+    });
+    assert.equal(retryComment.ok, true);
+    assert.equal(retryComment.sourceHash, commentHash);
+
+    const { github } = mockGithub({ nextId: 9 });
+    const persisted = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      comments: [],
+      priorState: failedCommentApply,
+      attempt: {
+        sourceHash: commentHash,
+        requiresTranslation: true,
+        detectedLanguage: "Korean",
+        sourceComplete: false,
+      },
+      now: now + 240_000,
+    });
+    assert.equal(persisted.state.sourceHash, issueHash);
   });
 });

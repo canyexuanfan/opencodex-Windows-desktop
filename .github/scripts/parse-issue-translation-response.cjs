@@ -103,9 +103,11 @@ function main() {
   const parsed = parseAiResponse(process.env.AI_RESPONSE);
   if (!parsed) {
     // Still emit outputs so the workflow can persist rate-limit state.
+    // Do not mark the source complete — invalid output must remain retryable.
     console.warn("::warning::Issue translation AI response was empty or not valid JSON.");
     writeOutput("requires_translation", "false");
     writeOutput("detected_language", "unknown");
+    writeOutput("source_complete", "false");
     return;
   }
 
@@ -113,6 +115,7 @@ function main() {
     const lang = scrubLine(parsed.detected_language || "English", 64) || "English";
     writeOutput("requires_translation", "false");
     writeOutput("detected_language", lang);
+    writeOutput("source_complete", "true");
     return;
   }
 
@@ -127,6 +130,8 @@ function main() {
   writeOutput("detected_language", lang);
   writeOutput("translated_title", title);
   writeMultilineOutput("translated_body", body);
+  // Apply step marks complete only after a successful issue/comment update.
+  writeOutput("source_complete", "false");
 }
 
 if (require.main === module) {

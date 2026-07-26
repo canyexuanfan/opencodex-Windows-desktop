@@ -324,6 +324,12 @@ function collectMergedRecentFromComments(comments, priorState = null, now = Date
 /**
  * Record a new attempt. Far-future poisoned prior state is ignored/healed.
  * New attemptedAt always uses wall-clock `now` so skew cannot stick forever.
+ *
+ * `sourceHash` on persisted state is the last *completed* source only.
+ * Rate-limit fields (`attemptedAt`, `recent`) update on every attempt.
+ * Pass `sourceComplete: true` only after a valid no-translation decision or a
+ * successful issue/comment translation apply — never for invalid/empty model
+ * output or GitHub update failures (those must remain retryable after cooldown).
  */
 function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.now() }) {
   let prior = null;
@@ -336,10 +342,17 @@ function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.n
 
   const priorRecent = pruneRecent(prior?.recent, now);
   const recent = pruneRecent([...priorRecent, now], now);
+  const sourceComplete = attempt?.sourceComplete === true;
+  const completedHash = sourceComplete && typeof attempt.sourceHash === "string"
+    && SOURCE_HASH_RE.test(attempt.sourceHash)
+    ? attempt.sourceHash
+    : (prior?.sourceHash && SOURCE_HASH_RE.test(prior.sourceHash)
+      ? prior.sourceHash
+      : "0000000000000000");
 
   return {
     v: 2,
-    sourceHash: attempt.sourceHash,
+    sourceHash: completedHash,
     attemptedAt: now,
     recent,
     requiresTranslation: Boolean(attempt.requiresTranslation),
@@ -483,7 +496,8 @@ async function persistTranslationControlState({
     : (mergedRecent.length
       ? {
         v: 2,
-        sourceHash: attempt.sourceHash,
+        // Incomplete synthetic prior: do not treat the current attempt hash as completed.
+        sourceHash: "0000000000000000",
         attemptedAt: Math.min(...mergedRecent),
         recent: mergedRecent,
         requiresTranslation: false,
@@ -570,6 +584,8 @@ function shouldSkipCommentTranslation(comment, issue = null) {
 /**
  * Decide whether a user issue comment should be sent to the translator.
  * Reuses issue rate limits via the shared per-issue control comment.
+ * `comment:<id>` is only a hash namespace — minSourceChars applies to the
+ * stripped comment body alone so short comments cannot burn model quota.
  */
 function shouldTranslateComment({
   comment,
@@ -587,12 +603,18 @@ function shouldTranslateComment({
   }
 
   const sourceBody = stripTranslationBlock(comment.body || "");
+  const minChars = rateLimit.minSourceChars ?? DEFAULT_RATE_LIMIT.minSourceChars;
+  if (String(sourceBody).trim().length < minChars) {
+    return { ok: false, reason: "source_too_short" };
+  }
+
   const decision = shouldTranslate({
     sourceTitle: commentSourceTitle(commentId),
     sourceBody,
     priorState,
     now,
-    rateLimit,
+    // Length already enforced on the body; title is namespace-only.
+    rateLimit: { ...rateLimit, minSourceChars: 0 },
   });
   if (!decision.ok) return decision;
   return {

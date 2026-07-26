@@ -288,6 +288,9 @@ describe("GitHub Actions hardening", () => {
     expect(staleGuardIdx).toBeLessThan(issueUpdateIdx);
     expect(applyScript).toContain("persistTranslationControlState");
     expect(applyScript).toContain("Translation control state not persisted");
+    expect(applyScript).toContain("sourceComplete");
+    expect(applyScript).toContain("source remains retryable");
+    expect(applyScript).toMatch(/sourceComplete,\s*\n\s*\}/);
 
     const parseStep = workflow
       .split("- name: Parse AI response")[1]!
@@ -304,11 +307,23 @@ describe("GitHub Actions hardening", () => {
     expect(persistStep).toContain("always()");
     expect(persistStep).toContain("requires_translation != 'true'");
     expect(persistStep).toContain("persistTranslationControlState");
+    expect(persistStep).toContain("SOURCE_COMPLETE");
+    expect(persistStep).toContain('sourceComplete: process.env.SOURCE_COMPLETE === "true"');
     expect(persistStep).not.toContain("silent_state");
     expect(persistStep).not.toContain("cleanup_comment_ids");
     expect(workflow).not.toContain("Save translation control state cache");
     expect(workflow).not.toContain("Remove migrated English control comments");
     expect(workflow).not.toContain("Restore translation control state cache");
+
+    const commentPersist = workflow
+      .split("- name: Persist comment translation control state")[1]!
+      .split(/\n {2}[a-zA-Z]/)[0]!;
+    expect(commentPersist).toContain('sourceComplete: process.env.SOURCE_COMPLETE === "true"');
+    const commentApplyStep = workflow
+      .split("- name: Apply inline comment translation")[1]!
+      .split("- name: Persist comment translation control state")[0]!;
+    expect(commentApplyStep).toContain("sourceComplete");
+    expect(commentApplyStep).toContain("source remains retryable");
 
     // Helper contract: marker-only English comments; replace-before-cleanup; body non-authoritative.
     const helperSrc = await readText(".github/scripts/issue-translation.cjs");
@@ -316,6 +331,7 @@ describe("GitHub Actions hardening", () => {
     expect(helperSrc).toContain("Automated translation bookkeeping");
     expect(helperSrc).toContain("canonical comment first");
     expect(helperSrc).toContain("Authoritative control state comes only from verified bot-owned comments");
+    expect(helperSrc).toContain("sourceComplete");
     expect(helperSrc).not.toContain("writeFileControlState");
     expect(helperSrc).not.toContain(".ocx-translation-state");
   });

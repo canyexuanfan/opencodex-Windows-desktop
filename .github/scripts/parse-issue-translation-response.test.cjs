@@ -154,6 +154,7 @@ describe("parse-issue-translation-response process", () => {
     assert.equal(parsed.detected_language, "German");
     assert.equal(parsed.translated_title, "Proxy does not start");
     assert.equal(parsed.translated_body, "The proxy does not start.");
+    assert.equal(parsed.source_complete, "false");
   });
 
   it("writes English path without translation fields", () => {
@@ -167,7 +168,32 @@ describe("parse-issue-translation-response process", () => {
     const parsed = parseOutputs(output);
     assert.equal(parsed.requires_translation, "false");
     assert.equal(parsed.detected_language, "English");
+    assert.equal(parsed.source_complete, "true");
     assert.equal(parsed.translated_title, undefined);
+  });
+
+  it("marks invalid JSON incomplete so sources stay retryable", () => {
+    for (const raw of ["{", "", "[]"]) {
+      const { status, output } = runParser(raw);
+      assert.equal(status, 0);
+      const parsed = parseOutputs(output);
+      assert.equal(parsed.requires_translation, "false");
+      assert.equal(parsed.detected_language, "unknown");
+      assert.equal(parsed.source_complete, "false");
+    }
+  });
+
+  it("leaves translate decisions incomplete until apply succeeds", () => {
+    const { status, output } = runParser(JSON.stringify({
+      requires_translation: true,
+      detected_language: "German",
+      translated_title: "T",
+      translated_body: "",
+    }));
+    assert.equal(status, 0);
+    const parsed = parseOutputs(output);
+    assert.equal(parsed.requires_translation, "true");
+    assert.equal(parsed.source_complete, "false");
   });
 
   it("treats string requires_translation as false path", () => {
@@ -198,6 +224,7 @@ describe("parse-issue-translation-response process", () => {
       const parsed = parseOutputs(output);
       assert.equal(parsed.requires_translation, "false");
       assert.equal(parsed.detected_language, "unknown");
+      assert.equal(parsed.source_complete, "false");
     }
   });
 

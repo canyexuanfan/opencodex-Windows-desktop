@@ -246,8 +246,12 @@ jobs:
             });
             const priorState = resolveControlState(comments, issue_number);
 
+            let sourceComplete = false;
             try {
-              if (!translatedTitle && !translatedBody) return;
+              if (!translatedTitle && !translatedBody) {
+                core.warning("Model requested translation but returned an empty title and body; leaving source retryable.");
+                return;
+              }
 
               const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
               const liveSourceBody = stripOrphanBodyControlState(stripTranslationBlock(live.body || ""));
@@ -285,9 +289,14 @@ jobs:
               if (changed) {
                 await github.rest.issues.update(update);
               }
+              sourceComplete = true;
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              core.warning(`Issue translation apply failed; source remains retryable: ${message}`);
+              throw err;
             } finally {
-              // Count every model attempt toward cooldown / hourly caps,
-              // including empty translations and stale-source skips.
+              // Count every model attempt toward cooldown / hourly caps.
+              // Only mark sourceHash complete after a successful apply.
               try {
                 await persistTranslationControlState({
                   github,
@@ -300,6 +309,7 @@ jobs:
                     sourceHash: process.env.SOURCE_HASH,
                     requiresTranslation: true,
                     detectedLanguage: lang,
+                    sourceComplete,
                   },
                 });
               } catch (err) {
@@ -325,6 +335,7 @@ jobs:
         env:
           SOURCE_HASH: ${{ steps.prepare.outputs.source_hash }}
           DETECTED_LANG: ${{ steps.parse.outputs.detected_language }}
+          SOURCE_COMPLETE: ${{ steps.parse.outputs.source_complete }}
         with:
           script: |
             const path = require("path");
@@ -358,6 +369,8 @@ jobs:
                   sourceHash: process.env.SOURCE_HASH,
                   requiresTranslation: false,
                   detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
+                  // Invalid/empty AI JSON sets source_complete=false and stays retryable.
+                  sourceComplete: process.env.SOURCE_COMPLETE === "true",
                 },
               });
               if (result.cleanup?.failed?.length) {
@@ -371,10 +384,10 @@ jobs:
               const message = err instanceof Error ? err.message : String(err);
               core.warning(`English translation state not persisted: ${message}`);
               core.notice(`translation-state-degraded: ${message}`);
-                await core.summary
-                  .addHeading("Translation control state degraded", 3)
-                  .addRaw(message)
-                  .write();
+              await core.summary
+                .addHeading("Translation control state degraded", 3)
+                .addRaw(message)
+                .write();
             }
 
   translate-comment:
@@ -520,8 +533,12 @@ jobs:
             });
             const priorState = resolveControlState(comments, issue_number);
 
+            let sourceComplete = false;
             try {
-              if (!translatedBody) return;
+              if (!translatedBody) {
+                core.warning("Model requested comment translation but returned an empty body; leaving source retryable.");
+                return;
+              }
 
               const { data: live } = await github.rest.issues.getComment({
                 owner, repo, comment_id,
@@ -542,6 +559,11 @@ jobs:
                   owner, repo, comment_id, body: nextBody,
                 });
               }
+              sourceComplete = true;
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              core.warning(`Comment translation apply failed; source remains retryable: ${message}`);
+              throw err;
             } finally {
               try {
                 await persistTranslationControlState({
@@ -555,6 +577,7 @@ jobs:
                     sourceHash: process.env.SOURCE_HASH,
                     requiresTranslation: true,
                     detectedLanguage: lang,
+                    sourceComplete,
                   },
                 });
               } catch (err) {
@@ -578,6 +601,7 @@ jobs:
         env:
           SOURCE_HASH: ${{ steps.prepare.outputs.source_hash }}
           DETECTED_LANG: ${{ steps.parse.outputs.detected_language }}
+          SOURCE_COMPLETE: ${{ steps.parse.outputs.source_complete }}
         with:
           script: |
             const path = require("path");
@@ -605,6 +629,7 @@ jobs:
                   sourceHash: process.env.SOURCE_HASH,
                   requiresTranslation: false,
                   detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
+                  sourceComplete: process.env.SOURCE_COMPLETE === "true",
                 },
               });
               if (result.cleanup?.failed?.length) {
