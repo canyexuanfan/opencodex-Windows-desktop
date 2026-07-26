@@ -65,7 +65,9 @@ Idempotently ensure a background proxy is running, then sync its live model cata
 ### `ocx status [--json]`
 
 Print a read-only diagnostic summary: proxy PID, `/healthz` reachability, dashboard URL,
-config path, default provider, Codex autostart setting, service state, and shim state.
+config path, default provider, Codex autostart setting, service state, shim state, and the redacted
+effective Codex home. Only the explicit, high-confidence Windows Orca runtime-home signature adds an
+actionable App-home mismatch warning; it never changes `CODEX_HOME` automatically.
 
 Human output also includes an **OAuth health** block after the OAuth logins summary: `OAuth health:
 ok` when every known account is healthy, or `OAuth health: warning` with one redacted line per
@@ -104,6 +106,13 @@ Abbreviated example shape:
   },
   "runtime": {
     "source": "bundled"
+  },
+  "codexHome": {
+    "effectiveCodexHome": "C:\\Users\\[USER]\\.codex",
+    "appCodexHome": "C:\\Users\\[USER]\\.codex",
+    "mismatch": false,
+    "warning": null,
+    "action": null
   },
   "codexAutostart": true,
   "defaultProvider": "openai",
@@ -415,7 +424,9 @@ lightweight, on-demand startup without a daemon — the proxy starts only when `
 
 Run read-only environment and connectivity diagnostics: state paths and filesystem type, WSL dual
 installs, proxy environment/config, ChatGPT reachability, Codex plugin and project-config warnings,
-and pending history migration. It prints repair hints but does not apply them.
+and pending history migration. The Codex app-home targeting section also detects the narrow Windows
+Orca runtime-home mismatch and explains service migration when applicable. Paths shown by this new
+diagnostic redact the OS username. Doctor prints repair hints but does not apply them.
 
 The **OAuth reliability** section reports whether credential storage is writable, whether refresh
 single-flight / lock files can be created under `OPENCODEX_HOME`, non-healthy OAuth or Codex pool

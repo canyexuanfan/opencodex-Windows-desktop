@@ -15,6 +15,7 @@ describe("ocx restore back", () => {
     expect(restoreCase).toContain("await findLiveProxy()");
     expect(restoreCase).toContain("await syncModelsToCodex(live.port)");
     expect(restoreCase.indexOf("findLiveProxy()")).toBeLessThan(restoreCase.indexOf("syncModelsToCodex(live.port)"));
+    expect(restoreCase).toContain("target.effectiveCodexHome");
     // The forward switch (plain `ocx restore`) is unchanged.
     expect(restoreCase).toContain("restoreNativeCodex()");
   });

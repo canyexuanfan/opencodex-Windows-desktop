@@ -91,6 +91,12 @@ $CODEX_HOME/models_cache.json
 使用该目录，让 WSL app-server mode 和 Windows Codex Desktop 共享同一份 config 与 auth 文件。要覆盖
 此检测，请显式设置 `CODEX_HOME`。
 
+在 Windows 上，Orca shell 可能同时把 `CODEX_HOME` 和 `ORCA_CODEX_HOME` 指向 Orca 的内置
+runtime home，而 ChatGPT/Codex App 仍读取 `%USERPROFILE%\\.codex`。`ocx status` 与
+`ocx doctor` 会检测这一明确的不一致，并以隐藏用户名的形式显示目标 home。如果后台服务是在原 Orca
+shell 中安装的，请先在原 shell 中卸载服务，再把 `CODEX_HOME` 设为 App home、取消
+`ORCA_CODEX_HOME`，重新同步/恢复并安装服务。
+
 在专用提供商模式下，`requires_openai_auth = true` 会让 Codex App/TUI 的账号门控界面与原生
 Codex 保持一致。opencodex 也提供 `/v1/responses` WebSocket。专用提供商仅在
 `"websockets": true` 时声明 `supports_websockets = true`；loopback 模式下，Codex 的内置提供商

@@ -103,6 +103,13 @@ $CODEX_HOME/models_cache.json
 каталог, чтобы режим app-server в WSL и Windows Codex Desktop разделяли одни и те же файлы
 конфигурации и аутентификации. Чтобы переопределить это обнаружение, задайте `CODEX_HOME` явно.
 
+В Windows оболочка Orca может назначить `CODEX_HOME` и `ORCA_CODEX_HOME` встроенному runtime-home
+Orca, тогда как ChatGPT/Codex App по-прежнему читает `%USERPROFILE%\\.codex`. `ocx status` и
+`ocx doctor` обнаруживают именно это расхождение и показывают целевой home со скрытым именем
+пользователя. Если фоновая служба была установлена из оболочки Orca, сначала удалите её в исходной
+оболочке, затем задайте `CODEX_HOME` для App, удалите `ORCA_CODEX_HOME`, повторите sync/restore и
+установите службу заново.
+
 В режиме выделенного провайдера `requires_openai_auth = true` сохраняет поведение зависящих от
 аккаунта интерфейсов Codex App/TUI таким же, как в нативном Codex. opencodex также обслуживает
 `/v1/responses` по WebSocket. Выделенный провайдер объявляет `supports_websockets = true` только

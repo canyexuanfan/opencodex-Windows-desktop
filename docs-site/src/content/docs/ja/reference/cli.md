@@ -62,7 +62,8 @@ ocx eject back
 ### `ocx status [--json]`
 
 プロキシ PID、`/healthz` 接続状態、ダッシュボード URL、設定ファイルパス、デフォルトプロバイダー、Codex 自動起動
-設定、サービス状態、shim 状態を読み取り専用の診断要約として出力します。
+設定、サービス状態、shim 状態、ユーザー名をマスクした実効 Codex home を読み取り専用の診断要約として出力します。
+明示的で信頼度の高い Windows Orca runtime-home パターンに一致した場合のみ、App home との不一致に対する実行可能な警告を追加し、`CODEX_HOME` は自動変更しません。
 
 機械が読める読み取り専用の診断契約は `--json` で受け取ります。
 
@@ -94,6 +95,13 @@ ocx status --json
   },
   "runtime": {
     "source": "bundled"
+  },
+  "codexHome": {
+    "effectiveCodexHome": "C:\\Users\\[USER]\\.codex",
+    "appCodexHome": "C:\\Users\\[USER]\\.codex",
+    "mismatch": false,
+    "warning": null,
+    "action": null
   },
   "codexAutostart": true,
   "defaultProvider": "openai",
@@ -387,7 +395,9 @@ ocx codex-shim uninstall
 ### `ocx doctor`
 
 状態パスとファイルシステムの種類、WSL 二重インストール、プロキシ環境/設定、ChatGPT 接続状態、Codex プラグインと
-プロジェクト設定の警告、保留中の履歴マイグレーションを読み取り専用で診断します。復旧案内は出力しますが自ら適用はしません。
+プロジェクト設定の警告、保留中の履歴マイグレーションを読み取り専用で診断します。Codex app-home targeting
+セクションは Windows Orca runtime-home の不一致を限定的に検出し、必要なら元の Orca サービス削除と App
+home での再インストールを案内します。新しい診断のパスは OS ユーザー名をマスクします。復旧案内は出力しますが自ら適用はしません。
 
 ### `ocx debug [provider|usage …]`
 

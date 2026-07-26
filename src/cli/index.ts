@@ -42,6 +42,7 @@ import { maybeShowStarPrompt } from "./star-prompt";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
+import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -615,6 +616,11 @@ async function handleStatus() {
   console.log(`   Codex runtime: ${status.json.codexRuntime.path}`);
   console.log(`   Codex version: ${status.json.codexRuntime.version ?? "unknown"}`);
   console.log(`   Codex source: ${status.json.codexRuntime.source}`);
+  console.log(`   Codex home: ${status.json.codexHome.effectiveCodexHome}`);
+  if (status.json.codexHome.warning) {
+    console.log(`   ⚠️  ${status.json.codexHome.warning}`);
+    console.log(`      Action: ${status.json.codexHome.action}`);
+  }
   console.log(`   Catalog clamp: ${status.json.codexRuntime.catalogClamp.active ? "active" : "inactive"}`);
   if (status.json.codexRuntime.catalogClamp.removedEfforts.length > 0) {
     console.log(`   Removed efforts: ${status.json.codexRuntime.catalogClamp.removedEfforts.join(", ")}`);
@@ -688,7 +694,8 @@ switch (command) {
         process.exit(1);
       }
       await syncModelsToCodex(live.port);
-      console.log("Plain `codex` now routes through opencodex again (undo with: ocx restore).");
+      const target = collectOrcaCodexHomeDiagnostic();
+      console.log(`Plain \`codex\` now routes through opencodex in ${target.effectiveCodexHome} (undo with: ocx restore).`);
       break;
     }
     const r = restoreNativeCodex();
