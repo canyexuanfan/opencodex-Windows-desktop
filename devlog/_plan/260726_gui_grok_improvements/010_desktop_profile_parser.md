@@ -67,6 +67,41 @@ Preserve them through the return so a round-trip does not erase applied state:
 +  };
 ```
 
+### P-phase amendment: `reconcileDesktopProfile` drops them too
+
+Found while re-verifying this doc against the tree. `desktop-profile.ts:164` ends
+with:
+
+```ts
+return parseDesktopProfile({ version: 1, assignments, defaults });
+```
+
+It rebuilds the object from scratch, so even a parser that preserves the fields
+would lose them here — and `agent-settings-routes.ts:417` persists exactly this
+return value on every PUT:
+
+```ts
+config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: reconcileDesktopProfile(state.profile, state.models) };
+```
+
+So saving any assignment change would silently reset the applied-state markers and
+the GUI would report "not applied" for a config that is applied on disk. Carry the
+fields through:
+
+```ts
+-  return parseDesktopProfile({ version: 1, assignments, defaults });
++  return parseDesktopProfile({
++    version: 1,
++    assignments,
++    defaults,
++    ...(profile.appliedFingerprint !== undefined ? { appliedFingerprint: profile.appliedFingerprint } : {}),
++    ...(profile.appliedAt !== undefined ? { appliedAt: profile.appliedAt } : {}),
++  });
+```
+
+`profile` is the already-parsed stored value at line 147, so this preserves what
+the user had rather than inventing a value.
+
 Deliberately NOT changed: the write sites. The routes are correct — the applied
 fingerprint genuinely belongs on the profile, which is why `types.ts` declares it.
 The parser is the side that is wrong.

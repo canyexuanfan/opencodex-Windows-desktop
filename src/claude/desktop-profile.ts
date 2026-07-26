@@ -51,6 +51,25 @@ function assertExactKeys(value: Record<string, unknown>, keys: readonly string[]
   }
 }
 
+/**
+ * Applied-state markers survive every profile rebuild.
+ *
+ * `parseDesktopProfile`, `reconcileDesktopProfile` and `moveDesktopRoute` each construct a
+ * fresh `{ version, assignments, defaults }`, and the management routes persist whatever they
+ * return. Without this carry-through, saving an assignment — or merely dragging a model to
+ * another family — would erase the fingerprint the apply route wrote, and the GUI would report
+ * "not applied" for a config that is applied on disk.
+ */
+function appliedMarkers(source: { appliedFingerprint?: unknown; appliedAt?: unknown }): {
+  appliedFingerprint?: string;
+  appliedAt?: string;
+} {
+  return {
+    ...(typeof source.appliedFingerprint === "string" ? { appliedFingerprint: source.appliedFingerprint } : {}),
+    ...(typeof source.appliedAt === "string" ? { appliedAt: source.appliedAt } : {}),
+  };
+}
+
 function isFamily(value: unknown): value is DesktopFamily {
   return typeof value === "string" && (DESKTOP_FAMILIES as readonly string[]).includes(value);
 }
@@ -76,11 +95,20 @@ function validDateAlias(alias: string): boolean {
 
 export function parseDesktopProfile(value: unknown): DesktopProfile {
   if (!isPlainObject(value)) throw new DesktopProfileError("must be an object");
-  assertExactKeys(value, ["version", "assignments", "defaults"], "profile");
+  // `appliedFingerprint`/`appliedAt` are written back by the apply route once a profile
+  // reaches Claude Desktop (see server/management/agent-settings-routes.ts). Rejecting them
+  // here made every reload after the first apply fail with `unknown field`.
+  assertExactKeys(value, ["version", "assignments", "defaults", "appliedFingerprint", "appliedAt"], "profile");
   if (value.version !== 1) throw new DesktopProfileError("version must be 1", "profile.version");
   if (!isPlainObject(value.assignments)) throw new DesktopProfileError("must be an object", "profile.assignments");
   if (!isPlainObject(value.defaults)) throw new DesktopProfileError("must be an object", "profile.defaults");
   assertExactKeys(value.defaults, DESKTOP_FAMILIES, "profile.defaults");
+  if (value.appliedFingerprint !== undefined && typeof value.appliedFingerprint !== "string") {
+    throw new DesktopProfileError("must be a string", "profile.appliedFingerprint");
+  }
+  if (value.appliedAt !== undefined && typeof value.appliedAt !== "string") {
+    throw new DesktopProfileError("must be a string", "profile.appliedAt");
+  }
 
   const assignments: Record<string, OcxClaudeDesktopAssignment> = {};
   const aliases = new Set<string>();
@@ -115,7 +143,7 @@ export function parseDesktopProfile(value: unknown): DesktopProfile {
     }
     defaults[family] = route;
   }
-  return { version: 1, assignments, defaults };
+  return { version: 1, assignments, defaults, ...appliedMarkers(value) };
 }
 
 function dayOfYearAlias(dayIndex: number): string {
@@ -161,7 +189,7 @@ export function reconcileDesktopProfile(
     const current = defaults[family];
     defaults[family] = current && assignments[current]?.family === family ? current : (members[0] ?? null);
   }
-  return parseDesktopProfile({ version: 1, assignments, defaults });
+  return parseDesktopProfile({ version: 1, assignments, defaults, ...appliedMarkers(profile) });
 }
 
 export function moveDesktopRoute(
@@ -185,7 +213,7 @@ export function moveDesktopRoute(
   const destinationMembers = Object.keys(assignments).filter(key => assignments[key]!.family === family).sort();
   if (makeDefault || !defaults[family] || assignments[defaults[family]!]?.family !== family) defaults[family] = route;
   if (!defaults[family] && destinationMembers.length > 0) defaults[family] = destinationMembers[0]!;
-  return parseDesktopProfile({ version: 1, assignments, defaults });
+  return parseDesktopProfile({ version: 1, assignments, defaults, ...appliedMarkers(parsed) });
 }
 
 export function setDesktopFamilyDefault(

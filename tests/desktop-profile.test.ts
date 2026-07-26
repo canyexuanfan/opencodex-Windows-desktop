@@ -81,4 +81,63 @@ describe("Claude Desktop profile", () => {
     expect(() => reconcileDesktopProfile(full, [...encoded, { route: "test/overflow", label: "Overflow" }])).toThrow("365 encoded date slots");
     expect(full).toEqual(snapshot);
   });
+
+  // The apply route writes `appliedFingerprint`/`appliedAt` back onto the stored profile so the
+  // GUI can show applied-vs-saved state. Every rebuild in this module must accept AND carry them:
+  // rejecting them broke the Desktop tab outright after the first apply, and silently dropping
+  // them would make a saved edit — or a single drag between families — report "not applied" for a
+  // config that is applied on disk.
+  describe("applied-state markers", () => {
+    const applied = {
+      appliedFingerprint: "0123456789abcdef",
+      appliedAt: "2026-07-26T06:00:00.000Z",
+    } as const;
+
+    function seeded() {
+      return { ...reconcileDesktopProfile(emptyDesktopProfile(), models), ...applied };
+    }
+
+    test("parseDesktopProfile accepts and preserves them", () => {
+      const parsed = parseDesktopProfile(seeded());
+      expect(parsed.appliedFingerprint).toBe(applied.appliedFingerprint);
+      expect(parsed.appliedAt).toBe(applied.appliedAt);
+    });
+
+    test("reconcileDesktopProfile keeps them across a catalog change", () => {
+      const next = reconcileDesktopProfile(seeded(), [...models, { route: "test/new-model", label: "New" }]);
+      expect(next.appliedFingerprint).toBe(applied.appliedFingerprint);
+      expect(next.appliedAt).toBe(applied.appliedAt);
+    });
+
+    test("moveDesktopRoute keeps them — the drag-and-drop path", () => {
+      const moved = moveDesktopRoute(seeded(), "cursor/gpt-5.6-luna", "sonnet");
+      expect(moved.appliedFingerprint).toBe(applied.appliedFingerprint);
+      expect(moved.appliedAt).toBe(applied.appliedAt);
+    });
+
+    test("setDesktopFamilyDefault keeps them", () => {
+      const moved = moveDesktopRoute(seeded(), "cursor/gpt-5.6-luna", "sonnet");
+      const next = setDesktopFamilyDefault(moved, "sonnet", "cursor/gpt-5.6-luna");
+      expect(next.appliedFingerprint).toBe(applied.appliedFingerprint);
+      expect(next.appliedAt).toBe(applied.appliedAt);
+    });
+
+    test("a profile without the markers stays without them", () => {
+      const parsed = parseDesktopProfile(reconcileDesktopProfile(emptyDesktopProfile(), models));
+      expect(parsed).not.toHaveProperty("appliedFingerprint");
+      expect(parsed).not.toHaveProperty("appliedAt");
+    });
+
+    test("non-string markers are rejected with the field named", () => {
+      expect(() => parseDesktopProfile({ ...seeded(), appliedFingerprint: 42 }))
+        .toThrow("profile.appliedFingerprint");
+      expect(() => parseDesktopProfile({ ...seeded(), appliedAt: {} }))
+        .toThrow("profile.appliedAt");
+    });
+
+    test("genuinely unknown fields are still rejected", () => {
+      expect(() => parseDesktopProfile({ ...seeded(), bogusField: "x" }))
+        .toThrow('unknown field "bogusField"');
+    });
+  });
 });
