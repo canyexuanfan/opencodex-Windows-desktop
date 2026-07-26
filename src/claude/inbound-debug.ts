@@ -16,6 +16,8 @@ import { createHmac, randomBytes } from "node:crypto";
 import { isClaudeDebugEnabled } from "../lib/debug-settings";
 
 export interface ClaudeInboundDebugEntry {
+  /** Monotonic capture id — unique even when several entries share Date.now(). */
+  id: number;
   at: number;
   endpoint: "messages" | "count_tokens";
   model: string;
@@ -39,6 +41,7 @@ const RING_LIMIT = 20;
 const ring: ClaudeInboundDebugEntry[] = [];
 const salt = randomBytes(16).toString("hex");
 let lastEnabled = false;
+let nextCaptureId = 0;
 
 function tag(value: string): string {
   return createHmac("sha256", salt).update(value).digest("hex").slice(0, 8);
@@ -82,6 +85,7 @@ export function captureClaudeInbound(
   const userId = metadata && typeof metadata.user_id === "string" ? metadata.user_id : undefined;
   const system = systemText(body.system);
   const entry: ClaudeInboundDebugEntry = {
+    id: ++nextCaptureId,
     at: Date.now(),
     endpoint,
     model: typeof body.model === "string" ? body.model : "unknown",

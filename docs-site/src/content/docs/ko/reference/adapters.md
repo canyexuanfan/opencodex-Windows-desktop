@@ -88,6 +88,27 @@ interface ProviderAdapter {
   JSON을 감지합니다. 업스트림이 토큰 수를 반환하지 않아 사용량은 추정합니다.
 - `fetchResponse`에서 제한된 횟수만 재시도하고 오류를 분류/마스킹합니다. 비스트리밍 파서는 웹 검색
   루프를 위해 같은 이벤트 스트림을 끝까지 소비합니다.
+### 완료와 네이티브 stop reason
+
+Kiro의 어시스턴트 텍스트에는 그 자체로 턴 종료를 알리는 신뢰할 만한 구분이 없습니다. 다만 종단
+`metadataEvent`가 네이티브 `stopReason`을 실어 올 수 있습니다. `END_TURN`과 `STOP_SEQUENCE`는 권위 있는
+종료로 보고 해당 텍스트를 최종 답변으로 내보냅니다. 추가 모델 왕복은 없습니다.
+
+호환 경로를 타는 것은 stop reason이 **없을 때뿐**입니다. 명시적인 이유는 이미 상류에서 추론을 끝냈으므로
+다시 모델에 요청하지 않고 그대로 보고합니다. 출력 토큰 한도는 이어쓸 수 있는 incomplete로, 컨텍스트 윈도
+고갈은 재시도 불가한 context-length 오류로, 필터링이나 가드레일 정지는 filtered incomplete로 표면화합니다.
+실제 툴 호출 없이 온 `TOOL_USE`는 진행이 아니라 모순으로 처리합니다.
+
+stop reason이 아예 없을 때만 opencodex가 비공개 `codex_kiro_final_answer` 툴을 추가하고 한 번만
+이어갑니다. 중복 억제는 공백을 정규화한 완전 일치로 제한합니다. 표현만 바뀐 상태 업데이트가 결과 자체를
+뒤집을 수 있고("아직 진행 중"에서 "완료됨"으로), 그 문장을 잃는 편이 겉보기 반복을 보여주는 것보다 나쁩니다.
+
+### Reasoning effort
+
+`gpt-5.6-sol`과 `claude-opus-5`는 네이티브 effort를 지원하며 요청 필드 이름이 다릅니다.
+`low` / `medium` / `high` / `xhigh` / `max` 값은 각각
+`additionalModelRequestFields.reasoning.effort`와 `output_config.effort`로 전송됩니다.
+
 
 ## `cursor`
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AccountQuota } from "../codex-quota-utils";
+import { accountNeedsReauth } from "../oauth-health-display";
 
 /**
  * Codex account pool DATA layer (WP3 / 030_account_state_lift.md).
@@ -23,6 +24,10 @@ export interface CodexAccountEntry {
   hasCredential: boolean;
   quota: AccountQuota | null;
   needsReauth?: boolean;
+  health?: { status: "healthy" | "cooldown" | "reauth_required" | "warning"; reason?: string; until?: string };
+  healthLabel?: string;
+  healthSummary?: string;
+  healthAction?: string;
 }
 
 export type CodexAccountLoadState = "loading" | "ready" | "error";
@@ -248,9 +253,8 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
     ? accounts.find(a => a.id === activeId)
     : null;
   const mainAccount = accounts.find(a => a.isMain);
-  const activeNeedsReauth = activePoolAccount
-    ? Boolean(activePoolAccount.needsReauth)
-    : Boolean(mainAccount?.needsReauth);
+  // Include health-only reauth so Providers overview attention matches row CTAs.
+  const activeNeedsReauth = accountNeedsReauth(activePoolAccount ?? mainAccount);
 
   return {
     accounts,

@@ -6,45 +6,12 @@ import starlight from "@astrojs/starlight";
 // so Starlight must not emit the former /opencodex project-site prefix.
 const SITE_URL = "https://opencodex.me";
 
-// JSON-LD: WebSite + SoftwareApplication (docs SEO baseline; canonical/og/sitemap
-// are emitted by Starlight itself).
-const jsonLd = JSON.stringify({
-  "@context": "https://schema.org",
-  "@graph": [
-    {
-      "@type": "WebSite",
-      "@id": `${SITE_URL}/#website`,
-      url: `${SITE_URL}/`,
-      name: "opencodex",
-      description:
-        "Universal provider proxy for OpenAI Codex & Claude Code — use any LLM with Codex CLI, App, SDK, and Claude Code.",
-      inLanguage: ["en", "ko", "zh-CN", "ru", "ja"],
-    },
-    {
-      "@type": "SoftwareApplication",
-      "@id": `${SITE_URL}/#software`,
-      name: "opencodex",
-      alternateName: "ocx",
-      description:
-        "Local LLM proxy that lets OpenAI Codex (CLI, App, SDK) and Claude Code run on any model — Claude, Gemini, Grok, DeepSeek, Kimi, Qwen, Ollama, OpenRouter, and more — with streaming, tool calls, reasoning tokens, and images working in both directions.",
-      keywords:
-        "codex, claude code, openai codex proxy, claude code proxy, llm proxy, ai gateway, anthropic, gemini, grok, deepseek, ollama, openrouter, responses api, codex cli",
-      featureList: [
-        "Run Codex CLI/App/SDK on any LLM provider",
-        "Run Claude Code on any LLM via the Anthropic Messages API",
-        "ChatGPT account pool with quota-aware routing",
-        "Streaming, tool calls, reasoning tokens, and vision in both directions",
-        "Web dashboard on localhost:10100",
-      ],
-      applicationCategory: "DeveloperApplication",
-      operatingSystem: "macOS, Linux, Windows",
-      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-      softwareHelp: { "@type": "CreativeWork", url: `${SITE_URL}/` },
-      downloadUrl: "https://www.npmjs.com/package/@bitkyc08/opencodex",
-      url: "https://github.com/lidge-jun/opencodex",
-    },
-  ],
-});
+// NOTE: the WebSite / SoftwareApplication JSON-LD deliberately does NOT live here.
+// Google only reads site-name markup from the home page of a site, and a global
+// `head` entry would replay one `#website` entity (with the root `url`) on every
+// docs page and every locale. Duplicated, conflicting WebSite objects are exactly
+// what makes Google fall back to the domain ("opencodex.me") for the site name.
+// The markup is emitted once per locale home page from `src/components/SiteJsonLd.astro`.
 
 export default defineConfig({
   site: SITE_URL,
@@ -83,7 +50,6 @@ export default defineConfig({
         { tag: "meta", attrs: { name: "twitter:image", content: `${SITE_URL}/og.png` } },
         { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: light)", content: "#ffffff" } },
         { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: dark)", content: "#212121" } },
-        { tag: "script", attrs: { type: "application/ld+json" }, content: jsonLd },
       ],
       social: [
         { icon: "github", label: "GitHub", href: "https://github.com/lidge-jun/opencodex" },
@@ -121,6 +87,7 @@ export default defineConfig({
             { label: "Codex App Model Picker", translations: { ko: "Codex App 모델 선택기", "zh-CN": "Codex App 模型选择器", ru: "Выбор модели в Codex App", ja: "Codex App モデルピッカー" }, slug: "guides/codex-app-models" },
             { label: "Model Ordering", translations: { ko: "모델 정렬에 관하여", "zh-CN": "模型排序", ru: "Сортировка моделей", ja: "モデルの並び順" }, slug: "guides/model-ordering" },
             { label: "Claude Code", translations: { ko: "Claude Code", "zh-CN": "Claude Code", ru: "Claude Code", ja: "Claude Code" }, slug: "guides/claude-code" },
+            { label: "Grok Build", translations: { ko: "Grok Build", "zh-CN": "Grok Build", ru: "Grok Build", ja: "Grok Build" }, slug: "guides/grok-build" },
             { label: "Sidecars: Web Search & Vision", translations: { ko: "사이드카: 웹 검색 & 비전", "zh-CN": "边车：网络搜索与视觉", ru: "Сайдкары: веб-поиск и зрение", ja: "サイドカー: ウェブ検索 & ビジョン" }, slug: "guides/sidecars" },
             { label: "Web Dashboard", translations: { ko: "웹 대시보드", "zh-CN": "网页控制台", ru: "Веб-дашборд", ja: "ウェブダッシュボード" }, slug: "guides/web-dashboard" },
             { label: "Sub-agent Surface", translations: { ko: "서브에이전트 서피스", "zh-CN": "子代理界面", ru: "Интерфейс подагентов", ja: "サブエージェントサーフェス" }, slug: "guides/sub-agent-surface" },

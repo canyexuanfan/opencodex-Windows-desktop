@@ -7,7 +7,7 @@
  * A provider with a legacy bare `apiKey` is seeded into a one-entry pool on first touch.
  */
 import { createHash } from "node:crypto";
-import { saveConfig } from "../config";
+import { saveConfigPreservingClaudeCode } from "../config";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 
 export interface ProviderApiKeyInfo {
@@ -87,7 +87,7 @@ export function addProviderApiKey(config: OcxConfig, name: string, key: string, 
     pool.push({ id, key: trimmed, ...(label?.trim() ? { label: label.trim() } : {}), addedAt: Date.now() });
   }
   provider.apiKey = trimmed;
-  saveConfig(config);
+  saveConfigPreservingClaudeCode(config);
   return { id };
 }
 
@@ -98,7 +98,7 @@ export function setActiveProviderApiKey(config: OcxConfig, name: string, id: str
   const entry = ensurePool(provider).find(e => e.id === id);
   if (!entry) return false;
   provider.apiKey = entry.key;
-  saveConfig(config);
+  saveConfigPreservingClaudeCode(config);
   return true;
 }
 
@@ -110,7 +110,7 @@ export function setProviderApiKeyLabel(config: OcxConfig, name: string, id: stri
   if (!entry) return false;
   if (label) entry.label = label;
   else delete entry.label;
-  saveConfig(config);
+  saveConfigPreservingClaudeCode(config);
   return true;
 }
 
@@ -128,6 +128,6 @@ export function removeProviderApiKey(config: OcxConfig, name: string, id: string
     else delete provider.apiKey;
   }
   if (provider.apiKeyPool.length === 0) delete provider.apiKeyPool;
-  saveConfig(config);
+  saveConfigPreservingClaudeCode(config);
   return true;
 }

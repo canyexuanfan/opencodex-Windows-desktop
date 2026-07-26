@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readJsonOrThrow } from "../fetch-json";
 import { Notice, EmptyState } from "../ui";
 import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot, IconInfo } from "../icons";
 import { useT } from "../i18n/shared";
@@ -13,12 +14,17 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  /** Sync guard: state-only `busy` can miss clicks before the disabled re-render commits. */
+  const saveInFlight = useRef(false);
 
   const chosenSet = useMemo(() => new Set(chosen), [chosen]);
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`${apiBase}/api/subagent-models`).then(res => res.json());
+      const res = await fetch(`${apiBase}/api/subagent-models`);
+      const r = await readJsonOrThrow<{ available?: string[]; chosen?: string[] }>(res, t("sub.loadFail"));
+      if (!r) throw new Error(t("sub.loadFail"));
       const avail: string[] = r.available ?? [];
       const availSet = new Set(avail);
       setAvailable(avail);
@@ -38,10 +44,12 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   }, [load]);
 
   const toggle = (m: string) => {
+    if (busy) return;
     setStatus("");
     setChosen(prev => prev.includes(m) ? prev.filter(x => x !== m) : (prev.length >= 5 ? prev : [...prev, m]));
   };
   const move = (i: number, dir: -1 | 1) => {
+    if (busy) return;
     setChosen(prev => {
       const next = [...prev];
       const j = i + dir;
@@ -52,6 +60,9 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   };
 
   const save = async () => {
+    if (busy || saveInFlight.current) return;
+    saveInFlight.current = true;
+    setBusy(true);
     setStatus("");
     try {
       const r = await fetch(`${apiBase}/api/subagent-models`, {
@@ -59,14 +70,16 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ models: chosen }),
       });
-      const d = await r.json();
-      setOk(r.ok);
-      setStatus(r.ok
-        ? t("sub.saved", { n: d.applied?.length ?? 0, cmd: "ocx sync" })
-        : (d.error || t("sub.saveFailed")));
-    } catch {
+      const d = await readJsonOrThrow<{ applied?: string[] }>(r, t("sub.saveFailed"));
+      if (d?.applied) setChosen(d.applied);
+      setOk(true);
+      setStatus(t("sub.saved", { n: d?.applied?.length ?? 0, cmd: "ocx sync" }));
+    } catch (error) {
       setOk(false);
-      setStatus(t("sub.networkError"));
+      setStatus(error instanceof Error && error.message ? error.message : t("sub.networkError"));
+    } finally {
+      saveInFlight.current = false;
+      setBusy(false);
     }
   };
 
@@ -99,13 +112,13 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
             <div key={m} className="card panel-accent row" style={{ padding: "8px 12px", gap: 10 }}>
               <span className="mono font-bold" style={{ width: 18, color: "var(--accent)" }}>{i + 1}</span>
               <code className="mono" style={{ flex: 1, color: "var(--text)" }}>{modelLabel(m)}</code>
-              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t("sub.moveUp", { m })}>
+              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, -1)} disabled={busy || i === 0} aria-label={t("sub.moveUp", { m })}>
                 <IconArrowUp />
               </button>
-              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, 1)} disabled={i === chosen.length - 1} aria-label={t("sub.moveDown", { m })}>
+              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, 1)} disabled={busy || i === chosen.length - 1} aria-label={t("sub.moveDown", { m })}>
                 <IconArrowDown />
               </button>
-              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => toggle(m)} aria-label={t("sub.removeAria", { m })} style={{ color: "var(--red)" }}>
+              <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => toggle(m)} disabled={busy} aria-label={t("sub.removeAria", { m })} style={{ color: "var(--red)" }}>
                 <IconX />
               </button>
             </div>
@@ -114,7 +127,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
       )}
 
       <div style={{ marginTop: 14 }}>
-        <button type="button" className="btn btn-primary" onClick={save}>{t("common.save")}</button>
+        <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy}>{t("common.save")}</button>
       </div>
 
       <div className="h-section">{t("sub.models")} <span className="count">{filtered.length}</span></div>
@@ -139,9 +152,9 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
               type="button"
               className={`card row${sel ? " panel-accent" : ""}`}
               onClick={() => toggle(m)}
-              disabled={full}
+              disabled={busy || full}
               aria-pressed={sel}
-              style={{ width: "100%", opacity: full ? 0.45 : 1, cursor: full ? "not-allowed" : "pointer" }}
+              style={{ width: "100%", opacity: full || busy ? 0.45 : 1, cursor: full || busy ? "not-allowed" : "pointer" }}
             >
               <span style={{ width: 16, height: 16, flexShrink: 0, color: "var(--accent)", display: "inline-flex" }}>
                 {sel && <IconCheck style={{ width: 16, height: 16 }} />}

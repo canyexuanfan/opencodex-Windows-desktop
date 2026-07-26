@@ -878,12 +878,41 @@
   margin-bottom: 18px;
 }
 
+.pws-custom-model-label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.pws-custom-model-row {
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pws-custom-model-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
 .pws-model-list {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 12px;
-  margin-top: 4px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pws-model-expand {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 
 .pws-model-chip {

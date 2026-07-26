@@ -1,16 +1,41 @@
 <h3 align="center">make codex open!</h3>
-<p align="center"><b>Universal provider proxy for OpenAI Codex &amp; Claude Code</b> — use any LLM with Codex CLI, App, SDK, and Claude Code.</p>
-<p align="center"><code>npm install -g @bitkyc08/opencodex</code> · <code>ocx start</code> · <b>localhost:10100</b></p>
+<p align="center"><b>Universal provider proxy for OpenAI Codex, Claude Code, Claude Desktop &amp; Grok Build</b><br>
+Two commands, and every one of them runs any LLM you point it at.</p>
 
 <p align="center">
+  <a href="https://x.com/claudeebum"><img src="https://img.shields.io/badge/%40claudeebum-000000?logo=x&logoColor=white" alt="Follow @claudeebum on X"></a>
   <a href="https://www.npmjs.com/package/@bitkyc08/opencodex"><img src="https://img.shields.io/npm/v/@bitkyc08/opencodex?color=cb3837&label=npm&logo=npm" alt="npm version"></a>
   <a href="https://github.com/lidge-jun/opencodex/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/@bitkyc08/opencodex?color=blue" alt="license"></a>
   <img src="https://img.shields.io/node/v/@bitkyc08/opencodex?logo=node.js&label=node" alt="node version">
 </p>
 
-<p align="center">
-  <img src="assets/banner.png" alt="opencodex — Universal provider proxy for Codex, use any LLM" width="820">
-</p>
+```bash
+npm install -g @bitkyc08/opencodex
+ocx start        # proxy + dashboard on localhost:10100
+```
+
+<table align="center">
+  <tr>
+    <td width="50%" align="center">
+      <img src="assets/claude-code-models.gif" alt="Claude Code running a routed model through opencodex — the status bar shows gpt-5.6-luna-medium as the active model" width="410"><br>
+      <sub><b>Claude Code, running any model.</b><br>The picker is stock Claude Code. The brain behind it isn't.</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="assets/demo.gif" alt="opencodex demo — running a task in the Codex app on a routed non-OpenAI model" width="410"><br>
+      <sub><b>Codex, running any model.</b><br>Pick a provider and go — same workflow, different brain.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="assets/claude-desktop-subagent.gif" alt="Claude Desktop answering as Claude Opus 4.8, then dispatching a GPT-5.6 Sol subagent through opencodex" width="410"><br>
+      <sub><b>Claude Desktop, running any model.</b><br>Opus answers, then hands the task to a GPT-5.6 Sol subagent.</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="assets/grok-build-subagent.gif" alt="Grok Build running GPT-5.6 Sol through opencodex and calling a Kimi K3 subagent" width="410"><br>
+      <sub><b>Grok Build, running any model.</b><br>Sol drives the session and calls a Kimi K3 subagent.</sub>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="README.md">English</a> · <a href="readme/README.ko.md">한국어</a> · <a href="readme/README.zh-CN.md">简体中文</a> · <a href="readme/README.ru.md">Русский</a> · <a href="readme/README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/"><b>Full documentation →</b></a>
@@ -20,14 +45,13 @@
   <img src="assets/architecture.png" alt="opencodex architecture — Codex CLI routes through opencodex proxy to any LLM provider" width="820">
 </p>
 
-Use Claude, Gemini, Grok, GLM, DeepSeek, Kimi, Qwen, Ollama, or any other LLM with Codex — and with **Claude Code** — without waiting for anyone to add support.
+Use Claude, Gemini, Grok, GLM, DeepSeek, Kimi, Qwen, Ollama, or any other LLM with Codex — and with **Claude Code**, **Claude Desktop**, and **Grok Build** — without waiting for anyone to add support.
+
+Subagents cross the boundary too: Claude Desktop can answer as Opus and hand the next step to a
+GPT-5.6 Sol subagent, and Grok Build can drive a session on Sol while calling Kimi K3 — each side
+keeping its own native UI.
 
 opencodex is a lightweight local proxy that translates Codex's Responses API into whatever your provider speaks. Streaming, tool calls, reasoning tokens, images — everything works, in both directions.
-
-<p align="center">
-  <img src="assets/demo.gif" alt="opencodex demo — running a task in the Codex app on a routed non-OpenAI model" width="820">
-</p>
-<p align="center"><sub><b>Codex, running any model.</b> Pick a provider and go — same Codex workflow, different brain.</sub></p>
 
 It can also manage a **ChatGPT account pool** for Codex auth. Add multiple ChatGPT / Codex accounts,
 refresh their 5h / weekly / 30d quota in the dashboard, and let new sessions auto-route to the
@@ -228,7 +252,7 @@ next Codex session. opencodex keeps these behaviors:
 ## Highlights
 
 - **Use any LLM with Codex.** 5 protocol adapters cover Anthropic Messages, Google Gemini, Azure, OpenAI Responses passthrough, and every OpenAI-compatible Chat Completions endpoint — that's 40+ providers out of the box.
-- **Use any LLM with Claude Code too.** The same daemon serves the Anthropic Messages API (`/v1/messages` + `count_tokens`): `ocx claude` launches Claude Code fully wired, and routed models appear in its native `/model` picker via gateway model discovery (`claude-ocx-<provider>--<model>` aliases, Claude Code 2.1.129+). Configure slots and model maps on the dashboard's Claude page.
+- **Use any LLM with Claude Code too.** The same daemon serves the Anthropic Messages API (`/v1/messages` + `count_tokens`): `ocx claude` launches Claude Code fully wired, and routed models appear in its native `/model` picker via gateway model discovery (`claude-ocx-<provider>--<model>` aliases, Claude Code 2.1.129+). Configure slots and model maps on the dashboard's Claude page. The Claude page also carries a separate Desktop profile with Opus, Fable, Sonnet, and Haiku families, accessible drag/keyboard controls, and JSON import/export.
 - **Use any LLM with GitHub Copilot App too.** Point Copilot's Model providers at `http://127.0.0.1:10100/v1` — OpenCodex serves OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` so routed models sync into the app. See [docs/github-copilot-app.md](docs/github-copilot-app.md).
 - **Pool ChatGPT accounts safely.** Keep existing Codex threads on one account while new sessions
   can auto-pick a lower-usage account from the pool, with quota refresh and non-PII request labels.
@@ -292,9 +316,33 @@ ocx logout <provider>          # remove a stored login
 ocx account <list|current|use> # list/switch accounts & API-key pools (masked; also refresh/auto-switch/remove/add-key)
 ocx gui                        # open the web dashboard
 ocx claude [args...]           # launch Claude Code wired to the proxy (model discovery on)
+ocx claude desktop             # save and apply the Claude Desktop four-family profile
 ocx service [install|start|stop|status|uninstall]   # install/update/start background service
 ocx update [--tag preview]     # update opencodex; preview installs stay on @preview
 ```
+
+### Claude Desktop profile
+
+The dashboard's **Claude → Desktop** view sorts routes into four families: Opus, Fable, Sonnet,
+and Haiku. New routes start in Opus, and the first Opus route is the initial application default.
+Every non-empty family has one default. You can drag a route, or use its visible move control with
+a mouse, touch, or keyboard. **Save and apply** writes the profile to Claude Desktop. JSON export
+and import are available for backup or moving the same setup to another machine.
+
+```bash
+ocx claude desktop [apply]                         # save and apply the current profile
+ocx claude desktop show [--json]                   # inspect routes, families, and defaults
+ocx claude desktop move <route> <family> [--default]
+ocx claude desktop default <family> <route|none>
+ocx claude desktop export <path|->                 # use - to write JSON to stdout
+ocx claude desktop import <path> [--apply]         # validate, then save; optionally apply
+```
+
+Families are `opus`, `fable`, `sonnet`, and `haiku`. Non-Anthropic routes receive stable
+Claude-shaped aliases with a synthetic 2026 date slot; that date is an internal slot, not the
+model's release date. Real Anthropic Claude routes keep their real model ids. Use `none` only for
+an empty family; a non-empty family always needs a default. The older apply forms
+`ocx claude desktop --static`, `--hybrid`, and `--discovery-only` remain supported.
 
 ### Autostart: service vs shim
 
@@ -455,6 +503,9 @@ Contributor setup lives in [`CONTRIBUTING.md`](./CONTRIBUTING.md), and security 
 lives in [`SECURITY.md`](./SECURITY.md).
 
 ## Development
+
+Source development requires the `bun` CLI on your `PATH`. This is separate from the published npm
+package's bundled Bun runtime, which is used only by installed `ocx` commands.
 
 ```bash
 git clone https://github.com/lidge-jun/opencodex.git

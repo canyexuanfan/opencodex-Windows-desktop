@@ -1,15 +1,27 @@
 <h3 align="center">make codex open!</h3>
-<p align="center"><b>面向 OpenAI Codex 与 Claude Code 的通用 provider 代理</b> —— 在 Codex CLI、App、SDK 和 Claude Code 中使用任意 LLM。</p>
-<p align="center"><code>npm install -g @bitkyc08/opencodex</code> · <code>ocx start</code> · <b>localhost:10100</b></p>
+<p align="center"><b>面向 OpenAI Codex 与 Claude Code 的通用 provider 代理</b><br>
+两条命令，Codex 和 Claude Code 就能用任何 LLM 跑起来。</p>
 
 <p align="center">
+  <a href="https://x.com/claudeebum"><img src="https://img.shields.io/badge/%40claudeebum-000000?logo=x&logoColor=white" alt="在 X 上关注 @claudeebum"></a>
   <a href="https://www.npmjs.com/package/@bitkyc08/opencodex"><img src="https://img.shields.io/npm/v/@bitkyc08/opencodex?color=cb3837&label=npm&logo=npm" alt="npm version"></a>
   <a href="https://github.com/lidge-jun/opencodex/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/@bitkyc08/opencodex?color=blue" alt="license"></a>
   <img src="https://img.shields.io/node/v/@bitkyc08/opencodex?logo=node.js&label=node" alt="node version">
 </p>
 
+```bash
+npm install -g @bitkyc08/opencodex
+ocx start        # 代理 + 仪表盘: localhost:10100
+```
+
 <p align="center">
-  <img src="assets/banner.png" alt="opencodex — 让 Codex 接入任意 LLM" width="820">
+  <img src="../assets/claude-code-models.gif" alt="通过 opencodex 运行路由模型的 Claude Code —— 状态栏显示 gpt-5.6-luna-medium 为当前模型" width="820"><br>
+  <sub><b>Claude Code 可以用任何模型。</b>选择器是原生 Claude Code，跑起来的模型随你挑。</sub>
+</p>
+
+<p align="center">
+  <img src="../assets/demo.gif" alt="opencodex 演示 —— 在 Codex 应用中用路由的非 OpenAI 模型执行任务" width="820"><br>
+  <sub><b>Codex 可以用任何模型。</b>选好 provider 直接开跑 —— 同样的 Codex 工作流，换个大脑。</sub>
 </p>
 
 <p align="center">
@@ -17,17 +29,12 @@
 </p>
 
 <p align="center">
-  <img src="assets/architecture.png" alt="opencodex 架构 — Codex CLI 通过 opencodex 代理路由到任意 LLM 提供商" width="820">
+  <img src="../assets/architecture.png" alt="opencodex 架构 — Codex CLI 通过 opencodex 代理路由到任意 LLM 提供商" width="820">
 </p>
 
 在 Codex 中 —— 以及在 **Claude Code** 中 —— 使用 Claude、Gemini、Grok、GLM、DeepSeek、Kimi、Qwen、Ollama 或任意其他 LLM，无需等待官方添加支持。
 
 opencodex 是一个轻量级本地代理，把 Codex 的 Responses API 翻译成你的 provider 所讲的协议。streaming、tool 调用、reasoning token、图片 —— 全部双向工作。
-
-<p align="center">
-  <img src="assets/demo.gif" alt="opencodex 演示 —— 在 Codex 应用中用路由的非 OpenAI 模型执行任务" width="820">
-</p>
-<p align="center"><sub><b>在 Codex 里运行任意模型。</b>选好 provider 即可 —— 同样的 Codex 工作流，不同的大脑。</sub></p>
 
 它还能为 Codex 认证管理一个 **ChatGPT 账户池**。添加多个 ChatGPT / Codex 账户，在仪表盘中刷新它们的
 5 小时 / 每周 / 30 天配额，并让新会话自动路由到使用量最低的健康账户。现有 Codex 线程会固定在启动它的
@@ -107,7 +114,7 @@ npm 警告里给出的缩写命令缺少包名，会把当前目录重新安装�
 ## 亮点
 
 - **在 Codex 中使用任意 LLM。** 5 种协议 adapter 覆盖 Anthropic Messages、Google Gemini、Azure、OpenAI Responses 直通，以及所有 OpenAI 兼容 Chat Completions 端点 —— 即开箱即用的 **40+ provider**。
-- **在 Claude Code 中也能使用任意 LLM。** 同一个守护进程提供 Anthropic Messages API（`/v1/messages` + `count_tokens`）：`ocx claude` 启动完全接线的 Claude Code，路由模型通过网关模型发现出现在原生 `/model` 选择器中（`claude-ocx-<provider>--<model>` 别名，Claude Code 2.1.129+）。槽位和模型映射在仪表盘的 Claude 页面配置。
+- **在 Claude 中也能使用任意 LLM。** `ocx claude` 可通过代理启动 Claude Code。Claude 仪表盘还提供独立的 Desktop 配置，可管理 Opus、Fable、Sonnet、Haiku 四个系列，并支持拖放、键盘操作和 JSON 导入/导出。
 - **安全地池化 ChatGPT 账户。** 现有 Codex 线程保持在一个账户上，而新会话可以从池中自动挑选使用量更低的账户，并带有配额刷新和非 PII 请求标签。
 - **登录一次，免填 API key。** xAI、Anthropic、Kimi 支持 OAuth，可用现有账户认证，token 自动刷新。也可以转发 `codex login`、粘贴 API key，或使用 `${ENV_VAR}` 引用 —— 随你选择。
 - **Codex 在哪里能用，它就在哪里能用。** 自动注入 Codex CLI、TUI、App 和 SDK。路由模型像原生模型一样出现在 Codex 的模型选择器里。
@@ -173,7 +180,7 @@ reasoning 为 `low`。可用性仍受上游
 preview gate 限制；opencodex 只是准备好你的账户/provider 可访问时所需的路由和目录元数据。
 
 <p align="center">
-  <img src="assets/codex-app-picker.png" alt="Codex App 展示 opencodex 路由模型及 reasoning effort 选择器" width="480">
+  <img src="../assets/codex-app-picker.png" alt="Codex App 展示 opencodex 路由模型及 reasoning effort 选择器" width="480">
 </p>
 
 ## OpenAI provider 账户模式
@@ -243,10 +250,33 @@ ocx logout <provider>          # 移除已保存的登录
 ocx account <list|current|use> # 查看/切换账号与 API-key pool（脱敏；含 refresh/auto-switch/remove/add-key）
 ocx gui                        # 打开 Web 仪表盘
 ocx claude [args...]           # 启动接入代理的 Claude Code（模型发现已开启）
+ocx claude desktop             # 保存并应用 Claude Desktop 四系列配置
 ocx codex-shim install         # 运行 codex 时自动启动代理
 ocx service [install|start|stop|status|uninstall]   # 安装/更新/启动后台服务
 ocx update [--tag preview]     # 更新 opencodex；preview 安装保持 @preview
 ```
+
+### Claude Desktop 配置
+
+仪表盘的 **Claude → Desktop** 页面把路由分为 Opus、Fable、Sonnet、Haiku 四个系列。新路由
+默认放入 Opus，第一个 Opus 路由是应用的初始默认模型。每个非空系列都有一个默认路由。你可以
+拖动路由，也可以用鼠标、触控或键盘操作每一行中可见的移动控件。点击 **保存并应用到 Desktop**
+后，配置会写入 Claude Desktop。还可以通过 JSON 导入/导出来备份配置，或迁移到另一台机器。
+
+```bash
+ocx claude desktop [apply]                         # 保存并应用当前配置
+ocx claude desktop show [--json]                   # 查看路由、系列和默认值
+ocx claude desktop move <route> <family> [--default]
+ocx claude desktop default <family> <route|none>
+ocx claude desktop export <path|->                 # 使用 - 将 JSON 输出到 stdout
+ocx claude desktop import <path> [--apply]         # 验证后保存，可选择立即应用
+```
+
+`family` 可取 `opus`、`fable`、`sonnet`、`haiku`。非 Anthropic 路由会获得带有合成 2026 日期
+槽位的稳定 Claude 格式别名；该日期是内部槽位，不是模型发布日期。真正的 Anthropic Claude
+路由保留原始模型 id。`none` 只能用于空系列；非空系列始终需要一个默认值。旧的应用方式
+`ocx claude desktop --static`、`--hybrid` 和
+`--discovery-only` 仍然受支持。
 
 ### 自动启动：service vs shim
 

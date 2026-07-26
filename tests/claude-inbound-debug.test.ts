@@ -81,4 +81,50 @@ describe("claude inbound debug capture (devlog 130 B1)", () => {
     const [entry] = getClaudeInboundDebugEntries();
     expect(entry!.anthropicBeta).toBe("context-1m-2025-08-07,effort-2025-11-24");
   });
+
+  test("same-millisecond captures get unique monotonic ids", () => {
+    setDebugSettings({ claude: true });
+    const now = Date.now();
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      captureClaudeInbound("messages", body);
+      captureClaudeInbound("messages", body);
+      captureClaudeInbound("messages", body);
+    } finally {
+      Date.now = originalNow;
+    }
+    const entries = getClaudeInboundDebugEntries();
+    expect(entries).toHaveLength(3);
+    expect(entries.every(e => e.at === now)).toBe(true);
+    const ids = entries.map(e => e.id);
+    expect(new Set(ids).size).toBe(3);
+    // Newest-first snapshot; ids remain monotonic in capture order.
+    expect(ids[0]!).toBeGreaterThan(ids[1]!);
+    expect(ids[1]!).toBeGreaterThan(ids[2]!);
+  });
+
+  test("ids stay unique and ordered after the ring buffer wraps", () => {
+    setDebugSettings({ claude: true });
+    const now = Date.now();
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      // RING_LIMIT is 20; overflow it so eviction is exercised rather than simple appends.
+      for (let i = 0; i < 25; i++) captureClaudeInbound("messages", body);
+    } finally {
+      Date.now = originalNow;
+    }
+
+    const entries = getClaudeInboundDebugEntries();
+    expect(entries).toHaveLength(20);
+
+    const ids = entries.map(e => e.id);
+    // Eviction must not recycle ids: a counter reset would resurrect a discarded id and
+    // reintroduce the duplicate-key collision this field exists to prevent.
+    expect(new Set(ids).size).toBe(20);
+    for (let i = 1; i < ids.length; i++) {
+      expect(ids[i - 1]!).toBeGreaterThan(ids[i]!);
+    }
+  });
 });

@@ -16,7 +16,8 @@ describe("GitHub Actions hardening", () => {
   test("cross-platform CI keeps bounded jobs and immutable action references", async () => {
     const workflow = await readText(".github/workflows/ci.yml");
 
-    expect(count(workflow, "timeout-minutes: 8")).toBe(2);
+    expect(count(workflow, "timeout-minutes: 12")).toBe(1);
+    expect(count(workflow, "timeout-minutes: 8")).toBe(1);
     expect(workflow).toContain("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
     expect(workflow).toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
     expect(workflow).toContain("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e");
@@ -173,25 +174,46 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("issue-translation.cjs");
     expect(workflow).toContain("translated_title");
     expect(workflow).toContain("isPreparedSourceStillCurrent");
-    expect(workflow).toContain("extractTranslationControlState");
+    expect(workflow).toContain("resolveControlState");
+    expect(workflow).toContain("persistTranslationControlState");
     expect(workflow).toContain("parse-issue-translation-response.cjs");
     expect(workflow).not.toContain('node -e "');
-    expect(workflow).toContain("upsertTranslationControlComment");
+    expect(workflow).not.toContain("actions/cache/restore");
+    expect(workflow).not.toContain("actions/cache/save");
+    expect(workflow).not.toContain("actions: write");
+    expect(workflow).not.toContain(".ocx-translation-state");
+    expect(workflow).not.toContain("null language");
+    expect(workflow).toContain('normally "English"');
     expect(workflow).toContain("rejectsWorkflowDispatchNonDefaultBranch");
     expect(workflow).toContain("rejectsWorkflowDispatchPullRequest");
     expect(workflow).toContain("models: read");
     expect(workflow).toContain("Number.isSafeInteger(parsedIssueNumber)");
     expect(workflow).toContain("parsedIssueNumber <= 0");
 
-    // Job-scoped permissions only (no top-level issues:write).
+    // Job-scoped permissions only (no top-level issues:write; no actions:write).
     expect(workflow).toMatch(
       /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read/,
     );
+    const translateJob = workflow.split(/\n {2}translate:\n/)[1]!.split(/\n {2}[a-zA-Z]/)[0]!;
+    expect(translateJob).not.toMatch(/actions:\s*write/);
     expect(workflow).toMatch(
       /jobs:\s*\n\s*translate:[\s\S]*?validate:[\s\S]*?permissions:\s*\n\s*contents: read\s*\n\s*#.*\n\s*issues: write/,
     );
     const beforeJobs = workflow.split(/jobs:\s*\n/)[0]!;
     expect(beforeJobs).not.toMatch(/^\s*permissions:/m);
+
+    // Non-cancelling per-issue concurrency at workflow and translate-job scope.
+    expect(workflow).toContain("group: issue-quality-${{ github.event.issue.number || inputs.issue_number }}");
+    expect(workflow).toContain("group: issue-translation-${{ github.event.issue.number || inputs.issue_number }}");
+    const workflowConcurrency = workflow.split(/jobs:\s*\n/)[0]!;
+    expect(workflowConcurrency).toMatch(
+      /concurrency:\s*\n\s*group: issue-quality-[^\n]*\n\s*cancel-in-progress:\s*false/,
+    );
+    expect(translateJob).toMatch(
+      /concurrency:\s*\n\s*group: issue-translation-[^\n]*\n\s*cancel-in-progress:\s*false/,
+    );
+    expect(translateJob).toContain("translation-state-degraded");
+    expect(translateJob).toContain("core.summary");
 
     // Trusted scripts always come from the repository default branch.
     const checkoutStep = workflow
@@ -243,6 +265,8 @@ describe("GitHub Actions hardening", () => {
     expect(branchGuardIdxTranslate).toBeGreaterThan(-1);
     expect(issuesGetIdxTranslate).toBeGreaterThan(-1);
     expect(branchGuardIdxTranslate).toBeLessThan(issuesGetIdxTranslate);
+    expect(translateScript).toContain("resolveControlState");
+    expect(translateScript).toContain("Never trust author-editable issue body markers");
 
     const applyScript = workflow
       .split("- name: Apply inline translation")[1]!
@@ -252,6 +276,8 @@ describe("GitHub Actions hardening", () => {
     expect(staleGuardIdx).toBeGreaterThan(-1);
     expect(issueUpdateIdx).toBeGreaterThan(-1);
     expect(staleGuardIdx).toBeLessThan(issueUpdateIdx);
+    expect(applyScript).toContain("persistTranslationControlState");
+    expect(applyScript).toContain("Translation control state not persisted");
 
     const parseStep = workflow
       .split("- name: Parse AI response")[1]!
@@ -264,9 +290,24 @@ describe("GitHub Actions hardening", () => {
 
     const persistStep = workflow
       .split("- name: Persist translation control state")[1]!
-      .split(/\n {2}[a-z]/)[0]!;
+      .split(/\n {2}[a-zA-Z]/)[0]!;
     expect(persistStep).toContain("always()");
     expect(persistStep).toContain("requires_translation != 'true'");
+    expect(persistStep).toContain("persistTranslationControlState");
+    expect(persistStep).not.toContain("silent_state");
+    expect(persistStep).not.toContain("cleanup_comment_ids");
+    expect(workflow).not.toContain("Save translation control state cache");
+    expect(workflow).not.toContain("Remove migrated English control comments");
+    expect(workflow).not.toContain("Restore translation control state cache");
+
+    // Helper contract: marker-only English comments; replace-before-cleanup; body non-authoritative.
+    const helperSrc = await readText(".github/scripts/issue-translation.cjs");
+    expect(helperSrc).toContain("shouldOmitVisibleBookkeeping");
+    expect(helperSrc).toContain("Automated translation bookkeeping");
+    expect(helperSrc).toContain("canonical comment first");
+    expect(helperSrc).toContain("Authoritative control state comes only from verified bot-owned comments");
+    expect(helperSrc).not.toContain("writeFileControlState");
+    expect(helperSrc).not.toContain(".ocx-translation-state");
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {
@@ -277,9 +318,9 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
 
     // Engine pin: the action wrapper would fetch react-doctor@latest without it.
-    expect(workflow).toContain('version: "0.7.8"');
+    expect(workflow).toContain('version: "0.9.1"');
 
-    // Action pin must accept CLI JSON schemaVersion 3 (baseline reports from 0.7.8).
+    // Action pin must accept CLI JSON schemaVersion 3 (baseline reports from 0.9.1).
     // v2.1.0's ensure-json-report only knew schemas 1–2 and failed every PR scan.
     // Advisory + least privilege: read-only token, all write-scoped outputs off.
     // pull-requests: read is required so the action can list PR files for
@@ -298,7 +339,7 @@ describe("GitHub Actions hardening", () => {
     const guiPkg = await readText("gui/package.json");
     const rootPkg = await readText("package.json");
 
-    expect(guiPkg).toContain("react-doctor@0.7.8");
+    expect(guiPkg).toContain("react-doctor@0.9.1");
     expect(guiPkg).not.toContain("react-doctor@latest");
     expect(rootPkg).not.toContain("react-doctor@latest");
     expect(rootPkg).toContain('"doctor:gui:if-changed": "bun scripts/doctor-gui-if-changed.ts"');

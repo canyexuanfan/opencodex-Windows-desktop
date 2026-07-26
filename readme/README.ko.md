@@ -1,15 +1,27 @@
 <h3 align="center">make codex open!</h3>
-<p align="center"><b>OpenAI Codex &amp; Claude Code를 위한 범용 프로바이더 프록시</b> — Codex CLI·App·SDK와 Claude Code에서 어떤 LLM이든 사용하세요.</p>
-<p align="center"><code>npm install -g @bitkyc08/opencodex</code> · <code>ocx start</code> · <b>localhost:10100</b></p>
+<p align="center"><b>OpenAI Codex &amp; Claude Code를 위한 범용 프로바이더 프록시</b><br>
+명령어 두 줄이면 Codex와 Claude Code가 원하는 LLM으로 돌아갑니다.</p>
 
 <p align="center">
+  <a href="https://x.com/claudeebum"><img src="https://img.shields.io/badge/%40claudeebum-000000?logo=x&logoColor=white" alt="X에서 @claudeebum 팔로우"></a>
   <a href="https://www.npmjs.com/package/@bitkyc08/opencodex"><img src="https://img.shields.io/npm/v/@bitkyc08/opencodex?color=cb3837&label=npm&logo=npm" alt="npm version"></a>
   <a href="https://github.com/lidge-jun/opencodex/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/@bitkyc08/opencodex?color=blue" alt="license"></a>
   <img src="https://img.shields.io/node/v/@bitkyc08/opencodex?logo=node.js&label=node" alt="node version">
 </p>
 
+```bash
+npm install -g @bitkyc08/opencodex
+ocx start        # 프록시 + 대시보드: localhost:10100
+```
+
 <p align="center">
-  <img src="assets/banner.png" alt="opencodex — 어떤 LLM이든 Codex에서 사용" width="820">
+  <img src="../assets/claude-code-models.gif" alt="opencodex로 라우팅된 모델에서 돌아가는 Claude Code — 상태 표시줄에 gpt-5.6-luna-medium이 활성 모델로 표시됨" width="820"><br>
+  <sub><b>Claude Code에서 어떤 모델이든.</b> 선택기는 Claude Code 그대로, 돌아가는 모델은 원하는 대로.</sub>
+</p>
+
+<p align="center">
+  <img src="../assets/demo.gif" alt="opencodex 데모 — Codex 앱에서 비-OpenAI 라우팅 모델로 작업 실행" width="820"><br>
+  <sub><b>Codex에서 어떤 모델이든.</b> 프로바이더만 고르면 끝 — 같은 Codex 워크플로, 다른 두뇌.</sub>
 </p>
 
 <p align="center">
@@ -17,17 +29,12 @@
 </p>
 
 <p align="center">
-  <img src="assets/architecture.png" alt="opencodex 아키텍처 — Codex CLI가 opencodex 프록시를 통해 모든 LLM 프로바이더로 라우팅" width="820">
+  <img src="../assets/architecture.png" alt="opencodex 아키텍처 — Codex CLI가 opencodex 프록시를 통해 모든 LLM 프로바이더로 라우팅" width="820">
 </p>
 
 Claude, Gemini, Grok, GLM, DeepSeek, Kimi, Qwen, Ollama 등 어떤 LLM이든 Codex에서 — 그리고 **Claude Code**에서도 — 사용하세요. 누군가 지원을 추가해 주길 기다릴 필요 없이.
 
 opencodex는 Codex의 Responses API를 프로바이더가 쓰는 프로토콜로 변환해 주는 가벼운 로컬 프록시입니다. streaming, tool 호출, reasoning 토큰, 이미지까지 양방향으로 모두 동작합니다.
-
-<p align="center">
-  <img src="assets/demo.gif" alt="opencodex 데모 — Codex 앱에서 비-OpenAI 라우팅 모델로 작업 실행" width="820">
-</p>
-<p align="center"><sub><b>Codex에서 어떤 모델이든.</b> 프로바이더만 고르면 끝 — 같은 Codex 워크플로, 다른 두뇌.</sub></p>
 
 또한 Codex 인증을 위한 **ChatGPT 계정 풀**을 관리할 수 있습니다. 여러 ChatGPT / Codex 계정을 추가하고,
 대시보드에서 5시간 / 주간 / 30일 쿼터를 갱신하며, 새 세션을 사용량이 가장 적은 정상 계정으로 자동
@@ -164,7 +171,7 @@ seed됩니다(`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; OpenRouter는 `ope
 routing/catalog metadata를 준비해 둡니다.
 
 <p align="center">
-  <img src="assets/codex-app-picker.png" alt="opencodex 라우팅 모델을 reasoning effort 선택기와 함께 보여주는 Codex App" width="480">
+  <img src="../assets/codex-app-picker.png" alt="opencodex 라우팅 모델을 reasoning effort 선택기와 함께 보여주는 Codex App" width="480">
 </p>
 
 ## OpenAI 프로바이더 계정 모드
@@ -204,7 +211,7 @@ opencodex는 두 가지 동작을 분리해서 유지합니다:
 ## 주요 기능
 
 - **어떤 LLM이든 Codex에서.** 5개의 프로토콜 adapter가 Anthropic Messages, Google Gemini, Azure, OpenAI Responses passthrough, 그리고 모든 OpenAI 호환 Chat Completions 엔드포인트를 커버합니다 — 즉 기본 제공 **40개 이상의 프로바이더**입니다.
-- **Claude Code에서도 어떤 LLM이든.** 같은 데몬이 Anthropic Messages API(`/v1/messages` + `count_tokens`)를 제공합니다: `ocx claude`가 Claude Code를 완전히 연결된 상태로 실행하고, 라우팅 모델이 게이트웨이 모델 디스커버리로 네이티브 `/model` 피커에 나타납니다 (`claude-ocx-<provider>--<model>` 별칭, Claude Code 2.1.129+). 슬롯과 모델 매핑은 대시보드의 Claude 페이지에서 설정합니다.
+- **Claude에서도 어떤 LLM이든.** `ocx claude`로 Claude Code를 프록시에 연결해 실행할 수 있습니다. Claude 대시보드에는 Opus, Fable, Sonnet, Haiku를 관리하는 별도 Desktop 프로필과 드래그/키보드 조작, JSON 가져오기/내보내기도 있습니다.
 - **ChatGPT 계정을 안전하게 풀링.** 기존 Codex 스레드는 한 계정에 유지하면서, 새 세션은 쿼터 갱신과 비-PII 요청 라벨과 함께 풀에서 사용량이 낮은 계정을 자동 선택할 수 있습니다.
 - **한 번 로그인하면 API 키는 생략.** xAI, Anthropic, Kimi는 OAuth를 지원하므로 기존 계정으로 인증할 수 있고 토큰은 자동 갱신됩니다. 또는 `codex login`을 forward 하거나, API 키를 붙여넣거나, `${ENV_VAR}` 참조를 쓸 수 있습니다 — 선택은 자유입니다.
 - **Codex가 동작하는 모든 곳에서.** Codex CLI, TUI, App, SDK에 자동으로 주입됩니다. 라우팅된 모델이 네이티브 모델처럼 Codex 모델 선택기에 나타납니다.
@@ -250,10 +257,34 @@ ocx logout <provider>          # 저장된 로그인 정보 삭제
 ocx account <list|current|use> # 계정/API key pool 조회·전환 (마스킹; refresh/auto-switch/remove/add-key 포함)
 ocx gui                        # 웹 대시보드 열기
 ocx claude [args...]           # 프록시에 연결된 Claude Code 실행 (모델 디스커버리 켜짐)
+ocx claude desktop             # Claude Desktop 4개 family 프로필 저장 및 적용
 ocx codex-shim install         # codex 실행 시 `ocx ensure` 실행
 ocx service [install|start|stop|status|uninstall]   # 백그라운드 서비스 설치/갱신/시작
 ocx update [--tag preview]     # opencodex 업데이트; preview 설치는 @preview 유지
 ```
+
+### Claude Desktop 프로필
+
+대시보드의 **Claude → Desktop** 화면은 라우트를 Opus, Fable, Sonnet, Haiku 네 family로
+나눕니다. 새 라우트는 Opus에 들어가고, 첫 Opus 라우트가 앱의 초기 기본값이 됩니다. 비어 있지 않은
+family마다 기본 라우트가 하나씩 있습니다. 라우트를 드래그하거나, 각 행의 이동 메뉴를 마우스·터치·
+키보드로 사용할 수 있습니다. **저장하고 Desktop에 적용**을 누르면 Claude Desktop 설정에
+반영됩니다. JSON 가져오기/내보내기로 백업하거나 다른 머신에 같은 설정을 옮길 수도 있습니다.
+
+```bash
+ocx claude desktop [apply]                         # 현재 프로필 저장 및 적용
+ocx claude desktop show [--json]                   # 라우트, family, 기본값 확인
+ocx claude desktop move <route> <family> [--default]
+ocx claude desktop default <family> <route|none>
+ocx claude desktop export <path|->                 # -를 쓰면 stdout으로 JSON 출력
+ocx claude desktop import <path> [--apply]         # 검증 후 저장, 선택적으로 바로 적용
+```
+
+family 값은 `opus`, `fable`, `sonnet`, `haiku`입니다. Anthropic이 아닌 라우트에는 2026 날짜 슬롯을
+쓴 안정적인 Claude 형식 별칭이 붙습니다. 이 날짜는 내부 슬롯이며 모델 출시일이 아닙니다. 실제
+Anthropic Claude 라우트는 원래 모델 id를 유지합니다. `none`은 빈 family에만 쓸 수 있으며,
+비어 있지 않은 family에는 항상 기본값이 필요합니다. 기존 적용 방식인
+`ocx claude desktop --static`, `--hybrid`, `--discovery-only`도 계속 지원됩니다.
 
 ### 자동 시작: service vs shim
 

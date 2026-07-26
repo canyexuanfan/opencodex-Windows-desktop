@@ -277,4 +277,158 @@ describe("codex-journal", () => {
     expect(readFileSync(join(testDir, "config.toml"), "utf8")).toContain("original config");
     expect(existsSync(journalPath)).toBe(false);
   });
+
+  /**
+   * Issue #477. `writeJournal` used to return early whenever a valid journal
+   * existed, so the first snapshot a machine ever took was the only one it ever
+   * had. A partial restore leaves the journal behind (see the two tests above),
+   * so that state is ordinary — and days later an unclean shutdown would replay
+   * the day-one config over plugins, model choice and trusted projects.
+   */
+  test("a stale journal is superseded once the config is native again (#477)", () => {
+    const r = runScript(testDir, `
+      const fs = require("fs");
+      const path = require("path");
+      const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
+      const configPath = path.join(process.env.CODEX_HOME, "config.toml");
+      (async () => {
+        // Day one: inject, then edit while routing is live so the stop leaves the journal.
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        fs.appendFileSync(configPath, '\\n[projects."/tmp/day-one"]\\ntrust_level = "trusted"\\n', "utf8");
+        restoreNativeCodex();
+        // Day four: the user installs a plugin while opencodex is not running.
+        fs.appendFileSync(configPath, '\\n[plugins."browser@openai-bundled"]\\nenabled = true\\n', "utf8");
+        const nativeBaseline = fs.readFileSync(configPath, "utf8");
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        console.log(JSON.stringify({ nativeBaseline }));
+      })();
+    `);
+    expect(r.status).toBe(0);
+    const { nativeBaseline } = JSON.parse(r.stdout) as { nativeBaseline: string };
+
+    const journalPath = join(testDir, "opencodex-journal.json");
+    const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+    expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toBe(nativeBaseline);
+    // A refreshed record is a new transaction: the day-one fingerprint is gone,
+    // replaced by one for the injection that just ran.
+    expect(typeof journal.injectedConfigHash).toBe("string");
+
+    // And recovery works end to end: an unclean shutdown restores day four.
+    const r2 = runScript(testDir, `
+      const fs = require("fs");
+      const path = require("path");
+      const journalPath = path.join(process.env.CODEX_HOME, "opencodex-journal.json");
+      const j = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+      fs.writeFileSync(journalPath, JSON.stringify({ ...j, pid: 999999 }));
+      const { reconcileJournal } = require("./src/codex/journal");
+      console.log(JSON.stringify({ restored: reconcileJournal() }));
+    `);
+    expect(r2.status).toBe(0);
+    expect(JSON.parse(r2.stdout).restored).toBe(true);
+    const recovered = readFileSync(join(testDir, "config.toml"), "utf8");
+    expect(recovered).toContain("browser@openai-bundled");
+    expect(recovered).not.toContain("[model_providers.opencodex]");
+    expect(recovered).not.toContain("Auto-injected by opencodex");
+  });
+
+  /**
+   * The guard the #477 fix must not break. Deleting the early return outright —
+   * the fix the issue suggests — would let the second injection of a start
+   * capture the ALREADY-INJECTED config as the user's original, and a later
+   * restore would then replay opencodex routing as if the user had written it.
+   */
+  test("re-injecting over an injected config never captures it as the original (#477)", () => {
+    const original = '# original config\nmodel_provider = "openai"\n';
+    writeFileSync(join(testDir, "config.toml"), original, "utf8");
+
+    const r = runScript(testDir, `
+      const { injectCodexConfig } = require("./src/codex/inject");
+      (async () => {
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        console.log("done");
+      })();
+    `);
+    expect(r.status).toBe(0);
+    const journal = JSON.parse(readFileSync(join(testDir, "opencodex-journal.json"), "utf8"));
+    expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toBe(original);
+  });
+
+  /**
+   * The reachable case a "replace only when a journal exists" gate would miss:
+   * an injected config with NO journal, which is exactly where the legacy upgrade
+   * path in tests/codex-inject-integration.test.ts starts.
+   */
+  test("an injected config with no journal is never captured as the original (#477)", () => {
+    const injected = [
+      'model_provider = "opencodex"',
+      "",
+      "# Auto-injected by opencodex",
+      "[model_providers.opencodex]",
+      'name = "OpenCodex Proxy"',
+      'base_url = "http://127.0.0.1:10100/v1"',
+      "",
+    ].join("\n");
+    writeFileSync(join(testDir, "config.toml"), injected, "utf8");
+
+    const r = runScript(testDir, `
+      const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
+      (async () => {
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        restoreNativeCodex();
+        console.log("done");
+      })();
+    `);
+    expect(r.status).toBe(0);
+
+    const after = readFileSync(join(testDir, "config.toml"), "utf8");
+    expect(after).not.toContain("[model_providers.opencodex]");
+    expect(after).not.toContain("Auto-injected by opencodex");
+  });
+
+  /**
+   * Documents why no PID-based transaction guard is needed. `ocx sync` and the
+   * `ocx ensure` parent legitimately inject in a process that did not write the
+   * journal, and the only journal a marking process ever meets is hashless —
+   * a refresh rebuilds the record, and a non-refresh means the previous
+   * transaction already completed.
+   */
+  test("a hashless journal from another process can still be marked (#477)", () => {
+    runScript(testDir, `require("./src/codex/journal").writeJournal(); console.log("journaled");`);
+    const journalPath = join(testDir, "opencodex-journal.json");
+    const first = JSON.parse(readFileSync(journalPath, "utf8"));
+    expect(first.injectedConfigHash).toBeUndefined();
+
+    const r = runScript(testDir, `
+      const { markJournalInjectedState } = require("./src/codex/journal");
+      markJournalInjectedState("# injected\\n", null);
+      console.log(String(process.pid));
+    `);
+    expect(r.status).toBe(0);
+    expect(Number(r.stdout)).not.toBe(first.pid);
+
+    const second = JSON.parse(readFileSync(journalPath, "utf8"));
+    expect(second.pid).toBe(first.pid);              // still the first process's record
+    expect(typeof second.injectedConfigHash).toBe("string"); // marked by the second
+  });
+
+  test("writeJournal() with no options still snapshots a native config", () => {
+    const r = runScript(testDir, `require("./src/codex/journal").writeJournal(); console.log("written");`);
+    expect(r.status).toBe(0);
+    const journal = JSON.parse(readFileSync(join(testDir, "opencodex-journal.json"), "utf8"));
+    expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toContain("original config");
+  });
+
+  test("writeJournal() with no options refuses an injected config", () => {
+    writeFileSync(join(testDir, "config.toml"), [
+      'model_provider = "opencodex"',
+      "",
+      "# Auto-injected by opencodex",
+      "[model_providers.opencodex]",
+      'base_url = "http://127.0.0.1:10100/v1"',
+      "",
+    ].join("\n"), "utf8");
+    runScript(testDir, `require("./src/codex/journal").writeJournal(); console.log("done");`);
+    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(false);
+  });
 });

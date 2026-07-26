@@ -51,7 +51,11 @@ describe("openai-chat non-stream response hardening", () => {
       error: { message: "upstream quota exhausted", code: "quota_exceeded" },
     })));
 
-    expect(events).toEqual([{ type: "error", message: "upstream quota exhausted" }]);
+    expect(events).toEqual([{
+      type: "error",
+      message: "upstream quota exhausted",
+      code: "quota_exceeded",
+    }]);
   });
 
   test("rejects an empty choices array", async () => {

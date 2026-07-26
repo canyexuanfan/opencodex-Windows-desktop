@@ -308,6 +308,12 @@ export interface OcxUrlCitation {
 export interface OcxUsage {
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Absolute active-context size after the response. Stateful providers can expose this separately
+   * from their per-attempt usage. Responses serialization derives the input side from
+   * `contextTotalTokens - outputTokens` so output is never added to an absolute checkpoint twice.
+   */
+  contextTotalTokens?: number;
   totalTokens?: number;
   cachedInputTokens?: number;
   cacheReadInputTokens?: number;
@@ -356,11 +362,26 @@ export interface OcxClaudeCodeConfig {
    */
   systemEnv?: boolean;
   /**
-   * Auth mode for Claude Code inbound requests. "proxy" injects a dummy
-   * ANTHROPIC_AUTH_TOKEN so Claude Code routes through the proxy without a
-   * real Anthropic key. Default: undefined (no token injection).
+   * Auth mode for Claude Code inbound requests — a THREE-state intent.
+   *
+   * "proxy": inject the dummy ANTHROPIC_AUTH_TOKEN so Claude Code routes through the
+   * proxy without a real Anthropic key. "subscription": never inject it. UNSET means
+   * AUTO: the mode is resolved from detected Claude auth on every launch and every
+   * status read (src/claude/auth-mode.ts), so registering a Claude login switches the
+   * behaviour with no migration and no stored state.
+   *
+   * An explicit value always wins over detection and is never rewritten by the auto
+   * logic — that is what makes a manual choice stick (devlog 260726_claude_auth_auto).
    */
-  authMode?: "proxy";
+  authMode?: "proxy" | "subscription";
+  /**
+   * ISO timestamp of the one-time authMode migration. Before auto existed, choosing
+   * "Subscription" DELETED the key, so a pre-upgrade config cannot distinguish an
+   * explicit subscription choice from "never chose". Its ABSENCE identifies a
+   * pre-upgrade block; the migration writes it once and never re-runs, so a user who
+   * later picks Auto (which deletes authMode) is not silently converted back.
+   */
+  authModeMigratedAt?: string;
   /**
    * Context-window override for Claude Code/Desktop clients (devlog 136 B6):
    * injected as CLAUDE_CODE_MAX_CONTEXT_TOKENS + DISABLE_COMPACT=1 (the official
@@ -415,6 +436,27 @@ export interface OcxClaudeCodeConfig {
   webSearchSidecar?: { backend?: "openai" | "anthropic"; model?: string };
   /** Claude-originated vision override. Unset fields inherit the global sidecar settings. */
   visionSidecar?: { backend?: "openai" | "anthropic"; model?: string };
+  /** Persisted Claude Desktop four-family routing profile. */
+  desktopProfile?: OcxClaudeDesktopProfile;
+  /** Auto-reconcile Desktop 3P config when provider catalog changes. Default: enabled. */
+  desktopAutoApply?: boolean;
+}
+
+export type OcxClaudeDesktopFamily = "opus" | "fable" | "sonnet" | "haiku";
+
+export interface OcxClaudeDesktopAssignment {
+  family: OcxClaudeDesktopFamily;
+  alias: string;
+}
+
+export interface OcxClaudeDesktopProfile {
+  version: 1;
+  assignments: Record<string, OcxClaudeDesktopAssignment>;
+  defaults: Record<OcxClaudeDesktopFamily, string | null>;
+  /** SHA-256 fingerprint of the last successfully applied 3P config content. */
+  appliedFingerprint?: string;
+  /** ISO timestamp of the last successful apply. */
+  appliedAt?: string;
 }
 
 /** 사용자가 대시보드에서 직접 추가한 커스텀 모델 정의. */
@@ -448,6 +490,16 @@ export interface OcxConfig {
    * Codex's spawn_agent only advertises the first 5 routed models, so this picks which 5 appear.
    */
   subagentModels?: string[];
+  /**
+   * Priority-ordered fallback models for spawned sub-agents. When the requested
+   * model is quota-exhausted or recently failed, opencodex rewrites the child
+   * turn to the next available entry before routing.
+   */
+  subagentModelFallback?: string[];
+  /**
+   * TTL (ms) for cached sub-agent model availability probes. Default 60_000.
+   */
+  subagentModelFallbackPollMs?: number;
   injectionModel?: string;
   /**
    * Optional reasoning effort the delegation prompt tells the agent to pass in spawn_agent calls
@@ -455,6 +507,16 @@ export interface OcxConfig {
    * the Codex ladder (src/reasoning-effort.ts CODEX_REASONING_LEVELS) at the API boundary.
    */
   injectionEffort?: string;
+  /**
+   * Model ids the user has EXCLUDED from the Grok Build managed block. Absent or empty
+   * means "everything visible", which is the historical behaviour — so an existing
+   * config keeps the fence it already had.
+   *
+   * Exclusion list rather than an inclusion list on purpose: a newly added provider
+   * model should appear in Grok by default, exactly as it does today. An inclusion list
+   * would silently hide every future model behind a switch nobody knew to flip.
+   */
+  grokExcludedModels?: string[];
   /**
    * When true, OpenAI-routed requests include `service_tier: "priority"` (fast inference).
    * When false, service_tier is stripped so requests use default speed.
@@ -475,7 +537,8 @@ export interface OcxConfig {
    * <multi_agent_mode> tags). When set, it replaces the built-in prompt on whichever
    * collab surface would have fired; firing gates are unchanged. Placeholders:
    * `{{model}}` -> injectionModel, `{{effort}}` -> injectionEffort, `{{roster}}` ->
-   * the resolved sub-agent roster block ("" when nothing resolves).
+   * the resolved sub-agent roster block ("" when nothing resolves), `{{fallback}}` ->
+   * the configured subagent model fallback guidance block ("" when unset).
    */
   injectionPrompt?: string;
   /**
@@ -875,7 +938,12 @@ export interface OcxProviderConfig {
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
   preserveReasoningContentModels?: string[];
   /**
-   * Model ids whose reasoning is a vendor `thinking: {type: enabled|disabled}` toggle on the
+   * Model ids whose OpenAI-compatible chat endpoint accepts `reasoning_split: true` and returns
+   * thinking separately in `reasoning_content` / `reasoning_details` instead of visible content.
+   */
+  reasoningSplitModels?: string[];
+  /**
+   * Model ids whose reasoning is a vendor `thinking: {type}` toggle on the
    * chat-completions wire (MiMo v2.x, GLM 5/5.1 style), NOT an OpenAI `reasoning_effort` ladder.
    * The openai-chat adapter translates the mapped effort into the thinking toggle for these.
    */

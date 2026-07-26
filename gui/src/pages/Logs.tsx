@@ -8,11 +8,8 @@ import { modelLabel } from "../model-display";
 import { EmptyState, Notice } from "../ui";
 import Debug from "./Debug";
 
-type LogsTab = "logs" | "debug";
-
-function readTabFromHash(): LogsTab {
-  return window.location.hash.replace(/^#\/?/, "") === "logs/debug" ? "debug" : "logs";
-}
+import type { LogsTab } from "./logs-tab-keydown";
+import { logsTabKeyDown, readTabFromHash, selectLogsTab } from "./logs-tab-keydown";
 
 interface UsageBreakdown {
   inputTokens: number;
@@ -268,14 +265,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const selectTab = (next: LogsTab) => {
-    window.location.hash = next === "debug" ? "logs/debug" : "logs";
-  };
-
-  const onTabKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowLeft" || e.key === "Home") { e.preventDefault(); selectTab("logs"); document.getElementById("logs-tab-logs")?.focus(); }
-    else if (e.key === "ArrowRight" || e.key === "End") { e.preventDefault(); selectTab("debug"); document.getElementById("logs-tab-debug")?.focus(); }
-  };
+  const selectTab = selectLogsTab;
 
   const fetchLogs = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent === true;
@@ -345,7 +335,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           tabIndex={tab === "logs" ? 0 : -1}
           className={`page-tab${tab === "logs" ? " page-tab--active" : ""}`}
           onClick={() => selectTab("logs")}
-          onKeyDown={onTabKeyDown}
+          onKeyDown={logsTabKeyDown}
         >
           {t("logs.tabLogs")}
         </button>
@@ -358,7 +348,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           tabIndex={tab === "debug" ? 0 : -1}
           className={`page-tab${tab === "debug" ? " page-tab--active" : ""}`}
           onClick={() => selectTab("debug")}
-          onKeyDown={onTabKeyDown}
+          onKeyDown={logsTabKeyDown}
         >
           {t("logs.tabDebug")}
         </button>
@@ -655,7 +645,7 @@ function LogDetailDialog({
                   <th className="num">{t("logs.col.estimatedCost")}</th>
                   <th>{t("logs.detail.attempt.reason")}</th>
                 </tr></thead>
-                <tbody>{[...detail.attempts].sort((a, b) => a.ordinal - b.ordinal).map(attempt => {
+                <tbody>{detail.attempts.toSorted((a, b) => a.ordinal - b.ordinal).map(attempt => {
                   const attemptCost = attempt.displayMetrics?.cost;
                   const matched = attemptCost?.kind === "value" ? attemptCost.estimate.price : undefined;
                   const reason = attempt.errorCode

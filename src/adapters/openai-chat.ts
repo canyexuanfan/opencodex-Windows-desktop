@@ -2,6 +2,9 @@ import type { ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
+import { debugProviderDiagnostic } from "../lib/debug";
+import { isDebugEnabled } from "../lib/debug-settings";
+import { isCyberPolicyCode } from "../lib/errors";
 import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
@@ -522,6 +525,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         messages,
         stream: parsed.stream,
       };
+      if (modelInList(provider.reasoningSplitModels, parsed.modelId)) body.reasoning_split = true;
       const maxTokens = resolveMaxTokens(provider, parsed);
       const openRouterRouting = resolveOpenRouterRouting(provider, parsed.modelId);
       if (openRouterRouting) body.provider = openRouterProviderPayload(openRouterRouting);
@@ -545,9 +549,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           const budget = thinkingBudgetForEffort(parsed, reasoningEffort, maxTokens);
           if (budget !== undefined) body.thinking_budget = budget;
         } else if (modelInList(provider.thinkingToggleModels, parsed.modelId)) {
-          // Vendor thinking-toggle wire (MiMo v2.x, GLM 5/5.1): the mapped value is the toggle
-          // state, sent as `thinking: {type}` — these models ignore/reject reasoning_effort.
-          if (reasoningEffort === "enabled" || reasoningEffort === "disabled") {
+          // Vendor thinking-toggle wire: the mapped value is sent as `thinking: {type}` because
+          // these models ignore/reject reasoning_effort. Most use enabled/disabled; MiniMax-M3
+          // uses adaptive/disabled.
+          if (reasoningEffort === "enabled" || reasoningEffort === "disabled" || reasoningEffort === "adaptive") {
             body.thinking = { type: reasoningEffort };
           }
         } else {
@@ -588,7 +593,24 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
 
-      return { url, method: "POST", headers, body: JSON.stringify(body) };
+      const bodyJson = JSON.stringify(body);
+      // Never log pathname/query — tenant-scoped hosts (e.g. Cloudflare
+      // /accounts/<account_id>/ai/v1) would otherwise leak account identifiers (#452).
+      if (isDebugEnabled()) {
+        let host = "upstream";
+        try { host = new URL(url).host; } catch { /* keep fallback */ }
+        debugProviderDiagnostic("openai-chat", "request", {
+          host,
+          model: body.model,
+          stream: parsed.stream,
+          messageCount: Array.isArray(messages) ? messages.length : 0,
+          toolCount: Array.isArray(tools) ? tools.length : 0,
+          hasCredential,
+          bodyBytes: new TextEncoder().encode(bodyJson).length,
+        });
+      }
+
+      return { url, method: "POST", headers, body: bodyJson };
     },
 
     async *parseStream(response: Response): AsyncGenerator<AdapterEvent> {
@@ -657,9 +679,21 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // instead of a clean [DONE]. Surface it as a terminal error so the bridge emits a
         // classified response.failed (bridge case "error") — never a truncated completion.
         if (chunk.error) {
-          const err = chunk.error as { message?: string } | undefined;
+          const err = chunk.error as { message?: string; code?: string; type?: string; status?: number } | undefined;
+          const message = err?.message ?? "upstream error";
+          debugProviderDiagnostic("openai-chat", "stream-error", { message });
           yield* flushToolCalls();
-          yield { type: "error", message: err?.message ?? "upstream error" };
+          yield {
+            type: "error",
+            message,
+            ...(typeof err?.code === "string" ? { code: err.code } : {}),
+            ...(typeof err?.type === "string" ? { errorType: err.type } : {}),
+            ...(isCyberPolicyCode(err?.code)
+              ? { status: 400 }
+              : typeof err?.status === "number" && Number.isInteger(err.status)
+                ? { status: err.status }
+                : {}),
+          };
           return "terminate";
         }
 
@@ -679,12 +713,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         const delta = choices[0].delta;
         if (delta) {
-          if (typeof delta.content === "string" && delta.content.length > 0) {
-            yield { type: "text_delta", text: delta.content };
-          }
-
           if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
             yield { type: "reasoning_raw_delta", text: delta.reasoning_content };
+          }
+          if (typeof delta.content === "string" && delta.content.length > 0) {
+            yield { type: "text_delta", text: delta.content };
           }
 
           const toolCalls = delta.tool_calls as { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] | undefined;
@@ -748,6 +781,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // closed so the bridge emits a classified response.failed rather than a silent truncation.
         const sawFinish = finishReason !== undefined;
         if (!sawFinish && pendingUsage === undefined) {
+          debugProviderDiagnostic("openai-chat", "stream-truncated", {
+            finishReason: finishReason ?? null,
+            hadUsage: false,
+          });
           yield { type: "error", message: "upstream stream ended without a terminal signal ([DONE] or finish_reason) — possible truncation" };
           return;
         }
@@ -766,10 +803,21 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const json = await response.json() as Record<string, unknown>;
       if (json.error) {
-        const upstreamError = json.error as { message?: unknown };
+        const upstreamError = json.error as { message?: unknown; code?: unknown; type?: unknown; status?: unknown };
+        const message = typeof upstreamError.message === "string" ? upstreamError.message : "upstream error";
+        const code = typeof upstreamError.code === "string" ? upstreamError.code : undefined;
+        const errorType = typeof upstreamError.type === "string" ? upstreamError.type : undefined;
+        const status = isCyberPolicyCode(code)
+          ? 400
+          : typeof upstreamError.status === "number" && Number.isInteger(upstreamError.status)
+            ? upstreamError.status
+            : undefined;
         return [{
           type: "error",
-          message: typeof upstreamError.message === "string" ? upstreamError.message : "upstream error",
+          message,
+          ...(code !== undefined ? { code } : {}),
+          ...(errorType !== undefined ? { errorType } : {}),
+          ...(status !== undefined ? { status } : {}),
         }];
       }
 
@@ -780,11 +828,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
 
       const msg = choices[0].message;
-      if (typeof msg.content === "string") {
-        events.push({ type: "text_delta", text: msg.content });
-      }
       if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
         events.push({ type: "reasoning_raw_delta", text: msg.reasoning_content });
+      }
+      if (typeof msg.content === "string") {
+        events.push({ type: "text_delta", text: msg.content });
       }
       const toolCalls = msg.tool_calls as { id: string; function: { name: string; arguments: string } }[] | undefined;
       if (toolCalls) {

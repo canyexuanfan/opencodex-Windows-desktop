@@ -40,7 +40,13 @@ beforeEach(() => {
     configurable: true,
     value: async (url: string, init?: RequestInit) => {
       requests.push({ url: String(url), init });
-      return { ok: true, json: async () => ({ available, chosen }) } as unknown as Response;
+      const body = JSON.stringify({ available, chosen });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => body,
+        json: async () => ({ available, chosen }),
+      } as unknown as Response;
     },
   });
 

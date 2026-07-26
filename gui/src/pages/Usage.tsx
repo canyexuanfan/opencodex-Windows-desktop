@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
+import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters";
 import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
 
 type Range = "all" | "30d" | "7d";
-type UsageSurface = "all" | "codex" | "claude";
+type UsageSurface = "all" | "codex" | "claude" | "grok";
 
 interface UsageSummaryTotals {
   requests: number;
@@ -82,14 +83,6 @@ interface UsageResponse {
 
 function formatPct(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
-}
-
-function formatEstimatedUsdValue(value: number, locale: Locale): string {
-  if (!Number.isFinite(value) || value < 0) return "\u2014";
-  return `~$${new Intl.NumberFormat(locale, {
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
-  }).format(value)}`;
 }
 
 // Stable per-model bar color: hash the provider/model id to a hue so the same model keeps its color
@@ -214,7 +207,7 @@ function UsageFilters({
   return (
     <div className="usage-filters">
       <div className="usage-segmented" role="group" aria-label={t("logs.filter.surface.label")}>
-        {(["all", "codex", "claude"] as UsageSurface[]).map(choice => {
+        {(["all", "codex", "claude", "grok"] as UsageSurface[]).map(choice => {
           const label = t(`logs.filter.surface.${choice}`);
           return (
             <button
@@ -230,6 +223,9 @@ function UsageFilters({
               )}
               {choice === "claude" && (
                 <img className="usage-source-mark" src="/provider-icons/claude.svg" alt="" aria-hidden="true" />
+              )}
+              {choice === "grok" && (
+                <img className="usage-source-mark" src="/provider-icons/grok.svg" alt="" aria-hidden="true" />
               )}
               <span className={choice === "all" ? "usage-source-label" : "usage-source-label usage-source-label-collapsible"}>
                 {label}
@@ -292,7 +288,7 @@ function UsageSummaryCards({
         <div className="usage-cost-row" role="note">
           <span className="muted">{t("usage.cost.total")}</span>
           <span className="stat-value mono usage-cost-value">
-            {formatEstimatedUsdValue(summary.estimatedCostUsd, locale)}
+            {formatUsdEstimate(summary.estimatedCostUsd, locale)}
           </span>
           <span className="muted text-caption">{t("usage.cost.disclaimer")}</span>
           {((summary.unpricedRequests ?? 0) + (summary.unmeteredRequests ?? 0)) > 0 && (
@@ -592,23 +588,27 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
+  const loadGenerationRef = useRef(0);
 
   const fetchUsage = useCallback(async (nextRange: Range, nextSurface: UsageSurface, signal: AbortSignal) => {
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     setError(null);
     try {
       const res = await fetch(`${apiBase}/api/usage?range=${nextRange}&surface=${nextSurface}`, { signal });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
       const json = await res.json() as UsageResponse;
-      if (signal.aborted) return;
+      if (signal.aborted || generation !== loadGenerationRef.current) return;
       setData(json);
     } catch (cause) {
       // A stale request (range/apiBase changed, or unmount) must not overwrite newer state.
-      if (signal.aborted) return;
+      if (signal.aborted || generation !== loadGenerationRef.current) return;
       const detail = cause instanceof Error ? cause.message : "";
       setError(detail ? `${t("usage.loadError")} ${detail}` : t("usage.loadError"));
     } finally {
-      if (!signal.aborted) setLoading(false);
+      // Only the current request may clear loading — a superseded abort must not
+      // settle the UI while a newer fetch is still in flight.
+      if (generation === loadGenerationRef.current) setLoading(false);
     }
   }, [apiBase, t]);
 
@@ -619,6 +619,9 @@ export default function Usage({ apiBase }: { apiBase: string }) {
     }, 0);
     return () => {
       window.clearTimeout(timeout);
+      // Invalidate before abort so a superseded request's finally cannot clear
+      // loading in the gap before the deferred replacement increments generation.
+      loadGenerationRef.current += 1;
       controller.abort();
     };
   }, [fetchUsage, range, surface]);
@@ -629,7 +632,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const filteredModels = useMemo(() => {
     const q = modelQuery.trim().toLowerCase();
     const models = data?.models ?? [];
-    const sorted = [...models].sort((a, b) => b.totalTokens - a.totalTokens);
+    const sorted = models.toSorted((a, b) => b.totalTokens - a.totalTokens);
     if (!q) return sorted.slice(0, 100);
     return sorted.filter(m =>
       m.model.toLowerCase().includes(q) ||
@@ -639,7 +642,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   }, [data?.models, modelQuery]);
 
   const sortedProviders = useMemo(() =>
-    [...(data?.providers ?? [])].sort((a, b) => b.totalTokens - a.totalTokens),
+    (data?.providers ?? []).toSorted((a, b) => b.totalTokens - a.totalTokens),
     [data?.providers],
   );
 

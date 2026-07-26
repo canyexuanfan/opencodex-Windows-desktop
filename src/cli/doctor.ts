@@ -7,14 +7,15 @@
  * it never sets proxy env, relocates state dirs, mutates quota, or changes
  * networking. See devlog/_plan/260630_wsl-account-autoswitch/30_*.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, readRuntimePort, resolveEnvValue } from "../config";
 import { gracefulStopHost } from "../lib/process-control";
+import { maskAccountId } from "../lib/privacy";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
 import { readCodexTokens } from "../codex/auth-collision";
-import { resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
+import { collectOrcaCodexHomeDiagnostic, resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 import { collectProjectCodexConfigWarnings, formatProjectCodexConfigWarningsForDoctor } from "../codex/project-config-warnings";
@@ -26,7 +27,144 @@ import {
   resolveAndPersistCodexRuntime,
   resolveCodexRuntime,
 } from "../codex/runtime";
+import { CODEX_REAUTH_ACTION, collectOAuthHealthEntriesForCli, MASKED_ACCOUNT_FALLBACK, type OAuthHealthEntry } from "../oauth/health";
+import { getAuthRefreshIntentLockPath, getAuthStorePath } from "../oauth/store";
 export { resolveCodexHomeDir } from "../codex/home";
+
+export type OAuthDoctorCheck = { level: "OK" | "WARN"; message: string };
+
+function pathIsWritable(path: string): boolean {
+  try {
+    // Directories need execute/search as well as write for create+rename.
+    accessSync(path, constants.W_OK | constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Observe-only: can we atomically replace auth.json (sibling tmp + rename)? */
+function isOAuthCredentialStorageWritable(): boolean {
+  const storePath = getAuthStorePath();
+  const dir = existsSync(storePath) ? dirname(storePath) : getConfigDir();
+  if (existsSync(dir)) return pathIsWritable(dir);
+  // Config dir missing: check nearest existing ancestor (no mkdir — observe-only).
+  let parent = dirname(dir);
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(parent)) return pathIsWritable(parent);
+    const next = dirname(parent);
+    if (next === parent) break;
+    parent = next;
+  }
+  return false;
+}
+
+/** Observe-only: refresh lock paths resolve and their parent dir is writable. */
+function isOAuthRefreshSingleFlightReady(): boolean {
+  try {
+    const sample = getAuthRefreshIntentLockPath("doctor-probe", "probe-account");
+    if (!sample.includes("auth.refresh.")) return false;
+    const dir = getConfigDir();
+    if (existsSync(dir)) return pathIsWritable(dir);
+    return isOAuthCredentialStorageWritable();
+  } catch {
+    return false;
+  }
+}
+
+function actionForDoctorEntry(entry: OAuthHealthEntry): string {
+  if (entry.action) return entry.action;
+  if (entry.provider === "codex") {
+    return CODEX_REAUTH_ACTION;
+  }
+  if (entry.health.status === "warning" && entry.health.reason === "stale_credentials") {
+    return `run \`ocx login ${entry.provider}\``;
+  }
+  if (entry.health.status === "warning" && entry.health.reason === "metadata_mismatch") {
+    return `run \`ocx login ${entry.provider}\` to refresh credentials`;
+  }
+  return `run \`ocx doctor\` again after fixing OAuth state for ${entry.provider}`;
+}
+
+function describeDoctorHealth(entry: OAuthHealthEntry): string {
+  const masked = maskAccountId(entry.accountId) ?? MASKED_ACCOUNT_FALLBACK;
+  const health = entry.health;
+  switch (health.status) {
+    case "reauth_required":
+      return `Account ${masked} requires reauthentication`;
+    case "cooldown":
+      return health.reason === "rate_limit"
+        ? `Account ${masked} is rate limited until ${health.until}`
+        : `Account ${masked} is quota limited until ${health.until}`;
+    case "warning":
+      switch (health.reason) {
+        case "refresh_conflict":
+          return `Account ${masked} has a refresh conflict`;
+        case "metadata_mismatch":
+          return `Account ${masked} has a metadata mismatch`;
+        case "stale_credentials":
+          return `Account ${masked} has incomplete credentials`;
+      }
+    case "healthy":
+      return `Account ${masked} is healthy`;
+  }
+}
+
+/**
+ * OAuth reliability checks for `ocx doctor`. Observe-only: never mutates
+ * credentials, locks, or networking. Every WARN includes a recovery Action.
+ */
+export async function collectOAuthDoctorChecks(
+  now = Date.now(),
+  deps: Parameters<typeof collectOAuthHealthEntriesForCli>[1] = {},
+): Promise<OAuthDoctorCheck[]> {
+  const checks: OAuthDoctorCheck[] = [];
+
+  if (isOAuthCredentialStorageWritable()) {
+    checks.push({ level: "OK", message: "OAuth credential storage directory is writable for atomic auth.json updates." });
+  } else {
+    checks.push({
+      level: "WARN",
+      message:
+        "OAuth credential storage directory is not writable. Action: fix permissions on OPENCODEX_HOME so ocx can create temp files and rename auth.json",
+    });
+  }
+
+  if (isOAuthRefreshSingleFlightReady()) {
+    checks.push({ level: "OK", message: "Token refresh single-flight is active." });
+  } else {
+    checks.push({
+      level: "WARN",
+      message:
+        "Token refresh single-flight is unavailable. Action: fix permissions on OPENCODEX_HOME so ocx can create refresh lock files",
+    });
+  }
+
+  const report = await collectOAuthHealthEntriesForCli(now, deps);
+  if (report.codexHealthSource === "unavailable") {
+    checks.push({
+      level: "WARN",
+      message:
+        "Codex account health unavailable (proxy not running). Action: start the proxy and re-run `ocx doctor` to inspect live cooldown/reauth",
+    });
+  }
+  for (const entry of report.entries) {
+    if (entry.health.status === "healthy") continue;
+    const action = actionForDoctorEntry(entry);
+    checks.push({
+      level: "WARN",
+      message: `${describeDoctorHealth(entry)}. Action: ${action}`,
+    });
+  }
+
+  // Build-time / architecture note — not a runtime fabrication scanner.
+  checks.push({
+    level: "OK",
+    message: "Codex forward path uses pass-through client metadata (build-time invariant; not a runtime scan).",
+  });
+
+  return checks;
+}
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const PROBE_TIMEOUT_MS = 8000;
@@ -441,6 +579,23 @@ export function formatServiceMemoryLines(report: ServiceMemoryReport): string[] 
   return lines;
 }
 
+/**
+ * Actionable hint for the most common confusion: Codex/Claude clients fail with raw
+ * connection errors (e.g. "error sending request for url (http://127.0.0.1:10100/...)")
+ * when the proxy is simply not running. Returns null when a live proxy was found.
+ */
+export function proxyDownRestartHint(input: {
+  proxyRunning: boolean;
+  port: number;
+  serviceViable: boolean;
+}): string | null {
+  if (input.proxyRunning) return null;
+  const restart = input.serviceViable
+    ? "Restart it with 'ocx service start' (service installed) or 'ocx start'."
+    : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
+  return `The ocx proxy is not running. Codex/Claude clients pinned to 127.0.0.1:${input.port} fail with errors like "error sending request for url (http://127.0.0.1:${input.port}/v1/responses)". ${restart}`;
+}
+
 export async function runDoctor(args: string[] = []): Promise<void> {
   if (args.includes("--fix-codex-runtime")) {
     const resolved = resolveCodexRuntime();
@@ -481,7 +636,18 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     console.log(`  ${row.exists ? "ok " : "-- "} ${row.label}: ${row.path}${flags ? `  (${flags})` : ""}`);
   }
 
-  const startup = collectStartupHealth(readConfigDiagnostics().config);
+  const orcaHome = collectOrcaCodexHomeDiagnostic();
+  console.log("\nCodex app home targeting");
+  console.log(`  ${orcaHome.mismatch ? "!! " : "ok "} Effective Codex home: ${orcaHome.effectiveCodexHome}`);
+  if (orcaHome.mismatch) {
+    console.log(`  !!  ${orcaHome.warning}`);
+    console.log(`      Action: ${orcaHome.action}`);
+  } else {
+    console.log("      No Orca-owned CODEX_HOME mismatch detected.");
+  }
+
+  const doctorConfig = readConfigDiagnostics().config;
+  const startup = collectStartupHealth(doctorConfig);
   console.log("\nCodex restart safety");
   console.log(`  ${startup.rebootSafe ? "ok " : "!! "} ${startupHealthSummary(startup)}`);
   console.log(`       routing=${startup.routingKind}, service=${startup.serviceViable ? "viable" : startup.serviceInstalled ? "installed-but-unhealthy" : "absent"}, shim=${startup.shimHealthy ? "healthy" : startup.shimInstalled ? "stale" : "absent"}`);
@@ -542,10 +708,13 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   // #314: service-process memory/runtime identity via the authed management
   // endpoint. readPid() FIRST (liveness), then the pid-scoped runtime record —
   // readRuntimePort alone can serve a stale file pointing at a foreign port.
+  // Hoisted out of the block below: the Hints section reuses the same liveness pair
+  // for the proxy-down restart hint.
+  const livePid = readPid();
+  const liveRuntime = livePid ? readRuntimePort(livePid) : null;
   console.log("\nMemory / runtime");
   {
-    const livePid = readPid();
-    const runtime = livePid ? readRuntimePort(livePid) : null;
+    const runtime = liveRuntime;
     if (!runtime) {
       console.log(`  --     doctor process Bun ${Bun.version} (this is NOT the service process)`);
       console.log("  --     no running ocx proxy found (no live pid/runtime record)");
@@ -600,8 +769,20 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     }
   }
 
+  // OAuth reliability: observe-only (no mutations / auto-repair).
+  console.log("\nOAuth reliability");
+  for (const check of await collectOAuthDoctorChecks()) {
+    console.log(`  [${check.level}] ${check.message}`);
+  }
+
   // Hints, not fixes.
   const hints: string[] = [];
+  const proxyDown = proxyDownRestartHint({
+    proxyRunning: Boolean(livePid && liveRuntime),
+    port: doctorConfig.port ?? 10100,
+    serviceViable: startup.serviceViable,
+  });
+  if (proxyDown) hints.push(proxyDown);
   const anyDrvfs = paths.some(p => detectFsType(p.path, mounts).isDrvfs || detectFsType(p.path, mounts).isMntDrive);
   const noProxy = currentProxyEnv.every(p => !p.present) && !configuredProxy.present;
   if (!startup.rebootSafe) {

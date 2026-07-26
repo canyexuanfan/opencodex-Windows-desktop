@@ -151,7 +151,14 @@ describe("system environment injection", () => {
     launchctlBaseUrl = "http://127.0.0.1:4567";
     mockAuthTokenGetenv("opencodex-proxy");
 
-    expect(await injectSystemEnv(4567, baseConfig)).toEqual({ injected: true });
+    // EXPLICIT subscription, not auto: this asserts the switch-back strip, and under
+    // auto the resolver would read the real machine's Claude auth and could legitimately
+    // decide proxy (devlog 260726_claude_auth_auto/040).
+    const subscription = {
+      ...baseConfig,
+      claudeCode: { systemEnv: true, authMode: "subscription" },
+    } as unknown as OcxConfig;
+    expect(await injectSystemEnv(4567, subscription)).toEqual({ injected: true });
     expect(execSpy.mock.calls.map(call => call[0])).toContain("launchctl unsetenv ANTHROPIC_AUTH_TOKEN");
     expect(JSON.parse(trackingFile!).injectedKeys).not.toContain("ANTHROPIC_AUTH_TOKEN");
   });

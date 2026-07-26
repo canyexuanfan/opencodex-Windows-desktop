@@ -94,6 +94,12 @@ WSL では `CODEX_HOME` がなく Linux 側 `~/.codex/config.toml` もないと�
 ちょうど一つならそのディレクトリを使い、WSL app-server モードと Windows Codex Desktop が同じ config と
 auth ファイルを共有します。この検出を上書きするには `CODEX_HOME` を明示してください。
 
+Windows の Orca シェルは `CODEX_HOME` と `ORCA_CODEX_HOME` を Orca のバンドル runtime home に
+設定することがありますが、ChatGPT/Codex App は引き続き `%USERPROFILE%\\.codex` を読みます。
+`ocx status` と `ocx doctor` はこの正確な不一致を検出し、ユーザーパスをマスクして対象 home を表示します。
+その Orca シェルからバックグラウンドサービスをインストールした場合は、まず元のシェルでサービスを削除し、
+App home を `CODEX_HOME` に設定して `ORCA_CODEX_HOME` を解除した後、同期/復元とサービスインストールをやり直してください。
+
 専用プロバイダーモードの `requires_openai_auth = true` は Codex App/TUI のアカウントゲート UI がネイティブ
 Codex と同じ条件で動作するようにします。opencodex は `/v1/responses` WebSocket も提供します。専用
 プロバイダーは `"websockets": true` のときのみ `supports_websockets = true` を宣言します。ループバックでは
@@ -124,6 +130,20 @@ Codex はディスクのカタログ(デフォルト `$CODEX_HOME/opencodex-cata
 ルーティングされたカタログ項目の GPT-5 アイデンティティ文言も実際の上流モデル名に合わせます。推論選択肢は
 プロバイダーとモデルメタデータに応じて Codex の `low | medium | high | xhigh | max | ultra` 段階を使い、
 上流がサポートしない値はリクエスト送信前にマッピングまたはサポート範囲に下げます。
+
+## プロキシ接続エラー
+
+Codex がリトライの末に `stream disconnected before completion: error sending request for url (http://127.0.0.1:10100/v1/responses)`
+のようなエラーを出す場合(Claude Code で同様の接続失敗が出る場合も同じ)、opencodex プロキシが起動していません。
+設定ポートにリスナーがないため、クライアントが生の接続エラーをそのまま表示します。プロキシを再起動してください:
+
+```bash
+ocx start              # フォアグラウンド
+ocx service install    # 常駐: ログイン時に自動起動し、クラッシュ時に自動再起動
+```
+
+`ocx status` はプロキシの稼働状態を表示し、停止時には同じ再起動ヒントも表示します。
+`ocx doctor` は再起動の安全性(サービス/シムのカバレッジ)を報告します。
 
 ## サブエージェントピッカー
 

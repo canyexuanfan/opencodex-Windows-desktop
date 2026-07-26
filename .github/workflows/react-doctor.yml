@@ -50,7 +50,7 @@ jobs:
           directory: gui
           # Pin the npm engine — the action wrapper would otherwise fetch
           # react-doctor@latest, silently skewing CI from the local pinned runs.
-          version: "0.7.8"
+          version: "0.9.1"
           # Advisory contract: report to the step log only; never gate, never write.
           blocking: none
           comment: false

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { AccountLoadState } from "../components/provider-workspace/types";
+import { accountNeedsReauth } from "../oauth-health-display";
 import { oauthAccountDisplayLabel } from "../provider-workspace/auth";
 
 export interface Config {
@@ -9,8 +10,33 @@ export interface Config {
 }
 
 export interface OAuthStatus { loggedIn: boolean; email?: string; error?: string; done?: boolean; needsReauth?: boolean; activeAccountId?: string | null }
-export interface OAuthAccount { id: string; alias?: string; email?: string; active: boolean; needsReauth?: boolean; expiresAt?: number }
+export interface OAuthAccount {
+  id: string;
+  alias?: string;
+  email?: string;
+  active: boolean;
+  needsReauth?: boolean;
+  expiresAt?: number;
+  health?: { status: "healthy" | "cooldown" | "reauth_required" | "warning"; reason?: string; until?: string };
+  healthLabel?: string;
+  healthSummary?: string;
+  healthAction?: string;
+}
 export interface ApiKeyEntry { id: string; label?: string; masked: string; active: boolean }
+
+/** Pure aggregate map used by Providers overview / rail attention state. */
+export function buildActiveAccountNeedsReauthMap(
+  accountSets: Record<string, { activeAccountId: string | null; accounts: OAuthAccount[] }>,
+  codexActiveNeedsReauth = false,
+): Record<string, boolean> {
+  const map: Record<string, boolean> = {};
+  for (const [provider, set] of Object.entries(accountSets)) {
+    const active = set.accounts.find(a => a.active) ?? set.accounts.find(a => a.id === set.activeAccountId);
+    if (accountNeedsReauth(active)) map[provider] = true;
+  }
+  if (codexActiveNeedsReauth) map.openai = true;
+  return map;
+}
 
 export function useProviderAccountPools(deps: {
   apiBase: string;
@@ -67,7 +93,7 @@ export function useProviderAccountPools(deps: {
 
   const fetchKeyPools = useCallback(async (providers: string[]) => {
     const entries = await Promise.all(providers.map(async name => {
-      const data = await fetch(`${apiBase}/api/providers/keys?name=${encodeURIComponent(name)}`).then(r => r.json()).catch(() => null) as { keys?: ApiKeyEntry[] } | null;
+      const data = await fetch(`${apiBase}/api/providers/keys?name=${encodeURIComponent(name)}`).then(async r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); }).catch(() => null) as { keys?: ApiKeyEntry[] } | null;
       return [name, data?.keys ?? []] as const;
     }));
     setKeyPools(Object.fromEntries(entries));
@@ -125,18 +151,18 @@ export function useProviderAccountPools(deps: {
     if (!key) return false;
     try {
       const res = await fetch(`${apiBase}/api/providers/keys`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: provider, key }) });
-      if (res.ok) {
-        notify(t("prov.keyAdded", { name: provider }), true);
-        setAddingKeyFor(null);
-        await Promise.all([
-          fetchKeyPools(Object.keys(keyPools).includes(provider) ? Object.keys(keyPools) : [...Object.keys(keyPools), provider]),
-          fetchConfig(), fetchProviderQuotas(true),
-        ]);
-        return true;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        notify(data.error || t("prov.keyAddFail"), false);
+        return false;
       }
-      const data = await res.json().catch(() => ({})) as { error?: string };
-      notify(data.error || t("prov.keyAddFail"), false);
-      return false;
+      notify(t("prov.keyAdded", { name: provider }), true);
+      setAddingKeyFor(null);
+      await Promise.all([
+        fetchKeyPools(Object.keys(keyPools).includes(provider) ? Object.keys(keyPools) : [...Object.keys(keyPools), provider]),
+        fetchConfig(), fetchProviderQuotas(true),
+      ]);
+      return true;
     } catch {
       notify(t("prov.keyAddFail"), false);
       return false;
@@ -200,15 +226,10 @@ export function useProviderAccountPools(deps: {
     return () => window.clearTimeout(timeout);
   }, [fetchKeyPools, keyCardProviders]);
 
-  const activeAccountNeedsReauth = useMemo(() => {
-    const map: Record<string, boolean> = {};
-    for (const [provider, set] of Object.entries(accountSets)) {
-      const active = set.accounts.find(a => a.active) ?? set.accounts.find(a => a.id === set.activeAccountId);
-      if (active?.needsReauth) map[provider] = true;
-    }
-    if (codexActiveNeedsReauth) map.openai = true;
-    return map;
-  }, [accountSets, codexActiveNeedsReauth]);
+  const activeAccountNeedsReauth = useMemo(
+    () => buildActiveAccountNeedsReauthMap(accountSets, codexActiveNeedsReauth),
+    [accountSets, codexActiveNeedsReauth],
+  );
 
   return {
     accountSets, accountLoadStates, switchingAccount, openAccounts, keyPools, addingKeyFor, newKeyValue,

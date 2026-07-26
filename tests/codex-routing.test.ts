@@ -9,6 +9,7 @@ import {
   CODEX_THREAD_AFFINITY_MAX_ENTRIES,
   CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS,
   classifyCodexUpstreamOutcome,
+  clearCodexAccountCooldown,
   clearCodexUpstreamHealth,
   clearCodexUpstreamHealthForAccount,
   clearThreadAccountMap,
@@ -447,6 +448,82 @@ describe("codex routing", () => {
     expect(tryAcquireCodexQuotaProbeLease("a", probeAt + 100 + CODEX_QUOTA_PROBE_INTERVAL_MS)).toBeNull();
   });
 
+  // --- manual cooldown escape (260726 lockout hardening) ----------------------
+
+  test("clearCodexAccountCooldown lifts a live cooldown but keeps failure history", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "7200", now });
+    expect(isCodexAccountInCooldown("a", now + 1_000)).toBe(true);
+
+    expect(clearCodexAccountCooldown("a", now + 1_000)).toBe(true);
+
+    expect(isCodexAccountInCooldown("a", now + 1_000)).toBe(false);
+    const health = getCodexUpstreamHealth("a");
+    expect(health?.cooldownUntil).toBeUndefined();
+    expect(health?.cooldownSource).toBeUndefined();
+    // Clearing says "the quota window moved", not "this account is healthy":
+    // failover must keep what it learned from the 429.
+    expect(health?.lastFailureStatus).toBe(429);
+  });
+
+  test("clearing is a no-op without a live cooldown", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    expect(clearCodexAccountCooldown("a", now)).toBe(false);
+
+    recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "60", now });
+    // Already expired on its own.
+    expect(clearCodexAccountCooldown("a", now + 120_000)).toBe(false);
+  });
+
+  test("manual clearing releases the in-flight lease, so a stale probe cannot erase the NEXT cooldown", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    const resetAt = Math.floor((now + 4 * 24 * 60 * 60_000) / 1000);
+    recordCodexUpstreamOutcome(config, "a", 429, { resetAt, now });
+    const probeAt = now + CODEX_QUOTA_PROBE_INTERVAL_MS;
+    const staleLease = tryAcquireCodexQuotaProbeLease("a", probeAt)!;
+
+    // User lifts the cooldown while that probe is still in flight. The lease is dropped
+    // with it, so the stale probe no longer owns anything.
+    expect(clearCodexAccountCooldown("a", probeAt + 10)).toBe(true);
+    expect(getCodexUpstreamHealth("a")?.probeLeaseId).toBeUndefined();
+
+    // Upstream is still exhausted, so the next request re-cools the account.
+    recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "7200", now: probeAt + 20 });
+    // The stale probe finally returns 200. It must not void the new limit.
+    recordCodexUpstreamOutcome(config, "a", 200, { now: probeAt + 30, probeLeaseId: staleLease });
+
+    expect(isCodexAccountInCooldown("a", probeAt + 30)).toBe(true);
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ cooldownSource: "retry-after" });
+  });
+
+  test("a stale probe cannot void a later cooldown even while a fresh probe is live", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    const resetAt = Math.floor((now + 4 * 24 * 60 * 60_000) / 1000);
+    recordCodexUpstreamOutcome(config, "a", 429, { resetAt, now });
+    const probeAt = now + CODEX_QUOTA_PROBE_INTERVAL_MS;
+    const staleLease = tryAcquireCodexQuotaProbeLease("a", probeAt)!;
+
+    expect(clearCodexAccountCooldown("a", probeAt + 10)).toBe(true);
+    recordCodexUpstreamOutcome(config, "a", 429, { resetAt, now: probeAt + 20 });
+    // A fresh probe is granted against the NEW cooldown, so the account holds a lease again.
+    const freshAt = probeAt + 20 + CODEX_QUOTA_PROBE_INTERVAL_MS;
+    const freshLease = tryAcquireCodexQuotaProbeLease("a", freshAt)!;
+    expect(freshLease).not.toBe(staleLease);
+
+    // The STALE probe reports success. Lease-id mismatch is what must hold here (the
+    // generation guard is redundant defence): otherwise manual clearing would become a
+    // way to void a later limit.
+    recordCodexUpstreamOutcome(config, "a", 200, { now: freshAt + 100, probeLeaseId: staleLease });
+
+    expect(isCodexAccountInCooldown("a", freshAt + 100)).toBe(true);
+    // The live probe is untouched by an unrelated outcome.
+    expect(getCodexUpstreamHealth("a")?.probeLeaseId).toBe(freshLease);
+  });
+
   test("credential failure ends the probe", () => {
     const config = makeConfig();
     const now = 1_800_000_000_000;
@@ -737,6 +814,71 @@ describe("codex routing", () => {
     });
     expect((await handleCodexAuthAPI(req, new URL(req.url), config))!.status).toBe(200);
     expect(config.upstreamFailoverThreshold).toBe(4);
+  });
+
+  test("clear-cooldown route lifts a live cooldown", async () => {
+    const config = makeConfig();
+    const now = Date.now();
+    recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "7200", now });
+    expect(isCodexAccountInCooldown("a", now + 1_000)).toBe(true);
+
+    const req = new Request("http://localhost/api/codex-auth/accounts/clear-cooldown", {
+      method: "POST",
+      body: JSON.stringify({ id: "a" }),
+    });
+    const res = (await handleCodexAuthAPI(req, new URL(req.url), config))!;
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, id: "a", cleared: true });
+    expect(isCodexAccountInCooldown("a", now + 1_000)).toBe(false);
+  });
+
+  test("clear-cooldown works for the main login, which is the single-account lockout case", async () => {
+    const config = makeConfig();
+    const now = Date.now();
+    recordCodexUpstreamOutcome(config, MAIN_CODEX_ACCOUNT_ID, 429, { retryAfter: "7200", now });
+
+    const req = new Request("http://localhost/api/codex-auth/accounts/clear-cooldown", {
+      method: "POST",
+      body: JSON.stringify({ id: MAIN_CODEX_ACCOUNT_ID }),
+    });
+    const res = (await handleCodexAuthAPI(req, new URL(req.url), config))!;
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ cleared: true });
+    expect(isCodexAccountInCooldown(MAIN_CODEX_ACCOUNT_ID, now + 1_000)).toBe(false);
+  });
+
+  test("clear-cooldown does not disclose whether an account exists", async () => {
+    const config = makeConfig();
+    // Known account with no cooldown, and an id that is not configured at all: both must
+    // answer identically so the route cannot be used to enumerate accounts.
+    const known = new Request("http://localhost/api/codex-auth/accounts/clear-cooldown", {
+      method: "POST",
+      body: JSON.stringify({ id: "a" }),
+    });
+    const unknown = new Request("http://localhost/api/codex-auth/accounts/clear-cooldown", {
+      method: "POST",
+      body: JSON.stringify({ id: "nope-not-configured" }),
+    });
+
+    const knownRes = (await handleCodexAuthAPI(known, new URL(known.url), config))!;
+    const unknownRes = (await handleCodexAuthAPI(unknown, new URL(unknown.url), config))!;
+
+    expect(knownRes.status).toBe(unknownRes.status);
+    expect(knownRes.status).toBe(200);
+    expect(await knownRes.json()).toMatchObject({ cleared: false });
+    expect(await unknownRes.json()).toMatchObject({ cleared: false });
+  });
+
+  test("clear-cooldown rejects a malformed account id", async () => {
+    const config = makeConfig();
+    const req = new Request("http://localhost/api/codex-auth/accounts/clear-cooldown", {
+      method: "POST",
+      body: JSON.stringify({ id: "../../etc/passwd" }),
+    });
+
+    expect((await handleCodexAuthAPI(req, new URL(req.url), config))!.status).toBe(400);
   });
 
   test("WHAM tertiary window parses as optional 30d quota", () => {

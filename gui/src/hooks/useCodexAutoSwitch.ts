@@ -146,19 +146,22 @@ export function useCodexAutoSwitch(
     clearFeedback();
     setSaving(true);
     revisionRef.current += 1;
-    const ok = await putAutoSwitchThreshold(apiBase, next);
-    revisionRef.current += 1;
-    savingRef.current = false;
-    if (ok) {
-      deferredServerValueRef.current = null;
-      apply(next);
-      if (showSuccess) showFeedback(messages.updated, false);
-    } else {
-      if (!reconcileDeferred()) apply(previous);
-      showFeedback(messages.updateFailed, true);
+    try {
+      const ok = await putAutoSwitchThreshold(apiBase, next);
+      revisionRef.current += 1;
+      if (ok) {
+        deferredServerValueRef.current = null;
+        apply(next);
+        if (showSuccess) showFeedback(messages.updated, false);
+      } else {
+        if (!reconcileDeferred()) apply(previous);
+        showFeedback(messages.updateFailed, true);
+      }
+      return ok;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
-    setSaving(false);
-    return ok;
   }, [apiBase, apply, clearFeedback, messages.updateFailed, messages.updated, reconcileDeferred, showFeedback]);
 
   const rejectDraft = useCallback(() => {

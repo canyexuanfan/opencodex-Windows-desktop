@@ -144,10 +144,6 @@ export function isFreeProvider(p: WorkspaceProvider): boolean {
     || hasLoopbackBaseUrl(p.baseUrl);
 }
 
-export function isPaidProvider(name: string, p: WorkspaceProvider): boolean {
-  return providerTier(name, p) === "paid";
-}
-
 /** Three-way tier: accounts wins over free; everything else is paid. */
 export function providerTier(name: string, p: WorkspaceProvider): ProviderTier {
   if (isAccountProvider(name, p)) return "accounts";
@@ -281,15 +277,4 @@ export function hideRedundantChatGptForwardProviders<T extends WorkspaceProvider
   const rest = { ...providers };
   delete rest.chatgpt;
   return rest;
-}
-
-/**
- * Resolve the one current Codex-account provider used by account-management links.
- * Legacy or custom forward-shaped rows are not eligible owners.
- */
-export function pickCanonicalForwardProvider(
-  providers: Record<string, WorkspaceProvider>,
-): string | null {
-  if (providers.openai && isAccountProvider("openai", providers.openai)) return "openai";
-  return null;
 }

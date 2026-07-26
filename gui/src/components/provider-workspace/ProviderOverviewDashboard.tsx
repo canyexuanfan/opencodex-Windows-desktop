@@ -4,7 +4,7 @@
  * recently-used ranking, and Edit JSON entry.
  */
 import { useMemo } from "react";
-import { useT, useI18n } from "../../i18n";
+import { useT, useI18n } from "../../i18n/shared";
 import { IconAlert, IconChevron } from "../../icons";
 import type { WorkspaceSections, WorkspaceItem } from "../../provider-workspace/catalog";
 import { accountQuotaFromReport, type ProviderQuotaReportView } from "../../provider-workspace/report";

@@ -5,99 +5,63 @@ import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
 import { type ComboItem, parseComboList } from "../combo-workspace-data";
+import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import {
   buildProviderModelGroups,
   type ConfiguredProviderSummary,
-  type ProviderDiscoverySummary,
   type ProviderModelGroup,
 } from "../models-groups";
-
-interface ModelRow {
-  provider: string;
-  id: string;
-  namespaced: string;
-  disabled: boolean;
-  native?: boolean;
-  custom?: boolean;
-  customId?: string;
-  displayName?: string;
-  inputModalities?: string[];
-  contextWindow?: number;
-  contextCap?: number;
-  contextCapped?: boolean;
-}
-
-interface ProviderContextCapsResponse {
-  cap?: number;
-  value?: number;
-  caps?: Record<string, number>;
-}
-
-interface V2Status {
-  enabled: boolean;
-  agentsMaxThreadsConflict: boolean;
-  maxConcurrentThreadsPerSession?: number | null;
-  multiAgentMode?: "v1" | "default" | "v2";
-}
-
-interface ShadowCallData {
-  enabled: boolean;
-  model: string;
-}
-
-const CAP_OPTIONS = Array.from({ length: 18 }, (_, i) => 100_000 + i * 50_000); // 100k … 950k
-const CAP_OPTION_SET = new Set(CAP_OPTIONS);
-const CUSTOM_OPTION = "custom";
-const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128, 256, 500, 1000];
-const THREAD_OPTION_SET = new Set(THREAD_OPTIONS);
-const PAGE = 60; // rows rendered per provider before a "show more" (keeps 1000s-of-models providers usable)
-
-/** Compact token display (350k) — unit is technical, not prose. */
-function fmtK(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return String(n);
-  return n % 1000 === 0 ? `${n / 1000}k` : n.toLocaleString();
-}
-
-function collectDisabledNamespaced(rows: ModelRow[]): Set<string> {
-  const next = new Set<string>();
-  for (const m of rows) {
-    if (m.disabled) next.add(m.namespaced);
-  }
-  return next;
-}
-
-function activeModelOptions(models: ModelRow[], disabled: Set<string>): { value: string; label: string }[] {
-  const options: { value: string; label: string }[] = [];
-  for (const m of models) {
-    if (!disabled.has(m.id) && !disabled.has(m.namespaced)) {
-      options.push({ value: m.namespaced, label: m.namespaced });
-    }
-  }
-  return options;
-}
+import {
+  fetchSelectedModels,
+  modelVisible,
+  putModelVisibility,
+  shouldApplyLoadGeneration,
+  type ProviderModelMap,
+  type ModelVisibilityScope,
+  type ModelVisibilityTarget,
+} from "../model-visibility";
+import {
+  activeModelOptions,
+  CAP_OPTION_SET,
+  CAP_OPTIONS,
+  collectDisabledNamespaced,
+  CUSTOM_OPTION,
+  fmtK,
+  PAGE,
+  readCollapsedProviders,
+  readCombosOpen,
+  THREAD_OPTION_SET,
+  THREAD_OPTIONS,
+  writeCollapsedProviders,
+  writeCombosOpen,
+  discoveryFailureLabel,
+  type ModelRow,
+  type ProviderContextCapsResponse,
+  type ShadowCallData,
+  type V2Status,
+} from "./models-shared";
+import { EmptyProviderHint } from "./models-provider-hints";
 
 export default function Models({ apiBase }: { apiBase: string }) {
   const t: TFn = useT();
   const [models, setModels] = useState<ModelRow[]>([]);
   const [providers, setProviders] = useState<ConfiguredProviderSummary[]>([]);
   const [disabled, setDisabled] = useState<Set<string>>(new Set());
+  const [selectedModels, setSelectedModels] = useState<ProviderModelMap | null>(null);
   const [search, setSearch] = useState<Record<string, string>>({});
   const [limit, setLimit] = useState<Record<string, number>>({});
   const [contextCaps, setContextCaps] = useState<Record<string, number>>({});
   const [contextCapValue, setContextCapValue] = useState(350_000);
   const [customCap, setCustomCap] = useState("");
   const [showCustom, setShowCustom] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem("ocx-models-collapsed");
-      return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
-    } catch { return new Set(); }
-  });
+  const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsedProviders);
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const loadGenerationRef = useRef(0);
+  const loadPendingRef = useRef(false);
   // multi_agent_v2 / ultra gate. null = endpoint unavailable (older proxy build) -> section hidden.
   const [v2, setV2] = useState<V2Status | null>(null);
   const [v2Busy, setV2Busy] = useState(false);
@@ -125,26 +89,33 @@ export default function Models({ apiBase }: { apiBase: string }) {
   // an API error must never masquerade as "no combos configured").
   const [combos, setCombos] = useState<ComboItem[] | null>(null);
   const [combosError, setCombosError] = useState(false);
-  const [combosOpen, setCombosOpen] = useState(() => {
-    try { return localStorage.getItem("ocx-models-combos-open") === "1"; } catch { return false; }
-  });
+  const [combosOpen, setCombosOpen] = useState(readCombosOpen);
 
   // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const toggleCombosOpen = () => {
-    setCombosOpen(prev => {
-      const next = !prev;
-      try { localStorage.setItem("ocx-models-combos-open", next ? "1" : "0"); } catch { /* ignore */ }
-      return next;
-    });
+    const next = !combosOpen;
+    writeCombosOpen(next);
+    setCombosOpen(next);
   };
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`${apiBase}/api/combos`)
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
-      .then((j: unknown) => { if (!cancelled) { setCombos(parseComboList(j)); setCombosError(false); } })
-      .catch(() => { if (!cancelled) { setCombos(null); setCombosError(true); } });
+    void (async () => {
+      try {
+        const r = await fetch(`${apiBase}/api/combos`);
+        const j = await readJsonOrThrow<unknown>(r);
+        if (!cancelled) {
+          setCombos(parseComboList(j));
+          setCombosError(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setCombos(null);
+          setCombosError(true);
+        }
+      }
+    })();
     return () => { cancelled = true; };
   }, [apiBase]);
 
@@ -153,14 +124,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
   }, []);
 
   const shadowModelOptions = useMemo(
-    () => activeModelOptions(models, disabled),
-    [models, disabled],
+    () => activeModelOptions(models, disabled, selectedModels ?? {}),
+    [models, disabled, selectedModels],
   );
 
   const loadShadowCall = useCallback(async () => {
     try {
       const r = await fetch(`${apiBase}/api/shadow-call-settings`);
-      if (r.ok) setShadowCall(await r.json() as ShadowCallData);
+      const data = await readJsonIfOk<ShadowCallData>(r);
+      if (data) setShadowCall(data);
     } catch { /* old server / network: keep the section disabled */ }
   }, [apiBase]);
 
@@ -169,29 +141,40 @@ export default function Models({ apiBase }: { apiBase: string }) {
     if (v2BusyRef.current) return;
     try {
       const r = await fetch(`${apiBase}/api/v2`);
-      if (!r.ok || !(r.headers.get("content-type") ?? "").includes("application/json")) { setV2(null); return; }
-      const data = await r.json() as V2Status;
-      if (typeof data.enabled === "boolean") {
-        setV2({
-          enabled: data.enabled,
-          agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
-          maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
-          multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
-        });
-      }
+      if (!(r.headers.get("content-type") ?? "").includes("application/json")) { setV2(null); return; }
+      const data = await readJsonIfOk<V2Status>(r);
+      if (!data || typeof data.enabled !== "boolean") { setV2(null); return; }
+      setV2({
+        enabled: data.enabled,
+        agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
+        maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
+        multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
+      });
     } catch {
       setV2(null); // old server / network: hide the section instead of guessing
     }
   }, [apiBase]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false): Promise<boolean> => {
+    if (loadPendingRef.current && !force) return false;
+    loadPendingRef.current = true;
+    const generation = ++loadGenerationRef.current;
     try {
-      const [data, capsData] = await Promise.all([
-        fetch(`${apiBase}/api/models`).then(r => r.json()) as Promise<ModelRow[]>,
-        fetch(`${apiBase}/api/provider-context-caps`).then(r => r.json()) as Promise<ProviderContextCapsResponse>,
+      const [modelsRes, capsRes, providersRes, selectionData] = await Promise.all([
+        fetch(`${apiBase}/api/models`),
+        fetch(`${apiBase}/api/provider-context-caps`),
+        fetch(`${apiBase}/api/providers`),
+        fetchSelectedModels(apiBase),
       ]);
-      const providerData = await fetch(`${apiBase}/api/providers`)
-        .then(r => r.json()) as ConfiguredProviderSummary[];
+      const [data, capsData, providerData] = await Promise.all([
+        readJsonOrThrow<ModelRow[]>(modelsRes),
+        readJsonOrThrow<ProviderContextCapsResponse>(capsRes),
+        readJsonOrThrow<ConfiguredProviderSummary[]>(providersRes),
+      ]);
+      if (data === undefined || capsData === undefined || providerData === undefined) {
+        throw new Error("models payload missing");
+      }
+      if (!shouldApplyLoadGeneration(generation, loadGenerationRef.current)) return false;
       void loadV2(); // best-effort, independent of the models fetch
       void loadShadowCall();
       const nextGroups = buildProviderModelGroups(data, providerData);
@@ -203,15 +186,23 @@ export default function Models({ apiBase }: { apiBase: string }) {
       setModels(data);
       setProviders(providerData);
       setDisabled(collectDisabledNamespaced(data));
+      setSelectedModels(selectionData);
       const value = typeof capsData.value === "number" && Number.isFinite(capsData.value) && capsData.value > 0
         ? capsData.value
         : (typeof capsData.cap === "number" && Number.isFinite(capsData.cap) && capsData.cap > 0 ? capsData.cap : undefined);
       if (value !== undefined) setContextCapValue(value);
       setContextCaps(capsData.caps ?? {});
+      return true;
     } catch {
-      setOk(false); setStatus(t("models.loadFail"));
+      if (shouldApplyLoadGeneration(generation, loadGenerationRef.current)) {
+        setOk(false); setStatus(t("models.loadFail"));
+      }
+      return false;
     } finally {
-      setLoading(false);
+      if (shouldApplyLoadGeneration(generation, loadGenerationRef.current)) {
+        loadPendingRef.current = false;
+        setLoading(false);
+      }
     }
   }, [apiBase, loadShadowCall, loadV2, t]);
   useEffect(() => {
@@ -237,30 +228,45 @@ export default function Models({ apiBase }: { apiBase: string }) {
     [models, providers],
   );
 
-  const apply = async (next: Set<string>) => {
+  const effectiveVisibleCount = useMemo(() => {
+    if (!selectedModels) return 0;
+    return models.filter(model => modelVisible(
+      selectedModels,
+      model.provider,
+      model.id,
+      model.native === true,
+      disabled.has(model.namespaced),
+    )).length;
+  }, [disabled, models, selectedModels]);
+
+  const applyVisibility = async (
+    scope: ModelVisibilityScope,
+    provider: string,
+    targets: ModelVisibilityTarget[],
+    enabled: boolean,
+  ) => {
+    ++loadGenerationRef.current;
     setBusy(true);
     busyRef.current = true;
     setStatus("");
+    let errorKey: "models.saveFailed" | "models.networkError" | null = null;
     try {
-      const r = await fetch(`${apiBase}/api/disabled-models`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models: [...next] }),
-      });
-      if (r.ok) { setDisabled(next); setOk(true); setStatus(t("models.applied")); }
-      else { setOk(false); setStatus(t("models.saveFailed")); }
+      const response = await putModelVisibility(apiBase, scope, provider, targets, enabled);
+      if (!response.ok) errorKey = "models.saveFailed";
     } catch {
-      setOk(false); setStatus(t("models.networkError"));
+      errorKey = "models.networkError";
     } finally {
+      const refreshed = await load(true);
+      if (errorKey) {
+        setOk(false);
+        setStatus(t(errorKey));
+      } else if (refreshed) {
+        setOk(true);
+        setStatus(t("models.applied"));
+      }
       setBusy(false);
       busyRef.current = false;
     }
-  };
-
-  const toggle = (ns: string) => {
-    const next = new Set(disabled);
-    if (next.has(ns)) next.delete(ns); else next.add(ns);
-    apply(next);
   };
 
   const toggleProviderCap = async (provider: string) => {
@@ -274,15 +280,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider, enabled }),
       });
-      if (r.ok) {
-        const data = (await r.json()) as ProviderContextCapsResponse;
-        setContextCaps(data.caps ?? {});
+      try {
+        const data = await readJsonOrThrow<ProviderContextCapsResponse>(r, t("models.capSaveFailed"));
+        setContextCaps(data?.caps ?? {});
         setOk(true);
         setStatus(t("models.capApplied"));
-        await load();
-      } else {
+        await load(true);
+      } catch (e) {
         setOk(false);
-        setStatus(t("models.capSaveFailed"));
+        setStatus(e instanceof Error ? e.message : t("models.capSaveFailed"));
       }
     } catch {
       setOk(false); setStatus(t("models.networkError"));
@@ -295,14 +301,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
     setCollapsed(prev => {
       const n = new Set(prev);
       if (n.has(p)) n.delete(p); else n.add(p);
-      try { localStorage.setItem("ocx-models-collapsed", JSON.stringify([...n])); } catch { /* quota */ }
+      writeCollapsedProviders(n);
       return n;
     });
   };
   const setAllCollapsed = (collapse: boolean) => {
     setCollapsed(() => {
       const n = collapse ? new Set(groups.map(group => group.provider)) : new Set<string>();
-      try { localStorage.setItem("ocx-models-collapsed", JSON.stringify([...n])); } catch { /* quota */ }
+      writeCollapsedProviders(n);
       return n;
     });
   };
@@ -317,16 +323,16 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (r.ok) {
-        const data = (await r.json()) as ProviderContextCapsResponse;
-        if (typeof data.value === "number" && Number.isFinite(data.value) && data.value > 0) setContextCapValue(data.value);
-        setContextCaps(data.caps ?? {});
+      try {
+        const data = await readJsonOrThrow<ProviderContextCapsResponse>(r, t("models.capSaveFailed"));
+        if (typeof data?.value === "number" && Number.isFinite(data.value) && data.value > 0) setContextCapValue(data.value);
+        setContextCaps(data?.caps ?? {});
         setOk(true);
         setStatus(t("models.capApplied"));
-        await load();
-      } else {
+        await load(true);
+      } catch (e) {
         setOk(false);
-        setStatus(t("models.capSaveFailed"));
+        setStatus(e instanceof Error ? e.message : t("models.capSaveFailed"));
       }
     } catch {
       setOk(false); setStatus(t("models.networkError"));
@@ -393,15 +399,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ multiAgentMode: mode }),
       });
-      const data = await r.json().catch(() => null) as V2Status & { warnings?: string[]; error?: string } | null;
-      if (r.ok && data) {
+      try {
+        const data = await readJsonOrThrow<V2Status & { warnings?: string[] }>(r, t("models.saveFailed"));
         void loadV2();
         setOk(true);
         setStatus(t("models.v2Applied"));
-        setV2Note((data.warnings ?? []).join(" "));
-      } else {
+        setV2Note((data?.warnings ?? []).join(" "));
+      } catch (e) {
         setOk(false);
-        setStatus(data?.error ?? t("models.saveFailed"));
+        setStatus(e instanceof Error ? e.message : t("models.saveFailed"));
       }
     } catch {
       setOk(false); setStatus(t("models.networkError"));
@@ -428,9 +434,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ maxConcurrentThreadsPerSession: value }),
       });
-      const data = await r.json().catch(() => null) as V2Status & { warnings?: string[]; error?: string } | null;
-      if (r.ok && data && typeof data.enabled === "boolean") {
-      setV2({
+      try {
+        const data = await readJsonOrThrow<V2Status & { warnings?: string[] }>(r, t("models.saveFailed"));
+        if (!data || typeof data.enabled !== "boolean") {
+          setOk(false);
+          setStatus(t("models.saveFailed"));
+          return;
+        }
+        setV2({
           enabled: data.enabled,
           agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
           maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
@@ -439,9 +450,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
         setOk(true);
         setStatus(t("models.v2ThreadsApplied"));
         setShowThreadsCustom(false);
-      } else {
+      } catch (e) {
         setOk(false);
-        setStatus(data?.error ?? t("models.saveFailed"));
+        setStatus(e instanceof Error ? e.message : t("models.saveFailed"));
       }
     } catch {
       setOk(false); setStatus(t("models.networkError"));
@@ -493,14 +504,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider, modelId, displayName, contextWindow, inputModalities }),
       });
-      if (r.ok) {
+      try {
+        await readJsonOrThrow(r, t("models.customSaveFailed"));
         setCustomModalOpen(false);
         setOk(true);
         setStatus(t("models.customAdded"));
-        await load();
-      } else {
-        const data = await r.json().catch(() => null) as { error?: string } | null;
-        setCustomError(data?.error ?? t("models.customSaveFailed"));
+        await load(true);
+      } catch (e) {
+        setCustomError(e instanceof Error ? e.message : t("models.customSaveFailed"));
       }
     } catch {
       setCustomError(t("models.networkError"));
@@ -518,14 +529,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       });
-      if (r.ok) {
+      try {
+        await readJsonOrThrow(r, t("models.customSaveFailed"));
         setCustomModalOpen(false);
         setOk(true);
         setStatus(t("models.customUpdated"));
-        await load();
-      } else {
-        const data = await r.json().catch(() => null) as { error?: string } | null;
-        setCustomError(data?.error ?? t("models.customSaveFailed"));
+        await load(true);
+      } catch (e) {
+        setCustomError(e instanceof Error ? e.message : t("models.customSaveFailed"));
       }
     } catch {
       setCustomError(t("models.networkError"));
@@ -540,7 +551,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       if (r.ok) {
         setOk(true);
         setStatus(t("models.customDeleted"));
-        await load();
+        await load(true);
       } else {
         setOk(false);
         setStatus(t("models.customSaveFailed"));
@@ -552,12 +563,25 @@ export default function Models({ apiBase }: { apiBase: string }) {
   };
 
   if (loading) return <div className="row muted"><span className="spin" /> {t("models.loading")}</div>;
+  if (!selectedModels) {
+    return <Notice tone="err">{t("models.loadFail")}</Notice>;
+  }
 
 
   const renderGroup = (group: ProviderModelGroup<ModelRow>) => {
     const { provider, rows, native, liveModels, discovery } = group;
     const isCollapsed = collapsed.has(provider);
-    const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
+    // Final visibility, not just the disable flag: a model is visible to Codex only when the
+    // provider allowlist admits it AND it is not disabled. Reading `disabled` alone made the
+    // switches disagree with what the picker actually offers.
+    const isVisible = (model: ModelRow) => modelVisible(
+      selectedModels,
+      provider,
+      model.id,
+      model.native === true,
+      disabled.has(model.namespaced),
+    );
+    const activeCount = rows.filter(isVisible).length;
     const capOn = contextCaps[provider] === contextCapValue;
     const isNative = native;
     const discoveryFailure = liveModels && discovery?.status === "failed" ? discovery : undefined;
@@ -567,21 +591,34 @@ export default function Models({ apiBase }: { apiBase: string }) {
     // stay findable in long lists. The sort is stable, so the server order is kept
     // inside each partition, and this does not affect the picker order above
     // (visibility toggles still only filter).
-    const sorted = [...filtered].sort((a, b) => Number(disabled.has(a.namespaced)) - Number(disabled.has(b.namespaced)));
+    const sorted = filtered.toSorted((a, b) => Number(!isVisible(a)) - Number(!isVisible(b)));
     const shown = limit[provider] ?? PAGE;
     const visible = sorted.slice(0, shown);
     const remaining = filtered.length - visible.length;
-     const allOn = rows.every(m => !disabled.has(m.namespaced));
-     const allOff = rows.every(m => disabled.has(m.namespaced));
+     // An empty provider has nothing to send: keep both bulk buttons inert so we never PUT an
+     // empty target list (the management API rejects it with 400).
+     const hasRows = rows.length > 0;
+     const allOn = !hasRows || rows.every(isVisible);
+     const allOff = !hasRows || rows.every(m => !isVisible(m));
      const bulkToggle = (enable: boolean) => {
-       const next = new Set(disabled);
-       for (const m of rows) { if (enable) next.delete(m.namespaced); else next.add(m.namespaced); }
-       apply(next);
+       if (!hasRows) return;
+       void applyVisibility(
+         "provider",
+         provider,
+         rows.map(m => ({ id: m.id, native: m.native === true })),
+         enable,
+       );
      };
     return (
       <div key={provider} className="card models-provider-card" style={{ marginBottom: 8, overflow: "hidden" }}>
-       <div onClick={() => toggleCollapse(provider)}
-          className={`row group-head models-provider-head${isCollapsed ? "" : " open"}`}>
+       <div className={`row group-head models-provider-head${isCollapsed ? "" : " open"}`}>
+          <button
+            type="button"
+            className="row models-provider-toggle"
+            onClick={() => toggleCollapse(provider)}
+            aria-expanded={!isCollapsed}
+            style={{ flex: 1, border: 0, background: "transparent", padding: 0, color: "inherit", cursor: "pointer", textAlign: "left" }}
+          >
           <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
           <span className="text-body font-semibold">{provider}</span>
           {isNative && <span className="muted mono text-caption" style={{ padding: "1px 6px", border: "1px solid var(--border)", borderRadius: "var(--radius-pill)" }}>{t("models.nativeGroupLabel")}</span>}
@@ -589,13 +626,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
            <span
              className="badge badge-amber"
              role="status"
-             title={discoveryFailureReason(t, discoveryFailure)}
+             title={discoveryFailureLabel(t, discoveryFailure)}
            >
              {t("models.discoveryFailedBadge")}
            </span>
          )}
           <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
-           <div className="row models-provider-actions" onClick={e => e.stopPropagation()}>
+          </button>
+           <div className="row models-provider-actions">
              {!isNative && (
                <button
                  type="button"
@@ -643,7 +681,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
               />
             )}
              {visible.map(m => {
-               const off = disabled.has(m.namespaced);
+               // The row reflects the same final-visibility answer as the count and the picker.
+               const off = !isVisible(m);
                return (
                  <div
                    key={m.namespaced}
@@ -656,7 +695,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                    }}
                  >
                    <div className="row" style={{ padding: "5px 0" }}>
-                     <Switch on={!off} onClick={() => toggle(m.namespaced)} disabled={busy} label={m.native ? m.id : m.namespaced} />
+                     <Switch on={!off} onClick={() => void applyVisibility("models", provider, [{ id: m.id, native: m.native === true }], off)} disabled={busy} label={m.native ? m.id : m.namespaced} />
                      <code className="mono text-control" style={{ color: off ? "var(--faint)" : "var(--text)", textDecoration: off ? "line-through" : "none" }}>{m.native ? modelLabel(m.id) : m.namespaced}</code>
                      {m.custom && (
                        <span className="muted mono text-caption" style={{ padding: "1px 6px", border: "1px solid var(--border)", borderRadius: "var(--radius-pill)" }}>
@@ -1171,7 +1210,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       <div className="page-head">
         <h2>{t("nav.models")}</h2>
         <div className="row">
-          <span className="muted mono text-label">{t("models.active", { active: models.length - disabled.size, total: models.length })}</span>
+          <span className="muted mono text-label">{t("models.active", { active: effectiveVisibleCount, total: models.length })}</span>
         </div>
       </div>
       <p className="page-sub">{t("models.subtitle")}</p>
@@ -1190,11 +1229,18 @@ export default function Models({ apiBase }: { apiBase: string }) {
               aria-current={selectedProvider === null ? "true" : undefined}
             >
               <span className="models-workspace-rail-name">{t("models.workspace.allProviders")}</span>
-              <span className="models-workspace-rail-meta">{t("models.active", { active: models.length - disabled.size, total: models.length })}</span>
+              <span className="models-workspace-rail-meta">{t("models.active", { active: effectiveVisibleCount, total: models.length })}</span>
             </button>
             {groups.map(group => {
               const { provider, rows } = group;
-              const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
+              // Same final-visibility rule as the provider card, so the rail never disagrees with it.
+              const activeCount = rows.filter(m => modelVisible(
+                selectedModels,
+                provider,
+                m.id,
+                m.native === true,
+                disabled.has(m.namespaced),
+              )).length;
               return (
                 <button
                   key={provider}
@@ -1225,49 +1271,4 @@ export default function Models({ apiBase }: { apiBase: string }) {
     </div>
   );
 
-}
-
-function discoveryFailureReason(
-  t: ReturnType<typeof useT>,
-  discovery: Extract<ProviderDiscoverySummary, { status: "failed" }>,
-): string {
-  switch (discovery.reason) {
-    case "http":
-      return t("models.discoveryFailedHttp", { status: discovery.httpStatus });
-    case "blocked":
-      return t("models.discoveryFailedBlocked");
-    case "invalid_response":
-      return t("models.discoveryFailedInvalidResponse");
-    case "network":
-      return t("models.discoveryFailedNetwork");
-    case "provider":
-      return t("models.discoveryFailedProvider");
-    default:
-      return t("models.discoveryFailedGeneric");
-  }
-}
-
-export function EmptyProviderHint({
-  liveModels,
-  discovery,
-  showFailureBadge = true,
-}: {
-  liveModels: boolean;
-  discovery?: ProviderDiscoverySummary;
-  showFailureBadge?: boolean;
-}) {
-  const t = useT();
-  const failed = liveModels && discovery?.status === "failed" ? discovery : undefined;
-  return (
-    <div className="row muted text-label leading-body" role="status" style={{ alignItems: "flex-start", gap: 8, padding: "6px 0" }}>
-      <IconInfo width={15} height={15} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
-      <span>
-        {failed && showFailureBadge && <><span className="badge badge-amber">{t("models.discoveryFailedBadge")}</span>{" "}</>}
-        {failed
-          ? `${discoveryFailureReason(t, failed)} `
-          : `${t(liveModels ? "models.emptyDiscovery" : "models.emptyDiscoveryDisabled")} `}
-        <a href="#providers">{t("models.openProviderSettings")}</a>
-      </span>
-    </div>
-  );
 }

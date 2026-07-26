@@ -10,6 +10,8 @@ import {
   CodexDirectAuthenticationError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
+  cooldownErrorMessage,
+  cooldownErrorResponse,
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
@@ -23,6 +25,7 @@ import {
   removeCodexAccountCredential,
   saveCodexAccountCredential,
 } from "../src/codex/account-store";
+import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import { clearAccountNeedsReauth, isAccountNeedsReauth } from "../src/codex/auth-api";
 import {
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
@@ -398,5 +401,56 @@ describe("Codex auth context", () => {
     });
     cfg.codexAccounts = cfg.codexAccounts?.filter(account => account.id !== "pool-a");
     expect(isCodexAuthContextUsable({ ...ctx, generation: 4 }, cfg)).toBe(false);
+  });
+});
+
+// A cooled-down account is the ONLY thing standing between the user and a working
+// Codex Desktop, because injected routing has no second path. The refusal therefore has
+// to say who is cooled, until when, and how to escape — without leaking the raw id to a
+// possibly remote data-plane client.
+describe("cooldown error surface", () => {
+  test("message names the account, deadline, source, and escape command", () => {
+    const until = Date.parse("2026-07-26T10:00:00.000Z");
+    const err = new CodexAccountCooldownError("acct_9f3c21", until, "reset-derived");
+
+    const message = cooldownErrorMessage(err);
+
+    expect(message).toContain("2026-07-26T10:00:00.000Z");
+    expect(message).toContain("reset-derived");
+    expect(message).toContain("ocx account clear-cooldown openai <id>");
+    // Masked, never raw: /v1/* bodies can reach remote authenticated clients when the
+    // proxy binds a non-loopback hostname.
+    expect(message).not.toContain("acct_9f3c21");
+    expect(message).toContain("account-…3c21");
+  });
+
+  test("the main login renders as the alias users actually type", () => {
+    const err = new CodexAccountCooldownError(MAIN_CODEX_ACCOUNT_ID, Date.now() + 60_000);
+
+    const message = cooldownErrorMessage(err);
+
+    expect(message).toContain("(main)");
+    expect(message).not.toContain("__main__");
+    // No recorded source falls back to the default label rather than printing undefined.
+    expect(message).toContain("source: default");
+  });
+
+  test("HTTP form carries a Retry-After the client can act on", async () => {
+    const now = 1_800_000_000_000;
+    const err = new CodexAccountCooldownError("pool-a", now + 90_000, "retry-after");
+
+    const response = cooldownErrorResponse(err, now);
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("90");
+    const body = await response.json() as { error?: { message?: string } };
+    expect(body.error?.message).toContain("ocx account clear-cooldown");
+  });
+
+  test("an already-elapsed cooldown still yields a valid Retry-After", () => {
+    const now = 1_800_000_000_000;
+    const err = new CodexAccountCooldownError("pool-a", now - 5_000, "default");
+
+    expect(cooldownErrorResponse(err, now).headers.get("Retry-After")).toBe("1");
   });
 });

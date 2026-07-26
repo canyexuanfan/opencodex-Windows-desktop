@@ -18,6 +18,8 @@ bare `gpt-5.6-sol` は Providers ページの Pool/Direct オプションに従�
 max input 922,000 で `*-pro` virtual ID は公開状態を維持し、wire でベースモデルと
 `reasoning.mode: "pro"` に切り替わります。
 
+組み込み `openai` が欠落または無効な場合、ダッシュボードの Accounts ピッカーと Codex Auth から復元できます。欠落行は正規プリセットから作成され、正規の無効行は保存済みのモードやモデル設定を置き換えずに再有効化され、非正規の `openai` 行にはその復元経路は出ません。
+
 出荷版 v1 config は marker 2 の単一オプション行に自動移行されます。オリジナルは
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak` に一度保存され、次のコマンドで復元します:
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`。
@@ -78,7 +80,7 @@ ocx logout <provider>
 | `xai` | `openai-chat` | `https://api.x.ai/v1` | ライブ一覧を優先し、フォールバックのデフォルトモデルは `grok-4.5`。 |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude モデル; ライブモデル一覧は `/v1/models` から取得。 |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 コーディングモデル。 |
-| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | インストール済み `kiro-cli` ログインを優先取得。 |
+| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | インストール済み `kiro-cli` ログインを優先取得。Kiro CLI のインストール(`curl -fsSL https://cli.kiro.dev/install | bash`)と `kiro-cli login` が必要。 |
 | `google-antigravity` | `google` | `https://daily-cloudcode-pa.googleapis.com` | Google OAuth を Cloud Code Assist wire で使用。 |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | 実験的 PKCE ログイン、HTTP/2 トランスポート、アカウント別モデル探索をサポート。 |
 

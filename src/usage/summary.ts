@@ -5,7 +5,7 @@ import type { PersistedUsageEntry, UsageStatus } from "./log";
 import { estimateComboCost, estimateRequestCost, effectiveServiceTier } from "./cost";
 
 export type UsageRange = "7d" | "30d" | "all";
-export type UsageSurface = "all" | "codex" | "claude";
+export type UsageSurface = "all" | "codex" | "claude" | "grok";
 
 export interface UsageSummaryTotals {
   requests: number;
@@ -98,7 +98,7 @@ export function parseRange(input: string | null | undefined): UsageRange {
 }
 
 export function parseUsageSurface(input: string | null | undefined): UsageSurface {
-  if (input === "codex" || input === "claude") return input;
+  if (input === "codex" || input === "claude" || input === "grok") return input;
   return "all";
 }
 
@@ -491,8 +491,12 @@ export function summarizeUsage(
   const { since } = rangeWindow(range, now);
   const filteredEntries = entries.filter(entry => {
     if (since !== null && entry.timestamp < since) return false;
-    if (surface === "claude") return entry.surface === "claude";
-    if (surface === "codex") return entry.surface !== "claude";
+    if (surface === "claude") return entry.surface === "claude" || entry.surface === "claude-desktop";
+    if (surface === "grok") return entry.surface === "grok";
+    // Codex = the historical unlabelled bucket. Before the grok tag existed every
+    // non-Claude turn landed here, and `surface !== "claude"` also swallowed
+    // claude-desktop — disjoint predicates fix both.
+    if (surface === "codex") return entry.surface === undefined;
     return true;
   });
   const totals = blankTotals();

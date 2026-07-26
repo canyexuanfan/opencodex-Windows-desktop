@@ -1,7 +1,8 @@
 import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "./types";
-import { COMBO_NAMESPACE, tryPickComboModel, type ComboPick } from "./combos";
+import { preservesPhysicalComboProvider, tryPickComboModel, type ComboPick } from "./combos";
 import { hasOwnProvider, resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
+import { redactSecretString, redactUrlForLog } from "./lib/redact";
 import { PROVIDER_REGISTRY, providerCodexAccountMode } from "./providers/registry";
 import { LEGACY_CHATGPT_PROVIDER_ID, LEGACY_OPENAI_MULTI_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
 import { decodeRoutedModelId, encodeRoutedModelId } from "./providers/slug-codec";
@@ -117,6 +118,73 @@ function mergeStringArrayRecord(
   return out;
 }
 
+/** Same endpoint modulo surrounding space and trailing slashes — matches `matchBaseUrlChoice`. */
+function isSameEndpoint(a: string, b: string): boolean {
+  return a.trim().replace(/\/+$/, "") === b.trim().replace(/\/+$/, "");
+}
+
+/**
+ * Origin of a user-configured URL, with the path withheld.
+ *
+ * A configured `baseUrl` is user-controlled and its path may itself be the credential — an
+ * account-scoped route token such as `https://proxy.example/v1/8fK2mP7qR4nV6x` is opaque and
+ * high-entropy, so it matches none of the prefix patterns in `redactSecretString`. Pattern
+ * redaction cannot be trusted for this value, so no path segment is logged at all. `URL.origin`
+ * also excludes userinfo, query and fragment.
+ *
+ * `…/…` marks that a path was present without revealing it, so a reader can tell an origin-only
+ * config apart from one whose path was dropped.
+ */
+function configuredOriginForLog(url: string): string {
+  try {
+    const parsed = new URL(url.trim());
+    // "null" is what URL.origin yields for non-special schemes; treat it as unusable.
+    if (!parsed.origin || parsed.origin === "null") return "(unloggable URL)";
+    const hasPath = parsed.pathname !== "" && parsed.pathname !== "/";
+    return hasPath ? `${parsed.origin}/…` : parsed.origin;
+  } catch {
+    return "(unparseable URL)";
+  }
+}
+
+// `routedProviderConfig` runs per request, so warn once per (provider, discarded, effective) triple.
+// Keyed by the URLs too: editing config.json to a different wrong value warns again.
+const discardedBaseUrlWarnings = new Set<string>();
+
+/**
+ * A pinned registry entry — non-template `baseUrl`, no `allowBaseUrlOverride` — outranks a saved
+ * `baseUrl`. Dropping it silently is a footgun: requests go to an endpoint the user never
+ * configured, and a wrong-region or wrong-account URL then surfaces only as a 401 with nothing
+ * pointing back at the discarded setting.
+ *
+ * Warns rather than throws. The effective route is exactly what it was before, so a hard error
+ * here would break configs that route fine today (a stale `baseUrl` left over from an earlier
+ * provider is harmless whenever it names the same endpoint the registry pins).
+ */
+function warnIfBaseUrlDiscarded(providerName: string, userBaseUrl: string, effectiveBaseUrl: string): void {
+  if (isSameEndpoint(userBaseUrl, effectiveBaseUrl)) return;
+  // Asymmetric on purpose. Past the guard above, `effectiveBaseUrl` is necessarily
+  // `registryEntry.baseUrl`: the caller passes the resolved URL, and whenever that resolution
+  // kept the user's value the two are equal and we have already returned. So the effective side
+  // is a constant from this repo's registry and safe to print in full — it is also the useful
+  // half, naming the endpoint requests will actually use. The configured side is untrusted.
+  const discarded = configuredOriginForLog(userBaseUrl);
+  const effective = redactSecretString(redactUrlForLog(effectiveBaseUrl));
+  // Key off the logged forms: no raw credential is retained for the process lifetime, and
+  // rotating a key embedded in the URL no longer re-warns about the same endpoint mismatch.
+  // Coarser than the raw URLs — two bad paths on one host warn once, which is the right grain.
+  const key = `${providerName} | ${discarded} | ${effective}`;
+  if (discardedBaseUrlWarnings.has(key)) return;
+  discardedBaseUrlWarnings.add(key);
+  console.warn(
+    // Routing is what this warning speaks for: an adapter may adjust the endpoint again
+    // downstream (kiro re-derives the region), so do not promise where the request lands.
+    `⚠️  config.json provider "${providerName}": configured baseUrl ${discarded} is ignored`
+    + ` because this provider's endpoint is fixed at ${effective}. A URL saved for a different`
+    + ` account or region is a common cause of 401s here — drop it, or use the provider whose endpoint matches.`,
+  );
+}
+
 function routedProviderConfig(providerName: string, provider: OcxProviderConfig): OcxProviderConfig {
   const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === providerName);
   if (!registryEntry) {
@@ -150,6 +218,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const noPenaltyModels = mergeStringArray(registryEntry.noPenaltyModels, provider.noPenaltyModels);
   const autoToolChoiceOnlyModels = mergeStringArray(registryEntry.autoToolChoiceOnlyModels, provider.autoToolChoiceOnlyModels);
   const preserveReasoningContentModels = mergeStringArray(registryEntry.preserveReasoningContentModels, provider.preserveReasoningContentModels);
+  const reasoningSplitModels = mergeStringArray(registryEntry.reasoningSplitModels, provider.reasoningSplitModels);
   const thinkingToggleModels = mergeStringArray(registryEntry.thinkingToggleModels, provider.thinkingToggleModels);
   const thinkingBudgetModels = mergeStringArray(registryEntry.thinkingBudgetModels, provider.thinkingBudgetModels);
   const registryBaseUrlIsTemplate = /\{[^}]*\}/.test(registryEntry.baseUrl);
@@ -162,6 +231,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const baseUrl = (registryBaseUrlIsTemplate || registryEntry.allowBaseUrlOverride) && userBaseUrlIsResolved
     ? userBaseUrl
     : registryEntry.baseUrl;
+  if (userBaseUrlIsResolved) warnIfBaseUrlDiscarded(providerName, userBaseUrl, baseUrl);
   assertProviderDestinationAllowed(providerName, { baseUrl, allowPrivateNetwork: provider.allowPrivateNetwork });
 
   return {
@@ -203,6 +273,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(noPenaltyModels ? { noPenaltyModels } : {}),
     ...(autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels } : {}),
     ...(preserveReasoningContentModels ? { preserveReasoningContentModels } : {}),
+    ...(reasoningSplitModels ? { reasoningSplitModels } : {}),
     ...(thinkingToggleModels ? { thinkingToggleModels } : {}),
     ...(thinkingBudgetModels ? { thinkingBudgetModels } : {}),
   };
@@ -235,10 +306,7 @@ function routeResult(providerName: string, provider: OcxProviderConfig, modelId:
 }
 
 function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: boolean): RouteResult {
-  const preservePhysicalComboProvider =
-    hasOwnProvider(config.providers, COMBO_NAMESPACE)
-    && Object.keys(config.combos ?? {}).length === 0;
-  if (!bypassCombos && !preservePhysicalComboProvider) {
+  if (!bypassCombos && !preservesPhysicalComboProvider(config)) {
     const combo = tryPickComboModel(config, modelId);
     if (combo) {
       const concrete = `${combo.target.provider}/${combo.target.model}`;

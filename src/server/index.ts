@@ -12,6 +12,7 @@ import type { Server, ServerWebSocket } from "bun";
 import {
   DEFAULT_SUBAGENT_MODELS,
   applyProxyEnv,
+  armClaudeCodeBaseline,
   loadConfig,
   saveConfig,
   websocketsEnabled,
@@ -20,10 +21,12 @@ import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
 import { startMemoryWatchdog } from "./memory-watchdog";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
+import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { providerCodexAccountMode } from "../providers/registry";
 import {
   CodexAccountCooldownError,
+  cooldownErrorMessage,
 } from "../codex/auth-context";
 export {
   clearThreadAccountMap,
@@ -121,6 +124,7 @@ import { handleClaudeCountTokens, handleClaudeMessages } from "./claude-messages
 import { handleChatCompletions } from "./chat-completions";
 import { anthropicErrorResponse } from "../claude/outbound";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
+import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
 import { handleImages } from "./images";
 import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
 import { handleSearch } from "./search";
@@ -235,7 +239,7 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
 // export function relaySseWithHeartbeat
 
 export function startServer(port?: number) {
-  const config = runOpenAiTierStartupMigration(loadConfig());
+  const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   applyProxyEnv(config);
   assertServerAuthConfig(config);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
@@ -247,6 +251,11 @@ export function startServer(port?: number) {
     config.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
     saveConfig(config);
   }
+  // authMode migration (devlog 260726_claude_auth_auto/015): before "auto" existed,
+  // choosing Subscription DELETED the key, so a pre-upgrade block with no authMode is
+  // indistinguishable from "never chose". Pin those to subscription once so an upgrade
+  // never silently moves a deliberate subscriber onto proxy.
+  if (runClaudeAuthModeMigration(config)) saveConfig(config);
   // Sidecar model migration (KST 2026-07-10 06:00 = UTC 2026-07-09 21:00): auto-migrate the old
   // gpt-5.4-mini default to gpt-5.6-luna for both search and vision sidecars. Only touches configs
   // still on the old default — explicit user choices are preserved.
@@ -266,6 +275,13 @@ export function startServer(port?: number) {
     }
   }
   invalidateCodexModelsCache();
+  // Arm the `claudeCode` hand-edit guard (devlog 260726_claude_auth_auto/040 H1) BEFORE
+  // the server can serve a request, and AFTER the startup migrations above — those run
+  // against a config nobody else holds and are the documented exception to the save
+  // boundary, so the baseline should reflect what they wrote. Arming is eager on
+  // purpose: a lazy "arm on first save" loses exactly the hand edit made before that
+  // first save, which is the case the guard exists for.
+  armClaudeCodeBaseline(config);
   // usage.jsonl already persists every request; rehydrate the in-memory Logs ring so
   // /api/logs (and the GUI) survive `ocx stop` / `ocx start` process restarts.
   hydrateRequestLogsFromDisk();
@@ -281,6 +297,18 @@ export function startServer(port?: number) {
   // is 127.0.0.1, so binding literal "localhost" would reintroduce the F4 refusal. Wildcards
   // (0.0.0.0/::) and specific hosts are left untouched so intentional exposure is preserved.
   const bindHost = /^localhost$/i.test(config.hostname ?? "") ? "127.0.0.1" : (config.hostname ?? "127.0.0.1");
+
+  // Codex treats empty / non-JSON 503 bodies as "Unknown error" (#452). Keep Retry-After and
+  // the server_is_overloaded code so clients can back off, but always return a JSON envelope.
+  function drainingResponse(req: Request): Response {
+    const response = formatErrorResponse(503, "server_error", "Service shutting down");
+    const headers = new Headers(response.headers);
+    for (const [name, value] of Object.entries(corsHeaders(req, config))) {
+      headers.set(name, value);
+    }
+    headers.set("Retry-After", "5");
+    return new Response(response.body, { status: 503, headers });
+  }
 
   const server: Server<WsData> = Bun.serve<WsData>({
     port: listenPort,
@@ -301,7 +329,7 @@ export function startServer(port?: number) {
       // handshake-time only, so capture inbound headers and thread them into the pipeline.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -362,8 +390,15 @@ export function startServer(port?: number) {
           || url.searchParams.get("flavor") === "anthropic";
         if (wantsAnthropicList && !url.searchParams.has("client_version")) {
           if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, config);
+          // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
+          buildDesktop3pRegistry(
+            [...visibleNativeSlugs(config)],
+            goOrdered.map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow })),
+            config.claudeCode?.desktopProfile,
+          );
           const { buildAnthropicModelInfos } = await import("../claude/model-info");
           const { resolveAutoContext } = await import("../claude/context-windows");
+          const { activeDesktop3pAlias } = await import("../claude/desktop-3p");
           // Per-surface id family (devlog 050): explicit ?ids= wins; otherwise the
           // Claude Code CLI discovery UA (`claude-code/<version>`, binary n_()) gets
           // readable claude-ocx ids and every other client (Desktop 3P) keeps the
@@ -374,12 +409,7 @@ export function startServer(port?: number) {
             : idsParam === "desktop"
               ? "desktop3p" as const
               : (/^claude-code\//i.test(req.headers.get("user-agent") ?? "") ? "readable" as const : "desktop3p" as const);
-          const data = buildAnthropicModelInfos([...visibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode), idStyle);
-          // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
-          buildDesktop3pRegistry(
-            [...visibleNativeSlugs(config)],
-            goOrdered.map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow })),
-          );
+          const data = buildAnthropicModelInfos([...visibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode), idStyle, activeDesktop3pAlias);
           return jsonResponse({ data }, 200, req, config);
         }
         if (url.searchParams.has("client_version")) {
@@ -406,7 +436,7 @@ export function startServer(port?: number) {
       // before the /v1/* 404 guard below.
       if (url.pathname === "/v1/responses/compact" && req.method === "POST") {
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -438,10 +468,7 @@ export function startServer(port?: number) {
       ) {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", {
-            status: 503,
-            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
-          });
+          return drainingResponse(req);
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -460,10 +487,7 @@ export function startServer(port?: number) {
       if (url.pathname === "/v1/alpha/search" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", {
-            status: 503,
-            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
-          });
+          return drainingResponse(req);
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -487,7 +511,7 @@ export function startServer(port?: number) {
       if (url.pathname === "/v1/responses" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -526,7 +550,7 @@ export function startServer(port?: number) {
       // Claude Code posts `/v1/messages?beta=true` — pathname match ignores the query (003 G9).
       if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") {
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         if (!hasValidApiAuth(req, config)) {
           return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
@@ -541,7 +565,7 @@ export function startServer(port?: number) {
       if (url.pathname === "/v1/messages" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         if (!hasValidApiAuth(req, config)) {
           return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
@@ -564,7 +588,7 @@ export function startServer(port?: number) {
       if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -587,10 +611,7 @@ export function startServer(port?: number) {
       ) {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", {
-            status: 503,
-            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
-          });
+          return drainingResponse(req);
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -618,10 +639,7 @@ export function startServer(port?: number) {
         : null;
       if (liveSidebandTarget) {
         if (isDraining()) {
-          return new Response("Service shutting down", {
-            status: 503,
-            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
-          });
+          return drainingResponse(req);
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -796,9 +814,11 @@ export function startServer(port?: number) {
             try {
               if (err instanceof CodexAccountCooldownError) {
                 finalizeLog(429);
+                // Codex Desktop rides this WS transport, so it must carry the same
+                // actionable text as HTTP; a frame has no headers, hence message-only.
                 sendJsonFrame(ws, buildWsErrorFrame(429, {
                   type: "rate_limit_error",
-                  message: "Selected Codex account is cooling down",
+                  message: cooldownErrorMessage(err),
                 }));
                 return;
               }

@@ -10,7 +10,7 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
-  saveConfig,
+  saveConfigPreservingClaudeCode,
 } from "../config";
 import {
   clearLoginState,
@@ -48,7 +48,8 @@ import {
   setDebugSettings,
   type DebugFlag,
 } from "../lib/debug-settings";
-import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../types";
+import type { OcxClaudeCodeConfig, OcxClaudeDesktopProfile, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../types";
+import type { DesktopProfileModel } from "../claude/desktop-profile";
 import { drainAndShutdown } from "./lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "./request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../usage/cost";
@@ -135,16 +136,32 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 
   if (url.pathname === "/api/stop" && req.method === "POST") {
     const { restoreNativeCodex } = await import("../codex/inject");
-    const { stopServiceIfInstalled } = await import("../service");
-    stopServiceIfInstalled();
+    const { stopServiceIfInstalled, isServiceOwnershipError } = await import("../service");
+    try {
+      stopServiceIfInstalled();
+    } catch (err) {
+      if (isServiceOwnershipError(err)) {
+        // The installed service belongs to another CODEX_HOME/OPENCODEX_HOME: it would respawn
+        // this proxy immediately, and its shared config is not ours to tear down. Refuse the
+        // stop instead of half-performing it. 409, not 500 — the request is well-formed.
+        return jsonResponse({ success: false, message: err.message }, 409, req, config);
+      }
+      throw err;
+    }
     const restore = restoreNativeCodex();
+    // Both managed configs come down together on an explicit teardown. The daemon's own
+    // syncCleanup skips this when OCX_SERVICE is set (so a crash/respawn keeps the fence),
+    // which is exactly why an intentional stop has to do it here.
+    const { stripGrokConfig } = await import("../grok/inject");
+    const grok = stripGrokConfig();
     setTimeout(async () => {
       await drainAndShutdown(undefined, config.shutdownTimeoutMs ?? 5000);
       process.exit(0);
     }, 200);
+    const grokNote = grok.ok ? "" : ` Grok config cleanup failed: ${grok.message}`;
     return jsonResponse(restore.success
-      ? { success: true, message: "Proxy stopping, native Codex restored." }
-      : { success: false, message: `Proxy stopping, but native Codex restore failed: ${restore.message}. Run \`ocx restore\`.` });
+      ? { success: true, message: `Proxy stopping, native Codex restored.${grokNote}` }
+      : { success: false, message: `Proxy stopping, but native Codex restore failed: ${restore.message}. Run \`ocx restore\`.${grokNote}` });
   }
 
   if (url.pathname.startsWith("/api/codex-auth/")) {
@@ -156,4 +173,4 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 }
 
 
-export { fetchAllModels } from "./management/shared";
+export { buildClaudeDesktopState, fetchAllModels } from "./management/shared";

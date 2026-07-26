@@ -84,6 +84,26 @@ token。
   JSON。上游不返回 token 数量，因此 usage 采用估算值。
 - 经 `fetchResponse` 负责有界重试和分类/脱敏后的错误；非流式 parser 会排空同一 event stream，
   供 web-search loop 使用。
+### 完成与原生 stop reason
+
+Kiro 的 assistant 文本本身没有可靠的回合结束标记，但终止的 `metadataEvent` 可能带有原生 `stopReason`。
+`END_TURN` 和 `STOP_SEQUENCE` 视为权威结束，其文本直接作为最终回答发出，不再额外往返模型。
+
+只有在 stop reason **缺失**时才走兼容路径。任何显式原因都已在上游终止了本次推理，因此适配器直接报告而不是
+再发一次请求：输出 token 上限表现为可继续的 incomplete，上下文窗口耗尽表现为不可重试的 context-length
+错误，内容过滤或 guardrail 停止表现为 filtered incomplete。没有真实工具调用却出现的 `TOOL_USE` 被视为
+矛盾而非进展。
+
+只有完全没有 stop reason 时，opencodex 才添加私有的 `codex_kiro_final_answer` 工具并做一次续写。
+重复抑制严格限定为空白归一化后的完全一致：改写过的状态更新可能改变本回合的结果（从"仍在进行"变成"已完成"），
+丢掉那句话比显示一次表面重复更糟糕。
+
+### Reasoning effort
+
+`gpt-5.6-sol` 和 `claude-opus-5` 支持原生 effort，且请求字段名不同。`low` / `medium` / `high` /
+`xhigh` / `max` 分别通过 `additionalModelRequestFields.reasoning.effort` 和
+`output_config.effort` 发送。
+
 
 ## `cursor`
 

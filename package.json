@@ -21,6 +21,7 @@
     "gui/dist",
     "assets/banner.png",
     "assets/architecture.png",
+    "assets/claude-code-models.gif",
     "assets/codex-app-picker.png",
     "README.md",
     "LICENSE"
@@ -89,7 +90,7 @@
     "type": "git",
     "url": "git+https://github.com/lidge-jun/opencodex.git"
   },
-  "homepage": "https://opencodex.me/",
+  "homepage": "https://lidge-jun.github.io/opencodex/",
   "bugs": {
     "url": "https://github.com/lidge-jun/opencodex/issues"
   },

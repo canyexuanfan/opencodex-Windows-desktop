@@ -1,5 +1,6 @@
 import type { Server } from "bun";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
+import { formatPassthroughUpstreamError } from "./passthrough-error";
 import {
   getConfigPath,
   multiAgentGuidanceEnabled,
@@ -9,7 +10,7 @@ import { parseRequest } from "../../responses/parser";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
 import { FORWARD_HEADERS, sanitizeReasoningInputContent } from "../../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseProviderState, rememberResponseState } from "../../responses/state";
-import { routeModel } from "../../router";
+import { routeModel, type RouteResult } from "../../router";
 import {
   advanceComboAfterFailure,
   comboDefaultEffort,
@@ -42,6 +43,7 @@ import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
+  cooldownErrorResponse,
   CodexAuthContextError,
   CodexDirectAuthenticationError,
   CodexPoolAuthenticationError,
@@ -56,6 +58,7 @@ import {
 } from "../../codex/auth-context";
 import {
   formatCodexProviderForLog,
+  previewCodexAccountForRequest,
   recordCodexUpstreamOutcome,
   type CodexUpstreamOutcome,
 } from "../../codex/routing";
@@ -76,6 +79,12 @@ import { registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle"
 import { redactSecretString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import { supportedLadderFor } from "../effort-policy";
+import { isThreadSpawnRequest } from "../effort-policy";
+import {
+  applySubagentModelFallback,
+  maybePrimeSubagentQuota,
+  recordSubagentQuotaFailureForThreadSpawn,
+} from "../../codex/subagent-model-fallback";
 import {
   beginRequestAttempt,
   catalogModelSupportsServiceTier,
@@ -266,6 +275,8 @@ export function comboUnavailableResponse(message: string): Response {
 export interface ConsumedComboFailure {
   response: Response;
   classificationText: string;
+  /** Structured upstream `error.code` when present in the failure body. */
+  upstreamCode?: string;
   /** Valid numeric/date value used only for cooldown calculation. */
   retryAfter?: string;
   /** Reserved for 040 usage attribution without adding another body read. */
@@ -314,12 +325,20 @@ export async function consumeComboFailure(
   const fallback = `Provider error ${response.status}`;
   let classificationText = fallback;
   let usage: OcxUsage | undefined;
+  let upstreamCode: string | undefined;
   try {
     const body = await readBoundedResponseBody(response, { signal });
     usage = usageFromComboFailureText(body.text);
     if (body.displaySafe) {
       const safeText = redactSecretString(body.text).slice(0, 500);
       if (safeText) classificationText = safeText;
+      try {
+        const parsed = JSON.parse(body.text) as { error?: { code?: unknown } | string };
+        const nested = typeof parsed?.error === "object" && parsed.error ? parsed.error.code : undefined;
+        if (typeof nested === "string" && nested.length > 0) upstreamCode = nested;
+      } catch {
+        /* non-JSON upstream body — message-only classification */
+      }
     }
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -330,8 +349,11 @@ export async function consumeComboFailure(
     : `${fallback}: ${classificationText}`;
   const retryAfter = sanitizedRetryAfter(response.headers.get("retry-after"), now);
   return {
-    response: formatErrorResponse(response.status, "upstream_error", message),
+    response: formatErrorResponse(response.status, "upstream_error", message, {
+      ...(upstreamCode !== undefined ? { code: upstreamCode } : {}),
+    }),
     classificationText,
+    ...(upstreamCode !== undefined ? { upstreamCode } : {}),
     ...(retryAfter !== undefined ? { retryAfter } : {}),
     ...(usage ? { usage } : {}),
   };
@@ -411,6 +433,169 @@ function unreadableEncryptedAgentTaskResponse(): Response {
       },
     }),
     { status: 400, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+type ResponsesAuthResolution =
+  | { ok: true; authCtx: CodexAuthContext; headers: Headers }
+  | { ok: false; response: Response };
+
+/**
+ * Resolve Codex auth for a route. On unusable contexts, releases any probe lease
+ * before returning the 401 (nothing reaches upstream).
+ */
+async function resolveResponsesCodexAuth(
+  req: Request,
+  config: OcxConfig,
+  route: RouteResult,
+  options: HandleResponsesOptions,
+): Promise<ResponsesAuthResolution> {
+  try {
+    if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
+    let authCtx: CodexAuthContext;
+    if (route.codexAccountMode) {
+      authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode);
+      options.onCodexAuthContextResolved?.(authCtx);
+    } else {
+      authCtx = { kind: "main", accountId: null };
+      options.onCodexAuthContextResolved?.(undefined);
+    }
+    if (!isCodexAuthContextUsable(authCtx, config)) {
+      releaseCodexAuthContextProbeLease(authCtx);
+      return {
+        ok: false,
+        response: formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication"),
+      };
+    }
+    return {
+      ok: true,
+      authCtx,
+      headers: headersForCodexAuthContext(req.headers, authCtx),
+    };
+  } catch (err) {
+    if (err instanceof CodexAccountCooldownError) {
+      return { ok: false, response: cooldownErrorResponse(err) };
+    }
+    if (err instanceof CodexThreadAffinityExpiredError) {
+      return {
+        ok: false,
+        response: formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session"),
+      };
+    }
+    if (err instanceof CodexAuthContextError) {
+      const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
+      console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
+      return {
+        ok: false,
+        response: formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication"),
+      };
+    }
+    if (err instanceof CodexPoolAuthenticationError) {
+      return { ok: false, response: formatErrorResponse(401, "authentication_error", err.message) };
+    }
+    if (err instanceof CodexDirectAuthenticationError) {
+      return { ok: false, response: formatErrorResponse(401, "authentication_error", err.message) };
+    }
+    if (err instanceof ForwardAdmissionCredentialError) {
+      return { ok: false, response: formatErrorResponse(401, "authentication_error", err.message) };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Apply every route-dependent request mutation against the final selected route.
+ * Must run only after subagent fallback has settled the model/provider.
+ */
+async function applyFinalRouteRequestNormalization(args: {
+  parsed: OcxParsedRequest;
+  route: RouteResult;
+  config: OcxConfig;
+  req: Request;
+  logCtx: RequestLogContext;
+}): Promise<void> {
+  const { parsed, route, config, req, logCtx } = args;
+
+  // Apply the routed model id upstream: routing may strip a "<provider>/" namespace.
+  if (route.modelId !== parsed.modelId) {
+    if (parsed._rawBody && typeof parsed._rawBody === "object") {
+      (parsed._rawBody as { model?: string }).model = route.modelId;
+    }
+    parsed.modelId = route.modelId;
+  }
+  // Settle the wire once so logging, fast-mode, auth, and sidecars read the adapter
+  // this request will actually use (#404).
+  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+  logCtx.model = route.modelId;
+  logCtx.provider = route.providerName;
+  logCtx.providerAdapter = route.provider.adapter;
+
+  // Final selected model before virtual wire-model rewriting (Pro aliases).
+  const finalSelectedModelId = route.modelId;
+
+  // Virtual model rewriting: Pro aliases → base model + reasoning.mode="pro".
+  applyOpenAiVirtualModel(parsed, route, logCtx);
+
+  // Fast mode override for OpenAI-routed models.
+  if (config.fastMode !== undefined && route.provider.adapter === "openai-responses") {
+    const tier = config.fastMode ? "priority" : undefined;
+    if (parsed._rawBody && typeof parsed._rawBody === "object") {
+      if (tier) (parsed._rawBody as Record<string, unknown>).service_tier = tier;
+      else delete (parsed._rawBody as Record<string, unknown>).service_tier;
+    }
+    parsed.options.serviceTier = tier;
+  }
+
+  {
+    const guidance = await multiAgentGuidanceText(parsed, {
+      multiAgentGuidanceEnabled: config.multiAgentGuidanceEnabled,
+      injectionModel: config.injectionModel,
+      injectionEffort: config.injectionEffort,
+      subagentModels: config.subagentModels,
+      subagentModelFallback: config.subagentModelFallback,
+      injectionPrompt: config.injectionPrompt,
+    });
+    if (guidance) {
+      injectDeveloperMessage(parsed, guidance);
+      if (isInjectionDebugEnabled()) {
+        injectionDebugLog(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, guidanceEnabled=${multiAgentGuidanceEnabled(config)}, ${guidance.length} chars)`);
+      }
+    } else if (isInjectionDebugEnabled() && collabSurface(parsed) !== null) {
+      injectionDebugLog(`[opencodex] ${route.modelId}: collab surface=${collabSurface(parsed)}, guidance silent (effort=${parsed.options.reasoning ?? "unset"}, injectionModel=${config.injectionModel ?? "unset"})`);
+    }
+  }
+
+  {
+    const { applyEffortCap, effortCapAppliesTo, supportedLadderFor } = await import("../effort-policy");
+    const surface = collabSurface(parsed);
+    if (effortCapAppliesTo(surface, req.headers, config, parsed._compactionRequest === true)) {
+      const capped = applyEffortCap(parsed, req.headers, config, supportedLadderFor(route));
+      if (capped) {
+        logCtx.requestedEffort = `${capped.from}->${capped.to}`;
+        if (isInjectionDebugEnabled()) {
+          injectionDebugLog(`[opencodex] ${route.modelId}: effort cap applied (${capped.from} -> ${capped.to}, ${capped.subagent ? "sub-agent" : "main"} turn)`);
+        }
+      }
+    } else if (isInjectionDebugEnabled() && (config.effortCap || config.subagentEffortCap)) {
+      injectionDebugLog(`[opencodex] ${route.modelId}: effort cap skipped (surface=${surface ?? "none"}, v2 feature only)`);
+    }
+  }
+
+  {
+    const { nativeEffortClamp, shouldApplyNativeEffortClamp } = await import("../../codex/catalog");
+    const clamped = shouldApplyNativeEffortClamp(route.providerName, route.provider, finalSelectedModelId)
+      ? nativeEffortClamp(route.modelId, parsed.options.reasoning)
+      : null;
+    if (clamped) {
+      parsed.options.reasoning = clamped;
+      const raw = parsed._rawBody as { reasoning?: { effort?: string } } | undefined;
+      if (raw?.reasoning && typeof raw.reasoning === "object") raw.reasoning.effort = clamped;
+      logCtx.requestedEffort = `${logCtx.requestedEffort ?? "max"}->${clamped}`;
+    }
+  }
+  logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(
+    route.modelId,
+    logCtx.requestedServiceTier ?? logCtx.configuredServiceTier,
   );
 }
 
@@ -604,7 +789,9 @@ export async function handleComboResponses(
     (logCtx.attempts ??= []).push(attempt);
     attemptRetained = true;
     lastFailure = failure.response;
-    if (comboFailureDecision(response.status, failure.classificationText) === "stop") {
+    if (comboFailureDecision(failure.response.status, failure.classificationText, {
+      code: failure.upstreamCode,
+    }) === "stop") {
       Object.assign(logCtx, childLog, {
         requestedModel,
         model: requestedModel,
@@ -706,7 +893,11 @@ export async function handleResponses(
   }
   if (parsed._compactionRequest === true) parsed._cursorIsolateConversation = true;
 
-  let route;
+  if (isThreadSpawnRequest(req.headers)) {
+    await maybePrimeSubagentQuota(config);
+  }
+
+  let route: RouteResult;
   try {
     route = routeModel(config, parsed.modelId);
   } catch (err) {
@@ -716,167 +907,72 @@ export async function handleResponses(
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 
-  // The canonical ChatGPT backend can decrypt its V2 Fernet task tokens; routed
-  // providers cannot. Reject the raw-input classification before adapter construction
-  // or provider dispatch so an unreadable worker task cannot trigger a cost storm.
+  let authCtx: CodexAuthContext = { kind: "main", accountId: null };
+  let selectedForwardHeaders = req.headers;
+  let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
+  let subagentQuotaFailureModel = parsed.modelId;
+
+  // Subagent fallback must settle the final model/provider BEFORE route-dependent
+  // normalization (virtual models, effort caps, service tier, wire protocol).
+  // Preview the preferred Codex account without acquiring a probe lease or refreshing
+  // tokens — auth is resolved only after the final route is selected.
+  if (isThreadSpawnRequest(req.headers) && !options.comboAttempt) {
+    const threadId = req.headers.get("x-codex-parent-thread-id");
+    const previewAccountId = previewCodexAccountForRequest(threadId, config);
+    subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
+    const fallback = applySubagentModelFallback(
+      parsed,
+      req.headers,
+      config,
+      previewAccountId,
+      Date.now(),
+      unreadableEncryptedAgentTask,
+    );
+    if (fallback) {
+      (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
+      (logCtx as unknown as Record<string, unknown>).subagentModelFallbackTo = fallback.to;
+      if (isInjectionDebugEnabled()) {
+        injectionDebugLog(`[opencodex] subagent model fallback ${fallback.from} -> ${fallback.to}`);
+      }
+    }
+    subagentQuotaFailureModel = fallback?.to ?? parsed.modelId;
+
+    if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
+      try {
+        route = routeModel(config, fallback.to);
+      } catch (err) {
+        if (err instanceof NoAvailableComboTargetsError) {
+          return comboUnavailableResponse(err.message);
+        }
+        return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
+  // Encrypted child tasks may only reach the canonical native backend. This check
+  // runs against the FINAL route so native-only fallback can rescue a routed primary.
   if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
     return unreadableEncryptedAgentTaskResponse();
   }
 
-  // Apply the routed model id upstream: routing may strip a "<provider>/" namespace
-  // (e.g. "opencode-go/deepseek-v4-pro" → "deepseek-v4-pro"). Adapters read parsed.modelId,
-  // and the passthrough adapter serializes _rawBody, so rewrite both.
-  if (route.modelId !== parsed.modelId) {
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      (parsed._rawBody as { model?: string }).model = route.modelId;
-    }
-    parsed.modelId = route.modelId;
-  }
-  // Settle the wire once, right after the native model id is known, so logging,
-  // fast-mode injection, auth, and sidecar decisions all read the adapter this
-  // request will actually use rather than the provider-wide default (#404).
-  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
-  logCtx.model = route.modelId;
-  logCtx.provider = route.providerName;
-  logCtx.providerAdapter = route.provider.adapter;
+  await applyFinalRouteRequestNormalization({ parsed, route, config, req, logCtx });
 
-  // Virtual model rewriting: Pro aliases → base model + reasoning.mode="pro".
-  // Must run before effort caps/native clamps so the base model gets correct limits.
-  applyOpenAiVirtualModel(parsed, route, logCtx);
-
-  // Fast mode override: when config.fastMode is explicitly set, inject or strip
-  // service_tier for OpenAI-routed models. Undefined = passthrough (client decides).
-  if (config.fastMode !== undefined && route.provider.adapter === "openai-responses") {
-    const tier = config.fastMode ? "priority" : undefined;
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      if (tier) (parsed._rawBody as Record<string, unknown>).service_tier = tier;
-      else delete (parsed._rawBody as Record<string, unknown>).service_tier;
-    }
-    parsed.options.serviceTier = tier;
-  }
-
-  // Multi-agent guidance shim: codex-rs emits its Proactive delegation developer
-  // message only on the v2 surface. The proxy fills the gaps: the Proactive text
-  // for v1 collab surfaces at the top tier (no model designation on v1), and the
-  // sub-agent model/roster designation plus fork_turns override rules on v2.
-  // The surface is judged from the request's own tool list. Runs BEFORE the
-  // mock-max clamp below so the synthetic top tier (ultra arrives as max on the
-  // codex wire) is still visible. Both request shapes are rewritten.
   {
-    const guidance = await multiAgentGuidanceText(parsed, {
-      multiAgentGuidanceEnabled: config.multiAgentGuidanceEnabled,
-      injectionModel: config.injectionModel,
-      injectionEffort: config.injectionEffort,
-      subagentModels: config.subagentModels,
-      injectionPrompt: config.injectionPrompt,
-    });
-    if (guidance) {
-      injectDeveloperMessage(parsed, guidance);
-      if (isInjectionDebugEnabled()) injectionDebugLog(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, guidanceEnabled=${multiAgentGuidanceEnabled(config)}, ${guidance.length} chars)`);
-    } else if (isInjectionDebugEnabled() && collabSurface(parsed) !== null) {
-      injectionDebugLog(`[opencodex] ${route.modelId}: collab surface=${collabSurface(parsed)}, guidance silent (effort=${parsed.options.reasoning ?? "unset"}, injectionModel=${config.injectionModel ?? "unset"})`);
-    }
+    const finalAuth = await resolveResponsesCodexAuth(req, config, route, options);
+    if (!finalAuth.ok) return finalAuth.response;
+    authCtx = finalAuth.authCtx;
+    selectedForwardHeaders = finalAuth.headers;
   }
 
-  // Hard effort caps (effortCap / subagentEffortCap): enforcement companion to the advisory
-  // injection above — spawn-arg prompting cannot stop codex-rs from inheriting the parent's
-  // ultra-tier default on bare spawns (see src/server/effort-policy.ts). Runs BEFORE the
-  // mock-max clamp so a capped effort is what nativeness clamping then validates; rewrites
-  // both request shapes (same dual-write contract as the clamp below).
-  // GATE: v2 feature only (effortCapAppliesTo) — v2-surface main turns plus header-marked
-  // child turns admitted regardless of tool surface (depth-limited leaves carry no collab
-  // tools while shallower children do, so tool sniffing alone would cap siblings
-  // inconsistently); multiAgentMode "v1" disables caps entirely; compaction turns bypass
-  // caps so routed compaction matches native /v1/responses/compact (which never enters
-  // handleResponses).
-  {
-    const { applyEffortCap, effortCapAppliesTo, supportedLadderFor } = await import("../effort-policy");
-    const surface = collabSurface(parsed);
-    if (effortCapAppliesTo(surface, req.headers, config, parsed._compactionRequest === true)) {
-      const capped = applyEffortCap(parsed, req.headers, config, supportedLadderFor(route));
-      if (capped) {
-        logCtx.requestedEffort = `${capped.from}->${capped.to}`;
-        if (isInjectionDebugEnabled()) {
-          injectionDebugLog(`[opencodex] ${route.modelId}: effort cap applied (${capped.from} -> ${capped.to}, ${capped.subagent ? "sub-agent" : "main"} turn)`);
-        }
-      }
-    } else if (isInjectionDebugEnabled() && (config.effortCap || config.subagentEffortCap)) {
-      injectionDebugLog(`[opencodex] ${route.modelId}: effort cap skipped (surface=${surface ?? "none"}, v2 feature only)`);
-    }
-  }
-
-  // Mock-max clamp: native models whose real ladder stops below max (gpt-5.5/5.4/…)
-  // receive `max` when the user picks Ultra (codex converts ultra->max client-side).
-  // Clamp to the model's highest real effort BEFORE any adapter — the ChatGPT
-  // passthrough serializes _rawBody verbatim, so both shapes must be rewritten.
-  // GUARD: judge nativeness by BOTH the originally requested id (logCtx.requestedModel)
-  // and the resolved provider identity. Routing strips the "<provider>/" namespace, and
-  // some third-party providers expose bare `defaultModel` selectors, so route.modelId
-  // alone can make a routed model masquerade as an off-snapshot native. Only the
-  // canonical built-in ChatGPT forward provider should receive the native clamp.
-  {
-    const requestedModelId = logCtx.requestedModel ?? route.modelId;
-    const { nativeEffortClamp, shouldApplyNativeEffortClamp } = await import("../../codex/catalog");
-    const clamped = shouldApplyNativeEffortClamp(route.providerName, route.provider, requestedModelId)
-      ? nativeEffortClamp(route.modelId, parsed.options.reasoning)
-      : null;
-    if (clamped) {
-      parsed.options.reasoning = clamped;
-      const raw = parsed._rawBody as { reasoning?: { effort?: string } } | undefined;
-      if (raw?.reasoning && typeof raw.reasoning === "object") raw.reasoning.effort = clamped;
-      logCtx.requestedEffort = `${logCtx.requestedEffort ?? "max"}->${clamped}`;
-    }
-  }
-  logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(
-    route.modelId,
-    logCtx.requestedServiceTier ?? logCtx.configuredServiceTier,
-  );
-
-  let authCtx: CodexAuthContext = { kind: "main", accountId: null };
-  let selectedForwardHeaders: Headers;
-  try {
-    if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
-    if (route.codexAccountMode) {
-      authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode);
-      options.onCodexAuthContextResolved?.(authCtx);
-    } else {
-      options.onCodexAuthContextResolved?.(undefined);
-    }
-    selectedForwardHeaders = headersForCodexAuthContext(req.headers, authCtx);
-  } catch (err) {
-    if (err instanceof CodexAccountCooldownError) {
-      return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
-    }
-    if (err instanceof CodexThreadAffinityExpiredError) {
-      return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
-    }
-    if (err instanceof CodexAuthContextError) {
-      const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
-      console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
-      return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
-    }
-    if (err instanceof CodexPoolAuthenticationError) {
-      return formatErrorResponse(401, "authentication_error", err.message);
-    }
-    if (err instanceof CodexDirectAuthenticationError) {
-      return formatErrorResponse(401, "authentication_error", err.message);
-    }
-    if (err instanceof ForwardAdmissionCredentialError) {
-      return formatErrorResponse(401, "authentication_error", err.message);
-    }
-    throw err;
-  }
-  if (!isCodexAuthContextUsable(authCtx, config)) {
-    // Nothing reaches upstream on this path, so give the probe back.
-    releaseCodexAuthContextProbeLease(authCtx);
-    return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
-  }
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
   logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
   // Prefer Codex pool account as the Cursor thread namespace when present. Cursor routes without
   // codexAccountMode still get a credential-derived scope inside the Cursor adapter.
   const identityScope = codexLogAccountId(authCtx);
   if (identityScope) parsed._cursorIdentityScope = identityScope;
+  subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
+    ? authCtx.accountId
+    : config.activeCodexAccountId ?? null;
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.
@@ -1178,6 +1274,22 @@ export async function handleResponses(
       if (terminalBodyWillRecord) {
         options.setTerminalOutcomeRecorder?.((status, httpStatusOverride) => {
           terminalRecorder(status, httpStatusOverride);
+          if (status === "failed") {
+            const quotaFailureMessage = httpStatusOverride === 429 || httpStatusOverride === 402
+              || logCtx.terminalHttpStatus === 429
+              || logCtx.terminalHttpStatus === 402
+              ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
+              : undefined;
+            if (quotaFailureMessage !== undefined) {
+              recordSubagentQuotaFailureForThreadSpawn(
+                req.headers,
+                subagentQuotaFailureModel,
+                quotaFailureMessage,
+                config,
+                subagentFallbackAccountId,
+              );
+            }
+          }
           options.onNativePassthroughTerminal?.(status);
         });
       } else {
@@ -1194,6 +1306,23 @@ export async function handleResponses(
       }
     }
 
+    // Non-2xx passthrough failures must never reach Codex as an empty body —
+    // Codex renders that as the opaque "Unknown error" (#452). Combo attempts
+    // keep their typed failure envelope. Non-empty bodies are relayed verbatim
+    // (headers included) so pool-retry Activation B/D and client diagnostics stay intact.
+    if (!upstreamResponse.ok) {
+      if (options.comboAttempt) {
+        const failure = await consumeComboFailure(upstreamResponse, options.abortSignal);
+        options.onConsumedComboFailure?.(failure);
+        return failure.response;
+      }
+      const errorText = await upstreamResponse.text().catch(() => "");
+      return formatPassthroughUpstreamError(upstreamResponse.status, errorText, {
+        statusText: upstreamResponse.statusText,
+        headers,
+      });
+    }
+
     // Bun#32111 workaround: passthrough SSE uses tee()+native relay to avoid the
     // async-pull segfault on Windows. Branch[0] goes directly to the Response (Bun
     // native relay, never enters JS Sink.write); branch[1] is consumed in the
@@ -1204,7 +1333,7 @@ export async function handleResponses(
     // bounded reader with inline inspection (see src/server/relay-eager.ts and
     // devlog/_plan/260723_win_mem_safestream/020). Default on the bundled
     // known-bad runtime remains the tee path below.
-    if (upstreamResponse.ok && isEventStream && upstreamResponse.body) {
+    if (isEventStream && upstreamResponse.body) {
       const repairConfig = route.provider.responsesItemIdRepair;
       const winNoRepair = process.platform === "win32" && !hasResponsesItemIdRepair(repairConfig);
       const eagerDecision = winNoRepair ? decideEagerRelay(config.streamMode ?? "auto") : null;
@@ -1215,6 +1344,22 @@ export async function handleResponses(
         const reportNativeTerminal = recordTerminalOutcomes
           ? (status: ResponsesTerminalStatus, httpStatusOverride?: number) => {
             terminalRecorder?.(status, httpStatusOverride);
+            if (status === "failed") {
+              const quotaFailureMessage = httpStatusOverride === 429 || httpStatusOverride === 402
+                || logCtx.terminalHttpStatus === 429
+                || logCtx.terminalHttpStatus === 402
+                ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
+                : undefined;
+              if (quotaFailureMessage !== undefined) {
+                recordSubagentQuotaFailureForThreadSpawn(
+                  req.headers,
+                  subagentQuotaFailureModel,
+                  quotaFailureMessage,
+                  config,
+                  subagentFallbackAccountId,
+                );
+              }
+            }
             options.onNativePassthroughTerminal?.(status);
           }
           : undefined;
@@ -1259,6 +1404,22 @@ export async function handleResponses(
         // client-cancel (no terminal seen) is finalized separately via consumeForInspection's onCancel.
         const reportNativeTerminal = (status: ResponsesTerminalStatus, httpStatusOverride?: number) => {
           terminalRecorder?.(status, httpStatusOverride);
+          if (status === "failed") {
+            const quotaFailureMessage = httpStatusOverride === 429 || httpStatusOverride === 402
+              || logCtx.terminalHttpStatus === 429
+              || logCtx.terminalHttpStatus === 402
+              ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
+              : undefined;
+            if (quotaFailureMessage !== undefined) {
+              recordSubagentQuotaFailureForThreadSpawn(
+                req.headers,
+                subagentQuotaFailureModel,
+                quotaFailureMessage,
+                config,
+                subagentFallbackAccountId,
+              );
+            }
+          }
           options.onNativePassthroughTerminal?.(status);
         };
         consumeForInspection(
@@ -1297,14 +1458,9 @@ export async function handleResponses(
       }));
     }
     if (headers.get("content-type")?.toLowerCase().includes("application/json")) {
-      if (!upstreamResponse.ok && options.comboAttempt) {
-        const failure = await consumeComboFailure(upstreamResponse, options.abortSignal);
-        options.onConsumedComboFailure?.(failure);
-        return failure.response;
-      }
       const text = await upstreamResponse.text();
       inspectResponseLogJson(logCtx, text);
-      if (upstreamResponse.ok && rememberPassthroughResponse) {
+      if (rememberPassthroughResponse) {
         try {
           rememberPassthroughResponse(JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown });
         } catch { /* non-JSON despite content-type; recording is best-effort */ }
@@ -1374,6 +1530,15 @@ export async function handleResponses(
           hideThinkingSummary: parsed.options.hideThinkingSummary,
           ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
           ...(routedCompaction ? { compaction: true } : {}),
+          onUsage: usage => {
+            // Raw adapter usage, pre wire-normalization: the bridged SSE now always carries
+            // zero-default detail objects, so provenance must come from here (cache_detail_missing).
+            logCtx.usageFromBridge = true;
+            if (usage) {
+              logCtx.usage = usage;
+              if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
+            }
+          },
           ...(routedCompaction ? {} : {
             onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) =>
               rememberResponseState(
@@ -1411,6 +1576,13 @@ export async function handleResponses(
       toolSearchToolNames,
       ...(routedCompaction ? { compaction: true } : {}),
       onProviderState: state => { providerState = state; },
+      onUsage: usage => {
+        logCtx.usageFromBridge = true;
+        if (usage) {
+          logCtx.usage = usage;
+          if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
+        }
+      },
     });
     if (!routedCompaction) {
       rememberResponseState(
@@ -1442,6 +1614,13 @@ export async function handleResponses(
       forceEmptyResponseId: true,
       abortSignal: options.abortSignal,
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
+      onUsage: usage => {
+        logCtx.usageFromBridge = true;
+        if (usage) {
+          logCtx.usage = usage;
+          if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
+        }
+      },
       recordSidecarOutcome: wsPlan.forwardSidecar?.recordOutcome,
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
       routedModelStallTimeoutMs: wsPlan.routedModelStallTimeoutMs,
@@ -1640,6 +1819,15 @@ export async function handleResponses(
       }
       const errorText = await upstreamResponse.text().catch(() => "unknown error");
       cleanupUpstreamAbort();
+      recordSubagentQuotaFailureForThreadSpawn(
+        req.headers,
+        subagentQuotaFailureModel,
+        upstreamResponse.status === 429 || upstreamResponse.status === 402
+          ? upstreamResponse.status
+          : `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
+        config,
+        subagentFallbackAccountId,
+      );
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
       return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`);
@@ -1788,6 +1976,14 @@ export async function handleResponses(
         hideThinkingSummary: parsed.options.hideThinkingSummary,
         ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
         ...(routedCompaction ? { compaction: true } : {}),
+        onUsage: usage => {
+          // Raw adapter usage, pre wire-normalization (see the runTurn branch above).
+          logCtx.usageFromBridge = true;
+          if (usage) {
+            logCtx.usage = usage;
+            if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
+          }
+        },
         // Compaction turns must NOT enter the continuation cache: _rawBody still holds the full
         // PRE-compaction history, and a later previous_response_id expansion would rehydrate the
         // giant stale chain Codex just replaced.
@@ -1837,6 +2033,13 @@ export async function handleResponses(
       toolSearchToolNames,
       ...(routedCompaction ? { compaction: true } : {}),
       onProviderState: state => { providerState = state; },
+      onUsage: usage => {
+        logCtx.usageFromBridge = true;
+        if (usage) {
+          logCtx.usage = usage;
+          if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
+        }
+      },
     });
     // See the streaming branch: compaction turns skip the continuation cache.
     if (!routedCompaction) {

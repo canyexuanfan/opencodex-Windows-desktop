@@ -80,15 +80,17 @@ export async function loginKiro(ctrl: OAuthController): Promise<OAuthCredentials
       url: "",
       instructions:
         "No kiro-cli token found. Paste a Kiro access token below (starts with 'aoa'). " +
-        "Run `kiro-cli login` first, or set KIRO_ACCESS_TOKEN.",
+        "Otherwise install the Kiro CLI (`curl -fsSL https://cli.kiro.dev/install | bash`), " +
+        "run `kiro-cli login`, and retry — or set KIRO_ACCESS_TOKEN.",
     });
-    ctrl.onProgress?.("No kiro-cli token found. Paste a Kiro access token (starts with 'aoa').");
+    ctrl.onProgress?.("No kiro-cli token found. Paste a Kiro access token (starts with 'aoa'), or install the Kiro CLI and run `kiro-cli login` first.");
     const raw = (await ctrl.onManualCodeInput()).trim();
     if (raw) return { access: raw, refresh: "", expires: Date.now() + 3600_000, source: "manual" };
   }
 
   throw new Error(
-    "Kiro: no token found. Run `kiro-cli login` first (import), or set KIRO_ACCESS_TOKEN. " +
+    "Kiro: no token found. Install the Kiro CLI (`curl -fsSL https://cli.kiro.dev/install | bash`) " +
+      "and run `kiro-cli login` to import its session, or set KIRO_ACCESS_TOKEN. " +
       "Browser login is not supported for Kiro.",
   );
 }

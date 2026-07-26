@@ -10,7 +10,7 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
-  saveConfig,
+  saveConfigPreservingClaudeCode,
 } from "../../config";
 import {
   clearLoginState,
@@ -179,7 +179,7 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
         config.claudeCode = claudeCode;
       }
     }
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     clearComboSelectionState(id);
     clearComboTargetCooldowns(id);
     if (renameFrom) {
@@ -200,7 +200,7 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
     const { clearComboSelectionState, clearComboTargetCooldowns } = await import("../../combos");
     delete config.combos![id];
     if (Object.keys(config.combos!).length === 0) delete config.combos;
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     clearComboSelectionState(id);
     clearComboTargetCooldowns(id);
     await refreshCodexCatalogBestEffort();

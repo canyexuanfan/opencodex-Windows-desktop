@@ -2,8 +2,8 @@
  * ProviderOverview — 2-column layout: left (CONNECTION + Auth summary) / right
  * (STATS + Notes). Phase 030 of workspace design parity.
  */
-import { useCallback, useState, type ReactNode } from "react";
-import { useT, useI18n } from "../../i18n";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useT, useI18n } from "../../i18n/shared";
 import { IconAlert, IconCheck } from "../../icons";
 import { binProviderStatus, type WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatRelativeTime, relativeTimeLabelsFromT, formatRequestCount, formatTokenCount } from "../../provider-workspace/usage";
@@ -196,19 +196,34 @@ function NotesSection({ item, onUpdateProvider }: {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (editing) textareaRef.current?.focus();
+  }, [editing]);
 
   const save = useCallback(async () => {
     if (saving || !onUpdateProvider) return;
     const trimmed = draft.trim();
     if (trimmed === (item.note ?? "")) {
       setEditing(false);
+      setError("");
       return;
     }
     setSaving(true);
-    await onUpdateProvider(item.name, { note: trimmed || undefined });
-    setSaving(false);
-    setEditing(false);
-  }, [draft, item.name, item.note, onUpdateProvider, saving]);
+    try {
+      const result = await onUpdateProvider(item.name, { note: trimmed || undefined });
+      if (!result.ok) {
+        setError(result.error || t("prov.saveFailed"));
+        return;
+      }
+      setError("");
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }, [draft, item.name, item.note, onUpdateProvider, saving, t]);
 
   if (!editing) {
     return (
@@ -220,6 +235,7 @@ function NotesSection({ item, onUpdateProvider }: {
           onClick={() => {
             if (!onUpdateProvider) return;
             setDraft(item.note ?? "");
+            setError("");
             setEditing(true);
           }}
           disabled={!onUpdateProvider}
@@ -234,18 +250,19 @@ function NotesSection({ item, onUpdateProvider }: {
     <section className="pws-section pws-notes-section" aria-label={t("pws.notes")}>
       <h3 className="pws-section-title">{t("pws.notes")}</h3>
       <textarea
+        ref={textareaRef}
         className="pws-notes-textarea"
         value={draft}
         onChange={e => setDraft(e.target.value)}
         onBlur={() => void save()}
         onKeyDown={e => {
-          if (e.key === "Escape") { setDraft(item.note ?? ""); setEditing(false); }
+          if (e.key === "Escape") { setDraft(item.note ?? ""); setError(""); setEditing(false); }
         }}
         placeholder={t("pws.notePlaceholder")}
-        autoFocus
         rows={3}
         disabled={saving}
       />
+      {error ? <p className="pws-inline-error" role="alert">{error}</p> : null}
     </section>
   );
 }

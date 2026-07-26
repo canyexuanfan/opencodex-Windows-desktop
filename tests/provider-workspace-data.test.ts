@@ -6,8 +6,6 @@ import {
   hideRedundantChatGptForwardProviders,
   isAccountProvider,
   isFreeProvider,
-  isPaidProvider,
-  pickCanonicalForwardProvider,
   providerTier,
   sortWorkspaceItems,
   type WorkspaceItem,
@@ -27,13 +25,11 @@ import {
 import {
   formatProviderDisplayName,
   isCatalogProviderId,
-  providerBrandColor,
 } from "../gui/src/provider-icons";
 import {
   bucketPresets,
   filterPresets,
   presetTier,
-  sortPresets,
   type CatalogPreset,
 } from "../gui/src/components/provider-catalog/provider-presets";
 import { isLocalProvider, providerKind } from "../gui/src/provider-workspace/kind";
@@ -188,8 +184,6 @@ describe("catalog: three-way tiers", () => {
     expect(isFreeProvider(prov())).toBe(false);
     expect(providerTier("nvidia", prov({ freeTier: true }))).toBe("free");
     expect(providerTier("venice", prov({ authMode: "key", hasApiKey: true }))).toBe("paid");
-    expect(isPaidProvider("venice", prov({ authMode: "key", hasApiKey: true }))).toBe(true);
-    expect(isPaidProvider("nvidia", prov({ freeTier: true }))).toBe(false);
     // Accounts precedence pinned: a canonical provider that ALSO carries freeTier is accounts.
     expect(providerTier("openai", forwardProv({ freeTier: true }))).toBe("accounts");
   });
@@ -251,7 +245,7 @@ describe("catalog: sorting", () => {
   });
 });
 
-describe("catalog: chatgpt hiding + canonical picker", () => {
+describe("catalog: chatgpt hiding", () => {
   test("hides legacy chatgpt only when canonical openai covers the same passthrough", () => {
     const both = { openai: forwardProv(), chatgpt: forwardProv() };
     expect(Object.keys(hideRedundantChatGptForwardProviders(both))).toEqual(["openai"]);
@@ -275,16 +269,6 @@ describe("catalog: chatgpt hiding + canonical picker", () => {
     expect(out).not.toBe(both);
   });
 
-  test("pickCanonicalForwardProvider prefers canonical openai", () => {
-    expect(pickCanonicalForwardProvider({ "openai-multi": forwardProv(), openai: forwardProv() })).toBe("openai");
-    expect(pickCanonicalForwardProvider({ openai: forwardProv() })).toBe("openai");
-    expect(pickCanonicalForwardProvider({ chatgpt: forwardProv() })).toBeNull();
-    expect(pickCanonicalForwardProvider({ venice: prov({ authMode: "key", hasApiKey: true }) })).toBeNull();
-    // Legacy Multi never wins, regardless of shape.
-    expect(pickCanonicalForwardProvider({ "openai-multi": prov({ authMode: "key" }), openai: forwardProv() })).toBe("openai");
-    expect(pickCanonicalForwardProvider({ "my-forward": forwardProv() })).toBeNull();
-    expect(pickCanonicalForwardProvider({ "my-forward": forwardProv(), openai: forwardProv() })).toBe("openai");
-  });
 });
 
 describe("usage: model parsing", () => {
@@ -462,10 +446,7 @@ describe("provider-icons", () => {
     expect(formatProviderDisplayName("MyProxy")).toBe("MyProxy");
   });
 
-  test("brand colors and catalog membership", () => {
-    expect(providerBrandColor("nvidia")).toBe("#76B900");
-    expect(providerBrandColor("openai-multi")).toBeUndefined();
-    expect(providerBrandColor("unknown")).toBeUndefined();
+  test("catalog membership excludes legacy Multi and custom ids", () => {
     expect(isCatalogProviderId("openai-multi")).toBe(false);
     expect(isCatalogProviderId("my-proxy")).toBe(false);
   });
@@ -527,16 +508,6 @@ describe("add-provider catalog presets (WP050a)", () => {
     expect(filterPresets(rows, "").map(p => p.id)).toEqual(["nvidia", "groq"]);
   });
 
-  test("sortPresets is deterministic: label case-insensitive, id tiebreak, input not mutated", () => {
-    const rows = [
-      preset({ id: "b-provider", label: "zeta" }),
-      preset({ id: "a-provider", label: "Zeta" }),
-      preset({ id: "c-provider", label: "alpha" }),
-    ];
-    const sorted = sortPresets(rows);
-    expect(sorted.map(p => p.id)).toEqual(["c-provider", "a-provider", "b-provider"]);
-    expect(rows.map(p => p.id)).toEqual(["b-provider", "a-provider", "c-provider"]);
-  });
 });
 
 describe("provider kind classification (WP080a)", () => {
