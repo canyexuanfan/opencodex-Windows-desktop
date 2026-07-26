@@ -29,6 +29,7 @@ test("Dashboard usage polling cannot delay core health and settings", async () =
   expect(core.slice(coreFnStart)).not.toContain("/api/usage?range=30d");
   expect(hook).toContain("dashboard-usage:${apiBase}");
   expect(hook).toContain("fetchDashboardUsage(apiBase, signal)");
+  expect(hook).toMatch(/dashboard-usage:\$\{apiBase\}[\s\S]*pollMs: 60_000/);
 });
 
 test("Dashboard workspace pane is a labelled section, not a nested main landmark", async () => {

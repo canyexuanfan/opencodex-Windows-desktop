@@ -78,22 +78,20 @@ Missing usage is never treated as zero. The dashboard Usage tab renders the same
 main Dashboard surfaces a 30d token / coverage summary. The in-memory `requestLog` is capped at
 200 entries and is **not** the source of truth for aggregation — the JSONL on disk is.
 
-The reader keeps an in-process, append-aware cache for aggregate requests. An unchanged file reuses
-normalized entries, while an ordinary append reads and parses only the new bytes. The cache is
-discarded when the configured path changes, the file identity changes, the size shrinks, a same-size
-rewrite is observed, or the previous suffix no longer matches. The Dashboard polls its 30-day usage
-summary as an independent client resource so a large or older usage log cannot hold up health,
-provider, or settings state. Full cache rebuilds used by the management API parse in bounded batches
-and yield between them so unrelated management requests remain serviceable during an upgrade's first
-read of an existing large log.
+The management API caches only the compact summary for an exact file revision and query; it never
+retains normalized per-request rows after a response. The cache invalidates on any identity, size, or
+timestamp change and at the next range expiry or local-day boundary. Rebuilds parse in bounded
+batches and yield between them, so unrelated management requests remain serviceable even for a large
+existing log. The Dashboard polls its 30-day usage summary independently once per minute, so usage
+work cannot delay health/provider/settings state or run every five seconds.
 
 [Decision Log]
-- 목적과 의도: Keep five-second dashboard refreshes responsive as `usage.jsonl` grows.
+- 목적과 의도: Keep dashboard and management requests responsive as `usage.jsonl` grows.
 - 기존 구현 및 제약 조건: The JSONL file remains the durable source of truth and may be truncated, replaced, or hand-edited.
-- 검토한 주요 대안: Reparse the complete file, maintain a separate database, or cache normalized rows and read appended bytes.
-- 선택한 방식: Verify file identity and a short prefix-boundary signature, incrementally parse appends, cooperatively batch full rebuilds, and poll usage separately in the GUI.
-- 다른 대안 대신 이 방식을 선택한 이유: It removes repeated parsing without introducing a second persistence format or migration path.
-- 장점, 단점 및 영향: Normal polling work scales with new rows; the first read and any detected rewrite still pay one full parse for correctness.
+- 검토한 주요 대안: Retain normalized rows, maintain a second database, or cache only revision-keyed summaries and cooperatively rebuild them.
+- 선택한 방식: Keep only bounded summary results, share full reads by exact file identity, yield during parsing, and poll usage separately at a slower cadence.
+- 다른 대안 대신 이 방식을 선택한 이유: It bounds resident heap and avoids a second persistence format while keeping unrelated endpoints responsive.
+- 장점, 단점 및 영향: Unchanged queries are cheap and memory stays bounded; a changed large log still consumes rebuild CPU, but cooperatively and at most once per observed revision/query.
 
 For diagnosing upstream-shape / usage-extraction issues run `ocx debug usage on` (or set
 `OPENCODEX_USAGE_DEBUG=1` before start). The proxy then writes a rolling debug record per finalized

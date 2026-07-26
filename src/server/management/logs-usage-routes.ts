@@ -34,9 +34,14 @@ import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { resolveCodexHomeDir } from "../../codex/home";
 import { scanStorage } from "../../storage/scanner";
-import { readUsageEntriesForManagement } from "../../usage/log";
+import {
+  currentUsageLogRevision,
+  readUsageSnapshotForManagement,
+  usageLogRevisionKey,
+  type PersistedUsageEntry,
+} from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
-import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
+import { parseRange, parseUsageSurface, summarizeUsage, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
@@ -59,6 +64,48 @@ import { applySystemEnvToggle } from "../system-env";
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+
+const USAGE_DAY_MS = 86_400_000;
+const usageSummaryCache = new Map<string, {
+  revisionKey: string;
+  expiresAt: number;
+  summary: UsageSummary;
+}>();
+
+function usageEntryMatchesSurface(entry: PersistedUsageEntry, surface: UsageSurface): boolean {
+  if (surface === "claude") return entry.surface === "claude" || entry.surface === "claude-desktop";
+  if (surface === "grok") return entry.surface === "grok";
+  if (surface === "codex") return entry.surface === undefined;
+  return true;
+}
+
+function nextLocalMidnight(now: number): number {
+  const next = new Date(now);
+  next.setHours(24, 0, 0, 0);
+  return next.getTime();
+}
+
+function usageSummaryExpiresAt(
+  entries: PersistedUsageEntry[],
+  range: UsageRange,
+  surface: UsageSurface,
+  now: number,
+): number {
+  let expiresAt = nextLocalMidnight(now);
+  const windowMs = range === "7d" ? 7 * USAGE_DAY_MS : range === "30d" ? 30 * USAGE_DAY_MS : null;
+  if (windowMs === null) return expiresAt;
+  for (const entry of entries) {
+    if (!usageEntryMatchesSurface(entry, surface)) continue;
+    const expiry = entry.timestamp + windowMs;
+    if (expiry > now && expiry < expiresAt) expiresAt = expiry;
+  }
+  return expiresAt;
+}
+
+function refreshedUsageSummary(summary: UsageSummary, range: UsageRange, now: number): UsageSummary {
+  const since = range === "7d" ? now - 7 * USAGE_DAY_MS : range === "30d" ? now - 30 * USAGE_DAY_MS : null;
+  return { ...summary, since, generatedAt: now };
+}
 
 export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
@@ -123,7 +170,20 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     const surface = parseUsageSurface(url.searchParams.get("surface"));
     const now = Date.now();
     try {
-      return jsonResponse(summarizeUsage(await readUsageEntriesForManagement(), range, now, surface));
+      const cacheKey = `${range}:${surface}`;
+      const observedRevisionKey = usageLogRevisionKey(currentUsageLogRevision());
+      const cached = usageSummaryCache.get(cacheKey);
+      if (cached && cached.revisionKey === observedRevisionKey && now < cached.expiresAt) {
+        return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
+      }
+      const snapshot = await readUsageSnapshotForManagement();
+      const summary = summarizeUsage(snapshot.entries, range, now, surface);
+      usageSummaryCache.set(cacheKey, {
+        revisionKey: usageLogRevisionKey(snapshot.revision),
+        expiresAt: usageSummaryExpiresAt(snapshot.entries, range, surface, now),
+        summary,
+      });
+      return jsonResponse(summary);
     } catch {
       return jsonResponse({
         range,

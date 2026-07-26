@@ -1,18 +1,21 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendUsageEntry,
+  currentUsageLogRevision,
   readRecentUsageEntries,
   readUsageEntries,
   readUsageEntriesForManagement,
+  readUsageSnapshotForManagement,
   resetUsageReadCacheForTests,
   usageForFinalLog,
   usageLogPath,
   usageStatusForFinalLog,
   usageTotalTokens,
   usageReadCacheStatsForTests,
+  usageLogRevisionKey,
 } from "../src/usage/log";
 
 let testDir = "";
@@ -44,32 +47,12 @@ describe("usage log", () => {
     totalTokens: 2,
   });
 
-  test("caches unchanged prefixes and parses only appended JSONL rows", () => {
+  test("file revisions change after append and in-place rewrite", () => {
     writeFileSync(usageLogPath(), `${persistedLine("a")}\n${persistedLine("b")}\n`);
-    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["a", "b"]);
-    expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2 });
-
-    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["a", "b"]);
-    expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2 });
-
-    appendFileSync(usageLogPath(), `${persistedLine("c")}\n`);
-    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["a", "b", "c"]);
-    expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 1, parsedLines: 3 });
-  });
-
-  test("invalidates the incremental cache after truncate or in-place rewrite", () => {
-    writeFileSync(usageLogPath(), `${persistedLine("old-a")}\n${persistedLine("old-b")}\n`);
-    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["old-a", "old-b"]);
-
+    const first = usageLogRevisionKey(currentUsageLogRevision());
     writeFileSync(usageLogPath(), `${persistedLine("new")}\n`);
+    expect(usageLogRevisionKey(currentUsageLogRevision())).not.toBe(first);
     expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["new"]);
-    expect(usageReadCacheStatsForTests().fullReads).toBe(2);
-
-    // Grow the same inode with a different prefix. The suffix signature prevents this
-    // from being mistaken for an append that could retain old entries.
-    writeFileSync(usageLogPath(), `${persistedLine("replacement-a")}\n${persistedLine("replacement-b")}\n`);
-    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["replacement-a", "replacement-b"]);
-    expect(usageReadCacheStatsForTests().fullReads).toBe(3);
   });
 
   test("management full reads yield while parsing a large existing log", async () => {
@@ -83,6 +66,21 @@ describe("usage log", () => {
     expect(entries).toHaveLength(2_100);
     expect(timerRan).toBe(true);
     expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2_100 });
+  });
+
+  test("a replacement does not join an in-flight read for the previous file revision", async () => {
+    writeFileSync(
+      usageLogPath(),
+      `${Array.from({ length: 2_100 }, (_, index) => persistedLine(`old-${index}`)).join("\n")}\n`,
+    );
+    const oldRead = readUsageSnapshotForManagement();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    writeFileSync(usageLogPath(), `${persistedLine("replacement")}\n`);
+    const newRead = readUsageSnapshotForManagement();
+    const [oldSnapshot, newSnapshot] = await Promise.all([oldRead, newRead]);
+    expect(oldSnapshot.entries).toHaveLength(2_100);
+    expect(newSnapshot.entries.map(entry => entry.requestId)).toEqual(["replacement"]);
+    expect(usageLogRevisionKey(newSnapshot.revision)).not.toBe(usageLogRevisionKey(oldSnapshot.revision));
   });
 
   test("persists only canonical ordered attempt fields", () => {
