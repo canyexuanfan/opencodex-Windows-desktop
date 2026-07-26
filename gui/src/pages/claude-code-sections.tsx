@@ -119,26 +119,54 @@ export function ClaudeCodeSettingsCard({
             </div>
             <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
               <Select
-                value={!override ? "inherit" : override.backend ?? "auto"}
+                value={
+                  !override || (!override.backend && !(override.model?.trim()))
+                    ? "inherit"
+                    : override.backend ?? "auto"
+                }
                 options={[
                   { value: "inherit", label: t("claude.useMainSetting") },
                   { value: "auto", label: t("dash.backendAuto") },
                   { value: "openai", label: t("dash.backendOpenAI") },
                   { value: "anthropic", label: t("dash.backendAnthropic") },
                 ]}
-                onChange={value => onStateChange({
-                  ...state,
-                  [key]: value === "inherit"
-                    ? undefined
-                    : { ...override, backend: value === "auto" ? undefined : value as SidecarBackend },
-                })}
+                onChange={value => {
+                  // Empty Auto ({ backend: undefined, model: "" }) is deleted by the
+                  // management API and reloads as inherit — don't offer a distinct
+                  // non-persistable Auto state.
+                  if (value === "inherit") {
+                    onStateChange({ ...state, [key]: undefined });
+                    return;
+                  }
+                  if (value === "auto") {
+                    const model = override?.model?.trim();
+                    onStateChange({
+                      ...state,
+                      [key]: model ? { model: override!.model, backend: undefined } : undefined,
+                    });
+                    return;
+                  }
+                  onStateChange({
+                    ...state,
+                    [key]: { ...override, backend: value as SidecarBackend },
+                  });
+                }}
                 label={t("dash.sidecarBackend")}
                 portal
               />
               <input
                 className="input mono"
                 value={override?.model ?? ""}
-                onChange={e => onStateChange({ ...state, [key]: { ...override, model: e.target.value } })}
+                onChange={e => {
+                  const model = e.target.value;
+                  // Clearing the only field of an Auto override collapses to inherit
+                  // (same persist semantics as an empty sidecar object).
+                  if (!model.trim() && !override?.backend) {
+                    onStateChange({ ...state, [key]: undefined });
+                    return;
+                  }
+                  onStateChange({ ...state, [key]: { ...override, model } });
+                }}
                 placeholder={t("claude.sidecarModelPlaceholder")}
                 disabled={!override}
                 aria-label={t("dash.sidecarModel")}

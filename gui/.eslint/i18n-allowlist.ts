@@ -39,6 +39,7 @@ const BRAND_LITERALS_LOWER = new Set(
 const TECHNICAL_UNITS = new Set([
   "ms",
   "k",
+  "M",
   "1M",
   "c",
   "w",

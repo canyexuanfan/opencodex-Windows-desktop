@@ -29,8 +29,12 @@ export interface ClaudeCodeState {
 export function formatCompactWindow(value: number): string {
   if (value >= 1_000_000) {
     const millions = value / 1_000_000;
-    const label = Number.isInteger(millions) ? String(millions) : millions.toFixed(1).replace(/\.0$/, "");
-    return `${label}M`;
+    if (Number.isInteger(millions)) return `${millions}M`;
+    // One decimal is enough for ladder-ish values (1.5M); if it would collide with
+    // another million label (e.g. 1_040_000 → "1M"), fall back to an exact k label.
+    const oneDecimal = millions.toFixed(1).replace(/\.0$/, "");
+    if (Number(oneDecimal) * 1_000_000 === value) return `${oneDecimal}M`;
+    return `${Math.round(value / 1_000)}k`;
   }
   return `${Math.round(value / 1_000)}k`;
 }
