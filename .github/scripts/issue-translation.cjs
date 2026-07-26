@@ -141,13 +141,29 @@ function isEnglishDetectedLanguage(value) {
 }
 
 /**
+ * Language written into control-state on the no-translation persist path.
+ *
+ * Confirmed English only when `sourceComplete` is true (valid parsed
+ * `requires_translation: false`). Missing/blank language on incomplete
+ * AI/parse/action failures must record `unknown`, never default to English.
+ */
+function detectedLanguageForControlPersist({ detectedLanguage, sourceComplete } = {}) {
+  if (sourceComplete === true) {
+    return scrubDetectedLanguage(detectedLanguage || "English");
+  }
+  const raw = String(detectedLanguage ?? "").trim();
+  if (!raw) return "unknown";
+  return scrubDetectedLanguage(raw);
+}
+
+/**
  * Visible bookkeeping language label for the sticky control comment.
  * Always non-empty so the bot bubble never renders as a blank ghost comment.
+ * Missing language is `unknown` — never invent a confirmed English label.
  */
 function bookkeepingLanguageLabel(state) {
   if (state?.detectedLanguage) return scrubDetectedLanguage(state.detectedLanguage);
-  if (!state?.requiresTranslation) return "English";
-  return scrubDetectedLanguage(null);
+  return "unknown";
 }
 
 /**
@@ -887,6 +903,7 @@ module.exports = {
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   isEnglishDetectedLanguage,
+  detectedLanguageForControlPersist,
   bookkeepingLanguageLabel,
   stripOrphanBodyControlState,
   buildTranslationBlock,

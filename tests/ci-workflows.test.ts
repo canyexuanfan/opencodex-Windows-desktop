@@ -359,7 +359,12 @@ describe("GitHub Actions hardening", () => {
     expect(persistStep).toContain("requires_translation != 'true'");
     expect(persistStep).toContain("persistTranslationControlState");
     expect(persistStep).toContain("SOURCE_COMPLETE");
-    expect(persistStep).toContain('sourceComplete: process.env.SOURCE_COMPLETE === "true"');
+    expect(persistStep).toContain("detectedLanguageForControlPersist");
+    expect(persistStep).toContain('const sourceComplete = process.env.SOURCE_COMPLETE === "true"');
+    expect(persistStep).toMatch(/sourceComplete,\s*\n\s*\}/);
+    // Missing DETECTED_LANG on incomplete/skipped parse must not default to English.
+    expect(persistStep).not.toContain('DETECTED_LANG || "English"');
+    expect(persistStep).not.toContain("DETECTED_LANG || 'English'");
     expect(persistStep).not.toContain("silent_state");
     expect(persistStep).not.toContain("cleanup_comment_ids");
     expect(workflow).not.toContain("Save translation control state cache");
@@ -369,7 +374,11 @@ describe("GitHub Actions hardening", () => {
     const commentPersist = workflow
       .split("- name: Persist comment translation control state")[1]!
       .split(/\n {2}[a-zA-Z]/)[0]!;
-    expect(commentPersist).toContain('sourceComplete: process.env.SOURCE_COMPLETE === "true"');
+    expect(commentPersist).toContain('const sourceComplete = process.env.SOURCE_COMPLETE === "true"');
+    expect(commentPersist).toContain("detectedLanguageForControlPersist");
+    expect(commentPersist).toMatch(/sourceComplete,\s*\n\s*\}/);
+    expect(commentPersist).not.toContain('DETECTED_LANG || "English"');
+    expect(commentPersist).not.toContain("DETECTED_LANG || 'English'");
     const commentApplyStep = workflow
       .split("- name: Apply inline comment translation")[1]!
       .split("- name: Persist comment translation control state")[0]!;
@@ -387,6 +396,7 @@ describe("GitHub Actions hardening", () => {
     const helperSrc = await readText(".github/scripts/issue-translation.cjs");
     expect(helperSrc).toContain("shouldOmitVisibleBookkeeping");
     expect(helperSrc).toContain("findStickyControlComment");
+    expect(helperSrc).toContain("detectedLanguageForControlPersist");
     expect(helperSrc).toContain("Automated translation bookkeeping");
     expect(helperSrc).toContain("canonical comment first");
     expect(helperSrc).toContain("Authoritative control state comes only from verified bot-owned comments");

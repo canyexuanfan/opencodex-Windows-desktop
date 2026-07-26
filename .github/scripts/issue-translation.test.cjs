@@ -35,6 +35,8 @@ const {
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   isEnglishDetectedLanguage,
+  detectedLanguageForControlPersist,
+  bookkeepingLanguageLabel,
   stripOrphanBodyControlState,
   fitTranslationBody,
   shouldOmitVisibleBookkeeping,
@@ -43,6 +45,7 @@ const {
   collectMergedRecentFromComments,
   isValidControlTimestamp,
   pruneRecent,
+  completedHashFor,
 } = require("./issue-translation.cjs");
 
 const HASH_A = "aaaaaaaaaaaaaaaa";
@@ -311,6 +314,57 @@ describe("bot-owned control state", () => {
       requiresTranslation: false,
       detectedLanguage: "English",
     }), false);
+  });
+
+  it("incomplete AI/parse failures bookkeep as unknown, never false-English", async () => {
+    assert.equal(
+      detectedLanguageForControlPersist({ detectedLanguage: "", sourceComplete: false }),
+      "unknown",
+    );
+    assert.equal(
+      detectedLanguageForControlPersist({ detectedLanguage: undefined, sourceComplete: false }),
+      "unknown",
+    );
+    assert.equal(
+      detectedLanguageForControlPersist({ detectedLanguage: "unknown", sourceComplete: false }),
+      "unknown",
+    );
+    assert.equal(
+      detectedLanguageForControlPersist({ detectedLanguage: "", sourceComplete: true }),
+      "English",
+    );
+    assert.equal(
+      detectedLanguageForControlPersist({ detectedLanguage: "English", sourceComplete: true }),
+      "English",
+    );
+    assert.equal(bookkeepingLanguageLabel({ requiresTranslation: false, detectedLanguage: null }), "unknown");
+    assert.equal(bookkeepingLanguageLabel({ requiresTranslation: false, detectedLanguage: "English" }), "English");
+
+    const { github, calls } = mockGithub({ nextId: 77 });
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 9,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: detectedLanguageForControlPersist({
+          detectedLanguage: "",
+          sourceComplete: false,
+        }),
+        sourceComplete: false,
+      },
+      now: 100,
+    });
+    assert.equal(result.state.sourceHash, "0000000000000000");
+    assert.equal(result.state.detectedLanguage, "unknown");
+    assert.match(calls[0][1].body, /detected language: unknown/);
+    assert.doesNotMatch(calls[0][1].body, /detected language: English/);
+    // Attempt counted (recent) but source stays retryable.
+    assert.deepEqual(result.state.recent, [100]);
+    assert.equal(completedHashFor(result.state, "issue"), null);
   });
 
   it("English creates a bot comment with visible English bookkeeping", async () => {
