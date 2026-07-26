@@ -4,6 +4,7 @@ import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoice
 import { mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
 import { debugProviderDiagnostic } from "../lib/debug";
 import { isDebugEnabled } from "../lib/debug-settings";
+import { isCyberPolicyCode } from "../lib/errors";
 import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
@@ -678,11 +679,21 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // instead of a clean [DONE]. Surface it as a terminal error so the bridge emits a
         // classified response.failed (bridge case "error") — never a truncated completion.
         if (chunk.error) {
-          const err = chunk.error as { message?: string } | undefined;
+          const err = chunk.error as { message?: string; code?: string; type?: string; status?: number } | undefined;
           const message = err?.message ?? "upstream error";
           debugProviderDiagnostic("openai-chat", "stream-error", { message });
           yield* flushToolCalls();
-          yield { type: "error", message };
+          yield {
+            type: "error",
+            message,
+            ...(typeof err?.code === "string" ? { code: err.code } : {}),
+            ...(typeof err?.type === "string" ? { errorType: err.type } : {}),
+            ...(isCyberPolicyCode(err?.code)
+              ? { status: 400 }
+              : typeof err?.status === "number" && Number.isInteger(err.status)
+                ? { status: err.status }
+                : {}),
+          };
           return "terminate";
         }
 
@@ -792,10 +803,21 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const json = await response.json() as Record<string, unknown>;
       if (json.error) {
-        const upstreamError = json.error as { message?: unknown };
+        const upstreamError = json.error as { message?: unknown; code?: unknown; type?: unknown; status?: unknown };
+        const message = typeof upstreamError.message === "string" ? upstreamError.message : "upstream error";
+        const code = typeof upstreamError.code === "string" ? upstreamError.code : undefined;
+        const errorType = typeof upstreamError.type === "string" ? upstreamError.type : undefined;
+        const status = isCyberPolicyCode(code)
+          ? 400
+          : typeof upstreamError.status === "number" && Number.isInteger(upstreamError.status)
+            ? upstreamError.status
+            : undefined;
         return [{
           type: "error",
-          message: typeof upstreamError.message === "string" ? upstreamError.message : "upstream error",
+          message,
+          ...(code !== undefined ? { code } : {}),
+          ...(errorType !== undefined ? { errorType } : {}),
+          ...(status !== undefined ? { status } : {}),
         }];
       }
 

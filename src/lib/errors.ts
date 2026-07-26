@@ -4,6 +4,32 @@ export interface OcxErrorPayload {
   code: string | null;
 }
 
+/** OpenAI / Codex hard block for high-risk cybersecurity activity (HTTP 400 or mid-stream). */
+export const CYBER_POLICY_ERROR_CODE = "cyber_policy";
+
+export function isCyberPolicyCode(code: string | null | undefined): boolean {
+  return code === CYBER_POLICY_ERROR_CODE;
+}
+
+/**
+ * Detect OpenAI cyber-policy refusals from message text when structured `code` was stripped.
+ * Matches Codex fallback copy and Cursor/API agent wording (session evidence 2026-07-24).
+ * Does not treat a bare `cyber_policy` token as conclusive — model ids / routing errors can
+ * include that substring without being a policy refusal.
+ */
+export function isCyberPolicyMessage(text: string): boolean {
+  const lower = text.toLowerCase();
+  // Serialized error-code signatures only (not bare model-id collisions).
+  if (/"code"\s*:\s*"cyber_policy"/.test(lower)) return true;
+  if (/\bcode\s*[:=]\s*["']?cyber_policy\b/.test(lower)) return true;
+  if (lower.includes("high-risk cybersecurity")) return true;
+  if (lower.includes("high-risk cyber activity") || lower.includes("high-risk cyber ")) return true;
+  if (lower.includes("possible cybersecurity risk")) return true;
+  if (lower.includes("flagged") && lower.includes("cybersecurity")) return true;
+  if (lower.includes("flagged") && lower.includes("cyber activity")) return true;
+  return false;
+}
+
 function isSubscriptionGateMessage(text: string): boolean {
   return (
     text.includes("requires a subscription") ||
@@ -89,6 +115,11 @@ export function classifyError(status: number, type: string, message: string): Oc
     isClientClosedMessage(text)
   ) {
     return { message, type: "invalid_request_error", code: "client_closed_request" };
+  }
+  // Codex only shows the dedicated cyber UI when error.code === "cyber_policy".
+  // Prefer that code (and invalid_request_error) over generic remaps / 502 upstream_server_error.
+  if (type === CYBER_POLICY_ERROR_CODE || isCyberPolicyMessage(text)) {
+    return { message, type: "invalid_request_error", code: CYBER_POLICY_ERROR_CODE };
   }
   if (
     text.includes("context_length_exceeded") ||
@@ -234,6 +265,8 @@ export function inferHttpStatusFromAdapterMessage(message: string): number {
   const lower = message.toLowerCase();
   // Client aborts (e.g. mid web-search loop) must not look like upstream 502s in /api/logs.
   if (isClientClosedMessage(lower)) return 499;
+  // Codex Transport maps cyber_policy only on HTTP 400 (SSE is code-based).
+  if (isCyberPolicyMessage(lower)) return 400;
   // See classifyError: this prefix now only means explicit request-size overflow (400);
   // quota-style Cursor resource exhaustion carries the rate-limit prefix and maps to 429.
   if (lower.includes("cursor resource limit exceeded")) return 400;
@@ -305,6 +338,9 @@ export function httpStatusFromTerminalError(error: {
 } | undefined): number {
   if (!error) return 502;
   if (error.code === "client_closed_request" || error.code === "client_cancelled") return 499;
+  if (isCyberPolicyCode(error.code) || (error.message ? isCyberPolicyMessage(error.message) : false)) {
+    return 400;
+  }
   if (error.type === "rate_limit_error" || error.code === "rate_limit_exceeded") return 429;
   if (error.type === "authentication_error" || error.code === "invalid_api_key") return 401;
   if (

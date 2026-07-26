@@ -8,6 +8,7 @@
 type Rec = Record<string, unknown>;
 
 import { decodeServerSentEvents } from "../lib/sse-decoder";
+import { classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, isCyberPolicyMessage } from "../lib/errors";
 
 function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -43,23 +44,48 @@ export function chatCompletionsUsage(usage: unknown): Rec {
   return out;
 }
 
-export function chatCompletionsErrorBody(status: number, message: string, type = "invalid_request_error"): Rec {
+export function chatCompletionsErrorBody(
+  status: number,
+  message: string,
+  type = "invalid_request_error",
+  code?: string | null,
+): Rec {
+  if (isCyberPolicyCode(code) || isCyberPolicyMessage(message)) {
+    return {
+      error: {
+        message,
+        type: "invalid_request_error",
+        param: null,
+        code: CYBER_POLICY_ERROR_CODE,
+      },
+    };
+  }
   return {
     error: {
       message,
       type,
       param: null,
-      code: status === 401 ? "invalid_api_key"
-        : status === 404 ? "model_not_found"
-        : status === 429 ? "rate_limit_exceeded"
-        : null,
+      code: code !== undefined
+        ? code
+        : status === 401 ? "invalid_api_key"
+          : status === 404 ? "model_not_found"
+          : status === 429 ? "rate_limit_exceeded"
+          : null,
     },
   };
 }
 
-export function chatCompletionsErrorResponse(status: number, message: string, type?: string): Response {
-  return new Response(JSON.stringify(chatCompletionsErrorBody(status, message, type)), {
-    status,
+export function chatCompletionsErrorResponse(
+  status: number,
+  message: string,
+  type?: string,
+  code?: string | null,
+): Response {
+  const body = chatCompletionsErrorBody(status, message, type, code);
+  const err = body.error as { code?: string | null };
+  const finalStatus = err.code === CYBER_POLICY_ERROR_CODE ? 400 : status;
+  return new Response(JSON.stringify(body), {
+    status: finalStatus,
     headers: { "Content-Type": "application/json" },
   });
 }
@@ -85,19 +111,13 @@ export function isChatCompletionsStreamError(err: unknown): err is ChatCompletio
 
 function streamErrorStatus(message: string): number {
   const lower = message.toLowerCase();
+  if (isCyberPolicyMessage(lower)) return 400;
   if (lower.includes("truncated")) return 502;
   if (lower.includes("rate") || lower.includes("429")) return 429;
   if (lower.includes("unauthor") || lower.includes("401") || lower.includes("api key")) return 401;
   if (lower.includes("not found") || lower.includes("404")) return 404;
   if (lower.includes("invalid") || lower.includes("400")) return 400;
   return 502;
-}
-
-function streamErrorType(status: number): string {
-  if (status === 401) return "authentication_error";
-  if (status === 429) return "rate_limit_error";
-  if (status >= 500) return "server_error";
-  return "invalid_request_error";
 }
 
 function dataFrame(payload: Rec | "[DONE]"): string {
@@ -220,7 +240,7 @@ export function responsesSseToChatCompletionsSse(
         emit(frame);
         emit("[DONE]");
       };
-      const fail = (message: string) => {
+      const fail = (message: string, details?: { code?: string | null; type?: string; status?: number }) => {
         if (terminated) return;
         terminated = true;
         failed = true;
@@ -229,18 +249,21 @@ export function responsesSseToChatCompletionsSse(
         // Deliver the error frame then close the stream abnormally (no [DONE]).
         // Do not controller.error() — that can drop already-enqueued bytes from consumers
         // like response.text().
-        const status = streamErrorStatus(message);
-        const type = streamErrorType(status);
+        const statusHint = details?.status ?? streamErrorStatus(message);
+        const classified = classifyError(statusHint, details?.type ?? "upstream_error", message);
+        if (isCyberPolicyCode(details?.code) || classified.code === CYBER_POLICY_ERROR_CODE) {
+          classified.code = CYBER_POLICY_ERROR_CODE;
+          classified.type = "invalid_request_error";
+        } else if (details?.code !== undefined && details.code !== null && !classified.code) {
+          classified.code = details.code;
+        }
         try {
           controller.enqueue(encoder.encode(dataFrame({
             error: {
-              message,
-              type,
+              message: classified.message,
+              type: classified.type,
               param: null,
-              code: status === 401 ? "invalid_api_key"
-                : status === 404 ? "model_not_found"
-                : status === 429 ? "rate_limit_exceeded"
-                : null,
+              code: classified.code,
             },
           })));
           emittedFrames++;
@@ -373,7 +396,13 @@ export function responsesSseToChatCompletionsSse(
             const response = isRec(data.response) ? data.response : {};
             const error = isRec(response.error) ? response.error : {};
             const message = typeof error.message === "string" ? error.message : "upstream request failed";
-            fail(message);
+            const code = typeof error.code === "string" ? error.code : null;
+            const type = typeof error.type === "string" ? error.type : undefined;
+            fail(message, {
+              code,
+              type,
+              ...(code === CYBER_POLICY_ERROR_CODE ? { status: 400 } : {}),
+            });
             break;
           }
           default:
@@ -555,8 +584,11 @@ export async function collectChatCompletion(
               ? parsed.error.message
               : "upstream request failed";
             const type = typeof parsed.error.type === "string" ? parsed.error.type : "server_error";
-            const status = streamErrorStatus(message);
-            streamError = new ChatCompletionsStreamError(message, { status, type });
+            const code = typeof parsed.error.code === "string" ? parsed.error.code : null;
+            const status = code === CYBER_POLICY_ERROR_CODE || isCyberPolicyMessage(message)
+              ? 400
+              : streamErrorStatus(message);
+            streamError = new ChatCompletionsStreamError(message, { status, type, code });
             continue;
           }
           if (parsed.usage) usage = parsed.usage;

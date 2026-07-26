@@ -1,4 +1,4 @@
-import { classifyError } from "../lib/errors";
+import { classifyError, isCyberPolicyCode } from "../lib/errors";
 import type { OcxComboTarget } from "../types";
 import { targetKey } from "./types";
 
@@ -79,10 +79,18 @@ export function clearComboTargetCooldowns(comboId?: string): void {
 
 export type ComboFailureDecision = "hop" | "stop";
 
-export function comboFailureDecision(status: number, message: string): ComboFailureDecision {
+export function comboFailureDecision(
+  status: number,
+  message: string,
+  options?: { code?: string | null },
+): ComboFailureDecision {
   if (status === 499) return "stop";
   if (message.toLowerCase().includes("origin_rejected")) return "stop";
+  // Cyber policy is a hard non-retryable refusal — honor structured code even when
+  // classificationText was truncated before the JSON code field.
+  if (isCyberPolicyCode(options?.code)) return "stop";
   const error = classifyError(status, "upstream_error", message);
+  if (isCyberPolicyCode(error.code)) return "stop";
   if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
     return "stop";
   }

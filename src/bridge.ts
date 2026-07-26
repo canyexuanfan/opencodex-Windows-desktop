@@ -1,5 +1,5 @@
 import type { AdapterEvent, OcxMessagePhase, OcxProviderContinuationState, OcxUsage } from "./types";
-import { adapterFailureFromMessage, classifyError, type OcxErrorPayload } from "./lib/errors";
+import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { resolveStallTimeoutSec } from "./stall-timeout";
@@ -68,10 +68,16 @@ function adapterFailureFromEvent(event: Extract<AdapterEvent, { type: "error" }>
     return adapterFailureFromMessage(event.message);
   }
   const fallback = adapterFailureFromMessage(event.message);
-  const httpStatus = event.status ?? fallback.httpStatus;
+  let httpStatus = event.status ?? fallback.httpStatus;
   const error = classifyError(httpStatus, event.errorType ?? fallback.error.type, event.message);
   if (event.errorType !== undefined) error.type = event.errorType;
   if (event.code !== undefined) error.code = event.code;
+  // Codex maps cyber_policy on HTTP 400 (body) or mid-stream code; never leave it as 502.
+  if (isCyberPolicyCode(error.code) || isCyberPolicyCode(event.code)) {
+    error.code = CYBER_POLICY_ERROR_CODE;
+    error.type = "invalid_request_error";
+    httpStatus = 400;
+  }
   return { httpStatus, error };
 }
 
@@ -1149,8 +1155,20 @@ export function buildResponseJSON(
   };
 }
 
-export function formatErrorResponse(status: number, type: string, message: string): Response {
-  return new Response(JSON.stringify({ error: classifyError(status, type, message) }), {
-    status, headers: { "Content-Type": "application/json" },
+export function formatErrorResponse(
+  status: number,
+  type: string,
+  message: string,
+  options?: { code?: string | null },
+): Response {
+  const error = classifyError(status, type, message);
+  if (isCyberPolicyCode(options?.code)) {
+    error.code = CYBER_POLICY_ERROR_CODE;
+    error.type = "invalid_request_error";
+  }
+  const finalStatus = error.code === CYBER_POLICY_ERROR_CODE ? 400 : status;
+  return new Response(JSON.stringify({ error }), {
+    status: finalStatus,
+    headers: { "Content-Type": "application/json" },
   });
 }
