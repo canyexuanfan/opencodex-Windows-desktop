@@ -62,7 +62,7 @@ config file existed at the moment of stamping, and record it:
 afterward — deriving it later is impossible. Onboarding fires only when
 `baseline.firstRun === true`.
 
-### UNRESOLVED (found by the 2026-07-26 rescan) — this signal is still wrong
+### RESOLVED by D1 (2026-07-26) — `firstRun` is dropped
 
 `firstRun` as specified means "the config file was absent when the baseline was
 stamped", and `010` stamps on the first `GET /api/announcements` — the first
@@ -75,10 +75,30 @@ So it measures whether the user reached the dashboard before the CLI, not whethe
 they are new. A brand-new user who follows the documented `ocx init` → `ocx login`
 path would be classified `firstRun: false` and never see onboarding.
 
-**Do not implement WP-D against this signal as written.** The correction belongs
-in the same pass that builds it — see `031_guided_tour_draft.md` § R1 for the
-candidate replacements (stamp at config CREATION, or record a real
-user-configured provider distinct from the seeded `openai` default).
+**`baseline.firstRun` is therefore removed from the schema** rather than kept
+unused — a recorded signal known to be wrong invites a later reader to trust it.
+
+The replacement is `031` § D1′, reached after a first attempt was defeated. Every
+rejected candidate tried to INFER newness from state kept for another purpose
+(file timing, provider shape, session identity), and each inference had a path
+that falsified it. Newness is not derivable here — it must be recorded once, by
+the code that first has the answer:
+
+```ts
+  /** Written once, by the first saveConfig that creates the file. Never inferred. */
+  install?: { createdAt: string; createdByVersion: string };
+```
+
+`saveConfig` (`src/config.ts:845-857`) is the single choke point every write
+passes through and can see whether the file already existed. The marker is absent
+on every pre-existing installation and present on every new one, and no path —
+`ocx init` replacing providers, tier migration rebuilding a row, pool accounts
+living in a separate file — can forge it, because none can make an existing file
+not exist.
+
+Onboarding fires when `install` is present. The stepper keeps its existing flat
+`onboarding` record; no migration is needed because no existing key changes
+meaning.
 
 ## Steps — CONTENT IS AN OPEN QUESTION
 

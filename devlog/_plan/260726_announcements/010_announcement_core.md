@@ -46,27 +46,32 @@ Add to `OcxConfig`, beside the existing optional feature fields:
 +   * upgrading in must not receive a backlog. `dismissed` holds acknowledged ids.
 +   */
 +  announcements?: {
-+    baseline?: { at: string; version: string; firstRun: boolean };
++    baseline?: { at: string; version: string };
 +    dismissed?: string[];
 +  };
 ```
 
-`firstRun` records whether the config FILE was absent at stamp time — the only
-unambiguous "never configured anything" signal, since `getDefaultConfig()` seeds
-an `openai` provider so a fresh install is not provider-empty
-(`src/config.ts:739-741`, `:886-901`). It must be captured at stamp time because
-the file exists immediately afterward. WP-D consumes it; WP-B only records it.
+**`firstRun` was removed** (see `031` § D1). It recorded whether the config FILE
+was absent at stamp time, but the file is written by `ocx init`, startup seeding,
+port fallback and OAuth login — so it measured whether the user opened the
+dashboard before the CLI, not whether they were new. WP-D derives newness from
+an explicit install marker instead (`031` § D1′), written once by the first
+`saveConfig` that creates the file:
+
+```ts
++  /** Written once, by the first saveConfig that creates the file. Never inferred. */
++  install?: { createdAt: string; createdByVersion: string };
+```
+
+That marker is independent of the announcement baseline and belongs beside it in
+`OcxConfig`, not inside `announcements`: it describes the installation, while
+`baseline` describes when announcements started being observed.
 
 ## NEW `src/announcements/state.ts`
 
 ```ts
 /** Stamps the baseline exactly once. Returns the config unchanged if one exists. */
-export function ensureAnnouncementBaseline(
-  config: OcxConfig,
-  now: Date,
-  version: string,
-  firstRun: boolean,
-): boolean;
+export function ensureAnnouncementBaseline(config: OcxConfig, now: Date, version: string): boolean;
 
 /** Announcements declared after the baseline and not yet dismissed. */
 export function pendingAnnouncements(

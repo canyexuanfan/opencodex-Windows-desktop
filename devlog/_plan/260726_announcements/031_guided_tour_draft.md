@@ -288,6 +288,133 @@ window mid-tour, no terminal stamp is written and the badge stays hidden
 permanently — for the only cohort that can ever be in that state. `040` checks
 the opposite case only.
 
+## Decisions to close the rescan — 2026-07-26
+
+### First attempt (D1-D5) — DEFEATED, kept for the record
+
+I proposed five decisions and had them attacked by a fourth lens. All five fell.
+The reasoning is preserved because the failures are more instructive than the
+proposals:
+
+| # | Proposal | Why it fell |
+|---|---|---|
+| D1 | "New install = exactly the seeded canonical `openai` provider" | `ocx init` REPLACES `providers` wholesale (`src/cli/init.ts:159-164`), and its featured first option is that same canonical openai row — so the documented onboarding path lands in the "new" bucket forever. Meanwhile ChatGPT pool accounts persist to `codex-accounts.json` (`src/codex/account-store.ts:17`), not `config.providers`, so a heavily-configured user still reads as new. Legacy tier migration (`src/providers/openai-tiers.ts`) can also rebuild an upgrader's row byte-identical to the seed. |
+| D2 | Split into `onboarding.stepper` / `onboarding.tour` | No migration was specified for configs the stepper release already wrote in the flat shape, so every graduate would see the stepper again. |
+| D3 | Suppress announcements only "in this session" | There is no session identity in a config-backed HTTP route, so the priority rule would silently move client-side, out of the substrate that exists to enforce it. |
+| D4 | `OPENCODEX_HOME=$(mktemp -d) ocx start` as a safe first-run harness | `OPENCODEX_HOME` scopes only the ocx config dir. The same `ocx start` still rewrites the real `~/.codex/config.toml`, the shell hook, system env and `~/.grok/config.toml`, and fights the real proxy for port 10100. "Real config untouched" was false. |
+| D5 | Ship sidebar-only highlighting first | Reverses an explicit user answer without asking, and H2 already established the two highlight tiers are separate mechanisms — so the cost is duplicated later, not deferred. |
+
+### The pattern behind all five failures
+
+Every proposal tried to **infer** whether a user is new from state kept for some
+other purpose — file timing, provider shape, session identity. Each inference had
+a path that falsified it, and each fix would have needed another inference.
+
+That is the actual finding: newness is not derivable from this codebase's
+existing state. It has to be **recorded deliberately, once, by the code that
+first has the answer**.
+
+### D1′ — record newness at config creation, explicitly
+
+`saveConfig` (`src/config.ts:845-857`) is the single choke point through which
+every config write passes, and it can see whether the file already existed. The
+first write stamps an explicit marker:
+
+```ts
+  /** Written once, by the first saveConfig that creates the file. Never inferred. */
+  install?: { createdAt: string; createdByVersion: string };
+```
+
+Onboarding eligibility then reads a fact rather than a proxy: the marker is
+absent on every pre-existing installation (they were created before the field
+existed), and present with a known version on every new one. No path through
+`ocx init`, tier migration, pool accounts or port fallback can forge it, because
+none of them can make an existing file not exist.
+
+The earlier objection to this candidate — "startup seeding also creates the
+file" — is now handled honestly: an installation created by startup seeding IS
+new. The marker records when the installation began, which is true regardless of
+which command began it. What it must NOT do is claim to know whether the user has
+done anything yet; that is a separate question the tour does not need to ask.
+
+### D2′ — the tour is eligible only for installs created after it shipped
+
+`install.createdByVersion` makes R2 answerable without a discriminator field:
+the tour fires when the installation was created by a version at or after the
+tour's own release. A stepper graduate was created earlier and is never eligible,
+which is the intended "first-time users only" semantics, stated positively.
+
+The stepper keeps its existing flat record. No migration is needed because no
+existing key changes meaning.
+
+### D3′ — suppression is released by any terminal stamp, and abandonment writes one
+
+Rather than invent session identity, the client writes `skippedAt` when the user
+navigates away mid-tour (`beforeunload`, or the next load observing an
+unterminated tour). Announcements are suppressed only while a tour has no
+terminal stamp, which the substrate CAN express.
+
+### D4′ — the first-run harness needs full isolation, and that needs verifying
+
+`OPENCODEX_HOME` alone is not enough. A usable procedure must also redirect
+`CODEX_HOME`, avoid the shell hook and system env, use a non-default port, and
+leave `~/.grok` alone. Whether the CLI supports all of that in one invocation is
+UNVERIFIED — the implementation pass must confirm it before `040` promises it.
+
+### D5′ — in-page highlighting stays, as the user decided
+
+Withdrawn. The scope reduction was mine, not the user's, and H2 shows it would
+duplicate rather than defer the cost. In-page highlighting remains the target;
+the cost question from R4 is a real one but belongs to the user, not to me.
+
+### D2 — the tour gets its own eligibility key
+
+Closes R2. `031`'s original "do not invent tour-specific state" rule was written
+before the tour became a first-run-only alternative to the stepper, and taken
+literally it makes the two indistinguishable. The substrate gains a discriminator:
+
+```ts
+onboarding?: {
+  stepper?:  { completedAt?: string; skippedAt?: string; lastStep?: number };
+  tour?:     { completedAt?: string; skippedAt?: string; lastStep?: number };
+};
+```
+
+Two records of the same shape, not two schemas. The prohibition it relaxes was
+aimed at preventing a parallel STORE, and this stays in the one store.
+
+### D3 — abandonment releases announcements after the first reload
+
+Closes R5. A tour that is never finished must not hold announcements forever.
+Rule: announcements are suppressed only while a tour is **in flight in this
+session**. On a fresh page load with a `lastStep` recorded but no terminal stamp,
+the tour does not auto-resume and announcements are released; the tour remains
+available from a manual entry point.
+
+Closing the window is a decision, and treating it as one is more honest than
+trapping the user in a flow they walked away from.
+
+### D4 — `040` gains a positive verification procedure
+
+Closes R3. Since H3 makes the geometry unassertable in happy-dom, the gate list
+must contain a way to make the tour APPEAR, not only checks that it stays hidden:
+
+```
+OPENCODEX_HOME=$(mktemp -d) ocx start   # genuine first run, real config untouched
+```
+
+### D5 — the cost question is answered by scope, not by argument
+
+R4 observed that the expensive branch now serves the narrowest cohort. Rather
+than defend the cost, the first tour release ships **sidebar-level highlighting
+only** — the cheap tier that needs no per-page anchors, no virtualizer
+integration, and no in-page geometry.
+
+In-page anchors stay in this document as a follow-up, to be added for the
+specific steps that measurably need them once the tour exists and can be watched.
+This keeps the user's "highlight in-page elements" decision as the destination
+while refusing to pay for all of it before anything has been observed.
+
 ## Dependency
 
 Requires WP-B's state substrate (baseline + `onboarding.lastStep`) and WP-D's
