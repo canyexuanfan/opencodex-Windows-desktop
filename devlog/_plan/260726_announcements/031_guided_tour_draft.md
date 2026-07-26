@@ -73,6 +73,38 @@ detail that reads as the whole feature being broken.
 | Stack | **Build it ourselves.** No `react-joyride`/`driver.js`. | Keeps GUI runtime deps at three (`react`, `react-dom`, `@tanstack/react-virtual`) and avoids the dependency-installation security review at `MAINTAINERS.md:22`. We own the geometry: anchor math, scroll-into-view, resize/reflow, focus. |
 | Highlight scope | **In-page elements, not just sidebar entries.** | The expensive branch of the cost table above. Every target page needs a stable, documented anchor; the tour cannot rely on CSS selectors that a refactor silently breaks. |
 | Progression | **Not completion-gated.** Skip per step, plus a skip-the-whole-tour button. | Confirms the "guide, do not trap" position: a user without an API key at step 2 is never stranded. Full-skip must be reachable from every step, including the first. |
+| Audience | **First-time users only** (`baseline.firstRun === true`). | The tour never fires for an existing installation. It REPLACES the plain stepper for brand-new installs in a later release rather than layering on top of it. |
+
+### What "first-time users only" settles — and what it costs
+
+This resolves H1 below: there is no longer an "upgrade path from stepper to
+tour" that needs a state in which to run, because the tour deliberately does not
+reach users who already have an installation. The two flows are alternatives
+selected by install age, not successive experiences.
+
+The cost is that the expensive branch — per-page anchors, live geometry,
+virtualizer integration — now serves a session that happens **once per machine,
+is fully skippable, and can never be replayed by an existing user**. That is not
+an argument against building it, but it is the trade the next design pass must
+accept explicitly rather than discover late.
+
+### How to actually see it during development
+
+A first-run-only feature is normally hostile to review: the reviewer's own
+machine has a config, so the flow they are asked to approve never appears for
+them. That is not the case here — `src/config.ts:316` resolves the config
+directory from `OPENCODEX_HOME`, so a throwaway home reproduces a genuine first
+run on demand:
+
+```
+OPENCODEX_HOME=$(mktemp -d) ocx start
+```
+
+Worth writing down now, because H3 already establishes that the highlight
+geometry cannot be asserted in happy-dom. Manual visual verification is therefore
+the acceptance path for this feature, and this command is what makes that path
+available to anyone rather than only to a maintainer willing to move their real
+config aside.
 
 ### What the in-page choice commits us to
 
@@ -189,6 +221,72 @@ front, that this feature ships on judgment rather than measurement, and saying s
 
 `030`'s test list still encoded the provider-count trigger its own audit had
 killed. Corrected to `baseline.firstRun`.
+
+## Rescan after "first-time users only" — 2026-07-26
+
+H1 is **partially** resolved, and the rescan surfaced a defect that would have
+shipped a feature with no audience at all.
+
+### R1 (HIGH, blocks implementation) — `firstRun` does not mean "new user"
+
+`030` defines `firstRun` as "the config file was absent at baseline-stamp time",
+and `010` stamps the baseline on the first `GET /api/announcements` — that is, on
+the first dashboard visit. But the config file is written by several paths that
+normally run BEFORE anyone opens the dashboard, each verified in source:
+
+| Path | Writes config |
+|---|---|
+| `ocx init` | `src/cli/init.ts:166` |
+| proxy startup seeding/migration | `src/server/index.ts:248`, `:265` |
+| port-fallback persistence | `src/cli/index.ts:133` |
+| OAuth login | `src/oauth/login-cli.ts:125` |
+
+So `firstRun` actually measures *whether the user opened the dashboard before
+touching the CLI* — not whether they are new. A brand-new user following the
+documented `ocx init` → `ocx login` path stamps `firstRun: false` and never sees
+the tour.
+
+This was survivable while `firstRun` was one of two conditions. As the SOLE gate
+it empties the feature's audience, and the failure is invisible: the tour ships,
+nothing errors, and nobody ever sees it.
+
+**The next design pass must replace the signal, not tune it.** Candidates worth
+evaluating: stamp the baseline at first config CREATION rather than first
+dashboard read; or record "has this installation ever completed a meaningful
+action" (a provider the user actually configured, distinct from the seeded
+`openai` default) instead of inferring newness from file mtime semantics.
+
+### R2 (HIGH) — stepper and tour still share one trigger with no discriminator
+
+A user who installs the *stepper* release fresh gets `firstRun: true` AND a
+terminal `completedAt`. When the tour ships, a literal first-run-only rule says
+show it; the inherited stepper rule says never again. The substrate cannot
+express "saw the stepper, has not seen the tour", so H1's residue moved rather
+than disappeared.
+
+That cohort is precisely the population that exists when the tour launches.
+
+### R3 (MEDIUM) — the gate list can only verify the tour stays invisible
+
+`040`'s three manual checks are all negative ("announcements still empty",
+"onboarding does not fire for an upgrader"). Nothing makes the tour APPEAR. With
+H3 establishing that geometry cannot be asserted in happy-dom, the only
+acceptance path is visual — so `040` needs a positive procedure, using the
+`OPENCODEX_HOME` throwaway root documented above.
+
+### R4 (MEDIUM) — the investment now serves the narrowest possible cohort
+
+The expensive branch was justified as "the upgrade path from stepper to tour",
+which first-run-only forecloses. What remains is a one-time, instantly
+skippable, unmeasurable session for new installs only. Not a veto — but
+`000_plan.md`'s own UX-LAZY-01 cost test demands this be accepted deliberately.
+
+### R5 (MEDIUM) — an abandoned tour can hold announcements forever
+
+Announcements are suppressed while onboarding is pending. If a user closes the
+window mid-tour, no terminal stamp is written and the badge stays hidden
+permanently — for the only cohort that can ever be in that state. `040` checks
+the opposite case only.
 
 ## Dependency
 

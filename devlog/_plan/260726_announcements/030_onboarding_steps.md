@@ -62,6 +62,24 @@ config file existed at the moment of stamping, and record it:
 afterward — deriving it later is impossible. Onboarding fires only when
 `baseline.firstRun === true`.
 
+### UNRESOLVED (found by the 2026-07-26 rescan) — this signal is still wrong
+
+`firstRun` as specified means "the config file was absent when the baseline was
+stamped", and `010` stamps on the first `GET /api/announcements` — the first
+dashboard visit. But the config file is written earlier by ordinary paths:
+`ocx init` (`src/cli/init.ts:166`), proxy startup seeding/migration
+(`src/server/index.ts:248`, `:265`), port-fallback persistence
+(`src/cli/index.ts:133`) and OAuth login (`src/oauth/login-cli.ts:125`).
+
+So it measures whether the user reached the dashboard before the CLI, not whether
+they are new. A brand-new user who follows the documented `ocx init` → `ocx login`
+path would be classified `firstRun: false` and never see onboarding.
+
+**Do not implement WP-D against this signal as written.** The correction belongs
+in the same pass that builds it — see `031_guided_tour_draft.md` § R1 for the
+candidate replacements (stamp at config CREATION, or record a real
+user-configured provider distinct from the seeded `openai` default).
+
 ## Steps — CONTENT IS AN OPEN QUESTION
 
 The mechanics (stepper, back/next, skip, progress, focus trap, escape behaviour)
