@@ -143,7 +143,7 @@ export function useAddCodexAccountOAuth({
       }
       // Preserve structured `{ error }` bodies on non-2xx instead of collapsing to networkError.
       const data = await readJsonOrThrow<LoginResponse>(resp, t("modal.networkError"));
-      if (!aliveRef.current) return;
+      if (!aliveRef.current || !data) return;
       if (data.url) {
         flowRef.current = data.flowId ?? null;
         dispatch({ type: "set-flow-id", flowId: data.flowId ?? null });
