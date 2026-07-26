@@ -19,6 +19,11 @@ The API route publishes 1,050,000 context / 922,000 max input metadata. Its
 `sol-pro`, `terra-pro`, and `luna-pro` virtual ids keep their selected public identity while the wire
 uses the base model plus `reasoning.mode: "pro"`.
 
+If the built-in `openai` provider is missing or disabled, the dashboard Accounts picker and Codex
+Auth page can restore it: absent rows are created from the canonical preset, disabled canonical
+rows are re-enabled without replacing saved mode or model settings, and noncanonical `openai`
+rows are not offered that recovery path.
+
 Shipped v1 configs migrate automatically to marker 2 and one option-aware row. The original config
 is retained once at `~/.opencodex/config.json.pre-openai-tiers-v2.bak`; restore it with
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`.

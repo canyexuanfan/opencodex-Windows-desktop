@@ -2,6 +2,71 @@ import { useCallback, useEffect, useState } from "react";
 import { useT } from "../i18n";
 import CodexAccountPool from "../components/CodexAccountPool";
 import { codexAccountModeState, type CodexAccountModeState } from "../codex-multi-state";
+import { ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } from "../provider-payload";
+
+export type OpenAiAccountBannerState = CodexAccountModeState | "invalid" | null;
+
+export function OpenAiAccountModeBanner({
+  state,
+  busy,
+  onEnable,
+}: {
+  state: OpenAiAccountBannerState;
+  busy: boolean;
+  onEnable: () => void;
+}) {
+  const t = useT();
+  return (
+    <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="row">
+        <strong>{t("codexAuth.accountModeTitle")}</strong>
+        {state === "pool" && <span className="badge badge-accent">{t("codexAuth.accountModePool")}</span>}
+        {state === "direct" && <span className="badge badge-green">{t("codexAuth.accountModeDirect")}</span>}
+      </div>
+      {state === "pool" && (
+        <p className="card-sub" style={{ margin: "6px 0 0" }}>{t("codexAuth.accountModePoolDesc")}</p>
+      )}
+      {state === "direct" && (
+        <p className="card-sub" style={{ margin: "6px 0 0" }}>
+          {t("codexAuth.accountModeDirectDesc")} <a href="#providers">{t("codexAuth.openProviders")}</a>
+        </p>
+      )}
+      {(state === "absent" || state === "disabled") && (
+        <div className="row" style={{ alignItems: "center", marginTop: 8 }}>
+          <p className="card-sub" style={{ flex: 1, margin: 0 }}>{t("codexAuth.openaiUnavailableDesc")}</p>
+          <button className="btn btn-primary btn-sm" disabled={busy} onClick={onEnable}>
+            {busy ? t("codexAuth.enablingOpenai") : t("codexAuth.enableOpenai")}
+          </button>
+        </div>
+      )}
+      {state === "invalid" && (
+        <p className="card-sub" style={{ margin: "6px 0 0" }}>
+          {t("codexAuth.openaiMissing")} <a href="#providers">{t("codexAuth.openProviders")}</a>
+        </p>
+      )}
+    </div>
+  );
+}
+
+function openaiProviderFromConfig(config: unknown): {
+  adapter?: string;
+  authMode?: string;
+  baseUrl?: string;
+  disabled?: boolean;
+} | undefined {
+  if (!config || typeof config !== "object") return undefined;
+  const providers = (config as { providers?: unknown }).providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return undefined;
+  if (!Object.hasOwn(providers, "openai")) return undefined;
+  const provider = (providers as Record<string, unknown>).openai;
+  if (!provider || typeof provider !== "object" || Array.isArray(provider)) return undefined;
+  return provider as {
+    adapter?: string;
+    authMode?: string;
+    baseUrl?: string;
+    disabled?: boolean;
+  };
+}
 
 /**
  * Codex Auth page — a thin wrapper around CodexAccountPool (WP060 extraction).
@@ -10,12 +75,24 @@ import { codexAccountModeState, type CodexAccountModeState } from "../codex-mult
  */
 export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const t = useT();
+  const [bannerState, setBannerState] = useState<OpenAiAccountBannerState>(null);
   const [accountModeState, setAccountModeState] = useState<CodexAccountModeState | null>(null);
+  const [enableBusy, setEnableBusy] = useState(false);
+  const [enableError, setEnableError] = useState("");
 
   const loadMode = useCallback(async () => {
     try {
       const config = await fetch(`${apiBase}/api/config`).then(r => r.json());
-      setAccountModeState(codexAccountModeState(config));
+      const providerState = openAiAccountProviderState(openaiProviderFromConfig(config));
+      if (providerState === "absent" || providerState === "disabled" || providerState === "invalid") {
+        setBannerState(providerState);
+        // Non-canonical / missing rows are not a live Codex account mode.
+        setAccountModeState(providerState === "disabled" ? "disabled" : "absent");
+        return;
+      }
+      const mode = codexAccountModeState(config);
+      setBannerState(mode);
+      setAccountModeState(mode);
     } catch { /* banner degrades to no badge */ }
   }, [apiBase]);
 
@@ -25,33 +102,33 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     return () => { window.clearTimeout(timeout); window.clearInterval(iv); };
   }, [loadMode]);
 
-  const banner = (
-    <div className="panel" style={{ marginBottom: 16 }}>
-      <div className="row">
-        <strong>{t("codexAuth.accountModeTitle")}</strong>
-        {accountModeState === "pool" && <span className="badge badge-accent">{t("codexAuth.accountModePool")}</span>}
-        {accountModeState === "direct" && <span className="badge badge-green">{t("codexAuth.accountModeDirect")}</span>}
-      </div>
-      {accountModeState === "pool" && (
-        <p className="card-sub" style={{ margin: "6px 0 0" }}>{t("codexAuth.accountModePoolDesc")}</p>
-      )}
-      {accountModeState === "direct" && (
-        <p className="card-sub" style={{ margin: "6px 0 0" }}>
-          {t("codexAuth.accountModeDirectDesc")} <a href="#providers">{t("codexAuth.openProviders")}</a>
-        </p>
-      )}
-      {accountModeState === "absent" && (
-        <p className="card-sub" style={{ margin: "8px 0 0" }}>
-          {t("codexAuth.openaiMissing")} <a href="#providers">{t("codexAuth.openProviders")}</a>
-        </p>
-      )}
-      {accountModeState === "disabled" && (
-        <p className="card-sub" style={{ margin: "8px 0 0" }}>
-          {t("codexAuth.openaiDisabled")} <a href="#providers">{t("codexAuth.openProviders")}</a>
-        </p>
-      )}
-    </div>
-  );
+  const enableOpenAi = async () => {
+    setEnableBusy(true);
+    setEnableError("");
+    try {
+      // Recovery is gated on the same canonical checks as Providers → Accounts.
+      if (bannerState !== "absent" && bannerState !== "disabled") return;
+      await ensureOpenAiProvider(apiBase, bannerState);
+      await loadMode();
+    } catch (error) {
+      if (error instanceof OpenAiEnableError) {
+        setEnableError(t(error.i18nKey));
+      } else {
+        setEnableError(error instanceof Error ? error.message : t("prov.saveFailed"));
+      }
+    } finally {
+      setEnableBusy(false);
+    }
+  };
+
+  const banner = <>
+    <OpenAiAccountModeBanner
+      state={bannerState}
+      busy={enableBusy}
+      onEnable={() => { void enableOpenAi(); }}
+    />
+    {enableError && <div className="notice notice-err" role="alert">{enableError}</div>}
+  </>;
 
   return <CodexAccountPool apiBase={apiBase} accountModeState={accountModeState} banner={banner} />;
 }

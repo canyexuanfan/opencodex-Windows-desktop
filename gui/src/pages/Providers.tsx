@@ -6,6 +6,7 @@ import ProviderWorkspaceShell, { type AddProviderIntent } from "../components/pr
 import ProviderDetails from "../components/provider-workspace/ProviderDetails";
 import { RemoveConfirmDialog, UnsavedLeaveDialog } from "../components/provider-workspace/ProviderDialogs";
 import type { WorkspaceProvider } from "../provider-workspace/catalog";
+import { codexAccountProviderNames, ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } from "../provider-payload";
 import type { ProviderUpdatePatch } from "../components/provider-workspace/types";
 import { oauthTosRisk } from "../oauth-tos-risk";
 import { Notice } from "../ui";
@@ -407,10 +408,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   }
 
   const addModalAccountRows = [
-    ...Object.entries(config.providers)
-      .filter(([, prov]) => prov.authMode === "forward")
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([name]) => ({
+    ...codexAccountProviderNames(config.providers)
+      .map(name => ({
         id: name,
         label: formatProviderDisplayName(name),
         kind: "codex" as const,
@@ -431,7 +430,34 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     }
   }
 
-  const onAccountLogin = (provider: string) => {
+  const onAccountLogin = async (provider: string) => {
+    if (provider === "openai") {
+      if (busy === "openai") return;
+      const configured = config.providers.openai;
+      const state = openAiAccountProviderState(configured);
+      if (state === "invalid") {
+        notify(t("codexAuth.openaiMissing"), false);
+        return;
+      }
+      if (state === "absent" || state === "disabled") {
+        setBusy("openai");
+        try {
+          await ensureOpenAiProvider(apiBase, state);
+          await fetchConfig();
+        } catch (error) {
+          if (error instanceof OpenAiEnableError) {
+            notify(t(error.i18nKey), false);
+          } else {
+            notify(error instanceof Error ? error.message : t("prov.saveFailed"), false);
+          }
+          return;
+        } finally {
+          if (aliveRef.current) setBusy(current => current === "openai" ? null : current);
+        }
+      }
+      setCodexLoginOpen(true);
+      return;
+    }
     if (isForwardProvider(provider)) {
       setCodexLoginOpen(true);
       return;
@@ -451,6 +477,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       onAdded={() => {
         setCodexLoginOpen(false);
         notify(t("prov.loginOk", { provider: formatProviderDisplayName("openai"), cmd: "ocx sync" }), true);
+        void fetchConfig();
         void fetchOauth();
         void fetchProviderQuotas(true);
         bumpModelsRefresh();

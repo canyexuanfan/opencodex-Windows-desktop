@@ -133,10 +133,15 @@ export function assertProviderDestinationAllowed(name: string, provider: Pick<Oc
  * config load are synchronous). DNS failures return null: config-time validation is
  * advisory and must not hard-fail offline startups. DNS rebinding after validation is
  * a recorded residual for this loopback proxy (devlog 260712_pr_batch_landing 000).
+ *
+ * `allowBenchmarkAddresses` is only for the exact canonical ChatGPT Codex seed under
+ * Clash fake-IP DNS (198.18.0.0/15). Every other non-public answer — including mixed
+ * benchmark + private/metadata sets — still fails.
  */
 export async function providerDestinationResolvedError(
   name: string,
   provider: Pick<OcxProviderConfig, "baseUrl" | "allowPrivateNetwork">,
+  options?: { allowBenchmarkAddresses?: boolean },
 ): Promise<string | null> {
   const syncError = providerDestinationConfigError(name, provider);
   if (syncError) return syncError;
@@ -160,6 +165,14 @@ export async function providerDestinationResolvedError(
     const ipKind = isIP(address);
     const assessment = ipKind === 4 ? classifyIpv4(address) : ipKind === 6 ? classifyIpv6(normalizeHostname(address)) : null;
     if (!assessment || assessment.kind === "public") continue;
+    // Clash fake-IP only: 198.18/19 benchmark detail. Mixed dangerous sets still reject.
+    if (
+      options?.allowBenchmarkAddresses
+      && assessment.kind === "private"
+      && assessment.detail === "benchmark address"
+    ) {
+      continue;
+    }
     if (assessment.kind === "metadata") return `baseUrl hostname ${hostname} resolves to a blocked metadata endpoint (${address})`;
     return `baseUrl hostname ${hostname} resolves to a ${assessment.detail} (${address}); set allowPrivateNetwork:true only for intentionally local/self-hosted providers`;
   }

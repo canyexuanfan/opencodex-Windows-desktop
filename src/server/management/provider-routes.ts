@@ -28,7 +28,7 @@ import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
-import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { CODEX_FORWARD_BASE_URL, isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { getProviderDiscoveryStatus } from "../../codex/model-cache";
@@ -101,7 +101,10 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     }
     // Hostname destinations additionally get a DNS-resolved SSRF check at write time —
     // the sync check above only classifies literal IPs (review finding, PR #96).
-    const resolvedError = await providerDestinationResolvedError(name, prov);
+    // Canonical openai still runs the resolver: only Clash fake-IP (198.18.0.0/15)
+    // answers are ignored; loopback/RFC1918/metadata/mixed sets still fail.
+    const allowBenchmarkAddresses = name === "openai" && isCanonicalOpenAiForwardProvider(prov);
+    const resolvedError = await providerDestinationResolvedError(name, prov, { allowBenchmarkAddresses });
     if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
     // Catalog providers (e.g. ollama-cloud) carry a models + vision/reasoning classification the GUI
     // doesn't send — merge it in so the sidecars are gated correctly.
@@ -233,15 +236,43 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
 
     if (!touched) return jsonResponse({ error: "no recognized fields to update" }, 400);
 
-    // A disabled-only toggle preserves the v2 fast lane: it changes routing eligibility,
-    // not the provider shape, so the merged-shape validators (canonical-seed guard for
-    // openai, destination/local checks) do not apply.
+    // A disabled-only toggle preserves the v2 fast lane for non-openai providers: it changes
+    // routing eligibility, not the provider shape. Re-enabling `openai` is different — a
+    // malformed disabled row must not come back online unchanged, so canonicalize/reject
+    // against the same built-in gate used by mode PATCH and POST.
     const editorTouched = keys.some(key => key !== "disabled");
+    const enablingOpenAi = name === "openai"
+      && Object.hasOwn(rawBody, "disabled")
+      && rawBody.disabled === false
+      && config.providers[name]?.disabled === true;
     if (editorTouched) {
       const providerError = providerManagementConfigError(name, next);
       if (providerError) return jsonResponse({ error: providerError }, 400);
       const resolvedError = await providerDestinationResolvedError(name, next);
       if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
+    } else if (enablingOpenAi) {
+      if (!isCanonicalOpenAiForwardProvider(next)) {
+        return jsonResponse({ error: "provider openai must be the canonical built-in provider" }, 400);
+      }
+      // Persist the byte-identical canonical URL so config.ts startup checks (case-sensitive)
+      // accept the row after we fill mode. Equivalent hosts like CHATGPT.com/:443 normalize here.
+      next.baseUrl = CODEX_FORWARD_BASE_URL;
+      // Fill missing mode so a disabled canonical row becomes a complete live openai entry.
+      if (next.codexAccountMode !== "pool" && next.codexAccountMode !== "direct") {
+        next.codexAccountMode = "pool";
+      }
+      // Same DNS gate as POST: Clash fake-IP only. Never honor a persisted
+      // allowPrivateNetwork on this path — it must not bypass the built-in guard.
+      const resolvedError = await providerDestinationResolvedError(
+        "openai",
+        { baseUrl: CODEX_FORWARD_BASE_URL },
+        { allowBenchmarkAddresses: true },
+      );
+      if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
+      if (next.disabled === false) delete next.disabled;
+      // Canonical openai never uses private-network opt-in; drop a stale flag that
+      // was ignored for the DNS probe so it cannot linger on the live row.
+      delete next.allowPrivateNetwork;
     }
 
     const { saveConfig: save } = await import("../../config");
