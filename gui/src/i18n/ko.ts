@@ -838,6 +838,7 @@ export const ko: Record<TKey, string> = {
   "claude.removeMapping": "규칙 삭제",
   "claude.aliases": "사용 가능한 모델",
   "claude.aliasesHint": "Claude Code의 /model 메뉴에 표시되는 모델 목록입니다.",
+  "claude.aliasProviderOther": "기타",
   "claude.loading": "불러오는 중…",
   "claude.loadFail": "Claude 설정을 불러오지 못했습니다",
   "claude.saved": "저장되었습니다.",

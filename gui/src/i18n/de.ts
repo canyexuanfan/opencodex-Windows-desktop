@@ -818,6 +818,7 @@ export const de: Record<TKey, string> = {
   "claude.removeMapping": "Regel entfernen",
   "claude.aliases": "Verfügbare Modelle",
   "claude.aliasesHint": "Modelle, die im /model-Menü von Claude Code erscheinen.",
+  "claude.aliasProviderOther": "Sonstiges",
   "claude.loading": "Lädt…",
   "claude.loadFail": "Claude-Einstellungen konnten nicht geladen werden",
   "claude.saved": "Gespeichert.",

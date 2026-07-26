@@ -1122,6 +1122,7 @@ export const en = {
   "claude.removeMapping": "Remove rule",
   "claude.aliases": "Available models",
   "claude.aliasesHint": "Models that appear in Claude Code's /model menu.",
+  "claude.aliasProviderOther": "Other",
   "claude.loading": "Loading…",
   "claude.loadFail": "Failed to load Claude settings",
   "claude.saved": "Saved.",

@@ -1121,6 +1121,7 @@ export const ru: Record<TKey, string> = {
   "claude.removeMapping": "Удалить правило",
   "claude.aliases": "Доступные модели",
   "claude.aliasesHint": "Модели, которые появляются в меню /model в Claude Code.",
+  "claude.aliasProviderOther": "Другое",
   "claude.loading": "Загрузка…",
   "claude.loadFail": "Не удалось загрузить настройки Claude",
   "claude.saved": "Сохранено.",

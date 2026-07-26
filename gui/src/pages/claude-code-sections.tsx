@@ -223,11 +223,14 @@ export function ClaudeCodeModelMapSection({
 
 type AliasRow = { id: string; display_name: string };
 
+/** Sentinel bucket key for aliases whose display_name has no trailing `(provider)`. */
+const ALIAS_PROVIDER_OTHER = "etc";
+
 function groupAliasesByProvider(aliases: AliasRow[]): Array<[string, AliasRow[]]> {
   const groups = new Map<string, AliasRow[]>();
   for (const alias of aliases) {
     const match = /\(([^)]+)\)\s*$/.exec(alias.display_name);
-    const provider = match ? match[1]! : "etc";
+    const provider = match ? match[1]! : ALIAS_PROVIDER_OTHER;
     const bucket = groups.get(provider);
     if (bucket) bucket.push(alias);
     else groups.set(provider, [alias]);
@@ -247,7 +250,7 @@ export function ClaudeCodeAliasesSection({ aliases }: { aliases: AliasRow[] }) {
         <div className="stack" style={{ gap: 6, maxHeight: 320, overflowY: "auto" }}>
           {groupAliasesByProvider(aliases).map(([provider, aliasRows]) => (
             <div key={provider}>
-              <div className="muted text-caption font-semibold" style={{ textTransform: "uppercase", letterSpacing: "var(--tracking-wide)", margin: "6px 2px 4px" }}>{provider} · {aliasRows.length}</div>
+              <div className="muted text-caption font-semibold" style={{ textTransform: "uppercase", letterSpacing: "var(--tracking-wide)", margin: "6px 2px 4px" }}>{provider === ALIAS_PROVIDER_OTHER ? t("claude.aliasProviderOther") : provider} · {aliasRows.length}</div>
               <div className="stack" style={{ gap: 4 }}>
                 {aliasRows.map(a => (
                   <div key={a.id} className="card row" style={{ padding: "6px 12px", gap: 10 }}>

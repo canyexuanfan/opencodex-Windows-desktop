@@ -1076,6 +1076,7 @@ export const ja: Record<TKey, string> = {
   "claude.removeMapping": "ルールを削除",
   "claude.aliases": "利用可能なモデル",
   "claude.aliasesHint": "Claude Code の /model メニューに表示されるモデル。",
+  "claude.aliasProviderOther": "その他",
   "claude.loading": "読み込み中…",
   "claude.loadFail": "Claude 設定の読み込みに失敗しました",
   "claude.saved": "保存しました。",

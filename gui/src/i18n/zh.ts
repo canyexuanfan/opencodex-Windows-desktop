@@ -838,6 +838,7 @@ export const zh: Record<TKey, string> = {
   "claude.removeMapping": "删除规则",
   "claude.aliases": "可用模型",
   "claude.aliasesHint": "Claude Code 的 /model 菜单中显示的模型列表。",
+  "claude.aliasProviderOther": "其他",
   "claude.loading": "加载中…",
   "claude.loadFail": "加载 Claude 设置失败",
   "claude.saved": "已保存。",

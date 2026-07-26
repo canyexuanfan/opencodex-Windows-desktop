@@ -48,9 +48,9 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         effectiveModelEnv: r.effectiveModelEnv ?? {},
       });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
-    } catch {
+    } catch (error) {
       setOk(false);
-      setStatus(t("claude.loadFail"));
+      setStatus(error instanceof Error && error.message ? error.message : t("claude.loadFail"));
     } finally {
       setLoading(false);
     }
@@ -110,18 +110,13 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
             : null,
         }),
       });
-      if (!r.ok) {
-        const d = await r.json().catch(() => ({})) as { error?: string };
-        setOk(false);
-        setStatus(d.error || t("claude.saveFailed"));
-        return;
-      }
+      await readJsonOrThrow(r, t("claude.saveFailed"));
       setOk(true);
       setStatus(t("claude.saved"));
       await load();
-    } catch {
+    } catch (error) {
       setOk(false);
-      setStatus(t("claude.networkError"));
+      setStatus(error instanceof Error && error.message ? error.message : t("claude.networkError"));
     }
   };
 

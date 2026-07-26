@@ -27,5 +27,10 @@ export interface ClaudeCodeState {
 }
 
 export function formatCompactWindow(value: number): string {
-  return value >= 1_000_000 ? "1M" : `${Math.round(value / 1_000)}k`;
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    const label = Number.isInteger(millions) ? String(millions) : millions.toFixed(1).replace(/\.0$/, "");
+    return `${label}M`;
+  }
+  return `${Math.round(value / 1_000)}k`;
 }

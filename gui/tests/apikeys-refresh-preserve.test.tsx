@@ -7,8 +7,10 @@ import ApiKeys from "../src/pages/ApiKeys";
 
 const originalFetch = globalThis.fetch;
 let restoreGlobals: (() => void) | undefined;
+let previousLanguageDescriptor: PropertyDescriptor | undefined;
 
 beforeEach(() => {
+  previousLanguageDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, "language");
   Object.defineProperty(globalThis.navigator, "language", { configurable: true, value: "en-US" });
   const previous = {
     document: Object.getOwnPropertyDescriptor(globalThis, "document"),
@@ -25,6 +27,11 @@ beforeEach(() => {
     ] as const) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else delete (globalThis as Record<string, unknown>)[key];
+    }
+    if (previousLanguageDescriptor) {
+      Object.defineProperty(globalThis.navigator, "language", previousLanguageDescriptor);
+    } else {
+      delete (globalThis.navigator as { language?: string }).language;
     }
   };
 });
