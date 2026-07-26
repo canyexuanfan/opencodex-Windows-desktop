@@ -21,4 +21,41 @@ describe("logOAuthEvent", () => {
     expect(lines[0]).toContain("account=account-…wxyz");
     expect(lines[0]).not.toContain("acct_abcdefghijklmnopqrstuvwxyz");
   });
+
+  test("omits forbidden token-like field keys from output", () => {
+    const lines: string[] = [];
+    const original = console.info;
+    console.info = (msg?: unknown) => { lines.push(String(msg)); };
+    try {
+      logOAuthEvent("OAuth refresh started", {
+        provider: "kiro",
+        access: "secret-access-value",
+        refresh: "secret-refresh-value",
+        authorization: "secret-authorization-value",
+        code: "secret-code-value",
+        token: "secret-token-value",
+        accessToken: "secret-accessToken-value",
+        refreshToken: "secret-refreshToken-value",
+        safe: "visible",
+      });
+    } finally {
+      console.info = original;
+    }
+    expect(lines.length).toBe(1);
+    const line = lines[0];
+    expect(line).toContain("provider=kiro");
+    expect(line).toContain("safe=visible");
+    for (const key of [
+      "access",
+      "refresh",
+      "authorization",
+      "code",
+      "token",
+      "accessToken",
+      "refreshToken",
+    ]) {
+      expect(line).not.toContain(`${key}=`);
+      expect(line).not.toContain(`secret-${key}-value`);
+    }
+  });
 });
