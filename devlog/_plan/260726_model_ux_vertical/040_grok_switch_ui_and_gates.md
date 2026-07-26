@@ -1,6 +1,7 @@
 # 040 — WP4: Grok switch UI in the shared vertical idiom, plus closing gates
 
-Depends on WP3 (the routes and config field) and WP1 (the collapse idiom this reuses).
+Depends on WP3 (the routes and config field) and WP1 (the collapse store this reuses).
+Audit fold-backs (blockers 3, 4, 7) come from `001_audit_synthesis.md`.
 
 ## Scope
 
@@ -31,7 +32,10 @@ Routed (19)                                                            ▸
 
 A routed model that is switched off has no alias, because it is not in the fence — the
 alias column shows `—` for it. That is honest and matches `readGrokStatus`, which can
-only report what was written.
+only report what was written. The page NEVER computes an alias itself: alias allocation
+lives in `buildGrokManagedBlock` with collision counters and user-table reservations
+(`src/grok/inject.ts:130-165`), so a client-side guess would eventually be wrong
+(audit blocker 3). Aliases come from `status.models`, matched by id.
 
 ## MODIFY — `gui/src/pages/Grok.tsx`
 
@@ -51,12 +55,27 @@ interface GrokStatus {
 ```
 
 ```ts
+// Same store WP1 introduces — one implementation, one fallback path, one test file
+// (audit blocker 4). The key is Grok-specific so the two surfaces cannot collide.
+const GROUP_COLLAPSE = makeCollapseStore("ocx.grok.collapsedGroups.v1");
+
 const [excluded, setExcluded] = useState<Set<string>>(new Set());
 const [savedExcluded, setSavedExcluded] = useState<Set<string>>(new Set());
-const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsedGrokGroups);
+// null = no stored preference; both groups start open because Grok has only two.
+const [collapsed, setCollapsed] = useState<Set<string>>(() => GROUP_COLLAPSE.read() ?? new Set());
 const [pending, setPending] = useState<"save" | "apply" | null>(null);
 const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
 const [announcement, setAnnouncement] = useState("");
+```
+
+The toggle writes through the store, mirroring WP1:
+
+```ts
+const toggleGroup = (id: string) => {
+  const next = toggleInSet(collapsed, id);
+  GROUP_COLLAPSE.write(next);
+  setCollapsed(next);
+};
 ```
 
 `dirty` is a set comparison, mirroring the Desktop page's `dirty` memo:
@@ -111,14 +130,17 @@ const GROUPS = [
 ] as const;
 ```
 
-Each group renders with the SAME markup vocabulary WP1 introduced —
-`.claude-lane`-equivalent classes are reused verbatim via shared class names
-(`.ocx-group`, `.ocx-group-head`, `.ocx-group-toggle`) so the two pages cannot drift.
-WP4 therefore also renames the WP1 classes to the shared names and keeps the
-`.claude-*` ones only where the meaning is Desktop-specific (alias field, move row).
+Each group renders with the shared collapsible-group chrome WP1 already introduced —
+`.ocx-group-stack`, `.ocx-group`, `.ocx-group-head`, `.ocx-group-toggle`,
+`.ocx-group-heading`, `.ocx-group-name`, `.ocx-group-count`, `.ocx-chevron`
+(`010` § Class vocabulary decision). WP4 **consumes** them and renames nothing: the
+vocabulary split was settled in WP1 so this phase adds no CSS beyond Grok's own row
+(`.grok-model-row`) and reuses the existing `.grok-endpoint` block.
 
-Row: `<Switch>` from `gui/src/ui.tsx:8` + label + alias `<code>` + context. A switch
-flip only mutates `excluded`; nothing is written until Save.
+Row: `<Switch>` from `gui/src/ui.tsx:8` + label + alias `<code>` + context. `Switch`
+accepts only `on`/`onClick`/`disabled`/`label`, and its fallback label is English, so
+every row passes a translated `label` (`t("grok.toggleModel", { id })`). A switch flip
+only mutates `excluded`; nothing is written until Save.
 
 ### 4. Empty / absent states preserved
 
@@ -161,21 +183,32 @@ test("the Grok page only writes selection state and triggers the guarded sync", 
 | `grok.saving` / `grok.applying` | `Saving…` / `Applying…` |
 | `grok.unsaved` / `grok.upToDate` | `Unsaved changes` / `Selection is up to date` |
 | `grok.excludedNotice` | `{count} models are switched off. Apply to update your Grok config.` |
+| `grok.toggleModel` | `Register {id} with Grok` |
 | `grok.search` | reuse `models.search` instead — no new key |
 
 ko/ja/zh/de/ru translated in the same commit; `bun run lint:i18n` is the gate.
 
 ## TESTS
 
-`gui/tests/grok-switch.test.ts` (NEW):
+`gui/tests/grok-switch.test.tsx` (NEW, MOUNTED — audit blocker 7):
 
-- source-shape: the page renders `Switch`, `aria-expanded`, and both new endpoints;
-- source-shape: `dirty` gating exists on the Save button (`disabled={!dirty ...}`);
-- every new `grok.*` key resolves in all six locales (same loop as the existing
-  `grok-page.test.ts` locale test);
-- a pure helper `grokGroupView(candidates, excluded, group)` is unit-tested for
-  counting, ordering (registered first), and the "switched-off routed model has no
-  alias" case.
+- with candidates present, each row renders a switch reflecting `excluded`;
+- flipping a switch marks the page dirty and enables Save;
+- Save PUTs `{ excluded: [...] }` and clears dirty;
+- `Save & apply` calls both endpoints in order, and a response carrying
+  `skippedReason` renders the "not changed" message rather than a success —
+  activation evidence for the policy-skip branch;
+- a failed PUT surfaces an error notice and leaves the switches dirty (no false
+  success);
+- with `present: false` (no Grok installed), the switches still render and the empty
+  state names the next action.
+
+`gui/tests/grok-group-view.test.ts` (NEW, pure): `grokGroupView(candidates, aliasById,
+excluded, group)` covers counting, native/routed partition, registered-first ordering,
+and the "switched-off model shows `—` for alias" case.
+
+Locale coverage stays a source-level loop over the six dictionaries, as in the existing
+`gui/tests/grok-page.test.ts`.
 
 ## Closing gates (this phase owns the full run)
 

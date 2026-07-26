@@ -1,6 +1,8 @@
 # 010 — WP1: vertical family stack, Opus on top, collapsible headers
 
-Direction and dials come from `000_plan.md`. This doc is the implementation contract.
+Direction and dials come from `000_plan.md`; audit fold-backs come from
+`001_audit_synthesis.md` (blockers 4, 6, 7, 8, 9). This doc is the implementation
+contract.
 
 ## Scope
 
@@ -8,19 +10,19 @@ IN: family container geometry, family-level collapse, collapsed-header legibilit
 persistence, the locale keys those need.
 OUT: the per-model row's internal disclosure (WP2), anything Grok (WP3/WP4).
 
-## NEW — `gui/src/pages/claude-desktop-collapse.ts`
+## NEW — `gui/src/pages/collapse-store.ts`
 
 Pure helpers, testable without a DOM. Mirrors the storage idiom in
-`gui/src/pages/models-shared.ts:101-116` but with its own key, because Desktop families
-and Models providers are different namespaces and must not collide.
+`gui/src/pages/models-shared.ts:101-116` but parameterized by key, because WP4's Grok
+page needs the same behaviour and two copies would drift (audit blocker 4).
 
 ```ts
 /**
- * Collapse persistence for the Claude Desktop family stack.
+ * Keyed collapse persistence for the dashboard's collapsible group surfaces.
  *
- * Separate from the Models page's provider-collapse key on purpose: the two surfaces
- * collapse different things, and sharing one key would make collapsing "opus" here
- * collapse a provider literally named "opus" there.
+ * Each surface passes its own storage key: the surfaces collapse different things, and
+ * sharing one key would make collapsing "opus" on Desktop collapse a provider literally
+ * named "opus" on the Models page.
  *
  * Collapse is view state. It never reaches the profile: `modelsByFamily` and
  * `effectiveDefaults` keep seeing every model (see claude-desktop-lane.ts).
@@ -30,34 +32,46 @@ export interface StorageLike {
   setItem(key: string, value: string): void;
 }
 
-const KEY = "ocx.claudeDesktop.collapsedFamilies.v1";
-
-/** Opus is the family users actually assign; it starts open, the rest start collapsed. */
-export const DEFAULT_COLLAPSED_FAMILIES = ["fable", "sonnet", "haiku"] as const;
-
-export function readCollapsedFamilies(storage?: StorageLike): Set<string> {
-  const store = storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
-  if (!store) return new Set(DEFAULT_COLLAPSED_FAMILIES);
-  try {
-    const saved = store.getItem(KEY);
-    // No stored preference is NOT "everything open": a first visit should show the
-    // Opus lane and a compact index of the rest, which is the whole point of the change.
-    if (saved === null) return new Set(DEFAULT_COLLAPSED_FAMILIES);
-    const parsed = JSON.parse(saved) as unknown;
-    return Array.isArray(parsed) ? new Set(parsed.filter((v): v is string => typeof v === "string")) : new Set();
-  } catch {
-    return new Set(DEFAULT_COLLAPSED_FAMILIES);
-  }
+export interface CollapseStore {
+  /** `null` means "no stored preference" — the caller applies its data-driven default. */
+  read(storage?: StorageLike): Set<string> | null;
+  write(collapsed: ReadonlySet<string>, storage?: StorageLike): void;
 }
 
-export function writeCollapsedFamilies(collapsed: ReadonlySet<string>, storage?: StorageLike): void {
-  const store = storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
-  if (!store) return;
-  try {
-    store.setItem(KEY, JSON.stringify([...collapsed]));
-  } catch {
-    /* quota / private-mode — collapse is a preference, never a hard failure */
-  }
+function resolveStorage(storage?: StorageLike): StorageLike | undefined {
+  if (storage) return storage;
+  return typeof localStorage === "undefined" ? undefined : localStorage;
+}
+
+export function makeCollapseStore(key: string): CollapseStore {
+  return {
+    read(storage) {
+      const store = resolveStorage(storage);
+      if (!store) return null;
+      try {
+        const saved = store.getItem(key);
+        if (saved === null) return null;
+        const parsed = JSON.parse(saved) as unknown;
+        // Corrupt JSON and non-arrays are indistinguishable from "never set" for the
+        // user's purposes, so both fall back to the data-driven default rather than
+        // silently collapsing everything.
+        return Array.isArray(parsed)
+          ? new Set(parsed.filter((value): value is string => typeof value === "string"))
+          : null;
+      } catch {
+        return null;
+      }
+    },
+    write(collapsed, storage) {
+      const store = resolveStorage(storage);
+      if (!store) return;
+      try {
+        store.setItem(key, JSON.stringify([...collapsed]));
+      } catch {
+        /* quota / private-mode — collapse is a preference, never a hard failure */
+      }
+    },
+  };
 }
 
 export function toggleInSet(current: ReadonlySet<string>, key: string): Set<string> {
@@ -67,33 +81,59 @@ export function toggleInSet(current: ReadonlySet<string>, key: string): Set<stri
 }
 ```
 
+And in `gui/src/pages/claude-desktop-lane.ts`, the Desktop-specific default (audit
+blocker 8 — a fixed "only Opus is open" list is wrong because any model can be assigned
+to any family, `ClaudeDesktop.tsx:153-157`):
+
+```ts
+/**
+ * With no stored preference, a family is open when it holds models and collapsed when
+ * it is empty. On a fresh install that is "Opus open, three empty families folded" —
+ * the same result a hard-coded list would give, but it stays correct once the user
+ * fills Sonnet.
+ */
+export function defaultCollapsedFamilies(counts: Record<string, number>): Set<string> {
+  return new Set(Object.keys(counts).filter(family => counts[family] === 0));
+}
+```
+
 ## MODIFY — `gui/src/pages/ClaudeDesktop.tsx`
 
 ### 1. Import and state
 
 ```diff
- import { LANE_PAGE, laneView } from "./claude-desktop-lane";
-+import { readCollapsedFamilies, toggleInSet, writeCollapsedFamilies } from "./claude-desktop-collapse";
+-import { LANE_PAGE, laneView } from "./claude-desktop-lane";
++import { LANE_PAGE, defaultCollapsedFamilies, laneView } from "./claude-desktop-lane";
++import { makeCollapseStore, toggleInSet } from "./collapse-store";
 +import { IconChevron } from "../icons";
 ```
 
-Next to the existing `laneSearch`/`laneLimit` state (currently `:114-116`):
+Next to the existing `laneSearch`/`laneLimit` state (currently `:118-119`):
 
 ```diff
 +  // View state only — see the lane comment above: collapse must never narrow the
 +  // source arrays that effectiveDefaults reads.
-+  const [collapsedFamilies, setCollapsedFamilies] = useState<Set<string>>(readCollapsedFamilies);
++  const [storedCollapse, setStoredCollapse] = useState<Set<string> | null>(() => FAMILY_COLLAPSE.read());
+```
+
+with `const FAMILY_COLLAPSE = makeCollapseStore("ocx.claudeDesktop.collapsedFamilies.v1");`
+at module scope, and the effective set derived rather than stored, so the data-driven
+default keeps working until the user expresses a preference:
+
+```tsx
+const collapsedFamilies = storedCollapse
+  ?? defaultCollapsedFamilies(Object.fromEntries(FAMILIES.map(f => [f, modelsByFamily[f].length])));
 ```
 
 and the toggle, next to `moveModel`:
 
 ```diff
 +  const toggleFamily = (family: Family) => {
-+    setCollapsedFamilies(current => {
-+      const next = toggleInSet(current, family);
-+      writeCollapsedFamilies(next);
-+      return next;
-+    });
++    // First interaction promotes the derived default into a stored preference, so a
++    // later catalog change cannot silently re-fold what the user just opened.
++    const next = toggleInSet(collapsedFamilies, family);
++    FAMILY_COLLAPSE.write(next);
++    setStoredCollapse(next);
 +  };
 ```
 
@@ -105,11 +145,11 @@ container class changes so the CSS grid does not have to be overloaded:
 
 ```diff
 -      <div className="claude-lanes" aria-label={t("claudeDesktop.assignmentsLabel")}>
-+      <div className="claude-family-stack" aria-label={t("claudeDesktop.assignmentsLabel")}>
++      <div className="ocx-group-stack" aria-label={t("claudeDesktop.assignmentsLabel")}>
 ```
 
 The lane header becomes a real disclosure button. Replacing the current
-`<header className="claude-lane-head">` block (`:334-352`):
+`<header className="ocx-group-head">` block (`:334-352`):
 
 ```tsx
 const isCollapsed = collapsedFamilies.has(family);
@@ -117,36 +157,41 @@ const familyDefault = effectiveDefaults[family];
 return (
   <section
     key={family}
-    className={`claude-lane${isCollapsed ? " collapsed" : ""}`}
+    className={`ocx-group${isCollapsed ? " collapsed" : ""}`}
     aria-labelledby={`claude-lane-${family}`}
     onDragOver={event => event.preventDefault()}
     onDrop={event => dropOnLane(event, family)}
   >
-    <header className={`claude-lane-head${isCollapsed ? "" : " open"}`}>
-      <button
-        type="button"
-        className="claude-lane-toggle"
-        aria-expanded={!isCollapsed}
-        aria-controls={`claude-lane-body-${family}`}
-        onClick={() => toggleFamily(family)}
-      >
-        <IconChevron
-          className="claude-chevron"
-          width={14}
-          height={14}
-          aria-hidden="true"
-          style={{ transform: isCollapsed ? "none" : "rotate(90deg)" }}
-        />
-        <h3 id={`claude-lane-${family}`}>{t(FAMILY_KEYS[family])}</h3>
-        <span className="claude-lane-count">
-          {t(all.length === 1 ? "claudeDesktop.modelCountOne" : "claudeDesktop.modelCountMany", { count: all.length })}
-        </span>
-        {/* Collapsed legibility: the resolved default is the one thing a user opens a
-            lane to check, so it must be readable without opening it. */}
-        {familyDefault && (
-          <code className="claude-lane-default" title={familyDefault}>{familyDefault}</code>
-        )}
-      </button>
+    <header className={`ocx-group-head${isCollapsed ? "" : " open"}`}>
+      {/* A heading is not phrasing content, so the button goes INSIDE the h3, not the
+          other way round (audit blocker 9). The heading stays in the a11y tree and the
+          family name becomes the button's accessible name. */}
+      <h3 id={`claude-lane-${family}`} className="ocx-group-heading">
+        <button
+          type="button"
+          className="ocx-group-toggle"
+          aria-expanded={!isCollapsed}
+          aria-controls={`claude-lane-body-${family}`}
+          onClick={() => toggleFamily(family)}
+        >
+          <IconChevron
+            className="ocx-chevron"
+            width={14}
+            height={14}
+            aria-hidden="true"
+            style={{ transform: isCollapsed ? "none" : "rotate(90deg)" }}
+          />
+          <span className="ocx-group-name">{t(FAMILY_KEYS[family])}</span>
+          <span className="ocx-group-count">
+            {t(all.length === 1 ? "claudeDesktop.modelCountOne" : "claudeDesktop.modelCountMany", { count: all.length })}
+          </span>
+          {/* Collapsed legibility: the resolved default is the one thing a user opens a
+              lane to check, so it must be readable without opening it. */}
+          {familyDefault && (
+            <code className="claude-lane-default" title={familyDefault}>{familyDefault}</code>
+          )}
+        </button>
+      </h3>
       {/* Warnings stay OUTSIDE the fold — ux-states.md §5 forbids hiding state the
           user has to act on. */}
       {all.length > 0 && profile.defaults[family] === null && (
@@ -179,31 +224,49 @@ not remove it.
 ## MODIFY — `gui/src/styles.css`
 
 Replace the 4-column grid with a vertical stack and add the toggle/summary styling.
-Existing `.claude-lane*` rules stay; only the container geometry and the new header
-internals change.
+
+**Class vocabulary decision (audit round 2, blocker 3).** WP4 needs the same collapsible
+group chrome on the Grok page, and a retroactive rename in WP4 would leave WP1's markup
+undefined. So WP1 introduces the shared names NOW, and WP4 only consumes them:
+
+| Shared (introduced here, used by both pages) | Desktop-specific (stays `.claude-*`) |
+|---|---|
+| `.ocx-group-stack`, `.ocx-group`, `.ocx-group-head`, `.ocx-group-toggle`, `.ocx-group-heading`, `.ocx-group-name`, `.ocx-group-count`, `.ocx-chevron` | `.claude-lane-default`, `.claude-lane-models`, `.claude-lane-search`, `.claude-lane-more`, `.claude-lane-empty`, `.claude-model-*`, `.claude-alias`, `.claude-move-row`, `.claude-default-radio`, `.claude-default-needed`, `.claude-effort-badge` |
+
+Rule: a class is shared only when the two pages need the SAME chrome (the collapsible
+group shell). Anything that means "Claude family assignment" keeps its `.claude-` name,
+because Grok has no aliases to edit, no default radio and no move control. Existing
+`.claude-lane*` rules for those parts stay untouched; `.claude-lanes` itself is deleted.
 
 ```diff
 -.claude-lanes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; gap: 12px; }
-+/* Vertical family stack: Opus first, one collapsible section per Claude family.
++/* Shared collapsible-group chrome. Used by the Claude Desktop family stack and the
++   Grok page's native/routed groups, so the two dense surfaces cannot drift apart.
 +   Replaces the 4-column kanban — with a real catalog, three lanes sat empty beside
 +   one 4000px column. */
-+.claude-family-stack { display: flex; flex-direction: column; gap: 10px; }
++.ocx-group-stack { display: flex; flex-direction: column; gap: 10px; }
 ```
 
 ```css
-.claude-lane-toggle {
+.ocx-group-toggle {
   display: flex; flex: 1; align-items: baseline; gap: 10px; min-width: 0; padding: 0;
   border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left;
 }
-.claude-chevron { flex-shrink: 0; color: var(--muted); transition: transform var(--motion-fast); }
-.claude-lane-count { color: var(--muted); font-size: 11.5px; }
+.ocx-group-heading { flex: 1; min-width: 0; margin: 0; font-size: 14px; }
+.ocx-group-name { font-size: 14px; font-weight: 600; }
+.ocx-chevron { flex-shrink: 0; color: var(--muted); transition: transform var(--motion-fast); }
+.ocx-group-count { color: var(--muted); font-size: 11.5px; }
 .claude-lane-default {
   min-width: 0; overflow: hidden; color: var(--faint); font-size: 11px;
   text-overflow: ellipsis; white-space: nowrap;
 }
-.claude-lane-head.open { border-bottom: 1px solid var(--border-soft); }
-.claude-lane.collapsed .claude-lane-head { border-bottom: 0; }
+.ocx-group-head.open { border-bottom: 1px solid var(--border-soft); }
+.ocx-group.collapsed .ocx-group-head { border-bottom: 0; }
 ```
+
+`.ocx-group` and `.ocx-group-head` inherit the current `.claude-lane` / `.claude-lane-head`
+declarations (`styles.css:1295-1302`) verbatim — the rules are renamed, not rewritten,
+so the visual result is unchanged and the diff stays reviewable.
 
 And the media queries that only existed to re-flow the grid:
 
@@ -231,23 +294,32 @@ rather than assuming.
 
 ## TESTS
 
-`gui/tests/claude-desktop-collapse.test.ts` (NEW):
+`gui/tests/collapse-store.test.ts` (NEW):
 
-- no stored value → Opus open, other three collapsed (`DEFAULT_COLLAPSED_FAMILIES`);
-- a stored `[]` → everything open (an explicit user preference beats the default);
-- `writeCollapsedFamilies` round-trips through a fake storage;
+- no stored value → `read()` returns `null` (caller applies its default);
+- a stored `[]` → an empty Set, distinct from `null` (an explicit "everything open"
+  preference must beat the data-driven default);
+- `write` round-trips through a fake storage;
 - a throwing `setItem` (private mode) does not throw out of the writer;
-- corrupt JSON falls back to the default set, not a crash;
+- corrupt JSON and a non-array payload both return `null`, not a crash;
+- two stores with different keys do not read each other's values;
 - `toggleInSet` adds/removes without mutating its input;
-- the storage key is NOT the Models page key (regression guard against collision).
+- `defaultCollapsedFamilies` folds only the empty families.
 
-`gui/tests/claude-desktop-vertical.test.ts` (NEW, source-shape assertions in the style
-of `gui/tests/grok-page.test.ts`):
+`gui/tests/claude-desktop-vertical.test.tsx` (NEW, MOUNTED — audit blocker 7; the repo
+already mounts React with Happy DOM in `gui/tests/subagents-busy-race.test.tsx`):
 
-- `ClaudeDesktop.tsx` no longer references `claude-lanes` and does reference
-  `claude-family-stack`;
-- the header renders `aria-expanded`;
-- `styles.css` has no `grid-template-columns: repeat(4` for the family container.
+- with models only in Opus, Opus renders expanded and the three empty families render
+  with `aria-expanded="false"`;
+- clicking a family header toggles `aria-expanded` and hides/shows its body;
+- **dropping a model onto a COLLAPSED family still moves it** (the drop handler lives on
+  the section, so collapse must not break it);
+- the header count still reports the family's true total while a search is active;
+- the toggle writes to storage and a remount restores it.
+
+Plus a small source-shape guard in the same file: `styles.css` no longer declares
+`grid-template-columns: repeat(4` for the family container, and `ClaudeDesktop.tsx`
+references `ocx-group-stack` rather than `claude-lanes`.
 
 ## Verification (C)
 

@@ -1,6 +1,7 @@
 # 020 — WP2: two-tier disclosure for Desktop model rows
 
-Depends on WP1: the row lives inside the vertical family section WP1 builds.
+Depends on WP1: the row lives inside the vertical family section WP1 builds. Audit
+fold-backs (blockers 6, 7, 8) come from `001_audit_synthesis.md`.
 
 ## Scope
 
@@ -9,7 +10,7 @@ OUT: family geometry (WP1), Grok (WP3/WP4).
 
 ## Current shape
 
-`gui/src/pages/ClaudeDesktop.tsx:369-425` renders every model fully expanded:
+`gui/src/pages/ClaudeDesktop.tsx:375-431` renders every model fully expanded:
 title + badge, context, effort badge, effective-default note, alias field, default
 radio, and a `move to` select + button. That is ~180px per model. At 23 models in one
 family the user scrolls past 4000px of controls to find one route.
@@ -17,10 +18,10 @@ family the user scrolls past 4000px of controls to find one route.
 ## The rule this phase must not break
 
 Row-level collapse is view state, exactly like search and paging
-(`ClaudeDesktop.tsx:110-113`). The default radio and the move select must keep their
+(`ClaudeDesktop.tsx:115-119`). The default radio and the move select must keep their
 existing `onChange` handlers and keep writing to `profile`/`destinations`; collapsing a
 row must not unmount those in a way that loses a pending selection. Because
-`destinations` is page-level state keyed by route (`:106`), an unmounted row's pending
+`destinations` is page-level state keyed by route (`:109`), an unmounted row's pending
 move destination survives a collapse — verify this in the test rather than assuming it.
 
 ## MODIFY — `gui/src/pages/claude-desktop-lane.ts`
@@ -86,7 +87,7 @@ return (
       onClick={() => setOpenRows(current => ({ ...current, [model.route]: !rowOpen }))}
     >
       <IconChevron
-        className="claude-chevron"
+        className="ocx-chevron"
         width={12}
         height={12}
         aria-hidden="true"
@@ -96,7 +97,12 @@ return (
         <strong title={model.label}>{model.label}</strong>
         <code title={model.route}>{model.route}</code>
       </span>
-      {context && <span className="claude-model-context">{context}</span>}
+    {context && <span className="claude-model-context">{context}</span>}
+    {/* Effort stays in the SUMMARY (audit blocker 8): whether a model honours effort
+        informs which model you make the family default, so folding it away defeats the
+        summary's purpose. */}
+    {model.effortSupported === false && <span className="claude-effort-badge off">{t("claudeDesktop.effort.displayOnly")}</span>}
+    {model.effortSupported === true && <span className="claude-effort-badge on">{t("claudeDesktop.effort.supported")}</span>}
       <span className={`badge ${model.available ? "badge-green" : "badge-muted"}`}>
         {model.available ? t("claudeDesktop.available") : t("claudeDesktop.unavailable")}
       </span>
@@ -106,7 +112,7 @@ return (
     </button>
     {rowOpen && (
       <div className="claude-model-body" id={`claude-model-body-${model.route}`}>
-        {/* effort badge, effective-default note, alias field, default radio, move row —
+        {/* effective-default note, alias field, default radio, move row —
             all moved here verbatim from the current card body */}
       </div>
     )}
@@ -114,9 +120,9 @@ return (
 );
 ```
 
-The availability badge and context stay in the SUMMARY, not the body: they are triage
-information (`000_plan.md` — do not hide state the user must act on). The effort badge
-moves into the body because it is detail, not triage.
+The availability badge, context and effort chip stay in the SUMMARY, not the body: they
+are triage information (`000_plan.md` — do not hide state the user must act on). Only
+the edit affordances — alias, default radio, move control — go behind the fold.
 
 ### 3. Interaction rules that must not regress
 
@@ -155,14 +161,19 @@ ja `既定`, zh `默认`, de `Standard`, ru `По умолчанию`.
 
 ## TESTS
 
-`gui/tests/claude-desktop-row-disclosure.test.ts` (NEW):
+`gui/tests/claude-desktop-row-disclosure.test.tsx` (NEW, MOUNTED — audit blocker 7):
 
-- `rowStartsOpen` returns true only for the family default, false for a null default;
-- source-shape: the summary button carries `aria-expanded` and `aria-controls`;
-- source-shape: alias / default radio / move row appear only inside
-  `claude-model-body`;
-- source-shape: the availability badge and context are NOT inside the body block;
-- `claudeDesktop.defaultBadge` exists in all six locales.
+- a non-default row renders collapsed: no alias field, no default radio, no move select
+  in the DOM; the summary button reports `aria-expanded="false"`;
+- the family's resolved default row renders open (`rowStartsOpen`);
+- clicking a summary reveals the alias, the radio and the move control;
+- **pending move destination survives a collapse**: open a row, pick a destination,
+  collapse it, reopen it, and the select still shows the chosen family (this is the
+  regression the `destinations`-is-page-state comment predicts, so it must be observed
+  rather than assumed);
+- dragging from a COLLAPSED row still sets the drag payload;
+- the availability badge and context remain in the DOM while collapsed;
+- `claudeDesktop.defaultBadge` resolves in all six locales.
 
 Extend `gui/tests/claude-desktop-lane.test.ts` with the `rowStartsOpen` cases so the
 pure-helper suite stays in one place.
@@ -171,7 +182,7 @@ pure-helper suite stays in one place.
 
 | Command | Expected |
 |---------|----------|
-| `cd gui && bun test tests/claude-desktop-row-disclosure.test.ts tests/claude-desktop-lane.test.ts` | pass |
+| `cd gui && bun test tests/claude-desktop-row-disclosure.test.tsx tests/claude-desktop-lane.test.ts` | pass |
 | `cd gui && bun run test` | pass |
 | `bun run lint:gui` / `bun run lint:i18n` | clean |
 | headless render | collapsed rows one line tall; the default row open; expanding a row reveals alias/default/move |

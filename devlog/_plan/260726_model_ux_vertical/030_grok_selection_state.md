@@ -1,8 +1,9 @@
 # 030 — WP3: Grok per-model selection state, sync filter, management API
 
-No dependency on WP1/WP2; this is the backend half of the Grok switch.
+No dependency on WP1/WP2; this is the backend half of the Grok switch. Audit
+fold-backs (blockers 1, 2, 3) come from `001_audit_synthesis.md`.
 
-## Why the switch cannot simply write TOML
+## The writer boundary, stated precisely
 
 `src/grok/inject.ts:186-207` refuses to auto-register for non-loopback binds, and the
 comment there records why: a regenerated block cannot carry the admission token without
@@ -12,9 +13,41 @@ byte-for-byte user-content preservation, EOL detection, orphaned-marker refusal 
 alias reservation. Re-implementing any of that behind an HTTP route would widen the blast
 radius of a web-reachable surface.
 
-So the switch changes **what the existing writer is asked to write**, and re-applying
-calls the same `syncGrokConfig` the CLI calls. No new writer exists anywhere in this
-phase.
+So the rule is not "the management API performs no write" — the apply route below does
+reach `atomicWriteFile` through `injectGrokConfig` (`src/grok/inject.ts:238`), and
+pretending otherwise would be a guard that cannot fail. The rule is:
+
+> **`injectGrokConfig` remains the single writer of `~/.grok/config.toml`. No new code
+> path writes that file, and the HTTP surface may only ask the existing writer to run
+> against the persisted config.**
+
+**Threat model for `POST /api/grok/apply`.** The route sits behind the same boundary as
+`POST /api/claude-desktop/apply`: API auth runs before management routing
+(`src/server/index.ts:344-348`) and origin is checked in `handleManagementAPI`
+(`src/server/management-api.ts:82-92`). Beyond that it is deliberately input-free:
+
+| Input | Source | Attacker influence |
+|-------|--------|--------------------|
+| model list | catalog + `config.grokExcludedModels` | only via the audited selection route |
+| target path | `resolveGrokHome()` inside the writer | none |
+| port / hostname | runtime-port record (below) | none |
+| request body | ignored entirely | none |
+
+The worst an authenticated same-origin caller can do is re-run the sync that
+`ocx start` / `ensure` / `restart` already run unprompted.
+
+**Concurrency.** Two clicks must not interleave two read-modify-write cycles over one
+file. The route serializes through a module-level chain:
+
+```ts
+let grokApplyChain: Promise<unknown> = Promise.resolve();
+/** Serializes applies: injectGrokConfig is read-modify-write over a single file. */
+function queueGrokApply<T>(run: () => Promise<T>): Promise<T> {
+  const next = grokApplyChain.then(run, run);
+  grokApplyChain = next.catch(() => {});
+  return next;
+}
+```
 
 ## NEW config field — `src/types.ts`
 
@@ -38,54 +71,67 @@ survives a round-trip; adding an explicit `z.array(z.string()).optional()` entry
 the contract intentional and gives a bad hand-edit a real parse error instead of a
 silent pass. Add it to the schema object in the same commit.
 
-## MODIFY — `src/grok/sync.ts`
+## Alias stability — why a plain filter is wrong
 
-`syncGrokConfig` currently builds `models` from every native slug plus every
-catalog-visible routed model (`:33-52`). Insert a single filter step after the list is
-assembled, before `deps.injectGrokConfig`:
+`buildGrokManagedBlock` allocates aliases with a collision counter over the list it is
+handed, plus reservations for user-owned `[model.*]` tables
+(`src/grok/inject.ts:130-165`). Dropping an entry BEFORE the builder sees it therefore
+renumbers its colliding successors: with `kimi/k3` and `kimi-k3` both sanitizing to
+`ocx-kimi-k3`, switching the first one off silently renames the second from
+`ocx-kimi-k3-2` to `ocx-kimi-k3` — renaming a name the user already typed into grok.
+Order preservation alone does not prevent this (audit blocker 3).
+
+Fix: allocate aliases over the **unfiltered** list and skip only the emission.
+
+### MODIFY — `src/grok/inject.ts`
 
 ```diff
- export async function syncGrokConfig(...) {
-   let models: GrokInjectModel[];
-   try {
-     const routed = filterCatalogVisibleModels(await deps.fetchAllModels(config), config);
-     models = [
-       ...visibleNativeSlugs(config).map(...),
-       ...routed.map(...),
-     ];
-+    // The user's per-model switches from the dashboard. An empty/absent list keeps the
-+    // historical behaviour (everything visible goes into the fence).
-+    models = filterGrokSelectedModels(models, config.grokExcludedModels);
-   } catch (err) { ... }
-   return deps.injectGrokConfig(port, models, ...);
- }
+-export function buildGrokManagedBlock(port: number, models: GrokInjectModel[], hostname?: string, reservedAliases?: ReadonlySet<string>): string {
++export function buildGrokManagedBlock(
++  port: number,
++  models: GrokInjectModel[],
++  hostname?: string,
++  reservedAliases?: ReadonlySet<string>,
++  /**
++   * Ids to allocate an alias for but NOT emit. Alias numbering must not depend on which
++   * models the user switched off, or excluding one colliding model would rename another
++   * model's alias out from under a grok config that already uses it.
++   */
++  excluded?: ReadonlySet<string>,
++): string {
 ```
 
-with the helper exported from the same module so both the route and the tests can use
-it without importing the whole sync path:
+Inside the loop, immediately after `taken.add(alias)`:
 
-```ts
-/**
- * Drop excluded ids from a Grok model list.
- *
- * Pure and order-preserving: alias generation in buildGrokManagedBlock depends on list
- * order (duplicate base aliases get numeric suffixes), so reordering here would rename
- * a user's aliases behind their back.
- */
-export function filterGrokSelectedModels(
-  models: GrokInjectModel[],
-  excluded: readonly string[] | undefined,
-): GrokInjectModel[] {
-  if (!excluded || excluded.length === 0) return models;
-  const drop = new Set(excluded);
-  return models.filter(model => !drop.has(model.id));
-}
+```diff
++    if (excluded?.has(model.id)) continue;   // slot consumed, table not written
 ```
 
-Edge case that must be handled, not discovered later: excluding EVERY model leaves an
-empty list, and `buildGrokManagedBlock` with `models: []` emits just the two markers.
-That is a valid "registered nothing" fence, and `stripGrokConfig` still removes it. The
-route rejects nothing on this basis; the UI warns.
+`isFirst` derives from `lines.length === 1`, which stays correct: a skipped model adds
+no lines, so the first EMITTED table is still the one that omits the leading blank line.
+`injectGrokConfig` grows the same optional field on its `opts` and forwards it.
+
+### MODIFY — `src/grok/sync.ts`
+
+```diff
+   const routed = filterCatalogVisibleModels(await deps.fetchAllModels(config), config);
+   models = [ /* natives */, /* routed */ ];
+ } catch (err) { ... }
+-return deps.injectGrokConfig(port, models, { hostname, grokHome });
++// Pass the FULL list plus the exclusion set: the writer allocates aliases over
++// everything and emits only what is switched on, so a model's alias never depends on
++// its neighbours' switches. Absent/empty selection keeps today's behaviour exactly.
++return deps.injectGrokConfig(port, models, {
++  ...(opts.hostname !== undefined ? { hostname: opts.hostname } : {}),
++  ...(opts.grokHome !== undefined ? { grokHome: opts.grokHome } : {}),
++  excluded: new Set(config.grokExcludedModels ?? []),
++});
+```
+
+Edge case handled, not discovered later: excluding EVERY model emits a fence with the
+two markers and no `[model.` table. That is a valid "registered nothing" state, and
+`stripGrokConfig` still removes it cleanly. The route rejects nothing on this basis;
+the UI warns.
 
 ## NEW routes — `src/server/management/agent-settings-routes.ts`
 
@@ -101,7 +147,10 @@ Beside the existing read-only `GET /api/grok` (`:388-396`).
 +      const { fetchGrokCandidateModels } = await import("./shared");
 +      // `candidates` is the full visible catalog the fence WOULD carry, so the page can
 +      // show a switch for a model the user has already excluded (it is absent from the
-+      // fence, so `status.models` alone could never list it).
++      // fence, so `status.models` alone could never list it). The page pairs each
++      // candidate with the alias from `status.models` and renders "—" when there is
++      // none: aliases are the WRITER's output and are never guessed client-side
++      // (audit blocker 3).
 +      return jsonResponse({
 +        ...readGrokStatus(),
 +        candidates: await fetchGrokCandidateModels(config),
@@ -167,12 +216,20 @@ export async function fetchGrokCandidateModels(config: OcxConfig): Promise<GrokC
 ```ts
   // Re-runs the SAME sync the CLI runs. All guards (no-grok-home, non-loopback refusal,
   // orphaned marker, backup, alias reservation) live in injectGrokConfig and are not
-  // duplicated here.
+  // duplicated here. Accepts no body: every input comes from persisted state.
   if (url.pathname === "/api/grok/apply" && req.method === "POST") {
     try {
       const { syncGrokConfig } = await import("../../grok/sync");
-      const port = Number(url.port) || config.port;
-      const result = await syncGrokConfig(port, config, config.hostname ? { hostname: config.hostname } : {});
+      const { readRuntimePort } = await import("../../config");
+      // The host/port the proxy ACTUALLY bound — not the request authority (caller-
+      // influenced, src/server/index.ts:302) and not config.hostname, which
+      // src/grok/sync.ts:24 warns may have drifted. `ocx ensure` passes live.hostname
+      // for this exact reason (src/cli/index.ts:320-324); the runtime-port record is
+      // the in-process equivalent, written at startup (src/cli/index.ts:200).
+      const runtime = readRuntimePort(process.pid);
+      const port = runtime?.port ?? config.port;
+      const hostname = runtime?.hostname ?? config.hostname;
+      const result = await queueGrokApply(() => syncGrokConfig(port, config, hostname !== undefined ? { hostname } : {}));
       // A policy skip (non-loopback, no ~/.grok) is not a server error: report it as a
       // result the page can explain rather than a 500 the user cannot act on.
       return jsonResponse({ ok: result.ok, changed: result.changed, message: result.message,
@@ -186,22 +243,28 @@ export async function fetchGrokCandidateModels(config: OcxConfig): Promise<GrokC
 Security note for review: both new routes ride the existing management-API auth/CORS
 boundary (`handleManagementAPI` → `handleAgentSettingsRoutes`), the same one that
 already carries `PUT /api/claude-desktop` and `POST /api/claude-desktop/apply`. No new
-auth surface, no credential handling, no request-body logging.
+auth surface, no credential handling, no request-body logging. Per `AGENTS.md` this
+phase touches a security-adjacent surface: review attention belongs on the threat model
+and the serialization above, not on a claim that nothing writes.
 
 ## TESTS
 
 `tests/grok-selection.test.ts` (NEW):
 
-- `filterGrokSelectedModels` with no list returns the input array unchanged
-  (identity-ish, order preserved);
-- excluding one id drops exactly that id and keeps order;
-- excluding an unknown id is a no-op;
-- excluding everything yields `[]`, and `injectGrokConfig(port, [])` writes a fence with
-  the two markers and no `[model.` table — **activation evidence** for the empty case
+- no exclusions → output byte-identical to the current writer (no regression for every
+  existing user);
+- excluding one id omits exactly that `[model.…]` table and keeps the others;
+- excluding an unknown id changes nothing;
+- **alias stability**: with two ids that sanitize to the same base alias, excluding the
+  first leaves the second's alias unchanged (`ocx-kimi-k3-2` stays `ocx-kimi-k3-2`) —
+  the regression the audit found;
+- a user-reserved `[model.ocx-…]` table outside the fence still pushes generated
+  aliases past it while exclusions are active;
+- excluding everything writes a fence with the two markers and no `[model.` table, and
+  `stripGrokConfig` removes it cleanly — **activation evidence** for the empty case
   (C-ACTIVATION-GROUNDING-01);
-- `syncGrokConfig` with `grokExcludedModels` set omits that model's table from the
-  written TOML while keeping the others (uses the `tempGrokHome` helper pattern from
-  `tests/grok-sync.test.ts`).
+- `syncGrokConfig` with `grokExcludedModels` set produces that filtered TOML end to end
+  (uses the `tempGrokHome` helper pattern from `tests/grok-sync.test.ts`).
 
 Extend `tests/claude-management-api.test.ts` style coverage in a NEW
 `tests/grok-management-api.test.ts`:
@@ -211,15 +274,23 @@ Extend `tests/claude-management-api.test.ts` style coverage in a NEW
 - with `[]` → the field is REMOVED from config (not stored as an empty array);
 - `GET /api/grok` includes `candidates` and `excluded`;
 - `POST /api/grok/apply` in a temp `GROK_HOME` with no `.grok` directory returns
-  `ok: true` with `skippedReason: "no-grok-home"` — the guard fires and is observed.
+  `ok: true` with `skippedReason: "no-grok-home"` — the guard fires and is observed;
+- `POST /api/grok/apply` against a real temp `.grok` writes the fence, and a second call
+  reports `changed: false` — proving the HTTP path really reaches the guarded writer
+  rather than merely asserting it does not write;
+- with a runtime-port record naming a non-loopback hostname, apply returns
+  `skippedReason: "non-loopback"` and the file is NOT written — activation evidence for
+  the host guard and the regression test for audit blocker 2;
+- two concurrent applies both resolve and leave exactly one fence (serialization).
 
-Guard test (NEW, `tests/grok-writer-boundary.test.ts`) — the criterion `c-grok-guard`
-needs a mechanical check, not a promise:
+Guard test (NEW, `tests/grok-writer-boundary.test.ts`) — `c-grok-guard` needs a check
+that can actually fail:
 
-- read `src/server/management/agent-settings-routes.ts` and assert it contains no
-  `atomicWriteFile`/`writeFileSync` reference in the Grok region, and that the only
-  Grok write path it imports is `syncGrokConfig`;
-- `rg`-equivalent assertion that `config.toml` is written only from `src/grok/inject.ts`.
+- walk every file under `src/` and assert that the only module writing a grok
+  `config.toml` (an `atomicWriteFile`/`writeFileSync` applied to a grok config path) is
+  `src/grok/inject.ts`. A second writer anywhere fails the test — the property the
+  criterion actually claims, unlike a string scan of one route file, which the audit
+  showed would pass while the capability existed.
 
 ## Verification (C)
 
