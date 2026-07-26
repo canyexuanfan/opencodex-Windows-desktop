@@ -11,6 +11,7 @@ import {
   type ElevatedReconciliationOutcome,
   type FinalizeWindowsSchedulerOptions,
   type FinalizeWindowsSchedulerResult,
+  type WindowsSchedulerTaskProbe,
 } from "../service";
 
 export type StartupInstallAction = "install-service" | "install-shim";
@@ -75,18 +76,25 @@ export function ownsStartupInstallAttempt(attemptId: string): boolean {
 
 /**
  * Clear a partial-install block after the operator has cleaned up Task Scheduler.
- * Does not itself delete the task — callers must verify absence first.
+ * Requires an observed probe and clears only when the task is proven absent.
+ * Does not itself delete the task.
  */
-export function clearStartupInstallPartialBlock(options?: {
-  taskInstalled?: boolean;
+export function clearStartupInstallPartialBlock(options: {
+  probe: WindowsSchedulerTaskProbe;
 }): { cleared: boolean; detail: string } {
   if (installState.status !== "blocked") {
     return { cleared: false, detail: `Install lock is ${installState.status}, not blocked.` };
   }
-  if (options?.taskInstalled) {
+  if (options.probe.status === "present") {
     return {
       cleared: false,
       detail: "OpenCodex Task Scheduler task is still present; remove it before clearing the block.",
+    };
+  }
+  if (options.probe.status === "unknown") {
+    return {
+      cleared: false,
+      detail: `Could not verify Task Scheduler absence (${options.probe.detail}); not clearing the block.`,
     };
   }
   installState = { status: "idle" };

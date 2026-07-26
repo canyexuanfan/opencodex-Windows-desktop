@@ -207,8 +207,11 @@ describe("startup install elevation retry", () => {
     });
 
     await expect(runStartupInstallAction("install-service")).rejects.toThrow(/partial Task Scheduler state/);
-    expect(clearStartupInstallPartialBlock({ taskInstalled: true }).cleared).toBe(false);
-    expect(clearStartupInstallPartialBlock({ taskInstalled: false }).cleared).toBe(true);
+    expect(clearStartupInstallPartialBlock({ probe: { status: "present" } }).cleared).toBe(false);
+    expect(clearStartupInstallPartialBlock({
+      probe: { status: "unknown", detail: "Access is denied." },
+    }).cleared).toBe(false);
+    expect(clearStartupInstallPartialBlock({ probe: { status: "absent" } }).cleared).toBe(true);
     expect(getStartupInstallState().status).toBe("idle");
   });
 

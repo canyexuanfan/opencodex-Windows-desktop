@@ -532,6 +532,40 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
     expect(writeCount).toBe(0);
   });
 
+  test("late protocol-failed with unknown task probe stays blocked-partial and never writes state", async () => {
+    let resolveCompletion!: (value: {
+      outcome: "protocol-failed";
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    }) => void;
+    const completion = new Promise<{
+      outcome: "protocol-failed";
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    }>(resolve => { resolveCompletion = resolve; });
+
+    setFinalizeWindowsSchedulerHooksForTests({
+      startElevateCreateAndRun: () => ({ completion, launcherPid: 1 }),
+      writeInstallState: () => { writeCount += 1; },
+      probeTask: () => ({ status: "unknown", detail: "Access is denied…" }),
+      requestTimeoutMs: 20,
+    });
+
+    const result = await finalizeWindowsSchedulerServiceRegistration();
+    expect(result.kind).toBe("indeterminate");
+    resolveCompletion({
+      outcome: "protocol-failed",
+      exitCode: OCX_ELEVATED_PROTOCOL_FAILED,
+      stdout: "",
+      stderr: "",
+    });
+    if (result.kind !== "indeterminate") throw new Error("expected indeterminate");
+    await expect(result.reconciliation).resolves.toBe("blocked-partial");
+    expect(writeCount).toBe(0);
+  });
+
   test("stale attempt ownership prevents late write", async () => {
     let resolveCompletion!: (value: {
       outcome: "success";

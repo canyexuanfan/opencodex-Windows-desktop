@@ -347,14 +347,66 @@ function schtasks(args: string[]): string {
   }
 }
 
-/** True when the Task Scheduler registration for the default proxy task exists. */
-export function windowsSchedulerTaskInstalled(taskName = TASK): boolean {
-  if (process.platform !== "win32") return false;
-  try {
-    return querySchtasks(["/query", "/tn", taskName]).includes(taskName);
-  } catch {
-    return false;
+/** Tri-state Task Scheduler presence: never treat a failed query as proven absence. */
+export type WindowsSchedulerTaskProbe =
+  | { status: "present" }
+  | { status: "absent" }
+  | { status: "unknown"; detail: string };
+
+function schtasksErrorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** True when a schtasks CSV listing line refers to the given task name. */
+export function windowsSchedulerCsvIncludesTask(csv: string, taskName: string): boolean {
+  const needle = taskName.toLowerCase();
+  for (const line of csv.split(/\r?\n/)) {
+    const lower = line.toLowerCase();
+    if (!lower.includes(needle)) continue;
+    // Prefer exact CSV field matches ("\TaskName" / "TaskName") before a substring hit.
+    if (
+      lower.includes(`"\\${needle}"`)
+      || lower.includes(`"${needle}"`)
+      || new RegExp(`(^|[,\\\\])${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([,"]|$)`).test(lower)
+    ) {
+      return true;
+    }
   }
+  return false;
+}
+
+/**
+ * Probe whether the OpenCodex Task Scheduler task exists.
+ * Query failures fall back to a CSV listing before concluding absence; if both
+ * fail, returns `unknown` so callers can fail closed instead of releasing locks.
+ */
+export function probeWindowsSchedulerTask(taskName = TASK): WindowsSchedulerTaskProbe {
+  if (process.platform !== "win32") return { status: "absent" };
+
+  let queryFailure: string | null = null;
+  try {
+    const out = querySchtasks(["/query", "/tn", taskName]);
+    if (out.includes(taskName)) return { status: "present" };
+  } catch (error) {
+    queryFailure = schtasksErrorDetail(error);
+  }
+
+  try {
+    const csv = querySchtasks(["/query", "/fo", "CSV"]);
+    if (windowsSchedulerCsvIncludesTask(csv, taskName)) return { status: "present" };
+    return { status: "absent" };
+  } catch (error) {
+    const listDetail = schtasksErrorDetail(error);
+    const detail = queryFailure
+      ? `Specific query failed (${queryFailure}); CSV listing also failed (${listDetail}).`
+      : `Task query did not confirm presence and CSV listing failed (${listDetail}).`;
+    return { status: "unknown", detail };
+  }
+}
+
+/** True when the Task Scheduler registration for the default proxy task is proven present. */
+export function windowsSchedulerTaskInstalled(taskName = TASK): boolean {
+  return probeWindowsSchedulerTask(taskName).status === "present";
 }
 
 export interface WindowsSchedulerInstallVerification {
@@ -437,11 +489,12 @@ async function rollbackElevatedSchedulerTask(taskName = TASK): Promise<string | 
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-  const stillInstalled = finalizeHooks?.taskInstalled?.() ?? windowsSchedulerTaskInstalled(taskName);
-  if (stillInstalled) {
-    return `Task Scheduler task ${taskName} is still present after rollback.`;
+  const probe = resolveWindowsSchedulerTaskProbe(taskName);
+  if (probe.status === "absent") return null;
+  if (probe.status === "unknown") {
+    return `Task Scheduler task ${taskName} presence could not be verified after rollback: ${probe.detail}`;
   }
-  return null;
+  return `Task Scheduler task ${taskName} is still present after rollback.`;
 }
 
 type ElevateCreateAndRunStart = (
@@ -462,6 +515,9 @@ type FinalizeHooks = {
   ) => Promise<ElevatedSchtasksCreateAndRunResult>;
   verify?: () => WindowsSchedulerInstallVerification;
   writeInstallState?: () => void;
+  /** Preferred tri-state probe for security-sensitive reconciliation. */
+  probeTask?: () => WindowsSchedulerTaskProbe;
+  /** Legacy boolean hook; mapped to present/absent when probeTask is unset. */
   taskInstalled?: () => boolean;
   /** Defense-in-depth: late reconciliation must still own this attempt. */
   stillOwnsAttempt?: (attemptId: string) => boolean;
@@ -469,6 +525,14 @@ type FinalizeHooks = {
 };
 
 let finalizeHooks: FinalizeHooks | null = null;
+
+function resolveWindowsSchedulerTaskProbe(taskName = TASK): WindowsSchedulerTaskProbe {
+  if (finalizeHooks?.probeTask) return finalizeHooks.probeTask();
+  if (finalizeHooks?.taskInstalled) {
+    return finalizeHooks.taskInstalled() ? { status: "present" } : { status: "absent" };
+  }
+  return probeWindowsSchedulerTask(taskName);
+}
 
 /** Test-only hooks for elevated create+run finalization. */
 export function setFinalizeWindowsSchedulerHooksForTests(hooks: FinalizeHooks | null): void {
@@ -482,15 +546,21 @@ function throwPartialInstall(parts: string[]): never {
 /**
  * Reconcile an unrecognized elevated exit when we cannot trust the phase code.
  * Never invent a create-vs-run classification; inspect actual task state first.
+ * An unverifiable probe must fail closed (partial / blocked), never release.
  */
 async function reconcileUnknownElevatedOutcome(exitCode: number): Promise<void> {
-  const taskPresent = finalizeHooks?.taskInstalled?.() ?? windowsSchedulerTaskInstalled();
+  const probe = resolveWindowsSchedulerTaskProbe();
   const parts = [
     "The elevated Task Scheduler operation returned an unknown result.",
     `Exit code: ${exitCode}.`,
     "OpenCodex could not prove whether task creation completed, so installation state was not written.",
   ];
-  if (!taskPresent) {
+  if (probe.status === "unknown") {
+    parts.push(`Task Scheduler presence could not be verified: ${probe.detail}`);
+    parts.push("A partial Task Scheduler backend may remain.");
+    throwPartialInstall(parts);
+  }
+  if (probe.status === "absent") {
     parts.push("No OpenCodex Task Scheduler task was found after the elevated operation.");
     throwPartialInstall(parts);
   }
@@ -625,7 +695,8 @@ function isPartialInstallError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return /partial Task Scheduler/i.test(error.message)
     || /Cleanup also failed/i.test(error.message)
-    || /left in place because native WinSW status could not be verified/i.test(error.message);
+    || /left in place because native WinSW status could not be verified/i.test(error.message)
+    || /Task Scheduler presence could not be verified/i.test(error.message);
 }
 
 /**

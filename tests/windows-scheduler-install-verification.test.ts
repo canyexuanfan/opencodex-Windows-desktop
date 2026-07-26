@@ -2,8 +2,22 @@ import { describe, expect, test } from "bun:test";
 import {
   buildWindowsTaskXml,
   evaluateWindowsSchedulerInstallVerification,
+  windowsSchedulerCsvIncludesTask,
   windowsTaskRegistrationHealthy,
 } from "../src/service";
+
+describe("windowsSchedulerCsvIncludesTask", () => {
+  test("matches quoted Task Scheduler CSV task names", () => {
+    const csv = [
+      `"TaskName","Next Run Time","Status"`,
+      `"\\opencodex-proxy","N/A","Ready"`,
+      `"\\Other Task","N/A","Ready"`,
+    ].join("\n");
+    expect(windowsSchedulerCsvIncludesTask(csv, "opencodex-proxy")).toBe(true);
+    expect(windowsSchedulerCsvIncludesTask(csv, "missing-task")).toBe(false);
+    expect(windowsSchedulerCsvIncludesTask(csv, "opencodex")).toBe(false);
+  });
+});
 
 describe("evaluateWindowsSchedulerInstallVerification", () => {
   const wscript = "C:\\Windows\\System32\\wscript.exe";
