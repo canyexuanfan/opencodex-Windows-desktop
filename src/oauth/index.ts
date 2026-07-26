@@ -17,6 +17,12 @@ import { effectiveGoogleMode } from "../providers/registry";
 import { resolveProviderTransport } from "../providers/xai-transport";
 import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 import { logOAuthEvent } from "./log";
+export {
+  collectOAuthHealthEntries,
+  projectOAuthAccountHealth,
+  type OAuthAccountHealth,
+  type OAuthHealthEntry,
+} from "./health";
 
 const REFRESH_SKEW_MS = 60_000;
 export interface OAuthAccessSnapshot {
