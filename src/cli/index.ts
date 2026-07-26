@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
 import { currentExternalCodexModelProvider, restoreNativeCodex, shouldInjectApiAuthHeader } from "../codex/inject";
 import { stripGrokConfig } from "../grok/inject";
 import { restoreLegacyOpenaiHistory } from "../codex/history-provider";
-import { writeJournal, reconcileJournal } from "../codex/journal";
+import { reconcileJournal } from "../codex/journal";
 import {
   codexAutoStartEnabled,
   getConfigDir,
@@ -198,7 +198,9 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   const config = loadConfig();
   writeRuntimePort({ pid: process.pid, port, hostname: config.hostname });
-  if (!currentExternalCodexModelProvider()) writeJournal();
+  // No pre-emptive snapshot here. `injectCodexConfig` journals the exact bytes it
+  // is about to transform; snapshotting earlier only captured a baseline that could
+  // already be stale by the time injection ran (#477).
 
   // Background proactive token refresh. No-op unless config.tokenGuardian.enabled; timer is unref'd
   // so it never keeps the process alive on its own. Stopped in syncCleanup so no refresh fires mid-drain.
