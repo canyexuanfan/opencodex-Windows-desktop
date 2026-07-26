@@ -17,6 +17,7 @@ import dashboard from '../assets/dashboard.png';
 import picker from '../assets/codex-app-picker.png';
 import heroFieldLight from '../assets/hero-route-light.png';
 import heroFieldDark from '../assets/hero-route-dark.png';
+import SiteJsonLd from './SiteJsonLd.astro';
 
 interface Props {
 	locale?: 'ko' | 'zh-cn' | 'ru' | 'ja';
@@ -117,6 +118,10 @@ const docsMap = [
 	},
 ];
 ---
+
+{/* Site-name markup: Landing only renders on the locale home pages, so this is
+    the one place Google should see a WebSite entity. */}
+<SiteJsonLd locale={locale} />
 
 <div class="lp not-content">
 	<!-- scene stack: hero -> quickstart -> horizontal rail. Each wrapper owns a
