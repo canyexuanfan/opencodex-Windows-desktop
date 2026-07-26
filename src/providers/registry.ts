@@ -401,6 +401,18 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // transport returns 400 ("Multi Agent requests are not allowed on chat completions").
     models: ["grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     defaultModel: "grok-4.5",
+    // Vision lineup per docs.x.ai model-capabilities/images/understanding: the grok-4.x chat
+    // models accept image input (JPEG/PNG, URL or base64). Without this the catalog leaves
+    // inputModalities undefined, and deriveComboCatalogModel defaults an undefined member to
+    // ["text"] — so any combo containing an xAI target is advertised to Codex as text-only and
+    // the app blocks attachments client-side. grok-build-0.1 / grok-composer-2.5-fast stay out
+    // (they are already listed in noVisionModels below).
+    modelInputModalities: {
+      "grok-4.5": ["text", "image"],
+      "grok-4.3": ["text", "image"],
+      "grok-4.20-0309-reasoning": ["text", "image"],
+      "grok-4.20-0309-non-reasoning": ["text", "image"],
+    },
     noReasoningModels: ["grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     // Replay assistant reasoning_content for grok reasoning models: xAI documents dropped
     // reasoning_content as the top cause of prompt-cache misses on multi-turn conversations
