@@ -1,11 +1,5 @@
 import { formatErrorResponse } from "../../bridge";
-import { parseRetryAfterMs } from "../../combos";
-
-function sanitizedRetryAfter(value: string | null | undefined, now: number): string | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed || trimmed.length > 128) return undefined;
-  return parseRetryAfterMs(trimmed, now) !== undefined ? trimmed : undefined;
-}
+import { resolveClientRetryAfter } from "../../lib/retry-after";
 
 /**
  * Passthrough adapters historically relayed upstream non-2xx bodies verbatim.
@@ -16,9 +10,8 @@ function sanitizedRetryAfter(value: string | null | undefined, now: number): str
  * HTML/text errors) must keep their original bytes and headers so pool-retry
  * activation and client diagnostics stay honest.
  *
- * Normalized (empty-body) responses force `Content-Type: application/json` and
- * preserve a validated `Retry-After` so Responses clients and the chat-completions
- * / Claude bridges that copy that header keep correct backoff.
+ * When Retry-After is missing on a retryable 429, inject a small default so
+ * Codex/Responses clients can back off the same way Claude Code does (#507).
  */
 export function formatPassthroughUpstreamError(
   status: number,
@@ -31,9 +24,25 @@ export function formatPassthroughUpstreamError(
 ): Response {
   const trimmed = bodyText.trim();
   const now = options?.now ?? Date.now();
-  const retryAfter = sanitizedRetryAfter(options?.headers?.get("retry-after"), now);
+  const retryAfter = resolveClientRetryAfter({
+    status,
+    message: trimmed || `Provider error ${status}: (empty body)`,
+    upstreamRetryAfter: options?.headers?.get("retry-after"),
+    now,
+  });
 
   if (trimmed) {
+    if (retryAfter && !options?.headers?.get("retry-after")?.trim()) {
+      const headers = options?.headers
+        ? new Headers(options.headers)
+        : new Headers({ "Content-Type": "application/json" });
+      headers.set("Retry-After", retryAfter);
+      return new Response(bodyText, {
+        status,
+        ...(options?.statusText ? { statusText: options.statusText } : {}),
+        headers,
+      });
+    }
     return new Response(bodyText, {
       status,
       ...(options?.statusText ? { statusText: options.statusText } : {}),
@@ -45,6 +54,7 @@ export function formatPassthroughUpstreamError(
     status,
     "upstream_error",
     `Provider error ${status}: (empty body)`,
+    retryAfter !== undefined ? { retryAfter } : undefined,
   );
   const headers = new Headers(response.headers);
   headers.set("Content-Type", "application/json");

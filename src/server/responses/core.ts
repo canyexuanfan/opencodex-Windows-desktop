@@ -27,6 +27,7 @@ import {
 } from "../../combos";
 import { isInjectionDebugEnabled } from "../../lib/debug-settings";
 import { injectionDebugLog } from "../../lib/injection-debug-log";
+import { resolveClientRetryAfter } from "../../lib/retry-after";
 import { modelInList, namespacedToolName } from "../../types";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../../types";
 import {
@@ -347,10 +348,16 @@ export async function consumeComboFailure(
   const message = classificationText === fallback
     ? fallback
     : `${fallback}: ${classificationText}`;
-  const retryAfter = sanitizedRetryAfter(response.headers.get("retry-after"), now);
+  const retryAfter = resolveClientRetryAfter({
+    status: response.status,
+    message,
+    upstreamRetryAfter: response.headers.get("retry-after"),
+    now,
+  });
   return {
     response: formatErrorResponse(response.status, "upstream_error", message, {
       ...(upstreamCode !== undefined ? { code: upstreamCode } : {}),
+      ...(retryAfter !== undefined ? { retryAfter } : {}),
     }),
     classificationText,
     ...(upstreamCode !== undefined ? { upstreamCode } : {}),
@@ -1830,7 +1837,15 @@ export async function handleResponses(
       );
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
-      return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`);
+      const message = `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`;
+      const retryAfter = resolveClientRetryAfter({
+        status: upstreamResponse.status,
+        message,
+        upstreamRetryAfter: upstreamResponse.headers.get("retry-after"),
+      });
+      return formatErrorResponse(upstreamResponse.status, "upstream_error", message, {
+        ...(retryAfter !== undefined ? { retryAfter } : {}),
+      });
     }
   }
 
