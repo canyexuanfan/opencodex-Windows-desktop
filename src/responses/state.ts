@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
 import type { OcxProviderContinuationState } from "../types";
@@ -14,6 +14,10 @@ const MAX_STORED_RESPONSE_BYTES = 64 * 1024 * 1024;
  * carry base64 `input_image` data URLs, and one screenshot-heavy thread must not balloon the file. */
 const SNAPSHOT_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const SNAPSHOT_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
+const STALE_TEMP_GRACE_MS = 15 * 60 * 1_000;
+const STALE_TEMP_MAX_ENTRIES = 4_096;
+const STALE_TEMP_MAX_CLEANUPS = 512;
+const RESPONSE_STATE_TEMP_NAME = /^responses-state\.json\.ocx\.(\d+)\.(\d+)\.tmp$/;
 
 interface StoredResponseState {
   createdAt: number;
@@ -88,6 +92,111 @@ function snapshotPath(): string {
   return join(getConfigDir(), "responses-state.json");
 }
 
+export interface ResponseStateTempRecoveryResult {
+  matched: number;
+  removed: number;
+  failed: number;
+  bytesRemoved: number;
+}
+
+interface ResponseStateTempRecoveryIO {
+  now: () => number;
+  list: (dir: string) => Iterable<string>;
+  inspect: (path: string) => { isFile: boolean; mtimeMs: number; size: number };
+  isProcessAlive: (pid: number) => boolean;
+  unlink: (path: string) => void;
+}
+
+type ResponseStateTempRecoveryOptions = Partial<ResponseStateTempRecoveryIO> & {
+  maxEntries?: number;
+  maxCleanups?: number;
+};
+
+function processIsAlive(pid: number): boolean {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but cannot be signalled. Unknown platform errors
+    // are also protected; cleanup should prefer a false negative over touching a live writer.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+const responseStateTempRecoveryIO: ResponseStateTempRecoveryIO = {
+  now: Date.now,
+  list: function* list(dir) {
+    const handle = opendirSync(dir);
+    try {
+      for (let entry = handle.readSync(); entry; entry = handle.readSync()) yield entry.name;
+    } finally {
+      handle.closeSync();
+    }
+  },
+  inspect: path => {
+    const stat = lstatSync(path);
+    return { isFile: stat.isFile() && !stat.isSymbolicLink(), mtimeMs: stat.mtimeMs, size: stat.size };
+  },
+  isProcessAlive: processIsAlive,
+  unlink: unlinkSync,
+};
+
+/**
+ * Recover only abandoned response-state atomic-write files. The exact basename,
+ * regular-file check, age gate, and PID liveness check protect unrelated/active files.
+ * Cleanup is capped and best-effort because continuation state is only a cache. Removal
+ * deliberately uses unlink only: path-based truncation could follow a replacement symlink.
+ */
+export function recoverStaleResponseStateTemps(
+  dir = getConfigDir(),
+  options: ResponseStateTempRecoveryOptions = {},
+): ResponseStateTempRecoveryResult {
+  const { maxEntries = STALE_TEMP_MAX_ENTRIES, maxCleanups = STALE_TEMP_MAX_CLEANUPS, ...overrides } = options;
+  const io = { ...responseStateTempRecoveryIO, ...overrides };
+  const result: ResponseStateTempRecoveryResult = {
+    matched: 0,
+    removed: 0,
+    failed: 0,
+    bytesRemoved: 0,
+  };
+  let names: Iterable<string>;
+  try { names = io.list(dir); } catch { return result; }
+  let iterator: Iterator<string>;
+  try { iterator = names[Symbol.iterator](); } catch { return result; }
+  let scanned = 0;
+  for (;;) {
+    let next: IteratorResult<string>;
+    try { next = iterator.next(); } catch { return result; }
+    if (next.done) break;
+    const name = next.value;
+    scanned += 1;
+    if (scanned > maxEntries || result.removed + result.failed >= maxCleanups) break;
+    const match = RESPONSE_STATE_TEMP_NAME.exec(name);
+    if (!match) continue;
+    result.matched += 1;
+    const pid = Number(match[1]);
+    const sequence = Number(match[2]);
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(sequence) || sequence <= 0) continue;
+    const path = join(dir, name);
+    let file: ReturnType<ResponseStateTempRecoveryIO["inspect"]>;
+    try { file = io.inspect(path); } catch { continue; }
+    if (!file.isFile || io.now() - file.mtimeMs < STALE_TEMP_GRACE_MS) continue;
+    if (pid === process.pid || io.isProcessAlive(pid)) continue;
+
+    try {
+      io.unlink(path);
+      result.removed += 1;
+      result.bytesRemoved += file.size;
+    } catch {
+      // Locked files remain for a later startup. Do not truncate by path: a same-user
+      // replacement could turn that fallback into an arbitrary symlink-target write.
+      result.failed += 1;
+    }
+  }
+  return result;
+}
+
 /**
  * Best-effort disk snapshot so previous_response_id chains survive a proxy restart (the
  * dominant expansion-miss cause: an in-memory-only store dies with the process, and the next
@@ -98,8 +207,13 @@ function snapshotPath(): string {
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  const path = snapshotPath();
   try {
-    const path = snapshotPath();
+    recoverStaleResponseStateTemps(dirname(path));
+  } catch {
+    /* best-effort cleanup only; snapshot loading must remain independent */
+  }
+  try {
     if (!existsSync(path)) return;
     const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };
     if ((raw.version !== 1 && raw.version !== 2) || !Array.isArray(raw.states)) return;
@@ -239,6 +353,46 @@ export function previousResponseProviderState(responseId: string | undefined): O
   pruneResponses();
   const providers = states.get(responseId)?.providers;
   return providers ? structuredClone(providers) : undefined;
+}
+
+export interface ResponseStateMetrics {
+  /** Number of retained continuation entries currently in RAM. */
+  count: number;
+  /** Sum of serialized item bytes across all entries (the running in-memory byte accounting).
+   * Because expanded previous_response_id chains share prefix item references, this is an UPPER
+   * bound on true heap (it re-counts shared history), never an under-count — safe as a
+   * memory-pressure signal. */
+  totalBytes: number;
+  /** Serialized item bytes of the single largest entry (a long chain's head, or an image-heavy turn). */
+  largestBytes: number;
+  /** Age of the oldest retained entry, in ms (0 when the store is empty). */
+  oldestAgeMs: number;
+}
+
+/**
+ * Observe-only snapshot of the in-RAM continuation store, surfaced via GET /api/system/memory.
+ * Additive and side-effect free — it does NOT lazy-load the disk snapshot, prune, or evict — so a
+ * diagnostics probe can sample it without perturbing request handling. `totalBytes` reads the
+ * running byte counter and `largestBytes` reads each entry's cached `sizeBytes`, so a probe never
+ * re-serializes the whole store (a large transient allocation that would fire exactly when memory
+ * is already under pressure). This is the seam for deciding whether RAM growth originates in this
+ * store (JS heap) or in the runtime allocator (native).
+ */
+export function responseStateMetrics(): ResponseStateMetrics {
+  const at = now();
+  let largestBytes = 0;
+  let oldestCreatedAt = at;
+  for (const state of states.values()) {
+    const bytes = state.sizeBytes ?? 0;
+    if (bytes > largestBytes) largestBytes = bytes;
+    if (state.createdAt < oldestCreatedAt) oldestCreatedAt = state.createdAt;
+  }
+  return {
+    count: states.size,
+    totalBytes: storedResponseBytes,
+    largestBytes,
+    oldestAgeMs: states.size > 0 ? at - oldestCreatedAt : 0,
+  };
 }
 
 /**

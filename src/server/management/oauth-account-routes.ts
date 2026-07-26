@@ -10,7 +10,7 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
-  saveConfig,
+  saveConfigPreservingClaudeCode,
 } from "../../config";
 import {
   clearLoginState,
@@ -55,6 +55,7 @@ import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerS
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
 import { applySystemEnvToggle } from "../system-env";
+import { buildApiAccessEndpoints } from "./api-access";
 
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
@@ -157,7 +158,24 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const status = getLoginStatus(provider);
-    return jsonResponse({ activeAccountId: status.activeAccountId ?? null, accounts: status.accounts ?? [] });
+    const { getAccountSet } = await import("../../oauth/store");
+    const {
+      oauthAccountHealthFields,
+      projectOAuthAccountHealth,
+      projectStoredOAuthAccountHealth,
+    } = await import("../../oauth/health");
+    const set = getAccountSet(provider);
+    const accounts = (status.accounts ?? []).map(summary => {
+      const full = set?.accounts.find(account => account.id === summary.id);
+      const health = full
+        ? projectStoredOAuthAccountHealth(provider, full)
+        : projectOAuthAccountHealth({
+          needsReauth: summary.needsReauth === true,
+          reauthReason: summary.needsReauth === true ? "refresh_failed" : undefined,
+        });
+      return { ...summary, ...oauthAccountHealthFields(provider, summary.id, health) };
+    });
+    return jsonResponse({ activeAccountId: status.activeAccountId ?? null, accounts });
   }
   if (url.pathname === "/api/oauth/accounts/active" && req.method === "PUT") {
     const body = await req.json().catch(() => ({})) as { provider?: string; accountId?: string };
@@ -272,7 +290,15 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   // ---------------------------------------------------------------------------
   if (url.pathname === "/api/keys" && req.method === "GET") {
     const keys = config.apiKeys ?? [];
-    return jsonResponse({ keys: keys.map(k => ({ id: k.id, name: k.name, prefix: k.key.slice(0, 8) + "...", createdAt: k.createdAt })), endpoint: `http://${config.hostname ?? "127.0.0.1"}:${config.port ?? 10100}/v1/responses` }, 200, req, config);
+    const endpoints = buildApiAccessEndpoints(config, {
+      requestUrl: req.url,
+      requestHost: req.headers.get("host"),
+      requestOrigin: req.headers.get("origin"),
+    });
+    return jsonResponse({
+      keys: keys.map(k => ({ id: k.id, name: k.name, prefix: k.key.slice(0, 8) + "...", createdAt: k.createdAt })),
+      ...endpoints,
+    }, 200, req, config);
   }
 
   if (url.pathname === "/api/keys" && req.method === "POST") {
@@ -286,7 +312,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const key = "ocx_" + Buffer.from(hashBuf).toString("hex").slice(0, 40);
     const entry = { id: crypto.randomUUID(), name, key, createdAt: new Date().toISOString() };
     config.apiKeys = [...(config.apiKeys ?? []), entry];
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     return jsonResponse({ id: entry.id, name: entry.name, key: entry.key, createdAt: entry.createdAt }, 201, req, config);
   }
 
@@ -294,7 +320,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const body = await req.json() as { id?: string };
     if (!body.id) return jsonResponse({ error: "id required" }, 400, req, config);
     config.apiKeys = (config.apiKeys ?? []).filter(k => k.id !== body.id);
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     return jsonResponse({ success: true }, 200, req, config);
   }
   return null;

@@ -4,13 +4,27 @@
  * handlers via props-down; no internal auth machinery.
  */
 import { useState } from "react";
-import { useT } from "../../i18n";
+import { useT } from "../../i18n/shared";
 import { IconLock, IconExternal, IconTrash } from "../../icons";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { oauthAccountDisplayLabel, providerAuthSurface } from "../../provider-workspace/auth";
+import { displayAccountId } from "../../lib/privacy";
+import {
+  copyTextToClipboard,
+  doctorCopyButtonLabel,
+  formatOAuthHealthLabel,
+  formatOAuthHealthSummary,
+  oauthHealthBadgeClass,
+  oauthHealthIsCooldown,
+  oauthHealthShowsDoctor,
+  oauthHealthShowsReauth,
+  type DoctorCopyFeedback,
+} from "../../oauth-health-display";
 import CodexAccountPool from "../CodexAccountPool";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
 import type { AccountLoadState, OAuthAccountRow, ApiKeyRow, LoginHint, ProviderAuthHandlers } from "./types";
+
+const DOCTOR_CMD = "ocx doctor";
 
 export default function ProviderAuthPanel({
   item, apiBase, oauth, accounts = [], keys = [], accountLoadState = "ready",
@@ -36,6 +50,7 @@ export default function ProviderAuthPanel({
   const [newKey, setNewKey] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
+  const [copiedDoctorFor, setCopiedDoctorFor] = useState<DoctorCopyFeedback | null>(null);
 
   const surface = providerAuthSurface({ ...item, hasApiKey: item.hasApiKey || keys.length > 0 });
   const isOauth = surface === "oauth-accounts";
@@ -68,9 +83,12 @@ export default function ProviderAuthPanel({
     const key = newKey.trim();
     if (!key) return;
     setKeyBusy(true);
-    const ok = await authHandlers.onAddApiKey(item.name, key);
-    setKeyBusy(false);
-    if (ok) { setNewKey(""); setAddingKey(false); }
+    try {
+      const ok = await authHandlers.onAddApiKey(item.name, key);
+      if (ok) { setNewKey(""); setAddingKey(false); }
+    } finally {
+      setKeyBusy(false);
+    }
   };
 
   return (
@@ -149,27 +167,55 @@ export default function ProviderAuthPanel({
               </div>
             )}
             {accounts.length > 0 && (
-              <div className="pwi-auth-list" role="list">
+              <ul className="pwi-auth-list">
                 {accounts.map(account => {
                   const label = oauthAccountDisplayLabel(accounts, account, t);
                   const switching = switchingAccountId === account.id;
+                  const healthStatus = account.health?.status;
+                  const showReauth = Boolean(account.needsReauth) || oauthHealthShowsReauth(healthStatus);
+                  const showDoctor = oauthHealthShowsDoctor(healthStatus);
+                  const inCooldown = oauthHealthIsCooldown(healthStatus);
+                  const maskedId = displayAccountId(account.id);
+                  const healthLabel = formatOAuthHealthLabel(t, account.health);
+                  const healthSummary = formatOAuthHealthSummary(t, item.name, account.id, account.health);
+                  const copyDoctor = () => {
+                    void copyTextToClipboard(DOCTOR_CMD).then((ok) => {
+                      const feedback: DoctorCopyFeedback = {
+                        accountId: account.id,
+                        outcome: ok ? "copied" : "unavailable",
+                      };
+                      setCopiedDoctorFor(feedback);
+                      setTimeout(() => setCopiedDoctorFor(current => (
+                        current?.accountId === account.id && current.outcome === feedback.outcome ? null : current
+                      )), 2500);
+                    });
+                  };
                   return (
-                  <div key={account.id} className={`pwi-auth-row${account.active ? " pwi-auth-row--active" : ""}`} role="listitem">
+                  <li key={account.id} className={`pwi-auth-row${account.active ? " pwi-auth-row--active" : ""}`}>
                     <button type="button" className="pwi-auth-row-main"
-                      onClick={() => { if (!account.active && !account.needsReauth && !switchingAccountId) void authHandlers.onSwitchAccount(item.name, account); }}
+                      onClick={() => { if (!account.active && !showReauth && !inCooldown && !switchingAccountId) void authHandlers.onSwitchAccount(item.name, account); }}
                       aria-current={account.active ? "true" : undefined}
                       aria-label={`${label}${account.active ? ` — ${t("pws.accountCurrent")}` : ""}`}
-                      disabled={Boolean(account.needsReauth || (switchingAccountId && !switching))}>
-                      <span className={`pwi-auth-dot ${account.needsReauth ? "pwi-auth-dot--warn" : account.active ? "pwi-auth-dot--ok" : "pwi-auth-dot--off"}`} aria-hidden="true" />
+                      disabled={Boolean(showReauth || inCooldown || (switchingAccountId && !switching))}>
+                      <span className={`pwi-auth-dot ${showReauth ? "pwi-auth-dot--warn" : account.active ? "pwi-auth-dot--ok" : "pwi-auth-dot--off"}`} aria-hidden="true" />
                       <span className="pwi-auth-row-copy">
                         <span className="pwi-auth-row-label">{label}</span>
-                        <span className="pwi-auth-row-secondary">{[account.email, `${t("prov.accountId")}: ${account.id}`].filter(Boolean).join(" · ")}</span>
+                        <span className="pwi-auth-row-secondary">{[account.email, `${t("prov.accountId")}: ${maskedId}`].filter(Boolean).join(" · ")}</span>
+                        {healthSummary && (
+                          <span className="pwi-auth-row-secondary faint">{healthSummary}</span>
+                        )}
+                        {inCooldown && (
+                          <span className="pwi-auth-row-secondary faint">{t("pws.healthCooldownHint")}</span>
+                        )}
                       </span>
-                      {account.needsReauth && <span className="badge badge-amber">{t("pws.reauth")}</span>}
+                      {healthLabel && (
+                        <span className={oauthHealthBadgeClass(healthStatus)}>{healthLabel}</span>
+                      )}
+                      {showReauth && !healthLabel && <span className="badge badge-amber">{t("pws.reauth")}</span>}
                       {account.active && <span className="badge badge-primary">{t("prov.accountActive")}</span>}
                       {switching && <span className="badge badge-muted">{t("pws.accountSwitching")}</span>}
                     </button>
-                    {account.needsReauth && (
+                    {showReauth && (
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm"
@@ -177,6 +223,11 @@ export default function ProviderAuthPanel({
                         onClick={() => void authHandlers.onReauth(item.name, account.id)}
                       >
                         {t("pws.reauthenticate")}
+                      </button>
+                    )}
+                    {showDoctor && (
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={copyDoctor}>
+                        {doctorCopyButtonLabel(t, copiedDoctorFor, account.id)}
                       </button>
                     )}
                     <button type="button" className="btn btn-ghost btn-sm"
@@ -190,10 +241,10 @@ export default function ProviderAuthPanel({
                       onClick={() => void authHandlers.onRemoveAccount(item.name, account)}>
                       <IconTrash style={{ width: 13, height: 13 }} aria-hidden="true" />
                     </button>
-                  </div>
+                  </li>
                   );
                 })}
-              </div>
+              </ul>
             )}
             {accountLoadState === "ready" && loggedIn && accounts.length === 0 && (
               <div className="pwi-auth-state pwi-auth-state--empty">{t("pws.noAccounts")}</div>
@@ -210,9 +261,9 @@ export default function ProviderAuthPanel({
         {isKeyAuth && (
           <>
             {keys.length > 0 && (
-              <div className="pwi-auth-list" role="list">
+              <ul className="pwi-auth-list">
                 {keys.map(entry => (
-                  <div key={entry.id} className={`pwi-auth-row${entry.active ? " pwi-auth-row--active" : ""}`} role="listitem">
+                  <li key={entry.id} className={`pwi-auth-row${entry.active ? " pwi-auth-row--active" : ""}`}>
                     <button type="button" className="pwi-auth-row-main"
                       onClick={() => void authHandlers.onSwitchApiKey(item.name, entry)}
                       disabled={entry.active}>
@@ -233,9 +284,9 @@ export default function ProviderAuthPanel({
                       onClick={() => void authHandlers.onRemoveApiKey(item.name, entry)}>
                       <IconTrash style={{ width: 13, height: 13 }} aria-hidden="true" />
                     </button>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
             {addingKey ? (
               <div className="pwi-auth-add-key">

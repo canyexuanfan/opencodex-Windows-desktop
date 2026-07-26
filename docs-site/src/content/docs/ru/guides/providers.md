@@ -20,6 +20,11 @@ description: Все способы, которыми opencodex аутентиф�
 виртуальные id `sol-pro`, `terra-pro` и `luna-pro` сохраняют выбранную публичную идентичность, тогда
 как в фактическом запросе используется базовая модель плюс `reasoning.mode: "pro"`.
 
+Если встроенный провайдер `openai` отсутствует или отключён, его можно восстановить из выбора Accounts
+на панели и со страницы Codex Auth: отсутствующие записи создаются из канонического пресета, отключённые
+канонические записи включаются без замены сохранённого режима и настроек моделей, а неканонические
+записи `openai` этот путь восстановления не получают.
+
 Поставляемые v1-конфигурации автоматически мигрируют на маркер 2 и одну строку с поддержкой опций.
 Исходная конфигурация один раз сохраняется в `~/.opencodex/config.json.pre-openai-tiers-v2.bak`;
 восстановить её можно командой
@@ -83,7 +88,7 @@ ocx logout <provider>
 | `xai` | `openai-chat` | `https://api.x.ai/v1` | Каталог Grok загружается в реальном времени; фолбэк по умолчанию — `grok-4.5`. |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Модели Claude; актуальный список моделей загружается из `/v1/models`. |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Модели Kimi K2.7/K2.6/K2.5 для кодинга. |
-| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | Вход сначала импортирует и переиспользует сессию установленного `kiro-cli`. |
+| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | Вход сначала импортирует и переиспользует сессию установленного `kiro-cli`. Требуется установленный Kiro CLI (`curl -fsSL https://cli.kiro.dev/install | bash`) и вход через `kiro-cli login`. |
 | `google-antigravity` | `google` | `https://daily-cloudcode-pa.googleapis.com` | Google OAuth поверх протокола Cloud Code Assist. |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | Экспериментальный PKCE-вход, живой транспорт HTTP/2 и обнаружение моделей с фильтрацией по аккаунту. |
 | `github-copilot` | `openai-chat` | `https://api.githubcopilot.com` | Экспериментально. Device flow GitHub + обмен `copilot_internal` (OAuth-клиент VS Code). Требуется активная подписка Copilot; это не официальный сторонний API. |

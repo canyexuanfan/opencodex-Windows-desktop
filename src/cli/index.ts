@@ -2,8 +2,9 @@
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { currentExternalCodexModelProvider, restoreNativeCodex, shouldInjectApiAuthHeader } from "../codex/inject";
+import { stripGrokConfig } from "../grok/inject";
 import { restoreLegacyOpenaiHistory } from "../codex/history-provider";
-import { writeJournal, reconcileJournal } from "../codex/journal";
+import { reconcileJournal } from "../codex/journal";
 import {
   codexAutoStartEnabled,
   getConfigDir,
@@ -28,7 +29,7 @@ import { findAvailablePort, isAddrInUse, PortUnavailableError, shouldPersistSele
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
 import { stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
-import { diagnoseService, serviceCommand, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { diagnoseService, isServiceOwnershipError, serviceCommand, serviceEnvironmentOwnedHere, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
 import { startupHealthSummary } from "../codex/autostart-health";
 import { drainAndShutdown, startServer } from "../server";
 import { injectSystemEnv, revertSystemEnv } from "../server/system-env";
@@ -41,6 +42,7 @@ import { maybeShowStarPrompt } from "./star-prompt";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
+import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -106,10 +108,21 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
   const preferred = requestedPort ?? config.port ?? 10100;
   const hardPin = requestedPort !== undefined && requestedPort > 0;
   // Soft start: brief prefer-retry then ephemeral hop.
-  // Explicit `--port` (service wrappers / update restart): longer prefer-retry, never hop.
+  // Explicit `--port` (service wrappers / update restart): wait for the pinned port
+  // to free without killing any listener (healthy ocx / foreign). Never hop.
+  if (hardPin && preferred > 0) {
+    const { reclaimListenPort } = await import("../server/port-reclaim");
+    await reclaimListenPort(preferred, config.hostname ?? "127.0.0.1", {
+      timeoutMs: 30_000,
+      intervalMs: 100,
+      scanIntervalMs: 500,
+      killOcxHolders: false,
+      dropTcpRows: false,
+    });
+  }
   try {
     const selected = await findAvailablePort(preferred, config.hostname ?? "127.0.0.1", {
-      preferRetryMs: hardPin ? 8_000 : 750,
+      preferRetryMs: hardPin ? 0 : 750,
       preferRetryIntervalMs: 50,
       allowEphemeralFallback: !hardPin,
     });
@@ -186,7 +199,9 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   const config = loadConfig();
   writeRuntimePort({ pid: process.pid, port, hostname: config.hostname });
-  if (!currentExternalCodexModelProvider()) writeJournal();
+  // No pre-emptive snapshot here. `injectCodexConfig` journals the exact bytes it
+  // is about to transform; snapshotting earlier only captured a baseline that could
+  // already be stale by the time injection ran (#477).
 
   // Background proactive token refresh. No-op unless config.tokenGuardian.enabled; timer is unref'd
   // so it never keeps the process alive on its own. Stopped in syncCleanup so no refresh fires mid-drain.
@@ -207,6 +222,13 @@ async function handleStart(options: { block?: boolean } = {}) {
     removeRuntimePort(process.pid);
     if (!process.env.OCX_SERVICE && !currentExternalCodexModelProvider()) {
       try { restoreNativeCodex(); } catch { /* best-effort restore */ }
+    }
+    // Same ownership rule as `ocx stop`: if the installed service belongs to another home, the
+    // Grok fence is shared state we must not remove — that service keeps running and would be
+    // left pointing nowhere. This guard also covers signal-driven exits, which is the path that
+    // would otherwise bypass handleStop's gate entirely.
+    if (!process.env.OCX_SERVICE && serviceEnvironmentOwnedHere()) {
+      try { stripGrokConfig(); } catch { /* best-effort restore */ }
     }
   };
 
@@ -264,8 +286,20 @@ async function handleStart(options: { block?: boolean } = {}) {
     buildDesktop3pRegistry(
       [...visibleNativeSlugs(config)],
       models.map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow })),
+      config.claudeCode?.desktopProfile,
     );
   } catch { /* best-effort — registry rebuilds on first /v1/models call */ }
+  // Grok Build auto-registration: additive fenced block in ~/.grok/config.toml so an installed
+  // grok CLI can pick opencodex-routed models without manual config. No-op when ~/.grok is
+  // absent or the bind is non-loopback; removed again by stop/eject/uninstall/shutdown.
+  // Deliberately a SIBLING of the Desktop-3P block above: nesting it there meant a catalog
+  // failure skipped the fence entirely, even though syncGrokConfig handles that case itself.
+  try {
+    const { syncGrokConfig } = await import("../grok/sync");
+    const r = await syncGrokConfig(port, config, config.hostname ? { hostname: config.hostname } : {});
+    if (r.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");
+    else if (!r.ok) console.error(`⚠️  ${r.message}`);
+  } catch { /* best-effort — grok integration must never block startup */ }
   if (options.block ?? true) {
     setInterval(() => {}, 60_000);
     await new Promise<void>(() => {});
@@ -286,6 +320,14 @@ async function handleEnsure() {
       });
       // Ensure env file exists for already-running proxy (may have been deleted or pre-dates this feature).
       await injectSystemEnv(live.port, config).catch(() => {});
+      // Refresh the Grok Build fence too (same contract as start). live.hostname is the
+      // hostname the running proxy actually bound — config.hostname may have drifted.
+      try {
+        const { syncGrokConfig } = await import("../grok/sync");
+        const g = await syncGrokConfig(live.port, config, live.hostname ? { hostname: live.hostname } : {});
+        if (g.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");
+        else if (!g.ok) console.error(`⚠️  ${g.message}`);
+      } catch { /* best-effort */ }
       console.log(`✅ Proxy running on port ${live.port}`);
       return;
     }
@@ -304,6 +346,15 @@ async function handleEnsure() {
     console.error("❌ Proxy did not become healthy after starting.");
     process.exit(1);
   }
+  // Deterministic fence guarantee: the spawned child injects late in its own startup, but
+  // this parent returns as soon as /healthz responds — inject here too (idempotent block
+  // replace) so `ocx ensure` never returns without the Grok fence in place.
+  try {
+    const { syncGrokConfig } = await import("../grok/sync");
+    const g = await syncGrokConfig(port, config, config.hostname ? { hostname: config.hostname } : {});
+    if (g.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");
+    else if (!g.ok) console.error(`⚠️  ${g.message}`);
+  } catch { /* best-effort */ }
   // Always sync the LIVE port: after a fallback-port start, config.port still names the
   // busy preferred port — syncing that would point Codex at a dead listener.
   await syncModelsToCodex(port).catch(e => {
@@ -354,11 +405,29 @@ async function handleTrayProxyRestart(): Promise<void> {
 }
 
 async function handleStop() {
-  const stoppedService = stopServiceIfInstalled();
-  if (stoppedService) console.log("🛑 Service manager stopped (won't respawn).");
+  let stopFailed = false;
+  let stoppedService = false;
+  // An ownership mismatch means the service manager was never even contacted: the installed
+  // service is still live and will respawn the proxy. Tearing down SHARED state in that
+  // situation (native Codex config, the Grok fence) removes config out from under a running
+  // service — the exact failure this flag prevents. A plain stop failure is different: we
+  // tried, so local teardown still proceeds.
+  let ownershipBlocked = false;
+  try {
+    stoppedService = stopServiceIfInstalled();
+    if (stoppedService) console.log("🛑 Service manager stopped (won't respawn).");
+  } catch (err) {
+    if (isServiceOwnershipError(err)) {
+      ownershipBlocked = true;
+      stopFailed = true;
+      console.error(`❌ ${err.message}`);
+      console.error("   Skipping shared teardown (native Codex restore, Grok config): the installed service is still running.");
+    } else {
+      console.error(`⚠️  Service manager stop failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const pid = readPid();
-  let stopFailed = false;
   if (pid) {
     try {
       // Graceful-first (management-API drain) — on Windows this is the only path where
@@ -367,9 +436,15 @@ async function handleStop() {
       console.log(`✅ Proxy (PID ${pid}) stopped.`);
       removePid(pid);
       removeRuntimePort(pid);
-    } catch {
+    } catch (err) {
       stopFailed = true;
       console.error(`❌ Failed to stop proxy (PID ${pid}).`);
+      // stopProxy throws with the reason — an ownership refusal (409) carries the
+      // remediation ("run the stop from that home"). Swallowing it leaves the operator
+      // with a bare failure and a manual `kill` as the obvious next move, which is the
+      // exact teardown the refusal exists to prevent.
+      const detail = err instanceof Error ? err.message : String(err);
+      if (detail) console.error(`   ${detail}`);
     }
   } else {
     // Snapshot the stale on-disk state BEFORE the async probe: a concurrent `ocx start`
@@ -383,9 +458,11 @@ async function handleStop() {
       try {
         await stopProxy(live.pid);
         console.log(`✅ Proxy (PID ${live.pid}) stopped.`);
-      } catch {
+      } catch (err) {
         stopFailed = true;
         console.error(`❌ Failed to stop proxy (PID ${live.pid}).`);
+        const detail = err instanceof Error ? err.message : String(err);
+        if (detail) console.error(`   ${detail}`);
       }
     } else if (!stoppedService) {
       console.log("No running proxy found.");
@@ -398,12 +475,27 @@ async function handleStop() {
       removeRuntimePortIfPidIs(staleRuntimePid);
     }
   }
-  const r = restoreNativeCodex();
-  console.log(`↩️  ${r.message}`);
-  // Safety net: revert system env vars even if the daemon's syncCleanup didn't run
-  // (e.g. SIGKILL). revertSystemEnv is ownership-checked and idempotent.
+  if (!ownershipBlocked) {
+    const r = restoreNativeCodex();
+    console.log(`↩️  ${r.message}`);
+  }
+  // revertSystemEnv is NOT gated: it carries its own ownership check and concerns launchctl
+  // user env, not CODEX_HOME. Safety net for when the daemon's syncCleanup didn't run (SIGKILL).
   try { revertSystemEnv(); } catch { /* best-effort */ }
-  if (stopFailed) process.exit(1);
+  if (!ownershipBlocked) {
+    // Same safety net for the Grok Build managed block (marker-owned, idempotent).
+    try {
+      const g = stripGrokConfig();
+      if (g.changed) console.log(`↩️  ${g.message}`);
+      // A refused strip (e.g. orphaned marker) leaves the fence pointing at a dead proxy —
+      // reporting success there hides a broken end state.
+      else if (!g.ok) { stopFailed = true; console.error(`⚠️  ${g.message}`); }
+    } catch { /* best-effort */ }
+  }
+  // Set the code rather than exiting inline: `restart` and the tray coordinator call this
+  // function and need it to RETURN so they can decide what to do next.
+  if (stopFailed) process.exitCode = 1;
+  return !stopFailed;
 }
 
 async function handleUninstall() {
@@ -445,6 +537,12 @@ async function handleUninstall() {
   await runStep("native Codex restored", () => {
     const r = restoreNativeCodex();
     if (!r.success) throw new Error(r.message);
+  });
+
+  await runStep("Grok Build config restored", () => {
+    const r = stripGrokConfig();
+    if (!r.ok) throw new Error(r.message);
+    return r.changed;
   });
 
   await runStep("system env vars reverted", () => {
@@ -501,6 +599,10 @@ async function handleStatus() {
     console.log(`❌ Proxy: ${status.proxyLabel}`);
   }
   console.log(`   Health: ${status.healthLabel}`);
+  if (!(status.json.proxy.pid || status.json.proxy.health.ok)) {
+    console.log("   ↳ Not running — Codex/Claude requests will fail with connection errors.");
+    console.log("     Restart with 'ocx start', or install the persistent service: 'ocx service install'.");
+  }
   console.log(`   Dashboard: ${status.json.dashboard.url}`);
   console.log(`   Config: ${status.json.paths.config}`);
   console.log(`   PID file: ${status.json.paths.pid}`);
@@ -514,6 +616,11 @@ async function handleStatus() {
   console.log(`   Codex runtime: ${status.json.codexRuntime.path}`);
   console.log(`   Codex version: ${status.json.codexRuntime.version ?? "unknown"}`);
   console.log(`   Codex source: ${status.json.codexRuntime.source}`);
+  console.log(`   Codex home: ${status.json.codexHome.effectiveCodexHome}`);
+  if (status.json.codexHome.warning) {
+    console.log(`   ⚠️  ${status.json.codexHome.warning}`);
+    console.log(`      Action: ${status.json.codexHome.action}`);
+  }
   console.log(`   Catalog clamp: ${status.json.codexRuntime.catalogClamp.active ? "active" : "inactive"}`);
   if (status.json.codexRuntime.catalogClamp.removedEfforts.length > 0) {
     console.log(`   Removed efforts: ${status.json.codexRuntime.catalogClamp.removedEfforts.join(", ")}`);
@@ -528,10 +635,17 @@ async function handleStatus() {
       console.log(`      Suggested: ${status.json.codexPlugins.suggestedRepair}`);
     }
   }
-  const { oauthLoginSummary } = await import("../oauth");
+  const { collectOAuthHealthEntriesForCli, oauthLoginSummary } = await import("../oauth");
+  const { formatOAuthHealthForStatus } = await import("./status-oauth");
   console.log(`   OAuth logins:`);
   for (const e of oauthLoginSummary()) {
     console.log(`     ${e.provider.padEnd(10)} ${e.loggedIn ? `✓ logged in${e.email ? ` (${e.email})` : ""}` : "✗ not logged in"}`);
+  }
+  const oauthHealthBlock = formatOAuthHealthForStatus(await collectOAuthHealthEntriesForCli());
+  if (oauthHealthBlock) {
+    for (const line of oauthHealthBlock.split("\n")) {
+      console.log(`   ${line}`);
+    }
   }
 }
 
@@ -560,9 +674,14 @@ switch (command) {
   case "start":
     await handleStart();
     break;
-  case "stop":
-    await handleStop();
+  case "stop": {
+    // Downtime warning lives HERE, not in handleStop: `restart`/tray-restart callers
+    // re-start the proxy immediately, so warning there would contradict the next line.
+    if (await handleStop()) {
+      console.log("⚠️  Codex/Claude requests through the proxy will fail until it is restarted ('ocx start' or 'ocx service start').");
+    }
     break;
+  }
   case "restore":
   case "eject": {
     if (args[1] === "back") {
@@ -575,11 +694,17 @@ switch (command) {
         process.exit(1);
       }
       await syncModelsToCodex(live.port);
-      console.log("Plain `codex` now routes through opencodex again (undo with: ocx restore).");
+      const target = collectOrcaCodexHomeDiagnostic();
+      console.log(`Plain \`codex\` now routes through opencodex in ${target.effectiveCodexHome} (undo with: ocx restore).`);
       break;
     }
     const r = restoreNativeCodex();
     console.log(r.success ? `✅ ${r.message}` : `⚠️  ${r.message}`);
+    try {
+      const g = stripGrokConfig();
+      if (g.changed) console.log(`✅ ${g.message}`);
+      else if (!g.ok) console.error(`⚠️  ${g.message}`);
+    } catch { /* best-effort */ }
     console.log("Plain `codex` now runs natively (no proxy). Switch back with: ocx restore back");
     break;
   }
@@ -737,8 +862,10 @@ switch (command) {
     break;
   }
   case "restart": {
-    await handleStop();
-    await handleEnsure();
+    // A failed stop must not be followed by a re-inject: with a foreign service still running
+    // (ownership mismatch) we would rewrite shared config we just declined to touch.
+    if (await handleStop()) await handleEnsure();
+    else console.error("↩️  Restart aborted: the proxy was not stopped cleanly.");
     break;
   }
   case "health": {
@@ -771,42 +898,9 @@ switch (command) {
     const { cmdClaude } = await import("./claude");
     // "ocx claude desktop" → write Desktop 3P config
     if (args[1] === "desktop") {
-      const config = loadConfig();
-      const { fetchAllModels } = await import("../server/management-api");
-      const { visibleNativeSlugs, filterCatalogVisibleModels } = await import("../codex/catalog");
-      const { parseDesktop3pModeArgs, writeDesktop3pConfig } = await import("../claude/desktop-3p");
-      // Mutually-exclusive mode flags (devlog 138): default static (deterministic; the
-      // static list overrides discovery anyway — no merge).
-      const parsedMode = parseDesktop3pModeArgs(args.slice(2));
-      if ("error" in parsedMode) {
-        console.error(`❌ ${parsedMode.error}`);
-        process.exit(1);
-      }
-      const mode = parsedMode.mode;
-      const live = await findLiveProxy();
-      const port = live?.port ?? config.port ?? 10100;
-      const allModels = await fetchAllModels(config);
-      const models = filterCatalogVisibleModels(allModels, config);
-      const nativeSlugs = [...visibleNativeSlugs(config)];
-      // contextWindow rides along so supports1m derives from authoritative data (감사 R1#1).
-      const routedModels = models.map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow }));
-      const result = writeDesktop3pConfig(port, nativeSlugs, routedModels, undefined, mode);
-      if (result.written) {
-        const oneM = routedModels.filter(m => typeof m.contextWindow === "number" && m.contextWindow >= 1_000_000).length;
-        console.log(`✅ Claude Desktop 3P 설정 완료: ${result.path}`);
-        console.log(`   Gateway: http://127.0.0.1:${port}`);
-        if (mode === "discovery") {
-          console.log(`   모델 목록: 자동 발견만 (프록시 /v1/models에서 ${nativeSlugs.length + models.length}개)`);
-        } else {
-          const suffix = mode === "hybrid" ? " + 자동 발견 병행" : "";
-          console.log(`   모델 ${nativeSlugs.length + models.length}개 고정 등록${suffix} (1M 컨텍스트 별도 행 ${oneM}개)`);
-          if (oneM > 0) console.log(`   1M을 쓰려면 Desktop 모델 피커에서 [1M] 붙은 행을 직접 선택하세요.`);
-        }
-        console.log(`   Claude Desktop을 재시작하면 적용됩니다.`);
-      } else {
-        console.error(`❌ 설정 실패: ${result.reason}`);
-        process.exit(1);
-      }
+      const { handleClaudeDesktopCommand } = await import("./claude-desktop");
+      const exitCode = await handleClaudeDesktopCommand(args.slice(2));
+      if (exitCode !== 0) process.exit(exitCode);
       break;
     }
     process.exit(await cmdClaude(args.slice(1)));

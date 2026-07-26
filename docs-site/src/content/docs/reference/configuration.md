@@ -87,6 +87,8 @@ body-occupancy guard):
 | --- | --- | --- | --- |
 | `claudeCode.bodyStallSec?` | `number` | `90` | Native passthrough body inactivity budget in seconds — raw upstream-byte silence while a read is pending, never total duration. Min 1. Exactly `0` disables. |
 | `claudeCode.bodyMaxBytes?` | `number` | `67108864` | Native passthrough cumulative body byte cap (streamed SSE and buffered non-stream). Exactly `0` disables. |
+| `claudeCode.authMode?` | `"proxy" \| "subscription"` | unset (auto) | How `ANTHROPIC_AUTH_TOKEN` is handled at launch. Unset means auto: opencodex detects Claude auth on every launch and picks subscription when it finds any, proxy when it finds none, and subscription with a warning when it cannot tell. An explicit value is never overridden by detection. See [Claude Code](/guides/claude-code/#auth-mode). |
+| `claudeCode.authModeMigratedAt?` | `string` | unset | Internal one-time marker. Written once when an upgrade pins a pre-`auto` config to `subscription`, so a deliberate subscriber is not silently moved onto the proxy. Do not set by hand. |
 
 ### Managed record shapes
 
@@ -146,7 +148,7 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` (or alias `azure`). |
-| `baseUrl` | `string` | Upstream API base URL. |
+| `baseUrl` | `string` | Upstream API base URL. Built-in providers with a fixed endpoint ignore it — see [Fixed provider endpoints](#fixed-provider-endpoints). |
 | `responsesPath?` | `string` | Optional relative resource path for key-auth `openai-responses` requests. It must start with `/` and contain no URL scheme, query, or fragment. When omitted, the adapter keeps its legacy `/v1/responses` URL construction. |
 | `disabled?` | `boolean` | Keep the provider on disk but exclude it from routing and model/catalog listings. |
 | `apiKey?` | `string` | API key, or an `${ENV_VAR}` / `$ENV_VAR` reference resolved at request time. |
@@ -192,6 +194,31 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | `desktopExecutor?` | `DesktopExecutorConfig` | **Cursor only.** External computer-use/record-screen commands; fields are listed below. |
 | `unsafeAllowNativeLocalExec?` | `boolean` | **Cursor adapter only.** Legacy compatibility boolean for the Cursor server-driven local `read` / `write` / `delete` / `ls` / `grep` / `shell` / `fetch` executor. Equivalent to `nativeLocalExec: "on"` when `nativeLocalExec` is unset; an explicit `nativeLocalExec` value always wins. Defaults to `false`. Prefer `nativeLocalExec` for new configs. See [Cursor provider](#cursor-provider-adapter-cursor) below. |
 | `nativeLocalExec?` | `"off" \| "codex-sandbox" \| "on"` | **Cursor adapter only.** Native local exec policy for the Cursor server-driven executor. `"off"` (default) rejects it; `"on"` is the trusted-local opt-in; `"codex-sandbox"` is accepted for backwards compatibility but is fail-closed like `"off"`. See [Cursor provider](#cursor-provider-adapter-cursor) below. |
+
+### Fixed provider endpoints
+
+Routing resolves a provider's endpoint before any adapter sees it, and for most built-in
+providers the registry's own endpoint wins over a `baseUrl` in your config. Three kinds of entry
+keep the configured URL at this stage:
+
+- providers that opt into an override — `ollama`, `vllm`, `lm-studio`, `litellm`, `qwen-cloud`
+  and `alibaba-token-plan-intl`;
+- providers whose registry endpoint is a template you fill in, such as `azure-openai` and
+  `cloudflare-ai-gateway`;
+- providers you define yourself, which are not in the registry at all.
+
+Adapters may adjust the resolved URL afterward. The `kiro` adapter, for example, follows the API
+region of the imported credential for a canonical `runtime.{region}.kiro.dev` host. See
+[Adapters](/reference/adapters/) for per-adapter rules.
+
+When routing discards a configured `baseUrl`, opencodex logs a warning. It names the registry
+endpoint in full and your configured one by origin only, shown as `https://host/…` when it had a
+path — a configured path can itself be a credential, so none of it is logged. Either drop the
+`baseUrl` — the registry endpoint is what routing will use regardless — or switch to the provider
+whose endpoint matches the URL you wanted.
+Picking the right entry matters when a vendor runs one product in several regions:
+`alibaba-token-plan` is pinned to Beijing while `alibaba-token-plan-intl` covers the
+international endpoints, and a key issued for one is rejected by the other.
 
 For broken `openai-responses` compatibility gateways, `responsesItemIdRepair` belongs on the
 provider object itself, for example:

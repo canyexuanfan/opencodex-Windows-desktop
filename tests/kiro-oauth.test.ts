@@ -248,6 +248,24 @@ describe("kiro oauth — import-first", () => {
 
   test("loginKiro throws (not hangs) in GUI with no token and no manual input", async () => {
     await expect(loginKiro({})).rejects.toThrow(/no token found/i);
+    await expect(loginKiro({})).rejects.toThrow(/cli\.kiro\.dev\/install/);
+  });
+
+  test("loginKiro instructions name the Kiro CLI install prerequisite", async () => {
+    let instructions: string | undefined;
+    let progress: string | undefined;
+    await loginKiro({
+      onAuth: ({ instructions: text }) => {
+        instructions = text;
+      },
+      onProgress: message => {
+        progress = message;
+      },
+      onManualCodeInput: async () => "aoa-pasted",
+    });
+    expect(instructions).toContain("cli.kiro.dev/install");
+    expect(instructions).toContain("kiro-cli login");
+    expect(progress).toContain("kiro-cli");
   });
 
   test("inspectKiroCliSqlite reports safe diagnostics without token values", () => {

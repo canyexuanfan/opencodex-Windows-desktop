@@ -44,32 +44,6 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   xiaomi: "xiaomi-color.svg",
 };
 
-/** Brand colors for monochrome Simple-Icons SVGs (fill is black by default). */
-const PROVIDER_BRAND_COLORS: Record<string, string> = {
-  nvidia: "#76B900",
-  "mimo-free": "#FF6900",
-  xiaomi: "#FF6900",
-  anthropic: "#D97757",
-  "anthropic-apikey": "#D97757",
-  openai: "#10A37F",
-  "openai-apikey": "#10A37F",
-  chatgpt: "#10A37F",
-  "azure-openai": "#10A37F",
-  // xAI / Ollama monochrome marks stay as-authored (black/white per theme SVG).
-  deepseek: "#4D6BFE",
-  groq: "#F55036",
-  mistral: "#FF7000",
-  openrouter: "#6566F1",
-  google: "#8E75B2",
- "google-vertex": "#8E75B2",
-  alibaba: "#FF6A00",
-  "alibaba-token-plan": "#FF6A00",
-  "alibaba-token-plan-intl": "#FF6A00",
- kimi: "#1A6CFF",
-  "kimi-code": "#1A6CFF",
-  moonshot: "#1A6CFF",
-};
-
 /**
  * Canonical brand casing for known provider ids (config keys stay lowercase).
  * Current OpenAI ids follow the registry labels; legacy `chatgpt` keeps its historical label.
@@ -132,11 +106,6 @@ export function providerIconSrc(provider: string, _hints?: ProviderIconHints): s
   void _hints;
   const icon = providerIconAlias(provider);
   return icon ? `/provider-icons/${icon}` : undefined;
-}
-
-/** Brand accent for monochrome icons; undefined = leave SVG as-authored. */
-export function providerBrandColor(provider: string): string | undefined {
-  return PROVIDER_BRAND_COLORS[provider.toLowerCase()];
 }
 
 /** Display label with proper brand casing when known; otherwise original name. */

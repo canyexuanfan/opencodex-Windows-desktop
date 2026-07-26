@@ -14,6 +14,7 @@
 import { formatErrorResponse } from "../bridge";
 import {
   CodexAccountCooldownError,
+  cooldownErrorResponse,
   CodexAuthContextError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
@@ -84,7 +85,7 @@ export async function handleImages(
       if (forward) logCtx.provider = formatCodexProviderForLog(forward.providerName, codexLogAccountId(forward.authContext), config);
     } catch (err) {
       if (err instanceof CodexAccountCooldownError) {
-        forwardAuthError = formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+        forwardAuthError = cooldownErrorResponse(err);
       } else if (err instanceof CodexThreadAffinityExpiredError) {
         forwardAuthError = formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
       } else if (err instanceof CodexAuthContextError) {

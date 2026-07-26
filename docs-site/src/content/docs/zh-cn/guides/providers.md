@@ -17,6 +17,8 @@ bare `gpt-5.6-sol` 遵循 Providers 页面中的 Pool/Direct 选项，
 922,000 max input；`*-pro` virtual id 保留在公开状态中，线上改写为 base 模型加
 `reasoning.mode: "pro"`。
 
+若内置 `openai` 提供商缺失或已禁用，可在仪表盘 Accounts 选择器或 Codex Auth 页面恢复：缺失行会从规范预设创建，已禁用的规范行会在不替换已保存模式/模型设置的情况下重新启用，非规范的 `openai` 行不会提供该恢复路径。
+
 shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保留一次到
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak`；恢复命令：
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`。
@@ -72,7 +74,7 @@ ocx logout <provider>
 | `xai` | `openai-chat` | `https://api.x.ai/v1` | 优先使用实时 Grok 目录；回退默认模型为 `grok-4.5`。 |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude 模型；实时模型列表从 `/v1/models` 获取。 |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 编程模型。 |
-| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | 优先复用已安装的 `kiro-cli` 登录。 |
+| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | 优先复用已安装的 `kiro-cli` 登录。需先安装 Kiro CLI（`curl -fsSL https://cli.kiro.dev/install | bash`）并执行 `kiro-cli login`。 |
 | `google-antigravity` | `google` | `https://daily-cloudcode-pa.googleapis.com` | 通过 Cloud Code Assist 协议使用 Google OAuth。 |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | 实验性 PKCE 登录、HTTP/2 传输和按账号筛选的模型发现。 |
 

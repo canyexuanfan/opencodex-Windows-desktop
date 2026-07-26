@@ -91,6 +91,12 @@ $CODEX_HOME/models_cache.json
 使用该目录，让 WSL app-server mode 和 Windows Codex Desktop 共享同一份 config 与 auth 文件。要覆盖
 此检测，请显式设置 `CODEX_HOME`。
 
+在 Windows 上，Orca shell 可能同时把 `CODEX_HOME` 和 `ORCA_CODEX_HOME` 指向 Orca 的内置
+runtime home，而 ChatGPT/Codex App 仍读取 `%USERPROFILE%\\.codex`。`ocx status` 与
+`ocx doctor` 会检测这一明确的不一致，并以隐藏用户名的形式显示目标 home。如果后台服务是在原 Orca
+shell 中安装的，请先在原 shell 中卸载服务，再把 `CODEX_HOME` 设为 App home、取消
+`ORCA_CODEX_HOME`，重新同步/恢复并安装服务。
+
 在专用提供商模式下，`requires_openai_auth = true` 会让 Codex App/TUI 的账号门控界面与原生
 Codex 保持一致。opencodex 也提供 `/v1/responses` WebSocket。专用提供商仅在
 `"websockets": true` 时声明 `supports_websockets = true`；loopback 模式下，Codex 的内置提供商
@@ -118,6 +124,21 @@ Codex 显示的模型来自一个磁盘上的目录（默认为 `$CODEX_HOME/ope
 路由目录条目还会把 GPT-5 身份文案改为真实的上游模型名称。reasoning 选项会依据提供商和模型元数据，
 使用 Codex 的 `low | medium | high | xhigh | max | ultra` 档位；上游不支持的值会在发送请求前完成
 映射或下调。
+
+## 代理连接错误
+
+如果 Codex 重试后报出类似
+`stream disconnected before completion: error sending request for url (http://127.0.0.1:10100/v1/responses)`
+的错误（或 Claude Code 出现类似的连接失败），说明 opencodex 代理没有在运行：
+配置端口上没有任何监听，客户端只能显示原始的连接错误。请重启代理：
+
+```bash
+ocx start              # 前台运行
+ocx service install    # 常驻：登录时自动启动，崩溃后自动重启
+```
+
+`ocx status` 可查看代理是否在运行，未运行时也会给出同样的重启提示；
+`ocx doctor` 会报告重启安全性（service/shim 覆盖情况）。
 
 ## subagent 选择器
 

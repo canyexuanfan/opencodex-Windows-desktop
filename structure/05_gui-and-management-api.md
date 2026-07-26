@@ -78,6 +78,21 @@ Missing usage is never treated as zero. The dashboard Usage tab renders the same
 main Dashboard surfaces a 30d token / coverage summary. The in-memory `requestLog` is capped at
 200 entries and is **not** the source of truth for aggregation — the JSONL on disk is.
 
+The management API caches only the compact summary for an exact file revision and query; it never
+retains normalized per-request rows after a response. The cache invalidates on any identity, size, or
+timestamp change and at the next range expiry or local-day boundary. Rebuilds parse in bounded
+batches and yield between them, so unrelated management requests remain serviceable even for a large
+existing log. The Dashboard polls its 30-day usage summary independently once per minute, so usage
+work cannot delay health/provider/settings state or run every five seconds.
+
+[Decision Log]
+- 목적과 의도: Keep dashboard and management requests responsive as `usage.jsonl` grows.
+- 기존 구현 및 제약 조건: The JSONL file remains the durable source of truth and may be truncated, replaced, or hand-edited.
+- 검토한 주요 대안: Retain normalized rows, maintain a second database, or cache only revision-keyed summaries and cooperatively rebuild them.
+- 선택한 방식: Keep only bounded summary results, share full reads by exact file identity, yield during parsing, and poll usage separately at a slower cadence.
+- 다른 대안 대신 이 방식을 선택한 이유: It bounds resident heap and avoids a second persistence format while keeping unrelated endpoints responsive.
+- 장점, 단점 및 영향: Unchanged queries are cheap and memory stays bounded; a changed large log still consumes rebuild CPU, but cooperatively and at most once per observed revision/query.
+
 For diagnosing upstream-shape / usage-extraction issues run `ocx debug usage on` (or set
 `OPENCODEX_USAGE_DEBUG=1` before start). The proxy then writes a rolling debug record per finalized
 request to `~/.opencodex/usage-debug.jsonl` (mode `0o600`, auto-trimmed to the most-recent 100 lines

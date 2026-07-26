@@ -43,19 +43,22 @@ test("the accelerator stays out of the tab order and the accessibility tree", as
 test("deleting routes through the existing confirmation dialog", async () => {
   const shell = await read("../src/components/provider-workspace/ProviderWorkspaceShell.tsx");
   const providers = await read("../src/pages/Providers.tsx");
+  const crud = await read("../src/pages/use-providers-crud.ts");
+  const modals = await read("../src/pages/providers-page-modals.tsx");
 
   // Providers hands the rail the same callback the detail header uses...
   expect(providers).toContain("onRemoveProvider={removeProvider}");
   expect(shell).toContain("onRemoveProvider(item.name)");
 
   // ...and that callback only opens the dialog; it never deletes directly.
-  const handler = providers.slice(
-    providers.indexOf("const removeProvider = async"),
-    providers.indexOf("const confirmRemoveProvider"),
+  // CRUD lives in the extracted hook after the Providers split.
+  const handler = crud.slice(
+    crud.indexOf("const removeProvider = useCallback"),
+    crud.indexOf("const confirmRemoveProvider"),
   );
   expect(handler).toContain("setRemoveConfirmName(name)");
   expect(handler).not.toContain("method: \"DELETE\"");
-  expect(providers).toContain("<RemoveConfirmDialog");
+  expect(modals).toContain("<RemoveConfirmDialog");
 });
 
 test("the accelerator is hidden where hover does not exist", async () => {

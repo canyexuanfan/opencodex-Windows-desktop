@@ -8,7 +8,7 @@ import {
 } from "../combo-workspace-data";
 import { hideRedundantChatGptForwardProviders } from "../provider-workspace/catalog";
 import { Notice } from "../ui";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 
 type ProviderOption = {
   name: string;
@@ -148,7 +148,9 @@ export default function Combos({ apiBase }: { apiBase: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(toPutBody(item, renameFrom ? { renameFrom } : {})),
       });
-      const data = await res.json() as unknown;
+      const data = res.ok
+        ? await res.json() as unknown
+        : await res.json().catch(() => null) as unknown;
       const serverError = responseError(data);
       if (!res.ok || serverError || !responseSucceeded(data)) {
         const err = serverError || t("cws.saveFailed");
@@ -173,7 +175,9 @@ export default function Combos({ apiBase }: { apiBase: string }) {
   const removeCombo = async (id: string) => {
     try {
       const res = await fetch(`${apiBase}/api/combos?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-      const data = await res.json() as unknown;
+      const data = res.ok
+        ? await res.json() as unknown
+        : await res.json().catch(() => null) as unknown;
       const serverError = responseError(data);
       if (!res.ok || serverError || !responseSucceeded(data)) {
         const err = serverError || t("cws.removeFailed");

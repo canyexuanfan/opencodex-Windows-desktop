@@ -204,6 +204,7 @@ export async function runUpdate(): Promise<void> {
   const capturedListen = {
     port: runtimeTrusted ? preUpdateRt.port : configPort,
     hostname: (runtimeTrusted ? preUpdateRt.hostname : undefined) ?? preUpdateConfig.hostname ?? "127.0.0.1",
+    ...(runtimeTrusted && livePid ? { oldPid: livePid } : {}),
   };
 
   // Never replace package files under a live proxy: the running server dynamic-imports
@@ -281,12 +282,17 @@ export async function runUpdate(): Promise<void> {
     if (serviceWasInstalled) {
       console.log("🔁 Reinstalling the background service with the updated files...");
       const { serviceReinstallArgs } = await import("../service");
-      const { waitForPortAvailable } = await import("../server/ports");
-      const freed = await waitForPortAvailable(capturedListen.port, capturedListen.hostname, {
-        timeoutMs: 5_000,
-        intervalMs: 25,
+      const { reclaimListenPort } = await import("../server/port-reclaim");
+      const freed = await reclaimListenPort(capturedListen.port, capturedListen.hostname, {
+        timeoutMs: 30_000,
+        intervalMs: 100,
+        scanIntervalMs: 500,
+        killOcxHolders: capturedListen.oldPid != null,
+        onlyKillPids: capturedListen.oldPid != null ? [capturedListen.oldPid] : [],
       });
-      if (!freed) console.warn(`⚠️  Port ${capturedListen.port} still busy; reinstalling with pinned --port anyway.`);
+      if (!freed) {
+        console.warn(`⚠️  Port ${capturedListen.port} still busy after 30s; reinstalling service with pinned --port ${capturedListen.port} anyway (refusing to hop).`);
+      }
       const prevBake = process.env.OCX_BAKE_PORT;
       process.env.OCX_BAKE_PORT = String(capturedListen.port);
       try {
@@ -301,26 +307,31 @@ export async function runUpdate(): Promise<void> {
           // On Windows, schtasks /create requires elevation. The CLI inherits the
           // user's (non-admin) token, so the service reinstall can fail with access
           // denied. Fall back to a direct detached proxy start so the update never
-          // leaves the user without a running proxy.
-          console.warn("⚠️  Service refresh failed — starting the proxy directly instead.");
-          console.warn("   Run 'ocx service install' as administrator to refresh the background service.");
-          const env = { ...process.env };
-          delete env.OCX_SERVICE;
-          const child = spawn(process.execPath, [process.argv[1], "start", "--port", String(capturedListen.port)], {
-            detached: true,
-            stdio: "ignore",
-            windowsHide: true,
-            env,
-          });
-          child.unref();
-          console.log(`✅ Proxy starting on port ${capturedListen.port}.`);
+          // leaves the user without a running proxy — but only when the port is free.
+          if (!freed) {
+            console.warn("⚠️  Service refresh failed and the captured port is still busy; not starting on another port.");
+            console.warn(`   Run 'ocx service install' as administrator, then 'ocx start --port ${capturedListen.port}'.`);
+          } else {
+            console.warn("⚠️  Service refresh failed — starting the proxy directly instead.");
+            console.warn("   Run 'ocx service install' as administrator to refresh the background service.");
+            const env = { ...process.env };
+            delete env.OCX_SERVICE;
+            const child = spawn(process.execPath, [process.argv[1], "start", "--port", String(capturedListen.port)], {
+              detached: true,
+              stdio: "ignore",
+              windowsHide: true,
+              env,
+            });
+            child.unref();
+            console.log(`✅ Proxy starting on port ${capturedListen.port}.`);
+          }
         }
       } finally {
         if (prevBake === undefined) delete process.env.OCX_BAKE_PORT;
         else process.env.OCX_BAKE_PORT = prevBake;
       }
     } else {
-      console.log("Restart the proxy:  ocx start");
+      console.log(`Restart the proxy:  ocx start --port ${capturedListen.port}`);
     }
   } else {
     if (trayWasRunning) {

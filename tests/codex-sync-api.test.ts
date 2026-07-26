@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { syncModelsToCodex } from "../src/codex/sync";
 import type { OcxConfig } from "../src/types";
+import type { OrcaCodexHomeDiagnostic } from "../src/codex/home";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-sync-api");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -13,6 +14,19 @@ const config = {
   defaultProvider: "openai",
   providers: {},
 } as OcxConfig;
+
+function homeDiagnostic(overrides: Partial<OrcaCodexHomeDiagnostic> = {}): OrcaCodexHomeDiagnostic {
+  return {
+    applicable: false,
+    mismatch: false,
+    effectiveCodexHome: "C:\\Users\\[USER]\\.codex",
+    appCodexHome: "C:\\Users\\[USER]\\.codex",
+    orcaCodexHome: null,
+    warning: null,
+    action: null,
+    ...overrides,
+  };
+}
 
 describe("GUI/CLI Codex sync backend", () => {
   beforeEach(() => {
@@ -32,7 +46,9 @@ describe("GUI/CLI Codex sync backend", () => {
     let injectedPort = 0;
     let injectedCatalogPath: string | null | undefined;
 
-    const result = await syncModelsToCodex(12345, config, null, {
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const result = await syncModelsToCodex(12345, config, { log: line => logs.push(String(line)), error: line => errors.push(String(line)) }, {
       refreshCodexModelCatalog: async () => ({
         added: 3,
         path: "/tmp/opencodex-catalog.json",
@@ -45,6 +61,7 @@ describe("GUI/CLI Codex sync backend", () => {
         return { success: true, message: "injected" };
       },
       currentExternalCodexModelProvider: () => null,
+      collectCodexHomeDiagnostic: () => homeDiagnostic(),
     });
 
     expect(injectedPort).toBe(12345);
@@ -57,6 +74,8 @@ describe("GUI/CLI Codex sync backend", () => {
       cacheSynced: true,
       message: "injected",
     });
+    expect(logs).toContain("   Target Codex home: C:\\Users\\[USER]\\.codex");
+    expect(errors).toEqual([]);
   });
 
   test("keeps injection fallback behavior when catalog refresh throws", async () => {
@@ -82,7 +101,17 @@ describe("GUI/CLI Codex sync backend", () => {
   test("skips catalog refresh before preserving an external provider", async () => {
     let refreshed = false;
     let injectedCatalogPath: string | null | undefined = "unset";
-    const result = await syncModelsToCodex(10100, config, null, {
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const mismatch = homeDiagnostic({
+      applicable: true,
+      mismatch: true,
+      effectiveCodexHome: "C:\\Users\\[USER]\\AppData\\Roaming\\orca\\codex-runtime-home\\home",
+      orcaCodexHome: "C:\\Users\\[USER]\\AppData\\Roaming\\orca\\codex-runtime-home\\home",
+      warning: "Orca target does not reach the app",
+      action: "migrate the installed service",
+    });
+    const result = await syncModelsToCodex(10100, config, { log: line => logs.push(String(line)), error: line => errors.push(String(line)) }, {
       refreshCodexModelCatalog: async () => {
         refreshed = true;
         throw new Error("must not refresh");
@@ -92,6 +121,7 @@ describe("GUI/CLI Codex sync backend", () => {
         return { success: true, message: "external provider preserved" };
       },
       currentExternalCodexModelProvider: () => "custom",
+      collectCodexHomeDiagnostic: () => mismatch,
     });
 
     expect(refreshed).toBe(false);
@@ -104,5 +134,10 @@ describe("GUI/CLI Codex sync backend", () => {
       cacheSynced: false,
       message: "external provider preserved",
     });
+    expect(logs).toContain(`   Target Codex home: ${mismatch.effectiveCodexHome}`);
+    expect(errors).toEqual([
+      `WARNING: ${mismatch.warning}`,
+      `Action: ${mismatch.action}`,
+    ]);
   });
 });

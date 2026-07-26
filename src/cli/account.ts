@@ -2,7 +2,7 @@
 import { loadConfig } from "../config";
 import { providerCodexAccountMode } from "../providers/registry";
 import type { OcxConfig } from "../types";
-import { cmdAddKey, cmdAlias, cmdAutoSwitch, cmdRefresh, cmdRemove } from "./account-extended";
+import { cmdAddKey, cmdAlias, cmdAutoSwitch, cmdClearCooldown, cmdRefresh, cmdRemove } from "./account-extended";
 import { apiError, apiJson, classifyAccount, fetchRows, proxyUnreachable, resolveBaseUrl, type AccountDeps, type AccountRow, type AccountType, type ApiResult }
   from "./account-api";
 
@@ -23,6 +23,7 @@ const ACCOUNT_USAGE = `Usage:
   ocx account auto-switch <provider> <on|off|status|threshold <0-100>> [--json]
   ocx account alias <provider> <account-or-key-id> <display-name|-> [--json]
   ocx account remove <provider> <account-or-key-id|main> --yes [--json]
+  ocx account clear-cooldown <provider> <account-id|main> [--json]
   ocx account add-key <provider> [--label <label>] [--json]
 
 List and switch provider accounts and API-key pools (masked output only).
@@ -257,6 +258,7 @@ export async function cmdAccount(args: string[], deps: AccountDeps = {}): Promis
     if (sub === "auto-switch") return await cmdAutoSwitch(rest, deps);
     if (sub === "alias" || sub === "rename") return await cmdAlias(rest, deps);
     if (sub === "remove") return await cmdRemove(rest, deps);
+    if (sub === "clear-cooldown") return await cmdClearCooldown(rest, deps);
     if (sub === "add-key") return await cmdAddKey(rest, deps);
     console.error(ACCOUNT_USAGE);
     return 1;

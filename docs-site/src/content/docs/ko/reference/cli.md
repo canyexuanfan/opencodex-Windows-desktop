@@ -65,7 +65,8 @@ ocx eject back
 ### `ocx status [--json]`
 
 프록시 PID, `/healthz` 연결 상태, 대시보드 URL, 설정 파일 경로, 기본 프로바이더, Codex 자동 시작
-설정, 서비스 상태, shim 상태를 읽기 전용 진단 요약으로 출력합니다.
+설정, 서비스 상태, shim 상태와 사용자 이름을 가린 실제 Codex home을 읽기 전용 진단 요약으로 출력합니다.
+명시적인 고신뢰 Windows Orca runtime-home 패턴이 확인될 때만 App home 불일치에 대한 조치 가능한 경고를 추가하며 `CODEX_HOME`을 자동으로 바꾸지는 않습니다.
 
 기계가 읽을 수 있는 읽기 전용 진단 계약은 `--json`으로 받습니다.
 
@@ -97,6 +98,13 @@ ocx status --json
   },
   "runtime": {
     "source": "bundled"
+  },
+  "codexHome": {
+    "effectiveCodexHome": "C:\\Users\\[USER]\\.codex",
+    "appCodexHome": "C:\\Users\\[USER]\\.codex",
+    "mismatch": false,
+    "warning": null,
+    "action": null
   },
   "codexAutostart": true,
   "defaultProvider": "openai",
@@ -405,7 +413,9 @@ ocx codex-shim uninstall
 ### `ocx doctor`
 
 상태 경로와 파일시스템 유형, WSL 이중 설치, 프록시 환경/설정, ChatGPT 연결 상태, Codex 플러그인과
-프로젝트 설정 경고, 대기 중인 기록 마이그레이션을 읽기 전용으로 진단합니다. 복구 안내는 출력하지만
+프로젝트 설정 경고, 대기 중인 기록 마이그레이션을 읽기 전용으로 진단합니다. Codex app-home targeting
+섹션은 Windows Orca runtime-home 불일치를 좁게 탐지하고 필요한 경우 기존 Orca 서비스 제거와 앱 home
+기반 재설치 절차를 안내합니다. 새 진단의 경로에서는 OS 사용자 이름을 가립니다. 복구 안내는 출력하지만
 직접 적용하지 않습니다.
 
 ### `ocx debug [provider|usage …]`

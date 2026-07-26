@@ -1,0 +1,422 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { Window } from "happy-dom";
+import { act, useEffect, useState } from "react";
+import type { Root } from "react-dom/client";
+import { useClientResource, useKeyedClientResource } from "../src/client-resource";
+
+const globals = ["document", "window", "navigator", "IS_REACT_ACT_ENVIRONMENT"] as const;
+let previousGlobals: Record<(typeof globals)[number], unknown>;
+let testWindow: Window;
+
+beforeEach(() => {
+  previousGlobals = Object.fromEntries(globals.map((key) => [key, Reflect.get(globalThis, key)])) as typeof previousGlobals;
+  testWindow = new Window({ url: "http://localhost/" });
+  Object.defineProperties(globalThis, {
+    document: { configurable: true, value: testWindow.document },
+    window: { configurable: true, value: testWindow },
+    navigator: { configurable: true, value: testWindow.navigator },
+  });
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+});
+
+afterEach(() => {
+  testWindow.close();
+  for (const key of globals) {
+    Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
+  }
+});
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
+    await act(async () => {
+      await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 10));
+    });
+  }
+}
+
+test("after the latest subscriber unmounts, polling continues with the surviving loader", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const calls: string[] = [];
+  const KEY = `poll-survivors-${Date.now()}`;
+
+  function Subscriber({
+    label,
+    pollMs,
+  }: {
+    label: string;
+    pollMs: number;
+  }) {
+    useClientResource(
+      KEY,
+      async () => {
+        calls.push(label);
+        return label;
+      },
+      { pollMs },
+    );
+    return <span data-label={label} />;
+  }
+
+  function Harness() {
+    const [showLatest, setShowLatest] = useState(true);
+    useEffect(() => {
+      (window as unknown as { __dropLatest?: () => void }).__dropLatest = () => setShowLatest(false);
+    }, []);
+    return (
+      <>
+        <Subscriber label="survivor" pollMs={40} />
+        {showLatest ? <Subscriber label="latest" pollMs={40} /> : null}
+      </>
+    );
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Harness />);
+  });
+
+  // Initial subscribe fetch(es) from both subscribers sharing one store (first only fetches).
+  await waitFor(() => calls.length >= 1);
+  const beforeUnmount = calls.length;
+
+  await act(async () => {
+    (window as unknown as { __dropLatest: () => void }).__dropLatest();
+  });
+
+  await waitFor(() => calls.length > beforeUnmount);
+
+  const afterUnmount = calls.slice(beforeUnmount);
+  expect(afterUnmount.length).toBeGreaterThan(0);
+  expect(afterUnmount.every((label) => label === "survivor")).toBe(true);
+  expect(afterUnmount.some((label) => label === "latest")).toBe(false);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("unmounting the subscriber that owns an in-flight request must not overwrite remaining data", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `inflight-owner-${Date.now()}`;
+  let resolveB!: (value: string) => void;
+  const deferredB = new Promise<string>((resolve) => {
+    resolveB = resolve;
+  });
+
+  type HarnessApi = {
+    dropB: () => void;
+    refreshB: () => void;
+    readA: () => string | undefined;
+  };
+  const api: HarnessApi = {
+    dropB: () => {},
+    refreshB: () => {},
+    readA: () => undefined,
+  };
+
+  function SubscriberA() {
+    const resource = useClientResource(KEY, async () => "from-A");
+    useEffect(() => {
+      api.readA = () => resource.data;
+    }, [resource.data]);
+    return <span data-a={resource.data ?? ""} />;
+  }
+
+  function SubscriberB() {
+    const resource = useClientResource(KEY, async () => deferredB);
+    useEffect(() => {
+      api.refreshB = () => resource.refresh();
+    }, [resource.refresh]);
+    return <span data-b="" />;
+  }
+
+  function Harness() {
+    const [showB, setShowB] = useState(true);
+    useEffect(() => {
+      api.dropB = () => setShowB(false);
+    }, []);
+    return (
+      <>
+        <SubscriberA />
+        {showB ? <SubscriberB /> : null}
+      </>
+    );
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Harness />);
+  });
+
+  await waitFor(() => api.readA() === "from-A");
+
+  await act(async () => {
+    api.refreshB();
+  });
+
+  await act(async () => {
+    api.dropB();
+  });
+
+  await act(async () => {
+    resolveB("from-B");
+  });
+  // Settle so a buggy late write would have time to land.
+  await waitFor(() => api.readA() === "from-A");
+  expect(api.readA()).toBe("from-A");
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("when the in-flight owner unmounts with no cache, a remaining subscriber replaces the fetch", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `replace-inflight-${Date.now()}`;
+  const deferredB = new Promise<string>(() => {
+    /* intentionally never resolves — owner unmount must replace it */
+  });
+
+  type HarnessApi = {
+    mountA: () => void;
+    dropB: () => void;
+    read: () => { data: string | undefined; loading: boolean };
+  };
+  const api: HarnessApi = {
+    mountA: () => {},
+    dropB: () => {},
+    read: () => ({ data: undefined, loading: false }),
+  };
+
+  function SubscriberA() {
+    const resource = useClientResource(KEY, async () => "from-A");
+    useEffect(() => {
+      api.read = () => ({ data: resource.data, loading: resource.loading });
+    }, [resource.data, resource.loading]);
+    return <span data-a={resource.data ?? ""} data-loading={String(resource.loading)} />;
+  }
+
+  function SubscriberB() {
+    useClientResource(KEY, async () => deferredB);
+    return <span data-b="" />;
+  }
+
+  function Harness() {
+    const [showA, setShowA] = useState(false);
+    const [showB, setShowB] = useState(true);
+    useEffect(() => {
+      api.mountA = () => setShowA(true);
+      api.dropB = () => setShowB(false);
+    }, []);
+    return (
+      <>
+        {showB ? <SubscriberB /> : null}
+        {showA ? <SubscriberA /> : null}
+      </>
+    );
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Harness />);
+  });
+
+  // B is sole subscriber with a deferred request → shared snapshot is loading with no data.
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 10));
+  });
+
+  await act(async () => {
+    api.mountA();
+  });
+
+  await act(async () => {
+    api.dropB();
+  });
+
+  await waitFor(() => api.read().data === "from-A" && api.read().loading === false);
+
+  expect(api.read()).toEqual({ data: "from-A", loading: false });
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("keyed deps changes force loading while retaining previous data until refetch completes", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `keyed-deps-${Date.now()}`;
+  let resolveNext!: (value: string) => void;
+  let nextValue = new Promise<string>((resolve) => {
+    resolveNext = resolve;
+  });
+
+  type Snap = { data: string | undefined; loading: boolean };
+  let snap: Snap = { data: undefined, loading: false };
+  let setFilter!: (value: string) => void;
+
+  function Page() {
+    const [filter, setFilterState] = useState("one");
+    setFilter = setFilterState;
+    const resource = useKeyedClientResource(
+      KEY,
+      [filter],
+      async () => {
+        if (filter === "one") return "data-one";
+        return nextValue;
+      },
+    );
+    useEffect(() => {
+      snap = { data: resource.data, loading: resource.loading };
+    }, [resource.data, resource.loading]);
+    return <span />;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+
+  await waitFor(() => snap.data === "data-one" && snap.loading === false);
+
+  await act(async () => {
+    setFilter("two");
+  });
+
+  await waitFor(() => snap.loading === true && snap.data === "data-one");
+
+  await act(async () => {
+    resolveNext("data-two");
+  });
+  await waitFor(() => snap.data === "data-two" && snap.loading === false);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("changing pollMs keeps cached data without a cold refetch", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `pollms-churn-${Date.now()}`;
+  let fetches = 0;
+  type Snap = { data: string | undefined; loading: boolean };
+  let snap: Snap = { data: undefined, loading: false };
+  let setPollMs!: (value: number) => void;
+
+  function Page() {
+    const [pollMs, setPollMsState] = useState(40);
+    setPollMs = setPollMsState;
+    const resource = useClientResource(
+      KEY,
+      async () => {
+        fetches += 1;
+        return "cached";
+      },
+      { pollMs },
+    );
+    useEffect(() => {
+      snap = { data: resource.data, loading: resource.loading };
+    }, [resource.data, resource.loading]);
+    return <span />;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+
+  await waitFor(() => snap.data === "cached" && snap.loading === false);
+  expect(fetches).toBe(1);
+
+  await act(async () => {
+    setPollMs(80);
+  });
+
+  // Subscribe identity churn must not wipe the store or force a cold fetch.
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 20));
+  });
+  expect(snap).toEqual({ data: "cached", loading: false });
+  expect(fetches).toBe(1);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("store is evicted after the last subscriber leaves", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `store-evict-${Date.now()}`;
+  let fetches = 0;
+  type Snap = { data: string | undefined };
+  let snap: Snap = { data: undefined };
+
+  function Page() {
+    const resource = useClientResource(KEY, async () => {
+      fetches += 1;
+      return `v${fetches}`;
+    });
+    useEffect(() => {
+      snap = { data: resource.data };
+    }, [resource.data]);
+    return <span />;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  await waitFor(() => snap.data === "v1");
+  expect(fetches).toBe(1);
+
+  await act(async () => {
+    root.unmount();
+  });
+  // Flush deferred eviction.
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 0));
+  });
+
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  await waitFor(() => snap.data === "v2");
+  expect(fetches).toBe(2);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});

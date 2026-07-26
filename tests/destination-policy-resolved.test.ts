@@ -80,3 +80,70 @@ describe("providerDestinationResolvedError — DNS-resolved SSRF check (activati
     expect(lookupMock).not.toHaveBeenCalled();
   });
 });
+
+describe("providerDestinationResolvedError — canonical openai Clash fake-IP exception", () => {
+  test("allows pure 198.18.0.0/15 benchmark answers when opted in", async () => {
+    lookupMock.mockResolvedValueOnce([
+      { address: "198.18.0.30", family: 4 },
+      { address: "198.19.1.2", family: 4 },
+    ]);
+    expect(await providerDestinationResolvedError(
+      "openai",
+      provider("https://chatgpt.com/backend-api/codex"),
+      { allowBenchmarkAddresses: true },
+    )).toBeNull();
+  });
+
+  test("still rejects loopback, RFC1918, and metadata even with the opt-in", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "127.0.0.1", family: 4 }]);
+    expect(await providerDestinationResolvedError(
+      "openai",
+      provider("https://chatgpt.com/backend-api/codex"),
+      { allowBenchmarkAddresses: true },
+    )).toContain("loopback address (127.0.0.1)");
+
+    lookupMock.mockResolvedValueOnce([{ address: "10.0.0.5", family: 4 }]);
+    expect(await providerDestinationResolvedError(
+      "openai",
+      provider("https://chatgpt.com/backend-api/codex"),
+      { allowBenchmarkAddresses: true },
+    )).toContain("private-network address (10.0.0.5)");
+
+    lookupMock.mockResolvedValueOnce([{ address: "169.254.169.254", family: 4 }]);
+    expect(await providerDestinationResolvedError(
+      "openai",
+      provider("https://chatgpt.com/backend-api/codex"),
+      { allowBenchmarkAddresses: true },
+    )).toContain("blocked metadata endpoint (169.254.169.254)");
+  });
+
+  test("rejects mixed benchmark plus private or metadata answers", async () => {
+    lookupMock.mockResolvedValueOnce([
+      { address: "198.18.0.30", family: 4 },
+      { address: "10.0.0.5", family: 4 },
+    ]);
+    expect(await providerDestinationResolvedError(
+      "openai",
+      provider("https://chatgpt.com/backend-api/codex"),
+      { allowBenchmarkAddresses: true },
+    )).toContain("private-network address (10.0.0.5)");
+
+    lookupMock.mockResolvedValueOnce([
+      { address: "198.18.0.30", family: 4 },
+      { address: "169.254.169.254", family: 4 },
+    ]);
+    expect(await providerDestinationResolvedError(
+      "openai",
+      provider("https://chatgpt.com/backend-api/codex"),
+      { allowBenchmarkAddresses: true },
+    )).toContain("blocked metadata endpoint (169.254.169.254)");
+  });
+
+  test("without the opt-in, benchmark answers are still rejected", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "198.18.0.30", family: 4 }]);
+    expect(await providerDestinationResolvedError(
+      "openai",
+      provider("https://chatgpt.com/backend-api/codex"),
+    )).toContain("benchmark address (198.18.0.30)");
+  });
+});

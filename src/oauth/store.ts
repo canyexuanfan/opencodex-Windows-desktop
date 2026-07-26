@@ -40,16 +40,41 @@ export function getAuthRefreshIntentPath(provider: string, accountId: string): s
   return `${getAuthRefreshIntentLockPath(provider, accountId)}.json`;
 }
 export interface OAuthRefreshIntent { version: 1; provider: string; accountId: string; generation: string; createdAt: number; uncertain?: true }
+function parseOAuthRefreshIntent(
+  provider: string,
+  accountId: string,
+  raw: string,
+): OAuthRefreshIntent {
+  const value = JSON.parse(raw) as Partial<OAuthRefreshIntent>;
+  if (
+    value.version !== 1
+    || value.provider !== provider
+    || value.accountId !== accountId
+    || typeof value.generation !== "string"
+    || typeof value.createdAt !== "number"
+  ) {
+    return { version: 1, provider, accountId, generation: "", createdAt: 0, uncertain: true };
+  }
+  return value as OAuthRefreshIntent;
+}
+
 export function readOAuthRefreshIntent(provider: string, accountId: string): OAuthRefreshIntent | undefined {
   const path = getAuthRefreshIntentPath(provider, accountId);
   try {
     hardenConfigDir();
     hardenExistingSecret(path);
-    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<OAuthRefreshIntent>;
-    if (value.version !== 1 || value.provider !== provider || value.accountId !== accountId || typeof value.generation !== "string" || typeof value.createdAt !== "number") {
-      return { version: 1, provider, accountId, generation: "", createdAt: 0, uncertain: true };
-    }
-    return value as OAuthRefreshIntent;
+    return parseOAuthRefreshIntent(provider, accountId, readFileSync(path, "utf8"));
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return undefined;
+    return { version: 1, provider, accountId, generation: "", createdAt: 0, uncertain: true };
+  }
+}
+
+/** Observe-only intent read for diagnostics: no chmod/ACL hardening. */
+export function peekOAuthRefreshIntent(provider: string, accountId: string): OAuthRefreshIntent | undefined {
+  const path = getAuthRefreshIntentPath(provider, accountId);
+  try {
+    return parseOAuthRefreshIntent(provider, accountId, readFileSync(path, "utf8"));
   } catch (error) {
     if (errorCode(error) === "ENOENT") return undefined;
     return { version: 1, provider, accountId, generation: "", createdAt: 0, uncertain: true };
@@ -89,6 +114,20 @@ export function loadAuthStore(): AuthStore {
   return loadAuthStoreInternal().store;
 }
 
+/**
+ * Observe-only auth store read for diagnostics (`ocx doctor` / status).
+ * Does not chmod paths or backup invalid JSON — corrupt files are treated as empty.
+ */
+export function peekAuthStore(): AuthStore {
+  const path = getAuthStorePath();
+  if (!existsSync(path)) return {};
+  try {
+    return normalizeAuthStore(JSON.parse(readFileSync(path, "utf-8"))).store;
+  } catch {
+    return {};
+  }
+}
+
 function persist(store: AuthStore): void {
   const dir = getConfigDir();
   if (!existsSync(dir)) {
@@ -114,7 +153,17 @@ export function createOAuthFileLock(options: OAuthFileLockOptions): { acquire():
  return { async acquire() { hardenConfigDir(); if(!existsSync(getConfigDir())) mkdirSync(getConfigDir(),{recursive:true,mode:0o700}); const ownerId=randomUUID(),started=now(); for(;;){ let fd:number|undefined; try { fd=openSync(options.path,"wx",0o600); const bytes=`${JSON.stringify({version:1,ownerId,pid:process.pid,createdAt:now()})}\n`; write(fd,bytes); const fs=fstatSync(fd); closeSync(fd); fd=undefined; const owned=snapshot(options.path); if(owned.bytes!==bytes||!sameFd(owned,fs)) throw new OAuthFileLockError("OAuth lock changed during creation"); let released=false; return {ownerId,release(){if(released)return;released=true;try{const a=snapshot(options.path);if(!sameSnapshot(owned,a))return;options.beforeReleaseUnlink?.();const b=snapshot(options.path);if(sameSnapshot(owned,b))unlinkSync(options.path);}catch(e){if(errorCode(e)!=="ENOENT")console.warn(`[oauth] lock release failed: ${e instanceof Error?e.message:String(e)}`);}}}; } catch(e) { if(fd!==undefined){let fs;try{fs=fstatSync(fd);}catch{}try{closeSync(fd);}catch{}if(fs)try{const a=snapshot(options.path);if(sameFd(a,fs)){options.beforeFailedCreateUnlink?.();const b=snapshot(options.path);if(sameSnapshot(a,b)&&sameFd(b,fs))unlinkSync(options.path);}}catch{}} if(errorCode(e)!=="EEXIST")throw e instanceof OAuthFileLockError?e:new OAuthFileLockError("Could not create OAuth file lock",{cause:e}); }
  try{const a=snapshot(options.path);let created=a.mtimeMs;try{const p=JSON.parse(a.bytes);if(typeof p.createdAt==="number")created=Math.max(created,p.createdAt);}catch{}if(now()-created>stale){options.beforeStaleUnlink?.();const b=snapshot(options.path);if(sameSnapshot(a,b))unlinkSync(options.path);continue;}}catch(e){if(errorCode(e)==="ENOENT")continue;throw new OAuthFileLockError("Could not inspect OAuth file lock",{cause:e});} const elapsed=now()-started;if(elapsed>=wait)throw new OAuthFileLockError(`Timed out after ${wait}ms waiting for OAuth file lock`);await sleep(Math.min(wait-elapsed,min+Math.floor(random()*(max-min+1)))); } } };
 }
-export function createOAuthRefreshIntentLock(provider:string,accountId:string,overrides:Partial<OAuthFileLockOptions>={}) { return createOAuthFileLock({path:getAuthRefreshIntentLockPath(provider,accountId),staleAfterMs:120000,...overrides}); }
+/** Wait long enough for slow IdP refreshes (e.g. Cursor 15s × 3 attempts) before timing out. */
+export const OAUTH_REFRESH_LOCK_WAIT_MS = 60_000;
+
+export function createOAuthRefreshIntentLock(provider:string,accountId:string,overrides:Partial<OAuthFileLockOptions>={}) {
+  return createOAuthFileLock({
+    path: getAuthRefreshIntentLockPath(provider, accountId),
+    staleAfterMs: 120000,
+    waitTimeoutMs: OAUTH_REFRESH_LOCK_WAIT_MS,
+    ...overrides,
+  });
+}
 
 /**
  * One-time downgrade safety net: the first time we persist the NEW shape over a file that

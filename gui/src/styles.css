@@ -331,7 +331,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .lang-toggle .select-trigger { width: 100%; justify-content: space-between; border: none; background: none; color: inherit; font-size: var(--text-control); padding: 0; min-height: auto; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .lang-toggle .select-trigger:hover:not(:disabled) { border: none; background: none; color: inherit; box-shadow: none; }
 .lang-toggle .select-dropdown { background: var(--glass-rail); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
-.lang-toggle .select-dropdown-beside { top: 0; left: calc(100% + 6px); right: auto; min-width: 10rem; }
+.lang-toggle .select-dropdown-beside { top: auto; bottom: 0; left: calc(100% + 6px); right: auto; min-width: 10rem; max-height: min(60vh, 20rem); overflow-y: auto; }
 .theme-toggle { display: flex; align-items: center; gap: 9px; padding: 8px 10px; width: 100%; text-align: left; background: none; border: none; cursor: pointer; color: var(--muted); font: inherit; font-size: var(--text-control); border-radius: var(--radius-sm); transition: background var(--motion-fast), color var(--motion-fast); }
 .theme-toggle:hover { background: var(--accent-soft); color: var(--text); }
 .theme-toggle svg { width: 16px; height: 16px; flex-shrink: 0; }
@@ -383,6 +383,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   border-radius: var(--radius-xs);
   padding: 1px 4px;
 }
+.api-endpoints { display: grid; gap: 10px; margin-top: 8px; }
+.api-endpoints > div { display: grid; gap: 4px; }
+.api-auth-list { display: grid; gap: 8px; margin: 0; padding-left: 1.1rem; }
+.api-auth-list li { color: var(--muted); font-size: var(--text-label); }
+.api-model-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.api-test-note { font-size: var(--text-label); }
+.api-test-note--ok { color: var(--green, #22c55e); }
+.api-test-note--error { color: var(--red); }
 
 /* ---- buttons ---- */
 .btn {
@@ -655,7 +663,13 @@ select.input { appearance: none; }
   bottom: auto;
 }
 .select-dropdown-right { left: auto !important; right: 0; }
-.select-dropdown-beside { top: 0; left: calc(100% + 6px); right: auto; min-width: 10rem; }
+/* Beside-placement lives inside the sidebar, which establishes a containing block via
+   backdrop-filter (and a transform on the mobile drawer) — so a fixed-position fix would
+   resolve against the sidebar, not the viewport. Anchor the menu's BOTTOM to the trigger row
+   instead: the locale control sits in the footer, so the menu grows upward into empty sidebar
+   space. The height bound is what makes this count-independent — adding a locale used to push
+   the menu past the sidebar edge. */
+.select-dropdown-beside { top: auto; bottom: 0; left: calc(100% + 6px); right: auto; min-width: 10rem; max-height: min(60vh, 20rem); overflow-y: auto; }
 .select-option {
   display: block; width: 100%; text-align: left;
   padding: 7px 12px; border: none; border-radius: var(--radius-sm);
@@ -774,7 +788,7 @@ dialog.modal-overlay {
 dialog.modal-overlay::backdrop {
   background: transparent;
 }
-.modal-card { background: color-mix(in oklab, canvas 92%, transparent); backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px; width: 100%; max-width: 520px; box-shadow: 0 8px 32px rgb(0 0 0 / 0.18); max-height: 84vh; overflow-y: auto; }
+.modal-card { position: relative; z-index: 1; background: color-mix(in oklab, canvas 92%, transparent); backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px; width: 100%; max-width: 520px; box-shadow: 0 8px 32px rgb(0 0 0 / 0.18); max-height: 84vh; overflow-y: auto; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .modal-head h3 { font-size: var(--text-subtitle); }
 
@@ -1240,3 +1254,169 @@ button.prov-account-row.active { cursor: default; }
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+
+/* Invisible full-area control for native <dialog> backdrop dismiss (a11y). */
+.modal-backdrop-dismiss {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+/* ── Claude client tabs + Desktop profile editor ── */
+.claude-tabs {
+  display: inline-flex; gap: 2px; margin-bottom: 22px; padding: 3px;
+  border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface);
+}
+.claude-tabs button {
+  min-width: 88px; min-height: 34px; padding: 6px 14px; border: 0; border-radius: var(--radius-pill);
+  background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer;
+}
+.claude-tabs button:hover { color: var(--text); background: var(--hover); }
+.claude-tabs button.active { color: var(--text); background: var(--raised); box-shadow: var(--shadow-sm); }
+.claude-desktop-loading { padding: 28px 4px; color: var(--muted); }
+.claude-desktop-error { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.claude-desktop-head { align-items: flex-start; }
+.claude-desktop-head .page-sub { margin-bottom: 0; }
+.claude-profile-tools, .claude-save-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.claude-profile-bar {
+  position: sticky; top: 12px; z-index: 8; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin: 18px 0 16px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--glass-panel); backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur); box-shadow: var(--shadow-sm);
+}
+.claude-dirty { color: var(--muted); font-size: 12.5px; font-weight: 550; }
+.claude-dirty.active { color: var(--amber); }
+/* Shared collapsible-group chrome, used by the Claude Desktop family stack and (from
+   the Grok work-phase) the Grok page's native/routed groups, so the two dense surfaces
+   cannot drift apart. This replaced a 4-column kanban: with a real catalog three lanes
+   sat empty beside one very tall column. */
+.ocx-group-stack { display: flex; flex-direction: column; gap: 10px; }
+.ocx-group {
+  min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  overflow: hidden;
+}
+.ocx-group-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px;
+  background: var(--raised);
+}
+/* Only an OPEN group needs the hairline: on a folded one it reads as a stray rule. */
+.ocx-group-head.open { border-bottom: 1px solid var(--border-soft); }
+.ocx-group-heading { flex: 1; min-width: 0; margin: 0; font-size: 14px; }
+.ocx-group-toggle {
+  display: flex; width: 100%; align-items: baseline; gap: 10px; min-width: 0; padding: 0;
+  border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left;
+}
+.ocx-group-name { font-size: 14px; font-weight: 600; }
+.ocx-group-count { flex-shrink: 0; color: var(--muted); font-size: 11.5px; }
+.ocx-chevron { flex-shrink: 0; align-self: center; color: var(--muted); transition: transform var(--motion-fast); }
+.claude-lane-default {
+  min-width: 0; overflow: hidden; color: var(--faint); font-size: 11px;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.claude-default-radio { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; cursor: pointer; }
+.claude-default-needed { color: var(--amber); font-size: 11.5px; font-weight: 550; }
+.claude-effective-default { display: inline-block; margin-top: 6px; color: var(--amber); font-size: 11px; font-weight: 550; }
+.claude-lane-models { display: flex; flex-direction: column; gap: 9px; min-height: 104px; padding: 10px; }
+/* Lane density controls: a filter that only appears once a lane is long enough to need one,
+   and a pager for the tail. Same idiom as the Models page so the two dense surfaces match. */
+.claude-lane-search { width: calc(100% - 20px); margin: 0 10px; min-height: 32px; font-size: 12.5px; }
+.claude-lane-more { align-self: stretch; justify-content: center; }
+
+/* Grok page: read-only status for the managed fence in ~/.grok/config.toml. */
+.grok-endpoint {
+  display: flex; align-items: center; gap: 10px; margin: 14px 0 6px; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  font-size: var(--text-control);
+}
+.grok-endpoint > span { color: var(--muted); }
+/* Switch rows: one line each, mirroring the Desktop collapsed-row language. */
+.grok-model-list { display: flex; flex-direction: column; }
+.grok-model-row {
+  display: flex; align-items: center; gap: 12px; padding: 7px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.grok-model-row:first-child { border-top: 0; }
+.grok-model-names { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
+.grok-model-names strong { overflow: hidden; color: var(--text); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.grok-model-names code { overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.claude-lane-empty {
+  display: grid; place-items: center; min-height: 82px; padding: 12px; border: 1px dashed var(--border);
+  border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center;
+}
+/* Two-tier disclosure: the card is a one-line summary until it is opened, so padding
+   belongs to the parts rather than the shell. */
+.claude-model-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); box-shadow: var(--shadow-sm); }
+.claude-model-card[draggable="true"] { cursor: grab; }
+.claude-model-card[draggable="true"]:active { cursor: grabbing; }
+.claude-model-summary {
+  display: flex; width: 100%; align-items: center; gap: 10px; padding: 9px 12px;
+  border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left;
+}
+.claude-model-summary:hover { background: var(--hover); }
+.claude-model-names { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
+.claude-model-names strong { display: block; overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.claude-model-names code { display: block; overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.claude-model-context { flex-shrink: 0; color: var(--muted); font-size: 11px; }
+.claude-model-context-unknown { color: var(--faint); font-style: italic; }
+.claude-row-default { flex-shrink: 0; color: var(--green); font-size: 10.5px; font-weight: 600; }
+.claude-1m-chip {
+  flex-shrink: 0; padding: 1px 6px; border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+}
+.claude-model-body { padding: 10px 12px 12px; border-top: 1px solid var(--border-soft); }
+.claude-field { display: block; margin-top: 10px; }
+.claude-model-body > .claude-field:first-child { margin-top: 0; }
+.claude-field > span, .claude-move-row > label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11.5px; font-weight: 550; }
+.claude-alias {
+  display: block; width: 100%; min-height: 34px; padding: 7px 10px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--raised);
+  color: var(--text); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap;
+}
+.claude-default-radio { margin-top: 10px; color: var(--text); }
+.claude-move-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; margin-top: 10px; }
+.claude-move-row > label { grid-column: 1 / -1; margin: 0; }
+.claude-move-row .input { min-width: 0; height: 34px; padding-block: 4px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+@media (max-width: 760px) {
+  .claude-tabs { display: flex; width: 100%; }
+  .claude-tabs button { flex: 1; min-height: 44px; }
+  .claude-desktop-head { flex-direction: column; }
+  .claude-profile-tools { width: 100%; }
+  .claude-profile-tools .btn { flex: 1; min-height: 44px; }
+  .claude-profile-bar { top: 8px; align-items: stretch; flex-direction: column; }
+  .claude-save-actions .btn { flex: 1; min-height: 44px; }
+  .ocx-group-head { align-items: flex-start; }
+  .claude-move-row .input, .claude-move-row .btn { min-height: 44px; }
+}
+
+/* ── Desktop status bar + effort badges (hardening WP3) ── */
+.claude-status-bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 8px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  font-size: 12.5px; color: var(--muted);
+}
+.claude-status-bar.applied { border-color: var(--green); }
+.claude-status-bar.stale { border-color: var(--amber); }
+.claude-status-bar.not-applied { border-color: var(--border); }
+.claude-status-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0;
+}
+.claude-status-bar.applied .claude-status-dot { background: var(--green); }
+.claude-status-bar.stale .claude-status-dot { background: var(--amber); }
+.claude-status-health { margin-left: auto; font-size: 11.5px; }
+.claude-effort-badge {
+  display: inline-block; flex-shrink: 0; padding: 1px 6px; border-radius: var(--radius-xs);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+}
+.claude-effort-badge.on { background: color-mix(in srgb, var(--green) 15%, transparent); color: var(--green); }
+.claude-effort-badge.off { background: color-mix(in srgb, var(--muted) 12%, transparent); color: var(--muted); }

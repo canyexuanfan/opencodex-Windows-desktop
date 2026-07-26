@@ -42,6 +42,7 @@ import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
+  cooldownErrorResponse,
   CodexAuthContextError,
   CodexDirectAuthenticationError,
   CodexPoolAuthenticationError,
@@ -231,7 +232,7 @@ export async function handleResponsesCompact(
       }
     } catch (err) {
       if (err instanceof CodexAccountCooldownError) {
-        return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+        return cooldownErrorResponse(err);
       }
       if (err instanceof CodexThreadAffinityExpiredError) {
         return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");

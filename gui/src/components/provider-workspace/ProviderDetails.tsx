@@ -3,7 +3,7 @@
  * and composes the Overview/Models/Usage/Settings panels.
  */
 import { useCallback, useMemo, useRef, useState } from "react";
-import { useT } from "../../i18n";
+import { useT } from "../../i18n/shared";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatProviderDisplayName } from "../../provider-icons";
 import { isFreeProvider } from "../../provider-workspace/catalog";
@@ -30,6 +30,7 @@ export default function ProviderDetails({
   modelUsage,
   quotaReport,
   availableModels,
+  hasLiveModels,
   selectedModels,
   modelsLoading,
   modelsLoadFailed,
@@ -57,6 +58,8 @@ export default function ProviderDetails({
   modelUsage?: ProviderModelUsageRow[];
   quotaReport?: ProviderQuotaReportView;
   availableModels: string[];
+  /** Server-reported live-catalog provenance; see filterModels(). */
+  hasLiveModels: boolean;
   selectedModels: string[];
   modelsLoading?: boolean;
   modelsLoadFailed?: boolean;
@@ -247,8 +250,11 @@ export default function ProviderDetails({
         )}
         {tab === "models" && (
           <ProviderModels
+            key={item.name}
             item={item}
+            apiBase={apiBase}
             availableModels={availableModels}
+            hasLiveModels={hasLiveModels}
             selectedModels={selectedModels}
             modelsLoading={modelsLoading}
             modelsLoadFailed={modelsLoadFailed}

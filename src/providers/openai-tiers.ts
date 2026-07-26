@@ -6,7 +6,7 @@ export const LEGACY_OPENAI_MULTI_PROVIDER_ID = "openai-multi";
 export const OPENAI_API_PROVIDER_ID = "openai-apikey";
 export const LEGACY_CHATGPT_PROVIDER_ID = "chatgpt";
 
-const CODEX_FORWARD_BASE_URL = "https://chatgpt.com/backend-api/codex";
+export const CODEX_FORWARD_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const LEGACY_OPENAI_MULTI_PREFIX = `${LEGACY_OPENAI_MULTI_PROVIDER_ID}/`;
 
 function canonicalCodexForwardProvider(mode: CodexAccountMode): OcxProviderConfig {

@@ -13,9 +13,11 @@ import {
   formatServiceMemoryLines,
   parseProcessEnvBlock,
   probeWham,
+  proxyDownRestartHint,
   resolveCodexHomeDir,
   type ServiceMemoryData,
 } from "../src/cli/doctor";
+import { collectOrcaCodexHomeDiagnostic } from "../src/codex/home";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-doctor-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -74,6 +76,43 @@ describe("doctor", () => {
   test("resolveCodexHomeDir expands ~ like the hardened runtime paths", () => {
     process.env.CODEX_HOME = "~/custom-codex";
     expect(resolveCodexHomeDir()).toBe(join(homedir(), "custom-codex"));
+  });
+
+  test("Orca home diagnostic warns only for the Windows Orca runtime mismatch", () => {
+    const appHome = "C:\\Users\\alice\\.codex";
+    const orcaHome = "C:\\Users\\alice\\AppData\\Roaming\\orca\\codex-runtime-home\\home";
+    const mismatch = collectOrcaCodexHomeDiagnostic({
+      platform: "win32",
+      env: { CODEX_HOME: orcaHome, ORCA_CODEX_HOME: orcaHome },
+      effectiveCodexHome: orcaHome,
+      appCodexHome: appHome,
+    });
+    expect(mismatch.mismatch).toBe(true);
+    expect(mismatch.warning).toContain("OpenCodex injection will not reach that app");
+    expect(mismatch.effectiveCodexHome).toContain("C:\\Users\\[USER]\\");
+    expect(mismatch.effectiveCodexHome).not.toContain("alice");
+    expect(mismatch.action).toContain("ocx service uninstall");
+    expect(mismatch.action).toContain("ocx service install");
+    expect(mismatch.action).toContain("%USERPROFILE%\\.codex");
+    expect(mismatch.action).toContain("Remove-Item Env:ORCA_CODEX_HOME");
+    expect(mismatch.action).toContain("SilentlyContinue; $env:CODEX_HOME");
+    expect(mismatch.action).not.toContain("C:\\Users\\[USER]");
+
+    const matching = collectOrcaCodexHomeDiagnostic({
+      platform: "win32",
+      env: { CODEX_HOME: appHome, ORCA_CODEX_HOME: orcaHome },
+      effectiveCodexHome: appHome,
+      appCodexHome: appHome,
+    });
+    expect(matching.mismatch).toBe(false);
+
+    const intentionalCustom = collectOrcaCodexHomeDiagnostic({
+      platform: "win32",
+      env: { CODEX_HOME: "D:\\codex-work" },
+      effectiveCodexHome: "D:\\codex-work",
+      appCodexHome: appHome,
+    });
+    expect(intentionalCustom.mismatch).toBe(false);
   });
 
   test("resolveCodexHomeDir discovers a single Windows Codex Desktop home from WSL", () => {
@@ -373,5 +412,25 @@ describe("service memory section (#314 WP4)", () => {
     const unreachable = formatServiceMemoryLines({ status: "unreachable", error: "ECONNREFUSED" });
     expect(unreachable.some(l => l.includes("not reachable"))).toBe(true);
     expect(unreachable.some(l => l.includes("service pid"))).toBe(false);
+  });
+
+  test("proxyDownRestartHint is null while a live proxy exists", () => {
+    expect(proxyDownRestartHint({ proxyRunning: true, port: 10100, serviceViable: false })).toBeNull();
+    expect(proxyDownRestartHint({ proxyRunning: true, port: 10100, serviceViable: true })).toBeNull();
+  });
+
+  test("proxyDownRestartHint names the symptom and both restart paths", () => {
+    const hint = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false });
+    expect(hint).toContain("error sending request for url");
+    expect(hint).toContain("127.0.0.1:10100");
+    expect(hint).toContain("ocx start");
+    expect(hint).toContain("ocx service install");
+  });
+
+  test("proxyDownRestartHint prefers 'ocx service start' when a service is installed", () => {
+    const hint = proxyDownRestartHint({ proxyRunning: false, port: 12000, serviceViable: true });
+    expect(hint).toContain("ocx service start");
+    expect(hint).toContain("127.0.0.1:12000");
+    expect(hint).not.toContain("ocx service install");
   });
 });

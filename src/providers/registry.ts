@@ -71,6 +71,7 @@ export interface ProviderRegistryEntry {
   promptCacheKey?: boolean;
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
+  reasoningSplitModels?: string[];
   thinkingToggleModels?: string[];
   thinkingBudgetModels?: string[];
   escapeBuiltinToolNames?: boolean;
@@ -92,7 +93,7 @@ export type ProviderConfigSeed = Pick<
   | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
-  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
+  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "reasoningSplitModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
   | "googleMode" | "project" | "location" | "headers"
 >;
 
@@ -117,6 +118,16 @@ const MINIMAX_MODELS = [
 const MINIMAX_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   MINIMAX_MODELS.map(id => [id, id === "MiniMax-M3" ? 1_000_000 : 204_800]),
 );
+const MINIMAX_M3_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const MINIMAX_M3_REASONING_EFFORT_MAP: Record<string, string> = {
+  none: "disabled",
+  minimal: "disabled",
+  low: "disabled",
+  medium: "adaptive",
+  high: "adaptive",
+  xhigh: "adaptive",
+  max: "adaptive",
+};
 const OPENAI_GPT56_MODELS = ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const OPENAI_GPT56_PRO_MODELS = ["gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"];
 const OPENAI_API_GPT56_CONTEXT_WINDOW = 1_050_000;
@@ -390,6 +401,18 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // transport returns 400 ("Multi Agent requests are not allowed on chat completions").
     models: ["grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     defaultModel: "grok-4.5",
+    // Vision lineup per docs.x.ai model-capabilities/images/understanding: the grok-4.x chat
+    // models accept image input (JPEG/PNG, URL or base64). Without this the catalog leaves
+    // inputModalities undefined, and deriveComboCatalogModel defaults an undefined member to
+    // ["text"] — so any combo containing an xAI target is advertised to Codex as text-only and
+    // the app blocks attachments client-side. grok-build-0.1 / grok-composer-2.5-fast stay out
+    // (they are already listed in noVisionModels below).
+    modelInputModalities: {
+      "grok-4.5": ["text", "image"],
+      "grok-4.3": ["text", "image"],
+      "grok-4.20-0309-reasoning": ["text", "image"],
+      "grok-4.20-0309-non-reasoning": ["text", "image"],
+    },
     noReasoningModels: ["grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     // Replay assistant reasoning_content for grok reasoning models: xAI documents dropped
     // reasoning_content as the top cause of prompt-cache misses on multi-turn conversations
@@ -470,7 +493,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://runtime.us-east-1.kiro.dev",
     authKind: "oauth",
     oauthId: "kiro",
-    note: "Import-first: reuses your installed kiro-cli login (no browser). Experimental third-party harness — see Kiro ToS.",
+    note: "Import-first: reuses your installed Kiro CLI login — requires kiro-cli installed and signed in (`kiro-cli login`). Experimental third-party harness — see Kiro ToS.",
     models: KIRO_MODELS,
     defaultModel: "kiro-auto",
     // Kiro speaks CodeWhisperer wire, not OpenAI-style GET /models. Keep the static
@@ -643,6 +666,18 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEffortMap: { "deepseek/deepseek-v4-pro": DEEPSEEK_THINKING_REASONING_MAP },
     preserveReasoningContentModels: ["deepseek/deepseek-v4-pro"],
     note: "OpenAI-compatible adaptive router. Default is a tool-capable model; orcarouter/auto (adaptive routing) is also selectable. Full catalog: https://www.orcarouter.ai/models",
+  },
+  {
+    // BizRouter: Korean enterprise LLM gateway (api.bizrouter.ai). Model ids are
+    // vendor-namespaced (`<vendor>/<model>`) and pass through to the upstream as-is.
+    // Live-verified 2026-07-24: /v1/chat/completions accepts the `tools` field and
+    // streams, and GET /v1/models returns the per-API-key allowed catalog in the
+    // OpenAI list shape, so live model discovery narrows to what the key can use.
+    id: "bizrouter", label: "BizRouter", adapter: "openai-chat", baseUrl: "https://api.bizrouter.ai/v1",
+    authKind: "key", dashboardUrl: "https://bizrouter.ai/settings/keys",
+    defaultModel: "openai/gpt-5.6-sol",
+    models: ["openai/gpt-5.6-sol", "anthropic/claude-sonnet-5", "google/gemini-3.5-flash"],
+    note: "Korean enterprise LLM gateway. Per-key allowed models are discovered live from /v1/models. Full catalog: https://bizrouter.ai/models",
   },
   { id: "groq", label: "Groq", adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", authKind: "key", featured: true, dashboardUrl: "https://console.groq.com/keys" },
   // 2026-07-10 Gemini API refresh: Tier-2 ai.google.dev evidence recorded in
@@ -908,12 +943,24 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     id: "minimax", label: "MiniMax — Coding Plan", baseUrl: "https://api.minimax.io/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.minimax.io", defaultModel: "MiniMax-M3", models: MINIMAX_MODELS,
     modelContextWindows: MINIMAX_MODEL_CONTEXT_WINDOWS,
+    modelReasoningEfforts: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORTS },
+    modelDefaultReasoningEfforts: { "MiniMax-M3": "medium" },
+    modelReasoningEffortMap: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORT_MAP },
+    preserveReasoningContentModels: MINIMAX_MODELS,
+    reasoningSplitModels: MINIMAX_MODELS,
+    thinkingToggleModels: ["MiniMax-M3"],
     jawcodeBundle: "minimax", metadataModelIdNormalize: "case-insensitive", note: "Subscription Key or API Key",
   },
   {
     id: "minimax-cn", label: "MiniMax — Coding Plan (CN)", baseUrl: "https://api.minimaxi.com/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.minimaxi.com", defaultModel: "MiniMax-M3", models: MINIMAX_MODELS,
     modelContextWindows: MINIMAX_MODEL_CONTEXT_WINDOWS,
+    modelReasoningEfforts: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORTS },
+    modelDefaultReasoningEfforts: { "MiniMax-M3": "medium" },
+    modelReasoningEffortMap: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORT_MAP },
+    preserveReasoningContentModels: MINIMAX_MODELS,
+    reasoningSplitModels: MINIMAX_MODELS,
+    thinkingToggleModels: ["MiniMax-M3"],
     jawcodeBundle: "minimax", metadataModelIdNormalize: "case-insensitive", note: "中国区 Subscription Key",
   },
   {
