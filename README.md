@@ -1,6 +1,6 @@
 <h3 align="center">make codex open!</h3>
-<p align="center"><b>Universal provider proxy for OpenAI Codex &amp; Claude Code</b><br>
-Two commands, and Codex and Claude Code both run any LLM you point them at.</p>
+<p align="center"><b>Universal provider proxy for OpenAI Codex, Claude Code, Claude Desktop &amp; Grok Build</b><br>
+Two commands, and every one of them runs any LLM you point it at.</p>
 
 <p align="center">
   <a href="https://x.com/claudeebum"><img src="https://img.shields.io/badge/%40claudeebum-000000?logo=x&logoColor=white" alt="Follow @claudeebum on X"></a>
@@ -14,15 +14,28 @@ npm install -g @bitkyc08/opencodex
 ocx start        # proxy + dashboard on localhost:10100
 ```
 
-<p align="center">
-  <img src="assets/claude-code-models.gif" alt="Claude Code running a routed model through opencodex — the status bar shows gpt-5.6-luna-medium as the active model" width="820"><br>
-  <sub><b>Claude Code, running any model.</b> The picker is stock Claude Code. The brain behind it isn't.</sub>
-</p>
-
-<p align="center">
-  <img src="assets/demo.gif" alt="opencodex demo — running a task in the Codex app on a routed non-OpenAI model" width="820"><br>
-  <sub><b>Codex, running any model.</b> Pick a provider and go — same Codex workflow, different brain.</sub>
-</p>
+<table align="center">
+  <tr>
+    <td width="50%" align="center">
+      <img src="assets/claude-code-models.gif" alt="Claude Code running a routed model through opencodex — the status bar shows gpt-5.6-luna-medium as the active model" width="410"><br>
+      <sub><b>Claude Code, running any model.</b><br>The picker is stock Claude Code. The brain behind it isn't.</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="assets/demo.gif" alt="opencodex demo — running a task in the Codex app on a routed non-OpenAI model" width="410"><br>
+      <sub><b>Codex, running any model.</b><br>Pick a provider and go — same workflow, different brain.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="assets/claude-desktop-subagent.gif" alt="Claude Desktop answering as Claude Opus 4.8, then dispatching a GPT-5.6 Sol subagent through opencodex" width="410"><br>
+      <sub><b>Claude Desktop, running any model.</b><br>Opus answers, then hands the task to a GPT-5.6 Sol subagent.</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="assets/grok-build-subagent.gif" alt="Grok Build running GPT-5.6 Sol through opencodex and calling a Kimi K3 subagent" width="410"><br>
+      <sub><b>Grok Build, running any model.</b><br>Sol drives the session and calls a Kimi K3 subagent.</sub>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="README.md">English</a> · <a href="readme/README.ko.md">한국어</a> · <a href="readme/README.zh-CN.md">简体中文</a> · <a href="readme/README.ru.md">Русский</a> · <a href="readme/README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/"><b>Full documentation →</b></a>
@@ -32,7 +45,11 @@ ocx start        # proxy + dashboard on localhost:10100
   <img src="assets/architecture.png" alt="opencodex architecture — Codex CLI routes through opencodex proxy to any LLM provider" width="820">
 </p>
 
-Use Claude, Gemini, Grok, GLM, DeepSeek, Kimi, Qwen, Ollama, or any other LLM with Codex — and with **Claude Code** — without waiting for anyone to add support.
+Use Claude, Gemini, Grok, GLM, DeepSeek, Kimi, Qwen, Ollama, or any other LLM with Codex — and with **Claude Code**, **Claude Desktop**, and **Grok Build** — without waiting for anyone to add support.
+
+Subagents cross the boundary too: Claude Desktop can answer as Opus and hand the next step to a
+GPT-5.6 Sol subagent, and Grok Build can drive a session on Sol while calling Kimi K3 — each side
+keeping its own native UI.
 
 opencodex is a lightweight local proxy that translates Codex's Responses API into whatever your provider speaks. Streaming, tool calls, reasoning tokens, images — everything works, in both directions.
 
