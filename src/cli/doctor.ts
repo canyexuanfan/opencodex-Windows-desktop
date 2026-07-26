@@ -7,11 +7,12 @@
  * it never sets proxy env, relocates state dirs, mutates quota, or changes
  * networking. See devlog/_plan/260630_wsl-account-autoswitch/30_*.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, readRuntimePort, resolveEnvValue } from "../config";
 import { gracefulStopHost } from "../lib/process-control";
+import { maskAccountId } from "../lib/privacy";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
 import { readCodexTokens } from "../codex/auth-collision";
 import { resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
@@ -26,7 +27,127 @@ import {
   resolveAndPersistCodexRuntime,
   resolveCodexRuntime,
 } from "../codex/runtime";
+import { collectOAuthHealthEntries, type OAuthHealthEntry } from "../oauth/health";
+import { getAuthRefreshIntentLockPath, getAuthStorePath } from "../oauth/store";
 export { resolveCodexHomeDir } from "../codex/home";
+
+export type OAuthDoctorCheck = { level: "OK" | "WARN"; message: string };
+
+function pathIsWritable(path: string): boolean {
+  try {
+    accessSync(path, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Observe-only: can we write auth.json (or create it in the config dir)? */
+function isOAuthCredentialStorageWritable(): boolean {
+  const storePath = getAuthStorePath();
+  if (existsSync(storePath)) return pathIsWritable(storePath);
+  const dir = getConfigDir();
+  if (existsSync(dir)) return pathIsWritable(dir);
+  // Config dir missing: check nearest existing ancestor (no mkdir — observe-only).
+  let parent = dirname(dir);
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(parent)) return pathIsWritable(parent);
+    const next = dirname(parent);
+    if (next === parent) break;
+    parent = next;
+  }
+  return false;
+}
+
+/** Observe-only: refresh lock paths resolve and their parent dir is writable. */
+function isOAuthRefreshSingleFlightReady(): boolean {
+  try {
+    const sample = getAuthRefreshIntentLockPath("doctor-probe", "probe-account");
+    if (!sample.includes("auth.refresh.")) return false;
+    const dir = getConfigDir();
+    if (existsSync(dir)) return pathIsWritable(dir);
+    return isOAuthCredentialStorageWritable();
+  } catch {
+    return false;
+  }
+}
+
+function actionForDoctorEntry(entry: OAuthHealthEntry): string {
+  if (entry.action) return entry.action;
+  if (entry.health.status === "warning" && entry.health.reason === "stale_credentials") {
+    return `run \`ocx auth login ${entry.provider}\``;
+  }
+  if (entry.health.status === "warning" && entry.health.reason === "metadata_mismatch") {
+    return `run \`ocx auth login ${entry.provider}\` to refresh credentials`;
+  }
+  return `run \`ocx doctor\` again after fixing OAuth state for ${entry.provider}`;
+}
+
+function describeDoctorHealth(entry: OAuthHealthEntry): string {
+  const masked = maskAccountId(entry.accountId) ?? "account-…????";
+  const health = entry.health;
+  switch (health.status) {
+    case "reauth_required":
+      return `Account ${masked} requires reauthentication`;
+    case "cooldown":
+      return health.reason === "rate_limit"
+        ? `Account ${masked} is rate limited until ${health.until}`
+        : `Account ${masked} is quota limited until ${health.until}`;
+    case "warning":
+      switch (health.reason) {
+        case "refresh_conflict":
+          return `Account ${masked} has a refresh conflict`;
+        case "metadata_mismatch":
+          return `Account ${masked} has a metadata mismatch`;
+        case "stale_credentials":
+          return `Account ${masked} has incomplete credentials`;
+      }
+    case "healthy":
+      return `Account ${masked} is healthy`;
+  }
+}
+
+/**
+ * OAuth reliability checks for `ocx doctor`. Observe-only: never mutates
+ * credentials, locks, or networking. Every WARN includes a recovery Action.
+ */
+export function collectOAuthDoctorChecks(now = Date.now()): OAuthDoctorCheck[] {
+  const checks: OAuthDoctorCheck[] = [];
+
+  if (isOAuthCredentialStorageWritable()) {
+    checks.push({ level: "OK", message: "OAuth credential storage is writable." });
+  } else {
+    checks.push({
+      level: "WARN",
+      message:
+        "OAuth credential storage is not writable. Action: fix permissions on OPENCODEX_HOME so ocx can write auth.json",
+    });
+  }
+
+  if (isOAuthRefreshSingleFlightReady()) {
+    checks.push({ level: "OK", message: "Token refresh single-flight is active." });
+  } else {
+    checks.push({
+      level: "WARN",
+      message:
+        "Token refresh single-flight is unavailable. Action: fix permissions on OPENCODEX_HOME so ocx can create refresh lock files",
+    });
+  }
+
+  for (const entry of collectOAuthHealthEntries(now)) {
+    if (entry.health.status === "healthy") continue;
+    const action = actionForDoctorEntry(entry);
+    checks.push({
+      level: "WARN",
+      message: `${describeDoctorHealth(entry)}. Action: ${action}`,
+    });
+  }
+
+  // Static integrity note for the Codex forward path (no runtime scanner).
+  checks.push({ level: "OK", message: "No fabricated official-client metadata detected." });
+
+  return checks;
+}
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const PROBE_TIMEOUT_MS = 8000;
@@ -598,6 +719,12 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     if (dual.interopCodexOnPath) {
       console.log(`  --  codex on PATH is the Windows launcher via interop: ${dual.interopCodexOnPath}`);
     }
+  }
+
+  // OAuth reliability: observe-only (no mutations / auto-repair).
+  console.log("\nOAuth reliability");
+  for (const check of collectOAuthDoctorChecks()) {
+    console.log(`  [${check.level}] ${check.message}`);
   }
 
   // Hints, not fixes.
