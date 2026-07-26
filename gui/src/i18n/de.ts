@@ -1264,6 +1264,7 @@ export const de: Record<TKey, string> = {
   "claudeDesktop.chooseDefault": "Standard wählen",
   "claudeDesktop.temporaryDefault": "Temporärer Standard",
   "claudeDesktop.laneEmpty": "Modell hier ablegen oder die Verschieben-Steuerung verwenden.",
+  "claudeDesktop.laneNoMatch": "Kein Modell dieser Familie passt zur Suche.",
   "claudeDesktop.available": "Verfügbar",
   "claudeDesktop.unavailable": "Nicht verfügbar",
   "claudeDesktop.contextM": "{n}M Kontext",

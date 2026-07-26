@@ -1286,6 +1286,7 @@ export const en = {
   "claudeDesktop.chooseDefault": "Choose a default",
   "claudeDesktop.temporaryDefault": "Temporary default",
   "claudeDesktop.laneEmpty": "Drop a model here or use its Move control.",
+  "claudeDesktop.laneNoMatch": "No model in this family matches your search.",
   "claudeDesktop.available": "Available",
   "claudeDesktop.unavailable": "Unavailable",
   "claudeDesktop.contextM": "{n}M context",

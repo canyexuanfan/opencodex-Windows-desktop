@@ -1145,6 +1145,7 @@ export const ja: Record<TKey, string> = {
   "claudeDesktop.chooseDefault": "デフォルトを選択",
   "claudeDesktop.temporaryDefault": "一時的なデフォルト",
   "claudeDesktop.laneEmpty": "ここにモデルをドロップするか、移動コントロールを使用してください。",
+  "claudeDesktop.laneNoMatch": "検索に一致するモデルはこのファミリーにありません。",
   "claudeDesktop.available": "利用可能",
   "claudeDesktop.unavailable": "利用不可",
   "claudeDesktop.contextM": "{n}M コンテキスト",

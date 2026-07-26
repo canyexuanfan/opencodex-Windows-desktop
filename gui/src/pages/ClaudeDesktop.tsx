@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { LANE_PAGE, laneView } from "./claude-desktop-lane";
 import { EmptyState, Notice } from "../ui";
 import { useT, type TFn, type TKey } from "../i18n";
 
@@ -14,6 +15,9 @@ interface DesktopProfile {
   version: 1;
   assignments: Record<string, Assignment>;
   defaults: Record<Family, string | null>;
+  /** Written by the apply route; mirrors OcxClaudeDesktopProfile so a round-trip keeps them. */
+  appliedFingerprint?: string;
+  appliedAt?: string;
 }
 
 interface DesktopModel {
@@ -55,6 +59,11 @@ function cloneProfile(profile: DesktopProfile): DesktopProfile {
       Object.entries(profile.assignments).map(([route, assignment]) => [route, { ...assignment }]),
     ),
     defaults: { ...profile.defaults },
+    // The saved-profile clone is compared against `profile` to compute `dirty`. Dropping the
+    // applied-state markers here would make a freshly loaded profile read as unsaved the moment
+    // the server had ever applied it.
+    ...(profile.appliedFingerprint !== undefined ? { appliedFingerprint: profile.appliedFingerprint } : {}),
+    ...(profile.appliedAt !== undefined ? { appliedAt: profile.appliedAt } : {}),
   };
 }
 
@@ -103,6 +112,11 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
   const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [pending, setPending] = useState<PendingAction>(null);
+  // Lane density: search and paging are RENDER-ONLY. modelsByFamily and effectiveDefaults must
+  // keep seeing every model — filtering the source arrays would silently change which model is
+  // the effective default, turning a view filter into a data mutation.
+  const [laneSearch, setLaneSearch] = useState<Record<string, string>>({});
+  const [laneLimit, setLaneLimit] = useState<Record<string, number>>({});
   const importRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -305,7 +319,12 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
       )}
 
       <div className="claude-lanes" aria-label={t("claudeDesktop.assignmentsLabel")}>
-        {FAMILIES.map(family => (
+        {FAMILIES.map(family => {
+          // Render-only narrowing: the lane header, effectiveDefaults and every assignment keep
+          // reading the full list, so filtering can never change what Claude Desktop resolves.
+          const all = modelsByFamily[family];
+          const lane = laneView(all, laneSearch[family] ?? "", laneLimit[family] ?? LANE_PAGE);
+          return (
           <section
             key={family}
             className="claude-lane"
@@ -324,10 +343,29 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
               )}
             </header>
 
+            {lane.showSearch && (
+              <input
+                className="input claude-lane-search"
+                type="search"
+                placeholder={t("models.search")}
+                aria-label={t("models.search")}
+                value={laneSearch[family] ?? ""}
+                onChange={event => {
+                  const next = event.target.value;
+                  setLaneSearch(current => ({ ...current, [family]: next }));
+                  // A new query starts from the first page; otherwise a previously expanded lane
+                  // would hide the very matches the user just searched for.
+                  setLaneLimit(current => ({ ...current, [family]: LANE_PAGE }));
+                }}
+              />
+            )}
+
             <div className="claude-lane-models">
-              {modelsByFamily[family].length === 0 ? (
+              {all.length === 0 ? (
                 <div className="claude-lane-empty">{t("claudeDesktop.laneEmpty")}</div>
-              ) : modelsByFamily[family].map(model => {
+              ) : lane.noMatch ? (
+                <div className="claude-lane-empty">{t("claudeDesktop.laneNoMatch")}</div>
+              ) : lane.shown.map(model => {
                 const assignment = profile.assignments[model.route];
                 const context = formatContextWindow(model.contextWindow, t);
                 const destination = destinations[model.route] ?? "opus";
@@ -393,9 +431,19 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
                   </article>
                 );
               })}
+              {lane.hidden > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm claude-lane-more"
+                  onClick={() => setLaneLimit(current => ({ ...current, [family]: (current[family] ?? LANE_PAGE) + LANE_PAGE }))}
+                >
+                  {t("models.showMore", { n: lane.hidden })}
+                </button>
+              )}
             </div>
           </section>
-        ))}
+          );
+        })}
       </div>
     </>
   );

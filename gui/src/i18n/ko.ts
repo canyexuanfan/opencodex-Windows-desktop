@@ -1284,6 +1284,7 @@ export const ko: Record<TKey, string> = {
   "claudeDesktop.chooseDefault": "기본 모델 선택",
   "claudeDesktop.temporaryDefault": "임시 기본 모델",
   "claudeDesktop.laneEmpty": "모델을 여기에 놓거나 이동 컨트롤을 사용하세요.",
+  "claudeDesktop.laneNoMatch": "검색어와 일치하는 모델이 이 계열에 없습니다.",
   "claudeDesktop.available": "사용 가능",
   "claudeDesktop.unavailable": "사용 불가",
   "claudeDesktop.contextM": "컨텍스트 {n}M",

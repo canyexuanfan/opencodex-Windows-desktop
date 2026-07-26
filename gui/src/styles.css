@@ -1306,6 +1306,10 @@ button.prov-account-row.active { cursor: default; }
 .claude-default-needed { color: var(--amber); font-size: 11.5px; font-weight: 550; }
 .claude-effective-default { display: inline-block; margin-top: 6px; color: var(--amber); font-size: 11px; font-weight: 550; }
 .claude-lane-models { display: flex; flex-direction: column; gap: 9px; min-height: 104px; padding: 10px; }
+/* Lane density controls: a filter that only appears once a lane is long enough to need one,
+   and a pager for the tail. Same idiom as the Models page so the two dense surfaces match. */
+.claude-lane-search { width: calc(100% - 20px); margin: 0 10px; min-height: 32px; font-size: 12.5px; }
+.claude-lane-more { align-self: stretch; justify-content: center; }
 .claude-lane-empty {
   display: grid; place-items: center; min-height: 82px; padding: 12px; border: 1px dashed var(--border);
   border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center;

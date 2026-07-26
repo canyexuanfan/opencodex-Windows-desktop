@@ -1,0 +1,50 @@
+/**
+ * Lane density helpers for the Claude Desktop page.
+ *
+ * These are deliberately pure and rendered-list-only. The page's `modelsByFamily` and
+ * `effectiveDefaults` must keep seeing every model: `effectiveDefaults` picks the first
+ * AVAILABLE member as a family's fallback, so filtering the source arrays would let a search
+ * box silently change which model Claude Desktop resolves. Narrow the rendered slice, never
+ * the data.
+ */
+
+/** Cards rendered per lane before the pager appears. */
+export const LANE_PAGE = 6;
+/** Lanes shorter than this need no filter — showing one would be pure noise. */
+export const LANE_SEARCH_MIN = 4;
+
+export interface LaneModel {
+  route: string;
+  label: string;
+  available: boolean;
+}
+
+export interface LaneView<T extends LaneModel> {
+  /** True total for this family, unaffected by search — what the lane header must report. */
+  total: number;
+  /** Whether the filter input is worth showing at all. */
+  showSearch: boolean;
+  /** Cards to render now. */
+  shown: T[];
+  /** How many matches remain behind the pager. */
+  hidden: number;
+  /** The lane has models, but none match the current query. */
+  noMatch: boolean;
+}
+
+export function laneView<T extends LaneModel>(models: T[], search: string, limit: number): LaneView<T> {
+  const query = search.trim().toLowerCase();
+  const matched = query
+    ? models.filter(model => model.label.toLowerCase().includes(query) || model.route.toLowerCase().includes(query))
+    : models;
+  // Stable partition: available first, server order preserved inside each half.
+  const ordered = matched.toSorted((a, b) => Number(!a.available) - Number(!b.available));
+  const shown = ordered.slice(0, limit);
+  return {
+    total: models.length,
+    showSearch: models.length > LANE_SEARCH_MIN,
+    shown,
+    hidden: ordered.length - shown.length,
+    noMatch: models.length > 0 && ordered.length === 0,
+  };
+}

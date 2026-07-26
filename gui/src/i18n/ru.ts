@@ -1190,6 +1190,7 @@ export const ru: Record<TKey, string> = {
   "claudeDesktop.chooseDefault": "Выберите модель по умолчанию",
   "claudeDesktop.temporaryDefault": "Временная модель по умолчанию",
   "claudeDesktop.laneEmpty": "Перетащите модель сюда или используйте её элемент «Переместить».",
+  "claudeDesktop.laneNoMatch": "В этом семействе нет моделей, соответствующих запросу.",
   "claudeDesktop.available": "Доступно",
   "claudeDesktop.unavailable": "Недоступно",
   "claudeDesktop.contextM": "Контекст {n}M",
