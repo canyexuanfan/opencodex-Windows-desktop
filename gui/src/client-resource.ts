@@ -11,12 +11,12 @@ type Store<T> = {
   listeners: Set<() => void>;
   /** listener → requested poll interval (undefined = no poll from that subscriber) */
   pollByListener: Map<() => void, number | undefined>;
+  /** listener → fetcher owned by that subscriber */
+  fetcherByListener: Map<() => void, (signal: AbortSignal) => Promise<T>>;
   subscriberCount: number;
   pollTimer: ReturnType<typeof setInterval> | null;
   inflight: AbortController | null;
   generation: number;
-  /** Latest fetcher for poll ticks (updated on each subscribe). */
-  fetcher: ((signal: AbortSignal) => Promise<T>) | null;
 };
 
 /**
@@ -34,11 +34,11 @@ function getStore<T>(key: string): Store<T> {
       snapshot: { data: undefined, error: undefined, loading: false },
       listeners: new Set(),
       pollByListener: new Map(),
+      fetcherByListener: new Map(),
       subscriberCount: 0,
       pollTimer: null,
       inflight: null,
       generation: 0,
-      fetcher: null,
     };
     stores.set(key, store);
   }
@@ -56,6 +56,20 @@ function clearPollTimer<T>(store: Store<T>) {
   }
 }
 
+/** Prefer a polling subscriber's fetcher; otherwise any remaining subscriber. */
+function pickFetcher<T>(
+  store: Store<T>,
+): ((signal: AbortSignal) => Promise<T>) | null {
+  for (const [listener, ms] of store.pollByListener) {
+    if (typeof ms === "number" && ms > 0) {
+      const fetcher = store.fetcherByListener.get(listener);
+      if (fetcher) return fetcher;
+    }
+  }
+  for (const fetcher of store.fetcherByListener.values()) return fetcher;
+  return null;
+}
+
 /** Honor the most aggressive (smallest positive) poll interval among subscribers. */
 function recomputePoll<T>(store: Store<T>) {
   clearPollTimer(store);
@@ -65,9 +79,10 @@ function recomputePoll<T>(store: Store<T>) {
       pollMs = pollMs === undefined ? ms : Math.min(pollMs, ms);
     }
   }
-  if (pollMs === undefined || !store.fetcher) return;
-  const fetcher = store.fetcher;
+  if (pollMs === undefined) return;
   store.pollTimer = setInterval(() => {
+    const fetcher = pickFetcher(store);
+    if (!fetcher) return;
     // Skip ticks while a request is in flight so slow polls can finish.
     void runFetch(store, fetcher, { replaceInflight: false });
   }, pollMs);
@@ -112,9 +127,9 @@ function subscribeResource<T>(
   onStoreChange: () => void,
 ) {
   const store = getStore<T>(key);
-  store.fetcher = fetcher;
   store.listeners.add(onStoreChange);
   store.pollByListener.set(onStoreChange, pollMs);
+  store.fetcherByListener.set(onStoreChange, fetcher);
   store.subscriberCount++;
 
   if (store.subscriberCount === 1) {
@@ -125,6 +140,7 @@ function subscribeResource<T>(
   return () => {
     store.listeners.delete(onStoreChange);
     store.pollByListener.delete(onStoreChange);
+    store.fetcherByListener.delete(onStoreChange);
     store.subscriberCount--;
     if (store.subscriberCount === 0) {
       store.inflight?.abort();

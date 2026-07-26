@@ -15,6 +15,9 @@ function needsApiAuth(input: RequestInfo | URL): boolean {
   return !!path && (path.startsWith("/api/") || path.startsWith("/v1/"));
 }
 
+/** Legacy sessionStorage key from pre-memory auth — wiped once on install, never read. */
+const LEGACY_TOKEN_KEY = "opencodex-api-token";
+
 /** In-memory only — never write tokens to web storage (XSS can read sessionStorage/localStorage). */
 let memoryToken: string | null = null;
 
@@ -28,6 +31,14 @@ function storeToken(token: string): void {
 
 function clearToken(): void {
   memoryToken = null;
+}
+
+function clearLegacySessionToken(): void {
+  try {
+    sessionStorage.removeItem(LEGACY_TOKEN_KEY);
+  } catch {
+    /* session storage may be disabled */
+  }
 }
 
 function withToken(input: RequestInfo | URL, init: RequestInit | undefined, token: string): [RequestInfo | URL, RequestInit | undefined] {
@@ -48,6 +59,8 @@ async function promptForToken(): Promise<string | null> {
 export function installApiAuthFetch(): void {
   if (installed) return;
   installed = true;
+  // Drop any leftover XSS-readable token; new tokens stay memory-only (no read/migrate).
+  clearLegacySessionToken();
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     if (!needsApiAuth(input)) return originalFetch(input, init);
@@ -67,4 +80,11 @@ export function installApiAuthFetch(): void {
     if (retry.status === 401) clearToken();
     return retry;
   };
+}
+
+/** Test-only: allow a fresh `installApiAuthFetch()` in the same module instance. */
+export function resetApiAuthFetchForTests(): void {
+  installed = false;
+  memoryToken = null;
+  promptInFlight = null;
 }
