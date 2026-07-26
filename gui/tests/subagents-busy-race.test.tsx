@@ -173,3 +173,46 @@ test("blocks edits while save is busy and reconciles chosen from applied", async
   expect(saveButton().disabled).toBe(false);
   expect(container.textContent).toContain("1/5");
 });
+
+test("rapid Save clicks issue only one PUT until the first settles", async () => {
+  await mount();
+
+  await act(async () => {
+    const btn = saveButton();
+    btn.click();
+    btn.click();
+    btn.click();
+  });
+
+  expect(putCount).toBe(1);
+  expect(saveButton().disabled).toBe(true);
+
+  await act(async () => {
+    releasePut?.();
+    releasePut = null;
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  expect(saveButton().disabled).toBe(false);
+
+  // Re-arm a gated PUT and confirm a later click can fire again.
+  putGate = new Promise<void>((resolve) => {
+    releasePut = resolve;
+  });
+  await act(async () => {
+    saveButton().click();
+  });
+  expect(putCount).toBe(2);
+
+  await act(async () => {
+    releasePut?.();
+    releasePut = null;
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  expect(saveButton().disabled).toBe(false);
+});

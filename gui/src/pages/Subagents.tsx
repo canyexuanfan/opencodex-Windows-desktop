@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readJsonOrThrow } from "../fetch-json";
 import { Notice, EmptyState } from "../ui";
 import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot, IconInfo } from "../icons";
@@ -15,6 +15,8 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  /** Sync guard: state-only `busy` can miss clicks before the disabled re-render commits. */
+  const saveInFlight = useRef(false);
 
   const chosenSet = useMemo(() => new Set(chosen), [chosen]);
 
@@ -58,7 +60,8 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   };
 
   const save = async () => {
-    if (busy) return;
+    if (busy || saveInFlight.current) return;
+    saveInFlight.current = true;
     setBusy(true);
     setStatus("");
     try {
@@ -67,20 +70,15 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ models: chosen }),
       });
-      if (!r.ok) {
-        const d = await r.json().catch(() => ({})) as { error?: string; applied?: string[] };
-        setOk(false);
-        setStatus(d.error || t("sub.saveFailed"));
-        return;
-      }
-      const d = await r.json() as { applied?: string[] };
-      if (d.applied) setChosen(d.applied);
+      const d = await readJsonOrThrow<{ applied?: string[] }>(r, t("sub.saveFailed"));
+      if (d?.applied) setChosen(d.applied);
       setOk(true);
-      setStatus(t("sub.saved", { n: d.applied?.length ?? 0, cmd: "ocx sync" }));
-    } catch {
+      setStatus(t("sub.saved", { n: d?.applied?.length ?? 0, cmd: "ocx sync" }));
+    } catch (error) {
       setOk(false);
-      setStatus(t("sub.networkError"));
+      setStatus(error instanceof Error && error.message ? error.message : t("sub.networkError"));
     } finally {
+      saveInFlight.current = false;
       setBusy(false);
     }
   };
