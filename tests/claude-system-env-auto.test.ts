@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { injectSystemEnv } from "../src/server/system-env";
 import { PROXY_MARKER } from "../src/claude/auth-detect";
 import type { OcxConfig } from "../src/types";
@@ -52,7 +54,7 @@ beforeEach(() => {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_AUTH_TOKEN;
   // An empty profile dir + a HOME with no ~/.claude.json = detection "absent".
-  const empty = fs.mkdtempSync("/tmp/ocx-sysenv-");
+  const empty = fs.mkdtempSync(join(tmpdir(), "ocx-sysenv-"));
   process.env.CLAUDE_CONFIG_DIR = empty;
   process.env.HOME = empty;
 

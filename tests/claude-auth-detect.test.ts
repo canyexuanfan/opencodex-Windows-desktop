@@ -121,8 +121,9 @@ test("claudeConfigDir honours CLAUDE_CONFIG_DIR", () => {
 // `os.homedir()` reads the OS user database and IGNORES a reassigned HOME, so a probe
 // against an isolated profile would silently read the real user's files instead.
 test("claudeConfigDir follows a reassigned HOME instead of the OS user database", () => {
-  expect(claudeConfigDir({ HOME: "/tmp/fake-home" })).toBe("/tmp/fake-home/.claude");
-  expect(claudeConfigDir({ USERPROFILE: "C:\\fake" })).toContain(".claude");
+  // `join` uses the platform separator, so compare against a joined path, not a literal.
+  expect(claudeConfigDir({ HOME: join("/tmp", "fake-home") })).toBe(join("/tmp", "fake-home", ".claude"));
+  expect(claudeConfigDir({ USERPROFILE: join("/tmp", "fake-profile") })).toBe(join("/tmp", "fake-profile", ".claude"));
 });
 
 // Same reason for ~/.claude.json: under CLAUDE_CONFIG_DIR it is that dir's SIBLING.
