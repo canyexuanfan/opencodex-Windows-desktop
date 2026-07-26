@@ -144,16 +144,12 @@ function isEnglishDetectedLanguage(value) {
  * Language written into control-state on the no-translation persist path.
  *
  * Confirmed English only when `sourceComplete` is true (valid parsed
- * `requires_translation: false`). Missing/blank language on incomplete
- * AI/parse/action failures must record `unknown`, never default to English.
+ * `requires_translation: false`). Incomplete AI/parse/action failures always
+ * record `unknown` — never retain a language label that could look confirmed.
  */
 function detectedLanguageForControlPersist({ detectedLanguage, sourceComplete } = {}) {
-  if (sourceComplete === true) {
-    return scrubDetectedLanguage(detectedLanguage || "English");
-  }
-  const raw = String(detectedLanguage ?? "").trim();
-  if (!raw) return "unknown";
-  return scrubDetectedLanguage(raw);
+  if (sourceComplete !== true) return "unknown";
+  return scrubDetectedLanguage(detectedLanguage || "English");
 }
 
 /**

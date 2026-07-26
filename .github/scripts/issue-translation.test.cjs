@@ -330,6 +330,10 @@ describe("bot-owned control state", () => {
       "unknown",
     );
     assert.equal(
+      detectedLanguageForControlPersist({ detectedLanguage: "English", sourceComplete: false }),
+      "unknown",
+    );
+    assert.equal(
       detectedLanguageForControlPersist({ detectedLanguage: "", sourceComplete: true }),
       "English",
     );
