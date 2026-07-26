@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   type ComboItem,
   comboModelId,
@@ -52,25 +52,18 @@ export function DetailPanel({
   const dirty = !draftEquals(draft, baseline);
   const baselineSyncKey = `${baseline.id}:${baseline.alias ?? ""}:${baseline.strategy}:${baseline.stickyLimit}:${baseline.defaultEffort}:${baseline.targets.map((t) => `${t.provider}/${t.model}:${t.weight ?? 1}`).join(",")}`;
 
-  const onDirtyChangeRef = useRef(onDirtyChange);
-  useEffect(() => {
-    onDirtyChangeRef.current = onDirtyChange;
-  }, [onDirtyChange]);
-
-  const updateDraft = useCallback((next: ComboItem | ((prev: ComboItem) => ComboItem)) => {
-    setDraft(prev => {
-      const resolved = typeof next === "function" ? next(prev) : next;
-      onDirtyChangeRef.current(!draftEquals(resolved, baseline));
-      return resolved;
-    });
-  }, [baseline]);
+  const updateDraft = useCallback((updater: (prev: ComboItem) => ComboItem) => {
+    const next = updater(draft);
+    setDraft(next);
+    onDirtyChange(!draftEquals(next, baseline));
+  }, [draft, baseline, onDirtyChange]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDraft(baseline);
       setMsg(null);
       setTab("config");
-      onDirtyChangeRef.current(false);
+      onDirtyChange(false);
     }, 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: key captures baseline payload
