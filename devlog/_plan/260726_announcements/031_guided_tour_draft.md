@@ -66,13 +66,129 @@ must capture the page it started on and restore it on skip or finish. Without
 that, closing the tour leaves the user somewhere they did not choose — a small
 detail that reads as the whole feature being broken.
 
-## Open questions (carried into Interview, not decided here)
+## Decisions taken in Interview (2026-07-26)
 
-1. Highlight scope: sidebar entries only, or in-page elements too? The second
-   requires adding anchors to each target page.
-2. Progression: guide-but-never-block (recommended above), or genuinely gated?
-3. Completion detection: which signals count as "done" per step, and can they be
-   read from data the dashboard already fetches?
+| Question | Answer | Consequence |
+|---|---|---|
+| Stack | **Build it ourselves.** No `react-joyride`/`driver.js`. | Keeps GUI runtime deps at three (`react`, `react-dom`, `@tanstack/react-virtual`) and avoids the dependency-installation security review at `MAINTAINERS.md:22`. We own the geometry: anchor math, scroll-into-view, resize/reflow, focus. |
+| Highlight scope | **In-page elements, not just sidebar entries.** | The expensive branch of the cost table above. Every target page needs a stable, documented anchor; the tour cannot rely on CSS selectors that a refactor silently breaks. |
+| Progression | **Not completion-gated.** Skip per step, plus a skip-the-whole-tour button. | Confirms the "guide, do not trap" position: a user without an API key at step 2 is never stranded. Full-skip must be reachable from every step, including the first. |
+
+### What the in-page choice commits us to
+
+Named here because it is the difference between a two-day feature and a
+two-week one:
+
+- an **anchor registry** — a stable id per highlightable target, owned somewhere,
+  rather than ad-hoc query selectors;
+- **existence handling** — a step whose target is not mounted (wrong page, list
+  not yet loaded, virtualized row off-screen) must degrade to the page-level
+  highlight instead of pointing at nothing;
+- **geometry upkeep** — reposition on scroll, resize and layout shift, because the
+  overlay is not part of normal flow.
+
+### Open questions still outstanding
+
+1. Which specific in-page targets get anchors, and who owns adding them — the
+   tour, or each page?
+2. Completion detection: with no gating, is a per-step "done" check still worth
+   showing, and can it be read from data the dashboard already fetches?
+
+## Contradiction scan — 2026-07-26 (3 read-only lenses)
+
+Run against the decisions above before any code exists. Nine high-severity
+conflicts; the ones that change the shape of the feature are recorded here so the
+release that builds this starts from them instead of rediscovering them.
+
+### H1 — the tour can never fire for anyone who saw the stepper
+
+`031` says the tour reuses `onboarding.lastStep` and must not invent its own
+state. But `030` makes onboarding fire only while no `completedAt`/`skippedAt`
+exists. Every user who completes or skips the shipped stepper is therefore
+permanently ineligible for the tour that replaces it — the "upgrade path from
+stepper to tour" has no state in which it can run.
+
+Unresolved. The next design pass must decide whether the tour is a second entity
+with its own eligibility, or whether shipping it invalidates the stepper's
+terminal stamps.
+
+### H2 — one overlay cannot spotlight both a sidebar entry and page content
+
+`.sidebar` is a stacking context at `z-index: var(--z-overlay)` = 30
+(`gui/src/styles.css:219-226`), while a `document.body` portal sits at
+`--z-modal` = 50 (`:112-115`). A nav button inside the sidebar can never paint
+above a z-50 scrim regardless of its own z-index. The same
+`backdrop-filter`/`transform` containing-block trap that invalidated a fix
+earlier in this session applies again.
+
+Consequence: sidebar highlighting and in-page highlighting are two mechanisms,
+not one parameterised one.
+
+### H3 — the geometry claim is unverifiable by our only test harness
+
+happy-dom (`gui/package.json`) returns `getBoundingClientRect()` of all zeros for
+a styled element; existing tests already stub the prototype
+(`gui/tests/logs-auto-refresh.test.tsx:48-58`). `IntersectionObserver` and
+`ResizeObserver` exist but observe a zero-geometry layout.
+
+So "the spotlight lands on the right element at the right size" — the defining
+success property of an in-page highlight — cannot be asserted by any gate in
+`040_final_gates.md`. Either the feature accepts manual visual verification as its
+acceptance path, or it needs a real-browser harness this repo does not have.
+
+### H4 — virtualized rows have no node to anchor to
+
+Logs and Debug render through `useVirtualizer` (`gui/src/pages/Logs.tsx:305-311`).
+A step targeting a row outside the virtual window has nothing to measure, so the
+tour would have to drive `scrollToIndex` — pushing tour concerns into the
+virtualizer.
+
+### H5 — the router has no address for an in-page target
+
+`navigateToPage(id: Page)` addresses pages only. Sub-page position lives in
+component-local `useState` (`Logs.tsx:260`, `Claude.tsx:9`,
+`ProviderDetails.tsx:87`) that no external caller can set. An in-page target
+needs a `(page, region, element)` address; the repo has only the first term.
+
+### H6 — "skip this step" and "skip the tour" collapse to one field
+
+The user asked for both. `030`'s substrate has `lastStep` (a position) and
+`skippedAt` (a terminal stamp), so declining step 2 and passing step 2 are
+indistinguishable once persisted — which also destroys the "gentle re-offer"
+signal `030` says skipping exists to preserve.
+
+### H7 — no way to know whether the tour worked
+
+There is no telemetry sink anywhere in the product, and `scripts/privacy-scan.ts`
+is structured to keep it that way. `completedAt`/`skippedAt` never leave the
+installation. With an instant full-skip and no gating, a tour everyone dismisses
+in one second is indistinguishable from a successful one.
+
+This is not an argument for adding analytics — it is an argument for deciding, up
+front, that this feature ships on judgment rather than measurement, and saying so.
+
+### Medium findings, recorded without expansion
+
+- Focus ownership collides with the mobile drawer's `inert` + focus-restore
+  (`gui/src/App.tsx:146-155`, `:211-215`); a body-portalled tour panel is not
+  inert while `main` is.
+- Every tour string multiplies by six locales before lint and tests pass; the
+  i18n surface scales with the number of highlighted targets.
+- Measure-then-`setState` in a layout effect is the natural spotlight
+  implementation and is exactly what the react-doctor gate rejects.
+- "Step" is already taken twice in the surface the tour targets:
+  `AddCodexAccountStep` and the provider modal's own `setupStep1/2/3`.
+- `select-position.ts` is a weaker reuse candidate than assumed: it positions a
+  fixed-size menu from a static trigger and relies on portalling, not on tracking
+  an arbitrary target across scroll containers and page transitions.
+- Restoring the user's page fights the hash for ownership of "where the user is",
+  and restoring via `navigateToPage` pushes another history entry rather than
+  undoing one.
+
+### Fixed during this scan
+
+`030`'s test list still encoded the provider-count trigger its own audit had
+killed. Corrected to `baseline.firstRun`.
 
 ## Dependency
 

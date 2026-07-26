@@ -86,8 +86,8 @@ first candidates to cut if five proves too long.
 
 ## TESTS — `gui/tests/onboarding.test.ts` (NEW)
 
-- fires for a first-ever run (baseline stamped, no providers configured);
-- does NOT fire for an existing user upgrading in (baseline present, providers exist);
+- fires for a first-ever run (`baseline.firstRun === true`);
+- does NOT fire for an existing user upgrading in (`baseline.firstRun === false`);
 - does not re-fire after `completedAt` or after `skippedAt`;
 - announcements are suppressed while onboarding is pending, and appear afterwards;
 - back/next/skip move `lastStep` correctly and persist it;
