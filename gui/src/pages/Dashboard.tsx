@@ -13,6 +13,11 @@ import {
 } from "./dashboard-shared";
 import { useDashboardData } from "./use-dashboard-data";
 
+function selectDashboardTab(next: DashboardSection) {
+  // Deliberate navigation: push a history entry so Back/Forward restore the tab.
+  navigateHash(dashboardHashForSection(next));
+}
+
 export default function Dashboard({ apiBase }: { apiBase: string }) {
   const d = useDashboardData(apiBase);
   const {
@@ -52,10 +57,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     { id: "models", label: t("dash.availableModels"), body: modelsSection },
   ];
   const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
-  const selectTab = (next: DashboardSection) => {
-    // Deliberate navigation: push a history entry so Back/Forward restore the tab.
-    navigateHash(dashboardHashForSection(next));
-  };
+  const selectTab = selectDashboardTab;
   const onTabKeyDown = (e: React.KeyboardEvent) => {
     const index = sections.findIndex(s => s.id === selectedSection);
     let next = -1;

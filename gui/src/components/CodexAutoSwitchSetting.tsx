@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 
 export type AutoSwitchFeedback = { tone: "ok" | "err"; message: string } | null;
 

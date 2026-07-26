@@ -4,7 +4,7 @@
  * chrome) arrives in WP080b; detail panels in WP090/091.
  */
 /* eslint-disable react-refresh/only-export-components -- label helpers co-locate with the rail row */
-import { useT, type TFn } from "../../i18n";
+import { useT, type TFn } from "../../i18n/shared";
 import { IconServer, IconStar } from "../../icons";
 import {
   binProviderStatus,

@@ -35,7 +35,7 @@
 .pwi-auth-row-secondary { max-width: 100%; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-label); color: var(--muted); }
 .pwi-auth-open-link  { font-size: var(--text-label); color: var(--accent); text-decoration: underline; cursor: pointer; }
 
-.pwi-auth-list { display: flex; flex-direction: column; gap: 4px; }
+.pwi-auth-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .pwi-auth-row {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 8px; border-radius: var(--radius-xs);

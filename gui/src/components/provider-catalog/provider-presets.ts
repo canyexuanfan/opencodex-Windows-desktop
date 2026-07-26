@@ -68,8 +68,3 @@ export function filterPresets(presets: CatalogPreset[], query: string): CatalogP
   return presets.filter(p => p.label.toLowerCase().includes(q) || p.id.toLowerCase().includes(q));
 }
 
-/** Deterministic catalog order: label A→Z (case-insensitive), id as tiebreak. */
-export function sortPresets(presets: CatalogPreset[]): CatalogPreset[] {
-  return [...presets].sort((a, b) =>
-    a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id));
-}

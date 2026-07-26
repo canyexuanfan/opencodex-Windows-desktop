@@ -4,7 +4,7 @@ import QuotaBars from "./QuotaBars";
 import { CodexTicketBadge } from "./codex-account-pool-helpers";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 import type { CodexAccountModeState } from "../codex-multi-state";
-import type { TFn } from "../i18n";
+import type { TFn } from "../i18n/shared";
 
 export function CodexAccountPoolMainCard({
   t,

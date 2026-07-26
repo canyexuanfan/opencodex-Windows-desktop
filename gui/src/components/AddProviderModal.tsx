@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { IconX } from "../icons";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import { useKeyedClientResource } from "../client-resource";
 import {
   buildProviderPostBody,

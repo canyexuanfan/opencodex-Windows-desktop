@@ -782,7 +782,7 @@ dialog.modal-overlay {
 dialog.modal-overlay::backdrop {
   background: transparent;
 }
-.modal-card { background: color-mix(in oklab, canvas 92%, transparent); backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px; width: 100%; max-width: 520px; box-shadow: 0 8px 32px rgb(0 0 0 / 0.18); max-height: 84vh; overflow-y: auto; }
+.modal-card { position: relative; z-index: 1; background: color-mix(in oklab, canvas 92%, transparent); backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px; width: 100%; max-width: 520px; box-shadow: 0 8px 32px rgb(0 0 0 / 0.18); max-height: 84vh; overflow-y: auto; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .modal-head h3 { font-size: var(--text-subtitle); }
 
@@ -1247,4 +1247,17 @@ button.prov-account-row.active { cursor: default; }
 @keyframes ocx-tooltip-in {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+
+/* Invisible full-area control for native <dialog> backdrop dismiss (a11y). */
+.modal-backdrop-dismiss {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }

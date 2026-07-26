@@ -1,5 +1,5 @@
 import { IconLink } from "../icons";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import type { StatusTone } from "./add-codex-account-reducer";
 
 export function AddCodexAccountWaitingStep({

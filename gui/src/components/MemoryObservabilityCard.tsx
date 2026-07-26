@@ -42,15 +42,35 @@ interface SystemMemory {
  * memory diagnostic must not introduce. The number itself goes through the active locale so it
  * matches every other figure on this dashboard.
  */
+const byteNumberFormats = new Map<string, Intl.NumberFormat>();
+function byteNumberFormat(locale: Locale, fractionDigits: number): Intl.NumberFormat {
+  const key = `${locale}:${fractionDigits}`;
+  let fmt = byteNumberFormats.get(key);
+  if (!fmt) {
+    fmt = new Intl.NumberFormat(locale, {
+      minimumFractionDigits: fractionDigits,
+      maximumFractionDigits: fractionDigits,
+    });
+    byteNumberFormats.set(key, fmt);
+  }
+  return fmt;
+}
+const plainNumberFormats = new Map<string, Intl.NumberFormat>();
+function plainNumberFormat(locale: Locale): Intl.NumberFormat {
+  let fmt = plainNumberFormats.get(locale);
+  if (!fmt) {
+    fmt = new Intl.NumberFormat(locale);
+    plainNumberFormats.set(locale, fmt);
+  }
+  return fmt;
+}
+
 function formatBytes(bytes: number, locale: Locale): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** exp;
-  const formatted = new Intl.NumberFormat(locale, {
-    minimumFractionDigits: exp === 0 ? 0 : 1,
-    maximumFractionDigits: exp === 0 ? 0 : 1,
-  }).format(value);
+  const formatted = byteNumberFormat(locale, exp === 0 ? 0 : 1).format(value);
   return `${formatted} ${units[exp]}`;
 }
 
@@ -95,12 +115,19 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
       if (inFlight) return;
       inFlight = true;
       // Bound each poll so a hung request cannot pin inFlight forever and
-      // starve the unavailable fallback.
+      // starve the unavailable fallback. Prefer AbortSignal.timeout; fall back
+      // to a manual timer when the browser lacks AbortSignal.any/timeout.
       const controller = new AbortController();
       activeController = controller;
-      const timeout = setTimeout(() => controller.abort(), 10_000);
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const signal = typeof AbortSignal !== "undefined" && "any" in AbortSignal && "timeout" in AbortSignal
+        ? AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)])
+        : (() => {
+          timeoutId = setTimeout(() => controller.abort(), 10_000);
+          return controller.signal;
+        })();
       try {
-        const res = await fetch(`${apiBase}/api/system/memory`, { signal: controller.signal });
+        const res = await fetch(`${apiBase}/api/system/memory`, { signal });
         if (!res.ok) throw new Error("memory unavailable");
         const json = await res.json() as SystemMemory;
         if (!cancelled) {
@@ -111,7 +138,7 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
         // Old servers (pre-#314) 404 this route; degrade to a quiet unavailable note.
         if (!cancelled) setUnavailable(true);
       } finally {
-        clearTimeout(timeout);
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
         if (activeController === controller) activeController = null;
         inFlight = false;
       }
@@ -166,7 +193,7 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
         <div className="muted text-label" style={{ margin: "14px 0 6px" }}>{t("dash.mem.store")}</div>
         <div className="muted text-control" style={{ marginBottom: 10 }}>{t("dash.mem.storeHint")}</div>
         <div className="stat-row">
-          <Stat label={t("dash.mem.storeEntries")} value={responseState ? new Intl.NumberFormat(locale).format(responseState.count) : "—"} />
+          <Stat label={t("dash.mem.storeEntries")} value={responseState ? plainNumberFormat(locale).format(responseState.count) : "—"} />
           <Stat label={t("dash.mem.storeTotal")} value={responseState ? formatBytes(responseState.totalBytes, locale) : "—"} />
           <Stat label={t("dash.mem.storeLargest")} value={responseState ? formatBytes(responseState.largestBytes, locale) : "—"} />
           <Stat

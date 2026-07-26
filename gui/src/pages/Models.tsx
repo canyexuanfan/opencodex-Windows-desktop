@@ -591,7 +591,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
     // stay findable in long lists. The sort is stable, so the server order is kept
     // inside each partition, and this does not affect the picker order above
     // (visibility toggles still only filter).
-    const sorted = [...filtered].sort((a, b) => Number(!isVisible(a)) - Number(!isVisible(b)));
+    const sorted = filtered.toSorted((a, b) => Number(!isVisible(a)) - Number(!isVisible(b)));
     const shown = limit[provider] ?? PAGE;
     const visible = sorted.slice(0, shown);
     const remaining = filtered.length - visible.length;
@@ -611,8 +611,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
      };
     return (
       <div key={provider} className="card models-provider-card" style={{ marginBottom: 8, overflow: "hidden" }}>
-       <div onClick={() => toggleCollapse(provider)}
-          className={`row group-head models-provider-head${isCollapsed ? "" : " open"}`}>
+       <div className={`row group-head models-provider-head${isCollapsed ? "" : " open"}`}>
+          <button
+            type="button"
+            className="row models-provider-toggle"
+            onClick={() => toggleCollapse(provider)}
+            aria-expanded={!isCollapsed}
+            style={{ flex: 1, border: 0, background: "transparent", padding: 0, color: "inherit", cursor: "pointer", textAlign: "left" }}
+          >
           <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
           <span className="text-body font-semibold">{provider}</span>
           {isNative && <span className="muted mono text-caption" style={{ padding: "1px 6px", border: "1px solid var(--border)", borderRadius: "var(--radius-pill)" }}>{t("models.nativeGroupLabel")}</span>}
@@ -626,7 +632,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
            </span>
          )}
           <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
-           <div className="row models-provider-actions" onClick={e => e.stopPropagation()}>
+          </button>
+           <div className="row models-provider-actions">
              {!isNative && (
                <button
                  type="button"

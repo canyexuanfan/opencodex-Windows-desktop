@@ -4,7 +4,7 @@
  * short lists fill horizontal space instead of a tall single-column stack.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useT } from "../../i18n";
+import { useT } from "../../i18n/shared";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { filterModels } from "../../provider-workspace/report";
 
@@ -62,12 +62,11 @@ export default function ProviderModels({
 
   useEffect(() => {
     let active = true;
-    void fetch(`${apiBase}/api/custom-models`)
-      .then(response => {
+    const load = async () => {
+      try {
+        const response = await fetch(`${apiBase}/api/custom-models`);
         if (!response.ok) throw new Error();
-        return response.json();
-      })
-      .then((rows: unknown) => {
+        const rows: unknown = await response.json();
         if (!Array.isArray(rows)) throw new Error("Invalid custom model list");
         if (!active) return;
         setCustomModelIds(rows.flatMap(row => {
@@ -78,8 +77,7 @@ export default function ProviderModels({
         setCustomModelsLoadFailed(false);
         setCustomError("");
         setCustomModelsReady(true);
-      })
-      .catch(() => {
+      } catch {
         if (!active) return;
         setCustomModelIds([]);
         // Without this the component stays permanently unable to add a model: `customModelsReady`
@@ -88,7 +86,9 @@ export default function ProviderModels({
         setCustomModelsReady(false);
         setCustomModelsLoadFailed(true);
         setCustomError(t("models.networkError"));
-      });
+      }
+    };
+    void load();
     return () => { active = false; };
   }, [apiBase, item.name, t, customModelsLoadEpoch]);
 
@@ -236,13 +236,13 @@ export default function ProviderModels({
       ) : models.length === 0 ? (
         <p className="muted" role="status">{t("pws.noModelMatch")}</p>
       ) : (
-        <div className="pws-model-list" role="list">
+        <ul className="pws-model-list">
           {visibleModels.map(modelId => {
             const isDefault = modelId === item.defaultModel;
             const isSelected = selectedSet.has(modelId);
             const copied = copiedId === modelId;
             return (
-              <div key={modelId} className="pws-model-chip" role="listitem">
+              <li key={modelId} className="pws-model-chip">
                 <button
                   type="button"
                   className="pws-model-chip-main"
@@ -254,10 +254,10 @@ export default function ProviderModels({
                 </button>
                 {isDefault ? <span className="badge badge-muted pws-model-flag">{t("prov.defaultBadge")}</span> : null}
                 {isSelected ? <span className="badge badge-accent pws-model-flag">{t("pws.selected")}</span> : null}
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
       {capped && (
         <p className="muted text-label" style={{ marginTop: 10 }}>

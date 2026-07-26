@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { TFn } from "../i18n";
+import type { TFn } from "../i18n/shared";
 import type { ProviderUpdatePatch } from "../components/provider-workspace/types";
 import { apiErrorMessage } from "../api-error";
 
@@ -82,7 +82,9 @@ export function useProvidersCrud({
         const data = await res.json().catch(() => ({})) as { error?: string };
         return { ok: false, error: data.error || "Update failed" };
       }
-      fetchConfig();
+      // Await refresh so callers (e.g. notes editor) only leave edit mode once
+      // item.note reflects the saved value.
+      await fetchConfig();
       return { ok: true };
     } catch {
       return { ok: false, error: "Network error" };

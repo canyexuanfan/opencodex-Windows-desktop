@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import CodexAccountPool from "../components/CodexAccountPool";
 import { codexAccountModeState, type CodexAccountModeState } from "../codex-multi-state";
 import { ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } from "../provider-payload";
@@ -34,7 +34,7 @@ export function OpenAiAccountModeBanner({
       {(state === "absent" || state === "disabled") && (
         <div className="row" style={{ alignItems: "center", marginTop: 8 }}>
           <p className="card-sub" style={{ flex: 1, margin: 0 }}>{t("codexAuth.openaiUnavailableDesc")}</p>
-          <button className="btn btn-primary btn-sm" disabled={busy} onClick={onEnable}>
+          <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={onEnable}>
             {busy ? t("codexAuth.enablingOpenai") : t("codexAuth.enableOpenai")}
           </button>
         </div>
@@ -82,7 +82,9 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
 
   const loadMode = useCallback(async () => {
     try {
-      const config = await fetch(`${apiBase}/api/config`).then(r => r.json());
+      const res = await fetch(`${apiBase}/api/config`);
+      if (!res.ok) throw new Error(String(res.status));
+      const config = await res.json();
       const providerState = openAiAccountProviderState(openaiProviderFromConfig(config));
       if (providerState === "absent" || providerState === "disabled" || providerState === "invalid") {
         setBannerState(providerState);
@@ -93,7 +95,10 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       const mode = codexAccountModeState(config);
       setBannerState(mode);
       setAccountModeState(mode);
-    } catch { /* banner degrades to no badge */ }
+    } catch {
+      setBannerState(null);
+      setAccountModeState(null);
+    }
   }, [apiBase]);
 
   useEffect(() => {

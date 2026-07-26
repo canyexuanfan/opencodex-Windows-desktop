@@ -1,4 +1,4 @@
-import type { TFn } from "../i18n";
+import type { TFn } from "../i18n/shared";
 import { IconTicket } from "../icons";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 import { daysUntil, formatCreditDate } from "./codex-account-pool-utils";

@@ -81,10 +81,8 @@ export function AddComboModal({
       className="modal-overlay"
       aria-labelledby="cwi-add-title"
       onCancel={handleCancel}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) requestClose();
-      }}
     >
+      <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={requestClose} />
       <div className="modal-card" style={{ width: "min(560px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
           <h3 id="cwi-add-title" style={{ margin: 0 }}>{t("cws.addTitle")}</h3>

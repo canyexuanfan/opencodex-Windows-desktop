@@ -1,4 +1,4 @@
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 import { IconAlert, IconX } from "../icons";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 import type { CodexAccountModeState } from "../codex-multi-state";

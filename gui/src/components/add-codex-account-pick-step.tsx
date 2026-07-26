@@ -1,5 +1,5 @@
 import { IconGlobe } from "../icons";
-import { useT } from "../i18n";
+import { useT } from "../i18n/shared";
 
 export function AddCodexAccountPickStep({
   id,

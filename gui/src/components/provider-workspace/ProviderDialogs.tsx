@@ -2,7 +2,7 @@
  * ProviderDialogs — confirmation and warning dialogs for the workspace
  * Settings tab (WP091): remove provider, unsaved-leave, JSON save-before-leave.
  */
-import { useT } from "../../i18n";
+import { useT } from "../../i18n/shared";
 
 export function RemoveConfirmDialog({
   providerName, onConfirm, onCancel,

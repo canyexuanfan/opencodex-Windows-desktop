@@ -5,7 +5,7 @@ import type {
   AddCodexAccountUiAction,
   ManualCodeState,
 } from "./add-codex-account-reducer";
-import type { TFn } from "../i18n";
+import type { TFn } from "../i18n/shared";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 
 export function useAddCodexAccountOAuth({

@@ -1,4 +1,4 @@
-import type { TFn } from "../i18n";
+import type { TFn } from "../i18n/shared";
 import { readJsonIfOk } from "../fetch-json";
 
 function remainingCreditsToast(

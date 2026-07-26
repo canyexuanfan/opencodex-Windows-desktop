@@ -1,5 +1,5 @@
-import type { Locale, TFn } from "../i18n";
-import { useI18n } from "../i18n";
+import type { Locale, TFn } from "../i18n/shared";
+import { useI18n } from "../i18n/shared";
 import { IconAlert } from "../icons";
 import { type AccountQuota, normalizeQuotaForPlan } from "../codex-quota-utils";
 
@@ -148,17 +148,17 @@ export default function QuotaBars({ quota, plan, threshold, t, className, layout
   if (layout === "stacked") {
     return (
       <div className={`quota-stacked${className ? ` ${className}` : ""}`}>
-        {rows.map((row, index) => (
-          <StackedQuotaRow key={`${row.limitLabel}-${index}`} row={row} threshold={threshold} t={t} locale={locale} />
+        {rows.map(row => (
+          <StackedQuotaRow key={row.limitLabel} row={row} threshold={threshold} t={t} locale={locale} />
         ))}
       </div>
     );
   }
   return (
     <div className={`quota-compact${className ? ` ${className}` : ""}`}>
-      {rows.map((row, index) => (
+      {rows.map(row => (
         <QuotaRow
-          key={`${row.label}-${index}`}
+          key={row.label}
           label={row.label}
           percent={row.percent}
           resetAt={row.resetAt}

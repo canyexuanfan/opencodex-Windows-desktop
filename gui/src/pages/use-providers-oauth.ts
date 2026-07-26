@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { TFn } from "../i18n";
+import type { TFn } from "../i18n/shared";
 import { readJsonIfOk } from "../fetch-json";
 import type { OAuthAccount, OAuthStatus } from "./providers-shared";
 import { oauthLabel } from "./providers-shared";

@@ -67,7 +67,7 @@ export function useProviderAccountPools(deps: {
 
   const fetchKeyPools = useCallback(async (providers: string[]) => {
     const entries = await Promise.all(providers.map(async name => {
-      const data = await fetch(`${apiBase}/api/providers/keys?name=${encodeURIComponent(name)}`).then(r => r.json()).catch(() => null) as { keys?: ApiKeyEntry[] } | null;
+      const data = await fetch(`${apiBase}/api/providers/keys?name=${encodeURIComponent(name)}`).then(async r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); }).catch(() => null) as { keys?: ApiKeyEntry[] } | null;
       return [name, data?.keys ?? []] as const;
     }));
     setKeyPools(Object.fromEntries(entries));
@@ -125,18 +125,18 @@ export function useProviderAccountPools(deps: {
     if (!key) return false;
     try {
       const res = await fetch(`${apiBase}/api/providers/keys`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: provider, key }) });
-      if (res.ok) {
-        notify(t("prov.keyAdded", { name: provider }), true);
-        setAddingKeyFor(null);
-        await Promise.all([
-          fetchKeyPools(Object.keys(keyPools).includes(provider) ? Object.keys(keyPools) : [...Object.keys(keyPools), provider]),
-          fetchConfig(), fetchProviderQuotas(true),
-        ]);
-        return true;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        notify(data.error || t("prov.keyAddFail"), false);
+        return false;
       }
-      const data = await res.json().catch(() => ({})) as { error?: string };
-      notify(data.error || t("prov.keyAddFail"), false);
-      return false;
+      notify(t("prov.keyAdded", { name: provider }), true);
+      setAddingKeyFor(null);
+      await Promise.all([
+        fetchKeyPools(Object.keys(keyPools).includes(provider) ? Object.keys(keyPools) : [...Object.keys(keyPools), provider]),
+        fetchConfig(), fetchProviderQuotas(true),
+      ]);
+      return true;
     } catch {
       notify(t("prov.keyAddFail"), false);
       return false;

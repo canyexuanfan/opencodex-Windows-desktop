@@ -645,7 +645,7 @@ function LogDetailDialog({
                   <th className="num">{t("logs.col.estimatedCost")}</th>
                   <th>{t("logs.detail.attempt.reason")}</th>
                 </tr></thead>
-                <tbody>{[...detail.attempts].sort((a, b) => a.ordinal - b.ordinal).map(attempt => {
+                <tbody>{detail.attempts.toSorted((a, b) => a.ordinal - b.ordinal).map(attempt => {
                   const attemptCost = attempt.displayMetrics?.cost;
                   const matched = attemptCost?.kind === "value" ? attemptCost.estimate.price : undefined;
                   const reason = attempt.errorCode

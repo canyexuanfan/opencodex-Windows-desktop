@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { TFn } from "../i18n";
+import type { TFn } from "../i18n/shared";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import type { OAuthStatus, ProviderQuotaReport, ProvidersConfig } from "./providers-shared";
 

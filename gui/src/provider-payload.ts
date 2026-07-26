@@ -114,7 +114,7 @@ function buildReservedProviderPostBody(
   if (!preset.provider) throw new Error(`Missing canonical provider seed for ${preset.id}`);
   return {
     name: preset.id,
-    provider: JSON.parse(JSON.stringify(preset.provider)) as ProviderPayload,
+    provider: structuredClone(preset.provider) as ProviderPayload,
   };
 }
 
