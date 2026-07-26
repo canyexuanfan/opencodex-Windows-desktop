@@ -688,10 +688,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             message,
             ...(typeof err?.code === "string" ? { code: err.code } : {}),
             ...(typeof err?.type === "string" ? { errorType: err.type } : {}),
-            ...(typeof err?.status === "number" && Number.isInteger(err.status)
-              ? { status: err.status }
-              : isCyberPolicyCode(err?.code)
-                ? { status: 400 }
+            ...(isCyberPolicyCode(err?.code)
+              ? { status: 400 }
+              : typeof err?.status === "number" && Number.isInteger(err.status)
+                ? { status: err.status }
                 : {}),
           };
           return "terminate";
@@ -807,10 +807,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         const message = typeof upstreamError.message === "string" ? upstreamError.message : "upstream error";
         const code = typeof upstreamError.code === "string" ? upstreamError.code : undefined;
         const errorType = typeof upstreamError.type === "string" ? upstreamError.type : undefined;
-        const status = typeof upstreamError.status === "number" && Number.isInteger(upstreamError.status)
-          ? upstreamError.status
-          : isCyberPolicyCode(code)
-            ? 400
+        const status = isCyberPolicyCode(code)
+          ? 400
+          : typeof upstreamError.status === "number" && Number.isInteger(upstreamError.status)
+            ? upstreamError.status
             : undefined;
         return [{
           type: "error",

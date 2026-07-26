@@ -248,6 +248,53 @@ describe("cyber_policy error fidelity", () => {
     });
   });
 
+  test("openai-chat cyber_policy forces HTTP 400 even when upstream status is 5xx", async () => {
+    const adapter = createOpenAIChatAdapter({
+      adapter: "openai-chat",
+      baseUrl: "https://example.test/v1",
+      apiKey: "key",
+    });
+    const streamEvents = await collectAdapter(adapter.parseStream(new Response([
+      `data: ${JSON.stringify({
+        error: { message: OPENAI_CYBER_MESSAGE, code: CYBER_POLICY_ERROR_CODE, status: 502 },
+      })}\n\n`,
+    ].join(""))));
+    expect(streamEvents.find(e => e.type === "error")).toMatchObject({
+      code: CYBER_POLICY_ERROR_CODE,
+      status: 400,
+    });
+
+    const nonStream = await adapter.parseResponse!(new Response(JSON.stringify({
+      error: { message: OPENAI_CYBER_MESSAGE, code: CYBER_POLICY_ERROR_CODE, status: 500 },
+    })));
+    expect(nonStream).toEqual([{
+      type: "error",
+      message: OPENAI_CYBER_MESSAGE,
+      code: CYBER_POLICY_ERROR_CODE,
+      status: 400,
+    }]);
+  });
+
+  test("chat completions preserves structured model_not_found through classify remaps", async () => {
+    // Mirror the non-OK rewrite path: classifyError would otherwise overwrite a structured code.
+    const classified = classifyError(404, "invalid_request_error", "No such model");
+    expect(classified.code).not.toBe("model_not_found");
+    const body = chatCompletionsErrorBody(404, "No such model", "invalid_request_error", "model_not_found");
+    expect(body).toEqual({
+      error: {
+        message: "No such model",
+        type: "invalid_request_error",
+        param: null,
+        code: "model_not_found",
+      },
+    });
+    const replay = chatCompletionsErrorResponse(502, "No such model", "server_error", "model_not_found");
+    expect(replay.status).toBe(502);
+    await expect(replay.json()).resolves.toMatchObject({
+      error: { code: "model_not_found" },
+    });
+  });
+
   test("httpStatusFromTerminalError and combo failover treat cyber as non-retryable 400", () => {
     expect(httpStatusFromTerminalError({
       type: "invalid_request_error",

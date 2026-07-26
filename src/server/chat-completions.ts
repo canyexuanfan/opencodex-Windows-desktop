@@ -189,6 +189,10 @@ export async function handleChatCompletions(
     if (isCyberPolicyCode(upstreamCode)) {
       classified.code = CYBER_POLICY_ERROR_CODE;
       classified.type = "invalid_request_error";
+    } else if (upstreamCode === "model_not_found") {
+      // Structured model_not_found must win over classifyError's generic remaps.
+      classified.code = "model_not_found";
+      classified.type = "invalid_request_error";
     } else if (upstreamCode !== undefined && upstreamCode !== null && classified.code == null) {
       classified.code = upstreamCode;
     }
@@ -263,6 +267,10 @@ export async function handleChatCompletions(
     const classified = classifyError(502, error?.type ?? "server_error", message);
     if (isCyberPolicyCode(error?.code)) {
       classified.code = CYBER_POLICY_ERROR_CODE;
+      classified.type = "invalid_request_error";
+    } else if (error?.code === "model_not_found") {
+      // Same deliberate preserve as the non-OK path: structured code beats generic classify.
+      classified.code = "model_not_found";
       classified.type = "invalid_request_error";
     }
     return chatCompletionsErrorResponse(
