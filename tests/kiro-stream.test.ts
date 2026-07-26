@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createKiroAdapter } from "../src/adapters/kiro";
+import { createKiroAdapter, isRetryableKiroStreamCatchError } from "../src/adapters/kiro";
 import {
   KIRO_COMPLETION_RETRY_MESSAGE,
   KIRO_COMPLETION_TOOL_NAME,
@@ -1016,6 +1016,57 @@ describe("kiro adapter — parseStream", () => {
     });
     const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(broken)));
     expect(events.some(event => event.type === "text_delta")).toBe(true);
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      code: "kiro_stream_protocol_error",
+      retryable: false,
+    });
+  });
+
+  test("eventstream truncated EOF with zero output is retryable (#520)", async () => {
+    expect(isRetryableKiroStreamCatchError(
+      new Error("eventstream: truncated message at end of stream"),
+      false,
+    )).toBe(true);
+    expect(isRetryableKiroStreamCatchError(
+      new Error("eventstream: truncated message at end of stream"),
+      true,
+    )).toBe(false);
+
+    const broken = new ReadableStream<Uint8Array>({
+      pull() {
+        throw new Error("eventstream: truncated message at end of stream");
+      },
+    });
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(broken)));
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      code: "kiro_stream_protocol_error",
+      retryable: true,
+      usage: expect.objectContaining({ outputTokens: 0 }),
+    });
+  });
+
+  test("fallback socket close after first-attempt progress stays non-retryable (#520)", async () => {
+    globalThis.fetch = (async () => {
+      const broken = new ReadableStream<Uint8Array>({
+        pull() {
+          throw new Error("The socket connection was closed unexpectedly");
+        },
+      });
+      return new Response(broken);
+    }) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
+
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "I am checking." }),
+      eventFrame({ conversationId: "returned-conversation-fallback-close" }),
+    ))));
+
+    expect(events.some(event =>
+      event.type === "text_delta" && event.text === "I am checking.",
+    )).toBe(true);
     expect(events.at(-1)).toMatchObject({
       type: "error",
       code: "kiro_stream_protocol_error",

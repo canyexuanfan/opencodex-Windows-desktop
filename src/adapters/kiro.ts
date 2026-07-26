@@ -607,7 +607,9 @@ export function isRetryableKiroStreamCatchError(err: unknown, emittedOutput: boo
   if (emittedOutput) return false;
   const message = err instanceof Error ? err.message : String(err);
   if (/^invalid Kiro\b/i.test(message)) return false;
-  return /socket connection was closed|connection(?: was)? closed unexpectedly|ECONNRESET|EPIPE|UND_ERR_|fetch failed|decoder failed|premature close|other side closed|unexpected EOF|network connection lost|terminated/i
+  // Include Smithy/eventstream truncation (`eventstream: truncated message at end of stream`):
+  // partial frame + clean EOF with zero output is the same replay-safe class as a socket close.
+  return /socket connection was closed|connection(?: was)? closed unexpectedly|ECONNRESET|EPIPE|UND_ERR_|fetch failed|decoder failed|premature close|other side closed|unexpected EOF|network connection lost|terminated|truncated message at end of stream|eventstream:\s*truncated/i
     .test(message);
 }
 
@@ -642,6 +644,8 @@ async function* parseKiroAttempt(
   conversationId: string | undefined,
   previousAssistantText?: string,
   contextInputEstimate?: number,
+  /** True when an earlier attempt already flushed visible content to the client (#520). */
+  priorEmittedOutput = false,
 ): AsyncGenerator<AdapterEvent, KiroAttemptResult> {
   // `required` mode holds staged commentary here so a terminal END_TURN can relabel it as the final
   // answer instead of paying for another inference request. Anything the inner parser leaves behind
@@ -659,6 +663,7 @@ async function* parseKiroAttempt(
     deferred,
     previousAssistantText,
     contextInputEstimate,
+    priorEmittedOutput,
   );
   let next = await attempt.next();
   while (!next.done) {
@@ -680,6 +685,7 @@ async function* parseKiroAttemptEvents(
   deferred: AdapterEvent[],
   previousAssistantText?: string,
   contextInputEstimate?: number,
+  priorEmittedOutput = false,
 ): AsyncGenerator<AdapterEvent, KiroAttemptResult> {
   const emptyResult = (): KiroAttemptResult => ({ assistantText: "", sawReasoning: false });
   if (!response.body) {
@@ -1210,10 +1216,12 @@ async function* parseKiroAttemptEvents(
   } catch (err) {
     // Mid-stream socket closes after response.created / heartbeats only must stay retryable:
     // nothing was relayed to the client, so a string-body replay is safe (see #519 / cursor's
-    // emittedOutput gate). Once any assistant text, reasoning, tool, or deferred content exists,
-    // fail closed — the client may already have partial output. Protocol parse throws stay
-    // non-retryable even with zero output.
-    const emittedOutput = sawText
+    // emittedOutput gate). Once any assistant text, reasoning, tool, or deferred content exists
+    // — including content flushed by a prior attempt before a bounded fallback — fail closed;
+    // the client may already have partial output. Protocol parse throws stay non-retryable even
+    // with zero output.
+    const emittedOutput = priorEmittedOutput
+      || sawText
       || sawReasoning
       || sawRealTool
       || assistantText.length > 0
@@ -1325,6 +1333,9 @@ export async function* parseKiroStream(
     fallback.conversationId,
     firstResult.assistantText,
     fallback.contextInputEstimate,
+    // First attempt already flushed deferred progress to the client before this fallback.
+    // A zero-output transport failure here must stay non-retryable to avoid duplicating that text.
+    Boolean(firstResult.assistantText.trim()) || firstResult.sawReasoning,
   );
   let secondNext = await second.next();
   while (!secondNext.done) {
