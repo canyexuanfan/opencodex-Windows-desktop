@@ -3,7 +3,24 @@ import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
 import { resolveAutoContext, type AutoContextMode } from "../claude/context-windows";
+import { PROXY_MARKER, defaultAuthDetectDeps, detectClaudeAuth } from "../claude/auth-detect";
+import { resolveClaudeAuthMode } from "../claude/auth-mode";
 import type { OcxConfig } from "../types";
+
+/**
+ * Does the opencodex dummy marker belong in the system environment?
+ *
+ * Keyed on the SAME resolver `ocx claude` uses, so an auto config with no Claude auth
+ * also reaches plain `claude` launches — before this, auto-absent users got nothing
+ * from auto-connect and the feature looked broken for exactly the people it helps
+ * (devlog 260726_claude_auth_auto/035).
+ *
+ * NOTE this is a SNAPSHOT: the file only changes when this runs (proxy start, `ocx
+ * ensure`, or a settings save). `ocx claude` re-resolves live on every launch.
+ */
+function systemEnvMarkerMode(config: OcxConfig): "proxy" | "subscription" {
+  return resolveClaudeAuthMode(config, detectClaudeAuth(defaultAuthDetectDeps())).markerMode;
+}
 
 // ---------------------------------------------------------------------------
 // Shell-hook env file: written on inject, sourced by the shell hook in .zshrc.
@@ -31,8 +48,8 @@ function writeShellEnvFile(port: number, config: OcxConfig, modelEnv: Record<str
     `[ -z "\${${name}+x}" ] && export ${name}=${shellValue(value)}`;
   if (config.apiKeys?.length) {
     lines.push(`export ANTHROPIC_AUTH_TOKEN=${shellValue(config.apiKeys[0].key)}`);
-  } else if (config.claudeCode?.authMode === "proxy") {
-    lines.push(conditional("ANTHROPIC_AUTH_TOKEN", "opencodex-proxy"));
+  } else if (systemEnvMarkerMode(config) === "proxy") {
+    lines.push(conditional("ANTHROPIC_AUTH_TOKEN", PROXY_MARKER));
   }
   // Model slots (default + tiers + legacy small-fast) with [1m] applied (devlog 260712 B2).
   if (modelEnv.ANTHROPIC_MODEL) {
@@ -240,11 +257,11 @@ export async function injectSystemEnv(port: number, config: OcxConfig): Promise<
     inject("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1");
     if (config.apiKeys?.length) {
       inject("ANTHROPIC_AUTH_TOKEN", config.apiKeys[0].key);
-    } else if (config.claudeCode?.authMode === "proxy" && launchctlGetenv("ANTHROPIC_AUTH_TOKEN") === undefined) {
-      inject("ANTHROPIC_AUTH_TOKEN", "opencodex-proxy");
-    } else if (config.claudeCode?.authMode !== "proxy"
+    } else if (systemEnvMarkerMode(config) === "proxy" && launchctlGetenv("ANTHROPIC_AUTH_TOKEN") === undefined) {
+      inject("ANTHROPIC_AUTH_TOKEN", PROXY_MARKER);
+    } else if (systemEnvMarkerMode(config) !== "proxy"
       && injectedKeys.includes("ANTHROPIC_AUTH_TOKEN")
-      && launchctlGetenv("ANTHROPIC_AUTH_TOKEN") === "opencodex-proxy") {
+      && launchctlGetenv("ANTHROPIC_AUTH_TOKEN") === PROXY_MARKER) {
       // Subscription switch-back (devlog 260720_claude_authmode_persist): remove ONLY
       // the opencodex-owned dummy token so a launchd-started Claude regains its own
       // claude.ai OAuth. User-set tokens (not tracked in injectedKeys, or carrying a

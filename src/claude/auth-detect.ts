@@ -78,7 +78,17 @@ export interface AuthDetectResult {
 /** Claude Code config dir: `CLAUDE_CONFIG_DIR` override, else `~/.claude`. */
 export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.CLAUDE_CONFIG_DIR?.trim();
-  return explicit ? explicit : join(homedir(), ".claude");
+  return explicit ? explicit : join(homeDir(env), ".claude");
+}
+
+/**
+ * `os.homedir()` reads the OS user database and ignores a reassigned `HOME`, which
+ * makes an isolated-profile probe silently read the real user's files. Prefer the
+ * environment the caller handed us; fall back to the OS value.
+ */
+function homeDir(env: NodeJS.ProcessEnv): string {
+  const fromEnv = env.HOME?.trim() || env.USERPROFILE?.trim();
+  return fromEnv ? fromEnv : homedir();
 }
 
 function detectClaudeJson(deps: AuthDetectDeps): AuthSourceResult {
@@ -166,7 +176,10 @@ export function defaultAuthDetectDeps(env: NodeJS.ProcessEnv = process.env): Aut
   const configDir = claudeConfigDir(env);
   return {
     readClaudeJson() {
-      const path = join(homedir(), ".claude.json");
+      // Sibling of the config dir when CLAUDE_CONFIG_DIR is set, else ~/.claude.json.
+      const path = env.CLAUDE_CONFIG_DIR?.trim()
+        ? join(configDir, "..", ".claude.json")
+        : join(homeDir(env), ".claude.json");
       if (!existsSync(path)) return undefined;
       // A parse failure propagates so the caller records `unknown`, not `absent`.
       return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;

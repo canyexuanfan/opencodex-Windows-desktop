@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   PROXY_MARKER,
   claudeConfigDir,
@@ -111,6 +114,24 @@ test("claudeConfigDir honours CLAUDE_CONFIG_DIR", () => {
   expect(claudeConfigDir({ CLAUDE_CONFIG_DIR: "/tmp/alt-profile" })).toBe("/tmp/alt-profile");
   expect(claudeConfigDir({ CLAUDE_CONFIG_DIR: "   " })).toContain(".claude");
   expect(claudeConfigDir({})).toContain(".claude");
+});
+
+// `os.homedir()` reads the OS user database and IGNORES a reassigned HOME, so a probe
+// against an isolated profile would silently read the real user's files instead.
+test("claudeConfigDir follows a reassigned HOME instead of the OS user database", () => {
+  expect(claudeConfigDir({ HOME: "/tmp/fake-home" })).toBe("/tmp/fake-home/.claude");
+  expect(claudeConfigDir({ USERPROFILE: "C:\\fake" })).toContain(".claude");
+});
+
+// Same reason for ~/.claude.json: under CLAUDE_CONFIG_DIR it is that dir's SIBLING.
+test("the default claude.json reader stays inside the overridden profile", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ocx-authdetect-"));
+  writeFileSync(join(dir, ".claude.json"), JSON.stringify({
+    oauthAccount: { emailAddress: "someone@example.com" },
+  }));
+  const deps = defaultAuthDetectDeps({ CLAUDE_CONFIG_DIR: join(dir, ".claude") });
+  expect(deps.readClaudeJson()?.oauthAccount).toBeDefined();
+  expect(defaultAuthDetectDeps({ HOME: dir }).readClaudeJson()?.oauthAccount).toBeDefined();
 });
 
 // The keychain probe must be metadata-only: -g and -w print password material.
