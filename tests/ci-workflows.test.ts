@@ -204,9 +204,13 @@ describe("GitHub Actions hardening", () => {
       .split("- name: Persist comment translation control state")[0]!;
     const guardAt = commentApply.indexOf("isPreparedSourceStillCurrent({");
     const updateAt = commentApply.indexOf("updateComment");
+    const missingAt = commentApply.indexOf("missingRequiredTranslationFields({");
     expect(guardAt).toBeGreaterThanOrEqual(0);
     expect(updateAt).toBeGreaterThanOrEqual(0);
+    expect(missingAt).toBeGreaterThanOrEqual(0);
+    expect(missingAt).toBeLessThan(updateAt);
     expect(guardAt).toBeLessThan(updateAt);
+    expect(commentApply).toContain("omitted required field(s)");
 
     // Job-scoped permissions only (no top-level issues:write; no actions:write).
     expect(workflow).toMatch(
@@ -298,7 +302,12 @@ describe("GitHub Actions hardening", () => {
     expect(applyScript).toContain("Translation control state not persisted");
     expect(applyScript).toContain("sourceComplete");
     expect(applyScript).toContain("source remains retryable");
+    expect(applyScript).toContain("missingRequiredTranslationFields");
+    expect(applyScript).toContain("omitted required field(s)");
     expect(applyScript).toMatch(/sourceComplete,\s*\n\s*\}/);
+    expect(applyScript.indexOf("missingRequiredTranslationFields({")).toBeLessThan(
+      applyScript.indexOf("github.rest.issues.update("),
+    );
 
     const parseStep = workflow
       .split("- name: Parse AI response")[1]!
@@ -332,6 +341,13 @@ describe("GitHub Actions hardening", () => {
       .split("- name: Persist comment translation control state")[0]!;
     expect(commentApplyStep).toContain("sourceComplete");
     expect(commentApplyStep).toContain("source remains retryable");
+    expect(commentApplyStep).toContain("missingRequiredTranslationFields");
+    expect(commentApplyStep).toContain("omitted required field(s)");
+    const commentMissingAt = commentApplyStep.indexOf("missingRequiredTranslationFields({");
+    const commentUpdateAt = commentApplyStep.indexOf("updateComment");
+    expect(commentMissingAt).toBeGreaterThanOrEqual(0);
+    expect(commentUpdateAt).toBeGreaterThanOrEqual(0);
+    expect(commentMissingAt).toBeLessThan(commentUpdateAt);
 
     // Helper contract: marker-only English comments; replace-before-cleanup; body non-authoritative.
     const helperSrc = await readText(".github/scripts/issue-translation.cjs");

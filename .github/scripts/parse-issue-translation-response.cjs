@@ -111,11 +111,21 @@ function main() {
     return;
   }
 
-  if (parsed.requires_translation !== true) {
+  // Only boolean false is a completed no-translation decision. Strings/null/numbers
+  // must not mark the source complete (remain retryable after cooldown).
+  if (parsed.requires_translation === false) {
     const lang = scrubLine(parsed.detected_language || "English", 64) || "English";
     writeOutput("requires_translation", "false");
     writeOutput("detected_language", lang);
     writeOutput("source_complete", "true");
+    return;
+  }
+
+  if (parsed.requires_translation !== true) {
+    console.warn("::warning::Issue translation AI response had an invalid requires_translation value.");
+    writeOutput("requires_translation", "false");
+    writeOutput("detected_language", "unknown");
+    writeOutput("source_complete", "false");
     return;
   }
 

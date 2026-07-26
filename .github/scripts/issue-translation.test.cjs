@@ -30,6 +30,7 @@ const {
   shouldSkipCommentTranslation,
   shouldTranslateComment,
   buildTranslatedCommentBody,
+  missingRequiredTranslationFields,
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   isEnglishDetectedLanguage,
@@ -1353,6 +1354,65 @@ describe("issue comment translation", () => {
         liveBody: koreanComment + " edited",
       }),
       false,
+    );
+  });
+});
+
+describe("missingRequiredTranslationFields", () => {
+  it("requires translated title/body only when the matching source field is nonempty", () => {
+    assert.deepEqual(
+      missingRequiredTranslationFields({
+        sourceTitle: "Deutscher Titel",
+        sourceBody: "langer Text",
+        translatedTitle: "",
+        translatedBody: "English",
+      }),
+      ["title"],
+    );
+    assert.deepEqual(
+      missingRequiredTranslationFields({
+        sourceTitle: "Deutscher Titel",
+        sourceBody: "langer Text",
+        translatedTitle: "English title",
+        translatedBody: "",
+      }),
+      ["body"],
+    );
+    assert.deepEqual(
+      missingRequiredTranslationFields({
+        sourceTitle: "Deutscher Titel",
+        sourceBody: "langer Text",
+        translatedTitle: "",
+        translatedBody: "",
+      }),
+      ["title", "body"],
+    );
+    assert.deepEqual(
+      missingRequiredTranslationFields({
+        sourceTitle: "Deutscher Titel",
+        sourceBody: "",
+        translatedTitle: "English title",
+        translatedBody: "",
+      }),
+      [],
+    );
+    assert.deepEqual(
+      missingRequiredTranslationFields({
+        sourceTitle: "",
+        sourceBody: "관련: #508 (같은 Kiro adapter의 컨텍스트 토큰 보고 문제).",
+        translatedTitle: "",
+        translatedBody: "Related: #508",
+      }),
+      [],
+    );
+    assert.deepEqual(
+      missingRequiredTranslationFields({
+        sourceTitle: "",
+        sourceBody: "관련: #508 (같은 Kiro adapter의 컨텍스트 토큰 보고 문제).",
+        translatedTitle: "",
+        translatedBody: "",
+      }),
+      ["body"],
     );
   });
 });

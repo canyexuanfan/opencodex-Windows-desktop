@@ -208,13 +208,48 @@ describe("parse-issue-translation-response process", () => {
     assert.equal(parsed.source_complete, "false");
   });
 
-  it("treats string requires_translation as false path", () => {
+  it("treats only boolean false as a completed no-translation decision", () => {
+    const { status, output } = runParser(JSON.stringify({
+      requires_translation: false,
+      detected_language: "English",
+      translated_title: "",
+      translated_body: "",
+    }));
+    assert.equal(status, 0);
+    const parsed = parseOutputs(output);
+    assert.equal(parsed.requires_translation, "false");
+    assert.equal(parsed.detected_language, "English");
+    assert.equal(parsed.source_complete, "true");
+  });
+
+  it("keeps invalid requires_translation values incomplete and retryable", () => {
+    for (const value of ["true", "false", 1, 0, null, undefined, {}, []]) {
+      const payload = {
+        detected_language: "German",
+        translated_title: "T",
+        translated_body: "Body",
+      };
+      if (value !== undefined) payload.requires_translation = value;
+      const { status, output } = runParser(JSON.stringify(payload));
+      assert.equal(status, 0, String(value));
+      const parsed = parseOutputs(output);
+      assert.equal(parsed.requires_translation, "false", String(value));
+      assert.equal(parsed.detected_language, "unknown", String(value));
+      assert.equal(parsed.source_complete, "false", String(value));
+      assert.equal(parsed.translated_title, undefined, String(value));
+    }
+  });
+
+  it("treats string requires_translation as incomplete, not English-complete", () => {
     const { status, output } = runParser(JSON.stringify({
       requires_translation: "true",
       detected_language: "German",
     }));
     assert.equal(status, 0);
-    assert.equal(parseOutputs(output).requires_translation, "false");
+    const parsed = parseOutputs(output);
+    assert.equal(parsed.requires_translation, "false");
+    assert.equal(parsed.detected_language, "unknown");
+    assert.equal(parsed.source_complete, "false");
   });
 
   it("supports multiline bodies and shell-looking content", () => {

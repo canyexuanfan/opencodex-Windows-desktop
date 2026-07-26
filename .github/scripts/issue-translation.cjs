@@ -704,6 +704,27 @@ function buildTranslatedCommentBody(sourceBody, translatedBody, detectedLanguage
   return appendTranslationBlock(sourceBody, translationText);
 }
 
+/**
+ * Required translated fields for a successful apply.
+ * Nonempty source title/body each require a nonempty translated counterpart.
+ * @returns {string[]} missing field names (`title` / `body`)
+ */
+function missingRequiredTranslationFields({
+  sourceTitle = "",
+  sourceBody = "",
+  translatedTitle = "",
+  translatedBody = "",
+} = {}) {
+  const missing = [];
+  if (String(sourceTitle || "").trim() && !String(translatedTitle || "").trim()) {
+    missing.push("title");
+  }
+  if (String(sourceBody || "").trim() && !String(translatedBody || "").trim()) {
+    missing.push("body");
+  }
+  return missing;
+}
+
 function shouldTranslate({
   sourceTitle = "",
   sourceBody,
@@ -834,6 +855,7 @@ module.exports = {
   shouldSkipCommentTranslation,
   shouldTranslateComment,
   buildTranslatedCommentBody,
+  missingRequiredTranslationFields,
   shouldTranslate,
   completedHashFor,
   migrateSourceHashes,

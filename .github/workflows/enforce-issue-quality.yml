@@ -205,6 +205,7 @@ jobs:
               stripTranslationBlock,
               stripOrphanBodyControlState,
               isPreparedSourceStillCurrent,
+              missingRequiredTranslationFields,
               BOT_LOGIN,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
 
@@ -248,8 +249,16 @@ jobs:
 
             let sourceComplete = false;
             try {
-              if (!translatedTitle && !translatedBody) {
-                core.warning("Model requested translation but returned an empty title and body; leaving source retryable.");
+              const missingFields = missingRequiredTranslationFields({
+                sourceTitle: preparedTitle,
+                sourceBody,
+                translatedTitle,
+                translatedBody,
+              });
+              if (missingFields.length) {
+                core.warning(
+                  `Model requested translation but omitted required field(s): ${missingFields.join(", ")}; leaving source retryable.`,
+                );
                 return;
               }
 
@@ -525,6 +534,7 @@ jobs:
               scrubDetectedLanguage,
               stripTranslationBlock,
               isPreparedSourceStillCurrent,
+              missingRequiredTranslationFields,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
 
             const { owner, repo } = context.repo;
@@ -542,8 +552,16 @@ jobs:
 
             let sourceComplete = false;
             try {
-              if (!translatedBody) {
-                core.warning("Model requested comment translation but returned an empty body; leaving source retryable.");
+              const missingFields = missingRequiredTranslationFields({
+                sourceTitle: "",
+                sourceBody,
+                translatedTitle: "",
+                translatedBody,
+              });
+              if (missingFields.length) {
+                core.warning(
+                  `Model requested comment translation but omitted required field(s): ${missingFields.join(", ")}; leaving source retryable.`,
+                );
                 return;
               }
 
