@@ -20,6 +20,8 @@ import {
 import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
 import { startMemoryWatchdog } from "./memory-watchdog";
+import { maybeRunDueStorageCleanupPolicy } from "../storage/policy";
+import { startStorageCleanupScheduler } from "../storage/policy-scheduler";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
@@ -288,6 +290,9 @@ export function startServer(port?: number) {
   // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
   // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
   startMemoryWatchdog();
+  // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
+  // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
+  startStorageCleanupScheduler();
 
   const listenPort = port ?? config.port ?? 10100;
   setCorsOrigin(listenPort);
@@ -875,6 +880,11 @@ export function startServer(port?: number) {
       .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
       .catch(() => {});
   }
+
+  // Opt-in storage policy (default OFF). Never blocks listen; errors are swallowed.
+  queueMicrotask(() => {
+    maybeRunDueStorageCleanupPolicy("startup");
+  });
 
   return server;
 }

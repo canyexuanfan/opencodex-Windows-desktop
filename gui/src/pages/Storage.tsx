@@ -377,6 +377,352 @@ function ArchivedCleanupPanel({
   );
 }
 
+const GB = 1024 ** 3;
+
+interface CleanupPolicy {
+  enabled: boolean;
+  trigger: { archivedBytesOver: number };
+  target: { reduceToBytes?: number; removeOldestPercent?: number };
+  schedule: "startup" | "daily" | "weekly" | "manual";
+  mode: "quarantine" | "permanent";
+  lastRun?: { at: number; freedBytes: number; removed: number };
+  nextRun?: number;
+}
+
+function AutoCleanupPolicyPanel({
+  apiBase,
+  locale,
+  t,
+  onDone,
+}: {
+  apiBase: string;
+  locale: Locale;
+  t: TFn;
+  onDone: () => void;
+}) {
+  const [policy, setPolicy] = useState<CleanupPolicy | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [targetMode, setTargetMode] = useState<"percent" | "reduce">("percent");
+  const [percent, setPercent] = useState(25);
+  const [reduceGb, setReduceGb] = useState(4);
+  const [thresholdGb, setThresholdGb] = useState(5);
+
+  const loadPolicy = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/storage/cleanup-policy`, { signal });
+      if (!res.ok) throw new Error("load_failed");
+      const json = await res.json() as CleanupPolicy;
+      if (signal?.aborted) return;
+      setPolicy(json);
+      setThresholdGb(Math.max(0, Math.round((json.trigger.archivedBytesOver / GB) * 100) / 100));
+      if (json.target.reduceToBytes !== undefined) {
+        setTargetMode("reduce");
+        setReduceGb(Math.max(0, Math.round((json.target.reduceToBytes / GB) * 100) / 100));
+      } else {
+        setTargetMode("percent");
+        setPercent(Math.min(100, Math.max(1, Math.floor(json.target.removeOldestPercent ?? 25))));
+      }
+    } catch {
+      if (signal?.aborted) return;
+      setPolicy(null);
+      setError(t("storage.policy.loadFailed"));
+    } finally {
+      if (!signal?.aborted) setLoading(false);
+    }
+  }, [apiBase, t]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadPolicy(controller.signal);
+    return () => controller.abort();
+  }, [loadPolicy]);
+
+  const buildBody = (): CleanupPolicy | null => {
+    if (!policy) return null;
+    const threshold = Number(thresholdGb);
+    if (!Number.isFinite(threshold) || threshold < 0) return null;
+    const body: CleanupPolicy = {
+      enabled: policy.enabled,
+      trigger: { archivedBytesOver: Math.floor(threshold * GB) },
+      target: targetMode === "reduce"
+        ? { reduceToBytes: Math.floor(Math.max(0, Number(reduceGb) || 0) * GB) }
+        : { removeOldestPercent: Math.min(100, Math.max(1, Math.floor(Number(percent) || 1))) },
+      schedule: policy.schedule,
+      mode: policy.mode,
+    };
+    return body;
+  };
+
+  const savePolicy = async (patch?: Partial<CleanupPolicy>) => {
+    const base = buildBody();
+    if (!base) {
+      setError(t("storage.policy.invalid"));
+      return;
+    }
+    const body = { ...base, ...patch };
+    setSaving(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const res = await fetch(`${apiBase}/api/storage/cleanup-policy`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json() as { ok?: boolean; policy?: CleanupPolicy; error?: string };
+      if (!res.ok || !json.policy) throw new Error(json.error ?? t("storage.policy.saveFailed"));
+      setPolicy(json.policy);
+      setStatus(t("storage.policy.saved"));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("storage.policy.saveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runNow = async () => {
+    setRunning(true);
+    setError(null);
+    setStatus(null);
+    try {
+      // Persist current form values before running.
+      const base = buildBody();
+      if (base) {
+        const saveRes = await fetch(`${apiBase}/api/storage/cleanup-policy`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(base),
+        });
+        const saved = await saveRes.json() as { policy?: CleanupPolicy; error?: string };
+        if (!saveRes.ok || !saved.policy) throw new Error(saved.error ?? t("storage.policy.saveFailed"));
+        setPolicy(saved.policy);
+      }
+      const res = await fetch(`${apiBase}/api/storage/cleanup-policy/run`, { method: "POST" });
+      const json = await res.json() as {
+        ok?: boolean;
+        skipped?: string;
+        deferred?: boolean;
+        error?: string;
+        removed?: number;
+        freedBytes?: number;
+        mode?: string;
+        policy?: CleanupPolicy;
+      };
+      if (json.policy) setPolicy(json.policy);
+      if (json.skipped === "disabled") {
+        setStatus(t("storage.policy.skippedDisabled"));
+      } else if (json.skipped === "under_threshold") {
+        setStatus(t("storage.policy.skippedUnder"));
+      } else if (json.skipped === "nothing_selected") {
+        setStatus(t("storage.policy.skippedEmpty"));
+      } else if (!res.ok || json.deferred || json.error === "codex_busy") {
+        setError(t("storage.cleanup.err.codex_busy"));
+      } else if (!res.ok || !json.ok) {
+        setError(t("storage.policy.runFailed"));
+      } else {
+        setStatus(
+          json.mode === "permanent"
+            ? t("storage.policy.donePermanent", {
+              count: String(json.removed ?? 0),
+              size: formatBytes(json.freedBytes ?? 0, locale),
+            })
+            : t("storage.policy.doneQuarantine", {
+              count: String(json.removed ?? 0),
+              size: formatBytes(json.freedBytes ?? 0, locale),
+            }),
+        );
+        onDone();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("storage.policy.runFailed"));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const formatWhen = (ms: number | undefined) =>
+    ms === undefined ? t("storage.policy.never") : new Date(ms).toLocaleString(locale);
+
+  if (loading && !policy) {
+    return (
+      <section className="panel" style={{ marginTop: 16 }} aria-labelledby="storage-policy-title">
+        <h3 id="storage-policy-title" className="panel-title">{t("storage.policy.title")}</h3>
+        <p className="muted">{t("storage.policy.loading")}</p>
+      </section>
+    );
+  }
+
+  if (!policy) {
+    return (
+      <section className="panel" style={{ marginTop: 16 }} aria-labelledby="storage-policy-title">
+        <h3 id="storage-policy-title" className="panel-title">{t("storage.policy.title")}</h3>
+        {error && <p className="err" role="alert">{error}</p>}
+      </section>
+    );
+  }
+
+  return (
+    <section className="panel" style={{ marginTop: 16 }} aria-labelledby="storage-policy-title">
+      <h3 id="storage-policy-title" className="panel-title">{t("storage.policy.title")}</h3>
+      <p className="muted" style={{ marginTop: 4 }}>{t("storage.policy.help")}</p>
+
+      <label className="row" style={{ marginTop: 12, gap: 8, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={policy.enabled}
+          disabled={saving || running}
+          onChange={e => {
+            const enabled = e.target.checked;
+            setPolicy({ ...policy, enabled });
+            void savePolicy({ enabled });
+          }}
+        />
+        <span>{t("storage.policy.enabled")}</span>
+      </label>
+      <p className="muted" style={{ marginTop: 4, fontSize: "var(--text-sm)" }}>{t("storage.policy.enabledHint")}</p>
+
+      <div style={{ display: "grid", gap: 12, marginTop: 16, maxWidth: 420 }}>
+        <label>
+          <span className="muted">{t("storage.policy.threshold")}</span>
+          <input
+            type="number"
+            min={0}
+            step={0.1}
+            value={thresholdGb}
+            disabled={saving || running}
+            onChange={e => setThresholdGb(Number(e.target.value))}
+            onBlur={() => void savePolicy()}
+            style={{ display: "block", marginTop: 4, width: "100%" }}
+          />
+        </label>
+
+        <fieldset style={{ border: "none", padding: 0, margin: 0 }}>
+          <legend className="muted">{t("storage.policy.target")}</legend>
+          <label className="row" style={{ gap: 8, alignItems: "center", marginTop: 4 }}>
+            <input
+              type="radio"
+              name="storage-policy-target"
+              checked={targetMode === "percent"}
+              disabled={saving || running}
+              onChange={() => setTargetMode("percent")}
+            />
+            <span>{t("storage.policy.targetPercent")}</span>
+          </label>
+          {targetMode === "percent" && (
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={percent}
+              disabled={saving || running}
+              onChange={e => setPercent(Number(e.target.value))}
+              onBlur={() => void savePolicy()}
+              style={{ display: "block", marginTop: 4, width: "100%" }}
+            />
+          )}
+          <label className="row" style={{ gap: 8, alignItems: "center", marginTop: 8 }}>
+            <input
+              type="radio"
+              name="storage-policy-target"
+              checked={targetMode === "reduce"}
+              disabled={saving || running}
+              onChange={() => setTargetMode("reduce")}
+            />
+            <span>{t("storage.policy.targetReduce")}</span>
+          </label>
+          {targetMode === "reduce" && (
+            <input
+              type="number"
+              min={0}
+              step={0.1}
+              value={reduceGb}
+              disabled={saving || running}
+              onChange={e => setReduceGb(Number(e.target.value))}
+              onBlur={() => void savePolicy()}
+              style={{ display: "block", marginTop: 4, width: "100%" }}
+            />
+          )}
+        </fieldset>
+
+        <label>
+          <span className="muted">{t("storage.policy.schedule")}</span>
+          <select
+            value={policy.schedule}
+            disabled={saving || running}
+            onChange={e => {
+              const schedule = e.target.value as CleanupPolicy["schedule"];
+              setPolicy({ ...policy, schedule });
+              void savePolicy({ schedule });
+            }}
+            style={{ display: "block", marginTop: 4, width: "100%" }}
+          >
+            <option value="manual">{t("storage.policy.schedule.manual")}</option>
+            <option value="startup">{t("storage.policy.schedule.startup")}</option>
+            <option value="daily">{t("storage.policy.schedule.daily")}</option>
+            <option value="weekly">{t("storage.policy.schedule.weekly")}</option>
+          </select>
+        </label>
+
+        <label>
+          <span className="muted">{t("storage.policy.mode")}</span>
+          <select
+            value={policy.mode}
+            disabled={saving || running}
+            onChange={e => {
+              const mode = e.target.value as CleanupPolicy["mode"];
+              setPolicy({ ...policy, mode });
+              void savePolicy({ mode });
+            }}
+            style={{ display: "block", marginTop: 4, width: "100%" }}
+          >
+            <option value="quarantine">{t("storage.policy.mode.quarantine")}</option>
+            <option value="permanent">{t("storage.policy.mode.permanent")}</option>
+          </select>
+        </label>
+        {policy.mode === "permanent" && (
+          <p className="err" role="status">{t("storage.policy.permanentWarn")}</p>
+        )}
+      </div>
+
+      <div className="usage-cards" style={{ marginTop: 16 }}>
+        <div className="stat">
+          <div className="muted">{t("storage.policy.lastRun")}</div>
+          <div className="stat-value" style={{ fontSize: "var(--text-body)" }}>{formatWhen(policy.lastRun?.at)}</div>
+          {policy.lastRun && (
+            <div className="muted" style={{ marginTop: 4 }}>
+              {t("storage.policy.lastRunDetail", {
+                count: String(policy.lastRun.removed),
+                size: formatBytes(policy.lastRun.freedBytes, locale),
+              })}
+            </div>
+          )}
+        </div>
+        <div className="stat">
+          <div className="muted">{t("storage.policy.nextRun")}</div>
+          <div className="stat-value" style={{ fontSize: "var(--text-body)" }}>{formatWhen(policy.nextRun)}</div>
+        </div>
+      </div>
+
+      <div className="row" style={{ marginTop: 16, gap: 8, flexWrap: "wrap" }}>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={saving || running} onClick={() => void savePolicy()}>
+          {t("storage.policy.save")}
+        </button>
+        <button type="button" className="btn btn-sm" disabled={saving || running || !policy.enabled} onClick={() => void runNow()}>
+          {running ? t("storage.policy.running") : t("storage.policy.runNow")}
+        </button>
+      </div>
+      {status && <p className="muted" style={{ marginTop: 8 }} role="status">{status}</p>}
+      {error && <p className="err" style={{ marginTop: 8 }} role="alert">{error}</p>}
+    </section>
+  );
+}
+
 export default function Storage({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [data, setData] = useState<StorageReport | null>(null);
@@ -431,7 +777,15 @@ export default function Storage({ apiBase }: { apiBase: string }) {
       ) : failed ? (
         <EmptyState title={t("storage.error")} />
       ) : empty ? (
-        <EmptyState title={t("storage.empty")} />
+        <>
+          <EmptyState title={t("storage.empty")} />
+          <AutoCleanupPolicyPanel
+            apiBase={apiBase}
+            locale={locale}
+            t={t}
+            onDone={() => void fetchStorage()}
+          />
+        </>
       ) : (
         <>
           <div className="usage-cards">
@@ -441,6 +795,12 @@ export default function Storage({ apiBase }: { apiBase: string }) {
           </div>
           <BucketsTable buckets={data!.buckets} locale={locale} t={t} />
           <LargestFilesPanel buckets={data!.buckets} locale={locale} t={t} />
+          <AutoCleanupPolicyPanel
+            apiBase={apiBase}
+            locale={locale}
+            t={t}
+            onDone={() => void fetchStorage()}
+          />
           {archivedCount > 0 && (
             <ArchivedCleanupPanel
               apiBase={apiBase}

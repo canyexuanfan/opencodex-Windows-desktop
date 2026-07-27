@@ -1,0 +1,374 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { StorageCleanupPolicy } from "../src/types";
+import {
+  BUSY_DEFER_MS,
+  computeNextRun,
+  defaultStorageCleanupPolicy,
+  isPolicyDue,
+  normalizeStorageCleanupPolicy,
+  percentForAtLeastCount,
+  runStorageCleanupPolicy,
+  selectReduceToBytes,
+  selectPolicyPreview,
+} from "../src/storage/policy";
+import {
+  listArchivedCandidates,
+  type CleanupResult,
+  type ExecuteCleanupOptions,
+} from "../src/storage/cleanup";
+
+const OLD = new Date("2026-01-01T00:00:00Z");
+const MID = new Date("2026-02-01T00:00:00Z");
+const NEW = new Date("2026-03-01T00:00:00Z");
+
+let home = "";
+
+afterEach(() => {
+  if (home) {
+    try { rmSync(home, { recursive: true, force: true }); } catch { /* */ }
+    home = "";
+  }
+});
+
+function seedHome(sizes: Array<{ name: string; bytes: number; when: Date }>): string {
+  home = mkdtempSync(join(tmpdir(), "ocx-storage-policy-"));
+  mkdirSync(join(home, "archived_sessions"));
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, archived INTEGER)`);
+  for (const entry of sizes) {
+    const path = join(home, "archived_sessions", entry.name);
+    writeFileSync(path, "x".repeat(entry.bytes));
+    utimesSync(path, entry.when, entry.when);
+    db.exec(
+      `INSERT INTO threads VALUES ('${entry.name}','archived_sessions/${entry.name}',1)`,
+    );
+  }
+  db.close();
+  return home;
+}
+
+function policy(partial: Partial<StorageCleanupPolicy> & Pick<StorageCleanupPolicy, "enabled" | "trigger" | "target">): StorageCleanupPolicy {
+  return normalizeStorageCleanupPolicy({
+    schedule: "manual",
+    mode: "quarantine",
+    ...partial,
+  });
+}
+
+describe("normalizeStorageCleanupPolicy", () => {
+  test("defaults enabled false and never enables implicitly", () => {
+    const d = defaultStorageCleanupPolicy();
+    expect(d.enabled).toBe(false);
+    expect(normalizeStorageCleanupPolicy(undefined).enabled).toBe(false);
+    expect(normalizeStorageCleanupPolicy({}).enabled).toBe(false);
+    expect(normalizeStorageCleanupPolicy({ enabled: "yes" }).enabled).toBe(false);
+    expect(normalizeStorageCleanupPolicy({ enabled: true }).enabled).toBe(true);
+  });
+
+  test("permanent mode only when explicitly set", () => {
+    expect(normalizeStorageCleanupPolicy({ mode: "permanent" }).mode).toBe("permanent");
+    expect(normalizeStorageCleanupPolicy({ mode: "nope" }).mode).toBe("quarantine");
+    expect(normalizeStorageCleanupPolicy({}).mode).toBe("quarantine");
+  });
+});
+
+describe("selection helpers", () => {
+  test("selectReduceToBytes takes oldest until under target", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+      { name: "rollout-mid.jsonl", bytes: 100, when: MID },
+      { name: "rollout-new.jsonl", bytes: 100, when: NEW },
+    ]);
+    const all = listArchivedCandidates(dir);
+    expect(all.map(c => c.relPath)).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+      "archived_sessions/rollout-mid.jsonl",
+      "archived_sessions/rollout-new.jsonl",
+    ]);
+    const selected = selectReduceToBytes(all, 150);
+    expect(selected.map(c => c.relPath)).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+      "archived_sessions/rollout-mid.jsonl",
+    ]);
+    expect(selected.reduce((s, c) => s + c.bytes, 0)).toBe(200);
+  });
+
+  test("percentForAtLeastCount maps to selectOldestPercent counts", () => {
+    expect(percentForAtLeastCount(4, 0)).toBe(0);
+    expect(percentForAtLeastCount(4, 4)).toBe(100);
+    // selectOldestPercent uses max(1, floor(n*pct/100)), so pct=1 already yields 1 of 4
+    expect(percentForAtLeastCount(4, 1)).toBe(1);
+    expect(percentForAtLeastCount(4, 2)).toBe(50);
+  });
+
+  test("selectPolicyPreview honors removeOldestPercent", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 50, when: OLD },
+      { name: "rollout-new.jsonl", bytes: 50, when: NEW },
+    ]);
+    const preview = selectPolicyPreview(
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 0 },
+        target: { removeOldestPercent: 50 },
+      }),
+      dir,
+    );
+    expect(preview.count).toBe(1);
+    expect(preview.percent).toBe(50);
+    expect(preview.bytes).toBe(50);
+  });
+
+  test("selectPolicyPreview honors reduceToBytes via oldest files", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+      { name: "rollout-mid.jsonl", bytes: 100, when: MID },
+      { name: "rollout-new.jsonl", bytes: 100, when: NEW },
+    ]);
+    const preview = selectPolicyPreview(
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 0 },
+        target: { reduceToBytes: 100 },
+      }),
+      dir,
+    );
+    // Need to free 200 → two oldest → percent covering ≥2 of 3
+    expect(preview.count).toBeGreaterThanOrEqual(2);
+    expect(preview.bytes).toBeGreaterThanOrEqual(200);
+  });
+});
+
+describe("schedule helpers", () => {
+  test("computeNextRun for daily/weekly; manual/startup unset", () => {
+    const now = 1_700_000_000_000;
+    expect(computeNextRun("daily", now)).toBe(now + 24 * 60 * 60 * 1000);
+    expect(computeNextRun("weekly", now)).toBe(now + 7 * 24 * 60 * 60 * 1000);
+    expect(computeNextRun("manual", now)).toBeUndefined();
+    expect(computeNextRun("startup", now)).toBeUndefined();
+  });
+
+  test("isPolicyDue respects schedule and reason", () => {
+    const base = policy({
+      enabled: true,
+      trigger: { archivedBytesOver: 0 },
+      target: { removeOldestPercent: 10 },
+      schedule: "manual",
+    });
+    expect(isPolicyDue(base, 1, "manual")).toBe(true);
+    expect(isPolicyDue(base, 1, "startup")).toBe(false);
+    expect(isPolicyDue({ ...base, schedule: "startup" }, 1, "startup")).toBe(true);
+    expect(isPolicyDue({ ...base, schedule: "startup" }, 1, "schedule")).toBe(false);
+    expect(isPolicyDue({ ...base, schedule: "daily", nextRun: 100 }, 50, "schedule")).toBe(false);
+    expect(isPolicyDue({ ...base, schedule: "daily", nextRun: 100 }, 100, "schedule")).toBe(true);
+    expect(isPolicyDue({ ...base, enabled: false, schedule: "daily" }, 1, "manual")).toBe(false);
+  });
+});
+
+describe("runStorageCleanupPolicy", () => {
+  test("disabled never calls execute", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 1000, when: OLD },
+    ]);
+    let calls = 0;
+    const stored: StorageCleanupPolicy[] = [
+      policy({
+        enabled: false,
+        trigger: { archivedBytesOver: 0 },
+        target: { removeOldestPercent: 100 },
+      }),
+    ];
+    const result = runStorageCleanupPolicy({
+      reason: "manual",
+      force: true,
+      codexHome: dir,
+      loadPolicy: () => stored[0]!,
+      savePolicy: p => { stored[0] = p; },
+      execute: () => {
+        calls += 1;
+        return { ok: true, mode: "quarantine", percent: 100, count: 1, bytes: 1000, removedPaths: [] };
+      },
+    });
+    expect(result.skipped).toBe("disabled");
+    expect(calls).toBe(0);
+    expect(existsSync(join(dir, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("under threshold no-ops without execute", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+    ]);
+    let calls = 0;
+    const stored: StorageCleanupPolicy[] = [
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 10_000 },
+        target: { removeOldestPercent: 100 },
+        schedule: "daily",
+      }),
+    ];
+    const now = 5_000;
+    const result = runStorageCleanupPolicy({
+      reason: "schedule",
+      force: true,
+      now,
+      codexHome: dir,
+      loadPolicy: () => stored[0]!,
+      savePolicy: p => { stored[0] = p; },
+      execute: () => {
+        calls += 1;
+        return { ok: true, mode: "quarantine", percent: 100, count: 0, bytes: 0, removedPaths: [] };
+      },
+    });
+    expect(result.skipped).toBe("under_threshold");
+    expect(calls).toBe(0);
+    expect(stored[0]!.nextRun).toBe(computeNextRun("daily", now));
+    expect(existsSync(join(dir, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("over threshold runs quarantine mode and records lastRun", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+      { name: "rollout-new.jsonl", bytes: 100, when: NEW },
+    ]);
+    const stored: StorageCleanupPolicy[] = [
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 50 },
+        target: { removeOldestPercent: 50 },
+        mode: "quarantine",
+      }),
+    ];
+    let seen: ExecuteCleanupOptions | undefined;
+    const result = runStorageCleanupPolicy({
+      reason: "manual",
+      force: true,
+      now: 9_000,
+      codexHome: dir,
+      loadPolicy: () => stored[0]!,
+      savePolicy: p => { stored[0] = p; },
+      execute: (opts): CleanupResult => {
+        seen = opts;
+        return {
+          ok: true,
+          mode: opts.mode,
+          percent: opts.percent,
+          count: 1,
+          bytes: 100,
+          removedPaths: ["archived_sessions/rollout-old.jsonl"],
+          trashDir: ".trash/9000",
+        };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(seen?.mode).toBe("quarantine");
+    expect(seen?.percent).toBe(50);
+    expect(result.freedBytes).toBe(100);
+    expect(result.removed).toBe(1);
+    expect(stored[0]!.lastRun).toEqual({ at: 9_000, freedBytes: 100, removed: 1 });
+  });
+
+  test("permanent mode is passed through when set on policy", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+    ]);
+    const stored: StorageCleanupPolicy[] = [
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 0 },
+        target: { removeOldestPercent: 100 },
+        mode: "permanent",
+      }),
+    ];
+    let mode: string | undefined;
+    runStorageCleanupPolicy({
+      reason: "manual",
+      force: true,
+      codexHome: dir,
+      loadPolicy: () => stored[0]!,
+      savePolicy: p => { stored[0] = p; },
+      execute: (opts): CleanupResult => {
+        mode = opts.mode;
+        return { ok: true, mode: "permanent", percent: 100, count: 1, bytes: 100, removedPaths: [] };
+      },
+    });
+    expect(mode).toBe("permanent");
+  });
+
+  test("codex_busy defers nextRun without lastRun mutation", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+    ]);
+    const stored: StorageCleanupPolicy[] = [
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 0 },
+        target: { removeOldestPercent: 100 },
+        schedule: "daily",
+        lastRun: { at: 1, freedBytes: 10, removed: 1 },
+      }),
+    ];
+    const now = 20_000;
+    const result = runStorageCleanupPolicy({
+      reason: "manual",
+      force: true,
+      now,
+      codexHome: dir,
+      loadPolicy: () => stored[0]!,
+      savePolicy: p => { stored[0] = p; },
+      execute: (): CleanupResult => ({
+        ok: false,
+        mode: "quarantine",
+        percent: 100,
+        count: 0,
+        bytes: 0,
+        removedPaths: [],
+        error: "codex_busy",
+      }),
+    });
+    expect(result.deferred).toBe("codex_busy");
+    expect(stored[0]!.nextRun).toBe(now + BUSY_DEFER_MS);
+    expect(stored[0]!.lastRun).toEqual({ at: 1, freedBytes: 10, removed: 1 });
+    expect(existsSync(join(dir, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("end-to-end quarantine execute against fixture home", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+      { name: "rollout-new.jsonl", bytes: 200, when: NEW },
+    ]);
+    const stored: StorageCleanupPolicy[] = [
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 50 },
+        target: { removeOldestPercent: 50 },
+        mode: "quarantine",
+      }),
+    ];
+    const result = runStorageCleanupPolicy({
+      reason: "manual",
+      force: true,
+      now: 42_000,
+      codexHome: dir,
+      loadPolicy: () => stored[0]!,
+      savePolicy: p => { stored[0] = p; },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.removed).toBe(1);
+    expect(result.freedBytes).toBe(100);
+    expect(existsSync(join(dir, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(dir, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
+    expect(existsSync(join(dir, ".trash"))).toBe(true);
+  });
+});

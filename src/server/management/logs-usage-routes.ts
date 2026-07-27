@@ -36,6 +36,13 @@ import { resolveCodexHomeDir } from "../../codex/home";
 import { scanStorage } from "../../storage/scanner";
 import { executeArchivedCleanup, pickWireCleanupTestHooks, previewArchivedCleanup, type CleanupMode } from "../../storage/cleanup";
 import {
+  normalizeStorageCleanupPolicy,
+  parseStorageCleanupPolicyInput,
+  runStorageCleanupPolicy,
+  writeStorageCleanupPolicyToConfig,
+} from "../../storage/policy";
+import type { StorageCleanupPolicy } from "../../types";
+import {
   currentUsageLogRevision,
   readUsageSnapshotForManagement,
   usageLogRevisionKey,
@@ -323,6 +330,73 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         error: "cleanup_failed",
         message: "Cleanup failed.",
       }, 500);
+    }
+  }
+
+  if (url.pathname === "/api/storage/cleanup-policy" && req.method === "GET") {
+    const policy = normalizeStorageCleanupPolicy(config.storageCleanupPolicy);
+    return jsonResponse(policy);
+  }
+
+  if (url.pathname === "/api/storage/cleanup-policy" && req.method === "PUT") {
+    let raw: unknown;
+    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    const previous = normalizeStorageCleanupPolicy(config.storageCleanupPolicy);
+    const parsed = parseStorageCleanupPolicyInput(raw, previous);
+    if (!parsed.ok) return jsonResponse({ error: parsed.error }, 400);
+    // Never enable implicitly: if client omitted enabled, keep previous (default false).
+    const body = raw as Record<string, unknown>;
+    if (body.enabled === undefined) parsed.policy.enabled = previous.enabled;
+    const saved = writeStorageCleanupPolicyToConfig(parsed.policy);
+    config.storageCleanupPolicy = saved;
+    return jsonResponse({ ok: true, policy: saved });
+  }
+
+  if (url.pathname === "/api/storage/cleanup-policy/run" && req.method === "POST") {
+    try {
+      const result = runStorageCleanupPolicy({ reason: "manual", force: true });
+      // Refresh in-memory config so subsequent GETs see lastRun/nextRun.
+      config.storageCleanupPolicy = result.policy;
+      if (result.skipped) {
+        return jsonResponse({
+          ok: true,
+          skipped: result.skipped,
+          policy: result.policy,
+        });
+      }
+      if (result.deferred === "codex_busy" || result.error === "codex_busy") {
+        return jsonResponse({
+          ok: false,
+          deferred: true,
+          error: "codex_busy",
+          message: "Codex is using state.sqlite — try again after quitting Codex.",
+          policy: result.policy,
+        }, 409);
+      }
+      if (!result.ok) {
+        const status =
+          result.error === "stale_preview" || result.error === "referenced_history"
+            ? 409
+            : result.error === "invalid_mode" || result.error === "invalid_digest"
+              ? 400
+              : 500;
+        return jsonResponse({
+          ok: false,
+          error: result.error ?? "cleanup_failed",
+          policy: result.policy,
+          ...(result.trashDir ? { trashDir: result.trashDir } : {}),
+        }, status);
+      }
+      return jsonResponse({
+        ok: true,
+        mode: result.mode,
+        removed: result.removed ?? 0,
+        freedBytes: result.freedBytes ?? 0,
+        ...(result.trashDir ? { trashDir: result.trashDir } : {}),
+        policy: result.policy,
+      });
+    } catch {
+      return jsonResponse({ ok: false, error: "cleanup_failed" }, 500);
     }
   }
 
