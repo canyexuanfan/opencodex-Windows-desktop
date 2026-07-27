@@ -658,7 +658,72 @@ mut3  total=26 survived=[noop 1]
 기준선: `36 pass  0 fail  419 expect() calls`, `bun run typecheck` 오류 0,
 `git status --short .github/` 클린.
 
-## 열 라운드가 남긴 것
+## 감사 11라운드 — 모든 층을 정확 비교로 고정했는데 한 곳만 아니었다
+
+10라운드까지의 YAML 층은 **정확한 키 집합 동등 비교**로 지어져 있다. 최상위 키,
+`permissions`, `concurrency`, 잡 목록, 잡의 키, 스텝 수, 스텝의 키, `with`의 키 —
+전부 `toEqual`이다. 딱 한 곳만 아니었다. `on`의 **키가 `pull_request_target` 하나**인
+것은 확인했지만, 그 **안쪽 모양**은 확인하지 않았다.
+
+독립 감사가 정확히 그 구멍으로 들어왔다.
+
+```yaml
+on:
+  pull_request_target:
+    branches:
+      - main
+    types: [...]
+```
+
+`branches: [main]`은 게이트를 main을 대상으로 한 PR로 좁힌다. `preview`를 향해 열린
+PR은 아무 처리 없이 지나간다. 더 나쁜 것은 `paths:`다 — 특정 파일이 바뀔 때만
+발화하므로 문서만 고친 PR에서는 영원히 돌지 않는다. 넷 다 diff에서는 평범한 범위
+지정처럼 보이고, 넷 다 어떤 어설션도 깨지 않았다.
+
+직접 확인한 결과 `branches`, `branches-ignore`, `paths`, `paths-ignore` **4가지가
+전부 살아남았다**. 반면 `synchronize` 추가, `workflow_dispatch` 추가, `schedule`
+추가는 이미 잡히고 있었다 — 트리거 **목록**과 **타입 배열**은 고정돼 있었고,
+트리거의 **필터**만 비어 있었다.
+
+### 대응
+
+한 줄이다. 다른 모든 층과 같은 방식으로 고정했다.
+
+```
+expect(Object.keys(workflow.on?.pull_request_target ?? {})).toEqual(["types"]);
+```
+
+타입 배열 자체는 이미 별도 테스트가 정렬 비교로 고정하고 있어 중복을 만들지 않았다.
+
+이 라운드의 교훈은 새 원리가 아니라 **일관성**이다. 정확 비교를 열한 곳에 적용하고
+한 곳을 빠뜨리면, 공격은 정확히 그 한 곳으로 온다. 층을 세는 것보다 층마다 같은
+규율이 적용됐는지 훑는 편이 빠르다.
+
+## 변이 검증 실측 (117/117)
+
+11라운드 7가지:
+
+```
+branches-filter CAUGHT   branches-ignore CAUGHT   paths-filter CAUGHT
+paths-ignore CAUGHT      add-synchronize CAUGHT   extra-trigger CAUGHT
+schedule-trigger CAUGHT
+
+total=7 survived=none
+```
+
+이전 110가지 회귀 재확인:
+
+```
+mut10b total=18 survived=[무해 2]  mut9b total=25 survived=[무해 4]
+mut8b  total=10 survived=none      mut7  total=8  survived=none
+mut6   total=7  survived=none      mut5  total=7  survived=none
+mut4   total=13 survived=[noop 1]  mut3  total=26 survived=[noop 1]
+```
+
+기준선: `36 pass  0 fail  420 expect() calls`, `bun run typecheck` 오류 0,
+`git status --short .github/` 클린.
+
+## 열한 라운드가 남긴 것
 
 설계가 세 번 바뀌었고, 매번 앞 라운드가 그 방향의 한계를 증명했다.
 
@@ -666,6 +731,8 @@ mut3  total=26 survived=[noop 1]
    키만 덮는다.
 2. **허용 목록** (4라운드) — "정확히 이 키들". YAML 골격에는 유효했고 지금도 유지된다.
    하지만 스크립트 본문에는 통하지 않았다. JavaScript는 같은 효과에 무한한 철자가 있다.
+   그리고 11라운드가 보였듯, 허용 목록은 **빠짐없이 적용될 때만** 허용 목록이다 —
+   열두 층 중 열한 층에 적용하면 공격은 남은 한 층으로 온다.
 3. **실행 하네스** (5~10라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
    **가짜의 충실도**가 새 공격면이 됐다. 여섯 라운드 연속으로 스크립트가 아니라
    하네스가 뚫렸다 — 전역 탈출, 에러 모양, 이벤트 루프, 바인딩 이름, 바인딩 모양,

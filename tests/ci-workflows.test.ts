@@ -325,6 +325,17 @@ describe("GitHub Actions hardening", () => {
     // executing the PR's code under it is the classic escalation.
     expect(Object.keys(workflow.on ?? {})).toEqual(["pull_request_target"]);
 
+    // And the trigger is exactly a `types:` list — nothing else.
+    //
+    // Every other level here is pinned by exact key-set equality; this one was
+    // not, and a review round walked straight through the hole. `branches: [main]`
+    // narrows the gate to PRs against `main`, so one opened against `preview`
+    // sails past unenforced. `paths:` is worse: the gate then fires only when
+    // particular files change, which on a docs-only PR means never. Both are
+    // additive, both look like ordinary scoping in a diff, and neither failed a
+    // single assertion.
+    expect(Object.keys(workflow.on?.pull_request_target ?? {})).toEqual(["types"]);
+
     // Exactly one permission scope. Asserting that `pull-requests: write` is
     // present says nothing about what was added beside it, and a `write-all`
     // scalar is not an object at all.
