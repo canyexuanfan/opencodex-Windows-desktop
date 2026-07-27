@@ -180,6 +180,7 @@ import {
   createLocalAttestationProof,
   createLocalAttestationSecret,
 } from "../lib/local-management-attestation";
+import { createReadinessGate, type ReadinessGate } from "./readiness";
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -365,6 +366,8 @@ export interface StartServerDeps {
   liveSidebandWebSocketFactory?: LiveSidebandWebSocketFactory;
   /** Test-only seam; production derives a fresh local-attestation secret per process. */
   localAttestationSecret?: string;
+  /** Optional readiness gate; a fresh pending gate is created when omitted. */
+  readinessGate?: ReadinessGate;
 }
 
 /*
@@ -389,6 +392,8 @@ export function consumeStartupCacheInvalidationWrite(): boolean {
 }
 
 export function startServer(port?: number, deps: StartServerDeps = {}) {
+  const localAttestationSecret = deps.localAttestationSecret ?? createLocalAttestationSecret();
+export function startServer(port?: number, deps: StartServerDeps = {}): Server<WsData> {
   const localAttestationSecret = deps.localAttestationSecret ?? createLocalAttestationSecret();
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   setLiveStateStoreConfig(config);
@@ -523,14 +528,25 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
     return response;
   }
 
+  // Readiness gate: one PRIVATE controller per startServer invocation, captured
+  // by this listener's closure. Starting/failing a second server in the same
+  // process can never reset or mutate this gate. handleStart creates the gate,
+  // passes it in, and transitions it after the post-startup sync settles. When
+  // no gate is supplied (tests, ad-hoc starts) a fresh pending gate is created.
+  const readinessGate = deps.readinessGate ?? createReadinessGate();
+  // Actual bound port, filled in after Bun.serve binds so /readyz reports the
+  // real ephemeral port for startServer(0). /healthz keeps its existing port
+  // field (the requested listenPort) byte-for-byte.
+  let boundPort: number | null = null;
+
   const nativeMainLifecycle = startNativeMainStartupLifecycle(deps.nativeMainStartup);
   let server: Server<WsData>;
   try {
     server = Bun.serve<WsData>({
-    port: listenPort,
-    hostname: bindHost,
-    idleTimeout: 255,
-    async fetch(req, requestServer): Promise<Response> {
+      port: listenPort,
+      hostname: bindHost,
+      idleTimeout: 255,
+      async fetch(req, requestServer): Promise<Response> {
       const url = new URL(req.url);
       markActivity(`${req.method} ${url.pathname}`);
 
@@ -588,6 +604,33 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           if (proof) response.headers.set(LOCAL_ATTESTATION_PROOF_HEADER, proof);
         }
         return response;
+      }
+
+      // Readiness: like /healthz this is exact GET and unauthenticated (so a client can
+      // back off BEFORE knowing the admission token), but stricter than liveness. The
+      // body carries only sanitized identity + the fixed status enum; the sync message,
+      // warning text, catalog path, provider output, and account data are never exposed.
+      // POST or "/readyz/" must NOT match (exact pathname + GET method) so they fall
+      // through to the JSON 404 guard rather than being silently accepted.
+      if (url.pathname === "/readyz" && req.method === "GET") {
+        const status = readinessGate.getStatus();
+        const body = {
+          service: "opencodex",
+          version: VERSION,
+          uptime: process.uptime(),
+          pid: process.pid,
+          port: boundPort ?? listenPort,
+          status,
+        };
+        if (status === "ready") {
+          return jsonResponse(body, 200, req, config);
+        }
+        // Pending/failed: 503 with a conservative Retry-After so well-behaved clients
+        // (and `ocx ready --wait`) back off instead of hot-looping.
+        const resp = jsonResponse(body, 503, req, config);
+        const headers = new Headers(resp.headers);
+        headers.set("Retry-After", "1");
+        return new Response(resp.body, { status: 503, headers });
       }
 
       if (url.pathname.startsWith("/api/")) {
@@ -1322,6 +1365,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
   });
   setServerRef(server);
   const actualPort = server.port ?? listenPort;
+  boundPort = actualPort;
   setCorsOrigin(actualPort);
 
   console.log(`🚀 opencodex proxy running on http://localhost:${actualPort}`);

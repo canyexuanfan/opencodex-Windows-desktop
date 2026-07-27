@@ -29,10 +29,25 @@ bundled catalog never contains those rows.
 
 Codex App model picker visibility comes from this shared catalog, not from patching the App.
 
-Provider live-model lists are cached with a configured TTL (`src/codex/model-cache.ts`). Adding,
-deleting, or editing a provider's shape clears that per-provider cache; a disabled-only change
-deliberately does not, because a disabled provider is already excluded from the catalog gather
-instead. Codex's own `models_cache.json` is a different cache, invalidated by catalog refresh.
+  Provider live-model lists are cached with a configured TTL (`src/codex/model-cache.ts`). Adding,
+  deleting, or editing a provider's shape clears that per-provider cache; a disabled-only change
+  deliberately does not, because a disabled provider is already excluded from the catalog gather
+  instead. Codex's own `models_cache.json` is a different cache, invalidated by catalog refresh.
+
+  ## Startup readiness
+
+Each `startServer` invocation owns a private, one-shot readiness gate created before the listener
+binds. `handleStart` supplies its gate and transitions it after the shared catalog sync settles.
+Calls without a supplied gate receive a fresh private gate that intentionally remains pending. Only
+`ok: true` with no nonempty warning becomes ready; `null`, a throw, `ok !== true`, or a nonempty
+warning becomes failed. State is isolated per server instance.
+
+Exact unauthenticated `GET /readyz` returns sanitized identity fields plus pending, ready, or failed.
+The `ocx ready` probe validates the service, version, uptime, PID, port, status, and HTTP/status
+pairing. With `--wait`, it applies one absolute deadline across discovery, readiness probes, polling,
+and sleeps; the single-probe path preserves the existing per-call timeout without a wait deadline.
+Older proxies without `/readyz` fail closed as unreachable. `/healthz` remains the separate liveness
+contract.
 
 ## Entry shape
 
