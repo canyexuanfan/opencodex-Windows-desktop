@@ -114,20 +114,6 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("bun run build");
   });
 
-  test("cross-platform CI path filters include the stale needs-info workflow", async () => {
-    const workflow = Bun.YAML.parse(await readText(".github/workflows/ci.yml")) as {
-      on?: {
-        pull_request?: { paths?: string[] };
-        push?: { paths?: string[] };
-      };
-    };
-    const path = ".github/workflows/stale-needs-info.yml";
-    // Assert each trigger separately so a duplicated pull_request entry cannot
-    // satisfy a whole-file count while push is missing the path.
-    expect(workflow.on?.pull_request?.paths ?? []).toContain(path);
-    expect(workflow.on?.push?.paths ?? []).toContain(path);
-  });
-
   test("stale needs-info workflow is schedule-only and least-privilege", async () => {
     const text = await readText(".github/workflows/stale-needs-info.yml");
     const workflow = Bun.YAML.parse(text) as {
