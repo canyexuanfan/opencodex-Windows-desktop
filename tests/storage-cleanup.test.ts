@@ -1,0 +1,908 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  computePreviewDigest,
+  executeArchivedCleanup,
+  listArchivedCandidates,
+  normalizeArchivedRolloutPath,
+  previewArchivedCleanup,
+  selectOldestPercent,
+  type ExecuteCleanupOptions,
+} from "../src/storage/cleanup";
+
+const OLD = new Date("2026-01-01T00:00:00Z");
+const MID = new Date("2026-02-01T00:00:00Z");
+const NEW = new Date("2026-03-01T00:00:00Z");
+
+let home = "";
+
+afterEach(() => {
+  if (home) {
+    try { rmSync(home, { recursive: true, force: true }); } catch { /* */ }
+    home = "";
+  }
+});
+
+function seedLogsStore(dir: string): void {
+  const logs = new Database(join(dir, "logs_2.sqlite"));
+  logs.exec(`CREATE TABLE logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    ts_nanos INTEGER NOT NULL DEFAULT 0,
+    level TEXT NOT NULL,
+    target TEXT NOT NULL,
+    thread_id TEXT,
+    estimated_bytes INTEGER NOT NULL DEFAULT 0
+  )`);
+  logs.exec(`INSERT INTO logs (ts, level, target, thread_id, estimated_bytes) VALUES
+    (1,'INFO','t','told',10),
+    (2,'INFO','t','tmid',10),
+    (3,'INFO','t','active',10),
+    (4,'INFO','t','tnew',10)`);
+  logs.close();
+}
+
+function seedGoalsStore(dir: string): void {
+  const goals = new Database(join(dir, "goals_1.sqlite"));
+  goals.exec(`CREATE TABLE thread_goals (
+    thread_id TEXT PRIMARY KEY NOT NULL,
+    goal_id TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    status TEXT NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    time_used_seconds INTEGER NOT NULL DEFAULT 0,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+  )`);
+  goals.exec(`CREATE TABLE thread_goal_continuation_deferrals (
+    thread_id TEXT PRIMARY KEY NOT NULL REFERENCES thread_goals(thread_id) ON DELETE CASCADE
+  )`);
+  goals.exec(`INSERT INTO thread_goals VALUES
+    ('told','g1','old','complete',0,0,1,1),
+    ('tmid','g2','mid','active',0,0,2,2),
+    ('active','g3','live','active',0,0,3,3)`);
+  goals.exec(`INSERT INTO thread_goal_continuation_deferrals VALUES ('tmid')`);
+  goals.close();
+}
+
+function seedMemoriesStore(dir: string): void {
+  const memories = new Database(join(dir, "memories_1.sqlite"));
+  memories.exec(`CREATE TABLE stage1_outputs (
+    thread_id TEXT PRIMARY KEY,
+    source_updated_at INTEGER NOT NULL,
+    raw_memory TEXT NOT NULL,
+    rollout_summary TEXT NOT NULL,
+    generated_at INTEGER NOT NULL,
+    selected_for_phase2 INTEGER NOT NULL DEFAULT 0
+  )`);
+  memories.exec(`CREATE TABLE jobs (
+    kind TEXT NOT NULL,
+    job_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    worker_id TEXT,
+    ownership_token TEXT,
+    started_at INTEGER,
+    finished_at INTEGER,
+    lease_until INTEGER,
+    retry_at INTEGER,
+    retry_remaining INTEGER NOT NULL,
+    last_error TEXT,
+    input_watermark INTEGER,
+    last_success_watermark INTEGER,
+    PRIMARY KEY (kind, job_key)
+  )`);
+  memories.exec(`INSERT INTO stage1_outputs VALUES
+    ('told',1,'m-old','s-old',1,0),
+    ('tmid',2,'m-mid','s-mid',2,1),
+    ('active',3,'m-live','s-live',3,0)`);
+  memories.exec(`INSERT INTO jobs VALUES
+    ('memory_stage1','told','done',NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL),
+    ('memory_stage1','tmid','done',NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL),
+    ('memory_stage1','active','done',NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL),
+    ('memory_consolidate_global','global','done',NULL,NULL,NULL,NULL,NULL,NULL,3,NULL,0,0)`);
+  memories.close();
+}
+
+function seedSatelliteStores(dir: string): void {
+  seedLogsStore(dir);
+  seedGoalsStore(dir);
+  seedMemoriesStore(dir);
+}
+
+function buildHome(opts?: {
+  withSpawnEdges?: boolean;
+  withDynamicTools?: boolean;
+  withSatelliteStores?: boolean;
+  satellites?: "all" | "logs" | "memories" | "goals";
+}): string {
+  const dir = mkdtempSync(join(tmpdir(), "ocx-cleanup-"));
+  mkdirSync(join(dir, "sessions", "2026", "05", "27"), { recursive: true });
+  writeFileSync(join(dir, "sessions", "2026", "05", "27", "rollout-active.jsonl"), "ACTIVE".repeat(20));
+
+  mkdirSync(join(dir, "archived_sessions"));
+  writeFileSync(join(dir, "archived_sessions", "rollout-old.jsonl"), "OLD".repeat(10));
+  writeFileSync(join(dir, "archived_sessions", "rollout-mid.jsonl"), "MID".repeat(20));
+  writeFileSync(join(dir, "archived_sessions", "rollout-new.jsonl"), "NEW".repeat(30));
+  utimesSync(join(dir, "archived_sessions", "rollout-old.jsonl"), OLD, OLD);
+  utimesSync(join(dir, "archived_sessions", "rollout-mid.jsonl"), MID, MID);
+  utimesSync(join(dir, "archived_sessions", "rollout-new.jsonl"), NEW, NEW);
+
+  const db = new Database(join(dir, "state_5.sqlite"));
+  db.exec(`CREATE TABLE threads (
+    id TEXT PRIMARY KEY,
+    rollout_path TEXT NOT NULL,
+    archived INTEGER,
+    archived_at INTEGER,
+    history_mode TEXT
+  )`);
+  db.exec(`INSERT INTO threads VALUES
+    ('active','sessions/2026/05/27/rollout-active.jsonl',0,NULL,'legacy'),
+    ('told','archived_sessions/rollout-old.jsonl',1,1,'legacy'),
+    ('tmid','archived_sessions/rollout-mid.jsonl',1,2,'legacy'),
+    ('tnew','archived_sessions/rollout-new.jsonl',1,3,'legacy')
+  `);
+  if (opts?.withSpawnEdges) {
+    db.exec(`CREATE TABLE thread_spawn_edges (
+      parent_thread_id TEXT NOT NULL,
+      child_thread_id TEXT NOT NULL PRIMARY KEY,
+      status TEXT NOT NULL
+    )`);
+    db.exec(`INSERT INTO thread_spawn_edges VALUES ('told','tmid','active')`);
+  }
+  if (opts?.withDynamicTools) {
+    db.exec(`CREATE TABLE thread_dynamic_tools (
+      thread_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      input_schema TEXT NOT NULL,
+      PRIMARY KEY(thread_id, position),
+      FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
+    )`);
+    db.exec(`INSERT INTO thread_dynamic_tools VALUES ('told',0,'tool','d','{}')`);
+  }
+  db.close();
+  const satellites = opts?.satellites ?? (opts?.withSatelliteStores ? "all" : undefined);
+  if (satellites === "all") seedSatelliteStores(dir);
+  else if (satellites === "logs") seedLogsStore(dir);
+  else if (satellites === "memories") seedMemoriesStore(dir);
+  else if (satellites === "goals") seedGoalsStore(dir);
+  return dir;
+}
+
+function runWithDigest(
+  percent: number,
+  mode: "quarantine" | "permanent",
+  codexHome: string,
+  extra?: {
+    busyTimeoutMs?: number;
+    now?: number;
+    digest?: string;
+    _test?: ExecuteCleanupOptions["_test"];
+  },
+) {
+  const preview = previewArchivedCleanup(percent, codexHome);
+  return executeArchivedCleanup({
+    percent,
+    mode,
+    digest: extra?.digest ?? preview.digest,
+    codexHome,
+    busyTimeoutMs: extra?.busyTimeoutMs,
+    now: extra?.now,
+    _test: extra?._test,
+  });
+}
+
+describe("previewArchivedCleanup", () => {
+  test("lists archived files oldest-first and ignores active sessions", () => {
+    home = buildHome();
+    const listed = listArchivedCandidates(home);
+    expect(listed.map(c => c.relPath)).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+      "archived_sessions/rollout-mid.jsonl",
+      "archived_sessions/rollout-new.jsonl",
+    ]);
+    expect(listed.some(c => c.relPath.includes("sessions/2026"))).toBe(false);
+  });
+
+  test("percent selects oldest subset and includes digest", () => {
+    home = buildHome();
+    const all = listArchivedCandidates(home);
+    expect(selectOldestPercent(all, 0)).toEqual([]);
+    expect(selectOldestPercent(all, 34).map(c => c.relPath)).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+    ]);
+    expect(selectOldestPercent(all, 100)).toHaveLength(3);
+    const preview = previewArchivedCleanup(50, home);
+    expect(preview.count).toBe(1);
+    expect(preview.candidates[0]!.relPath).toBe("archived_sessions/rollout-old.jsonl");
+    expect(preview.bytes).toBe(preview.candidates[0]!.bytes);
+    expect(preview.digest).toBe(computePreviewDigest(preview.candidates, 50));
+    expect(preview.digest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test("treats .jsonl and .jsonl.zst as one logical rollout", () => {
+    home = buildHome();
+    writeFileSync(join(home, "archived_sessions", "rollout-old.jsonl.zst"), "ZST");
+    utimesSync(join(home, "archived_sessions", "rollout-old.jsonl.zst"), OLD, OLD);
+    const listed = listArchivedCandidates(home);
+    const old = listed.find(c => c.relPath === "archived_sessions/rollout-old.jsonl");
+    expect(old).toBeTruthy();
+    expect(old!.physicalRelPaths.sort()).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+      "archived_sessions/rollout-old.jsonl.zst",
+    ]);
+    expect(listed.filter(c => c.relPath.includes("rollout-old"))).toHaveLength(1);
+  });
+});
+
+describe("normalizeArchivedRolloutPath", () => {
+  test("accepts exact archived paths and rejects active / basename-only matches", () => {
+    home = buildHome();
+    expect(normalizeArchivedRolloutPath("archived_sessions/rollout-old.jsonl", home))
+      .toBe("archived_sessions/rollout-old.jsonl");
+    expect(normalizeArchivedRolloutPath("archived_sessions/rollout-old.jsonl.zst", home))
+      .toBe("archived_sessions/rollout-old.jsonl");
+    expect(normalizeArchivedRolloutPath(join(home, "archived_sessions", "rollout-old.jsonl"), home))
+      .toBe("archived_sessions/rollout-old.jsonl");
+    expect(normalizeArchivedRolloutPath("sessions/2026/05/27/rollout-active.jsonl", home)).toBeNull();
+    expect(normalizeArchivedRolloutPath("rollout-old.jsonl", home)).toBeNull();
+    // ISO timestamps in filenames must not be treated as Windows drive letters.
+    expect(normalizeArchivedRolloutPath("archived_sessions/rollout-2026-01-01T10:00:00.jsonl", home))
+      .toBe("archived_sessions/rollout-2026-01-01T10:00:00.jsonl");
+  });
+});
+
+describe("executeArchivedCleanup", () => {
+  test("quarantine moves files to .trash and removes matching threads", () => {
+    home = buildHome();
+    const result = runWithDigest(50, "quarantine", home, { now: 1_700_000_000_000 });
+    expect(result.ok).toBe(true);
+    expect(result.count).toBe(1);
+    expect(result.removedPaths).toEqual(["archived_sessions/rollout-old.jsonl"]);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(home, "sessions", "2026", "05", "27", "rollout-active.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(true);
+    const trashFile = join(home, ".trash", "1700000000000", "rollout-old.jsonl");
+    expect(existsSync(trashFile)).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(home, ".trash", "1700000000000", "manifest.json"), "utf8"));
+    expect(manifest.entries[0].threadId).toBe("told");
+
+    const db = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const ids = db.query<{ id: string }, []>("SELECT id FROM threads ORDER BY id").all().map(r => r.id);
+    db.close();
+    expect(ids).toEqual(["active", "tmid", "tnew"]);
+  });
+
+  test("permanent deletes files and threads without creating trash", () => {
+    home = buildHome();
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(true);
+    expect(result.count).toBe(3);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(false);
+    expect(existsSync(join(home, ".trash"))).toBe(false);
+    expect(existsSync(join(home, "sessions", "2026", "05", "27", "rollout-active.jsonl"))).toBe(true);
+
+    const db = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const ids = db.query<{ id: string }, []>("SELECT id FROM threads").all().map(r => r.id);
+    db.close();
+    expect(ids).toEqual(["active"]);
+  });
+
+  test("stale_preview when filesystem changed after preview", () => {
+    home = buildHome();
+    const preview = previewArchivedCleanup(50, home);
+    writeFileSync(join(home, "archived_sessions", "rollout-extra.jsonl"), "EXTRA");
+    utimesSync(join(home, "archived_sessions", "rollout-extra.jsonl"), new Date("2025-01-01"), new Date("2025-01-01"));
+    const result = executeArchivedCleanup({
+      percent: 50,
+      mode: "quarantine",
+      digest: preview.digest,
+      codexHome: home,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("stale_preview");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("concurrent archiving that changes mtime/metadata yields stale_preview", () => {
+    home = buildHome();
+    const preview = previewArchivedCleanup(50, home);
+    const target = join(home, "archived_sessions", "rollout-old.jsonl");
+    writeFileSync(target, "OLD".repeat(10) + "CHANGED");
+    utimesSync(target, OLD, OLD);
+    const result = executeArchivedCleanup({
+      percent: 50,
+      mode: "quarantine",
+      digest: preview.digest,
+      codexHome: home,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("stale_preview");
+  });
+
+  test("does not delete active thread that shares basename with archived file", () => {
+    home = buildHome();
+    // Active row points at sessions/.../rollout-old.jsonl (same basename as archive).
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.exec(`INSERT INTO threads VALUES ('dupe','sessions/2026/05/27/rollout-old.jsonl',0,NULL,'legacy')`);
+    writeFileSync(join(home, "sessions", "2026", "05", "27", "rollout-old.jsonl"), "ACTIVE-DUPE");
+    db.close();
+
+    const result = runWithDigest(50, "quarantine", home, { now: 1_700_000_000_001 });
+    expect(result.ok).toBe(true);
+
+    const check = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const ids = check.query<{ id: string }, []>("SELECT id FROM threads ORDER BY id").all().map(r => r.id);
+    check.close();
+    expect(ids).toContain("dupe");
+    expect(ids).not.toContain("told");
+    expect(existsSync(join(home, "sessions", "2026", "05", "27", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("codex_busy probe skips all filesystem mutations", () => {
+    home = buildHome();
+    const locker = new Database(join(home, "state_5.sqlite"));
+    locker.exec("BEGIN EXCLUSIVE");
+    try {
+      const result = runWithDigest(100, "quarantine", home, { busyTimeoutMs: 1 });
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("codex_busy");
+      expect(result.count).toBe(0);
+      expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+      expect(existsSync(join(home, ".trash"))).toBe(false);
+    } finally {
+      locker.exec("ROLLBACK");
+      locker.close();
+    }
+  });
+
+  test("busy final satellite lock rolls back earlier satellite write locks", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const goalsLocker = new Database(join(home, "goals_1.sqlite"));
+    goalsLocker.exec("BEGIN EXCLUSIVE");
+    try {
+      const result = runWithDigest(100, "permanent", home, { busyTimeoutMs: 1 });
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("codex_busy");
+      expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+      expect(existsSync(join(home, ".trash"))).toBe(false);
+    } finally {
+      goalsLocker.exec("ROLLBACK");
+      goalsLocker.close();
+    }
+
+    const logs = new Database(join(home, "logs_2.sqlite"));
+    logs.exec(
+      `INSERT INTO logs (ts, level, target, thread_id, estimated_bytes) VALUES (99,'INFO','t','writable-after-busy',99)`,
+    );
+    logs.close();
+    const memories = new Database(join(home, "memories_1.sqlite"));
+    memories.exec(
+      `INSERT INTO stage1_outputs VALUES ('writable-after-busy',1,'m','s',1,0)`,
+    );
+    memories.close();
+
+    let logsRead: Database | undefined;
+    let memoriesRead: Database | undefined;
+    try {
+      logsRead = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+      memoriesRead = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+      expect(
+        logsRead.query("SELECT thread_id FROM logs WHERE thread_id='writable-after-busy'").get(),
+      ).toBeTruthy();
+      expect(
+        memoriesRead.query(
+          "SELECT thread_id FROM stage1_outputs WHERE thread_id='writable-after-busy'",
+        ).get(),
+      ).toBeTruthy();
+    } finally {
+      try { logsRead?.close(); } catch { /* */ }
+      try { memoriesRead?.close(); } catch { /* */ }
+    }
+  });
+
+  test("rolls back staged renames when a later rename fails", () => {
+    home = buildHome();
+    const fresh = previewArchivedCleanup(100, home);
+    expect(fresh.count).toBe(3);
+
+    // Exclusive stage dir uses `.trash/42-1` when `.trash/42` already exists.
+    const now = 42;
+    mkdirSync(join(home, ".trash", String(now)), { recursive: true });
+
+    const result = executeArchivedCleanup({
+      percent: 100,
+      mode: "quarantine",
+      digest: fresh.digest,
+      codexHome: home,
+      now,
+      _test: { blockStageDestBasenames: ["rollout-mid.jsonl"] },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("fs_failed");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
+  });
+
+  test("rolls back staged renames when DB delete aborts after staging", () => {
+    home = buildHome();
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.exec(`CREATE TRIGGER deny_thread_delete BEFORE DELETE ON threads
+      BEGIN SELECT RAISE(ABORT, 'blocked'); END`);
+    db.close();
+    const result = runWithDigest(50, "quarantine", home, { now: 77 });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, ".trash", "77", "rollout-old.jsonl"))).toBe(false);
+  });
+
+  test("deletes spawn edges with parent_thread_id/child_thread_id and cascades dynamic tools", () => {
+    home = buildHome({ withSpawnEdges: true, withDynamicTools: true });
+    // Delete both sides of the edge together so referenced_history does not fire.
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(true);
+    const db = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(db.query("SELECT COUNT(*) AS n FROM thread_spawn_edges").get() as { n: number }).toEqual({ n: 0 });
+    expect(db.query("SELECT COUNT(*) AS n FROM thread_dynamic_tools").get() as { n: number }).toEqual({ n: 0 });
+    db.close();
+  });
+
+  test("rejects candidates still referenced by a live spawn edge", () => {
+    home = buildHome({ withSpawnEdges: true });
+    // Edge told→tmid; deleting only oldest (told) leaves tmid outside the set.
+    const result = runWithDigest(34, "quarantine", home);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("referenced_history");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("rejects paginated history_mode threads", () => {
+    home = buildHome();
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.exec(`UPDATE threads SET history_mode='paginated' WHERE id='told'`);
+    db.close();
+    const result = runWithDigest(50, "quarantine", home);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("referenced_history");
+  });
+
+  test("quarantine removes both plain and compressed physical files", () => {
+    home = buildHome();
+    writeFileSync(join(home, "archived_sessions", "rollout-old.jsonl.zst"), "ZST");
+    utimesSync(join(home, "archived_sessions", "rollout-old.jsonl.zst"), OLD, OLD);
+    const result = runWithDigest(50, "quarantine", home, { now: 1_700_000_000_002 });
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl.zst"))).toBe(false);
+    expect(existsSync(join(home, ".trash", "1700000000002", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, ".trash", "1700000000002", "rollout-old.jsonl.zst"))).toBe(true);
+  });
+
+  test("never returns ok with error field or absolute paths in error codes", () => {
+    home = buildHome();
+    const result = executeArchivedCleanup({
+      percent: 50,
+      mode: "quarantine",
+      digest: "deadbeef",
+      codexHome: home,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("invalid_digest");
+    expect(JSON.stringify(result)).not.toContain(home);
+  });
+
+  test("manifest-write failure rolls back staged files and leaves no stranded trash", () => {
+    home = buildHome();
+    const result = runWithDigest(50, "quarantine", home, {
+      now: 88,
+      _test: { failManifestWrite: true },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("fs_failed");
+    expect(result.trashDir).toBeUndefined();
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, ".trash", "88", "rollout-old.jsonl"))).toBe(false);
+    // Whole stage directory must be removed — not just the staged file.
+    expect(existsSync(join(home, ".trash", "88"))).toBe(false);
+    // DB untouched
+    const db = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const ids = db.query<{ id: string }, []>("SELECT id FROM threads ORDER BY id").all().map(r => r.id);
+    db.close();
+    expect(ids).toContain("told");
+  });
+
+  test("rename-back failure keeps staged file and reports relative trashDir", () => {
+    home = buildHome();
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.exec(`CREATE TRIGGER deny_thread_delete BEFORE DELETE ON threads
+      BEGIN SELECT RAISE(ABORT, 'blocked'); END`);
+    db.close();
+
+    const result = executeArchivedCleanup({
+      percent: 50,
+      mode: "quarantine",
+      digest: previewArchivedCleanup(50, home).digest,
+      codexHome: home,
+      now: 91,
+      _test: { failRollbackBasenames: ["rollout-old.jsonl"] },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+    expect(result.trashDir).toBe(".trash/91");
+    // Staged file must not be discarded when rename-back fails.
+    expect(existsSync(join(home, ".trash", "91", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, ".trash", "91", "manifest.json"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(home);
+  });
+
+  test("partial permanent purge preserves remaining stage and recovery path", () => {
+    home = buildHome();
+    const preview = previewArchivedCleanup(100, home);
+    const result = executeArchivedCleanup({
+      percent: 100,
+      mode: "permanent",
+      digest: preview.digest,
+      codexHome: home,
+      now: 92,
+      _test: { failPurgeBasenames: ["rollout-mid.jsonl"] },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("fs_failed");
+    expect(result.trashDir).toBe(".trash/92");
+    // Remaining staged file + manifest must survive for recovery.
+    expect(existsSync(join(home, ".trash", "92", "rollout-mid.jsonl"))).toBe(true);
+    expect(existsSync(join(home, ".trash", "92", "manifest.json"))).toBe(true);
+    const manifest = JSON.parse(
+      readFileSync(join(home, ".trash", "92", "manifest.json"), "utf8"),
+    ) as {
+      purgeIncomplete?: boolean;
+      purgedRelPaths?: string[];
+      entries: Array<{ relPath: string }>;
+    };
+    expect(manifest.purgeIncomplete).toBe(true);
+    expect(manifest.purgedRelPaths).toContain("archived_sessions/rollout-old.jsonl");
+    expect(manifest.entries.map(e => e.relPath)).toEqual(["archived_sessions/rollout-mid.jsonl"]);
+    // Successfully purged candidates are gone from archive and stage.
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(home, ".trash", "92", "rollout-old.jsonl"))).toBe(false);
+    // DB rows for the batch are already committed away.
+    const db = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const ids = db.query<{ id: string }, []>("SELECT id FROM threads").all().map(r => r.id);
+    db.close();
+    expect(ids).toEqual(["active"]);
+  });
+
+  test("permanent cleanup removes logs, goals, and memory rows for deleted threads", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(true);
+    expect(result.count).toBe(3);
+
+    const logs = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    const logThreads = logs.query<{ thread_id: string }, []>(
+      "SELECT thread_id FROM logs ORDER BY thread_id",
+    ).all().map(r => r.thread_id);
+    logs.close();
+    expect(logThreads).toEqual(["active"]);
+
+    const goals = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+    const goalThreads = goals.query<{ thread_id: string }, []>(
+      "SELECT thread_id FROM thread_goals ORDER BY thread_id",
+    ).all().map(r => r.thread_id);
+    const deferrals = goals.query<{ thread_id: string }, []>(
+      "SELECT thread_id FROM thread_goal_continuation_deferrals",
+    ).all();
+    goals.close();
+    expect(goalThreads).toEqual(["active"]);
+    expect(deferrals).toEqual([]);
+
+    const memories = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    const stage1 = memories.query<{ thread_id: string }, []>(
+      "SELECT thread_id FROM stage1_outputs ORDER BY thread_id",
+    ).all().map(r => r.thread_id);
+    const stage1Jobs = memories.query<{ job_key: string }, []>(
+      "SELECT job_key FROM jobs WHERE kind='memory_stage1' ORDER BY job_key",
+    ).all().map(r => r.job_key);
+    const consolidate = memories.query<{ status: string }, []>(
+      "SELECT status FROM jobs WHERE kind='memory_consolidate_global' AND job_key='global'",
+    ).get();
+    memories.close();
+    expect(stage1).toEqual(["active"]);
+    expect(stage1Jobs).toEqual(["active"]);
+    // tmid was selected_for_phase2, so upstream enqueues/ refreshes global consolidation.
+    expect(consolidate?.status).toBe("pending");
+
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const ids = state.query<{ id: string }, []>("SELECT id FROM threads").all().map(r => r.id);
+    state.close();
+    expect(ids).toEqual(["active"]);
+  });
+
+  test("threads read failure leaves every file and database unchanged", () => {
+    home = buildHome({ withSatelliteStores: true });
+    // Present state DB with no readable threads table → fail closed before FS/DB mutation.
+    rmSync(join(home, "state_5.sqlite"), { force: true });
+    const broken = new Database(join(home, "state_5.sqlite"));
+    broken.exec(`CREATE TABLE not_threads (id TEXT PRIMARY KEY)`);
+    broken.exec(`INSERT INTO not_threads VALUES ('x')`);
+    broken.close();
+
+    const beforeLogs = readFileSync(join(home, "logs_2.sqlite"));
+    const beforeGoals = readFileSync(join(home, "goals_1.sqlite"));
+    const beforeMemories = readFileSync(join(home, "memories_1.sqlite"));
+    const beforeState = readFileSync(join(home, "state_5.sqlite"));
+
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
+    expect(existsSync(join(home, ".trash"))).toBe(false);
+    expect(Buffer.compare(beforeLogs, readFileSync(join(home, "logs_2.sqlite")))).toBe(0);
+    expect(Buffer.compare(beforeGoals, readFileSync(join(home, "goals_1.sqlite")))).toBe(0);
+    expect(Buffer.compare(beforeMemories, readFileSync(join(home, "memories_1.sqlite")))).toBe(0);
+    expect(Buffer.compare(beforeState, readFileSync(join(home, "state_5.sqlite")))).toBe(0);
+  });
+
+  test.each([
+    ["failAfterLogsMutation", { failAfterLogsMutation: true }],
+    ["failAfterMemoriesMutation", { failAfterMemoriesMutation: true }],
+    ["failAfterGoalsMutation", { failAfterGoalsMutation: true }],
+    ["failBeforeStateCommit", { failBeforeStateCommit: true }],
+  ] as const)(
+    "injected %s restores every file and database",
+    (_name, hook) => {
+      home = buildHome({ withSatelliteStores: true });
+      const files = {
+        old: readFileSync(join(home, "archived_sessions", "rollout-old.jsonl")),
+        mid: readFileSync(join(home, "archived_sessions", "rollout-mid.jsonl")),
+        neu: readFileSync(join(home, "archived_sessions", "rollout-new.jsonl")),
+      };
+      const logsDb = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+      const logs = logsDb.query("SELECT id, ts, level, target, thread_id, estimated_bytes FROM logs ORDER BY id").all();
+      logsDb.close();
+      const goalsDb = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+      const goals = goalsDb.query("SELECT thread_id, goal_id, objective, status FROM thread_goals ORDER BY thread_id").all();
+      const deferrals = goalsDb.query("SELECT thread_id FROM thread_goal_continuation_deferrals ORDER BY thread_id").all();
+      goalsDb.close();
+      const memDb = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+      const stage1 = memDb.query("SELECT thread_id, raw_memory, rollout_summary, selected_for_phase2 FROM stage1_outputs ORDER BY thread_id").all();
+      const jobs = memDb.query("SELECT kind, job_key, status FROM jobs ORDER BY kind, job_key").all();
+      memDb.close();
+      const stateDb = new Database(join(home, "state_5.sqlite"), { readonly: true });
+      const threads = stateDb.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all();
+      stateDb.close();
+
+      const result = runWithDigest(100, "permanent", home, { now: 93, _test: { ...hook } });
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("db_reconcile_failed");
+      expect(result.trashDir).toBeUndefined();
+      expect(existsSync(join(home, ".trash"))).toBe(false);
+      expect(Buffer.compare(files.old, readFileSync(join(home, "archived_sessions", "rollout-old.jsonl")))).toBe(0);
+      expect(Buffer.compare(files.mid, readFileSync(join(home, "archived_sessions", "rollout-mid.jsonl")))).toBe(0);
+      expect(Buffer.compare(files.neu, readFileSync(join(home, "archived_sessions", "rollout-new.jsonl")))).toBe(0);
+
+      const logsAfter = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+      expect(logsAfter.query("SELECT id, ts, level, target, thread_id, estimated_bytes FROM logs ORDER BY id").all()).toEqual(logs);
+      logsAfter.close();
+      const goalsAfter = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+      expect(goalsAfter.query("SELECT thread_id, goal_id, objective, status FROM thread_goals ORDER BY thread_id").all()).toEqual(goals);
+      expect(goalsAfter.query("SELECT thread_id FROM thread_goal_continuation_deferrals ORDER BY thread_id").all()).toEqual(deferrals);
+      goalsAfter.close();
+      const memAfter = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+      expect(memAfter.query("SELECT thread_id, raw_memory, rollout_summary, selected_for_phase2 FROM stage1_outputs ORDER BY thread_id").all()).toEqual(stage1);
+      expect(memAfter.query("SELECT kind, job_key, status FROM jobs ORDER BY kind, job_key").all()).toEqual(jobs);
+      memAfter.close();
+      const stateAfter = new Database(join(home, "state_5.sqlite"), { readonly: true });
+      expect(stateAfter.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all()).toEqual(threads);
+      stateAfter.close();
+    },
+  );
+
+  test("satellite restore failure keeps recovery trashDir and manifest", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const result = runWithDigest(100, "permanent", home, {
+      now: 94,
+      _test: { failBeforeStateCommit: true, failSatelliteRestore: true },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+    expect(result.trashDir).toBe(".trash/94");
+    expect(existsSync(join(home, ".trash", "94", "manifest.json"))).toBe(true);
+    expect(existsSync(join(home, ".trash", "94", "satellite-backup.json"))).toBe(true);
+    // Files are still restored; trash is kept for DB recovery metadata.
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("satellite-backup write failure leaves every database and rollout unchanged", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const files = {
+      old: readFileSync(join(home, "archived_sessions", "rollout-old.jsonl")),
+      mid: readFileSync(join(home, "archived_sessions", "rollout-mid.jsonl")),
+      neu: readFileSync(join(home, "archived_sessions", "rollout-new.jsonl")),
+    };
+    const logsDb = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    const logs = logsDb.query("SELECT id, ts, level, target, thread_id, estimated_bytes FROM logs ORDER BY id").all();
+    logsDb.close();
+    const goalsDb = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+    const goals = goalsDb.query("SELECT thread_id, goal_id, objective, status FROM thread_goals ORDER BY thread_id").all();
+    const deferrals = goalsDb.query("SELECT thread_id FROM thread_goal_continuation_deferrals ORDER BY thread_id").all();
+    goalsDb.close();
+    const memDb = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    const stage1 = memDb.query("SELECT thread_id, raw_memory, rollout_summary, selected_for_phase2 FROM stage1_outputs ORDER BY thread_id").all();
+    const jobs = memDb.query("SELECT kind, job_key, status FROM jobs ORDER BY kind, job_key").all();
+    memDb.close();
+    const stateDb = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const threads = stateDb.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all();
+    stateDb.close();
+
+    const result = runWithDigest(100, "permanent", home, {
+      now: 95,
+      _test: { failSatelliteBackupWrite: true },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("fs_failed");
+    expect(result.trashDir).toBeUndefined();
+    expect(existsSync(join(home, ".trash"))).toBe(false);
+    expect(Buffer.compare(files.old, readFileSync(join(home, "archived_sessions", "rollout-old.jsonl")))).toBe(0);
+    expect(Buffer.compare(files.mid, readFileSync(join(home, "archived_sessions", "rollout-mid.jsonl")))).toBe(0);
+    expect(Buffer.compare(files.neu, readFileSync(join(home, "archived_sessions", "rollout-new.jsonl")))).toBe(0);
+
+    const logsAfter = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    expect(logsAfter.query("SELECT id, ts, level, target, thread_id, estimated_bytes FROM logs ORDER BY id").all()).toEqual(logs);
+    logsAfter.close();
+    const goalsAfter = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+    expect(goalsAfter.query("SELECT thread_id, goal_id, objective, status FROM thread_goals ORDER BY thread_id").all()).toEqual(goals);
+    expect(goalsAfter.query("SELECT thread_id FROM thread_goal_continuation_deferrals ORDER BY thread_id").all()).toEqual(deferrals);
+    goalsAfter.close();
+    const memAfter = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    expect(memAfter.query("SELECT thread_id, raw_memory, rollout_summary, selected_for_phase2 FROM stage1_outputs ORDER BY thread_id").all()).toEqual(stage1);
+    expect(memAfter.query("SELECT kind, job_key, status FROM jobs ORDER BY kind, job_key").all()).toEqual(jobs);
+    memAfter.close();
+    const stateAfter = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(stateAfter.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all()).toEqual(threads);
+    stateAfter.close();
+  });
+
+  test("permanent cleanup works with logs-only satellite store", () => {
+    home = buildHome({ satellites: "logs" });
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(true);
+    const logs = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    expect(logs.query("SELECT thread_id FROM logs ORDER BY thread_id").all().map(r => r.thread_id)).toEqual(["active"]);
+    logs.close();
+    expect(existsSync(join(home, "goals_1.sqlite"))).toBe(false);
+    expect(existsSync(join(home, "memories_1.sqlite"))).toBe(false);
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(state.query("SELECT id FROM threads").all().map(r => r.id)).toEqual(["active"]);
+    state.close();
+  });
+
+  test("permanent cleanup works with memories-only satellite store", () => {
+    home = buildHome({ satellites: "memories" });
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(true);
+    const memories = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    expect(memories.query("SELECT thread_id FROM stage1_outputs ORDER BY thread_id").all().map(r => r.thread_id)).toEqual(["active"]);
+    expect(memories.query("SELECT job_key FROM jobs WHERE kind='memory_stage1' ORDER BY job_key").all().map(r => r.job_key)).toEqual(["active"]);
+    expect(memories.query("SELECT status FROM jobs WHERE kind='memory_consolidate_global' AND job_key='global'").get()?.status).toBe("pending");
+    memories.close();
+    expect(existsSync(join(home, "logs_2.sqlite"))).toBe(false);
+    expect(existsSync(join(home, "goals_1.sqlite"))).toBe(false);
+  });
+
+  test("permanent cleanup works with goals-only satellite store", () => {
+    home = buildHome({ satellites: "goals" });
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(true);
+    const goals = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+    expect(goals.query("SELECT thread_id FROM thread_goals ORDER BY thread_id").all().map(r => r.thread_id)).toEqual(["active"]);
+    expect(goals.query("SELECT thread_id FROM thread_goal_continuation_deferrals").all()).toEqual([]);
+    goals.close();
+    expect(existsSync(join(home, "logs_2.sqlite"))).toBe(false);
+    expect(existsSync(join(home, "memories_1.sqlite"))).toBe(false);
+  });
+
+  test("concurrent satellite writes after mutation are preserved on restore", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const result = runWithDigest(100, "permanent", home, {
+      now: 96,
+      _test: {
+        failBeforeStateCommit: true,
+        afterSatelliteMutations: () => {
+          const logs = new Database(join(home, "logs_2.sqlite"));
+          logs.exec(
+            `INSERT INTO logs (ts, level, target, thread_id, estimated_bytes) VALUES (99,'INFO','t','concurrent-insert',99)`,
+          );
+          logs.close();
+          const mem = new Database(join(home, "memories_1.sqlite"));
+          mem.exec(
+            `UPDATE jobs SET status='running' WHERE kind='memory_consolidate_global' AND job_key='global'`,
+          );
+          mem.close();
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+
+    const logs = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    expect(logs.query("SELECT thread_id FROM logs WHERE thread_id='concurrent-insert'").get()).toBeTruthy();
+    expect(
+      logs.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id IN ('told','tmid','tnew')").get()?.n,
+    ).toBe(3);
+    expect(logs.query("SELECT thread_id FROM logs WHERE thread_id='active'").get()).toBeTruthy();
+    logs.close();
+
+    const memories = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    expect(
+      memories.query(
+        "SELECT status FROM jobs WHERE kind='memory_consolidate_global' AND job_key='global'",
+      ).get()?.status,
+    ).toBe("running");
+    expect(
+      memories.query("SELECT thread_id FROM stage1_outputs ORDER BY thread_id").all().map(r => r.thread_id),
+    ).toEqual(["active", "tmid", "told"]);
+    memories.close();
+
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(state.query("SELECT id FROM threads ORDER BY id").all().map(r => r.id)).toEqual([
+      "active", "tmid", "tnew", "told",
+    ]);
+    state.close();
+  });
+
+  test("concurrent consolidate enqueue watermark change is preserved on restore", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const result = runWithDigest(100, "permanent", home, {
+      now: 97,
+      _test: {
+        failBeforeStateCommit: true,
+        afterSatelliteMutations: () => {
+          const mem = new Database(join(home, "memories_1.sqlite"));
+          mem.exec(
+            `UPDATE jobs SET input_watermark = 99999
+             WHERE kind='memory_consolidate_global' AND job_key='global' AND status='pending'`,
+          );
+          mem.close();
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+
+    const memories = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    const consolidate = memories.query<{
+      status: string;
+      input_watermark: number | null;
+    }, []>(
+      "SELECT status, input_watermark FROM jobs WHERE kind='memory_consolidate_global' AND job_key='global'",
+    ).get();
+    memories.close();
+    expect(consolidate?.status).toBe("pending");
+    expect(Number(consolidate?.input_watermark ?? 0)).toBe(99999);
+
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(state.query("SELECT id FROM threads ORDER BY id").all().map(r => r.id)).toEqual([
+      "active", "tmid", "tnew", "told",
+    ]);
+    state.close();
+  });
+});
