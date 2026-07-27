@@ -211,4 +211,42 @@ describe("POST /api/storage/cleanup", () => {
       await server.stop(true);
     }
   });
+
+  test("partial permanent purge returns relative trashDir on the wire", async () => {
+    seedArchived(isolatedCodexHome!.path);
+    const previous = process.env.OPENCODEX_CLEANUP_TEST_HOOKS;
+    process.env.OPENCODEX_CLEANUP_TEST_HOOKS = "1";
+    const server = startServer(0);
+    try {
+      const previewRes = await fetch(new URL("/api/storage/cleanup/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 100 }),
+      });
+      const preview = await previewRes.json();
+      const res = await fetch(new URL("/api/storage/cleanup", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          percent: 100,
+          mode: "permanent",
+          digest: preview.digest,
+          _test: { failPurgeBasenames: ["rollout-new.jsonl"] },
+        }),
+      });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+      expect(body.error).toBe("fs_failed");
+      expect(body.trashDir).toMatch(/^\.trash\/\d+$/);
+      expect(JSON.stringify(body)).not.toContain(isolatedCodexHome!.path.replaceAll("\\", "\\\\"));
+      const trashAbs = join(isolatedCodexHome!.path, ...String(body.trashDir).split("/"));
+      expect(existsSync(join(trashAbs, "rollout-new.jsonl"))).toBe(true);
+      expect(existsSync(join(trashAbs, "manifest.json"))).toBe(true);
+    } finally {
+      await server.stop(true);
+      if (previous === undefined) delete process.env.OPENCODEX_CLEANUP_TEST_HOOKS;
+      else process.env.OPENCODEX_CLEANUP_TEST_HOOKS = previous;
+    }
+  });
 });

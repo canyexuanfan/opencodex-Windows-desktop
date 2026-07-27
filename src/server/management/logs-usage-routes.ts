@@ -259,7 +259,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
   }
 
   if (url.pathname === "/api/storage/cleanup" && req.method === "POST") {
-    let body: { percent?: unknown; mode?: unknown; digest?: unknown };
+    let body: { percent?: unknown; mode?: unknown; digest?: unknown; _test?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
     const percent = typeof body?.percent === "number" ? body.percent : Number.NaN;
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
@@ -270,8 +270,26 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       return jsonResponse({ error: "invalid_mode" }, 400);
     }
     const digest = typeof body?.digest === "string" ? body.digest : "";
+    const testHooks =
+      process.env.OPENCODEX_CLEANUP_TEST_HOOKS === "1" &&
+      body &&
+      typeof body === "object" &&
+      "_test" in body &&
+      body._test &&
+      typeof body._test === "object"
+        ? body._test as {
+          failManifestWrite?: boolean;
+          failPurgeBasenames?: string[];
+          failRollbackBasenames?: string[];
+        }
+        : undefined;
     try {
-      const result = executeArchivedCleanup({ percent, mode: mode as CleanupMode, digest });
+      const result = executeArchivedCleanup({
+        percent,
+        mode: mode as CleanupMode,
+        digest,
+        ...(testHooks ? { _test: testHooks } : {}),
+      });
       if (!result.ok) {
         const status =
           result.error === "codex_busy" || result.error === "stale_preview" || result.error === "referenced_history"
@@ -293,6 +311,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
           ok: false,
           error: result.error ?? "cleanup_failed",
           message: messages[result.error ?? ""] ?? messages.cleanup_failed,
+          ...(result.trashDir ? { trashDir: result.trashDir } : {}),
         }, status);
       }
       return jsonResponse({

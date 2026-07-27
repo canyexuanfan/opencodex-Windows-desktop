@@ -450,7 +450,8 @@ interface ReconcileErr {
   error: CleanupErrorCode;
 }
 
-function reconcileThreads(
+/** Load matching archived threads and refuse referenced history — no deletes yet. */
+function loadThreadsForCleanup(
   stateDbPath: string,
   candidates: ArchivedCandidate[],
   codexHome: string,
@@ -464,14 +465,6 @@ function reconcileThreads(
     if (findReferencedHistory(db, threads)) {
       return { ok: false, error: "referenced_history" };
     }
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      deleteThreadsAndDependents(db, threads.map(t => t.id));
-      db.exec("COMMIT");
-    } catch (error) {
-      try { db.exec("ROLLBACK"); } catch { /* */ }
-      throw error;
-    }
     return { ok: true, threads };
   } catch (error) {
     return { ok: false, error: mapDbError(error) };
@@ -479,6 +472,34 @@ function reconcileThreads(
     try { db?.close(); } catch { /* */ }
   }
 }
+
+/** Delete matching threads in one transaction. Call only after the recovery manifest exists. */
+function deleteThreadsTransaction(
+  stateDbPath: string,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): { ok: true } | ReconcileErr {
+  if (!stateDbPath || !existsSync(stateDbPath) || threadIds.length === 0) return { ok: true };
+  let db: Database | undefined;
+  try {
+    db = openStateDbWritable(stateDbPath, busyTimeoutMs);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      deleteThreadsAndDependents(db, threadIds);
+      db.exec("COMMIT");
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch { /* */ }
+      throw error;
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: mapDbError(error) };
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+type StagedFile = { from: string; to: string; relPath: string };
 
 function absFromRel(codexHome: string, relPath: string): string {
   return join(codexHome, ...relPath.split("/"));
@@ -488,8 +509,8 @@ function stageCandidates(
   codexHome: string,
   candidates: ArchivedCandidate[],
   stageDir: string,
-): { ok: true; staged: Array<{ from: string; to: string; relPath: string }> } | { ok: false; staged: Array<{ from: string; to: string; relPath: string }> } {
-  const staged: Array<{ from: string; to: string; relPath: string }> = [];
+): { ok: true; staged: StagedFile[] } | { ok: false; staged: StagedFile[] } {
+  const staged: StagedFile[] = [];
   const usedBasenames = new Set<string>();
   try {
     mkdirSync(stageDir, { recursive: true });
@@ -514,29 +535,66 @@ function stageCandidates(
   }
 }
 
-function rollbackStaged(staged: Array<{ from: string; to: string }>): void {
+/**
+ * Rename staged files back to their originals.
+ * Returns whether every staged file was restored. Unrestored entries stay in `remaining`.
+ */
+function rollbackStaged(
+  staged: StagedFile[],
+  opts?: { failBasenames?: Set<string> },
+): { restored: boolean; remaining: StagedFile[] } {
+  const remaining: StagedFile[] = [];
   for (let i = staged.length - 1; i >= 0; i--) {
     const item = staged[i]!;
+    const base = basename(item.to);
+    if (opts?.failBasenames?.has(base)) {
+      remaining.push(item);
+      continue;
+    }
     try {
       if (existsSync(item.to) && !existsSync(item.from)) {
         renameSync(item.to, item.from);
+      } else if (existsSync(item.to)) {
+        // Destination occupied — cannot restore without clobbering.
+        remaining.push(item);
       }
     } catch {
-      /* best-effort restore */
+      remaining.push(item);
     }
   }
+  return { restored: remaining.length === 0, remaining };
 }
 
-function purgeStaged(staged: Array<{ to: string }>): boolean {
-  let ok = true;
+function purgeStaged(
+  staged: StagedFile[],
+  opts?: { failBasenames?: Set<string> },
+): { purged: StagedFile[]; remaining: StagedFile[] } {
+  const purged: StagedFile[] = [];
+  const remaining: StagedFile[] = [];
   for (const item of staged) {
+    const base = basename(item.to);
+    if (opts?.failBasenames?.has(base)) {
+      remaining.push(item);
+      continue;
+    }
     try {
       unlinkSync(item.to);
+      purged.push(item);
     } catch {
-      ok = false;
+      remaining.push(item);
     }
   }
-  return ok;
+  return { purged, remaining };
+}
+
+/** Remove stageDir only when it contains no unrestored staged files. */
+function removeStageIfEmpty(stageDir: string, remaining: StagedFile[]): void {
+  if (remaining.length > 0) return;
+  try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
+}
+
+function trashRelPath(codexHome: string, stageDir: string): string {
+  return toForwardSlash(relative(codexHome, stageDir) || stageDir);
 }
 
 export interface ExecuteCleanupOptions {
@@ -548,12 +606,19 @@ export interface ExecuteCleanupOptions {
   /** Test-only: shrink busy_timeout so lock tests fail fast. */
   busyTimeoutMs?: number;
   now?: number;
+  /** Test-only failure injection for atomicity regressions. */
+  _test?: {
+    failManifestWrite?: boolean;
+    failPurgeBasenames?: string[];
+    failRollbackBasenames?: string[];
+  };
 }
 
 function fail(
   mode: CleanupMode,
   percent: number,
   error: CleanupErrorCode,
+  extra?: { trashDir?: string },
 ): CleanupResult {
   return {
     ok: false,
@@ -563,18 +628,22 @@ function fail(
     bytes: 0,
     removedPaths: [],
     error,
+    ...(extra?.trashDir ? { trashDir: extra.trashDir } : {}),
   };
 }
 
 /**
  * Execute archived cleanup bound to a preview digest.
- * Stages every physical file first; rolls back on any FS or DB failure.
+ * Stages every physical file, writes the recovery manifest, then commits DB deletes.
+ * Rollback never deletes a stage directory that still holds unrestored files.
  */
 export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupResult {
   const codexHome = options.codexHome ?? resolveCodexHomeDir();
   const mode = options.mode;
   const percent = clampPercent(options.percent);
   const busyTimeoutMs = options.busyTimeoutMs ?? 100;
+  const failRollback = new Set(options._test?.failRollbackBasenames ?? []);
+  const failPurge = new Set(options._test?.failPurgeBasenames ?? []);
 
   if (mode !== "quarantine" && mode !== "permanent") {
     return fail(mode, percent, "invalid_mode");
@@ -605,43 +674,24 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
   }
 
   // Preflight referenced-history / matching while DB is free, before any rename.
-  if (probe.path && existsSync(probe.path)) {
-    let db: Database | undefined;
-    try {
-      db = openStateDbWritable(probe.path, busyTimeoutMs);
-      const threads = loadMatchingThreads(db, preview.candidates, codexHome);
-      if (findReferencedHistory(db, threads)) {
-        return fail(mode, percent, "referenced_history");
-      }
-    } catch (error) {
-      return fail(mode, percent, mapDbError(error));
-    } finally {
-      try { db?.close(); } catch { /* */ }
-    }
+  const loaded = loadThreadsForCleanup(probe.path, preview.candidates, codexHome, busyTimeoutMs);
+  if (!loaded.ok) {
+    return fail(mode, percent, loaded.error);
   }
 
   const epoch = options.now ?? Date.now();
   const stageDir = join(codexHome, TRASH_DIR, String(epoch));
+  const trashDir = trashRelPath(codexHome, stageDir);
+
   const stageResult = stageCandidates(codexHome, preview.candidates, stageDir);
   if (!stageResult.ok) {
-    rollbackStaged(stageResult.staged);
-    try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
-    return fail(mode, percent, "fs_failed");
+    const rolled = rollbackStaged(stageResult.staged, { failBasenames: failRollback });
+    removeStageIfEmpty(stageDir, rolled.remaining);
+    return fail(mode, percent, "fs_failed", rolled.restored ? undefined : { trashDir });
   }
-
-  const dbResult = reconcileThreads(probe.path, preview.candidates, codexHome, busyTimeoutMs);
-  if (!dbResult.ok) {
-    rollbackStaged(stageResult.staged);
-    try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
-    return fail(mode, percent, dbResult.error);
-  }
-
-  const removedPaths = preview.candidates.map(c => c.relPath);
-  const bytes = preview.candidates.reduce((sum, c) => sum + c.bytes, 0);
-  const trashRel = toForwardSlash(relative(codexHome, stageDir) || stageDir);
 
   const manifestEntries: CleanupManifestEntry[] = preview.candidates.map(candidate => {
-    const thread = dbResult.threads.find(t => {
+    const thread = loaded.threads.find(t => {
       const normalized = normalizeArchivedRolloutPath(t.rollout_path, codexHome);
       return normalized === candidate.relPath;
     });
@@ -656,56 +706,87 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     };
   });
 
-  const writeManifest = (manifestMode: CleanupMode): boolean => {
-    try {
-      writeFileSync(
-        join(stageDir, "manifest.json"),
-        JSON.stringify({
-          quarantinedAt: epoch,
-          mode: manifestMode,
-          percent,
-          digest: preview.digest,
-          entries: manifestEntries,
-        }, null, 2),
-      );
-      return true;
-    } catch {
-      return false;
+  // Manifest must exist before DB deletion so a mid-flight crash still has recovery metadata.
+  let manifestWritten = false;
+  try {
+    if (options._test?.failManifestWrite) {
+      throw new Error("test_fail_manifest_write");
     }
-  };
+    writeFileSync(
+      join(stageDir, "manifest.json"),
+      JSON.stringify({
+        quarantinedAt: epoch,
+        mode,
+        percent,
+        digest: preview.digest,
+        entries: manifestEntries,
+      }, null, 2),
+    );
+    manifestWritten = true;
+  } catch {
+    const rolled = rollbackStaged(stageResult.staged, { failBasenames: failRollback });
+    removeStageIfEmpty(stageDir, rolled.remaining);
+    return fail(mode, percent, "fs_failed", rolled.restored ? undefined : { trashDir });
+  }
+
+  const deleted = deleteThreadsTransaction(
+    probe.path,
+    loaded.threads.map(t => t.id),
+    busyTimeoutMs,
+  );
+  if (!deleted.ok) {
+    const rolled = rollbackStaged(stageResult.staged, { failBasenames: failRollback });
+    // Keep the stage (and manifest) whenever anything remains unrestored.
+    removeStageIfEmpty(stageDir, rolled.remaining);
+    return fail(mode, percent, deleted.error, rolled.restored ? undefined : { trashDir });
+  }
+
+  const removedPaths = preview.candidates.map(c => c.relPath);
+  const bytes = preview.candidates.reduce((sum, c) => sum + c.bytes, 0);
 
   if (mode === "quarantine") {
-    if (!writeManifest("quarantine")) {
-      rollbackStaged(stageResult.staged);
-      try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
-      return fail(mode, percent, "fs_failed");
-    }
     return {
       ok: true,
       mode,
       percent,
       count: removedPaths.length,
       bytes,
-      trashDir: trashRel,
+      trashDir,
       removedPaths,
     };
   }
 
   // Permanent: purge staged files only after a successful DB commit.
-  if (!purgeStaged(stageResult.staged)) {
-    // DB already committed; leave remnants in stage with a manifest for manual recovery.
-    writeManifest("permanent");
+  const purge = purgeStaged(stageResult.staged, { failBasenames: failPurge });
+  if (purge.remaining.length > 0) {
+    // Partially applied: DB rows are gone; keep remaining staged files + manifest for recovery.
+    if (!manifestWritten) {
+      try {
+        writeFileSync(
+          join(stageDir, "manifest.json"),
+          JSON.stringify({
+            quarantinedAt: epoch,
+            mode: "permanent",
+            percent,
+            digest: preview.digest,
+            entries: manifestEntries,
+            purgeIncomplete: true,
+          }, null, 2),
+        );
+      } catch { /* best-effort */ }
+    }
     return {
       ok: false,
       mode,
       percent,
       count: 0,
       bytes: 0,
-      trashDir: trashRel,
+      trashDir,
       removedPaths: [],
       error: "fs_failed",
     };
   }
+
   try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* empty dir */ }
   // Drop an empty `.trash` root so permanent cleanup leaves no quarantine tree behind.
   try {
