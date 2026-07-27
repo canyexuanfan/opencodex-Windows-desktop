@@ -12,7 +12,7 @@
 import { findLiveProxy, probeHostname } from "../server/proxy-liveness";
 import { runningProxyUpdateHeaders } from "../oauth/login-cli";
 
-export type CliStdin = NodeJS.ReadableStream & { isTTY?: boolean };
+export type CliStdin = NodeJS.ReadableStream & { isTTY?: boolean; readableEnded?: boolean };
 
 export interface RuntimeApiDeps {
   baseUrl?: string;
@@ -146,8 +146,19 @@ const SECRET_OPTIONS = ["--code"];
  * reporting them verbatim writes the credential to stderr. Repeating the
  * option does the same with the second value, since the parser takes only the
  * first occurrence.
+ *
+ * The token after the option is redacted whatever it looks like. Skipping
+ * `--`-prefixed tokens read as "that is a flag, not a value", but the shell
+ * hands over whatever was typed: `--code --SUPERSECRET` and
+ * `--code -- SUPERSECRET` both put the credential straight in the message. A
+ * mistaken `--code --json` now reads `--code <redacted>`, which is worse
+ * diagnostics for a case that already prints the usage text, and better than
+ * printing a credential.
+ *
+ * `redactValues` extends that to bare leftovers, for commands whose positional
+ * argument is itself a credential.
  */
-function redactSecretArgs(args: string[]): string[] {
+function redactSecretArgs(args: string[], redactValues = false): string[] {
   const out: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index] as string;
@@ -158,22 +169,39 @@ function redactSecretArgs(args: string[]): string[] {
     }
     if (SECRET_OPTIONS.includes(arg)) {
       out.push(arg);
-      // Swallow the value that belongs to it, if one followed.
-      const next = args[index + 1];
-      if (next !== undefined && !next.startsWith("--")) {
+      // Swallow the value that belongs to it. `--` is an end-of-options
+      // separator, so the value is the token after it.
+      let valueIndex = index + 1;
+      if (args[valueIndex] === "--") {
+        out.push("--");
+        valueIndex++;
+      }
+      if (args[valueIndex] !== undefined) {
         out.push("<redacted>");
-        index++;
+        index = valueIndex;
       }
       continue;
     }
-    out.push(arg);
+    out.push(redactValues && !arg.startsWith("-") ? "<redacted>" : arg);
   }
   return out;
 }
 
-export function rejectArgs(args: string[], usage: string): void {
+export interface RejectArgsOptions {
+  /**
+   * Report bare leftovers as `<redacted>`. Set by commands where a stray
+   * positional is plausibly the credential itself — `ocx account code <p>`
+   * takes one positional code, so a second one is echoed by the usage error
+   * unless it is hidden. Flag-shaped leftovers stay visible, because a
+   * mistyped flag is the thing the message needs to name.
+   */
+  redactValues?: boolean;
+}
+
+export function rejectArgs(args: string[], usage: string, options?: RejectArgsOptions): void {
   if (args.length > 0) {
-    throw new CliUsageError(`Unexpected argument(s): ${redactSecretArgs(args).join(" ")}`, usage);
+    const shown = redactSecretArgs(args, options?.redactValues === true);
+    throw new CliUsageError(`Unexpected argument(s): ${shown.join(" ")}`, usage);
   }
 }
 
@@ -216,6 +244,10 @@ export function takeOptionWithSyntax(
 export async function readSecretLine(deps: RuntimeApiDeps, label: string): Promise<string> {
   const input: CliStdin = deps.stdinImpl ?? process.stdin;
   const timeoutMs = deps.stdinTimeoutMs ?? 120_000;
+  // A stream that already ended emits nothing more, so attaching listeners
+  // would wait out the full timeout and then blame a slow paste. `echo … |
+  // something-else | ocx account code <p>` reaches here that way.
+  if (input.readableEnded === true) throw new CliUsageError(`${label} input was empty`);
   const line = await new Promise<string>((resolve, reject) => {
     let buffer = "";
     let settled = false;

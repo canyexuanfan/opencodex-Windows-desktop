@@ -1166,6 +1166,84 @@ describe("ocx account CLI (issue #180 matrix)", () => {
       expect(result.output).not.toContain("SUPERSECRET123");
     });
 
+    test("a flag-shaped code after --code is still hidden", async () => {
+      // Redaction used to stop at the first `--`, reading the next token as a
+      // flag rather than a value. The shell hands over whatever was typed, so
+      // a credential that happens to start with `--`, or one placed after the
+      // end-of-options separator, went straight into the usage error.
+      const dashed = await run(["cancel", "anthropic", "--code", "--SUPERSECRET123"]);
+      expect(dashed.code).toBe(2);
+      expect(dashed.output).not.toContain("SUPERSECRET123");
+      expect(dashed.stderr).toContain("<redacted>");
+
+      const separated = await run(["cancel", "anthropic", "--code", "--", "SUPERSECRET123"]);
+      expect(separated.code).toBe(2);
+      expect(separated.output).not.toContain("SUPERSECRET123");
+      expect(separated.stderr).toContain("<redacted>");
+    });
+
+    test("a second positional is hidden, while a mistyped flag is still named", async () => {
+      // An unquoted redirect URL splits on spaces, so the tail of the code
+      // arrives as extra positionals. Reporting them verbatim is the same leak
+      // by another route.
+      const split = await run(["code", "anthropic", "first", "SUPERSECRET123"]);
+      expect(split.code).toBe(2);
+      expect(split.output).not.toContain("SUPERSECRET123");
+      expect(split.stderr).toContain("<redacted>");
+
+      // Hiding values must not hide the diagnosis: a wrong flag is not a
+      // credential and stays readable.
+      const flag = await run(["code", "anthropic", "first", "--nope"]);
+      expect(flag.code).toBe(2);
+      expect(flag.stderr).toContain("--nope");
+    });
+
+    test("a stdin that already ended fails at once instead of waiting out the timeout", async () => {
+      // `something | something-else | ocx account code <p>` can hand over a
+      // stream that is already drained. Listening on it hears nothing, so the
+      // command sat for the full two minutes and then blamed a slow paste.
+      const drained = new PassThrough() as AccountStdin;
+      drained.isTTY = false;
+      drained.resume();
+      drained.end("");
+      await new Promise(resolve => drained.once("end", resolve));
+
+      const started = Date.now();
+      const result = await run(
+        ["code", "anthropic"],
+        { ...defaultDeps(), stdinImpl: drained, stdinTimeoutMs: 30_000 },
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("input was empty");
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    test("the credential survives being split across chunks and CRLF line ends", async () => {
+      // Overwriting the buffer instead of appending, or resolving an empty
+      // string at end-of-stream, both truncate the code silently.
+      const chunked = new PassThrough() as AccountStdin;
+      chunked.isTTY = false;
+      const pending = run(["code", "anthropic", "--json"], { ...defaultDeps(), stdinImpl: chunked });
+      chunked.write(SECRET.slice(0, 20));
+      chunked.write(`${SECRET.slice(20)}\r\n`);
+      const result = await pending;
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+    });
+
+    test("a code that arrives without a trailing newline is still read", async () => {
+      const noNewline = new PassThrough() as AccountStdin;
+      noNewline.isTTY = false;
+      const pending = run(["code", "anthropic", "--json"], { ...defaultDeps(), stdinImpl: noNewline });
+      noNewline.end(SECRET);
+      const result = await pending;
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+    });
+
     test("a plain login still opens the browser flow instead of waiting on stdin", async () => {
       // The stdin default belongs to `account code`. If it reached `login`,
       // every ordinary `ocx account login <provider>` would block on a prompt.

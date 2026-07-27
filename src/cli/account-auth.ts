@@ -160,7 +160,9 @@ async function code(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   // replaced by a confusing one about how the code was passed.
   const positional = args[0]?.startsWith("--") ? undefined : args.shift();
   if (!provider) throw new CliUsageError("provider is required", USAGE);
-  rejectArgs(args, USAGE);
+  // A second positional here is most likely the code, split by an unquoted
+  // space or a stray shell expansion. Naming it back would put it on stderr.
+  rejectArgs(args, USAGE, { redactValues: true });
   if (suppliedCode && positional !== undefined) {
     throw new CliUsageError("pass the code either positionally or with --code, not both", USAGE);
   }
