@@ -13,7 +13,6 @@ on:
   # default-branch review. Schedule-only keeps the trusted revision on main.
 
 permissions:
-  contents: read
   issues: write
   # actions/stale requires this even when PR processing is disabled below.
   pull-requests: write

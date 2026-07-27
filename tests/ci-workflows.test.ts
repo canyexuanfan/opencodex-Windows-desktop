@@ -115,9 +115,17 @@ describe("GitHub Actions hardening", () => {
   });
 
   test("cross-platform CI path filters include the stale needs-info workflow", async () => {
-    const workflow = await readText(".github/workflows/ci.yml");
-    // pull_request + push allowlists must both list privileged workflow files.
-    expect(count(workflow, '".github/workflows/stale-needs-info.yml"')).toBe(2);
+    const workflow = Bun.YAML.parse(await readText(".github/workflows/ci.yml")) as {
+      on?: {
+        pull_request?: { paths?: string[] };
+        push?: { paths?: string[] };
+      };
+    };
+    const path = ".github/workflows/stale-needs-info.yml";
+    // Assert each trigger separately so a duplicated pull_request entry cannot
+    // satisfy a whole-file count while push is missing the path.
+    expect(workflow.on?.pull_request?.paths ?? []).toContain(path);
+    expect(workflow.on?.push?.paths ?? []).toContain(path);
   });
 
   test("stale needs-info workflow is schedule-only and least-privilege", async () => {
@@ -138,10 +146,10 @@ describe("GitHub Actions hardening", () => {
     expect(workflow.on).toBeDefined();
     expect(Object.keys(workflow.on ?? {})).toEqual(["schedule"]);
     expect(workflow.permissions).toEqual({
-      contents: "read",
       issues: "write",
       "pull-requests": "write",
     });
+    expect(workflow.permissions).not.toHaveProperty("contents");
 
     const steps = workflow.jobs?.stale?.steps ?? [];
     expect(steps).toHaveLength(2);
