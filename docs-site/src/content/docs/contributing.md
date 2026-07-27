@@ -85,13 +85,11 @@ bun run release:watch               # watch the newest Release workflow run
 - `dev` — the default integration target. Open your pull request here unless it
   belongs to a scoped line below.
 - `dev2-go` — parallel integration line for the Go native port (`go/`, the
-  native runtime entrypoint, and the Go release-asset tooling). **Not yet open
-  for pull requests:** the automated target-branch check does not know about
-  this line, so it prefixes such a pull request with `[WRONG BRANCH]` and
-  forces it to draft, and it runs again whenever you edit the title or mark the
-  pull request ready, so that state holds. GitHub will not merge a draft, so
-  the pull request cannot land. Until the check is updated, send Go
-  native-port work to `dev` or ask a maintainer first.
+  native runtime entrypoint, and the Go release-asset tooling). Open for pull
+  requests alongside `dev`. Send work here only when it belongs to the Go port;
+  everything else goes to `dev`. The automated target-branch check accepts both
+  and cannot tell them apart, so scope is settled in review — a maintainer may
+  ask you to retarget.
 - `main` — releases only. It moves by maintainer-controlled promotion from
   `dev`; do not open feature pull requests against it.
 - `preview` — the prerelease train.

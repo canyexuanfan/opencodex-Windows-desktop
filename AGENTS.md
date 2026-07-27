@@ -42,12 +42,12 @@ non-trivial change. CI runs these on Linux, Windows, and macOS.
   unless it belongs to a scoped line below.
 - `dev2-go` — parallel integration line for the Go native port: `go/`,
   `bin/native-runtime.mjs`, `src/lib/runtime-entry.ts`, and the Go
-  release-asset tooling. **Not yet open for pull requests.** The target-branch
-  check does not recognise this line: it prefixes any non-`dev` pull request
-  with `[WRONG BRANCH]` and converts it to a draft, and it runs again on every
-  edit and ready-for-review event, so the draft state holds. GitHub will not
-  merge a draft, so such a pull request cannot land. Until the check is
-  updated, send Go native-port work to `dev` or coordinate with a maintainer.
+  release-asset tooling. Open for pull requests: the target-branch check
+  accepts `dev` and `dev2-go` as integration targets. Keep it to scoped Go
+  native-port work — the check cannot tell an intentional target from a
+  mistaken one, so that boundary is a review decision. It converges back
+  through maintainer-controlled merges, and promotion to `main` still happens
+  only from `dev`.
 - `main` — release branch. It only moves by maintainer-controlled promotion
   from `dev` (releases, docs deploys). Do not open feature PRs against `main`.
 - `preview` — prerelease train (`x.y.z-preview.*` versions).
@@ -74,12 +74,12 @@ reviewers (Codex, CodeRabbit).
   language. Be detailed and specific: name the file and line, describe the
   concrete failure mode, and suggest a fix. Avoid vague or purely stylistic
   commentary.
-- **Branch targeting:** flag any pull request that does not target `dev`
-  (releases and maintainer promotions are the only exceptions). That includes
-  `dev2-go` for now: the line is real, but it cannot take pull requests until
-  the target-branch check is updated, so ask the author to retarget to `dev`.
-  Explain it that way rather than as a mistake — the `[WRONG BRANCH]` prefix on
-  such a pull request is applied by `enforce-pr-target.yml`, not by the author.
+- **Branch targeting:** flag any pull request that targets neither `dev` nor
+  `dev2-go` (releases and maintainer promotions are the only exceptions).
+  `dev2-go` is accepted by the automation but scoped by review: if a pull
+  request targets it without touching `go/`, the native runtime entrypoint, or
+  the Go release-asset tooling, ask the author to retarget to `dev`. The
+  automation cannot make that judgement, which is why it is yours.
 - **Security boundary (highest priority):** changes touching authentication,
   credential/token handling, OAuth flows, GitHub Actions workflows, release
   automation (`scripts/release.ts`, `.github/workflows/release.yml`), or

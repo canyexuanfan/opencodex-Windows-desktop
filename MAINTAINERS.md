@@ -19,11 +19,10 @@ through GitHub repository settings.
 - Pull requests target `dev` by default. `dev2-go` is a parallel integration
   line reserved for Go native-port work; it converges back through
   maintainer-controlled merges, and promotion to `main` still happens only from
-  `dev`. The target-branch check does not recognise that line yet — it prefixes
-  the title with `[WRONG BRANCH]`, forces such pull requests to draft, and runs
-  again on every edit or ready-for-review event, so that state holds and
-  blocks merging entirely. Until the check is updated, `dev2-go` takes
-  maintainer pushes but not pull requests.
+  `dev`. The target-branch check accepts both as integration targets. It cannot
+  distinguish scoped Go port work from anything else aimed at `dev2-go`, so
+  that boundary is enforced in review: redirect an out-of-scope pull request to
+  `dev` rather than treating the automation's silence as approval.
 - A pull request requires approval from at least one maintainer and successful required CI checks
   before merge.
 - Authors do not approve their own pull requests.
