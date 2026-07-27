@@ -6,10 +6,11 @@
  * permanent delete is opt-in.
  *
  * Execution is bound to a preview digest. All candidates are staged first; any FS
- * or DB failure rolls staged moves back. DB reconciliation freezes thread IDs under
- * the state write lock, then mutates `logs_*` → `memories_*` → `goals_*` → `state_*`
- * with satellite snapshots so later failures can restore already-deleted rows.
- * Success never carries soft `dbWarning` / `failedPaths`.
+ * Freezes the thread-ID set under the state write lock, persists a complete
+ * satellite-backup.json before any satellite delete commit, then mutates
+ * `logs_*` → `memories_*` → `goals_*` → `state_*`. Later failures restore
+ * satellite rows before staged files. Success never carries soft `dbWarning` /
+ * `failedPaths`.
  */
 import { createHash } from "node:crypto";
 import {
@@ -511,6 +512,7 @@ interface ReconcileTestHooks {
   failAfterGoalsMutation?: boolean;
   failBeforeStateCommit?: boolean;
   failSatelliteRestore?: boolean;
+  failSatelliteBackupWrite?: boolean;
 }
 
 const SATELLITE_BACKUP_FILE = "satellite-backup.json";
@@ -542,11 +544,8 @@ function clearSatelliteBackup(stageDir: string): void {
   try { unlinkSync(join(stageDir, SATELLITE_BACKUP_FILE)); } catch { /* */ }
 }
 
-/**
- * Snapshot + delete logs rows for frozen thread IDs.
- * Returns null when the logs DB is absent.
- */
-function mutateLogsWithBackup(
+/** Read-only snapshot of logs rows that would be deleted. */
+function snapshotLogs(
   logsDbPath: string | null,
   threadIds: string[],
   busyTimeoutMs: number,
@@ -555,22 +554,16 @@ function mutateLogsWithBackup(
   let db: Database | undefined;
   try {
     db = openDbWritable(logsDbPath, busyTimeoutMs);
-    db.exec("BEGIN IMMEDIATE");
     if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
     const placeholders = threadIds.map(() => "?").join(",");
     const rows = selectRows(db, `SELECT * FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
-    db.run(`DELETE FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
-    db.exec("COMMIT");
     return { path: logsDbPath, rows };
-  } catch (error) {
-    try { db?.exec("ROLLBACK"); } catch { /* */ }
-    throw error;
   } finally {
     try { db?.close(); } catch { /* */ }
   }
 }
 
-function mutateMemoriesWithBackup(
+function snapshotMemories(
   memoriesDbPath: string | null,
   threadIds: string[],
   busyTimeoutMs: number,
@@ -579,7 +572,6 @@ function mutateMemoriesWithBackup(
   let db: Database | undefined;
   try {
     db = openDbWritable(memoriesDbPath, busyTimeoutMs);
-    db.exec("BEGIN IMMEDIATE");
     if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
     const placeholders = threadIds.map(() => "?").join(",");
     const stage1 = selectRows(
@@ -589,7 +581,6 @@ function mutateMemoriesWithBackup(
     );
     let stage1Jobs: SqlRow[] = [];
     let consolidateJob: SqlRow | null = null;
-    let consolidateTouched = false;
     let selectedForPhase2 = 0;
     if (columnExists(db, "stage1_outputs", "selected_for_phase2")) {
       selectedForPhase2 = stage1.filter(r => Number(r.selected_for_phase2 ?? 0) !== 0).length;
@@ -604,15 +595,101 @@ function mutateMemoriesWithBackup(
         `SELECT * FROM jobs WHERE kind = ? AND job_key = ?`,
       ).get(JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY) as SqlRow | null;
     }
+    return {
+      path: memoriesDbPath,
+      stage1,
+      stage1Jobs,
+      consolidateJob,
+      consolidateTouched: selectedForPhase2 > 0,
+    };
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
 
+function snapshotGoals(
+  goalsDbPath: string | null,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): SatelliteBackup["goals"] {
+  if (!goalsDbPath || !existsSync(goalsDbPath) || threadIds.length === 0) return undefined;
+  let db: Database | undefined;
+  try {
+    db = openDbWritable(goalsDbPath, busyTimeoutMs);
+    if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
+    const placeholders = threadIds.map(() => "?").join(",");
+    const goals = selectRows(
+      db,
+      `SELECT * FROM thread_goals WHERE thread_id IN (${placeholders})`,
+      threadIds,
+    );
+    let deferrals: SqlRow[] = [];
+    if (tableExists(db, "thread_goal_continuation_deferrals")) {
+      deferrals = selectRows(
+        db,
+        `SELECT * FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+        threadIds,
+      );
+    }
+    return { path: goalsDbPath, goals, deferrals };
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+/** Build the complete satellite backup while holding the state write lock (read-only on satellites). */
+function snapshotSatelliteBackup(
+  paths: RuntimeDbPaths,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): SatelliteBackup {
+  return {
+    threadIds,
+    logs: snapshotLogs(paths.logs, threadIds, busyTimeoutMs),
+    memories: snapshotMemories(paths.memories, threadIds, busyTimeoutMs),
+    goals: snapshotGoals(paths.goals, threadIds, busyTimeoutMs),
+  };
+}
+
+function commitLogsDelete(
+  section: NonNullable<SatelliteBackup["logs"]>,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): void {
+  let db: Database | undefined;
+  try {
+    db = openDbWritable(section.path, busyTimeoutMs);
+    db.exec("BEGIN IMMEDIATE");
+    if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
+    const placeholders = threadIds.map(() => "?").join(",");
+    db.run(`DELETE FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db?.exec("ROLLBACK"); } catch { /* */ }
+    throw error;
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+function commitMemoriesDelete(
+  section: NonNullable<SatelliteBackup["memories"]>,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): void {
+  let db: Database | undefined;
+  try {
+    db = openDbWritable(section.path, busyTimeoutMs);
+    db.exec("BEGIN IMMEDIATE");
+    if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
+    const placeholders = threadIds.map(() => "?").join(",");
     db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, threadIds);
     if (tableExists(db, "jobs")) {
       db.run(
         `DELETE FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
         [JOB_KIND_MEMORY_STAGE1, ...threadIds],
       );
-      if (selectedForPhase2 > 0) {
-        consolidateTouched = true;
+      if (section.consolidateTouched) {
         const now = Math.floor(Date.now() / 1000);
         db.run(
           `INSERT INTO jobs (
@@ -633,7 +710,6 @@ function mutateMemoriesWithBackup(
       }
     }
     db.exec("COMMIT");
-    return { path: memoriesDbPath, stage1, stage1Jobs, consolidateJob, consolidateTouched };
   } catch (error) {
     try { db?.exec("ROLLBACK"); } catch { /* */ }
     throw error;
@@ -642,30 +718,18 @@ function mutateMemoriesWithBackup(
   }
 }
 
-function mutateGoalsWithBackup(
-  goalsDbPath: string | null,
+function commitGoalsDelete(
+  section: NonNullable<SatelliteBackup["goals"]>,
   threadIds: string[],
   busyTimeoutMs: number,
-): SatelliteBackup["goals"] {
-  if (!goalsDbPath || !existsSync(goalsDbPath) || threadIds.length === 0) return undefined;
+): void {
   let db: Database | undefined;
   try {
-    db = openDbWritable(goalsDbPath, busyTimeoutMs);
+    db = openDbWritable(section.path, busyTimeoutMs);
     db.exec("BEGIN IMMEDIATE");
     if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
     const placeholders = threadIds.map(() => "?").join(",");
-    const goals = selectRows(
-      db,
-      `SELECT * FROM thread_goals WHERE thread_id IN (${placeholders})`,
-      threadIds,
-    );
-    let deferrals: SqlRow[] = [];
     if (tableExists(db, "thread_goal_continuation_deferrals")) {
-      deferrals = selectRows(
-        db,
-        `SELECT * FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
-        threadIds,
-      );
       db.run(
         `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
         threadIds,
@@ -673,7 +737,6 @@ function mutateGoalsWithBackup(
     }
     db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, threadIds);
     db.exec("COMMIT");
-    return { path: goalsDbPath, goals, deferrals };
   } catch (error) {
     try { db?.exec("ROLLBACK"); } catch { /* */ }
     throw error;
@@ -807,9 +870,9 @@ function loadThreadsForCleanup(
 /**
  * Reconcile all Codex per-thread stores for the matched archived candidates.
  *
- * Freezes the thread-ID set under the state write lock, then mutates satellites
- * (logs → memories → goals) with durable snapshots. Any later failure restores
- * satellite rows before the caller restores staged files.
+ * Freezes the thread-ID set under the state write lock, persists a complete
+ * satellite backup, then mutates satellites (logs → memories → goals). Any later
+ * failure restores satellite rows before the caller restores staged files.
  */
 function reconcileDeletedThreads(
   paths: RuntimeDbPaths,
@@ -857,23 +920,35 @@ function reconcileDeletedThreads(
       return { ok: false, error: "referenced_history" };
     }
     const threadIds = threads.map(t => t.id);
-    backup = { threadIds };
 
-    // Snapshot+delete satellites while the state lock is held so the ID set cannot drift.
-    backup.logs = mutateLogsWithBackup(paths.logs, threadIds, busyTimeoutMs);
-    writeSatelliteBackup(stageDir, backup);
-    satellitesMutated = Boolean(backup.logs);
-    if (hooks?.failAfterLogsMutation) throw new Error("test_fail_after_logs");
+    // Snapshot every satellite first, then persist the complete backup before any delete commit.
+    backup = snapshotSatelliteBackup(paths, threadIds, busyTimeoutMs);
+    try {
+      if (hooks?.failSatelliteBackupWrite) {
+        throw new Error("test_fail_satellite_backup_write");
+      }
+      writeSatelliteBackup(stageDir, backup);
+    } catch {
+      stateDb.exec("ROLLBACK");
+      clearSatelliteBackup(stageDir);
+      return { ok: false, error: "fs_failed" };
+    }
 
-    backup.memories = mutateMemoriesWithBackup(paths.memories, threadIds, busyTimeoutMs);
-    writeSatelliteBackup(stageDir, backup);
-    satellitesMutated = satellitesMutated || Boolean(backup.memories);
-    if (hooks?.failAfterMemoriesMutation) throw new Error("test_fail_after_memories");
-
-    backup.goals = mutateGoalsWithBackup(paths.goals, threadIds, busyTimeoutMs);
-    writeSatelliteBackup(stageDir, backup);
-    satellitesMutated = satellitesMutated || Boolean(backup.goals);
-    if (hooks?.failAfterGoalsMutation) throw new Error("test_fail_after_goals");
+    if (backup.logs) {
+      commitLogsDelete(backup.logs, threadIds, busyTimeoutMs);
+      satellitesMutated = true;
+      if (hooks?.failAfterLogsMutation) throw new Error("test_fail_after_logs");
+    }
+    if (backup.memories) {
+      commitMemoriesDelete(backup.memories, threadIds, busyTimeoutMs);
+      satellitesMutated = true;
+      if (hooks?.failAfterMemoriesMutation) throw new Error("test_fail_after_memories");
+    }
+    if (backup.goals) {
+      commitGoalsDelete(backup.goals, threadIds, busyTimeoutMs);
+      satellitesMutated = true;
+      if (hooks?.failAfterGoalsMutation) throw new Error("test_fail_after_goals");
+    }
 
     // Re-check under the same lock before committing state deletes.
     if (findReferencedHistory(stateDb, threads)) {
@@ -1019,6 +1094,7 @@ export interface ExecuteCleanupOptions {
     failAfterGoalsMutation?: boolean;
     failBeforeStateCommit?: boolean;
     failSatelliteRestore?: boolean;
+    failSatelliteBackupWrite?: boolean;
   };
 }
 
