@@ -1291,6 +1291,34 @@ export interface ExecuteCleanupOptions {
   };
 }
 
+/** Serializable cleanup test hooks allowed on the management API wire. */
+export type CleanupWireTestHooks = Omit<
+  NonNullable<ExecuteCleanupOptions["_test"]>,
+  "afterSatelliteMutations"
+>;
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every(e => typeof e === "string");
+}
+
+/** Pick only allowlisted serializable hooks; drops afterSatelliteMutations and unknown keys. */
+export function pickWireCleanupTestHooks(raw: unknown): CleanupWireTestHooks | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const out: CleanupWireTestHooks = {};
+  if (typeof o.failManifestWrite === "boolean") out.failManifestWrite = o.failManifestWrite;
+  if (isStringArray(o.failPurgeBasenames)) out.failPurgeBasenames = o.failPurgeBasenames;
+  if (isStringArray(o.failRollbackBasenames)) out.failRollbackBasenames = o.failRollbackBasenames;
+  if (isStringArray(o.blockStageDestBasenames)) out.blockStageDestBasenames = o.blockStageDestBasenames;
+  if (typeof o.failAfterLogsMutation === "boolean") out.failAfterLogsMutation = o.failAfterLogsMutation;
+  if (typeof o.failAfterMemoriesMutation === "boolean") out.failAfterMemoriesMutation = o.failAfterMemoriesMutation;
+  if (typeof o.failAfterGoalsMutation === "boolean") out.failAfterGoalsMutation = o.failAfterGoalsMutation;
+  if (typeof o.failBeforeStateCommit === "boolean") out.failBeforeStateCommit = o.failBeforeStateCommit;
+  if (typeof o.failSatelliteRestore === "boolean") out.failSatelliteRestore = o.failSatelliteRestore;
+  if (typeof o.failSatelliteBackupWrite === "boolean") out.failSatelliteBackupWrite = o.failSatelliteBackupWrite;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function fail(
   mode: CleanupMode,
   percent: number,

@@ -18,6 +18,7 @@ import {
   normalizeArchivedRolloutPath,
   previewArchivedCleanup,
   selectOldestPercent,
+  type ExecuteCleanupOptions,
 } from "../src/storage/cleanup";
 
 const OLD = new Date("2026-01-01T00:00:00Z");
@@ -188,18 +189,7 @@ function runWithDigest(
     busyTimeoutMs?: number;
     now?: number;
     digest?: string;
-    _test?: {
-      failManifestWrite?: boolean;
-      failPurgeBasenames?: string[];
-      failRollbackBasenames?: string[];
-      failAfterLogsMutation?: boolean;
-      failAfterMemoriesMutation?: boolean;
-      failAfterGoalsMutation?: boolean;
-      failBeforeStateCommit?: boolean;
-      failSatelliteRestore?: boolean;
-      failSatelliteBackupWrite?: boolean;
-      afterSatelliteMutations?: () => void;
-    };
+    _test?: ExecuteCleanupOptions["_test"];
   },
 ) {
   const preview = previewArchivedCleanup(percent, codexHome);

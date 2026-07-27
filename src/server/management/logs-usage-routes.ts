@@ -34,7 +34,7 @@ import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { resolveCodexHomeDir } from "../../codex/home";
 import { scanStorage } from "../../storage/scanner";
-import { executeArchivedCleanup, previewArchivedCleanup, type CleanupMode } from "../../storage/cleanup";
+import { executeArchivedCleanup, pickWireCleanupTestHooks, previewArchivedCleanup, type CleanupMode } from "../../storage/cleanup";
 import {
   currentUsageLogRevision,
   readUsageSnapshotForManagement,
@@ -274,14 +274,8 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       process.env.OPENCODEX_CLEANUP_TEST_HOOKS === "1" &&
       body &&
       typeof body === "object" &&
-      "_test" in body &&
-      body._test &&
-      typeof body._test === "object"
-        ? body._test as {
-          failManifestWrite?: boolean;
-          failPurgeBasenames?: string[];
-          failRollbackBasenames?: string[];
-        }
+      "_test" in body
+        ? pickWireCleanupTestHooks(body._test)
         : undefined;
     try {
       const result = executeArchivedCleanup({
