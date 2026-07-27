@@ -229,6 +229,33 @@
       "criteriaIds": [
         "c7"
       ]
+    },
+    {
+      "id": "wp8",
+      "title": "게이트를 main으로 승격 (fast-forward) — pull_request_target은 기본 브랜치 워크플로를 실행하므로 이것 없이는 발효되지 않음",
+      "status": "in_progress",
+      "tasks": [
+        {
+          "id": "wp8-t1",
+          "title": "dev HEAD b4a9fe5c 호스팅 CI success 확인 (Cross-platform CI + Service lifecycle)",
+          "status": "open"
+        },
+        {
+          "id": "wp8-t2",
+          "title": "main..dev 98커밋 범위에 릴리스 파이프라인/보안 리뷰 대상 변경이 있는지 확인",
+          "status": "open"
+        },
+        {
+          "id": "wp8-t3",
+          "title": "git push origin b4a9fe5c:main (fast-forward, 로컬 체크아웃은 dev 유지)",
+          "status": "open"
+        },
+        {
+          "id": "wp8-t4",
+          "title": "승격 후 원격 main의 enforce-pr-target.yml에 ALLOWED_BASES 존재 확인 + c5 met 기록",
+          "status": "open"
+        }
+      ]
     }
   ],
   "criteria": [
