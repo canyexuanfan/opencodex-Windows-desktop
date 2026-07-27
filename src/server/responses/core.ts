@@ -39,6 +39,7 @@ import {
   UnsupportedOAuthProviderError,
 } from "../../oauth";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../../web-search";
+import { buildImageTool, planImageBridge, runWithImageBridge, clampImageMaxRounds, IMAGE_GEN_TOOL_NAME } from "../../images";
 import { describeImagesInPlace, planVisionSidecar, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../../vision";
 import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/run-turn-queue";
 import {
@@ -1531,6 +1532,168 @@ export async function handleResponses(
     });
   }
 
+  // Image / web-search sidecars: plan once, then dispatch with runTurn-aware priority.
+  // Routed-compaction turns must NOT hit the image bridge: compaction clears tools/_webSearch but
+  // leaves _imageGeneration, so planImageBridge would activate and return a normal Responses
+  // completion instead of the synthetic compaction item Codex expects (#424).
+  //
+  // Web-search's loop only supports buildRequest/fetch/parseStream — NOT adapter.runTurn. Sending
+  // Cursor/runTurn requests into runWithWebSearch produces empty HTTP failures. So:
+  //   - non-runTurn: web-search wins over image when both eligible (documented priority)
+  //   - runTurn: image bridge may run (it supports runTurn); web-search is skipped so runTurn
+  //     can proceed for web-search-only turns
+  const wsPlan = !routedCompaction
+    ? planWebSearch(config, parsed, false, route.provider, route.modelId, openAiSidecar)
+    : undefined;
+  const imgPlan = !routedCompaction ? await planImageBridge(config, parsed, route.provider) : undefined;
+  const canRunWebSearch = !!wsPlan && !adapter.runTurn;
+  if (imgPlan && (!wsPlan || adapter.runTurn)) {
+    // The bridge forces stream:true internally and returns SSE. Non-streaming requests can't be
+    // served — reject explicitly rather than returning SSE to a client expecting JSON.
+    if (!parsed.stream) {
+      return formatErrorResponse(400, "invalid_request_error", "image bridge requires stream=true");
+    }
+    // Replace any pre-existing image_gen alias instead of appending a duplicate wire name.
+    const priorTools = parsed.context.tools ?? [];
+    parsed.context.tools = [
+      ...priorTools.filter(t => {
+        if (t.imageGeneration) return false;
+        if (imgPlan.toolNames.has(t.name)) return false;
+        if (t.namespace && imgPlan.toolNames.has(namespacedToolName(t.namespace, t.name))) return false;
+        return true;
+      }),
+      buildImageTool(),
+    ];
+    // Hosted image_generation tool_choice / allowed_tools must target the synthetic function name.
+    const tc = parsed.options.toolChoice;
+    if (tc && typeof tc === "object" && "allowedTools" in tc && Array.isArray(tc.allowedTools)) {
+      const mapped = tc.allowedTools.map(name =>
+        name === "image_generation" || name === "image_gen" || imgPlan.toolNames.has(name)
+          ? IMAGE_GEN_TOOL_NAME
+          : name,
+      );
+      parsed.options.toolChoice = { ...tc, allowedTools: [...new Set(mapped)] };
+    } else if (tc && typeof tc === "object" && "name" in tc && typeof tc.name === "string"
+      && (tc.name === "image_generation" || imgPlan.toolNames.has(tc.name))) {
+      parsed.options.toolChoice = { ...tc, name: IMAGE_GEN_TOOL_NAME };
+    }
+    const imgResponse = await runWithImageBridge({
+      parsed, adapter,
+      plan: imgPlan,
+      forwardHeaders: selectedForwardHeaders,
+      onAttemptSend: () => noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens),
+      abortSignal: options.abortSignal,
+      maxRounds: clampImageMaxRounds(config.images?.maxRounds),
+      connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
+      stallTimeoutSec: config.stallTimeoutSec,
+      fetchImpl: providerFetch(route.provider),
+      onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
+      onUsage: usage => {
+        // Cursor may assign _cursorConversationId inside the image loop's first runTurn;
+        // backfill so Logs can filter/total that opening request (parity with the normal
+        // runTurn branch).
+        if (!logCtx.conversationId && parsed._cursorConversationId) {
+          logCtx.conversationId = normalizeLogConversationId(parsed._cursorConversationId);
+        }
+        logCtx.usageFromBridge = true;
+        if (usage) {
+          logCtx.usage = usage;
+          if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
+        }
+      },
+      on429: retryAfter => {
+        const rotated = rotateProviderTransportOn429(config, route.providerName, {
+          retryAfter,
+          now: Date.now(),
+          attemptedKey: route.provider.apiKey,
+          promptCacheKey: parsed.options.promptCacheKey,
+        });
+        if (!rotated) return null;
+        route.provider = rotated;
+        return resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          config.cacheRetention,
+        );
+      },
+      ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
+      ...(options.forceEmptyResponseId ? { forceEmptyResponseId: true } : {}),
+      onCompletedResponse: (response, providerState) =>
+        rememberResponseState(
+          parsed._rawBody,
+          response,
+          continuationStateForResponse(providerState),
+          adapterNeedsForcedContinuation(adapter.name) ? { force: true } : undefined,
+        ),
+    });
+    if (imgResponse.body) {
+      const imgTurnAc = new AbortController();
+      return new Response(trackStreamLifetime(imgResponse.body, imgTurnAc), {
+        status: imgResponse.status,
+        headers: imgResponse.headers,
+      });
+    }
+    return imgResponse;
+  }
+
+  // Web-search sidecar: Codex enabled web_search but this is a routed (non-OpenAI) model that can't
+  // run it server-side. Expose web_search as a function tool and run searches via the gpt-mini sidecar
+  // through the ChatGPT passthrough, looping until the model answers. Otherwise take the normal path.
+  // Placed BEFORE the runTurn early-return for non-runTurn adapters so dual-tool turns dispatch
+  // through web-search instead of being swallowed. runTurn adapters never enter this branch.
+  if (canRunWebSearch && wsPlan) {
+    parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
+    noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
+    const wsResponse = await runWithWebSearch({
+      parsed, adapter,
+      backend: wsPlan.backend,
+      forwardProvider: wsPlan.forwardSidecar?.provider,
+      anthropicSidecar: wsPlan.anthropicSidecar,
+      hostedTool: wsPlan.hostedTool,
+      selectedForwardHeaders: wsPlan.forwardSidecar?.headers ?? selectedForwardHeaders,
+      settings: wsPlan.settings,
+      maxSearches: wsPlan.maxSearches,
+      forceEmptyResponseId: true,
+      abortSignal: options.abortSignal,
+      ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
+      onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
+      onUsage: usage => {
+        logCtx.usageFromBridge = true;
+        if (usage) {
+          logCtx.usage = usage;
+          if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
+        }
+      },
+      recordSidecarOutcome: wsPlan.forwardSidecar?.recordOutcome,
+      connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
+      routedModelStallTimeoutMs: wsPlan.routedModelStallTimeoutMs,
+      stallTimeoutSec: wsPlan.stallTimeoutSec,
+      on429: retryAfter => {
+        const rotated = rotateProviderTransportOn429(config, route.providerName, {
+          retryAfter,
+          now: Date.now(),
+          attemptedKey: route.provider.apiKey,
+          promptCacheKey: parsed.options.promptCacheKey,
+        });
+        if (!rotated) return null;
+        route.provider = rotated;
+        return resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          config.cacheRetention,
+        );
+      },
+    });
+    // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
+    // in-flight web-search turns instead of skipping them during graceful shutdown.
+    if (wsResponse.body) {
+      const wsTurnAc = new AbortController();
+      return new Response(trackStreamLifetime(wsResponse.body, wsTurnAc), {
+        status: wsResponse.status,
+        headers: wsResponse.headers,
+      });
+    }
+    return wsResponse;
+  }
+
   if (adapter.runTurn) {
     const runTurnAbort = new AbortController();
     linkAbortSignal(runTurnAbort, options.abortSignal);
@@ -1649,64 +1812,6 @@ export async function handleResponses(
       );
     }
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
-  }
-
-  // Web-search sidecar: Codex enabled web_search but this is a routed (non-OpenAI) model that can't
-  // run it server-side. Expose web_search as a function tool and run searches via the gpt-mini sidecar
-  // through the ChatGPT passthrough, looping until the model answers. Otherwise take the normal path.
-  const wsPlan = planWebSearch(config, parsed, false, route.provider, route.modelId, openAiSidecar);
-  if (wsPlan) {
-    parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
-    noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
-    const wsResponse = await runWithWebSearch({
-      parsed, adapter,
-      backend: wsPlan.backend,
-      forwardProvider: wsPlan.forwardSidecar?.provider,
-      anthropicSidecar: wsPlan.anthropicSidecar,
-      hostedTool: wsPlan.hostedTool,
-      selectedForwardHeaders: wsPlan.forwardSidecar?.headers ?? selectedForwardHeaders,
-      settings: wsPlan.settings,
-      maxSearches: wsPlan.maxSearches,
-      forceEmptyResponseId: true,
-      abortSignal: options.abortSignal,
-      ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
-      onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
-      onUsage: usage => {
-        logCtx.usageFromBridge = true;
-        if (usage) {
-          logCtx.usage = usage;
-          if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
-        }
-      },
-      recordSidecarOutcome: wsPlan.forwardSidecar?.recordOutcome,
-      connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
-      routedModelStallTimeoutMs: wsPlan.routedModelStallTimeoutMs,
-      stallTimeoutSec: wsPlan.stallTimeoutSec,
-      on429: retryAfter => {
-        const rotated = rotateProviderTransportOn429(config, route.providerName, {
-          retryAfter,
-          now: Date.now(),
-          attemptedKey: route.provider.apiKey,
-          promptCacheKey: parsed.options.promptCacheKey,
-        });
-        if (!rotated) return null;
-        route.provider = rotated;
-        return resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
-          config.cacheRetention,
-        );
-      },
-    });
-    // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
-    // in-flight web-search turns instead of skipping them during graceful shutdown.
-    if (wsResponse.body) {
-      const wsTurnAc = new AbortController();
-      return new Response(trackStreamLifetime(wsResponse.body, wsTurnAc), {
-        status: wsResponse.status,
-        headers: wsResponse.headers,
-      });
-    }
-    return wsResponse;
   }
 
   const upstream = new AbortController();
