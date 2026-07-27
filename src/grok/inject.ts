@@ -175,8 +175,8 @@ function findOpencodexOrphans(content: string, region: ManagedRegion | null): Or
   // A pre-fence orphan's body must stop AT the fence. The managed block opens with a
   // COMMENT, not a table header, so a span that runs to "the next table header" swallows
   // the BEGIN marker whenever no other table separates them — and removing the orphan then
-  // deletes the fence opener itself, stranding the END marker and making every later sync
-  // re-append a block (the #511 duplicate loop, one layer down).
+  // deletes the fence opener itself, which strands the END marker and makes every later
+  // sync re-append a block (the #511 duplicate loop, one layer down).
   // `region` is null ONLY when BEGIN_MARKER is absent (see findManagedRegion), so -1
   // disables the clamp for marker-less files without a redundant scan.
   const fenceStart = region ? region.start : -1;
