@@ -312,8 +312,22 @@ describe("GitHub Actions hardening", () => {
     expect(script).toMatch(/storedState\.titlePrefixedByBot/);
     expect(script).toMatch(/await\s+convertToDraft\(\)/);
     expect(script).toMatch(/await\s+markReadyForReview\(\)/);
-    expect(script).toContain("convertPullRequestToDraft");
-    expect(script).toContain("markPullRequestReadyForReview");
+
+    // Tie each helper to its GraphQL body. Asserting that the call and the
+    // mutation name both appear somewhere leaves a gap: declaring an empty
+    // `async function convertToDraft() {}` later in the script shadows the real
+    // one, removes the behaviour, and satisfies both checks. Require exactly one
+    // declaration of each, and require it to contain the mutation.
+    for (const [helper, mutation] of [
+      ["convertToDraft", "convertPullRequestToDraft"],
+      ["markReadyForReview", "markPullRequestReadyForReview"],
+    ] as const) {
+      const declarations = [...script.matchAll(new RegExp(`function\\s+${helper}\\s*\\(`, "g"))];
+      expect(declarations).toHaveLength(1);
+      const body = script.slice(declarations[0]!.index!);
+      const nextDeclaration = body.slice(1).search(/\n\s*(?:async\s+)?function\s/);
+      expect(nextDeclaration === -1 ? body : body.slice(0, nextDeclaration + 1)).toContain(mutation);
+    }
     expect(script).toMatch(/const TITLE_PREFIX = "\[WRONG BRANCH\] ";/);
 
     // Observed on PR #527 (devlog .../050_live_evidence.md): the state is written
