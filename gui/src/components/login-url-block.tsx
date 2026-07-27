@@ -5,7 +5,7 @@ import { copyTextToClipboard } from "../oauth-health-display";
 
 const FEEDBACK_MS = 2500;
 
-type CopyState = "idle" | "copied" | "unavailable";
+type CopyOutcome = "copied" | "unavailable";
 
 /**
  * Recovery affordance for an OAuth waiting state: the proxy already tried to
@@ -16,7 +16,10 @@ type CopyState = "idle" | "copied" | "unavailable";
  */
 export function LoginUrlBlock({ url }: { url: string }) {
   const t = useT();
-  const [copyState, setCopyState] = useState<CopyState>("idle");
+  // Feedback carries the URL it belongs to. A new URL therefore reads as idle
+  // without an effect: the add-provider modal keeps this block mounted across a
+  // provider switch, and stale "copied" would claim a URL the clipboard never got.
+  const [feedback, setFeedback] = useState<{ url: string; outcome: CopyOutcome } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearTimer = useCallback(() => {
@@ -28,30 +31,24 @@ export function LoginUrlBlock({ url }: { url: string }) {
 
   useEffect(() => clearTimer, [clearTimer]);
 
-  // A new URL invalidates the old feedback. Without this the block would claim
-  // "copied" over a URL the clipboard never received — the workspace panel is
-  // remounted by its provider key, but the add-provider modal is not.
-  useEffect(() => {
-    clearTimer();
-    setCopyState("idle");
-  }, [url, clearTimer]);
-
   if (!url) return null;
+
+  const outcome = feedback?.url === url ? feedback.outcome : null;
 
   const copy = () => {
     void copyTextToClipboard(url).then((ok) => {
       clearTimer();
-      setCopyState(ok ? "copied" : "unavailable");
+      setFeedback({ url, outcome: ok ? "copied" : "unavailable" });
       timerRef.current = setTimeout(() => {
         timerRef.current = null;
-        setCopyState("idle");
+        setFeedback(null);
       }, FEEDBACK_MS);
     });
   };
 
-  const label = copyState === "copied"
+  const label = outcome === "copied"
     ? t("prov.linkCopied")
-    : copyState === "unavailable"
+    : outcome === "unavailable"
       ? t("prov.linkCopyUnavailable")
       : t("prov.copyLink");
 
