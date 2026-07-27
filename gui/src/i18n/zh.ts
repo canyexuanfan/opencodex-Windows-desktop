@@ -1346,6 +1346,7 @@ export const zh: Record<TKey, string> = {
   "claudeDesktop.status.applied": "已应用到 Desktop",
   "claudeDesktop.status.stale": "配置已更改 — 需重新应用",
   "claudeDesktop.status.notApplied": "未应用",
+  "claudeDesktop.status.notActiveProfile": "Desktop 正在使用其他配置 — 请重新应用",
   "claudeDesktop.health.lastRequest": "最后请求",
   "claudeDesktop.health.stats": "{count} 请求 / {errors} 错误",
   "claudeDesktop.effort.supported": "effort",

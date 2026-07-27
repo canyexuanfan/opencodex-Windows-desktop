@@ -543,16 +543,22 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       const { readFileSync: readFile, existsSync } = await import("node:fs");
       const { createHash } = await import("node:crypto");
       const { join } = await import("node:path");
-      const { homedir } = await import("node:os");
-      const libraryPath = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR?.trim()
-        || join(homedir(), "Library", "Application Support", "Claude-3p", "configLibrary");
+      const { claudeDesktopConfigLibraryDir } = await import("../../claude/desktop-3p-paths");
+      const libraryPath = claudeDesktopConfigLibraryDir();
       const metaPath = join(libraryPath, "_meta.json");
       let onDiskFingerprint: string | null = null;
       let configPath: string | null = null;
+      // Desktop serves ONLY the profile named by _meta.json's appliedId, so an
+      // opencodex entry that merely EXISTS does not mean Desktop is using it.
+      // null = undeterminable (no metadata / unreadable / no appliedId).
+      let activeProfile: boolean | null = null;
       if (existsSync(metaPath)) {
         try {
           const meta = JSON.parse(readFile(metaPath, "utf8"));
           const entry = Array.isArray(meta.entries) ? meta.entries.find((e: { name?: string }) => e?.name === "opencodex") : undefined;
+          const appliedId = typeof meta.appliedId === "string" ? meta.appliedId : null;
+          // A readable appliedId with no opencodex entry is a KNOWN false, not unknown.
+          activeProfile = appliedId === null ? null : (entry?.id ? appliedId === entry.id : false);
           if (entry?.id) {
             configPath = join(libraryPath, `${entry.id}.json`);
             if (existsSync(configPath)) {
@@ -574,6 +580,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         onDiskFingerprint,
         configPath,
         stale,
+        activeProfile,
         health,
       });
     } catch (error) {

@@ -1204,6 +1204,7 @@ export const ja: Record<TKey, string> = {
   "claudeDesktop.status.applied": "Desktop に適用済み",
   "claudeDesktop.status.stale": "設定が古くなっています — 再適用してください",
   "claudeDesktop.status.notApplied": "未適用",
+  "claudeDesktop.status.notActiveProfile": "Desktop は別のプロファイルを使用中 — 再適用してください",
   "claudeDesktop.health.lastRequest": "最終リクエスト",
   "claudeDesktop.health.stats": "{count} リクエスト / {errors} エラー",
   "claudeDesktop.effort.supported": "effort",

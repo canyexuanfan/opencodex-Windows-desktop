@@ -1249,6 +1249,7 @@ export const ru: Record<TKey, string> = {
   "claudeDesktop.status.applied": "Применено к Desktop",
   "claudeDesktop.status.stale": "Конфигурация устарела — примените заново",
   "claudeDesktop.status.notApplied": "Не применено",
+  "claudeDesktop.status.notActiveProfile": "Desktop использует другой профиль — примените заново",
   "claudeDesktop.health.lastRequest": "Последний запрос",
   "claudeDesktop.health.stats": "{count} запр. / {errors} ошиб.",
   "claudeDesktop.effort.supported": "effort",

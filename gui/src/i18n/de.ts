@@ -1326,6 +1326,7 @@ export const de: Record<TKey, string> = {
   "claudeDesktop.status.applied": "Auf Desktop angewendet",
   "claudeDesktop.status.stale": "Konfiguration veraltet — erneut anwenden",
   "claudeDesktop.status.notApplied": "Nicht angewendet",
+  "claudeDesktop.status.notActiveProfile": "Desktop nutzt ein anderes Profil — erneut anwenden",
   "claudeDesktop.health.lastRequest": "Letzte Anfrage",
   "claudeDesktop.health.stats": "{count} Anf. / {errors} Fehl.",
   "claudeDesktop.effort.supported": "effort",

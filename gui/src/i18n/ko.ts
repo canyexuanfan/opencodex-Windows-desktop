@@ -1346,6 +1346,7 @@ export const ko: Record<TKey, string> = {
   "claudeDesktop.status.applied": "Desktop에 적용됨",
   "claudeDesktop.status.stale": "설정 변경됨 — 재적용 필요",
   "claudeDesktop.status.notApplied": "미적용",
+  "claudeDesktop.status.notActiveProfile": "Desktop이 다른 프로필을 사용 중 — 재적용 필요",
   "claudeDesktop.health.lastRequest": "마지막 요청",
   "claudeDesktop.health.stats": "{count} 요청 / {errors} 에러",
   "claudeDesktop.effort.supported": "effort",

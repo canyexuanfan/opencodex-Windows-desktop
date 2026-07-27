@@ -1348,6 +1348,7 @@ export const en = {
   "claudeDesktop.status.applied": "Applied to Desktop",
   "claudeDesktop.status.stale": "Config stale — re-apply",
   "claudeDesktop.status.notApplied": "Not applied",
+  "claudeDesktop.status.notActiveProfile": "Desktop is serving another profile — re-apply",
   "claudeDesktop.health.lastRequest": "Last request",
   "claudeDesktop.health.stats": "{count} req / {errors} err",
   "claudeDesktop.effort.supported": "effort",

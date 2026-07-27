@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWriteFile } from "../config";
 import type { OcxClaudeDesktopProfile } from "../types";
+import { claudeDesktopConfigLibraryDir } from "./desktop-3p-paths";
 import {
   reconcileDesktopProfile,
   renderDesktopProfile,
@@ -308,8 +308,7 @@ export function writeDesktop3pConfig(
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
 ): { written: boolean; path: string; reason?: string; fingerprint?: string } {
-  const libraryPath = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR?.trim()
-    || join(homedir(), "Library", "Application Support", "Claude-3p", "configLibrary");
+  const libraryPath = claudeDesktopConfigLibraryDir();
   const metadataPath = join(libraryPath, "_meta.json");
   let configPath = libraryPath;
 
