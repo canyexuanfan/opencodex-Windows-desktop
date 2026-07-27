@@ -150,8 +150,11 @@ function ArchivedCleanupPanel({
   const [error, setError] = useState<string | null>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
-  const busyRef = useRef(busy);
-  busyRef.current = busy;
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
 
   useEffect(() => {
     if (!confirmOpen) return;
