@@ -3,9 +3,9 @@
  * embedding for the workspace Settings tab (WP091). Consumes WP040+WP060
  * handlers via props-down; no internal auth machinery.
  */
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useT } from "../../i18n/shared";
-import { IconLock, IconExternal, IconLink, IconTrash } from "../../icons";
+import { IconLock, IconTrash } from "../../icons";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { oauthAccountDisplayLabel, providerAuthSurface } from "../../provider-workspace/auth";
 import { displayAccountId } from "../../lib/privacy";
@@ -21,6 +21,7 @@ import {
   type DoctorCopyFeedback,
 } from "../../oauth-health-display";
 import CodexAccountPool from "../CodexAccountPool";
+import { LoginUrlBlock } from "../login-url-block";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
 import type { AccountLoadState, OAuthAccountRow, ApiKeyRow, LoginHint, ProviderAuthHandlers } from "./types";
 
@@ -50,21 +51,6 @@ export default function ProviderAuthPanel({
   const [newKey, setNewKey] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
-  const [linkCopyState, setLinkCopyState] = useState<"idle" | "copied" | "unavailable">("idle");
-  const linkCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => { if (linkCopyTimer.current) clearTimeout(linkCopyTimer.current); }, []);
-
-  const copyLoginUrl = (url: string) => {
-    void copyTextToClipboard(url).then((ok) => {
-      setLinkCopyState(ok ? "copied" : "unavailable");
-      if (linkCopyTimer.current) clearTimeout(linkCopyTimer.current);
-      linkCopyTimer.current = setTimeout(() => {
-        linkCopyTimer.current = null;
-        setLinkCopyState("idle");
-      }, 2500);
-    });
-  };
   const [copiedDoctorFor, setCopiedDoctorFor] = useState<DoctorCopyFeedback | null>(null);
 
   const surface = providerAuthSurface({ ...item, hasApiKey: item.hasApiKey || keys.length > 0 });
@@ -152,27 +138,7 @@ export default function ProviderAuthPanel({
                       }}>{deviceCodeCopied ? t("prov.codeCopied") : t("prov.copyCode")}</button>
                     </div>
                   )}
-                  {hintForThis.url && (
-                    <div className="pwi-auth-url-wrap">
-                      <code className="pwi-auth-url">{hintForThis.url}</code>
-                      <div className="pwi-auth-url-actions">
-                        <button type="button" className="btn btn-ghost btn-sm"
-                          onClick={() => copyLoginUrl(hintForThis.url ?? "")}>
-                          <IconLink style={{ width: 13, height: 13 }} aria-hidden="true" />
-                          <span aria-live="polite">
-                            {linkCopyState === "copied"
-                              ? t("prov.linkCopied")
-                              : linkCopyState === "unavailable"
-                                ? t("prov.linkCopyUnavailable")
-                                : t("prov.copyLink")}
-                          </span>
-                        </button>
-                        <a href={hintForThis.url} target="_blank" rel="noreferrer" className="pwi-auth-open-link">
-                          <IconExternal style={{ width: 13, height: 13 }} /> {t("prov.didntOpen")}
-                        </a>
-                      </div>
-                    </div>
-                  )}
+                  <LoginUrlBlock url={hintForThis.url ?? ""} />
                   {authHandlers.onCancelLogin && (
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => void authHandlers.onCancelLogin?.(item.name)}>
                       {t("common.cancel")}
