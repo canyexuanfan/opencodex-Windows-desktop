@@ -72,6 +72,40 @@ git cherry-pick a64aa5856
 > 동등하지 않으면 `a64aa5856`가 미묘하게 다른 베이스 위에 얹히고 누락된 델타가
 > **조용히 사라진다.** 차이가 있으면 건너뛰지 말고 충돌로 해소한다.
 
+### C 단계 실측 결과 — **동등하지 않다**
+
+```
+$ git diff --stat 1ba588eff~1 1ba588eff | tail -1
+ 6 files changed,  86 insertions(+), 14 deletions(-)
+
+$ git diff --stat 9dd3c42da~1 9dd3c42da | tail -1
+ 6 files changed, 208 insertions(+), 15 deletions(-)
+
+$ git range-diff 9dd3c42da~1..9dd3c42da 1ba588eff~1..1ba588eff | rg -c '^\s+[-+]'
+150
+```
+
+파일 목록은 6개로 **동일**하다:
+`src/codex/catalog/sync.ts`, `src/codex/refresh.ts`, `src/codex/sync.ts`,
+`tests/codex-refresh.test.ts`, `tests/codex-sync-api.test.ts`,
+`tests/injection-model-api.test.ts`.
+
+그런데 dev의 `9dd3c42da`가 **+122줄 더 많다.** range-diff 차이 라인 150줄.
+즉 `9dd3c42da`는 `1ba588eff`의 재작성본이며 그 **상위집합**으로 보인다
+(리뷰 반영으로 커버리지가 늘어난 형태).
+
+**따라서 계획의 "그냥 건너뛴다"는 그대로 실행하면 안 된다.** 수정된 절차:
+
+1. `a64aa5856`만 체리픽하되, **충돌이 나는 것이 정상**이다 — `a64aa5856`는
+   `1ba588eff` 위에 쓰였고 dev에는 그 상위집합이 있다.
+2. 충돌 해소 시 **dev(`9dd3c42da`) 쪽을 무조건 정본**으로 삼는다. `1ba588eff`
+   버전의 코드가 남으면 리뷰 반영분이 되돌려진다.
+3. `a64aa5856`가 **새로 추가하는 것만** 얹는다 — stale app-server 경고.
+4. 체리픽 후 `git diff origin/dev -- src/codex/` 로 실제 델타가 stale 경고에만
+   국한되는지 확인한다. `9dd3c42da`의 라인이 사라졌으면 잘못된 해소다.
+
+이 확인이 없었으면 dev의 리뷰 반영분 122줄이 조용히 되돌려질 수 있었다.
+
 ### 3. 충돌 해소 규칙
 
 두 테스트 파일에서 충돌이 나면:
