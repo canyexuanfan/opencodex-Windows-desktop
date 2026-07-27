@@ -73,6 +73,8 @@ describe("POST /api/storage/cleanup", () => {
       const body = await res.json();
       expect(body.count).toBe(1);
       expect(body.candidates[0].relPath).toBe("archived_sessions/rollout-old.jsonl");
+      expect(body.candidates[0].absPath).toBeUndefined();
+      expect(body.codexHome).toBeUndefined();
       expect(existsSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
     } finally {
       await server.stop(true);
@@ -98,6 +100,51 @@ describe("POST /api/storage/cleanup", () => {
       expect(existsSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
     } finally {
       await server.stop(true);
+    }
+  });
+
+  test("permanent mode deletes files without trash", async () => {
+    seedArchived(isolatedCodexHome!.path);
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/api/storage/cleanup", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50, mode: "permanent" }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.mode).toBe("permanent");
+      expect(body.count).toBe(1);
+      expect(body.trashDir).toBeUndefined();
+      expect(existsSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+      expect(existsSync(join(isolatedCodexHome!.path, ".trash"))).toBe(false);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("codex_busy returns 409", async () => {
+    seedArchived(isolatedCodexHome!.path);
+    const locker = new Database(join(isolatedCodexHome!.path, "state_5.sqlite"));
+    locker.exec("BEGIN EXCLUSIVE");
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/api/storage/cleanup", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 100, mode: "quarantine" }),
+      });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+      expect(body.error).toBe("codex_busy");
+      expect(existsSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    } finally {
+      await server.stop(true);
+      locker.exec("ROLLBACK");
+      locker.close();
     }
   });
 

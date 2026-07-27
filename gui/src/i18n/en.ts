@@ -653,6 +653,8 @@ export const en = {
   "storage.cleanup.confirmPermanent": "Delete permanently",
   "storage.cleanup.doneQuarantine": "Quarantined {count} file(s) ({size}).",
   "storage.cleanup.donePermanent": "Permanently deleted {count} file(s) ({size}).",
+  "storage.cleanup.previewFailed": "Preview failed.",
+  "storage.cleanup.cleanupFailed": "Cleanup failed.",
 
   // add-provider modal
   "modal.addNamed": "Add: {label}",

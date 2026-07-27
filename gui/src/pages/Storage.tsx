@@ -147,6 +147,22 @@ function ArchivedCleanupPanel({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!confirmOpen) return;
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    cancelRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) setConfirmOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      previousFocusRef.current?.focus();
+    };
+  }, [confirmOpen, busy]);
 
   const runPreview = async () => {
     setBusy(true);
@@ -159,7 +175,7 @@ function ArchivedCleanupPanel({
         body: JSON.stringify({ percent }),
       });
       const json = await res.json() as CleanupPreview & { error?: string };
-      if (!res.ok) throw new Error(json.error ?? "preview failed");
+      if (!res.ok) throw new Error(json.error ?? t("storage.cleanup.previewFailed"));
       setPreview(json);
       setConfirmOpen(true);
     } catch (e) {
@@ -181,7 +197,7 @@ function ArchivedCleanupPanel({
       });
       const json = await res.json() as CleanupResult;
       if (!res.ok || !json.ok) {
-        throw new Error(json.message ?? json.error ?? "cleanup failed");
+        throw new Error(json.message ?? json.error ?? t("storage.cleanup.cleanupFailed"));
       }
       setConfirmOpen(false);
       setPreview(null);
@@ -246,9 +262,8 @@ function ArchivedCleanupPanel({
           aria-modal="true"
           aria-labelledby="storage-cleanup-confirm-title"
           onClick={() => !busy && setConfirmOpen(false)}
-          onKeyDown={e => { if (e.key === "Escape" && !busy) setConfirmOpen(false); }}
         >
-          <div className="modal" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
             <h3 id="storage-cleanup-confirm-title">{t("storage.cleanup.confirmTitle")}</h3>
             <p>
               {t("storage.cleanup.confirmBody", {
@@ -280,7 +295,13 @@ function ArchivedCleanupPanel({
               {permanent ? t("storage.cleanup.permanentWarn") : t("storage.cleanup.quarantineNote")}
             </p>
             <div className="dialog-actions" style={{ marginTop: 16 }}>
-              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setConfirmOpen(false)}>
+              <button
+                ref={cancelRef}
+                type="button"
+                className="btn btn-ghost"
+                disabled={busy}
+                onClick={() => setConfirmOpen(false)}
+              >
                 {t("storage.cleanup.cancel")}
               </button>
               <button

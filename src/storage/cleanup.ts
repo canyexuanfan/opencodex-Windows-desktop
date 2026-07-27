@@ -57,7 +57,15 @@ export interface CleanupResult {
   count: number;
   bytes: number;
   trashDir?: string;
+  /** Hard failure code (e.g. `codex_busy`, `invalid_mode`, `fs_failed`). */
   error?: string;
+  /**
+   * Soft DB reconciliation issue after a successful FS change.
+   * Mapped codes only — never raw driver messages (may embed absolute paths).
+   */
+  dbWarning?: "codex_busy" | "db_reconcile_failed";
+  /** Relative paths that failed to move/unlink (partial batch). */
+  failedPaths?: string[];
   removedPaths: string[];
 }
 
@@ -162,8 +170,14 @@ function isBusyError(error: unknown): boolean {
   return (
     code === "SQLITE_BUSY" ||
     code === "SQLITE_LOCKED" ||
-    /SQLITE_BUSY|SQLITE_LOCKED|database is locked|locked/i.test(msg)
+    /SQLITE_BUSY|SQLITE_LOCKED|database is locked|database table is locked/i.test(msg)
   );
+}
+
+function mapDbWarning(error: string | undefined): CleanupResult["dbWarning"] | undefined {
+  if (!error) return undefined;
+  if (error === "codex_busy") return "codex_busy";
+  return "db_reconcile_failed";
 }
 
 /** True when the threads table can be written (BEGIN IMMEDIATE succeeds). */
@@ -347,41 +361,79 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
   }
 
   const removedPaths: string[] = [];
+  const failedPaths: string[] = [];
   let bytes = 0;
   const epoch = options.now ?? Date.now();
   let trashDir: string | undefined;
-  let dbError: string | undefined;
+  let dbWarning: CleanupResult["dbWarning"] | undefined;
 
   if (mode === "quarantine") {
     trashDir = join(codexHome, TRASH_DIR, String(epoch));
-    mkdirSync(trashDir, { recursive: true });
+    try {
+      mkdirSync(trashDir, { recursive: true });
+    } catch {
+      return {
+        ok: false,
+        mode,
+        percent,
+        count: 0,
+        bytes: 0,
+        removedPaths: [],
+        error: "fs_failed",
+      };
+    }
     const manifestEntries: CleanupManifestEntry[] = [];
+    const succeeded: ArchivedCandidate[] = [];
     for (const candidate of preview.candidates) {
       const dest = join(trashDir, basename(candidate.relPath));
-      renameSync(candidate.absPath, dest);
-      removedPaths.push(candidate.relPath);
-      bytes += candidate.bytes;
-      const thread = threadSnapshots.find(t => rolloutPathMatches(candidate, t.rollout_path, codexHome));
-      manifestEntries.push({
-        relPath: candidate.relPath,
-        bytes: candidate.bytes,
-        mtimeMs: candidate.mtimeMs,
-        ...(thread
-          ? { threadId: thread.id, rolloutPath: thread.rollout_path, archived: thread.archived }
-          : {}),
-      });
+      try {
+        renameSync(candidate.absPath, dest);
+        removedPaths.push(candidate.relPath);
+        bytes += candidate.bytes;
+        succeeded.push(candidate);
+        const thread = threadSnapshots.find(t => rolloutPathMatches(candidate, t.rollout_path, codexHome));
+        manifestEntries.push({
+          relPath: candidate.relPath,
+          bytes: candidate.bytes,
+          mtimeMs: candidate.mtimeMs,
+          ...(thread
+            ? { threadId: thread.id, rolloutPath: thread.rollout_path, archived: thread.archived }
+            : {}),
+        });
+      } catch {
+        failedPaths.push(candidate.relPath);
+      }
     }
-    writeFileSync(
-      join(trashDir, "manifest.json"),
-      JSON.stringify({
-        quarantinedAt: epoch,
-        mode: "quarantine",
+    if (manifestEntries.length > 0) {
+      try {
+        writeFileSync(
+          join(trashDir, "manifest.json"),
+          JSON.stringify({
+            quarantinedAt: epoch,
+            mode: "quarantine",
+            percent,
+            entries: manifestEntries,
+            failedPaths,
+          }, null, 2),
+        );
+      } catch {
+        /* best-effort manifest; files already moved */
+      }
+    }
+    if (succeeded.length === 0) {
+      return {
+        ok: false,
+        mode,
         percent,
-        entries: manifestEntries,
-      }, null, 2),
-    );
-    const dbResult = reconcileThreads(probe.path, preview.candidates, codexHome, busyTimeoutMs);
-    dbError = dbResult.error;
+        count: 0,
+        bytes: 0,
+        removedPaths: [],
+        failedPaths,
+        error: "fs_failed",
+      };
+    }
+    const dbResult = reconcileThreads(probe.path, succeeded, codexHome, busyTimeoutMs);
+    dbWarning = mapDbWarning(dbResult.error);
   } else {
     // Permanent: reconcile DB first so a lock cannot leave files deleted with rows intact.
     const dbResult = reconcileThreads(probe.path, preview.candidates, codexHome, busyTimeoutMs);
@@ -396,11 +448,28 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
         error: "codex_busy",
       };
     }
-    dbError = dbResult.error;
+    dbWarning = mapDbWarning(dbResult.error);
     for (const candidate of preview.candidates) {
-      unlinkSync(candidate.absPath);
-      removedPaths.push(candidate.relPath);
-      bytes += candidate.bytes;
+      try {
+        unlinkSync(candidate.absPath);
+        removedPaths.push(candidate.relPath);
+        bytes += candidate.bytes;
+      } catch {
+        failedPaths.push(candidate.relPath);
+      }
+    }
+    if (removedPaths.length === 0 && failedPaths.length > 0) {
+      return {
+        ok: false,
+        mode,
+        percent,
+        count: 0,
+        bytes: 0,
+        removedPaths: [],
+        failedPaths,
+        error: "fs_failed",
+        ...(dbWarning ? { dbWarning } : {}),
+      };
     }
   }
 
@@ -411,7 +480,8 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     count: removedPaths.length,
     bytes,
     ...(trashDir ? { trashDir: toForwardSlash(relative(codexHome, trashDir) || trashDir) } : {}),
-    ...(dbError ? { error: dbError } : {}),
+    ...(dbWarning ? { dbWarning } : {}),
+    ...(failedPaths.length > 0 ? { failedPaths } : {}),
     removedPaths,
   };
 }

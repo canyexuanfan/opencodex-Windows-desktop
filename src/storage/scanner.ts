@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Database, constants } from "bun:sqlite";
 import { resolveCodexHomeDir } from "../codex/home";
+import { TRASH_DIR } from "./cleanup";
 
 // SQLITE_OPEN_READONLY alone is not filesystem-read-only for a WAL-mode DB: Bun's
 // `{ readonly: true }` can still materialize *.sqlite-wal/-shm sidecars the first time a
@@ -200,7 +201,7 @@ export function scanStorage(codexHome: string = resolveCodexHomeDir()): StorageR
     }
     if (stat.isDirectory()) {
       // Quarantine trash (Phase 2) must not inflate "other" or totals.
-      if (name === ".trash") continue;
+      if (name === TRASH_DIR) continue;
       walkFiles(full, name, files[DIR_BUCKETS[name] ?? "other"]);
     } else if (stat.isFile()) {
       const key: StorageBucketKey = STATE_DB_FILE.test(name) ? "state_db" : LOGS_DB_FILE.test(name) ? "logs_db" : "other";

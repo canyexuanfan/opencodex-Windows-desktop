@@ -241,7 +241,14 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
       return jsonResponse({ error: "percent must be a number between 0 and 100" }, 400);
     }
-    return jsonResponse(previewArchivedCleanup(percent));
+    const preview = previewArchivedCleanup(percent);
+    // Omit absolute host paths (codexHome / absPath) from the wire response.
+    return jsonResponse({
+      percent: preview.percent,
+      count: preview.count,
+      bytes: preview.bytes,
+      candidates: preview.candidates.map(({ relPath, bytes, mtimeMs }) => ({ relPath, bytes, mtimeMs })),
+    });
   }
 
   if (url.pathname === "/api/storage/cleanup" && req.method === "POST") {
@@ -255,15 +262,23 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     if (mode !== "quarantine" && mode !== "permanent") {
       return jsonResponse({ error: "mode must be quarantine or permanent" }, 400);
     }
-    const result = executeArchivedCleanup({ percent, mode: mode as CleanupMode });
-    if (!result.ok && result.error === "codex_busy") {
+    try {
+      const result = executeArchivedCleanup({ percent, mode: mode as CleanupMode });
+      if (!result.ok && result.error === "codex_busy") {
+        return jsonResponse({
+          ...result,
+          message: "Codex is using state.sqlite — try again after quitting Codex.",
+        }, 409);
+      }
+      if (!result.ok) return jsonResponse(result, 500);
+      return jsonResponse(result);
+    } catch (error) {
       return jsonResponse({
-        ...result,
-        message: "Codex is using state.sqlite — try again after quitting Codex.",
-      }, 409);
+        ok: false,
+        error: "cleanup_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
     }
-    if (!result.ok) return jsonResponse(result, 500);
-    return jsonResponse(result);
   }
 
   return null;
