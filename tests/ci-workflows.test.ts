@@ -666,6 +666,87 @@ describe("GitHub Actions hardening", () => {
       expect(methodsOf(result)).toEqual(["pulls.get", "issues.listComments", "issues.updateComment"]);
     });
 
+    test("the verdict comes from the fetched PR, not the stale event payload", async () => {
+      // The event fired when the PR still targeted dev; by the time the job
+      // runs it has been retargeted to main. The workflow refetches for exactly
+      // this reason, and an audit round undid that with
+      // `Object.assign(pr, context.payload.pull_request)` — invisible in a
+      // harness where the two were the same object.
+      const wentWrong = await run({
+        pr: { base: { ref: "main" }, title: "Add a thing", draft: false },
+        eventPayload: { base: { ref: "dev" }, title: "Add a thing", draft: false },
+      });
+      expect(methodsOf(wentWrong)).toContain("pulls.update");
+      expect(callsTo(wentWrong, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "[WRONG BRANCH] Add a thing" },
+      ]);
+
+      // …and the reverse: the event says main, the live PR says dev. No writes.
+      const wasFixed = await run({
+        pr: { base: { ref: "dev" } },
+        eventPayload: { base: { ref: "main" } },
+      });
+      expect(methodsOf(wasFixed)).toEqual(["pulls.get", "issues.listComments"]);
+    });
+
+    test("the bot finds its own comment even when it has scrolled onto a later page", async () => {
+      // A busy PR pushes the bot comment off page one. Without pagination the
+      // workflow does not find its state: it posts a SECOND comment and forgets
+      // it had prefixed the title, so the prefix is never removed. An audit
+      // round swapped `paginate` for a bare `listComments` and nothing noticed.
+      const filler = Array.from({ length: 3 }, (_, index) => ({
+        id: 100 + index,
+        user: { login: "contributor" },
+        body: "looks good",
+      }));
+
+      const result = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        commentPages: [
+          filler,
+          [botComment({ version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true })],
+        ],
+      });
+
+      // Found it: the prefix comes off, the PR is marked ready, and the
+      // existing comment is edited rather than duplicated.
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.listComments",
+        "pulls.update",
+        "graphql",
+        "issues.updateComment",
+      ]);
+      expect(callsTo(result, "issues.createComment")).toEqual([]);
+    });
+
+    test("a bot comment with unreadable state is treated as no state, not as a reason to stop", async () => {
+      // `parseState` catches a JSON error and returns null. Nothing covered
+      // that branch, so an audit round added `if (botComment && !storedState)
+      // return;` — a wrong-target PR with one corrupted comment became a
+      // permanent no-op, and every scenario still passed.
+      const result = await run({
+        pr: { base: { ref: "main" }, title: "Add a thing", draft: false },
+        comments: [{
+          id: 7,
+          user: { login: BOT },
+          body: `${MARKER}\n<!-- wrong-branch-enforcer-state:{not json} -->`,
+        }],
+      });
+
+      // Enforcement still happens, and the unreadable comment is repaired in
+      // place rather than duplicated.
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.updateComment",
+        "pulls.update",
+        "graphql",
+      ]);
+      expect(result.warnings.join(" ")).toContain("Could not parse stored workflow state");
+    });
+
     test("a failed draft conversion propagates, and the state is already stored", async () => {
       // Observed on PR #527 (devlog .../050_live_evidence.md): the GraphQL
       // mutation failed, the workflow ended in failure, and the PR stayed

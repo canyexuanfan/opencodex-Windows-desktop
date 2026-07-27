@@ -256,6 +256,74 @@ try-catch-wrap CAUGHT
 
 기준선: `23 pass  0 fail  344 expect() calls`, `bun run typecheck` 오류 0.
 
+## 감사 5라운드 — 하네스 자체가 공격면이 된다
+
+실행 하네스를 감사에 넘겼다. 또 FAIL. 이번 지적은 성격이 다르다. 스크립트를 뚫은 게
+아니라 **가짜가 진짜와 다른 지점**을 찾았다.
+
+| 변이 | 하네스의 어떤 거짓말을 이용했나 |
+| --- | --- |
+| `if (typeof exec === "function") return;` | `exec`을 Proxy 객체로 줬다. 진짜는 함수다 |
+| `if (!process.versions.bun) return;` | 테스트는 Bun, `github-script`는 Node |
+| `Object.assign(pr, context.payload.pull_request)` | `context.payload.pull_request`가 `pr`의 얕은 복사라 `base`가 **같은 객체**였다. 실제로는 이벤트 페이로드가 stale하다 |
+| `paginate` → 단일 `listComments` | 가짜 paginate가 한 페이지만 읽었다 |
+| `const u = await update(...); if (u) return;` | 가짜 쓰기가 `undefined`를 반환했다. Octokit은 응답 객체를 준다 |
+| `if (botComment && !storedState) return;` | 손상된 JSON 상태 분기를 커버하는 시나리오가 없었다 |
+
+전부 프로덕션에서는 동작이 달라지고 테스트에서는 초록인 변이다. 오라클이 거짓말하면
+그 위에 쌓은 증거는 값어치가 없다.
+
+### 하네스 수정
+
+- `exec`/`glob`/`io`/`fetch`/`require`를 **호출 가능한** Proxy로 바꿨다. 진짜처럼
+  함수지만 실제로 호출하면 던진다 — 이 워크플로는 서브프로세스를 돌릴 이유가 없다.
+- `process`를 Node로 보이게 섀도잉했다. `versions.node`, `GITHUB_ACTIONS=true`,
+  runner 경로까지. 런타임 탐지가 두 환경을 구분하지 못한다.
+- `context.payload.pull_request`를 `pr`과 **깊은 수준까지 독립**시키고,
+  `eventPayload` 옵션으로 실제로 stale하게 만들 수 있게 했다.
+- `paginate`가 모든 페이지를 순회하고, `listComments`가 `page` 인자를 존중한다.
+  `commentPages`로 다중 페이지를 구성할 수 있다.
+- 모든 쓰기가 Octokit 모양의 `{status, url, headers, data}`를 반환한다.
+
+### 시나리오 3개 추가
+
+- **stale 이벤트 페이로드**: 이벤트는 dev, 실제 PR은 main → 강제 적용된다.
+  반대 방향(이벤트 main, 실제 dev)은 쓰기 0회.
+- **봇 코멘트가 2페이지로 밀린 경우**: `listComments` 2회 호출, 기존 코멘트를
+  찾아서 편집(중복 생성 0회).
+- **손상된 상태 JSON**: 강제 적용은 그대로 진행되고, 코멘트는 제자리에서 복구되며,
+  `core.warning`이 남는다.
+
+## 변이 검증 실측 (46/46)
+
+5라운드 7가지(파생 1건 포함):
+
+```
+detect-exec-fn CAUGHT        detect-bun-runtime CAUGHT   detect-node-runtime CAUGHT
+stale-payload-overwrite CAUGHT drop-pagination CAUGHT    branch-on-response CAUGHT
+bail-on-bad-state CAUGHT
+```
+
+이전 39가지 회귀 재확인: 전부 CAUGHT, survived = none.
+
+기준선: `26 pass  0 fail  359 expect() calls`, `bun run typecheck` 오류 0.
+전체 스위트(푸시 훅): `4907 pass  0 fail`.
+
+## 다섯 라운드가 남긴 것
+
+설계가 세 번 바뀌었고, 매번 앞 라운드가 그 방향의 한계를 증명했다.
+
+1. **부정 목록** (1~3라운드) — "이 키는 없어야 한다". 20번 뚫렸다. 감사자가 생각해낸
+   키만 덮는다.
+2. **허용 목록** (4라운드) — "정확히 이 키들". YAML 골격에는 유효했고 지금도 유지된다.
+   하지만 스크립트 본문에는 통하지 않았다. JavaScript는 같은 효과에 무한한 철자가 있다.
+3. **실행 하네스** (5라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
+   **가짜의 충실도**가 새 공격면이 됐다.
+
+세 번째가 옳은 방향이다. 다만 오라클의 충실도가 곧 증거의 품질이라는 걸 5라운드가
+가르쳤다. 앞으로 이 하네스를 손댈 때는 "진짜 `github-script` + Octokit이라면 어떻게
+행동하나"를 먼저 물어야 한다.
+
 ## 범위 밖
 
 게이트 자체의 재설계는 040이 다루며 사용자 승인 대기 상태다. 이 테스트는 재설계를
