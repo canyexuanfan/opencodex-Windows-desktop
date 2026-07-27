@@ -39,7 +39,7 @@ const ENTER = "\r";
 const ESCAPE = "\x1b";
 
 describe("interactiveConfirm", () => {
-  test("bare enter takes the highlighted default, which consent prompts set to No", async () => {
+  test("bare enter takes whichever choice is highlighted", async () => {
     expect((await ask([ENTER])).answer).toBe(false);
     expect((await ask([ENTER], true)).answer).toBe(true);
   });
@@ -69,12 +69,15 @@ describe("interactiveConfirm", () => {
     expect(raw).toBe(false);
   });
 
-  test("without raw mode it falls back to a typed answer that still defaults to No", async () => {
+  test("without raw mode it falls back to a typed answer honoring the same default", async () => {
     const input = new PassThrough() as unknown as NodeJS.ReadStream;
     const output = new PassThrough() as unknown as NodeJS.WriteStream;
-    const pending = interactiveConfirm({ question: "Star it?", defaultYes: false, input, output });
+    const declined = interactiveConfirm({ question: "Star it?", defaultYes: false, input, output });
     input.write("\n");
+    expect(await declined).toBe(false);
 
-    expect(await pending).toBe(false);
+    const accepted = interactiveConfirm({ question: "Star it?", defaultYes: true, input, output });
+    input.write("\n");
+    expect(await accepted).toBe(true);
   });
 });

@@ -9,8 +9,8 @@ import { createInterface } from "node:readline/promises";
  * consent.
  *
  * The highlighted choice is caller-supplied and is what a bare Enter returns.
- * Consent prompts pass `defaultYes: false` so pressing Enter blind cannot opt
- * the user into anything.
+ * Whatever the default, the selector always shows which side is highlighted, so
+ * Enter never does something the screen did not already say it would.
  */
 
 export interface InteractiveConfirmOptions {

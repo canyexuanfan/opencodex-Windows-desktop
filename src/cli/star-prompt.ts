@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getConfigDir } from "../config";
+import { isAgentDriven } from "./agent-driven";
 import { interactiveConfirm } from "./interactive-confirm";
 
 const REPO = "lidge-jun/opencodex";
@@ -43,11 +44,31 @@ function starRepo(): { ok: boolean; error?: string } {
 }
 
 /**
+ * Shown instead of the prompt when an agent is driving `ocx start`. The agent
+ * reads this as its instruction: it must not answer, it must ask the person.
+ * Deliberately addressed to the agent rather than silently skipped, so the
+ * request reaches the user through the agent instead of disappearing.
+ */
+function printAgentDeferral(): void {
+  console.log(
+    `\n  \x1b[38;5;141m⭐ opencodex isn't starred on GitHub yet.\x1b[0m\n` +
+    `  \x1b[2mAgent: do not answer this yourself — it uses the user's GitHub identity.\n` +
+    `  Ask the user whether to star ${REPO}, and only run\n` +
+    `  \`gh api -X PUT /user/starred/${REPO}\` if they say yes.\x1b[0m\n`,
+  );
+}
+
+/**
  * First interactive `ocx start`: a one-time "star on GitHub?" question with an
- * explicit Yes/No selector (arrow keys, `y`/`n`, Enter). "No" is highlighted
- * first, so Enter alone declines. On yes, stars the repo via the user's `gh`
- * auth. No-op under the background service, for non-TTY/piped runs, when
- * already prompted, or when `gh` is missing or logged out. Never throws.
+ * explicit Yes/No selector (arrow keys, `y`/`n`, Enter), starring through the
+ * user's own `gh` login.
+ *
+ * The selector is only rendered when the account owner is there to answer it:
+ * it is skipped under the background service, for non-TTY/piped runs, and when
+ * `gh` is missing or logged out. When an agent is driving the process the
+ * question is not auto-answered — the agent is told to ask the user instead,
+ * and the one-time marker stays unwritten so a later hand-typed run can still
+ * show the real prompt. Never throws.
  */
 export async function maybeShowStarPrompt(): Promise<void> {
   try {
@@ -56,11 +77,19 @@ export async function maybeShowStarPrompt(): Promise<void> {
     const marker = join(dir, MARKER);
     if (existsSync(marker)) return;
     if (!ghAvailable()) return; // can't star without an authenticated gh — stay silent and re-check on a later start
+
+    // An agent would answer this on the user's behalf, using the user's GitHub
+    // identity. Hand the question to the agent to relay, and leave the marker
+    // unwritten so the user still gets the real prompt on their own run.
+    if (isAgentDriven()) {
+      printAgentDeferral();
+      return;
+    }
     try { mkdirSync(dir, { recursive: true }); writeFileSync(marker, new Date().toISOString()); } catch { /* best-effort */ }
 
     const yes = await interactiveConfirm({
-      question: "\n  \x1b[38;5;141m⭐ Enjoying opencodex? Star it on GitHub?\x1b[0m",
-      defaultYes: false,
+      question: "\n  \x1b[38;5;141m⭐ Enjoying opencodex? Star it on GitHub (via gh)?\x1b[0m",
+      defaultYes: true,
     });
     if (!yes) return;
     const r = starRepo();

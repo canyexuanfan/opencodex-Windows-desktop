@@ -28,13 +28,28 @@ describe("startup star prompt", () => {
     expect(promptIndex).toBeLessThan(syncIndex);
   });
 
-  test("GitHub star prompt asks with an explicit Yes/No selector defaulting to No", async () => {
+  test("GitHub star prompt asks with an explicit Yes/No selector and names gh", async () => {
     const prompt = await readText("src/cli/star-prompt.ts");
 
     expect(prompt).toContain("interactiveConfirm");
-    expect(prompt).toContain("defaultYes: false");
-    // The old typed prompt treated a bare Enter as consent.
-    expect(prompt).not.toContain('ans === "" || ans === "y"');
+    expect(prompt).toContain("defaultYes: true");
+    expect(prompt).toContain("Star it on GitHub (via gh)?");
+  });
+
+  test("an agent driving ocx is told to ask the user instead of answering", async () => {
+    const prompt = await readText("src/cli/star-prompt.ts");
+    const guardIndex = prompt.indexOf("if (isAgentDriven()) {");
+    const markerIndex = prompt.indexOf("writeFileSync(marker");
+
+    expect(guardIndex).toBeGreaterThan(-1);
+    // The guard must precede the marker write, otherwise an agent run would
+    // consume the one-time prompt the user never saw.
+    expect(guardIndex).toBeLessThan(markerIndex);
+    // The agent path relays the question rather than selecting a choice.
+    expect(prompt).toContain("printAgentDeferral");
+    expect(prompt).toContain("do not answer this yourself");
+    expect(prompt).toContain("Ask the user whether to star");
+    expect(prompt).not.toMatch(/isAgentDriven\(\)[\s\S]{0,80}starRepo\(\)/);
   });
 
   test("the star prompt only appears when gh can actually star", async () => {
