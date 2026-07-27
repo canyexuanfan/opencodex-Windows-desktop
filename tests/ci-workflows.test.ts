@@ -410,8 +410,14 @@ describe("GitHub Actions hardening", () => {
     // PR, then derive wrongBase from it. Pinning the comparison itself stops a
     // rewrite that leaves the constant in place while hard-coding the answer.
     expect(script).toContain("github.rest.pulls.get");
-    expect(script).toMatch(/const EXPECTED_BASE = "dev";/);
-    expect(script).toMatch(/const wrongBase = pr\.base\.ref !== EXPECTED_BASE;/);
+    // The allow-list is the gate's whole policy, so it is pinned by value and
+    // not just by shape: a widened list is the one edit that opens every base
+    // at once while every behavioural scenario below still passes.
+    expect(script).toMatch(/const ALLOWED_BASES = \["dev", "dev2-go"\];/);
+    expect(script).toMatch(/const DEFAULT_BASE = "dev";/);
+    expect(script).toMatch(
+      /const wrongBase = !ALLOWED_BASES\.includes\(pr\.base\.ref\);/,
+    );
 
     // Every mutation targets the PR the event fired for. `pull_number` is the
     // only handle the script has, and an audit round repointed it at
@@ -573,6 +579,107 @@ describe("GitHub Actions hardening", () => {
       // Reads only. If a rewrite adds a write here, it appears in this list.
       expect(methodsOf(result)).toEqual(["pulls.get", "issues.listComments"]);
       expect(result.logs.join(" ")).toContain("Target branch is correct");
+    });
+
+    test("a PR targeting dev2-go is left completely alone, exactly like dev", async () => {
+      // The whole point of the allow-list. dev2-go is the Go native-port
+      // integration line; before this change the gate prefixed and drafted
+      // every PR aimed at it, and GitHub refuses to merge a draft — so the
+      // line existed but nothing could land on it.
+      const result = await run({ pr: { base: { ref: "dev2-go" }, title: "Port the runtime entry", draft: false } });
+
+      expect(methodsOf(result)).toEqual(["pulls.get", "issues.listComments"]);
+      expect(result.logs.join(" ")).toContain("Target branch is correct");
+      // No comment either. Silence is the acceptance signal.
+      expect(callsTo(result, "issues.createComment")).toEqual([]);
+    });
+
+    test("every base outside the allow-list is still blocked", async () => {
+      // Widening a list is a one-token edit, and the danger is widening it too
+      // far. These four are the bases a contributor actually reaches for:
+      // the release branch, its old name, the prerelease train, and a topic
+      // branch. None of them is an integration line.
+      for (const ref of ["main", "master", "preview", "feature/x"]) {
+        const result = await run({ pr: { base: { ref }, title: "Add a thing", draft: false } });
+
+        expect(methodsOf(result)).toEqual([
+          "pulls.get",
+          "issues.listComments",
+          "issues.createComment",
+          "pulls.update",
+          "graphql",
+        ]);
+        const [comment] = callsTo(result, "issues.createComment") as [{ body: string }];
+        expect(comment.body).toContain(`\`${ref}\``);
+      }
+    });
+
+    test("a PR retargeted from main to dev2-go is restored, not left prefixed", async () => {
+      // The migration case the allow-list creates: `wrongBase` now goes false
+      // for two bases, so the restoration path has to fire for dev2-go the
+      // same way it fires for dev. If it does not, a contributor who follows
+      // the bot's own instruction ends up with a permanently renamed, drafted
+      // PR and no state left to explain it.
+      const result = await run({
+        pr: { base: { ref: "dev2-go" }, draft: true, title: "[WRONG BRANCH] Port the runtime entry" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true })],
+      });
+
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "pulls.update",
+        "graphql",
+        "issues.updateComment",
+      ]);
+      expect(callsTo(result, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "Port the runtime entry" },
+      ]);
+      const [cleared] = callsTo(result, "issues.updateComment") as [{ body: string }];
+      expect(cleared.body).toContain('"active":false');
+      // The confirmation names where the PR actually went, not a hard-coded
+      // default — otherwise it tells a dev2-go contributor they landed on dev.
+      expect(cleared.body).toContain("now targets `dev2-go`");
+    });
+
+    test("a PR moved from dev2-go back to main is enforced again from a cleared state", async () => {
+      // The other half of the round trip. After a restoration the marker is
+      // inactive, so a move back out has to build fresh state rather than
+      // reuse the cleared one, and must not stack a second prefix.
+      const result = await run({
+        pr: { base: { ref: "main" }, draft: false, title: "Port the runtime entry" },
+        comments: [botComment({ version: 1, active: false, autoDraftedByBot: false, titlePrefixedByBot: false })],
+      });
+
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.updateComment",
+        "pulls.update",
+        "graphql",
+      ]);
+      expect(callsTo(result, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "[WRONG BRANCH] Port the runtime entry" },
+      ]);
+      const [comment] = callsTo(result, "issues.updateComment") as [{ body: string }];
+      expect(comment.body).toContain('"active":true');
+      expect(comment.body).toContain('"autoDraftedByBot":true');
+      expect(comment.body).toContain('"titlePrefixedByBot":true');
+    });
+
+    test("the wrong-target explanation lists every allowed base and names the default", async () => {
+      // Two branches are legitimate and only one is the default, so listing
+      // them without ranking them sends ordinary contributions to the Go port
+      // line. The instruction has to say which one to pick and why the other
+      // exists.
+      const result = await run({
+        pr: { base: { ref: "main" }, title: "Add a thing", draft: false },
+      });
+      const [comment] = callsTo(result, "issues.createComment") as [{ body: string }];
+
+      expect(comment.body).toContain("must target one of `dev` or `dev2-go`");
+      expect(comment.body).toContain("Please retarget this PR to `dev`");
+      expect(comment.body).toContain("only for scoped Go native-port work");
     });
 
     test("a PR targeting main is prefixed, drafted, and explained — and nothing else", async () => {
@@ -875,9 +982,12 @@ describe("GitHub Actions hardening", () => {
       const [comment] = callsTo(result, "issues.createComment") as [{ body: string }];
       // Addressed to the PR author, so GitHub actually notifies them.
       expect(comment.body).toContain("@someone-else");
-      // Names both branches, so the instruction is actionable without context.
+      // Names every branch involved, so the instruction is actionable without
+      // context: where the PR is now, where it should go, and the one other
+      // base that is legitimate but not the default.
       expect(comment.body).toContain("`main`");
       expect(comment.body).toContain("`dev`");
+      expect(comment.body).toContain("`dev2-go`");
       // Points at the documentation rather than assuming the reader knows.
       expect(comment.body).toContain("https://lidge-jun.github.io/opencodex/contributing/");
       // And carries the state the next run needs.
