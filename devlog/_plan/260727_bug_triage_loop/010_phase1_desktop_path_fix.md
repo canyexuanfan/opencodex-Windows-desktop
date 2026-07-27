@@ -21,8 +21,23 @@ Desktop 번들의 `GE()`를 그대로 옮긴다. 추측하지 않는다. 기존 
 
 ## NEW: `src/claude/desktop-3p-paths.ts`
 
+### 설계 결정: 순수 함수 + 얇은 래퍼 (A단계 감사 블로커 1 해소)
+
+초안은 `node:os`의 `platform()`을 직접 호출했다. 이 저장소의 유일한 플랫폼 스텁 관용구는
+`Object.defineProperty(process, "platform", ...)`인데(`tests/claude-management-api.test.ts:22`,
+`tests/windows-elevation-spawn.test.ts:38`), Bun 1.3.14에서 이 스텁은 `os.platform()`에
+전파되지 않는다. 직접 확인했다:
+
+```
+process.platform = win32 | os.platform() = darwin
+```
+
+따라서 초안대로 가면 win32 테스트가 통과하면서 실제로는 darwin 분기를 태운다. RCA가 가장
+심각하다고 판정한 결함을 지키는 테스트가 공허해진다. 해석 로직을 `(env, platform)` 주입형
+순수 함수로 분리하고, 얇은 래퍼가 런타임 값을 넘기는 구조로 확정한다.
+
 ```ts
-import { homedir, platform } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -35,47 +50,59 @@ import { join } from "node:path";
  *     const t = app.getPath("userData");
  *     return t.endsWith(Bu) ? t : `${t}${Bu}`;
  *   }
- *
- * Electron `app.getPath("userData")`는 CLAUDE_USER_DATA_DIR가 설정되면 그 값을
- * 따르므로, 프록시 쪽에서는 해당 환경변수를 userData로 직접 읽는다.
  */
 const SUFFIX = "-3p";
 const APP_DIR = `Claude${SUFFIX}`;
 
-function electronUserDataRoot(): string {
-  const home = homedir();
-  if (platform() === "win32") {
-    const appData = process.env.APPDATA?.trim();
+/** 순수 함수: 테스트가 env/platform/home을 직접 주입한다. */
+export interface DesktopPathInputs {
+  env: Record<string, string | undefined>;
+  platform: NodeJS.Platform;
+  home: string;
+}
+
+/** Electron `app.getPath("userData")` — appData + productName("Claude"). */
+export function resolveElectronUserData(inputs: DesktopPathInputs): string {
+  const { env, platform, home } = inputs;
+  if (platform === "win32") {
+    const appData = env.APPDATA?.trim();
     return appData ? join(appData, "Claude") : join(home, "AppData", "Roaming", "Claude");
   }
-  if (platform() === "darwin") return join(home, "Library", "Application Support", "Claude");
-  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  if (platform === "darwin") return join(home, "Library", "Application Support", "Claude");
+  const xdg = env.XDG_CONFIG_HOME?.trim();
   return xdg ? join(xdg, "Claude") : join(home, ".config", "Claude");
 }
 
-export function claudeDesktopUserDataDir(): string {
-  const explicit = process.env.CLAUDE_USER_DATA_DIR?.trim();
+export function resolveUserDataDir(inputs: DesktopPathInputs): string {
+  const explicit = inputs.env.CLAUDE_USER_DATA_DIR?.trim();
   if (explicit) return explicit;
 
-  if (platform() === "win32") {
-    const localAppData = process.env.LOCALAPPDATA?.trim();
+  if (inputs.platform === "win32") {
+    const localAppData = inputs.env.LOCALAPPDATA?.trim();
     if (localAppData) return join(localAppData, APP_DIR);
   }
 
-  const root = electronUserDataRoot();
+  const root = resolveElectronUserData(inputs);
   return root.endsWith(SUFFIX) ? root : `${root}${SUFFIX}`;
 }
 
-/** opencodex가 3P 설정을 쓰고 읽는 디렉터리. */
-export function claudeDesktopConfigLibraryDir(): string {
-  const override = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR?.trim();
+export function resolveConfigLibraryDir(inputs: DesktopPathInputs): string {
+  const override = inputs.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR?.trim();
   if (override) return override;
-  return join(claudeDesktopUserDataDir(), "configLibrary");
+  return join(resolveUserDataDir(inputs), "configLibrary");
+}
+
+/** 런타임 래퍼 — 얇게 유지한다. 분기 로직은 위 순수 함수에만 존재한다. */
+export function claudeDesktopConfigLibraryDir(): string {
+  return resolveConfigLibraryDir({ env: process.env, platform: process.platform, home: homedir() });
 }
 ```
 
+래퍼가 `process.platform`을 읽으므로 기존 `Object.defineProperty` 스텁도 유효하다. 다만
+분기 테스트는 순수 함수를 직접 호출해 `platform`을 인자로 넘기는 쪽을 정본으로 삼는다.
+
 `OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR` 오버라이드는 최우선을 유지한다. 기존 테스트
-20여 곳이 이 변수로 임시 디렉터리를 주입하므로 순서를 바꾸면 전부 깨진다.
+5개 파일 22곳이 이 변수로 임시 디렉터리를 주입하므로 순서를 바꾸면 전부 깨진다.
 
 ## MODIFY: `src/claude/desktop-3p.ts`
 
@@ -179,39 +206,46 @@ after:
 ```ts
 import { describe, expect, test, afterEach } from "bun:test";
 
-// 대상 모듈은 os.platform()/env를 읽으므로, 각 테스트가 env를 복원한다.
+// 분기 테스트는 순수 함수를 직접 호출한다 — process.platform 스텁이 os.platform()에
+// 전파되지 않는 Bun 동작(확인: process.platform=win32 일 때 os.platform()=darwin)에
+// 의존하지 않기 위해서다.
 
 describe("Claude Desktop configLibrary 경로 해석", () => {
   test("CLAUDE_USER_DATA_DIR가 설정되면 -3p 접미사 없이 그 경로를 따른다", () => {
-    // 활성화: CLAUDE_USER_DATA_DIR=/tmp/custom-ud
-    // 관측: 결과가 "/tmp/custom-ud/configLibrary"이고 "-3p"를 포함하지 않음
+    // 활성화: resolveConfigLibraryDir({ env: { CLAUDE_USER_DATA_DIR: "/tmp/custom-ud" }, platform: "darwin", home })
+    // 관측: "/tmp/custom-ud/configLibrary" 이고 "-3p" 미포함
   });
 
   test("기본 macOS 경로는 Claude-3p를 유지한다 (회귀 방지)", () => {
-    // 활성화: CLAUDE_USER_DATA_DIR/LOCALAPPDATA 미설정, darwin
+    // 활성화: env={}, platform="darwin"
     // 관측: ".../Application Support/Claude-3p/configLibrary"
   });
 
   test("OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR가 다른 모든 분기를 이긴다", () => {
-    // 활성화: 두 변수 동시 설정
+    // 활성화: OPENCODEX_... 와 CLAUDE_USER_DATA_DIR 동시 설정
     // 관측: 오버라이드 값이 그대로 반환
   });
 
   test("win32 + LOCALAPPDATA는 LOCALAPPDATA/Claude-3p로 해석된다", () => {
-    // 활성화: platform을 win32로 스텁 + LOCALAPPDATA 설정
-    // 관측: join(LOCALAPPDATA, "Claude-3p", "configLibrary"), macOS 결과와 다름
+    // 활성화: platform: "win32" 인자 + env.LOCALAPPDATA
+    // 관측: join(LOCALAPPDATA, "Claude-3p", "configLibrary") 이고 darwin 결과와 다름
+    //       (동일 입력을 platform만 바꿔 호출해 차이를 단언한다)
   });
 
   test("userData가 이미 -3p로 끝나면 중복 접미사를 붙이지 않는다", () => {
+    // 활성화: home이 "-3p"로 끝나는 경로를 만들도록 구성
     // 관측: "Claude-3p-3p"가 생성되지 않음
+  });
+
+  test("래퍼가 순수 함수와 동일한 결과를 낸다 (배선 증명)", () => {
+    // 활성화: claudeDesktopConfigLibraryDir() vs resolveConfigLibraryDir(런타임 입력)
+    // 관측: 두 값이 일치 — 래퍼가 실제로 순수 함수를 호출함을 증명
   });
 });
 ```
 
-`platform()` 스텁 방식은 구현 시 결정한다. `os.platform`을 직접 모킹하기 어려우면
-해석 함수를 `(env, platform)` 주입형 순수 함수로 분리하고 얇은 래퍼를 두는 쪽이
-테스트 가능성이 높다. 그 경우 위 설계의 `claudeDesktopUserDataDir()`는
-`resolveUserDataDir(env, platform)`을 호출하는 래퍼가 된다.
+마지막 "배선 증명" 테스트가 없으면 순수 함수만 통과하고 래퍼가 실제로는 옛 하드코딩을
+쓰는 상황을 잡지 못한다. 순수 함수 분리의 대가로 반드시 포함한다.
 
 `appliedId` 테스트는 상태 라우트를 태우므로 기존 `tests/claude-management-api.test.ts`
 패턴을 따른다:

@@ -32,6 +32,19 @@ function GE(){
 function mD(){ return Nn.join(GE(), "configLibrary") }
 ```
 
+### 버전 일반화 근거 (A단계 감사 보강)
+
+로컬 번들은 1.18286.0인데 제보자는 1.24012.9를 썼다. 버전 차이를 무시하고 일반화하면
+안 되므로 외부 근거로 보강한다. Anthropic의 현행 설정 레퍼런스가 세 플랫폼 경로를
+그대로 문서화하고 있다:
+
+- macOS: `~/Library/Application Support/Claude-3p/configLibrary/`
+- Windows: `%LOCALAPPDATA%\Claude-3p\configLibrary\`
+- Linux: `~/.config/Claude-3p/configLibrary/`
+
+즉 세 분기 모두 현재까지 유지된다. 이 벤더 문서가 6주 전 로컬 번들보다 강한 근거이며,
+본 RCA의 결론은 로컬 추출이 아니라 이 문서에 의해 지탱된다.
+
 세 가지가 확정된다.
 
 **1. `Claude-3p`는 정상 기본값이다.** 마지막 분기가 `userData`에 `-3p`를 무조건
@@ -115,6 +128,18 @@ function l$(){
 사용자가 Desktop UI에서 "Default"로 전환하면 `appliedId`가 `d1444bab`로 바뀐다.
 그 순간 ocx의 상태 API는 여전히 `entries`에서 `opencodex`를 찾아내 "적용됨"이라고
 보고하지만, Desktop은 opencodex 설정을 읽지 않는다. 조용한 거짓 보고다.
+
+**범위 한정 (A단계 감사 보강).** "Desktop이 `appliedId`만 읽는다"는 managed-config
+읽기 경로(`l$()`)에 한정된 진술이다. 번들에는 `[appliedId, ...나머지 엔트리]`를 순회하며
+`inferenceProvider === "anthropic"`을 찾는 별도 루틴도 있다. 따라서 `activeProfile`
+필드의 의미는 "managed-config 경로에서 우리 프로필이 선택되었는가"로 좁혀서 문서화한다.
+상태 수정의 정당성 자체는 변하지 않는다 — `l$()`가 3P 게이트웨이 설정을 읽는 경로이기 때문이다.
+
+**Windows 마이그레이션 경로 (A단계 감사 보강).** 번들에는 `XW()`(`%APPDATA%\Claude-3p`)와
+`QW()`가 있고, `QW()`는 레거시 Roaming 디렉터리를 `GE()` 위치로 이전하며 복사 목록에
+`configLibrary`를 포함한다. Windows에서 마이그레이션이 진행 중인 창에서는 ocx가 Desktop이
+아직 읽지 않는 위치에 쓸 수 있다. 이번 수정의 범위를 넘으므로 WP1에서는 `GE()` 정합까지만
+구현하고, 이 창은 알려진 한계로 기록한다.
 
 ## 결론
 

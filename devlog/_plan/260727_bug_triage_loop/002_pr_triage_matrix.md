@@ -22,7 +22,33 @@ gh run list --json conclusion --jq '.[] | select(.conclusion=="action_required")
 이번 루프의 자동 실행 범위 밖이다 — 승인 자체가 fork 코드를 CI에서 실행시키는
 결정이기 때문이다.
 
-`enforce-target` FAILURE는 별개이고 실제 실패다: #536(→`main`), #527(→`codex/...` 스택).
+## `enforce-target` FAILURE의 진짜 원인 (A단계 감사 정정)
+
+초안은 이를 "타깃 검사가 통합 브랜치가 아닌 base를 거부한 것"으로 읽었다. **오독이다.**
+워크플로 실패 로그(run 30240509333, `feat/glm-provider`)의 실제 내용:
+
+```
+GraphqlResponseError: Request failed due to following response errors:
+ - Resource not accessible by integration
+##[error]Unhandled error: GraphqlResponseError
+response: { data: { convertPullRequestToDraft: null }, errors: [ [Object] ] }
+```
+
+`enforce-pr-target.yml`은 잘못된 타깃을 발견하면 (a) 제목에 `[WRONG BRANCH] ` 접두사를
+붙이고 (b) `convertPullRequestToDraft` GraphQL 뮤테이션으로 draft 전환을 시도한다.
+`permissions:`는 `pull-requests: write`만 부여하는데, draft 전환에는 그것으로 부족하다.
+워크플로가 `core.setFailed`를 호출하는 경로가 없으므로 잡은 **처리되지 않은 예외로 죽는다.**
+
+실측 확증:
+
+| PR | 제목 접두사 | draft 상태 |
+|----|-------------|------------|
+| #527 | `[WRONG BRANCH]` 붙음 | `isDraft: false` (전환 실패) |
+| #536 | `[WRONG BRANCH]` 붙음 | `isDraft: false` (전환 실패) |
+
+접두사는 REST로 성공하고 draft 전환은 GraphQL에서 실패한다. 즉 **잘못된 타깃의 모든 PR에서
+재현되는 실제 워크플로 결함**이며, 이번 트리아지가 발견한 신규 버그다. 후속 work-phase
+후보로 기록한다(수정은 `.github/workflows/` 변경이므로 `AGENTS.md`상 보안 리뷰 대상).
 
 ## 매트릭스
 
