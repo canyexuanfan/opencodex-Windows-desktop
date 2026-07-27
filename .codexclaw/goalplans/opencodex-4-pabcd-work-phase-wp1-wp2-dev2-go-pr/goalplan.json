@@ -2,7 +2,7 @@
   "objective": "opencodex 저장소 거버넌스 및 기여 정책 4건을 PABCD 다중 work-phase 루프로 처리한다. WP1 문서화 우선 사이클, WP2 dev2-go 기반 PR 및 포팅/리베이스 PR 허용 정책, WP3 대상 PR 두 개로 분할, WP4 Wibias 메인테이너 추가. 검증은 실제 파일과 명령 출력으로만. 서브에이전트는 gpt-5.6-terra medium 일반 티어 활용.",
   "slug": "opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr",
   "createdAt": "2026-07-27T00:41:29.352Z",
-  "updatedAt": "2026-07-27T03:40:13.130884+00:00",
+  "updatedAt": "2026-07-27T04:17:39.364Z",
   "activeWorkPhaseId": null,
   "workPhases": [
     {
@@ -112,28 +112,38 @@
     },
     {
       "id": "wp5",
-      "title": "PR 타깃 게이트 재설계 (enforce-pr-target.yml) — 사용자 승인 대기",
-      "status": "pending",
+      "title": "PR 타깃 게이트 재설계 (enforce-pr-target.yml) — 사용자 승인 완료, allow-list 방식 채택",
+      "status": "done",
       "tasks": [
         {
           "id": "wp5-t1",
-          "title": "actor 검증 방식 결정 (라벨 vs 리뷰 승인)",
-          "status": "pending"
+          "title": "040 문서에 승인 결과와 채택안(c: allow-list) 확정 기록",
+          "status": "done"
         },
         {
           "id": "wp5-t2",
-          "title": "head SHA 바인딩으로 승인 무효화",
-          "status": "pending"
+          "title": "enforce-pr-target.yml: EXPECTED_BASE -> ALLOWED_BASES allow-list",
+          "status": "done"
         },
         {
           "id": "wp5-t3",
-          "title": "enforce-pr-target 회귀 테스트 추가",
-          "status": "pending"
+          "title": "tests/ci-workflows.test.ts: dev2-go 통과 / 그 외 차단 / 복원 시나리오",
+          "status": "done"
         },
         {
           "id": "wp5-t4",
-          "title": "dev2-go 브랜치의 CI 트리거 (별도 PR)",
+          "title": "AGENTS.md/CONTRIBUTING.md/MAINTAINERS.md 서술을 실제 동작에 동기화",
+          "status": "done"
+        },
+        {
+          "id": "wp5-t5",
+          "title": "독립 감사 + 변이 회귀 재실행 (신규 allow-list 우회 변이 포함)",
           "status": "pending"
+        },
+        {
+          "id": "wp5-t6",
+          "title": "CI 트리거 갭 해소: ci.yml/service-lifecycle.yml pull_request에 dev2-go 추가 + 드리프트 테스트",
+          "status": "done"
         }
       ],
       "criteriaIds": [
@@ -252,9 +262,9 @@
     },
     {
       "id": "c5",
-      "scenario": "enforce-pr-target.yml이 dev2-go PR을 정당하게 통과시키고, 승인 actor가 검증되며, 승인 후 head가 바뀌면 무효화되고, 회귀 테스트가 상태 전이를 덮는다. main 승격으로 실제 발효된다.",
+      "scenario": "enforce-pr-target.yml이 dev2-go PR을 정당하게 통과시키고, 그 외 타깃은 차단·복원 경로가 회귀 테스트로 덮이며, PR을 받는 브랜치는 CI 트리거도 함께 받는다. actor 검증 + head SHA 바인딩은 040 문서의 근거 셋에 따라 채택하지 않았다 (강제력 없는 자동 판정 대신 리뷰가 잡는다). main 승격으로 실제 발효된다.",
       "expectedEvidence": "워크플로 diff + 신규 테스트 통과 출력 + main 승격 확인",
-      "capturedEvidence": "",
+      "capturedEvidence": "커밋: d761e880 (ALLOWED_BASES allow-list, 워크플로 5지점) / 10b1d2aa (문서 8종, 5개 로케일 포함) / 5229717b (ci.yml+service-lifecycle.yml PR 트리거에 dev2-go) / 76c25710 (하네스 node24 충실도 + 트리거 키집합 고정 + live base 코멘트 어설션) / 2b03e908 (ci.yml paths 양쪽 트리거 정확 집합 고정) / 99679376 (040 문서에 15~17라운드 기록). 검증: bun x tsc --noEmit exit 0; bun run test 4945 pass / 0 fail / 24352 expect(); bun test tests/ci-workflows.test.ts 52 pass / 0 fail / 548 expect(). 변이 회귀: mut16 12/12, mut17 5/5, mut18 5/5 (봉쇄 전 5종 전부 SURVIVED), mut20 8/8 (봉쇄 전 4종 SURVIVED) 전부 CAUGHT. 독립 감사 3라운드: 15=FAIL(5건) -> 76c25710, 16=FAIL(1건) -> 2b03e908, 17=PASS (12/12 CAUGHT, 무해 생존 2건 근거 기록). 미충족 잔여: main 승격 (승인 완료, 다음 work-phase).",
       "status": "open"
     },
     {
