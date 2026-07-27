@@ -379,6 +379,43 @@ describe("executeArchivedCleanup", () => {
     }
   });
 
+  test("busy final satellite lock rolls back earlier satellite write locks", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const goalsLocker = new Database(join(home, "goals_1.sqlite"));
+    goalsLocker.exec("BEGIN EXCLUSIVE");
+    try {
+      const result = runWithDigest(100, "permanent", home, { busyTimeoutMs: 1 });
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("codex_busy");
+      expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+      expect(existsSync(join(home, ".trash"))).toBe(false);
+    } finally {
+      goalsLocker.exec("ROLLBACK");
+      goalsLocker.close();
+    }
+
+    const logs = new Database(join(home, "logs_2.sqlite"));
+    logs.exec(
+      `INSERT INTO logs (ts, level, target, thread_id, estimated_bytes) VALUES (99,'INFO','t','writable-after-busy',99)`,
+    );
+    logs.close();
+    const memories = new Database(join(home, "memories_1.sqlite"));
+    memories.exec(
+      `INSERT INTO stage1_outputs VALUES ('writable-after-busy',1,'m','s',1,0)`,
+    );
+    memories.close();
+    expect(
+      new Database(join(home, "logs_2.sqlite"), { readonly: true })
+        .query("SELECT thread_id FROM logs WHERE thread_id='writable-after-busy'")
+        .get(),
+    ).toBeTruthy();
+    expect(
+      new Database(join(home, "memories_1.sqlite"), { readonly: true })
+        .query("SELECT thread_id FROM stage1_outputs WHERE thread_id='writable-after-busy'")
+        .get(),
+    ).toBeTruthy();
+  });
+
   test("rolls back staged renames when a later rename fails", () => {
     home = buildHome();
     const fresh = previewArchivedCleanup(100, home);
@@ -830,6 +867,43 @@ describe("executeArchivedCleanup", () => {
       memories.query("SELECT thread_id FROM stage1_outputs ORDER BY thread_id").all().map(r => r.thread_id),
     ).toEqual(["active", "tmid", "told"]);
     memories.close();
+
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(state.query("SELECT id FROM threads ORDER BY id").all().map(r => r.id)).toEqual([
+      "active", "tmid", "tnew", "told",
+    ]);
+    state.close();
+  });
+
+  test("concurrent consolidate enqueue watermark change is preserved on restore", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const result = runWithDigest(100, "permanent", home, {
+      now: 97,
+      _test: {
+        failBeforeStateCommit: true,
+        afterSatelliteMutations: () => {
+          const mem = new Database(join(home, "memories_1.sqlite"));
+          mem.exec(
+            `UPDATE jobs SET input_watermark = 99999
+             WHERE kind='memory_consolidate_global' AND job_key='global' AND status='pending'`,
+          );
+          mem.close();
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+
+    const memories = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    const consolidate = memories.query<{
+      status: string;
+      input_watermark: number | null;
+    }, []>(
+      "SELECT status, input_watermark FROM jobs WHERE kind='memory_consolidate_global' AND job_key='global'",
+    ).get();
+    memories.close();
+    expect(consolidate?.status).toBe("pending");
+    expect(Number(consolidate?.input_watermark ?? 0)).toBe(99999);
 
     const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
     expect(state.query("SELECT id FROM threads ORDER BY id").all().map(r => r.id)).toEqual([

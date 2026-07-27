@@ -498,6 +498,8 @@ interface SatelliteBackup {
     stage1Jobs: SqlRow[];
     consolidateJob: SqlRow | null;
     consolidateTouched: boolean;
+    /** Row image after deleteMemoriesInTx; set before memories commit (in-memory only). */
+    consolidatePostImage?: SqlRow | null;
   };
   goals?: {
     path: string;
@@ -557,21 +559,50 @@ function updateRowFromSnapshot(
   );
 }
 
-/** Revert delete-time consolidate enqueue; preserve concurrent post-commit status changes. */
-function restoreConsolidateGlobalJob(db: Database, snapshot: SqlRow): void {
-  const kind = String(snapshot.kind);
-  const jobKey = String(snapshot.job_key);
-  const existing = db.query<{ status: string }, [string, string]>(
-    "SELECT status FROM jobs WHERE kind = ? AND job_key = ?",
-  ).get(kind, jobKey);
-  if (!existing) {
-    insertRowsConflictIgnore(db, "jobs", [snapshot]);
+function normalizeSqlValue(
+  v: string | number | bigint | null | Uint8Array | undefined,
+): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "bigint") return v.toString();
+  if (v instanceof Uint8Array) return Buffer.from(v).toString("base64");
+  return String(v);
+}
+
+function sqlRowEqual(a: SqlRow, b: SqlRow): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (normalizeSqlValue(a[key]) !== normalizeSqlValue(b[key])) return false;
+  }
+  return true;
+}
+
+function readConsolidateGlobalJob(db: Database): SqlRow | null {
+  if (!tableExists(db, "jobs")) return null;
+  return db.query<SqlRow, [string, string]>(
+    "SELECT * FROM jobs WHERE kind = ? AND job_key = ?",
+  ).get(JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY) as SqlRow | null;
+}
+
+/** Revert delete-time enqueue only when the row still matches cleanup's post-delete image. */
+function restoreConsolidateGlobalJob(
+  db: Database,
+  snapshot: SqlRow | null,
+  postImage: SqlRow | null | undefined,
+): void {
+  if (!postImage) return;
+  const current = readConsolidateGlobalJob(db);
+  if (!current) {
+    if (snapshot) insertRowsConflictIgnore(db, "jobs", [snapshot]);
     return;
   }
-  const snapStatus = String(snapshot.status ?? "");
-  const currentStatus = String(existing.status ?? "");
-  if (currentStatus === "pending" && snapStatus !== "pending") {
+  if (!sqlRowEqual(current, postImage)) return;
+  if (snapshot) {
     updateRowFromSnapshot(db, "jobs", snapshot, ["kind", "job_key"]);
+  } else {
+    db.run(
+      "DELETE FROM jobs WHERE kind = ? AND job_key = ?",
+      [JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY],
+    );
   }
 }
 
@@ -599,17 +630,29 @@ function beginSatelliteWriteLocks(
   paths: RuntimeDbPaths,
   busyTimeoutMs: number,
 ): SatelliteWriteLocks {
-  const begin = (path: string | null): SatelliteWriteLock | undefined => {
-    if (!path || !existsSync(path)) return undefined;
-    const db = openDbWritable(path, busyTimeoutMs);
-    db.exec("BEGIN IMMEDIATE");
-    return { path, db };
-  };
-  return {
-    logs: begin(paths.logs),
-    memories: begin(paths.memories),
-    goals: begin(paths.goals),
-  };
+  const locks: SatelliteWriteLocks = {};
+  const order: Array<{ key: "logs" | "memories" | "goals"; path: string | null }> = [
+    { key: "logs", path: paths.logs },
+    { key: "memories", path: paths.memories },
+    { key: "goals", path: paths.goals },
+  ];
+  try {
+    for (const { key, path } of order) {
+      if (!path || !existsSync(path)) continue;
+      const db = openDbWritable(path, busyTimeoutMs);
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        locks[key] = { path, db };
+      } catch (error) {
+        try { db.close(); } catch { /* */ }
+        throw error;
+      }
+    }
+    return locks;
+  } catch (error) {
+    rollbackAllSatelliteLocks(locks);
+    throw error;
+  }
 }
 
 function rollbackSatelliteLock(lock: SatelliteWriteLock | undefined): void {
@@ -670,9 +713,7 @@ function snapshotMemoriesInTx(
       `SELECT * FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
       [JOB_KIND_MEMORY_STAGE1, ...threadIds],
     );
-    consolidateJob = db.query<SqlRow, [string, string]>(
-      `SELECT * FROM jobs WHERE kind = ? AND job_key = ?`,
-    ).get(JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY) as SqlRow | null;
+    consolidateJob = readConsolidateGlobalJob(db);
   }
   return {
     path,
@@ -810,6 +851,9 @@ function deleteAndCommitSatellites(
     }
     if (locks.memories && backup.memories) {
       deleteMemoriesInTx(locks.memories.db, backup.memories);
+      if (backup.memories.consolidateTouched) {
+        backup.memories.consolidatePostImage = readConsolidateGlobalJob(locks.memories.db);
+      }
       commitSatelliteLock(locks.memories);
       locks.memories = undefined;
       if (hooks?.failAfterMemoriesMutation) throw new Error("test_fail_after_memories");
@@ -848,8 +892,8 @@ function restoreSatelliteBackup(
         insertRowsConflictIgnore(db, "stage1_outputs", mem.stage1);
         if (tableExists(db, "jobs")) {
           insertRowsConflictIgnore(db, "jobs", mem.stage1Jobs);
-          if (mem.consolidateTouched && mem.consolidateJob) {
-            restoreConsolidateGlobalJob(db, mem.consolidateJob);
+          if (mem.consolidateTouched) {
+            restoreConsolidateGlobalJob(db, mem.consolidateJob, mem.consolidatePostImage);
           }
         }
       });
