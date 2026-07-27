@@ -915,6 +915,60 @@ describe("GitHub Actions hardening", () => {
       expect(done.body).toContain('"version":1');
     });
 
+    test("state written by an unknown version is still honoured on both paths", async () => {
+      // The reader never looks at `version`. That is a deliberate property,
+      // not an oversight: a comment written by a future run of this workflow
+      // still has to be readable by the run that is executing now, or the
+      // prefix it added stays on the PR forever with nothing left to remove
+      // it. A version gate reads as defensive hygiene — `if (storedState &&
+      // storedState.version !== 1) return;` — and verified reachable: with
+      // that line in place, an active v2 marker on a corrected, drafted PR
+      // produced only ["pulls.get", "issues.listComments"]. No title
+      // restoration, no ready-for-review, permanently stuck.
+      for (const version of [2, 99]) {
+        const active = { version, active: true, autoDraftedByBot: true, titlePrefixedByBot: true };
+
+        // Corrected target: the unknown-version state is trusted and both
+        // changes are undone, and the marker is rewritten at the version this
+        // workflow writes.
+        const restored = await run({
+          pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+          comments: [botComment(active)],
+        });
+        expect(methodsOf(restored)).toEqual([
+          "pulls.get",
+          "issues.listComments",
+          "pulls.update",
+          "graphql",
+          "issues.updateComment",
+        ]);
+        expect(callsTo(restored, "pulls.update")).toEqual([
+          { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "Add a thing" },
+        ]);
+        const [cleared] = callsTo(restored, "issues.updateComment") as [{ body: string }];
+        expect(cleared.body).toContain('"version":1');
+        expect(cleared.body).toContain('"active":false');
+
+        // Still wrong: enforcement proceeds, and the spread carries the
+        // unknown version through untouched. Pinning that is what makes a
+        // future migration a visible decision rather than a silent rewrite.
+        const wrong = await run({
+          pr: { base: { ref: "main" }, draft: false, title: "Add a thing" },
+          comments: [botComment(active)],
+        });
+        expect(methodsOf(wrong)).toEqual([
+          "pulls.get",
+          "issues.listComments",
+          "issues.updateComment",
+          "pulls.update",
+          "graphql",
+        ]);
+        const [refreshed] = callsTo(wrong, "issues.updateComment") as [{ body: string }];
+        expect(refreshed.body).toContain(`"version":${version}`);
+        expect(refreshed.body).toContain('"active":true');
+      }
+    });
+
     test("the state comment is written before the PR is touched", async () => {
       // Order is the recovery story. The comment records what the workflow is
       // about to change; if a mutation fails afterwards, a rerun reads that
