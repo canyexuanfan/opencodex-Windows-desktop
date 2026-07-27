@@ -202,12 +202,17 @@ describe("GitHub Actions hardening", () => {
    * catches, and `// await convertToDraft();` satisfies a substring check while
    * removing the behaviour. A parser sees keys, not spellings.
    */
-  type WorkflowStep = { name?: string; uses?: string; run?: string; with?: { script?: string } };
-  type WorkflowJob = { permissions?: unknown; steps?: WorkflowStep[] };
-  type WorkflowShape = {
+  type WorkflowStep = Record<string, unknown> & {
+    name?: string;
+    uses?: string;
+    run?: string;
+    with?: Record<string, unknown>;
+  };
+  type WorkflowJob = Record<string, unknown> & { "runs-on"?: unknown; steps?: WorkflowStep[] };
+  type WorkflowShape = Record<string, unknown> & {
     on?: { pull_request_target?: { types?: string[] } };
     permissions?: Record<string, string> | string;
-    concurrency?: { group?: string };
+    concurrency?: Record<string, unknown> & { group?: string };
     jobs?: Record<string, WorkflowJob>;
   };
 
@@ -280,8 +285,35 @@ describe("GitHub Actions hardening", () => {
     return out;
   }
 
-  test("PR target enforcement stays least-privilege and never runs PR code", async () => {
-    const { workflow, jobs, steps, allSteps } = await readEnforcePrTarget();
+  /**
+   * Enumerate what the workflow IS, not what it must not be.
+   *
+   * Three audit rounds killed the deny-list approach. Each round the author
+   * closed the named holes and each round the next auditor found more, because
+   * "assert this key is absent" only ever covers keys someone thought of. Round
+   * three alone landed fourteen: `if: false` on the job, `if: false` on the
+   * step, `runs-on: self-hosted`, `container: node:22`, a `strategy.matrix`,
+   * `outputs.leaked: ${{ github.token }}`, a `<<:` merge key that smuggles in
+   * `if: false`, `github-token: ${{ secrets.SOME_PAT }}` beside `script`,
+   * `result-encoding`, a job-level `env:` carrying the PR title, and
+   * `cancel-in-progress`.
+   *
+   * Every one of those is a KEY THAT WAS NOT THERE BEFORE. So pin the key sets
+   * exactly. A new key — any new key, including one invented after this test
+   * was written — fails here and gets read by a human. That is the property a
+   * characterisation test on a privileged workflow actually needs.
+   */
+  test("PR target enforcement's structure is an exact allowlist, not a deny-list", async () => {
+    const { workflow, jobs, steps } = await readEnforcePrTarget();
+
+    // Top level: these five keys and nothing else.
+    expect(Object.keys(workflow).sort()).toEqual([
+      "concurrency",
+      "jobs",
+      "name",
+      "on",
+      "permissions",
+    ]);
 
     // pull_request_target runs with the base repo's token. Checking out or
     // executing the PR's code under it is the classic escalation.
@@ -292,41 +324,60 @@ describe("GitHub Actions hardening", () => {
     // scalar is not an object at all.
     expect(workflow.permissions).toEqual({ "pull-requests": "write" });
 
+    // One run per PR, so two rapid events cannot race on the title/draft state,
+    // and no `cancel-in-progress` — cancelling the in-flight run mid-mutation is
+    // how the bot ends up having prefixed the title but not recorded that it did.
+    expect(workflow.concurrency).toEqual({
+      group: "enforce-pr-target-${{ github.event.pull_request.number }}",
+    });
+
     // One job, and it is this one. An audit round added a `sidecar:` job that
     // inherited the PR-write token and un-drafted the PR — every assertion below
     // still passed, because they only ever looked at `enforce-target`.
     expect(jobs.map(([name]) => name)).toEqual(["enforce-target"]);
 
-    // A job-level `permissions:` block overrides the workflow-level one, so
-    // narrowing the top and widening the job is a silent escalation. No job may
-    // declare its own scope.
-    for (const [name, job] of jobs) {
-      expect([name, job?.permissions]).toEqual([name, undefined]);
-    }
+    // The job is exactly a runner plus steps. No `if:` (which silently disables
+    // the whole gate), no `permissions:` (a job-level block overrides the narrow
+    // workflow-level one), no `container:`/`strategy:`/`outputs:`/`env:`/
+    // `defaults:`, and no `<<:` merge key to reintroduce any of them sideways.
+    const [, job] = jobs[0]!;
+    expect(Object.keys(job).sort()).toEqual(["runs-on", "steps"]);
+    expect(job["runs-on"]).toBe("ubuntu-latest");
 
-    // Exactly one step, and it is the github-script step. Anything more is an
-    // extra privileged action nobody reviewed: the audit added a second
+    // Exactly one step: name, the pinned action, and its inputs. Anything more
+    // is an extra privileged action nobody reviewed — the audit added a second
     // `github-script` step that mutated the PR and the suite stayed green.
     expect(steps).toHaveLength(1);
-    expect(allSteps).toHaveLength(1);
+    const [step] = steps as [WorkflowStep];
+    expect(Object.keys(step).sort()).toEqual(["name", "uses", "with"]);
 
-    // No step may run a shell command, and every action must be pinned to a
-    // 40-hex commit SHA — this workflow hands a write token to whatever it
-    // resolves to, so a tag or branch ref is a mutable dependency. Checked
-    // across every job, not just this one.
-    for (const step of allSteps) {
-      expect(step).not.toHaveProperty("run");
-      const uses = step.uses;
-      expect(typeof uses).toBe("string");
-      expect(String(uses)).not.toContain("actions/checkout");
-      expect(String(uses)).toMatch(/@[0-9a-f]{40}$/);
-    }
-    expect(allSteps.some(step => String(step.uses).startsWith("actions/github-script@"))).toBe(true);
+    // `github-script` is the action, pinned to a 40-hex commit SHA: this
+    // workflow hands a write token to whatever the ref resolves to, so a tag or
+    // branch is a mutable dependency.
+    expect(step.uses).toMatch(/^actions\/github-script@[0-9a-f]{40}$/);
 
-    // One run per PR, so two rapid events cannot race on the title/draft state.
-    expect(workflow.concurrency?.group).toBe(
-      "enforce-pr-target-${{ github.event.pull_request.number }}",
+    // `script` is the only input. `github-token:` swaps the restricted
+    // `GITHUB_TOKEN` for an arbitrary PAT, and every other input changes how the
+    // action behaves with that token in hand.
+    expect(Object.keys(step.with ?? {})).toEqual(["script"]);
+  });
+
+  /**
+   * `${{ }}` is interpolated by Actions into the script text BEFORE node sees
+   * it, so a PR title containing a backtick or a quote is code, not data. This
+   * is the canonical `pull_request_target` script-injection sink, and the round
+   * three audit walked straight through it with
+   * `const injected = "${{ github.event.pull_request.title }}";`.
+   *
+   * The script body must contain no expression syntax at all. It already reads
+   * everything it needs from the `context` object at runtime.
+   */
+  test("PR target enforcement's script interpolates nothing from the event", async () => {
+    const { workflow } = await readEnforcePrTarget();
+    const rawScript = String(
+      (workflow.jobs?.["enforce-target"]?.steps?.[0]?.with?.script as string) ?? "",
     );
+    expect(rawScript).not.toContain("${{");
   });
 
   test("PR target enforcement reacts to the events that can change the verdict", async () => {
@@ -354,6 +405,95 @@ describe("GitHub Actions hardening", () => {
       /const pull_number = context\.payload\.pull_request\.number;/,
     );
     expect(script.match(/pull_number\s*=/g) ?? []).toHaveLength(1);
+
+    // Nothing may write back into the fetched PR. The audit round preserved the
+    // required comparison line verbatim and defeated it one line earlier with
+    // `pr.base.ref = EXPECTED_BASE;` — the literal was still there, the verdict
+    // was still always false. `pr` is read-only evidence, so no assignment to
+    // any of its fields may exist.
+    expect(script).not.toMatch(/\bpr\.[A-Za-z_$][\w$.]*\s*=(?!=)/);
+  });
+
+  /**
+   * Every write this workflow performs, and exactly which fields it may carry.
+   *
+   * The audit found two argument-level bypasses that nothing above catches,
+   * because both leave the call site's shape intact:
+   *
+   *   - `issue_number: 1` on the comment call, retargeting the bot's comment at
+   *     an unrelated issue;
+   *   - `base: "main"` added to the title update, so the gate that exists to
+   *     stop wrong-branch PRs quietly retargets them itself.
+   *
+   * The second is the worse one: `pulls.update` accepts `base`, `state`, and
+   * `body`, so an unconstrained argument list on a write token means the bot can
+   * retarget or close any PR it is invoked on. Pin the argument names.
+   */
+  test("PR target enforcement's writes carry only the fields they need", async () => {
+    const { script } = await readEnforcePrTarget();
+
+    // Parse each `await github.rest.X.Y({ ... })` call and collect its top-level
+    // argument names by brace-depth, so nested objects do not leak in.
+    function callArgs(callee: string): string[][] {
+      const found: string[][] = [];
+      const pattern = new RegExp(`${callee.replaceAll(".", "\\.")}\\(\\s*\\{`, "g");
+      for (const match of script.matchAll(pattern)) {
+        let depth = 1;
+        let i = match.index! + match[0].length;
+        const start = i;
+        for (; i < script.length && depth > 0; i += 1) {
+          const char = script[i]!;
+          if (char === "{" || char === "(" || char === "[") depth += 1;
+          else if (char === "}" || char === ")" || char === "]") depth -= 1;
+        }
+        const body = script.slice(start, i - 1);
+        const names: string[] = [];
+        let nest = 0;
+        for (const line of body.split("\n")) {
+          const trimmed = line.trim();
+          const key = /^([A-Za-z_$][\w$]*)\s*(?::|,|$)/.exec(trimmed);
+          if (nest === 0 && key) names.push(key[1]!);
+          for (const char of line) {
+            if (char === "{" || char === "[" || char === "(") nest += 1;
+            else if (char === "}" || char === "]" || char === ")") nest -= 1;
+          }
+        }
+        found.push(names.sort());
+      }
+      return found;
+    }
+
+    // The two title rewrites — one adds the prefix, one removes it on a correct
+    // retarget. `base`, `state`, and `body` are all accepted by this endpoint
+    // and none of them belong here.
+    expect(callArgs("github.rest.pulls.update")).toEqual([
+      ["owner", "pull_number", "repo", "title"],
+      ["owner", "pull_number", "repo", "title"],
+    ]);
+
+    // Both comment writes address the PR being enforced, by its own number.
+    expect(callArgs("github.rest.issues.createComment")).toEqual([
+      ["body", "issue_number", "owner", "repo"],
+    ]);
+    expect(callArgs("github.rest.issues.updateComment")).toEqual([
+      ["body", "comment_id", "owner", "repo"],
+    ]);
+
+    // …and the number is `pull_number`, not a literal. `issue_number: 1` has the
+    // same shape as `issue_number: pull_number` and points somewhere else.
+    expect(script).toMatch(/issue_number:\s*pull_number\b/);
+    expect(script).not.toMatch(/issue_number:\s*\d/);
+
+    // These are the only three mutating REST calls. A fourth is a new write
+    // nobody reviewed.
+    const restWrites = [...script.matchAll(/github\.rest\.[\w.]+/g)]
+      .map(match => match[0])
+      .filter(name => !name.endsWith(".get") && !name.endsWith(".listComments"));
+    expect([...new Set(restWrites)].sort()).toEqual([
+      "github.rest.issues.createComment",
+      "github.rest.issues.updateComment",
+      "github.rest.pulls.update",
+    ]);
   });
 
   test("PR target enforcement records what it changed so it can undo it", async () => {

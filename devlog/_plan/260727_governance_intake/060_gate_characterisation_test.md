@@ -110,6 +110,77 @@ restored OK; survived = none
 
 기준선: `14 pass  0 fail  292 expect() calls`, `bun run typecheck` 오류 0.
 
+## 감사 3라운드 — 열거 게임의 종료
+
+봉쇄본을 다시 독립 감사에 넘겼다. 또 FAIL, 이번엔 14가지가 살아남았다.
+
+`if: false`(잡/스텝 양쪽), `runs-on: self-hosted`, `container: node:22`,
+`strategy.matrix`, `outputs.leaked: ${{ github.token }}`, `<<:` 병합 키로 `if: false`
+주입, `github-token: ${{ secrets.SOME_PAT }}`, `result-encoding`, 잡 레벨 `env:`에
+PR 제목 주입, `cancel-in-progress`, 그리고 스크립트 안쪽으로 `${{ ... }}` 보간,
+`pr.base.ref = EXPECTED_BASE` 되쓰기, `issue_number: 1`, `base: "main"` 추가.
+
+여기서 패턴이 보인다. **살아남은 것은 전부 "원래 없던 키"다.** 세 라운드 내내 우리는
+"이 키는 없어야 한다"를 하나씩 늘려왔는데, 그건 감사자가 생각해낸 것만 덮는다.
+다음 라운드에는 다음 키가 나온다. 끝나지 않는다.
+
+### 설계 반전 — 부정 목록에서 허용 목록으로
+
+무엇이 없어야 하는지가 아니라 **무엇인지**를 열거한다.
+
+- 최상위 키 집합이 정확히 `[concurrency, jobs, name, on, permissions]`
+- `concurrency` 객체 전체가 `{group: ...}` 하나 (`cancel-in-progress` 자동 차단)
+- 잡 키 집합이 정확히 `[runs-on, steps]`, `runs-on`은 `ubuntu-latest` 고정
+  → `if`, `permissions`, `container`, `strategy`, `outputs`, `env`, `defaults`, `<<`
+  전부 한 어설션에 걸린다
+- 스텝 키 집합이 정확히 `[name, uses, with]`, `with` 키가 정확히 `[script]`
+  → `github-token`, `result-encoding`, 스텝 `if` 전부 차단
+- `uses`는 `^actions/github-script@[0-9a-f]{40}$`
+
+이 방식의 값어치는 **아직 발명되지 않은 키도 걸린다**는 것이다. 새 키가 추가되면
+어떤 키든 여기서 실패하고 사람이 읽게 된다. 권한 있는 워크플로의 특성화 테스트에
+필요한 성질이 바로 그거다.
+
+### 스크립트 쪽 — 보간 금지와 인자 화이트리스트
+
+`${{ }}`는 Actions가 node 실행 **전에** 스크립트 텍스트로 치환한다. 그래서 백틱이
+들어간 PR 제목은 데이터가 아니라 코드다. `pull_request_target`의 교과서적 주입 지점.
+스크립트 원문에 `${{`가 하나도 없어야 한다 — 필요한 값은 이미 런타임에 `context`에서
+읽고 있다.
+
+`pr` 객체에 대한 필드 대입도 전면 금지한다. 감사는 요구 비교문을 글자 그대로 남겨둔
+채 한 줄 위에서 `pr.base.ref = EXPECTED_BASE;`로 판정을 죽였다. 리터럴은 그대로,
+결과는 항상 false.
+
+쓰기 호출은 인자 이름까지 고정한다. `pulls.update`는 `base`, `state`, `body`를 받는다.
+인자 목록이 열려 있으면 write 토큰을 쥔 봇이 PR을 리타깃하거나 닫을 수 있다는 뜻이다.
+`issue_number`는 리터럴 금지, `pull_number` 바인딩만 허용. 변조 REST 호출은 정확히
+세 개(`pulls.update`, `issues.createComment`, `issues.updateComment`)여야 한다.
+
+## 변이 검증 실측 (27/27)
+
+3개 라운드가 찾은 모든 우회 + 파생 2건을 재주입했다. 각 변이 후 즉시
+`git checkout -- .github/workflows/enforce-pr-target.yml`.
+
+```
+run-with-space CAUGHT      quoted-uses-key CAUGHT     line-comment-draft CAUGHT
+hardcoded-wrongBase CAUGHT block-comment-draft CAUGHT second-job CAUGHT
+job-level-perms CAUGHT     extra-script-step CAUGHT   unreachable-restore CAUGHT
+pr-controlled-target CAUGHT pat-override CAUGHT       job-env-pr-title CAUGHT
+job-if-false CAUGHT        step-if-false CAUGHT       self-hosted-runner CAUGHT
+unpinned-container CAUGHT  script-injection CAUGHT    pr-field-writeback CAUGHT
+comment-other-issue CAUGHT constant-concurrency CAUGHT cancel-in-progress CAUGHT
+merge-key-disable CAUGHT   extra-with-input CAUGHT    nul-title-prefix CAUGHT
+matrix-and-outputs CAUGHT  update-retargets-main CAUGHT update-closes-pr CAUGHT
+
+survived = none
+```
+
+기준선: `16 pass  0 fail  303 expect() calls`, `bun run typecheck` 오류 0.
+
+한 가지 실측 정정: 계획은 `pulls.update`가 1회 호출된다고 봤는데 실제로는 2회다
+(접두사 부착, 그리고 리타깃 후 제거). 어설션을 실제 트리에 맞췄다.
+
 ## 범위 밖
 
 게이트 자체의 재설계는 040이 다루며 사용자 승인 대기 상태다. 이 테스트는 재설계를
