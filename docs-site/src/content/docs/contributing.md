@@ -80,6 +80,27 @@ bun run release <version> --publish # publish after the CI-gated dry run is unde
 bun run release:watch               # watch the newest Release workflow run
 ```
 
+## Branches
+
+- `dev` — the default integration target. Open your pull request here unless it
+  belongs to a scoped line below.
+- `dev2-go` — parallel integration line for the Go native port (`go/`, the
+  native runtime entrypoint, and the Go release-asset tooling). **Not yet open
+  for pull requests:** the automated target-branch check does not know about
+  this line, so it prefixes such a pull request with `[WRONG BRANCH]` and
+  forces it to draft, and it runs again whenever you edit the title or mark the
+  pull request ready, so that state holds. GitHub will not merge a draft, so
+  the pull request cannot land. Until the check is updated, send Go
+  native-port work to `dev` or ask a maintainer first.
+- `main` — releases only. It moves by maintainer-controlled promotion from
+  `dev`; do not open feature pull requests against it.
+- `preview` — the prerelease train.
+
+Porting and rebase pull requests are welcome. Carrying a fix from one
+integration line to another, or rebasing a stale branch onto the current head,
+is normal contribution rather than noise — note the source commits in the
+description.
+
 ## Project maintainers
 
 The current maintainers, their responsibilities, and the review and merge policy are documented in

@@ -44,10 +44,10 @@ non-trivial change. CI runs these on Linux, Windows, and macOS.
   `bin/native-runtime.mjs`, `src/lib/runtime-entry.ts`, and the Go
   release-asset tooling. **Not yet open for pull requests.** The target-branch
   check does not recognise this line: it prefixes any non-`dev` pull request
-  with `[WRONG BRANCH]`, converts it to a draft, and re-applies both whenever
-  the pull request is edited or marked ready for review. GitHub will not merge
-  a draft, so such a pull request cannot land. Until the check is updated, send
-  Go native-port work to `dev` or coordinate with a maintainer.
+  with `[WRONG BRANCH]` and converts it to a draft, and it runs again on every
+  edit and ready-for-review event, so the draft state holds. GitHub will not
+  merge a draft, so such a pull request cannot land. Until the check is
+  updated, send Go native-port work to `dev` or coordinate with a maintainer.
 - `main` — release branch. It only moves by maintainer-controlled promotion
   from `dev` (releases, docs deploys). Do not open feature PRs against `main`.
 - `preview` — prerelease train (`x.y.z-preview.*` versions).
@@ -74,12 +74,12 @@ reviewers (Codex, CodeRabbit).
   language. Be detailed and specific: name the file and line, describe the
   concrete failure mode, and suggest a fix. Avoid vague or purely stylistic
   commentary.
-- **Branch targeting:** flag any pull request that targets `main` instead of an
-  integration branch (releases and maintainer promotions are the only
-  exceptions). `dev` is the default. `dev2-go` is a real integration line for
-  Go native-port work, so do not treat an automated `[WRONG BRANCH]` prefix on
-  such a pull request as the author's mistake — that prefix is applied by
-  `enforce-pr-target.yml`, which does not know the line exists yet.
+- **Branch targeting:** flag any pull request that does not target `dev`
+  (releases and maintainer promotions are the only exceptions). That includes
+  `dev2-go` for now: the line is real, but it cannot take pull requests until
+  the target-branch check is updated, so ask the author to retarget to `dev`.
+  Explain it that way rather than as a mistake — the `[WRONG BRANCH]` prefix on
+  such a pull request is applied by `enforce-pr-target.yml`, not by the author.
 - **Security boundary (highest priority):** changes touching authentication,
   credential/token handling, OAuth flows, GitHub Actions workflows, release
   automation (`scripts/release.ts`, `.github/workflows/release.yml`), or

@@ -14,10 +14,11 @@ Thanks for helping with opencodex.
 - `dev2-go` — parallel integration line for the Go native port (`go/`, the
   native runtime entrypoint, and the Go release-asset tooling). **Not yet open
   for pull requests:** the automated target-branch check does not know about
-  this line, so it prefixes such a PR with `[WRONG BRANCH]`, forces it to
-  draft, and does so again every time you edit the title or mark it ready.
-  GitHub will not merge a draft, so the PR cannot land. Until the check is
-  updated, send Go native-port work to `dev` or ask a maintainer first.
+  this line, so it prefixes such a PR with `[WRONG BRANCH]` and forces it to
+  draft — and it runs again whenever you edit the title or mark the PR ready,
+  so the draft state holds. GitHub will not merge a draft, so the PR cannot
+  land. Until the check is updated, send Go native-port work to `dev` or ask a
+  maintainer first.
 - `main` — releases only; moves by maintainer-controlled promotion from `dev`.
 - `preview` — prerelease train.
 

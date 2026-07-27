@@ -78,6 +78,23 @@ bun run release <version> --publish # CI-gated dry-run을 확인한 뒤 실제 p
 bun run release:watch               # 가장 최근 Release workflow run 감시
 ```
 
+## 브랜치
+
+- `dev` — 기본 통합 대상. 아래 범위 브랜치에 해당하지 않으면 여기로 PR을 올립니다.
+- `dev2-go` — Go 네이티브 포트(`go/`, 네이티브 런타임 진입점, Go 릴리즈 자산 도구)를 위한
+  병렬 통합선입니다. **아직 PR을 받지 않습니다.** 타깃 브랜치 검사 자동화가 이 브랜치를
+  모르기 때문에, PR 제목에 `[WRONG BRANCH]`를 붙이고 draft로 되돌립니다. 제목을 고치거나
+  ready로 바꿔도 자동화가 다시 실행되어 draft 상태가 유지됩니다. GitHub은 draft PR을
+  머지하지 않으므로 그 PR은 반영될 수 없습니다. 검사가 갱신되기 전까지 Go 네이티브 포트
+  작업은 `dev`로 보내거나 메인테이너에게 먼저 문의하세요.
+- `main` — 릴리즈 전용. `dev`에서 메인테이너가 승격시킬 때만 움직이며, 기능 PR을 직접
+  올리지 않습니다.
+- `preview` — 프리릴리즈 트레인.
+
+포팅 PR과 리베이스 PR을 환영합니다. 한 통합선의 수정을 다른 쪽으로 옮기거나, 오래된
+브랜치를 현재 head 위로 리베이스하는 것은 잡음이 아니라 정상적인 기여입니다. 설명란에
+출처 커밋을 적어주세요.
+
 ## 컨벤션
 
 - **ES Modules 전용**(`import`/`export`), TypeScript, `strict` 모드. `bun x tsc --noEmit`을 깨끗하게
