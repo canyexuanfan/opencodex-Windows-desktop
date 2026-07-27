@@ -408,20 +408,34 @@ export async function runEnforcePrTarget(
     return { status: 200, url: `https://api.github.com/${method}`, headers: {}, data };
   }
 
+  /**
+   * Every client method resolves or REJECTS — it never throws synchronously.
+   *
+   * The methods used to be `Promise.resolve(record(…))`, which evaluates
+   * `record` first, so a simulated failure escaped as a synchronous exception.
+   * Real Octokit returns a promise and rejects it, and the difference is
+   * visible from the script: `github.rest.pulls.get(…).catch(…)` never runs its
+   * handler against a synchronous throw. A review round used exactly that to
+   * turn a failed authoritative PR read into a synthetic correct-looking PR,
+   * which converts an enforcement outage into a green check.
+   */
+  const respond = async (method: string, args: unknown, data?: unknown) =>
+    record(method, args, data);
+
   const rest = {
     pulls: {
-      get: (args: unknown) => Promise.resolve(record("pulls.get", args, pr)),
-      update: (args: unknown) => Promise.resolve(record("pulls.update", args, { ...pr })),
+      get: (args: unknown) => respond("pulls.get", args, pr),
+      update: (args: unknown) => respond("pulls.update", args, { ...pr }),
     },
     issues: {
       // Honours `page`, so a caller that skips `paginate` sees only page one —
       // exactly what happens against the real API.
       listComments: (args: unknown) => {
         const page = Number((args as { page?: number })?.page ?? 1);
-        return Promise.resolve(record("issues.listComments", args, pages[page - 1] ?? []));
+        return respond("issues.listComments", args, pages[page - 1] ?? []);
       },
-      createComment: (args: unknown) => Promise.resolve(record("issues.createComment", args, { id: 99 })),
-      updateComment: (args: unknown) => Promise.resolve(record("issues.updateComment", args, { id: 7 })),
+      createComment: (args: unknown) => respond("issues.createComment", args, { id: 99 }),
+      updateComment: (args: unknown) => respond("issues.updateComment", args, { id: 7 }),
     },
   };
 
@@ -440,9 +454,9 @@ export async function runEnforcePrTarget(
   class Octokit {
     rest = rest;
     graphql = (query: unknown, variables: unknown) =>
-      Promise.resolve(record("graphql", { query, variables }));
+      respond("graphql", { query, variables });
     request = (route: unknown, params: unknown) =>
-      Promise.resolve(record("request", { route, params }));
+      respond("request", { route, params });
     /**
      * `github.paginate(fn, params)` — walk every page and concatenate, the way
      * Octokit does. A one-page fake would make dropping pagination invisible.

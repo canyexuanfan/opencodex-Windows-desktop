@@ -723,7 +723,86 @@ mut4   total=13 survived=[noop 1]  mut3  total=26 survived=[noop 1]
 기준선: `36 pass  0 fail  420 expect() calls`, `bun run typecheck` 오류 0,
 `git status --short .github/` 클린.
 
-## 열한 라운드가 남긴 것
+## 감사 12라운드 — 동작의 구멍, 그리고 거부의 모양
+
+11라운드 수정을 같은 감사자에게 재감사시켰다. 트리거 수정은 **확인됐다** —
+감사자가 `<<: { branches: [main] }` 병합 키까지 시도했으나 YAML 파서가 펼치면서
+`["branches","types"]`로 잡혔다. 대신 다른 부류 3건을 가져왔고, 재현하며 2건을 더
+찾았다.
+
+이번 5건은 하네스 충실도 문제가 아니다. **시나리오가 없는 도달 가능한 상태**들이다.
+
+### 제목 경계 3건
+
+`TITLE_PREFIX`는 **기여자가 쓸 수 있는 문자열**이다. 이 사실이 세 변이의 공통
+전제다.
+
+- `pr.title === TITLE_PREFIX` — `startsWith`가 참인 값이므로, 이 등가 비교로 조기
+  반환하면 제목을 `"[WRONG BRANCH] "`로 지은 PR이 통째로 면제된다.
+- `!pr.title` — GitHub이 허용하지 않지만 스크립트는 확인하지 않는다. 리뷰에서
+  방어적으로 보이는 한 줄이다.
+- `startsWith(TITLE_PREFIX + TITLE_PREFIX)` — 가장 교묘하다. "접두사 중복 방지"처럼
+  읽히지만, 접두사가 기여자 소유 텍스트이므로 **기여자가 의도적으로 만족시킬 수
+  있는 조건**이다. 실측으로 확인했다: 이 가드가 있을 때
+  `"[WRONG BRANCH] [WRONG BRANCH] mine"` 제목의 main 대상 PR은
+  `["pulls.get","issues.listComments"]`만 남기고 끝난다 — 코멘트도 draft도 없는
+  완전 면제.
+
+### 봇 코멘트 중복 1건
+
+`find` → `findLast`. 한 단어 차이로 정반대 상태를 고른다. 중복 봇 코멘트는 실제로
+생긴다(실패한 실행이 남긴 것, 워크플로가 두 벌 돌던 시절의 잔재). 둘이 모순된
+상태를 담고 있으면 **어느 쪽이 권위인가**가 제목 복원 여부를 결정한다. 페이지네이션
+시나리오는 있었지만 매칭 코멘트가 둘인 경우는 없었다.
+
+### `pulls.get` 실패 1건 — 그리고 하네스 버그
+
+```js
+}).catch(error => {
+  if (error.status === 404) {
+    return { data: { base: { ref: EXPECTED_BASE } } };
+  }
+  throw error;
+});
+```
+
+권위 있는 읽기의 실패를 **"올바른 대상인 척하는 가짜 PR"** 로 바꾼다. 집행 장애가
+초록 체크가 되고, 그동안 잘못된 대상의 PR은 전부 통과한다.
+
+시나리오를 추가했는데도 잡히지 않았다. 원인은 하네스였다. 모든 클라이언트 메서드가
+`Promise.resolve(record(...))` 형태였고, `record`가 **동기적으로 던지므로** 실패가
+거부된 프로미스가 아니라 동기 예외로 튀어나왔다. 진짜 Octokit은 프로미스를 돌려주고
+그것을 거부한다. 차이는 스크립트에서 보인다 — 동기 예외에는 `.catch()` 핸들러가
+아예 실행되지 않는다. `respond()` async 헬퍼로 전부 라우팅해서 고쳤다.
+
+**거부의 모양도 충실도의 일부다.** 6라운드에서 `RequestError`의 `.status`를 맞췄지만,
+거부가 **언제** 일어나는가는 그때 맞추지 않았다.
+
+## 변이 검증 실측 (123/123)
+
+12라운드 6가지:
+
+```
+title-eq-prefix CAUGHT    title-empty-skip CAUGHT   title-double-pfx CAUGHT
+findlast-comment CAUGHT   get-swallow-404 CAUGHT    base-case-insens CAUGHT
+
+total=6 survived=none
+```
+
+이전 117가지 회귀 재확인:
+
+```
+mut11b total=7  survived=none      mut10b total=18 survived=[무해 2]
+mut9b  total=25 survived=[무해 4]  mut8b  total=10 survived=none
+mut7   total=8  survived=none      mut6   total=7  survived=none
+mut5   total=7  survived=none      mut4   total=13 survived=[noop 1]
+mut3   total=26 survived=[noop 1]
+```
+
+기준선: `42 pass  0 fail  455 expect() calls`, `bun run typecheck` 오류 0,
+`git status --short .github/` 클린.
+
+## 열두 라운드가 남긴 것
 
 설계가 세 번 바뀌었고, 매번 앞 라운드가 그 방향의 한계를 증명했다.
 

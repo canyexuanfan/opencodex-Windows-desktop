@@ -930,6 +930,146 @@ describe("GitHub Actions hardening", () => {
       expect(comment).toBeLessThan(methods.indexOf("graphql"));
     });
 
+    test("a title that is exactly the prefix is still enforced", async () => {
+      // `pr.title === TITLE_PREFIX` is a reachable, contributor-controllable
+      // value, and `startsWith` is true for it — so an early return keyed on
+      // that exact equality reads as a harmless guard and silently exempts any
+      // PR whose author titles it "[WRONG BRANCH] ". A review round added one
+      // and nothing failed.
+      const result = await run({
+        pr: { base: { ref: "main" }, title: "[WRONG BRANCH] ", draft: false },
+      });
+
+      // Already prefixed, so no title write — but the state and the draft
+      // conversion still have to happen.
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.createComment",
+        "graphql",
+      ]);
+      const [comment] = callsTo(result, "issues.createComment") as [{ body: string }];
+      expect(comment.body).toContain('"titlePrefixedByBot":false');
+      expect(comment.body).toContain('"autoDraftedByBot":true');
+    });
+
+    test("an empty title is enforced rather than skipped", async () => {
+      // GitHub does not allow it, but the script never checks, and
+      // `if (!pr.title) return;` is the kind of defensive line that looks
+      // reasonable in review. It exempts whatever can produce a falsy title.
+      const result = await run({
+        pr: { base: { ref: "main" }, title: "", draft: true },
+      });
+
+      expect(callsTo(result, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "[WRONG BRANCH] " },
+      ]);
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.createComment",
+        "pulls.update",
+      ]);
+    });
+
+    test("an already-prefixed title is never prefixed twice", async () => {
+      // The workflow re-runs on `edited`, which its own title write triggers.
+      // Without the `startsWith` guard each pass would stack another prefix.
+      // This states the property directly, so a guard keyed on the doubled
+      // prefix — which only ever matches after the bug already happened —
+      // cannot be introduced as if it were the fix.
+      const result = await run({
+        pr: { base: { ref: "main" }, title: "[WRONG BRANCH] Add a thing", draft: true },
+      });
+
+      // No second prefix — and the run still does everything else it owes:
+      // reads, finds no prior state, and records that it changed nothing.
+      // Asserting only the absent write would let an early return keyed on the
+      // doubled prefix pass, since that skips the write too.
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.createComment",
+      ]);
+      const [comment] = callsTo(result, "issues.createComment") as [{ body: string }];
+      expect(comment.body).toContain('"titlePrefixedByBot":false');
+      expect(comment.body).toContain('"active":true');
+    });
+
+    test("a title that already carries the prefix twice is still enforced", async () => {
+      // The prefix is contributor-writable text, so any guard keyed on a
+      // doubled prefix is a guard the contributor can satisfy on purpose.
+      // Verified reachable: with such a guard in place, a PR titled
+      // "[WRONG BRANCH] [WRONG BRANCH] mine" against main produced only
+      // ["pulls.get", "issues.listComments"] — no comment, no draft, complete
+      // exemption.
+      const result = await run({
+        pr: { base: { ref: "main" }, title: "[WRONG BRANCH] [WRONG BRANCH] mine", draft: false },
+      });
+
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.createComment",
+        "graphql",
+      ]);
+      // Already prefixed by the `startsWith` test, so no third prefix is added.
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      const [comment] = callsTo(result, "issues.createComment") as [{ body: string }];
+      expect(comment.body).toContain('"active":true');
+      expect(comment.body).toContain('"autoDraftedByBot":true');
+    });
+
+    test("with two bot comments, the workflow reads and writes the first", async () => {
+      // Duplicates happen: a failed run that posted before crashing, or a
+      // repository that once ran two copies of this workflow. The two carry
+      // conflicting state, so which one is authoritative decides whether the
+      // title gets restored. `find` and `findLast` are a one-word edit apart
+      // and pick opposite answers; nothing pinned which.
+      const first = {
+        id: 7,
+        user: { login: BOT },
+        body: [MARKER, `<!-- wrong-branch-enforcer-state:${JSON.stringify({ version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true })} -->`].join("\n"),
+      };
+      const second = {
+        id: 8,
+        user: { login: BOT },
+        body: [MARKER, `<!-- wrong-branch-enforcer-state:${JSON.stringify({ version: 1, active: false, autoDraftedByBot: false, titlePrefixedByBot: false })} -->`].join("\n"),
+      };
+      const result = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [first, second],
+      });
+
+      // The first comment's state is the one honoured: it says the bot
+      // prefixed and drafted, so both are undone.
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "pulls.update",
+        "graphql",
+        "issues.updateComment",
+      ]);
+      // And the first comment is the one rewritten, not the second.
+      const [updated] = callsTo(result, "issues.updateComment") as [{ comment_id: number }];
+      expect(updated.comment_id).toBe(7);
+    });
+
+    test("a failure reading the PR stops the run", async () => {
+      // `pulls.get` is the authoritative read the whole verdict rests on.
+      // Turning its failure into a synthetic correct-looking PR converts an
+      // enforcement outage into a green check — the gate reports success while
+      // every wrong-target PR walks through. Existing coverage failed the
+      // GraphQL call and `pulls.update`, never this one.
+      for (const status of [404, 403, 500]) {
+        await expect(
+          run({ pr: { base: { ref: "main" } }, failOn: ["pulls.get"], failStatus: status }),
+        ).rejects.toThrow();
+      }
+    });
+
     test("the harness offers every binding the pinned action does", async () => {
       // Round eight did not attack the workflow. It attacked the gap between
       // this fake and the real runtime, three times over: `typeof getOctokit
