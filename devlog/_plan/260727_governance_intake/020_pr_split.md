@@ -8,10 +8,15 @@ WP3 · 근거: `000_survey.md`, PR #518 파일/커밋 실측
 `gh pr list --state open --json number,isDraft`). 나머지 12개는 draft라
 작성자 소유이므로 우리가 쪼갤 대상이 아니다. #355도 draft다.
 
-| PR | 상태 | 크기 (GitHub API 실측) | 분할 필요성 |
+살아있는 PR의 절대 수치는 문서에 박지 않는다 — 2차 감사 시점 `+1193/10커밋`이
+3차 감사 시점에 `+1245/11커밋`으로 바뀌었다. 분할 직전에 재조회한다:
+
+    gh api repos/lidge-jun/opencodex/pulls/518 --jq '{additions,deletions,changed_files,commits}'
+
+| PR | 상태 | 성격 | 분할 필요성 |
 | --- | --- | --- | --- |
-| #518 | UNSTABLE (windows pending) | 21파일 / +1193 / -34 / 10커밋 | **높음** — 두 관심사가 섞여 있음 |
-| #522 | CLEAN, 전 체크 통과 | 20파일 / +643 / -9 | 낮음 — 단일 기능(상관 ID) |
+| #518 | UNSTABLE (windows pending) | 21파일, 두 관심사 | **높음** |
+| #522 | CLEAN, 전 체크 통과 | 20파일, 단일 기능 | 낮음 |
 
 **대상은 #518**로 확정한다. #522는 이미 CLEAN이고 관심사가 하나라서
 쪼개면 오히려 리뷰 비용만 늘어난다.
@@ -153,12 +158,3 @@ WP4에서 Wibias가 메인테이너가 되면 1번이 훨씬 자연스러워진�
 **WP4(메인테이너 추가)를 WP3(분할)보다 먼저** 하는 것이 맞다.
 
 → 이 발견에 따라 goalplan의 work-phase 순서를 wp4 → wp3으로 바꾼다.
-
-## 수용 기준
-
-1. `codex/catalog-written-signal` 브랜치에서 `bun run typecheck` exit 0.
-2. `bun test tests/codex-models-cache-invalidate.test.ts tests/codex-refresh.test.ts
-   tests/codex-sync-api.test.ts tests/injection-model-api.test.ts` 전부 통과.
-3. 그 브랜치 diff에 `src/codex/app-server-processes.ts`가 **없다**.
-4. `codex/app-server-restart` 브랜치에서 동일 typecheck + 프로세스 테스트 통과.
-5. 두 브랜치의 diff 합집합이 #518의 diff와 파일 단위로 일치.
