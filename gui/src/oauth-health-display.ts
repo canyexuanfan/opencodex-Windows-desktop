@@ -162,17 +162,12 @@ function copyViaExecCommand(text: string): boolean {
   }
 }
 
-export type DoctorCopyFeedback = {
-  accountId: string;
-  outcome: "copied" | "unavailable";
-};
-
+/** Scope resolution moved to useCopyFeedback; this only maps an outcome to copy. */
 export function doctorCopyButtonLabel(
   t: TFn,
-  feedback: DoctorCopyFeedback | null | undefined,
-  accountId: string,
+  outcome: "copied" | "unavailable" | null | undefined,
 ): string {
-  if (feedback?.accountId !== accountId) return t("pws.copyDoctor");
-  return feedback.outcome === "copied" ? t("pws.doctorCopied") : t("pws.doctorCopyUnavailable");
+  if (!outcome) return t("pws.copyDoctor");
+  return outcome === "copied" ? t("pws.doctorCopied") : t("pws.doctorCopyUnavailable");
 }
 
