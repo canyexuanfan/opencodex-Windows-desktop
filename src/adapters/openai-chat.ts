@@ -349,7 +349,9 @@ function ensureZenRootObjectSchema(schema: unknown): Record<string, unknown> {
 }
 
 function shouldSanitizeZenToolParameters(provider: OcxProviderConfig): boolean {
-  return provider.baseUrl.replace(/\/+$/, "") === "https://opencode.ai/zen/v1";
+  const baseUrl = provider.baseUrl.replace(/\/+$/, "");
+  return baseUrl === "https://opencode.ai/zen/v1"
+    || baseUrl === "https://opencode.ai/zen/go/v1";
 }
 
 const XAI_SCHEMA_BASE_URLS = new Set(["api.x.ai", "cli-chat-proxy.grok.com"]);
