@@ -71,6 +71,10 @@ GitHub Actions intentionally stay small:
 - **Release** (`.github/workflows/release.yml`) is manual. It does not act as a second full CI
   pipeline; before dry-run or publish it requires the exact release commit (`GITHUB_SHA`) to already
   have a successful Cross-platform CI run.
+- **Stale needs-info** (`.github/workflows/stale-needs-info.yml`) runs daily on the default branch.
+  Open issues labeled `needs-info` with no activity for 14 days get a warning; after 7 more idle
+  days they close as not planned. `upstream-tracking` and `roadmap` are exempt. Any update clears
+  the stale warning.
 
 Use the helper for releases:
 
