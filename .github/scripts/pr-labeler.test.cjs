@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
@@ -140,5 +142,31 @@ describe("planTypeLabelSync", () => {
       events: [],
     });
     assert.deepEqual(plan, { skip: true, reason: "no-prefix" });
+  });
+});
+
+describe("pr-labeler workflow", () => {
+  const workflowPath = path.join(__dirname, "../workflows/pr-labeler.yml");
+  const workflow = fs.readFileSync(workflowPath, "utf8");
+
+  function pullRequestTargetTypes() {
+    const match = workflow.match(/pull_request_target:\s*\n(?:[ \t].*\n)*?[ \t]+types:\s*\[([^\]]+)\]/);
+    assert.ok(match, "expected pull_request_target types array in pr-labeler.yml");
+    return match[1].split(",").map((type) => type.trim());
+  }
+
+  it("listens for labeled and unlabeled so human overrides cancel stale sync runs", () => {
+    const types = pullRequestTargetTypes();
+    assert.ok(types.includes("labeled"), "missing pull_request_target type: labeled");
+    assert.ok(types.includes("unlabeled"), "missing pull_request_target type: unlabeled");
+    assert.ok(types.includes("synchronize"), "missing pull_request_target type: synchronize");
+  });
+
+  it("keeps trusted default-branch checkout, concurrency cancel, and minimal permissions", () => {
+    assert.match(workflow, /ref:\s*\$\{\{\s*github\.event\.repository\.default_branch\s*\}\}/);
+    assert.match(workflow, /cancel-in-progress:\s*true/);
+    assert.match(workflow, /pull-requests:\s*read/);
+    assert.match(workflow, /issues:\s*write/);
+    assert.doesNotMatch(workflow, /pull-requests:\s*write/);
   });
 });

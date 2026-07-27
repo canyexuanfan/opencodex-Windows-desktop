@@ -6,7 +6,10 @@ name: PR Labeler
 # branch — same promotion model as enforce-issue-quality.yml.
 on:
   pull_request_target:
-    types: [opened, edited, synchronize]
+    # labeled/unlabeled let a human type-label change enqueue a fresher run in the
+    # per-PR concurrency group, cancelling any in-flight title sync that started
+    # before the override (PR #518 race).
+    types: [opened, edited, synchronize, labeled, unlabeled]
 
 concurrency:
   group: pr-labeler-${{ github.event.pull_request.number }}
