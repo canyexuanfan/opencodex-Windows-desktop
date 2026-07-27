@@ -112,6 +112,7 @@ ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提
 | Hugging Face | `https://router.huggingface.co/v1` |
 | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` |
 | Z.AI (GLM Coding) | `https://api.z.ai/api/coding/paas/v4` |
+| 智谱 AI (BigModel) | `https://open.bigmodel.cn/api/paas/v4` |
 | Qwen Cloud | Token plan（默认）: `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` · 按量付费: `https://dashscope.aliyuncs.com/compatible-mode/v1` · 或自定义 |
 | 腾讯云 Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` |
 | SiliconFlow | `https://api.siliconflow.cn/v1` |
@@ -125,6 +126,9 @@ ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提
 
 > **腾讯云 Coding Plan 使用限制：**腾讯将此订阅限定为交互式编程工具使用。禁止通用 API
 > 自动化、自定义应用后端和非交互式批量调用；违规使用可能导致套餐密钥被停用。
+
+> **两条 GLM 线路：**`zai` 是 Z.AI 的国际 coding plan 订阅，`zhipu-bigmodel` 是智谱国内
+> BigModel 的按量付费端点。二者主机、密钥与计费均不同，为其中一方签发的密钥无法在另一方通过鉴权。
 
 ### 多个 API 密钥
 
