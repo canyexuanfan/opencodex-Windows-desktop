@@ -194,95 +194,112 @@ describe("GitHub Actions hardening", () => {
    * These assertions pin the CURRENT behaviour rather than a desired one. The
    * gate is being redesigned (devlog/_plan/260727_governance_intake/040), and a
    * redesign without a characterisation test is how the four review rounds on
-   * that plan happened in the first place. When the gate changes, these should
-   * fail loudly and be updated deliberately.
+   * that plan happened in the first place.
+   *
+   * They parse the workflow rather than grepping it. Two rounds of adversarial
+   * mutation testing broke the string-matching version: `- run : echo pwn` and
+   * `- 'uses': owner/action@feature` are valid YAML that no reasonable regex
+   * catches, and `// await convertToDraft();` satisfies a substring check while
+   * removing the behaviour. A parser sees keys, not spellings.
    */
+  async function readEnforcePrTarget(): Promise<{
+    workflow: Record<string, unknown>;
+    steps: Array<Record<string, unknown>>;
+    script: string;
+  }> {
+    const text = await readText(".github/workflows/enforce-pr-target.yml");
+    const workflow = Bun.YAML.parse(text) as Record<string, any>;
+    const steps = workflow.jobs["enforce-target"].steps as Array<Record<string, unknown>>;
+    // Strip line comments so a commented-out call cannot satisfy a "calls X" check.
+    const script = String(steps[0]!.with && (steps[0]!.with as any).script)
+      .split("\n")
+      .map(line => line.replace(/\/\/.*$/, ""))
+      .join("\n");
+    return { workflow, steps, script };
+  }
+
   test("PR target enforcement stays least-privilege and never runs PR code", async () => {
-    const workflow = await readText(".github/workflows/enforce-pr-target.yml");
+    const { workflow, steps } = await readEnforcePrTarget();
 
     // pull_request_target runs with the base repo's token. Checking out or
-    // executing the PR's code under it is the classic escalation; this workflow
-    // must keep doing neither.
-    expect(workflow).toContain("pull_request_target:");
-    expect(workflow).not.toContain("actions/checkout");
-    // Match a `run:` key in either step spelling — `  run:` and `- run:` are both
-    // valid YAML, and an earlier version of this assertion only caught the first.
-    expect(workflow).not.toMatch(/^[ \t]*-?[ \t]*run:/m);
+    // executing the PR's code under it is the classic escalation.
+    expect(Object.keys(workflow.on as object)).toEqual(["pull_request_target"]);
 
-    // The permission block must be exactly one scope. Asserting that
-    // `pull-requests: write` is present says nothing about what else was added
-    // beside it, so read the block and compare the whole key set.
-    const permissions = /\npermissions:\n((?:[ \t]+\S+:[^\n]*\n)+)/.exec(workflow)?.[1];
-    expect(permissions).toBeDefined();
-    const scopes = permissions!.trim().split("\n").map(line => line.trim()).sort();
-    expect(scopes).toEqual(["pull-requests: write"]);
+    // Exactly one permission scope. Asserting that `pull-requests: write` is
+    // present says nothing about what was added beside it, and a `write-all`
+    // scalar is not an object at all.
+    expect(workflow.permissions).toEqual({ "pull-requests": "write" });
 
-    // Every `uses:` must be a full 40-hex commit SHA. A tag or branch ref is
-    // mutable, and this workflow hands a write token to whatever it resolves to.
-    const refs = [...workflow.matchAll(/uses:\s+(\S+)/g)].map(match => match[1]!);
-    expect(refs.length).toBeGreaterThan(0);
-    for (const ref of refs) {
-      expect(ref).toMatch(/@[0-9a-f]{40}$/);
+    // No step may run a shell command, and every action must be pinned to a
+    // 40-hex commit SHA — this workflow hands a write token to whatever it
+    // resolves to, so a tag or branch ref is a mutable dependency.
+    for (const step of steps) {
+      expect(step).not.toHaveProperty("run");
+      const uses = step.uses;
+      expect(typeof uses).toBe("string");
+      expect(String(uses)).not.toContain("actions/checkout");
+      expect(String(uses)).toMatch(/@[0-9a-f]{40}$/);
     }
-    expect(workflow).toContain("actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3");
+    expect(steps.some(step => String(step.uses).startsWith("actions/github-script@"))).toBe(true);
 
     // One run per PR, so two rapid events cannot race on the title/draft state.
-    expect(workflow).toContain("group: enforce-pr-target-${{ github.event.pull_request.number }}");
+    expect((workflow.concurrency as any).group).toBe(
+      "enforce-pr-target-${{ github.event.pull_request.number }}",
+    );
   });
 
   test("PR target enforcement reacts to the events that can change the verdict", async () => {
-    const workflow = await readText(".github/workflows/enforce-pr-target.yml");
+    const { workflow, script } = await readEnforcePrTarget();
 
     // `edited` is what catches a retarget; `ready_for_review` is what re-applies
     // the draft when someone undoes it by hand. Dropping either silently makes
     // the gate one-shot.
-    for (const event of ["opened", "reopened", "edited", "ready_for_review"]) {
-      expect(workflow).toContain(`- ${event}`);
-    }
-    // The verdict is a base-branch comparison, so it re-reads the PR instead of
-    // trusting a possibly stale event payload.
-    expect(workflow).toContain("github.rest.pulls.get");
-    expect(workflow).toContain('const EXPECTED_BASE = "dev";');
-    expect(workflow).toContain("pr.base.ref !== EXPECTED_BASE");
+    const types = (workflow.on as any).pull_request_target.types as string[];
+    expect([...types].sort()).toEqual(["edited", "opened", "ready_for_review", "reopened"]);
+
+    // The verdict is a live base-branch comparison, not a cached one: re-read the
+    // PR, then derive wrongBase from it. Pinning the comparison itself stops a
+    // rewrite that leaves the constant in place while hard-coding the answer.
+    expect(script).toContain("github.rest.pulls.get");
+    expect(script).toMatch(/const EXPECTED_BASE = "dev";/);
+    expect(script).toMatch(/const wrongBase = pr\.base\.ref !== EXPECTED_BASE;/);
   });
 
   test("PR target enforcement records what it changed so it can undo it", async () => {
-    const workflow = await readText(".github/workflows/enforce-pr-target.yml");
+    const { script } = await readEnforcePrTarget();
 
     // The bot rewrites the author's title and draft state, so it stores which of
     // those it touched and restores exactly those on a correct retarget. Losing
     // this bookkeeping means a PR that was already a draft gets marked ready, or
     // that the `[WRONG BRANCH] ` prefix is never removed.
-    //
-    // Assert the assignments and the calls, not just that the identifiers appear
-    // somewhere: deleting `state.titlePrefixedByBot = true` leaves every mention
-    // of the name intact while silently breaking title restoration.
-    expect(workflow).toMatch(/state\.autoDraftedByBot\s*=\s*true/);
-    expect(workflow).toMatch(/state\.titlePrefixedByBot\s*=\s*true/);
-    expect(workflow).toMatch(/storedState\.autoDraftedByBot/);
-    expect(workflow).toMatch(/storedState\.titlePrefixedByBot/);
-    expect(workflow).toMatch(/await\s+convertToDraft\(\)/);
-    expect(workflow).toMatch(/await\s+markReadyForReview\(\)/);
-    expect(workflow).toContain("convertPullRequestToDraft");
-    expect(workflow).toContain("markPullRequestReadyForReview");
-    expect(workflow).toContain('const TITLE_PREFIX = "[WRONG BRANCH] ";');
+    expect(script).toMatch(/state\.autoDraftedByBot\s*=\s*true/);
+    expect(script).toMatch(/state\.titlePrefixedByBot\s*=\s*true/);
+    expect(script).toMatch(/storedState\.autoDraftedByBot/);
+    expect(script).toMatch(/storedState\.titlePrefixedByBot/);
+    expect(script).toMatch(/await\s+convertToDraft\(\)/);
+    expect(script).toMatch(/await\s+markReadyForReview\(\)/);
+    expect(script).toContain("convertPullRequestToDraft");
+    expect(script).toContain("markPullRequestReadyForReview");
+    expect(script).toMatch(/const TITLE_PREFIX = "\[WRONG BRANCH\] ";/);
 
     // Observed on PR #527 (devlog .../050_live_evidence.md): the state is written
     // BEFORE the mutation and is not reconciled when the mutation fails, so a
-    // failed convertToDraft still records autoDraftedByBot: true. This assertion
-    // documents that ordering rather than endorsing it — the redesign in 040
-    // owns fixing it, and this test should change with it.
+    // failed convertToDraft still records autoDraftedByBot: true. This documents
+    // that ordering rather than endorsing it — the redesign in 040 owns fixing
+    // it, and this assertion should change with it.
     //
-    // Scope the comparison to the wrong-base branch. `upsertComment` is called
-    // from both branches, so a plain indexOf over the whole file would compare
-    // against whichever call happens to come first in the text.
-    const wrongBaseBranch = /if \(wrongBase\) \{([\s\S]*?)\n            \}\n\n            \/\/ The target is correct/.exec(workflow)?.[1];
-    expect(wrongBaseBranch).toBeDefined();
-    const stateWriteIndex = wrongBaseBranch!.indexOf("await upsertComment(");
-    const draftCallIndex = wrongBaseBranch!.indexOf("await convertToDraft()");
+    // Scope the comparison to the wrong-base branch: upsertComment is called from
+    // both branches, so comparing across the whole script would measure whichever
+    // call happens to come first in the text.
+    const branchStart = script.indexOf("if (wrongBase) {");
+    expect(branchStart).toBeGreaterThan(-1);
+    const branch = script.slice(branchStart);
+    const stateWriteIndex = branch.indexOf("await upsertComment(");
+    const draftCallIndex = branch.indexOf("await convertToDraft()");
     expect(stateWriteIndex).toBeGreaterThan(-1);
     expect(draftCallIndex).toBeGreaterThan(stateWriteIndex);
   });
+
 
   test("docs deployment is pinned, bounded, and scoped to Pages", async () => {
     const workflow = await readText(".github/workflows/deploy-docs.yml");
