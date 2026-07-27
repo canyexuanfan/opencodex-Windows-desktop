@@ -85,14 +85,12 @@ jobs:
           close-issue-reason: not_planned
           # Any new comment/update removes the stale label and restarts the clock.
           remove-stale-when-updated: true
-          # Skip long-lived tracker / roadmap items even if they also carry needs-info.
-          exempt-issue-labels: upstream-tracking,roadmap
           ascending: true
           operations-per-run: 60
           stale-issue-message: |
             This issue has the `needs-info` label and has had no activity for 14 days.
 
-            It will be closed in 7 days if there is still no reply with the requested details (reproduction steps, logs, or a concrete spec). A comment or edit resets this timer. Maintainers can remove `needs-info` once the report is actionable.
+            It will be closed in 7 days if there is still no reply with the requested details (reproduction steps, logs, or a concrete spec). A comment or edit resets this timer. Maintainers can remove `needs-info` once the report is actionable — for example when promoting it to `roadmap`.
           close-issue-message: |
             Closing this issue because it stayed on `needs-info` with no further reply.
 

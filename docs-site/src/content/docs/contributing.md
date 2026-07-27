@@ -73,8 +73,8 @@ GitHub Actions intentionally stay small:
   have a successful Cross-platform CI run.
 - **Stale needs-info** (`.github/workflows/stale-needs-info.yml`) runs daily on the default branch.
   Open issues labeled `needs-info` with no activity for 14 days get a warning; after 7 more idle
-  days they close as not planned. `upstream-tracking` and `roadmap` are exempt. Any update clears
-  the stale warning.
+  days they close as not planned. Any update clears the stale warning. To keep long-lived work open,
+  remove `needs-info` (for example when promoting an issue to `roadmap`).
 
 Use the helper for releases:
 
