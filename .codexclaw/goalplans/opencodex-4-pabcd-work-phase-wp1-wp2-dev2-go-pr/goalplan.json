@@ -257,7 +257,8 @@
         }
       ],
       "criteriaIds": [],
-      "note": "사용자가 세션 범위를 dev로 좁힘(\"일단 dev에서만 처리해\"). 사전 감사도 DO NOT PROMOTE 판정: 승격 범위가 게이트 한정이 아니라 main..dev 98커밋/9172줄이고, main 푸시는 deploy-docs(실제 Pages 배포)를 트리거한다. 메인테이너의 명시적 수용이 선행 조건. 계획서: devlog/_plan/260727_governance_intake/070_main_promotion.md"
+      "note": "사용자가 세션 범위를 dev로 좁힘(\"일단 dev에서만 처리해\"). 사전 감사도 DO NOT PROMOTE 판정: 승격 범위가 게이트 한정이 아니라 main..dev 98커밋/9172줄이고, main 푸시는 deploy-docs(실제 Pages 배포)를 트리거한다. 메인테이너의 명시적 수용이 선행 조건. 계획서: devlog/_plan/260727_governance_intake/070_main_promotion.md",
+      "blocker": "EXTERNAL: main 승격은 (a) 사용자가 이번 세션 범위에서 제외했고(\"일단 dev에서만 처리해\"), (b) 사전 감사가 DO NOT PROMOTE 판정을 냈다 — 승격 범위가 게이트 한정이 아니라 main..dev 98커밋/9172줄이며 main 푸시는 deploy-docs(실제 GitHub Pages 배포)를 트리거하므로 메인테이너의 명시적 수용이 선행 조건이다. 에이전트 권한으로 해소할 수 없다."
     },
     {
       "id": "wp9",
@@ -322,7 +323,8 @@
       "scenario": "enforce-pr-target.yml이 dev2-go PR을 정당하게 통과시키고, 그 외 타깃은 차단·복원 경로가 회귀 테스트로 덮이며, PR을 받는 브랜치는 CI 트리거도 함께 받는다. actor 검증 + head SHA 바인딩은 040 문서의 근거 셋에 따라 채택하지 않았다 (강제력 없는 자동 판정 대신 리뷰가 잡는다). main 승격으로 실제 발효된다.",
       "expectedEvidence": "워크플로 diff + 신규 테스트 통과 출력 + main 승격 확인",
       "capturedEvidence": "커밋: d761e880 (ALLOWED_BASES allow-list, 워크플로 5지점) / 10b1d2aa (문서 8종, 5개 로케일 포함) / 5229717b (ci.yml+service-lifecycle.yml PR 트리거에 dev2-go) / 76c25710 (하네스 node24 충실도 + 트리거 키집합 고정 + live base 코멘트 어설션) / 2b03e908 (ci.yml paths 양쪽 트리거 정확 집합 고정) / 99679376 (040 문서에 15~17라운드 기록). 검증: bun x tsc --noEmit exit 0; bun run test 4945 pass / 0 fail / 24352 expect(); bun test tests/ci-workflows.test.ts 52 pass / 0 fail / 548 expect(). 변이 회귀: mut16 12/12, mut17 5/5, mut18 5/5 (봉쇄 전 5종 전부 SURVIVED), mut20 8/8 (봉쇄 전 4종 SURVIVED) 전부 CAUGHT. 독립 감사 3라운드: 15=FAIL(5건) -> 76c25710, 16=FAIL(1건) -> 2b03e908, 17=PASS (12/12 CAUGHT, 무해 생존 2건 근거 기록). 미충족 잔여: main 승격 (승인 완료, 다음 work-phase). [세션 종료 시점] dev 쪽 조건은 전부 충족(워크플로 diff + ci-workflows 테스트 통과 + 변이 회귀 전건 CAUGHT). 남은 조건인 'main 승격으로 발효'만 미충족이며, 이는 사용자가 이번 세션 범위에서 제외했다. origin/main은 origin/dev의 조상이라 fast-forward 가능한 상태로 남아 있다.",
-      "status": "deferred"
+      "status": "deferred",
+      "blocker": "EXTERNAL: 'main 승격으로 발효' 조건만 미충족. 승격 권한/수용은 메인테이너 결정이며 사용자가 범위에서 제외했다."
     },
     {
       "id": "c6",
