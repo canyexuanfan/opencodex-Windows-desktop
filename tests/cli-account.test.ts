@@ -1087,6 +1087,55 @@ describe("ocx account CLI (issue #180 matrix)", () => {
       expect(silent.listenerCount("error")).toBe(0);
     });
 
+    test("a space-separated --code is redacted too, not just the equals form", async () => {
+      // The equals form is one token; the space form is two, and reporting the
+      // leftovers verbatim printed the second one. Mistyping the option on a
+      // command that does not parse it is the reachable path.
+      const cancel = await run(["cancel", "anthropic", "--code", SECRET]);
+
+      expect(cancel.code).toBe(2);
+      expect(cancel.stderr).toContain("--code <redacted>");
+      expect(cancel.output).not.toContain("SUPERSECRET123");
+
+      const reset = await run(["reset-credits", "main", "--code", SECRET]);
+      expect(reset.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("repeating --code is refused instead of leaving the second value to be echoed", async () => {
+      // The parser took the first occurrence only, so the second flag and its
+      // value fell through to rejectArgs — which reported them.
+      for (const argv of [
+        ["code", "anthropic", "--code", "FIRST", "--code", SECRET],
+        ["login", "anthropic", "--code", "FIRST", "--code", SECRET],
+      ]) {
+        const result = await run(argv);
+        expect(result.code).toBe(2);
+        expect(result.stderr).toContain("more than once");
+        expect(result.output).not.toContain("SUPERSECRET123");
+        expect(result.output).not.toContain("FIRST");
+      }
+    });
+
+    test("--code= with nothing after it is a usage error, not an empty credential", async () => {
+      const result = await run(["code", "anthropic", "--code="]);
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("requires a value");
+    });
+
+    test("only the first line of a pipe is the credential", async () => {
+      // Resolving the whole buffer would fold a trailing line into the value,
+      // so a pasted block with a stray newline would POST something the user
+      // never typed.
+      const result = await run(
+        ["code", "anthropic", "--json"],
+        { ...defaultDeps(), stdinImpl: stdinFrom(`${SECRET}\ntrailing junk\n`) },
+      );
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+    });
+
     test("giving the code twice is refused rather than silently preferring one", async () => {
       const result = await run(["code", "anthropic", SECRET, "--code", SECRET]);
 

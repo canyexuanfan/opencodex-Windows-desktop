@@ -137,16 +137,43 @@ export function csv(value: string | undefined): string[] | undefined {
  */
 const SECRET_OPTIONS = ["--code"];
 
-function redactArg(arg: string): string {
-  for (const option of SECRET_OPTIONS) {
-    if (arg.startsWith(`${option}=`)) return `${option}=<redacted>`;
+/**
+ * Replace credential values before they are reported back.
+ *
+ * Both spellings have to be covered, and the space-separated one spans two
+ * tokens: mistyping `ocx account cancel <p> --code <secret>` on a command that
+ * does not parse `--code` leaves the flag AND its value in the leftovers, and
+ * reporting them verbatim writes the credential to stderr. Repeating the
+ * option does the same with the second value, since the parser takes only the
+ * first occurrence.
+ */
+function redactSecretArgs(args: string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] as string;
+    const inline = SECRET_OPTIONS.find(option => arg.startsWith(`${option}=`));
+    if (inline) {
+      out.push(`${inline}=<redacted>`);
+      continue;
+    }
+    if (SECRET_OPTIONS.includes(arg)) {
+      out.push(arg);
+      // Swallow the value that belongs to it, if one followed.
+      const next = args[index + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        out.push("<redacted>");
+        index++;
+      }
+      continue;
+    }
+    out.push(arg);
   }
-  return arg;
+  return out;
 }
 
 export function rejectArgs(args: string[], usage: string): void {
   if (args.length > 0) {
-    throw new CliUsageError(`Unexpected argument(s): ${args.map(redactArg).join(" ")}`, usage);
+    throw new CliUsageError(`Unexpected argument(s): ${redactSecretArgs(args).join(" ")}`, usage);
   }
 }
 
@@ -162,6 +189,12 @@ export function takeOptionWithSyntax(
   args: string[],
   flag: string,
 ): { value: string; inline: boolean } | undefined {
+  const occurrences = args.filter(arg => arg === flag || arg.startsWith(`${flag}=`)).length;
+  // Taking only the first occurrence would leave the second value in the
+  // leftovers for rejectArgs to report. Say what is wrong without repeating
+  // either value.
+  if (occurrences > 1) throw new CliUsageError(`${flag} was given more than once`);
+
   const inlineIndex = args.findIndex(arg => arg.startsWith(`${flag}=`));
   if (inlineIndex !== -1) {
     const [raw] = args.splice(inlineIndex, 1) as [string];
