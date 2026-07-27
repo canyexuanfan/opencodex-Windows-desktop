@@ -1116,6 +1116,28 @@ describe("ocx account CLI (issue #180 matrix)", () => {
       }
     });
 
+    test("the inline form consumes its own token only, not the rest of the line", async () => {
+      // `splice(index)` instead of `splice(index, 1)` removes everything after
+      // the option too: --json stops working and a genuinely wrong argument is
+      // silently accepted, both without any visible failure.
+      const withJson = await run(["code", "anthropic", `--code=${SECRET}`, "--json"]);
+      expect(withJson.code).toBe(0);
+      expect(() => JSON.parse(withJson.stdout)).not.toThrow();
+
+      // A stray token after the inline option is still seen. Here it is read
+      // as the positional code, which collides with --code and is refused; the
+      // point is that it is not silently swallowed.
+      const withGarbage = await run(["code", "anthropic", `--code=${SECRET}`, "nonsense"]);
+      expect(withGarbage.code).toBe(2);
+      expect(withGarbage.stderr).toContain("not both");
+
+      // And with the collision removed, an unknown flag still reaches the
+      // rejection instead of disappearing.
+      const withUnknownFlag = await run(["code", "anthropic", `--code=${SECRET}`, "--nope"]);
+      expect(withUnknownFlag.code).toBe(2);
+      expect(withUnknownFlag.stderr).toContain("--nope");
+    });
+
     test("--code= with nothing after it is a usage error, not an empty credential", async () => {
       const result = await run(["code", "anthropic", "--code="]);
 

@@ -155,7 +155,10 @@ async function code(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const wantsJson = takeFlag(args, "--json");
   const flowId = takeOption(args, "--flow");
   const suppliedCode = takeOptionWithSyntax(args, "--code");
-  const positional = args.shift();
+  // An unknown flag is not a credential. Without this guard `--nope` becomes
+  // the positional code and the real complaint ("unexpected argument") is
+  // replaced by a confusing one about how the code was passed.
+  const positional = args[0]?.startsWith("--") ? undefined : args.shift();
   if (!provider) throw new CliUsageError("provider is required", USAGE);
   rejectArgs(args, USAGE);
   if (suppliedCode && positional !== undefined) {
