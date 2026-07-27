@@ -46,6 +46,56 @@ interface CleanupResult {
   message?: string;
 }
 
+interface TrashEntry {
+  id: string;
+  epoch: string;
+  fileCount: number;
+  bytes: number;
+  quarantinedAt?: number;
+  mode?: "quarantine" | "permanent";
+}
+
+interface TrashList {
+  entries: TrashEntry[];
+}
+
+interface RestoreResult {
+  ok: boolean;
+  count: number;
+  bytes: number;
+  trashDir?: string;
+  error?: string;
+  message?: string;
+}
+
+const GB = 1024 ** 3;
+
+interface CleanupPolicy {
+  enabled: boolean;
+  trigger: { archivedBytesOver: number };
+  target: { reduceToBytes?: number; removeOldestPercent?: number };
+  schedule: "startup" | "daily" | "weekly" | "manual";
+  mode: "quarantine" | "permanent";
+  lastRun?: { at: number; freedBytes: number; removed: number };
+  nextRun?: number;
+  job?: {
+    status: "idle" | "running";
+    reason?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    lastError?: string;
+    lastOutcome?: {
+      ok: boolean;
+      skipped?: string;
+      deferred?: string;
+      error?: string;
+      mode?: string;
+      freedBytes?: number;
+      removed?: number;
+    };
+  };
+}
+
 const BUCKET_TKEYS: Record<string, TKey> = {
   sessions: "storage.bucket.sessions",
   archived_sessions: "storage.bucket.archived_sessions",
@@ -57,6 +107,21 @@ const BUCKET_TKEYS: Record<string, TKey> = {
 };
 
 const PRESETS = [10, 25, 50] as const;
+
+const localizedCatch = (e: unknown, fallback: string): string => {
+  if (!(e instanceof Error)) return fallback;
+  const msg = e.message;
+  if (
+    msg === "Failed to fetch"
+    || msg.includes("NetworkError")
+    || msg.includes("network error")
+    || msg.includes("JSON")
+    || msg.includes("Unexpected end of")
+  ) {
+    return fallback;
+  }
+  return msg || fallback;
+};
 
 function bucketLabel(bucket: StorageBucket, t: TFn): string {
   const tkey = BUCKET_TKEYS[bucket.key];
@@ -180,6 +245,7 @@ function ArchivedCleanupPanel({
     switch (code) {
       case "codex_busy": return t("storage.cleanup.err.codex_busy");
       case "stale_preview": return t("storage.cleanup.err.stale_preview");
+      case "restore_pending_overlap": return t("storage.cleanup.err.restore_pending_overlap");
       case "referenced_history": return t("storage.cleanup.err.referenced_history");
       case "invalid_digest": return t("storage.cleanup.err.invalid_digest");
       case "invalid_mode": return t("storage.cleanup.err.invalid_mode");
@@ -197,21 +263,6 @@ function ArchivedCleanupPanel({
     t("storage.cleanup.preset", {
       percent: new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(value / 100),
     });
-
-  const localizedCatch = (e: unknown, fallback: string): string => {
-    if (!(e instanceof Error)) return fallback;
-    const msg = e.message;
-    if (
-      msg === "Failed to fetch"
-      || msg.includes("NetworkError")
-      || msg.includes("network error")
-      || msg.includes("JSON")
-      || msg.includes("Unexpected end of")
-    ) {
-      return fallback;
-    }
-    return msg || fallback;
-  };
 
   const runPreview = async () => {
     setBusy(true);
@@ -377,32 +428,239 @@ function ArchivedCleanupPanel({
   );
 }
 
-const GB = 1024 ** 3;
+function QuarantineTrashPanel({
+  apiBase,
+  locale,
+  t,
+  onDone,
+  reloadToken,
+  onEntriesChange,
+}: {
+  apiBase: string;
+  locale: Locale;
+  t: TFn;
+  onDone: () => void;
+  reloadToken: number;
+  onEntriesChange?: (entries: TrashEntry[]) => void;
+}) {
+  const [entries, setEntries] = useState<TrashEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [confirmEntry, setConfirmEntry] = useState<TrashEntry | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const busyRef = useRef(false);
+  const loadGenerationRef = useRef(0);
 
-interface CleanupPolicy {
-  enabled: boolean;
-  trigger: { archivedBytesOver: number };
-  target: { reduceToBytes?: number; removeOldestPercent?: number };
-  schedule: "startup" | "daily" | "weekly" | "manual";
-  mode: "quarantine" | "permanent";
-  lastRun?: { at: number; freedBytes: number; removed: number };
-  nextRun?: number;
-  job?: {
-    status: "idle" | "running";
-    reason?: string;
-    startedAt?: number;
-    finishedAt?: number;
-    lastError?: string;
-    lastOutcome?: {
-      ok: boolean;
-      skipped?: string;
-      deferred?: string;
-      error?: string;
-      mode?: string;
-      freedBytes?: number;
-      removed?: number;
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  const closeConfirm = useCallback(() => setConfirmEntry(null), []);
+
+  useEffect(() => {
+    if (!confirmEntry) return;
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    cancelRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busyRef.current) closeConfirm();
     };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      previousFocusRef.current?.focus();
+    };
+  }, [confirmEntry, closeConfirm]);
+
+  const loadTrash = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++loadGenerationRef.current;
+    setLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/api/storage/trash`, { signal });
+      const json = await res.json() as TrashList & { error?: string };
+      if (signal?.aborted || generation !== loadGenerationRef.current) return;
+      if (!res.ok) throw new Error(json.error ?? "list_failed");
+      const next = Array.isArray(json.entries) ? json.entries : [];
+      setEntries(next);
+      onEntriesChange?.(next);
+      setError(null);
+    } catch (e) {
+      if (signal?.aborted || generation !== loadGenerationRef.current) return;
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      setEntries([]);
+      onEntriesChange?.([]);
+      setError(localizedCatch(e, t("storage.trash.listFailed")));
+    } finally {
+      if (generation === loadGenerationRef.current) setLoading(false);
+    }
+  }, [apiBase, t, onEntriesChange]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      void loadTrash(controller.signal);
+    }, 0);
+    return () => {
+      window.clearTimeout(timeout);
+      loadGenerationRef.current += 1;
+      controller.abort();
+    };
+  }, [loadTrash, reloadToken]);
+
+  const mapRestoreError = (code: string | undefined, fallback?: string) => {
+    switch (code) {
+      case "codex_busy": return t("storage.trash.err.codex_busy");
+      case "invalid_trash": return t("storage.trash.err.invalid_trash");
+      case "missing_trash": return t("storage.trash.err.missing_trash");
+      case "dest_exists": return t("storage.trash.err.dest_exists");
+      case "fs_failed": return t("storage.trash.err.fs_failed");
+      case "db_reconcile_failed": return t("storage.trash.err.db_reconcile_failed");
+      case "storage_mutation_busy": return t("storage.trash.err.storage_mutation_busy");
+      case "restore_failed": return t("storage.trash.err.restore_failed");
+      case "restore_worker_timeout": return t("storage.trash.err.restore_worker_timeout");
+      case "restore_worker_aborted": return t("storage.trash.err.restore_worker_aborted");
+      case "restore_worker_failed":
+        return fallback ?? t("storage.trash.err.restore_worker_failed");
+      default: return fallback ?? t("storage.trash.restoreFailed");
+    }
   };
+
+  const runRestore = async () => {
+    if (!confirmEntry) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/storage/trash/restore`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: confirmEntry.id }),
+      });
+      const json = await res.json() as RestoreResult;
+      if (!res.ok || !json.ok) {
+        throw new Error(mapRestoreError(json.error, json.message));
+      }
+      closeConfirm();
+      setStatus(t("storage.trash.done", {
+        count: String(json.count),
+        size: formatBytes(json.bytes, locale),
+      }));
+      onDone();
+    } catch (e) {
+      setError(localizedCatch(e, t("storage.trash.restoreFailed")));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const formatWhen = (entry: TrashEntry) => {
+    const ms = entry.quarantinedAt ?? Number(entry.epoch.split("-")[0]);
+    if (!Number.isFinite(ms) || ms <= 0) return "—";
+    return new Date(ms).toLocaleString(locale);
+  };
+
+  const modeLabel = (mode: TrashEntry["mode"]) => {
+    if (mode === "permanent") return t("storage.trash.mode.permanent");
+    if (mode === "quarantine") return t("storage.trash.mode.quarantine");
+    return "—";
+  };
+
+  return (
+    <section className="panel" style={{ marginTop: 16 }} aria-labelledby="storage-trash-title">
+      <h3 id="storage-trash-title" className="panel-title">{t("storage.trash.title")}</h3>
+      <p className="muted" style={{ marginTop: 4 }}>{t("storage.trash.help")}</p>
+
+      {status && <p className="muted" style={{ marginTop: 12 }}>{status}</p>}
+      {error && !confirmEntry && <p style={{ marginTop: 12, color: "var(--red)" }}>{error}</p>}
+
+      {loading ? (
+        <p className="muted" style={{ marginTop: 12 }}>{t("storage.trash.loading")}</p>
+      ) : entries.length === 0 ? (
+        <p className="muted" style={{ marginTop: 12 }}>{t("storage.trash.empty")}</p>
+      ) : (
+        <div className="tbl-wrap" style={{ marginTop: 12 }}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>{t("storage.trash.col.when")}</th>
+                <th className="num">{t("storage.trash.col.files")}</th>
+                <th className="num">{t("storage.trash.col.size")}</th>
+                <th>{t("storage.trash.col.mode")}</th>
+                <th>{t("storage.trash.col.id")}</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map(entry => (
+                <tr key={entry.id}>
+                  <td className="muted">{formatWhen(entry)}</td>
+                  <td className="num">{entry.fileCount}</td>
+                  <td className="num mono">{formatBytes(entry.bytes, locale)}</td>
+                  <td className="muted">{modeLabel(entry.mode)}</td>
+                  <td className="mono" style={{ fontSize: "var(--text-caption)" }}>{entry.id}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={busy}
+                      onClick={() => {
+                        setError(null);
+                        setConfirmEntry(entry);
+                      }}
+                    >
+                      {t("storage.trash.restore")}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {confirmEntry && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="storage-trash-confirm-title"
+          onClick={() => !busy && closeConfirm()}
+        >
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <h3 id="storage-trash-confirm-title">{t("storage.trash.confirmTitle")}</h3>
+            <p>
+              {t("storage.trash.confirmBody", {
+                count: String(confirmEntry.fileCount),
+                size: formatBytes(confirmEntry.bytes, locale),
+                id: confirmEntry.id,
+              })}
+            </p>
+            {error && <p style={{ marginTop: 12, color: "var(--red)" }}>{error}</p>}
+            <div className="dialog-actions" style={{ marginTop: 16 }}>
+              <button
+                ref={cancelRef}
+                type="button"
+                className="btn btn-ghost"
+                disabled={busy}
+                onClick={() => closeConfirm()}
+              >
+                {t("storage.trash.cancel")}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                onClick={() => void runRestore()}
+              >
+                {t("storage.trash.confirmRestore")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function policyFieldsFromResponse(json: CleanupPolicy): CleanupPolicy {
@@ -469,7 +727,6 @@ function AutoCleanupPolicyPanel({
 
   useEffect(() => {
     const controller = new AbortController();
-    // Defer so loadPolicy's setState is not synchronous inside the effect body.
     const timeout = window.setTimeout(() => {
       void loadPolicy(controller.signal);
     }, 0);
@@ -555,7 +812,6 @@ function AutoCleanupPolicyPanel({
     setError(null);
     setStatus(null);
     try {
-      // Persist current form values before running — abort if the form is invalid.
       const base = buildBody();
       if (!base) {
         setError(t("storage.policy.invalid"));
@@ -624,7 +880,6 @@ function AutoCleanupPolicyPanel({
           outcome = job.lastOutcome;
           break;
         }
-        // Job finished so fast that startedAt advanced; accept matching finished marker.
         if (job.finishedAt && job.finishedAt >= startedAt && job.lastOutcome) {
           outcome = job.lastOutcome;
           break;
@@ -849,6 +1104,9 @@ export default function Storage({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [data, setData] = useState<StorageReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [trashReloadToken, setTrashReloadToken] = useState(0);
+  // Stamp trash awareness with apiBase so a base change invalidates without an effect.
+  const [trashInfo, setTrashInfo] = useState({ apiBase, settled: false, hasEntries: false });
   const loadGenerationRef = useRef(0);
 
   const fetchStorage = useCallback(async (signal?: AbortSignal) => {
@@ -880,15 +1138,30 @@ export default function Storage({ apiBase }: { apiBase: string }) {
     };
   }, [fetchStorage]);
 
+  const refreshAll = useCallback(() => {
+    void fetchStorage();
+    setTrashReloadToken(n => n + 1);
+  }, [fetchStorage]);
+
+  const onTrashEntriesChange = useCallback((entries: TrashEntry[]) => {
+    setTrashInfo({ apiBase, settled: true, hasEntries: entries.length > 0 });
+  }, [apiBase]);
+
+  const trashSettled = trashInfo.apiBase === apiBase && trashInfo.settled;
+  const trashHasEntries = trashInfo.apiBase === apiBase && trashInfo.hasEntries;
   const failed = !loading && (!data || data.error !== undefined);
-  const empty = !loading && !failed && data!.total.fileCount === 0;
+  const empty = !loading && !failed && data!.total.fileCount === 0 && trashSettled && !trashHasEntries;
   const archivedCount = data?.buckets.find(b => b.key === "archived_sessions")?.fileCount ?? 0;
+  const showBody = Boolean(data) && !failed;
+  // While storage is empty, keep the trash panel mounted until it reports so we
+  // do not flash the empty state over a non-empty quarantine.
+  const showTrashWhileSettling = showBody && (data!.total.fileCount > 0 || !trashSettled || trashHasEntries);
 
   return (
     <>
       <div className="page-head">
         <h2 id="storage-page-title">{t("storage.title")}</h2>
-        <button type="button" className="btn btn-ghost btn-sm" disabled={loading} onClick={() => void fetchStorage()}>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={loading} onClick={() => refreshAll()}>
           <IconRefresh /> {t("storage.refresh")}
         </button>
       </div>
@@ -905,30 +1178,44 @@ export default function Storage({ apiBase }: { apiBase: string }) {
             apiBase={apiBase}
             locale={locale}
             t={t}
-            onDone={() => void fetchStorage()}
+            onDone={() => refreshAll()}
           />
         </>
       ) : (
         <>
-          <div className="usage-cards">
-            <div className="stat"><div className="muted">{t("storage.card.total")}</div><div className="stat-value">{formatBytes(data!.total.bytes, locale)}</div></div>
-            <div className="stat"><div className="muted">{t("storage.card.files")}</div><div className="stat-value">{data!.total.fileCount.toLocaleString(locale)}</div></div>
-            <div className="stat"><div className="muted">{t("storage.card.home")}</div><div className="stat-value mono" style={{ fontSize: "var(--text-body)", wordBreak: "break-all" }}>{data!.codexHome}</div></div>
-          </div>
-          <BucketsTable buckets={data!.buckets} locale={locale} t={t} />
-          <LargestFilesPanel buckets={data!.buckets} locale={locale} t={t} />
+          {data && data.total.fileCount > 0 && (
+            <>
+              <div className="usage-cards">
+                <div className="stat"><div className="muted">{t("storage.card.total")}</div><div className="stat-value">{formatBytes(data.total.bytes, locale)}</div></div>
+                <div className="stat"><div className="muted">{t("storage.card.files")}</div><div className="stat-value">{data.total.fileCount.toLocaleString(locale)}</div></div>
+                <div className="stat"><div className="muted">{t("storage.card.home")}</div><div className="stat-value mono" style={{ fontSize: "var(--text-body)", wordBreak: "break-all" }}>{data.codexHome}</div></div>
+              </div>
+              <BucketsTable buckets={data.buckets} locale={locale} t={t} />
+              <LargestFilesPanel buckets={data.buckets} locale={locale} t={t} />
+            </>
+          )}
           <AutoCleanupPolicyPanel
             apiBase={apiBase}
             locale={locale}
             t={t}
-            onDone={() => void fetchStorage()}
+            onDone={() => refreshAll()}
           />
           {archivedCount > 0 && (
             <ArchivedCleanupPanel
               apiBase={apiBase}
               locale={locale}
               t={t}
-              onDone={() => void fetchStorage()}
+              onDone={() => refreshAll()}
+            />
+          )}
+          {showTrashWhileSettling && (
+            <QuarantineTrashPanel
+              apiBase={apiBase}
+              locale={locale}
+              t={t}
+              reloadToken={trashReloadToken}
+              onEntriesChange={onTrashEntriesChange}
+              onDone={() => refreshAll()}
             />
           )}
         </>

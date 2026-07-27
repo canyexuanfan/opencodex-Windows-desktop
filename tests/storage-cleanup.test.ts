@@ -4,8 +4,11 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -15,8 +18,10 @@ import {
   computePreviewDigest,
   executeArchivedCleanup,
   listArchivedCandidates,
+  listTrashEntries,
   normalizeArchivedRolloutPath,
   previewArchivedCleanup,
+  restoreTrashEntry,
   selectOldestPercent,
   type ExecuteCleanupOptions,
 } from "../src/storage/cleanup";
@@ -369,6 +374,7 @@ describe("executeArchivedCleanup", () => {
     }
   });
 
+  // Windows CI: SQLite lock contention across satellite DBs can exceed the default 5s.
   test("busy final satellite lock rolls back earlier satellite write locks", () => {
     home = buildHome({ withSatelliteStores: true });
     const goalsLocker = new Database(join(home, "goals_1.sqlite"));
@@ -412,7 +418,7 @@ describe("executeArchivedCleanup", () => {
       try { logsRead?.close(); } catch { /* */ }
       try { memoriesRead?.close(); } catch { /* */ }
     }
-  });
+  }, { timeout: 20_000 });
 
   test("rolls back staged renames when a later rename fails", () => {
     home = buildHome();
@@ -588,6 +594,7 @@ describe("executeArchivedCleanup", () => {
     expect(ids).toEqual(["active"]);
   });
 
+  // Windows CI: multi-satellite permanent cleanup can exceed the default 5s under lock/IO load.
   test("permanent cleanup removes logs, goals, and memory rows for deleted threads", () => {
     home = buildHome({ withSatelliteStores: true });
     const result = runWithDigest(100, "permanent", home);
@@ -632,7 +639,7 @@ describe("executeArchivedCleanup", () => {
     const ids = state.query<{ id: string }, []>("SELECT id FROM threads").all().map(r => r.id);
     state.close();
     expect(ids).toEqual(["active"]);
-  });
+  }, { timeout: 20_000 });
 
   test("threads read failure leaves every file and database unchanged", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -714,6 +721,7 @@ describe("executeArchivedCleanup", () => {
       expect(stateAfter.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all()).toEqual(threads);
       stateAfter.close();
     },
+    { timeout: 30_000 },
   );
 
   test("satellite restore failure keeps recovery trashDir and manifest", () => {
@@ -871,6 +879,7 @@ describe("executeArchivedCleanup", () => {
     state.close();
   }, { timeout: 30_000 });
 
+  // Windows CI: same multi-satellite restore profile as above (timed out at 5s on PR #558).
   test("concurrent consolidate enqueue watermark change is preserved on restore", () => {
     home = buildHome({ withSatelliteStores: true });
     const result = runWithDigest(100, "permanent", home, {
@@ -907,4 +916,883 @@ describe("executeArchivedCleanup", () => {
     ]);
     state.close();
   }, { timeout: 30_000 });
+});
+
+describe("listTrashEntries + restoreTrashEntry", () => {
+  test("round-trip quarantine → restore returns files and threads", () => {
+    home = buildHome();
+    const original = readFileSync(join(home, "archived_sessions", "rollout-old.jsonl"), "utf8");
+    const quarantined = runWithDigest(50, "quarantine", home, { now: 1_700_000_000_100 });
+    expect(quarantined.ok).toBe(true);
+    expect(quarantined.trashDir).toBe(".trash/1700000000100");
+
+    const listed = listTrashEntries(home);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]!.id).toBe(".trash/1700000000100");
+    expect(listed[0]!.fileCount).toBe(1);
+    expect(listed[0]!.mode).toBe("quarantine");
+    expect(listed[0]!.quarantinedAt).toBe(1_700_000_000_100);
+    expect(JSON.stringify(listed)).not.toContain(home.replaceAll("\\", "\\\\"));
+
+    const restored = restoreTrashEntry(".trash/1700000000100", { codexHome: home });
+    expect(restored.ok).toBe(true);
+    expect(restored.count).toBe(1);
+    expect(restored.restoredPaths).toEqual(["archived_sessions/rollout-old.jsonl"]);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(readFileSync(join(home, "archived_sessions", "rollout-old.jsonl"), "utf8")).toBe(original);
+    expect(existsSync(join(home, ".trash", "1700000000100"))).toBe(false);
+    expect(listTrashEntries(home)).toEqual([]);
+
+    const db = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const row = db.query<{ id: string; rollout_path: string; archived: number | null }, []>(
+      "SELECT id, rollout_path, archived FROM threads WHERE id='told'",
+    ).get();
+    db.close();
+    expect(row).toEqual({
+      id: "told",
+      rollout_path: "archived_sessions/rollout-old.jsonl",
+      archived: 1,
+    });
+    expect(existsSync(join(home, "sessions", "2026", "05", "27", "rollout-active.jsonl"))).toBe(true);
+  });
+
+  test("restore refuses when Codex DB is busy", () => {
+    home = buildHome();
+    const quarantined = runWithDigest(50, "quarantine", home, { now: 1_700_000_000_200 });
+    expect(quarantined.ok).toBe(true);
+
+    const locker = new Database(join(home, "state_5.sqlite"));
+    locker.exec("BEGIN EXCLUSIVE");
+    try {
+      const restored = restoreTrashEntry(".trash/1700000000200", {
+        codexHome: home,
+        busyTimeoutMs: 1,
+      });
+      expect(restored.ok).toBe(false);
+      expect(restored.error).toBe("codex_busy");
+      expect(existsSync(join(home, ".trash", "1700000000200", "rollout-old.jsonl"))).toBe(true);
+      expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    } finally {
+      locker.exec("ROLLBACK");
+      locker.close();
+    }
+  });
+
+  test("rejects missing, invalid, and path-escaping trash ids", () => {
+    home = buildHome();
+    expect(restoreTrashEntry(".trash/999", { codexHome: home }).error).toBe("missing_trash");
+    expect(restoreTrashEntry("../etc/passwd", { codexHome: home }).error).toBe("invalid_trash");
+    expect(restoreTrashEntry(".trash/../sessions", { codexHome: home }).error).toBe("invalid_trash");
+    expect(restoreTrashEntry(".trash/not-an-epoch", { codexHome: home }).error).toBe("invalid_trash");
+    expect(restoreTrashEntry("", { codexHome: home }).error).toBe("invalid_trash");
+  });
+
+  test("refuses restore when destination archived file already exists", () => {
+    home = buildHome();
+    const quarantined = runWithDigest(50, "quarantine", home, { now: 1_700_000_000_300 });
+    expect(quarantined.ok).toBe(true);
+    writeFileSync(join(home, "archived_sessions", "rollout-old.jsonl"), "COLLISION");
+    const restored = restoreTrashEntry(".trash/1700000000300", { codexHome: home });
+    expect(restored.ok).toBe(false);
+    expect(restored.error).toBe("dest_exists");
+    expect(existsSync(join(home, ".trash", "1700000000300", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("quarantine retains satellite-backup and restores satellite + state dependents", () => {
+    home = buildHome({ withSatelliteStores: true, withDynamicTools: true, withSpawnEdges: true });
+    // 100%: spawn edge told→tmid stays inside the delete set (cross-boundary edges refuse cleanup).
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_000_400 });
+    expect(quarantined.ok).toBe(true);
+    const backupPath = join(home, ".trash", "1700000000400", "satellite-backup.json");
+    expect(existsSync(backupPath)).toBe(true);
+    const backup = JSON.parse(readFileSync(backupPath, "utf8")) as {
+      threadIds: string[];
+      threads?: Array<Record<string, unknown>>;
+      dynamicTools?: Array<Record<string, unknown>>;
+      spawnEdges?: Array<Record<string, unknown>>;
+      logs?: { path: string; rows: unknown[] };
+    };
+    expect(backup.threadIds).toContain("told");
+    expect(backup.threads?.some(r => r.id === "told")).toBe(true);
+    expect(backup.dynamicTools?.length).toBeGreaterThan(0);
+    expect(backup.spawnEdges?.length).toBeGreaterThan(0);
+    expect(backup.logs?.rows.length).toBeGreaterThan(0);
+
+    // Simulate Codex rotating to a newer logs DB — restore must remap to current home.
+    renameSync(join(home, "logs_2.sqlite"), join(home, "logs_3.sqlite"));
+
+    const restored = restoreTrashEntry(".trash/1700000000400", { codexHome: home });
+    expect(restored.ok).toBe(true);
+    expect(existsSync(backupPath)).toBe(false);
+
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(state.query("SELECT id FROM threads WHERE id='told'").get()).toEqual({ id: "told" });
+    expect(state.query("SELECT COUNT(*) AS n FROM thread_dynamic_tools WHERE thread_id='told'").get())
+      .toEqual({ n: 1 });
+    expect(state.query("SELECT COUNT(*) AS n FROM thread_spawn_edges WHERE parent_thread_id='told' OR child_thread_id='told'").get())
+      .toEqual({ n: 1 });
+    state.close();
+
+    const logs = new Database(join(home, "logs_3.sqlite"), { readonly: true });
+    expect(logs.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id='told'").get()).toEqual({ n: 1 });
+    logs.close();
+  });
+
+  test("rejects malformed satellite-backup.json without destroying trash", () => {
+    home = buildHome();
+    const quarantined = runWithDigest(50, "quarantine", home, { now: 1_700_000_000_500 });
+    expect(quarantined.ok).toBe(true);
+    writeFileSync(join(home, ".trash", "1700000000500", "satellite-backup.json"), "{truncated");
+    const restored = restoreTrashEntry(".trash/1700000000500", { codexHome: home });
+    expect(restored.ok).toBe(false);
+    expect(restored.error).toBe("db_reconcile_failed");
+    expect(existsSync(join(home, ".trash", "1700000000500", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+  });
+
+  test("refuses restore when manifest has threads but state DB is absent", () => {
+    home = buildHome();
+    const quarantined = runWithDigest(50, "quarantine", home, { now: 1_700_000_000_600 });
+    expect(quarantined.ok).toBe(true);
+    unlinkSync(join(home, "state_5.sqlite"));
+    const restored = restoreTrashEntry(".trash/1700000000600", { codexHome: home });
+    expect(restored.ok).toBe(false);
+    expect(restored.error).toBe("db_reconcile_failed");
+    expect(existsSync(join(home, ".trash", "1700000000600", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("partial purge survivors restore only remaining physical files", () => {
+    home = buildHome();
+    writeFileSync(join(home, "archived_sessions", "rollout-old.jsonl.zst"), "ZST");
+    utimesSync(join(home, "archived_sessions", "rollout-old.jsonl.zst"), OLD, OLD);
+    const preview = previewArchivedCleanup(50, home);
+    const result = executeArchivedCleanup({
+      percent: 50,
+      mode: "permanent",
+      digest: preview.digest,
+      codexHome: home,
+      now: 1_700_000_000_700,
+      _test: { failPurgeBasenames: ["rollout-old.jsonl"] },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.trashDir).toBe(".trash/1700000000700");
+    const manifest = JSON.parse(
+      readFileSync(join(home, ".trash", "1700000000700", "manifest.json"), "utf8"),
+    ) as { entries: Array<{ physicalRelPaths: string[] }> };
+    expect(manifest.entries[0]!.physicalRelPaths).toEqual(["archived_sessions/rollout-old.jsonl"]);
+    // Twin was purged; stage only has the survivor.
+    expect(existsSync(join(home, ".trash", "1700000000700", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, ".trash", "1700000000700", "rollout-old.jsonl.zst"))).toBe(false);
+
+    const restored = restoreTrashEntry(".trash/1700000000700", { codexHome: home });
+    expect(restored.ok).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+  });
+
+  test("rejects mixed valid+malformed manifest entries as invalid_trash without touching staged files", () => {
+    home = buildHome();
+    const stage = join(home, ".trash", "1700000000800");
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(join(stage, "rollout-old.jsonl"), "OLD-STAGE");
+    writeFileSync(join(stage, "rollout-mid.jsonl"), "MID-STAGE");
+    writeFileSync(join(stage, "manifest.json"), JSON.stringify({
+      quarantinedAt: 1_700_000_000_800,
+      mode: "quarantine",
+      entries: [
+        {
+          relPath: "archived_sessions/rollout-old.jsonl",
+          bytes: 9,
+          mtimeMs: OLD.getTime(),
+          physicalRelPaths: ["archived_sessions/rollout-old.jsonl"],
+          threadId: "told",
+          rolloutPath: "archived_sessions/rollout-old.jsonl",
+          archived: 1,
+        },
+        {
+          relPath: "archived_sessions/rollout-mid.jsonl",
+          bytes: 9,
+          mtimeMs: MID.getTime(),
+          // Malformed: non-string path must reject the entire manifest (no per-entry filter).
+          physicalRelPaths: ["archived_sessions/rollout-mid.jsonl", null],
+          threadId: "tmid",
+          rolloutPath: "archived_sessions/rollout-mid.jsonl",
+          archived: 1,
+        },
+      ],
+    }));
+
+    const restored = restoreTrashEntry(".trash/1700000000800", { codexHome: home });
+    expect(restored.ok).toBe(false);
+    expect(restored.error).toBe("invalid_trash");
+    expect(readFileSync(join(stage, "rollout-old.jsonl"), "utf8")).toBe("OLD-STAGE");
+    expect(readFileSync(join(stage, "rollout-mid.jsonl"), "utf8")).toBe("MID-STAGE");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(readFileSync(join(home, "archived_sessions", "rollout-old.jsonl"), "utf8")).toBe("OLD".repeat(10));
+    expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(true);
+    expect(readFileSync(join(home, "archived_sessions", "rollout-mid.jsonl"), "utf8")).toBe("MID".repeat(20));
+  });
+
+  test("legacy quarantine without satellite-backup reconstructs production-shaped thread from rollout", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-cleanup-legacy-"));
+    home = dir;
+    mkdirSync(join(dir, "archived_sessions"), { recursive: true });
+
+    const rolloutBody = [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        payload: {
+          id: "told",
+          model_provider: "openai",
+          source: "cli",
+          cwd: "/tmp/project",
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        payload: { type: "user_message", message: "restore me please" },
+      }),
+    ].join("\n") + "\n";
+
+    const stage = join(dir, ".trash", "1700000000900");
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(join(stage, "rollout-old.jsonl"), rolloutBody);
+    writeFileSync(join(stage, "manifest.json"), JSON.stringify({
+      quarantinedAt: 1_700_000_000_900,
+      mode: "quarantine",
+      entries: [
+        {
+          relPath: "archived_sessions/rollout-old.jsonl",
+          bytes: Buffer.byteLength(rolloutBody),
+          mtimeMs: OLD.getTime(),
+          physicalRelPaths: ["archived_sessions/rollout-old.jsonl"],
+          threadId: "told",
+          rolloutPath: "archived_sessions/rollout-old.jsonl",
+          archived: 1,
+        },
+      ],
+    }));
+    // Intentionally no satellite-backup.json — Phase-2 legacy quarantine shape.
+
+    const db = new Database(join(dir, "state_5.sqlite"));
+    db.exec(`CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      rollout_path TEXT NOT NULL,
+      model_provider TEXT NOT NULL,
+      source TEXT NOT NULL,
+      first_user_message TEXT NOT NULL,
+      has_user_event INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER,
+      archived_at INTEGER
+    )`);
+    db.close();
+
+    const restored = restoreTrashEntry(".trash/1700000000900", { codexHome: home });
+    expect(restored.ok).toBe(true);
+    expect(existsSync(join(dir, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(stage)).toBe(false);
+
+    const state = new Database(join(dir, "state_5.sqlite"), { readonly: true });
+    const row = state.query<{
+      id: string;
+      rollout_path: string;
+      model_provider: string;
+      source: string;
+      first_user_message: string;
+      has_user_event: number;
+      archived: number | null;
+    }, []>(
+      `SELECT id, rollout_path, model_provider, source, first_user_message, has_user_event, archived
+       FROM threads WHERE id='told'`,
+    ).get();
+    state.close();
+    expect(row).toEqual({
+      id: "told",
+      rollout_path: "archived_sessions/rollout-old.jsonl",
+      model_provider: "openai",
+      source: "cli",
+      first_user_message: "restore me please",
+      has_user_event: 1,
+      archived: 1,
+    });
+  });
+
+  test.each([
+    ["failAfterStateCommit", { failAfterStateCommit: true }, "db_reconcile_failed"],
+    ["failAfterFirstSatelliteCommit", { failAfterFirstSatelliteCommit: true }, "db_reconcile_failed"],
+    ["failAtLeftoverStageGate", { failAtLeftoverStageGate: true }, "fs_failed"],
+  ] as const)(
+    "injected %s leaves partial restore with pending marker and retry succeeds",
+    (_name, hook, error) => {
+      home = buildHome({
+        withSatelliteStores: true,
+        withDynamicTools: true,
+        withSpawnEdges: true,
+      });
+      const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_000 });
+      expect(quarantined.ok).toBe(true);
+      const trashId = quarantined.trashDir!;
+      const stage = join(home, ...trashId.split("/"));
+
+      const failed = restoreTrashEntry(trashId, { codexHome: home, _test: { ...hook } });
+      expect(failed.ok).toBe(false);
+      expect(failed.error).toBe(error);
+      // Files stay restored — accurate partial counts, no restage.
+      expect(failed.count).toBe(3);
+      expect(failed.restoredPaths).toEqual([
+        "archived_sessions/rollout-old.jsonl",
+        "archived_sessions/rollout-mid.jsonl",
+        "archived_sessions/rollout-new.jsonl",
+      ]);
+      expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+      expect(existsSync(join(stage, "rollout-old.jsonl"))).toBe(false);
+      expect(existsSync(join(stage, "manifest.json"))).toBe(true);
+      expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+
+      const pending = JSON.parse(readFileSync(join(stage, "restore-pending.json"), "utf8")) as {
+        filesRestored: boolean;
+        acceptedDestRels: string[];
+        pending: { state: boolean; logs: boolean; memories: boolean; goals: boolean };
+      };
+      expect(pending.filesRestored).toBe(true);
+      expect(pending.acceptedDestRels).toContain("archived_sessions/rollout-old.jsonl");
+
+      const retried = restoreTrashEntry(trashId, { codexHome: home });
+      expect(retried.ok).toBe(true);
+      expect(retried.count).toBe(3);
+      expect(existsSync(stage)).toBe(false);
+      expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+
+      const stateAfter = new Database(join(home, "state_5.sqlite"), { readonly: true });
+      expect(stateAfter.query("SELECT id FROM threads WHERE id='told'").get()).toEqual({ id: "told" });
+      expect(stateAfter.query("SELECT COUNT(*) AS n FROM thread_dynamic_tools WHERE thread_id='told'").get())
+        .toEqual({ n: 1 });
+      stateAfter.close();
+      const logsAfter = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+      expect(logsAfter.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id='told'").get()).toEqual({ n: 1 });
+      logsAfter.close();
+    },
+    { timeout: 20_000 },
+  );
+
+  test("late failure after logs commit keeps metadata, persists pending sections, and resume preserves pre-existing rows", () => {
+    // Regression for the old non-atomic path: compensate logs then hit busy on
+    // state — which deleted logs while leaving state+files. Prefer partial+resume.
+    home = buildHome({
+      withSatelliteStores: true,
+      withDynamicTools: true,
+      withSpawnEdges: true,
+    });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_100 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const stateSeed = new Database(join(home, "state_5.sqlite"));
+    stateSeed.exec(`INSERT INTO threads VALUES (
+      'told','archived_sessions/rollout-old.jsonl',1,1,'legacy'
+    )`);
+    stateSeed.exec(`INSERT INTO thread_dynamic_tools VALUES ('told',0,'pre','d','{}')`);
+    stateSeed.close();
+    const logsSeed = new Database(join(home, "logs_2.sqlite"));
+    logsSeed.exec(
+      `INSERT INTO logs (id, ts, level, target, thread_id, estimated_bytes) VALUES (1,1,'INFO','pre','told',10)`,
+    );
+    logsSeed.close();
+    const memSeed = new Database(join(home, "memories_1.sqlite"));
+    memSeed.exec(`INSERT INTO stage1_outputs VALUES ('told',1,'pre-m','pre-s',1,0)`);
+    memSeed.close();
+    const goalsSeed = new Database(join(home, "goals_1.sqlite"));
+    goalsSeed.exec(`INSERT INTO thread_goals VALUES ('told','g1','pre','complete',0,0,1,1)`);
+    goalsSeed.close();
+
+    const failed = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failAfterFirstSatelliteCommit: true },
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("db_reconcile_failed");
+    expect(failed.count).toBe(3);
+
+    // Files stay; no restage; no metadata compensation.
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+
+    const pending = JSON.parse(readFileSync(join(stage, "restore-pending.json"), "utf8")) as {
+      pending: { state: boolean; logs: boolean; memories: boolean; goals: boolean };
+    };
+    expect(pending.pending).toEqual({
+      state: false,
+      logs: false,
+      memories: true,
+      goals: true,
+    });
+
+    // Pre-existing conflict-ignored rows stay; newly restored mid/new rows stay.
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(state.query("SELECT COUNT(*) AS n FROM threads WHERE id IN ('told','tmid','tnew')").get())
+      .toEqual({ n: 3 });
+    expect(
+      state.query("SELECT name FROM thread_dynamic_tools WHERE thread_id='told' AND position=0").get(),
+    ).toEqual({ name: "pre" });
+    state.close();
+    const logs = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    expect(
+      logs.query("SELECT ts, target, estimated_bytes FROM logs WHERE id=1").get(),
+    ).toEqual({ ts: 1, target: "pre", estimated_bytes: 10 });
+    expect(logs.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id IN ('tmid','tnew')").get())
+      .toEqual({ n: 2 });
+    logs.close();
+
+    // State locked after logs would have been compensated under the old design —
+    // resume must still finish without dest_exists and without deleting pre rows.
+    let locker: Database | undefined;
+    let retried: ReturnType<typeof restoreTrashEntry>;
+    try {
+      locker = new Database(join(home, "state_5.sqlite"));
+      locker.exec("BEGIN EXCLUSIVE");
+      // State already done in pending — busy state must not block satellite resume.
+      retried = restoreTrashEntry(trashId, { codexHome: home, busyTimeoutMs: 1 });
+    } finally {
+      try { locker?.exec("ROLLBACK"); } catch { /* */ }
+      try { locker?.close(); } catch { /* */ }
+    }
+    expect(retried!.ok).toBe(true);
+    expect(retried!.count).toBe(3);
+    expect(existsSync(stage)).toBe(false);
+
+    const mem = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    expect(mem.query("SELECT raw_memory FROM stage1_outputs WHERE thread_id='told'").get())
+      .toEqual({ raw_memory: "pre-m" });
+    expect(
+      mem.query("SELECT COUNT(*) AS n FROM stage1_outputs WHERE thread_id IN ('told','tmid','tnew')").get(),
+    ).toEqual({ n: 2 }); // fixture seeds told+tmid only
+    mem.close();
+    const goals = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+    expect(goals.query("SELECT objective FROM thread_goals WHERE thread_id='told'").get())
+      .toEqual({ objective: "pre" });
+    expect(
+      goals.query("SELECT COUNT(*) AS n FROM thread_goals WHERE thread_id IN ('told','tmid','tnew')").get(),
+    ).toEqual({ n: 2 }); // fixture seeds told+tmid only
+    goals.close();
+  }, { timeout: 20_000 });
+
+  test("leftover-stage failure never restages files and retry accepts destinations", () => {
+    // Regression for reverse-move failure after metadata compensation: restage
+    // could leave metadata deleted while files remained at dest. We never restage.
+    home = buildHome({ withSatelliteStores: true, withDynamicTools: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_200 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const logsSeed = new Database(join(home, "logs_2.sqlite"));
+    logsSeed.exec(
+      `INSERT INTO logs (id, ts, level, target, thread_id, estimated_bytes) VALUES (1,42,'INFO','pre','told',99)`,
+    );
+    logsSeed.close();
+
+    const failed = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failAtLeftoverStageGate: true },
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("fs_failed");
+    expect(failed.count).toBe(3);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+
+    const pending = JSON.parse(readFileSync(join(stage, "restore-pending.json"), "utf8")) as {
+      pending: { state: boolean; logs: boolean; memories: boolean; goals: boolean };
+    };
+    expect(pending.pending).toEqual({
+      state: false,
+      logs: false,
+      memories: false,
+      goals: false,
+    });
+
+    // Pre-existing log preserved; satellite rows from this restore remain.
+    const logs = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    expect(
+      logs.query("SELECT ts, target, estimated_bytes FROM logs WHERE id=1").get(),
+    ).toEqual({ ts: 42, target: "pre", estimated_bytes: 99 });
+    expect(logs.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id IN ('told','tmid','tnew')").get())
+      .toEqual({ n: 3 });
+    logs.close();
+
+    const retried = restoreTrashEntry(trashId, { codexHome: home });
+    expect(retried.ok).toBe(true);
+    expect(retried.count).toBe(3);
+    expect(existsSync(stage)).toBe(false);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+
+    const logsAfter = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    expect(
+      logsAfter.query("SELECT ts, target FROM logs WHERE id=1").get(),
+    ).toEqual({ ts: 42, target: "pre" });
+    logsAfter.close();
+  }, { timeout: 20_000 });
+
+  test("initial restore-pending write failure moves no files", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_300 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const failed = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failInitialPendingWrite: true },
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("fs_failed");
+    expect(failed.count).toBe(0);
+    expect(existsSync(join(stage, "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(false);
+
+    const retried = restoreTrashEntry(trashId, { codexHome: home });
+    expect(retried.ok).toBe(true);
+    expect(retried.count).toBe(3);
+    expect(existsSync(stage)).toBe(false);
+  }, { timeout: 20_000 });
+
+  test("interrupted pending update preserves the previous valid marker", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_400 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const failed = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failPendingWriteBeforeRename: true },
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("fs_failed");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+
+    const pending = JSON.parse(readFileSync(join(stage, "restore-pending.json"), "utf8")) as {
+      filesRestored: boolean;
+      acceptedDestRels: string[];
+      pending: { state: boolean; logs: boolean; memories: boolean; goals: boolean };
+    };
+    // Atomic rename never landed the post-state update — prior marker remains.
+    expect(pending.filesRestored).toBe(true);
+    expect(pending.pending).toEqual({
+      state: true,
+      logs: true,
+      memories: true,
+      goals: true,
+    });
+    expect(pending.acceptedDestRels).toContain("archived_sessions/rollout-old.jsonl");
+
+    const retried = restoreTrashEntry(trashId, { codexHome: home });
+    expect(retried.ok).toBe(true);
+    expect(retried.error).toBeUndefined();
+    expect(existsSync(stage)).toBe(false);
+  }, { timeout: 20_000 });
+
+  test("crash after file move retries without dest_exists or fs_failed", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_500 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const crashed = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failAfterFileMoves: true },
+    });
+    expect(crashed.ok).toBe(false);
+    expect(crashed.error).toBe("fs_failed");
+    expect(crashed.count).toBe(3);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+
+    const retried = restoreTrashEntry(trashId, { codexHome: home });
+    expect(retried.ok).toBe(true);
+    expect(retried.error).not.toBe("dest_exists");
+    expect(retried.error).not.toBe("fs_failed");
+    expect(retried.count).toBe(3);
+    expect(existsSync(stage)).toBe(false);
+  }, { timeout: 20_000 });
+
+  test("mid-move failure keeps placed dest, marker, and resumes without dest_exists", () => {
+    // First rename succeeds, second throws. Do not reverse the first file or drop
+    // the durable planned acceptedDestRels — retry must finish both states.
+    home = buildHome({ withSatelliteStores: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_550 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const failed = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failAfterMoveCount: 1 },
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("fs_failed");
+    expect(failed.count).toBe(1);
+    expect(failed.restoredPaths).toEqual(["archived_sessions/rollout-old.jsonl"]);
+
+    // First dest stays; remaining rollouts stay staged; marker keeps full plan.
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "rollout-old.jsonl"))).toBe(false);
+    expect(existsSync(join(stage, "rollout-mid.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "rollout-new.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+
+    const pending = JSON.parse(readFileSync(join(stage, "restore-pending.json"), "utf8")) as {
+      filesRestored: boolean;
+      acceptedDestRels: string[];
+      pending: { state: boolean; logs: boolean; memories: boolean; goals: boolean };
+    };
+    expect(pending.filesRestored).toBe(true);
+    expect(pending.acceptedDestRels).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+      "archived_sessions/rollout-mid.jsonl",
+      "archived_sessions/rollout-new.jsonl",
+    ]);
+    expect(pending.pending).toEqual({
+      state: true,
+      logs: true,
+      memories: true,
+      goals: true,
+    });
+
+    const retried = restoreTrashEntry(trashId, { codexHome: home });
+    expect(retried.ok).toBe(true);
+    expect(retried.error).not.toBe("dest_exists");
+    expect(retried.error).not.toBe("fs_failed");
+    expect(retried.count).toBe(3);
+    expect(existsSync(stage)).toBe(false);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
+  }, { timeout: 20_000 });
+
+  test("malformed restore-pending.json is not treated as a fresh restore", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_600 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    writeFileSync(join(stage, "restore-pending.json"), "{not-valid-json", "utf8");
+    const failed = restoreTrashEntry(trashId, { codexHome: home });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("fs_failed");
+    expect(failed.count).toBe(0);
+    // Stage intact — no silent fresh restore that would move files under a corrupt marker.
+    expect(existsSync(join(stage, "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
+    expect(readFileSync(join(stage, "restore-pending.json"), "utf8")).toBe("{not-valid-json");
+  }, { timeout: 20_000 });
+
+  test("resume with owed satellite sections and missing backup fails closed", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_700 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const partial = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failAfterFirstSatelliteCommit: true },
+    });
+    expect(partial.ok).toBe(false);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+    expect(existsSync(join(stage, "satellite-backup.json"))).toBe(true);
+    const pendingAfterPartial = JSON.parse(readFileSync(join(stage, "restore-pending.json"), "utf8")) as {
+      pending: { logs: boolean; memories: boolean; goals: boolean };
+    };
+    expect(
+      pendingAfterPartial.pending.logs
+      || pendingAfterPartial.pending.memories
+      || pendingAfterPartial.pending.goals,
+    ).toBe(true);
+
+    unlinkSync(join(stage, "satellite-backup.json"));
+    const failed = restoreTrashEntry(trashId, { codexHome: home });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("db_reconcile_failed");
+    expect(existsSync(stage)).toBe(true);
+    expect(existsSync(join(stage, "manifest.json"))).toBe(true);
+  }, { timeout: 20_000 });
+
+  test("resume with owed logs section but missing logs in backup fails closed", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_800 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const partial = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failAfterStateCommit: true },
+    });
+    expect(partial.ok).toBe(false);
+
+    const backupPath = join(stage, "satellite-backup.json");
+    const backup = JSON.parse(readFileSync(backupPath, "utf8")) as Record<string, unknown>;
+    delete backup.logs;
+    writeFileSync(backupPath, JSON.stringify(backup));
+
+    const pending = JSON.parse(readFileSync(join(stage, "restore-pending.json"), "utf8")) as {
+      pending: { logs: boolean; memories: boolean; goals: boolean };
+    };
+    expect(pending.pending.logs).toBe(true);
+
+    const failed = restoreTrashEntry(trashId, { codexHome: home });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("db_reconcile_failed");
+    expect(existsSync(stage)).toBe(true);
+    expect(existsSync(join(stage, "manifest.json"))).toBe(true);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+  }, { timeout: 20_000 });
+
+  test("failed tombstone rename keeps stage recoverable and listed", () => {
+    home = buildHome();
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_001_900 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const failed = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failStageTombstoneRename: true },
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toBe("fs_failed");
+    expect(failed.count).toBe(3);
+    expect(existsSync(stage)).toBe(true);
+    expect(existsSync(join(stage, "manifest.json"))).toBe(true);
+    expect(listTrashEntries(home).some(e => e.id === trashId)).toBe(true);
+
+    const retried = restoreTrashEntry(trashId, { codexHome: home });
+    expect(retried.ok).toBe(true);
+    expect(existsSync(stage)).toBe(false);
+    expect(listTrashEntries(home)).toEqual([]);
+  }, { timeout: 20_000 });
+
+  test("tombstone delete failure reports success without phantom trash entry", () => {
+    home = buildHome();
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_002_000 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const restored = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failTombstoneDelete: true },
+    });
+    expect(restored.ok).toBe(true);
+    expect(existsSync(stage)).toBe(false);
+    expect(listTrashEntries(home)).toEqual([]);
+
+    const trashRoot = join(home, ".trash");
+    const tombstones = readdirSync(trashRoot).filter(n => n.startsWith(".tombstone-"));
+    expect(tombstones.length).toBe(1);
+  }, { timeout: 20_000 });
+
+  test("cleanup rejects overlap with accepted restore-pending destinations after state-commit failure", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_002_000 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+    const restoredRel = "archived_sessions/rollout-old.jsonl";
+
+    const partial = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failAfterStateCommit: true },
+    });
+    expect(partial.ok).toBe(false);
+    expect(existsSync(join(home, restoredRel))).toBe(true);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+
+    const overlapDigest = computePreviewDigest(
+      selectOldestPercent(listArchivedCandidates(home), 100),
+      100,
+    );
+    const blocked = executeArchivedCleanup({
+      percent: 100,
+      mode: "quarantine",
+      digest: overlapDigest,
+      codexHome: home,
+    });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.error).toBe("restore_pending_overlap");
+    expect(existsSync(join(home, restoredRel))).toBe(true);
+    expect(existsSync(stage)).toBe(true);
+
+    const retry = restoreTrashEntry(trashId, { codexHome: home });
+    expect(retry.ok).toBe(true);
+    expect(existsSync(join(home, restoredRel))).toBe(true);
+  }, { timeout: 20_000 });
+
+  test("cleanup rejects overlap with accepted restore-pending destinations after file-move failure", () => {
+    home = buildHome();
+    const quarantined = runWithDigest(100, "quarantine", home, { now: 1_700_000_002_100 });
+    expect(quarantined.ok).toBe(true);
+    const trashId = quarantined.trashDir!;
+    const stage = join(home, ...trashId.split("/"));
+
+    const partial = restoreTrashEntry(trashId, {
+      codexHome: home,
+      _test: { failAfterMoveCount: 1 },
+    });
+    expect(partial.ok).toBe(false);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "rollout-mid.jsonl"))).toBe(true);
+    expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
+
+    const overlapDigest = computePreviewDigest(
+      selectOldestPercent(listArchivedCandidates(home), 100),
+      100,
+    );
+    const blocked = executeArchivedCleanup({
+      percent: 100,
+      mode: "permanent",
+      digest: overlapDigest,
+      codexHome: home,
+    });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.error).toBe("restore_pending_overlap");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(stage)).toBe(true);
+
+    const retry = restoreTrashEntry(trashId, { codexHome: home });
+    expect(retry.ok).toBe(true);
+  }, { timeout: 20_000 });
+
+  test("percent preview backfills past pending oldest archive for manual cleanup", () => {
+    home = buildHome();
+    const stage = join(home, ".trash", "1700000");
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(join(stage, "restore-pending.json"), JSON.stringify({
+      version: 1,
+      filesRestored: true,
+      acceptedDestRels: ["archived_sessions/rollout-old.jsonl"],
+      pending: { state: true, logs: false, memories: false, goals: false },
+    }));
+
+    const preview = previewArchivedCleanup(34, home);
+    expect(preview.count).toBe(1);
+    expect(preview.candidates.map(c => c.relPath)).toEqual(["archived_sessions/rollout-mid.jsonl"]);
+
+    const result = runWithDigest(34, "quarantine", home, { now: 1_700_000_001_000 });
+    expect(result.ok).toBe(true);
+    expect(result.count).toBe(1);
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(false);
+    expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
+  });
 });
