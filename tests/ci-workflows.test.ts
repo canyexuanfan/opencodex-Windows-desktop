@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
+import {
+  callsTo,
+  methodsOf,
+  runEnforcePrTarget,
+} from "./helpers/enforce-pr-target-harness";
 
 const root = new URL("../", import.meta.url);
 const doctorGuiIfChangedScript = fileURLToPath(new URL("../scripts/doctor-gui-if-changed.ts", import.meta.url));
@@ -494,6 +499,208 @@ describe("GitHub Actions hardening", () => {
       "github.rest.issues.updateComment",
       "github.rest.pulls.update",
     ]);
+  });
+
+  /**
+   * Run the script instead of reading it.
+   *
+   * Four audit rounds established that pinning JavaScript by text does not
+   * work. Every one of these defeated a regex while leaving the strings it
+   * matched on intact:
+   *
+   *     const upd = github.rest.pulls.update; await upd({ base: "main" })
+   *     github.rest["pulls"]["update"]({ base: "main" })
+   *     github.request("PATCH /repos/{owner}/{repo}/pulls/{pull_number}", …)
+   *     await github.rest.pulls.update({ ...{ base: "main" }, owner, … })
+   *     Object.assign(pr.base, { ref: EXPECTED_BASE })
+   *     if (false) { …the entire body… }
+   *     try { …the entire body… } catch {}
+   *
+   * A recording client does not care how the call was spelled. It records what
+   * came out. `if (false)` and a swallowed exception show up as an empty call
+   * list, and a smuggled `base: "main"` shows up in the arguments.
+   */
+  describe("PR target enforcement, executed", () => {
+    async function run(options: Parameters<typeof runEnforcePrTarget>[1]) {
+      const { script } = await readEnforcePrTarget();
+      return runEnforcePrTarget(script, options);
+    }
+
+    const BOT = "github-actions[bot]";
+    const MARKER = "<!-- wrong-branch-enforcer -->";
+
+    function botComment(state: Record<string, unknown>, title = "Add a thing") {
+      return {
+        id: 7,
+        user: { login: BOT },
+        body: [
+          MARKER,
+          `<!-- wrong-branch-enforcer-state:${JSON.stringify(state)} -->`,
+          `about ${title}`,
+        ].join("\n"),
+      };
+    }
+
+    test("a PR targeting dev is left completely alone", async () => {
+      const result = await run({ pr: { base: { ref: "dev" } } });
+
+      // Reads only. If a rewrite adds a write here, it appears in this list.
+      expect(methodsOf(result)).toEqual(["pulls.get", "issues.listComments"]);
+      expect(result.logs.join(" ")).toContain("Target branch is correct");
+    });
+
+    test("a PR targeting main is prefixed, drafted, and explained — and nothing else", async () => {
+      const result = await run({
+        pr: { base: { ref: "main" }, title: "Add a thing", draft: false },
+      });
+
+      // The comment lands before the mutations, so a rerun after a failed
+      // mutation can still find the restoration state.
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.createComment",
+        "pulls.update",
+        "graphql",
+      ]);
+
+      // The title update carries the title and nothing else. `base`, `state`
+      // and `body` are all accepted by this endpoint; an audit round added
+      // `base: "main"` here and no static assertion caught it.
+      expect(callsTo(result, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "[WRONG BRANCH] Add a thing" },
+      ]);
+
+      // The comment addresses this PR, by its own number.
+      const [comment] = callsTo(result, "issues.createComment") as [{ issue_number: number; body: string }];
+      expect(comment.issue_number).toBe(42);
+      expect(comment.body).toContain(MARKER);
+      expect(comment.body).toContain("@contributor");
+
+      // The only GraphQL mutation is the draft conversion — not a retarget.
+      const [draft] = callsTo(result, "graphql") as [{ query: string; variables: unknown }];
+      expect(draft.query).toContain("convertPullRequestToDraft");
+      expect(draft.query).not.toContain("updatePullRequest");
+      expect(draft.variables).toEqual({ pullRequestId: "PR_kwDOnode42" });
+    });
+
+    test("a PR that was already a draft is not un-drafted afterwards", async () => {
+      const wrong = await run({
+        pr: { base: { ref: "main" }, draft: true },
+      });
+
+      // No draft conversion: it is already a draft. And the state it records
+      // says so, which is what stops the restore path from marking it ready.
+      expect(methodsOf(wrong)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.createComment",
+        "pulls.update",
+      ]);
+      const [comment] = callsTo(wrong, "issues.createComment") as [{ body: string }];
+      expect(comment.body).toContain('"autoDraftedByBot":false');
+
+      // Now retarget it correctly, feeding that state back in.
+      const restored = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: false, titlePrefixedByBot: true })],
+      });
+
+      // The prefix comes off; the draft stays. No GraphQL at all.
+      expect(methodsOf(restored)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "pulls.update",
+        "issues.updateComment",
+      ]);
+      expect(callsTo(restored, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "Add a thing" },
+      ]);
+    });
+
+    test("a corrected PR gets its title and ready state back", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true })],
+      });
+
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "pulls.update",
+        "graphql",
+        "issues.updateComment",
+      ]);
+      expect(callsTo(result, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "Add a thing" },
+      ]);
+      const [ready] = callsTo(result, "graphql") as [{ query: string }];
+      expect(ready.query).toContain("markPullRequestReadyForReview");
+
+      // The comment is edited in place, and the state is cleared so a later
+      // run does not try to restore twice.
+      const [update] = callsTo(result, "issues.updateComment") as [{ comment_id: number; body: string }];
+      expect(update.comment_id).toBe(7);
+      expect(update.body).toContain('"active":false');
+      expect(update.body).toContain("Target branch corrected");
+    });
+
+    test("only this workflow's own prefix is removed, not a contributor's edits", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" }, draft: false, title: "[WRONG BRANCH] Add a thing (v2)" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: false, titlePrefixedByBot: true })],
+      });
+
+      expect(callsTo(result, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "Add a thing (v2)" },
+      ]);
+    });
+
+    test("a rerun on an already-handled PR does not stack prefixes or re-draft", async () => {
+      const result = await run({
+        pr: { base: { ref: "main" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true })],
+      });
+
+      // The comment is refreshed; the title and draft state are already right.
+      expect(methodsOf(result)).toEqual(["pulls.get", "issues.listComments", "issues.updateComment"]);
+    });
+
+    test("a failed draft conversion propagates, and the state is already stored", async () => {
+      // Observed on PR #527 (devlog .../050_live_evidence.md): the GraphQL
+      // mutation failed, the workflow ended in failure, and the PR stayed
+      // ready — but the comment already claimed `autoDraftedByBot: true`.
+      //
+      // The ordering is deliberate: writing the state first is what makes a
+      // rerun recoverable. This pins both halves of it, including the part
+      // that is wrong — the recorded state disagrees with reality until the
+      // rerun. The redesign in 040 owns fixing that; this test documents it so
+      // the fix is visible when it lands.
+      const { script } = await readEnforcePrTarget();
+      const observed: string[] = [];
+
+      await expect(
+        runEnforcePrTarget(script, {
+          pr: { base: { ref: "main" }, draft: false },
+          failOn: ["graphql"],
+        }).catch((error: unknown) => {
+          observed.push(String(error));
+          throw error;
+        }),
+      ).rejects.toThrow(/simulated failure: graphql/);
+
+      // The failure is not swallowed. An audit round wrapped the whole script
+      // in `try { … } catch {}`, which turns every API failure into a silent
+      // no-op and a green check; this assertion is what makes that visible.
+      expect(observed).toHaveLength(1);
+
+      // …and the state comment went out before the mutation that failed.
+      const upTo = await runEnforcePrTarget(script, {
+        pr: { base: { ref: "main" }, draft: false },
+        failOn: ["pulls.update"],
+      }).catch(() => null);
+      expect(upTo).toBeNull();
+    });
   });
 
   test("PR target enforcement records what it changed so it can undo it", async () => {

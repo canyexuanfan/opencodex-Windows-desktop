@@ -181,6 +181,81 @@ survived = none
 한 가지 실측 정정: 계획은 `pulls.update`가 1회 호출된다고 봤는데 실제로는 2회다
 (접두사 부착, 그리고 리타깃 후 제거). 어설션을 실제 트리에 맞췄다.
 
+## 감사 4라운드 — 정적 고정의 한계, 그리고 실행 하네스
+
+허용 목록 버전을 다시 감사에 넘겼다. YAML 쪽은 버텼다. `True:`(YAML 1.1 불린 강제),
+flow 스타일 `{group: ...}`, `runs-on: [ubuntu-latest]`, 다중 문서 `---` 전부 잡혔다.
+인용 키·순서 변경·앵커·스텝 이름 변경은 살아남았지만 파싱 결과가 동일하므로
+행위 우회가 아니다.
+
+무너진 건 전부 스크립트 안쪽이었다. 12가지.
+
+```
+const github = {}                              // 클라이언트 자체를 가림
+const upd = github.rest.pulls.update; upd({base:"main"})
+github.rest["pulls"]["update"]({base:"main"})   // 계산된 멤버 접근
+github.request("PATCH /repos/.../pulls/...")    // github.rest.* 를 아예 우회
+{ ...{base:"main"}, owner, ... }                // 스프레드로 인자 주입
+graphql에 updatePullRequest 추가
+Object.assign(pr.base, {ref: EXPECTED_BASE})    // 점 대입이 아님
+const b = pr.base; b.ref = ...                  // 별칭
+const { base } = pr; base.ref = ...             // 구조분해
+if (false) { ...전체... }
+try { ...전체... } catch {}                      // 실패를 삼킴
+return;                                         // 조기 반환
+```
+
+### 인정할 것은 인정한다
+
+감사 결론이 맞다. **JavaScript를 텍스트로 고정하는 건 이길 수 없다.** 같은 효과를
+내는 철자가 무한히 많고, 정규식이 찾는 문자열은 전부 그대로 남는다. 정적 고정을
+더 정교하게 만드는 방향은 5라운드에서 또 뚫린다.
+
+그래서 읽기를 그만두고 **실행**한다.
+
+### tests/helpers/enforce-pr-target-harness.ts
+
+워크플로의 인라인 스크립트를 뽑아내 `actions/github-script`와 같은 자유 변수
+(`github`, `context`, `core`, …)로 컴파일하고, 기록하는 가짜 클라이언트를 넘긴다.
+`github-script`가 본문을 async 함수로 감싸므로 하네스도 똑같이 감싼다 — 스크립트가
+최상위 `return`을 쓰기 때문에 이게 맞아야 조기 반환 경로가 재현된다.
+
+`github.rest.*`뿐 아니라 `github.request`, `github.graphql`, `github.paginate`도
+전부 같은 `record()`를 통과한다. 그래서 `github.rest.*`를 버린 재작성도 기록에 남는다.
+`exec`/`io`/`fetch`/`require`는 접근만 해도 던지는 프록시로 막았다.
+
+### 무엇을 검증하나
+
+시나리오 7개를 실제로 돌린다.
+
+| 시나리오 | 관찰하는 것 |
+| --- | --- |
+| dev 대상 PR | 읽기 2회뿐. 쓰기가 하나라도 생기면 목록에 나타난다 |
+| main 대상 PR | 코멘트 → 제목 → draft 순서, `pulls.update` 인자가 정확히 4개, GraphQL은 `convertPullRequestToDraft` 하나 |
+| 이미 draft인 PR | draft 변환 없음, 상태에 `autoDraftedByBot:false`, 리타깃 후에도 draft 유지 |
+| 리타깃된 PR | 접두사 제거 + ready 복귀 + 코멘트 상태 `active:false` |
+| 기여자가 제목을 더 고친 경우 | 접두사만 떼고 나머지 편집 보존 |
+| 재실행 | 접두사 중복 부착 없음, 재-draft 없음 |
+| GraphQL 실패 | 예외가 전파된다 (`try/catch` 삼킴 탐지), 상태 코멘트는 이미 나감 |
+
+호출이 어떤 철자로 쓰였는지는 상관없다. 나온 호출을 본다.
+
+## 변이 검증 실측 (39/39)
+
+4라운드 스크립트 변이 12가지:
+
+```
+shadow-github CAUGHT     shadow-context CAUGHT    alias-update CAUGHT
+spread-injection CAUGHT  computed-member CAUGHT   github-request CAUGHT
+graphql-retarget CAUGHT  object-assign-pr CAUGHT  alias-pr-base CAUGHT
+destructure-pr CAUGHT    early-return CAUGHT      if-false-wrap CAUGHT
+try-catch-wrap CAUGHT
+```
+
+이전 27가지 회귀 재확인: 전부 CAUGHT, survived = none.
+
+기준선: `23 pass  0 fail  344 expect() calls`, `bun run typecheck` 오류 0.
+
 ## 범위 밖
 
 게이트 자체의 재설계는 040이 다루며 사용자 승인 대기 상태다. 이 테스트는 재설계를
