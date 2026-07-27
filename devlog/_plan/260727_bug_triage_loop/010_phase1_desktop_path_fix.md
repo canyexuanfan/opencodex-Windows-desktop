@@ -10,9 +10,23 @@ IN:
 - `src/claude/desktop-3p-paths.ts` (NEW) — 경로 해석 단일 소스
 - `src/claude/desktop-3p.ts` (MODIFY) — 헬퍼 사용 + `appliedId` 정합
 - `src/server/management/agent-settings-routes.ts` (MODIFY) — 헬퍼 사용 + `appliedId` 반영
+- `gui/src/pages/ClaudeDesktop.tsx` (MODIFY) — `activeProfile` 표면화
 - `tests/claude-desktop-config-path.test.ts` (NEW) — 활성화 회귀 테스트
 
-OUT: Desktop 프로필 생성 로직, 모델 렌더링, 인증/토큰 경로, GUI.
+OUT: Desktop 프로필 생성 로직, 모델 렌더링, 인증/토큰 경로.
+
+### 알려진 한계 — 이번 phase에서 고치지 않는 것 (2차 감사 블로커 3)
+
+`writeDesktop3pConfig`는 매 쓰기마다 `appliedId`를 자기 id로 무조건 설정한다
+(`desktop-3p.ts:331`). 명시적인 `ocx claude desktop apply`에서는 타당하지만,
+`autoApplyDesktopBestEffort`(`agent-settings-routes.ts:78`)는 프로바이더 변경 시
+Desktop에 대한 사용자 의도 없이 발화한다. 즉 사용자가 Desktop UI에서 의도적으로
+"Default"를 골라도, 다음번 프로바이더 편집 때 조용히 opencodex로 되돌려진다.
+
+RCA가 `activeProfile`의 동기로 삼은 바로 그 사용자 행동을 쓰기 경로가 되돌리는 셈이다.
+이번 phase에서는 **탐지(읽기)까지만** 하고 쓰기 정책은 건드리지 않는다 — 자동 적용의
+의도 판정은 별도 설계 결정이며, Desktop 소유 파일에 대한 무인 쓰기 정책 변경은 이번
+수정의 위험 범위를 넘는다. 후속 work-phase 후보로 기록한다.
 
 ## 설계 원칙
 
@@ -127,8 +141,15 @@ import 추가:
 import { claudeDesktopConfigLibraryDir } from "./desktop-3p-paths";
 ```
 
-`homedir` / `join`이 이 파일의 다른 곳에서 쓰이지 않게 되면 import에서 제거한다
-(사용처 확인 후 결정 — `tsc --noEmit`이 미사용 import를 잡지는 않으므로 수동 확인).
+`join`은 313행(`_meta.json`)과 321행(`<id>.json`)에서 계속 쓰이므로 **유지**한다.
+제거 대상은 `homedir`(3행)뿐이다. 루트 ESLint도 `noUnusedLocals`도 없어 자동으로
+잡히지 않으므로 수동으로 지운다 (2차 감사 블로커 5).
+
+`APPDATA` 분기는 `LOCALAPPDATA`가 설정된 환경에서는 도달하지 않는다. 그럼에도 남기는
+이유는 Electron의 `userData` 정의를 그대로 옮기기 위함이며, `LOCALAPPDATA`가 없는
+비정상 Windows 환경의 폴백이다. 도달 불가로 오인되지 않도록 테스트에서 이 조합
+(`platform: "win32"`, `LOCALAPPDATA` 미설정, `APPDATA` 설정)을 명시적으로 태운다
+(2차 감사 블로커 6).
 
 ## MODIFY: `src/server/management/agent-settings-routes.ts`
 
@@ -170,7 +191,10 @@ after:
           // Desktop reads ONLY the profile named by appliedId. An opencodex entry that
           // exists but is not applied means Desktop is serving a different profile.
           const appliedId = typeof meta.appliedId === "string" ? meta.appliedId : null;
-          activeProfile = appliedId !== null && entry?.id ? (appliedId === entry.id) : null;
+          // 엔트리가 아예 없어도 appliedId가 읽혔다면 "우리 프로필이 아님"은 확정이다.
+          // 이를 null로 두면 "메타데이터 없음"과 구분되지 않아, 이 수정이 없애려던
+          // 조용한 거짓 보고가 그대로 살아남는다 (2차 감사 블로커 1).
+          activeProfile = appliedId === null ? null : (entry?.id ? appliedId === entry.id : false);
           if (entry?.id) {
             configPath = join(libraryPath, `${entry.id}.json`);
 ```
@@ -199,6 +223,49 @@ after:
 `stale`과 분리하는 이유: `stale`은 "내용이 다르다"이고 `activeProfile`은 "아예 안
 읽힌다"이다. 두 상태는 독립이며 후자가 더 치명적이다.
 
+### `activeProfile` 케이스 표 (2차 감사 반영)
+
+| `_meta.json` 상태 | `activeProfile` | 근거 |
+|-------------------|-----------------|------|
+| 없음 | `null` | 판정 불가 |
+| 읽기/파싱 실패 | `null` | 판정 불가 |
+| `appliedId` 없음 | `null` | 판정 불가 |
+| `appliedId` 있음 + opencodex 엔트리 없음 | **`false`** | Desktop이 우리를 안 읽는 것이 확정 |
+| `appliedId` ≠ opencodex 엔트리 id | `false` | 다른 프로필이 적용됨 |
+| `appliedId` = opencodex 엔트리 id | `true` | 우리 프로필이 적용됨 |
+
+## MODIFY: `gui/src/pages/ClaudeDesktop.tsx` (2차 감사 블로커 2)
+
+`applied`는 우리가 저장한 fingerprint에서 오고 디스크를 보지 않는다. 따라서 사용자가
+Desktop에서 "Default"로 전환하면 `applied: true, stale: false, activeProfile: false`가
+되는데, 현재 상태바는 `stale ? … : applied ? …`만 분기하므로 **초록색 "적용됨"을 띄운
+채 Desktop은 우리를 무시한다.** API에만 필드를 추가하면 사용자는 영원히 못 본다.
+
+`DesktopStatus` 인터페이스(42행)에 필드 추가:
+
+```ts
+interface DesktopStatus {
+  applied: boolean;
+  appliedAt: string | null;
+  stale: boolean;
+  activeProfile?: boolean | null;   // NEW
+  health: { lastRequestAt: string | null; requestCount: number; errorCount: number };
+}
+```
+
+상태바(330행) 분기에 `activeProfile === false`를 `stale`보다 먼저 둔다 — 내용 불일치보다
+"아예 안 읽힘"이 더 치명적이기 때문이다:
+
+```tsx
+<div className={`claude-status-bar ${
+  status.activeProfile === false ? "not-applied"
+  : status.stale ? "stale"
+  : status.applied ? "applied" : "not-applied"}`}>
+```
+
+표시 문자열은 기존 i18n 키를 재사용하되, 별도 키(`claudeDesktop.status.notActiveProfile`)를
+추가해 "다른 프로필이 적용되어 있음"을 구분한다. 번역 로케일은 영어 원문과 모순되지 않게
+동시 갱신한다.
 ## NEW: `tests/claude-desktop-config-path.test.ts`
 
 각 criterion을 실제로 트리거하는 활성화 테스트 (C-ACTIVATION-GROUNDING-01).
@@ -268,7 +335,24 @@ test("appliedId가 opencodex 엔트리를 가리키면 activeProfile이 true다"
 | c-userdatadir | `CLAUDE_USER_DATA_DIR` 설정 | 경로에 `-3p` 없음 |
 | c-windows | `platform=win32` + `LOCALAPPDATA` | `LOCALAPPDATA/Claude-3p/configLibrary` |
 | c-appliedid | `appliedId` ≠ opencodex 엔트리 id | 상태 응답 `activeProfile === false` |
-| c-baseline | 기본 darwin 환경 | `Claude-3p` 유지 + 4972 pass 이상 / 0 fail |
+| c-baseline | 기본 darwin 환경 | `Claude-3p` 유지 + 아래 실측 기준선 대비 신규 실패 0건 |
+
+### 실측 기준선 (2차 감사 블로커 4 — 첫 편집 전 캡처)
+
+WP1 코드 변경 직전, HEAD `9d061614`에서 측정:
+
+```
+$ bun run test
+ 4972 pass
+ 0 fail
+ 24472 expect() calls
+Ran 4972 tests across 378 files. [155.06s]
+
+$ bun run typecheck   # exit 0
+```
+
+수정 후에는 신규 테스트가 추가되므로 총 개수가 늘어난다. 판정 기준은 총합이 아니라
+**`0 fail` 유지 + 4972건의 기존 통과가 하나도 깨지지 않음**이다.
 
 ## 검증
 
