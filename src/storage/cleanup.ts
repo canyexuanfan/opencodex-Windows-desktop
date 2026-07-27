@@ -513,6 +513,8 @@ interface ReconcileTestHooks {
   failBeforeStateCommit?: boolean;
   failSatelliteRestore?: boolean;
   failSatelliteBackupWrite?: boolean;
+  /** Runs after satellite deletes are committed, before state thread deletion. */
+  afterSatelliteMutations?: () => void;
 }
 
 const SATELLITE_BACKUP_FILE = "satellite-backup.json";
@@ -525,14 +527,51 @@ function selectRows(db: Database, sql: string, params: Array<string | number>): 
   return db.query<SqlRow, Array<string | number>>(sql).all(...params) as SqlRow[];
 }
 
-function insertRows(db: Database, table: string, rows: SqlRow[]): void {
+function insertRowsConflictIgnore(db: Database, table: string, rows: SqlRow[]): void {
   for (const row of rows) {
     const cols = Object.keys(row);
     if (cols.length === 0) continue;
     db.run(
-      `INSERT INTO ${quoteIdent(table)} (${cols.map(quoteIdent).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+      `INSERT INTO ${quoteIdent(table)} (${cols.map(quoteIdent).join(", ")}) VALUES (${cols.map(() => "?").join(", ")}) ON CONFLICT DO NOTHING`,
       cols.map(c => row[c] as string | number | bigint | null | Uint8Array),
     );
+  }
+}
+
+function updateRowFromSnapshot(
+  db: Database,
+  table: string,
+  row: SqlRow,
+  pkCols: string[],
+): void {
+  const cols = Object.keys(row).filter(c => !pkCols.includes(c));
+  if (cols.length === 0) return;
+  const sets = cols.map(c => `${quoteIdent(c)} = ?`).join(", ");
+  const where = pkCols.map(c => `${quoteIdent(c)} = ?`).join(" AND ");
+  db.run(
+    `UPDATE ${quoteIdent(table)} SET ${sets} WHERE ${where}`,
+  [
+    ...cols.map(c => row[c] as string | number | bigint | null | Uint8Array),
+    ...pkCols.map(c => row[c] as string | number | bigint | null | Uint8Array),
+  ],
+  );
+}
+
+/** Revert delete-time consolidate enqueue; preserve concurrent post-commit status changes. */
+function restoreConsolidateGlobalJob(db: Database, snapshot: SqlRow): void {
+  const kind = String(snapshot.kind);
+  const jobKey = String(snapshot.job_key);
+  const existing = db.query<{ status: string }, [string, string]>(
+    "SELECT status FROM jobs WHERE kind = ? AND job_key = ?",
+  ).get(kind, jobKey);
+  if (!existing) {
+    insertRowsConflictIgnore(db, "jobs", [snapshot]);
+    return;
+  }
+  const snapStatus = String(snapshot.status ?? "");
+  const currentStatus = String(existing.status ?? "");
+  if (currentStatus === "pending" && snapStatus !== "pending") {
+    updateRowFromSnapshot(db, "jobs", snapshot, ["kind", "job_key"]);
   }
 }
 
@@ -544,208 +583,250 @@ function clearSatelliteBackup(stageDir: string): void {
   try { unlinkSync(join(stageDir, SATELLITE_BACKUP_FILE)); } catch { /* */ }
 }
 
-/** Read-only snapshot of logs rows that would be deleted. */
-function snapshotLogs(
-  logsDbPath: string | null,
-  threadIds: string[],
-  busyTimeoutMs: number,
-): SatelliteBackup["logs"] {
-  if (!logsDbPath || !existsSync(logsDbPath) || threadIds.length === 0) return undefined;
-  let db: Database | undefined;
-  try {
-    db = openDbWritable(logsDbPath, busyTimeoutMs);
-    if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    const rows = selectRows(db, `SELECT * FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
-    return { path: logsDbPath, rows };
-  } finally {
-    try { db?.close(); } catch { /* */ }
-  }
+interface SatelliteWriteLock {
+  path: string;
+  db: Database;
 }
 
-function snapshotMemories(
-  memoriesDbPath: string | null,
-  threadIds: string[],
-  busyTimeoutMs: number,
-): SatelliteBackup["memories"] {
-  if (!memoriesDbPath || !existsSync(memoriesDbPath) || threadIds.length === 0) return undefined;
-  let db: Database | undefined;
-  try {
-    db = openDbWritable(memoriesDbPath, busyTimeoutMs);
-    if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    const stage1 = selectRows(
-      db,
-      `SELECT * FROM stage1_outputs WHERE thread_id IN (${placeholders})`,
-      threadIds,
-    );
-    let stage1Jobs: SqlRow[] = [];
-    let consolidateJob: SqlRow | null = null;
-    let selectedForPhase2 = 0;
-    if (columnExists(db, "stage1_outputs", "selected_for_phase2")) {
-      selectedForPhase2 = stage1.filter(r => Number(r.selected_for_phase2 ?? 0) !== 0).length;
-    }
-    if (tableExists(db, "jobs")) {
-      stage1Jobs = selectRows(
-        db,
-        `SELECT * FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
-        [JOB_KIND_MEMORY_STAGE1, ...threadIds],
-      );
-      consolidateJob = db.query<SqlRow, [string, string]>(
-        `SELECT * FROM jobs WHERE kind = ? AND job_key = ?`,
-      ).get(JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY) as SqlRow | null;
-    }
-    return {
-      path: memoriesDbPath,
-      stage1,
-      stage1Jobs,
-      consolidateJob,
-      consolidateTouched: selectedForPhase2 > 0,
-    };
-  } finally {
-    try { db?.close(); } catch { /* */ }
-  }
+interface SatelliteWriteLocks {
+  logs?: SatelliteWriteLock;
+  memories?: SatelliteWriteLock;
+  goals?: SatelliteWriteLock;
 }
 
-function snapshotGoals(
-  goalsDbPath: string | null,
-  threadIds: string[],
-  busyTimeoutMs: number,
-): SatelliteBackup["goals"] {
-  if (!goalsDbPath || !existsSync(goalsDbPath) || threadIds.length === 0) return undefined;
-  let db: Database | undefined;
-  try {
-    db = openDbWritable(goalsDbPath, busyTimeoutMs);
-    if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    const goals = selectRows(
-      db,
-      `SELECT * FROM thread_goals WHERE thread_id IN (${placeholders})`,
-      threadIds,
-    );
-    let deferrals: SqlRow[] = [];
-    if (tableExists(db, "thread_goal_continuation_deferrals")) {
-      deferrals = selectRows(
-        db,
-        `SELECT * FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
-        threadIds,
-      );
-    }
-    return { path: goalsDbPath, goals, deferrals };
-  } finally {
-    try { db?.close(); } catch { /* */ }
-  }
-}
-
-/** Build the complete satellite backup while holding the state write lock (read-only on satellites). */
-function snapshotSatelliteBackup(
+/** Deterministic order: logs → memories → goals. Each present DB gets BEGIN IMMEDIATE. */
+function beginSatelliteWriteLocks(
   paths: RuntimeDbPaths,
-  threadIds: string[],
   busyTimeoutMs: number,
-): SatelliteBackup {
+): SatelliteWriteLocks {
+  const begin = (path: string | null): SatelliteWriteLock | undefined => {
+    if (!path || !existsSync(path)) return undefined;
+    const db = openDbWritable(path, busyTimeoutMs);
+    db.exec("BEGIN IMMEDIATE");
+    return { path, db };
+  };
   return {
-    threadIds,
-    logs: snapshotLogs(paths.logs, threadIds, busyTimeoutMs),
-    memories: snapshotMemories(paths.memories, threadIds, busyTimeoutMs),
-    goals: snapshotGoals(paths.goals, threadIds, busyTimeoutMs),
+    logs: begin(paths.logs),
+    memories: begin(paths.memories),
+    goals: begin(paths.goals),
   };
 }
 
-function commitLogsDelete(
-  section: NonNullable<SatelliteBackup["logs"]>,
-  threadIds: string[],
-  busyTimeoutMs: number,
-): void {
-  let db: Database | undefined;
-  try {
-    db = openDbWritable(section.path, busyTimeoutMs);
-    db.exec("BEGIN IMMEDIATE");
-    if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    db.run(`DELETE FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
-    db.exec("COMMIT");
-  } catch (error) {
-    try { db?.exec("ROLLBACK"); } catch { /* */ }
-    throw error;
-  } finally {
-    try { db?.close(); } catch { /* */ }
-  }
+function rollbackSatelliteLock(lock: SatelliteWriteLock | undefined): void {
+  if (!lock) return;
+  try { lock.db.exec("ROLLBACK"); } catch { /* */ }
+  try { lock.db.close(); } catch { /* */ }
 }
 
-function commitMemoriesDelete(
-  section: NonNullable<SatelliteBackup["memories"]>,
+function rollbackAllSatelliteLocks(locks: SatelliteWriteLocks): void {
+  rollbackSatelliteLock(locks.logs);
+  rollbackSatelliteLock(locks.memories);
+  rollbackSatelliteLock(locks.goals);
+  locks.logs = undefined;
+  locks.memories = undefined;
+  locks.goals = undefined;
+}
+
+function commitSatelliteLock(lock: SatelliteWriteLock | undefined): void {
+  if (!lock) return;
+  lock.db.exec("COMMIT");
+  lock.db.close();
+}
+
+function snapshotLogsInTx(
+  db: Database,
+  path: string,
   threadIds: string[],
-  busyTimeoutMs: number,
+): SatelliteBackup["logs"] {
+  if (threadIds.length === 0) return undefined;
+  if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
+  const placeholders = threadIds.map(() => "?").join(",");
+  const rows = selectRows(db, `SELECT * FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
+  return { path, rows };
+}
+
+function snapshotMemoriesInTx(
+  db: Database,
+  path: string,
+  threadIds: string[],
+): SatelliteBackup["memories"] {
+  if (threadIds.length === 0) return undefined;
+  if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
+  const placeholders = threadIds.map(() => "?").join(",");
+  const stage1 = selectRows(
+    db,
+    `SELECT * FROM stage1_outputs WHERE thread_id IN (${placeholders})`,
+    threadIds,
+  );
+  let stage1Jobs: SqlRow[] = [];
+  let consolidateJob: SqlRow | null = null;
+  let selectedForPhase2 = 0;
+  if (columnExists(db, "stage1_outputs", "selected_for_phase2")) {
+    selectedForPhase2 = stage1.filter(r => Number(r.selected_for_phase2 ?? 0) !== 0).length;
+  }
+  if (tableExists(db, "jobs")) {
+    stage1Jobs = selectRows(
+      db,
+      `SELECT * FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
+      [JOB_KIND_MEMORY_STAGE1, ...threadIds],
+    );
+    consolidateJob = db.query<SqlRow, [string, string]>(
+      `SELECT * FROM jobs WHERE kind = ? AND job_key = ?`,
+    ).get(JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY) as SqlRow | null;
+  }
+  return {
+    path,
+    stage1,
+    stage1Jobs,
+    consolidateJob,
+    consolidateTouched: selectedForPhase2 > 0,
+  };
+}
+
+function snapshotGoalsInTx(
+  db: Database,
+  path: string,
+  threadIds: string[],
+): SatelliteBackup["goals"] {
+  if (threadIds.length === 0) return undefined;
+  if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
+  const placeholders = threadIds.map(() => "?").join(",");
+  const goals = selectRows(
+    db,
+    `SELECT * FROM thread_goals WHERE thread_id IN (${placeholders})`,
+    threadIds,
+  );
+  let deferrals: SqlRow[] = [];
+  if (tableExists(db, "thread_goal_continuation_deferrals")) {
+    deferrals = selectRows(
+      db,
+      `SELECT * FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+      threadIds,
+    );
+  }
+  return { path, goals, deferrals };
+}
+
+/** Snapshot every present satellite under its write lock (rows stable until commit). */
+function snapshotSatelliteBackupInLocks(
+  locks: SatelliteWriteLocks,
+  threadIds: string[],
+): SatelliteBackup {
+  const backup: SatelliteBackup = { threadIds };
+  if (locks.logs) {
+    backup.logs = snapshotLogsInTx(locks.logs.db, locks.logs.path, threadIds);
+  }
+  if (locks.memories) {
+    backup.memories = snapshotMemoriesInTx(locks.memories.db, locks.memories.path, threadIds);
+  }
+  if (locks.goals) {
+    backup.goals = snapshotGoalsInTx(locks.goals.db, locks.goals.path, threadIds);
+  }
+  return backup;
+}
+
+function deleteLogsInTx(db: Database, rows: SqlRow[]): void {
+  if (rows.length === 0) return;
+  if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
+  const ids = rows.map(r => r.id).filter(id => id !== null && id !== undefined);
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => "?").join(",");
+  db.run(`DELETE FROM logs WHERE id IN (${placeholders})`, ids as Array<string | number>);
+}
+
+function deleteMemoriesInTx(
+  db: Database,
+  section: NonNullable<SatelliteBackup["memories"]>,
 ): void {
-  let db: Database | undefined;
-  try {
-    db = openDbWritable(section.path, busyTimeoutMs);
-    db.exec("BEGIN IMMEDIATE");
-    if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, threadIds);
-    if (tableExists(db, "jobs")) {
+  if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
+  const stage1Ids = section.stage1.map(r => String(r.thread_id));
+  if (stage1Ids.length > 0) {
+    const placeholders = stage1Ids.map(() => "?").join(",");
+    db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, stage1Ids);
+  }
+  if (tableExists(db, "jobs")) {
+    const jobKeys = section.stage1Jobs.map(r => String(r.job_key));
+    if (jobKeys.length > 0) {
+      const placeholders = jobKeys.map(() => "?").join(",");
       db.run(
         `DELETE FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
-        [JOB_KIND_MEMORY_STAGE1, ...threadIds],
+        [JOB_KIND_MEMORY_STAGE1, ...jobKeys],
       );
-      if (section.consolidateTouched) {
-        const now = Math.floor(Date.now() / 1000);
-        db.run(
-          `INSERT INTO jobs (
-             kind, job_key, status, worker_id, ownership_token, started_at, finished_at,
-             lease_until, retry_at, retry_remaining, last_error, input_watermark, last_success_watermark
-           ) VALUES (?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, 0)
-           ON CONFLICT(kind, job_key) DO UPDATE SET
-             status = CASE WHEN jobs.status = 'running' THEN 'running' ELSE 'pending' END,
-             retry_at = CASE WHEN jobs.status = 'running' THEN jobs.retry_at ELSE NULL END,
-             retry_remaining = max(jobs.retry_remaining, excluded.retry_remaining),
-             input_watermark = CASE
-               WHEN excluded.input_watermark > COALESCE(jobs.input_watermark, 0)
-               THEN excluded.input_watermark
-               ELSE COALESCE(jobs.input_watermark, 0) + 1
-             END`,
-          [JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY, DEFAULT_RETRY_REMAINING, now],
-        );
-      }
     }
-    db.exec("COMMIT");
-  } catch (error) {
-    try { db?.exec("ROLLBACK"); } catch { /* */ }
-    throw error;
-  } finally {
-    try { db?.close(); } catch { /* */ }
-  }
-}
-
-function commitGoalsDelete(
-  section: NonNullable<SatelliteBackup["goals"]>,
-  threadIds: string[],
-  busyTimeoutMs: number,
-): void {
-  let db: Database | undefined;
-  try {
-    db = openDbWritable(section.path, busyTimeoutMs);
-    db.exec("BEGIN IMMEDIATE");
-    if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    if (tableExists(db, "thread_goal_continuation_deferrals")) {
+    if (section.consolidateTouched) {
+      const now = Math.floor(Date.now() / 1000);
       db.run(
-        `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
-        threadIds,
+        `INSERT INTO jobs (
+           kind, job_key, status, worker_id, ownership_token, started_at, finished_at,
+           lease_until, retry_at, retry_remaining, last_error, input_watermark, last_success_watermark
+         ) VALUES (?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, 0)
+         ON CONFLICT(kind, job_key) DO UPDATE SET
+           status = CASE WHEN jobs.status = 'running' THEN 'running' ELSE 'pending' END,
+           retry_at = CASE WHEN jobs.status = 'running' THEN jobs.retry_at ELSE NULL END,
+           retry_remaining = max(jobs.retry_remaining, excluded.retry_remaining),
+           input_watermark = CASE
+             WHEN excluded.input_watermark > COALESCE(jobs.input_watermark, 0)
+             THEN excluded.input_watermark
+             ELSE COALESCE(jobs.input_watermark, 0) + 1
+           END`,
+        [JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY, DEFAULT_RETRY_REMAINING, now],
       );
     }
-    db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, threadIds);
-    db.exec("COMMIT");
-  } catch (error) {
-    try { db?.exec("ROLLBACK"); } catch { /* */ }
-    throw error;
-  } finally {
-    try { db?.close(); } catch { /* */ }
   }
 }
 
-/** Restore previously snapshotted satellite rows. Returns false on any restore failure. */
+function deleteGoalsInTx(
+  db: Database,
+  section: NonNullable<SatelliteBackup["goals"]>,
+): void {
+  if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
+  const deferralIds = section.deferrals.map(r => String(r.thread_id));
+  if (deferralIds.length > 0 && tableExists(db, "thread_goal_continuation_deferrals")) {
+    const placeholders = deferralIds.map(() => "?").join(",");
+    db.run(
+      `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+      deferralIds,
+    );
+  }
+  const goalIds = section.goals.map(r => String(r.thread_id));
+  if (goalIds.length > 0) {
+    const placeholders = goalIds.map(() => "?").join(",");
+    db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, goalIds);
+  }
+}
+
+/** Delete snapshotted primary-key rows and commit each satellite write transaction. */
+function deleteAndCommitSatellites(
+  locks: SatelliteWriteLocks,
+  backup: SatelliteBackup,
+  hooks?: ReconcileTestHooks,
+): void {
+  try {
+    if (locks.logs && backup.logs) {
+      deleteLogsInTx(locks.logs.db, backup.logs.rows);
+      commitSatelliteLock(locks.logs);
+      locks.logs = undefined;
+      if (hooks?.failAfterLogsMutation) throw new Error("test_fail_after_logs");
+    }
+    if (locks.memories && backup.memories) {
+      deleteMemoriesInTx(locks.memories.db, backup.memories);
+      commitSatelliteLock(locks.memories);
+      locks.memories = undefined;
+      if (hooks?.failAfterMemoriesMutation) throw new Error("test_fail_after_memories");
+    }
+    if (locks.goals && backup.goals) {
+      deleteGoalsInTx(locks.goals.db, backup.goals);
+      commitSatelliteLock(locks.goals);
+      locks.goals = undefined;
+      if (hooks?.failAfterGoalsMutation) throw new Error("test_fail_after_goals");
+    }
+  } catch (error) {
+    rollbackAllSatelliteLocks(locks);
+    throw error;
+  }
+}
+
+/** Restore only snapshotted rows; concurrent inserts/updates after commit stay intact. */
 function restoreSatelliteBackup(
   backup: SatelliteBackup,
   busyTimeoutMs: number,
@@ -756,12 +837,7 @@ function restoreSatelliteBackup(
     if (backup.logs) {
       const restored = withWritableDb(backup.logs.path, busyTimeoutMs, db => {
         if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
-        // Clear any partial survivors for these ids, then re-insert the snapshot.
-        if (backup.threadIds.length > 0) {
-          const placeholders = backup.threadIds.map(() => "?").join(",");
-          db.run(`DELETE FROM logs WHERE thread_id IN (${placeholders})`, backup.threadIds);
-        }
-        insertRows(db, "logs", backup.logs!.rows);
+        insertRowsConflictIgnore(db, "logs", backup.logs!.rows);
       });
       if (!restored.ok) return false;
     }
@@ -769,25 +845,11 @@ function restoreSatelliteBackup(
       const mem = backup.memories;
       const restored = withWritableDb(mem.path, busyTimeoutMs, db => {
         if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
-        if (backup.threadIds.length > 0) {
-          const placeholders = backup.threadIds.map(() => "?").join(",");
-          db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, backup.threadIds);
-          if (tableExists(db, "jobs")) {
-            db.run(
-              `DELETE FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
-              [JOB_KIND_MEMORY_STAGE1, ...backup.threadIds],
-            );
-          }
-        }
-        insertRows(db, "stage1_outputs", mem.stage1);
+        insertRowsConflictIgnore(db, "stage1_outputs", mem.stage1);
         if (tableExists(db, "jobs")) {
-          insertRows(db, "jobs", mem.stage1Jobs);
-          if (mem.consolidateTouched) {
-            db.run(
-              `DELETE FROM jobs WHERE kind = ? AND job_key = ?`,
-              [JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY],
-            );
-            if (mem.consolidateJob) insertRows(db, "jobs", [mem.consolidateJob]);
+          insertRowsConflictIgnore(db, "jobs", mem.stage1Jobs);
+          if (mem.consolidateTouched && mem.consolidateJob) {
+            restoreConsolidateGlobalJob(db, mem.consolidateJob);
           }
         }
       });
@@ -797,19 +859,9 @@ function restoreSatelliteBackup(
       const g = backup.goals;
       const restored = withWritableDb(g.path, busyTimeoutMs, db => {
         if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
-        if (backup.threadIds.length > 0) {
-          const placeholders = backup.threadIds.map(() => "?").join(",");
-          if (tableExists(db, "thread_goal_continuation_deferrals")) {
-            db.run(
-              `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
-              backup.threadIds,
-            );
-          }
-          db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, backup.threadIds);
-        }
-        insertRows(db, "thread_goals", g.goals);
+        insertRowsConflictIgnore(db, "thread_goals", g.goals);
         if (tableExists(db, "thread_goal_continuation_deferrals")) {
-          insertRows(db, "thread_goal_continuation_deferrals", g.deferrals);
+          insertRowsConflictIgnore(db, "thread_goal_continuation_deferrals", g.deferrals);
         }
       });
       if (!restored.ok) return false;
@@ -887,6 +939,7 @@ function reconcileDeletedThreads(
   let stateDb: Database | undefined;
   let backup: SatelliteBackup | undefined;
   let satellitesMutated = false;
+  let satelliteLocks: SatelliteWriteLocks | undefined;
 
   const failWithRestore = (error: CleanupErrorCode, mapped?: CleanupErrorCode): ReconcileErr => {
     const code = mapped ?? error;
@@ -921,45 +974,46 @@ function reconcileDeletedThreads(
     }
     const threadIds = threads.map(t => t.id);
 
-    // Snapshot every satellite first, then persist the complete backup before any delete commit.
-    backup = snapshotSatelliteBackup(paths, threadIds, busyTimeoutMs);
+    satelliteLocks = beginSatelliteWriteLocks(paths, busyTimeoutMs);
     try {
-      if (hooks?.failSatelliteBackupWrite) {
-        throw new Error("test_fail_satellite_backup_write");
+      backup = snapshotSatelliteBackupInLocks(satelliteLocks, threadIds);
+      try {
+        if (hooks?.failSatelliteBackupWrite) {
+          throw new Error("test_fail_satellite_backup_write");
+        }
+        writeSatelliteBackup(stageDir, backup);
+      } catch {
+        rollbackAllSatelliteLocks(satelliteLocks);
+        stateDb.exec("ROLLBACK");
+        clearSatelliteBackup(stageDir);
+        return { ok: false, error: "fs_failed" };
       }
-      writeSatelliteBackup(stageDir, backup);
-    } catch {
-      stateDb.exec("ROLLBACK");
+
+      const hasSatelliteWork = Boolean(backup.logs || backup.memories || backup.goals);
+      if (hasSatelliteWork) {
+        satellitesMutated = true;
+        deleteAndCommitSatellites(satelliteLocks, backup, hooks);
+      } else {
+        rollbackAllSatelliteLocks(satelliteLocks);
+      }
+      satelliteLocks = undefined;
+
+      if (hooks?.afterSatelliteMutations) hooks.afterSatelliteMutations();
+
+      // Re-check under the same lock before committing state deletes.
+      if (findReferencedHistory(stateDb, threads)) {
+        stateDb.exec("ROLLBACK");
+        return failWithRestore("referenced_history");
+      }
+      deleteThreadsAndDependents(stateDb, threadIds);
+      if (hooks?.failBeforeStateCommit) throw new Error("test_fail_before_state_commit");
+      stateDb.exec("COMMIT");
       clearSatelliteBackup(stageDir);
-      return { ok: false, error: "fs_failed" };
+      return { ok: true, threads };
+    } catch (error) {
+      if (satelliteLocks) rollbackAllSatelliteLocks(satelliteLocks);
+      throw error;
     }
-
-    if (backup.logs) {
-      commitLogsDelete(backup.logs, threadIds, busyTimeoutMs);
-      satellitesMutated = true;
-      if (hooks?.failAfterLogsMutation) throw new Error("test_fail_after_logs");
-    }
-    if (backup.memories) {
-      commitMemoriesDelete(backup.memories, threadIds, busyTimeoutMs);
-      satellitesMutated = true;
-      if (hooks?.failAfterMemoriesMutation) throw new Error("test_fail_after_memories");
-    }
-    if (backup.goals) {
-      commitGoalsDelete(backup.goals, threadIds, busyTimeoutMs);
-      satellitesMutated = true;
-      if (hooks?.failAfterGoalsMutation) throw new Error("test_fail_after_goals");
-    }
-
-    // Re-check under the same lock before committing state deletes.
-    if (findReferencedHistory(stateDb, threads)) {
-      stateDb.exec("ROLLBACK");
-      return failWithRestore("referenced_history");
-    }
-    deleteThreadsAndDependents(stateDb, threadIds);
-    if (hooks?.failBeforeStateCommit) throw new Error("test_fail_before_state_commit");
-    stateDb.exec("COMMIT");
-    clearSatelliteBackup(stageDir);
-    return { ok: true, threads };
   } catch (error) {
     try { stateDb?.exec("ROLLBACK"); } catch { /* */ }
     return failWithRestore("db_reconcile_failed", mapDbError(error));
@@ -1095,6 +1149,7 @@ export interface ExecuteCleanupOptions {
     failBeforeStateCommit?: boolean;
     failSatelliteRestore?: boolean;
     failSatelliteBackupWrite?: boolean;
+    afterSatelliteMutations?: () => void;
   };
 }
 

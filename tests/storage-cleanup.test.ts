@@ -198,6 +198,7 @@ function runWithDigest(
       failBeforeStateCommit?: boolean;
       failSatelliteRestore?: boolean;
       failSatelliteBackupWrite?: boolean;
+      afterSatelliteMutations?: () => void;
     };
   },
 ) {
@@ -786,5 +787,54 @@ describe("executeArchivedCleanup", () => {
     goals.close();
     expect(existsSync(join(home, "logs_2.sqlite"))).toBe(false);
     expect(existsSync(join(home, "memories_1.sqlite"))).toBe(false);
+  });
+
+  test("concurrent satellite writes after mutation are preserved on restore", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const result = runWithDigest(100, "permanent", home, {
+      now: 96,
+      _test: {
+        failBeforeStateCommit: true,
+        afterSatelliteMutations: () => {
+          const logs = new Database(join(home, "logs_2.sqlite"));
+          logs.exec(
+            `INSERT INTO logs (ts, level, target, thread_id, estimated_bytes) VALUES (99,'INFO','t','concurrent-insert',99)`,
+          );
+          logs.close();
+          const mem = new Database(join(home, "memories_1.sqlite"));
+          mem.exec(
+            `UPDATE jobs SET status='running' WHERE kind='memory_consolidate_global' AND job_key='global'`,
+          );
+          mem.close();
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+
+    const logs = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    expect(logs.query("SELECT thread_id FROM logs WHERE thread_id='concurrent-insert'").get()).toBeTruthy();
+    expect(
+      logs.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id IN ('told','tmid','tnew')").get()?.n,
+    ).toBe(3);
+    expect(logs.query("SELECT thread_id FROM logs WHERE thread_id='active'").get()).toBeTruthy();
+    logs.close();
+
+    const memories = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    expect(
+      memories.query(
+        "SELECT status FROM jobs WHERE kind='memory_consolidate_global' AND job_key='global'",
+      ).get()?.status,
+    ).toBe("running");
+    expect(
+      memories.query("SELECT thread_id FROM stage1_outputs ORDER BY thread_id").all().map(r => r.thread_id),
+    ).toEqual(["active", "tmid", "told"]);
+    memories.close();
+
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(state.query("SELECT id FROM threads ORDER BY id").all().map(r => r.id)).toEqual([
+      "active", "tmid", "tnew", "told",
+    ]);
+    state.close();
   });
 });
