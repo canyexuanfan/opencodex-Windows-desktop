@@ -912,6 +912,7 @@ export const ko: Record<TKey, string> = {
   "storage.cleanup.help": "가장 오래된 보관 세션을 비율로 제거합니다. 활성 세션은 건드리지 않습니다. 기본은 격리이며 파일은 CODEX_HOME/.trash로 이동합니다.",
   "storage.cleanup.slider": "오래된 보관 비율",
   "storage.cleanup.percent": "오래된 {percent}%",
+  "storage.cleanup.preset": "{percent}",
   "storage.cleanup.preview": "미리보기",
   "storage.cleanup.confirmTitle": "보관 정리 확인",
   "storage.cleanup.confirmBody": "보관 파일 {count}개(약 {size}), 오래된 {percent}%를 처리합니다.",

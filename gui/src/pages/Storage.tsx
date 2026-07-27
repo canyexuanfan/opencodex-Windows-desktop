@@ -152,6 +152,12 @@ function ArchivedCleanupPanel({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const busyRef = useRef(false);
 
+  const closeConfirm = useCallback((clearPreview = false) => {
+    setConfirmOpen(false);
+    setPermanent(false);
+    if (clearPreview) setPreview(null);
+  }, []);
+
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
@@ -161,14 +167,14 @@ function ArchivedCleanupPanel({
     previousFocusRef.current = document.activeElement as HTMLElement | null;
     cancelRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busyRef.current) setConfirmOpen(false);
+      if (e.key === "Escape" && !busyRef.current) closeConfirm();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
       previousFocusRef.current?.focus();
     };
-  }, [confirmOpen]);
+  }, [confirmOpen, closeConfirm]);
 
   const mapCleanupError = (code: string | undefined, fallback?: string, trashDir?: string) => {
     switch (code) {
@@ -186,6 +192,11 @@ function ArchivedCleanupPanel({
       default: return fallback ?? t("storage.cleanup.cleanupFailed");
     }
   };
+
+  const formatPreset = (value: number) =>
+    t("storage.cleanup.preset", {
+      percent: new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(value / 100),
+    });
 
   const runPreview = async () => {
     setBusy(true);
@@ -226,14 +237,11 @@ function ArchivedCleanupPanel({
       if (!res.ok || !json.ok) {
         if (json.error === "stale_preview") {
           // Digest can never succeed again — send the user back to Preview.
-          setConfirmOpen(false);
-          setPreview(null);
+          closeConfirm(true);
         }
         throw new Error(mapCleanupError(json.error, json.message, json.trashDir));
       }
-      setConfirmOpen(false);
-      setPreview(null);
-      setPermanent(false);
+      closeConfirm(true);
       setStatus(
         permanent
           ? t("storage.cleanup.donePermanent", { count: String(json.count), size: formatBytes(json.bytes, locale) })
@@ -276,7 +284,7 @@ function ArchivedCleanupPanel({
               disabled={busy}
               onClick={() => setPercent(p)}
             >
-              {p}%
+              {formatPreset(p)}
             </button>
           ))}
         </div>
@@ -294,7 +302,7 @@ function ArchivedCleanupPanel({
           role="dialog"
           aria-modal="true"
           aria-labelledby="storage-cleanup-confirm-title"
-          onClick={() => !busy && setConfirmOpen(false)}
+          onClick={() => !busy && closeConfirm()}
         >
           <div className="modal-card" onClick={e => e.stopPropagation()}>
             <h3 id="storage-cleanup-confirm-title">{t("storage.cleanup.confirmTitle")}</h3>
@@ -311,7 +319,7 @@ function ArchivedCleanupPanel({
                   <li key={c.relPath}>{c.relPath}</li>
                 ))}
                 {preview.count > 8 && (
-                  <li>{t("storage.cleanup.moreFiles", { n: String(preview.count - 8) })}</li>
+                  <li>{t("storage.cleanup.moreFiles", { n: String(Math.max(0, preview.count - 8)) })}</li>
                 )}
               </ul>
             )}
@@ -334,7 +342,7 @@ function ArchivedCleanupPanel({
                 type="button"
                 className="btn btn-ghost"
                 disabled={busy}
-                onClick={() => setConfirmOpen(false)}
+                onClick={() => closeConfirm()}
               >
                 {t("storage.cleanup.cancel")}
               </button>

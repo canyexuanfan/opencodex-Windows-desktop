@@ -912,6 +912,7 @@ export const zh: Record<TKey, string> = {
   "storage.cleanup.help": "按百分比移除最旧的归档会话。不会触碰活动会话。默认隔离——文件移至 CODEX_HOME/.trash。",
   "storage.cleanup.slider": "最旧归档百分比",
   "storage.cleanup.percent": "最旧 {percent}%",
+  "storage.cleanup.preset": "{percent}",
   "storage.cleanup.preview": "预览",
   "storage.cleanup.confirmTitle": "确认归档清理",
   "storage.cleanup.confirmBody": "将处理 {count} 个归档文件（约 {size}），即最旧的 {percent}%。",

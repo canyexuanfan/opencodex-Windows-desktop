@@ -605,6 +605,7 @@ export const ja: Record<TKey, string> = {
   "storage.cleanup.help": "古いアーカイブセッションを割合で削除します。アクティブセッションには触れません。既定は隔離で、ファイルは CODEX_HOME/.trash へ移動します。",
   "storage.cleanup.slider": "古いアーカイブの割合",
   "storage.cleanup.percent": "古い {percent}%",
+  "storage.cleanup.preset": "{percent}",
   "storage.cleanup.preview": "プレビュー",
   "storage.cleanup.confirmTitle": "アーカイブクリーンアップの確認",
   "storage.cleanup.confirmBody": "アーカイブ {count} 件（約 {size}）、古い {percent}% を処理します。",

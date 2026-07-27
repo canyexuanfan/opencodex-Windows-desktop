@@ -892,6 +892,7 @@ export const de: Record<TKey, string> = {
   "storage.cleanup.help": "Entfernt die ältesten archivierten Sitzungen nach Prozentsatz. Aktive Sitzungen werden nie angefasst. Standard ist Quarantäne — Dateien wandern nach CODEX_HOME/.trash.",
   "storage.cleanup.slider": "Ältester Archivanteil",
   "storage.cleanup.percent": "Älteste {percent}%",
+  "storage.cleanup.preset": "{percent}",
   "storage.cleanup.preview": "Vorschau",
   "storage.cleanup.confirmTitle": "Archivbereinigung bestätigen",
   "storage.cleanup.confirmBody": "Es werden {count} archivierte Datei(en) (~{size}) verarbeitet, die ältesten {percent}%.",

@@ -640,6 +640,7 @@ export const ru: Record<TKey, string> = {
   "storage.cleanup.help": "Удаляет самые старые архивные сессии по проценту. Активные сессии не затрагиваются. По умолчанию — карантин: файлы перемещаются в CODEX_HOME/.trash.",
   "storage.cleanup.slider": "Доля самых старых архивов",
   "storage.cleanup.percent": "Самые старые {percent}%",
+  "storage.cleanup.preset": "{percent}",
   "storage.cleanup.preview": "Предпросмотр",
   "storage.cleanup.confirmTitle": "Подтвердить очистку архива",
   "storage.cleanup.confirmBody": "Будет обработано {count} архивных файл(ов) (~{size}), самые старые {percent}%.",

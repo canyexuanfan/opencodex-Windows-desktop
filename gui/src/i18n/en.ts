@@ -641,6 +641,7 @@ export const en = {
   "storage.cleanup.help": "Remove the oldest archived sessions by percentage. Active sessions are never touched. Quarantine is the default — files move to CODEX_HOME/.trash.",
   "storage.cleanup.slider": "Oldest archived percent",
   "storage.cleanup.percent": "Oldest {percent}%",
+  "storage.cleanup.preset": "{percent}",
   "storage.cleanup.preview": "Preview",
   "storage.cleanup.confirmTitle": "Confirm archived cleanup",
   "storage.cleanup.confirmBody": "This will process {count} archived file(s) (~{size}), the oldest {percent}%.",
