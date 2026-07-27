@@ -16,7 +16,7 @@ const IMMUTABLE_READONLY_FLAGS = constants.SQLITE_OPEN_READONLY | constants.SQLI
 /**
  * Read-only CODEX_HOME storage scanner — Phase 1 of the Storage page epic
  * (devlog/_plan/500_storage-page-session-cleanup). Pure measurement: sizes via
- * fs.stat walks, DB row counts via short-timeout readonly opens that degrade to
+ * fs.stat walks, DB row counts via immutable readonly opens that degrade to
  * null on lock/corruption. Performs zero writes under CODEX_HOME.
  */
 
@@ -199,6 +199,8 @@ export function scanStorage(codexHome: string = resolveCodexHomeDir()): StorageR
       continue;
     }
     if (stat.isDirectory()) {
+      // Quarantine trash (Phase 2) must not inflate "other" or totals.
+      if (name === ".trash") continue;
       walkFiles(full, name, files[DIR_BUCKETS[name] ?? "other"]);
     } else if (stat.isFile()) {
       const key: StorageBucketKey = STATE_DB_FILE.test(name) ? "state_db" : LOGS_DB_FILE.test(name) ? "logs_db" : "other";
