@@ -105,10 +105,14 @@ PR-2는 자동으로 dev를 base로 재타겟된다.
 읽는 부분이 필요 없고(신호를 만들기만 함), A가 그 신호를 소비한다.
 
 따라서 `src/cli/index.ts`와 `src/cli/help.ts`는 **전부 PR-2(A)로 보낸다.**
-PR-1(B)은 `src/cli/index.ts`를 건드리지 않는다 — `syncModelsToCodex`의
-반환 타입에 `catalogWritten`이 추가되는 것은 호출자에게 하위 호환이므로
-B만 머지해도 컴파일이 깨지지 않는다. 이 점은 수용 기준 1의 typecheck로
-증명한다.
+PR-1(B)은 `src/cli/index.ts`를 건드리지 않는다.
+
+`CodexSyncResult`에 필수 필드 `catalogWritten: boolean`을 추가하는 것은
+엄밀히 말해 그 인터페이스를 **생성하거나 구현하는** 코드에는 breaking이다.
+정확한 근거는 "하위 호환"이 아니라 저장소 안에서 그 객체를 실제로 구성하는
+곳이 `src/codex/sync.ts` 하나뿐이고 나머지 호출자는 속성을 읽기만 한다는
+사실이다. 다만 이는 **가설이며, B 브랜치가 아직 없으므로 증명되지 않았다.**
+수용 기준 1의 단독 typecheck가 그 증명이다.
 
 수정된 체크아웃 목록 (B):
 

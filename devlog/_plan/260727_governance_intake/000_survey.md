@@ -144,6 +144,16 @@ UX paper cuts(#517), combo 카탈로그(#516), CI 이슈 번역
   판정이 필요하다.
 - 메인테이너 추가는 두 파일 동시 갱신이 절차상 요구사항이다.
 
+## 분할 대상 PR 실측 (GitHub API, 2026-07-27)
+
+    gh api repos/lidge-jun/opencodex/pulls/518 --jq '{additions,deletions,changed_files,commits}'
+    # {"additions":1193,"changed_files":21,"commits":10,"deletions":34}
+
+    gh api repos/lidge-jun/opencodex/pulls/522 --jq '{additions,deletions,changed_files}'
+    # {"additions":643,"changed_files":20,"deletions":9}
+
+열린 PR 14개 중 ready는 #518과 #522 둘뿐이고 나머지 12개는 draft다.
+
 ## 1차 감사가 추가로 밝혀낸 것 (011 참조)
 
 위 결론에는 결정적 누락이 있었다. 감사에서 확인된 사실:
