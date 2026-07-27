@@ -404,16 +404,24 @@ describe("executeArchivedCleanup", () => {
       `INSERT INTO stage1_outputs VALUES ('writable-after-busy',1,'m','s',1,0)`,
     );
     memories.close();
-    expect(
-      new Database(join(home, "logs_2.sqlite"), { readonly: true })
-        .query("SELECT thread_id FROM logs WHERE thread_id='writable-after-busy'")
-        .get(),
-    ).toBeTruthy();
-    expect(
-      new Database(join(home, "memories_1.sqlite"), { readonly: true })
-        .query("SELECT thread_id FROM stage1_outputs WHERE thread_id='writable-after-busy'")
-        .get(),
-    ).toBeTruthy();
+
+    let logsRead: Database | undefined;
+    let memoriesRead: Database | undefined;
+    try {
+      logsRead = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+      memoriesRead = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+      expect(
+        logsRead.query("SELECT thread_id FROM logs WHERE thread_id='writable-after-busy'").get(),
+      ).toBeTruthy();
+      expect(
+        memoriesRead.query(
+          "SELECT thread_id FROM stage1_outputs WHERE thread_id='writable-after-busy'",
+        ).get(),
+      ).toBeTruthy();
+    } finally {
+      try { logsRead?.close(); } catch { /* */ }
+      try { memoriesRead?.close(); } catch { /* */ }
+    }
   });
 
   test("rolls back staged renames when a later rename fails", () => {
