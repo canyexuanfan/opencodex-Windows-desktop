@@ -429,17 +429,17 @@ describe("executeArchivedCleanup", () => {
     const fresh = previewArchivedCleanup(100, home);
     expect(fresh.count).toBe(3);
 
-    // Allow stageDir creation, then make the second candidate's destination a directory
-    // so renameSync fails after the first file has already moved.
-    mkdirSync(join(home, ".trash", "42"), { recursive: true });
-    mkdirSync(join(home, ".trash", "42", "rollout-mid.jsonl"));
+    // Exclusive stage dir uses `.trash/42-1` when `.trash/42` already exists.
+    const now = 42;
+    mkdirSync(join(home, ".trash", String(now)), { recursive: true });
 
     const result = executeArchivedCleanup({
       percent: 100,
       mode: "quarantine",
       digest: fresh.digest,
       codexHome: home,
-      now: 42,
+      now,
+      _test: { blockStageDestBasenames: ["rollout-mid.jsonl"] },
     });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("fs_failed");

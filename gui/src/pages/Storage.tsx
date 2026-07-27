@@ -198,6 +198,21 @@ function ArchivedCleanupPanel({
       percent: new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(value / 100),
     });
 
+  const localizedCatch = (e: unknown, fallback: string): string => {
+    if (!(e instanceof Error)) return fallback;
+    const msg = e.message;
+    if (
+      msg === "Failed to fetch"
+      || msg.includes("NetworkError")
+      || msg.includes("network error")
+      || msg.includes("JSON")
+      || msg.includes("Unexpected end of")
+    ) {
+      return fallback;
+    }
+    return msg || fallback;
+  };
+
   const runPreview = async () => {
     setBusy(true);
     setError(null);
@@ -213,7 +228,7 @@ function ArchivedCleanupPanel({
       setPreview(json);
       setConfirmOpen(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(localizedCatch(e, t("storage.cleanup.previewFailed")));
     } finally {
       setBusy(false);
     }
@@ -250,7 +265,7 @@ function ArchivedCleanupPanel({
       onDone();
     } catch (e) {
       // Keep the dialog open (except stale_preview) so the failure is visible.
-      setError(e instanceof Error ? e.message : String(e));
+      setError(localizedCatch(e, t("storage.cleanup.cleanupFailed")));
     } finally {
       setBusy(false);
     }

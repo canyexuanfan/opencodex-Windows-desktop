@@ -22,6 +22,7 @@ import {
   statSync,
   unlinkSync,
   writeFileSync,
+  chmodSync,
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Database } from "bun:sqlite";
@@ -51,6 +52,8 @@ export interface ArchivedCandidate {
   mtimeMs: number;
   /** All physical files for this logical rollout (`.jsonl` and/or `.jsonl.zst`). */
   physicalRelPaths: string[];
+  /** Per-physical-file metadata bound into the preview digest. */
+  physicalFiles: Array<{ relPath: string; bytes: number; mtimeMs: number }>;
 }
 
 export interface CleanupPreview {
@@ -94,6 +97,48 @@ const JOB_KIND_MEMORY_STAGE1 = "memory_stage1";
 const JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL = "memory_consolidate_global";
 const MEMORY_CONSOLIDATION_JOB_KEY = "global";
 const DEFAULT_RETRY_REMAINING = 3;
+/** Chunk size for `IN (...)` binds; spawn-edge checks bind each id twice. */
+const SQLITE_ID_CHUNK = 200;
+
+function chmodPrivatePath(path: string, mode: number): void {
+  try { chmodSync(path, mode); } catch { /* best-effort (e.g. Windows ACLs) */ }
+}
+
+function writePrivateFile(path: string, content: string): void {
+  writeFileSync(path, content, "utf8");
+  chmodPrivatePath(path, 0o600);
+}
+
+function chunkIds(ids: string[], chunkSize: number): string[][] {
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
+  return chunks;
+}
+
+/** Create `.trash/<epoch>` exclusively; suffix on collision. */
+function createExclusiveStageDir(codexHome: string, epoch: number): string {
+  const trashRoot = join(codexHome, TRASH_DIR);
+  mkdirSync(trashRoot, { recursive: true });
+  chmodPrivatePath(trashRoot, 0o700);
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const name = attempt === 0 ? String(epoch) : `${epoch}-${attempt}`;
+    const stageDir = join(trashRoot, name);
+    try {
+      mkdirSync(stageDir);
+      chmodPrivatePath(stageDir, 0o700);
+      return stageDir;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+  }
+  throw new Error("stage_dir_collision");
+}
+
+function isSafeArchiveFileName(name: string): boolean {
+  if (name.includes("/") || name.includes("\\") || name.includes("..")) return false;
+  return isRolloutFileName(name);
+}
 
 function clampPercent(percent: unknown): number {
   if (typeof percent !== "number" || !Number.isFinite(percent)) return 0;
@@ -192,7 +237,10 @@ export function normalizeArchivedRolloutPath(rolloutPath: string, codexHome: str
 export function computePreviewDigest(candidates: ArchivedCandidate[], percent: number): string {
   const lines = candidates
     .map(c => {
-      const physical = [...c.physicalRelPaths].sort().join(",");
+      const physical = [...c.physicalFiles]
+        .sort((a, b) => a.relPath.localeCompare(b.relPath))
+        .map(f => `${f.relPath}|${f.bytes}|${Math.trunc(f.mtimeMs)}`)
+        .join(",");
       return `${c.relPath}|${c.bytes}|${Math.trunc(c.mtimeMs)}|${physical}`;
     })
     .sort();
@@ -218,7 +266,7 @@ export function listArchivedCandidates(codexHome: string): ArchivedCandidate[] {
   const groups = new Map<string, Acc>();
 
   for (const name of names) {
-    if (!isRolloutFileName(name)) continue;
+    if (!isSafeArchiveFileName(name)) continue;
     const absPath = join(dir, name);
     try {
       const st = statSync(absPath);
@@ -255,6 +303,7 @@ export function listArchivedCandidates(codexHome: string): ArchivedCandidate[] {
       bytes: acc.files.reduce((sum, f) => sum + f.bytes, 0),
       mtimeMs: Math.min(...acc.files.map(f => f.mtimeMs)),
       physicalRelPaths: acc.files.map(f => f.relPath),
+      physicalFiles: acc.files.map(f => ({ relPath: f.relPath, bytes: f.bytes, mtimeMs: f.mtimeMs })),
     });
   }
   out.sort((a, b) => a.mtimeMs - b.mtimeMs || a.relPath.localeCompare(b.relPath));
@@ -416,14 +465,16 @@ function findReferencedHistory(
 
   // Spawn edges that cross the delete boundary keep history reachable.
   if (tableExists(db, "thread_spawn_edges")) {
-    const placeholders = ids.map(() => "?").join(",");
-    const edges = db.query<{ parent_thread_id: string; child_thread_id: string }, string[]>(
-      `SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges
-       WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
-    ).all(...ids, ...ids);
-    for (const edge of edges) {
-      if (!idSet.has(edge.parent_thread_id) || !idSet.has(edge.child_thread_id)) {
-        return true;
+    for (const chunk of chunkIds(ids, SQLITE_ID_CHUNK)) {
+      const placeholders = chunk.map(() => "?").join(",");
+      const edges = db.query<{ parent_thread_id: string; child_thread_id: string }, string[]>(
+        `SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges
+         WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
+      ).all(...chunk, ...chunk);
+      for (const edge of edges) {
+        if (!idSet.has(edge.parent_thread_id) || !idSet.has(edge.child_thread_id)) {
+          return true;
+        }
       }
     }
   }
@@ -431,11 +482,13 @@ function findReferencedHistory(
   // Other threads that list one of ours as forked_from / parent (when columns exist).
   for (const column of ["forked_from_id", "parent_thread_id", "source_thread_id"] as const) {
     if (!columnExists(db, "threads", column)) continue;
-    const placeholders = ids.map(() => "?").join(",");
-    const rows = db.query<{ id: string }, string[]>(
-      `SELECT id FROM threads WHERE ${column} IN (${placeholders})`,
-    ).all(...ids);
-    if (rows.some(r => !idSet.has(r.id))) return true;
+    for (const chunk of chunkIds(ids, SQLITE_ID_CHUNK * 2)) {
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = db.query<{ id: string }, string[]>(
+        `SELECT id FROM threads WHERE ${column} IN (${placeholders})`,
+      ).all(...chunk);
+      if (rows.some(r => !idSet.has(r.id))) return true;
+    }
   }
 
   return false;
@@ -459,21 +512,29 @@ function columnExists(db: Database, table: string, column: string): boolean {
 
 function deleteThreadsAndDependents(db: Database, threadIds: string[]): void {
   if (threadIds.length === 0) return;
-  const placeholders = threadIds.map(() => "?").join(",");
 
   // Upstream deletes dynamic tools before spawn edges before threads.
   if (tableExists(db, "thread_dynamic_tools")) {
-    db.run(`DELETE FROM thread_dynamic_tools WHERE thread_id IN (${placeholders})`, threadIds);
+    for (const chunk of chunkIds(threadIds, SQLITE_ID_CHUNK * 2)) {
+      const placeholders = chunk.map(() => "?").join(",");
+      db.run(`DELETE FROM thread_dynamic_tools WHERE thread_id IN (${placeholders})`, chunk);
+    }
   }
 
   if (tableExists(db, "thread_spawn_edges")) {
-    db.run(
-      `DELETE FROM thread_spawn_edges WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
-      [...threadIds, ...threadIds],
-    );
+    for (const chunk of chunkIds(threadIds, SQLITE_ID_CHUNK)) {
+      const placeholders = chunk.map(() => "?").join(",");
+      db.run(
+        `DELETE FROM thread_spawn_edges WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
+        [...chunk, ...chunk],
+      );
+    }
   }
 
-  db.run(`DELETE FROM threads WHERE id IN (${placeholders})`, threadIds);
+  for (const chunk of chunkIds(threadIds, SQLITE_ID_CHUNK * 2)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    db.run(`DELETE FROM threads WHERE id IN (${placeholders})`, chunk);
+  }
 }
 
 interface ReconcileOk {
@@ -607,7 +668,7 @@ function restoreConsolidateGlobalJob(
 }
 
 function writeSatelliteBackup(stageDir: string, backup: SatelliteBackup): void {
-  writeFileSync(join(stageDir, SATELLITE_BACKUP_FILE), JSON.stringify(backup), "utf8");
+  writePrivateFile(join(stageDir, SATELLITE_BACKUP_FILE), JSON.stringify(backup));
 }
 
 function clearSatelliteBackup(stageDir: string): void {
@@ -840,6 +901,7 @@ function deleteGoalsInTx(
 function deleteAndCommitSatellites(
   locks: SatelliteWriteLocks,
   backup: SatelliteBackup,
+  stageDir: string,
   hooks?: ReconcileTestHooks,
 ): void {
   try {
@@ -853,6 +915,7 @@ function deleteAndCommitSatellites(
       deleteMemoriesInTx(locks.memories.db, backup.memories);
       if (backup.memories.consolidateTouched) {
         backup.memories.consolidatePostImage = readConsolidateGlobalJob(locks.memories.db);
+        writeSatelliteBackup(stageDir, backup);
       }
       commitSatelliteLock(locks.memories);
       locks.memories = undefined;
@@ -1036,7 +1099,7 @@ function reconcileDeletedThreads(
       const hasSatelliteWork = Boolean(backup.logs || backup.memories || backup.goals);
       if (hasSatelliteWork) {
         satellitesMutated = true;
-        deleteAndCommitSatellites(satelliteLocks, backup, hooks);
+        deleteAndCommitSatellites(satelliteLocks, backup, stageDir, hooks);
       } else {
         rollbackAllSatelliteLocks(satelliteLocks);
       }
@@ -1069,13 +1132,21 @@ function reconcileDeletedThreads(
 type StagedFile = { from: string; to: string; relPath: string };
 
 function absFromRel(codexHome: string, relPath: string): string {
-  return join(codexHome, ...relPath.split("/"));
+  if (relPath.includes("..") || isAbsolute(relPath) || /^[A-Za-z]:[\\/]/.test(relPath)) {
+    throw new Error("invalid_rel_path");
+  }
+  const abs = resolve(codexHome, ...relPath.split("/"));
+  const homeAbs = resolve(codexHome);
+  const rel = toForwardSlash(relative(homeAbs, abs));
+  if (!rel || rel.startsWith("..")) throw new Error("path_escape");
+  return abs;
 }
 
 function stageCandidates(
   codexHome: string,
   candidates: ArchivedCandidate[],
   stageDir: string,
+  opts?: { blockDestBasenames?: Set<string> },
 ): { ok: true; staged: StagedFile[] } | { ok: false; staged: StagedFile[] } {
   const staged: StagedFile[] = [];
   const usedBasenames = new Set<string>();
@@ -1092,6 +1163,9 @@ function stageCandidates(
         }
         usedBasenames.add(base);
         const to = join(stageDir, base);
+        if (opts?.blockDestBasenames?.has(base)) {
+          mkdirSync(to, { recursive: true });
+        }
         renameSync(from, to);
         staged.push({ from, to, relPath: rel });
       }
@@ -1187,6 +1261,7 @@ export interface ExecuteCleanupOptions {
     failManifestWrite?: boolean;
     failPurgeBasenames?: string[];
     failRollbackBasenames?: string[];
+    blockStageDestBasenames?: string[];
     failAfterLogsMutation?: boolean;
     failAfterMemoriesMutation?: boolean;
     failAfterGoalsMutation?: boolean;
@@ -1227,6 +1302,7 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
   const busyTimeoutMs = options.busyTimeoutMs ?? 100;
   const failRollback = new Set(options._test?.failRollbackBasenames ?? []);
   const failPurge = new Set(options._test?.failPurgeBasenames ?? []);
+  const blockStageDest = new Set(options._test?.blockStageDestBasenames ?? []);
 
   if (mode !== "quarantine" && mode !== "permanent") {
     return fail(mode, percent, "invalid_mode");
@@ -1264,15 +1340,8 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
   }
 
   const epoch = options.now ?? Date.now();
-  const stageDir = join(codexHome, TRASH_DIR, String(epoch));
+  const stageDir = createExclusiveStageDir(codexHome, epoch);
   const trashDir = trashRelPath(codexHome, stageDir);
-
-  const stageResult = stageCandidates(codexHome, preview.candidates, stageDir);
-  if (!stageResult.ok) {
-    const rolled = rollbackStaged(stageResult.staged, { failBasenames: failRollback });
-    removeStageIfEmpty(stageDir, rolled.remaining);
-    return fail(mode, percent, "fs_failed", rolled.restored ? undefined : { trashDir });
-  }
 
   const threadByRelPath = new Map<string, ThreadSnapshot>();
   for (const thread of loaded.threads) {
@@ -1292,12 +1361,8 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     };
   });
 
-  // Manifest must exist before DB deletion so a mid-flight crash still has recovery metadata.
-  try {
-    if (options._test?.failManifestWrite) {
-      throw new Error("test_fail_manifest_write");
-    }
-    writeFileSync(
+  const writeManifest = (extra: Record<string, unknown> = {}) => {
+    writePrivateFile(
       join(stageDir, "manifest.json"),
       JSON.stringify({
         quarantinedAt: epoch,
@@ -1305,8 +1370,34 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
         percent,
         digest: preview.digest,
         entries: manifestEntries,
+        ...extra,
       }, null, 2),
     );
+  };
+
+  // Journal staged paths before the first rename so a crash mid-stage is recoverable.
+  try {
+    if (options._test?.failManifestWrite) {
+      throw new Error("test_fail_manifest_write");
+    }
+    writeManifest({ staging: true });
+  } catch {
+    removeStageIfEmpty(stageDir, []);
+    return fail(mode, percent, "fs_failed");
+  }
+
+  const stageResult = stageCandidates(codexHome, preview.candidates, stageDir, {
+    blockDestBasenames: blockStageDest.size > 0 ? blockStageDest : undefined,
+  });
+  if (!stageResult.ok) {
+    const rolled = rollbackStaged(stageResult.staged, { failBasenames: failRollback });
+    removeStageIfEmpty(stageDir, rolled.remaining);
+    return fail(mode, percent, "fs_failed", rolled.restored ? undefined : { trashDir });
+  }
+
+  // Final manifest before DB deletion so a mid-flight crash still has recovery metadata.
+  try {
+    writeManifest();
   } catch {
     const rolled = rollbackStaged(stageResult.staged, { failBasenames: failRollback });
     removeStageIfEmpty(stageDir, rolled.remaining);
@@ -1353,7 +1444,7 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     // Overwrite the pre-commit manifest so recovery reflects what actually survived.
     const survivingRelPaths = new Set(purge.remaining.map(item => item.relPath));
     try {
-      writeFileSync(
+      writePrivateFile(
         join(stageDir, "manifest.json"),
         JSON.stringify({
           quarantinedAt: epoch,
