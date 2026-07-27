@@ -4,14 +4,14 @@ WP3 · 근거: `000_survey.md`, PR #518 파일/커밋 실측
 
 ## 분할 대상 선정
 
-열린 PR 14개 중 ready 상태는 #518, #522, #355 셋뿐이다. 나머지 11개는
-draft라 작성자 소유이므로 우리가 쪼갤 대상이 아니다.
+열린 PR 14개 중 ready 상태는 **#518과 #522 둘뿐**이다 (실측:
+`gh pr list --state open --json number,isDraft`). 나머지 12개는 draft라
+작성자 소유이므로 우리가 쪼갤 대상이 아니다. #355도 draft다.
 
-| PR | 상태 | 크기 | 분할 필요성 |
+| PR | 상태 | 크기 (GitHub API 실측) | 분할 필요성 |
 | --- | --- | --- | --- |
-| #518 | UNSTABLE (windows pending) | 21파일 / +1192 | **높음** — 두 관심사가 섞여 있음 |
-| #522 | CLEAN, 전 체크 통과 | 20파일 / +634 | 낮음 — 단일 기능(상관 ID) |
-| #355 | ready | 미조사 | 타인 소유, 이번 범위 밖 |
+| #518 | UNSTABLE (windows pending) | 21파일 / +1193 / -34 / 10커밋 | **높음** — 두 관심사가 섞여 있음 |
+| #522 | CLEAN, 전 체크 통과 | 20파일 / +643 / -9 | 낮음 — 단일 기능(상관 ID) |
 
 **대상은 #518**로 확정한다. #522는 이미 CLEAN이고 관심사가 하나라서
 쪼개면 오히려 리뷰 비용만 늘어난다.
@@ -81,9 +81,60 @@ PR-2는 자동으로 dev를 base로 재타겟된다.
       tests/codex-models-cache-invalidate.test.ts tests/codex-refresh.test.ts \
       tests/codex-sync-api.test.ts tests/injection-model-api.test.ts
 
-주의: `src/codex/refresh.ts`와 `src/cli/index.ts`에는 A/B가 같은 파일에서
-섞여 있을 수 있다. 경로 단위 체크아웃 후 반드시 diff를 눈으로 확인하고,
-A 쪽 코드가 딸려오면 되돌린다.
+### 혼재 확인 결과 (실측)
+
+경로 단위 체크아웃이 통하는지 `gh pr diff 518`로 hunk를 직접 확인했다.
+
+| 파일 | 판정 |
+| --- | --- |
+| `src/codex/refresh.ts` | **순수 B.** `catalogWritten` 필드와 `cacheSynced = deps.invalidateCodexModelsCache()` 뿐. 프로세스 코드 없음 |
+| `src/codex/catalog/sync.ts` | 순수 B |
+| `src/codex/sync.ts` | 순수 B |
+| `src/cli/help.ts` | **순수 A.** `--restart-codex` 플래그 문서화만 |
+| `src/cli/index.ts` | **혼재.** 아래 참조 |
+
+`src/cli/index.ts`의 두 hunk(`case "sync"`, `case "sync-cache"`)는 B가 만든
+신호를 읽어 A를 호출하는 구조라 한 덩어리로 붙어 있다:
+
+    if (syncResult.catalogWritten || syncResult.cacheSynced) {
+      const { afterCatalogWriteHandleAppServers } = await import("../codex/app-server-processes");
+      afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
+    }
+
+즉 이 파일은 **경로 단위로 나눌 수 없다.** B에는 `catalogWritten`을
+읽는 부분이 필요 없고(신호를 만들기만 함), A가 그 신호를 소비한다.
+
+따라서 `src/cli/index.ts`와 `src/cli/help.ts`는 **전부 PR-2(A)로 보낸다.**
+PR-1(B)은 `src/cli/index.ts`를 건드리지 않는다 — `syncModelsToCodex`의
+반환 타입에 `catalogWritten`이 추가되는 것은 호출자에게 하위 호환이므로
+B만 머지해도 컴파일이 깨지지 않는다. 이 점은 수용 기준 1의 typecheck로
+증명한다.
+
+수정된 체크아웃 목록 (B):
+
+    git checkout pr518 -- src/codex/catalog/sync.ts src/codex/refresh.ts \
+      src/codex/sync.ts src/server/management/config-routes.ts \
+      gui/src/pages/dashboard-overview-sections.tsx gui/src/i18n \
+      tests/codex-models-cache-invalidate.test.ts tests/codex-refresh.test.ts \
+      tests/codex-sync-api.test.ts tests/injection-model-api.test.ts
+
+A는 나머지 전부: `src/codex/app-server-processes.ts`, `src/cli/index.ts`,
+`src/cli/help.ts`, `tests/codex-app-server-processes.test.ts`,
+docs-site 2개 파일.
+
+## 수용 기준
+
+1. `codex/catalog-written-signal`(B) 브랜치에서 `bun run typecheck` exit 0.
+   이것이 "B 단독으로 컴파일된다"는 증명이다.
+2. B 브랜치에서 `bun test tests/codex-models-cache-invalidate.test.ts
+   tests/codex-refresh.test.ts tests/codex-sync-api.test.ts
+   tests/injection-model-api.test.ts` 전부 통과.
+3. B 브랜치 diff에 `src/codex/app-server-processes.ts`, `src/cli/index.ts`,
+   `src/cli/help.ts`가 **없다**
+   (`git diff --name-only origin/dev...codex/catalog-written-signal`).
+4. `codex/app-server-restart`(A) 브랜치에서 typecheck exit 0 +
+   `bun test tests/codex-app-server-processes.test.ts` 통과.
+5. 두 브랜치 diff의 파일 합집합이 #518의 21개 파일과 정확히 일치.
 
 ## 소유권 문제 (중요)
 

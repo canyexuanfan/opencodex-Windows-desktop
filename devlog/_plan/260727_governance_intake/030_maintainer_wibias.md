@@ -87,6 +87,19 @@ GitHub Actions, release automation ... require explicit security review"라고
 규정하므로, 메인테이너 추가와 보안 경계 확대는 별개의 결정이어야 한다.
 보안 경로까지 넓히려면 소유자가 따로 지시해야 한다.
 
+### 다만 CODEOWNERS는 강제가 아니다 (감사 지적)
+
+`*` 규칙에만 추가해도 뒤쪽 경로 규칙이 우선한다는 점은 GitHub 문서로
+확인됐다(마지막 매치 우선). 그러나 실제 브랜치 보호는 없다:
+
+    gh api repos/lidge-jun/opencodex/branches/dev/protection    # HTTP 404
+    gh api repos/lidge-jun/opencodex/branches/main/protection   # HTTP 404
+
+즉 CODEOWNERS는 **리뷰 요청 자동화일 뿐 승인 강제가 아니다.** "보안 경로를
+CODEOWNERS로 지켰다"고 말하면 과장이다. 실제 강제가 필요하면 브랜치 보호
+규칙에 "Require review from Code Owners"를 켜야 하고, 그건 저장소 관리자
+설정이라 문서 변경으로는 불가능하다.
+
 ## 변경 3 — 절차 이행 기록
 
 MAINTAINERS.md "Maintainer changes" 절 아래에 이력 문단을 추가한다:
