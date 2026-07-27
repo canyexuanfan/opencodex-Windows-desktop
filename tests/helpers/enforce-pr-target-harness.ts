@@ -21,6 +21,18 @@ export type HarnessResult = {
   calls: RecordedCall[];
   logs: string[];
   warnings: string[];
+  /**
+   * What the script body returned. The real action captures this too
+   * (`const result = await callAsyncFunction(...)`, then `core.setOutput`), so
+   * modelling it costs nothing and lets a probe script report back.
+   */
+  returnValue: unknown;
+  /**
+   * The method names the fake `core` exposed for this run. A test compares it
+   * against the real `@actions/core` export list — round eight got in through
+   * a method production has and the fake did not.
+   */
+  coreSurface: string[];
 };
 
 export type PullRequestState = {
@@ -91,18 +103,41 @@ const DEFAULT_PR: Required<Omit<PullRequestState, "base" | "user">> & {
  * it — so the harness has to compile it the same way for the early-return paths
  * to behave.
  */
-export function compileScript(script: string): (scope: Record<string, unknown>) => Promise<void> {
+export function compileScript(script: string): (scope: Record<string, unknown>) => Promise<unknown> {
   const names = [...SCRIPT_BINDINGS, ...RUNTIME_SHADOWS];
   const factory = new Function(
     ...names,
     `return (async () => {\n${script}\n})();`,
-  ) as (...args: unknown[]) => Promise<void>;
+  ) as (...args: unknown[]) => Promise<unknown>;
   return scope => factory(...names.map(name => scope[name]));
 }
 
-/** What `actions/github-script` actually puts in scope. */
-const SCRIPT_BINDINGS = [
+/**
+ * What `actions/github-script` actually puts in scope.
+ *
+ * This is not a guess. The pinned action builds the script's scope in
+ * `src/main.ts`, which hands `callAsyncFunction` an object whose keys become
+ * the compiled function's parameters:
+ *
+ *   { require, __original_require__, github, octokit, getOctokit,
+ *     context, core, exec, glob, io }
+ *
+ * Round eight got in through the gap between that list and this one. Three
+ * mutations probed for a binding the real runtime has and the harness did not
+ * — `typeof getOctokit === "function"` among them — and returned early. In
+ * production the gate does nothing; here the probe was falsy so all thirty
+ * tests stayed green.
+ *
+ * The lesson generalises past those three names: any binding present in
+ * production and absent here is a detection vector. So the list is copied from
+ * the action's source rather than assembled from the names this script happens
+ * to use. `fetch` is a Node 24 global rather than an injected binding, and it
+ * is kept shadowed so the script cannot reach the network directly.
+ */
+export const SCRIPT_BINDINGS = [
   "github",
+  "octokit",
+  "getOctokit",
   "context",
   "core",
   "exec",
@@ -110,6 +145,7 @@ const SCRIPT_BINDINGS = [
   "io",
   "fetch",
   "require",
+  "__original_require__",
 ] as const;
 
 /**
@@ -261,6 +297,28 @@ function nodeLikeRuntime(deferred: (() => unknown)[]): Record<string, unknown> {
   };
 }
 
+/**
+ * `core.summary` — a chainable builder in production, so `typeof
+ * core.summary.addRaw === "function"` must hold here too. Nothing is written;
+ * a job summary is not part of this workflow's contract.
+ */
+function summaryStub(): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  const chain = () => summary;
+  for (const name of [
+    "addRaw", "addEOL", "addCodeBlock", "addList", "addTable", "addDetails",
+    "addImage", "addHeading", "addSeparator", "addBreak", "addQuote", "addLink",
+    "emptyBuffer",
+  ]) {
+    summary[name] = chain;
+  }
+  summary.write = async () => summary;
+  summary.clear = async () => summary;
+  summary.stringify = () => "";
+  summary.isEmptyBuffer = () => true;
+  return summary;
+}
+
 export async function runEnforcePrTarget(
   script: string,
   options: RunOptions,
@@ -268,6 +326,8 @@ export async function runEnforcePrTarget(
   const calls: RecordedCall[] = [];
   const logs: string[] = [];
   const warnings: string[] = [];
+  const outputs: { name: string; value: unknown }[] = [];
+  const states = new Map<string, unknown>();
   const failOn = new Set(options.failOn ?? []);
   const failStatus = options.failStatus ?? 500;
 
@@ -351,12 +411,84 @@ export async function runEnforcePrTarget(
     runId: 1234567890,
   };
 
+  /**
+   * The whole `@actions/core` surface, not the three methods this script
+   * happens to call.
+   *
+   * Round eight walked straight through the difference. `if (core.setOutput)
+   * return;` and `if (core.getInput?.("github-token")) return;` are no-ops in
+   * a harness whose fake `core` lacks those methods, and a complete shutdown
+   * of the gate in production, where `@actions/core` has both and
+   * `github-token` carries a `${{ github.token }}` default.
+   *
+   * Every name below is exported by `@actions/core`. Ones the script has no
+   * business calling from a workflow that holds a write token — `setSecret`,
+   * `addPath`, `exportVariable`, `getIDToken` — are present but throw, so the
+   * probe sees production's shape while the call is still rejected. The rest
+   * behave plausibly: `getInput` returns the action's real defaults,
+   * `isDebug()` is false, `group` runs its callback.
+   */
+  const coreDeny = (name: string) => () => {
+    throw new Error(`the script must not use core.${name}`);
+  };
+  /** The `with:` inputs this step passes, plus the action's own defaults. */
+  const actionInputs: Record<string, string> = {
+    script: script,
+    "github-token": "***",
+    debug: "false",
+    "user-agent": "actions/github-script",
+    previews: "",
+    "result-encoding": "json",
+    retries: "0",
+    "retry-exempt-status-codes": "400,401,403,404,422",
+    "base-url": "",
+  };
   const core = {
     info: (message: unknown) => { logs.push(String(message)); },
     warning: (message: unknown) => { warnings.push(String(message)); },
-    setFailed: (message: unknown) => { warnings.push(`setFailed: ${String(message)}`); },
+    error: (message: unknown) => { warnings.push(`error: ${String(message)}`); },
     notice: (message: unknown) => { logs.push(String(message)); },
-    debug: () => {},
+    debug: (message: unknown) => { logs.push(`debug: ${String(message)}`); },
+    setFailed: (message: unknown) => { warnings.push(`setFailed: ${String(message)}`); },
+    isDebug: () => false,
+    getInput: (name: unknown) => actionInputs[String(name)] ?? "",
+    getMultilineInput: (name: unknown) =>
+      (actionInputs[String(name)] ?? "").split("\n").filter(line => line !== ""),
+    getBooleanInput: (name: unknown) => (actionInputs[String(name)] ?? "") === "true",
+    setOutput: (name: unknown, value: unknown) => {
+      outputs.push({ name: String(name), value });
+    },
+    saveState: (name: unknown, value: unknown) => {
+      states.set(String(name), value);
+    },
+    getState: (name: unknown) => {
+      const stored = states.get(String(name));
+      return stored === undefined ? "" : String(stored);
+    },
+    startGroup: (name: unknown) => { logs.push(`::group::${String(name)}`); },
+    endGroup: () => { logs.push("::endgroup::"); },
+    group: async (name: unknown, fn: () => Promise<unknown>) => {
+      logs.push(`::group::${String(name)}`);
+      try {
+        return await fn();
+      } finally {
+        logs.push("::endgroup::");
+      }
+    },
+    setCommandEcho: () => {},
+    toPosixPath: (input: unknown) => String(input).replaceAll("\\", "/"),
+    toWin32Path: (input: unknown) => String(input).replaceAll("/", "\\"),
+    toPlatformPath: (input: unknown) => String(input),
+    platform: { platform: "linux", arch: "x64", isLinux: true, isMacOS: false, isWindows: false },
+    summary: summaryStub(),
+    markdownSummary: summaryStub(),
+    // Present because production has them; throwing because a PR-hygiene
+    // workflow that mutates the environment, the PATH, or the secret mask is
+    // not something to characterise.
+    exportVariable: coreDeny("exportVariable"),
+    setSecret: coreDeny("setSecret"),
+    addPath: coreDeny("addPath"),
+    getIDToken: coreDeny("getIDToken"),
   };
 
   /**
@@ -381,8 +513,19 @@ export async function runEnforcePrTarget(
 
   const deferred: (() => unknown)[] = [];
 
-  await compileScript(script)({
+  const returnValue = await compileScript(script)({
     github,
+    // The pinned action passes the same client under both names. A mutation
+    // that switches to `octokit.rest.pulls.update` must still be recorded.
+    octokit: github,
+    // Production injects a factory that mints a second, equally write-capable
+    // client. It has to be callable and has to return a recording client —
+    // otherwise `getOctokit(token).rest.pulls.update(...)` is an unrecorded
+    // write here and a real one on the runner.
+    getOctokit: (...args: unknown[]) => {
+      calls.push({ method: "getOctokit", args });
+      return github;
+    },
     context,
     core,
     exec: forbidden("exec"),
@@ -390,6 +533,7 @@ export async function runEnforcePrTarget(
     io: forbidden("io"),
     fetch: forbidden("fetch"),
     require: forbidden("require"),
+    __original_require__: forbidden("__original_require__"),
     // `github-script` runs under Node. An audit round detected the harness with
     // `if (!process.versions.bun) return;` — a no-op in production, green here.
     // Shadow `process` with something that looks like the Node the workflow
@@ -404,7 +548,7 @@ export async function runEnforcePrTarget(
     await callback();
   }
 
-  return { calls, logs, warnings };
+  return { calls, logs, warnings, returnValue, coreSurface: Object.keys(core).sort() };
 }
 
 /** Just the method names, in order — the usual thing to assert on. */

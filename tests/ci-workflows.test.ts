@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import {
+  SCRIPT_BINDINGS,
   callsTo,
   methodsOf,
   runEnforcePrTarget,
@@ -526,6 +527,20 @@ describe("GitHub Actions hardening", () => {
       return runEnforcePrTarget(script, options);
     }
 
+    /**
+     * Run an arbitrary body in the same scope the workflow script gets, and
+     * hand back what it returned.
+     *
+     * This is how a test asks "what would a mutation see from in there?"
+     * without guessing. Round eight's three findings were all probes for a
+     * binding that answers differently on the runner than in the harness, so
+     * the check that closes them has to be able to look from the same place.
+     */
+    async function runProbe(body: string): Promise<Record<string, unknown>> {
+      const result = await runEnforcePrTarget(body, { pr: { base: { ref: "dev" } } });
+      return result.returnValue as Record<string, unknown>;
+    }
+
     const BOT = "github-actions[bot]";
     const MARKER = "<!-- wrong-branch-enforcer -->";
 
@@ -834,6 +849,106 @@ describe("GitHub Actions hardening", () => {
         "graphql",
         "issues.updateComment",
       ]);
+    });
+
+    test("the harness offers every binding the pinned action does", async () => {
+      // Round eight did not attack the workflow. It attacked the gap between
+      // this fake and the real runtime, three times over: `typeof getOctokit
+      // === "function"`, `core.setOutput`, and `core.getInput?.("github-token")`
+      // are all truthy on the runner and were all absent here, so
+      // `if (…) return;` disabled the gate in production and changed nothing in
+      // the suite.
+      //
+      // Patching those three names would invite a fourth. The scope list below
+      // is transcribed from the pinned action's `src/main.ts`, which hands
+      // `callAsyncFunction` an object whose keys become the script's
+      // parameters. If the action is ever re-pinned to a version with a
+      // different scope, this fails and says so, instead of quietly reopening
+      // the hole.
+      expect([...SCRIPT_BINDINGS].sort()).toEqual([
+        "__original_require__",
+        "context",
+        "core",
+        "exec",
+        "fetch",
+        "getOctokit",
+        "github",
+        "glob",
+        "io",
+        "octokit",
+        "require",
+      ]);
+
+      // Same argument one level down: `core` is a module, and a probe for any
+      // method it exports is a probe the fake has to answer the same way.
+      // Transcribed from `@actions/core`'s exports.
+      const result = await run({ pr: { base: { ref: "dev" } } });
+      expect(result.coreSurface).toEqual([
+        "addPath",
+        "debug",
+        "endGroup",
+        "error",
+        "exportVariable",
+        "getBooleanInput",
+        "getIDToken",
+        "getInput",
+        "getMultilineInput",
+        "getState",
+        "group",
+        "info",
+        "isDebug",
+        "markdownSummary",
+        "notice",
+        "platform",
+        "saveState",
+        "setCommandEcho",
+        "setFailed",
+        "setOutput",
+        "setSecret",
+        "startGroup",
+        "summary",
+        "toPlatformPath",
+        "toPosixPath",
+        "toWin32Path",
+        "warning",
+      ]);
+    });
+
+    test("a probe for any of those bindings finds it, so it cannot detect the fake", async () => {
+      // The mechanism the three round-eight mutations shared: a truthiness or
+      // `typeof` check that answers one way on the runner and the other way
+      // here. Assert the answers match production for every injected name.
+      const result = await run({ pr: { base: { ref: "dev" } } });
+      const probe = await runProbe(`
+        const seen = {};
+        for (const [name, value] of Object.entries({
+          github, octokit, getOctokit, context, core, exec, glob, io, fetch, require,
+          __original_require__,
+        })) {
+          seen[name] = typeof value;
+        }
+        seen["core.getInput"] = typeof core.getInput;
+        seen["core.setOutput"] = typeof core.setOutput;
+        seen["core.summary.addRaw"] = typeof core.summary.addRaw;
+        seen["core.getInput(github-token)"] = core.getInput("github-token") !== "";
+        seen["core.isDebug"] = core.isDebug();
+        return seen;
+      `);
+
+      // Everything the action injects is a function or an object on the runner.
+      // Nothing here may be `undefined`.
+      expect(Object.values(probe).some(value => value === "undefined")).toBe(false);
+      expect(probe["core.getInput"]).toBe("function");
+      expect(probe["core.setOutput"]).toBe("function");
+      expect(probe["core.summary.addRaw"]).toBe("function");
+      // `github-token` carries a `${{ github.token }}` default, so it is
+      // non-empty on the runner. A gate that returns early when it is set is a
+      // gate that never runs.
+      expect(probe["core.getInput(github-token)"]).toBe(true);
+      expect(probe["core.isDebug"]).toBe(false);
+
+      // And the normal path is unaffected by the probe scenario.
+      expect(methodsOf(result)).toEqual(["pulls.get", "issues.listComments"]);
     });
 
     test("an API failure is never swallowed, whatever status it carries", async () => {

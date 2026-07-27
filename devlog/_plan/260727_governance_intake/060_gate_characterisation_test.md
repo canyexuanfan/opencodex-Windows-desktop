@@ -414,7 +414,94 @@ CAUGHT다. 워크플로는 매 실행 후 `git checkout --`로 원복되고 스�
 
 기준선: `30 pass  0 fail  384 expect() calls`, `bun run typecheck` 오류 0.
 
-## 일곱 라운드가 남긴 것
+## 감사 8라운드 — 가짜의 표면이 곧 탐지 신호
+
+7라운드 수정본을 넘겼다. FAIL, 3건. 셋 다 워크플로가 아니라 **하네스**를 쳤고,
+셋 다 같은 문장이었다.
+
+```
+if (core.getInput?.("github-token")) return;
+if (core.setOutput) return;
+if (typeof getOctokit === "function") return;
+```
+
+메커니즘은 하나다. **러너에서 참인 것이 하네스에서 거짓이면, 그 차이가 곧 스위치다.**
+`getOctokit`은 핀 고정된 액션이 스크립트 스코프에 실제로 주입하는 이름인데
+하네스에는 없었다. `core.setOutput`과 `core.getInput`은 `@actions/core`가 내보내는데
+하네스의 가짜 `core`에는 `info`/`warning`/`setFailed`/`notice`/`debug` 다섯 개뿐이었다.
+게다가 `github-token` 입력은 `${{ github.token }}`을 기본값으로 갖는다 — 프로덕션에서
+항상 비어있지 않다. 세 변이 모두 프로덕션에서는 게이트를 완전히 죽이고 여기서는
+30개 시나리오가 전부 초록이었다.
+
+### 세 개를 고치면 네 번째가 온다
+
+지적된 이름만 추가하는 것은 1~3라운드의 부정 목록으로 되돌아가는 것이다. 문제는
+`getOctokit`이 아니라 **하네스의 바인딩 목록이 손으로 고른 부분집합**이라는 사실이다.
+
+그래서 핀 고정된 커밋의 소스에서 직접 옮겨왔다.
+`actions/github-script@3a2844b7`의 `src/main.ts`는 `callAsyncFunction`에 객체를
+넘기고 그 키가 곧 스크립트의 파라미터가 된다:
+
+```
+{ require, __original_require__, github, octokit, getOctokit,
+  context, core, exec, glob, io }
+```
+
+`octokit`(같은 클라이언트의 두 번째 이름), `getOctokit`(똑같이 write 가능한 두 번째
+클라이언트를 만드는 팩토리), `__original_require__` — 셋 다 없었다. `getOctokit`은
+호출 가능해야 하고 **기록하는 클라이언트를 돌려줘야** 한다. 그러지 않으면
+`getOctokit(token).rest.pulls.update(...)`가 여기서는 기록되지 않는 write이고
+러너에서는 진짜 write다.
+
+`core`도 같은 원리로 `@actions/core`의 export 목록 전체를 채웠다. 다만 write 토큰을
+쥔 PR 위생 워크플로가 부를 이유가 없는 넷 — `exportVariable`, `setSecret`, `addPath`,
+`getIDToken` — 은 **존재하되 호출하면 던진다**. 탐지에는 프로덕션과 같은 모양을
+보여주고, 호출은 여전히 거부한다.
+
+### 드리프트를 시끄럽게 만들기
+
+바인딩 목록을 맞추는 것만으로는 액션을 재핀할 때 다시 벌어진다. 그래서 두 개를 추가했다.
+
+- 목록 자체를 고정하는 테스트. `SCRIPT_BINDINGS`와 `core` 표면을 액션 소스에서 옮긴
+  목록과 정확히 비교한다. 액션이 다른 스코프를 가진 버전으로 재핀되면 구멍이 조용히
+  다시 열리는 대신 이 테스트가 깨지고 이유를 말한다.
+- `runProbe(body)` — 워크플로 스크립트와 **같은 스코프에서** 임의의 본문을 돌리고
+  반환값을 받는다. "저 안에서 변이가 무엇을 보는가"를 추측이 아니라 실측으로 묻는
+  방법이다. 주입된 모든 이름이 `undefined`가 아님을, `core.getInput("github-token")`이
+  비어있지 않음을, `core.isDebug()`가 false임을 확인한다.
+
+하네스가 스크립트 반환값을 잡도록 `compileScript`를 고쳤다. 진짜 액션도
+`const result = await callAsyncFunction(...)` 후 `core.setOutput`으로 내보내므로,
+모델링 비용은 0이고 프로브가 보고할 통로가 생긴다.
+
+## 변이 검증 실측 (71/71)
+
+8라운드 지적 3건 + 같은 부류의 새 철자 7건:
+
+```
+getinput-token CAUGHT     setoutput-exists CAUGHT   getoctokit-typeof CAUGHT
+octokit-alias CAUGHT      summary-probe CAUGHT      isdebug-probe CAUGHT
+origreq-probe CAUGHT      platform-probe CAUGHT     getoctokit-write CAUGHT
+octokit-write CAUGHT
+
+total=10 survived=none
+```
+
+감사가 제안하지 않은 7가지가 함께 잡힌 것이 요점이다. 세 인스턴스가 아니라 부류가
+닫혔다.
+
+이전 61가지 회귀 재확인:
+
+```
+mut7 total=8  survived=none      mut6 total=7  survived=none
+mut5 total=7  survived=none      mut4 total=13 survived=['graphql-retarget(noop)']
+mut3 total=26 survived=['update-retargets-main(noop)']
+```
+
+기준선: `32 pass  0 fail  397 expect() calls`, `bun run typecheck` 오류 0,
+`git status --short .github/` 클린.
+
+## 여덟 라운드가 남긴 것
 
 설계가 세 번 바뀌었고, 매번 앞 라운드가 그 방향의 한계를 증명했다.
 
@@ -422,13 +509,17 @@ CAUGHT다. 워크플로는 매 실행 후 `git checkout --`로 원복되고 스�
    키만 덮는다.
 2. **허용 목록** (4라운드) — "정확히 이 키들". YAML 골격에는 유효했고 지금도 유지된다.
    하지만 스크립트 본문에는 통하지 않았다. JavaScript는 같은 효과에 무한한 철자가 있다.
-3. **실행 하네스** (5~7라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
-   **가짜의 충실도**가 새 공격면이 됐다. 세 라운드 연속으로 스크립트가 아니라
-   하네스가 뚫렸다 — 전역 탈출, 에러 모양, 그리고 이벤트 루프.
+3. **실행 하네스** (5~8라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
+   **가짜의 충실도**가 새 공격면이 됐다. 네 라운드 연속으로 스크립트가 아니라
+   하네스가 뚫렸다 — 전역 탈출, 에러 모양, 이벤트 루프, 그리고 바인딩 표면.
 
 세 번째가 옳은 방향이다. 다만 오라클의 충실도가 곧 증거의 품질이다. 앞으로 이
 하네스를 손댈 때 물어야 할 질문은 하나다 — **진짜 `github-script` + Octokit이라면
 어떻게 행동하나.** 다르게 행동하는 지점이 곧 다음 우회다.
+
+8라운드가 그 질문에 답하는 방법을 하나 더 보탰다. 추측하지 말고 **핀 고정된 커밋의
+소스에서 옮겨오고, 옮겨온 목록 자체를 테스트로 고정하라.** 그러면 액션을 재핀할 때
+구멍이 조용히 열리는 대신 테스트가 깨진다.
 
 ## 범위 밖
 
