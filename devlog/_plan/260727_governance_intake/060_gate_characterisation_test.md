@@ -583,7 +583,82 @@ mut3  total=26 survived=['update-retargets-main(noop)']
 기준선: `32 pass  0 fail  397 expect() calls`, `bun run typecheck` 오류 0,
 `git status --short .github/` 클린.
 
-## 아홉 라운드가 남긴 것
+## 감사 10라운드 — 충실도는 재귀적이고, 계약은 호출 목록만이 아니다
+
+9라운드가 "모양"을 맞췄으니 10라운드는 두 방향으로 밀었다. 하나는 **한 겹 더 깊이**,
+다른 하나는 **탐지가 전혀 필요 없는 의미 약화**. 18가지 중 9가지가 살아남았다.
+
+### 깊이 — 페이로드는 아직 부분집합이었다
+
+`context`를 클래스로 만들고 필드를 채웠지만 `payload`는 여전히
+`{ pull_request: eventPr }` 하나였다. 진짜 `pull_request_target` 이벤트는 `action`,
+`number`, `repository`, `sender`를 함께 싣고, PR 객체 자체도 `head`, `html_url`,
+`state`, `merged`, `labels`를 갖는다. `context.payload.pull_request.head.sha`
+하나로 하네스를 식별할 수 있었다.
+
+9라운드의 교훈이 한 단계 아래에서 그대로 반복된 것이다. **충실도는 목록이 아니라
+재귀적 속성이다** — 어느 깊이에서 멈추든 그 아래가 다음 탐지면이 된다.
+
+### 의미 — 초록인 채로 게이트를 무의미하게 만들기
+
+탐지 없이도 통과하는 변이가 넷 있었다. 전부 "호출은 같은데 내용이 달라진" 경우다.
+
+- **`per_page: 100` → `1`.** 호출 목록은 동일하다. 하지만 코멘트 많은 PR에서 봇이
+  자기 코멘트를 찾으려면 100번을 왕복해야 하고, 그 중 한 번이라도 실패하면 상태를
+  잃는다 — 중복 코멘트를 달고 자기가 무엇을 바꿨는지 잊는다. 성능 손잡이처럼 보이는
+  것이 정확성 손잡이였다.
+- **contributing 링크 삭제.** 코멘트는 이 게이트의 사용자 대면 절반 전부다. PR이
+  이름이 바뀌고 draft로 내려간 이유를 말해주는 유일한 것인데, 어디를 읽으라는 안내가
+  사라져도 아무 테스트도 깨지지 않았다.
+- **`version: 1` → `2`.** 쓰는 쪽만 올리고 읽는 쪽은 그대로면, 이전 실행이 남긴
+  상태를 아무도 존중하지 않는다. 접두사가 영원히 붙어있게 된다.
+- **코멘트/변경 순서.** 전체 호출 목록을 비교하는 시나리오가 있어서 결과적으로는
+  잡혔지만, 순서가 **복구 이야기 그 자체**라는 사실을 말하는 어설션은 없었다.
+  코멘트가 먼저 떨어져야 중간 실패 후 재실행이 상태를 읽고 마무리할 수 있다.
+
+### 대응
+
+- `payload`에 실제 이벤트가 싣는 필드를, `DEFAULT_PR`에 실제 PR 객체가 갖는 필드를
+  채웠다. 로직에는 무관하고 충실도에는 필수다.
+- 시나리오 4개 추가: 코멘트가 작성자를 멘션하고 두 브랜치 이름과 문서 링크를
+  담는가, `per_page`가 100인가, 상태 버전이 양쪽에서 1인가, 코멘트가 PR 변경보다
+  먼저인가.
+
+마지막 넷은 하네스 충실도 문제가 아니다. **계약이 호출 목록만이 아니라는 것**을
+말하는 어설션이 없었을 뿐이다. 9라운드까지는 "어떻게 불렀나"를 지켰고, 10라운드는
+"무엇을 말했나"를 지킨다.
+
+### 살아남은 2가지
+
+`response-headers`(`if (false) return;` — 상수 거짓이라 어느 쪽에서도 발화 안 함)와
+`comment-after-write`(주석 한 줄 삽입, 동작 변화 없음). 둘 다 무해한 변이다.
+
+## 변이 검증 실측 (110/110)
+
+10라운드 18가지 중 16가지 CAUGHT:
+
+```
+pr-payload-fields CAUGHT  payload-repo CAUGHT      payload-action CAUGHT
+payload-sender CAUGHT     pr-html-url CAUGHT       rest-shape-deep CAUGHT
+rest-issues-deep CAUGHT   rest-repos CAUGHT        expected-base-main CAUGHT
+marker-changed CAUGHT     bot-login-changed CAUGHT drop-mention CAUGHT
+per-page-1 CAUGHT         prefix-changed CAUGHT    state-version-bump CAUGHT
+drop-contrib-link CAUGHT
+```
+
+이전 92가지 회귀 재확인:
+
+```
+mut9b total=25 survived=[무해 4]   mut8b total=10 survived=none
+mut7  total=8  survived=none       mut6  total=7  survived=none
+mut5  total=7  survived=none       mut4  total=13 survived=[noop 1]
+mut3  total=26 survived=[noop 1]
+```
+
+기준선: `36 pass  0 fail  419 expect() calls`, `bun run typecheck` 오류 0,
+`git status --short .github/` 클린.
+
+## 열 라운드가 남긴 것
 
 설계가 세 번 바뀌었고, 매번 앞 라운드가 그 방향의 한계를 증명했다.
 
@@ -591,9 +666,10 @@ mut3  total=26 survived=['update-retargets-main(noop)']
    키만 덮는다.
 2. **허용 목록** (4라운드) — "정확히 이 키들". YAML 골격에는 유효했고 지금도 유지된다.
    하지만 스크립트 본문에는 통하지 않았다. JavaScript는 같은 효과에 무한한 철자가 있다.
-3. **실행 하네스** (5~9라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
-   **가짜의 충실도**가 새 공격면이 됐다. 다섯 라운드 연속으로 스크립트가 아니라
-   하네스가 뚫렸다 — 전역 탈출, 에러 모양, 이벤트 루프, 바인딩 이름, 바인딩 모양.
+3. **실행 하네스** (5~10라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
+   **가짜의 충실도**가 새 공격면이 됐다. 여섯 라운드 연속으로 스크립트가 아니라
+   하네스가 뚫렸다 — 전역 탈출, 에러 모양, 이벤트 루프, 바인딩 이름, 바인딩 모양,
+   페이로드 깊이.
 
 세 번째가 옳은 방향이다. 다만 오라클의 충실도가 곧 증거의 품질이다. 앞으로 이
 하네스를 손댈 때 물어야 할 질문은 하나다 — **진짜 `github-script` + Octokit이라면
@@ -612,6 +688,11 @@ mut3  total=26 survived=['update-retargets-main(noop)']
 4가지는 살아남았지만 프로덕션에서도 발화하지 않는 무해한 변이였다. 프로브로 값을
 직접 읽어 구분했다. 이 구분을 생략하면 무해한 변이를 쫓느라 하네스를 필요 이상으로
 복잡하게 만들게 된다.
+
+10라운드는 마지막 축을 추가했다. 하네스 충실도를 아무리 올려도 **계약이 호출 목록만
+이라고 믿는 한** 같은 호출로 다른 것을 말하는 변이는 통과한다. `per_page: 1`,
+사라진 문서 링크, 조용히 올라간 상태 버전 — 전부 호출 순서와 이름이 동일하다.
+게이트의 절반은 사용자에게 무엇을 말하는가이고, 그쪽에도 어설션이 필요하다.
 
 ## 범위 밖
 

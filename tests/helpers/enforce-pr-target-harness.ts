@@ -81,16 +81,28 @@ export type RunOptions = {
   failStatus?: number;
 };
 
-const DEFAULT_PR: Required<Omit<PullRequestState, "base" | "user">> & {
-  base: { ref: string };
-  user: { login: string };
-} = {
+/**
+ * A PR as the API returns it.
+ *
+ * The script reads `number`, `node_id`, `title`, `draft`, `base.ref`, and
+ * `user.login`, but the object it gets carries far more, and round ten used
+ * `context.payload.pull_request.head.sha` to tell the two apart. The extra
+ * fields are inert to the logic and load-bearing for fidelity.
+ */
+const DEFAULT_PR = {
   number: 42,
   node_id: "PR_kwDOnode42",
+  id: 1122334455,
   title: "Add a thing",
   draft: false,
-  base: { ref: "dev" },
-  user: { login: "contributor" },
+  state: "open",
+  merged: false,
+  locked: false,
+  html_url: "https://github.com/lidge-jun/opencodex/pull/42",
+  base: { ref: "dev", sha: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", label: "lidge-jun:dev" },
+  head: { ref: "feature", sha: "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b", label: "contributor:feature" },
+  user: { login: "contributor", id: 67890, type: "User" },
+  labels: [] as unknown[],
 };
 
 /**
@@ -505,7 +517,32 @@ export async function runEnforcePrTarget(
    * so they are non-empty even with no environment at all.
    */
   class Context {
-    payload = { pull_request: eventPr };
+    /**
+     * The webhook payload, not just its `pull_request`.
+     *
+     * Round ten carried round nine's mechanism one level further in: a real
+     * `pull_request_target` event delivers `action`, `number`, `repository`,
+     * `sender`, and an `organization`, and the PR object itself carries `head`,
+     * `html_url`, `labels`, `state`, and `merged`. Each field present on the
+     * runner and absent here is another `if (payload.x) return;`.
+     */
+    payload = {
+      action: "opened",
+      number: eventPr.number,
+      pull_request: eventPr,
+      repository: {
+        id: 987654321,
+        name: "opencodex",
+        full_name: "lidge-jun/opencodex",
+        default_branch: "main",
+        private: false,
+        owner: { login: "lidge-jun", id: 12345, type: "User" },
+        html_url: "https://github.com/lidge-jun/opencodex",
+      },
+      sender: { login: "contributor", id: 67890, type: "User" },
+      organization: undefined,
+      installation: undefined,
+    };
     eventName = "pull_request_target";
     sha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
     ref = "refs/pull/42/merge";

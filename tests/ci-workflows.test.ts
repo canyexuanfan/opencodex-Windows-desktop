@@ -851,6 +851,74 @@ describe("GitHub Actions hardening", () => {
       ]);
     });
 
+    test("the explanation tells the contributor what to do and where to read", async () => {
+      // The comment is the entire user-facing half of this gate: a PR gets
+      // renamed and drafted, and this is the only thing that says why. Round
+      // ten deleted the @mention target and the contributing link separately;
+      // both left every other assertion intact, and both leave a contributor
+      // staring at a mangled PR with no notification and no next step.
+      const result = await run({
+        pr: { base: { ref: "main" }, title: "Add a thing", draft: false, user: { login: "someone-else" } },
+      });
+
+      const [comment] = callsTo(result, "issues.createComment") as [{ body: string }];
+      // Addressed to the PR author, so GitHub actually notifies them.
+      expect(comment.body).toContain("@someone-else");
+      // Names both branches, so the instruction is actionable without context.
+      expect(comment.body).toContain("`main`");
+      expect(comment.body).toContain("`dev`");
+      // Points at the documentation rather than assuming the reader knows.
+      expect(comment.body).toContain("https://lidge-jun.github.io/opencodex/contributing/");
+      // And carries the state the next run needs.
+      expect(comment.body).toContain(MARKER);
+      expect(comment.body).toContain('"version":1');
+    });
+
+    test("comment listing asks for full pages, so the bot's own comment is found", async () => {
+      // `per_page` is a performance knob until it is a correctness one. At
+      // per_page: 1 a busy PR needs a hundred round trips to find a comment
+      // that page one used to hold, and any rate-limit or transient failure in
+      // that sequence means the bot does not find its own state — so it posts a
+      // duplicate and forgets what it changed. Round ten dropped it to 1 and
+      // nothing failed.
+      const result = await run({ pr: { base: { ref: "dev" } } });
+      const [listed] = callsTo(result, "issues.listComments") as [{ per_page: number }];
+      expect(listed.per_page).toBe(100);
+    });
+
+    test("the state marker keeps the version the reader expects", async () => {
+      // Both halves of the workflow parse this JSON, and a comment written by
+      // an older run is read by a newer one. Bumping `version` on the write
+      // side without teaching the read side is how a PR ends up with state
+      // nobody honours — the prefix stays on forever. Round ten bumped it to 2
+      // and every test passed, because nothing asserted the value.
+      const wrong = await run({ pr: { base: { ref: "main" }, draft: false } });
+      const [posted] = callsTo(wrong, "issues.createComment") as [{ body: string }];
+      expect(posted.body).toContain('"version":1');
+
+      const cleared = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true })],
+      });
+      const [done] = callsTo(cleared, "issues.updateComment") as [{ body: string }];
+      expect(done.body).toContain('"version":1');
+    });
+
+    test("the state comment is written before the PR is touched", async () => {
+      // Order is the recovery story. The comment records what the workflow is
+      // about to change; if a mutation fails afterwards, a rerun reads that
+      // record and finishes the job. Write the PR first and a failure in
+      // between leaves a renamed, drafted PR with no record that the bot did
+      // it — permanently stuck. The scenario above asserts the full call list,
+      // but this states the invariant on its own so a reordering says why.
+      const result = await run({ pr: { base: { ref: "main" }, draft: false } });
+      const methods = methodsOf(result);
+      const comment = methods.indexOf("issues.createComment");
+      expect(comment).toBeGreaterThan(-1);
+      expect(comment).toBeLessThan(methods.indexOf("pulls.update"));
+      expect(comment).toBeLessThan(methods.indexOf("graphql"));
+    });
+
     test("the harness offers every binding the pinned action does", async () => {
       // Round eight did not attack the workflow. It attacked the gap between
       // this fake and the real runtime, three times over: `typeof getOctokit
