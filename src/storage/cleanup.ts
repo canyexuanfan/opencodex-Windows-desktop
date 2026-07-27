@@ -6,8 +6,10 @@
  * permanent delete is opt-in.
  *
  * Execution is bound to a preview digest. All candidates are staged first; any FS
- * or DB failure rolls staged moves back. DB reconciliation runs in one transaction
- * with foreign keys enabled. Success never carries soft `dbWarning` / `failedPaths`.
+ * or DB failure rolls staged moves back. DB reconciliation follows Codex
+ * `delete_threads_strict` order across the per-thread stores (`logs_*`,
+ * `memories_*`, `goals_*`, then `state_*`) and never soft-succeeds with
+ * `dbWarning` / `failedPaths`.
  */
 import { createHash } from "node:crypto";
 import {
@@ -82,8 +84,15 @@ export interface CleanupResult {
 }
 
 const STATE_DB_FILE = /^state_(\d+)\.sqlite$/;
+const LOGS_DB_FILE = /^logs_(\d+)\.sqlite$/;
+const GOALS_DB_FILE = /^goals_(\d+)\.sqlite$/;
+const MEMORIES_DB_FILE = /^memories_(\d+)\.sqlite$/;
 const JSONL_SUFFIX = ".jsonl";
 const ZST_SUFFIX = ".jsonl.zst";
+const JOB_KIND_MEMORY_STAGE1 = "memory_stage1";
+const JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL = "memory_consolidate_global";
+const MEMORY_CONSOLIDATION_JOB_KEY = "global";
+const DEFAULT_RETRY_REMAINING = 3;
 
 function clampPercent(percent: unknown): number {
   if (typeof percent !== "number" || !Number.isFinite(percent)) return 0;
@@ -106,7 +115,8 @@ function isRolloutFileName(name: string): boolean {
   return name.endsWith(ZST_SUFFIX) || name.endsWith(JSONL_SUFFIX);
 }
 
-function newestStateDb(codexHome: string): string | null {
+/** Newest `prefix_N.sqlite` under CODEX_HOME, or null when absent. */
+function newestVersionedDb(codexHome: string, pattern: RegExp): string | null {
   let best: string | null = null;
   let bestVersion = -1;
   let names: string[] = [];
@@ -116,7 +126,7 @@ function newestStateDb(codexHome: string): string | null {
     return null;
   }
   for (const name of names) {
-    const match = name.match(STATE_DB_FILE);
+    const match = name.match(pattern);
     if (!match) continue;
     const version = Number(match[1]);
     if (version > bestVersion) {
@@ -125,6 +135,26 @@ function newestStateDb(codexHome: string): string | null {
     }
   }
   return best ? join(codexHome, best) : null;
+}
+
+function newestStateDb(codexHome: string): string | null {
+  return newestVersionedDb(codexHome, STATE_DB_FILE);
+}
+
+interface RuntimeDbPaths {
+  state: string | null;
+  logs: string | null;
+  goals: string | null;
+  memories: string | null;
+}
+
+function discoverRuntimeDbPaths(codexHome: string): RuntimeDbPaths {
+  return {
+    state: newestVersionedDb(codexHome, STATE_DB_FILE),
+    logs: newestVersionedDb(codexHome, LOGS_DB_FILE),
+    goals: newestVersionedDb(codexHome, GOALS_DB_FILE),
+    memories: newestVersionedDb(codexHome, MEMORIES_DB_FILE),
+  };
 }
 
 /**
@@ -255,8 +285,8 @@ export function previewArchivedCleanup(
   };
 }
 
-function openStateDbWritable(stateDbPath: string, busyTimeoutMs = 100): Database {
-  const db = new Database(stateDbPath);
+function openDbWritable(dbPath: string, busyTimeoutMs = 100): Database {
+  const db = new Database(dbPath);
   try {
     db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
   } catch {
@@ -285,23 +315,40 @@ function mapDbError(error: unknown): CleanupErrorCode {
   return "db_reconcile_failed";
 }
 
-/** True when the threads table can be written (BEGIN IMMEDIATE succeeds). */
-export function probeStateDbWritable(codexHome: string, busyTimeoutMs = 100): { ok: true; path: string } | { ok: false; error: CleanupErrorCode } {
-  const path = newestStateDb(codexHome);
-  if (!path || !existsSync(path)) return { ok: true, path: path ?? "" };
+/** Probe a single DB with BEGIN IMMEDIATE; missing path is a no-op success. */
+function probeDbWritable(
+  path: string | null,
+  busyTimeoutMs: number,
+): { ok: true } | { ok: false; error: CleanupErrorCode } {
+  if (!path || !existsSync(path)) return { ok: true };
   let db: Database | undefined;
   try {
-    db = openStateDbWritable(path, busyTimeoutMs);
+    db = openDbWritable(path, busyTimeoutMs);
     db.exec("BEGIN IMMEDIATE");
     db.exec("ROLLBACK");
-    return { ok: true, path };
+    return { ok: true };
   } catch (error) {
     if (isBusyError(error)) return { ok: false, error: "codex_busy" };
-    // Corrupt / unreadable DB must block cleanup so we never orphan rows or files.
     return { ok: false, error: "db_reconcile_failed" };
   } finally {
     try { db?.close(); } catch { /* */ }
   }
+}
+
+/**
+ * True when every present Codex runtime DB can be written (BEGIN IMMEDIATE).
+ * Busy / corrupt stores abort cleanup before any filesystem mutation.
+ */
+export function probeStateDbWritable(
+  codexHome: string,
+  busyTimeoutMs = 100,
+): { ok: true; path: string } | { ok: false; error: CleanupErrorCode } {
+  const paths = discoverRuntimeDbPaths(codexHome);
+  for (const path of [paths.state, paths.logs, paths.goals, paths.memories]) {
+    const probed = probeDbWritable(path, busyTimeoutMs);
+    if (!probed.ok) return probed;
+  }
+  return { ok: true, path: paths.state ?? "" };
 }
 
 interface ThreadSnapshot {
@@ -311,33 +358,30 @@ interface ThreadSnapshot {
   history_mode?: string | null;
 }
 
+/**
+ * Load archived threads matching the candidate set.
+ * Optional columns are detected via PRAGMA; missing `threads` / query failures throw
+ * so callers map to `db_reconcile_failed` / `codex_busy` instead of treating them as empty.
+ */
 function loadMatchingThreads(db: Database, candidates: ArchivedCandidate[], codexHome: string): ThreadSnapshot[] {
-  const logicalSet = new Set(candidates.map(c => c.relPath));
-  let rows: Array<{ id: string; rollout_path: string; archived?: number | null; history_mode?: string | null }> = [];
-  try {
-    rows = db.query<{ id: string; rollout_path: string; archived: number | null; history_mode: string | null }, []>(
-      `SELECT id, rollout_path, archived, history_mode FROM threads`,
-    ).all();
-  } catch {
-    try {
-      rows = db.query<{ id: string; rollout_path: string; archived: number | null }, []>(
-        `SELECT id, rollout_path, archived FROM threads`,
-      ).all().map(r => ({ ...r, history_mode: null }));
-    } catch {
-      try {
-        rows = db.query<{ id: string; rollout_path: string }, []>(
-          `SELECT id, rollout_path FROM threads`,
-        ).all().map(r => ({ ...r, archived: null, history_mode: null }));
-      } catch {
-        return [];
-      }
-    }
+  if (!tableExists(db, "threads")) {
+    throw new Error("missing_threads_table");
   }
+  const logicalSet = new Set(candidates.map(c => c.relPath));
+  const hasArchived = columnExists(db, "threads", "archived");
+  const hasHistoryMode = columnExists(db, "threads", "history_mode");
+  const selectCols = ["id", "rollout_path"];
+  if (hasArchived) selectCols.push("archived");
+  if (hasHistoryMode) selectCols.push("history_mode");
+  const rows = db.query<
+    { id: string; rollout_path: string; archived?: number | null; history_mode?: string | null },
+    []
+  >(`SELECT ${selectCols.join(", ")} FROM threads`).all();
 
   return rows
     .filter(row => {
       // When the archived column is present, only archived=1 rows may be deleted.
-      if (row.archived !== null && row.archived !== undefined && Number(row.archived) !== 1) {
+      if (hasArchived && Number(row.archived ?? 0) !== 1) {
         return false;
       }
       const normalized = normalizeArchivedRolloutPath(row.rollout_path, codexHome);
@@ -346,8 +390,8 @@ function loadMatchingThreads(db: Database, candidates: ArchivedCandidate[], code
     .map(row => ({
       id: row.id,
       rollout_path: row.rollout_path,
-      archived: row.archived ?? null,
-      history_mode: row.history_mode ?? null,
+      archived: hasArchived ? (row.archived ?? null) : null,
+      history_mode: hasHistoryMode ? (row.history_mode ?? null) : null,
     }));
 }
 
@@ -397,14 +441,10 @@ function findReferencedHistory(
 }
 
 function tableExists(db: Database, name: string): boolean {
-  try {
-    const row = db.query<{ name: string }, [string]>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
-    ).get(name);
-    return Boolean(row);
-  } catch {
-    return false;
-  }
+  const row = db.query<{ name: string }, [string]>(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+  ).get(name);
+  return Boolean(row);
 }
 
 function columnExists(db: Database, table: string, column: string): boolean {
@@ -420,17 +460,16 @@ function deleteThreadsAndDependents(db: Database, threadIds: string[]): void {
   if (threadIds.length === 0) return;
   const placeholders = threadIds.map(() => "?").join(",");
 
-  // Real Codex schema columns.
+  // Upstream deletes dynamic tools before spawn edges before threads.
+  if (tableExists(db, "thread_dynamic_tools")) {
+    db.run(`DELETE FROM thread_dynamic_tools WHERE thread_id IN (${placeholders})`, threadIds);
+  }
+
   if (tableExists(db, "thread_spawn_edges")) {
     db.run(
       `DELETE FROM thread_spawn_edges WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
       [...threadIds, ...threadIds],
     );
-  }
-
-  // Explicit dependent cleanup even when FK pragma is ignored by older builds.
-  if (tableExists(db, "thread_dynamic_tools")) {
-    db.run(`DELETE FROM thread_dynamic_tools WHERE thread_id IN (${placeholders})`, threadIds);
   }
 
   db.run(`DELETE FROM threads WHERE id IN (${placeholders})`, threadIds);
@@ -445,6 +484,114 @@ interface ReconcileErr {
   error: CleanupErrorCode;
 }
 
+function withWritableDb(
+  path: string,
+  busyTimeoutMs: number,
+  body: (db: Database) => void,
+): { ok: true } | ReconcileErr {
+  let db: Database | undefined;
+  try {
+    db = openDbWritable(path, busyTimeoutMs);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      body(db);
+      db.exec("COMMIT");
+      return { ok: true };
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch { /* */ }
+      throw error;
+    }
+  } catch (error) {
+    return { ok: false, error: mapDbError(error) };
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+/** Codex logs_*.sqlite: DELETE FROM logs WHERE thread_id IN (...). */
+function deleteLogsForThreads(
+  logsDbPath: string | null,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): { ok: true } | ReconcileErr {
+  if (!logsDbPath || !existsSync(logsDbPath) || threadIds.length === 0) return { ok: true };
+  return withWritableDb(logsDbPath, busyTimeoutMs, db => {
+    if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
+    const placeholders = threadIds.map(() => "?").join(",");
+    db.run(`DELETE FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
+  });
+}
+
+/**
+ * Codex memories_*.sqlite: remove stage1 outputs and memory_stage1 jobs, and enqueue
+ * global consolidation when a deleted output was selected for phase 2 (upstream).
+ */
+function deleteMemoriesForThreads(
+  memoriesDbPath: string | null,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): { ok: true } | ReconcileErr {
+  if (!memoriesDbPath || !existsSync(memoriesDbPath) || threadIds.length === 0) return { ok: true };
+  return withWritableDb(memoriesDbPath, busyTimeoutMs, db => {
+    if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
+    const placeholders = threadIds.map(() => "?").join(",");
+    let selectedForPhase2 = 0;
+    if (columnExists(db, "stage1_outputs", "selected_for_phase2")) {
+      const row = db.query<{ n: number }, string[]>(
+        `SELECT COUNT(*) AS n FROM stage1_outputs
+         WHERE thread_id IN (${placeholders}) AND selected_for_phase2 != 0`,
+      ).get(...threadIds);
+      selectedForPhase2 = row?.n ?? 0;
+    }
+    db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, threadIds);
+    if (tableExists(db, "jobs")) {
+      db.run(
+        `DELETE FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
+        [JOB_KIND_MEMORY_STAGE1, ...threadIds],
+      );
+      if (selectedForPhase2 > 0) {
+        const now = Math.floor(Date.now() / 1000);
+        db.run(
+          `INSERT INTO jobs (
+             kind, job_key, status, worker_id, ownership_token, started_at, finished_at,
+             lease_until, retry_at, retry_remaining, last_error, input_watermark, last_success_watermark
+           ) VALUES (?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, 0)
+           ON CONFLICT(kind, job_key) DO UPDATE SET
+             status = CASE WHEN jobs.status = 'running' THEN 'running' ELSE 'pending' END,
+             retry_at = CASE WHEN jobs.status = 'running' THEN jobs.retry_at ELSE NULL END,
+             retry_remaining = max(jobs.retry_remaining, excluded.retry_remaining),
+             input_watermark = CASE
+               WHEN excluded.input_watermark > COALESCE(jobs.input_watermark, 0)
+               THEN excluded.input_watermark
+               ELSE COALESCE(jobs.input_watermark, 0) + 1
+             END`,
+          [JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY, DEFAULT_RETRY_REMAINING, now],
+        );
+      }
+    }
+  });
+}
+
+/** Codex goals_*.sqlite: DELETE FROM thread_goals (cascades continuation deferrals). */
+function deleteGoalsForThreads(
+  goalsDbPath: string | null,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): { ok: true } | ReconcileErr {
+  if (!goalsDbPath || !existsSync(goalsDbPath) || threadIds.length === 0) return { ok: true };
+  return withWritableDb(goalsDbPath, busyTimeoutMs, db => {
+    if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
+    const placeholders = threadIds.map(() => "?").join(",");
+    if (tableExists(db, "thread_goal_continuation_deferrals")) {
+      db.run(
+        `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+        threadIds,
+      );
+    }
+    db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, threadIds);
+  });
+}
+
 /** Load matching archived threads and refuse referenced history — no deletes yet. */
 function loadThreadsForCleanup(
   stateDbPath: string,
@@ -455,7 +602,7 @@ function loadThreadsForCleanup(
   if (!stateDbPath || !existsSync(stateDbPath)) return { ok: true, threads: [] };
   let db: Database | undefined;
   try {
-    db = openStateDbWritable(stateDbPath, busyTimeoutMs);
+    db = openDbWritable(stateDbPath, busyTimeoutMs);
     const threads = loadMatchingThreads(db, candidates, codexHome);
     if (findReferencedHistory(db, threads)) {
       return { ok: false, error: "referenced_history" };
@@ -468,17 +615,33 @@ function loadThreadsForCleanup(
   }
 }
 
-/** Delete matching threads in one transaction. Call only after the recovery manifest exists. */
-function deleteThreadsTransaction(
-  stateDbPath: string,
+/**
+ * Reconcile all Codex per-thread stores for the matched archived candidates.
+ * Order matches upstream `delete_threads_strict`: logs → memories → goals → state.
+ */
+function reconcileDeletedThreads(
+  paths: RuntimeDbPaths,
   candidates: ArchivedCandidate[],
   codexHome: string,
   busyTimeoutMs: number,
 ): ReconcileOk | ReconcileErr {
-  if (!stateDbPath || !existsSync(stateDbPath)) return { ok: true, threads: [] };
+  if (!paths.state || !existsSync(paths.state)) return { ok: true, threads: [] };
+
+  // Fresh id set before satellite deletes (state rows still present for retryability).
+  const preflight = loadThreadsForCleanup(paths.state, candidates, codexHome, busyTimeoutMs);
+  if (!preflight.ok) return preflight;
+  const threadIds = preflight.threads.map(t => t.id);
+
+  const logs = deleteLogsForThreads(paths.logs, threadIds, busyTimeoutMs);
+  if (!logs.ok) return logs;
+  const memories = deleteMemoriesForThreads(paths.memories, threadIds, busyTimeoutMs);
+  if (!memories.ok) return memories;
+  const goals = deleteGoalsForThreads(paths.goals, threadIds, busyTimeoutMs);
+  if (!goals.ok) return goals;
+
   let db: Database | undefined;
   try {
-    db = openStateDbWritable(stateDbPath, busyTimeoutMs);
+    db = openDbWritable(paths.state, busyTimeoutMs);
     db.exec("BEGIN IMMEDIATE");
     try {
       // Re-validate under the write lock; the preflight result may be stale (TOCTOU).
@@ -670,13 +833,14 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     };
   }
 
+  const paths = discoverRuntimeDbPaths(codexHome);
   const probe = probeStateDbWritable(codexHome, busyTimeoutMs);
   if (!probe.ok) {
     return fail(mode, percent, probe.error);
   }
 
   // Preflight referenced-history / matching while DB is free, before any rename.
-  const loaded = loadThreadsForCleanup(probe.path, preview.candidates, codexHome, busyTimeoutMs);
+  const loaded = loadThreadsForCleanup(paths.state ?? "", preview.candidates, codexHome, busyTimeoutMs);
   if (!loaded.ok) {
     return fail(mode, percent, loaded.error);
   }
@@ -731,8 +895,8 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     return fail(mode, percent, "fs_failed", rolled.restored ? undefined : { trashDir });
   }
 
-  const deleted = deleteThreadsTransaction(
-    probe.path,
+  const deleted = reconcileDeletedThreads(
+    paths,
     preview.candidates,
     codexHome,
     busyTimeoutMs,

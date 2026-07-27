@@ -33,7 +33,87 @@ afterEach(() => {
   }
 });
 
-function buildHome(opts?: { withSpawnEdges?: boolean; withDynamicTools?: boolean }): string {
+function seedSatelliteStores(dir: string): void {
+  const logs = new Database(join(dir, "logs_2.sqlite"));
+  logs.exec(`CREATE TABLE logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    ts_nanos INTEGER NOT NULL DEFAULT 0,
+    level TEXT NOT NULL,
+    target TEXT NOT NULL,
+    thread_id TEXT,
+    estimated_bytes INTEGER NOT NULL DEFAULT 0
+  )`);
+  logs.exec(`INSERT INTO logs (ts, level, target, thread_id, estimated_bytes) VALUES
+    (1,'INFO','t','told',10),
+    (2,'INFO','t','tmid',10),
+    (3,'INFO','t','active',10),
+    (4,'INFO','t','tnew',10)`);
+  logs.close();
+
+  const goals = new Database(join(dir, "goals_1.sqlite"));
+  goals.exec(`CREATE TABLE thread_goals (
+    thread_id TEXT PRIMARY KEY NOT NULL,
+    goal_id TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    status TEXT NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    time_used_seconds INTEGER NOT NULL DEFAULT 0,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+  )`);
+  goals.exec(`CREATE TABLE thread_goal_continuation_deferrals (
+    thread_id TEXT PRIMARY KEY NOT NULL REFERENCES thread_goals(thread_id) ON DELETE CASCADE
+  )`);
+  goals.exec(`INSERT INTO thread_goals VALUES
+    ('told','g1','old','complete',0,0,1,1),
+    ('tmid','g2','mid','active',0,0,2,2),
+    ('active','g3','live','active',0,0,3,3)`);
+  goals.exec(`INSERT INTO thread_goal_continuation_deferrals VALUES ('tmid')`);
+  goals.close();
+
+  const memories = new Database(join(dir, "memories_1.sqlite"));
+  memories.exec(`CREATE TABLE stage1_outputs (
+    thread_id TEXT PRIMARY KEY,
+    source_updated_at INTEGER NOT NULL,
+    raw_memory TEXT NOT NULL,
+    rollout_summary TEXT NOT NULL,
+    generated_at INTEGER NOT NULL,
+    selected_for_phase2 INTEGER NOT NULL DEFAULT 0
+  )`);
+  memories.exec(`CREATE TABLE jobs (
+    kind TEXT NOT NULL,
+    job_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    worker_id TEXT,
+    ownership_token TEXT,
+    started_at INTEGER,
+    finished_at INTEGER,
+    lease_until INTEGER,
+    retry_at INTEGER,
+    retry_remaining INTEGER NOT NULL,
+    last_error TEXT,
+    input_watermark INTEGER,
+    last_success_watermark INTEGER,
+    PRIMARY KEY (kind, job_key)
+  )`);
+  memories.exec(`INSERT INTO stage1_outputs VALUES
+    ('told',1,'m-old','s-old',1,0),
+    ('tmid',2,'m-mid','s-mid',2,1),
+    ('active',3,'m-live','s-live',3,0)`);
+  memories.exec(`INSERT INTO jobs VALUES
+    ('memory_stage1','told','done',NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL),
+    ('memory_stage1','tmid','done',NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL),
+    ('memory_stage1','active','done',NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL),
+    ('memory_consolidate_global','global','done',NULL,NULL,NULL,NULL,NULL,NULL,3,NULL,0,0)`);
+  memories.close();
+}
+
+function buildHome(opts?: {
+  withSpawnEdges?: boolean;
+  withDynamicTools?: boolean;
+  withSatelliteStores?: boolean;
+}): string {
   const dir = mkdtempSync(join(tmpdir(), "ocx-cleanup-"));
   mkdirSync(join(dir, "sessions", "2026", "05", "27"), { recursive: true });
   writeFileSync(join(dir, "sessions", "2026", "05", "27", "rollout-active.jsonl"), "ACTIVE".repeat(20));
@@ -81,6 +161,7 @@ function buildHome(opts?: { withSpawnEdges?: boolean; withDynamicTools?: boolean
     db.exec(`INSERT INTO thread_dynamic_tools VALUES ('told',0,'tool','d','{}')`);
   }
   db.close();
+  if (opts?.withSatelliteStores) seedSatelliteStores(dir);
   return dir;
 }
 
@@ -448,5 +529,78 @@ describe("executeArchivedCleanup", () => {
     const ids = db.query<{ id: string }, []>("SELECT id FROM threads").all().map(r => r.id);
     db.close();
     expect(ids).toEqual(["active"]);
+  });
+
+  test("permanent cleanup removes logs, goals, and memory rows for deleted threads", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(true);
+    expect(result.count).toBe(3);
+
+    const logs = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+    const logThreads = logs.query<{ thread_id: string }, []>(
+      "SELECT thread_id FROM logs ORDER BY thread_id",
+    ).all().map(r => r.thread_id);
+    logs.close();
+    expect(logThreads).toEqual(["active"]);
+
+    const goals = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+    const goalThreads = goals.query<{ thread_id: string }, []>(
+      "SELECT thread_id FROM thread_goals ORDER BY thread_id",
+    ).all().map(r => r.thread_id);
+    const deferrals = goals.query<{ thread_id: string }, []>(
+      "SELECT thread_id FROM thread_goal_continuation_deferrals",
+    ).all();
+    goals.close();
+    expect(goalThreads).toEqual(["active"]);
+    expect(deferrals).toEqual([]);
+
+    const memories = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+    const stage1 = memories.query<{ thread_id: string }, []>(
+      "SELECT thread_id FROM stage1_outputs ORDER BY thread_id",
+    ).all().map(r => r.thread_id);
+    const stage1Jobs = memories.query<{ job_key: string }, []>(
+      "SELECT job_key FROM jobs WHERE kind='memory_stage1' ORDER BY job_key",
+    ).all().map(r => r.job_key);
+    const consolidate = memories.query<{ status: string }, []>(
+      "SELECT status FROM jobs WHERE kind='memory_consolidate_global' AND job_key='global'",
+    ).get();
+    memories.close();
+    expect(stage1).toEqual(["active"]);
+    expect(stage1Jobs).toEqual(["active"]);
+    // tmid was selected_for_phase2, so upstream enqueues/ refreshes global consolidation.
+    expect(consolidate?.status).toBe("pending");
+
+    const state = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    const ids = state.query<{ id: string }, []>("SELECT id FROM threads").all().map(r => r.id);
+    state.close();
+    expect(ids).toEqual(["active"]);
+  });
+
+  test("threads read failure leaves every file and database unchanged", () => {
+    home = buildHome({ withSatelliteStores: true });
+    // Present state DB with no readable threads table → fail closed before FS/DB mutation.
+    rmSync(join(home, "state_5.sqlite"), { force: true });
+    const broken = new Database(join(home, "state_5.sqlite"));
+    broken.exec(`CREATE TABLE not_threads (id TEXT PRIMARY KEY)`);
+    broken.exec(`INSERT INTO not_threads VALUES ('x')`);
+    broken.close();
+
+    const beforeLogs = readFileSync(join(home, "logs_2.sqlite"));
+    const beforeGoals = readFileSync(join(home, "goals_1.sqlite"));
+    const beforeMemories = readFileSync(join(home, "memories_1.sqlite"));
+    const beforeState = readFileSync(join(home, "state_5.sqlite"));
+
+    const result = runWithDigest(100, "permanent", home);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
+    expect(existsSync(join(home, ".trash"))).toBe(false);
+    expect(Buffer.compare(beforeLogs, readFileSync(join(home, "logs_2.sqlite")))).toBe(0);
+    expect(Buffer.compare(beforeGoals, readFileSync(join(home, "goals_1.sqlite")))).toBe(0);
+    expect(Buffer.compare(beforeMemories, readFileSync(join(home, "memories_1.sqlite")))).toBe(0);
+    expect(Buffer.compare(beforeState, readFileSync(join(home, "state_5.sqlite")))).toBe(0);
   });
 });
