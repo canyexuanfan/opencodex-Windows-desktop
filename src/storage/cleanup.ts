@@ -6,10 +6,10 @@
  * permanent delete is opt-in.
  *
  * Execution is bound to a preview digest. All candidates are staged first; any FS
- * or DB failure rolls staged moves back. DB reconciliation follows Codex
- * `delete_threads_strict` order across the per-thread stores (`logs_*`,
- * `memories_*`, `goals_*`, then `state_*`) and never soft-succeeds with
- * `dbWarning` / `failedPaths`.
+ * or DB failure rolls staged moves back. DB reconciliation freezes thread IDs under
+ * the state write lock, then mutates `logs_*` → `memories_*` → `goals_*` → `state_*`
+ * with satellite snapshots so later failures can restore already-deleted rows.
+ * Success never carries soft `dbWarning` / `failedPaths`.
  */
 import { createHash } from "node:crypto";
 import {
@@ -482,6 +482,279 @@ interface ReconcileOk {
 interface ReconcileErr {
   ok: false;
   error: CleanupErrorCode;
+  /** True when satellite rows were mutated and could not all be restored. */
+  satelliteRestoreFailed?: boolean;
+}
+
+type SqlRow = Record<string, string | number | bigint | null | Uint8Array>;
+
+interface SatelliteBackup {
+  threadIds: string[];
+  logs?: { path: string; rows: SqlRow[] };
+  memories?: {
+    path: string;
+    stage1: SqlRow[];
+    stage1Jobs: SqlRow[];
+    consolidateJob: SqlRow | null;
+    consolidateTouched: boolean;
+  };
+  goals?: {
+    path: string;
+    goals: SqlRow[];
+    deferrals: SqlRow[];
+  };
+}
+
+interface ReconcileTestHooks {
+  failAfterLogsMutation?: boolean;
+  failAfterMemoriesMutation?: boolean;
+  failAfterGoalsMutation?: boolean;
+  failBeforeStateCommit?: boolean;
+  failSatelliteRestore?: boolean;
+}
+
+const SATELLITE_BACKUP_FILE = "satellite-backup.json";
+
+function quoteIdent(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+function selectRows(db: Database, sql: string, params: Array<string | number>): SqlRow[] {
+  return db.query<SqlRow, Array<string | number>>(sql).all(...params) as SqlRow[];
+}
+
+function insertRows(db: Database, table: string, rows: SqlRow[]): void {
+  for (const row of rows) {
+    const cols = Object.keys(row);
+    if (cols.length === 0) continue;
+    db.run(
+      `INSERT INTO ${quoteIdent(table)} (${cols.map(quoteIdent).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+      cols.map(c => row[c] as string | number | bigint | null | Uint8Array),
+    );
+  }
+}
+
+function writeSatelliteBackup(stageDir: string, backup: SatelliteBackup): void {
+  writeFileSync(join(stageDir, SATELLITE_BACKUP_FILE), JSON.stringify(backup), "utf8");
+}
+
+function clearSatelliteBackup(stageDir: string): void {
+  try { unlinkSync(join(stageDir, SATELLITE_BACKUP_FILE)); } catch { /* */ }
+}
+
+/**
+ * Snapshot + delete logs rows for frozen thread IDs.
+ * Returns null when the logs DB is absent.
+ */
+function mutateLogsWithBackup(
+  logsDbPath: string | null,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): SatelliteBackup["logs"] {
+  if (!logsDbPath || !existsSync(logsDbPath) || threadIds.length === 0) return undefined;
+  let db: Database | undefined;
+  try {
+    db = openDbWritable(logsDbPath, busyTimeoutMs);
+    db.exec("BEGIN IMMEDIATE");
+    if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
+    const placeholders = threadIds.map(() => "?").join(",");
+    const rows = selectRows(db, `SELECT * FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
+    db.run(`DELETE FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
+    db.exec("COMMIT");
+    return { path: logsDbPath, rows };
+  } catch (error) {
+    try { db?.exec("ROLLBACK"); } catch { /* */ }
+    throw error;
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+function mutateMemoriesWithBackup(
+  memoriesDbPath: string | null,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): SatelliteBackup["memories"] {
+  if (!memoriesDbPath || !existsSync(memoriesDbPath) || threadIds.length === 0) return undefined;
+  let db: Database | undefined;
+  try {
+    db = openDbWritable(memoriesDbPath, busyTimeoutMs);
+    db.exec("BEGIN IMMEDIATE");
+    if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
+    const placeholders = threadIds.map(() => "?").join(",");
+    const stage1 = selectRows(
+      db,
+      `SELECT * FROM stage1_outputs WHERE thread_id IN (${placeholders})`,
+      threadIds,
+    );
+    let stage1Jobs: SqlRow[] = [];
+    let consolidateJob: SqlRow | null = null;
+    let consolidateTouched = false;
+    let selectedForPhase2 = 0;
+    if (columnExists(db, "stage1_outputs", "selected_for_phase2")) {
+      selectedForPhase2 = stage1.filter(r => Number(r.selected_for_phase2 ?? 0) !== 0).length;
+    }
+    if (tableExists(db, "jobs")) {
+      stage1Jobs = selectRows(
+        db,
+        `SELECT * FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
+        [JOB_KIND_MEMORY_STAGE1, ...threadIds],
+      );
+      consolidateJob = db.query<SqlRow, [string, string]>(
+        `SELECT * FROM jobs WHERE kind = ? AND job_key = ?`,
+      ).get(JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY) as SqlRow | null;
+    }
+
+    db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, threadIds);
+    if (tableExists(db, "jobs")) {
+      db.run(
+        `DELETE FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
+        [JOB_KIND_MEMORY_STAGE1, ...threadIds],
+      );
+      if (selectedForPhase2 > 0) {
+        consolidateTouched = true;
+        const now = Math.floor(Date.now() / 1000);
+        db.run(
+          `INSERT INTO jobs (
+             kind, job_key, status, worker_id, ownership_token, started_at, finished_at,
+             lease_until, retry_at, retry_remaining, last_error, input_watermark, last_success_watermark
+           ) VALUES (?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, 0)
+           ON CONFLICT(kind, job_key) DO UPDATE SET
+             status = CASE WHEN jobs.status = 'running' THEN 'running' ELSE 'pending' END,
+             retry_at = CASE WHEN jobs.status = 'running' THEN jobs.retry_at ELSE NULL END,
+             retry_remaining = max(jobs.retry_remaining, excluded.retry_remaining),
+             input_watermark = CASE
+               WHEN excluded.input_watermark > COALESCE(jobs.input_watermark, 0)
+               THEN excluded.input_watermark
+               ELSE COALESCE(jobs.input_watermark, 0) + 1
+             END`,
+          [JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY, DEFAULT_RETRY_REMAINING, now],
+        );
+      }
+    }
+    db.exec("COMMIT");
+    return { path: memoriesDbPath, stage1, stage1Jobs, consolidateJob, consolidateTouched };
+  } catch (error) {
+    try { db?.exec("ROLLBACK"); } catch { /* */ }
+    throw error;
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+function mutateGoalsWithBackup(
+  goalsDbPath: string | null,
+  threadIds: string[],
+  busyTimeoutMs: number,
+): SatelliteBackup["goals"] {
+  if (!goalsDbPath || !existsSync(goalsDbPath) || threadIds.length === 0) return undefined;
+  let db: Database | undefined;
+  try {
+    db = openDbWritable(goalsDbPath, busyTimeoutMs);
+    db.exec("BEGIN IMMEDIATE");
+    if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
+    const placeholders = threadIds.map(() => "?").join(",");
+    const goals = selectRows(
+      db,
+      `SELECT * FROM thread_goals WHERE thread_id IN (${placeholders})`,
+      threadIds,
+    );
+    let deferrals: SqlRow[] = [];
+    if (tableExists(db, "thread_goal_continuation_deferrals")) {
+      deferrals = selectRows(
+        db,
+        `SELECT * FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+        threadIds,
+      );
+      db.run(
+        `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+        threadIds,
+      );
+    }
+    db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, threadIds);
+    db.exec("COMMIT");
+    return { path: goalsDbPath, goals, deferrals };
+  } catch (error) {
+    try { db?.exec("ROLLBACK"); } catch { /* */ }
+    throw error;
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+/** Restore previously snapshotted satellite rows. Returns false on any restore failure. */
+function restoreSatelliteBackup(
+  backup: SatelliteBackup,
+  busyTimeoutMs: number,
+  failRestore = false,
+): boolean {
+  if (failRestore) return false;
+  try {
+    if (backup.logs) {
+      const restored = withWritableDb(backup.logs.path, busyTimeoutMs, db => {
+        if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
+        // Clear any partial survivors for these ids, then re-insert the snapshot.
+        if (backup.threadIds.length > 0) {
+          const placeholders = backup.threadIds.map(() => "?").join(",");
+          db.run(`DELETE FROM logs WHERE thread_id IN (${placeholders})`, backup.threadIds);
+        }
+        insertRows(db, "logs", backup.logs!.rows);
+      });
+      if (!restored.ok) return false;
+    }
+    if (backup.memories) {
+      const mem = backup.memories;
+      const restored = withWritableDb(mem.path, busyTimeoutMs, db => {
+        if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
+        if (backup.threadIds.length > 0) {
+          const placeholders = backup.threadIds.map(() => "?").join(",");
+          db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, backup.threadIds);
+          if (tableExists(db, "jobs")) {
+            db.run(
+              `DELETE FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
+              [JOB_KIND_MEMORY_STAGE1, ...backup.threadIds],
+            );
+          }
+        }
+        insertRows(db, "stage1_outputs", mem.stage1);
+        if (tableExists(db, "jobs")) {
+          insertRows(db, "jobs", mem.stage1Jobs);
+          if (mem.consolidateTouched) {
+            db.run(
+              `DELETE FROM jobs WHERE kind = ? AND job_key = ?`,
+              [JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY],
+            );
+            if (mem.consolidateJob) insertRows(db, "jobs", [mem.consolidateJob]);
+          }
+        }
+      });
+      if (!restored.ok) return false;
+    }
+    if (backup.goals) {
+      const g = backup.goals;
+      const restored = withWritableDb(g.path, busyTimeoutMs, db => {
+        if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
+        if (backup.threadIds.length > 0) {
+          const placeholders = backup.threadIds.map(() => "?").join(",");
+          if (tableExists(db, "thread_goal_continuation_deferrals")) {
+            db.run(
+              `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+              backup.threadIds,
+            );
+          }
+          db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, backup.threadIds);
+        }
+        insertRows(db, "thread_goals", g.goals);
+        if (tableExists(db, "thread_goal_continuation_deferrals")) {
+          insertRows(db, "thread_goal_continuation_deferrals", g.deferrals);
+        }
+      });
+      if (!restored.ok) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function withWritableDb(
@@ -506,90 +779,6 @@ function withWritableDb(
   } finally {
     try { db?.close(); } catch { /* */ }
   }
-}
-
-/** Codex logs_*.sqlite: DELETE FROM logs WHERE thread_id IN (...). */
-function deleteLogsForThreads(
-  logsDbPath: string | null,
-  threadIds: string[],
-  busyTimeoutMs: number,
-): { ok: true } | ReconcileErr {
-  if (!logsDbPath || !existsSync(logsDbPath) || threadIds.length === 0) return { ok: true };
-  return withWritableDb(logsDbPath, busyTimeoutMs, db => {
-    if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    db.run(`DELETE FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
-  });
-}
-
-/**
- * Codex memories_*.sqlite: remove stage1 outputs and memory_stage1 jobs, and enqueue
- * global consolidation when a deleted output was selected for phase 2 (upstream).
- */
-function deleteMemoriesForThreads(
-  memoriesDbPath: string | null,
-  threadIds: string[],
-  busyTimeoutMs: number,
-): { ok: true } | ReconcileErr {
-  if (!memoriesDbPath || !existsSync(memoriesDbPath) || threadIds.length === 0) return { ok: true };
-  return withWritableDb(memoriesDbPath, busyTimeoutMs, db => {
-    if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    let selectedForPhase2 = 0;
-    if (columnExists(db, "stage1_outputs", "selected_for_phase2")) {
-      const row = db.query<{ n: number }, string[]>(
-        `SELECT COUNT(*) AS n FROM stage1_outputs
-         WHERE thread_id IN (${placeholders}) AND selected_for_phase2 != 0`,
-      ).get(...threadIds);
-      selectedForPhase2 = row?.n ?? 0;
-    }
-    db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, threadIds);
-    if (tableExists(db, "jobs")) {
-      db.run(
-        `DELETE FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
-        [JOB_KIND_MEMORY_STAGE1, ...threadIds],
-      );
-      if (selectedForPhase2 > 0) {
-        const now = Math.floor(Date.now() / 1000);
-        db.run(
-          `INSERT INTO jobs (
-             kind, job_key, status, worker_id, ownership_token, started_at, finished_at,
-             lease_until, retry_at, retry_remaining, last_error, input_watermark, last_success_watermark
-           ) VALUES (?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, 0)
-           ON CONFLICT(kind, job_key) DO UPDATE SET
-             status = CASE WHEN jobs.status = 'running' THEN 'running' ELSE 'pending' END,
-             retry_at = CASE WHEN jobs.status = 'running' THEN jobs.retry_at ELSE NULL END,
-             retry_remaining = max(jobs.retry_remaining, excluded.retry_remaining),
-             input_watermark = CASE
-               WHEN excluded.input_watermark > COALESCE(jobs.input_watermark, 0)
-               THEN excluded.input_watermark
-               ELSE COALESCE(jobs.input_watermark, 0) + 1
-             END`,
-          [JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL, MEMORY_CONSOLIDATION_JOB_KEY, DEFAULT_RETRY_REMAINING, now],
-        );
-      }
-    }
-  });
-}
-
-/** Codex goals_*.sqlite: DELETE FROM thread_goals (cascades continuation deferrals). */
-function deleteGoalsForThreads(
-  goalsDbPath: string | null,
-  threadIds: string[],
-  busyTimeoutMs: number,
-): { ok: true } | ReconcileErr {
-  if (!goalsDbPath || !existsSync(goalsDbPath) || threadIds.length === 0) return { ok: true };
-  return withWritableDb(goalsDbPath, busyTimeoutMs, db => {
-    if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
-    const placeholders = threadIds.map(() => "?").join(",");
-    if (tableExists(db, "thread_goal_continuation_deferrals")) {
-      db.run(
-        `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
-        threadIds,
-      );
-    }
-    db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, threadIds);
-  });
 }
 
 /** Load matching archived threads and refuse referenced history — no deletes yet. */
@@ -617,50 +806,90 @@ function loadThreadsForCleanup(
 
 /**
  * Reconcile all Codex per-thread stores for the matched archived candidates.
- * Order matches upstream `delete_threads_strict`: logs → memories → goals → state.
+ *
+ * Freezes the thread-ID set under the state write lock, then mutates satellites
+ * (logs → memories → goals) with durable snapshots. Any later failure restores
+ * satellite rows before the caller restores staged files.
  */
 function reconcileDeletedThreads(
   paths: RuntimeDbPaths,
   candidates: ArchivedCandidate[],
   codexHome: string,
   busyTimeoutMs: number,
+  stageDir: string,
+  hooks?: ReconcileTestHooks,
 ): ReconcileOk | ReconcileErr {
   if (!paths.state || !existsSync(paths.state)) return { ok: true, threads: [] };
 
-  // Fresh id set before satellite deletes (state rows still present for retryability).
-  const preflight = loadThreadsForCleanup(paths.state, candidates, codexHome, busyTimeoutMs);
-  if (!preflight.ok) return preflight;
-  const threadIds = preflight.threads.map(t => t.id);
+  let stateDb: Database | undefined;
+  let backup: SatelliteBackup | undefined;
+  let satellitesMutated = false;
 
-  const logs = deleteLogsForThreads(paths.logs, threadIds, busyTimeoutMs);
-  if (!logs.ok) return logs;
-  const memories = deleteMemoriesForThreads(paths.memories, threadIds, busyTimeoutMs);
-  if (!memories.ok) return memories;
-  const goals = deleteGoalsForThreads(paths.goals, threadIds, busyTimeoutMs);
-  if (!goals.ok) return goals;
-
-  let db: Database | undefined;
-  try {
-    db = openDbWritable(paths.state, busyTimeoutMs);
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      // Re-validate under the write lock; the preflight result may be stale (TOCTOU).
-      const threads = loadMatchingThreads(db, candidates, codexHome);
-      if (findReferencedHistory(db, threads)) {
-        db.exec("ROLLBACK");
-        return { ok: false, error: "referenced_history" };
-      }
-      deleteThreadsAndDependents(db, threads.map(t => t.id));
-      db.exec("COMMIT");
-      return { ok: true, threads };
-    } catch (error) {
-      try { db.exec("ROLLBACK"); } catch { /* */ }
-      throw error;
+  const failWithRestore = (error: CleanupErrorCode, mapped?: CleanupErrorCode): ReconcileErr => {
+    const code = mapped ?? error;
+    let satelliteRestoreFailed = false;
+    if (satellitesMutated && backup) {
+      satelliteRestoreFailed = !restoreSatelliteBackup(
+        backup,
+        busyTimeoutMs,
+        Boolean(hooks?.failSatelliteRestore),
+      );
+      // Keep on-disk backup + manifest when restore cannot complete.
+      if (!satelliteRestoreFailed) clearSatelliteBackup(stageDir);
+    } else {
+      clearSatelliteBackup(stageDir);
     }
+    return {
+      ok: false,
+      error: code,
+      ...(satelliteRestoreFailed ? { satelliteRestoreFailed: true } : {}),
+    };
+  };
+
+  try {
+    stateDb = openDbWritable(paths.state, busyTimeoutMs);
+    stateDb.exec("BEGIN IMMEDIATE");
+
+    // Freeze the exact delete set under the write lock before any satellite mutation.
+    const threads = loadMatchingThreads(stateDb, candidates, codexHome);
+    if (findReferencedHistory(stateDb, threads)) {
+      stateDb.exec("ROLLBACK");
+      return { ok: false, error: "referenced_history" };
+    }
+    const threadIds = threads.map(t => t.id);
+    backup = { threadIds };
+
+    // Snapshot+delete satellites while the state lock is held so the ID set cannot drift.
+    backup.logs = mutateLogsWithBackup(paths.logs, threadIds, busyTimeoutMs);
+    writeSatelliteBackup(stageDir, backup);
+    satellitesMutated = Boolean(backup.logs);
+    if (hooks?.failAfterLogsMutation) throw new Error("test_fail_after_logs");
+
+    backup.memories = mutateMemoriesWithBackup(paths.memories, threadIds, busyTimeoutMs);
+    writeSatelliteBackup(stageDir, backup);
+    satellitesMutated = satellitesMutated || Boolean(backup.memories);
+    if (hooks?.failAfterMemoriesMutation) throw new Error("test_fail_after_memories");
+
+    backup.goals = mutateGoalsWithBackup(paths.goals, threadIds, busyTimeoutMs);
+    writeSatelliteBackup(stageDir, backup);
+    satellitesMutated = satellitesMutated || Boolean(backup.goals);
+    if (hooks?.failAfterGoalsMutation) throw new Error("test_fail_after_goals");
+
+    // Re-check under the same lock before committing state deletes.
+    if (findReferencedHistory(stateDb, threads)) {
+      stateDb.exec("ROLLBACK");
+      return failWithRestore("referenced_history");
+    }
+    deleteThreadsAndDependents(stateDb, threadIds);
+    if (hooks?.failBeforeStateCommit) throw new Error("test_fail_before_state_commit");
+    stateDb.exec("COMMIT");
+    clearSatelliteBackup(stageDir);
+    return { ok: true, threads };
   } catch (error) {
-    return { ok: false, error: mapDbError(error) };
+    try { stateDb?.exec("ROLLBACK"); } catch { /* */ }
+    return failWithRestore("db_reconcile_failed", mapDbError(error));
   } finally {
-    try { db?.close(); } catch { /* */ }
+    try { stateDb?.close(); } catch { /* */ }
   }
 }
 
@@ -758,6 +987,15 @@ function removeStageIfEmpty(stageDir: string, remaining: StagedFile[]): void {
   try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
 }
 
+function removeEmptyTrashRoot(codexHome: string): void {
+  try {
+    const trashRoot = join(codexHome, TRASH_DIR);
+    if (existsSync(trashRoot) && readdirSync(trashRoot).length === 0) {
+      rmSync(trashRoot, { recursive: true, force: true });
+    }
+  } catch { /* */ }
+}
+
 function trashRelPath(codexHome: string, stageDir: string): string {
   return toForwardSlash(relative(codexHome, stageDir) || stageDir);
 }
@@ -776,6 +1014,11 @@ export interface ExecuteCleanupOptions {
     failManifestWrite?: boolean;
     failPurgeBasenames?: string[];
     failRollbackBasenames?: string[];
+    failAfterLogsMutation?: boolean;
+    failAfterMemoriesMutation?: boolean;
+    failAfterGoalsMutation?: boolean;
+    failBeforeStateCommit?: boolean;
+    failSatelliteRestore?: boolean;
   };
 }
 
@@ -900,12 +1143,18 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     preview.candidates,
     codexHome,
     busyTimeoutMs,
+    stageDir,
+    options._test,
   );
   if (!deleted.ok) {
     const rolled = rollbackStaged(stageResult.staged, { failBasenames: failRollback });
-    // Keep the stage (and manifest) whenever anything remains unrestored.
-    removeStageIfEmpty(stageDir, rolled.remaining);
-    return fail(mode, percent, deleted.error, rolled.restored ? undefined : { trashDir });
+    // Keep the stage (and recovery manifest) when files or satellite DB rows remain unrestored.
+    const keepTrash = Boolean(deleted.satelliteRestoreFailed) || !rolled.restored;
+    if (!keepTrash) {
+      removeStageIfEmpty(stageDir, rolled.remaining);
+      removeEmptyTrashRoot(codexHome);
+    }
+    return fail(mode, percent, deleted.error, keepTrash ? { trashDir } : undefined);
   }
 
   const removedPaths = preview.candidates.map(c => c.relPath);
@@ -958,12 +1207,7 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
 
   try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* empty dir */ }
   // Drop an empty `.trash` root so permanent cleanup leaves no quarantine tree behind.
-  try {
-    const trashRoot = join(codexHome, TRASH_DIR);
-    if (existsSync(trashRoot) && readdirSync(trashRoot).length === 0) {
-      rmSync(trashRoot, { recursive: true, force: true });
-    }
-  } catch { /* */ }
+  removeEmptyTrashRoot(codexHome);
 
   return {
     ok: true,

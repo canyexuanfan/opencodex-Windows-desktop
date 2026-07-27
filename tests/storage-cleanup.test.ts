@@ -177,6 +177,11 @@ function runWithDigest(
       failManifestWrite?: boolean;
       failPurgeBasenames?: string[];
       failRollbackBasenames?: string[];
+      failAfterLogsMutation?: boolean;
+      failAfterMemoriesMutation?: boolean;
+      failAfterGoalsMutation?: boolean;
+      failBeforeStateCommit?: boolean;
+      failSatelliteRestore?: boolean;
     };
   },
 ) {
@@ -602,5 +607,79 @@ describe("executeArchivedCleanup", () => {
     expect(Buffer.compare(beforeGoals, readFileSync(join(home, "goals_1.sqlite")))).toBe(0);
     expect(Buffer.compare(beforeMemories, readFileSync(join(home, "memories_1.sqlite")))).toBe(0);
     expect(Buffer.compare(beforeState, readFileSync(join(home, "state_5.sqlite")))).toBe(0);
+  });
+
+  test("injected satellite/state failures restore every file and database", () => {
+    const hooks = [
+      { failAfterLogsMutation: true },
+      { failAfterMemoriesMutation: true },
+      { failAfterGoalsMutation: true },
+      { failBeforeStateCommit: true },
+    ] as const;
+
+    for (const hook of hooks) {
+      home = buildHome({ withSatelliteStores: true });
+      const files = {
+        old: readFileSync(join(home, "archived_sessions", "rollout-old.jsonl")),
+        mid: readFileSync(join(home, "archived_sessions", "rollout-mid.jsonl")),
+        neu: readFileSync(join(home, "archived_sessions", "rollout-new.jsonl")),
+      };
+      const logsDb = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+      const logs = logsDb.query("SELECT id, ts, level, target, thread_id, estimated_bytes FROM logs ORDER BY id").all();
+      logsDb.close();
+      const goalsDb = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+      const goals = goalsDb.query("SELECT thread_id, goal_id, objective, status FROM thread_goals ORDER BY thread_id").all();
+      const deferrals = goalsDb.query("SELECT thread_id FROM thread_goal_continuation_deferrals ORDER BY thread_id").all();
+      goalsDb.close();
+      const memDb = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+      const stage1 = memDb.query("SELECT thread_id, raw_memory, rollout_summary, selected_for_phase2 FROM stage1_outputs ORDER BY thread_id").all();
+      const jobs = memDb.query("SELECT kind, job_key, status FROM jobs ORDER BY kind, job_key").all();
+      memDb.close();
+      const stateDb = new Database(join(home, "state_5.sqlite"), { readonly: true });
+      const threads = stateDb.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all();
+      stateDb.close();
+
+      const result = runWithDigest(100, "permanent", home, { now: 93, _test: { ...hook } });
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("db_reconcile_failed");
+      expect(result.trashDir).toBeUndefined();
+      expect(existsSync(join(home, ".trash"))).toBe(false);
+      expect(Buffer.compare(files.old, readFileSync(join(home, "archived_sessions", "rollout-old.jsonl")))).toBe(0);
+      expect(Buffer.compare(files.mid, readFileSync(join(home, "archived_sessions", "rollout-mid.jsonl")))).toBe(0);
+      expect(Buffer.compare(files.neu, readFileSync(join(home, "archived_sessions", "rollout-new.jsonl")))).toBe(0);
+
+      const logsAfter = new Database(join(home, "logs_2.sqlite"), { readonly: true });
+      expect(logsAfter.query("SELECT id, ts, level, target, thread_id, estimated_bytes FROM logs ORDER BY id").all()).toEqual(logs);
+      logsAfter.close();
+      const goalsAfter = new Database(join(home, "goals_1.sqlite"), { readonly: true });
+      expect(goalsAfter.query("SELECT thread_id, goal_id, objective, status FROM thread_goals ORDER BY thread_id").all()).toEqual(goals);
+      expect(goalsAfter.query("SELECT thread_id FROM thread_goal_continuation_deferrals ORDER BY thread_id").all()).toEqual(deferrals);
+      goalsAfter.close();
+      const memAfter = new Database(join(home, "memories_1.sqlite"), { readonly: true });
+      expect(memAfter.query("SELECT thread_id, raw_memory, rollout_summary, selected_for_phase2 FROM stage1_outputs ORDER BY thread_id").all()).toEqual(stage1);
+      expect(memAfter.query("SELECT kind, job_key, status FROM jobs ORDER BY kind, job_key").all()).toEqual(jobs);
+      memAfter.close();
+      const stateAfter = new Database(join(home, "state_5.sqlite"), { readonly: true });
+      expect(stateAfter.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all()).toEqual(threads);
+      stateAfter.close();
+
+      rmSync(home, { recursive: true, force: true });
+      home = "";
+    }
+  });
+
+  test("satellite restore failure keeps recovery trashDir and manifest", () => {
+    home = buildHome({ withSatelliteStores: true });
+    const result = runWithDigest(100, "permanent", home, {
+      now: 94,
+      _test: { failBeforeStateCommit: true, failSatelliteRestore: true },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("db_reconcile_failed");
+    expect(result.trashDir).toBe(".trash/94");
+    expect(existsSync(join(home, ".trash", "94", "manifest.json"))).toBe(true);
+    expect(existsSync(join(home, ".trash", "94", "satellite-backup.json"))).toBe(true);
+    // Files are still restored; trash is kept for DB recovery metadata.
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
   });
 });
