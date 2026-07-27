@@ -15,10 +15,16 @@ draft로 강등하고(`convertPullRequestToDraft`), `ready_for_review` 이벤트
 
 그리고 **GitHub은 draft PR의 머지를 차단한다.** 두 사실을 합치면:
 
-> 워크플로를 고치기 전까지 dev2-go 대상 PR은 머지가 불가능하다.
+> 워크플로를 고치기 전까지 dev2-go 대상 PR은 정상 리뷰 흐름을 탈 수 없다.
 
 실제 상태가 그 증거다 — PR #455는 `draft=true`, 제목은
 `[WRONG BRANCH] chore: ...`로 자동 수정된 상태다.
+
+**단서 (실증, `050_live_evidence.md`):** draft 강등이 항상 성공하는 것은
+아니다. PR #527에서는 `convertPullRequestToDraft` mutation이 실패해 PR이
+ready로 남았고, 대신 워크플로가 `failure`로 끝나 빨간 체크를 남겼다.
+제목 오염과 retarget 요구는 두 경우 모두 발생한다. 어느 쪽이든 정상
+리뷰 흐름이 아니라는 결론은 같다.
 
 따라서 "그 상태로 리뷰하고 머지하라"는 안내는 쓸 수 없다. 실행 불가능한
 지시다. 정직한 문구는 이것뿐이다:
