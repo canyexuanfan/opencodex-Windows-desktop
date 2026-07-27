@@ -245,6 +245,7 @@ export const ja: Record<TKey, string> = {
   "prov.didntOpen": "開きませんか? ここをクリック",
   "prov.copyLink": "リンクをコピー",
   "prov.linkCopied": "コピーしました",
+  "prov.linkCopyUnavailable": "クリップボードを使用できません",
   "prov.pasteRedirect": "リダイレクト URL またはコードを貼り付け",
   "prov.pasteRedirectHint": "ブラウザに localhost エラーが表示された場合、アドレスバーから URL 全体をコピーしてここに貼り付けてください(または認可コードを貼り付け)。",
   "prov.pasteSubmit": "送信",

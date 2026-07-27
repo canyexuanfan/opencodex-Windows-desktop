@@ -240,6 +240,7 @@ export const zh: Record<TKey, string> = {
   "prov.didntOpen": "没有打开？点击这里",
   "prov.copyLink": "复制链接",
   "prov.linkCopied": "已复制",
+  "prov.linkCopyUnavailable": "剪贴板不可用",
   "prov.deviceCode": "设备验证码",
   "prov.copyCode": "复制验证码",
   "prov.codeCopied": "验证码已复制",

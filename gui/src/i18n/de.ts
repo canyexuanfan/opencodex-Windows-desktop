@@ -234,6 +234,7 @@ export const de: Record<TKey, string> = {
   "prov.didntOpen": "Hat sich nicht geöffnet? Hier klicken",
   "prov.copyLink": "Link kopieren",
   "prov.linkCopied": "Kopiert",
+  "prov.linkCopyUnavailable": "Zwischenablage nicht verfügbar",
   "prov.deviceCode": "Gerätecode",
   "prov.copyCode": "Code kopieren",
   "prov.codeCopied": "Code kopiert",

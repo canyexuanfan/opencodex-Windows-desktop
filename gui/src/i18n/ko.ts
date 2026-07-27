@@ -240,6 +240,7 @@ export const ko: Record<TKey, string> = {
   "prov.didntOpen": "안 열렸나요? 여기를 클릭하세요",
   "prov.copyLink": "링크 복사",
   "prov.linkCopied": "복사됨",
+  "prov.linkCopyUnavailable": "클립보드를 사용할 수 없음",
   "prov.deviceCode": "기기 인증 코드",
   "prov.copyCode": "코드 복사",
   "prov.codeCopied": "코드 복사됨",

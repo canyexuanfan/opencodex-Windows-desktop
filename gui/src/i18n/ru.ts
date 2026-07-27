@@ -245,6 +245,7 @@ export const ru: Record<TKey, string> = {
   "prov.didntOpen": "Не открылось? Нажмите здесь",
   "prov.copyLink": "Копировать ссылку",
   "prov.linkCopied": "Скопировано",
+  "prov.linkCopyUnavailable": "Буфер обмена недоступен",
   "prov.deviceCode": "Код устройства",
   "prov.copyCode": "Копировать код",
   "prov.codeCopied": "Код скопирован",

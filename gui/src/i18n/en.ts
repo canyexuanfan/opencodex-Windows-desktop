@@ -246,6 +246,7 @@ export const en = {
   "prov.didntOpen": "Didn't open? Click here",
   "prov.copyLink": "Copy link",
   "prov.linkCopied": "Copied",
+  "prov.linkCopyUnavailable": "Clipboard unavailable",
   "prov.deviceCode": "Device code",
   "prov.copyCode": "Copy code",
   "prov.codeCopied": "Code copied",
