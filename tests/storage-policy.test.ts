@@ -540,4 +540,56 @@ describe("runStorageCleanupPolicy", () => {
     ]);
     expect(result.removed).toBe(2);
   });
+
+  test("completion merges run metadata into concurrent policy edits", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+      { name: "rollout-new.jsonl", bytes: 100, when: NEW },
+    ]);
+    const stored: StorageCleanupPolicy[] = [
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 50 },
+        target: { removeOldestPercent: 50 },
+        schedule: "manual",
+        mode: "quarantine",
+      }),
+    ];
+    const now = 77_000;
+    const result = runStorageCleanupPolicy({
+      reason: "manual",
+      force: true,
+      now,
+      codexHome: dir,
+      loadPolicy: () => stored[0]!,
+      savePolicy: p => { stored[0] = p; },
+      execute: (): CleanupResult => {
+        // Simulate a concurrent PUT while the job holds the start-of-run snapshot.
+        stored[0] = policy({
+          enabled: false,
+          trigger: { archivedBytesOver: 999 },
+          target: { reduceToBytes: 42 },
+          schedule: "daily",
+          mode: "permanent",
+        });
+        return {
+          ok: true,
+          mode: "quarantine",
+          percent: 50,
+          count: 1,
+          bytes: 100,
+          removedPaths: ["archived_sessions/rollout-old.jsonl"],
+        };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(stored[0]!.enabled).toBe(false);
+    expect(stored[0]!.trigger).toEqual({ archivedBytesOver: 999 });
+    expect(stored[0]!.target).toEqual({ reduceToBytes: 42 });
+    expect(stored[0]!.schedule).toBe("daily");
+    expect(stored[0]!.mode).toBe("permanent");
+    expect(stored[0]!.lastRun).toEqual({ at: now, freedBytes: 100, removed: 1 });
+    expect(stored[0]!.nextRun).toBe(computeNextRun("daily", now));
+    expect(result.policy).toEqual(stored[0]);
+  });
 });

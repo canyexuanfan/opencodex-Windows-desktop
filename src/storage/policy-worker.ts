@@ -11,7 +11,7 @@ interface RunMessage {
   force?: boolean;
   codexHome?: string;
   busyTimeoutMs?: number;
-  /** Test-only: block this worker thread before evaluating the policy. */
+  /** Test-only: block after loading the start-of-job policy (see holdAfterLoadMs). */
   blockMs?: number;
   /** Env snapshot — Workers may not see parent mutations on all platforms. */
   env?: { CODEX_HOME?: string; OPENCODEX_HOME?: string };
@@ -33,14 +33,14 @@ self.onmessage = (event: MessageEvent<unknown>) => {
   try {
     if (env?.CODEX_HOME) process.env.CODEX_HOME = env.CODEX_HOME;
     if (env?.OPENCODEX_HOME) process.env.OPENCODEX_HOME = env.OPENCODEX_HOME;
-    if (typeof blockMs === "number" && Number.isFinite(blockMs) && blockMs > 0) {
-      Bun.sleepSync(Math.floor(blockMs));
-    }
     const result = runStorageCleanupPolicy({
       reason,
       force: force === true,
       ...(codexHome ? { codexHome } : {}),
       ...(busyTimeoutMs !== undefined ? { busyTimeoutMs } : {}),
+      ...(typeof blockMs === "number" && Number.isFinite(blockMs) && blockMs > 0
+        ? { holdAfterLoadMs: Math.floor(blockMs) }
+        : {}),
     });
     self.postMessage({ type: "done", requestId, result });
   } catch (err) {

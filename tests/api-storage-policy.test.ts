@@ -281,4 +281,89 @@ describe("storage cleanup policy API", () => {
       resetStorageCleanupPolicyJobForTests();
     }
   });
+
+  test("blocked worker completion preserves concurrent policy PUT edits", async () => {
+    setStorageCleanupPolicyJobTestHooks({ blockMs: 800 });
+    seedArchived(isolatedCodexHome!.path);
+    const server = startServer(0);
+    try {
+      await fetch(new URL("/api/storage/cleanup-policy", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          enabled: true,
+          trigger: { archivedBytesOver: 50 },
+          target: { removeOldestPercent: 50 },
+          schedule: "manual",
+          mode: "quarantine",
+        }),
+      });
+
+      const run = await fetch(new URL("/api/storage/cleanup-policy/run", server.url), {
+        method: "POST",
+      });
+      expect(run.status).toBe(200);
+      const runStart = await run.json() as { started?: boolean; job?: { status: string; startedAt: number } };
+      expect(runStart.started).toBe(true);
+      expect(runStart.job?.status).toBe("running");
+
+      // Wait until the job is visibly running, then edit policy while the worker holds.
+      const editDeadline = Date.now() + 2_000;
+      while (Date.now() < editDeadline) {
+        const peek = await fetch(new URL("/api/storage/cleanup-policy", server.url));
+        const peekBody = await peek.json() as { job?: { status?: string } };
+        if (peekBody.job?.status === "running") break;
+        await Bun.sleep(20);
+      }
+
+      // Let the worker load the start-of-job snapshot, then edit during the hold window.
+      await Bun.sleep(120);
+
+      const put = await fetch(new URL("/api/storage/cleanup-policy", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          enabled: false,
+          trigger: { archivedBytesOver: 1234 },
+          target: { reduceToBytes: 42 },
+          schedule: "daily",
+          mode: "permanent",
+        }),
+      });
+      expect(put.status).toBe(200);
+      const putBody = await put.json() as { ok?: boolean; policy?: { enabled?: boolean } };
+      expect(putBody.ok).toBe(true);
+      expect(putBody.policy?.enabled).toBe(false);
+
+      const done = await waitForJobIdle(server.url, runStart.job!.startedAt);
+      expect(done.job.lastOutcome?.ok).toBe(true);
+      expect(done.job.lastOutcome?.removed).toBe(1);
+      expect(done.enabled).toBe(false);
+      expect(done.lastRun?.removed).toBe(1);
+
+      const final = await fetch(new URL("/api/storage/cleanup-policy", server.url));
+      const body = await final.json() as {
+        enabled: boolean;
+        trigger: { archivedBytesOver: number };
+        target: { reduceToBytes?: number; removeOldestPercent?: number };
+        schedule: string;
+        mode: string;
+        lastRun?: { removed: number; freedBytes: number; at: number };
+        nextRun?: number;
+      };
+      expect(body.enabled).toBe(false);
+      expect(body.trigger.archivedBytesOver).toBe(1234);
+      expect(body.target).toEqual({ reduceToBytes: 42 });
+      expect(body.schedule).toBe("daily");
+      expect(body.mode).toBe("permanent");
+      expect(body.lastRun?.removed).toBe(1);
+      expect(body.lastRun?.freedBytes).toBe(100);
+      expect(typeof body.lastRun?.at).toBe("number");
+      expect(typeof body.nextRun).toBe("number");
+    } finally {
+      await server.stop(true);
+      stopStorageCleanupScheduler();
+      resetStorageCleanupPolicyJobForTests();
+    }
+  });
 });

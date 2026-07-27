@@ -44,7 +44,10 @@ export interface RequestPolicyRunOptions {
 }
 
 export interface PolicyJobTestHooks {
-  /** Block the worker thread this many ms before policy evaluation. */
+  /**
+   * Block the worker (or in-process run) this many ms after the start-of-job
+   * policy load, so concurrent PUTs can race completion metadata writes.
+   */
   blockMs?: number;
   /**
    * When true, run on the main thread via `queueMicrotask` + optional sleep.
@@ -142,7 +145,15 @@ function outcomeFromResult(result: PolicyRunResult): PolicyJobOutcome {
 }
 
 function applyFinished(result: PolicyRunResult): void {
-  livePolicyApply?.(result.policy);
+  // Prefer the latest persisted policy over `result.policy`. The worker (or
+  // in-process run) already merged run metadata into disk; a concurrent PUT
+  // may also have landed after that write. Re-reading avoids applying a stale
+  // start-of-job snapshot when the run skipped without saving.
+  try {
+    livePolicyApply?.(readStorageCleanupPolicyFromConfig());
+  } catch {
+    livePolicyApply?.(result.policy);
+  }
   state = {
     status: "idle",
     reason: state.reason,
@@ -228,9 +239,6 @@ async function executeJob(opts: RequestPolicyRunOptions): Promise<void> {
     let result: PolicyRunResult;
 
     if (testHooks?.runInProcess) {
-      if (typeof blockMs === "number" && blockMs > 0) {
-        await Bun.sleep(blockMs);
-      }
       // Dynamic import keeps the sync engine out of the hot path for the default Worker mode.
       const { runStorageCleanupPolicy } = await import("./policy");
       result = runStorageCleanupPolicy({
@@ -238,6 +246,7 @@ async function executeJob(opts: RequestPolicyRunOptions): Promise<void> {
         force: opts.force === true,
         ...(opts.codexHome ? { codexHome: opts.codexHome } : {}),
         ...(opts.busyTimeoutMs !== undefined ? { busyTimeoutMs: opts.busyTimeoutMs } : {}),
+        ...(typeof blockMs === "number" && blockMs > 0 ? { holdAfterLoadMs: blockMs } : {}),
       });
     } else {
       result = await runInWorker({
