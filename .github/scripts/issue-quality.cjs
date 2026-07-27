@@ -150,10 +150,11 @@ function resolveSection(body, headings) {
 }
 
 /**
- * True when the body has at least one non-empty h2–h4 section with enough
- * detail. Used for soft-pass only — unstructured length alone is not enough.
+ * True when the body has multiple non-empty h2–h4 sections with enough detail.
+ * Soft-pass only — unstructured length alone is not enough, and a single
+ * arbitrary heading must not bypass the quality gate (Codex on #564).
  */
-function hasSubstantialStructuredContent(body, minSectionLen = 40) {
+function hasSubstantialStructuredContent(body, minSectionLen = 40, minRichSections = 2) {
   if (typeof body !== "string") return false;
   const lines = body.split("\n");
   let capturing = false;
@@ -173,7 +174,7 @@ function hasSubstantialStructuredContent(body, minSectionLen = 40) {
     if (capturing) bucket.push(line);
   }
   if (capturing) flush();
-  return richSections >= 1;
+  return richSections >= minRichSections;
 }
 
 // ---------------------------------------------------------------------------
@@ -695,7 +696,8 @@ function validateIssue(issue) {
       // Same soft-pass as bug/feature: label- or maintainer-scoped provider
       // reports often use non-English structured headings after a retitle.
       const mappedHeadingPresent =
-        current !== null || expected !== null || repro !== null || response !== null || docs !== null;
+        current !== null || expected !== null || repro !== null || response !== null || docs !== null ||
+        provider !== null || version !== null || endpoint !== null;
       const canSoftPass =
         !mappedHeadingPresent &&
         hasSubstantialStructuredContent(body);

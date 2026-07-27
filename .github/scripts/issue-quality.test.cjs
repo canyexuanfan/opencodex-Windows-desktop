@@ -1049,6 +1049,44 @@ describe("translated feature headings and soft-pass", () => {
     assert.equal(result.valid, false);
   });
 
+  it("does not soft-pass a single arbitrary rich heading (Codex #564)", () => {
+    const result = validateIssue({
+      title: "Something broke after upgrade",
+      body: [
+        "## Notes",
+        "x".repeat(80),
+      ].join("\n"),
+      labels: ["bug"],
+      storedKind: "bug",
+    });
+    assert.equal(result.kind, "bug");
+    assert.equal(result.softPass, false);
+    assert.equal(result.valid, false);
+    assert.match(result.reasons.join(" "), /Summary and Reproduction are empty/);
+  });
+
+  it("does not soft-pass provider reports that only fill mapped metadata headings", () => {
+    const result = validateIssue({
+      title: "Provider X fails on Responses",
+      body: [
+        "### Provider or upstream service",
+        "custom-openai-compatible gateway hosted on our internal mesh",
+        "### OpenCodex version",
+        "2.7.41",
+        "### Endpoint or capability",
+        "`POST /v1/responses` with streaming tool calls",
+        "## Extra notes",
+        "We see intermittent 502s after rotating the upstream API key for this gateway.",
+      ].join("\n"),
+      labels: ["provider-compatibility"],
+      storedKind: "provider-compatibility",
+    });
+    assert.equal(result.kind, "provider-compatibility");
+    assert.equal(result.softPass, false);
+    assert.equal(result.valid, false);
+    assert.match(result.reasons.join(" "), /current behaviour|expected behaviour/i);
+  });
+
   it("still rejects empty [Feature]: bodies", () => {
     const result = validateIssue({
       title: "[Feature]: do something cool",
