@@ -45,18 +45,24 @@ Adding or removing a maintainer requires:
 
 ### Change log
 
-- 2026-07-27 — [@Wibias](https://github.com/Wibias) added as a maintainer at
-  the project owner's request (requirement 1). Requirement 2, review by another
-  current maintainer, is satisfied by the review on the pull request that lands
-  this change; the entry is recorded here at merge time. Scope covers issue and
-  pull-request triage, `dev` integration, and provider/CI maintenance.
-  Security-boundary ownership in `.github/CODEOWNERS` is deliberately
-  unchanged: authentication, credential handling, GitHub Actions, and release
-  automation keep the two owners already listed for those paths, so this
-  addition does not widen the review surface for them. Note that CODEOWNERS
-  requests reviews rather than enforcing them — no branch protection rule is
-  configured on this repository, so code-owner approval is a convention here,
-  not a gate. Widening the boundary, or enforcing it, is a separate decision.
+- 2026-07-27 — [@Wibias](https://github.com/Wibias) added as a maintainer.
+  Requirement 1 (agreement from the project owner) is met: the owner requested
+  the addition. **Requirement 2 (review by another current maintainer) is still
+  open** and is satisfied when this change is reviewed and merged; until then
+  this entry records an in-progress change, not a completed procedure.
+  Requirement 3 is met by this file and `.github/CODEOWNERS`.
+
+  Scope covers issue and pull-request triage, `dev` integration, and
+  provider/CI maintenance. Security-boundary ownership in `.github/CODEOWNERS`
+  is deliberately unchanged: authentication, credential handling, GitHub
+  Actions, and release automation keep the two owners already listed for those
+  paths, so this addition does not widen the review surface for them.
+
+  CODEOWNERS requests reviews rather than enforcing them — no branch protection
+  rule is configured on this repository, so code-owner approval is a convention
+  here, not a gate. The same is true of the approval requirement in the review
+  and merge policy above. Widening the security boundary, or enforcing either
+  of these through branch protection, is a separate decision.
 
 ## Security reports
 
