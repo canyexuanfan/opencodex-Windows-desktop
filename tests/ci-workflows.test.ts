@@ -113,6 +113,37 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("bun run build");
   });
 
+  test("cross-platform CI path filters include the stale needs-info workflow", async () => {
+    const workflow = await readText(".github/workflows/ci.yml");
+    // pull_request + push allowlists must both list privileged workflow files.
+    expect(count(workflow, '".github/workflows/stale-needs-info.yml"')).toBe(2);
+  });
+
+  test("stale needs-info workflow is schedule-only and least-privilege", async () => {
+    const text = await readText(".github/workflows/stale-needs-info.yml");
+    const workflow = Bun.YAML.parse(text) as {
+      on?: Record<string, unknown>;
+      permissions?: Record<string, string>;
+      jobs?: Record<string, { steps?: Array<{ uses?: string; with?: Record<string, unknown> }> }>;
+    };
+
+    // Branch-selected workflow_dispatch would run an unreviewed YAML with write tokens.
+    expect(workflow.on).toBeDefined();
+    expect(Object.keys(workflow.on ?? {})).toEqual(["schedule"]);
+    expect(workflow.permissions).toEqual({
+      contents: "read",
+      issues: "write",
+      "pull-requests": "write",
+    });
+
+    const step = workflow.jobs?.stale?.steps?.[0];
+    expect(step?.uses).toBe("actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629");
+    expect(step?.with?.["only-issue-labels"]).toBe("needs-info");
+    expect(step?.with?.["days-before-pr-stale"]).toBe(-1);
+    expect(step?.with?.["days-before-pr-close"]).toBe(-1);
+    expect(text).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
+  });
+
   test("service lifecycle is least-privilege, bounded, and cannot swallow health failures", async () => {
     const workflow = await readText(".github/workflows/service-lifecycle.yml");
 

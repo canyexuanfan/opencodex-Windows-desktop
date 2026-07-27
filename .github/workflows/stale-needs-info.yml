@@ -8,7 +8,9 @@ on:
   schedule:
     # Daily at 06:15 UTC (offset from the hour to reduce Action load spikes).
     - cron: "15 6 * * *"
-  workflow_dispatch:
+  # No workflow_dispatch: a branch-selected manual run would execute that
+  # branch's workflow body with issues:write / pull-requests:write, bypassing
+  # default-branch review. Schedule-only keeps the trusted revision on main.
 
 permissions:
   contents: read
