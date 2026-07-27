@@ -161,7 +161,7 @@ describe("GitHub Actions hardening", () => {
     expect(stale.with?.["days-before-issue-stale"]).toBe(14);
     expect(stale.with?.["days-before-issue-close"]).toBe(7);
     expect(stale.with?.["stale-issue-label"]).toBe("stale");
-    expect(stale.with?.["exempt-issue-labels"]).toBe("upstream-tracking,roadmap");
+    expect(stale.with?.["exempt-issue-labels"]).toBeUndefined();
     expect(stale.with?.["remove-stale-when-updated"]).toBe(true);
     expect(text).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
   });
