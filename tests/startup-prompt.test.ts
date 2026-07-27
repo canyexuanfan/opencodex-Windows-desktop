@@ -28,12 +28,30 @@ describe("startup star prompt", () => {
     expect(promptIndex).toBeLessThan(syncIndex);
   });
 
-  test("GitHub star prompt defaults to no", async () => {
+  test("GitHub star prompt asks with an explicit Yes/No selector defaulting to No", async () => {
     const prompt = await readText("src/cli/star-prompt.ts");
 
-    expect(prompt).toContain("[y/N]");
-    expect(prompt).toContain('yes = ans === "y" || ans === "yes"');
+    expect(prompt).toContain("interactiveConfirm");
+    expect(prompt).toContain("defaultYes: false");
+    // The old typed prompt treated a bare Enter as consent.
     expect(prompt).not.toContain('ans === "" || ans === "y"');
+  });
+
+  test("the star prompt only appears when gh can actually star", async () => {
+    const prompt = await readText("src/cli/star-prompt.ts");
+
+    expect(prompt).toContain('spawnSync("gh", ["auth", "status"]');
+    expect(prompt).toContain("if (!ghAvailable()) return;");
+  });
+
+  test("declining the star prompt does not steer the agent afterwards", async () => {
+    const prompt = await readText("src/cli/star-prompt.ts");
+
+    // A "No" ends the feature: no persisted decline state, and nothing injected
+    // into any model prompt to keep nudging the user later.
+    expect(prompt).toContain("if (!yes) return;");
+    expect(prompt).not.toMatch(/declined/i);
+    expect(prompt).not.toMatch(/system\s*prompt|encourage|remind the user/i);
   });
 
   test("ocx init offers the Codex autostart shim by default", async () => {
