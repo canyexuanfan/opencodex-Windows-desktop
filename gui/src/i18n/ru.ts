@@ -676,6 +676,7 @@ export const ru: Record<TKey, string> = {
   "storage.policy.loadFailed": "Не удалось загрузить политику очистки.",
   "storage.policy.saveFailed": "Не удалось сохранить политику очистки.",
   "storage.policy.runFailed": "Не удалось выполнить политику.",
+  "storage.policy.alreadyRunning": "Выполнение политики очистки уже выполняется.",
   "storage.policy.invalid": "Недопустимые значения политики.",
   "storage.policy.enabled": "Включить автоочистку",
   "storage.policy.enabledHint": "По умолчанию выкл. При включении работает только по выбранному расписанию (или «Запустить сейчас»).",

@@ -940,11 +940,12 @@ export const zh: Record<TKey, string> = {
   "storage.cleanup.err.cleanup_failed": "清理失败。",
 
   "storage.policy.title": "自动清理策略",
-  "storage.policy.help": "当归档会话超过阈值时可选批量清理。默认关闭——不会自动启用。",
+  "storage.policy.help": "当归档大小超过阈值时可选批量清理。默认关闭——不会自动启用。",
   "storage.policy.loading": "正在加载策略…",
   "storage.policy.loadFailed": "无法加载清理策略。",
   "storage.policy.saveFailed": "无法保存清理策略。",
   "storage.policy.runFailed": "策略运行失败。",
+  "storage.policy.alreadyRunning": "清理策略已在运行中。",
   "storage.policy.invalid": "策略值无效。",
   "storage.policy.enabled": "启用自动清理",
   "storage.policy.enabledHint": "默认关闭。启用后仅按所选计划（或立即运行）执行。",

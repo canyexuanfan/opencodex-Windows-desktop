@@ -438,6 +438,8 @@ function AutoCleanupPolicyPanel({
   const [reduceGb, setReduceGb] = useState("4");
   /** Draft string so a cleared threshold is rejected instead of coerced to 0. */
   const [thresholdGb, setThresholdGb] = useState("5");
+  /** Cancels in-flight Run-now polling when the panel unmounts. */
+  const runAbortRef = useRef<AbortController | null>(null);
 
   const loadPolicy = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -476,6 +478,13 @@ function AutoCleanupPolicyPanel({
       controller.abort();
     };
   }, [loadPolicy]);
+
+  useEffect(() => {
+    return () => {
+      runAbortRef.current?.abort();
+      runAbortRef.current = null;
+    };
+  }, []);
 
   const buildBody = (): CleanupPolicy | null => {
     if (!policy) return null;
@@ -537,6 +546,11 @@ function AutoCleanupPolicyPanel({
   };
 
   const runNow = async () => {
+    runAbortRef.current?.abort();
+    const controller = new AbortController();
+    runAbortRef.current = controller;
+    const { signal } = controller;
+
     setRunning(true);
     setError(null);
     setStatus(null);
@@ -551,15 +565,20 @@ function AutoCleanupPolicyPanel({
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(base),
+        signal,
       });
       const saved = await saveRes.json() as { policy?: CleanupPolicy; error?: string };
+      if (signal.aborted) return;
       if (!saveRes.ok || !saved.policy) {
         setError(t("storage.policy.saveFailed"));
         return;
       }
       setPolicy(policyFieldsFromResponse(saved.policy));
 
-      const res = await fetch(`${apiBase}/api/storage/cleanup-policy/run`, { method: "POST" });
+      const res = await fetch(`${apiBase}/api/storage/cleanup-policy/run`, {
+        method: "POST",
+        signal,
+      });
       const startJson = await res.json() as {
         ok?: boolean;
         started?: boolean;
@@ -567,8 +586,13 @@ function AutoCleanupPolicyPanel({
         job?: CleanupPolicy["job"];
         policy?: CleanupPolicy;
       };
+      if (signal.aborted) return;
       if (startJson.policy) setPolicy(policyFieldsFromResponse(startJson.policy));
-      if (!res.ok || startJson.error === "already_running") {
+      if (startJson.error === "already_running" || res.status === 409) {
+        setError(t("storage.policy.alreadyRunning"));
+        return;
+      }
+      if (!res.ok) {
         setError(t("storage.policy.runFailed"));
         return;
       }
@@ -583,10 +607,14 @@ function AutoCleanupPolicyPanel({
       let finalPolicy: CleanupPolicy | undefined;
 
       while (Date.now() < deadline) {
+        if (signal.aborted) return;
         await sleep(250);
-        const pollRes = await fetch(`${apiBase}/api/storage/cleanup-policy`);
+        if (signal.aborted) return;
+        const pollRes = await fetch(`${apiBase}/api/storage/cleanup-policy`, { signal });
+        if (signal.aborted) return;
         if (!pollRes.ok) continue;
         const body = await pollRes.json() as CleanupPolicy;
+        if (signal.aborted) return;
         finalPolicy = policyFieldsFromResponse(body);
         setPolicy(finalPolicy);
         const job = body.job;
@@ -603,6 +631,7 @@ function AutoCleanupPolicyPanel({
         }
       }
 
+      if (signal.aborted) return;
       if (finalPolicy) setPolicy(finalPolicy);
       if (!outcome) {
         setError(t("storage.policy.runFailed"));
@@ -633,10 +662,12 @@ function AutoCleanupPolicyPanel({
         );
         onDone();
       }
-    } catch {
+    } catch (err) {
+      if (signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
       setError(t("storage.policy.runFailed"));
     } finally {
-      setRunning(false);
+      if (runAbortRef.current === controller) runAbortRef.current = null;
+      if (!signal.aborted) setRunning(false);
     }
   };
 

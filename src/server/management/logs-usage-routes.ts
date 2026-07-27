@@ -339,6 +339,8 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
   if (url.pathname === "/api/storage/cleanup-policy/test-stream" && req.method === "GET") {
     const stream = getStorageCleanupPolicyTestStreamResponse();
     if (stream) return stream;
+    // Production: hook is off. Return an explicit JSON 404 — do not fall through to the GUI.
+    return jsonResponse({ error: "not_found" }, 404);
   }
 
   if (url.pathname === "/api/storage/cleanup-policy" && req.method === "GET") {

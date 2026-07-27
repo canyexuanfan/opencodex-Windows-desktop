@@ -677,6 +677,7 @@ export const en = {
   "storage.policy.loadFailed": "Could not load cleanup policy.",
   "storage.policy.saveFailed": "Could not save cleanup policy.",
   "storage.policy.runFailed": "Policy run failed.",
+  "storage.policy.alreadyRunning": "A cleanup policy run is already in progress.",
   "storage.policy.invalid": "Invalid policy values.",
   "storage.policy.enabled": "Enable auto-cleanup",
   "storage.policy.enabledHint": "Default is off. Enabling runs only on the schedule you choose (or Run now).",

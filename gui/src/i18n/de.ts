@@ -925,6 +925,7 @@ export const de: Record<TKey, string> = {
   "storage.policy.loadFailed": "Bereinigungsrichtlinie konnte nicht geladen werden.",
   "storage.policy.saveFailed": "Bereinigungsrichtlinie konnte nicht gespeichert werden.",
   "storage.policy.runFailed": "Richtlinienlauf fehlgeschlagen.",
+  "storage.policy.alreadyRunning": "Ein Bereinigungsrichtlinienlauf läuft bereits.",
   "storage.policy.invalid": "Ungültige Richtlinienwerte.",
   "storage.policy.enabled": "Automatische Bereinigung aktivieren",
   "storage.policy.enabledHint": "Standard ist aus. Bei Aktivierung nur nach gewähltem Zeitplan (oder Jetzt ausführen).",

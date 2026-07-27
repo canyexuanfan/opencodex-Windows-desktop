@@ -644,6 +644,7 @@ export const ja: Record<TKey, string> = {
   "storage.policy.loadFailed": "クリーンアップ方針を読み込めませんでした。",
   "storage.policy.saveFailed": "クリーンアップ方針を保存できませんでした。",
   "storage.policy.runFailed": "方針の実行に失敗しました。",
+  "storage.policy.alreadyRunning": "クリーンアップ方針の実行が既に進行中です。",
   "storage.policy.invalid": "方針の値が無効です。",
   "storage.policy.enabled": "自動クリーンアップを有効化",
   "storage.policy.enabledHint": "既定はオフです。有効にすると選択したスケジュール（または今すぐ実行）でのみ動きます。",

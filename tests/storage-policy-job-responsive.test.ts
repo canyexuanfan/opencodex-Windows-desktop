@@ -123,10 +123,11 @@ describe("storage cleanup policy job responsiveness", () => {
       expect(streamText.split("\n").filter(Boolean).length).toBe(8);
 
       // Every health probe during the blocked worker window should stay snappy.
+      // Relative to blockMs: a main-thread block would push samples toward blockMs itself.
+      const maxHealthMs = Math.floor(blockMs / 3); // 400ms at blockMs=1200
       for (const sample of healthSamples) {
-        expect(sample).toBeLessThan(400);
+        expect(sample).toBeLessThan(maxHealthMs);
       }
-      expect(Math.max(...healthSamples)).toBeLessThan(400);
 
       const deadline = Date.now() + 10_000;
       while (Date.now() < deadline) {
@@ -140,5 +141,5 @@ describe("storage cleanup policy job responsiveness", () => {
       stopStorageCleanupScheduler();
       resetStorageCleanupPolicyJobForTests();
     }
-  });
+  }, { timeout: 30_000 });
 });

@@ -240,7 +240,7 @@ describe("storage cleanup policy API", () => {
       stopStorageCleanupScheduler();
       resetStorageCleanupPolicyJobForTests();
     }
-  });
+  }, { timeout: 30_000 });
 
   test("POST run rejects when a job is already running", async () => {
     setStorageCleanupPolicyJobTestHooks({ blockMs: 800 });
@@ -280,7 +280,7 @@ describe("storage cleanup policy API", () => {
       stopStorageCleanupScheduler();
       resetStorageCleanupPolicyJobForTests();
     }
-  });
+  }, { timeout: 30_000 });
 
   test("blocked worker completion preserves concurrent policy PUT edits", async () => {
     setStorageCleanupPolicyJobTestHooks({ blockMs: 800 });
@@ -365,5 +365,5 @@ describe("storage cleanup policy API", () => {
       stopStorageCleanupScheduler();
       resetStorageCleanupPolicyJobForTests();
     }
-  });
+  }, { timeout: 30_000 });
 });

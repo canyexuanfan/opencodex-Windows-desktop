@@ -945,6 +945,7 @@ export const ko: Record<TKey, string> = {
   "storage.policy.loadFailed": "정리 정책을 불러오지 못했습니다.",
   "storage.policy.saveFailed": "정리 정책을 저장하지 못했습니다.",
   "storage.policy.runFailed": "정책 실행에 실패했습니다.",
+  "storage.policy.alreadyRunning": "정리 정책이 이미 실행 중입니다.",
   "storage.policy.invalid": "정책 값이 올바르지 않습니다.",
   "storage.policy.enabled": "자동 정리 사용",
   "storage.policy.enabledHint": "기본은 꺼짐입니다. 켜면 선택한 일정(또는 지금 실행)에만 동작합니다.",

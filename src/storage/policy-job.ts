@@ -67,6 +67,10 @@ let activeWorker: Worker | null = null;
 let testHooks: PolicyJobTestHooks | null = null;
 /** Optional mirror so completed worker runs refresh the live server config. */
 let livePolicyApply: ((policy: PolicyRunResult["policy"]) => void) | undefined;
+/** Settles the active `runInWorker` promise (clears watchdog) before hard terminate. */
+let cancelActiveRun: (() => void) | null = null;
+/** Bumped on abort/reset so a late worker completion cannot clobber newer job state. */
+let runGeneration = 0;
 
 export function setStorageCleanupPolicyJobLiveApply(
   apply: ((policy: PolicyRunResult["policy"]) => void) | null,
@@ -100,7 +104,15 @@ export function setStorageCleanupPolicyJobTestHooks(hooks: PolicyJobTestHooks | 
   testHooks = hooks;
 }
 
+function disownActiveRun(): void {
+  runGeneration += 1;
+  const cancel = cancelActiveRun;
+  cancelActiveRun = null;
+  cancel?.();
+}
+
 export function resetStorageCleanupPolicyJobForTests(): void {
+  disownActiveRun();
   if (activeWorker) {
     try { activeWorker.terminate(); } catch { /* */ }
     activeWorker = null;
@@ -112,6 +124,7 @@ export function resetStorageCleanupPolicyJobForTests(): void {
 
 /** Terminate an in-flight worker during process shutdown. */
 export function abortStorageCleanupPolicyJob(): void {
+  disownActiveRun();
   if (activeWorker) {
     try { activeWorker.terminate(); } catch { /* */ }
     activeWorker = null;
@@ -184,6 +197,7 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      cancelActiveRun = null;
       try { worker.terminate(); } catch { /* */ }
       if (activeWorker === worker) activeWorker = null;
       reject(new Error("storage_cleanup_worker_timeout"));
@@ -192,10 +206,15 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
+      cancelActiveRun = null;
       clearTimeout(timer);
       if (activeWorker === worker) activeWorker = null;
       try { worker.terminate(); } catch { /* */ }
       fn();
+    };
+
+    cancelActiveRun = () => {
+      finish(() => reject(new Error("aborted")));
     };
 
     worker.onmessage = (event: MessageEvent<unknown>) => {
@@ -234,6 +253,7 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
 }
 
 async function executeJob(opts: RequestPolicyRunOptions): Promise<void> {
+  const generation = ++runGeneration;
   try {
     const blockMs = testHooks?.blockMs;
     let result: PolicyRunResult;
@@ -255,11 +275,13 @@ async function executeJob(opts: RequestPolicyRunOptions): Promise<void> {
       });
     }
 
+    if (generation !== runGeneration) return;
     applyFinished(result);
   } catch (err) {
+    if (generation !== runGeneration) return;
     applyFailed(err instanceof Error ? err.message : "worker_failed");
   } finally {
-    inflight = null;
+    if (generation === runGeneration) inflight = null;
   }
 }
 
