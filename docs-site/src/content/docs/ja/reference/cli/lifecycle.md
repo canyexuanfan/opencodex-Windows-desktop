@@ -115,6 +115,19 @@ ocx status --json
 
 稼働中のプロキシの ID を確認します。ヒューマン出力は PID/ポートをレポートします。 `--json` は `{ok, pid, port}` を出力します。このコマンドは正常な場合のみ 0 で終了し、それ以外の場合は 1 で終了するため、サービス プローブに適しています。
 
+### `ocx ready [--json] [--wait [--timeout <seconds>]]`
+
+認証不要の `GET /readyz` エンドポイントで同期後の準備状態を確認します。準備完了時は `200`、
+`pending` または終端状態の `failed` では `Retry-After: 1` とともに `503` を返します。HTTP の
+サニタイズ済み識別フィールドは `{service, version, uptime, pid, port, status}` です。`/readyz` がない
+旧プロキシは `unreachable` として fail-closed し、`/healthz` は readiness ではなく別の liveness 確認です。
+デフォルトでは 1 回だけ probe します。`--wait` は準備完了または timeout まで polling しますが、
+終端 `failed` を確認すると即座に終了します。デフォルト timeout は 45 秒で、`--timeout <seconds>` には
+`--wait` が必要です（1〜300 秒の範囲）。CLI JSON は
+`{ready, status, pid, port}` を出力し、`status` は `ready`、`pending`、`failed`、`unreachable` の
+いずれかです。終了コードは ready が 0、not-ready/pending/failed/timeout/unreachable が 1、
+不正な引数が 64 です。
+
 ### `ocx doctor`
 
 読み取り専用環境と接続の診断を実行します: 状態パスとファイル システム タイプ、WSL デュアル インストール、プロキシ環境/構成、ChatGPT の到達可能性、Codex プラグインとプロジェクト設定の警告、保留中の履歴の移行。 Codex のアプリとホームのターゲット設定セクションでは、Windows Orca ランタイムとホームの狭い不一致も検出し、該当する場合はサービスの移行について説明します。この診断によって表示されるパスでは、OS ユーザー名が編集されます。医師は修復ヒントを出力しますが、適用しません。

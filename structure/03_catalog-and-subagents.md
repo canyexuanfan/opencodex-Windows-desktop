@@ -42,12 +42,16 @@ Calls without a supplied gate receive a fresh private gate that intentionally re
 `ok: true` with no nonempty warning becomes ready; `null`, a throw, `ok !== true`, or a nonempty
 warning becomes failed. State is isolated per server instance.
 
-Exact unauthenticated `GET /readyz` returns sanitized identity fields plus pending, ready, or failed.
-The `ocx ready` probe validates the service, version, uptime, PID, port, status, and HTTP/status
-pairing. With `--wait`, it applies one absolute deadline across discovery, readiness probes, polling,
-and sleeps; the single-probe path preserves the existing per-call timeout without a wait deadline.
-Older proxies without `/readyz` fail closed as unreachable. `/healthz` remains the separate liveness
-contract.
+Exact unauthenticated `GET /readyz` returns sanitized identity fields plus pending, ready, or failed:
+`200` for ready, or `503` with `Retry-After: 1` for pending and terminal failed. The full CLI syntax
+is `ocx ready [--json] [--wait [--timeout <seconds>]]`. The probe validates the service, version,
+uptime, PID, port, status, and HTTP/status pairing. The default is one probe. With `--wait`, it
+applies one absolute deadline (45 seconds by default) across discovery, readiness probes, polling,
+and sleeps, but exits immediately on terminal failed. CLI `--json` emits
+`{ready, status, pid, port}`, with status in `ready|pending|failed|unreachable`. Exit 0 means ready;
+exit 1 covers not-ready, pending, failed, timeout, and unreachable; exit 64 means invalid arguments.
+Older proxies without `/readyz` fail closed as unreachable. `/healthz` remains the separate
+liveness contract.
 
 ## Entry shape
 

@@ -142,6 +142,18 @@ tokens, authorization headers, request content, emails, and account identities.
 Identity-check the live proxy. Human output reports PID/port; `--json` emits `{ok, pid, port}`. The
 command exits 0 only when healthy and 1 otherwise, making it suitable for service probes.
 
+### `ocx ready [--json] [--wait [--timeout <seconds>]]`
+
+Check post-sync readiness through the unauthenticated `GET /readyz` endpoint. It returns `200` when
+ready, or `503` with `Retry-After: 1` for `pending` and terminal `failed`. Its sanitized HTTP identity
+is `{service, version, uptime, pid, port, status}`. Old proxies without `/readyz` fail closed as
+`unreachable`; `/healthz` is separate liveness, not readiness. The command performs one probe by
+default; `--wait` polls until ready or timeout, but exits immediately on terminal `failed`. The
+default timeout is 45 seconds; `--timeout <seconds>` requires `--wait` and accepts 1–300 seconds.
+CLI JSON emits `{ready, status, pid, port}`, where `status` is `ready`, `pending`, `failed`, or
+`unreachable`. Exit codes are 0 for ready; 1 for not-ready, pending, failed, timeout, or
+unreachable; and 64 for invalid arguments.
+
 ### `ocx doctor`
 
 Run read-only environment and connectivity diagnostics: state paths and filesystem type, WSL dual

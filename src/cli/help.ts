@@ -253,11 +253,13 @@ const helpEntries: Record<string, HelpEntry> = {
     usage: "ocx ready [--json] [--wait [--timeout <seconds>]]",
     summary: "Check post-sync readiness. Exits 0 only when ready.",
     details: [
-      "Default is a single identity-checked /readyz probe.",
-      "--wait polls until ready or the timeout elapses (default 45s, max 300s).",
+      "Exact unauthenticated GET /readyz returns HTTP 200 when ready, or 503 with Retry-After: 1 for pending or failed.",
+      "Its sanitized HTTP identity is {service, version, uptime, pid, port, status}; /healthz is separate liveness, not readiness.",
+      "Default is a single identity-checked /readyz probe; old proxies without /readyz fail closed as unreachable.",
+      "--wait polls until ready or timeout, but exits immediately on terminal failed (default 45s, max 300s).",
       "--timeout requires --wait and accepts a positive integer (1..300).",
       "--json emits {ready, status, pid, port}; status is one of ready|pending|failed|unreachable.",
-      "Invalid or unknown arguments exit 64. Not-ready, pending, failed, and timeout exit nonzero.",
+      "Invalid or unknown arguments exit 64. Not-ready, pending, failed, timeout, and unreachable exit 1.",
     ],
   },
 };
