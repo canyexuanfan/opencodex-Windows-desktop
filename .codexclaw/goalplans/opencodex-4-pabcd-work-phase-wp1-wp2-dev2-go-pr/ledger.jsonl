@@ -12,3 +12,7 @@
 {"ts": "2026-07-27T02:12:28.095252Z", "slug": "opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr", "event": "workphase_started", "detail": "started wp7 (P-phase amendment: wp6 closed before the round-2 audit returned FAIL; hardening is the next unit, LOOP-UNIT-CHAIN-01)"}
 {"ts":"2026-07-27T02:14:19.004Z","slug":"opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr","event":"workphase_done","detail":"closed wp7"}
 {"ts":"2026-07-27T02:14:19.004Z","slug":"opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr","event":"workphase_started","detail":"started wp5"}
+{"ts":"2026-07-27T03:11:25Z","slug":"opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr","event":"workphase_started","detail":"re-activated wp7: rounds 7-10 hardening was the unit actually worked; wp5 remains blocked on user approval and was parked back to pending"}
+{"ts":"2026-07-27T03:39:57.830Z","slug":"opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr","event":"workphase_done","detail":"closed wp7"}
+{"ts":"2026-07-27T03:39:57.830Z","slug":"opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr","event":"workphase_started","detail":"started wp5"}
+{"ts":"2026-07-27T03:40:13Z","event":"work-phase-complete","workPhaseId":"wp7","criterion":"c7","status":"met","evidence":"rounds 11-14 audited; 131 mutation variants CAUGHT except 6 proven-harmless; suite 4937 pass/0 fail; typecheck 0; commits 5f7afc21, dbd558e1"}

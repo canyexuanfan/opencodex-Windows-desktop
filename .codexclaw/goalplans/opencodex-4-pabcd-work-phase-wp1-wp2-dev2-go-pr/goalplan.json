@@ -2,7 +2,7 @@
   "objective": "opencodex 저장소 거버넌스 및 기여 정책 4건을 PABCD 다중 work-phase 루프로 처리한다. WP1 문서화 우선 사이클, WP2 dev2-go 기반 PR 및 포팅/리베이스 PR 허용 정책, WP3 대상 PR 두 개로 분할, WP4 Wibias 메인테이너 추가. 검증은 실제 파일과 명령 출력으로만. 서브에이전트는 gpt-5.6-terra medium 일반 티어 활용.",
   "slug": "opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr",
   "createdAt": "2026-07-27T00:41:29.352Z",
-  "updatedAt": "2026-07-27T02:32:43.290566Z",
+  "updatedAt": "2026-07-27T03:40:13.130884+00:00",
   "activeWorkPhaseId": null,
   "workPhases": [
     {
@@ -207,8 +207,13 @@
         },
         {
           "id": "wp7-t8",
-          "title": "감사 6라운드 (진행 중)",
-          "status": "pending"
+          "title": "감사 6~10라운드 대응 (하네스 충실도 + 계약 어설션)",
+          "status": "done"
+        },
+        {
+          "id": "wp7-t9",
+          "title": "감사 11~14라운드 대응 (트리거 모양, 도달 가능 상태, 버전 스큐, 스키마 truthiness 계약)",
+          "status": "done"
         }
       ],
       "criteriaIds": [
@@ -263,7 +268,7 @@
       "id": "c7",
       "scenario": "enforce-pr-target.yml 특성화 테스트가 알려진 모든 우회 변이를 잡는다",
       "expectedEvidence": "변이 주입 스크립트 출력에서 알려진 변이 전부 CAUGHT, survived=none. 기준선 bun test 통과, bun run typecheck 오류 0. 독립 감사(gpt-5.6-terra) verdict PASS 또는 NEAR-PASS.",
-      "capturedEvidence": "알려진 변이 15종 전수 재주입 결과: 전부 CAUGHT, survived=none. (contents:write / permissions:write-all / - run: / run : 공백 / 인용 run / 인용 uses+브랜치ref / actions-checkout / concurrency 삭제 / ready_for_review 삭제 / wrongBase=false / titlePrefixedByBot 삭제 / autoDraftedByBot 삭제 / convertToDraft 주석화 / convertToDraft shadow / markReadyForReview shadow). 기준선 bun test 14 pass 0 fail, bun run typecheck exit 0, 워크플로 git status 클린. 독립 감사 4라운드 VERDICT: PASS (CRITICAL/MAJOR 없음). 커밋 7c8f2e3f, 4b8b888d, 7038a464, b0ef4e21, 8bfdf8e5.",
+      "capturedEvidence": "변이 회귀 12개 스크립트 131종 전수: 알려진 무해 6종(context-eventname, core-tostring, promise-identity, err-tostringtag, response-headers, comment-after-write)과 들여쓰기 no-op 2종 외 전부 CAUGHT, git status --short .github/ clean. 기준선 bun test tests/ci-workflows.test.ts -> 44 pass / 0 fail / 485 expect(). bun run test -> 4937 pass / 0 fail / 24289 expect() exit 0. bun x tsc --noEmit exit 0. 독립 감사(gpt-5.6-terra, agent 019fa18f) 14라운드 verdict NEAR-PASS, 잔여 지적 1건은 dbd558e1로 봉쇄 후 CAUGHT 확인.",
       "status": "met"
     }
   ],
