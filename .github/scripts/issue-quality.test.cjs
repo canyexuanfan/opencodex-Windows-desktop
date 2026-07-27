@@ -163,6 +163,55 @@ describe("detectIssueKind", () => {
 // ---------------------------------------------------------------------------
 
 describe("validateIssue - feature", () => {
+  it("keeps nested sub-headings and fenced heading text inside a section (#541)", () => {
+    const body = [
+      "### What are you trying to accomplish?",
+      "Route Studio models through the user's WordPress.com account.",
+      "### What prevents this today?",
+      "The provider needs two wire formats and one shared OAuth identity.",
+      "### What should OpenCodex do?",
+      "Add a first-class provider with model-specific transport selection.",
+      "### Example usage or interface",
+      "#### CLI flow",
+      "```bash",
+      "# This heading-shaped shell comment must stay inside the fence",
+      "ocx login wordpress-studio",
+      "```",
+      "#### Dashboard flow",
+      "Providers -> WordPress Studio Code -> Log in",
+      "### Alternatives or workarounds",
+      "Use Studio directly.",
+    ].join("\n");
+
+    const example = extractSection(body, "Example usage or interface");
+    assert.match(example, /^#### CLI flow/);
+    assert.match(example, /# This heading-shaped shell comment/);
+    assert.match(example, /#### Dashboard flow/);
+    assert.doesNotMatch(example, /Alternatives or workarounds/);
+
+    const result = validateIssue({ title: "Add WordPress Studio provider", body, labels: ["enhancement"] });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.valid, true, `Expected valid but got reasons: ${result.reasons.join(", ")}`);
+  });
+
+  it("ignores markdown headings inside backtick and tilde fences when finding section boundaries (#541)", () => {
+    for (const fence of ["```", "~~~~"]) {
+      const body = [
+        "### Example usage or interface",
+        fence,
+        "### pasted heading",
+        "real example content",
+        fence,
+        "### Next sibling",
+        "outside",
+      ].join("\n");
+      assert.equal(
+        extractSection(body, "Example usage or interface"),
+        [fence, "### pasted heading", "real example content", fence].join("\n"),
+      );
+    }
+  });
+
   it("rejects issue #208-style duplicate content", () => {
     const repeated = "Add support for streaming responses in the proxy";
     const body = [
