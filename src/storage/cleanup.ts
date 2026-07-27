@@ -3,15 +3,19 @@
  *
  * Preview + execute for files under `archived_sessions/` only. Active `sessions/`
  * are never touched. Default mode quarantines into `CODEX_HOME/.trash/<epoch>/`;
- * permanent delete is opt-in. DB reconciliation probes writability first — on
- * SQLITE_BUSY nothing is moved or deleted.
+ * permanent delete is opt-in.
+ *
+ * Execution is bound to a preview digest. All candidates are staged first; any FS
+ * or DB failure rolls staged moves back. DB reconciliation runs in one transaction
+ * with foreign keys enabled. Success never carries soft `dbWarning` / `failedPaths`.
  */
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -25,12 +29,25 @@ export const TRASH_DIR = ".trash";
 
 export type CleanupMode = "quarantine" | "permanent";
 
+/** Mapped failure codes only — never embed absolute host paths. */
+export type CleanupErrorCode =
+  | "invalid_mode"
+  | "invalid_digest"
+  | "stale_preview"
+  | "codex_busy"
+  | "fs_failed"
+  | "db_reconcile_failed"
+  | "referenced_history"
+  | "cleanup_failed";
+
 export interface ArchivedCandidate {
-  /** Path relative to CODEX_HOME, forward-slash separated. */
+  /** Path relative to CODEX_HOME, forward-slash separated (logical `.jsonl` path). */
   relPath: string;
   absPath: string;
   bytes: number;
   mtimeMs: number;
+  /** All physical files for this logical rollout (`.jsonl` and/or `.jsonl.zst`). */
+  physicalRelPaths: string[];
 }
 
 export interface CleanupPreview {
@@ -38,6 +55,8 @@ export interface CleanupPreview {
   percent: number;
   count: number;
   bytes: number;
+  /** HMAC-free content digest binding execute to this exact candidate set. */
+  digest: string;
   candidates: ArchivedCandidate[];
 }
 
@@ -45,6 +64,7 @@ export interface CleanupManifestEntry {
   relPath: string;
   bytes: number;
   mtimeMs: number;
+  physicalRelPaths: string[];
   threadId?: string;
   rolloutPath?: string;
   archived?: number | null;
@@ -57,19 +77,13 @@ export interface CleanupResult {
   count: number;
   bytes: number;
   trashDir?: string;
-  /** Hard failure code (e.g. `codex_busy`, `invalid_mode`, `fs_failed`). */
-  error?: string;
-  /**
-   * Soft DB reconciliation issue after a successful FS change.
-   * Mapped codes only — never raw driver messages (may embed absolute paths).
-   */
-  dbWarning?: "codex_busy" | "db_reconcile_failed";
-  /** Relative paths that failed to move/unlink (partial batch). */
-  failedPaths?: string[];
+  error?: CleanupErrorCode;
   removedPaths: string[];
 }
 
 const STATE_DB_FILE = /^state_(\d+)\.sqlite$/;
+const JSONL_SUFFIX = ".jsonl";
+const ZST_SUFFIX = ".jsonl.zst";
 
 function clampPercent(percent: unknown): number {
   if (typeof percent !== "number" || !Number.isFinite(percent)) return 0;
@@ -78,6 +92,18 @@ function clampPercent(percent: unknown): number {
 
 function toForwardSlash(p: string): string {
   return p.split(sep).join("/");
+}
+
+/** Strip trailing `.zst` so plain + compressed share one logical rollout id. */
+export function logicalRolloutRelPath(relPath: string): string {
+  const normalized = toForwardSlash(relPath);
+  return normalized.endsWith(ZST_SUFFIX)
+    ? normalized.slice(0, -".zst".length)
+    : normalized;
+}
+
+function isRolloutFileName(name: string): boolean {
+  return name.endsWith(ZST_SUFFIX) || name.endsWith(JSONL_SUFFIX);
 }
 
 function newestStateDb(codexHome: string): string | null {
@@ -101,7 +127,47 @@ function newestStateDb(codexHome: string): string | null {
   return best ? join(codexHome, best) : null;
 }
 
-/** List archived rollout files oldest-first. Never walks `sessions/`. */
+/**
+ * Normalize a DB `rollout_path` to a CODEX_HOME-relative forward-slash path, then
+ * to the logical `.jsonl` form. Returns null when the path is not under
+ * `archived_sessions/` (rejects active `sessions/` and foreign paths).
+ */
+export function normalizeArchivedRolloutPath(rolloutPath: string, codexHome: string): string | null {
+  const raw = toForwardSlash(rolloutPath.trim());
+  if (!raw) return null;
+  let relativePath = raw;
+  try {
+    const abs = raw.includes(":") || raw.startsWith("/") ? resolve(raw) : resolve(codexHome, raw);
+    const homeAbs = resolve(codexHome);
+    const rel = toForwardSlash(relative(homeAbs, abs));
+    if (rel.startsWith("..") || rel === "") return null;
+    relativePath = rel;
+  } catch {
+    return null;
+  }
+  const logical = logicalRolloutRelPath(relativePath);
+  if (!logical.startsWith(`${ARCHIVED_SESSIONS_DIR}/`)) return null;
+  if (!logical.endsWith(JSONL_SUFFIX)) return null;
+  // Reject path tricks: only a single file under archived_sessions/
+  const rest = logical.slice(ARCHIVED_SESSIONS_DIR.length + 1);
+  if (!rest || rest.includes("/") || rest.includes("..")) return null;
+  return logical;
+}
+
+/** Content digest of the exact previewed candidate set (paths + size + mtime). */
+export function computePreviewDigest(candidates: ArchivedCandidate[], percent: number): string {
+  const lines = candidates
+    .map(c => {
+      const physical = [...c.physicalRelPaths].sort().join(",");
+      return `${c.relPath}|${c.bytes}|${Math.trunc(c.mtimeMs)}|${physical}`;
+    })
+    .sort();
+  return createHash("sha256")
+    .update(`${clampPercent(percent)}\n${lines.join("\n")}`)
+    .digest("hex");
+}
+
+/** List archived rollout groups oldest-first. Never walks `sessions/`. */
 export function listArchivedCandidates(codexHome: string): ArchivedCandidate[] {
   const dir = join(codexHome, ARCHIVED_SESSIONS_DIR);
   let names: string[] = [];
@@ -110,22 +176,52 @@ export function listArchivedCandidates(codexHome: string): ArchivedCandidate[] {
   } catch {
     return [];
   }
-  const out: ArchivedCandidate[] = [];
+
+  type Acc = {
+    logicalRel: string;
+    files: Array<{ name: string; absPath: string; relPath: string; bytes: number; mtimeMs: number }>;
+  };
+  const groups = new Map<string, Acc>();
+
   for (const name of names) {
-    if (!name.endsWith(".jsonl")) continue;
+    if (!isRolloutFileName(name)) continue;
     const absPath = join(dir, name);
     try {
       const st = statSync(absPath);
       if (!st.isFile()) continue;
-      out.push({
-        relPath: `${ARCHIVED_SESSIONS_DIR}/${name}`,
+      const relPath = `${ARCHIVED_SESSIONS_DIR}/${name}`;
+      const logicalRel = logicalRolloutRelPath(relPath);
+      let acc = groups.get(logicalRel);
+      if (!acc) {
+        acc = { logicalRel, files: [] };
+        groups.set(logicalRel, acc);
+      }
+      acc.files.push({
+        name,
         absPath,
+        relPath,
         bytes: st.size,
         mtimeMs: st.mtimeMs,
       });
     } catch {
       /* vanished mid-scan */
     }
+  }
+
+  const out: ArchivedCandidate[] = [];
+  for (const acc of groups.values()) {
+    // Prefer the plain `.jsonl` path as the public/logical identity when both exist.
+    acc.files.sort((a, b) => a.relPath.localeCompare(b.relPath));
+    const primary =
+      acc.files.find(f => f.relPath === acc.logicalRel) ??
+      acc.files[0]!;
+    out.push({
+      relPath: acc.logicalRel,
+      absPath: primary.absPath,
+      bytes: acc.files.reduce((sum, f) => sum + f.bytes, 0),
+      mtimeMs: Math.min(...acc.files.map(f => f.mtimeMs)),
+      physicalRelPaths: acc.files.map(f => f.relPath),
+    });
   }
   out.sort((a, b) => a.mtimeMs - b.mtimeMs || a.relPath.localeCompare(b.relPath));
   return out;
@@ -145,11 +241,13 @@ export function previewArchivedCleanup(
 ): CleanupPreview {
   const all = listArchivedCandidates(codexHome);
   const selected = selectOldestPercent(all, percent);
+  const pct = clampPercent(percent);
   return {
     codexHome,
-    percent: clampPercent(percent),
+    percent: pct,
     count: selected.length,
     bytes: selected.reduce((sum, c) => sum + c.bytes, 0),
+    digest: computePreviewDigest(selected, pct),
     candidates: selected,
   };
 }
@@ -160,6 +258,11 @@ function openStateDbWritable(stateDbPath: string, busyTimeoutMs = 100): Database
     db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
   } catch {
     /* older sqlite */
+  }
+  try {
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch {
+    /* ignore */
   }
   return db;
 }
@@ -174,16 +277,15 @@ function isBusyError(error: unknown): boolean {
   );
 }
 
-function mapDbWarning(error: string | undefined): CleanupResult["dbWarning"] | undefined {
-  if (!error) return undefined;
-  if (error === "codex_busy") return "codex_busy";
+function mapDbError(error: unknown): CleanupErrorCode {
+  if (isBusyError(error)) return "codex_busy";
   return "db_reconcile_failed";
 }
 
 /** True when the threads table can be written (BEGIN IMMEDIATE succeeds). */
-export function probeStateDbWritable(codexHome: string, busyTimeoutMs = 100): { ok: true; path: string } | { ok: false; error: string } {
+export function probeStateDbWritable(codexHome: string, busyTimeoutMs = 100): { ok: true; path: string } | { ok: false; error: CleanupErrorCode } {
   const path = newestStateDb(codexHome);
-  if (!path || !existsSync(path)) return { ok: true, path: path ?? "" }; // no DB → FS-only cleanup
+  if (!path || !existsSync(path)) return { ok: true, path: path ?? "" };
   let db: Database | undefined;
   try {
     db = openStateDbWritable(path, busyTimeoutMs);
@@ -192,73 +294,147 @@ export function probeStateDbWritable(codexHome: string, busyTimeoutMs = 100): { 
     return { ok: true, path };
   } catch (error) {
     if (isBusyError(error)) return { ok: false, error: "codex_busy" };
-    // Missing threads table or corrupt DB: still allow FS cleanup; DB step will soft-skip.
-    return { ok: true, path };
+    // Corrupt / unreadable DB must block cleanup so we never orphan rows or files.
+    return { ok: false, error: "db_reconcile_failed" };
   } finally {
     try { db?.close(); } catch { /* */ }
   }
-}
-
-function rolloutPathMatches(candidate: ArchivedCandidate, rolloutPath: string, codexHome: string): boolean {
-  const raw = rolloutPath.replace(/\\/g, "/");
-  const fileName = basename(candidate.relPath);
-  if (raw === candidate.relPath) return true;
-  if (raw.endsWith(`/${fileName}`) || raw.endsWith(`\\${fileName}`) || basename(raw) === fileName) return true;
-  try {
-    const abs = raw.includes(":") || raw.startsWith("/") ? resolve(raw) : resolve(codexHome, raw);
-    if (resolve(abs) === resolve(candidate.absPath)) return true;
-  } catch {
-    /* ignore */
-  }
-  return false;
 }
 
 interface ThreadSnapshot {
   id: string;
   rollout_path: string;
   archived: number | null;
+  history_mode?: string | null;
 }
 
 function loadMatchingThreads(db: Database, candidates: ArchivedCandidate[], codexHome: string): ThreadSnapshot[] {
-  let rows: Array<{ id: string; rollout_path: string; archived?: number | null }> = [];
+  const logicalSet = new Set(candidates.map(c => c.relPath));
+  let rows: Array<{ id: string; rollout_path: string; archived?: number | null; history_mode?: string | null }> = [];
   try {
-    rows = db.query<{ id: string; rollout_path: string; archived: number | null }, []>(
-      `SELECT id, rollout_path, archived FROM threads`,
+    rows = db.query<{ id: string; rollout_path: string; archived: number | null; history_mode: string | null }, []>(
+      `SELECT id, rollout_path, archived, history_mode FROM threads`,
     ).all();
   } catch {
     try {
-      rows = db.query<{ id: string; rollout_path: string }, []>(
-        `SELECT id, rollout_path FROM threads`,
-      ).all().map(r => ({ ...r, archived: null }));
+      rows = db.query<{ id: string; rollout_path: string; archived: number | null }, []>(
+        `SELECT id, rollout_path, archived FROM threads`,
+      ).all().map(r => ({ ...r, history_mode: null }));
     } catch {
-      return [];
+      try {
+        rows = db.query<{ id: string; rollout_path: string }, []>(
+          `SELECT id, rollout_path FROM threads`,
+        ).all().map(r => ({ ...r, archived: null, history_mode: null }));
+      } catch {
+        return [];
+      }
     }
   }
+
   return rows
-    .filter(row => candidates.some(c => rolloutPathMatches(c, row.rollout_path, codexHome)))
+    .filter(row => {
+      // When the archived column is present, only archived=1 rows may be deleted.
+      if (row.archived !== null && row.archived !== undefined && Number(row.archived) !== 1) {
+        return false;
+      }
+      const normalized = normalizeArchivedRolloutPath(row.rollout_path, codexHome);
+      return normalized !== null && logicalSet.has(normalized);
+    })
     .map(row => ({
       id: row.id,
       rollout_path: row.rollout_path,
       archived: row.archived ?? null,
+      history_mode: row.history_mode ?? null,
     }));
 }
 
-function deleteThreadsAndEdges(db: Database, threadIds: string[]): void {
-  if (threadIds.length === 0) return;
-  const placeholders = threadIds.map(() => "?").join(",");
-  db.run(`DELETE FROM threads WHERE id IN (${placeholders})`, threadIds);
+/**
+ * True when any matched thread is still linked to a thread outside the delete set
+ * (spawn edges) or uses paginated history that other live threads may depend on via fork.
+ */
+function findReferencedHistory(
+  db: Database,
+  threads: ThreadSnapshot[],
+): boolean {
+  if (threads.length === 0) return false;
+  const ids = threads.map(t => t.id);
+  const idSet = new Set(ids);
+
+  // Paginated history keeps durable projections tied to the rollout — refuse cleanup.
+  if (threads.some(t => (t.history_mode ?? "").toLowerCase() === "paginated")) {
+    return true;
+  }
+
+  // Spawn edges that cross the delete boundary keep history reachable.
   try {
-    db.run(`DELETE FROM thread_spawn_edges WHERE parent_id IN (${placeholders}) OR child_id IN (${placeholders})`, [
-      ...threadIds,
-      ...threadIds,
-    ]);
+    const placeholders = ids.map(() => "?").join(",");
+    const edges = db.query<{ parent_thread_id: string; child_thread_id: string }, string[]>(
+      `SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges
+       WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
+    ).all(...ids, ...ids);
+    for (const edge of edges) {
+      if (!idSet.has(edge.parent_thread_id) || !idSet.has(edge.child_thread_id)) {
+        return true;
+      }
+    }
   } catch {
+    /* table absent */
+  }
+
+  // Other threads that list one of ours as forked_from / parent (when columns exist).
+  for (const column of ["forked_from_id", "parent_thread_id", "source_thread_id"] as const) {
     try {
-      db.run(`DELETE FROM thread_spawn_edges WHERE thread_id IN (${placeholders})`, threadIds);
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = db.query<{ id: string }, string[]>(
+        `SELECT id FROM threads WHERE ${column} IN (${placeholders})`,
+      ).all(...ids);
+      if (rows.some(r => !idSet.has(r.id))) return true;
     } catch {
-      /* table absent or unknown schema — ignore */
+      /* column absent */
     }
   }
+
+  return false;
+}
+
+function tableExists(db: Database, name: string): boolean {
+  try {
+    const row = db.query<{ name: string }, [string]>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+    ).get(name);
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+function deleteThreadsAndDependents(db: Database, threadIds: string[]): void {
+  if (threadIds.length === 0) return;
+  const placeholders = threadIds.map(() => "?").join(",");
+
+  // Real Codex schema columns.
+  if (tableExists(db, "thread_spawn_edges")) {
+    db.run(
+      `DELETE FROM thread_spawn_edges WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
+      [...threadIds, ...threadIds],
+    );
+  }
+
+  // Explicit dependent cleanup even when FK pragma is ignored by older builds.
+  if (tableExists(db, "thread_dynamic_tools")) {
+    db.run(`DELETE FROM thread_dynamic_tools WHERE thread_id IN (${placeholders})`, threadIds);
+  }
+
+  db.run(`DELETE FROM threads WHERE id IN (${placeholders})`, threadIds);
+}
+
+interface ReconcileOk {
+  ok: true;
+  threads: ThreadSnapshot[];
+}
+interface ReconcileErr {
+  ok: false;
+  error: CleanupErrorCode;
 }
 
 function reconcileThreads(
@@ -266,212 +442,248 @@ function reconcileThreads(
   candidates: ArchivedCandidate[],
   codexHome: string,
   busyTimeoutMs: number,
-): { threads: ThreadSnapshot[]; error?: string } {
-  if (!stateDbPath || !existsSync(stateDbPath)) return { threads: [] };
+): ReconcileOk | ReconcileErr {
+  if (!stateDbPath || !existsSync(stateDbPath)) return { ok: true, threads: [] };
   let db: Database | undefined;
   try {
     db = openStateDbWritable(stateDbPath, busyTimeoutMs);
     const threads = loadMatchingThreads(db, candidates, codexHome);
+    if (findReferencedHistory(db, threads)) {
+      return { ok: false, error: "referenced_history" };
+    }
     db.exec("BEGIN IMMEDIATE");
     try {
-      deleteThreadsAndEdges(db, threads.map(t => t.id));
+      deleteThreadsAndDependents(db, threads.map(t => t.id));
       db.exec("COMMIT");
     } catch (error) {
       try { db.exec("ROLLBACK"); } catch { /* */ }
       throw error;
     }
-    return { threads };
+    return { ok: true, threads };
   } catch (error) {
-    if (isBusyError(error)) return { threads: [], error: "codex_busy" };
-    return { threads: [], error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, error: mapDbError(error) };
   } finally {
     try { db?.close(); } catch { /* */ }
   }
 }
 
+function absFromRel(codexHome: string, relPath: string): string {
+  return join(codexHome, ...relPath.split("/"));
+}
+
+function stageCandidates(
+  codexHome: string,
+  candidates: ArchivedCandidate[],
+  stageDir: string,
+): { ok: true; staged: Array<{ from: string; to: string; relPath: string }> } | { ok: false; staged: Array<{ from: string; to: string; relPath: string }> } {
+  const staged: Array<{ from: string; to: string; relPath: string }> = [];
+  try {
+    mkdirSync(stageDir, { recursive: true });
+    for (const candidate of candidates) {
+      for (const rel of candidate.physicalRelPaths) {
+        const from = absFromRel(codexHome, rel);
+        const to = join(stageDir, basename(rel));
+        renameSync(from, to);
+        staged.push({ from, to, relPath: rel });
+      }
+    }
+    return { ok: true, staged };
+  } catch {
+    return { ok: false, staged };
+  }
+}
+
+function rollbackStaged(staged: Array<{ from: string; to: string }>): void {
+  for (let i = staged.length - 1; i >= 0; i--) {
+    const item = staged[i]!;
+    try {
+      if (existsSync(item.to) && !existsSync(item.from)) {
+        renameSync(item.to, item.from);
+      }
+    } catch {
+      /* best-effort restore */
+    }
+  }
+}
+
+function purgeStaged(staged: Array<{ to: string }>): boolean {
+  let ok = true;
+  for (const item of staged) {
+    try {
+      unlinkSync(item.to);
+    } catch {
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 export interface ExecuteCleanupOptions {
   percent: number;
   mode: CleanupMode;
+  /** Required digest from preview; rejects when the candidate set drifted. */
+  digest: string;
   codexHome?: string;
   /** Test-only: shrink busy_timeout so lock tests fail fast. */
   busyTimeoutMs?: number;
   now?: number;
 }
 
+function fail(
+  mode: CleanupMode,
+  percent: number,
+  error: CleanupErrorCode,
+): CleanupResult {
+  return {
+    ok: false,
+    mode,
+    percent,
+    count: 0,
+    bytes: 0,
+    removedPaths: [],
+    error,
+  };
+}
+
 /**
- * Execute archived cleanup. Probes DB writability first — on `codex_busy` returns
- * without touching the filesystem.
+ * Execute archived cleanup bound to a preview digest.
+ * Stages every physical file first; rolls back on any FS or DB failure.
  */
 export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupResult {
   const codexHome = options.codexHome ?? resolveCodexHomeDir();
   const mode = options.mode;
   const percent = clampPercent(options.percent);
   const busyTimeoutMs = options.busyTimeoutMs ?? 100;
-  const preview = previewArchivedCleanup(percent, codexHome);
-  const empty: CleanupResult = {
-    ok: true,
-    mode,
-    percent,
-    count: 0,
-    bytes: 0,
-    removedPaths: [],
-  };
-  if (preview.candidates.length === 0) return empty;
 
   if (mode !== "quarantine" && mode !== "permanent") {
-    return { ...empty, ok: false, error: "invalid_mode" };
+    return fail(mode, percent, "invalid_mode");
+  }
+  if (typeof options.digest !== "string" || !/^[a-f0-9]{64}$/i.test(options.digest)) {
+    return fail(mode, percent, "invalid_digest");
+  }
+
+  const preview = previewArchivedCleanup(percent, codexHome);
+  if (preview.digest.toLowerCase() !== options.digest.toLowerCase()) {
+    return fail(mode, percent, "stale_preview");
+  }
+
+  if (preview.candidates.length === 0) {
+    return {
+      ok: true,
+      mode,
+      percent,
+      count: 0,
+      bytes: 0,
+      removedPaths: [],
+    };
   }
 
   const probe = probeStateDbWritable(codexHome, busyTimeoutMs);
   if (!probe.ok) {
+    return fail(mode, percent, probe.error);
+  }
+
+  // Preflight referenced-history / matching while DB is free, before any rename.
+  if (probe.path && existsSync(probe.path)) {
+    let db: Database | undefined;
+    try {
+      db = openStateDbWritable(probe.path, busyTimeoutMs);
+      const threads = loadMatchingThreads(db, preview.candidates, codexHome);
+      if (findReferencedHistory(db, threads)) {
+        return fail(mode, percent, "referenced_history");
+      }
+    } catch (error) {
+      return fail(mode, percent, mapDbError(error));
+    } finally {
+      try { db?.close(); } catch { /* */ }
+    }
+  }
+
+  const epoch = options.now ?? Date.now();
+  const stageDir = join(codexHome, TRASH_DIR, String(epoch));
+  const stageResult = stageCandidates(codexHome, preview.candidates, stageDir);
+  if (!stageResult.ok) {
+    rollbackStaged(stageResult.staged);
+    try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
+    return fail(mode, percent, "fs_failed");
+  }
+
+  const dbResult = reconcileThreads(probe.path, preview.candidates, codexHome, busyTimeoutMs);
+  if (!dbResult.ok) {
+    rollbackStaged(stageResult.staged);
+    try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
+    return fail(mode, percent, dbResult.error);
+  }
+
+  const removedPaths = preview.candidates.map(c => c.relPath);
+  const bytes = preview.candidates.reduce((sum, c) => sum + c.bytes, 0);
+  const trashRel = toForwardSlash(relative(codexHome, stageDir) || stageDir);
+
+  if (mode === "quarantine") {
+    const manifestEntries: CleanupManifestEntry[] = preview.candidates.map(candidate => {
+      const thread = dbResult.threads.find(t => {
+        const normalized = normalizeArchivedRolloutPath(t.rollout_path, codexHome);
+        return normalized === candidate.relPath;
+      });
+      return {
+        relPath: candidate.relPath,
+        bytes: candidate.bytes,
+        mtimeMs: candidate.mtimeMs,
+        physicalRelPaths: candidate.physicalRelPaths,
+        ...(thread
+          ? { threadId: thread.id, rolloutPath: thread.rollout_path, archived: thread.archived }
+          : {}),
+      };
+    });
+    try {
+      writeFileSync(
+        join(stageDir, "manifest.json"),
+        JSON.stringify({
+          quarantinedAt: epoch,
+          mode: "quarantine",
+          percent,
+          digest: preview.digest,
+          entries: manifestEntries,
+        }, null, 2),
+      );
+    } catch {
+      rollbackStaged(stageResult.staged);
+      try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
+      return fail(mode, percent, "fs_failed");
+    }
+    return {
+      ok: true,
+      mode,
+      percent,
+      count: removedPaths.length,
+      bytes,
+      trashDir: trashRel,
+      removedPaths,
+    };
+  }
+
+  // Permanent: purge staged files only after a successful DB commit.
+  if (!purgeStaged(stageResult.staged)) {
+    // DB already committed; leave remnants in stage rather than claiming success.
     return {
       ok: false,
       mode,
       percent,
       count: 0,
       bytes: 0,
+      trashDir: trashRel,
       removedPaths: [],
-      error: probe.error,
+      error: "fs_failed",
     };
   }
-
-  // Load matching thread snapshots while the DB is writable, then FS, then delete rows.
-  // Quarantine keeps files recoverable if the DB step races into SQLITE_BUSY.
-  let threadSnapshots: ThreadSnapshot[] = [];
-  if (probe.path && existsSync(probe.path)) {
-    let db: Database | undefined;
-    try {
-      db = openStateDbWritable(probe.path, busyTimeoutMs);
-      threadSnapshots = loadMatchingThreads(db, preview.candidates, codexHome);
-    } catch (error) {
-      if (isBusyError(error)) {
-        return {
-          ok: false,
-          mode,
-          percent,
-          count: 0,
-          bytes: 0,
-          removedPaths: [],
-          error: "codex_busy",
-        };
-      }
-    } finally {
-      try { db?.close(); } catch { /* */ }
+  try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* empty dir */ }
+  // Drop an empty `.trash` root so permanent cleanup leaves no quarantine tree behind.
+  try {
+    const trashRoot = join(codexHome, TRASH_DIR);
+    if (existsSync(trashRoot) && readdirSync(trashRoot).length === 0) {
+      rmSync(trashRoot, { recursive: true, force: true });
     }
-  }
-
-  const removedPaths: string[] = [];
-  const failedPaths: string[] = [];
-  let bytes = 0;
-  const epoch = options.now ?? Date.now();
-  let trashDir: string | undefined;
-  let dbWarning: CleanupResult["dbWarning"] | undefined;
-
-  if (mode === "quarantine") {
-    trashDir = join(codexHome, TRASH_DIR, String(epoch));
-    try {
-      mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return {
-        ok: false,
-        mode,
-        percent,
-        count: 0,
-        bytes: 0,
-        removedPaths: [],
-        error: "fs_failed",
-      };
-    }
-    const manifestEntries: CleanupManifestEntry[] = [];
-    const succeeded: ArchivedCandidate[] = [];
-    for (const candidate of preview.candidates) {
-      const dest = join(trashDir, basename(candidate.relPath));
-      try {
-        renameSync(candidate.absPath, dest);
-        removedPaths.push(candidate.relPath);
-        bytes += candidate.bytes;
-        succeeded.push(candidate);
-        const thread = threadSnapshots.find(t => rolloutPathMatches(candidate, t.rollout_path, codexHome));
-        manifestEntries.push({
-          relPath: candidate.relPath,
-          bytes: candidate.bytes,
-          mtimeMs: candidate.mtimeMs,
-          ...(thread
-            ? { threadId: thread.id, rolloutPath: thread.rollout_path, archived: thread.archived }
-            : {}),
-        });
-      } catch {
-        failedPaths.push(candidate.relPath);
-      }
-    }
-    if (manifestEntries.length > 0) {
-      try {
-        writeFileSync(
-          join(trashDir, "manifest.json"),
-          JSON.stringify({
-            quarantinedAt: epoch,
-            mode: "quarantine",
-            percent,
-            entries: manifestEntries,
-            failedPaths,
-          }, null, 2),
-        );
-      } catch {
-        /* best-effort manifest; files already moved */
-      }
-    }
-    if (succeeded.length === 0) {
-      return {
-        ok: false,
-        mode,
-        percent,
-        count: 0,
-        bytes: 0,
-        removedPaths: [],
-        failedPaths,
-        error: "fs_failed",
-      };
-    }
-    const dbResult = reconcileThreads(probe.path, succeeded, codexHome, busyTimeoutMs);
-    dbWarning = mapDbWarning(dbResult.error);
-  } else {
-    // Permanent: reconcile DB first so a lock cannot leave files deleted with rows intact.
-    const dbResult = reconcileThreads(probe.path, preview.candidates, codexHome, busyTimeoutMs);
-    if (dbResult.error === "codex_busy") {
-      return {
-        ok: false,
-        mode,
-        percent,
-        count: 0,
-        bytes: 0,
-        removedPaths: [],
-        error: "codex_busy",
-      };
-    }
-    dbWarning = mapDbWarning(dbResult.error);
-    for (const candidate of preview.candidates) {
-      try {
-        unlinkSync(candidate.absPath);
-        removedPaths.push(candidate.relPath);
-        bytes += candidate.bytes;
-      } catch {
-        failedPaths.push(candidate.relPath);
-      }
-    }
-    if (removedPaths.length === 0 && failedPaths.length > 0) {
-      return {
-        ok: false,
-        mode,
-        percent,
-        count: 0,
-        bytes: 0,
-        removedPaths: [],
-        failedPaths,
-        error: "fs_failed",
-        ...(dbWarning ? { dbWarning } : {}),
-      };
-    }
-  }
+  } catch { /* */ }
 
   return {
     ok: true,
@@ -479,9 +691,6 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     percent,
     count: removedPaths.length,
     bytes,
-    ...(trashDir ? { trashDir: toForwardSlash(relative(codexHome, trashDir) || trashDir) } : {}),
-    ...(dbWarning ? { dbWarning } : {}),
-    ...(failedPaths.length > 0 ? { failedPaths } : {}),
     removedPaths,
   };
 }

@@ -32,7 +32,8 @@ interface CleanupPreview {
   percent: number;
   count: number;
   bytes: number;
-  candidates: Array<{ relPath: string; bytes: number }>;
+  digest: string;
+  candidates: Array<{ relPath: string; bytes: number; physicalRelPaths?: string[] }>;
 }
 
 interface CleanupResult {
@@ -193,7 +194,11 @@ function ArchivedCleanupPanel({
       const res = await fetch(`${apiBase}/api/storage/cleanup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ percent: preview.percent, mode: permanent ? "permanent" : "quarantine" }),
+        body: JSON.stringify({
+          percent: preview.percent,
+          mode: permanent ? "permanent" : "quarantine",
+          digest: preview.digest,
+        }),
       });
       const json = await res.json() as CleanupResult;
       if (!res.ok || !json.ok) {
@@ -209,6 +214,7 @@ function ArchivedCleanupPanel({
       );
       onDone();
     } catch (e) {
+      // Keep the dialog open so the failure is visible on top of the confirm surface.
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -253,7 +259,7 @@ function ArchivedCleanupPanel({
       </div>
 
       {status && <p className="muted" style={{ marginTop: 12 }}>{status}</p>}
-      {error && <p style={{ marginTop: 12, color: "var(--red)" }}>{error}</p>}
+      {error && !confirmOpen && <p style={{ marginTop: 12, color: "var(--red)" }}>{error}</p>}
 
       {confirmOpen && preview && (
         <div
@@ -263,7 +269,7 @@ function ArchivedCleanupPanel({
           aria-labelledby="storage-cleanup-confirm-title"
           onClick={() => !busy && setConfirmOpen(false)}
         >
-          <div className="modal" onClick={e => e.stopPropagation()}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
             <h3 id="storage-cleanup-confirm-title">{t("storage.cleanup.confirmTitle")}</h3>
             <p>
               {t("storage.cleanup.confirmBody", {
@@ -294,6 +300,7 @@ function ArchivedCleanupPanel({
             <p className="muted" style={{ marginTop: 8, fontSize: "var(--text-caption)" }}>
               {permanent ? t("storage.cleanup.permanentWarn") : t("storage.cleanup.quarantineNote")}
             </p>
+            {error && <p style={{ marginTop: 12, color: "var(--red)" }}>{error}</p>}
             <div className="dialog-actions" style={{ marginTop: 16 }}>
               <button
                 ref={cancelRef}

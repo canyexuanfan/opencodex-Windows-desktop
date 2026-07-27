@@ -236,10 +236,10 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/cleanup/preview" && req.method === "POST") {
     let body: { percent?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
     const percent = typeof body?.percent === "number" ? body.percent : Number.NaN;
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
-      return jsonResponse({ error: "percent must be a number between 0 and 100" }, 400);
+      return jsonResponse({ error: "invalid_percent" }, 400);
     }
     const preview = previewArchivedCleanup(percent);
     // Omit absolute host paths (codexHome / absPath) from the wire response.
@@ -247,36 +247,67 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       percent: preview.percent,
       count: preview.count,
       bytes: preview.bytes,
-      candidates: preview.candidates.map(({ relPath, bytes, mtimeMs }) => ({ relPath, bytes, mtimeMs })),
+      digest: preview.digest,
+      candidates: preview.candidates.map(({ relPath, bytes, mtimeMs, physicalRelPaths }) => ({
+        relPath,
+        bytes,
+        mtimeMs,
+        physicalRelPaths,
+      })),
     });
   }
 
   if (url.pathname === "/api/storage/cleanup" && req.method === "POST") {
-    let body: { percent?: unknown; mode?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    let body: { percent?: unknown; mode?: unknown; digest?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
     const percent = typeof body?.percent === "number" ? body.percent : Number.NaN;
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
-      return jsonResponse({ error: "percent must be a number between 0 and 100" }, 400);
+      return jsonResponse({ error: "invalid_percent" }, 400);
     }
     const mode = body?.mode;
     if (mode !== "quarantine" && mode !== "permanent") {
-      return jsonResponse({ error: "mode must be quarantine or permanent" }, 400);
+      return jsonResponse({ error: "invalid_mode" }, 400);
     }
+    const digest = typeof body?.digest === "string" ? body.digest : "";
     try {
-      const result = executeArchivedCleanup({ percent, mode: mode as CleanupMode });
-      if (!result.ok && result.error === "codex_busy") {
+      const result = executeArchivedCleanup({ percent, mode: mode as CleanupMode, digest });
+      if (!result.ok) {
+        const status =
+          result.error === "codex_busy" || result.error === "stale_preview" || result.error === "referenced_history"
+            ? 409
+            : result.error === "invalid_mode" || result.error === "invalid_digest"
+              ? 400
+              : 500;
+        const messages: Record<string, string> = {
+          codex_busy: "Codex is using state.sqlite — try again after quitting Codex.",
+          stale_preview: "Archived files changed since preview — run Preview again.",
+          referenced_history: "Selected archives are still referenced by forked or paginated history.",
+          invalid_digest: "Preview digest is missing or invalid.",
+          invalid_mode: "mode must be quarantine or permanent.",
+          fs_failed: "Filesystem cleanup failed; no changes were kept.",
+          db_reconcile_failed: "Could not update Codex state database.",
+          cleanup_failed: "Cleanup failed.",
+        };
         return jsonResponse({
-          ...result,
-          message: "Codex is using state.sqlite — try again after quitting Codex.",
-        }, 409);
+          ok: false,
+          error: result.error ?? "cleanup_failed",
+          message: messages[result.error ?? ""] ?? messages.cleanup_failed,
+        }, status);
       }
-      if (!result.ok) return jsonResponse(result, 500);
-      return jsonResponse(result);
-    } catch (error) {
+      return jsonResponse({
+        ok: true,
+        mode: result.mode,
+        percent: result.percent,
+        count: result.count,
+        bytes: result.bytes,
+        ...(result.trashDir ? { trashDir: result.trashDir } : {}),
+        removedPaths: result.removedPaths,
+      });
+    } catch {
       return jsonResponse({
         ok: false,
         error: "cleanup_failed",
-        message: error instanceof Error ? error.message : String(error),
+        message: "Cleanup failed.",
       }, 500);
     }
   }

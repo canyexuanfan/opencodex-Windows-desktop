@@ -60,7 +60,7 @@ afterEach(() => {
 });
 
 describe("POST /api/storage/cleanup", () => {
-  test("preview returns oldest percent without mutating", async () => {
+  test("preview returns digest without host paths", async () => {
     seedArchived(isolatedCodexHome!.path);
     const server = startServer(0);
     try {
@@ -72,9 +72,11 @@ describe("POST /api/storage/cleanup", () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.count).toBe(1);
+      expect(body.digest).toMatch(/^[a-f0-9]{64}$/);
       expect(body.candidates[0].relPath).toBe("archived_sessions/rollout-old.jsonl");
       expect(body.candidates[0].absPath).toBeUndefined();
       expect(body.codexHome).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain(isolatedCodexHome!.path.replaceAll("\\", "\\\\"));
       expect(existsSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
     } finally {
       await server.stop(true);
@@ -85,10 +87,16 @@ describe("POST /api/storage/cleanup", () => {
     seedArchived(isolatedCodexHome!.path);
     const server = startServer(0);
     try {
+      const previewRes = await fetch(new URL("/api/storage/cleanup/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50 }),
+      });
+      const preview = await previewRes.json();
       const res = await fetch(new URL("/api/storage/cleanup", server.url), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ percent: 50, mode: "quarantine" }),
+        body: JSON.stringify({ percent: 50, mode: "quarantine", digest: preview.digest }),
       });
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -96,6 +104,7 @@ describe("POST /api/storage/cleanup", () => {
       expect(body.mode).toBe("quarantine");
       expect(body.count).toBe(1);
       expect(body.trashDir).toContain(".trash/");
+      expect(body.error).toBeUndefined();
       expect(existsSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
       expect(existsSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
     } finally {
@@ -107,10 +116,16 @@ describe("POST /api/storage/cleanup", () => {
     seedArchived(isolatedCodexHome!.path);
     const server = startServer(0);
     try {
+      const previewRes = await fetch(new URL("/api/storage/cleanup/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50 }),
+      });
+      const preview = await previewRes.json();
       const res = await fetch(new URL("/api/storage/cleanup", server.url), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ percent: 50, mode: "permanent" }),
+        body: JSON.stringify({ percent: 50, mode: "permanent", digest: preview.digest }),
       });
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -125,16 +140,49 @@ describe("POST /api/storage/cleanup", () => {
     }
   });
 
+  test("stale_preview returns 409 with mapped error only", async () => {
+    seedArchived(isolatedCodexHome!.path);
+    const server = startServer(0);
+    try {
+      const previewRes = await fetch(new URL("/api/storage/cleanup/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50 }),
+      });
+      const preview = await previewRes.json();
+      writeFileSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-extra.jsonl"), "x");
+      utimesSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-extra.jsonl"), new Date("2025-01-01"), new Date("2025-01-01"));
+      const res = await fetch(new URL("/api/storage/cleanup", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50, mode: "quarantine", digest: preview.digest }),
+      });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+      expect(body.error).toBe("stale_preview");
+      expect(JSON.stringify(body)).not.toContain(isolatedCodexHome!.path);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("codex_busy returns 409", async () => {
     seedArchived(isolatedCodexHome!.path);
     const locker = new Database(join(isolatedCodexHome!.path, "state_5.sqlite"));
     locker.exec("BEGIN EXCLUSIVE");
     const server = startServer(0);
     try {
+      const previewRes = await fetch(new URL("/api/storage/cleanup/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 100 }),
+      });
+      const preview = await previewRes.json();
       const res = await fetch(new URL("/api/storage/cleanup", server.url), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ percent: 100, mode: "quarantine" }),
+        body: JSON.stringify({ percent: 100, mode: "quarantine", digest: preview.digest }),
       });
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -154,9 +202,11 @@ describe("POST /api/storage/cleanup", () => {
       const res = await fetch(new URL("/api/storage/cleanup", server.url), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ percent: 10, mode: "yeet" }),
+        body: JSON.stringify({ percent: 10, mode: "yeet", digest: "a".repeat(64) }),
       });
       expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe("invalid_mode");
     } finally {
       await server.stop(true);
     }
