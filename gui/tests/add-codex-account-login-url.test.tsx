@@ -98,7 +98,7 @@ async function mountReauthModal() {
 }
 
 function copyButton(): HTMLButtonElement {
-  const button = host.querySelector(".pwi-auth-url-actions button");
+  const button = host.querySelector(".login-url-block-actions button");
   expect(button).toBeTruthy();
   return button as HTMLButtonElement;
 }

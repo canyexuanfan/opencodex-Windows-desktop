@@ -73,7 +73,7 @@ async function render(url: string) {
 }
 
 function copyButton(): HTMLButtonElement {
-  const button = host.querySelector(".pwi-auth-url-actions button");
+  const button = host.querySelector(".login-url-block-actions button");
   expect(button).toBeTruthy();
   return button as HTMLButtonElement;
 }
@@ -146,9 +146,21 @@ test("offers a manual open fallback alongside the copy button", async () => {
   expect(host.textContent).toContain("Didn't open?");
 });
 
+// The block is shared by three surfaces, so its styles must not read as owned
+// by any one of them. Without this the "ownership" claim is unenforceable.
+test("carries component-scoped class names, not a host surface's prefix", async () => {
+  await render(URL_A);
+
+  expect(host.querySelector(".login-url-block")).toBeTruthy();
+  expect(host.querySelector(".login-url-block-text")?.textContent).toBe(URL_A);
+  expect(host.querySelector(".login-url-block-actions")).toBeTruthy();
+  expect(host.querySelector(".login-url-block-open")).toBeTruthy();
+  expect(host.innerHTML).not.toContain("pwi-");
+});
+
 test("renders nothing without a URL", async () => {
   await render("");
 
-  expect(host.querySelector(".pwi-auth-url-wrap")).toBeNull();
+  expect(host.querySelector(".login-url-block")).toBeNull();
   expect(host.textContent).not.toContain("Copy link");
 });

@@ -24,14 +24,14 @@ export function LoginUrlBlock({ url }: { url: string }) {
       : t("prov.copyLink");
 
   return (
-    <div className="pwi-auth-url-wrap">
-      <code className="pwi-auth-url">{url}</code>
-      <div className="pwi-auth-url-actions">
+    <div className="login-url-block">
+      <code className="login-url-block-text">{url}</code>
+      <div className="login-url-block-actions">
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => copy(url, url)}>
           <IconLink style={{ width: 13, height: 13 }} aria-hidden="true" />
           <span aria-live="polite">{label}</span>
         </button>
-        <a href={url} target="_blank" rel="noreferrer" className="pwi-auth-open-link">
+        <a href={url} target="_blank" rel="noreferrer" className="login-url-block-open">
           <IconExternal style={{ width: 13, height: 13 }} aria-hidden="true" /> {t("prov.didntOpen")}
         </a>
       </div>
