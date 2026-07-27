@@ -202,20 +202,54 @@ describe("GitHub Actions hardening", () => {
    * catches, and `// await convertToDraft();` satisfies a substring check while
    * removing the behaviour. A parser sees keys, not spellings.
    */
+  type WorkflowStep = { name?: string; uses?: string; run?: string; with?: { script?: string } };
+  type WorkflowShape = {
+    on?: { pull_request_target?: { types?: string[] } };
+    permissions?: Record<string, string> | string;
+    concurrency?: { group?: string };
+    jobs?: Record<string, { steps?: WorkflowStep[] }>;
+  };
+
   async function readEnforcePrTarget(): Promise<{
-    workflow: Record<string, unknown>;
-    steps: Array<Record<string, unknown>>;
+    workflow: WorkflowShape;
+    steps: WorkflowStep[];
     script: string;
   }> {
     const text = await readText(".github/workflows/enforce-pr-target.yml");
-    const workflow = Bun.YAML.parse(text) as Record<string, any>;
-    const steps = workflow.jobs["enforce-target"].steps as Array<Record<string, unknown>>;
-    // Strip line comments so a commented-out call cannot satisfy a "calls X" check.
-    const script = String(steps[0]!.with && (steps[0]!.with as any).script)
+    const workflow = Bun.YAML.parse(text) as WorkflowShape;
+    const steps = workflow.jobs?.["enforce-target"]?.steps;
+    expect(Array.isArray(steps)).toBe(true);
+    const scriptStep = steps!.find(step => typeof step.with?.script === "string");
+    expect(scriptStep).toBeDefined();
+    const script = stripLineComments(String(scriptStep!.with!.script));
+    return { workflow, steps: steps!, script };
+  }
+
+  /**
+   * Drop `//` line comments so a commented-out call cannot satisfy a "calls X"
+   * assertion — but only where `//` really starts a comment. The script builds a
+   * message containing `https://…`, and a naive `line.replace(/\/\/.*$/, "")`
+   * truncates that string literal, quietly weakening everything after it. Track
+   * quoting instead.
+   */
+  function stripLineComments(source: string): string {
+    return source
       .split("\n")
-      .map(line => line.replace(/\/\/.*$/, ""))
+      .map(line => {
+        let quote: string | null = null;
+        for (let i = 0; i < line.length; i += 1) {
+          const char = line[i]!;
+          if (char === "\\") { i += 1; continue; }
+          if (quote) {
+            if (char === quote) quote = null;
+            continue;
+          }
+          if (char === '"' || char === "'" || char === "`") { quote = char; continue; }
+          if (char === "/" && line[i + 1] === "/") return line.slice(0, i);
+        }
+        return line;
+      })
       .join("\n");
-    return { workflow, steps, script };
   }
 
   test("PR target enforcement stays least-privilege and never runs PR code", async () => {
@@ -223,7 +257,7 @@ describe("GitHub Actions hardening", () => {
 
     // pull_request_target runs with the base repo's token. Checking out or
     // executing the PR's code under it is the classic escalation.
-    expect(Object.keys(workflow.on as object)).toEqual(["pull_request_target"]);
+    expect(Object.keys(workflow.on ?? {})).toEqual(["pull_request_target"]);
 
     // Exactly one permission scope. Asserting that `pull-requests: write` is
     // present says nothing about what was added beside it, and a `write-all`
@@ -243,7 +277,7 @@ describe("GitHub Actions hardening", () => {
     expect(steps.some(step => String(step.uses).startsWith("actions/github-script@"))).toBe(true);
 
     // One run per PR, so two rapid events cannot race on the title/draft state.
-    expect((workflow.concurrency as any).group).toBe(
+    expect(workflow.concurrency?.group).toBe(
       "enforce-pr-target-${{ github.event.pull_request.number }}",
     );
   });
@@ -254,7 +288,7 @@ describe("GitHub Actions hardening", () => {
     // `edited` is what catches a retarget; `ready_for_review` is what re-applies
     // the draft when someone undoes it by hand. Dropping either silently makes
     // the gate one-shot.
-    const types = (workflow.on as any).pull_request_target.types as string[];
+    const types = workflow.on?.pull_request_target?.types ?? [];
     expect([...types].sort()).toEqual(["edited", "opened", "ready_for_review", "reopened"]);
 
     // The verdict is a live base-branch comparison, not a cached one: re-read the
