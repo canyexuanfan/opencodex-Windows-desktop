@@ -25,6 +25,8 @@ import {
 } from "../src/storage/policy";
 import {
   listArchivedCandidates,
+  selectOldestPercent,
+  type ArchivedCandidate,
   type CleanupResult,
   type ExecuteCleanupOptions,
 } from "../src/storage/cleanup";
@@ -47,16 +49,38 @@ function seedHome(sizes: Array<{ name: string; bytes: number; when: Date }>): st
   mkdirSync(join(home, "archived_sessions"));
   const db = new Database(join(home, "state_5.sqlite"));
   db.exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, archived INTEGER)`);
+  const insert = db.prepare(
+    `INSERT INTO threads VALUES ($id, $path, 1)`,
+  );
+  db.exec("BEGIN");
   for (const entry of sizes) {
     const path = join(home, "archived_sessions", entry.name);
     writeFileSync(path, "x".repeat(entry.bytes));
     utimesSync(path, entry.when, entry.when);
-    db.exec(
-      `INSERT INTO threads VALUES ('${entry.name}','archived_sessions/${entry.name}',1)`,
-    );
+    insert.run({ $id: entry.name, $path: `archived_sessions/${entry.name}` });
   }
+  db.exec("COMMIT");
   db.close();
   return home;
+}
+
+/** Minimal ArchivedCandidate list for pure selection math (no FS). */
+function syntheticCandidates(
+  count: number,
+  bytesEach: number,
+): ArchivedCandidate[] {
+  return Array.from({ length: count }, (_, i) => {
+    const relPath = `archived_sessions/rollout-${String(i).padStart(3, "0")}.jsonl`;
+    const mtimeMs = OLD.getTime() + i * 60_000;
+    return {
+      relPath,
+      absPath: relPath,
+      bytes: bytesEach,
+      mtimeMs,
+      physicalRelPaths: [relPath],
+      physicalFiles: [{ relPath, bytes: bytesEach, mtimeMs }],
+    };
+  });
 }
 
 function policy(partial: Partial<StorageCleanupPolicy> & Pick<StorageCleanupPolicy, "enabled" | "trigger" | "target">): StorageCleanupPolicy {
@@ -174,23 +198,32 @@ describe("selection helpers", () => {
   });
 
   test("selectPolicyPreview reduceToBytes keeps a single candidate when percent would over-select", () => {
-    const sizes = Array.from({ length: 100 }, (_, i) => ({
-      name: `rollout-${String(i).padStart(3, "0")}.jsonl`,
-      bytes: 10,
-      when: new Date(OLD.getTime() + i * 60_000),
-    }));
-    const dir = seedHome(sizes);
+    // Percent mapping over-selects when n>100 and only one file is needed by bytes:
+    // pct=1 → floor(n/100) files. Prove that without seeding hundreds of files on disk —
+    // Windows CI FS makes a 100-file fixture exceed bun's default 5s harness timeout.
+    const synthetic = syntheticCandidates(200, 10);
+    const desired = selectReduceToBytes(synthetic, 1990); // total 2000 → free 10 → one file
+    expect(desired).toHaveLength(1);
+    const pct = percentForAtLeastCount(synthetic.length, desired.length);
+    expect(selectOldestPercent(synthetic, pct).length).toBeGreaterThan(1);
+
+    // FS integration: exact preview path (percent:0 + candidateRelPaths), small fixture.
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 10, when: OLD },
+      { name: "rollout-new.jsonl", bytes: 990, when: NEW },
+    ]);
     const preview = selectPolicyPreview(
       policy({
         enabled: true,
         trigger: { archivedBytesOver: 0 },
-        target: { reduceToBytes: 990 }, // total 1000 → free 10 → one file
+        target: { reduceToBytes: 990 }, // total 1000 → free 10 → only the 10-byte oldest
       }),
       dir,
     );
+    expect(preview.percent).toBe(0);
     expect(preview.count).toBe(1);
     expect(preview.bytes).toBe(10);
-    expect(preview.candidateRelPaths).toHaveLength(1);
+    expect(preview.candidateRelPaths).toEqual(["archived_sessions/rollout-old.jsonl"]);
   });
 });
 
