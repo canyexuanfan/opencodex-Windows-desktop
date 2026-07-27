@@ -796,6 +796,46 @@ describe("GitHub Actions hardening", () => {
       expect(cleared.body).toContain("Target branch corrected");
     });
 
+    test("a PR undrafted by hand before the retarget still gets its state cleared", async () => {
+      // The bot drafted it, the author marked it ready again, then retargeted
+      // to dev. `autoDraftedByBot: true` with `pr.draft: false` is reachable and
+      // had no scenario, so an audit round added `if (autoDraftedByBot &&
+      // !pr.draft) return;` — the state comment stays active forever and the
+      // next wrong-target event resumes from a record that no longer matches.
+      const result = await run({
+        pr: { base: { ref: "dev" }, draft: false, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true })],
+      });
+
+      // Nothing to un-draft, the prefix comes off, and the state is cleared.
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "pulls.update",
+        "issues.updateComment",
+      ]);
+      const [cleared] = callsTo(result, "issues.updateComment") as [{ body: string }];
+      expect(cleared.body).toContain('"active":false');
+    });
+
+    test("a title the author already fixed by hand is not sliced a second time", async () => {
+      // `titlePrefixedByBot: true` while the live title no longer starts with
+      // the prefix — the author removed it themselves. Slicing anyway would eat
+      // the first 15 characters of their title.
+      const result = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "Add a thing" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true })],
+      });
+
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      expect(methodsOf(result)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "graphql",
+        "issues.updateComment",
+      ]);
+    });
+
     test("an API failure is never swallowed, whatever status it carries", async () => {
       // Octokit rejects with a `RequestError` that has a `.status`, and an
       // audit round swallowed exactly one code:

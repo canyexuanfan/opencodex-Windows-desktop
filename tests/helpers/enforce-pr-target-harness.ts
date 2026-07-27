@@ -134,6 +134,18 @@ const RUNTIME_SHADOWS = [
   "global",
   "module",
   "import_meta",
+  // Deferred work escapes an `await`. A round-seven mutation dropped a
+  // `setTimeout(() => github.request("POST /repos/attacker/other/issues"), 0)`
+  // into the script: the harness awaited only the script body, so the write
+  // landed after the assertions had already run and every scenario passed.
+  // Under Node the timer fires with the write-capable client still in hand.
+  //
+  // These are captured rather than blocked, so the run can drain them and the
+  // recording includes whatever they did.
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "queueMicrotask",
 ] as const;
 
 /**
@@ -191,10 +203,17 @@ function nodeLikeProcess(): Record<string, unknown> {
  * holding a write token is not something to characterise, it is something to
  * reject.
  */
-function nodeLikeRuntime(): Record<string, unknown> {
+function nodeLikeRuntime(deferred: (() => unknown)[]): Record<string, unknown> {
   const nodeProcess = nodeLikeProcess();
   const deny = (name: string) => () => {
     throw new Error(`the script must not use ${name}`);
+  };
+  /** Record the callback so the run can drain it, and hand back a timer id. */
+  const capture = (callback: unknown) => {
+    if (typeof callback === "function") {
+      deferred.push(callback as () => unknown);
+    }
+    return { unref: () => {}, ref: () => {} };
   };
 
   const fakeGlobal: Record<string, unknown> = {
@@ -220,6 +239,11 @@ function nodeLikeRuntime(): Record<string, unknown> {
   fakeGlobal.globalThis = fakeGlobal;
   fakeGlobal.global = fakeGlobal;
 
+  fakeGlobal.setTimeout = capture;
+  fakeGlobal.setInterval = capture;
+  fakeGlobal.setImmediate = capture;
+  fakeGlobal.queueMicrotask = capture;
+
   return {
     process: nodeProcess,
     globalThis: fakeGlobal,
@@ -230,6 +254,10 @@ function nodeLikeRuntime(): Record<string, unknown> {
     eval: deny("eval"),
     module: undefined,
     import_meta: undefined,
+    setTimeout: capture,
+    setInterval: capture,
+    setImmediate: capture,
+    queueMicrotask: capture,
   };
 }
 
@@ -351,6 +379,8 @@ export async function runEnforcePrTarget(
     },
   );
 
+  const deferred: (() => unknown)[] = [];
+
   await compileScript(script)({
     github,
     context,
@@ -364,8 +394,15 @@ export async function runEnforcePrTarget(
     // `if (!process.versions.bun) return;` — a no-op in production, green here.
     // Shadow `process` with something that looks like the Node the workflow
     // actually gets, so a runtime probe cannot tell the two apart.
-    ...nodeLikeRuntime(),
+    ...nodeLikeRuntime(deferred),
   });
+
+  // Run whatever the script deferred. Node would run these too, with the write
+  // token still live, so their calls belong in the recording — a scenario that
+  // asserts on the exact call list then sees them.
+  for (const callback of deferred.splice(0)) {
+    await callback();
+  }
 
   return { calls, logs, warnings };
 }

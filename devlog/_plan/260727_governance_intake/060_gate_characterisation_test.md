@@ -357,7 +357,64 @@ cross-repo-on-stale CAUGHT
 
 기준선: `28 pass  0 fail  376 expect() calls`, `bun run typecheck` 오류 0.
 
-## 여섯 라운드가 남긴 것
+## 감사 7라운드 — 지연 실행과 이미 손댄 PR
+
+6라운드 수정본을 다시 넘겼다. FAIL, 8건 중 실질 2건.
+
+**지연 실행 2건.** 하네스가 기다린 것은 스크립트 본문뿐이었다. 감사는
+`setTimeout(() => github.request("POST /repos/attacker/other/issues"), 0)`와
+`queueMicrotask(...)`를 본문 끝에 매달았다. 어설션이 끝난 뒤에 write가 떨어지니
+기록에 남지 않았고 12개 시나리오가 전부 초록이었다. 진짜 Node에서는 그 콜백이
+write 토큰을 쥔 클라이언트를 그대로 들고 실행된다.
+
+**미커버 분기 2건.** `{autoDraftedByBot: true, pr.draft: false}`는 도달 가능하다 —
+봇이 draft로 내렸고 작성자가 손으로 ready로 되돌린 뒤 대상을 고친 경우다.
+`{titlePrefixedByBot: true, title이 접두사로 시작하지 않음}`도 마찬가지다 —
+작성자가 접두사를 직접 지운 경우. 두 조합 모두 시나리오가 없어서, 앞쪽에서
+조기 반환하거나 조건 없이 `slice`하도록 바꿔도 초록이었다. 후자는 프로덕션에서
+작성자 제목의 앞 15자를 먹는다.
+
+나머지 4건(스택 추적으로 하네스 탐지, 동적 `import`, 생성자 체인 탈출, `permissions`
+키 중복)은 이미 잡히고 있었다. 감사가 초록을 확인하지 않고 올린 추정이었다.
+
+### 대응
+
+- `RUNTIME_SHADOWS`에 `setTimeout`/`setInterval`/`setImmediate`/`queueMicrotask`를
+  추가했다. **차단이 아니라 캡처**다 — Node도 그 콜백을 돌리므로, 돌린 결과가
+  기록에 남아야 시나리오의 정확한 호출 목록 비교가 그것을 본다. 스크립트 본문이
+  resolve된 뒤 `for (const callback of deferred.splice(0)) await callback();`로
+  드레인한다.
+- 시나리오 2개 추가: 손으로 ready가 된 PR도 상태가 정리되는가, 작성자가 이미 고친
+  제목을 두 번 자르지 않는가.
+
+## 변이 검증 실측 (61/61)
+
+7라운드 8가지:
+
+```
+stack-detect CAUGHT     dynamic-import CAUGHT   ctor-chain CAUGHT
+floating-timer CAUGHT   floating-micro CAUGHT   dup-permissions CAUGHT
+skip-undrafted CAUGHT   slice-unconditional CAUGHT
+
+total=8 survived=none
+```
+
+이전 53가지 회귀 재확인:
+
+```
+mut6 (6라운드 7종)  total=7  survived=none
+mut5 (5라운드 7종)  total=7  survived=none
+mut4 (4라운드 13종) total=13 survived=['graphql-retarget(noop)']
+mut3 (3라운드 26종) total=26 survived=['update-retargets-main(noop)']
+```
+
+NO-OP 2건은 들여쓰기 불일치로 치환 자체가 적용되지 않은 것이며, 개별 재확인 시
+CAUGHT다. 워크플로는 매 실행 후 `git checkout --`로 원복되고 스크립트가 복원을
+검증한다.
+
+기준선: `30 pass  0 fail  384 expect() calls`, `bun run typecheck` 오류 0.
+
+## 일곱 라운드가 남긴 것
 
 설계가 세 번 바뀌었고, 매번 앞 라운드가 그 방향의 한계를 증명했다.
 
@@ -365,9 +422,9 @@ cross-repo-on-stale CAUGHT
    키만 덮는다.
 2. **허용 목록** (4라운드) — "정확히 이 키들". YAML 골격에는 유효했고 지금도 유지된다.
    하지만 스크립트 본문에는 통하지 않았다. JavaScript는 같은 효과에 무한한 철자가 있다.
-3. **실행 하네스** (5~6라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
-   **가짜의 충실도**가 새 공격면이 됐다. 두 라운드 연속으로 스크립트가 아니라
-   하네스가 뚫렸다.
+3. **실행 하네스** (5~7라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
+   **가짜의 충실도**가 새 공격면이 됐다. 세 라운드 연속으로 스크립트가 아니라
+   하네스가 뚫렸다 — 전역 탈출, 에러 모양, 그리고 이벤트 루프.
 
 세 번째가 옳은 방향이다. 다만 오라클의 충실도가 곧 증거의 품질이다. 앞으로 이
 하네스를 손댈 때 물어야 할 질문은 하나다 — **진짜 `github-script` + Octokit이라면
