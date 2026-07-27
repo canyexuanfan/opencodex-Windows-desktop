@@ -820,6 +820,13 @@ function schemaDiagnosticsError(error: z.ZodError): string {
   return details.length > 0 ? `schema_invalid: ${details.join("; ")}` : "schema_invalid";
 }
 
+/** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
+export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
+  const result = configSchema.safeParse(value);
+  if (result.success) return { ok: true, config: result.data as OcxConfig };
+  return { ok: false, error: schemaDiagnosticsError(result.error) };
+}
+
 export function readConfigDiagnostics(): ConfigDiagnostics {
   const configPath = getConfigPath();
   if (!existsSync(configPath)) {
