@@ -1,20 +1,28 @@
 import {
   CliUsageError,
   printData,
+  readSecretLine,
   rejectArgs,
   runCliAction,
   runtimeRequest,
   takeFlag,
   takeOption,
+  takeOptionWithSyntax,
+  type CliStdin,
   type RuntimeApiDeps,
 } from "./runtime-api";
 
 const USAGE = `Usage:
-  ocx account login <provider> [--id <account-id>] [--reauth] [--code <redirect-or-code>]
-      [--no-wait] [--json]
-  ocx account code <provider> <redirect-or-code> [--flow <flow-id>] [--json]
+  ocx account login <provider> [--id <account-id>] [--reauth] [--code -] [--no-wait] [--json]
+  ocx account code <provider> [--flow <flow-id>] [--json]   (reads the code from stdin)
   ocx account cancel <provider> [--flow <flow-id>] [--json]
-  ocx account reset-credits <account-id|main> [--consume --yes] [--json]`;
+  ocx account reset-credits <account-id|main> [--consume --yes] [--json]
+
+The redirect URL or authorization code is a short-lived credential. Pipe it in
+rather than passing it as an argument, where it lands in shell history and is
+visible to anyone who can run ps:
+  pbpaste | ocx account code <provider> --flow <flow-id>
+  ocx account login <provider> --code -   (same, for the login flow)`;
 
 const CODEX_NAMES = new Set(["openai", "codex", "chatgpt"]);
 
@@ -25,6 +33,35 @@ interface LoginStart {
   deviceCode?: string;
 }
 
+/** `-` means "read it from stdin", the documented way to pass a code silently. */
+const STDIN_SENTINEL = "-";
+
+const ARGV_WARNING =
+  "warning: the authorization code was passed as a command-line argument, so it is now in your shell history and was visible in the process list while this ran. Pipe it on stdin instead, or pass `-` to read from stdin.";
+
+/**
+ * Resolve the code, preferring stdin.
+ *
+ * Never logs the value itself — the warning names the exposure, not the
+ * credential. What this closes is shell history, `ps`, and this program's own
+ * output; a code pasted at an interactive prompt is still visible on the
+ * terminal, exactly as it is in the existing interactive login.
+ */
+async function resolveCode(
+  supplied: { value: string; inline: boolean } | undefined,
+  deps: RuntimeApiDeps,
+  required: boolean,
+): Promise<string | undefined> {
+  if (supplied && supplied.value !== STDIN_SENTINEL) {
+    console.error(ARGV_WARNING);
+    return supplied.value;
+  }
+  if (!supplied && !required) return undefined;
+  const input: CliStdin = deps.stdinImpl ?? process.stdin;
+  if (input.isTTY) console.error("Paste the redirect URL or authorization code, then press Enter:");
+  return await readSecretLine(deps, "authorization code");
+}
+
 async function login(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const args = [...argv];
   const provider = args.shift()?.trim().toLowerCase();
@@ -32,9 +69,12 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const noWait = takeFlag(args, "--no-wait");
   const reauth = takeFlag(args, "--reauth");
   const id = takeOption(args, "--id");
-  const code = takeOption(args, "--code");
+  const suppliedCode = takeOptionWithSyntax(args, "--code");
   if (!provider) throw new CliUsageError("provider is required", USAGE);
   rejectArgs(args, USAGE);
+  // Only resolve when --code was actually given: a plain `ocx account login`
+  // opens the browser flow and polls, and must not block on stdin.
+  const code = await resolveCode(suppliedCode, deps, false);
 
   if (CODEX_NAMES.has(provider)) {
     const start = await runtimeRequest<LoginStart>("/api/codex-auth/login", {
@@ -109,11 +149,24 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<void> {
 async function code(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const args = [...argv];
   const provider = args.shift()?.trim().toLowerCase();
-  const input = args.shift();
+  // Flags first. Taking the positional before parsing them made
+  // `ocx account code openai --flow f1` read `--flow` as the code and then
+  // reject `f1` as an unexpected argument.
   const wantsJson = takeFlag(args, "--json");
   const flowId = takeOption(args, "--flow");
-  if (!provider || !input) throw new CliUsageError("provider and redirect/code are required", USAGE);
+  const suppliedCode = takeOptionWithSyntax(args, "--code");
+  const positional = args.shift();
+  if (!provider) throw new CliUsageError("provider is required", USAGE);
   rejectArgs(args, USAGE);
+  if (suppliedCode && positional !== undefined) {
+    throw new CliUsageError("pass the code either positionally or with --code, not both", USAGE);
+  }
+  const input = await resolveCode(
+    suppliedCode ?? (positional === undefined ? undefined : { value: positional, inline: false }),
+    deps,
+    true,
+  );
+  if (!input) throw new CliUsageError("provider and redirect/code are required", USAGE);
   const path = CODEX_NAMES.has(provider) ? "/api/codex-auth/login/code" : "/api/oauth/login/code";
   if (CODEX_NAMES.has(provider) && !flowId) throw new CliUsageError("Codex login code requires --flow <flow-id>", USAGE);
   const body = CODEX_NAMES.has(provider) ? { flowId, input } : { provider, input };

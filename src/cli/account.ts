@@ -25,8 +25,8 @@ const ACCOUNT_USAGE = `Usage:
   ocx account remove <provider> <account-or-key-id|main> --yes [--json]
   ocx account clear-cooldown <provider> <account-id|main> [--json]
   ocx account add-key <provider> [--label <label>] [--json]
-  ocx account login <provider> [--id <account-id>] [--reauth] [--code <code>] [--no-wait] [--json]
-  ocx account code <provider> <redirect-or-code> [--flow <flow-id>] [--json]
+  ocx account login <provider> [--id <account-id>] [--reauth] [--code -] [--no-wait] [--json]
+  ocx account code <provider> [--flow <flow-id>] [--json]   (reads the code from stdin)
   ocx account cancel <provider> [--flow <flow-id>] [--json]
   ocx account reset-credits <account-id|main> [--consume --yes] [--json]
 

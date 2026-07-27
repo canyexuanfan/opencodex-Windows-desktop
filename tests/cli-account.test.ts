@@ -269,6 +269,22 @@ async function mockManagementApi(req: Request): Promise<Response> {
     return json({ ok: true });
   }
 
+  if (req.method === "POST" && url.pathname === "/api/oauth/login") {
+    return json({ url: "https://auth.example/authorize", instructions: "Sign in, then paste the redirect URL." });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/codex-auth/login") {
+    return json({ url: "https://auth.example/authorize", flowId: "flow-mock" });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/codex-auth/login/code") {
+    return json({ ok: true, accepted: true });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/oauth/login/code") {
+    return json({ ok: true, accepted: true });
+  }
+
   return json({ error: `unhandled mock endpoint: ${req.method} ${url.pathname}` }, 404);
 }
 
@@ -951,5 +967,135 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/codex-auth/accounts/alias" }));
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/oauth/accounts/alias" }));
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/providers/keys/alias" }));
+  });
+
+  describe("38: the authorization code never has to travel through argv", () => {
+    // An OAuth redirect URL carries a short-lived credential. Passed as an
+    // argument it lands in shell history and is readable via `ps` for as long
+    // as the command runs. The interactive login already reads it from a
+    // prompt; the headless path did not, and that is what these cover.
+    const SECRET = "https://cb.example/callback?code=SUPERSECRET123&state=abc";
+
+    test("a piped code produces the same request body as an argument would", async () => {
+      const piped = await run(
+        ["code", "anthropic", "--json"],
+        { ...defaultDeps(), stdinImpl: stdinFrom(`${SECRET}\n`) },
+      );
+      const pipedPost = requests.at(-1);
+
+      const passed = await run(["code", "anthropic", SECRET, "--json"]);
+      const passedPost = requests.at(-1);
+
+      expect(piped.code).toBe(0);
+      expect(passed.code).toBe(0);
+      expect(pipedPost?.body).toEqual({ provider: "anthropic", input: SECRET });
+      expect(pipedPost?.body).toEqual(passedPost?.body);
+
+      // Same result, different exposure: only the argv path warns, and the
+      // warning names the problem without repeating the credential.
+      expect(piped.stderr).toBe("");
+      expect(passed.stderr).toContain("shell history");
+      expect(passed.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("`-` is the documented way to say stdin, and it does not warn", async () => {
+      const positional = await run(
+        ["code", "anthropic", "-", "--json"],
+        { ...defaultDeps(), stdinImpl: stdinFrom(`${SECRET}\n`) },
+      );
+
+      expect(positional.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+      expect(positional.stderr).toBe("");
+    });
+
+    test("--code=<value> is accepted and warned about, because rejecting it prints the value", async () => {
+      // `takeOption` only understands `--code value`, so `--code=value` used to
+      // fall through to rejectArgs, which reported the whole argument —
+      // writing the authorization code to stderr. Refusing the syntax leaked
+      // more than accepting it.
+      const result = await run(["code", "anthropic", `--code=${SECRET}`, "--json"]);
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+      expect(result.stderr).toContain("shell history");
+      expect(result.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("a rejected argument list redacts the secret option instead of echoing it", async () => {
+      const result = await run(["code", "anthropic", "-", "--code=" + SECRET, "extra"]);
+
+      // CliUsageError is exit 2 in this CLI; the point of the case is the body
+      // of the message, not the code.
+      expect(result.code).toBe(2);
+      expect(result.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("--flow is parsed as a flag, not swallowed as the code", async () => {
+      // The positional used to be taken before the flags, so
+      // `code openai --flow f1` read `--flow` as the credential and then
+      // rejected `f1` as unexpected.
+      const result = await run(
+        ["code", "openai", "--flow", "flow-123", "--json"],
+        { ...defaultDeps(), stdinImpl: stdinFrom(`${SECRET}\n`) },
+      );
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)).toEqual(expect.objectContaining({
+        method: "POST",
+        path: "/api/codex-auth/login/code",
+        body: { flowId: "flow-123", input: SECRET },
+      }));
+      expect(result.output).not.toContain("--flow");
+    });
+
+    test("an empty pipe is a usage error, not an empty credential POST", async () => {
+      const before = requests.length;
+      const result = await run(
+        ["code", "anthropic"],
+        { ...defaultDeps(), stdinImpl: stdinFrom("   \n") },
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("input was empty");
+      expect(requests).toHaveLength(before);
+    });
+
+    test("a silent pipe times out and cleans up its listeners", async () => {
+      const silent = new PassThrough() as AccountStdin;
+      silent.isTTY = false;
+      const result = await run(
+        ["code", "anthropic"],
+        { ...defaultDeps(), stdinImpl: silent, stdinTimeoutMs: 5 },
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("timed out");
+      expect(silent.listenerCount("data")).toBe(0);
+      expect(silent.listenerCount("end")).toBe(0);
+      expect(silent.listenerCount("error")).toBe(0);
+    });
+
+    test("giving the code twice is refused rather than silently preferring one", async () => {
+      const result = await run(["code", "anthropic", SECRET, "--code", SECRET]);
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("not both");
+      expect(result.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("a plain login still opens the browser flow instead of waiting on stdin", async () => {
+      // The stdin default belongs to `account code`. If it reached `login`,
+      // every ordinary `ocx account login <provider>` would block on a prompt.
+      const silent = new PassThrough() as AccountStdin;
+      silent.isTTY = false;
+      const result = await run(
+        ["login", "anthropic", "--no-wait", "--json"],
+        { ...defaultDeps(), stdinImpl: silent, stdinTimeoutMs: 5 },
+      );
+
+      expect(result.code).toBe(0);
+      expect(requests.some(request => request.path === "/api/oauth/login/code")).toBe(false);
+    });
   });
 });

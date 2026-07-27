@@ -12,9 +12,14 @@
 import { findLiveProxy, probeHostname } from "../server/proxy-liveness";
 import { runningProxyUpdateHeaders } from "../oauth/login-cli";
 
+export type CliStdin = NodeJS.ReadableStream & { isTTY?: boolean };
+
 export interface RuntimeApiDeps {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  /** Test injection for commands that read a secret from stdin instead of argv. */
+  stdinImpl?: CliStdin;
+  stdinTimeoutMs?: number;
 }
 
 export class CliUsageError extends Error {
@@ -121,8 +126,95 @@ export function csv(value: string | undefined): string[] | undefined {
   return [...new Set(value.split(",").map(item => item.trim()).filter(Boolean))];
 }
 
+/**
+ * Options whose VALUE is a credential, listed here so a parse error never
+ * prints one.
+ *
+ * `takeOption` only understands `--flag value`. `--flag=value` therefore falls
+ * through to `rejectArgs`, which reports the offending argument verbatim — for
+ * `--code=https://…?code=SECRET` that writes the authorization code to stderr,
+ * which is the exact exposure the stdin path exists to avoid.
+ */
+const SECRET_OPTIONS = ["--code"];
+
+function redactArg(arg: string): string {
+  for (const option of SECRET_OPTIONS) {
+    if (arg.startsWith(`${option}=`)) return `${option}=<redacted>`;
+  }
+  return arg;
+}
+
 export function rejectArgs(args: string[], usage: string): void {
-  if (args.length > 0) throw new CliUsageError(`Unexpected argument(s): ${args.join(" ")}`, usage);
+  if (args.length > 0) {
+    throw new CliUsageError(`Unexpected argument(s): ${args.map(redactArg).join(" ")}`, usage);
+  }
+}
+
+/**
+ * `--flag value` or `--flag=value`, reporting which spelling was used.
+ *
+ * The equals form is accepted rather than rejected: rejecting it routes the
+ * value through `rejectArgs`, and a caller who typed `--code=<secret>` would
+ * see their credential echoed back. Accepting it lets the command warn about
+ * the shell-history exposure without repeating the value.
+ */
+export function takeOptionWithSyntax(
+  args: string[],
+  flag: string,
+): { value: string; inline: boolean } | undefined {
+  const inlineIndex = args.findIndex(arg => arg.startsWith(`${flag}=`));
+  if (inlineIndex !== -1) {
+    const [raw] = args.splice(inlineIndex, 1) as [string];
+    const value = raw.slice(flag.length + 1);
+    if (!value) throw new CliUsageError(`${flag} requires a value`);
+    return { value, inline: true };
+  }
+  const value = takeOption(args, flag);
+  return value === undefined ? undefined : { value, inline: false };
+}
+
+/**
+ * Read one line from stdin without it ever reaching argv.
+ *
+ * Same shape as `readStdinLine` in account-extended.ts: resolve on the first
+ * newline, on end-of-stream, or reject on timeout, and always drop the
+ * listeners so a caller that continues running does not leak them.
+ */
+export async function readSecretLine(deps: RuntimeApiDeps, label: string): Promise<string> {
+  const input: CliStdin = deps.stdinImpl ?? process.stdin;
+  const timeoutMs = deps.stdinTimeoutMs ?? 120_000;
+  const line = await new Promise<string>((resolve, reject) => {
+    let buffer = "";
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      input.removeListener("data", onData);
+      input.removeListener("end", onEnd);
+      input.removeListener("error", onError);
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
+    const onData = (chunk: unknown) => {
+      buffer += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      const newline = buffer.search(/[\r\n]/);
+      if (newline >= 0) finish(() => resolve(buffer.slice(0, newline).trim()));
+    };
+    const onEnd = () => finish(() => resolve(buffer.trim()));
+    const onError = (error: Error) => finish(() => reject(error));
+    const timer = setTimeout(
+      () => finish(() => reject(new CliUsageError(`timed out waiting for ${label} on stdin`))),
+      timeoutMs,
+    );
+    input.on("data", onData);
+    input.on("end", onEnd);
+    input.on("error", onError);
+  });
+  if (!line) throw new CliUsageError(`${label} input was empty`);
+  return line;
 }
 
 export function printData(value: unknown, wantsJson: boolean, lines?: string[]): void {
