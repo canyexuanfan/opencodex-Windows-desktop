@@ -47,3 +47,60 @@ WP8(main 승격) 사전 감사가 승격을 막으면서 낸 High 지적이다. 
 - `-`는 stdin을 읽고 경고하지 않는다
 - stdin이 비었고 TTY도 아니면 usage 오류
 - `bun run test` 전체 통과, `bun x tsc --noEmit` exit 0
+
+---
+
+## 계획 감사 (agent 019fa1d4) → 설계 수정
+
+감사가 blocker 2건 + High 3건을 냈다. 둘은 프로브로 직접 확인했다.
+
+### 실측한 것
+
+```
+[login --code=<secret>]  leaks=true
+   stderr> Error: Unexpected argument(s): --code=https://cb.example/?code=SUPERSECRET123&state=x
+[code openai --flow flow-123]  → Error: Unexpected argument(s): flow-123
+```
+
+첫째, `takeOption`은 `--code <값>`만 받는다. `--code=<값>`은 파싱에서 빠져
+`rejectArgs`로 흘러가고, **거기서 인자를 통째로 stderr에 찍는다.** 즉 인증
+코드를 등호로 붙이면 셸 히스토리뿐 아니라 프로그램 출력에도 남는다. 원래
+계획의 "값은 어디에도 안 나온다"가 이 경로에서 거짓이었다.
+
+둘째, `code()`는 플래그를 파싱하기 전에 `args.shift()`로 위치 인자를 먼저
+먹는다. `ocx account code openai --flow flow-123`은 `--flow`를 코드로 삼고
+남은 `flow-123`을 "예상치 못한 인자"라고 거절한다. 위치 인자를 선택으로
+만들기 **전에** 이 순서부터 뒤집어야 한다.
+
+### 수정된 설계
+
+- **`login`의 기본 동작은 건드리지 않는다.** 감사 지적대로 `--code` 없는
+  `ocx account login`은 지금처럼 브라우저 플로우를 열고 폴링한다. stdin을
+  기본으로 삼으면 평범한 로그인이 전부 프롬프트에서 멈춘다. stdin은
+  `account code <provider>` (위치 인자 생략)와 명시적 `--code -`에만 붙인다.
+- **`code()` 파싱 순서를 뒤집는다.** 플래그를 먼저 걷어내고 남은 토큰 0~1개를
+  위치 인자로 본다. 플래그가 앞뒤 어디 있어도 동작한다.
+- **등호 문법을 지원하고 경고한다.** `--code=<값>`을 받아들이되 stderr 경고를
+  낸다. 받아들이지 않으면 `rejectArgs`가 값을 찍기 때문에, 거절이 오히려 더
+  샌다. 아울러 `rejectArgs` 경로로 갈 수 있는 잔여 인자 중 `--code=`로
+  시작하는 것은 값을 잘라내고 `--code=<redacted>`로 보고한다.
+- **TTY 에코 보장 범위를 정직하게 적는다.** readline 프롬프트는 터미널 화면에
+  붙여넣은 값을 보여준다. 이 변경이 막는 것은 **셸 히스토리, `ps`, 그리고
+  프로그램 자신의 출력**이다. 터미널 화면은 막지 않는다 — 그건 별개 문제이고,
+  기존 대화형 경로(`login-cli.ts:55`)도 같은 성질이다.
+- **`ocx account` 총괄 USAGE도 같이 고친다** (`src/cli/account.ts:28`).
+  `ACCOUNT_AUTH_USAGE`만 고치면 알 수 없는 서브커맨드에서 옛 문법이 나온다.
+- stdin 헬퍼는 `account-extended.ts`의 `readStdinLine`과 같은 모양으로
+  `RuntimeApiDeps`에 `stdinImpl` / `stdinTimeoutMs`를 얹는다. 테스트 하네스에
+  이미 `stdinFrom`이 있다.
+
+### 수용 기준 (교체)
+
+- `account code <p>` — stdin(파이프)에서 읽고, 인자 경로와 **동일한 요청 본문**
+- `account code <p> -` / `login --code -` — 명시적 stdin, 경고 없음
+- `account code <p> <값>` / `--code <값>` — 동작하되 stderr 경고, 값 미노출
+- `--code=<값>` — 동작하되 경고, **값이 출력에 없다** (지금은 샌다)
+- `code <p> --flow <id>` — `--flow`를 코드로 먹지 않는다 (지금은 먹는다)
+- 빈 파이프 / 닫힌 stdin — usage 오류, POST 없음
+- `--code` 없는 평범한 `login`과 `--no-wait`는 **동작 변화 없음**
+- Codex 경로(`--flow` 필수)와 OAuth 경로 양쪽 본문 확인
