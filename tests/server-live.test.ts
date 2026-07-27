@@ -905,7 +905,7 @@ describe("GET /readyz", () => {
       // Readiness is pending right after bind: 503 + Retry-After, sanitized body.
       const readyzRes = await fetch(new URL("/readyz", base));
       expect(readyzRes.status).toBe(503);
-      expect(readyzRes.headers.get("retry-after")).toBeTruthy();
+      expect(readyzRes.headers.get("retry-after")).toBe("1");
       const readyzBody = (await readyzRes.json()) as Record<string, unknown>;
       expect(readyzBody.service).toBe("opencodex");
       expect(readyzBody.status).toBe("pending");
@@ -949,7 +949,7 @@ describe("GET /readyz", () => {
     try {
       const res = await fetch(new URL("/readyz", server.url));
       expect(res.status).toBe(503);
-      expect(res.headers.get("retry-after")).toBeTruthy();
+      expect(res.headers.get("retry-after")).toBe("1");
       expect(((await res.json()) as { status: string }).status).toBe("failed");
     } finally {
       await server.stop(true);
