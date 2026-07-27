@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, posix as posixPath, win32 as win32Path } from "node:path";
 import { atomicWriteFile } from "../config";
 import type { OcxClaudeDesktopProfile } from "../types";
 import {
@@ -48,6 +48,40 @@ export interface Desktop3pRoutedModel {
  * claude/desktop-profile.
  */
 export const DESKTOP_SUPPORTS_1M_THRESHOLD = 1_000_000;
+
+interface Desktop3pConfigLibraryOptions {
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  homeDir?: string;
+}
+
+/**
+ * Resolve the config library from the same user-data root Claude Desktop uses. Keeping this in one
+ * helper prevents the writer and dashboard status probe from agreeing on a path Desktop never reads.
+ */
+export function resolveDesktop3pConfigLibraryPath(
+  options: Desktop3pConfigLibraryOptions = {},
+): string {
+  const env = options.env ?? process.env;
+  const override = env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR?.trim();
+  if (override) return override;
+
+  const platform = options.platform ?? process.platform;
+  const pathForPlatform = platform === "win32" ? win32Path : posixPath;
+  const explicitUserData = env.CLAUDE_USER_DATA_DIR?.trim();
+  if (explicitUserData) return pathForPlatform.join(explicitUserData, "configLibrary");
+
+  const homeDir = options.homeDir ?? homedir();
+  if (platform === "darwin") {
+    return posixPath.join(homeDir, "Library", "Application Support", "Claude", "configLibrary");
+  }
+  if (platform === "win32") {
+    const appData = env.APPDATA?.trim() || win32Path.join(homeDir, "AppData", "Roaming");
+    return win32Path.join(appData, "Claude", "configLibrary");
+  }
+  const configHome = env.XDG_CONFIG_HOME?.trim() || posixPath.join(homeDir, ".config");
+  return posixPath.join(configHome, "Claude", "configLibrary");
+}
 
 /** CLI arg parsing for `ocx claude desktop` mode flags (mutually exclusive). */
 export function parseDesktop3pModeArgs(flags: string[]): { mode: Desktop3pConfigMode } | { error: string } {
@@ -308,8 +342,7 @@ export function writeDesktop3pConfig(
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
 ): { written: boolean; path: string; reason?: string; fingerprint?: string } {
-  const libraryPath = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR?.trim()
-    || join(homedir(), "Library", "Application Support", "Claude-3p", "configLibrary");
+  const libraryPath = resolveDesktop3pConfigLibraryPath();
   const metadataPath = join(libraryPath, "_meta.json");
   let configPath = libraryPath;
 

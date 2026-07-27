@@ -155,6 +155,7 @@ token 대신 쓸 수 있습니다. 모든 후보는 timing side channel을 막�
 | `reasoningEfforts?` | `string[]` | 알리고 전송할 프로바이더 단위 Codex reasoning 레이블(`low`, `medium`, `high`, `xhigh`, `max`, `ultra`). |
 | `modelReasoningEfforts?` | `Record<string,string[]>` | 모델별 reasoning 레이블. 빈 배열은 해당 모델의 effort control을 숨깁니다. |
 | `modelSupportsReasoningSummaries?` | `Record<string,boolean>` | 모델별 reasoning summary capability. 모델 값을 `false`로 두면 summary 지원을 알리지 않고 `openai-responses` 요청 전에 summary-delivery 필드를 제거합니다. |
+| `modelReasoningSummaryDelivery?` | `Record<string,"sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | 모델별 Responses delivery enum입니다. 설정된 모델은 summary 지원을 유지하며 기존 `stream_options.reasoning_summary_delivery` 값만 바꿉니다. 같은 모델의 summary capability를 `false`로 설정할 수 없습니다. |
 | `modelAdapters?` | `Record<string,string>` | 여러 wire를 쓰는 모델이 한 게이트웨이에 섞여 있을 때의 모델별 wire 지정. 키는 upstream native 모델 ID이고 값은 `openai-chat` 또는 `openai-responses`만 허용합니다. `web_search` 같은 hosted tool 때문에 한 모델만 Responses API가 필요할 때 씁니다. upstream이 wire를 고정한 모델과 canonical ChatGPT forward provider에서는 override가 거부됩니다. |
 | `reasoningEffortMap?` | `Record<string,string>` | 프로바이더 단위 reasoning 레이블 wire alias. 업스트림이 다른 값을 요구할 때만 사용합니다. |
 | `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | 모델별 reasoning 레이블 wire alias. |

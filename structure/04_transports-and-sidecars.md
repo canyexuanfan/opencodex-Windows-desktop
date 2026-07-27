@@ -64,6 +64,37 @@ tools. Conflict discovery spans both top-level `body.tools` and Codex Desktop Re
 namespace. ChatGPT forward mode preserves the pair because that backend accepts it and owns native
 image generation.
 
+Per-model `modelReasoningSummaryDelivery` is a narrow compatibility layer for
+`openai-responses` gateways whose summary capability is real but whose accepted delivery enum
+differs from Codex. Presence advertises reasoning summaries in the routed catalog and rewrites only
+an already-present `stream_options.reasoning_summary_delivery` at the adapter boundary. It never
+injects summary generation into a request, and config validation rejects a delivery map that
+conflicts with `modelSupportsReasoningSummaries: false` for the same model.
+
+[Decision Log]
+- 목적과 의도: Preserve Codex Desktop reasoning summaries while adapting only the delivery enum rejected by a specific Responses-compatible upstream.
+- 기존 구현 및 제약 조건: The existing boolean capability either passed Codex's enum unchanged or disabled summaries entirely; stale running clients can keep sending the old enum after a catalog refresh.
+- 검토한 주요 대안: Disable summaries; rewrite the enum globally; inject a delivery field when absent; configure a provider-wide value.
+- 선택한 방식: Use a validated per-model allowlisted map, imply summary capability for that model, and rewrite only a caller-provided delivery field at the Responses adapter boundary.
+- 다른 대안 대신 이 방식을 선택한 이유: Upstream enum support differs by model and provider, while global rewriting or injection would change unrelated requests and disabling summaries removes Desktop UX.
+- 장점, 단점 및 영향: Configured models retain the native summary UI and stale clients self-heal; each incompatible model needs an explicit map entry and contradictory opt-out configuration now fails closed.
+
+## Claude Desktop config-library resolution
+
+The Desktop profile writer and management status probe share
+`resolveDesktop3pConfigLibraryPath`. Explicit opencodex and Claude user-data overrides win; otherwise
+the resolver follows Electron's platform user-data convention under the `Claude` application
+directory. The retired hardcoded `Claude-3p` path is neither read nor migrated implicitly, so the
+status endpoint cannot report a self-consistent file that Desktop never sees.
+
+[Decision Log]
+- 목적과 의도: Make the generated Claude Desktop profile land in the directory the installed Desktop application actually reads and keep dashboard status consistent with that write target.
+- 기존 구현 및 제약 조건: Both callers duplicated a macOS-only `Claude-3p` fallback, which made their internal status agree while Electron used `Claude/configLibrary`; users may also set explicit profile roots.
+- 검토한 주요 대안: Rename only the CLI fallback; scan both directories; move or delete legacy files automatically; centralize a cross-platform resolver.
+- 선택한 방식: Centralize override-aware macOS, Windows, and Linux resolution and use it for both write and status paths without destructive migration.
+- 다른 대안 대신 이 방식을 선택한 이유: One resolver prevents drift, platform defaults match Electron, and leaving the legacy directory untouched avoids deleting user data or guessing which copy should win.
+- 장점, 단점 및 영향: New applies become visible to Desktop on every supported platform; old `Claude-3p` files remain harmless and users with nonstandard layouts must use the documented override.
+
 ## Cursor Native Exec
 
 Cursor's experimental live transport can receive server-driven local read/write/delete/ls/grep,

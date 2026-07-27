@@ -11,12 +11,46 @@ import {
   generateDesktop3pModels,
   legacyDesktop3pAlias,
   parseDesktop3pModeArgs,
+  resolveDesktop3pConfigLibraryPath,
   resolveDesktop3pAlias,
 } from "../src/claude/desktop-3p";
 import { moveDesktopRoute, reconcileDesktopProfile, setDesktopFamilyDefault } from "../src/claude/desktop-profile";
 import { resolveInboundModel } from "../src/claude/inbound";
 
 describe("Claude Desktop 3P models", () => {
+  test("resolves the actual cross-platform Claude Desktop config library (#539)", () => {
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR: " /custom/library " },
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe("/custom/library");
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { CLAUDE_USER_DATA_DIR: "/profiles/claude" },
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe("/profiles/claude/configLibrary");
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: {},
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe("/Users/test/Library/Application Support/Claude/configLibrary");
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { APPDATA: "C:\\Users\\test\\AppData\\Roaming" },
+      platform: "win32",
+      homeDir: "C:\\Users\\test",
+    })).toBe("C:\\Users\\test\\AppData\\Roaming\\Claude\\configLibrary");
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { XDG_CONFIG_HOME: "/xdg/config" },
+      platform: "linux",
+      homeDir: "/home/test",
+    })).toBe("/xdg/config/Claude/configLibrary");
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: {},
+      platform: "linux",
+      homeDir: "/home/test",
+    })).toBe("/home/test/.config/Claude/configLibrary");
+  });
+
   test("derives stable golden codes", () => {
     expect(deriveDesktop3pCode("native/gpt-5.6-sol")).toBe("ncb");
     expect(deriveDesktop3pCode("opencode-go/glm-5.2")).toBe("yrf");

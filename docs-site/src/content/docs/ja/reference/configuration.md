@@ -150,6 +150,7 @@ token の代わりに使えます。すべての候補は timing side channel �
 | `reasoningEfforts?` | `string[]` | 公表・送信するプロバイダー単位の Codex reasoning ラベル（`low`、`medium`、`high`、`xhigh`、`max`、`ultra`）。 |
 | `modelReasoningEfforts?` | `Record<string,string[]>` | モデル別 reasoning ラベル。空配列はそのモデルの effort control を隠します。 |
 | `modelSupportsReasoningSummaries?` | `Record<string,boolean>` | モデル別 reasoning summary capability。`false` にすると summary 対応を広告せず、`openai-responses` リクエスト前に summary-delivery フィールドを除去します。 |
+| `modelReasoningSummaryDelivery?` | `Record<string,"sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | モデル別の Responses delivery enum。設定したモデルは summary 対応を維持し、既存の `stream_options.reasoning_summary_delivery` だけを書き換えます。同じモデルの summary capability を `false` にはできません。 |
 | `reasoningEffortMap?` | `Record<string,string>` | プロバイダー単位の reasoning ラベル wire alias。上流が別の値を要求するときだけ使います。 |
 | `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | モデル別 reasoning ラベル wire alias。 |
 | `noReasoningModels?` | `string[]` | reasoning/thinking パラメータを拒否するモデル。アダプターが `reasoning_effort` を削除します。 |
