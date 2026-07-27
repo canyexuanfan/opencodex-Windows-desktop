@@ -45,10 +45,24 @@ describe("GitHub Actions hardening", () => {
 
     for (const path of [".github/workflows/ci.yml", ".github/workflows/service-lifecycle.yml"]) {
       const workflow = Bun.YAML.parse(await readText(path)) as {
-        on?: { pull_request?: { branches?: string[] } };
+        on?: { pull_request?: Record<string, unknown> };
       };
-      const branches = workflow.on?.pull_request?.branches ?? [];
+      const trigger = workflow.on?.pull_request ?? {};
+      const branches = (trigger.branches as string[] | undefined) ?? [];
       expect([...branches].sort()).toEqual(["dev", "dev2-go", "main"]);
+
+      // Narrowing a default is a mutation that deletes nothing. Omitting
+      // `types` means opened + synchronize + reopened; writing
+      // `types: [opened]` keeps the workflow, keeps the branch list, and stops
+      // running checks on every commit pushed after the PR was opened — the
+      // review then reads a green tick that belongs to an older tree. An
+      // absent key is only pinned by asserting the key set, so assert it.
+      expect(Object.keys(trigger).sort()).toEqual(["branches", "paths"]);
+      if ("types" in trigger) {
+        // If a future change genuinely needs `types`, it must still cover the
+        // three events the default covers.
+        expect([...(trigger.types as string[])].sort()).toEqual(["opened", "reopened", "synchronize"]);
+      }
     }
 
     // The push trigger is deliberately narrower: dev2-go is an integration
@@ -860,6 +874,34 @@ describe("GitHub Actions hardening", () => {
       expect(methodsOf(wasFixed)).toEqual(["pulls.get", "issues.listComments"]);
     });
 
+    test("what the comment tells the author is the live base, not the event's", async () => {
+      // Half of this gate is what it says. Reading `context.payload
+      // .pull_request.base.ref` for the message alone keeps every call and
+      // every argument identical while the text lies: a PR that actually
+      // targets main gets drafted and told it "currently targets dev", so the
+      // author sees nothing to fix. The corrected-path sentence has the same
+      // hole in reverse.
+      const wrongTarget = await run({
+        pr: { base: { ref: "main" }, title: "Add a thing", draft: false },
+        eventPayload: { base: { ref: "dev" }, title: "Add a thing", draft: false },
+      });
+      const [posted] = callsTo(wrongTarget, "issues.createComment") as [{ body: string }];
+      expect(posted.body).toContain("currently targets `main`");
+      expect(posted.body).not.toContain("currently targets `dev`");
+
+      // The corrected-path sentence: the event still carries the old wrong
+      // base, the live PR is on dev2-go. Naming the event's base here tells the
+      // author their retarget did not take.
+      const corrected = await run({
+        pr: { base: { ref: "dev2-go" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        eventPayload: { base: { ref: "main" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: false, titlePrefixedByBot: true })],
+      });
+      const [edited] = callsTo(corrected, "issues.updateComment") as [{ body: string }];
+      expect(edited.body).toContain("now targets `dev2-go`");
+      expect(edited.body).not.toContain("now targets `main`");
+    });
+
     test("the bot finds its own comment even when it has scrolled onto a later page", async () => {
       // A busy PR pushes the bot comment off page one. Without pagination the
       // workflow does not find its state: it posts a SECOND comment and forgets
@@ -1404,6 +1446,35 @@ describe("GitHub Actions hardening", () => {
 
       // And the normal path is unaffected by the probe scenario.
       expect(methodsOf(result)).toEqual(["pulls.get", "issues.listComments"]);
+    });
+
+    test("the harness runs the Node major the pinned action declares", async () => {
+      // Same class of finding as the three above, one level deeper: the
+      // runtime version. `actions/github-script@3a2844b7…` declares
+      // `runs: using: node24` in its `action.yml`, so the runner executes this
+      // script under Node 24. The harness reported v20 for fourteen rounds, so
+      // `if (process.versions.node.startsWith("24")) return;` was a no-op in
+      // the suite and a dead gate in production.
+      //
+      // Read the major out of the workflow's own pin rather than hardcoding
+      // it: re-pinning the action to a node26 build should fail here and say
+      // so, not silently reopen the gap.
+      const workflow = await readText(".github/workflows/enforce-pr-target.yml");
+      expect(workflow).toContain("actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3");
+
+      const probe = await runProbe(`
+        return {
+          major: process.versions.node.split(".")[0],
+          version: process.version,
+          startsWith24: process.versions.node.startsWith("24"),
+          bun: typeof process.versions.bun,
+        };
+      `);
+      expect(probe.major).toBe("24");
+      expect(probe.version).toBe(`v${probe.major}.10.0`);
+      expect(probe.startsWith24).toBe(true);
+      // Still Node, not Bun: the runner has no `process.versions.bun`.
+      expect(probe.bun).toBe("undefined");
     });
 
     test("an API failure is never swallowed, whatever status it carries", async () => {

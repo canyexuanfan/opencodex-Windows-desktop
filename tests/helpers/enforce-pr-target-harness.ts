@@ -226,8 +226,13 @@ function nodeLikeProcess(): Record<string, unknown> {
   return {
     platform: "linux",
     arch: "x64",
-    version: "v20.19.0",
-    versions: { node: "20.19.0", v8: "11.3.244.8" },
+    // The pinned action declares `using: node24` in its `action.yml`, so the
+    // runner executes the script under Node 24 — not the Node 20 this harness
+    // reported for fourteen rounds. A gate spelled
+    // `if (process.versions.node.startsWith("24")) return;` was dead code here
+    // and a disabled workflow in production.
+    version: "v24.10.0",
+    versions: { node: "24.10.0", v8: "13.6.233.10-node.18" },
     // The variables a real ubuntu-latest runner exports. Round nine probed
     // four of them — `RUNNER_TEMP`, `GITHUB_SHA`, `GITHUB_WORKSPACE`,
     // `ACTIONS_RUNTIME_TOKEN` — each present on the runner and absent here, so
