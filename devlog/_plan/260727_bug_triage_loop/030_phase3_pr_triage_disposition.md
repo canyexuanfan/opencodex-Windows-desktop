@@ -40,7 +40,12 @@ WP0에서 매트릭스를 쓴 뒤 두 건이 움직였다. 판정을 실행 전�
 - 소유자가 `lidge-jun`(자기 소유) — 외부 기여를 가로채지 않는다
 - 제목과 본문이 스스로 일회성 임시 검증용임을 명시
 - `mergeStateStatus=DIRTY` (충돌) + `+69609/-275` — 머지 경로가 없다
-- `dev2-go` 타깃이며 해당 검증 목적은 종료됨
+- 해당 검증 목적이 종료됨 (아래 확인 결과)
+
+**종결 사유에서 제외할 것 (WP3 감사).** `[WRONG BRANCH]` 제목을 근거로 쓰면 안 된다.
+`d761e880 ci: let pull requests target dev2-go, not just dev`가 `ALLOWED_BASES`를
+`["dev", "dev2-go"]`로 넓혔으므로 `dev2-go` 타깃은 더 이상 위반이 아니다. 그 제목은
+커밋 이전에 붙은 잔재다. 잘못된 사유로 닫으면 기록이 오도된다.
 
 ### 실행 전 확인 결과 (완료)
 
@@ -64,9 +69,18 @@ $ git log -1 --format='%ci %s' origin/dev2-go
 코멘트 문안:
 
 > Closing: this was a one-shot export trigger to verify the `dev2-go` release-asset
-> path, and that verification is done. The branch is now conflicted against its base
-> and carries a 69k-line diff that was never meant to merge. Reopen or re-trigger from
-> a fresh branch if the export needs another run.
+> path, and that verification is done — `dev2-go` has since recorded its release-gate
+> receipt (`aadba2c2`). The branch is conflicted against its base and carries a 69k-line
+> diff that was never meant to merge.
+>
+> (The `[WRONG BRANCH]` prefix predates `d761e880`, which added `dev2-go` to the allowed
+> bases — it is stale, not the reason for closing.)
+>
+> Re-trigger from a fresh branch if the export ever needs another run.
+
+**후속 단계.** `tmp/dev2-go-source-export` 브랜치도 삭제한다. 남겨 두면 임시 워크플로가
+브랜치에 실려 있어 이후 PR이 툴체인 export를 다시 트리거할 수 있다. 단, 브랜치 삭제는
+PR 종결과 별개의 원격 상태 변경이므로 별도로 확인하고 실행한다.
 
 ## 실행 항목 2: #526 → #527 스택 순서 판정
 
@@ -97,12 +111,31 @@ PR은 계속 막혀 있는 결과가 됐다.
 1. `#526`을 `dev`에 머지한다(메인테이너 결정, 이번 루프 범위 밖).
 2. `#527`의 base를 `dev`로 **수동 리타깃**한다 — 또는 머지 후 head 브랜치를 삭제해
    자동 재지정을 유발한다.
-3. 리타깃 후에도 `enforce-target`은 여전히 실패할 수 있다. 그 실패는 base 문제가 아니라
-   `002` 문서에 기록한 워크플로 권한 버그이기 때문이다.
+3. 리타깃하면 `enforce-target`은 **통과한다**(WP3 감사에서 정정). 워크플로는 base가
+   허용 목록에 있으면 draft 전환 자체를 시도하지 않고, 실패하던 GraphQL 뮤테이션은
+   그때만 호출되기 때문이다. 실측 선례: #536이 `dev`로 리타깃된 뒤
+   `feat/glm-provider` 실행(30250881926, 30250880040)이 success다.
 
-3번이 특히 중요하다. 리타깃만으로 체크가 녹색이 된다고 약속하면 안 된다.
+초안은 3번을 "리타깃해도 여전히 실패한다"고 적었으나 틀렸다. 권한 결함은 **ready 상태 +
+허용되지 않은 base** 조합에서만 드러난다. 이미 draft인 PR이나 리타깃된 PR은 영향받지 않는다.
 
 ## 실행 항목 3: 버그성 PR의 결함 실재 여부 검증
+
+### 최근 변화가 무효화한 항목 (WP3 감사)
+
+`e7d144fc`(2026-07-27T07:56Z, PR 없이 `dev` 직접 푸시)가 열린 작업 하나를 무효화했다.
+
+- **이슈 #538** (per-model `reasoning_summary_delivery` 정규화)이 이미 **CLOSED**다.
+  `e7d144fc`가 `src/config.ts`에 `reasoningSummaryDeliveryRecordConfigError`를,
+  `src/types.ts`에 `stream_options.reasoning_summary_delivery` 모델별 값을 추가하며
+  구현했다. `001` 매트릭스의 ROADMAP 판정은 실행 시점에 이미 낡았다.
+
+열린 PR 중 이 커밋으로 무효화된 것은 없다. `e7d144fc`가 건드린 `src/claude/desktop-3p.ts`와
+`src/server/management/agent-settings-routes.ts`는 열린 PR이 아니라 **WP1의 로컬 커밋
+`48b985d0`과 충돌**한다(사용자 결정 대기).
+
+또한 신규 PR **#544**(`fix(gui): give every OAuth login surface the same copy affordance`,
+base `dev`)가 열렸다. 병행 세션 작업물이며 이번 트리아지 범위 밖이다.
 
 "버그 수정 PR"이라고 주장하는 것들이 실제 결함을 고치는지 코드로 확인한다. 판정만 기록.
 

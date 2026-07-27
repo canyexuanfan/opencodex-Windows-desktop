@@ -26,7 +26,7 @@
 | 462 | 세션 사용 모델 제거 시 Codex 크래시 | upstream-tracking, needs-info | **AUTO-STALE** | needs-info. 워크플로가 처리 |
 | 521 | web-search 중 499 client_closed_request | needs-info | **AUTO-STALE** | 동일 |
 | 509 | Windows JS-heap 증가 (heapUsed 5729MB vs RSS 3001MB) | needs-info | **AUTO-STALE** | 동일. 단 RSS-only 워치독이 경고하지 못한다는 지적 자체는 유효한 관측 |
-| 538 | per-model `reasoning_summary_delivery` 정규화 | — | **ROADMAP** | 오늘 신규. 기능 요청 |
+| 538 | per-model `reasoning_summary_delivery` 정규화 | — | ~~ROADMAP~~ → **이미 종결됨** | WP3 감사에서 확인. `e7d144fc`(07:56Z)가 `src/config.ts`의 `reasoningSummaryDeliveryRecordConfigError`와 `src/types.ts`의 모델별 `stream_options.reasoning_summary_delivery`로 구현하며 처리. 이슈 상태 CLOSED |
 | 425 | Codex 계정을 모델 네임스페이스로 노출 | enhancement | **IN-FLIGHT** | PR #512가 담당 |
 | 42 | Storage 페이지 세션 정리 정책 | enhancement, roadmap | **IN-FLIGHT** | PR #529가 phase 2 담당 |
 | 294 | Claude 계정 풀 — ChatGPT/Codex 멀티계정 라우팅 패리티 | enhancement, roadmap | **ROADMAP** | |

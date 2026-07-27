@@ -24,6 +24,15 @@ gh run list --json conclusion --jq '.[] | select(.conclusion=="action_required")
 
 ## `enforce-target` FAILURE의 진짜 원인 (A단계 감사 정정)
 
+> **WP3 감사 추가 정정.** 이 절의 원인 분석은 유효하나 발화 조건이 좁다. 실패는 잘못된
+> 타깃 **전부**가 아니라 **draft 전환이 실제로 시도될 때만** 난다. 이미 draft인 PR은 그
+> 뮤테이션을 건너뛰어 통과한다. 실측: #536이 `dev`로 리타깃된 뒤 `feat/glm-provider`의
+> enforce-target 실행(30250881926, 30250880040)이 **success**다. 즉 "ready 상태 + 잘못된
+> 타깃" 조합에서만 드러나는 결함이다.
+>
+> 또한 `ALLOWED_BASES`는 `["dev", "dev2-go"]`다(`d761e880`). `dev2-go` 타깃은 더 이상
+> 위반이 아니며, #455에 남은 `[WRONG BRANCH]` 제목은 그 커밋 이전에 붙은 잔재다.
+
 초안은 이를 "타깃 검사가 통합 브랜치가 아닌 base를 거부한 것"으로 읽었다. **오독이다.**
 워크플로 실패 로그(run 30240509333, `feat/glm-provider`)의 실제 내용:
 
@@ -55,7 +64,7 @@ response: { data: { convertPullRequestToDraft: null }, errors: [ [Object] ] }
 | # | 제목 요약 | 성격 | 상태 | 판정 |
 |---|-----------|------|------|------|
 | 526 | sync가 실제로 카탈로그/캐시를 썼는지 보고 | 버그(#476) | CLEAN, CI 통과 | **MERGE-READY** — 신호만 추가, 소비자 없음. 저위험 |
-| 527 | 카탈로그 쓰기 후 stale app-server 경고 | 버그(#476) | `enforce-target` FAIL | **BLOCKED-BY-STACK** — #526 머지 시 자동 해소. 그 전엔 리타깃 불가 |
+| 527 | 카탈로그 쓰기 후 stale app-server 경고 | 버그(#476) | `enforce-target` FAIL | **BLOCKED-BY-STACK** — ~~#526 머지 시 자동 해소~~ **틀림.** `delete_branch_on_merge=false`라 수동 리타깃이 필요하다. `030` 참조 |
 | 529 | 아카이브 정리 + 격리 (phase 2 of #42) | 기능 | CLEAN, CI 통과 | **MERGE-READY** — 단 +3264/-21로 큼. 별도 리뷰 필요 |
 | 528 | 이미지 브리지 P2 후속 | 버그 후속 | CLEAN | **BLOCKED-BY-DEP** — #424 의존. #424가 먼저 |
 | 424 | Grok 이미지 브리지 | 기능 | CI 미승인, CHANGES_REQUESTED | **NEEDS-AUTHOR** |
@@ -90,11 +99,16 @@ response: { data: { convertPullRequestToDraft: null }, errors: [ [Object] ] }
 
 ```
 #526 (CLEAN, 신호만)
-   └─→ #527 (머지 후 base가 dev로 정리되어 enforce-target 통과)
+   └─→ #527 (머지 후에도 base는 그대로 — 수동 리타깃 필요)
 
 #424 (CI 승인 필요)
    └─→ #528 (tip 6d6b252에서 분기, #424 선행 필요)
 ```
+
+`#528`의 의존은 본문 주장이 아니라 커밋 그래프로 확인했다. `refs/pull/528/head`(`553e9afc`)가
+`0fba6e90 feat(images): add Grok image bridge for non-OpenAI models` 등 #424의 커밋을
+포함한다. 다만 `#424`의 **현재 head**(`a8b769c9`)는 `#528`의 조상이 **아니다** — #424가
+그 이후 갱신됐다는 뜻이므로, #424를 먼저 머지하면 #528은 리베이스가 필요하다.
 
 #526→#527이 이번 루프에서 판정 가능한 유일한 스택이다. 다만 머지 자체는 메인테이너
 결정이며, 사용자가 이번 루프에서 승인한 것은 `dev` 푸시(#539 수정)까지다. PR 머지는
