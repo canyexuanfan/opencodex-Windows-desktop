@@ -249,9 +249,9 @@ describe("/api/injection-model guidance kill switch + partial update", () => {
     await refreshCodexModelCatalog(config, {
       syncCatalogModels: async syncedConfig => {
         flagSeenBySync = syncedConfig.multiAgentGuidanceEnabled;
-        return { added: 0, path: join(tempHome!, "missing-catalog.json") };
+        return { added: 0, path: join(tempHome!, "missing-catalog.json"), catalogWritten: false, comboOmissions: [] };
       },
-      invalidateCodexModelsCache: () => {},
+      invalidateCodexModelsCache: () => false,
       existsSync: () => false,
     });
     expect(flagSeenBySync).toBe(false);
