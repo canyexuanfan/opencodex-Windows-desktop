@@ -83,6 +83,25 @@ describe("usage log", () => {
     expect(usageLogRevisionKey(newSnapshot.revision)).not.toBe(usageLogRevisionKey(oldSnapshot.revision));
   });
 
+  test("persists conversationId for Logs session correlation", () => {
+    appendUsageEntry({
+      requestId: "ocx-conversation",
+      timestamp: 1,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      conversationId: "thread-abc",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    });
+    expect(readUsageEntries()).toEqual([expect.objectContaining({
+      requestId: "ocx-conversation",
+      conversationId: "thread-abc",
+    })]);
+  });
+
   test("persists only canonical ordered attempt fields", () => {
     appendUsageEntry({
       requestId: "ocx-attempts",

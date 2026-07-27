@@ -29,12 +29,15 @@ import {
   USAGE_DEBUG_BODY_SAMPLE_BYTES,
   type UsageDebugBodyKind,
 } from "../usage/debug";
+import { matchesLogConversationId } from "./request-log-conversation";
 
 export interface RequestLogContext {
   model: string;
   provider: string;
   /** TTFT: ms from request start to the first non-empty model output delta (WP4, devlog 040). */
   firstOutputMs?: number;
+  /** Best-effort chat/session correlation for Logs grouping (#330). Opaque; omit when unknown. */
+  conversationId?: string;
   surface?: "claude" | "claude-desktop" | "grok";
   requestedModel?: string;
   /** Internal structural combo identity; omitted from RequestLogEntry/JSONL. */
@@ -87,6 +90,8 @@ export interface RequestLogEntry {
   /** TTFT: ms from request start to the first non-empty model output delta; unset for non-streaming/tool-only. */
   firstOutputMs?: number;
   surface?: "claude" | "claude-desktop" | "grok";
+  /** Best-effort chat/session correlation for Logs grouping (#330). */
+  conversationId?: string;
   requestedModel?: string;
   requestedEffort?: string;
   effectiveEffort?: string;
@@ -153,6 +158,7 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
     provider: entry.provider,
     ...(entry.firstOutputMs !== undefined ? { firstOutputMs: entry.firstOutputMs } : {}),
     ...(isKnownUsageSurface(entry.surface) ? { surface: entry.surface } : {}),
+    ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
     ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
     ...(entry.requestedEffort ? { requestedEffort: entry.requestedEffort } : {}),
     ...(entry.effectiveEffort ? { effectiveEffort: entry.effectiveEffort } : {}),
@@ -232,6 +238,7 @@ export function addRequestLog(entry: RequestLogEntry) {
       provider: entry.provider,
       model: entry.model,
       ...(isKnownUsageSurface(entry.surface) ? { surface: entry.surface } : {}),
+      ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
       ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
       ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
       ...(entry.requestedEffort ? { requestedEffort: entry.requestedEffort } : {}),
@@ -661,6 +668,7 @@ export function addFinalRequestLog(
     model: isCombo ? logCtx.requestedModel! : logCtx.model,
     provider: isCombo ? "combo" : logCtx.provider,
     ...(logCtx.surface ? { surface: logCtx.surface } : {}),
+    ...(logCtx.conversationId ? { conversationId: logCtx.conversationId } : {}),
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
     ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
     ...(logCtx.effectiveEffort ? { effectiveEffort: logCtx.effectiveEffort } : {}),
@@ -709,6 +717,10 @@ export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchPara
   if (provider) {
     filtered = filtered.filter(entry => entry.provider === provider
       || entry.attempts?.some(attempt => attempt.provider === provider));
+  }
+  const conversationId = params.get("conversationId")?.trim() || params.get("conversation")?.trim();
+  if (conversationId) {
+    filtered = filtered.filter(entry => matchesLogConversationId(entry.conversationId, conversationId));
   }
   const status = params.get("status")?.trim().toLowerCase();
   if (status) {

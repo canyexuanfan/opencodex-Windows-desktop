@@ -100,6 +100,11 @@ import {
   usageFromResponsesPayload,
   type RequestLogContext,
 } from "../request-log";
+import {
+  conversationIdFromResponsesRequest,
+  normalizeLogConversationId,
+  sessionIdHeaderFromRequest,
+} from "../request-log-conversation";
 import type { AttemptRecoveryKind } from "../../usage/log";
 import {
   consumeForInspection,
@@ -691,6 +696,8 @@ export async function handleComboResponses(
     const childLog: RequestLogContext = {
       model: pick.target.model,
       provider: pick.target.provider,
+      ...(logCtx.conversationId ? { conversationId: logCtx.conversationId } : {}),
+      ...(logCtx.surface ? { surface: logCtx.surface } : {}),
     };
     const targetRoute = routeModel(config, `${pick.target.provider}/${pick.target.model}`);
     const childBody = concreteComboRequestBody(
@@ -892,6 +899,16 @@ export async function handleResponses(
     if (clientThreadId) parsed._clientThreadId = clientThreadId;
   } catch (err) {
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
+  }
+  // Prefer a pre-populated id (routed Claude) over Responses headers that may be
+  // absent or synthetically injected (session_id from prompt_cache_key).
+  if (!logCtx.conversationId) {
+    logCtx.conversationId = conversationIdFromResponsesRequest({
+      clientThreadId: parsed._clientThreadId,
+      sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
+      threadIdHeader: req.headers.get("thread-id"),
+      cursorConversationId: parsed._cursorConversationId,
+    });
   }
   logCtx.requestedModel = parsed.modelId;
   logCtx.requestedEffort = parsed.options.reasoning;
@@ -1529,6 +1546,11 @@ export async function handleResponses(
           message: err instanceof Error ? err.message : String(err),
         });
       } finally {
+        // Cursor assigns a stable conversation id inside runTurn on the first headerless
+        // turn; backfill so Logs can filter/total that opening request (#330 / #522).
+        if (!logCtx.conversationId && parsed._cursorConversationId) {
+          logCtx.conversationId = normalizeLogConversationId(parsed._cursorConversationId);
+        }
         queue.close();
       }
     };
