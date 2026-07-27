@@ -969,6 +969,49 @@ describe("GitHub Actions hardening", () => {
       }
     });
 
+    test("state fields are read for truthiness, not for their type", async () => {
+      // `parseState` hands back whatever JSON.parse produced, and every reader
+      // is a plain `if (…)`. So the contract is truthiness, and a type guard —
+      // `if (storedState && typeof storedState.active !== "boolean") return;`
+      // — looks like schema hygiene while disabling restoration for any state
+      // this workflow did not write in its current shape. Verified reachable:
+      // with that guard, a marker carrying `"active":"true"` produced only
+      // ["pulls.get", "issues.listComments"] where the real script restores
+      // the title and marks the PR ready.
+      //
+      // The comment selector requires github-actions[bot], so this is not
+      // contributor-reachable. It is reachable across a migration, which is
+      // exactly when the prefix must still come off.
+      const loose = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment({ version: 1, active: "true", autoDraftedByBot: 1, titlePrefixedByBot: "yes" })],
+      });
+      expect(methodsOf(loose)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "pulls.update",
+        "graphql",
+        "issues.updateComment",
+      ]);
+      expect(callsTo(loose, "pulls.update")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "Add a thing" },
+      ]);
+
+      // And the falsy side is symmetric: `null` and `0` skip their own
+      // restoration without stopping the run or the clearing write.
+      const falsy = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment({ version: 1, active: true, autoDraftedByBot: null, titlePrefixedByBot: 0 })],
+      });
+      expect(methodsOf(falsy)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.updateComment",
+      ]);
+      const [cleared] = callsTo(falsy, "issues.updateComment") as [{ body: string }];
+      expect(cleared.body).toContain('"active":false');
+    });
+
     test("the state comment is written before the PR is touched", async () => {
       // Order is the recovery story. The comment records what the workflow is
       // about to change; if a mutation fails afterwards, a rerun reads that
