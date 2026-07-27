@@ -124,7 +124,13 @@ describe("GitHub Actions hardening", () => {
     const workflow = Bun.YAML.parse(text) as {
       on?: Record<string, unknown>;
       permissions?: Record<string, string>;
-      jobs?: Record<string, { steps?: Array<{ uses?: string; with?: Record<string, unknown> }> }>;
+      jobs?: Record<string, {
+        steps?: Array<{
+          name?: string;
+          uses?: string;
+          with?: Record<string, unknown>;
+        }>;
+      }>;
     };
 
     // Branch-selected workflow_dispatch would run an unreviewed YAML with write tokens.
@@ -136,11 +142,32 @@ describe("GitHub Actions hardening", () => {
       "pull-requests": "write",
     });
 
-    const step = workflow.jobs?.stale?.steps?.[0];
-    expect(step?.uses).toBe("actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629");
-    expect(step?.with?.["only-issue-labels"]).toBe("needs-info");
-    expect(step?.with?.["days-before-pr-stale"]).toBe(-1);
-    expect(step?.with?.["days-before-pr-close"]).toBe(-1);
+    const steps = workflow.jobs?.stale?.steps ?? [];
+    expect(steps).toHaveLength(2);
+
+    const ensureLabel = steps[0]!;
+    expect(ensureLabel.name).toBe("Ensure stale label exists");
+    expect(ensureLabel.uses).toBe(
+      "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+    );
+    const ensureScript = String(ensureLabel.with?.script ?? "");
+    expect(ensureScript).toContain("createLabel");
+    expect(ensureScript).toContain('const name = "stale"');
+    expect(ensureScript).toContain("core.setFailed");
+    expect(ensureScript).toContain("getLabel");
+
+    const stale = steps[1]!;
+    expect(stale.name).toBe("Mark and close inactive needs-info issues");
+    expect(stale.uses).toBe("actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629");
+    expect(stale.with?.["only-issue-labels"]).toBe("needs-info");
+    expect(stale.with?.["days-before-pr-stale"]).toBe(-1);
+    expect(stale.with?.["days-before-pr-close"]).toBe(-1);
+    expect(stale.with?.["remove-pr-stale-when-updated"]).toBe(false);
+    expect(stale.with?.["days-before-issue-stale"]).toBe(14);
+    expect(stale.with?.["days-before-issue-close"]).toBe(7);
+    expect(stale.with?.["stale-issue-label"]).toBe("stale");
+    expect(stale.with?.["exempt-issue-labels"]).toBe("upstream-tracking,roadmap");
+    expect(stale.with?.["remove-stale-when-updated"]).toBe(true);
     expect(text).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
   });
 

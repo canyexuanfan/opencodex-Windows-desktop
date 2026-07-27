@@ -27,6 +27,48 @@ jobs:
     name: Stale needs-info issues
     runs-on: ubuntu-latest
     steps:
+      - name: Ensure stale label exists
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const name = "stale";
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name });
+              core.info(`Label "${name}" already exists.`);
+              return;
+            } catch (err) {
+              if (err.status !== 404) {
+                core.setFailed(`Failed to look up label "${name}": ${err.message || err}`);
+                return;
+              }
+            }
+            try {
+              await github.rest.issues.createLabel({
+                owner,
+                repo,
+                name,
+                color: "ffffff",
+                description: "No activity on a needs-info issue; will close soon unless updated",
+              });
+              core.info(`Created label "${name}".`);
+            } catch (err) {
+              // Concurrent scheduled runs may race on first create.
+              if (err.status === 422) {
+                try {
+                  await github.rest.issues.getLabel({ owner, repo, name });
+                  core.info(`Label "${name}" appeared concurrently; continuing.`);
+                  return;
+                } catch (lookupErr) {
+                  core.setFailed(
+                    `Failed to create label "${name}" (422) and re-check failed: ${lookupErr.message || lookupErr}`,
+                  );
+                  return;
+                }
+              }
+              core.setFailed(`Failed to create label "${name}": ${err.message || err}`);
+            }
+
       - name: Mark and close inactive needs-info issues
         uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10.4.0
         with:
@@ -35,6 +77,8 @@ jobs:
           # Do not auto-stale pull requests.
           days-before-pr-stale: -1
           days-before-pr-close: -1
+          # -1 PR timers still allow unstaling existing PR labels; keep that off.
+          remove-pr-stale-when-updated: false
           # Warn after 14 days of inactivity; close 7 days after the warning.
           days-before-issue-stale: 14
           days-before-issue-close: 7
