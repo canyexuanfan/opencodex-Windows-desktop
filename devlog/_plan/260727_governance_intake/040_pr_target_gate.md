@@ -111,6 +111,16 @@
 
    (c) **워크플로를 dev2-go에 대해 비활성** — base가 dev2-go면 아무것도
        하지 않고 종료. (a)와 실질적으로 같으나 의도가 더 명시적이다.
+       **6차 감사 권장안.** (a)의 효과를 가지면서 의도가 분명하고,
+       라벨·actor·SHA 상태 저장을 `pull_request_target` write 권한 위에
+       얹는 (b)의 공격 표면을 피한다.
+
+   어느 안을 택하든 **회귀 테스트가 승인 조건이다** (5·6차 감사 합의):
+   - base=dev2-go PR이 draft로 강등되지 않고 ready 상태를 유지한다
+   - base=main 등 그 외 base는 기존대로 차단된다
+   - 제목 prefix / draft 복구 상태 전이가 깨지지 않는다
+   `tests/ci-workflows.test.ts`에 현재 `enforce-pr-target` 테스트가 하나도
+   없으므로, 이 테스트가 이 work-phase의 실질적 산출물이다.
 
 2. **main 승격 시점.** `pull_request_target`은 기본 브랜치(main)의 워크플로를
    실행한다. 승격 없이는 어떤 설계도 발효되지 않는다.
