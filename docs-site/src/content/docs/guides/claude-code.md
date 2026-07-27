@@ -151,6 +151,11 @@ capabilities (reasoning-effort ladder, thinking types) in the official ModelInfo
 Desktop's third-party gateway mode can offer its effort selector. Real Anthropic models keep their
 canonical ids. The synthetic 2026 date is an internal slot, not a release date. Legacy hash aliases
 and `claude-ocx-<provider>--<model>` ids from older configs still resolve.
+
+If Claude Desktop's footer picker does not change the model for an already-running 3P
+conversation, use `/model <id>` in that conversation. OpenCodex cannot observe picker state; it
+routes the model id carried by each request. Confirm the result under **Logs → requestedModel**.
+
 Models with an authoritative 1M context window get an extra `…[1m]` picker row: selecting it makes
 Claude Code account a full 1M context for that model (auto-compaction stays on) — the proxy strips
 the marker before routing.
