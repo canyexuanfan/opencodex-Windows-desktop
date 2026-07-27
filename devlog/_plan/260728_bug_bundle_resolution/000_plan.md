@@ -51,9 +51,15 @@ PABCD 다중 사이클로 해결한다. 사용자가 커밋·푸시·머지를 �
 | --- | --- | --- | --- |
 | WP2 | `010_ssh_loopback_gate.md` | SSH 원격 프록시 — `auth-cors.ts` | 서버 인증 게이트 (최하부) |
 | WP3 | `020_tls_altname_diagnosis.md` | 이슈 #553 — `responses/core.ts` | 응답/오류 계층 |
-| WP4 | `030_claude_system_dedup.md` | 이슈 #545 — `adapters/anthropic.ts` | 어댑터 계층 |
+| ~~WP4~~ | `030_claude_system_dedup.md` | ~~이슈 #545~~ | **A 게이트에서 폐기** |
 | WP5 | `040_pr527_rebase.md` | PR #527 리베이스+리타깃 | PR 정리 |
 | WP6 | `050_pr557_boundary.md` | PR #557 머지 + #533 클로즈 | PR 정리 |
+
+> **WP4 폐기 (2026-07-28 A 게이트, Critical).** 전제가 반전됐다 —
+> `skipSystemPromptPrefix`는 "이미 넣었다"가 아니라 "붙이지 않는다"는 뜻이라
+> 제안한 가드는 영원히 발화하지 않는다. 게다가 메인테이너가 이미 아웃바운드
+> 캡처를 근거로 "OAuth identity 제거는 안전한 수정이 아니다"라고 판정했다.
+> 근거 전문은 `030_claude_system_dedup.md` §폐기 근거. 이슈 #545는 열어둔다.
 
 > goalplan의 wp2~wp6 번호와 decade doc 번호가 1:1 대응한다. 단 goalplan 초기
 > 등록 순서(#527 먼저)는 **의존 순서로 재배열**됐다 — 로드맵 락은 이 문서다
@@ -78,7 +84,7 @@ PABCD 다중 사이클로 해결한다. 사용자가 커밋·푸시·머지를 �
 | c1 | 이 유닛에 000 + 모든 decade doc이 diff-level로 존재하고 커밋됨 | `ls` + 커밋 해시 |
 | c5 | 포트가 다른 루프백 Host가 게이트를 통과하고 비루프백은 여전히 거부 | 신설 테스트 출력 |
 | c3 | `ERR_TLS_CERT_ALTNAME_INVALID`가 별도 메시지 + 복구 명령 | 분기 진입 assertion |
-| c4 | 인바운드 system이 Claude Code 정체성을 가질 때 prepend 안 함 / 없을 때 함 | 양쪽 케이스 |
+| ~~c4~~ | ~~Claude system 중복 가드~~ | **폐기 — WP4와 함께** |
 | c2 | PR #527이 base=dev, mergeable, enforce-target pass | `gh pr view` + `gh pr checks` |
 | c6 | PR #557 머지 + #533 클로즈, 또는 NEEDS_HUMAN 기록 | `gh pr view --json state` |
 
@@ -95,3 +101,28 @@ PABCD 다중 사이클로 해결한다. 사용자가 커밋·푸시·머지를 �
 - `DONE` — 커밋 + 검증 증거 + 실제 상태 변화(PR 생성/머지, 이슈 클로즈)
 - `BLOCKED` — 업스트림/리포터 등 외부 의존
 - `NEEDS_HUMAN` — 보안 경계 판단 등 오너만 내릴 수 있는 결정
+
+**WP2와 WP6은 둘 다 `NEEDS_HUMAN` 가능이다.** WP2는 `src/server/auth-cors.ts`가
+`.github/CODEOWNERS:13`의 인증 경계라 두 메인테이너 리뷰 대상이고, WP6은
+의존성 설치 경계다. 두 경우 모두 PR을 올리는 데까지가 우리 몫이고 머지는
+사람의 결정이다 — 회피가 아니라 정책 준수다.
+
+## A 게이트 이력
+
+2026-07-28, 독립 리뷰어 1회 (read-only, 코드베이스 실측).
+`VERDICT: GO-WITH-FIXES (blockers=4)`.
+
+| # | 심각도 | 지적 | 처리 |
+| --- | --- | --- | --- |
+| 1 | Critical | WP4 분기가 도달 불가 + 문자열 불일치 + 메인테이너 기판정 | **WP4 폐기** |
+| 2 | High | `ssh -g`/devcontainer 잔여 위험이 009→계획으로 오면서 누락 | `010`에 명시적 수용 위험 절 추가 |
+| 3 | High | WP2가 CODEOWNERS 보안 리뷰 경계를 선언하지 않음 | `010` + 이 문서에 `NEEDS_HUMAN` 가능 명시 |
+| 4 | High | `OcxConfig` import 경로 오류 (`src/config`는 재export 안 함) | `../src/types`로 수정, `tsc` 실측 확인 |
+| 5 | Medium | `NodeJS.ErrnoException` 해석 미보장 | `(err as { code?: unknown }).code`로 교체 |
+| 7 | Medium | `1ba588eff` ≡ `9dd3c42da` 동등성이 미증명 | `040`에 `range-diff` 선행 증거 요구 추가 |
+| 7b | Medium | #557 "전 매트릭스 초록"이 과장 (8 SUCCESS + 1 null) | `050` 정정 |
+| 8 | Medium | WP2의 must-not-break 오라클이 무명 | `server-auth.test.ts:582-602` 명시 |
+
+리뷰어가 확인해준 것: WP3의 세 호출 지점과 오류 도달 경로(Bun 실측), Bun이
+생성 `Request`의 `Host` 헤더를 보존한다는 것(WP2 테스트 형태 유효),
+`030`의 out-of-scope 판단(vision/web-search 경로)이 옳다는 것.

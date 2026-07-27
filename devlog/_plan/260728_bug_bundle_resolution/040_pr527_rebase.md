@@ -59,6 +59,19 @@ git cherry-pick a64aa5856
 
 `1ba588eff`는 **의도적으로 건너뛴다** — dev의 `9dd3c42da`가 같은 일을 한다.
 
+> **선행 증거 필수 (A 게이트 지적).** "같은 일을 한다"는 아직 제목 대조일
+> 뿐이다. 건너뛰기 전에 실제 동등성을 증명한다:
+>
+> ```bash
+> git range-diff 9dd3c42da~1..9dd3c42da 1ba588eff~1..1ba588eff
+> # 또는 파일별
+> git diff 1ba588eff~1 1ba588eff -- src/codex/ | diffstat
+> git diff 9dd3c42da~1 9dd3c42da -- src/codex/ | diffstat
+> ```
+>
+> 동등하지 않으면 `a64aa5856`가 미묘하게 다른 베이스 위에 얹히고 누락된 델타가
+> **조용히 사라진다.** 차이가 있으면 건너뛰지 말고 충돌로 해소한다.
+
 ### 3. 충돌 해소 규칙
 
 두 테스트 파일에서 충돌이 나면:

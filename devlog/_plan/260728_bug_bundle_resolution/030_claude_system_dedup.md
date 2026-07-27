@@ -1,4 +1,62 @@
-# 030 — WP4: Claude Code system 블록 중복 삽입 가드 (이슈 #545)
+# 030 — WP4: **폐기** — Claude Code system 중복 가드 (이슈 #545)
+
+> **A 게이트에서 폐기됨 (2026-07-28, Critical 블로커 1).**
+> 이 문서의 초안은 잘못된 전제 위에 있었다. 아래 §폐기 근거를 먼저 읽을 것.
+> WP4는 실행하지 않는다. 로드맵에서 제외되고 goalplan wp4는 폐기 처리한다.
+
+## 폐기 근거
+
+초안의 전제: "`skipSystemPromptPrefix`는 클라이언트가 **이미 정체성 문구를
+넣었으니 더 붙이지 말라**는 신호다."
+
+**뒤집혔다.** 이 플래그는 Claude Code가 CLI 공용 system 프리픽스를 **붙이지
+않는다**는 뜻이다. 즉 분류기 요청은 정체성 문구를 **갖고 오지 않는다.**
+`hasClaudeCodeIdentityPrefix(system)`은 영원히 false를 반환하고 새 분기는 한
+번도 발화하지 않는다 — 그런데 제안된 단위 테스트는 상수를 자기 자신에게
+먹이므로 **통과한다.** C-ACTIVATION-GROUNDING-01이 정확히 막으려는 위양성이다.
+
+독립적인 두 번째 반증: 문자열이 애초에 다르다.
+
+| | 값 |
+| --- | --- |
+| 우리 상수 (`src/oauth/anthropic.ts:15`) | `You are a Claude agent, built on Anthropic's Claude Agent SDK.` |
+| Claude Code 실제 프리픽스 | `You are Claude Code, Anthropic's official CLI for Claude.` |
+
+초안의 위험 절이 "우리 상수와 클라이언트 문구가 완전히 같아야" 판정이 맞는다고
+썼는데, 바로 그 조건이 성립하지 않는다.
+
+## 결정적 근거 — 메인테이너가 이미 판정했다
+
+이슈 #545에서 리포터가 제안한 것이 정확히 이 수정이다("B (완화): inbound
+system에 이미 Claude Code identity가 있으면 중복 prepend 생략"). 메인테이너
+(`Ingwannu`)가 **아웃바운드 캡처를 받은 뒤** 답한 내용:
+
+> The capture confirms that OpenCodex preserves both caller controls all the way
+> to Anthropic: `max_tokens: 64` and `stop_sequences: ["</block>"]` are present on
+> every outbound request. (…) The 66-character system difference is also accounted
+> for by **the required Claude OAuth identity block** plus block joining; it is not
+> an unexplained truncation or dropped field.
+
+> We cannot safely fix that by raising the caller's explicit budget, **removing the
+> OAuth identity instruction**, or pretending an incomplete response completed.
+
+즉 정체성 블록은 **Claude OAuth가 요구하는 필수 요소**로 확인됐고, 그걸 빼는
+방향은 이미 안전하지 않다고 판정됐다. 우리 계획은 판정된 방향을 다시 하려던
+것이었다.
+
+## 이슈 #545의 실제 잔여 문제
+
+메인테이너 정리: Claude Desktop 3P의 Auto Mode 분류기가 클라이언트가 명시한
+64토큰 예산 안에 닫는 태그를 못 내는 경우가 있고, Desktop이 같은 요청을 5회
+반복한다. 이건 **호환성 문제**지 우리 번역 손실이 아니다. 라벨도
+`provider-compatibility`로 좁혀져 있다.
+
+우리가 안전하게 할 수 있는 일이 남아 있는지는 별도 조사 대상이며, 이번 유닛의
+스코프가 아니다. 이슈는 열린 채로 둔다.
+
+---
+
+## (이하 폐기된 초안 — 이력 보존용)
 
 대상: `src/adapters/anthropic.ts`
 이슈: #545 `Claude Desktop 3P Auto Mode classifier retries after 64-token Anthropic OAuth outputs`

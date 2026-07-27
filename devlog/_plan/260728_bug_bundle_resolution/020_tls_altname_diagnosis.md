@@ -58,7 +58,7 @@ export function describeUpstreamConnectFailure(err: unknown, connectMs: number):
     return `Provider connect timeout after ${connectMs}ms`;
   }
   const detail = err instanceof Error ? err.message : String(err);
-  const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+  const code = err instanceof Error ? (err as { code?: unknown }).code : undefined;
   if (code === "ERR_TLS_CERT_ALTNAME_INVALID" || detail.includes("ERR_TLS_CERT_ALTNAME_INVALID")) {
     const host = extractHostname(detail);
     const target = host ?? "the provider host";
@@ -186,3 +186,25 @@ OUT: 이슈 #553 자체의 클로즈 판단 — 리포터 환경 확인이 남�
 - `bun test tests/upstream-connect-error.test.ts` 4건 통과
 - `bun test tests/responses*.test.ts` 회귀 없음
 - `bun run privacy:scan` 초록
+> `(err as { code?: unknown }).code` — `NodeJS.ErrnoException`은 이 tsconfig
+> (`types: ["bun-types"]`, `@types/node` 직접 의존 없음)에서 해석이 보장되지
+> 않는다. 저장소 관용구는 `src/lib/upstream-retry.ts:213`이다.
+
+## 독립 리뷰 확인 사항 (A 게이트)
+
+리뷰어가 이 절을 실측으로 검증했다:
+
+- 세 호출 지점(1197·1746·1788)이 정확하다.
+- 오류가 실제로 거기까지 **도달한다.** Bun 실측:
+  `fetch("https://wrong.host.badssl.com/")` → `name=Error`,
+  `code=ERR_TLS_CERT_ALTNAME_INVALID`. 중간에서 삼켜지지 않는다 —
+  `fetchWithHeaderTimeout`은 시그널만 감싸고 rethrow,
+  `isConnectionResetError`는 `ECONNRESET`/`EPIPE`만 매칭,
+  `fetchWithTransientRetry`는 반환된 `Response` 상태만 검사,
+  `providerFetch`는 통과다.
+- 제안된 헬퍼를 실제 Bun 오류와 #553 원문 문자열 양쪽에 돌려 두 경우 모두
+  TLS 분기를 타고 호스트명 추출도 정확함을 확인했다.
+
+검증한 핸들러: #553 리포터의 URL은 `/v1/responses`이고, 세 호출 지점이 그
+경로를 덮는다. `/v1/chat/completions`는 `src/server/index.ts:588`에서
+`handleChatCompletions`로 분기하므로 별도 경로이며 이 변경 범위 밖이다.

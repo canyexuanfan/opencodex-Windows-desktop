@@ -69,6 +69,55 @@ export function isLoopbackRequestHost(value: string | null): boolean {
 4. **형제 함수가 이미 그렇다.** Origin 쪽은 07-05부터 포트 무관이다. Host
    쪽만 조이는 건 방어 효과 없이 정상 구성만 깬다.
 
+독립 리뷰가 위 네 근거를 전수 추적해 확인했다: `isLoopbackRequestHost`의 호출자는
+`auth-cors.ts:73` 하나뿐이고 `if (!isApiAuthRequired(config))` 안에서만 도달한다.
+비루프백 바인드는 `:76`으로 가서 `requireApiAuth`/`requireResponsesApiAuth`와
+`assertServerAuthConfig`로 별도 게이트를 받는다. `/v1/*`·관리 API 전 호출 지점
+(`src/server/index.ts` 322·336·373·443·475·494·518·558·573·595·618·646)이 모두
+`isAllowedRequestOrigin`을 거치므로 포트 검사가 유일한 방어인 경로는 없다.
+
+### 받아들이는 잔여 위험 (명시)
+
+**이 변경은 보안 중립이 아니다.** 루프백 모드는 인증이 아예 없다. 따라서:
+
+```
+ssh -g -L 20100:localhost:10100 remote
+```
+
+`-g` 옵션은 **클라이언트 쪽 `0.0.0.0`에** 리스너를 연다. 그 LAN의 누구나
+`Host: localhost:20100`으로 관리 API에 인증 없이 닿는다. 지금은 포트 불일치가
+**우연히** 이걸 막고 있고, 변경 후에는 막지 않는다.
+
+같은 성질의 토폴로지: devcontainer 포트 포워딩, Codespaces 포워딩.
+
+이걸 받아들이는 이유는 포트 검사가 **의도된 방어가 아니었기 때문**이다.
+`-g` 없는 평범한 `ssh -L`은 클라이언트 루프백에만 열리므로 노출이 없고,
+`-g`/devcontainer 토폴로지는 포트를 10100으로 맞추기만 하면 지금도 그대로
+뚫린다. 즉 현재 상태는 방어가 아니라 **일관성 없는 반쪽 차단**이다.
+
+진짜 해법은 별개다 — 포워딩된 루프백에 인증을 요구할지 여부는 제품 결정이며
+이 work-phase의 스코프가 아니다. 여기서는 위험을 기록하고 넘어간다.
+
+### 보안 리뷰 경계 (STRICT)
+
+`.github/CODEOWNERS:13`:
+
+```
+/src/server/auth-cors.ts @lidge-jun @Ingwannu
+```
+
+"Authentication, credentials, and management API" 항목이다. `MAINTAINERS.md:29-32`:
+
+> Authentication, credential handling, GitHub Actions, release automation,
+> dependency installation, and other security-boundary changes require explicit
+> security review.
+> Security-sensitive and release-related changes should be reviewed by both
+> maintainers when practical.
+
+**따라서 이 work-phase는 자체 머지할 수 없다.** dev 대상 PR로 올리고
+CODEOWNERS 리뷰를 받는다. 터미널 판정은 `NEEDS_HUMAN` 가능이며, 그건 실패가
+아니라 경계를 지킨 정상 종료다 — `050`의 #557과 같은 성질이다.
+
 ## 변경 (diff-level)
 
 ### MODIFY `src/server/auth-cors.ts`
@@ -100,7 +149,7 @@ B 단계에서 확인한다. 없으면 미사용 export가 되므로 그대로 �
 ```ts
 import { describe, expect, test } from "bun:test";
 import { isLoopbackRequestHost, isAllowedRequestOrigin } from "../src/server/auth-cors";
-import type { OcxConfig } from "../src/config";
+import type { OcxConfig } from "../src/types";
 
 const loopbackConfig = { hostname: "127.0.0.1" } as OcxConfig;
 
@@ -177,5 +226,13 @@ SSH 로컬 포워딩이 지원된다는 사실을 명시한다. 현재 이 절�
 
 - `bun run typecheck` 통과
 - `bun test tests/server-loopback-host-gate.test.ts` 전건 통과
-- `bun test tests/server-auth.test.ts` 회귀 없음 (기존 인증 경로 보존)
+- `bun test tests/server-auth.test.ts` 회귀 없음 — 특히
+  **`tests/server-auth.test.ts:582-602`의 Host 헤더 rebinding 테스트**가 이
+  work-phase의 must-not-break 오라클이다. 비루프백 이름(`attacker.test`)을 쓰므로
+  통과해야 정상이며, 깨지면 방어가 무너진 것이다.
 - `bun run privacy:scan` 초록
+- PR은 dev 대상. CODEOWNERS 보안 리뷰 없이 머지하지 않는다.
+
+> `import type { OcxConfig } from "../src/types"` — `src/config.ts`는
+> `OcxConfig`를 재export하지 않는다(리뷰 지적, `tsc` 실측 TS2459). 저장소의
+> 기존 테스트도 전부 `../src/types`를 쓴다.

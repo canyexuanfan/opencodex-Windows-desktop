@@ -13,7 +13,8 @@
 | mergeable | **MERGEABLE / CLEAN** | UNKNOWN |
 | head | `b0434ea58` | — |
 | 리뷰 | 미해결 스레드 0 | CHANGES_REQUESTED |
-| CI | 전 매트릭스 초록 | Windows 2건 실패 이력 |
+| CI | 8 SUCCESS + 1 null(pending/skipped) | Windows 2건 실패 이력 |
+| reviewDecision | 공란 (승인 0) | CHANGES_REQUESTED |
 | 파일 | 23개 | 23개 (동일) |
 
 #557은 #533의 **메인테이너 인수본**이다. 조상 관계가 아니라 더 새 dev 위에
@@ -26,8 +27,12 @@
 
 ## 왜 이건 코드 작업이 아닌가
 
-미해결 리뷰 0건, 전 매트릭스 초록. **기술적으로 남은 게 없다.** 남은 것은
+미해결 리뷰 스레드 0건, 실패 체크 0건. **기술적으로 남은 게 없다.** 남은 것은
 오너만 내릴 수 있는 판단 하나다.
+
+단, "전 매트릭스 초록"은 과장이었다(A 게이트 지적). 실제로는 8건 SUCCESS에
+1건이 null — pending이거나 skip이다. c6 증거를 캡처할 때 그 null 체크가
+무엇인지 명시한다. 승인은 0건이다.
 
 ## 보안 경계 사실관계
 
