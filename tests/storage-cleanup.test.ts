@@ -671,15 +671,14 @@ describe("executeArchivedCleanup", () => {
     expect(Buffer.compare(beforeState, readFileSync(join(home, "state_5.sqlite")))).toBe(0);
   });
 
-  test("injected satellite/state failures restore every file and database", () => {
-    const hooks = [
-      { failAfterLogsMutation: true },
-      { failAfterMemoriesMutation: true },
-      { failAfterGoalsMutation: true },
-      { failBeforeStateCommit: true },
-    ] as const;
-
-    for (const hook of hooks) {
+  test.each([
+    ["failAfterLogsMutation", { failAfterLogsMutation: true }],
+    ["failAfterMemoriesMutation", { failAfterMemoriesMutation: true }],
+    ["failAfterGoalsMutation", { failAfterGoalsMutation: true }],
+    ["failBeforeStateCommit", { failBeforeStateCommit: true }],
+  ] as const)(
+    "injected %s restores every file and database",
+    (_name, hook) => {
       home = buildHome({ withSatelliteStores: true });
       const files = {
         old: readFileSync(join(home, "archived_sessions", "rollout-old.jsonl")),
@@ -724,11 +723,8 @@ describe("executeArchivedCleanup", () => {
       const stateAfter = new Database(join(home, "state_5.sqlite"), { readonly: true });
       expect(stateAfter.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all()).toEqual(threads);
       stateAfter.close();
-
-      rmSync(home, { recursive: true, force: true });
-      home = "";
-    }
-  });
+    },
+  );
 
   test("satellite restore failure keeps recovery trashDir and manifest", () => {
     home = buildHome({ withSatelliteStores: true });

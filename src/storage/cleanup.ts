@@ -744,8 +744,11 @@ function snapshotLogsInTx(
 ): SatelliteBackup["logs"] {
   if (threadIds.length === 0) return undefined;
   if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
-  const placeholders = threadIds.map(() => "?").join(",");
-  const rows = selectRows(db, `SELECT * FROM logs WHERE thread_id IN (${placeholders})`, threadIds);
+  const rows: SqlRow[] = [];
+  for (const chunk of chunkIds(threadIds, SQLITE_ID_CHUNK * 2)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    rows.push(...selectRows(db, `SELECT * FROM logs WHERE thread_id IN (${placeholders})`, chunk));
+  }
   return { path, rows };
 }
 
@@ -756,24 +759,29 @@ function snapshotMemoriesInTx(
 ): SatelliteBackup["memories"] {
   if (threadIds.length === 0) return undefined;
   if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
-  const placeholders = threadIds.map(() => "?").join(",");
-  const stage1 = selectRows(
-    db,
-    `SELECT * FROM stage1_outputs WHERE thread_id IN (${placeholders})`,
-    threadIds,
-  );
+  const stage1: SqlRow[] = [];
   let stage1Jobs: SqlRow[] = [];
+  for (const chunk of chunkIds(threadIds, SQLITE_ID_CHUNK * 2)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    stage1.push(...selectRows(
+      db,
+      `SELECT * FROM stage1_outputs WHERE thread_id IN (${placeholders})`,
+      chunk,
+    ));
+    if (tableExists(db, "jobs")) {
+      stage1Jobs.push(...selectRows(
+        db,
+        `SELECT * FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
+        [JOB_KIND_MEMORY_STAGE1, ...chunk],
+      ));
+    }
+  }
   let consolidateJob: SqlRow | null = null;
   let selectedForPhase2 = 0;
   if (columnExists(db, "stage1_outputs", "selected_for_phase2")) {
     selectedForPhase2 = stage1.filter(r => Number(r.selected_for_phase2 ?? 0) !== 0).length;
   }
   if (tableExists(db, "jobs")) {
-    stage1Jobs = selectRows(
-      db,
-      `SELECT * FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
-      [JOB_KIND_MEMORY_STAGE1, ...threadIds],
-    );
     consolidateJob = readConsolidateGlobalJob(db);
   }
   return {
@@ -792,19 +800,22 @@ function snapshotGoalsInTx(
 ): SatelliteBackup["goals"] {
   if (threadIds.length === 0) return undefined;
   if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
-  const placeholders = threadIds.map(() => "?").join(",");
-  const goals = selectRows(
-    db,
-    `SELECT * FROM thread_goals WHERE thread_id IN (${placeholders})`,
-    threadIds,
-  );
+  const goals: SqlRow[] = [];
   let deferrals: SqlRow[] = [];
-  if (tableExists(db, "thread_goal_continuation_deferrals")) {
-    deferrals = selectRows(
+  for (const chunk of chunkIds(threadIds, SQLITE_ID_CHUNK * 2)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    goals.push(...selectRows(
       db,
-      `SELECT * FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
-      threadIds,
-    );
+      `SELECT * FROM thread_goals WHERE thread_id IN (${placeholders})`,
+      chunk,
+    ));
+    if (tableExists(db, "thread_goal_continuation_deferrals")) {
+      deferrals.push(...selectRows(
+        db,
+        `SELECT * FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+        chunk,
+      ));
+    }
   }
   return { path, goals, deferrals };
 }
@@ -832,8 +843,10 @@ function deleteLogsInTx(db: Database, rows: SqlRow[]): void {
   if (!tableExists(db, "logs")) throw new Error("missing_logs_table");
   const ids = rows.map(r => r.id).filter(id => id !== null && id !== undefined);
   if (ids.length === 0) return;
-  const placeholders = ids.map(() => "?").join(",");
-  db.run(`DELETE FROM logs WHERE id IN (${placeholders})`, ids as Array<string | number>);
+  for (const chunk of chunkIds(ids as string[], SQLITE_ID_CHUNK * 2)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    db.run(`DELETE FROM logs WHERE id IN (${placeholders})`, chunk as Array<string | number>);
+  }
 }
 
 function deleteMemoriesInTx(
@@ -842,17 +855,19 @@ function deleteMemoriesInTx(
 ): void {
   if (!tableExists(db, "stage1_outputs")) throw new Error("missing_stage1_outputs_table");
   const stage1Ids = section.stage1.map(r => String(r.thread_id));
-  if (stage1Ids.length > 0) {
-    const placeholders = stage1Ids.map(() => "?").join(",");
-    db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, stage1Ids);
+  for (const chunk of chunkIds(stage1Ids, SQLITE_ID_CHUNK * 2)) {
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => "?").join(",");
+    db.run(`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`, chunk);
   }
   if (tableExists(db, "jobs")) {
     const jobKeys = section.stage1Jobs.map(r => String(r.job_key));
-    if (jobKeys.length > 0) {
-      const placeholders = jobKeys.map(() => "?").join(",");
+    for (const chunk of chunkIds(jobKeys, SQLITE_ID_CHUNK * 2)) {
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => "?").join(",");
       db.run(
         `DELETE FROM jobs WHERE kind = ? AND job_key IN (${placeholders})`,
-        [JOB_KIND_MEMORY_STAGE1, ...jobKeys],
+        [JOB_KIND_MEMORY_STAGE1, ...chunk],
       );
     }
     if (section.consolidateTouched) {
@@ -883,17 +898,21 @@ function deleteGoalsInTx(
 ): void {
   if (!tableExists(db, "thread_goals")) throw new Error("missing_thread_goals_table");
   const deferralIds = section.deferrals.map(r => String(r.thread_id));
-  if (deferralIds.length > 0 && tableExists(db, "thread_goal_continuation_deferrals")) {
-    const placeholders = deferralIds.map(() => "?").join(",");
-    db.run(
-      `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
-      deferralIds,
-    );
+  if (tableExists(db, "thread_goal_continuation_deferrals")) {
+    for (const chunk of chunkIds(deferralIds, SQLITE_ID_CHUNK * 2)) {
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => "?").join(",");
+      db.run(
+        `DELETE FROM thread_goal_continuation_deferrals WHERE thread_id IN (${placeholders})`,
+        chunk,
+      );
+    }
   }
   const goalIds = section.goals.map(r => String(r.thread_id));
-  if (goalIds.length > 0) {
-    const placeholders = goalIds.map(() => "?").join(",");
-    db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, goalIds);
+  for (const chunk of chunkIds(goalIds, SQLITE_ID_CHUNK * 2)) {
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => "?").join(",");
+    db.run(`DELETE FROM thread_goals WHERE thread_id IN (${placeholders})`, chunk);
   }
 }
 
@@ -1340,7 +1359,12 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
   }
 
   const epoch = options.now ?? Date.now();
-  const stageDir = createExclusiveStageDir(codexHome, epoch);
+  let stageDir: string;
+  try {
+    stageDir = createExclusiveStageDir(codexHome, epoch);
+  } catch {
+    return fail(mode, percent, "fs_failed");
+  }
   const trashDir = trashRelPath(codexHome, stageDir);
 
   const threadByRelPath = new Map<string, ThreadSnapshot>();
