@@ -9,6 +9,7 @@ review and merge policy.
 | --- | --- | --- |
 | [@lidge-jun](https://github.com/lidge-jun) | Project owner | Project direction, releases, repository administration, and final governance decisions |
 | [@Ingwannu](https://github.com/Ingwannu) | Maintainer | Issue and pull-request triage, `dev` integration, security review, and repository maintenance |
+| [@Wibias](https://github.com/Wibias) | Maintainer | Issue and pull-request triage, `dev` integration, and provider/CI maintenance |
 
 The table describes project responsibilities. Actual repository permissions remain controlled
 through GitHub repository settings.
@@ -41,6 +42,16 @@ Adding or removing a maintainer requires:
 1. agreement from the project owner,
 2. review by another current maintainer when available, and
 3. updates to this file and [`.github/CODEOWNERS`](./.github/CODEOWNERS).
+
+### Change log
+
+- 2026-07-27 — [@Wibias](https://github.com/Wibias) added as a maintainer at
+  the project owner's request. Scope covers issue and pull-request triage,
+  `dev` integration, and provider/CI maintenance. Security-boundary ownership
+  in `.github/CODEOWNERS` is deliberately unchanged: authentication,
+  credential handling, GitHub Actions, and release automation still require
+  review from the two owners listed for those paths. Widening that boundary is
+  a separate decision.
 
 ## Security reports
 
