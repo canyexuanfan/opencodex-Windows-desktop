@@ -11,13 +11,22 @@ MAINTAINERS.md "Maintainer changes"가 세 가지를 요구한다:
 3. `MAINTAINERS.md`와 `.github/CODEOWNERS` **양쪽** 갱신
 
 1번은 이 세션에서 사용자(@lidge-jun, 프로젝트 소유자)가 직접 지시했다
-— "maintainer에 wibias추가". 2번은 @Ingwannu의 PR 리뷰로 충족하며,
-이 변경을 PR로 올리면 CODEOWNERS 규칙상 자동으로 리뷰 요청이 간다
-(`/MAINTAINERS.md @lidge-jun @Ingwannu`).
+— "maintainer에 wibias추가".
+
+2번은 **아직 충족되지 않았다.** CODEOWNERS 규칙(`/MAINTAINERS.md
+@lidge-jun @Ingwannu`)이 리뷰를 자동 *요청*하지만, 요청은 리뷰가 아니다.
+MAINTAINERS.md가 요구하는 것은 "review by another current maintainer"이며,
+그건 실제 승인이 달려야 충족된다. 수용 기준에 이를 명시한다.
 
 ## 근거 (기여 실적)
 
-v2.7.41 릴리스(2026-07-26T15:44Z) 이후 dev에 머지된 21개 PR 중 Wibias 저자:
+v2.7.41 릴리스(2026-07-26T15:44Z) 이후 dev에 머지된 PR 중 Wibias 저자가
+압도적 다수다. 정확한 수치는 계속 늘어나므로 재조회한다:
+
+    gh pr list --repo lidge-jun/opencodex --state merged --limit 60 \
+      --search "merged:>=2026-07-26T15:44Z" --json number,author
+
+주제별로 보면:
 
 - Kiro 스트리밍 안정화 전체 — #514, #516, #520 (이슈 #507/#508/#519 종료)
 - UX paper cuts — #517 (이슈 #488 종료)
@@ -130,3 +139,25 @@ MAINTAINERS.md "Maintainer changes" 절 아래에 이력 문단을 추가한다:
 3. `rg -n "@Wibias" .github/CODEOWNERS | rg -c "oauth|release|SECURITY"` → 0.
    (보안 경로에 안 들어갔다는 반증)
 4. MAINTAINERS.md 표가 3행이 된다.
+5. **절차 요건 2번 충족 증거**: 이 변경을 담은 PR에 @Ingwannu의 실제 승인이
+   달린다. 검증:
+
+       gh pr view <N> --repo lidge-jun/opencodex \
+         --json reviews,headRefOid \
+         --jq '{head: .headRefOid, approvals: [.reviews[] | select(.state=="APPROVED") | .author.login]}'
+
+   승인이 현재 head SHA에 대한 것인지도 확인한다. 승인 없이 머지하면
+   MAINTAINERS.md가 규정한 절차를 우리가 스스로 어기는 셈이다.
+
+## 실제 권한은 별도 (중요)
+
+문서 변경만으로 GitHub 권한이 생기지 않는다. 현재 실측:
+
+    gh api repos/lidge-jun/opencodex/collaborators --jq '.[] | "\(.login) triage=\(.permissions.triage) push=\(.permissions.push) maintain=\(.permissions.maintain) admin=\(.permissions.admin)"'
+    # Wibias    triage=true push=true maintain=false admin=false
+    # Ingwannu  triage=true push=true maintain=true  admin=true
+    # lidge-jun triage=true push=true maintain=true  admin=true
+
+@Wibias는 이미 push/triage 권한이 있고 maintain은 없다. 저장소 역할을
+`maintain`으로 올릴지는 **저장소 관리자 설정**이며 소유자가 별도로
+결정해야 한다. 이 계획은 문서만 바꾼다.

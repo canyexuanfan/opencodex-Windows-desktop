@@ -46,9 +46,11 @@ WP2 · 근거: `000_survey.md`
       `bin/native-runtime.mjs`, `src/lib/runtime-entry.ts`, and the Go
       release-asset tooling. Pull requests confined to that surface may target
       it directly. Note that the target-branch check has not caught up yet: it
-      still prefixes any non-`dev` pull request with `[WRONG BRANCH]` and
-      converts it to a draft. A maintainer clears that state manually until the
-      check is updated.
+      prefixes any non-`dev` pull request with `[WRONG BRANCH]` and converts it
+      to a draft, and it re-applies both on the next `edited` or
+      `ready_for_review` event — so clearing them by hand does not stick. Until
+      the check is updated, treat that state as cosmetic noise on a `dev2-go`
+      pull request rather than a defect in the contribution.
     - `main` — release branch. It only moves by maintainer-controlled promotion
       from `dev` (releases, docs deploys). Do not open feature PRs against `main`.
     - `preview` — prerelease train (`x.y.z-preview.*` versions).
@@ -94,8 +96,10 @@ claudedesktop 문단 뒤에 추가:
       when your change is confined to `go/`, the native runtime entrypoint, or
       the Go release-asset tooling. The automated target-branch check does not
       know about this line yet, so it will prefix your PR title with
-      `[WRONG BRANCH]` and convert it to a draft; a maintainer undoes that. You
-      do not need to retarget.
+      `[WRONG BRANCH]` and convert it to a draft — and it will do so again if
+      you edit the title or mark the PR ready. That is expected for now and is
+      not a judgement on your change; a maintainer reviews and merges it
+      regardless. You do not need to retarget.
     - `main` — releases only; moves by maintainer-controlled promotion from `dev`.
     - `preview` — prerelease train.
 
@@ -118,8 +122,10 @@ claudedesktop 문단 뒤에 추가:
       integration line reserved for Go native-port work; it converges back
       through maintainer-controlled merges, and promotion to `main` still
       happens only from `dev`. Until the target-branch check recognises that
-      line, a maintainer clears the automated `[WRONG BRANCH]` prefix and draft
-      state on such pull requests by hand.
+      line, `dev2-go` pull requests carry an automated `[WRONG BRANCH]` prefix
+      and draft state that re-applies on every `edited` / `ready_for_review`
+      event; clearing it by hand does not hold, so review and merge such pull
+      requests in that state rather than trying to fix the label first.
 
 ## 범위 밖
 

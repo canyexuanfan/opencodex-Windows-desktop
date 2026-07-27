@@ -4,22 +4,26 @@ WP3 · 근거: `000_survey.md`, PR #518 파일/커밋 실측
 
 ## 분할 대상 선정
 
-열린 PR 14개 중 ready 상태는 **#518과 #522 둘뿐**이다 (실측:
-`gh pr list --state open --json number,isDraft`). 나머지 12개는 draft라
-작성자 소유이므로 우리가 쪼갤 대상이 아니다. #355도 draft다.
+ready PR 목록은 계속 바뀐다 — 이 문서를 쓰는 동안 #522가 머지되고 #525가
+새로 열렸으며, #518의 상태도 `UNSTABLE`에서 `CLEAN`으로 바뀌었다. 그래서
+후보는 실행 직전에 재조회한다:
+
+    gh pr list --repo lidge-jun/opencodex --state open \
+      --json number,isDraft,mergeStateStatus \
+      --jq '.[] | select(.isDraft==false)'
+
+**선정 기준은 상태가 아니라 구조다:** 한 PR 안에 독립적으로 검증 가능한
+두 관심사가 들어 있고, 그중 하나가 위험도가 확연히 높을 때 쪼갠다. #518이
+여기 해당한다(프로세스 종료 vs 순수 신호 전달). 단일 기능 PR은 쪼개면
+리뷰 비용만 늘어난다.
 
 살아있는 PR의 절대 수치는 문서에 박지 않는다 — 2차 감사 시점 `+1193/10커밋`이
 3차 감사 시점에 `+1245/11커밋`으로 바뀌었다. 분할 직전에 재조회한다:
 
     gh api repos/lidge-jun/opencodex/pulls/518 --jq '{additions,deletions,changed_files,commits}'
 
-| PR | 상태 | 성격 | 분할 필요성 |
-| --- | --- | --- | --- |
-| #518 | UNSTABLE (windows pending) | 21파일, 두 관심사 | **높음** |
-| #522 | CLEAN, 전 체크 통과 | 20파일, 단일 기능 | 낮음 |
-
-**대상은 #518**로 확정한다. #522는 이미 CLEAN이고 관심사가 하나라서
-쪼개면 오히려 리뷰 비용만 늘어난다.
+**대상은 #518**로 확정한다. 두 관심사가 섞여 있고 그중 하나가 다른
+프로세스에 SIGTERM을 보낸다.
 
 ## #518이 왜 두 개인가
 
@@ -76,6 +80,14 @@ PR-2의 base를 PR-1로 두면 리뷰어가 A의 diff만 보게 된다. PR-1이 
 PR-2는 자동으로 dev를 base로 재타겟된다.
 
 ### 분리 절차
+
+먼저 **원본 head SHA를 고정한다.** 작성자가 force-push하면 합집합 검증이
+움직이는 표적을 비교하게 된다:
+
+    SRC=$(gh pr view 518 --repo lidge-jun/opencodex --json headRefOid --jq .headRefOid)
+    gh api repos/lidge-jun/opencodex/pulls/518/files --paginate \
+      --jq '.[].filename' | sort > /tmp/pr518-manifest.txt
+    echo "$SRC"   # 이 값을 아래 모든 단계에서 사용하고, 마지막에 재확인한다
 
     git fetch origin pull/518/head:pr518
     git switch -c codex/catalog-written-signal origin/dev
@@ -143,7 +155,10 @@ docs-site 2개 파일.
    (`git diff --name-only origin/dev...codex/catalog-written-signal`).
 4. `codex/app-server-restart`(A) 브랜치에서 typecheck exit 0 +
    `bun test tests/codex-app-server-processes.test.ts` 통과.
-5. 두 브랜치 diff의 파일 합집합이 #518의 21개 파일과 정확히 일치.
+5. 두 브랜치 diff의 파일 합집합이 고정된 `$SRC` 시점의
+   `/tmp/pr518-manifest.txt`와 정확히 일치.
+6. 분할 완료 시점에 `gh pr view 518 --json headRefOid`가 여전히 `$SRC`다.
+   달라졌으면 원본이 움직인 것이므로 manifest부터 다시 뜬다.
 
 ## 소유권 문제 (중요)
 
