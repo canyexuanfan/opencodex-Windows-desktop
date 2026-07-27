@@ -14,8 +14,9 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: read
+  # pulls.get only needs read; label mutations use the issues API.
+  pull-requests: read
+  issues: write
 
 jobs:
   label:
@@ -24,6 +25,7 @@ jobs:
       - name: Checkout labeler script (default-branch trusted code)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Apply type label from PR title
@@ -79,12 +81,17 @@ jobs:
                   documentation: '0075ca',
                   chore: 'e4e669',
                 };
-                await github.rest.issues.createLabel({
-                  owner, repo,
-                  name: plan.detected,
-                  color: colors[plan.detected] || 'ededed',
-                });
-                core.info(`Created missing label "${plan.detected}"`);
+                try {
+                  await github.rest.issues.createLabel({
+                    owner, repo,
+                    name: plan.detected,
+                    color: colors[plan.detected] || 'ededed',
+                  });
+                  core.info(`Created missing label "${plan.detected}"`);
+                } catch (createErr) {
+                  if (createErr.status !== 422) throw createErr;
+                  core.info(`Label "${plan.detected}" was created concurrently; continuing.`);
+                }
               } else {
                 throw err;
               }

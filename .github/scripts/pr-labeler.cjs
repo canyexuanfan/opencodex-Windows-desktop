@@ -37,7 +37,9 @@ const BOT_ACTORS = new Set(["github-actions[bot]"]);
 function detectTypeLabelFromTitle(title) {
   const match = String(title || "").match(/^([a-zA-Z]+)(?:\([^)]*\))?[!]?\s*:/);
   if (!match) return null;
-  return PREFIX_TO_LABEL[match[1].toLowerCase()] || null;
+  const prefix = match[1].toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(PREFIX_TO_LABEL, prefix)) return null;
+  return PREFIX_TO_LABEL[prefix];
 }
 
 /**

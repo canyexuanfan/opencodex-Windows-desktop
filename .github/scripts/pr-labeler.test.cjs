@@ -20,6 +20,7 @@ describe("detectTypeLabelFromTitle", () => {
   it("returns null without a conventional prefix", () => {
     assert.equal(detectTypeLabelFromTitle("Warn or restart stale app-server"), null);
     assert.equal(detectTypeLabelFromTitle(""), null);
+    assert.equal(detectTypeLabelFromTitle("constructor: drop legacy"), null);
   });
 });
 
