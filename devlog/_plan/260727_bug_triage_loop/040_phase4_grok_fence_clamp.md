@@ -28,8 +28,10 @@ const bodyEnd = headers[position + 1]?.index ?? content.length;
 
 ### `src/grok/inject.ts` — `findOpencodexOrphans`
 
-함수 시작부에 fence 상한을 한 번만 계산한다. `region`이 있으면 그 시작점이고,
-없으면(마커가 아직 없는 파일) `BEGIN_MARKER`를 직접 찾는다:
+함수 시작부에 fence 상한을 한 번만 계산한다. `findManagedRegion`은 `BEGIN_MARKER`가
+없을 때만 `null`을 반환하므로, `region`이 `null`이면 fence도 없다 — 따라서 `indexOf`
+폴백은 항상 `-1`을 재계산하는 죽은 코드다(A단계 감사 블로커 3). `-1`을 직접 쓰고
+그 불변식을 주석으로 남긴다:
 
 ```ts
 function findOpencodexOrphans(content: string, region: ManagedRegion | null): OrphanTable[] {
@@ -38,7 +40,9 @@ function findOpencodexOrphans(content: string, region: ManagedRegion | null): Or
   // comment, not a table header, so a span that runs to "the next table header" swallows
   // the BEGIN marker whenever no other table separates them — and removing the orphan
   // then deletes the fence opener itself (#511 follow-up).
-  const fenceStart = region ? region.start : content.indexOf(BEGIN_MARKER);
+  // region is null ONLY when BEGIN_MARKER is absent (see findManagedRegion), so -1
+  // disables the clamp for marker-less files without a redundant scan.
+  const fenceStart = region ? region.start : -1;
   const clampEnd = (start: number, end: number): number =>
     fenceStart >= 0 && start < fenceStart ? Math.min(end, fenceStart) : end;
 ```
@@ -58,20 +62,41 @@ function findOpencodexOrphans(content: string, region: ManagedRegion | null): Or
 +      end = clampEnd(header.index, headers[next + 1]?.index ?? content.length);
 ```
 
-자식 헤더 자체가 fence 안쪽이면 순회를 멈춰야 한다:
+자식 헤더가 fence 안쪽이면 순회를 멈춘다. **단, 부모가 fence 위에 있을 때만이다**
+(A단계 감사 블로커 1):
 
 ```ts
        const child = headers[next]!;
-+      if (fenceStart >= 0 && child.index >= fenceStart) break;
++      if (fenceStart >= 0 && header.index < fenceStart && child.index >= fenceStart) break;
        if (child.segments.length <= 2) break;
 ```
 
-### 왜 `region.start`와 `indexOf`를 둘 다 쓰는가
+### 왜 `header.index < fenceStart` 한정이 필수인가
 
-`region`은 `orphaned` 상태일 수 있지만 그 경우 호출부(368행)가 이미 `orphanedMarkerResult`로
-거부하므로 여기 도달하지 않는다. `region`이 `null`인 경우는 마커가 아예 없는 파일이고,
-그때 `indexOf`는 `-1`을 반환해 클램프가 자동으로 비활성화된다. 즉 fence 없는 파일의
-기존 동작은 그대로다.
+한정 없이 `child.index >= fenceStart`만 쓰면 **fence 아래 orphan에서 첫 반복에 즉시
+`break`한다** — 그 위치에서는 모든 헤더 인덱스가 `fenceStart`보다 크기 때문이다.
+결과적으로 하위 테이블이 남고, `userModelAliases`가 그 별칭을 계속 예약해 `-2` 중복이
+영구화된다. 이는 #511이 보고한 바로 그 루프의 재발이며, 현재 코드보다 나쁘다.
+
+세 변형을 실제 실행해 확인했다. 픽스처는 fence 아래 orphan + `[model.<alias>.extra_headers]`
+하위 테이블(Grok이 재직렬화할 때 만드는 형태):
+
+| 변형 | 결과 테이블 | 판정 |
+|------|-------------|------|
+| 현재 코드 | `[model.ocx-gpt-5-6-sol]` | 정상 |
+| plan040 초안(한정 없음) | `[model.ocx-gpt-5-6-sol-2]` + `[model.ocx-gpt-5-6-sol.extra_headers]` | **회귀** |
+| 한정 추가 | `[model.ocx-gpt-5-6-sol]` | 정상 |
+
+세 변형 모두 ADJACENT에서는 `BEGIN=1 END=1`, run2부터 `changed=false`로 수렴했다.
+즉 초안도 원래 결함은 고치지만 다른 레이아웃을 깨뜨린다. 기존 테스트 55건은 이 회귀를
+잡지 못한다 — fence 아래에 하위 테이블 달린 orphan을 둔 픽스처가 없기 때문이다.
+
+### 백업 (A단계 감사 블로커 2)
+
+`copyBackupOnce`는 `configExisted && !region` 조건이다. 현재 결함 코드가 이 레이아웃에서
+백업을 남긴 건 **fence를 파괴해 `region`이 falsy가 됐기 때문**이며 의도된 동작이 아니다.
+클램프가 fence를 지키면 그 우연한 백업이 사라진다. 사용자 파일의 테이블을 지우는
+동작이므로 `orphans.length > 0`일 때도 백업하도록 조건을 넓힌다.
 
 ## 회귀 테스트
 
@@ -92,13 +117,41 @@ test("an orphan adjacent to the fence does not swallow the BEGIN marker (#511)",
 수정 전 이 테스트가 실패함을 먼저 확인한다 — 통과하는 테스트를 추가하면 결함을 증명하지
 못한다.
 
+**필수 추가 케이스** (A단계 감사 블로커 4). 인접 픽스처만으로는 블로커 1을 잡을 수 없다:
+
+```ts
+test("a below-fence orphan still gets its sub-tables swept (guard regression)", () => {
+  // fence 아래 orphan + [model.<alias>.extra_headers]
+  // 단언: 하위 테이블이 남지 않고, default가 -2로 고정되지 않는다.
+  // 이 테스트는 한정 없는 초안에서 반드시 FAIL 해야 한다.
+});
+
+test("a below-fence orphan whose alias collides does not pin default to -2", () => {
+  // 단언: default === "ocx-gpt-5-6-sol" (not "...-2")
+});
+```
+
+여력이 되면 추가: 인접 orphan에 빈 줄이 아예 없는 배치, 인접 orphan 2개 연속(다중 제거
+오프셋), fence 위아래 동시, CRLF 인접, inject→strip 후 잔여 END 마커 없음, orphan과
+fence 사이 사용자 주석.
+
 ## 수용 기준
 
 | 기준 | 활성화 | 관측 |
 |------|--------|------|
 | c-grok-adjacency | fence 인접 orphan 3회 sync | `BEGIN=1 END=1`, run2부터 `changed=false`, 테이블 1개 |
+| 가드 회귀 방지 | fence 아래 orphan + 하위 테이블 | 하위 테이블 제거, `default`가 `-2` 아님 |
 | 무회귀 | 전체 스위트 | 4985 pass 기준선 대비 신규 실패 0건 |
 | SEPARATED 보존 | 기존 레이아웃 | 기존 55건 계속 통과 |
+
+## 이번 phase에서 다루지 않는 것
+
+감사에서 확인된 선재 결함 2건은 WP5로 넘긴다. 클램프가 악화시키지 않음을 확인했다.
+
+- inject→strip 후 `default`가 사라진 테이블을 가리킨다(SEPARATED에서 이미 발생).
+- fence 아래 orphan이 파일의 마지막 테이블이면 span이 EOF까지 가서 뒤따르는 사용자
+  주석을 삭제한다. 현재 코드와 모든 수정 변형이 동일하게 삭제한다. EOF 쪽 상한이
+  필요하나 범위가 다르다.
 
 ## 검증
 
