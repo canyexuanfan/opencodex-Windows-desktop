@@ -36,8 +36,9 @@ expect(entry).toMatchObject({
 });
 expect(entry?.modelContextWindows?.["glm-4.6"]).toBe(204_800);
 expect(entry?.modelInputModalities?.["glm-4.6v"]).toEqual(["text", "image"]);
-expect(entry?.noVisionModels).toContain("glm-4.6");
-expect(entry?.noVisionModels).not.toContain("glm-4.6v");
+expect(entry?.modelInputModalities?.["glm-4.6"]).toEqual(["text"]);
+// See 001 §A3: noVisionModels is a vision-sidecar routing claim, not a denial.
+expect(entry?.noVisionModels).toBeUndefined();
 expect(entry?.liveModels).toBeUndefined();
 ```
 
@@ -68,29 +69,52 @@ have broken.
 
 ### Test 3 — request shaping emits the thinking toggle
 
-The behavioral assertion AGENTS.md asks for. Route through the real adapter and
-read the built body:
+The behavioral assertion AGENTS.md asks for. Signature confirmed in `001` §A1:
+`buildRequest` is async, takes one `OcxParsedRequest`, and returns a JSON
+**string** body; the provider binds at adapter construction.
 
 ```ts
 const route = routeModel(config, "zhipu-bigmodel/glm-4.6");
-const adapter = resolveAdapter(route.provider.adapter);
-const built = adapter.buildRequest({ ...parsedRequest, options: { reasoning: "high" } }, route.provider);
-expect(built.body.thinking).toEqual({ type: "enabled" });
-expect(built.body.reasoning_effort).toBeUndefined();
+const adapter = createOpenAIChatAdapter(route.provider);
+const request = await adapter.buildRequest({
+  modelId: route.modelId,
+  context: { messages: [{ role: "user", content: "hi" }] },
+  stream: true,
+  options: { reasoning: "high" },
+});
+const body = JSON.parse(request.body) as { thinking?: { type: string }; reasoning_effort?: string };
+expect(body.thinking).toEqual({ type: "enabled" });
+expect(body.reasoning_effort).toBeUndefined();
 ```
 
 And the disabled half, since a one-sided toggle test passes even if the map is
-stuck:
+stuck on one value: `reasoning: "low"` maps to `disabled` through
+`THINKING_TOGGLE_MAP`, so the same build with `low` must yield
+`{ type: "disabled" }` and still no `reasoning_effort`.
+
+### Test 5 — the directory/registry collision guard, generalized
+
+From `001` §A4: the existing isolation test at
+`tests/provider-registry-parity.test.ts:796-812` only checks directory rows with
+`supportLevel === "reference"`, so it would have stayed green on the original
+`glm` collision. Add a case in `tests/provider-registry-parity.test.ts` covering
+every directory row:
 
 ```ts
-// reasoning: "low" maps to disabled through THINKING_TOGGLE_MAP
-expect(builtLow.body.thinking).toEqual({ type: "disabled" });
-expect(builtLow.body.reasoning_effort).toBeUndefined();
+test("a directory id shared with the registry must agree on its endpoint", () => {
+  const registryById = new Map(PROVIDER_REGISTRY.map(entry => [entry.id, entry]));
+  for (const row of FREE_PROVIDER_DIRECTORY) {
+    const registryEntry = registryById.get(row.id);
+    if (!registryEntry) continue;
+    // routedProviderConfig() canonicalizes a saved config onto the registry baseUrl,
+    // so a shared id with a different host silently retargets the user's API key.
+    expect(registryEntry.baseUrl).toBe(row.baseUrl);
+  }
+});
 ```
 
-The exact `buildRequest` signature is read from
-`src/adapters/openai-chat.ts` and an existing adapter test before writing this —
-the sketch above is the intent, not a promise about the parameter shape.
+This is the durable half of the fix: the next contributor reaching for a taken id
+gets a failing test instead of a review comment.
 
 ### Test 4 — derived surfaces
 

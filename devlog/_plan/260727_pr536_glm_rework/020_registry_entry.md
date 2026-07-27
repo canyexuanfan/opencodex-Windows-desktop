@@ -46,8 +46,7 @@ two GLM routes sit together and the comment above them can explain the split.
   models: ZHIPU_BIGMODEL_MODELS,
   jawcodeBundle: "zai",
   modelContextWindows: { "glm-4.6": 204_800 },
-  modelInputModalities: { "glm-4.6v": ["text", "image"] },
-  noVisionModels: ZHIPU_BIGMODEL_TEXT_MODELS,
+  modelInputModalities: ZHIPU_BIGMODEL_INPUT_MODALITIES,
   thinkingToggleModels: ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS,
   modelReasoningEfforts: Object.fromEntries(
     ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS]),
@@ -67,6 +66,10 @@ Constants placed next to the existing GLM constants near
 const ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS = ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1"];
 const ZHIPU_BIGMODEL_TEXT_MODELS = ["glm-4.6", "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1"];
 const ZHIPU_BIGMODEL_MODELS = [...ZHIPU_BIGMODEL_TEXT_MODELS, "glm-4.6v"];
+const ZHIPU_BIGMODEL_INPUT_MODALITIES: Record<string, string[]> = {
+  ...Object.fromEntries(ZHIPU_BIGMODEL_TEXT_MODELS.map(id => [id, ["text"]])),
+  "glm-4.6v": ["text", "image"],
+};
 ```
 
 ## Why each field
@@ -88,10 +91,13 @@ existing bundle rather than transcribing numbers by hand. `modelContextWindows`
 still declares `glm-4.6: 204_800` explicitly so the default model's window is
 correct even when bundle lookup is bypassed.
 
-**`modelInputModalities` + `noVisionModels`** — `glm-4.6v` is the vision member;
-everything else is text-only. Declaring both sides is what prevents B4 in either
-direction (a vision model blocked from images, or a text model advertised as
-multimodal).
+**`modelInputModalities` (and deliberately no `noVisionModels`)** — `glm-4.6v` is
+the vision member; everything else is text-only. See `001` §A3: in this
+repository `noVisionModels` is a vision-sidecar routing claim that makes the
+catalog *add* image input (`src/codex/catalog/provider-fetch.ts:98-105`), not a
+capability denial. We have not verified sidecar coverage for BigModel-hosted GLM,
+so the entry declares modalities directly and lists nothing under
+`noVisionModels`.
 
 **`thinkingToggleModels` and the effort maps** — the wire contract at
 `src/adapters/openai-chat.ts:561-570` only emits `thinking: { type }` when the
