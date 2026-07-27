@@ -2,8 +2,8 @@
   "objective": "opencodex 저장소 거버넌스 및 기여 정책 4건을 PABCD 다중 work-phase 루프로 처리한다. WP1 문서화 우선 사이클, WP2 dev2-go 기반 PR 및 포팅/리베이스 PR 허용 정책, WP3 대상 PR 두 개로 분할, WP4 Wibias 메인테이너 추가. 검증은 실제 파일과 명령 출력으로만. 서브에이전트는 gpt-5.6-terra medium 일반 티어 활용.",
   "slug": "opencodex-4-pabcd-work-phase-wp1-wp2-dev2-go-pr",
   "createdAt": "2026-07-27T00:41:29.352Z",
-  "updatedAt": "2026-07-27T04:17:39.364Z",
-  "activeWorkPhaseId": null,
+  "updatedAt": "2026-07-27T04:58:54.547Z",
+  "activeWorkPhaseId": "wp8",
   "workPhases": [
     {
       "id": "wp1",
@@ -233,57 +233,58 @@
     {
       "id": "wp8",
       "title": "게이트를 main으로 승격 (fast-forward) — pull_request_target은 기본 브랜치 워크플로를 실행하므로 이것 없이는 발효되지 않음",
-      "status": "deferred",
+      "status": "in_progress",
       "tasks": [
         {
           "id": "wp8-t1",
           "title": "dev HEAD b4a9fe5c 호스팅 CI success 확인 (Cross-platform CI + Service lifecycle)",
-          "status": "open"
+          "status": "pending"
         },
         {
           "id": "wp8-t2",
           "title": "main..dev 98커밋 범위에 릴리스 파이프라인/보안 리뷰 대상 변경이 있는지 확인",
-          "status": "open"
+          "status": "pending"
         },
         {
           "id": "wp8-t3",
           "title": "git push origin b4a9fe5c:main (fast-forward, 로컬 체크아웃은 dev 유지)",
-          "status": "open"
+          "status": "pending"
         },
         {
           "id": "wp8-t4",
           "title": "승격 후 원격 main의 enforce-pr-target.yml에 ALLOWED_BASES 존재 확인 + c5 met 기록",
-          "status": "open"
+          "status": "pending"
         }
       ],
-      "note": "사용자 지시로 보류 — \"일단 dev에서만 처리해\". 사전 감사(019fa1cf) VERDICT: DO NOT PROMOTE. 차단 사유 두 개: (1) 918a0c8d의 인증 코드 셸 인자 노출 = wp9로 처리, (2) 승격 범위가 게이트 한정이 아니라 98커밋/9172줄(devlog 제외)이라 메인테이너의 명시적 수용이 필요. 부수효과 확인: GitHub Pages 배포는 실제로 발생, npm publish는 발생하지 않음(release.yml은 workflow_dispatch 전용, package.json 2.7.41 동일)."
+      "criteriaIds": []
     },
     {
       "id": "wp9",
       "title": "ocx account 인증 코드를 셸 인자에서 stdin으로 (WP8 사전 감사 High 지적)",
-      "status": "in_progress",
+      "status": "done",
       "tasks": [
         {
           "id": "wp9-t1",
           "title": "stdin 읽기 헬퍼 + 주입 가능한 deps (runtime-api.ts)",
-          "status": "open"
+          "status": "done"
         },
         {
           "id": "wp9-t2",
           "title": "account code 위치 인자 / login --code를 선택으로, 기본 stdin, '-'는 명시적 stdin",
-          "status": "open"
+          "status": "done"
         },
         {
           "id": "wp9-t3",
           "title": "인자 사용 시 stderr 경고 (값은 절대 에코 금지)",
-          "status": "open"
+          "status": "done"
         },
         {
           "id": "wp9-t4",
           "title": "tests/cli-account.test.ts 회귀 + 독립 감사",
-          "status": "open"
+          "status": "done"
         }
-      ]
+      ],
+      "criteriaIds": []
     }
   ],
   "criteria": [
@@ -340,8 +341,8 @@
       "id": "c9",
       "scenario": "ocx account login/code가 인증 코드를 셸 히스토리와 프로세스 목록에 남기지 않는 경로를 기본으로 제공하고, 인자 경로를 쓰면 값을 노출하지 않는 경고가 나온다.",
       "expectedEvidence": "테스트 통과 출력 + 인자 경고 어설션 + 값 미노출 어설션",
-      "capturedEvidence": "",
-      "status": "open"
+      "capturedEvidence": "구현: d4dfa24e(stdin 기본 경로), e7f5bef5(공백 문법 redact + 중복 --code 거부), d3dc9d79(미지 플래그를 코드로 먹지 않음), f10c5060(비밀 옵션 뒤 토큰은 모양 무관 은닉, -- 구분자 건너뜀, account code 잔여 위치 인자 은닉, 종료된 stdin 즉시 실패), 1de43286(CR/LF 줄바꿈 고정). 검증: bun run test 4965 pass / 0 fail / 24429 expect(); bun x tsc --noEmit exit 0; bun test tests/cli-account.test.ts 62 pass / 0 fail / 276 expect(). 변이: mut23 10/10 CAUGHT, mut21 9/9 CAUGHT, mut22 4/4 CAUGHT. 독립 감사 2라운드: R2 FAIL(High 2 + Medium 1 + Low 1, 전부 프로브로 실측 재현) → 수정 → R3 VERDICT: PASS. 잔여: `--code --nope`는 --nope를 값으로 간주해 은닉(사용 오류 메시지는 --code를 여전히 지목) — 진단성보다 노출 차단 우선.",
+      "status": "met"
     }
   ],
   "host": {

@@ -104,3 +104,66 @@ WP8(main 승격) 사전 감사가 승격을 막으면서 낸 High 지적이다. 
 - 빈 파이프 / 닫힌 stdin — usage 오류, POST 없음
 - `--code` 없는 평범한 `login`과 `--no-wait`는 **동작 변화 없음**
 - Codex 경로(`--flow` 필수)와 OAuth 경로 양쪽 본문 확인
+
+## 구현 감사 2라운드 — 네 건, 전부 실측 재현 후 수정
+
+구현 후 독립 감사(round 2)가 FAIL을 냈다. 관례대로 지적을 그대로 받지 않고
+프로브로 먼저 재현했고, 넷 다 진짜였다.
+
+```
+F1a --code --SUPERSECRET  -> Unexpected argument(s): --code --SUPERSECRET
+F1b --code -- SUPERSECRET -> Unexpected argument(s): --code -- SUPERSECRET
+F2  code <p> FIRST SECRET -> Unexpected argument(s): FIRST SUPERSECRET
+F3  이미 end된 stdin       -> REJECTED timed out ... in 302 ms   (readableEnded=true)
+```
+
+**F1 — 값이 플래그처럼 생기면 redact를 빠져나간다.** 1라운드에서 넣은
+`!next.startsWith("--")` 가드는 "`--`로 시작하면 값이 아니라 플래그"라고
+읽는다. 하지만 셸은 타이핑된 것을 그대로 넘긴다. `--`로 시작하는 코드도,
+end-of-options 구분자 뒤에 놓인 코드도 그대로 메시지에 실렸다. 이제 비밀
+옵션 다음 토큰은 **모양과 무관하게** 가리고, `--`는 구분자로 한 칸 건너뛴다.
+대가로 `--code --json` 오타는 `--code <redacted>`로 보인다 — 어차피 usage
+전문이 함께 나오는 경우의 진단성을 조금 잃고, 자격증명 출력을 막는다.
+
+**F2 — 쪼개진 리다이렉트 URL은 위치 인자로 도착한다.** 따옴표 없는 URL이
+공백에서 갈라지면 꼬리가 잔여 위치 인자가 되고, `rejectArgs`가 그대로 찍었다.
+`rejectArgs`에 옵트인 `{ redactValues: true }`를 붙여 `account code`에서만
+**맨 위치 인자**를 가린다. 플래그 모양 잔여물은 계속 보인다 — 오타 플래그는
+자격증명이 아니고, 그게 메시지가 지목해야 할 대상이다.
+
+**F3 — 이미 끝난 스트림은 이벤트를 다시 내지 않는다.** `a | b | ocx account
+code <p>` 형태로 소진된 스트림이 넘어오면 리스너는 아무것도 못 듣고, 2분을
+기다린 뒤 "붙여넣기가 느리다"고 엉뚱하게 탓했다. `readableEnded === true`면
+즉시 빈 입력으로 처리한다(302ms → 0ms).
+
+**F4 — 맞는 동작인데 테스트가 없다.** 청크 분할, CRLF, 개행 없는 EOF는
+구현이 이미 옳았지만 아무것도 고정하지 않고 있었다. 회귀 테스트를 붙였고,
+그 과정에서 감사가 열거하지 않은 한 건이 추가로 드러났다: `/[\r\n]/`를
+`indexOf("\n")`로 좁히는 변이가 **살아남았다**. CR 단독 종료 붙여넣기가
+무방비였다는 뜻이라 그것도 고정했다.
+
+### 증거
+
+- `bun test tests/cli-account.test.ts` → 62 pass / 0 fail / 276 expect()
+- `bun run test` → 4965 pass / 0 fail / 24429 expect() (378 파일)
+- `bun x tsc --noEmit` → exit 0
+- 변이 `/tmp/mut23.py` 10종(지적 4건을 정조준) → 10/10 CAUGHT
+- 기존 `/tmp/mut21.py` 9/9, `/tmp/mut22.py` 4/4 CAUGHT (앵커 1개는 리팩터링으로 소멸)
+- 재감사(round 3, 동일 감사자) → **VERDICT: PASS**
+
+### 잔여 위험 (수용)
+
+`--code --nope`는 `--nope`를 값으로 간주해 가린다. 사용 오류 메시지는 여전히
+지원되지 않는 `--code`를 지목하므로 진단은 가능하다. 진단성보다 노출 차단을
+택한 의도된 트레이드오프다.
+
+### 교훈
+
+**"플래그처럼 생겼다"는 파서의 사정이지 사용자의 사정이 아니다.** 값이
+`--`로 시작할 수 있다는 가능성 하나로 1라운드 수정이 뚫렸다. 비밀을 가릴
+때는 모양으로 판단하지 말고 **위치**로 판단해야 한다 — 비밀 옵션 다음
+자리는 무엇이 오든 값이다.
+
+**감사가 맞았다고 감사가 다 봤다는 뜻은 아니다.** F4는 "테스트가 없다"까지만
+지적했는데, 실제로 변이를 돌려보니 그 중 하나는 이미 무방비였다. 지적을
+재현하는 것과 지적의 범위를 검증하는 것은 다른 일이다.
