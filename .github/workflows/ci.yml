@@ -2,7 +2,7 @@ name: Cross-platform CI
 
 on:
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, dev2-go]
     paths:
       - "src/**"
       - "bin/**"

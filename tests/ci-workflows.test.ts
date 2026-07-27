@@ -31,6 +31,35 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
   });
 
+  test("PR checks reach every branch the target gate accepts", async () => {
+    // These two lists have to move together with enforce-pr-target.yml. The
+    // gate now accepts dev2-go, and a PR that passes the gate but triggers no
+    // checks is worse than one that is blocked: it looks reviewable and has
+    // nothing behind it. Pin the pull_request branch lists to the gate's
+    // allow-list plus main.
+    const gate = await readText(".github/workflows/enforce-pr-target.yml");
+    const allowed = gate.match(/const ALLOWED_BASES = \[([^\]]*)\];/);
+    expect(allowed).not.toBeNull();
+    const bases = [...(allowed?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(m => m[1]);
+    expect(bases).toEqual(["dev", "dev2-go"]);
+
+    for (const path of [".github/workflows/ci.yml", ".github/workflows/service-lifecycle.yml"]) {
+      const workflow = Bun.YAML.parse(await readText(path)) as {
+        on?: { pull_request?: { branches?: string[] } };
+      };
+      const branches = workflow.on?.pull_request?.branches ?? [];
+      expect([...branches].sort()).toEqual(["dev", "dev2-go", "main"]);
+    }
+
+    // The push trigger is deliberately narrower: dev2-go is an integration
+    // line, not a release-promotion source, and release.yml gates on main and
+    // preview. Widening this one would put dev2-go into that path.
+    const ci = Bun.YAML.parse(await readText(".github/workflows/ci.yml")) as {
+      on?: { push?: { branches?: string[] } };
+    };
+    expect([...(ci.on?.push?.branches ?? [])].sort()).toEqual(["dev", "main", "preview"]);
+  });
+
   test("cross-platform CI keeps the GUI lint and build gates", async () => {
     // Review finding (PR #97): the GUI build gate was silently dropped once; assert the
     // enhanced gate (PR #99) stays wired so broken GUI builds cannot merge unnoticed.
