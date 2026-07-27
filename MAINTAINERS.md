@@ -46,12 +46,17 @@ Adding or removing a maintainer requires:
 ### Change log
 
 - 2026-07-27 — [@Wibias](https://github.com/Wibias) added as a maintainer at
-  the project owner's request. Scope covers issue and pull-request triage,
-  `dev` integration, and provider/CI maintenance. Security-boundary ownership
-  in `.github/CODEOWNERS` is deliberately unchanged: authentication,
-  credential handling, GitHub Actions, and release automation still require
-  review from the two owners listed for those paths. Widening that boundary is
-  a separate decision.
+  the project owner's request (requirement 1). Requirement 2, review by another
+  current maintainer, is satisfied by the review on the pull request that lands
+  this change; the entry is recorded here at merge time. Scope covers issue and
+  pull-request triage, `dev` integration, and provider/CI maintenance.
+  Security-boundary ownership in `.github/CODEOWNERS` is deliberately
+  unchanged: authentication, credential handling, GitHub Actions, and release
+  automation keep the two owners already listed for those paths, so this
+  addition does not widen the review surface for them. Note that CODEOWNERS
+  requests reviews rather than enforcing them — no branch protection rule is
+  configured on this repository, so code-owner approval is a convention here,
+  not a gate. Widening the boundary, or enforcing it, is a separate decision.
 
 ## Security reports
 
