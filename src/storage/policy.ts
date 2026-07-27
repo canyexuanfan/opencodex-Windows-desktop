@@ -11,10 +11,11 @@ import { resolveCodexHomeDir } from "../codex/home";
 import { loadConfig, saveConfigPreservingClaudeCode } from "../config";
 import type { StorageCleanupPolicy } from "../types";
 import {
+  computePreviewDigest,
   executeArchivedCleanup,
   listArchivedCandidates,
-  previewArchivedCleanup,
   previewExactArchivedCleanup,
+  selectOldestPercent,
   type CleanupMode,
   type CleanupResult,
   type ExecuteCleanupOptions,
@@ -106,7 +107,8 @@ export function normalizeStorageCleanupPolicy(raw: unknown): StorageCleanupPolic
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return base;
   const o = raw as Record<string, unknown>;
 
-  const enabled = o.enabled === true; // only explicit true enables
+  // only explicit true enables — and never when a present target is malformed
+  let enabled = o.enabled === true;
 
   let archivedBytesOver = base.trigger.archivedBytesOver;
   if (o.trigger && typeof o.trigger === "object" && !Array.isArray(o.trigger)) {
@@ -115,14 +117,21 @@ export function normalizeStorageCleanupPolicy(raw: unknown): StorageCleanupPolic
   }
 
   let target: StorageCleanupPolicy["target"] = base.target;
-  if (o.target && typeof o.target === "object" && !Array.isArray(o.target)) {
-    const candidate = o.target as StorageCleanupPolicy["target"];
-    if (isValidPolicyTarget(candidate)) {
-      const reduce = (candidate as { reduceToBytes?: number }).reduceToBytes;
-      const percent = (candidate as { removeOldestPercent?: number }).removeOldestPercent;
-      target = reduce !== undefined
-        ? { reduceToBytes: reduce }
-        : { removeOldestPercent: Math.min(100, Math.max(1, Math.floor(percent!))) };
+  if (Object.prototype.hasOwnProperty.call(o, "target")) {
+    if (o.target && typeof o.target === "object" && !Array.isArray(o.target)) {
+      const candidate = o.target as StorageCleanupPolicy["target"];
+      if (isValidPolicyTarget(candidate)) {
+        const reduce = (candidate as { reduceToBytes?: number }).reduceToBytes;
+        const percent = (candidate as { removeOldestPercent?: number }).removeOldestPercent;
+        target = reduce !== undefined
+          ? { reduceToBytes: reduce }
+          : { removeOldestPercent: Math.min(100, Math.max(1, Math.floor(percent!))) };
+      } else {
+        // Fail closed: malformed persisted target must not become delete-oldest 25%.
+        enabled = false;
+      }
+    } else {
+      enabled = false;
     }
   }
 
@@ -348,14 +357,15 @@ export function selectPolicyPreview(
     };
   }
 
+  // Reuse the already-listed candidates — avoid a second archive directory walk.
   const percent = Math.min(100, Math.max(0, Math.floor(removePct ?? 0)));
-  const preview = previewArchivedCleanup(percent, codexHome);
+  const selected = selectOldestPercent(all, percent);
   return {
     archivedBytes,
-    percent: preview.percent,
-    count: preview.count,
-    bytes: preview.bytes,
-    digest: preview.digest,
+    percent,
+    count: selected.length,
+    bytes: selected.reduce((sum, c) => sum + c.bytes, 0),
+    digest: computePreviewDigest(selected, percent),
   };
 }
 

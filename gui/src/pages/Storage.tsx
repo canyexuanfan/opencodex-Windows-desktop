@@ -410,7 +410,8 @@ function AutoCleanupPolicyPanel({
   const [percent, setPercent] = useState(25);
   /** Draft string so blank/invalid reduce targets are rejected instead of coerced to 0. */
   const [reduceGb, setReduceGb] = useState("4");
-  const [thresholdGb, setThresholdGb] = useState(5);
+  /** Draft string so a cleared threshold is rejected instead of coerced to 0. */
+  const [thresholdGb, setThresholdGb] = useState("5");
 
   const loadPolicy = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -421,7 +422,7 @@ function AutoCleanupPolicyPanel({
       const json = await res.json() as CleanupPolicy;
       if (signal?.aborted) return;
       setPolicy(json);
-      setThresholdGb(Math.max(0, Math.round((json.trigger.archivedBytesOver / GB) * 100) / 100));
+      setThresholdGb(String(Math.max(0, Math.round((json.trigger.archivedBytesOver / GB) * 100) / 100)));
       if (json.target.reduceToBytes !== undefined) {
         setTargetMode("reduce");
         setReduceGb(String(Math.max(0, Math.round((json.target.reduceToBytes / GB) * 100) / 100)));
@@ -452,7 +453,9 @@ function AutoCleanupPolicyPanel({
 
   const buildBody = (): CleanupPolicy | null => {
     if (!policy) return null;
-    const threshold = Number(thresholdGb);
+    const thresholdRaw = thresholdGb.trim();
+    if (thresholdRaw === "") return null;
+    const threshold = Number(thresholdRaw);
     if (!Number.isFinite(threshold) || threshold < 0) return null;
 
     let target: CleanupPolicy["target"];
@@ -623,7 +626,7 @@ function AutoCleanupPolicyPanel({
             step={0.1}
             value={thresholdGb}
             disabled={saving || running}
-            onChange={e => setThresholdGb(Number(e.target.value))}
+            onChange={e => setThresholdGb(e.target.value)}
             onBlur={() => void savePolicy()}
             style={{ display: "block", marginTop: 4, width: "100%" }}
           />

@@ -82,6 +82,25 @@ describe("normalizeStorageCleanupPolicy", () => {
     expect(normalizeStorageCleanupPolicy({ mode: "nope" }).mode).toBe("quarantine");
     expect(normalizeStorageCleanupPolicy({}).mode).toBe("quarantine");
   });
+
+  test("malformed persisted target fails closed (does not enable delete-oldest 25%)", () => {
+    const both = normalizeStorageCleanupPolicy({
+      enabled: true,
+      target: { reduceToBytes: 1, removeOldestPercent: 25 },
+    });
+    expect(both.enabled).toBe(false);
+    expect(both.target).toEqual({ removeOldestPercent: 25 });
+
+    const empty = normalizeStorageCleanupPolicy({ enabled: true, target: {} });
+    expect(empty.enabled).toBe(false);
+
+    const badType = normalizeStorageCleanupPolicy({ enabled: true, target: "percent" });
+    expect(badType.enabled).toBe(false);
+
+    const missingTarget = normalizeStorageCleanupPolicy({ enabled: true });
+    expect(missingTarget.enabled).toBe(true);
+    expect(missingTarget.target).toEqual({ removeOldestPercent: 25 });
+  });
 });
 
 describe("selection helpers", () => {

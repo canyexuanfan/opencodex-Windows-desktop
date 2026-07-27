@@ -886,9 +886,10 @@ export function startServer(port?: number) {
   }
 
   // Opt-in storage policy (default OFF). Never blocks listen; errors are swallowed.
-  queueMicrotask(() => {
+  // Prefer macrotask over queueMicrotask so the sync archive walk does not starve I/O.
+  setTimeout(() => {
     maybeRunDueStorageCleanupPolicy("startup");
-  });
+  }, 0);
 
   return server;
 }
