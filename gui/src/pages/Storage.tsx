@@ -170,14 +170,17 @@ function ArchivedCleanupPanel({
     };
   }, [confirmOpen]);
 
-  const mapCleanupError = (code: string | undefined, fallback?: string) => {
+  const mapCleanupError = (code: string | undefined, fallback?: string, trashDir?: string) => {
     switch (code) {
       case "codex_busy": return t("storage.cleanup.err.codex_busy");
       case "stale_preview": return t("storage.cleanup.err.stale_preview");
       case "referenced_history": return t("storage.cleanup.err.referenced_history");
       case "invalid_digest": return t("storage.cleanup.err.invalid_digest");
       case "invalid_mode": return t("storage.cleanup.err.invalid_mode");
-      case "fs_failed": return t("storage.cleanup.err.fs_failed");
+      case "fs_failed":
+        return trashDir
+          ? t("storage.cleanup.err.fs_failed_trash", { trashDir })
+          : t("storage.cleanup.err.fs_failed");
       case "db_reconcile_failed": return t("storage.cleanup.err.db_reconcile_failed");
       case "cleanup_failed": return t("storage.cleanup.err.cleanup_failed");
       default: return fallback ?? t("storage.cleanup.cleanupFailed");
@@ -226,7 +229,7 @@ function ArchivedCleanupPanel({
           setConfirmOpen(false);
           setPreview(null);
         }
-        throw new Error(mapCleanupError(json.error, json.message));
+        throw new Error(mapCleanupError(json.error, json.message, json.trashDir));
       }
       setConfirmOpen(false);
       setPreview(null);
@@ -307,8 +310,8 @@ function ArchivedCleanupPanel({
                 {preview.candidates.slice(0, 8).map(c => (
                   <li key={c.relPath}>{c.relPath}</li>
                 ))}
-                {preview.candidates.length > 8 && (
-                  <li>{t("storage.cleanup.moreFiles", { n: String(preview.candidates.length - 8) })}</li>
+                {preview.count > 8 && (
+                  <li>{t("storage.cleanup.moreFiles", { n: String(preview.count - 8) })}</li>
                 )}
               </ul>
             )}

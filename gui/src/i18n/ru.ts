@@ -659,7 +659,8 @@ export const ru: Record<TKey, string> = {
   "storage.cleanup.err.referenced_history": "Выбранные архивы всё ещё ссылаются из forked или paginated history.",
   "storage.cleanup.err.invalid_digest": "Digest предпросмотра отсутствует или недействителен.",
   "storage.cleanup.err.invalid_mode": "Режим должен быть quarantine или permanent.",
-  "storage.cleanup.err.fs_failed": "Ошибка файловой очистки; изменения не сохранены.",
+  "storage.cleanup.err.fs_failed": "Ошибка файловой очистки. Часть изменений могла уже примениться — проверьте CODEX_HOME/.trash и указанный путь восстановления.",
+  "storage.cleanup.err.fs_failed_trash": "Ошибка файловой очистки. Часть изменений могла уже примениться — проверьте {trashDir} и manifest.json на восстанавливаемые файлы.",
   "storage.cleanup.err.db_reconcile_failed": "Не удалось обновить базу состояния Codex.",
   "storage.cleanup.err.cleanup_failed": "Не удалось выполнить очистку.",
 

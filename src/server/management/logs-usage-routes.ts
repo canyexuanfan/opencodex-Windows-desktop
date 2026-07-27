@@ -303,7 +303,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
           referenced_history: "Selected archives are still referenced by forked or paginated history.",
           invalid_digest: "Preview digest is missing or invalid.",
           invalid_mode: "mode must be quarantine or permanent.",
-          fs_failed: "Filesystem cleanup failed; no changes were kept.",
+          fs_failed: "Filesystem cleanup failed. Some changes may already be applied — check CODEX_HOME/.trash and any recovery path in the response.",
           db_reconcile_failed: "Could not update Codex state database.",
           cleanup_failed: "Cleanup failed.",
         };

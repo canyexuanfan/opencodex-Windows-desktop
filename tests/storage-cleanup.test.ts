@@ -379,6 +379,8 @@ describe("executeArchivedCleanup", () => {
     expect(result.trashDir).toBeUndefined();
     expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
     expect(existsSync(join(home, ".trash", "88", "rollout-old.jsonl"))).toBe(false);
+    // Whole stage directory must be removed — not just the staged file.
+    expect(existsSync(join(home, ".trash", "88"))).toBe(false);
     // DB untouched
     const db = new Database(join(home, "state_5.sqlite"), { readonly: true });
     const ids = db.query<{ id: string }, []>("SELECT id FROM threads ORDER BY id").all().map(r => r.id);
@@ -428,6 +430,16 @@ describe("executeArchivedCleanup", () => {
     // Remaining staged file + manifest must survive for recovery.
     expect(existsSync(join(home, ".trash", "92", "rollout-mid.jsonl"))).toBe(true);
     expect(existsSync(join(home, ".trash", "92", "manifest.json"))).toBe(true);
+    const manifest = JSON.parse(
+      readFileSync(join(home, ".trash", "92", "manifest.json"), "utf8"),
+    ) as {
+      purgeIncomplete?: boolean;
+      purgedRelPaths?: string[];
+      entries: Array<{ relPath: string }>;
+    };
+    expect(manifest.purgeIncomplete).toBe(true);
+    expect(manifest.purgedRelPaths).toContain("archived_sessions/rollout-old.jsonl");
+    expect(manifest.entries.map(e => e.relPath)).toEqual(["archived_sessions/rollout-mid.jsonl"]);
     // Successfully purged candidates are gone from archive and stage.
     expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
     expect(existsSync(join(home, ".trash", "92", "rollout-old.jsonl"))).toBe(false);

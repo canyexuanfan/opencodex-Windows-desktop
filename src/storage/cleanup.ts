@@ -409,16 +409,11 @@ function tableExists(db: Database, name: string): boolean {
 
 function columnExists(db: Database, table: string, column: string): boolean {
   if (!tableExists(db, table)) return false;
-  try {
-    // table name already verified via sqlite_master; quote for safety.
-    const rows = db.query<{ name: string }, []>(
-      `PRAGMA table_info(${JSON.stringify(table)})`,
-    ).all();
-    return rows.some(r => r.name === column);
-  } catch (error) {
-    // Real pragma failures must not look like "column missing".
-    throw error;
-  }
+  // `table` is only ever a hardcoded identifier already verified via sqlite_master.
+  const rows = db.query<{ name: string }, []>(
+    `PRAGMA table_info("${table.replaceAll('"', '""')}")`,
+  ).all();
+  return rows.some(r => r.name === column);
 }
 
 function deleteThreadsAndDependents(db: Database, threadIds: string[]): void {
@@ -476,22 +471,29 @@ function loadThreadsForCleanup(
 /** Delete matching threads in one transaction. Call only after the recovery manifest exists. */
 function deleteThreadsTransaction(
   stateDbPath: string,
-  threadIds: string[],
+  candidates: ArchivedCandidate[],
+  codexHome: string,
   busyTimeoutMs: number,
-): { ok: true } | ReconcileErr {
-  if (!stateDbPath || !existsSync(stateDbPath) || threadIds.length === 0) return { ok: true };
+): ReconcileOk | ReconcileErr {
+  if (!stateDbPath || !existsSync(stateDbPath)) return { ok: true, threads: [] };
   let db: Database | undefined;
   try {
     db = openStateDbWritable(stateDbPath, busyTimeoutMs);
     db.exec("BEGIN IMMEDIATE");
     try {
-      deleteThreadsAndDependents(db, threadIds);
+      // Re-validate under the write lock; the preflight result may be stale (TOCTOU).
+      const threads = loadMatchingThreads(db, candidates, codexHome);
+      if (findReferencedHistory(db, threads)) {
+        db.exec("ROLLBACK");
+        return { ok: false, error: "referenced_history" };
+      }
+      deleteThreadsAndDependents(db, threads.map(t => t.id));
       db.exec("COMMIT");
+      return { ok: true, threads };
     } catch (error) {
       try { db.exec("ROLLBACK"); } catch { /* */ }
       throw error;
     }
-    return { ok: true };
   } catch (error) {
     return { ok: false, error: mapDbError(error) };
   } finally {
@@ -690,11 +692,13 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     return fail(mode, percent, "fs_failed", rolled.restored ? undefined : { trashDir });
   }
 
+  const threadByRelPath = new Map<string, ThreadSnapshot>();
+  for (const thread of loaded.threads) {
+    const normalized = normalizeArchivedRolloutPath(thread.rollout_path, codexHome);
+    if (normalized) threadByRelPath.set(normalized, thread);
+  }
   const manifestEntries: CleanupManifestEntry[] = preview.candidates.map(candidate => {
-    const thread = loaded.threads.find(t => {
-      const normalized = normalizeArchivedRolloutPath(t.rollout_path, codexHome);
-      return normalized === candidate.relPath;
-    });
+    const thread = threadByRelPath.get(candidate.relPath);
     return {
       relPath: candidate.relPath,
       bytes: candidate.bytes,
@@ -707,7 +711,6 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
   });
 
   // Manifest must exist before DB deletion so a mid-flight crash still has recovery metadata.
-  let manifestWritten = false;
   try {
     if (options._test?.failManifestWrite) {
       throw new Error("test_fail_manifest_write");
@@ -722,7 +725,6 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
         entries: manifestEntries,
       }, null, 2),
     );
-    manifestWritten = true;
   } catch {
     const rolled = rollbackStaged(stageResult.staged, { failBasenames: failRollback });
     removeStageIfEmpty(stageDir, rolled.remaining);
@@ -731,7 +733,8 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
 
   const deleted = deleteThreadsTransaction(
     probe.path,
-    loaded.threads.map(t => t.id),
+    preview.candidates,
+    codexHome,
     busyTimeoutMs,
   );
   if (!deleted.ok) {
@@ -759,22 +762,24 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
   // Permanent: purge staged files only after a successful DB commit.
   const purge = purgeStaged(stageResult.staged, { failBasenames: failPurge });
   if (purge.remaining.length > 0) {
-    // Partially applied: DB rows are gone; keep remaining staged files + manifest for recovery.
-    if (!manifestWritten) {
-      try {
-        writeFileSync(
-          join(stageDir, "manifest.json"),
-          JSON.stringify({
-            quarantinedAt: epoch,
-            mode: "permanent",
-            percent,
-            digest: preview.digest,
-            entries: manifestEntries,
-            purgeIncomplete: true,
-          }, null, 2),
-        );
-      } catch { /* best-effort */ }
-    }
+    // Overwrite the pre-commit manifest so recovery reflects what actually survived.
+    const survivingRelPaths = new Set(purge.remaining.map(item => item.relPath));
+    try {
+      writeFileSync(
+        join(stageDir, "manifest.json"),
+        JSON.stringify({
+          quarantinedAt: epoch,
+          mode: "permanent",
+          percent,
+          digest: preview.digest,
+          purgeIncomplete: true,
+          purgedRelPaths: purge.purged.map(item => item.relPath),
+          entries: manifestEntries.filter(entry =>
+            entry.physicalRelPaths.some(rel => survivingRelPaths.has(rel)),
+          ),
+        }, null, 2),
+      );
+    } catch { /* best-effort: the pre-commit manifest is still on disk */ }
     return {
       ok: false,
       mode,

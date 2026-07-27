@@ -660,7 +660,8 @@ export const en = {
   "storage.cleanup.err.referenced_history": "Selected archives are still referenced by forked or paginated history.",
   "storage.cleanup.err.invalid_digest": "Preview digest is missing or invalid.",
   "storage.cleanup.err.invalid_mode": "Cleanup mode must be quarantine or permanent.",
-  "storage.cleanup.err.fs_failed": "Filesystem cleanup failed; no changes were kept.",
+  "storage.cleanup.err.fs_failed": "Filesystem cleanup failed. Some changes may already be applied — check CODEX_HOME/.trash and any recovery path shown.",
+  "storage.cleanup.err.fs_failed_trash": "Filesystem cleanup failed. Some changes may already be applied — check {trashDir} and manifest.json for recoverable files.",
   "storage.cleanup.err.db_reconcile_failed": "Could not update Codex state database.",
   "storage.cleanup.err.cleanup_failed": "Cleanup failed.",
 

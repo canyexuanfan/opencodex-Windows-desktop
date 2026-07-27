@@ -624,7 +624,8 @@ export const ja: Record<TKey, string> = {
   "storage.cleanup.err.referenced_history": "選択したアーカイブはフォークまたはページング履歴から参照されています。",
   "storage.cleanup.err.invalid_digest": "プレビューのダイジェストが無い、または無効です。",
   "storage.cleanup.err.invalid_mode": "モードは quarantine または permanent である必要があります。",
-  "storage.cleanup.err.fs_failed": "ファイルシステムのクリーンアップに失敗しました。変更は保持されていません。",
+  "storage.cleanup.err.fs_failed": "ファイルシステムのクリーンアップに失敗しました。一部の変更は既に適用されている可能性があります — CODEX_HOME/.trash と表示されたリカバリパスを確認してください。",
+  "storage.cleanup.err.fs_failed_trash": "ファイルシステムのクリーンアップに失敗しました。一部の変更は既に適用されている可能性があります — {trashDir} と manifest.json で復旧可能なファイルを確認してください。",
   "storage.cleanup.err.db_reconcile_failed": "Codex の状態データベースを更新できませんでした。",
   "storage.cleanup.err.cleanup_failed": "クリーンアップに失敗しました。",
 
