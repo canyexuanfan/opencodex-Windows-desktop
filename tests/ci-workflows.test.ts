@@ -205,10 +205,27 @@ describe("GitHub Actions hardening", () => {
     // must keep doing neither.
     expect(workflow).toContain("pull_request_target:");
     expect(workflow).not.toContain("actions/checkout");
-    expect(workflow).not.toMatch(/^\s+run:/m);
-    expect(workflow).toContain("permissions:\n  pull-requests: write");
+    // Match a `run:` key in either step spelling — `  run:` and `- run:` are both
+    // valid YAML, and an earlier version of this assertion only caught the first.
+    expect(workflow).not.toMatch(/^[ \t]*-?[ \t]*run:/m);
+
+    // The permission block must be exactly one scope. Asserting that
+    // `pull-requests: write` is present says nothing about what else was added
+    // beside it, so read the block and compare the whole key set.
+    const permissions = /\npermissions:\n((?:[ \t]+\S+:[^\n]*\n)+)/.exec(workflow)?.[1];
+    expect(permissions).toBeDefined();
+    const scopes = permissions!.trim().split("\n").map(line => line.trim()).sort();
+    expect(scopes).toEqual(["pull-requests: write"]);
+
+    // Every `uses:` must be a full 40-hex commit SHA. A tag or branch ref is
+    // mutable, and this workflow hands a write token to whatever it resolves to.
+    const refs = [...workflow.matchAll(/uses:\s+(\S+)/g)].map(match => match[1]!);
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of refs) {
+      expect(ref).toMatch(/@[0-9a-f]{40}$/);
+    }
     expect(workflow).toContain("actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3");
-    expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
+
     // One run per PR, so two rapid events cannot race on the title/draft state.
     expect(workflow).toContain("group: enforce-pr-target-${{ github.event.pull_request.number }}");
   });
@@ -234,9 +251,18 @@ describe("GitHub Actions hardening", () => {
 
     // The bot rewrites the author's title and draft state, so it stores which of
     // those it touched and restores exactly those on a correct retarget. Losing
-    // this bookkeeping means a PR that was already a draft gets marked ready.
-    expect(workflow).toContain("autoDraftedByBot");
-    expect(workflow).toContain("titlePrefixedByBot");
+    // this bookkeeping means a PR that was already a draft gets marked ready, or
+    // that the `[WRONG BRANCH] ` prefix is never removed.
+    //
+    // Assert the assignments and the calls, not just that the identifiers appear
+    // somewhere: deleting `state.titlePrefixedByBot = true` leaves every mention
+    // of the name intact while silently breaking title restoration.
+    expect(workflow).toMatch(/state\.autoDraftedByBot\s*=\s*true/);
+    expect(workflow).toMatch(/state\.titlePrefixedByBot\s*=\s*true/);
+    expect(workflow).toMatch(/storedState\.autoDraftedByBot/);
+    expect(workflow).toMatch(/storedState\.titlePrefixedByBot/);
+    expect(workflow).toMatch(/await\s+convertToDraft\(\)/);
+    expect(workflow).toMatch(/await\s+markReadyForReview\(\)/);
     expect(workflow).toContain("convertPullRequestToDraft");
     expect(workflow).toContain("markPullRequestReadyForReview");
     expect(workflow).toContain('const TITLE_PREFIX = "[WRONG BRANCH] ";');
@@ -246,8 +272,14 @@ describe("GitHub Actions hardening", () => {
     // failed convertToDraft still records autoDraftedByBot: true. This assertion
     // documents that ordering rather than endorsing it — the redesign in 040
     // owns fixing it, and this test should change with it.
-    const stateWriteIndex = workflow.indexOf("await upsertComment(");
-    const draftCallIndex = workflow.indexOf("await convertToDraft();");
+    //
+    // Scope the comparison to the wrong-base branch. `upsertComment` is called
+    // from both branches, so a plain indexOf over the whole file would compare
+    // against whichever call happens to come first in the text.
+    const wrongBaseBranch = /if \(wrongBase\) \{([\s\S]*?)\n            \}\n\n            \/\/ The target is correct/.exec(workflow)?.[1];
+    expect(wrongBaseBranch).toBeDefined();
+    const stateWriteIndex = wrongBaseBranch!.indexOf("await upsertComment(");
+    const draftCallIndex = wrongBaseBranch!.indexOf("await convertToDraft()");
     expect(stateWriteIndex).toBeGreaterThan(-1);
     expect(draftCallIndex).toBeGreaterThan(stateWriteIndex);
   });
