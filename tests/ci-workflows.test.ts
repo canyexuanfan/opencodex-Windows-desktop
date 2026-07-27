@@ -69,9 +69,37 @@ describe("GitHub Actions hardening", () => {
     // line, not a release-promotion source, and release.yml gates on main and
     // preview. Widening this one would put dev2-go into that path.
     const ci = Bun.YAML.parse(await readText(".github/workflows/ci.yml")) as {
-      on?: { push?: { branches?: string[] } };
+      on?: {
+        push?: { branches?: string[]; paths?: string[] };
+        pull_request?: { paths?: string[] };
+      };
     };
     expect([...(ci.on?.push?.branches ?? [])].sort()).toEqual(["dev", "main", "preview"]);
+
+    // The path filter decides whether the job runs at all. Deleting one entry
+    // deletes nothing visible: the workflow still exists, still lists the right
+    // branches, and simply never fires for a PR that touches only that surface.
+    // Round 16 dropped `src/**`, `tests/**`, and both workflow self-references
+    // one at a time and the suite stayed green each time. Pin the list.
+    const ciPaths = [
+      ".gitattributes",
+      ".github/workflows/ci.yml",
+      ".github/workflows/enforce-pr-target.yml",
+      ".github/workflows/release.yml",
+      ".npmignore",
+      "bin/**",
+      "bun.lock",
+      "gui/**",
+      "package.json",
+      "scripts/**",
+      "src/**",
+      "tests/**",
+      "tsconfig.json",
+    ];
+    expect([...(ci.on?.pull_request?.paths ?? [])].sort()).toEqual(ciPaths);
+    // Push and pull_request have to cover the same surfaces, or a change lands
+    // on dev having been checked on one trigger and not the other.
+    expect([...(ci.on?.push?.paths ?? [])].sort()).toEqual(ciPaths);
   });
 
   test("cross-platform CI keeps the GUI lint and build gates", async () => {
