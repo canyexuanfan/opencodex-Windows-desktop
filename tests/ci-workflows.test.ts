@@ -203,57 +203,85 @@ describe("GitHub Actions hardening", () => {
    * removing the behaviour. A parser sees keys, not spellings.
    */
   type WorkflowStep = { name?: string; uses?: string; run?: string; with?: { script?: string } };
+  type WorkflowJob = { permissions?: unknown; steps?: WorkflowStep[] };
   type WorkflowShape = {
     on?: { pull_request_target?: { types?: string[] } };
     permissions?: Record<string, string> | string;
     concurrency?: { group?: string };
-    jobs?: Record<string, { steps?: WorkflowStep[] }>;
+    jobs?: Record<string, WorkflowJob>;
   };
 
   async function readEnforcePrTarget(): Promise<{
     workflow: WorkflowShape;
+    jobs: [string, WorkflowJob][];
     steps: WorkflowStep[];
+    allSteps: WorkflowStep[];
     script: string;
   }> {
     const text = await readText(".github/workflows/enforce-pr-target.yml");
     const workflow = Bun.YAML.parse(text) as WorkflowShape;
+    const jobs = Object.entries(workflow.jobs ?? {});
     const steps = workflow.jobs?.["enforce-target"]?.steps;
     expect(Array.isArray(steps)).toBe(true);
+    // Every step of every job, so a second job cannot smuggle in an unchecked
+    // one. `enforce-target` is not privileged here; it is just the one whose
+    // script body the behavioural tests read.
+    const allSteps = jobs.flatMap(([, job]) => job?.steps ?? []);
     const scriptStep = steps!.find(step => typeof step.with?.script === "string");
     expect(scriptStep).toBeDefined();
-    const script = stripLineComments(String(scriptStep!.with!.script));
-    return { workflow, steps: steps!, script };
+    const script = stripComments(String(scriptStep!.with!.script));
+    return { workflow, jobs, steps: steps!, allSteps, script };
   }
 
   /**
-   * Drop `//` line comments so a commented-out call cannot satisfy a "calls X"
-   * assertion — but only where `//` really starts a comment. The script builds a
-   * message containing `https://…`, and a naive `line.replace(/\/\/.*$/, "")`
-   * truncates that string literal, quietly weakening everything after it. Track
-   * quoting instead.
+   * Drop JavaScript comments so a commented-out call cannot satisfy a "calls X"
+   * assertion. Both forms matter: an audit round removed the draft conversion
+   * with `// await convertToDraft();` and then again with the block form
+   * `/* await convertToDraft(); *\/`, and a line-only stripper caught just the
+   * first.
+   *
+   * Quoting has to be tracked rather than pattern-matched. The script builds a
+   * message containing `https://…`, so a naive `line.replace(/\/\/.*$/, "")`
+   * truncates that string literal and quietly weakens everything after it.
+   * Newlines are preserved so failure output still points at the right line.
    */
-  function stripLineComments(source: string): string {
-    return source
-      .split("\n")
-      .map(line => {
-        let quote: string | null = null;
-        for (let i = 0; i < line.length; i += 1) {
-          const char = line[i]!;
-          if (char === "\\") { i += 1; continue; }
-          if (quote) {
-            if (char === quote) quote = null;
-            continue;
-          }
-          if (char === '"' || char === "'" || char === "`") { quote = char; continue; }
-          if (char === "/" && line[i + 1] === "/") return line.slice(0, i);
-        }
-        return line;
-      })
-      .join("\n");
+  function stripComments(source: string): string {
+    let out = "";
+    let quote: string | null = null;
+    let block = false;
+
+    for (let i = 0; i < source.length; i += 1) {
+      const char = source[i]!;
+      const next = source[i + 1];
+
+      if (block) {
+        if (char === "*" && next === "/") { block = false; i += 1; continue; }
+        if (char === "\n") out += char;
+        continue;
+      }
+
+      if (quote) {
+        out += char;
+        if (char === "\\") { if (next !== undefined) { out += next; i += 1; } continue; }
+        if (char === quote) quote = null;
+        continue;
+      }
+
+      if (char === '"' || char === "'" || char === "`") { quote = char; out += char; continue; }
+      if (char === "/" && next === "*") { block = true; i += 1; continue; }
+      if (char === "/" && next === "/") {
+        while (i < source.length && source[i] !== "\n") i += 1;
+        out += "\n";
+        continue;
+      }
+      out += char;
+    }
+
+    return out;
   }
 
   test("PR target enforcement stays least-privilege and never runs PR code", async () => {
-    const { workflow, steps } = await readEnforcePrTarget();
+    const { workflow, jobs, steps, allSteps } = await readEnforcePrTarget();
 
     // pull_request_target runs with the base repo's token. Checking out or
     // executing the PR's code under it is the classic escalation.
@@ -264,17 +292,36 @@ describe("GitHub Actions hardening", () => {
     // scalar is not an object at all.
     expect(workflow.permissions).toEqual({ "pull-requests": "write" });
 
+    // One job, and it is this one. An audit round added a `sidecar:` job that
+    // inherited the PR-write token and un-drafted the PR — every assertion below
+    // still passed, because they only ever looked at `enforce-target`.
+    expect(jobs.map(([name]) => name)).toEqual(["enforce-target"]);
+
+    // A job-level `permissions:` block overrides the workflow-level one, so
+    // narrowing the top and widening the job is a silent escalation. No job may
+    // declare its own scope.
+    for (const [name, job] of jobs) {
+      expect([name, job?.permissions]).toEqual([name, undefined]);
+    }
+
+    // Exactly one step, and it is the github-script step. Anything more is an
+    // extra privileged action nobody reviewed: the audit added a second
+    // `github-script` step that mutated the PR and the suite stayed green.
+    expect(steps).toHaveLength(1);
+    expect(allSteps).toHaveLength(1);
+
     // No step may run a shell command, and every action must be pinned to a
     // 40-hex commit SHA — this workflow hands a write token to whatever it
-    // resolves to, so a tag or branch ref is a mutable dependency.
-    for (const step of steps) {
+    // resolves to, so a tag or branch ref is a mutable dependency. Checked
+    // across every job, not just this one.
+    for (const step of allSteps) {
       expect(step).not.toHaveProperty("run");
       const uses = step.uses;
       expect(typeof uses).toBe("string");
       expect(String(uses)).not.toContain("actions/checkout");
       expect(String(uses)).toMatch(/@[0-9a-f]{40}$/);
     }
-    expect(steps.some(step => String(step.uses).startsWith("actions/github-script@"))).toBe(true);
+    expect(allSteps.some(step => String(step.uses).startsWith("actions/github-script@"))).toBe(true);
 
     // One run per PR, so two rapid events cannot race on the title/draft state.
     expect(workflow.concurrency?.group).toBe(
@@ -297,6 +344,16 @@ describe("GitHub Actions hardening", () => {
     expect(script).toContain("github.rest.pulls.get");
     expect(script).toMatch(/const EXPECTED_BASE = "dev";/);
     expect(script).toMatch(/const wrongBase = pr\.base\.ref !== EXPECTED_BASE;/);
+
+    // Every mutation targets the PR the event fired for. `pull_number` is the
+    // only handle the script has, and an audit round repointed it at
+    // `Number(context.payload.pull_request.title)` — a value the PR author
+    // controls, which turns the bot into a write primitive against any PR
+    // number the author can name. Bind it to the immutable event field.
+    expect(script).toMatch(
+      /const pull_number = context\.payload\.pull_request\.number;/,
+    );
+    expect(script.match(/pull_number\s*=/g) ?? []).toHaveLength(1);
   });
 
   test("PR target enforcement records what it changed so it can undo it", async () => {
@@ -329,6 +386,15 @@ describe("GitHub Actions hardening", () => {
       expect(nextDeclaration === -1 ? body : body.slice(0, nextDeclaration + 1)).toContain(mutation);
     }
     expect(script).toMatch(/const TITLE_PREFIX = "\[WRONG BRANCH\] ";/);
+
+    // The two branch conditions, pinned literally. An audit round wrote
+    // `if (!storedState?.active || true)` — the restoration path became
+    // unreachable, so a corrected PR kept its `[WRONG BRANCH] ` title and stayed
+    // a draft forever, and every assertion above still passed because both
+    // helpers and both state fields were still textually present. Presence of a
+    // call proves nothing about whether it can be reached.
+    expect(script).toMatch(/\n\s*if \(!storedState\?\.active\) \{\n/);
+    expect(script).toMatch(/\n\s*if \(wrongBase\) \{\n/);
 
     // Observed on PR #527 (devlog .../050_live_evidence.md): the state is written
     // BEFORE the mutation and is not reconciled when the mutation fails, so a

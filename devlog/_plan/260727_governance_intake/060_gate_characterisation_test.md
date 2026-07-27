@@ -56,10 +56,59 @@ MUTATION[hardcoded-wrongBase] => 13 pass  1 fail
 
 ```
 bun test tests/ci-workflows.test.ts
- 14 pass  0 fail  282 expect() calls
+ 14 pass  0 fail  282 expect() calls  (감사 2라운드 이전 기준선)
 ```
 
 네 가지 모두 잡힌다.
+
+## 감사 2라운드 — 새 우회 6가지
+
+파싱 교체본을 독립 서브에이전트(gpt-5.6-terra, medium)에 넘겨 "이 테스트를 통과하면서
+워크플로를 약화시켜 보라"고 요구했다. FAIL이 나왔고, 여섯 개가 살아남았다.
+
+| 변이 | 무엇이 뚫렸나 |
+| --- | --- |
+| 두 번째 잡 추가 | 헬퍼가 `jobs["enforce-target"]`만 읽어서, PR-write 토큰을 상속받는 `sidecar:` 잡을 붙여 PR을 un-draft해도 통과 |
+| 잡 레벨 권한 | 워크플로 레벨 `permissions`만 검사. 잡에 `contents: write`를 얹으면 무사통과 |
+| 스텝 추가 | 스텝 개수를 안 봤다. PR을 변조하는 `github-script` 스텝을 하나 더 붙여도 통과 |
+| `/* ... */` 블록 주석 | 주석 제거기가 `//`만 처리. 블록 형태로 `convertToDraft()`를 죽이면 통과 |
+| `|| true` 복원 무력화 | `if (!storedState?.active \|\| true)` — 복원 경로가 도달 불가가 되어도 호출과 필드는 텍스트로 남아 있어 통과 |
+| PR 제목을 대상 번호로 | `pull_number`를 `Number(pr.title)`로 바꿔도 통과. 작성자가 제어하는 값이므로 봇이 임의 PR에 대한 쓰기 프리미티브가 된다 |
+
+마지막 것이 가장 나쁘다. 봇은 `pull_number` 하나로만 PR을 지목하는데, 그게 작성자
+제어 값이 되면 게이트가 아니라 무기가 된다.
+
+## 대응
+
+- 헬퍼가 **모든 잡의 모든 스텝**을 모아 반환한다. `enforce-target`은 특별한 잡이 아니라
+  스크립트 본문을 읽을 대상일 뿐이다.
+- 잡 목록이 정확히 `["enforce-target"]`, 스텝 수가 정확히 1.
+- 어떤 잡도 자체 `permissions`를 선언할 수 없다.
+- 주석 제거기가 라인 주석과 블록 주석을 모두 처리한다. 인용 추적은 유지하고 줄바꿈을
+  보존해 실패 출력이 엉뚱한 줄을 가리키지 않게 했다.
+- `pull_number`는 `context.payload.pull_request.number`에 고정하고, 재대입이 없음을
+  대입 횟수로 확인한다.
+- 두 분기 조건(`if (wrongBase)`, `if (!storedState?.active)`)을 문자 그대로 고정한다.
+  호출이 존재한다는 사실은 그 호출에 도달할 수 있다는 증명이 아니다.
+
+## 변이 검증 실측 (10/10)
+
+```
+MUTATION[run-with-space        ] => CAUGHT
+MUTATION[quoted-uses-key       ] => CAUGHT
+MUTATION[line-comment-draft    ] => CAUGHT
+MUTATION[block-comment-draft   ] => CAUGHT
+MUTATION[hardcoded-wrongBase   ] => CAUGHT
+MUTATION[second-job            ] => CAUGHT
+MUTATION[job-level-perms       ] => CAUGHT
+MUTATION[extra-script-step     ] => CAUGHT
+MUTATION[unreachable-restore   ] => CAUGHT
+MUTATION[pr-controlled-target  ] => CAUGHT
+
+restored OK; survived = none
+```
+
+기준선: `14 pass  0 fail  292 expect() calls`, `bun run typecheck` 오류 0.
 
 ## 범위 밖
 
