@@ -142,12 +142,18 @@ MAINTAINERS.md "Maintainer changes" 절 아래에 이력 문단을 추가한다:
 5. **절차 요건 2번 충족 증거**: 이 변경을 담은 PR에 @Ingwannu의 실제 승인이
    달린다. 검증:
 
-       gh pr view <N> --repo lidge-jun/opencodex \
-         --json reviews,headRefOid \
-         --jq '{head: .headRefOid, approvals: [.reviews[] | select(.state=="APPROVED") | .author.login]}'
+       HEAD=$(gh pr view <N> --repo lidge-jun/opencodex --json headRefOid --jq .headRefOid)
+       gh api repos/lidge-jun/opencodex/pulls/<N>/reviews --paginate \
+         --jq --arg head "$HEAD" \
+         '[.[] | select(.state=="APPROVED") | {who: .user.login, commit: .commit_id, current: (.commit_id == $head)}]'
 
-   승인이 현재 head SHA에 대한 것인지도 확인한다. 승인 없이 머지하면
-   MAINTAINERS.md가 규정한 절차를 우리가 스스로 어기는 셈이다.
+   `gh pr view --json reviews`는 승인자만 주고 **그 승인이 어느 커밋에
+   달렸는지는 주지 않는다.** REST `/pulls/<N>/reviews`의 `commit_id`를
+   현재 head와 대조해야 force-push 이전의 낡은 승인을 걸러낼 수 있다.
+   위 명령의 `current: true`인 @Ingwannu 승인이 있어야 절차가 충족된다.
+
+   승인 없이 머지하면 MAINTAINERS.md가 규정한 절차를 우리가 스스로 어기는
+   셈이다.
 
 ## 실제 권한은 별도 (중요)
 

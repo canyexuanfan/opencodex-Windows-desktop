@@ -81,18 +81,22 @@ PR-2는 자동으로 dev를 base로 재타겟된다.
 
 ### 분리 절차
 
-먼저 **원본 head SHA를 고정한다.** 작성자가 force-push하면 합집합 검증이
-움직이는 표적을 비교하게 된다:
+먼저 **원본 head SHA를 고정하고, 이후 모든 입력을 그 SHA에서만 뽑는다.**
+SHA를 읽은 뒤 파일 목록과 브랜치를 각각 따로 조회하면, 그 사이 force-push가
+나면 manifest와 작업 브랜치가 서로 다른 head를 가리킨다. 사후 재확인은
+잘못 만든 뒤에야 알려줄 뿐이다.
 
     SRC=$(gh pr view 518 --repo lidge-jun/opencodex --json headRefOid --jq .headRefOid)
-    gh api repos/lidge-jun/opencodex/pulls/518/files --paginate \
-      --jq '.[].filename' | sort > /tmp/pr518-manifest.txt
-    echo "$SRC"   # 이 값을 아래 모든 단계에서 사용하고, 마지막에 재확인한다
 
-    git fetch origin pull/518/head:pr518
+    # SHA 자체를 가져온다 — pull/518/head는 움직이지만 $SRC는 움직이지 않는다.
+    git fetch origin "$SRC"
+    git switch -c pr518-frozen "$SRC"
+
+    # manifest도 API가 아니라 고정된 커밋에서 뽑는다.
+    git diff --name-only origin/dev..."$SRC" | sort > /tmp/pr518-manifest.txt
     git switch -c codex/catalog-written-signal origin/dev
-    # B에 해당하는 hunk만 체리픽 (커밋 단위로 안 갈라지므로 경로 기준)
-    git checkout pr518 -- src/codex/catalog/sync.ts src/codex/refresh.ts \
+    # B에 해당하는 경로만 고정 SHA에서 가져온다 (커밋 단위로 안 갈라짐)
+    git checkout "$SRC" -- src/codex/catalog/sync.ts src/codex/refresh.ts \
       src/codex/sync.ts src/server/management/config-routes.ts \
       gui/src/pages/dashboard-overview-sections.tsx gui/src/i18n \
       tests/codex-models-cache-invalidate.test.ts tests/codex-refresh.test.ts \
@@ -133,7 +137,7 @@ PR-1(B)은 `src/cli/index.ts`를 건드리지 않는다.
 
 수정된 체크아웃 목록 (B):
 
-    git checkout pr518 -- src/codex/catalog/sync.ts src/codex/refresh.ts \
+    git checkout "$SRC" -- src/codex/catalog/sync.ts src/codex/refresh.ts \
       src/codex/sync.ts src/server/management/config-routes.ts \
       gui/src/pages/dashboard-overview-sections.tsx gui/src/i18n \
       tests/codex-models-cache-invalidate.test.ts tests/codex-refresh.test.ts \
@@ -158,7 +162,9 @@ docs-site 2개 파일.
 5. 두 브랜치 diff의 파일 합집합이 고정된 `$SRC` 시점의
    `/tmp/pr518-manifest.txt`와 정확히 일치.
 6. 분할 완료 시점에 `gh pr view 518 --json headRefOid`가 여전히 `$SRC`다.
-   달라졌으면 원본이 움직인 것이므로 manifest부터 다시 뜬다.
+   달라졌더라도 분할 자체는 `$SRC`에서 만들었으므로 무효가 아니다 —
+   다만 원본이 앞서갔다는 뜻이므로, 새 head의 manifest를 다시 떠서 차이를
+   확인하고 필요하면 그 델타만 얹는다.
 
 ## 소유권 문제 (중요)
 
