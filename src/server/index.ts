@@ -20,7 +20,7 @@ import {
 import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
 import { startMemoryWatchdog } from "./memory-watchdog";
-import { maybeRunDueStorageCleanupPolicy } from "../storage/policy";
+import { maybeRunDueStorageCleanupPolicy, setStorageCleanupPolicyLiveSink } from "../storage/policy";
 import { startStorageCleanupScheduler } from "../storage/policy-scheduler";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
@@ -292,6 +292,10 @@ export function startServer(port?: number) {
   startMemoryWatchdog();
   // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
   // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
+  // Keep live config.policy in sync when background runs advance nextRun/lastRun.
+  setStorageCleanupPolicyLiveSink((policy) => {
+    config.storageCleanupPolicy = policy;
+  });
   startStorageCleanupScheduler();
 
   const listenPort = port ?? config.port ?? 10100;

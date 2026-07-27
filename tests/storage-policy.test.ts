@@ -17,6 +17,7 @@ import {
   defaultStorageCleanupPolicy,
   isPolicyDue,
   normalizeStorageCleanupPolicy,
+  parseStorageCleanupPolicyInput,
   percentForAtLeastCount,
   runStorageCleanupPolicy,
   selectReduceToBytes,
@@ -144,9 +145,33 @@ describe("selection helpers", () => {
       }),
       dir,
     );
-    // Need to free 200 → two oldest → percent covering ≥2 of 3
-    expect(preview.count).toBeGreaterThanOrEqual(2);
-    expect(preview.bytes).toBeGreaterThanOrEqual(200);
+    // Need to free 200 → exactly two oldest (not percent-rounded to more)
+    expect(preview.count).toBe(2);
+    expect(preview.bytes).toBe(200);
+    expect(preview.candidateRelPaths).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+      "archived_sessions/rollout-mid.jsonl",
+    ]);
+  });
+
+  test("selectPolicyPreview reduceToBytes keeps a single candidate when percent would over-select", () => {
+    const sizes = Array.from({ length: 100 }, (_, i) => ({
+      name: `rollout-${String(i).padStart(3, "0")}.jsonl`,
+      bytes: 10,
+      when: new Date(OLD.getTime() + i * 60_000),
+    }));
+    const dir = seedHome(sizes);
+    const preview = selectPolicyPreview(
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 0 },
+        target: { reduceToBytes: 990 }, // total 1000 → free 10 → one file
+      }),
+      dir,
+    );
+    expect(preview.count).toBe(1);
+    expect(preview.bytes).toBe(10);
+    expect(preview.candidateRelPaths).toHaveLength(1);
   });
 });
 
@@ -170,9 +195,58 @@ describe("schedule helpers", () => {
     expect(isPolicyDue(base, 1, "startup")).toBe(false);
     expect(isPolicyDue({ ...base, schedule: "startup" }, 1, "startup")).toBe(true);
     expect(isPolicyDue({ ...base, schedule: "startup" }, 1, "schedule")).toBe(false);
+    expect(isPolicyDue({ ...base, schedule: "startup", nextRun: 100 }, 50, "schedule")).toBe(false);
+    expect(isPolicyDue({ ...base, schedule: "startup", nextRun: 100 }, 100, "schedule")).toBe(true);
     expect(isPolicyDue({ ...base, schedule: "daily", nextRun: 100 }, 50, "schedule")).toBe(false);
     expect(isPolicyDue({ ...base, schedule: "daily", nextRun: 100 }, 100, "schedule")).toBe(true);
     expect(isPolicyDue({ ...base, enabled: false, schedule: "daily" }, 1, "manual")).toBe(false);
+  });
+
+  test("parseStorageCleanupPolicyInput preserves nextRun when schedule unchanged", () => {
+    const prev = policy({
+      enabled: true,
+      trigger: { archivedBytesOver: 100 },
+      target: { removeOldestPercent: 10 },
+      schedule: "daily",
+      nextRun: 9_999,
+    });
+    const parsed = parseStorageCleanupPolicyInput(
+      {
+        enabled: true,
+        trigger: { archivedBytesOver: 200 },
+        target: { removeOldestPercent: 20 },
+        schedule: "daily",
+        mode: "quarantine",
+      },
+      prev,
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.policy.nextRun).toBe(9_999);
+    expect(parsed.policy.trigger.archivedBytesOver).toBe(200);
+  });
+
+  test("parseStorageCleanupPolicyInput recomputes nextRun when schedule changes", () => {
+    const prev = policy({
+      enabled: true,
+      trigger: { archivedBytesOver: 100 },
+      target: { removeOldestPercent: 10 },
+      schedule: "manual",
+    });
+    const before = Date.now();
+    const parsed = parseStorageCleanupPolicyInput(
+      {
+        enabled: true,
+        trigger: { archivedBytesOver: 100 },
+        target: { removeOldestPercent: 10 },
+        schedule: "daily",
+        mode: "quarantine",
+      },
+      prev,
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.policy.nextRun).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000);
   });
 });
 
@@ -370,5 +444,48 @@ describe("runStorageCleanupPolicy", () => {
     expect(existsSync(join(dir, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
     expect(existsSync(join(dir, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
     expect(existsSync(join(dir, ".trash"))).toBe(true);
+  });
+
+  test("end-to-end reduceToBytes removes the exact candidate set", () => {
+    const dir = seedHome([
+      { name: "rollout-old.jsonl", bytes: 100, when: OLD },
+      { name: "rollout-mid.jsonl", bytes: 100, when: MID },
+      { name: "rollout-new.jsonl", bytes: 100, when: NEW },
+    ]);
+    const stored: StorageCleanupPolicy[] = [
+      policy({
+        enabled: true,
+        trigger: { archivedBytesOver: 0 },
+        target: { reduceToBytes: 100 },
+        mode: "quarantine",
+      }),
+    ];
+    let seen: ExecuteCleanupOptions | undefined;
+    const result = runStorageCleanupPolicy({
+      reason: "manual",
+      force: true,
+      now: 55_000,
+      codexHome: dir,
+      loadPolicy: () => stored[0]!,
+      savePolicy: p => { stored[0] = p; },
+      execute: (opts): CleanupResult => {
+        seen = opts;
+        return {
+          ok: true,
+          mode: opts.mode,
+          percent: opts.percent,
+          count: opts.candidateRelPaths?.length ?? 0,
+          bytes: 200,
+          removedPaths: opts.candidateRelPaths ?? [],
+          trashDir: ".trash/55000",
+        };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(seen?.candidateRelPaths).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+      "archived_sessions/rollout-mid.jsonl",
+    ]);
+    expect(result.removed).toBe(2);
   });
 });

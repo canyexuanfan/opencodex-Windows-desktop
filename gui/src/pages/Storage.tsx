@@ -408,7 +408,8 @@ function AutoCleanupPolicyPanel({
   const [error, setError] = useState<string | null>(null);
   const [targetMode, setTargetMode] = useState<"percent" | "reduce">("percent");
   const [percent, setPercent] = useState(25);
-  const [reduceGb, setReduceGb] = useState(4);
+  /** Draft string so blank/invalid reduce targets are rejected instead of coerced to 0. */
+  const [reduceGb, setReduceGb] = useState("4");
   const [thresholdGb, setThresholdGb] = useState(5);
 
   const loadPolicy = useCallback(async (signal?: AbortSignal) => {
@@ -423,7 +424,7 @@ function AutoCleanupPolicyPanel({
       setThresholdGb(Math.max(0, Math.round((json.trigger.archivedBytesOver / GB) * 100) / 100));
       if (json.target.reduceToBytes !== undefined) {
         setTargetMode("reduce");
-        setReduceGb(Math.max(0, Math.round((json.target.reduceToBytes / GB) * 100) / 100));
+        setReduceGb(String(Math.max(0, Math.round((json.target.reduceToBytes / GB) * 100) / 100)));
       } else {
         setTargetMode("percent");
         setPercent(Math.min(100, Math.max(1, Math.floor(json.target.removeOldestPercent ?? 25))));
@@ -439,24 +440,41 @@ function AutoCleanupPolicyPanel({
 
   useEffect(() => {
     const controller = new AbortController();
-    void loadPolicy(controller.signal);
-    return () => controller.abort();
+    // Defer so loadPolicy's setState is not synchronous inside the effect body.
+    const timeout = window.setTimeout(() => {
+      void loadPolicy(controller.signal);
+    }, 0);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
   }, [loadPolicy]);
 
   const buildBody = (): CleanupPolicy | null => {
     if (!policy) return null;
     const threshold = Number(thresholdGb);
     if (!Number.isFinite(threshold) || threshold < 0) return null;
-    const body: CleanupPolicy = {
+
+    let target: CleanupPolicy["target"];
+    if (targetMode === "reduce") {
+      const raw = reduceGb.trim();
+      if (raw === "") return null;
+      const reduce = Number(raw);
+      if (!Number.isFinite(reduce) || reduce < 0) return null;
+      target = { reduceToBytes: Math.floor(reduce * GB) };
+    } else {
+      const pct = Number(percent);
+      if (!Number.isFinite(pct) || pct < 1 || pct > 100) return null;
+      target = { removeOldestPercent: Math.min(100, Math.max(1, Math.floor(pct))) };
+    }
+
+    return {
       enabled: policy.enabled,
       trigger: { archivedBytesOver: Math.floor(threshold * GB) },
-      target: targetMode === "reduce"
-        ? { reduceToBytes: Math.floor(Math.max(0, Number(reduceGb) || 0) * GB) }
-        : { removeOldestPercent: Math.min(100, Math.max(1, Math.floor(Number(percent) || 1))) },
+      target,
       schedule: policy.schedule,
       mode: policy.mode,
     };
-    return body;
   };
 
   const savePolicy = async (patch?: Partial<CleanupPolicy>) => {
@@ -476,11 +494,14 @@ function AutoCleanupPolicyPanel({
         body: JSON.stringify(body),
       });
       const json = await res.json() as { ok?: boolean; policy?: CleanupPolicy; error?: string };
-      if (!res.ok || !json.policy) throw new Error(json.error ?? t("storage.policy.saveFailed"));
+      if (!res.ok || !json.policy) {
+        setError(t("storage.policy.saveFailed"));
+        return;
+      }
       setPolicy(json.policy);
       setStatus(t("storage.policy.saved"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("storage.policy.saveFailed"));
+    } catch {
+      setError(t("storage.policy.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -491,18 +512,24 @@ function AutoCleanupPolicyPanel({
     setError(null);
     setStatus(null);
     try {
-      // Persist current form values before running.
+      // Persist current form values before running — abort if the form is invalid.
       const base = buildBody();
-      if (base) {
-        const saveRes = await fetch(`${apiBase}/api/storage/cleanup-policy`, {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(base),
-        });
-        const saved = await saveRes.json() as { policy?: CleanupPolicy; error?: string };
-        if (!saveRes.ok || !saved.policy) throw new Error(saved.error ?? t("storage.policy.saveFailed"));
-        setPolicy(saved.policy);
+      if (!base) {
+        setError(t("storage.policy.invalid"));
+        return;
       }
+      const saveRes = await fetch(`${apiBase}/api/storage/cleanup-policy`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(base),
+      });
+      const saved = await saveRes.json() as { policy?: CleanupPolicy; error?: string };
+      if (!saveRes.ok || !saved.policy) {
+        setError(t("storage.policy.saveFailed"));
+        return;
+      }
+      setPolicy(saved.policy);
+
       const res = await fetch(`${apiBase}/api/storage/cleanup-policy/run`, { method: "POST" });
       const json = await res.json() as {
         ok?: boolean;
@@ -521,7 +548,7 @@ function AutoCleanupPolicyPanel({
         setStatus(t("storage.policy.skippedUnder"));
       } else if (json.skipped === "nothing_selected") {
         setStatus(t("storage.policy.skippedEmpty"));
-      } else if (!res.ok || json.deferred || json.error === "codex_busy") {
+      } else if (json.deferred || json.error === "codex_busy") {
         setError(t("storage.cleanup.err.codex_busy"));
       } else if (!res.ok || !json.ok) {
         setError(t("storage.policy.runFailed"));
@@ -539,8 +566,8 @@ function AutoCleanupPolicyPanel({
         );
         onDone();
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("storage.policy.runFailed"));
+    } catch {
+      setError(t("storage.policy.runFailed"));
     } finally {
       setRunning(false);
     }
@@ -643,7 +670,7 @@ function AutoCleanupPolicyPanel({
               step={0.1}
               value={reduceGb}
               disabled={saving || running}
-              onChange={e => setReduceGb(Number(e.target.value))}
+              onChange={e => setReduceGb(e.target.value)}
               onBlur={() => void savePolicy()}
               style={{ display: "block", marginTop: 4, width: "100%" }}
             />

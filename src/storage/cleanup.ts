@@ -233,9 +233,8 @@ export function normalizeArchivedRolloutPath(rolloutPath: string, codexHome: str
   return logical;
 }
 
-/** Content digest of the exact previewed candidate set (paths + size + mtime). */
-export function computePreviewDigest(candidates: ArchivedCandidate[], percent: number): string {
-  const lines = candidates
+function candidateDigestLines(candidates: ArchivedCandidate[]): string[] {
+  return candidates
     .map(c => {
       const physical = [...c.physicalFiles]
         .sort((a, b) => a.relPath.localeCompare(b.relPath))
@@ -244,8 +243,22 @@ export function computePreviewDigest(candidates: ArchivedCandidate[], percent: n
       return `${c.relPath}|${c.bytes}|${Math.trunc(c.mtimeMs)}|${physical}`;
     })
     .sort();
+}
+
+/** Content digest of the exact previewed candidate set (paths + size + mtime). */
+export function computePreviewDigest(candidates: ArchivedCandidate[], percent: number): string {
   return createHash("sha256")
-    .update(`${clampPercent(percent)}\n${lines.join("\n")}`)
+    .update(`${clampPercent(percent)}\n${candidateDigestLines(candidates).join("\n")}`)
+    .digest("hex");
+}
+
+/**
+ * Digest bound to an explicit candidate list (not a percent selection).
+ * Used when reduceToBytes needs an exact count that percent rounding cannot represent.
+ */
+export function computeExactPreviewDigest(candidates: ArchivedCandidate[]): string {
+  return createHash("sha256")
+    .update(`exact\n${candidateDigestLines(candidates).join("\n")}`)
     .digest("hex");
 }
 
@@ -333,6 +346,42 @@ export function previewArchivedCleanup(
     digest: computePreviewDigest(selected, pct),
     candidates: selected,
   };
+}
+
+/** Preview bound to an explicit candidate set (exact digest, percent left at 0). */
+export function previewExactArchivedCleanup(
+  candidates: ArchivedCandidate[],
+  codexHome: string = resolveCodexHomeDir(),
+): CleanupPreview {
+  const selected = [...candidates];
+  return {
+    codexHome,
+    percent: 0,
+    count: selected.length,
+    bytes: selected.reduce((sum, c) => sum + c.bytes, 0),
+    digest: computeExactPreviewDigest(selected),
+    candidates: selected,
+  };
+}
+
+/**
+ * Resolve an exact candidate list from current archive state.
+ * Returns null when any requested path is missing or drifted (caller maps to stale_preview).
+ */
+export function resolveExactArchivedCandidates(
+  candidateRelPaths: string[],
+  codexHome: string = resolveCodexHomeDir(),
+): ArchivedCandidate[] | null {
+  if (!Array.isArray(candidateRelPaths) || candidateRelPaths.length === 0) return [];
+  const all = listArchivedCandidates(codexHome);
+  const byRel = new Map(all.map(c => [c.relPath, c]));
+  const selected: ArchivedCandidate[] = [];
+  for (const rel of candidateRelPaths) {
+    const hit = byRel.get(rel);
+    if (!hit) return null;
+    selected.push(hit);
+  }
+  return selected;
 }
 
 function openDbWritable(dbPath: string, busyTimeoutMs = 100): Database {
@@ -1271,6 +1320,11 @@ export interface ExecuteCleanupOptions {
   mode: CleanupMode;
   /** Required digest from preview; rejects when the candidate set drifted. */
   digest: string;
+  /**
+   * Optional exact candidate set (logical relPaths). When set, selection bypasses
+   * percent rounding and the digest must match `computeExactPreviewDigest`.
+   */
+  candidateRelPaths?: string[];
   codexHome?: string;
   /** Test-only: shrink busy_timeout so lock tests fail fast. */
   busyTimeoutMs?: number;
@@ -1358,7 +1412,16 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
     return fail(mode, percent, "invalid_digest");
   }
 
-  const preview = previewArchivedCleanup(percent, codexHome);
+  let preview: CleanupPreview;
+  if (options.candidateRelPaths !== undefined) {
+    const selected = resolveExactArchivedCandidates(options.candidateRelPaths, codexHome);
+    if (selected === null) {
+      return fail(mode, percent, "stale_preview");
+    }
+    preview = previewExactArchivedCleanup(selected, codexHome);
+  } else {
+    preview = previewArchivedCleanup(percent, codexHome);
+  }
   if (preview.digest.toLowerCase() !== options.digest.toLowerCase()) {
     return fail(mode, percent, "stale_preview");
   }

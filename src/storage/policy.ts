@@ -14,6 +14,7 @@ import {
   executeArchivedCleanup,
   listArchivedCandidates,
   previewArchivedCleanup,
+  previewExactArchivedCleanup,
   type CleanupMode,
   type CleanupResult,
   type ExecuteCleanupOptions,
@@ -22,6 +23,15 @@ import {
 export const DEFAULT_ARCHIVED_BYTES_OVER = 5 * 1024 ** 3; // 5 GiB
 export const DEFAULT_REMOVE_OLDEST_PERCENT = 25;
 export const BUSY_DEFER_MS = 15 * 60 * 1000;
+
+/** Optional sink so background policy writes stay synced with the live server config. */
+let livePolicySink: ((policy: StorageCleanupPolicy) => void) | undefined;
+
+export function setStorageCleanupPolicyLiveSink(
+  sink: ((policy: StorageCleanupPolicy) => void) | null,
+): void {
+  livePolicySink = sink ?? undefined;
+}
 
 export type PolicySchedule = StorageCleanupPolicy["schedule"];
 export type PolicyRunReason = "startup" | "schedule" | "manual";
@@ -214,11 +224,12 @@ export function parseStorageCleanupPolicyInput(
 
   // Clients must not clear lastRun/nextRun via null unless intentional — accept omit only.
   const policy = normalizeStorageCleanupPolicy(merged);
-  // Recompute nextRun when schedule changes to a timed schedule and nextRun is stale/missing.
+  // Recompute nextRun only when schedule newly becomes timed, or no valid nextRun exists.
+  // Do not reset nextRun on every PUT that merely re-sends an unchanged schedule.
   if (
     (policy.schedule === "daily" || policy.schedule === "weekly")
-    && (policy.nextRun === undefined || o.schedule !== undefined)
     && o.nextRun === undefined
+    && (policy.nextRun === undefined || (o.schedule !== undefined && o.schedule !== prev.schedule))
   ) {
     policy.nextRun = computeNextRun(policy.schedule, Date.now());
   }
@@ -238,6 +249,7 @@ export function writeStorageCleanupPolicyToConfig(policy: StorageCleanupPolicy):
   const config = loadConfig();
   config.storageCleanupPolicy = normalized;
   saveConfigPreservingClaudeCode(config);
+  livePolicySink?.(normalized);
   return normalized;
 }
 
@@ -256,7 +268,13 @@ export function isPolicyDue(
   if (!policy.enabled) return false;
   if (reason === "manual") return true;
   if (policy.schedule === "manual") return false;
-  if (policy.schedule === "startup") return reason === "startup";
+  if (policy.schedule === "startup") {
+    if (reason === "startup") return true;
+    // Honor deferred nextRun (e.g. codex_busy at launch) on later scheduler ticks.
+    return reason === "schedule"
+      && policy.nextRun !== undefined
+      && now >= policy.nextRun;
+  }
   // daily / weekly: due when nextRun unset or elapsed
   if (policy.nextRun === undefined) return true;
   return now >= policy.nextRun;
@@ -301,6 +319,8 @@ export interface PolicySelection {
   count: number;
   bytes: number;
   digest: string;
+  /** Present when selection is an exact candidate list (reduceToBytes). */
+  candidateRelPaths?: string[];
 }
 
 /** Build a Phase-2-compatible preview for the active policy target. */
@@ -311,18 +331,24 @@ export function selectPolicyPreview(
   const all = listArchivedCandidates(codexHome);
   const archivedBytes = all.reduce((sum, c) => sum + c.bytes, 0);
 
-  let percent = 0;
   const reduceTo = (policy.target as { reduceToBytes?: number }).reduceToBytes;
   const removePct = (policy.target as { removeOldestPercent?: number }).removeOldestPercent;
 
   if (reduceTo !== undefined) {
+    // Exact candidate set — do not approximate via percent (would over-delete).
     const desired = selectReduceToBytes(all, reduceTo);
-    percent = percentForAtLeastCount(all.length, desired.length);
-  } else {
-    percent = Math.min(100, Math.max(0, Math.floor(removePct ?? 0)));
+    const preview = previewExactArchivedCleanup(desired, codexHome);
+    return {
+      archivedBytes,
+      percent: 0,
+      count: preview.count,
+      bytes: preview.bytes,
+      digest: preview.digest,
+      candidateRelPaths: desired.map(c => c.relPath),
+    };
   }
 
-  // Re-select via percent so executeArchivedCleanup's digest binding matches.
+  const percent = Math.min(100, Math.max(0, Math.floor(removePct ?? 0)));
   const preview = previewArchivedCleanup(percent, codexHome);
   return {
     archivedBytes,
@@ -377,7 +403,7 @@ export function runStorageCleanupPolicy(deps: PolicyRunDeps): PolicyRunResult {
     return { ok: true, skipped: "under_threshold", policy };
   }
 
-  if (selection.count === 0 || selection.percent <= 0) {
+  if (selection.count === 0) {
     policy = advanceNextRun(policy, now);
     save(policy);
     logPolicyEvent("skip nothing_selected");
@@ -388,6 +414,7 @@ export function runStorageCleanupPolicy(deps: PolicyRunDeps): PolicyRunResult {
     percent: selection.percent,
     mode: policy.mode,
     digest: selection.digest,
+    ...(selection.candidateRelPaths ? { candidateRelPaths: selection.candidateRelPaths } : {}),
     ...(deps.codexHome ? { codexHome: deps.codexHome } : {}),
     ...(deps.busyTimeoutMs !== undefined ? { busyTimeoutMs: deps.busyTimeoutMs } : {}),
     now,
