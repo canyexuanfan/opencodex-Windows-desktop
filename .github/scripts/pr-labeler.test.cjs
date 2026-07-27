@@ -17,10 +17,21 @@ describe("detectTypeLabelFromTitle", () => {
     assert.equal(detectTypeLabelFromTitle("chore!: drop legacy"), "chore");
   });
 
-  it("returns null without a conventional prefix", () => {
+  it("maps sentence-case prefixes when no conventional colon is present", () => {
+    assert.equal(
+      detectTypeLabelFromTitle("Fix Console Go tool schema sanitization"),
+      "bug",
+    );
+    assert.equal(detectTypeLabelFromTitle("Feat add Grok image bridge"), "enhancement");
+    assert.equal(detectTypeLabelFromTitle("Docs update setup guide"), "documentation");
+  });
+
+  it("returns null without a recognized prefix", () => {
     assert.equal(detectTypeLabelFromTitle("Warn or restart stale app-server"), null);
     assert.equal(detectTypeLabelFromTitle(""), null);
     assert.equal(detectTypeLabelFromTitle("constructor: drop legacy"), null);
+    assert.equal(detectTypeLabelFromTitle("Fixed Console Go tool schema"), null);
+    assert.equal(detectTypeLabelFromTitle("Fix"), null);
   });
 });
 
@@ -108,7 +119,21 @@ describe("planTypeLabelSync", () => {
     assert.deepEqual(plan, { skip: true, reason: "human-override" });
   });
 
-  it("skips titles without a conventional prefix", () => {
+  it("labels sentence-case bug-fix titles (PR #524)", () => {
+    const plan = planTypeLabelSync({
+      title: "Fix Console Go tool schema sanitization",
+      currentLabels: [],
+      events: [],
+    });
+    assert.deepEqual(plan, {
+      skip: false,
+      detected: "bug",
+      add: "bug",
+      remove: [],
+    });
+  });
+
+  it("skips titles without a recognized prefix", () => {
     const plan = planTypeLabelSync({
       title: "Warn or restart stale app-server",
       currentLabels: [],

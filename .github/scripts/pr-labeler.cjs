@@ -1,7 +1,9 @@
 "use strict";
 
 /**
- * Conventional-commit title → GitHub type label for PR Labeler.
+ * PR title → GitHub type label for PR Labeler.
+ * Accepts conventional commits (`fix(scope): …`) and sentence-case fallbacks
+ * (`Fix Console Go …`) for LLM-authored PRs that skip the prefix colon.
  * Kept as a pure module so override behavior can be unit-tested without Actions.
  */
 
@@ -29,17 +31,28 @@ const TYPE_LABELS = new Set(Object.values(PREFIX_TO_LABEL));
 /** Actors whose type-label mutations are treated as bot-owned (may be overwritten). */
 const BOT_ACTORS = new Set(["github-actions[bot]"]);
 
+function labelForTitlePrefix(prefix) {
+  const key = String(prefix || "").toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(PREFIX_TO_LABEL, key)) return null;
+  return PREFIX_TO_LABEL[key];
+}
+
 /**
- * Map a conventional-commit PR title to a managed type label.
+ * Map a PR title to a managed type label.
  * @param {string} title
  * @returns {string|null}
  */
 function detectTypeLabelFromTitle(title) {
-  const match = String(title || "").match(/^([a-zA-Z]+)(?:\([^)]*\))?[!]?\s*:/);
-  if (!match) return null;
-  const prefix = match[1].toLowerCase();
-  if (!Object.prototype.hasOwnProperty.call(PREFIX_TO_LABEL, prefix)) return null;
-  return PREFIX_TO_LABEL[prefix];
+  const text = String(title || "");
+
+  const conventional = text.match(/^([a-zA-Z]+)(?:\([^)]*\))?[!]?\s*:/);
+  if (conventional) return labelForTitlePrefix(conventional[1]);
+
+  // Sentence-case fallback (e.g. PR #524: "Fix Console Go tool schema sanitization").
+  const sentence = text.match(/^([A-Za-z]+)\s+\S/);
+  if (sentence) return labelForTitlePrefix(sentence[1]);
+
+  return null;
 }
 
 /**
