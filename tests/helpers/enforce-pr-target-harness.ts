@@ -216,12 +216,41 @@ function nodeLikeProcess(): Record<string, unknown> {
     arch: "x64",
     version: "v20.19.0",
     versions: { node: "20.19.0", v8: "11.3.244.8" },
+    // The variables a real ubuntu-latest runner exports. Round nine probed
+    // four of them — `RUNNER_TEMP`, `GITHUB_SHA`, `GITHUB_WORKSPACE`,
+    // `ACTIONS_RUNTIME_TOKEN` — each present on the runner and absent here, so
+    // `if (process.env.X) return;` was a no-op in the suite and a dead gate in
+    // production.
     env: {
       CI: "true",
       GITHUB_ACTIONS: "true",
+      GITHUB_ACTION: "__run",
+      GITHUB_ACTOR: "contributor",
+      GITHUB_API_URL: "https://api.github.com",
+      GITHUB_BASE_REF: "dev",
       GITHUB_EVENT_NAME: "pull_request_target",
+      GITHUB_EVENT_PATH: "/home/runner/work/_temp/_github_workflow/event.json",
+      GITHUB_GRAPHQL_URL: "https://api.github.com/graphql",
+      GITHUB_HEAD_REF: "feature",
+      GITHUB_JOB: "enforce-target",
+      GITHUB_REF: "refs/pull/42/merge",
       GITHUB_REPOSITORY: "lidge-jun/opencodex",
+      GITHUB_REPOSITORY_OWNER: "lidge-jun",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_RUN_ID: "1234567890",
+      GITHUB_RUN_NUMBER: "87",
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_SHA: "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b",
+      GITHUB_WORKFLOW: "Enforce PR target branch",
+      GITHUB_WORKSPACE: "/home/runner/work/opencodex/opencodex",
+      HOME: "/home/runner",
+      RUNNER_ARCH: "X64",
+      RUNNER_NAME: "GitHub Actions 1",
       RUNNER_OS: "Linux",
+      RUNNER_TEMP: "/home/runner/work/_temp",
+      RUNNER_TOOL_CACHE: "/opt/hostedtoolcache",
+      ACTIONS_RUNTIME_TOKEN: "***",
+      ACTIONS_RUNTIME_URL: "https://pipelines.actions.githubusercontent.com/",
     },
     argv: ["/usr/bin/node", "/home/runner/work/_actions/actions/github-script/dist/index.js"],
     cwd: () => "/home/runner/work/opencodex/opencodex",
@@ -384,32 +413,120 @@ export async function runEnforcePrTarget(
     },
   };
 
-  const github = {
-    rest,
-    graphql: (query: unknown, variables: unknown) =>
-      Promise.resolve(record("graphql", { query, variables })),
-    request: (route: unknown, params: unknown) =>
-      Promise.resolve(record("request", { route, params })),
+  /**
+   * A class, not an object literal.
+   *
+   * `getOctokit()` returns an `Octokit` instance, so on the runner
+   * `Object.getPrototypeOf(github) !== Object.prototype` is true. Round nine
+   * used exactly that to tell the two apart: a plain literal here made the
+   * check false, so `if (…) return;` skipped the whole gate in production and
+   * changed nothing in the suite.
+   *
+   * `rest` is the same shape either way; only the identity of the wrapper
+   * mattered.
+   */
+  class Octokit {
+    rest = rest;
+    graphql = (query: unknown, variables: unknown) =>
+      Promise.resolve(record("graphql", { query, variables }));
+    request = (route: unknown, params: unknown) =>
+      Promise.resolve(record("request", { route, params }));
     /**
      * `github.paginate(fn, params)` — walk every page and concatenate, the way
      * Octokit does. A one-page fake would make dropping pagination invisible.
      */
-    paginate: async (fn: (args: unknown) => Promise<{ data: unknown[] }>, params: unknown) => {
-      const collected: unknown[] = [];
-      for (let page = 1; page <= pages.length; page += 1) {
-        const response = await fn({ ...(params as object), page });
-        collected.push(...response.data);
-      }
-      return collected;
-    },
-  };
+    paginate = Object.assign(
+      async (fn: (args: unknown) => Promise<{ data: unknown[] }>, params: unknown) => {
+        const collected: unknown[] = [];
+        for (let page = 1; page <= pages.length; page += 1) {
+          const response = await fn({ ...(params as object), page });
+          collected.push(...response.data);
+        }
+        return collected;
+      },
+      {
+        /**
+         * Octokit hangs an async-iterator form off `paginate`. It has to exist
+         * (round nine probed `typeof github.paginate?.iterator === "function"`)
+         * and it has to record, or a rewrite that pages with `for await` walks
+         * out of the recording entirely.
+         */
+        iterator: (fn: (args: unknown) => Promise<{ data: unknown[] }>, params: unknown) => ({
+          async *[Symbol.asyncIterator]() {
+            for (let page = 1; page <= pages.length; page += 1) {
+              yield await fn({ ...(params as object), page });
+            }
+          },
+        }),
+      },
+    );
+    /**
+     * The plumbing a real client carries. None of it is something this
+     * workflow should touch, but all of it answers a `typeof` probe on the
+     * runner — so it answers here too, and calling it is what fails.
+     *
+     * `hook` matters most: `github.hook.before("request", …)` can rewrite every
+     * outgoing call, which is a way to retarget writes without naming them.
+     */
+    hook = Object.assign(
+      (...args: unknown[]) => { calls.push({ method: "hook", args }); throw new Error("the script must not install request hooks"); },
+      {
+        before: (...args: unknown[]) => { calls.push({ method: "hook.before", args }); throw new Error("the script must not install request hooks"); },
+        after: (...args: unknown[]) => { calls.push({ method: "hook.after", args }); throw new Error("the script must not install request hooks"); },
+        error: (...args: unknown[]) => { calls.push({ method: "hook.error", args }); throw new Error("the script must not install request hooks"); },
+        wrap: (...args: unknown[]) => { calls.push({ method: "hook.wrap", args }); throw new Error("the script must not install request hooks"); },
+      },
+    );
+    auth = async (...args: unknown[]) => {
+      calls.push({ method: "auth", args });
+      return { type: "token", token: "***" };
+    };
+    log = {
+      debug: (message: unknown) => { logs.push(`octokit debug: ${String(message)}`); },
+      info: (message: unknown) => { logs.push(`octokit info: ${String(message)}`); },
+      warn: (message: unknown) => { warnings.push(`octokit warn: ${String(message)}`); },
+      error: (message: unknown) => { warnings.push(`octokit error: ${String(message)}`); },
+    };
+  }
+  const github = new Octokit();
 
-  const context = {
-    repo: { owner: "lidge-jun", repo: "opencodex" },
-    payload: { pull_request: eventPr },
-    eventName: "pull_request_target",
-    runId: 1234567890,
-  };
+  /**
+   * `context` with every field the real `Context` class hydrates.
+   *
+   * Round nine walked through the four fields this used to carry. `context` is
+   * a class in `@actions/github` whose constructor sets `sha`, `ref`,
+   * `workflow`, `action`, `actor`, `job`, `runAttempt`, `runNumber`, `runId`,
+   * `apiUrl`, `serverUrl`, and `graphqlUrl` from the environment, and exposes
+   * `issue` and `repo` as getters. `typeof context.sha === "string"` is true on
+   * every runner and was false here, which is the round-eight mechanism again
+   * one level down: a name that answers differently is a switch.
+   *
+   * `apiUrl`, `serverUrl`, and `graphqlUrl` have defaults in the constructor,
+   * so they are non-empty even with no environment at all.
+   */
+  class Context {
+    payload = { pull_request: eventPr };
+    eventName = "pull_request_target";
+    sha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
+    ref = "refs/pull/42/merge";
+    workflow = "Enforce PR target branch";
+    action = "__run";
+    actor = "contributor";
+    job = "enforce-target";
+    runAttempt = 1;
+    runNumber = 87;
+    runId = 1234567890;
+    apiUrl = "https://api.github.com";
+    serverUrl = "https://github.com";
+    graphqlUrl = "https://api.github.com/graphql";
+    get repo() {
+      return { owner: "lidge-jun", repo: "opencodex" };
+    }
+    get issue() {
+      return { owner: "lidge-jun", repo: "opencodex", number: eventPr.number };
+    }
+  }
+  const context = new Context();
 
   /**
    * The whole `@actions/core` surface, not the three methods this script

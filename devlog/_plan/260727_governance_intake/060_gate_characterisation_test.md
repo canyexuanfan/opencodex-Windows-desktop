@@ -501,7 +501,89 @@ mut3 total=26 survived=['update-retargets-main(noop)']
 기준선: `32 pass  0 fail  397 expect() calls`, `bun run typecheck` 오류 0,
 `git status --short .github/` 클린.
 
-## 여덟 라운드가 남긴 것
+## 감사 9라운드 — 이름은 맞췄으나 모양은 아니었다
+
+9라운드는 서브에이전트가 돌리지 못했다. 적대적 변이라는 프레이밍이 콘텐츠 필터에
+걸려 `errored`로 돌아왔다(`.codexclaw/friction.jsonl`에 기록). 같은 프롬프트를 다시
+넣는 대신 세션에서 직접 배터리를 돌렸다 — 8라운드 수정이 **부류를 닫았는지**를
+검증하는 것이 목적이었으므로, 검증자가 누구인지보다 변이가 실측으로 잡히는지가 중요했다.
+
+25가지를 주입했다. **18가지가 살아남았다.** 8라운드 수정은 부류의 절반만 닫았다.
+
+### 무엇을 놓쳤나
+
+8라운드는 **주입되는 이름의 목록**을 액션 소스에서 옮겨왔다. 옳았지만 한 겹이었다.
+각 바인딩의 **모양**은 여전히 손으로 고른 부분집합이었다.
+
+- `context`는 `@actions/github`의 클래스다. 생성자가 `sha`, `ref`, `workflow`,
+  `action`, `actor`, `job`, `runAttempt`, `runNumber`, `runId`, `apiUrl`,
+  `serverUrl`, `graphqlUrl`를 환경에서 채우고 `issue`/`repo`는 getter다.
+  하네스에는 4개뿐이었다. `typeof context.sha === "string"`은 모든 러너에서 참이고
+  여기서는 거짓이었다 — 8라운드와 정확히 같은 메커니즘이 한 단계 아래에서 반복됐다.
+- `process.env`는 5개뿐이었다. 러너는 `RUNNER_TEMP`, `GITHUB_SHA`,
+  `GITHUB_WORKSPACE`, `ACTIONS_RUNTIME_TOKEN`을 포함해 30개 가까이 내보낸다.
+- `github`은 객체 리터럴이었다. 프로덕션에서는 `Octokit` 인스턴스이므로
+  `Object.getPrototypeOf(github) !== Object.prototype`이 참이다. 이 한 줄로
+  하네스를 식별할 수 있었다.
+- `github.hook`/`auth`/`log`/`paginate.iterator`가 없었다. `hook`이 특히 문제다 —
+  `github.hook.before("request", …)`는 이름을 대지 않고 모든 나가는 호출을 다시 쓸 수
+  있다.
+
+### 대응
+
+- `context`를 클래스로 만들고 실제 생성자가 채우는 필드를 전부 채웠다. `issue`와
+  `repo`는 프로덕션처럼 getter다.
+- `process.env`에 ubuntu-latest 러너가 실제로 내보내는 변수 목록을 채웠다.
+- `github`을 `class Octokit`의 인스턴스로 바꿨다. `rest` 모양은 그대로다 — 문제는
+  래퍼의 정체성뿐이었다.
+- `hook`/`auth`/`log`/`paginate.iterator`를 추가했다. 전부 프로덕션의 `typeof`
+  질문에 같은 답을 주고, `hook` 계열은 **호출하면 기록하고 던진다**. write 토큰을 쥔
+  워크플로가 요청 훅을 다는 것은 특성화할 동작이 아니다. `paginate.iterator`는
+  기록하는 비동기 이터레이터다 — `for await`로 페이징하는 재작성이 기록 밖으로
+  걸어나가지 않도록.
+
+### 살아남은 4가지는 실측으로 무해함을 확인했다
+
+`context-eventname`, `core-tostring`, `promise-identity`, `err-tostringtag`.
+프로브를 스크립트 스코프에서 돌려 값을 직접 읽었다:
+
+```
+{ "ctxEvent": "pull_request_target", "eventNameMismatch": false,
+  "coreInfoNative": false, "promiseIdentity": false,
+  "toStringTagInObject": false }
+```
+
+넷 다 하네스에서 `false`이고 프로덕션에서도 `false`다. `if (...) return;`이 양쪽
+모두에서 발화하지 않는다. 즉 우회가 아니라 무해한 변이다 — 잡히지 않는 것이 정상이다.
+"살아남았다"와 "우회다"는 다르며, 그 구분은 추측이 아니라 값을 읽어서 지었다.
+
+## 변이 검증 실측 (92/92)
+
+9라운드 25가지 중 21가지 CAUGHT, 4가지는 위와 같이 무해함 확인:
+
+```
+context-sha CAUGHT       context-actor CAUGHT     context-workflow CAUGHT
+context-apiurl CAUGHT    context-issue CAUGHT     env-runner-temp CAUGHT
+env-github-sha CAUGHT    env-workspace CAUGHT     env-actions-token CAUGHT
+global-crypto CAUGHT     global-sclone CAUGHT     global-abort CAUGHT
+global-textenc CAUGHT    global-url CAUGHT        global-buffer CAUGHT
+github-hook CAUGHT       github-auth CAUGHT       github-log CAUGHT
+paginate-iterator CAUGHT rest-meta CAUGHT         proto-identity CAUGHT
+```
+
+이전 71가지 회귀 재확인:
+
+```
+mut8b total=10 survived=none    mut7 total=8  survived=none
+mut6  total=7  survived=none    mut5 total=7  survived=none
+mut4  total=13 survived=['graphql-retarget(noop)']
+mut3  total=26 survived=['update-retargets-main(noop)']
+```
+
+기준선: `32 pass  0 fail  397 expect() calls`, `bun run typecheck` 오류 0,
+`git status --short .github/` 클린.
+
+## 아홉 라운드가 남긴 것
 
 설계가 세 번 바뀌었고, 매번 앞 라운드가 그 방향의 한계를 증명했다.
 
@@ -509,9 +591,9 @@ mut3 total=26 survived=['update-retargets-main(noop)']
    키만 덮는다.
 2. **허용 목록** (4라운드) — "정확히 이 키들". YAML 골격에는 유효했고 지금도 유지된다.
    하지만 스크립트 본문에는 통하지 않았다. JavaScript는 같은 효과에 무한한 철자가 있다.
-3. **실행 하네스** (5~8라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
-   **가짜의 충실도**가 새 공격면이 됐다. 네 라운드 연속으로 스크립트가 아니라
-   하네스가 뚫렸다 — 전역 탈출, 에러 모양, 이벤트 루프, 그리고 바인딩 표면.
+3. **실행 하네스** (5~9라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
+   **가짜의 충실도**가 새 공격면이 됐다. 다섯 라운드 연속으로 스크립트가 아니라
+   하네스가 뚫렸다 — 전역 탈출, 에러 모양, 이벤트 루프, 바인딩 이름, 바인딩 모양.
 
 세 번째가 옳은 방향이다. 다만 오라클의 충실도가 곧 증거의 품질이다. 앞으로 이
 하네스를 손댈 때 물어야 할 질문은 하나다 — **진짜 `github-script` + Octokit이라면
@@ -520,6 +602,16 @@ mut3 total=26 survived=['update-retargets-main(noop)']
 8라운드가 그 질문에 답하는 방법을 하나 더 보탰다. 추측하지 말고 **핀 고정된 커밋의
 소스에서 옮겨오고, 옮겨온 목록 자체를 테스트로 고정하라.** 그러면 액션을 재핀할 때
 구멍이 조용히 열리는 대신 테스트가 깨진다.
+
+9라운드는 그 규칙이 한 겹으로는 부족함을 보였다. 이름 목록을 맞춰도 각 바인딩의
+**모양**이 부분집합이면 같은 공격이 한 단계 아래에서 반복된다. `context`는 4개
+필드가 아니라 클래스이고, `github`은 리터럴이 아니라 인스턴스다. 충실도는 목록이
+아니라 재귀적 속성이다.
+
+그리고 방법론 하나 — **"살아남았다"는 "우회다"가 아니다.** 9라운드의 25가지 중
+4가지는 살아남았지만 프로덕션에서도 발화하지 않는 무해한 변이였다. 프로브로 값을
+직접 읽어 구분했다. 이 구분을 생략하면 무해한 변이를 쫓느라 하네스를 필요 이상으로
+복잡하게 만들게 된다.
 
 ## 범위 밖
 
