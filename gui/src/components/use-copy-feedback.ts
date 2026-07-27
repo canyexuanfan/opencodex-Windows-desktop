@@ -20,6 +20,7 @@ export function useCopyFeedback<Scope = void>(): {
 } {
   const [feedback, setFeedback] = useState<{ scope: Scope; outcome: CopyOutcome } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generationRef = useRef(0);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
@@ -36,11 +37,18 @@ export function useCopyFeedback<Scope = void>(): {
   );
 
   const copy = useCallback((text: string, scope: Scope) => {
+    // Writes settle out of order: a permission prompt can delay the first
+    // attempt past a second one. Without a generation the older completion
+    // overwrites the newer click's result — and its timer expires the wrong
+    // feedback. Same guard shape the OAuth polling paths already use.
+    const generation = ++generationRef.current;
     void copyTextToClipboard(text).then((ok) => {
+      if (generationRef.current !== generation) return;
       clearTimer();
       setFeedback({ scope, outcome: ok ? "copied" : "unavailable" });
       timerRef.current = setTimeout(() => {
         timerRef.current = null;
+        if (generationRef.current !== generation) return;
         setFeedback(null);
       }, FEEDBACK_MS);
     });

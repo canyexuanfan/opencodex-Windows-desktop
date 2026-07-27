@@ -83,7 +83,7 @@ export function CodexAccountPoolCards({
             )}
             {onCopyDoctor && oauthHealthShowsDoctor(healthStatus) && (
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => onCopyDoctor(a.id)}>
-                {doctorCopyButtonLabel(t, doctorCopyOutcomeFor?.(a.id))}
+                <span aria-live="polite">{doctorCopyButtonLabel(t, doctorCopyOutcomeFor?.(a.id))}</span>
               </button>
             )}
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onEditAlias(a)}>

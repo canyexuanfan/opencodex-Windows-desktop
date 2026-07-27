@@ -154,6 +154,21 @@ test("reports an unusable clipboard instead of dying silently", async () => {
   expect(host.textContent).toContain(DEVICE_CODE);
 });
 
+test("a new device code does not inherit the previous code's feedback", async () => {
+  await mountPanel({ provider: "claude", deviceCode: DEVICE_CODE });
+  await clickCopy();
+  expect(host.textContent).toContain("Code copied");
+
+  // Cancel + restart replaces loginInfo while the panel stays mounted, so the
+  // next code would otherwise show a copy it never received.
+  await mountPanel({ provider: "claude", deviceCode: "QRST-UVWX" });
+
+  expect(host.textContent).toContain("QRST-UVWX");
+  expect(host.textContent).not.toContain(DEVICE_CODE);
+  expect(host.textContent).not.toContain("Code copied");
+  expect(host.textContent).toContain("Copy code");
+});
+
 test("keeps the latest feedback for its full window across repeated copies", async () => {
   await mountPanel({ provider: "claude", deviceCode: DEVICE_CODE });
 

@@ -79,7 +79,7 @@ export function CodexAccountPoolMainCard({
         )}
         {onCopyDoctor && oauthHealthShowsDoctor(main?.health?.status) && (
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => onCopyDoctor(mainId)}>
-            {doctorCopyButtonLabel(t, doctorCopyOutcomeFor?.(mainId))}
+            <span aria-live="polite">{doctorCopyButtonLabel(t, doctorCopyOutcomeFor?.(mainId))}</span>
           </button>
         )}
         <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>

@@ -22,6 +22,7 @@ let root: Root | null = null;
 let originalFetch: typeof globalThis.fetch;
 let clipboardWrites: string[] = [];
 let statusHolders: Array<{ resolve: (value: Response) => void }> = [];
+let loginHolders: Array<{ resolve: () => void }> = [];
 
 function installClipboard(available: boolean) {
   clipboardWrites = [];
@@ -48,12 +49,16 @@ beforeEach(() => {
 
   originalFetch = globalThis.fetch;
   statusHolders = [];
+  loginHolders = [];
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     value: async (input: RequestInfo | URL) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname === "/api/codex-auth/login") {
-        return Response.json({ url: AUTH_URL, flowId: "flow-1" });
+        // Held so the test decides when the URL lands, instead of racing a timer.
+        return await new Promise<Response>((resolve) => {
+          loginHolders.push({ resolve: () => resolve(Response.json({ url: AUTH_URL, flowId: "flow-1" })) });
+        });
       }
       if (url.pathname === "/api/codex-auth/login-status") {
         return await new Promise<Response>((resolve) => { statusHolders.push({ resolve }); });
@@ -67,6 +72,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  for (const holder of loginHolders.splice(0)) holder.resolve();
   for (const holder of statusHolders.splice(0)) {
     holder.resolve(Response.json({ status: "pending" }));
   }
@@ -83,7 +89,11 @@ afterEach(async () => {
   await win.happyDOM?.close?.();
 });
 
-/** Reauth enters the waiting step immediately, but authUrl arrives a tick later. */
+/**
+ * Reauth enters the waiting step immediately, but authUrl arrives with the
+ * login response. Release that response inside act() so the URL render is
+ * flushed before any assertion — a fixed delay would race a slow worker.
+ */
 async function mountReauthModal() {
   const { createRoot } = await import("react-dom/client");
   await act(async () => {
@@ -94,7 +104,11 @@ async function mountReauthModal() {
       </LanguageProvider>,
     );
   });
-  await act(async () => { await new Promise((r) => setTimeout(r, 40)); });
+  await act(async () => {
+    while (loginHolders.length === 0) await new Promise((r) => setTimeout(r, 0));
+    for (const holder of loginHolders.splice(0)) holder.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+  });
 }
 
 function copyButton(): HTMLButtonElement {

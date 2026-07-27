@@ -49,7 +49,7 @@ export default function ProviderAuthPanel({
   const [addingKey, setAddingKey] = useState(false);
   const [newKey, setNewKey] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
-  const deviceCodeCopy = useCopyFeedback();
+  const deviceCodeCopy = useCopyFeedback<string>();
   const doctorCopy = useCopyFeedback<string>();
 
   const surface = providerAuthSurface({ ...item, hasApiKey: item.hasApiKey || keys.length > 0 });
@@ -75,7 +75,8 @@ export default function ProviderAuthPanel({
   if (!surface || !authHandlers) return null;
 
   const hintForThis = loginHint?.provider === item.name ? loginHint : null;
-  const deviceCodeOutcome = deviceCodeCopy.outcomeFor(undefined);
+  const deviceCode = hintForThis?.deviceCode ?? "";
+  const deviceCodeOutcome = deviceCodeCopy.outcomeFor(deviceCode);
   const deviceCodeCopyLabel = deviceCodeOutcome === "copied"
     ? t("prov.codeCopied")
     : deviceCodeOutcome === "unavailable"
@@ -136,7 +137,7 @@ export default function ProviderAuthPanel({
                       <span>{t("prov.deviceCode")}</span>
                       <code className="pwi-device-code">{hintForThis.deviceCode}</code>
                       <button type="button" className="btn btn-primary btn-sm"
-                        onClick={() => deviceCodeCopy.copy(hintForThis.deviceCode ?? "", undefined)}>
+                        onClick={() => deviceCodeCopy.copy(deviceCode, deviceCode)}>
                         <span aria-live="polite">{deviceCodeCopyLabel}</span>
                       </button>
                     </div>
@@ -216,7 +217,7 @@ export default function ProviderAuthPanel({
                     )}
                     {showDoctor && (
                       <button type="button" className="btn btn-ghost btn-sm" onClick={copyDoctor}>
-                        {doctorCopyButtonLabel(t, doctorCopy.outcomeFor(account.id))}
+                        <span aria-live="polite">{doctorCopyButtonLabel(t, doctorCopy.outcomeFor(account.id))}</span>
                       </button>
                     )}
                     <button type="button" className="btn btn-ghost btn-sm"
