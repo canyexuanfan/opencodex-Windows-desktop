@@ -185,6 +185,73 @@ describe("GitHub Actions hardening", () => {
     expect(notesBlock).toMatch(/\n {10}else\n/);
   });
 
+  /**
+   * `enforce-pr-target.yml` had no test at all, and it is the one workflow that
+   * mutates a contributor's pull request — it rewrites the title and converts the
+   * PR to a draft. It also runs on `pull_request_target`, so it holds the base
+   * repository's write token while doing it.
+   *
+   * These assertions pin the CURRENT behaviour rather than a desired one. The
+   * gate is being redesigned (devlog/_plan/260727_governance_intake/040), and a
+   * redesign without a characterisation test is how the four review rounds on
+   * that plan happened in the first place. When the gate changes, these should
+   * fail loudly and be updated deliberately.
+   */
+  test("PR target enforcement stays least-privilege and never runs PR code", async () => {
+    const workflow = await readText(".github/workflows/enforce-pr-target.yml");
+
+    // pull_request_target runs with the base repo's token. Checking out or
+    // executing the PR's code under it is the classic escalation; this workflow
+    // must keep doing neither.
+    expect(workflow).toContain("pull_request_target:");
+    expect(workflow).not.toContain("actions/checkout");
+    expect(workflow).not.toMatch(/^\s+run:/m);
+    expect(workflow).toContain("permissions:\n  pull-requests: write");
+    expect(workflow).toContain("actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3");
+    expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
+    // One run per PR, so two rapid events cannot race on the title/draft state.
+    expect(workflow).toContain("group: enforce-pr-target-${{ github.event.pull_request.number }}");
+  });
+
+  test("PR target enforcement reacts to the events that can change the verdict", async () => {
+    const workflow = await readText(".github/workflows/enforce-pr-target.yml");
+
+    // `edited` is what catches a retarget; `ready_for_review` is what re-applies
+    // the draft when someone undoes it by hand. Dropping either silently makes
+    // the gate one-shot.
+    for (const event of ["opened", "reopened", "edited", "ready_for_review"]) {
+      expect(workflow).toContain(`- ${event}`);
+    }
+    // The verdict is a base-branch comparison, so it re-reads the PR instead of
+    // trusting a possibly stale event payload.
+    expect(workflow).toContain("github.rest.pulls.get");
+    expect(workflow).toContain('const EXPECTED_BASE = "dev";');
+    expect(workflow).toContain("pr.base.ref !== EXPECTED_BASE");
+  });
+
+  test("PR target enforcement records what it changed so it can undo it", async () => {
+    const workflow = await readText(".github/workflows/enforce-pr-target.yml");
+
+    // The bot rewrites the author's title and draft state, so it stores which of
+    // those it touched and restores exactly those on a correct retarget. Losing
+    // this bookkeeping means a PR that was already a draft gets marked ready.
+    expect(workflow).toContain("autoDraftedByBot");
+    expect(workflow).toContain("titlePrefixedByBot");
+    expect(workflow).toContain("convertPullRequestToDraft");
+    expect(workflow).toContain("markPullRequestReadyForReview");
+    expect(workflow).toContain('const TITLE_PREFIX = "[WRONG BRANCH] ";');
+
+    // Observed on PR #527 (devlog .../050_live_evidence.md): the state is written
+    // BEFORE the mutation and is not reconciled when the mutation fails, so a
+    // failed convertToDraft still records autoDraftedByBot: true. This assertion
+    // documents that ordering rather than endorsing it — the redesign in 040
+    // owns fixing it, and this test should change with it.
+    const stateWriteIndex = workflow.indexOf("await upsertComment(");
+    const draftCallIndex = workflow.indexOf("await convertToDraft();");
+    expect(stateWriteIndex).toBeGreaterThan(-1);
+    expect(draftCallIndex).toBeGreaterThan(stateWriteIndex);
+  });
+
   test("docs deployment is pinned, bounded, and scoped to Pages", async () => {
     const workflow = await readText(".github/workflows/deploy-docs.yml");
 
