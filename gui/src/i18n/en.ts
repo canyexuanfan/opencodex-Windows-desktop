@@ -647,7 +647,7 @@ export const en = {
   "storage.cleanup.moreFiles": "…and {n} more",
   "storage.cleanup.permanent": "Delete permanently (skip quarantine)",
   "storage.cleanup.permanentWarn": "Permanent delete cannot be undone.",
-  "storage.cleanup.quarantineNote": "Files move to .trash under CODEX_HOME. Restore is not available in this release — keep the trash folder until you are sure.",
+  "storage.cleanup.quarantineNote": "Files move to .trash under CODEX_HOME. There is no in-app restore in this release — keep the trash folder, or manually move files back using manifest.json.",
   "storage.cleanup.cancel": "Cancel",
   "storage.cleanup.confirmQuarantine": "Quarantine",
   "storage.cleanup.confirmPermanent": "Delete permanently",
@@ -655,6 +655,14 @@ export const en = {
   "storage.cleanup.donePermanent": "Permanently deleted {count} file(s) ({size}).",
   "storage.cleanup.previewFailed": "Preview failed.",
   "storage.cleanup.cleanupFailed": "Cleanup failed.",
+  "storage.cleanup.err.codex_busy": "Codex is using state.sqlite — try again after quitting Codex.",
+  "storage.cleanup.err.stale_preview": "Archived files changed since preview — run Preview again.",
+  "storage.cleanup.err.referenced_history": "Selected archives are still referenced by forked or paginated history.",
+  "storage.cleanup.err.invalid_digest": "Preview digest is missing or invalid.",
+  "storage.cleanup.err.invalid_mode": "Cleanup mode must be quarantine or permanent.",
+  "storage.cleanup.err.fs_failed": "Filesystem cleanup failed; no changes were kept.",
+  "storage.cleanup.err.db_reconcile_failed": "Could not update Codex state database.",
+  "storage.cleanup.err.cleanup_failed": "Cleanup failed.",
 
   // add-provider modal
   "modal.addNamed": "Add: {label}",

@@ -20,7 +20,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Database } from "bun:sqlite";
 import { resolveCodexHomeDir } from "../codex/home";
 
@@ -137,7 +137,10 @@ export function normalizeArchivedRolloutPath(rolloutPath: string, codexHome: str
   if (!raw) return null;
   let relativePath = raw;
   try {
-    const abs = raw.includes(":") || raw.startsWith("/") ? resolve(raw) : resolve(codexHome, raw);
+    // Prefer Node's absolute-path detection. Do not treat a colon anywhere in the
+    // filename (Codex ISO timestamps) as an absolute Windows path.
+    const looksAbsolute = isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw);
+    const abs = looksAbsolute ? resolve(raw) : resolve(codexHome, raw);
     const homeAbs = resolve(codexHome);
     const rel = toForwardSlash(relative(homeAbs, abs));
     if (rel.startsWith("..") || rel === "") return null;
@@ -351,6 +354,7 @@ function loadMatchingThreads(db: Database, candidates: ArchivedCandidate[], code
 /**
  * True when any matched thread is still linked to a thread outside the delete set
  * (spawn edges) or uses paginated history that other live threads may depend on via fork.
+ * Throws real DB errors (busy/corruption) so callers can refuse cleanup.
  */
 function findReferencedHistory(
   db: Database,
@@ -366,7 +370,7 @@ function findReferencedHistory(
   }
 
   // Spawn edges that cross the delete boundary keep history reachable.
-  try {
+  if (tableExists(db, "thread_spawn_edges")) {
     const placeholders = ids.map(() => "?").join(",");
     const edges = db.query<{ parent_thread_id: string; child_thread_id: string }, string[]>(
       `SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges
@@ -377,21 +381,16 @@ function findReferencedHistory(
         return true;
       }
     }
-  } catch {
-    /* table absent */
   }
 
   // Other threads that list one of ours as forked_from / parent (when columns exist).
   for (const column of ["forked_from_id", "parent_thread_id", "source_thread_id"] as const) {
-    try {
-      const placeholders = ids.map(() => "?").join(",");
-      const rows = db.query<{ id: string }, string[]>(
-        `SELECT id FROM threads WHERE ${column} IN (${placeholders})`,
-      ).all(...ids);
-      if (rows.some(r => !idSet.has(r.id))) return true;
-    } catch {
-      /* column absent */
-    }
+    if (!columnExists(db, "threads", column)) continue;
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = db.query<{ id: string }, string[]>(
+      `SELECT id FROM threads WHERE ${column} IN (${placeholders})`,
+    ).all(...ids);
+    if (rows.some(r => !idSet.has(r.id))) return true;
   }
 
   return false;
@@ -405,6 +404,20 @@ function tableExists(db: Database, name: string): boolean {
     return Boolean(row);
   } catch {
     return false;
+  }
+}
+
+function columnExists(db: Database, table: string, column: string): boolean {
+  if (!tableExists(db, table)) return false;
+  try {
+    // table name already verified via sqlite_master; quote for safety.
+    const rows = db.query<{ name: string }, []>(
+      `PRAGMA table_info(${JSON.stringify(table)})`,
+    ).all();
+    return rows.some(r => r.name === column);
+  } catch (error) {
+    // Real pragma failures must not look like "column missing".
+    throw error;
   }
 }
 
@@ -477,12 +490,20 @@ function stageCandidates(
   stageDir: string,
 ): { ok: true; staged: Array<{ from: string; to: string; relPath: string }> } | { ok: false; staged: Array<{ from: string; to: string; relPath: string }> } {
   const staged: Array<{ from: string; to: string; relPath: string }> = [];
+  const usedBasenames = new Set<string>();
   try {
     mkdirSync(stageDir, { recursive: true });
     for (const candidate of candidates) {
       for (const rel of candidate.physicalRelPaths) {
         const from = absFromRel(codexHome, rel);
-        const to = join(stageDir, basename(rel));
+        const base = basename(rel);
+        // archived_sessions/ is flat today; refuse collisions so a future nested walk
+        // cannot silently overwrite another staged file.
+        if (usedBasenames.has(base)) {
+          throw new Error("stage_basename_collision");
+        }
+        usedBasenames.add(base);
+        const to = join(stageDir, base);
         renameSync(from, to);
         staged.push({ from, to, relPath: rel });
       }
@@ -619,34 +640,42 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
   const bytes = preview.candidates.reduce((sum, c) => sum + c.bytes, 0);
   const trashRel = toForwardSlash(relative(codexHome, stageDir) || stageDir);
 
-  if (mode === "quarantine") {
-    const manifestEntries: CleanupManifestEntry[] = preview.candidates.map(candidate => {
-      const thread = dbResult.threads.find(t => {
-        const normalized = normalizeArchivedRolloutPath(t.rollout_path, codexHome);
-        return normalized === candidate.relPath;
-      });
-      return {
-        relPath: candidate.relPath,
-        bytes: candidate.bytes,
-        mtimeMs: candidate.mtimeMs,
-        physicalRelPaths: candidate.physicalRelPaths,
-        ...(thread
-          ? { threadId: thread.id, rolloutPath: thread.rollout_path, archived: thread.archived }
-          : {}),
-      };
+  const manifestEntries: CleanupManifestEntry[] = preview.candidates.map(candidate => {
+    const thread = dbResult.threads.find(t => {
+      const normalized = normalizeArchivedRolloutPath(t.rollout_path, codexHome);
+      return normalized === candidate.relPath;
     });
+    return {
+      relPath: candidate.relPath,
+      bytes: candidate.bytes,
+      mtimeMs: candidate.mtimeMs,
+      physicalRelPaths: candidate.physicalRelPaths,
+      ...(thread
+        ? { threadId: thread.id, rolloutPath: thread.rollout_path, archived: thread.archived }
+        : {}),
+    };
+  });
+
+  const writeManifest = (manifestMode: CleanupMode): boolean => {
     try {
       writeFileSync(
         join(stageDir, "manifest.json"),
         JSON.stringify({
           quarantinedAt: epoch,
-          mode: "quarantine",
+          mode: manifestMode,
           percent,
           digest: preview.digest,
           entries: manifestEntries,
         }, null, 2),
       );
+      return true;
     } catch {
+      return false;
+    }
+  };
+
+  if (mode === "quarantine") {
+    if (!writeManifest("quarantine")) {
       rollbackStaged(stageResult.staged);
       try { rmSync(stageDir, { recursive: true, force: true }); } catch { /* */ }
       return fail(mode, percent, "fs_failed");
@@ -664,7 +693,8 @@ export function executeArchivedCleanup(options: ExecuteCleanupOptions): CleanupR
 
   // Permanent: purge staged files only after a successful DB commit.
   if (!purgeStaged(stageResult.staged)) {
-    // DB already committed; leave remnants in stage rather than claiming success.
+    // DB already committed; leave remnants in stage with a manifest for manual recovery.
+    writeManifest("permanent");
     return {
       ok: false,
       mode,

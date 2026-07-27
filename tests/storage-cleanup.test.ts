@@ -155,6 +155,9 @@ describe("normalizeArchivedRolloutPath", () => {
       .toBe("archived_sessions/rollout-old.jsonl");
     expect(normalizeArchivedRolloutPath("sessions/2026/05/27/rollout-active.jsonl", home)).toBeNull();
     expect(normalizeArchivedRolloutPath("rollout-old.jsonl", home)).toBeNull();
+    // ISO timestamps in filenames must not be treated as Windows drive letters.
+    expect(normalizeArchivedRolloutPath("archived_sessions/rollout-2026-01-01T10:00:00.jsonl", home))
+      .toBe("archived_sessions/rollout-2026-01-01T10:00:00.jsonl");
   });
 });
 
@@ -265,24 +268,14 @@ describe("executeArchivedCleanup", () => {
 
   test("rolls back staged renames when a later rename fails", () => {
     home = buildHome();
-    const preview = previewArchivedCleanup(100, home);
-    // Replace mid file with a directory so renameSync of the file path fails after earlier moves.
-    // Stage iterates candidates oldest-first; make the newest path a directory collision target
-    // by pre-creating the trash destination... instead: remove mid and put a non-file there.
-    rmSync(join(home, "archived_sessions", "rollout-mid.jsonl"));
-    mkdirSync(join(home, "archived_sessions", "rollout-mid.jsonl"));
-
-    // Digest must match current listing — rebuild preview after the sabotage for FS failure,
-    // but keep digest from before so we get stale OR sabotage after digest bind:
-    // Use fresh digest so execute proceeds, then fail mid-stage.
     const fresh = previewArchivedCleanup(100, home);
-    // Only old+new remain as files; mid is a dir and skipped by list (not isFile).
-    expect(fresh.count).toBe(2);
+    expect(fresh.count).toBe(3);
 
-    // Force a mid-batch failure by staging into a pre-created conflicting file name for the second candidate.
-    // Monkey-patch via making the trash parent a file so mkdir for epoch fails → fs_failed with rollback.
-    mkdirSync(join(home, ".trash"), { recursive: true });
-    writeFileSync(join(home, ".trash", "42"), "not-a-dir");
+    // Allow stageDir creation, then make the second candidate's destination a directory
+    // so renameSync fails after the first file has already moved.
+    mkdirSync(join(home, ".trash", "42"), { recursive: true });
+    mkdirSync(join(home, ".trash", "42", "rollout-mid.jsonl"));
+
     const result = executeArchivedCleanup({
       percent: 100,
       mode: "quarantine",
@@ -293,6 +286,7 @@ describe("executeArchivedCleanup", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe("fs_failed");
     expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(true);
     expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
   });
 

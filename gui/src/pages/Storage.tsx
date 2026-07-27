@@ -150,20 +150,36 @@ function ArchivedCleanupPanel({
   const [error, setError] = useState<string | null>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
 
   useEffect(() => {
     if (!confirmOpen) return;
     previousFocusRef.current = document.activeElement as HTMLElement | null;
     cancelRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) setConfirmOpen(false);
+      if (e.key === "Escape" && !busyRef.current) setConfirmOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
       previousFocusRef.current?.focus();
     };
-  }, [confirmOpen, busy]);
+  }, [confirmOpen]);
+
+  const mapCleanupError = (code: string | undefined, fallback?: string) => {
+    switch (code) {
+      case "codex_busy": return t("storage.cleanup.err.codex_busy");
+      case "stale_preview": return t("storage.cleanup.err.stale_preview");
+      case "referenced_history": return t("storage.cleanup.err.referenced_history");
+      case "invalid_digest": return t("storage.cleanup.err.invalid_digest");
+      case "invalid_mode": return t("storage.cleanup.err.invalid_mode");
+      case "fs_failed": return t("storage.cleanup.err.fs_failed");
+      case "db_reconcile_failed": return t("storage.cleanup.err.db_reconcile_failed");
+      case "cleanup_failed": return t("storage.cleanup.err.cleanup_failed");
+      default: return fallback ?? t("storage.cleanup.cleanupFailed");
+    }
+  };
 
   const runPreview = async () => {
     setBusy(true);
@@ -176,7 +192,7 @@ function ArchivedCleanupPanel({
         body: JSON.stringify({ percent }),
       });
       const json = await res.json() as CleanupPreview & { error?: string };
-      if (!res.ok) throw new Error(json.error ?? t("storage.cleanup.previewFailed"));
+      if (!res.ok) throw new Error(mapCleanupError(json.error, t("storage.cleanup.previewFailed")));
       setPreview(json);
       setConfirmOpen(true);
     } catch (e) {
@@ -202,7 +218,12 @@ function ArchivedCleanupPanel({
       });
       const json = await res.json() as CleanupResult;
       if (!res.ok || !json.ok) {
-        throw new Error(json.message ?? json.error ?? t("storage.cleanup.cleanupFailed"));
+        if (json.error === "stale_preview") {
+          // Digest can never succeed again — send the user back to Preview.
+          setConfirmOpen(false);
+          setPreview(null);
+        }
+        throw new Error(mapCleanupError(json.error, json.message));
       }
       setConfirmOpen(false);
       setPreview(null);
@@ -214,7 +235,7 @@ function ArchivedCleanupPanel({
       );
       onDone();
     } catch (e) {
-      // Keep the dialog open so the failure is visible on top of the confirm surface.
+      // Keep the dialog open (except stale_preview) so the failure is visible.
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);

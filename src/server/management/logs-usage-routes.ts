@@ -248,7 +248,8 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       count: preview.count,
       bytes: preview.bytes,
       digest: preview.digest,
-      candidates: preview.candidates.map(({ relPath, bytes, mtimeMs, physicalRelPaths }) => ({
+      // Dashboard only lists a handful; count/bytes/digest already bind the full set.
+      candidates: preview.candidates.slice(0, 50).map(({ relPath, bytes, mtimeMs, physicalRelPaths }) => ({
         relPath,
         bytes,
         mtimeMs,

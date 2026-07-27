@@ -646,7 +646,7 @@ export const ru: Record<TKey, string> = {
   "storage.cleanup.moreFiles": "…и ещё {n}",
   "storage.cleanup.permanent": "Удалить навсегда (без карантина)",
   "storage.cleanup.permanentWarn": "Безвозвратное удаление нельзя отменить.",
-  "storage.cleanup.quarantineNote": "Файлы перемещаются в .trash под CODEX_HOME. Восстановление из панели в этом выпуске недоступно — сохраняйте корзину, пока не уверены.",
+  "storage.cleanup.quarantineNote": "Файлы перемещаются в .trash под CODEX_HOME. В этом выпуске нет восстановления в приложении — сохраняйте корзину или вручную верните файлы по manifest.json.",
   "storage.cleanup.cancel": "Отмена",
   "storage.cleanup.confirmQuarantine": "В карантин",
   "storage.cleanup.confirmPermanent": "Удалить навсегда",
@@ -654,6 +654,14 @@ export const ru: Record<TKey, string> = {
   "storage.cleanup.donePermanent": "Удалено навсегда: {count} файл(ов) ({size}).",
   "storage.cleanup.previewFailed": "Не удалось выполнить предпросмотр.",
   "storage.cleanup.cleanupFailed": "Не удалось выполнить очистку.",
+  "storage.cleanup.err.codex_busy": "Codex использует state.sqlite — закройте Codex и повторите попытку.",
+  "storage.cleanup.err.stale_preview": "Архивы изменились после предпросмотра — выполните предпросмотр снова.",
+  "storage.cleanup.err.referenced_history": "Выбранные архивы всё ещё ссылаются из forked или paginated history.",
+  "storage.cleanup.err.invalid_digest": "Digest предпросмотра отсутствует или недействителен.",
+  "storage.cleanup.err.invalid_mode": "Режим должен быть quarantine или permanent.",
+  "storage.cleanup.err.fs_failed": "Ошибка файловой очистки; изменения не сохранены.",
+  "storage.cleanup.err.db_reconcile_failed": "Не удалось обновить базу состояния Codex.",
+  "storage.cleanup.err.cleanup_failed": "Не удалось выполнить очистку.",
 
   // add-provider modal
   "modal.addNamed": "Добавить: {label}",

@@ -611,7 +611,7 @@ export const ja: Record<TKey, string> = {
   "storage.cleanup.moreFiles": "…ほか {n} 件",
   "storage.cleanup.permanent": "完全に削除する（隔離しない）",
   "storage.cleanup.permanentWarn": "完全削除は元に戻せません。",
-  "storage.cleanup.quarantineNote": "ファイルは CODEX_HOME 下の .trash へ移動します。この版ではダッシュボードから復元できません — 確信できるまでゴミ箱を残してください。",
+  "storage.cleanup.quarantineNote": "ファイルは CODEX_HOME 下の .trash へ移動します。この版にアプリ内復元はありません — ゴミ箱を残すか、manifest.json を使って手動で戻してください。",
   "storage.cleanup.cancel": "キャンセル",
   "storage.cleanup.confirmQuarantine": "隔離する",
   "storage.cleanup.confirmPermanent": "完全に削除",
@@ -619,6 +619,14 @@ export const ja: Record<TKey, string> = {
   "storage.cleanup.donePermanent": "{count} 件を完全削除しました（{size}）。",
   "storage.cleanup.previewFailed": "プレビューに失敗しました。",
   "storage.cleanup.cleanupFailed": "クリーンアップに失敗しました。",
+  "storage.cleanup.err.codex_busy": "Codex が state.sqlite を使用中です — Codex を終了して再試行してください。",
+  "storage.cleanup.err.stale_preview": "プレビュー以降にアーカイブが変わりました — プレビューをやり直してください。",
+  "storage.cleanup.err.referenced_history": "選択したアーカイブはフォークまたはページング履歴から参照されています。",
+  "storage.cleanup.err.invalid_digest": "プレビューのダイジェストが無い、または無効です。",
+  "storage.cleanup.err.invalid_mode": "モードは quarantine または permanent である必要があります。",
+  "storage.cleanup.err.fs_failed": "ファイルシステムのクリーンアップに失敗しました。変更は保持されていません。",
+  "storage.cleanup.err.db_reconcile_failed": "Codex の状態データベースを更新できませんでした。",
+  "storage.cleanup.err.cleanup_failed": "クリーンアップに失敗しました。",
 
   // add-provider modal
   "modal.addNamed": "追加: {label}",
