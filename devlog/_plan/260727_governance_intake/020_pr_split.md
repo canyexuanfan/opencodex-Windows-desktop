@@ -1,0 +1,109 @@
+# 020 — 대상 PR 두 개로 분할 (diff-level)
+
+WP3 · 근거: `000_survey.md`, PR #518 파일/커밋 실측
+
+## 분할 대상 선정
+
+열린 PR 14개 중 ready 상태는 #518, #522, #355 셋뿐이다. 나머지 11개는
+draft라 작성자 소유이므로 우리가 쪼갤 대상이 아니다.
+
+| PR | 상태 | 크기 | 분할 필요성 |
+| --- | --- | --- | --- |
+| #518 | UNSTABLE (windows pending) | 21파일 / +1192 | **높음** — 두 관심사가 섞여 있음 |
+| #522 | CLEAN, 전 체크 통과 | 20파일 / +634 | 낮음 — 단일 기능(상관 ID) |
+| #355 | ready | 미조사 | 타인 소유, 이번 범위 밖 |
+
+**대상은 #518**로 확정한다. #522는 이미 CLEAN이고 관심사가 하나라서
+쪼개면 오히려 리뷰 비용만 늘어난다.
+
+## #518이 왜 두 개인가
+
+PR 제목은 "warn or restart stale app-server after sync"인데, 실제 diff는
+서로 독립적으로 검증 가능한 두 덩어리다.
+
+### 덩어리 A — 프로세스 탐지/종료 (위험한 쪽)
+
+    src/codex/app-server-processes.ts   +488  (신규)
+    src/cli/index.ts                    +13/-2
+    src/cli/help.ts                     +19/-4
+    tests/codex-app-server-processes.test.ts  +349 (신규)
+    docs-site/.../reference/cli.md      +10/-3
+    docs-site/.../guides/codex-integration.md +5
+
+`--restart-codex` 플래그로 **다른 프로세스에 SIGTERM을 보낸다**. PR 커밋
+이력을 보면 이 부분에만 리뷰 지적이 네 번 붙었다:
+
+    95a9bf91 harden app-server identity checks from CodeRabbit
+    56104a5a use Invoke-CimMethod for Windows process owner lookup
+    06316183 detect quoted app-server paths and gate sync-cache restarts
+    8d2292bf honor value-taking globals before app-server match
+
+프로세스 매칭이 틀리면 남의 프로세스를 죽인다. UID 스코프, 인용부호 경로,
+값을 받는 글로벌 플래그 처리가 전부 이 위험을 막는 코드다.
+
+### 덩어리 B — catalogWritten 신호 (안전한 쪽)
+
+    src/codex/catalog/sync.ts           +10/-5
+    src/codex/refresh.ts                +7/-3
+    src/codex/sync.ts                   +5
+    src/server/management/config-routes.ts +4/-4
+    gui/src/pages/dashboard-overview-sections.tsx +2/-1
+    gui/src/i18n/*.ts                   6파일 각 +1/-1
+    tests/codex-models-cache-invalidate.test.ts +203 (신규)
+    tests/codex-refresh.test.ts         +57/-4
+    tests/codex-sync-api.test.ts        +5
+    tests/injection-model-api.test.ts   +2/-2
+
+`syncCatalogModels`가 `catalogWritten: boolean`을 반환하고,
+`invalidateCodexModelsCache()`가 `void` → `boolean`으로 바뀐다.
+GUI는 그 신호로 stale 힌트를 띄운다. 프로세스를 건드리지 않는다.
+
+## 분할 방식
+
+B가 A의 전제다 — A의 재시작 게이트가 `catalogWritten`을 읽는다
+(커밋 `052015e6 gate app-server restart on catalogWritten`). 따라서
+**B를 먼저, A를 그 위에** 쌓는다.
+
+    PR-1 (B):  dev  ← codex/catalog-written-signal
+    PR-2 (A):  PR-1 ← codex/app-server-restart
+
+PR-2의 base를 PR-1로 두면 리뷰어가 A의 diff만 보게 된다. PR-1이 머지되면
+PR-2는 자동으로 dev를 base로 재타겟된다.
+
+### 분리 절차
+
+    git fetch origin pull/518/head:pr518
+    git switch -c codex/catalog-written-signal origin/dev
+    # B에 해당하는 hunk만 체리픽 (커밋 단위로 안 갈라지므로 경로 기준)
+    git checkout pr518 -- src/codex/catalog/sync.ts src/codex/refresh.ts \
+      src/codex/sync.ts src/server/management/config-routes.ts \
+      gui/src/pages/dashboard-overview-sections.tsx gui/src/i18n \
+      tests/codex-models-cache-invalidate.test.ts tests/codex-refresh.test.ts \
+      tests/codex-sync-api.test.ts tests/injection-model-api.test.ts
+
+주의: `src/codex/refresh.ts`와 `src/cli/index.ts`에는 A/B가 같은 파일에서
+섞여 있을 수 있다. 경로 단위 체크아웃 후 반드시 diff를 눈으로 확인하고,
+A 쪽 코드가 딸려오면 되돌린다.
+
+## 소유권 문제 (중요)
+
+#518은 **Wibias 소유**다. 우리가 그 브랜치를 강제로 바꾸는 것은
+범위 밖이다. 두 가지 길이 있다:
+
+1. **권장** — 분할 브랜치 두 개를 만들어 새 PR로 올리고, #518에
+   "이렇게 쪼갰다"는 코멘트를 남긴 뒤 작성자가 닫도록 요청한다.
+2. 작성자에게 분할을 요청만 하고 우리는 손대지 않는다.
+
+WP4에서 Wibias가 메인테이너가 되면 1번이 훨씬 자연스러워진다. 순서상
+**WP4(메인테이너 추가)를 WP3(분할)보다 먼저** 하는 것이 맞다.
+
+→ 이 발견에 따라 goalplan의 work-phase 순서를 wp4 → wp3으로 바꾼다.
+
+## 수용 기준
+
+1. `codex/catalog-written-signal` 브랜치에서 `bun run typecheck` exit 0.
+2. `bun test tests/codex-models-cache-invalidate.test.ts tests/codex-refresh.test.ts
+   tests/codex-sync-api.test.ts tests/injection-model-api.test.ts` 전부 통과.
+3. 그 브랜치 diff에 `src/codex/app-server-processes.ts`가 **없다**.
+4. `codex/app-server-restart` 브랜치에서 동일 typecheck + 프로세스 테스트 통과.
+5. 두 브랜치의 diff 합집합이 #518의 diff와 파일 단위로 일치.
