@@ -2186,6 +2186,26 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.supports_reasoning_summaries).toBe(false);
   });
 
+  test("model-specific reasoning-summary delivery keeps summaries enabled in the routed catalog (#538)", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        compat: {
+          adapter: "openai-responses",
+          baseUrl: "https://compat.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["summary-model"],
+          modelReasoningSummaryDelivery: { "summary-model": "sequential" },
+        },
+      },
+    });
+    const entries = buildCatalogEntries(null, [], models);
+    const routed = entries.find(e => e.slug === "compat/summary-model");
+
+    expect(models.find(model => model.id === "summary-model")?.supportsReasoningSummaries).toBe(true);
+    expect(routed?.supports_reasoning_summaries).toBe(true);
+  });
+
   test("generated jawcode snapshot is restricted to mapped providers", () => {
     expect(resolveJawcodeProvider("kimi")).toBe("moonshot");
     expect(resolveJawcodeProvider("nanogpt")).toBeUndefined();

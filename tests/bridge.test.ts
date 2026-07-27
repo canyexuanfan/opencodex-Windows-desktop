@@ -406,6 +406,39 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect((completed.output as Record<string, unknown>[]).map(item => item.phase)).toEqual(["commentary", "final_answer"]);
   });
 
+  test("unphased terminal text is finalized as one final_answer message (#542)", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "Only " },
+      { type: "text_delta", text: "once." },
+      { type: "done" },
+    ]), "routed/chat-model"));
+
+    const added = frames.find(frame => frame.event === "response.output_item.added")?.data.item as Record<string, unknown>;
+    const done = frames.find(frame => frame.event === "response.output_item.done")?.data.item as Record<string, unknown>;
+    const completed = frames.find(frame => frame.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+
+    expect(added.phase).toBeUndefined();
+    expect(done).toMatchObject({ id: added.id, phase: "final_answer" });
+    expect(output).toHaveLength(1);
+    expect(output[0]).toMatchObject({ id: added.id, phase: "final_answer" });
+  });
+
+  test("unphased text before a tool call is finalized as commentary (#542)", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "I will inspect that." },
+      { type: "tool_call_start", id: "call_1", name: "read_file" },
+      { type: "tool_call_delta", arguments: "{}" },
+      { type: "tool_call_end", id: "call_1" },
+      { type: "done" },
+    ]), "routed/chat-model"));
+
+    const completed = frames.find(frame => frame.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    expect(output[0]).toMatchObject({ type: "message", phase: "commentary" });
+    expect(output[1]).toMatchObject({ type: "function_call", name: "read_file" });
+  });
+
   test("explicit incomplete event stays incomplete with retry metadata", async () => {
     const frames = await collectSse(bridgeToResponsesSSE(replay([
       { type: "reasoning_raw_delta", text: "partial reasoning" },
@@ -471,6 +504,29 @@ describe("Responses bridge reasoning and usage parity", () => {
       end_turn: false,
       incomplete_details: { reason: "empty_kiro_stream", retryable: true },
     });
+  });
+
+  test("non-streaming JSON infers terminal and pre-tool phases without overriding explicit phases (#542)", () => {
+    const terminal = buildResponseJSON([
+      { type: "text_delta", text: "Only once." },
+      { type: "done" },
+    ], "routed/chat-model");
+    expect((terminal.output as Record<string, unknown>[])[0]).toMatchObject({ phase: "final_answer" });
+
+    const preTool = buildResponseJSON([
+      { type: "text_delta", text: "I will inspect that." },
+      { type: "tool_call_start", id: "call_1", name: "read_file" },
+      { type: "tool_call_delta", arguments: "{}" },
+      { type: "tool_call_end", id: "call_1" },
+      { type: "done" },
+    ], "routed/chat-model");
+    expect((preTool.output as Record<string, unknown>[])[0]).toMatchObject({ phase: "commentary" });
+
+    const explicit = buildResponseJSON([
+      { type: "text_delta", text: "Explicit.", phase: "commentary" },
+      { type: "done" },
+    ], "routed/chat-model");
+    expect((explicit.output as Record<string, unknown>[])[0]).toMatchObject({ phase: "commentary" });
   });
 
   test("structured adapter errors override message heuristics", () => {

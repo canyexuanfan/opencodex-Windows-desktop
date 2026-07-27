@@ -64,6 +64,37 @@ tools. Conflict discovery spans both top-level `body.tools` and Codex Desktop Re
 namespace. ChatGPT forward mode preserves the pair because that backend accepts it and owns native
 image generation.
 
+Per-model `modelReasoningSummaryDelivery` is a narrow compatibility layer for
+`openai-responses` gateways whose summary capability is real but whose accepted delivery enum
+differs from Codex. Presence advertises reasoning summaries in the routed catalog and rewrites only
+an already-present `stream_options.reasoning_summary_delivery` at the adapter boundary. It never
+injects summary generation into a request, and config validation rejects a delivery map that
+conflicts with `modelSupportsReasoningSummaries: false` for the same model.
+
+[Decision Log]
+- 목적과 의도: Preserve Codex Desktop reasoning summaries while adapting only the delivery enum rejected by a specific Responses-compatible upstream.
+- 기존 구현 및 제약 조건: The existing boolean capability either passed Codex's enum unchanged or disabled summaries entirely; stale running clients can keep sending the old enum after a catalog refresh.
+- 검토한 주요 대안: Disable summaries; rewrite the enum globally; inject a delivery field when absent; configure a provider-wide value.
+- 선택한 방식: Use a validated per-model allowlisted map, imply summary capability for that model, and rewrite only a caller-provided delivery field at the Responses adapter boundary.
+- 다른 대안 대신 이 방식을 선택한 이유: Upstream enum support differs by model and provider, while global rewriting or injection would change unrelated requests and disabling summaries removes Desktop UX.
+- 장점, 단점 및 영향: Configured models retain the native summary UI and stale clients self-heal; each incompatible model needs an explicit map entry and contradictory opt-out configuration now fails closed.
+
+## Claude Desktop config-library resolution
+
+The Desktop profile writer and management status probe share
+`resolveDesktop3pConfigLibraryPath`. Explicit opencodex and Claude user-data overrides win; otherwise
+the resolver follows Electron's platform user-data convention under the `Claude` application
+directory. The retired hardcoded `Claude-3p` path is neither read nor migrated implicitly, so the
+status endpoint cannot report a self-consistent file that Desktop never sees.
+
+[Decision Log]
+- 목적과 의도: Make the generated Claude Desktop profile land in the directory the installed Desktop application actually reads and keep dashboard status consistent with that write target.
+- 기존 구현 및 제약 조건: Both callers duplicated a macOS-only `Claude-3p` fallback, which made their internal status agree while Electron used `Claude/configLibrary`; users may also set explicit profile roots.
+- 검토한 주요 대안: Rename only the CLI fallback; scan both directories; move or delete legacy files automatically; centralize a cross-platform resolver.
+- 선택한 방식: Centralize override-aware macOS, Windows, and Linux resolution and use it for both write and status paths without destructive migration.
+- 다른 대안 대신 이 방식을 선택한 이유: One resolver prevents drift, platform defaults match Electron, and leaving the legacy directory untouched avoids deleting user data or guessing which copy should win.
+- 장점, 단점 및 영향: New applies become visible to Desktop on every supported platform; old `Claude-3p` files remain harmless and users with nonstandard layouts must use the documented override.
+
 ## Cursor Native Exec
 
 Cursor's experimental live transport can receive server-driven local read/write/delete/ls/grep,
@@ -290,6 +321,26 @@ Codex app, so tool cells group like native models — while the text still round
 `preserveReasoningContentModels` replay. Visible mode (summary "auto") keeps the raw
 `content[reasoning_text]` shape. Diagnosis and codex-rs grouping evidence:
 `devlog/_plan/260709_native_response_pattern/`.
+
+## Chat-to-Responses message phase inference
+
+Chat Completions streams do not carry the Responses `message.phase` field. The bridge keeps an
+unphased live message provisional while its deltas arrive, then assigns `commentary` when a later
+tool, search, reasoning, or assistant boundary proves that more work follows, and assigns
+`final_answer` only when a clean terminal `done` closes the current message. Explicit adapter
+phases always win. Streaming `output_item.added` remains unphased until that future boundary is
+known; `output_item.done` and the terminal response snapshot carry the authoritative inferred phase
+with the same item id. The batch/non-streaming bridge follows the same rule.
+
+```text
+[Decision Log]
+- 목적과 의도: Prevent Codex App from rendering one bridged Chat Completions answer as both live commentary and a second persisted final answer.
+- 기존 구현 및 제약 조건: openai-chat emits text deltas without phase, the bridge streamed them immediately, and whether text is pre-tool commentary or the terminal answer is unknowable until a later boundary arrives.
+- 검토한 주요 대안: Mark every delta final_answer; mark every delta commentary; buffer the entire answer before emitting; infer phase only when the message is finalized.
+- 선택한 방식: Keep the live added item provisional and infer commentary or final_answer at the authoritative close boundary, preserving explicit phases and item identity in done/completed output.
+- 다른 대안 대신 이 방식을 선택한 이유: Eager defaults misclassify either tool preambles or final answers, while full buffering removes live streaming; close-time inference provides correct persisted semantics without adding latency.
+- 장점, 단점 및 영향: Codex App receives a definitive phase for persisted bridged messages and avoids the duplicate-final rendering path; the provisional output_item.added event intentionally has no phase because its classification is not yet knowable.
+```
 
 ## Upstream reset retry
 

@@ -11,12 +11,52 @@ import {
   generateDesktop3pModels,
   legacyDesktop3pAlias,
   parseDesktop3pModeArgs,
+  resolveDesktop3pConfigLibraryPath,
   resolveDesktop3pAlias,
 } from "../src/claude/desktop-3p";
 import { moveDesktopRoute, reconcileDesktopProfile, setDesktopFamilyDefault } from "../src/claude/desktop-profile";
 import { resolveInboundModel } from "../src/claude/inbound";
 
 describe("Claude Desktop 3P models", () => {
+  test("resolves the actual cross-platform Claude Desktop config library (#539)", () => {
+    // Claude Desktop appends "-3p" to its userData root (app.asar `GE()`), so the
+    // suffix-less path is one Desktop never reads. Branch-by-branch coverage lives in
+    // tests/claude-desktop-config-path.test.ts; this pins the public entry point.
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR: " /custom/library " },
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe("/custom/library");
+    // CLAUDE_USER_DATA_DIR is the one branch where Desktop drops the suffix entirely.
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { CLAUDE_USER_DATA_DIR: "/profiles/claude" },
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe("/profiles/claude/configLibrary");
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: {},
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe("/Users/test/Library/Application Support/Claude-3p/configLibrary");
+    // Windows reads LOCALAPPDATA first; APPDATA is only the Electron userData fallback.
+    // Asserted with `join` because the separator follows the HOST, not the target platform.
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local" },
+      platform: "win32",
+      homeDir: "C:\\Users\\test",
+    })).toBe(join("C:\\Users\\test\\AppData\\Local", "Claude-3p", "configLibrary"));
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { XDG_CONFIG_HOME: "/xdg/config" },
+      platform: "linux",
+      homeDir: "/home/test",
+    })).toBe("/xdg/config/Claude-3p/configLibrary");
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: {},
+      platform: "linux",
+      homeDir: "/home/test",
+    })).toBe("/home/test/.config/Claude-3p/configLibrary");
+  });
+
   test("derives stable golden codes", () => {
     expect(deriveDesktop3pCode("native/gpt-5.6-sol")).toBe("ncb");
     expect(deriveDesktop3pCode("opencode-go/glm-5.2")).toBe("yrf");

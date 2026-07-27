@@ -11,11 +11,13 @@ import {
   isWirePinnedModel,
   MODEL_ADAPTER_OVERRIDE_ALLOWED,
   OPENAI_PROVIDER_TIER_VERSION,
+  REASONING_SUMMARY_DELIVERY_VALUES,
   type OcxConfig,
   type OcxProviderConfig,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider } from "./providers/openai-tiers";
 import { parseDesktopProfile } from "./claude/desktop-profile";
+import { modelRecordValue } from "./reasoning-effort";
 
 let _atomicSeq = 0;
 
@@ -442,6 +444,34 @@ export function booleanRecordConfigError(value: unknown, field: string): string 
   return null;
 }
 
+const REASONING_SUMMARY_DELIVERY_SET = new Set<string>(REASONING_SUMMARY_DELIVERY_VALUES);
+
+export function reasoningSummaryDeliveryRecordConfigError(
+  value: unknown,
+  supportsReasoningSummaries: unknown,
+  field = "modelReasoningSummaryDelivery",
+): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${field} must be a plain object`;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return `${field} must be a plain object with own properties`;
+
+  const supports = booleanRecordConfigError(supportsReasoningSummaries, "modelSupportsReasoningSummaries") === null
+    && supportsReasoningSummaries && typeof supportsReasoningSummaries === "object"
+    ? supportsReasoningSummaries as Record<string, boolean>
+    : undefined;
+  for (const [key, entry] of Object.entries(value)) {
+    if (!key.trim()) return `${field} keys must be nonblank model ids`;
+    if (typeof entry !== "string" || !REASONING_SUMMARY_DELIVERY_SET.has(entry)) {
+      return `${field}.${key} must be one of: ${REASONING_SUMMARY_DELIVERY_VALUES.join(", ")}`;
+    }
+    if (modelRecordValue(supports, key) === false) {
+      return `${field}.${key} conflicts with modelSupportsReasoningSummaries=false`;
+    }
+  }
+  return null;
+}
+
 /**
  * Validate a provider's per-model wire override map (#404).
  *
@@ -603,6 +633,17 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", name, "modelSupportsReasoningSummaries"],
         message: reasoningSummariesError,
+      });
+    }
+    const reasoningSummaryDeliveryError = reasoningSummaryDeliveryRecordConfigError(
+      (provider as { modelReasoningSummaryDelivery?: unknown }).modelReasoningSummaryDelivery,
+      (provider as { modelSupportsReasoningSummaries?: unknown }).modelSupportsReasoningSummaries,
+    );
+    if (reasoningSummaryDeliveryError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "modelReasoningSummaryDelivery"],
+        message: reasoningSummaryDeliveryError,
       });
     }
     const defaultMaxOutputError = positiveIntegerConfigError(

@@ -898,6 +898,11 @@ export interface OcxProviderConfig {
    * Responses backend rejects Codex summary-delivery fields for that model.
    */
   modelSupportsReasoningSummaries?: Record<string, boolean>;
+  /**
+   * Per-model wire value for Responses `stream_options.reasoning_summary_delivery`.
+   * Presence also advertises reasoning-summary support for that routed model.
+   */
+  modelReasoningSummaryDelivery?: Record<string, ReasoningSummaryDelivery>;
   /** Provider-wide mapping from Codex effort labels to upstream `reasoning_effort` values. */
   reasoningEffortMap?: Record<string, string>;
   /** Model-specific mapping from Codex effort labels to upstream `reasoning_effort` values. */
@@ -1005,6 +1010,15 @@ export interface OcxProviderConfig {
    */
   nativeLocalExec?: "off" | "codex-sandbox" | "on";
 }
+
+export const REASONING_SUMMARY_DELIVERY_VALUES = [
+  "sequential",
+  "sequential_cutoff",
+  "concurrent",
+  "concurrent_cutoff",
+] as const;
+
+export type ReasoningSummaryDelivery = typeof REASONING_SUMMARY_DELIVERY_VALUES[number];
 
 /** Trusted runtime ownership for Codex-account credentials. Never persisted per provider. */
 export type CodexAccountMode = "direct" | "pool";

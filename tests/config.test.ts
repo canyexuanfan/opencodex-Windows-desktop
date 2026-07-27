@@ -547,6 +547,60 @@ describe("opencodex config defaults", () => {
     }
   });
 
+  test("modelReasoningSummaryDelivery validates known values and rejects summary opt-out conflicts (#538)", () => {
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          modelSupportsReasoningSummaries: { strict: true },
+          modelReasoningSummaryDelivery: {
+            strict: "sequential",
+            concurrent: "concurrent_cutoff",
+          },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().error).toBeNull();
+
+    for (const modelReasoningSummaryDelivery of [
+      [],
+      { strict: "serial" },
+      { "": "sequential" },
+    ]) {
+      writeConfig({
+        port: 12345,
+        providers: {
+          custom: {
+            adapter: "openai-responses",
+            baseUrl: "https://example.test/v1",
+            modelReasoningSummaryDelivery,
+          },
+        },
+        defaultProvider: "custom",
+      });
+      expect(readConfigDiagnostics().source).toBe("fallback");
+      expect(readConfigDiagnostics().error).toContain("modelReasoningSummaryDelivery");
+    }
+
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          modelSupportsReasoningSummaries: { STRICT: false },
+          modelReasoningSummaryDelivery: { strict: "sequential" },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("conflicts with modelSupportsReasoningSummaries=false");
+  });
+
   test("modelAdapters accepts only allowed wires on eligible providers (#404)", () => {
     writeConfig({
       port: 12345,

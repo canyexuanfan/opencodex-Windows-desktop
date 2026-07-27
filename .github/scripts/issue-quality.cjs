@@ -97,13 +97,32 @@ function extractSection(body, heading) {
   const lines = body.split("\n");
   const headingLower = heading.toLowerCase().trim();
   let capturing = false;
+  let sectionDepth = 0;
+  let fence = null;
   const out = [];
   for (const line of lines) {
-    const m = line.match(/^#{2,4}\s+(.*)/);
+    if (fence) {
+      if (new RegExp(`^[ \\t]{0,3}${fence.marker}{${fence.length},}[ \\t]*$`).test(line)) {
+        fence = null;
+      }
+      if (capturing) out.push(line);
+      continue;
+    }
+
+    const fenceMatch = line.match(/^[ \t]{0,3}(`{3,}|~{3,})/);
+    if (fenceMatch) {
+      fence = { marker: fenceMatch[1][0], length: fenceMatch[1].length };
+      if (capturing) out.push(line);
+      continue;
+    }
+
+    const m = line.match(/^(#{2,4})\s+(.*)/);
     if (m) {
-      if (capturing) break; // next heading ends the section
-      if (m[1].toLowerCase().trim() === headingLower) {
+      const depth = m[1].length;
+      if (capturing && depth <= sectionDepth) break;
+      if (!capturing && m[2].toLowerCase().trim() === headingLower) {
         capturing = true;
+        sectionDepth = depth;
         continue;
       }
     }

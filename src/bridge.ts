@@ -302,8 +302,12 @@ export function bridgeToResponsesSSE(
         return anns;
       };
 
-      const closeCurrentMessage = () => {
+      const closeCurrentMessage = (inferredPhase?: OcxMessagePhase) => {
         if (!currentMsg) return;
+        // Chat Completions has no message-phase field. Keep its live item provisional, then
+        // classify it only when the next adapter event proves whether this text led into more
+        // work or completed the turn. Explicit adapter phases always outrank this inference.
+        const phase = currentMsg.phase ?? inferredPhase;
         // Bind any pending web-search citations to this assistant message (then they clear).
         const annotations = takeWebAnnotations();
         // Finalize the text part (Responses protocol). Without these .done events Codex never
@@ -318,7 +322,7 @@ export function bridgeToResponsesSSE(
         const item = {
           type: "message", id: currentMsg.itemId, status: "completed", role: "assistant",
           content: [{ type: "output_text", text: currentMsg.text, annotations }],
-          ...(currentMsg.phase ? { phase: currentMsg.phase } : {}),
+          ...(phase ? { phase } : {}),
         };
         emit("response.output_item.done", { output_index: currentMsg.outputIndex, item });
         finishedItems.push(item as OutputItem);
@@ -494,7 +498,7 @@ export function bridgeToResponsesSSE(
             case "assistant_boundary": {
               // A guarded continuation starts a fresh assistant output item while keeping the
               // intermediate, suspicious text in the same Responses turn.
-              if (currentMsg) closeCurrentMessage();
+              if (currentMsg) closeCurrentMessage("commentary");
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
@@ -507,7 +511,7 @@ export function bridgeToResponsesSSE(
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
-              if (currentMsg && currentMsg.phase !== event.phase) closeCurrentMessage();
+              if (currentMsg && currentMsg.phase !== event.phase) closeCurrentMessage("commentary");
               if (!currentMsg) {
                 const itemId = `msg_${uuid()}`;
                 const item = {
@@ -531,7 +535,7 @@ export function bridgeToResponsesSSE(
             }
             case "thinking_delta": {
               if (options?.hideThinkingSummary) { hiddenThinkingText += event.thinking; break; }
-              if (currentMsg) closeCurrentMessage();
+              if (currentMsg) closeCurrentMessage("commentary");
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
@@ -566,7 +570,7 @@ export function bridgeToResponsesSSE(
             }
             case "reasoning_raw_delta": {
               if (options?.hideThinkingSummary) { hiddenRawReasoningText += event.text; break; }
-              if (currentMsg) closeCurrentMessage();
+              if (currentMsg) closeCurrentMessage("commentary");
               if (currentReasoning) closeCurrentReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (!currentRawReasoning) {
@@ -583,7 +587,7 @@ export function bridgeToResponsesSSE(
               break;
             }
             case "tool_call_start": {
-              if (currentMsg) closeCurrentMessage();
+              if (currentMsg) closeCurrentMessage("commentary");
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
@@ -638,7 +642,7 @@ export function bridgeToResponsesSSE(
               // Open the native search cell so Codex shows the "Searching the web" spinner WHILE the
               // sidecar runs. Close any other open item first, allocate this item's output index, and
               // hold it open until the matching `web_search_call_end` (or a terminal close).
-              if (currentMsg) closeCurrentMessage();
+              if (currentMsg) closeCurrentMessage("commentary");
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
@@ -675,7 +679,7 @@ export function bridgeToResponsesSSE(
               break;
             }
             case "done": {
-              if (currentMsg) closeCurrentMessage();
+              if (currentMsg) closeCurrentMessage(event.stopReason ? undefined : "final_answer");
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
@@ -918,6 +922,7 @@ export function buildResponseJSON(
   let incompleteEvent: Extract<AdapterEvent, { type: "incomplete" }> | undefined;
   let endTurn: boolean | undefined;
   let stopReason: string | undefined;
+  let cleanDone = false;
   let compactionText = "";
 
   let currentText = "";
@@ -941,8 +946,9 @@ export function buildResponseJSON(
     try { const o = JSON.parse(args); return o && typeof o === "object" ? o : {}; } catch { return {}; }
   };
 
-  const flushText = () => {
+  const flushText = (inferredPhase?: OcxMessagePhase) => {
     if (!currentText) return;
+    const phase = currentTextPhase ?? inferredPhase;
     const annotations = pendingWebSources.map(s => ({
       type: "url_citation", url: s.url, ...(s.title ? { title: s.title } : {}), start_index: 0, end_index: 0,
     }));
@@ -950,7 +956,7 @@ export function buildResponseJSON(
     output.push({
       type: "message", id: `msg_${uuid()}`, role: "assistant", status: "completed",
       content: [{ type: "output_text", text: currentText, annotations }],
-      ...(currentTextPhase ? { phase: currentTextPhase } : {}),
+      ...(phase ? { phase } : {}),
     });
     currentText = "";
     currentTextPhase = undefined;
@@ -1025,13 +1031,13 @@ export function buildResponseJSON(
   for (const e of events) {
     switch (e.type) {
       case "assistant_boundary":
-        flushText();
+        flushText("commentary");
         flushSummaryReasoning();
         flushRawReasoning();
         flushToolCall();
         break;
       case "text_delta":
-        if (currentText && currentTextPhase !== e.phase) flushText();
+        if (currentText && currentTextPhase !== e.phase) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
         if (currentToolCallId) flushToolCall();
@@ -1044,7 +1050,7 @@ export function buildResponseJSON(
         }
         break;
       case "thinking_delta":
-        if (currentText) flushText();
+        if (currentText) flushText("commentary");
         if (currentRawReasoning) flushRawReasoning();
         if (currentToolCallId) flushToolCall();
         currentSummaryReasoning += e.thinking;
@@ -1059,13 +1065,13 @@ export function buildResponseJSON(
         batchRedacted.push(e.data);
         break;
       case "reasoning_raw_delta":
-        if (currentText) flushText();
+        if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentToolCallId) flushToolCall();
         currentRawReasoning += e.text;
         break;
       case "tool_call_start":
-        if (currentText) flushText();
+        if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
         flushToolCall();
@@ -1084,7 +1090,7 @@ export function buildResponseJSON(
         // single finalized item, emitted on `end`. Begin is a no-op here.
         break;
       case "web_search_call_end":
-        if (currentText) flushText();
+        if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
         flushToolCall();
@@ -1112,12 +1118,13 @@ export function buildResponseJSON(
       case "done":
         usage = e.usage;
         endTurn = e.endTurn;
+        cleanDone = e.stopReason === undefined;
         if (e.providerState) options?.onProviderState?.(e.providerState);
         if (e.stopReason === "max_tokens") stopReason = "max_tokens";
         break;
     }
   }
-  flushText();
+  flushText(cleanDone && !errorEvent && !incompleteEvent ? "final_answer" : undefined);
   flushSummaryReasoning();
   flushRawReasoning();
   flushToolCall();

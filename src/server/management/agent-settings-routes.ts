@@ -33,7 +33,6 @@ import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { resolveCodexHomeDir } from "../../codex/home";
-import { scanStorage } from "../../storage/scanner";
 import { readUsageEntries } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
@@ -543,8 +542,8 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       const { readFileSync: readFile, existsSync } = await import("node:fs");
       const { createHash } = await import("node:crypto");
       const { join } = await import("node:path");
-      const { claudeDesktopConfigLibraryDir } = await import("../../claude/desktop-3p-paths");
-      const libraryPath = claudeDesktopConfigLibraryDir();
+      const { resolveDesktop3pConfigLibraryPath } = await import("../../claude/desktop-3p");
+      const libraryPath = resolveDesktop3pConfigLibraryPath();
       const metaPath = join(libraryPath, "_meta.json");
       let onDiskFingerprint: string | null = null;
       let configPath: string | null = null;
