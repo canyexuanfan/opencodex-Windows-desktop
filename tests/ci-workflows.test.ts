@@ -676,7 +676,16 @@ describe("GitHub Actions hardening", () => {
         pr: { base: { ref: "main" }, title: "Add a thing", draft: false },
         eventPayload: { base: { ref: "dev" }, title: "Add a thing", draft: false },
       });
-      expect(methodsOf(wentWrong)).toContain("pulls.update");
+      // Exact equality, not `toContain`. An audit round hung an extra
+      // `github.request("POST /repos/attacker/other/issues", …)` off precisely
+      // this path because it was the one scenario asserting loosely.
+      expect(methodsOf(wentWrong)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.createComment",
+        "pulls.update",
+        "graphql",
+      ]);
       expect(callsTo(wentWrong, "pulls.update")).toEqual([
         { owner: "lidge-jun", repo: "opencodex", pull_number: 42, title: "[WRONG BRANCH] Add a thing" },
       ]);
@@ -745,6 +754,78 @@ describe("GitHub Actions hardening", () => {
         "graphql",
       ]);
       expect(result.warnings.join(" ")).toContain("Could not parse stored workflow state");
+    });
+
+    test("an active state that recorded no changes still enforces and still clears", async () => {
+      // `{active: true, titlePrefixedByBot: false, autoDraftedByBot: false}` is
+      // reachable — it is what a PR that was already prefixed and already a
+      // draft leaves behind. No scenario covered it, so an audit round added
+      // `if (storedState?.active && !titlePrefixedByBot && !autoDraftedByBot)
+      // return;` to both halves and turned enforcement into a no-op.
+      const noRecordedChanges = {
+        version: 1,
+        active: true,
+        autoDraftedByBot: false,
+        titlePrefixedByBot: false,
+      };
+
+      // Still wrong: refresh the explanation. Nothing to re-apply.
+      const stillWrong = await run({
+        pr: { base: { ref: "main" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment(noRecordedChanges)],
+      });
+      expect(methodsOf(stillWrong)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.updateComment",
+      ]);
+
+      // Corrected: nothing to undo, but the state must still be cleared or the
+      // next wrong-target event resumes from a stale record.
+      const corrected = await run({
+        pr: { base: { ref: "dev" }, draft: true, title: "[WRONG BRANCH] Add a thing" },
+        comments: [botComment(noRecordedChanges)],
+      });
+      expect(methodsOf(corrected)).toEqual([
+        "pulls.get",
+        "issues.listComments",
+        "issues.updateComment",
+      ]);
+      const [cleared] = callsTo(corrected, "issues.updateComment") as [{ body: string }];
+      expect(cleared.body).toContain('"active":false');
+      expect(cleared.body).toContain("Target branch corrected");
+    });
+
+    test("an API failure is never swallowed, whatever status it carries", async () => {
+      // Octokit rejects with a `RequestError` that has a `.status`, and an
+      // audit round swallowed exactly one code:
+      //
+      //     catch (error) { if (error.status === 404) return; throw error; }
+      //
+      // A green workflow, an un-drafted PR. Drive the failure at several
+      // statuses so a code-specific catch cannot hide in the gap.
+      const { script } = await readEnforcePrTarget();
+
+      for (const status of [403, 404, 422, 500]) {
+        await expect(
+          runEnforcePrTarget(script, {
+            pr: { base: { ref: "main" }, draft: false },
+            failOn: ["graphql"],
+            failStatus: status,
+          }),
+        ).rejects.toThrow(/simulated failure: graphql/);
+      }
+
+      // Same for the title update, which fails before the draft conversion.
+      for (const status of [403, 404, 422]) {
+        await expect(
+          runEnforcePrTarget(script, {
+            pr: { base: { ref: "main" }, draft: false },
+            failOn: ["pulls.update"],
+            failStatus: status,
+          }),
+        ).rejects.toThrow(/simulated failure: pulls\.update/);
+      }
     });
 
     test("a failed draft conversion propagates, and the state is already stored", async () => {

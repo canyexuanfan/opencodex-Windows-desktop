@@ -309,7 +309,55 @@ bail-on-bad-state CAUGHT
 기준선: `26 pass  0 fail  359 expect() calls`, `bun run typecheck` 오류 0.
 전체 스위트(푸시 훅): `4907 pass  0 fail`.
 
-## 다섯 라운드가 남긴 것
+## 감사 6라운드 — 전역 탈출, 에러 모양, 미커버 분기
+
+5라운드 수정본을 다시 넘겼다. FAIL, 6건.
+
+**전역 탈출 3건.** `compileScript`가 `new Function`을 쓰므로 컴파일된 본문이 전역
+스코프를 본다. `process`를 파라미터로 넘겨 가려도 `globalThis.process`,
+`Function("return process")()`, 그리고 `typeof Bun`은 진짜 런타임에 닿는다.
+감사는 `if (typeof Bun === "undefined") return;`으로 프로덕션에서만 죽는 워크플로를
+만들었다. 5라운드에서 `!process.versions.bun`을 막았더니 부정 방향으로 되받은 것이다.
+
+**Octokit 에러 모양 1건.** `failOn`이 평범한 `Error`를 던졌다. 진짜는 `.status`를
+가진 `RequestError`다. `catch (error) { if (error.status === 404) return; throw error; }`
+— 404 하나만 삼키면 draft 변환 실패가 초록 워크플로가 된다.
+
+**미커버 분기 2건.** `{active: true, titlePrefixedByBot: false, autoDraftedByBot: false}`은
+도달 가능한 상태다(이미 접두사가 붙어 있고 이미 draft인 PR이 남긴다). 시나리오가
+없어서, 이 조합에서 조기 반환하도록 양쪽 분기를 죽여도 초록이었다.
+
+**느슨한 어설션 1건.** stale 페이로드 시나리오만 `toContain`을 썼다. 감사는 정확히
+그 경로에 `github.request("POST /repos/attacker/other/issues")`를 매달았다.
+
+### 대응
+
+- 렉시컬 섀도잉 대상을 `RUNTIME_SHADOWS`로 확장했다: `process`, `globalThis`,
+  `global`, `Bun`, `Deno`, `Function`, `eval`, `module`. `globalThis`는 자기 자신을
+  가리키는 가짜 전역 객체로, 그 안의 `process`도 Node 모양이고 `Bun`은 undefined다.
+  `Function`과 `eval`은 호출하면 던진다 — write 토큰을 쥔 워크플로가 런타임에 코드를
+  컴파일할 이유는 없다.
+- `failOn`이 `HttpError`(`.status`, `.response.status`)를 던진다. `failStatus`로
+  코드를 지정할 수 있고, 테스트가 403/404/422/500을 순회한다.
+- 시나리오 2개 추가: 변경 기록이 없는 활성 상태에서 (a) 여전히 잘못된 대상,
+  (b) 리타깃 완료 — 양쪽 다 상태가 정리돼야 한다.
+- stale 경로 어설션을 정확한 동등 비교로 바꿨다.
+
+## 변이 검증 실측 (53/53)
+
+6라운드 7가지:
+
+```
+detect-bun-absent CAUGHT   globalthis-process CAUGHT  function-escape CAUGHT
+swallow-404 CAUGHT         noop-active-wrong CAUGHT   noop-active-correct CAUGHT
+cross-repo-on-stale CAUGHT
+```
+
+이전 46가지 회귀 재확인: 전부 CAUGHT, survived = none.
+
+기준선: `28 pass  0 fail  376 expect() calls`, `bun run typecheck` 오류 0.
+
+## 여섯 라운드가 남긴 것
 
 설계가 세 번 바뀌었고, 매번 앞 라운드가 그 방향의 한계를 증명했다.
 
@@ -317,12 +365,13 @@ bail-on-bad-state CAUGHT
    키만 덮는다.
 2. **허용 목록** (4라운드) — "정확히 이 키들". YAML 골격에는 유효했고 지금도 유지된다.
    하지만 스크립트 본문에는 통하지 않았다. JavaScript는 같은 효과에 무한한 철자가 있다.
-3. **실행 하네스** (5라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
-   **가짜의 충실도**가 새 공격면이 됐다.
+3. **실행 하네스** (5~6라운드) — 읽지 말고 돌려라. 철자는 무의미해졌지만, 이번엔
+   **가짜의 충실도**가 새 공격면이 됐다. 두 라운드 연속으로 스크립트가 아니라
+   하네스가 뚫렸다.
 
-세 번째가 옳은 방향이다. 다만 오라클의 충실도가 곧 증거의 품질이라는 걸 5라운드가
-가르쳤다. 앞으로 이 하네스를 손댈 때는 "진짜 `github-script` + Octokit이라면 어떻게
-행동하나"를 먼저 물어야 한다.
+세 번째가 옳은 방향이다. 다만 오라클의 충실도가 곧 증거의 품질이다. 앞으로 이
+하네스를 손댈 때 물어야 할 질문은 하나다 — **진짜 `github-script` + Octokit이라면
+어떻게 행동하나.** 다르게 행동하는 지점이 곧 다음 우회다.
 
 ## 범위 밖
 

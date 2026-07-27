@@ -59,6 +59,14 @@ export type RunOptions = {
   comments?: Comment[];
   /** Method names that should reject, to exercise partial-failure paths. */
   failOn?: string[];
+  /**
+   * HTTP status the simulated failure carries. Octokit throws `RequestError`
+   * with a `.status`, and an audit round used that to swallow exactly one code:
+   * `catch (error) { if (error.status === 404) return; throw error; }` turned a
+   * failed draft conversion into a green workflow. A plain `Error` cannot
+   * exercise that branch.
+   */
+  failStatus?: number;
 };
 
 const DEFAULT_PR: Required<Omit<PullRequestState, "base" | "user">> & {
@@ -84,13 +92,49 @@ const DEFAULT_PR: Required<Omit<PullRequestState, "base" | "user">> & {
  * to behave.
  */
 export function compileScript(script: string): (scope: Record<string, unknown>) => Promise<void> {
-  const names = ["github", "context", "core", "exec", "glob", "io", "fetch", "require", "process"];
+  const names = [...SCRIPT_BINDINGS, ...RUNTIME_SHADOWS];
   const factory = new Function(
     ...names,
     `return (async () => {\n${script}\n})();`,
   ) as (...args: unknown[]) => Promise<void>;
   return scope => factory(...names.map(name => scope[name]));
 }
+
+/** What `actions/github-script` actually puts in scope. */
+const SCRIPT_BINDINGS = [
+  "github",
+  "context",
+  "core",
+  "exec",
+  "glob",
+  "io",
+  "fetch",
+  "require",
+] as const;
+
+/**
+ * Names the script must not be able to use to look past the fakes.
+ *
+ * `new Function` compiles in global scope, so without these the body can reach
+ * the real runtime. Round six proved it three ways — `typeof Bun === "undefined"`,
+ * `globalThis.process.versions.bun`, and `Function("return process")()` all
+ * detected the test runner and returned early, which is a green suite and a
+ * dead workflow in production.
+ *
+ * Shadowing them as parameters closes the escape: inside the compiled body
+ * these resolve to the harness's values, not the runtime's.
+ */
+const RUNTIME_SHADOWS = [
+  "process",
+  "globalThis",
+  "Bun",
+  "Deno",
+  "Function",
+  "eval",
+  "global",
+  "module",
+  "import_meta",
+] as const;
 
 /**
  * A `process` that reports Node, not Bun.
@@ -99,6 +143,25 @@ export function compileScript(script: string): (scope: Record<string, unknown>) 
  * the runtime takes the Node path in production. A harness that leaks Bun lets
  * a mutation run one program in the test and another one for real.
  */
+/**
+ * A rejection shaped like Octokit's `RequestError`: `.status`, `.name`, and a
+ * `.response` with the status on it too. Anything that branches on an HTTP
+ * code sees the same thing it would see in production.
+ */
+function octokitError(method: string, status: number): Error & { status: number } {
+  const error = new Error(`simulated failure: ${method}`) as Error & {
+    status: number;
+    name: string;
+    response?: unknown;
+    request?: unknown;
+  };
+  error.name = "HttpError";
+  error.status = status;
+  error.response = { status, url: `https://api.github.com/${method}`, headers: {}, data: {} };
+  error.request = { method: "POST", url: `https://api.github.com/${method}` };
+  return error;
+}
+
 function nodeLikeProcess(): Record<string, unknown> {
   return {
     platform: "linux",
@@ -118,6 +181,58 @@ function nodeLikeProcess(): Record<string, unknown> {
   };
 }
 
+/**
+ * Every runtime binding the compiled script sees, shadowing the real globals.
+ *
+ * `globalThis` gets the same Node-shaped `process`, so `globalThis.process
+ * .versions.bun` is undefined here exactly as it is in production. `Bun` and
+ * `Deno` are undefined for the same reason. `Function` and `eval` are blocked
+ * outright — a script that needs to compile code at runtime inside a workflow
+ * holding a write token is not something to characterise, it is something to
+ * reject.
+ */
+function nodeLikeRuntime(): Record<string, unknown> {
+  const nodeProcess = nodeLikeProcess();
+  const deny = (name: string) => () => {
+    throw new Error(`the script must not use ${name}`);
+  };
+
+  const fakeGlobal: Record<string, unknown> = {
+    process: nodeProcess,
+    Bun: undefined,
+    Deno: undefined,
+    console,
+    JSON,
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Math,
+    Date,
+    RegExp,
+    Error,
+    Promise,
+    Map,
+    Set,
+    Symbol,
+  };
+  fakeGlobal.globalThis = fakeGlobal;
+  fakeGlobal.global = fakeGlobal;
+
+  return {
+    process: nodeProcess,
+    globalThis: fakeGlobal,
+    global: fakeGlobal,
+    Bun: undefined,
+    Deno: undefined,
+    Function: deny("Function"),
+    eval: deny("eval"),
+    module: undefined,
+    import_meta: undefined,
+  };
+}
+
 export async function runEnforcePrTarget(
   script: string,
   options: RunOptions,
@@ -126,6 +241,7 @@ export async function runEnforcePrTarget(
   const logs: string[] = [];
   const warnings: string[] = [];
   const failOn = new Set(options.failOn ?? []);
+  const failStatus = options.failStatus ?? 500;
 
   const pr = {
     ...DEFAULT_PR,
@@ -154,7 +270,7 @@ export async function runEnforcePrTarget(
   function record(method: string, args: unknown, data: unknown = {}): unknown {
     calls.push({ method, args });
     if (failOn.has(method)) {
-      throw new Error(`simulated failure: ${method}`);
+      throw octokitError(method, failStatus);
     }
     // Octokit resolves to a response object, never `undefined`. A harness that
     // returned `undefined` let a mutation branch on the result — `const update =
@@ -248,7 +364,7 @@ export async function runEnforcePrTarget(
     // `if (!process.versions.bun) return;` — a no-op in production, green here.
     // Shadow `process` with something that looks like the Node the workflow
     // actually gets, so a runtime probe cannot tell the two apart.
-    process: nodeLikeProcess(),
+    ...nodeLikeRuntime(),
   });
 
   return { calls, logs, warnings };
