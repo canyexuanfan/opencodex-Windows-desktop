@@ -1233,6 +1233,20 @@ describe("ocx account CLI (issue #180 matrix)", () => {
       expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
     });
 
+    test("a bare carriage return ends the line too", async () => {
+      // The read stops at either line character. Narrowing it to \n alone
+      // would fold a CR-terminated paste and everything after it into the
+      // value, and the request would carry something the user never typed.
+      const cr = new PassThrough() as AccountStdin;
+      cr.isTTY = false;
+      const pending = run(["code", "anthropic", "--json"], { ...defaultDeps(), stdinImpl: cr });
+      cr.write(`${SECRET}\rtrailing junk`);
+      const result = await pending;
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+    });
+
     test("a code that arrives without a trailing newline is still read", async () => {
       const noNewline = new PassThrough() as AccountStdin;
       noNewline.isTTY = false;
