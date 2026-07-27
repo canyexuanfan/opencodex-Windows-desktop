@@ -6,8 +6,10 @@ import { createKiroAdapter, isRetryableKiroStreamCatchError } from "../src/adapt
 import {
   KIRO_COMPLETION_RETRY_MESSAGE,
   KIRO_COMPLETION_TOOL_NAME,
+  KIRO_TOOL_RESULT_CARRIER_MESSAGE,
 } from "../src/adapters/kiro-constants";
 import { parseKiroEvent } from "../src/adapters/kiro-events";
+import { resetKiroThrottleStateForTests } from "../src/adapters/kiro-retry";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { estimateTokens } from "../src/lib/token-estimate";
 import type { OcxParsedRequest, OcxProviderConfig, OcxUsage } from "../src/types";
@@ -35,6 +37,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   globalThis.fetch = realFetch;
+  resetKiroThrottleStateForTests();
   if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
   if (origRegion === undefined) delete process.env.KIRO_REGION; else process.env.KIRO_REGION = origRegion;
   if (origApiRegion === undefined) delete process.env.KIRO_API_REGION; else process.env.KIRO_API_REGION = origApiRegion;
@@ -411,8 +414,10 @@ describe("kiro adapter — parseStream", () => {
 
   test("reasoning-only required response receives one fallback and can finish in plain text", async () => {
     let fetches = 0;
-    globalThis.fetch = (async () => {
+    let fallbackState: Record<string, any> | undefined;
+    globalThis.fetch = (async (_input, init) => {
       fetches++;
+      fallbackState = JSON.parse(String(init?.body)).conversationState;
       return new Response(streamOf(eventFrame({ content: "Reasoning checked; done." })));
     }) as typeof fetch;
     const adapter = createKiroAdapter(provider);
@@ -423,6 +428,9 @@ describe("kiro adapter — parseStream", () => {
     ))));
 
     expect(fetches).toBe(1);
+    expect(fallbackState?.history ?? []).not.toContainEqual({ assistantResponseMessage: { content: "" } });
+    expect(fallbackState?.currentMessage.userInputMessage.content).toContain("solve");
+    expect(fallbackState?.currentMessage.userInputMessage.content).toContain(KIRO_COMPLETION_RETRY_MESSAGE);
     expect(events.some(event => event.type === "reasoning_raw_delta")).toBe(true);
     expect(events.find(event => event.type === "text_delta")).toEqual({
       type: "text_delta", text: "Reasoning checked; done.", phase: "final_answer",
@@ -448,11 +456,11 @@ describe("kiro adapter — parseStream", () => {
     }
   });
 
-  test("native END_TURN metadata finishes a tool-enabled turn without a second request", async () => {
+  test("native END_TURN text still requires the private completion tool", async () => {
     let fetches = 0;
     globalThis.fetch = (async () => {
       fetches++;
-      return new Response(streamOf(eventFrame({ content: "should never run" })));
+      return new Response(streamOf(...completionFrames("The file has three lines.")));
     }) as typeof fetch;
     const adapter = createKiroAdapter(provider);
     await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
@@ -463,10 +471,11 @@ describe("kiro adapter — parseStream", () => {
       eventFrame({ stopReason: "END_TURN" }, "metadataEvent"),
     ))));
 
-    expect(fetches).toBe(0);
+    expect(fetches).toBe(1);
     expect(events.filter(event => event.type === "text_delta")).toEqual([
-      { type: "text_delta", text: "The file has ", phase: "final_answer" },
-      { type: "text_delta", text: "three lines.", phase: "final_answer" },
+      { type: "text_delta", text: "The file has ", phase: "commentary" },
+      { type: "text_delta", text: "three lines.", phase: "commentary" },
+      { type: "text_delta", text: "The file has three lines.", phase: "final_answer" },
     ]);
     expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
   });
@@ -522,7 +531,12 @@ describe("kiro adapter — parseStream", () => {
     });
   });
 
-  test("STOP_SEQUENCE emits its text as the final answer, not commentary", async () => {
+  test("STOP_SEQUENCE text also enters bounded completion validation", async () => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      return new Response(streamOf(...completionFrames("Done.")));
+    }) as typeof fetch;
     const adapter = createKiroAdapter(provider);
     await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
     const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
@@ -531,8 +545,10 @@ describe("kiro adapter — parseStream", () => {
     ))));
 
     expect(events.filter(event => event.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "Done.", phase: "commentary" },
       { type: "text_delta", text: "Done.", phase: "final_answer" },
     ]);
+    expect(fetches).toBe(1);
     expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
   });
 
@@ -1495,7 +1511,7 @@ describe("kiro adapter — parseStream", () => {
     expect(cs.history[1].assistantResponseMessage.toolUses).toEqual([
       { name: "bash", input: { command: "pwd" }, toolUseId: "call-1" },
     ]);
-    expect(cs.currentMessage.userInputMessage.content).toBe("");
+    expect(cs.currentMessage.userInputMessage.content).toBe(KIRO_TOOL_RESULT_CARRIER_MESSAGE);
     expect(cs.currentMessage.userInputMessage.userInputMessageContext.toolResults).toEqual([
       { content: [{ text: "/tmp" }], status: "success", toolUseId: "call-1" },
     ]);

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
+import { KIRO_TOOL_RESULT_CARRIER_MESSAGE } from "../src/adapters/kiro-constants";
 import { applyProviderConfigHints, buildCatalogEntries } from "../src/codex/catalog";
 import { normalizeKiroModelId } from "../src/providers/kiro-models";
 import { configuredReasoningEfforts, mapReasoningEffort } from "../src/reasoning-effort";
@@ -133,6 +134,20 @@ describe("kiro adapter — buildRequest", () => {
     const results = cs.currentMessage.userInputMessage.userInputMessageContext.toolResults;
     expect(results[0].toolUseId).toBe("call_1"); // matches the toolUse id
     expect(results[0].status).toBe("success");
+  });
+
+  test("empty tool output is normalized to a non-empty Kiro result block", async () => {
+    const messages = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-empty", name: "bash", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-empty", toolName: "bash", content: "", isError: false },
+    ];
+
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content.trim()).not.toBe("");
+    expect(current.userInputMessageContext.toolResults[0].content[0].text.trim()).not.toBe("");
   });
 
   test("tool result images are attached to Kiro carrier user messages", async () => {
@@ -541,7 +556,7 @@ describe("kiro adapter — buildRequest", () => {
 
     expect(assistant.toolUses).toEqual([{ name: "bash", input: { command: "pwd" }, toolUseId: "call-1" }]);
     expect(assistant.content).toBe("");
-    expect(current.content).toBe("");
+    expect(current.content).toBe(KIRO_TOOL_RESULT_CARRIER_MESSAGE);
     expect(current.userInputMessageContext.toolResults).toEqual([
       { content: [{ text: "/tmp" }], status: "success", toolUseId: "call-1" },
     ]);
@@ -690,7 +705,7 @@ describe("kiro adapter — native and emulated reasoning effort", () => {
     const { body } = await createKiroAdapter(provider).buildRequest({ ...parsedWith(messages, [bashTool]), options: { reasoning: "high" } });
     const content = JSON.parse(body).conversationState.currentMessage.userInputMessage.content;
 
-    expect(content).toBe("");
+    expect(content).toBe(KIRO_TOOL_RESULT_CARRIER_MESSAGE);
     expect(content).not.toContain("<thinking_mode>");
   });
 

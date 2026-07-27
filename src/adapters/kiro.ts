@@ -33,7 +33,7 @@ import type { ProviderAdapter } from "./base";
 import type { AdapterFetchContext, AdapterRequest } from "./base";
 import { extractKiroImages, normalizeKiroImages, type KiroImage } from "./kiro-images";
 import { sniffImageDimensions } from "./anthropic-image-guard";
-import { fetchKiroWithRetry } from "./kiro-retry";
+import { fetchKiroWithRetry, noteKiroTransientThrottle } from "./kiro-retry";
 import { convertKiroToolContext } from "./kiro-tools";
 import { neutralizeIdentity } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeFromNames } from "./tool-catalog-nudge";
@@ -42,6 +42,8 @@ import {
   KIRO_COMPLETION_RETRY_MESSAGE,
   KIRO_COMPLETION_TOOL_NAME,
   KIRO_CONTINUATION_MESSAGE,
+  KIRO_EMPTY_TOOL_RESULT_MESSAGE,
+  KIRO_TOOL_RESULT_CARRIER_MESSAGE,
   MAX_KIRO_INJECTED_INSTRUCTION_CHARS,
   type KiroCompletionMode,
 } from "./kiro-constants";
@@ -305,6 +307,51 @@ function appendTurnText(target: string, next: string): string {
   return target ? `${target}\n\n${next}` : next;
 }
 
+function validateKiroConversationState(history: KiroHistoryEntry[], currentMessage: KiroHistoryEntry): void {
+  const entries = [...history, currentMessage];
+  const pendingToolUses = new Set<string>();
+  let previousRole: "user" | "assistant" | undefined;
+
+  for (const entry of entries) {
+    const user = entry.userInputMessage;
+    const assistant = entry.assistantResponseMessage;
+    if (Boolean(user) === Boolean(assistant)) {
+      throw new Error("Kiro conversation entries must contain exactly one message role");
+    }
+    const role = user ? "user" : "assistant";
+    if (role === previousRole) throw new Error("Kiro conversation roles must alternate");
+    previousRole = role;
+
+    if (user) {
+      const hasPayload = Boolean(user.content.trim())
+        || Boolean(user.images?.length)
+        || Boolean(user.userInputMessageContext?.toolResults?.length);
+      if (!hasPayload) throw new Error("Kiro user messages must not be empty");
+      for (const result of user.userInputMessageContext?.toolResults ?? []) {
+        if (!pendingToolUses.delete(result.toolUseId)) {
+          throw new Error(`Kiro tool result has no matching tool use ${JSON.stringify(result.toolUseId)}`);
+        }
+        if (!result.content.some(part => part.text.trim())) {
+          throw new Error(`Kiro tool result must not be empty ${JSON.stringify(result.toolUseId)}`);
+        }
+      }
+      continue;
+    }
+
+    const toolUses = assistant?.toolUses ?? [];
+    if (!assistant?.content.trim() && toolUses.length === 0) {
+      throw new Error("Kiro assistant messages must not be empty");
+    }
+    for (const toolUse of toolUses) {
+      if (pendingToolUses.has(toolUse.toolUseId)) {
+        throw new Error(`Kiro conversation contains duplicate tool use ${JSON.stringify(toolUse.toolUseId)}`);
+      }
+      pendingToolUses.add(toolUse.toolUseId);
+    }
+  }
+  if (pendingToolUses.size > 0) throw new Error("Kiro conversation contains an unanswered tool use");
+}
+
 function boundedInjectedInstruction(text: string, used: { value: number }): string | undefined {
   const remaining = MAX_KIRO_INJECTED_INSTRUCTION_CHARS - used.value;
   if (remaining <= 0 || !text) return undefined;
@@ -423,31 +470,30 @@ export function buildKiroPayload(
         throw new Error(`Kiro cannot translate encrypted output for tool call ${JSON.stringify(tr.toolCallId)}`);
       }
       const text = userContentText(tr.content);
+      const resultText = text.trim() ? text : KIRO_EMPTY_TOOL_RESULT_MESSAGE;
       const images = extractKiroImages(tr.content);
       const toolUseId = normalizeToolId(tr.toolCallId);
       if (!priorCalls.has(toolUseId)) {
         throw new Error(`Kiro history contains an orphaned tool result for call ${JSON.stringify(tr.toolCallId)}`);
       }
-      pushUser("", images, [{
-        content: [{ text }],
+      pushUser(KIRO_TOOL_RESULT_CARRIER_MESSAGE, images, [{
+        content: [{ text: resultText }],
         status: tr.isError ? "error" : "success",
         toolUseId,
       }]);
     }
   }
 
-  // A reasoning-only first attempt has no Kiro-replayable assistant text. Preserve the turn
-  // boundary structurally so the adapter-generated retry is still a user turn after assistant
-  // history, without inventing prose that the model never said.
-  if (completionMode === "text_fallback" && turns.at(-1)?.kind !== "assistant") {
-    pushAssistant("", []);
-  }
-
   if (turns.length === 0 || turns[0].kind === "assistant") {
     turns.unshift({ kind: "user", content: KIRO_CONTINUATION_MESSAGE, images: [], toolResults: [] });
   }
   if (turns.at(-1)?.kind === "assistant") {
-    turns.push({ kind: "user", content: KIRO_CONTINUATION_MESSAGE, images: [], toolResults: [] });
+    turns.push({
+      kind: "user",
+      content: completionMode === "text_fallback" ? KIRO_COMPLETION_RETRY_MESSAGE : KIRO_CONTINUATION_MESSAGE,
+      images: [],
+      toolResults: [],
+    });
   }
 
   const currentTurn = turns.pop();
@@ -481,11 +527,14 @@ export function buildKiroPayload(
     currentUim.userInputMessageContext = { ...(currentUim.userInputMessageContext ?? {}), tools: kiroTools };
   }
   if (completionMode === "text_fallback") {
-    currentUim.content = KIRO_COMPLETION_RETRY_MESSAGE;
+    if (currentUim.content !== KIRO_COMPLETION_RETRY_MESSAGE) {
+      currentUim.content = appendTurnText(currentUim.content, KIRO_COMPLETION_RETRY_MESSAGE);
+    }
   } else if (!currentUim.userInputMessageContext?.toolResults && currentUim.content !== KIRO_CONTINUATION_MESSAGE) {
     currentUim.content = injectKiroThinkingTags(currentUim.content, parsed);
   }
 
+  validateKiroConversationState(history, currentEntry);
   const conversationId = stableConversationId(parsed);
   const payload: Record<string, unknown> = {
     conversationState: {
@@ -614,25 +663,7 @@ export function isRetryableKiroStreamCatchError(err: unknown, emittedOutput: boo
     .test(message);
 }
 
-/**
- * Suppress only a whitespace-normalized exact repeat. Semantic/fuzzy matching was rejected
- * during review: two long near-identical messages can differ by a single status word
- * ("is still pending" -> "is now complete") and still clear every similarity threshold, so
- * fuzzy suppression can silently delete the one sentence that carries the result. Showing a
- * cosmetic restatement is the cheaper failure.
- */
-function normalizedKiroAnswer(text: string): string {
-  return text.trim().replace(/\s+/g, " ");
-}
-
-function isRepeatedKiroAnswer(text: string, previous?: string): boolean {
-  return normalizedKiroAnswer(text) === normalizedKiroAnswer(previous ?? "");
-}
-
-/**
- * Kiro's native stop reason for a turn the model considers finished. Only this value is
- * authoritative; `TOOL_USE` and an absent reason both leave the turn incomplete.
- */
+/** Native clean-stop reason eligible for bounded private-completion validation. */
 const KIRO_END_TURN_STOP_REASON = "END_TURN";
 
 async function* parseKiroAttempt(
@@ -643,15 +674,12 @@ async function* parseKiroAttempt(
   contextWindowState: KiroContextWindowState,
   nameMap: Map<string, string> | undefined,
   conversationId: string | undefined,
-  previousAssistantText?: string,
   contextInputEstimate?: number,
   /** True when an earlier attempt already flushed visible content to the client (#520). */
   priorEmittedOutput = false,
 ): AsyncGenerator<AdapterEvent, KiroAttemptResult> {
-  // `required` mode holds staged commentary here so a terminal END_TURN can relabel it as the final
-  // answer instead of paying for another inference request. Anything the inner parser leaves behind
-  // — every early error return — is flushed before the terminal event so partial output is never
-  // silently dropped.
+  // `required` mode holds staged commentary until a real tool call or terminal metadata identifies
+  // the attempt boundary. Anything the inner parser leaves behind is flushed before the terminal.
   const deferred: AdapterEvent[] = [];
   const attempt = parseKiroAttemptEvents(
     response,
@@ -662,7 +690,6 @@ async function* parseKiroAttempt(
     nameMap,
     conversationId,
     deferred,
-    previousAssistantText,
     contextInputEstimate,
     priorEmittedOutput,
   );
@@ -684,7 +711,6 @@ async function* parseKiroAttemptEvents(
   nameMap: Map<string, string> | undefined,
   conversationId: string | undefined,
   deferred: AdapterEvent[],
-  previousAssistantText?: string,
   contextInputEstimate?: number,
   priorEmittedOutput = false,
 ): AsyncGenerator<AdapterEvent, KiroAttemptResult> {
@@ -750,6 +776,7 @@ async function* parseKiroAttemptEvents(
       || completionCalls > 0
       || open !== null
       || fallbackEvents.length > 0;
+    if (failure.status === 429 && failure.retryable) noteKiroTransientThrottle();
     return {
       type: "error",
       message: failure.message,
@@ -1048,13 +1075,11 @@ async function* parseKiroAttemptEvents(
         ...(contextWindowState.value ? { upstreamContextWindow: contextWindowState.value } : {}),
       });
     }
-    // Kiro's own end-of-turn verdict, trusted only when it is unambiguous: plain assistant text,
-    // with neither a real tool call nor a private completion call to arbitrate against it.
-    // STOP_SEQUENCE is an ordinary native completion just like END_TURN. Both must be decided
-    // here rather than further down, because the deferred text is relabeled to `final_answer`
-    // in this branch — once it flushes as commentary below, that chance is gone.
+    // Native stop metadata proves that this inference ended, but it does not prove that ordinary
+    // text is a final answer. Kiro has emitted END_TURN for progress prose, so tool-enabled turns
+    // still require the private completion call to distinguish commentary from completion (#531).
     const normalizedStopReason = stopReason?.trim().toUpperCase();
-    const nativeEndTurn = (normalizedStopReason === KIRO_END_TURN_STOP_REASON
+    const nativeCompletionStop = (normalizedStopReason === KIRO_END_TURN_STOP_REASON
       || normalizedStopReason === "STOP_SEQUENCE")
       && sawText
       && !sawRealTool
@@ -1067,31 +1092,19 @@ async function* parseKiroAttemptEvents(
       sawReasoning,
       sawRealTool,
       completionCalls,
-      nativeEndTurn,
+      nativeCompletionStop,
       ...(stopReason !== undefined ? { stopReason } : {}),
       assistantChars: assistantText.length,
     });
 
     if (mode === "required") {
-      if (nativeEndTurn) {
-        for (const event of deferred.splice(0)) {
-          yield event.type === "text_delta" ? { ...event, phase: "final_answer" } : event;
-        }
-        return {
-          assistantText,
-          sawReasoning,
-          terminal: { type: "done", usage: finalUsage, endTurn: true, ...(finalProviderState ? { providerState: finalProviderState } : {}) },
-        };
-      }
       for (const event of deferred.splice(0)) yield event;
     }
 
     if (mode === "text_fallback") {
       if (completionAnswer !== undefined) {
         for (const event of fallbackEvents) yield event;
-        if (!isRepeatedKiroAnswer(completionAnswer, previousAssistantText)) {
-          yield { type: "text_delta", text: completionAnswer, phase: "final_answer" };
-        }
+        yield { type: "text_delta", text: completionAnswer, phase: "final_answer" };
         return {
           assistantText,
           sawReasoning,
@@ -1107,10 +1120,9 @@ async function* parseKiroAttemptEvents(
         };
       }
       if (sawText) {
-        const repeated = isRepeatedKiroAnswer(assistantText, previousAssistantText);
         for (const event of fallbackEvents) {
           if (event.type !== "text_delta") yield event;
-          else if (!repeated) yield { ...event, phase: "final_answer" };
+          else yield { ...event, phase: "final_answer" };
         }
         return {
           assistantText,
@@ -1150,13 +1162,23 @@ async function* parseKiroAttemptEvents(
         terminal: { type: "done", usage: finalUsage, endTurn: false, ...(finalProviderState ? { providerState: finalProviderState } : {}) },
       };
     }
-    // An explicit native stop reason has already terminated this inference. Converting it into
+    if (mode === "required" && nativeCompletionStop) {
+      return {
+        assistantText,
+        sawReasoning,
+        needsFallback: true,
+        usage: finalUsage,
+        providerState: finalProviderState,
+      };
+    }
+
+    // An explicit non-completion stop reason has already terminated this inference. Converting it into
     // another model request would hide truncation behind a second paid call, and for context
     // exhaustion it would resubmit a request that cannot fit. Only a MISSING stop reason falls
     // through to the bounded compatibility fallback below.
     //
-    // END_TURN and STOP_SEQUENCE with text are handled earlier by `nativeEndTurn`; reaching
-    // here with either means the turn produced no text.
+    // END_TURN and STOP_SEQUENCE with text take the bounded validation path above; reaching here
+    // with either means the turn produced no replayable text.
     if (mode === "required" && normalizedStopReason !== undefined) {
       const providerStateField = finalProviderState ? { providerState: finalProviderState } : {};
       const incomplete = (reason: string, retryable: boolean) => ({
@@ -1285,7 +1307,6 @@ export async function* parseKiroStream(
     contextWindowState,
     nameMap,
     conversationId,
-    undefined,
     contextInputEstimate,
   );
   let firstNext = await first.next();
@@ -1354,7 +1375,6 @@ export async function* parseKiroStream(
     contextWindowState,
     fallback.nameMap,
     fallback.conversationId,
-    firstResult.assistantText,
     fallback.contextInputEstimate,
     // First attempt already flushed deferred progress to the client before this fallback.
     // A zero-output transport failure here must stay non-retryable to avoid duplicating that text.
@@ -1473,7 +1493,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
   const fallbackFactory: KiroFallbackFactory = async (
     returnedConversationId,
     assistantText,
-    sawReasoning,
+    _sawReasoning,
   ) => {
     if (!requestSnapshot) throw new Error("Kiro completion retry lost its request state");
     if (requestAbortSignal?.aborted) {
@@ -1486,16 +1506,17 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       ...(retryParsed._providerContinuation ?? {}),
       ...(returnedConversationId ? { kiro: { conversationId: returnedConversationId } } : {}),
     };
-    retryParsed.context.messages.push({
-      role: "assistant",
-      content: [
-        ...(sawReasoning ? [{ type: "thinking" as const, thinking: "" }] : []),
-        ...(assistantText ? [{ type: "text" as const, text: assistantText }] : []),
-      ],
-      phase: "commentary",
-      model: retryParsed.modelId,
-      timestamp: Date.now(),
-    });
+    // Reasoning is not replayable on the Kiro wire. Adding an empty assistant turn merely to mark
+    // that reasoning existed creates REQUEST_BODY_INVALID; only visible text earns a replay turn.
+    if (assistantText.trim()) {
+      retryParsed.context.messages.push({
+        role: "assistant",
+        content: [{ type: "text" as const, text: assistantText }],
+        phase: "commentary",
+        model: retryParsed.modelId,
+        timestamp: Date.now(),
+      });
+    }
     const retry = await build(retryParsed, "text_fallback");
     const response = await fetchKiroWithRetry(retry.request, {
       abortSignal: requestAbortSignal,

@@ -117,22 +117,37 @@ The web-search loop requests `stream: true` for every routed-model iteration, bu
 needed to decide whether to intercept a synthetic search call. Text explicitly phased as
 `commentary` is safe to forward live because it cannot terminate the turn; this keeps Kiro's
 progress visible. A Kiro stream EOF after user-facing text or reasoning gets one bounded completion
-retry, because the upstream text event does not distinguish progress from a final answer — but only
-when the terminal `metadataEvent` carries NO native `stopReason`. A native `END_TURN` or
-`STOP_SEQUENCE` is authoritative and ends the turn with that text as the final answer. Any other
-explicit reason already terminated the inference upstream and is reported as a terminal state rather
+retry, because neither the upstream text event nor `END_TURN` / `STOP_SEQUENCE` reliably distinguishes
+progress from a final answer. Those two clean-stop reasons prove only that the inference ended; on a
+tool-enabled turn, only the private completion tool authorizes `final_answer`. Any other explicit
+reason already terminated the inference upstream and is reported as a terminal state rather
 than converted into another model request: output-token limits become continuable incomplete output,
 context-window exhaustion becomes a non-retryable `context_length_exceeded` error, filtering becomes
 filtered incomplete output, and a `TOOL_USE` without an actual tool call is a contradiction. Since
 the stop reason arrives only at the end of the stream, `required`-mode assistant text is held inside
-the adapter until a real tool call starts (released as `commentary`) or the stream ends (released as
-`final_answer` on `END_TURN` or `STOP_SEQUENCE`, otherwise as `commentary`). Each held event yields a `heartbeat` in its place so the stall watchdog stays
-armed. This trades token-by-token rendering of a tool-enabled turn's answer for removing the extra
-inference request that the same turn previously always paid. Synthetic search calls, real tool calls,
+the adapter until a real tool call starts or the stream ends, then released as `commentary` unless a
+private completion call supplied the final answer. Each held event yields a `heartbeat` in its place
+so the stall watchdog stays armed. Synthetic search calls, real tool calls,
 and terminal events remain buffered until the iteration validates. Only the first iteration's final
 response headers/status and any 429 key rotations are handled eagerly. A failure before downstream
 SSE starts returns non-2xx JSON; once headers have started the final response, a generation failure
 is emitted as `response.failed` SSE.
+
+Kiro transient HTTP 429 recovery is coordinated process-wide after the first throttle: healthy
+traffic remains parallel, but throttled followers wait behind one abort-aware probe and share a
+deadline that is re-checked after every sleep. Event-stream `ThrottlingException` records the same
+deadline for the next client replay. Retries are bounded to three attempts; hard quota responses and
+ordinary 5xx errors are not replayed. Completion fallback rebuilds only replayable text, preserves
+the original user/tool-result turn for reasoning-only attempts, supplies neutral non-empty carriers
+for empty tool output, and validates role alternation plus tool-use/result pairing before transport.
+
+[Decision Log]
+- 목적과 의도: Prevent Kiro progress from becoming a false final answer, reject invalid empty completion retries, and stop concurrent transient 429s from consuming independent retry budgets.
+- 기존 구현 및 제약 조건: Kiro text has no trustworthy phase; stop metadata arrives only at stream end; the private completion tool is adapter-owned; normal parallel tool traffic must remain parallel; client cancellation must interrupt all waits.
+- 검토한 주요 대안: Trust native `END_TURN`; infer completion from wording; serialize every Kiro request; leave throttling entirely to the client; manufacture empty assistant turns to preserve alternation.
+- 선택한 방식: Require the private completion tool on tool-enabled turns, rebuild only valid replayable wire turns, validate the final conversation, and activate a shared cooldown plus single probe only after a transient throttle.
+- 다른 대안 대신 이 방식을 선택한 이유: Native stop metadata has mislabeled progress, wording is language-dependent, global serialization harms healthy concurrency, client-only retries amplify bursts, and empty structural turns are rejected upstream.
+- 장점, 단점 및 영향: Completion phase is deterministic and throttled concurrency recovers without a request storm; some clean Kiro stops pay one bounded validation call and an exactly repeated completion answer may be shown twice to preserve `final_answer` semantics.
 
 Historical `web_search_call` output items from previous Responses turns are not converted into
 assistant text. They are UI/search-cell evidence, not a replayable search result payload; turning
