@@ -3,6 +3,34 @@
 WP2 · 근거: `000_survey.md`
 감사 이력: rev1 FAIL(`011`) → rev2 FAIL(`012`) → rev3 FAIL(`013`)
 
+## 치명적 제약: 지금은 dev2-go PR을 머지할 수 없다
+
+5차 검토에서 확인된 사실이다. 현재 워크플로는 base가 `dev`가 아닌 PR을
+draft로 강등하고(`convertPullRequestToDraft`), `ready_for_review` 이벤트를
+구독하므로 **ready로 되돌리면 즉시 다시 draft가 된다.**
+
+    .github/workflows/enforce-pr-target.yml:5-9   types: [..., ready_for_review]
+    .github/workflows/enforce-pr-target.yml:156   wrongBase = pr.base.ref !== EXPECTED_BASE
+    .github/workflows/enforce-pr-target.yml:214   await convertToDraft();
+
+그리고 **GitHub은 draft PR의 머지를 차단한다.** 두 사실을 합치면:
+
+> 워크플로를 고치기 전까지 dev2-go 대상 PR은 머지가 불가능하다.
+
+실제 상태가 그 증거다 — PR #455는 `draft=true`, 제목은
+`[WRONG BRANCH] chore: ...`로 자동 수정된 상태다.
+
+따라서 "그 상태로 리뷰하고 머지하라"는 안내는 쓸 수 없다. 실행 불가능한
+지시다. 정직한 문구는 이것뿐이다:
+
+> dev2-go는 정식 통합선이지만, 타깃 검사 자동화가 아직 이를 모른다.
+> 그 자동화가 갱신될 때까지 dev2-go 대상 PR은 draft에 묶여 머지할 수 없다.
+> 자동화 갱신은 `040_pr_target_gate.md`가 다룬다.
+
+이 제약 때문에 WP2는 **"지금부터 dev2-go로 PR을 보내라"가 아니라
+"dev2-go는 정식 통합선이며 곧 열린다"를 선언하는 것**이 된다. 그 차이를
+문서가 흐리면 기여자가 머지되지 않는 PR을 열게 된다.
+
 ## 이 문서의 범위 (rev4에서 축소됨)
 
 세 번의 감사가 전부 `enforce-pr-target.yml` 재설계에서 막혔다. 그래서
@@ -45,12 +73,13 @@ WP2 · 근거: `000_survey.md`
     - `dev2-go` — parallel integration line for the Go native port: `go/`,
       `bin/native-runtime.mjs`, `src/lib/runtime-entry.ts`, and the Go
       release-asset tooling. Pull requests confined to that surface may target
-      it directly. Note that the target-branch check has not caught up yet: it
-      prefixes any non-`dev` pull request with `[WRONG BRANCH]` and converts it
-      to a draft, and it re-applies both on the next `edited` or
-      `ready_for_review` event — so clearing them by hand does not stick. Until
-      the check is updated, treat that state as cosmetic noise on a `dev2-go`
-      pull request rather than a defect in the contribution.
+      it directly **once the target-branch check recognises the line**. It does
+      not yet: it prefixes any non-`dev` pull request with `[WRONG BRANCH]`,
+      converts it to a draft, and re-applies both whenever the pull request is
+      edited or marked ready for review. Because GitHub blocks merging a draft,
+      a `dev2-go` pull request cannot be merged until that check is updated.
+      Until then, open Go native-port work against `dev` or coordinate with a
+      maintainer.
     - `main` — release branch. It only moves by maintainer-controlled promotion
       from `dev` (releases, docs deploys). Do not open feature PRs against `main`.
     - `preview` — prerelease train (`x.y.z-preview.*` versions).
@@ -94,12 +123,12 @@ claudedesktop 문단 뒤에 추가:
     - `dev` — default integration target for pull requests.
     - `dev2-go` — parallel integration line for the Go native port. Target it
       when your change is confined to `go/`, the native runtime entrypoint, or
-      the Go release-asset tooling. The automated target-branch check does not
-      know about this line yet, so it will prefix your PR title with
-      `[WRONG BRANCH]` and convert it to a draft — and it will do so again if
-      you edit the title or mark the PR ready. That is expected for now and is
-      not a judgement on your change; a maintainer reviews and merges it
-      regardless. You do not need to retarget.
+      the Go release-asset tooling. **Not yet open for pull requests:** the
+      automated target-branch check does not know about this line, so it
+      prefixes such a PR with `[WRONG BRANCH]`, forces it to draft, and does so
+      again every time you edit the title or mark it ready. GitHub will not
+      merge a draft, so the PR cannot land. Until the check is updated, send
+      Go native-port work to `dev` or ask a maintainer first.
     - `main` — releases only; moves by maintainer-controlled promotion from `dev`.
     - `preview` — prerelease train.
 
@@ -121,11 +150,11 @@ claudedesktop 문단 뒤에 추가:
     - Pull requests target `dev` by default. `dev2-go` is a parallel
       integration line reserved for Go native-port work; it converges back
       through maintainer-controlled merges, and promotion to `main` still
-      happens only from `dev`. Until the target-branch check recognises that
-      line, `dev2-go` pull requests carry an automated `[WRONG BRANCH]` prefix
-      and draft state that re-applies on every `edited` / `ready_for_review`
-      event; clearing it by hand does not hold, so review and merge such pull
-      requests in that state rather than trying to fix the label first.
+      happens only from `dev`. The target-branch check does not recognise that
+      line yet: it forces such pull requests to draft and re-applies that on
+      every `edited` / `ready_for_review` event, which blocks merging entirely.
+      Until the check is updated, `dev2-go` accepts direct pushes from
+      maintainers but not pull requests.
 
 ## 범위 밖
 
@@ -141,6 +170,8 @@ claudedesktop 문단 뒤에 추가:
 2. `rg -n -i "porting|rebase" AGENTS.md CONTRIBUTING.md` — 환영 문구 매치.
 3. `rg -n "WRONG BRANCH" AGENTS.md CONTRIBUTING.md MAINTAINERS.md` — 세 파일
    모두 현재 자동화 동작을 명시한다 (사실을 숨기지 않았다는 반증).
+3b. 세 파일 어디에도 "그 상태로 머지하라"에 해당하는 안내가 없다. draft는
+   머지가 차단되므로 실행 불가능한 지시다.
 4. `git diff --name-only` 에 `.github/` 경로가 **없다** (층 분리 반증).
-5. 최종 보고에 "자동화는 아직 미변경, dev2-go PR은 여전히 draft로 강등됨"이
-   명시된다.
+5. 최종 보고에 **"자동화 갱신 전까지 dev2-go 대상 PR은 draft에 묶여 머지
+   불가"**가 명시된다. "허용했다"고만 보고하면 사실과 다르다.
