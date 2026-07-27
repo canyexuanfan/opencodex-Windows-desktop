@@ -94,6 +94,21 @@ async function waitForProxy(timeoutMs = 8_000): Promise<LiveProxy | null> {
   return null;
 }
 
+/**
+ * A Grok fence sync that throws is best-effort by design — it must never block startup.
+ * Reporting nothing, however, is what lets a STALE fence survive: `~/.grok/config.toml`
+ * keeps naming whatever port the last successful sync wrote, and once that listener is
+ * gone every grok turn retries against a refused connection while our own log stays
+ * silent (2026-07-27 field report: 8 entries pinned to a dead 127.0.0.1:4179).
+ * So say what failed and name the single command that repairs it.
+ */
+function grokSyncFailureMessage(err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  return `Grok Build config sync failed: ${detail}. `
+    + "~/.grok/config.toml may still point at a previous proxy port — "
+    + "run 'ocx ensure' (or apply from the dashboard's Grok page) to repoint it.";
+}
+
 /** Argv for detached `start`, optionally hard-pinning the listen port. */
 function startArgv(port?: number): string[] {
   const args = [process.argv[1], "start"];
@@ -299,7 +314,14 @@ async function handleStart(options: { block?: boolean } = {}) {
     const r = await syncGrokConfig(port, config, config.hostname ? { hostname: config.hostname } : {});
     if (r.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");
     else if (!r.ok) console.error(`⚠️  ${r.message}`);
-  } catch { /* best-effort — grok integration must never block startup */ }
+  } catch (err) {
+    // Best-effort: grok integration must never block startup. But swallowing the error
+    // silently is how a stale fence survives unnoticed — ~/.grok/config.toml keeps
+    // pointing at whatever port the LAST successful sync wrote, and if that listener is
+    // gone every grok turn retries against a refused connection with nothing in our log
+    // to explain it. Name the failure and the one command that repairs it.
+    console.error(`⚠️  ${grokSyncFailureMessage(err)}`);
+  }
   if (options.block ?? true) {
     setInterval(() => {}, 60_000);
     await new Promise<void>(() => {});
@@ -327,7 +349,7 @@ async function handleEnsure() {
         const g = await syncGrokConfig(live.port, config, live.hostname ? { hostname: live.hostname } : {});
         if (g.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");
         else if (!g.ok) console.error(`⚠️  ${g.message}`);
-      } catch { /* best-effort */ }
+      } catch (err) { console.error(`⚠️  ${grokSyncFailureMessage(err)}`); }
       console.log(`✅ Proxy running on port ${live.port}`);
       return;
     }
@@ -354,7 +376,7 @@ async function handleEnsure() {
     const g = await syncGrokConfig(port, config, config.hostname ? { hostname: config.hostname } : {});
     if (g.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");
     else if (!g.ok) console.error(`⚠️  ${g.message}`);
-  } catch { /* best-effort */ }
+  } catch (err) { console.error(`⚠️  ${grokSyncFailureMessage(err)}`); }
   // Always sync the LIVE port: after a fallback-port start, config.port still names the
   // busy preferred port — syncing that would point Codex at a dead listener.
   await syncModelsToCodex(port).catch(e => {

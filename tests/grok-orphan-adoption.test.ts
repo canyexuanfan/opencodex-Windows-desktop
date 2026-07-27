@@ -252,4 +252,56 @@ describe("Grok orphan adoption (#511)", () => {
     expect(result).toMatchObject({ ok: false, changed: false, skippedReason: "orphaned-marker" });
     expect(readFileSync(configPath, "utf8")).toBe(content);
   });
+
+  /**
+   * The 2026-07-27 field failure. Grok re-serialized the file (marker comments gone,
+   * `extra_headers` promoted to sub-tables) and, separately, the proxy had once run on a
+   * different port. The result is a generation of OUR OWN entries pinned to a port
+   * nothing listens on, with `[models] default` naming one of them: the TUI shows the
+   * right context window (the stale entry carries it) while every turn retries against a
+   * refused connection and nothing ever reaches the proxy.
+   *
+   * A stale entry is only distinguishable from the live one by VALUE — its loopback port
+   * is not the port being injected — so port equality has to be part of the sweep.
+   */
+  test("adopts our own entries left on a port the proxy no longer listens on", () => {
+    writeFileSync(configPath, [
+      "[models]",
+      'default = "ocx-gpt-5-6-sol"',
+      "",
+      "[model.ocx-gpt-5-6-sol]",            // stale generation: dead port
+      'model = "gpt-5.6-sol"',
+      'base_url = "http://127.0.0.1:4179/v1"',
+      'api_backend = "chat_completions"',
+      'api_key = "opencodex-loopback"',
+      "context_window = 372000",
+      "",
+      "[model.ocx-gpt-5-6-sol.extra_headers]",
+      'x-opencodex-grok = "1"',
+      "",
+      "[model.hand-written]",               // must survive untouched
+      'model = "mine"',
+      'base_url = "http://127.0.0.1:4179/v1"',
+      'api_key = "not-ours"',
+      "",
+    ].join("\n"));
+
+    const result = injectGrokConfig(10100, MODELS, { grokHome });
+    expect(result).toMatchObject({ ok: true, changed: true });
+
+    const content = readFileSync(configPath, "utf8");
+    // No opencodex-owned entry may still point at the dead port.
+    expect(content).not.toContain("127.0.0.1:4179/v1\"\napi_backend");
+    expect(modelTables(content).filter(alias => alias.startsWith("ocx-"))).toHaveLength(1);
+    // Its orphaned sub-table went with it, or the alias stays reserved forever.
+    expect(content).not.toContain("[model.ocx-gpt-5-6-sol.extra_headers]");
+    // `default` must name a table that actually exists and reaches the live port.
+    const survivor = /^default = "([^"]+)"/m.exec(content)?.[1];
+    expect(survivor).toBeDefined();
+    expect(content).toContain(`[model.${survivor}]`);
+    expect(content).toContain('base_url = "http://127.0.0.1:10100/v1"');
+    // The user's own entry keeps its port, whatever it is.
+    expect(content).toContain("[model.hand-written]");
+    expect(content).toContain('api_key = "not-ours"');
+  });
 });
