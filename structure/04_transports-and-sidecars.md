@@ -322,6 +322,26 @@ Codex app, so tool cells group like native models — while the text still round
 `content[reasoning_text]` shape. Diagnosis and codex-rs grouping evidence:
 `devlog/_plan/260709_native_response_pattern/`.
 
+## Chat-to-Responses message phase inference
+
+Chat Completions streams do not carry the Responses `message.phase` field. The bridge keeps an
+unphased live message provisional while its deltas arrive, then assigns `commentary` when a later
+tool, search, reasoning, or assistant boundary proves that more work follows, and assigns
+`final_answer` only when a clean terminal `done` closes the current message. Explicit adapter
+phases always win. Streaming `output_item.added` remains unphased until that future boundary is
+known; `output_item.done` and the terminal response snapshot carry the authoritative inferred phase
+with the same item id. The batch/non-streaming bridge follows the same rule.
+
+```text
+[Decision Log]
+- 목적과 의도: Prevent Codex App from rendering one bridged Chat Completions answer as both live commentary and a second persisted final answer.
+- 기존 구현 및 제약 조건: openai-chat emits text deltas without phase, the bridge streamed them immediately, and whether text is pre-tool commentary or the terminal answer is unknowable until a later boundary arrives.
+- 검토한 주요 대안: Mark every delta final_answer; mark every delta commentary; buffer the entire answer before emitting; infer phase only when the message is finalized.
+- 선택한 방식: Keep the live added item provisional and infer commentary or final_answer at the authoritative close boundary, preserving explicit phases and item identity in done/completed output.
+- 다른 대안 대신 이 방식을 선택한 이유: Eager defaults misclassify either tool preambles or final answers, while full buffering removes live streaming; close-time inference provides correct persisted semantics without adding latency.
+- 장점, 단점 및 영향: Codex App receives a definitive phase for persisted bridged messages and avoids the duplicate-final rendering path; the provisional output_item.added event intentionally has no phase because its classification is not yet knowable.
+```
+
 ## Upstream reset retry
 
 `src/lib/upstream-retry.ts` guards upstream fetches against stale pooled keep-alive sockets
