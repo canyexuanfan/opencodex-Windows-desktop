@@ -144,8 +144,12 @@ MAINTAINERS.md "Maintainer changes" 절 아래에 이력 문단을 추가한다:
 
        HEAD=$(gh pr view <N> --repo lidge-jun/opencodex --json headRefOid --jq .headRefOid)
        gh api repos/lidge-jun/opencodex/pulls/<N>/reviews --paginate \
-         --jq --arg head "$HEAD" \
-         '[.[] | select(.state=="APPROVED") | {who: .user.login, commit: .commit_id, current: (.commit_id == $head)}]'
+         | jq --arg head "$HEAD" \
+           '[.[] | select(.state=="APPROVED")
+             | {who: .user.login, commit: .commit_id, current: (.commit_id == $head)}]'
+
+   `gh api --jq`는 `--arg`를 받지 않는다 (`accepts 1 arg(s), received 4`로
+   실패). 그래서 `jq`로 파이프해서 변수를 넘긴다 — 실측으로 확인했다.
 
    `gh pr view --json reviews`는 승인자만 주고 **그 승인이 어느 커밋에
    달렸는지는 주지 않는다.** REST `/pulls/<N>/reviews`의 `commit_id`를

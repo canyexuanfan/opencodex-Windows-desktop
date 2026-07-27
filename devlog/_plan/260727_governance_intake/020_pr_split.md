@@ -89,8 +89,10 @@ SHA를 읽은 뒤 파일 목록과 브랜치를 각각 따로 조회하면, 그 
     SRC=$(gh pr view 518 --repo lidge-jun/opencodex --json headRefOid --jq .headRefOid)
 
     # SHA 자체를 가져온다 — pull/518/head는 움직이지만 $SRC는 움직이지 않는다.
+    # 실측 확인: GitHub은 임의 커밋 SHA fetch를 허용한다
+    #   (`* branch <sha> -> FETCH_HEAD`).
     git fetch origin "$SRC"
-    git switch -c pr518-frozen "$SRC"
+    git switch -c pr518-frozen FETCH_HEAD
 
     # manifest도 API가 아니라 고정된 커밋에서 뽑는다.
     git diff --name-only origin/dev..."$SRC" | sort > /tmp/pr518-manifest.txt
