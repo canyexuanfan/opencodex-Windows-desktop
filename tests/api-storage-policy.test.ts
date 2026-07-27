@@ -283,7 +283,7 @@ describe("storage cleanup policy API", () => {
   }, { timeout: 30_000 });
 
   test("blocked worker completion preserves concurrent policy PUT edits", async () => {
-    setStorageCleanupPolicyJobTestHooks({ blockMs: 800 });
+    setStorageCleanupPolicyJobTestHooks({ blockMs: 1_200 });
     seedArchived(isolatedCodexHome!.path);
     const server = startServer(0);
     try {
@@ -317,7 +317,7 @@ describe("storage cleanup policy API", () => {
       }
 
       // Let the worker load the start-of-job snapshot, then edit during the hold window.
-      await Bun.sleep(120);
+      await Bun.sleep(450);
 
       const put = await fetch(new URL("/api/storage/cleanup-policy", server.url), {
         method: "PUT",
