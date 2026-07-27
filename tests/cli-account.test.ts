@@ -1023,12 +1023,23 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     });
 
     test("a rejected argument list redacts the secret option instead of echoing it", async () => {
-      const result = await run(["code", "anthropic", "-", "--code=" + SECRET, "extra"]);
+      // `code` parses --code now, so the leak has to be reached through a
+      // subcommand that does not: mistyping `cancel --code=<secret>` (or any
+      // other command in this family) still lands the whole argument in
+      // rejectArgs, which reports what it was given.
+      const mistyped = await run(["cancel", "anthropic", `--code=${SECRET}`]);
 
       // CliUsageError is exit 2 in this CLI; the point of the case is the body
       // of the message, not the code.
-      expect(result.code).toBe(2);
-      expect(result.output).not.toContain("SUPERSECRET123");
+      expect(mistyped.code).toBe(2);
+      expect(mistyped.stderr).toContain("--code=<redacted>");
+      expect(mistyped.output).not.toContain("SUPERSECRET123");
+
+      // And the same protection where the option is understood but the rest of
+      // the line is not.
+      const extra = await run(["code", "anthropic", "-", `--code=${SECRET}`, "extra"]);
+      expect(extra.code).toBe(2);
+      expect(extra.output).not.toContain("SUPERSECRET123");
     });
 
     test("--flow is parsed as a flag, not swallowed as the code", async () => {
