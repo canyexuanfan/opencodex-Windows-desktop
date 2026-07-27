@@ -233,7 +233,7 @@
     {
       "id": "wp8",
       "title": "게이트를 main으로 승격 (fast-forward) — pull_request_target은 기본 브랜치 워크플로를 실행하므로 이것 없이는 발효되지 않음",
-      "status": "in_progress",
+      "status": "deferred",
       "tasks": [
         {
           "id": "wp8-t1",
@@ -253,6 +253,34 @@
         {
           "id": "wp8-t4",
           "title": "승격 후 원격 main의 enforce-pr-target.yml에 ALLOWED_BASES 존재 확인 + c5 met 기록",
+          "status": "open"
+        }
+      ],
+      "note": "사용자 지시로 보류 — \"일단 dev에서만 처리해\". 사전 감사(019fa1cf) VERDICT: DO NOT PROMOTE. 차단 사유 두 개: (1) 918a0c8d의 인증 코드 셸 인자 노출 = wp9로 처리, (2) 승격 범위가 게이트 한정이 아니라 98커밋/9172줄(devlog 제외)이라 메인테이너의 명시적 수용이 필요. 부수효과 확인: GitHub Pages 배포는 실제로 발생, npm publish는 발생하지 않음(release.yml은 workflow_dispatch 전용, package.json 2.7.41 동일)."
+    },
+    {
+      "id": "wp9",
+      "title": "ocx account 인증 코드를 셸 인자에서 stdin으로 (WP8 사전 감사 High 지적)",
+      "status": "in_progress",
+      "tasks": [
+        {
+          "id": "wp9-t1",
+          "title": "stdin 읽기 헬퍼 + 주입 가능한 deps (runtime-api.ts)",
+          "status": "open"
+        },
+        {
+          "id": "wp9-t2",
+          "title": "account code 위치 인자 / login --code를 선택으로, 기본 stdin, '-'는 명시적 stdin",
+          "status": "open"
+        },
+        {
+          "id": "wp9-t3",
+          "title": "인자 사용 시 stderr 경고 (값은 절대 에코 금지)",
+          "status": "open"
+        },
+        {
+          "id": "wp9-t4",
+          "title": "tests/cli-account.test.ts 회귀 + 독립 감사",
           "status": "open"
         }
       ]
@@ -307,6 +335,13 @@
       "expectedEvidence": "변이 주입 스크립트 출력에서 알려진 변이 전부 CAUGHT, survived=none. 기준선 bun test 통과, bun run typecheck 오류 0. 독립 감사(gpt-5.6-terra) verdict PASS 또는 NEAR-PASS.",
       "capturedEvidence": "변이 회귀 12개 스크립트 131종 전수: 알려진 무해 6종(context-eventname, core-tostring, promise-identity, err-tostringtag, response-headers, comment-after-write)과 들여쓰기 no-op 2종 외 전부 CAUGHT, git status --short .github/ clean. 기준선 bun test tests/ci-workflows.test.ts -> 44 pass / 0 fail / 485 expect(). bun run test -> 4937 pass / 0 fail / 24289 expect() exit 0. bun x tsc --noEmit exit 0. 독립 감사(gpt-5.6-terra, agent 019fa18f) 14라운드 verdict NEAR-PASS, 잔여 지적 1건은 dbd558e1로 봉쇄 후 CAUGHT 확인.",
       "status": "met"
+    },
+    {
+      "id": "c9",
+      "scenario": "ocx account login/code가 인증 코드를 셸 히스토리와 프로세스 목록에 남기지 않는 경로를 기본으로 제공하고, 인자 경로를 쓰면 값을 노출하지 않는 경고가 나온다.",
+      "expectedEvidence": "테스트 통과 출력 + 인자 경고 어설션 + 값 미노출 어설션",
+      "capturedEvidence": "",
+      "status": "open"
     }
   ],
   "host": {
