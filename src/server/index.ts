@@ -20,12 +20,14 @@ import {
 import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
 import { startMemoryWatchdog } from "./memory-watchdog";
-import { maybeRunDueStorageCleanupPolicy, setStorageCleanupPolicyLiveSink } from "../storage/policy";
-import { startStorageCleanupScheduler } from "../storage/policy-scheduler";
+import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
+import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
+import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler } from "../storage/policy-scheduler";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { providerCodexAccountMode } from "../providers/registry";
+import type { StorageCleanupPolicy } from "../types";
 import {
   CodexAccountCooldownError,
   cooldownErrorMessage,
@@ -292,10 +294,13 @@ export function startServer(port?: number) {
   startMemoryWatchdog();
   // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
   // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
+  // Heavy work runs in a Worker via the single-flight job controller.
   // Keep live config.policy in sync when background runs advance nextRun/lastRun.
-  setStorageCleanupPolicyLiveSink((policy) => {
+  const applyPolicy = (policy: StorageCleanupPolicy) => {
     config.storageCleanupPolicy = policy;
-  });
+  };
+  setStorageCleanupPolicyLiveSink(applyPolicy);
+  setStorageCleanupPolicyJobLiveApply(applyPolicy);
   startStorageCleanupScheduler();
 
   const listenPort = port ?? config.port ?? 10100;
@@ -885,11 +890,8 @@ export function startServer(port?: number) {
       .catch(() => {});
   }
 
-  // Opt-in storage policy (default OFF). Never blocks listen; errors are swallowed.
-  // Prefer macrotask over queueMicrotask so the sync archive walk does not starve I/O.
-  setTimeout(() => {
-    maybeRunDueStorageCleanupPolicy("startup");
-  }, 0);
+  // Opt-in storage policy (default OFF). Never blocks listen; cancellable on shutdown.
+  scheduleStorageCleanupStartupRun();
 
   return server;
 }

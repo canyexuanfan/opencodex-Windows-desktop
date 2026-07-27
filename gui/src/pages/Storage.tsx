@@ -387,6 +387,32 @@ interface CleanupPolicy {
   mode: "quarantine" | "permanent";
   lastRun?: { at: number; freedBytes: number; removed: number };
   nextRun?: number;
+  job?: {
+    status: "idle" | "running";
+    reason?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    lastError?: string;
+    lastOutcome?: {
+      ok: boolean;
+      skipped?: string;
+      deferred?: string;
+      error?: string;
+      mode?: string;
+      freedBytes?: number;
+      removed?: number;
+    };
+  };
+}
+
+function policyFieldsFromResponse(json: CleanupPolicy): CleanupPolicy {
+  const { job, ...policy } = json;
+  void job;
+  return policy;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
 function AutoCleanupPolicyPanel({
@@ -421,7 +447,7 @@ function AutoCleanupPolicyPanel({
       if (!res.ok) throw new Error("load_failed");
       const json = await res.json() as CleanupPolicy;
       if (signal?.aborted) return;
-      setPolicy(json);
+      setPolicy(policyFieldsFromResponse(json));
       setThresholdGb(String(Math.max(0, Math.round((json.trigger.archivedBytesOver / GB) * 100) / 100)));
       if (json.target.reduceToBytes !== undefined) {
         setTargetMode("reduce");
@@ -501,7 +527,7 @@ function AutoCleanupPolicyPanel({
         setError(t("storage.policy.saveFailed"));
         return;
       }
-      setPolicy(json.policy);
+      setPolicy(policyFieldsFromResponse(json.policy));
       setStatus(t("storage.policy.saved"));
     } catch {
       setError(t("storage.policy.saveFailed"));
@@ -531,40 +557,78 @@ function AutoCleanupPolicyPanel({
         setError(t("storage.policy.saveFailed"));
         return;
       }
-      setPolicy(saved.policy);
+      setPolicy(policyFieldsFromResponse(saved.policy));
 
       const res = await fetch(`${apiBase}/api/storage/cleanup-policy/run`, { method: "POST" });
-      const json = await res.json() as {
+      const startJson = await res.json() as {
         ok?: boolean;
-        skipped?: string;
-        deferred?: boolean;
+        started?: boolean;
         error?: string;
-        removed?: number;
-        freedBytes?: number;
-        mode?: string;
+        job?: CleanupPolicy["job"];
         policy?: CleanupPolicy;
       };
-      if (json.policy) setPolicy(json.policy);
-      if (json.skipped === "disabled") {
+      if (startJson.policy) setPolicy(policyFieldsFromResponse(startJson.policy));
+      if (!res.ok || startJson.error === "already_running") {
+        setError(t("storage.policy.runFailed"));
+        return;
+      }
+      if (!startJson.started || !startJson.job?.startedAt) {
+        setError(t("storage.policy.runFailed"));
+        return;
+      }
+
+      const startedAt = startJson.job.startedAt;
+      const deadline = Date.now() + 120_000;
+      let outcome: NonNullable<CleanupPolicy["job"]>["lastOutcome"] | undefined;
+      let finalPolicy: CleanupPolicy | undefined;
+
+      while (Date.now() < deadline) {
+        await sleep(250);
+        const pollRes = await fetch(`${apiBase}/api/storage/cleanup-policy`);
+        if (!pollRes.ok) continue;
+        const body = await pollRes.json() as CleanupPolicy;
+        finalPolicy = policyFieldsFromResponse(body);
+        setPolicy(finalPolicy);
+        const job = body.job;
+        if (!job) continue;
+        if (job.status === "running") continue;
+        if (job.startedAt === startedAt && job.lastOutcome) {
+          outcome = job.lastOutcome;
+          break;
+        }
+        // Job finished so fast that startedAt advanced; accept matching finished marker.
+        if (job.finishedAt && job.finishedAt >= startedAt && job.lastOutcome) {
+          outcome = job.lastOutcome;
+          break;
+        }
+      }
+
+      if (finalPolicy) setPolicy(finalPolicy);
+      if (!outcome) {
+        setError(t("storage.policy.runFailed"));
+        return;
+      }
+
+      if (outcome.skipped === "disabled") {
         setStatus(t("storage.policy.skippedDisabled"));
-      } else if (json.skipped === "under_threshold") {
+      } else if (outcome.skipped === "under_threshold") {
         setStatus(t("storage.policy.skippedUnder"));
-      } else if (json.skipped === "nothing_selected") {
+      } else if (outcome.skipped === "nothing_selected") {
         setStatus(t("storage.policy.skippedEmpty"));
-      } else if (json.deferred || json.error === "codex_busy") {
+      } else if (outcome.deferred === "codex_busy" || outcome.error === "codex_busy") {
         setError(t("storage.cleanup.err.codex_busy"));
-      } else if (!res.ok || !json.ok) {
+      } else if (!outcome.ok) {
         setError(t("storage.policy.runFailed"));
       } else {
         setStatus(
-          json.mode === "permanent"
+          outcome.mode === "permanent"
             ? t("storage.policy.donePermanent", {
-              count: String(json.removed ?? 0),
-              size: formatBytes(json.freedBytes ?? 0, locale),
+              count: String(outcome.removed ?? 0),
+              size: formatBytes(outcome.freedBytes ?? 0, locale),
             })
             : t("storage.policy.doneQuarantine", {
-              count: String(json.removed ?? 0),
-              size: formatBytes(json.freedBytes ?? 0, locale),
+              count: String(outcome.removed ?? 0),
+              size: formatBytes(outcome.freedBytes ?? 0, locale),
             }),
         );
         onDone();
@@ -609,7 +673,6 @@ function AutoCleanupPolicyPanel({
           disabled={saving || running}
           onChange={e => {
             const enabled = e.target.checked;
-            setPolicy({ ...policy, enabled });
             void savePolicy({ enabled });
           }}
         />
@@ -687,7 +750,6 @@ function AutoCleanupPolicyPanel({
             disabled={saving || running}
             onChange={e => {
               const schedule = e.target.value as CleanupPolicy["schedule"];
-              setPolicy({ ...policy, schedule });
               void savePolicy({ schedule });
             }}
             style={{ display: "block", marginTop: 4, width: "100%" }}
@@ -706,7 +768,6 @@ function AutoCleanupPolicyPanel({
             disabled={saving || running}
             onChange={e => {
               const mode = e.target.value as CleanupPolicy["mode"];
-              setPolicy({ ...policy, mode });
               void savePolicy({ mode });
             }}
             style={{ display: "block", marginTop: 4, width: "100%" }}

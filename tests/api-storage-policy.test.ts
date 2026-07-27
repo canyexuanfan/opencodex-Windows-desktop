@@ -7,6 +7,10 @@ import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import {
+  resetStorageCleanupPolicyJobForTests,
+  setStorageCleanupPolicyJobTestHooks,
+} from "../src/storage/policy-job";
 import { stopStorageCleanupScheduler } from "../src/storage/policy-scheduler";
 
 let testDir = "";
@@ -43,6 +47,57 @@ function seedArchived(codexHome: string): void {
   db.close();
 }
 
+async function waitForJobIdle(
+  serverUrl: URL,
+  startedAt: number,
+  timeoutMs = 15_000,
+): Promise<{
+  enabled: boolean;
+  lastRun?: { removed: number };
+  job: {
+    status: string;
+    lastOutcome?: {
+      ok?: boolean;
+      skipped?: string;
+      removed?: number;
+      freedBytes?: number;
+      error?: string;
+      deferred?: string;
+    };
+  };
+}> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await fetch(new URL("/api/storage/cleanup-policy", serverUrl));
+    const body = await res.json() as {
+      enabled: boolean;
+      lastRun?: { removed: number };
+      job: {
+        status: string;
+        startedAt?: number;
+        finishedAt?: number;
+        lastOutcome?: {
+          ok?: boolean;
+          skipped?: string;
+          removed?: number;
+          freedBytes?: number;
+          error?: string;
+          deferred?: string;
+        };
+      };
+    };
+    if (
+      body.job.status === "idle"
+      && body.job.lastOutcome
+      && (body.job.startedAt === startedAt || (body.job.finishedAt ?? 0) >= startedAt)
+    ) {
+      return body;
+    }
+    await Bun.sleep(50);
+  }
+  throw new Error("policy job did not become idle in time");
+}
+
 beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
   isolatedCodexHome = installIsolatedCodexHome("ocx-api-storage-policy-codex-");
@@ -50,10 +105,13 @@ beforeEach(() => {
   process.env.OPENCODEX_HOME = testDir;
   saveConfig(baseConfig());
   stopStorageCleanupScheduler();
+  resetStorageCleanupPolicyJobForTests();
 });
 
 afterEach(() => {
   stopStorageCleanupScheduler();
+  resetStorageCleanupPolicyJobForTests();
+  setStorageCleanupPolicyJobTestHooks(null);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   isolatedCodexHome?.restore();
@@ -73,9 +131,11 @@ describe("storage cleanup policy API", () => {
       expect(body.mode).toBe("quarantine");
       expect(body.schedule).toBe("manual");
       expect(body.trigger.archivedBytesOver).toBeGreaterThan(0);
+      expect(body.job.status).toBe("idle");
     } finally {
       await server.stop(true);
       stopStorageCleanupScheduler();
+      resetStorageCleanupPolicyJobForTests();
     }
   });
 
@@ -107,6 +167,7 @@ describe("storage cleanup policy API", () => {
     } finally {
       await server.stop(true);
       stopStorageCleanupScheduler();
+      resetStorageCleanupPolicyJobForTests();
     }
   });
 
@@ -127,10 +188,11 @@ describe("storage cleanup policy API", () => {
     } finally {
       await server.stop(true);
       stopStorageCleanupScheduler();
+      resetStorageCleanupPolicyJobForTests();
     }
   });
 
-  test("POST run skips when disabled; runs when enabled", async () => {
+  test("POST run starts job promptly; skipped/success land on GET", async () => {
     seedArchived(isolatedCodexHome!.path);
     const server = startServer(0);
     try {
@@ -138,8 +200,11 @@ describe("storage cleanup policy API", () => {
         method: "POST",
       });
       expect(skipped.status).toBe(200);
-      const skipBody = await skipped.json();
-      expect(skipBody.skipped).toBe("disabled");
+      const skipStart = await skipped.json();
+      expect(skipStart.started).toBe(true);
+      expect(skipStart.job.status).toBe("running");
+      const skipDone = await waitForJobIdle(server.url, skipStart.job.startedAt);
+      expect(skipDone.job.lastOutcome?.skipped).toBe("disabled");
 
       await fetch(new URL("/api/storage/cleanup-policy", server.url), {
         method: "PUT",
@@ -157,15 +222,63 @@ describe("storage cleanup policy API", () => {
         method: "POST",
       });
       expect(ran.status).toBe(200);
-      const ranBody = await ran.json();
-      expect(ranBody.ok).toBe(true);
-      expect(ranBody.removed).toBe(1);
-      expect(ranBody.freedBytes).toBe(100);
-      expect(ranBody.policy.lastRun.removed).toBe(1);
-      expect(JSON.stringify(ranBody)).not.toContain(isolatedCodexHome!.path.replaceAll("\\", "\\\\"));
+      const ranStart = await ran.json();
+      expect(ranStart.ok).toBe(true);
+      expect(ranStart.started).toBe(true);
+      expect(ranStart.job.status).toBe("running");
+      // Must not block on full cleanup — response should not embed removed counts.
+      expect(ranStart.removed).toBeUndefined();
+
+      const ranDone = await waitForJobIdle(server.url, ranStart.job.startedAt);
+      expect(ranDone.job.lastOutcome?.ok).toBe(true);
+      expect(ranDone.job.lastOutcome?.removed).toBe(1);
+      expect(ranDone.job.lastOutcome?.freedBytes).toBe(100);
+      expect(ranDone.lastRun?.removed).toBe(1);
+      expect(JSON.stringify(ranDone)).not.toContain(isolatedCodexHome!.path.replaceAll("\\", "\\\\"));
     } finally {
       await server.stop(true);
       stopStorageCleanupScheduler();
+      resetStorageCleanupPolicyJobForTests();
+    }
+  });
+
+  test("POST run rejects when a job is already running", async () => {
+    setStorageCleanupPolicyJobTestHooks({ blockMs: 800 });
+    seedArchived(isolatedCodexHome!.path);
+    const server = startServer(0);
+    try {
+      await fetch(new URL("/api/storage/cleanup-policy", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          enabled: true,
+          trigger: { archivedBytesOver: 50 },
+          target: { removeOldestPercent: 50 },
+          schedule: "manual",
+          mode: "quarantine",
+        }),
+      });
+
+      const first = await fetch(new URL("/api/storage/cleanup-policy/run", server.url), {
+        method: "POST",
+      });
+      expect(first.status).toBe(200);
+      const firstBody = await first.json();
+      expect(firstBody.started).toBe(true);
+
+      const second = await fetch(new URL("/api/storage/cleanup-policy/run", server.url), {
+        method: "POST",
+      });
+      expect(second.status).toBe(409);
+      const secondBody = await second.json();
+      expect(secondBody.error).toBe("already_running");
+      expect(secondBody.started).toBe(false);
+
+      await waitForJobIdle(server.url, firstBody.job.startedAt);
+    } finally {
+      await server.stop(true);
+      stopStorageCleanupScheduler();
+      resetStorageCleanupPolicyJobForTests();
     }
   });
 });

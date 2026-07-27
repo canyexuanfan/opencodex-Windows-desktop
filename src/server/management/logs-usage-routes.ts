@@ -38,10 +38,13 @@ import { executeArchivedCleanup, pickWireCleanupTestHooks, previewArchivedCleanu
 import {
   normalizeStorageCleanupPolicy,
   parseStorageCleanupPolicyInput,
-  runStorageCleanupPolicy,
   writeStorageCleanupPolicyToConfig,
 } from "../../storage/policy";
-import type { StorageCleanupPolicy } from "../../types";
+import {
+  getStorageCleanupPolicyJobState,
+  getStorageCleanupPolicyTestStreamResponse,
+  requestStorageCleanupPolicyRun,
+} from "../../storage/policy-job";
 import {
   currentUsageLogRevision,
   readUsageSnapshotForManagement,
@@ -333,9 +336,17 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     }
   }
 
+  if (url.pathname === "/api/storage/cleanup-policy/test-stream" && req.method === "GET") {
+    const stream = getStorageCleanupPolicyTestStreamResponse();
+    if (stream) return stream;
+  }
+
   if (url.pathname === "/api/storage/cleanup-policy" && req.method === "GET") {
     const policy = normalizeStorageCleanupPolicy(config.storageCleanupPolicy);
-    return jsonResponse(policy);
+    return jsonResponse({
+      ...policy,
+      job: getStorageCleanupPolicyJobState(),
+    });
   }
 
   if (url.pathname === "/api/storage/cleanup-policy" && req.method === "PUT") {
@@ -349,51 +360,28 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     if (body.enabled === undefined) parsed.policy.enabled = previous.enabled;
     const saved = writeStorageCleanupPolicyToConfig(parsed.policy);
     config.storageCleanupPolicy = saved;
-    return jsonResponse({ ok: true, policy: saved });
+    return jsonResponse({ ok: true, policy: saved, job: getStorageCleanupPolicyJobState() });
   }
 
   if (url.pathname === "/api/storage/cleanup-policy/run" && req.method === "POST") {
     try {
-      const result = runStorageCleanupPolicy({ reason: "manual", force: true });
-      // Refresh in-memory config so subsequent GETs see lastRun/nextRun.
-      config.storageCleanupPolicy = result.policy;
-      if (result.skipped) {
-        return jsonResponse({
-          ok: true,
-          skipped: result.skipped,
-          policy: result.policy,
-        });
-      }
-      if (result.deferred === "codex_busy" || result.error === "codex_busy") {
+      const accepted = requestStorageCleanupPolicyRun({ reason: "manual", force: true });
+      if (!accepted.accepted) {
         return jsonResponse({
           ok: false,
-          deferred: true,
-          error: "codex_busy",
-          message: "Codex is using state.sqlite — try again after quitting Codex.",
-          policy: result.policy,
+          started: false,
+          error: "already_running",
+          message: "A cleanup policy run is already in progress.",
+          job: accepted.state,
+          policy: normalizeStorageCleanupPolicy(config.storageCleanupPolicy),
         }, 409);
       }
-      if (!result.ok) {
-        const status =
-          result.error === "stale_preview" || result.error === "referenced_history"
-            ? 409
-            : result.error === "invalid_mode" || result.error === "invalid_digest"
-              ? 400
-              : 500;
-        return jsonResponse({
-          ok: false,
-          error: result.error ?? "cleanup_failed",
-          policy: result.policy,
-          ...(result.trashDir ? { trashDir: result.trashDir } : {}),
-        }, status);
-      }
+      // Return promptly — clients poll GET for skip/defer/success/error outcomes.
       return jsonResponse({
         ok: true,
-        mode: result.mode,
-        removed: result.removed ?? 0,
-        freedBytes: result.freedBytes ?? 0,
-        ...(result.trashDir ? { trashDir: result.trashDir } : {}),
-        policy: result.policy,
+        started: true,
+        job: accepted.state,
+        policy: normalizeStorageCleanupPolicy(config.storageCleanupPolicy),
       });
     } catch {
       return jsonResponse({ ok: false, error: "cleanup_failed" }, 500);
