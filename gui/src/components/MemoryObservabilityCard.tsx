@@ -4,12 +4,10 @@ import { IconActivity } from "../icons";
 import { useI18n, type Locale } from "../i18n/shared";
 
 /**
- * Read-only Memory observability card. Polls GET /api/system/memory (the #314 WP3
- * service-process introspection surface) every 5s and renders scalar diagnostics
- * only: no sliders, no restart toggle, no PUT. Observed memory is the largest
- * of RSS, external, and ArrayBuffers so Windows working-set trimming does not
- * hide committed retention; a rising continuation-store total under rising
- * observed memory points at conversation retention.
+ * Memory observability card. Polls GET /api/system/memory (#314 WP3) every 5s
+ * and renders scalar diagnostics. Also hosts the confirm-gated Drain & restart
+ * action (#563): longer 60s drain, then respawn via ensure/service — not the
+ * short /api/stop teardown path.
  */
 
 interface MemorySample {
@@ -33,6 +31,7 @@ interface ResponseState {
 }
 
 interface SystemMemory {
+  pid?: number;
   rss: number;
   heapUsed: number;
   heapTotal: number;
@@ -43,8 +42,13 @@ interface SystemMemory {
   jscHeap: { heapSize: number; heapCapacity: number; objectCount: number } | null;
   /** Absent on older proxies whose /api/system/memory predates the continuation-store metrics. */
   responseState?: ResponseState;
+  /** Absent on older proxies predating the drain-and-restart action (#563). */
+  activeTurnCount?: number;
+  isDraining?: boolean;
   watchdog: { warnThresholdBytes: number; lastWarnAt: number | null; observedBytes?: number; observedMetric?: MemoryMetric; samples: MemorySample[] } | null;
 }
+
+type RestartPhase = "idle" | "draining" | "reconnecting" | "error";
 
 /**
  * Render a byte count with a binary-scaled unit; non-finite/zero inputs render as "0 B".
@@ -127,10 +131,34 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+const DRAIN_TIMEOUT_S = 60;
+const RECONNECT_POLL_MS = 1500;
+const RECONNECT_GIVE_UP_MS = 120_000;
+
 export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }) {
   const { locale, t } = useI18n();
   const [data, setData] = useState<SystemMemory | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [restartPhase, setRestartPhase] = useState<RestartPhase>("idle");
+  const [restartError, setRestartError] = useState<string | null>(null);
+  const [noSupervisor, setNoSupervisor] = useState(false);
+  const [supportsRestart, setSupportsRestart] = useState(false);
+  const [restartFromPid, setRestartFromPid] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/startup-health`);
+        if (!res.ok || cancelled) return;
+        const json = await res.json() as { protection?: string };
+        if (!cancelled) setNoSupervisor(json.protection === "none");
+      } catch {
+        /* older proxies / offline — leave warning off */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [apiBase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,10 +188,31 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
         if (!cancelled) {
           setData(json);
           setUnavailable(false);
+          setSupportsRestart(typeof json.activeTurnCount === "number");
+          if (json.isDraining && restartPhase === "idle") setRestartPhase("draining");
+          // Fast recycle can finish between polls with no observed outage — detect pid change.
+          if (
+            (restartPhase === "draining" || restartPhase === "reconnecting")
+            && restartFromPid != null
+            && typeof json.pid === "number"
+            && json.pid !== restartFromPid
+            && !json.isDraining
+          ) {
+            setRestartPhase("idle");
+            setRestartFromPid(null);
+            setRestartError(null);
+          }
         }
       } catch {
         // Old servers (pre-#314) 404 this route; degrade to a quiet unavailable note.
-        if (!cancelled) setUnavailable(true);
+        // During drain/restart the proxy goes away — switch to reconnect polling.
+        if (!cancelled) {
+          if (restartPhase === "draining" || restartPhase === "reconnecting") {
+            setRestartPhase("reconnecting");
+          } else {
+            setUnavailable(true);
+          }
+        }
       } finally {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
         if (activeController === controller) activeController = null;
@@ -177,9 +226,80 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
       activeController?.abort();
       clearInterval(interval);
     };
-  }, [apiBase]);
+  }, [apiBase, restartPhase, restartFromPid]);
 
-  if (unavailable && !data) {
+  useEffect(() => {
+    if (restartPhase !== "reconnecting") return;
+    let cancelled = false;
+    let inFlight = false;
+    const started = Date.now();
+    const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5_000);
+      try {
+        const res = await fetch(`${apiBase}/healthz`, { cache: "no-store", signal: controller.signal });
+        if (res.ok && !cancelled) {
+          let replaced = restartFromPid == null;
+          if (restartFromPid != null) {
+            try {
+              const health = await res.json() as { pid?: number };
+              replaced = typeof health.pid === "number" && health.pid !== restartFromPid;
+            } catch {
+              replaced = true;
+            }
+          }
+          if (replaced) {
+            setRestartPhase("idle");
+            setRestartFromPid(null);
+            setRestartError(null);
+            return;
+          }
+        }
+      } catch {
+        /* still down / aborted */
+      } finally {
+        clearTimeout(timeoutId);
+        inFlight = false;
+      }
+      if (!cancelled && Date.now() - started >= RECONNECT_GIVE_UP_MS) {
+        setRestartPhase("error");
+        setRestartError(t("dash.mem.restartFailed"));
+      }
+    };
+    void tick();
+    const interval = setInterval(() => void tick(), RECONNECT_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [apiBase, restartPhase, restartFromPid, t]);
+
+  const confirmRestart = () => {
+    const count = data?.activeTurnCount ?? 0;
+    const lines = [
+      t("dash.mem.restartConfirm", { count, seconds: DRAIN_TIMEOUT_S }),
+    ];
+    if (noSupervisor) lines.push(t("dash.mem.restartNoSupervisor"));
+    if (!window.confirm(lines.join("\n\n"))) return;
+    void (async () => {
+      setRestartError(null);
+      setRestartFromPid(typeof data?.pid === "number" ? data.pid : null);
+      setRestartPhase("draining");
+      try {
+        const res = await fetch(`${apiBase}/api/system/restart`, { method: "POST" });
+        if (!res.ok) throw new Error("restart_failed");
+        // Proxy will drain then exit; memory poll will trip reconnecting or pid change.
+      } catch {
+        setRestartPhase("error");
+        setRestartFromPid(null);
+        setRestartError(t("dash.mem.restartFailed"));
+      }
+    })();
+  };
+
+  if (unavailable && !data && restartPhase === "idle") {
     return (
       <div className="panel" style={{ marginBottom: 24 }}>
         <div className="font-semibold" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -196,6 +316,8 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
   const observedBy = data ? observedMetric(data) : null;
   // Optional on purpose: a 200 from an older proxy may lack the responseState field.
   const responseState = data?.responseState;
+  const activeTurns = data?.activeTurnCount;
+  const busy = restartPhase === "draining" || restartPhase === "reconnecting";
 
   return (
     <div className="panel" style={{ marginBottom: 24 }}>
@@ -249,6 +371,37 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
           </div>
         )}
       </details>
+
+      {supportsRestart && (
+        <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }} aria-live="polite">
+          <Stat
+            label={t("dash.mem.inFlight")}
+            value={typeof activeTurns === "number" ? plainNumberFormat(locale).format(activeTurns) : "—"}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={busy}
+            onClick={confirmRestart}
+          >
+            {t("dash.mem.restart")}
+          </button>
+          {restartPhase === "draining" && (
+            <span className="muted text-control">
+              {t("dash.mem.draining", { count: typeof activeTurns === "number" ? activeTurns : 0 })}
+            </span>
+          )}
+          {restartPhase === "reconnecting" && (
+            <span className="muted text-control">{t("dash.mem.reconnecting")}</span>
+          )}
+          {restartPhase === "error" && restartError && (
+            <span className="text-control" style={{ color: "var(--danger, #c44)" }}>{restartError}</span>
+          )}
+          {noSupervisor && restartPhase === "idle" && (
+            <span className="muted text-control">{t("dash.mem.restartNoSupervisor")}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
