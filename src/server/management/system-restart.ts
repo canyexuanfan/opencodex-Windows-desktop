@@ -11,6 +11,12 @@
  *   Task Scheduler ERRORLEVEL loop) bring the proxy back.
  * - Otherwise: detached `ocx start --port <live>` (bypasses ensure's
  *   codexAutoStart gate), mark recycle so exit cleanup keeps injection, exit(0).
+ * - If detached spawn fails (sync throw or pre-start `error`): exit(1) without
+ *   markRecycling — after drain the listen socket is already closed, so a latch
+ *   reset cannot recover serving. Clear inherited `OCX_SERVICE` so exit cleanup
+ *   can restore Codex/Grok fences (ensure/tray daemons set the marker without a
+ *   real supervisor). Log only a stable errno code — never the raw message
+ *   (paths in ENOENT often include the OS username).
  */
 import { spawn } from "node:child_process";
 import {
@@ -31,7 +37,8 @@ export interface SystemRestartIo {
   drainAndShutdown?: typeof drainAndShutdown;
   isServiceInstalled?: () => boolean;
   isSupervisedServiceChild?: () => boolean;
-  spawnStart?: (port?: number) => void;
+  /** Must resolve only after the replacement process has actually started. */
+  spawnStart?: (port?: number) => void | Promise<void>;
   markRecycling?: () => void;
   exitProcess?: (code: number) => void;
   schedule?: (fn: () => void | Promise<void>, ms: number) => void;
@@ -63,18 +70,49 @@ function isSupervisedServiceChild(): boolean {
   return process.env.OCX_SERVICE === "1" && isServiceInstalled();
 }
 
-function spawnDetachedStart(port?: number): void {
+/** Stable, path-free spawn failure label for logs (never interpolate err.message). */
+function spawnFailureCode(err: unknown): string {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (typeof code === "string" && code.length > 0 && code.length <= 64) return code;
+  }
+  return "spawn_failed";
+}
+
+function spawnDetachedStart(port?: number): Promise<void> {
   const args = [process.argv[1], "start"];
   if (typeof port === "number" && Number.isFinite(port) && port > 0 && port <= 65535) {
     args.push("--port", String(Math.trunc(port)));
   }
-  const child = spawn(process.execPath, args, {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-    env: { ...process.env, OCX_SERVICE: "1" },
+  return new Promise<void>((resolve, reject) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(process.execPath, args, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env: { ...process.env, OCX_SERVICE: "1" },
+      });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    child.once("error", (err) => {
+      finish(() => reject(err));
+    });
+    child.once("spawn", () => {
+      finish(() => {
+        child.unref();
+        resolve();
+      });
+    });
   });
-  child.unref();
 }
 
 /**
@@ -106,9 +144,22 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
         return;
       }
       const port = (io.listenPort ?? resolveListenPort)();
-      (io.spawnStart ?? spawnDetachedStart)(port);
+      const exitProcess = io.exitProcess ?? ((code: number) => { process.exit(code); });
+      try {
+        await (io.spawnStart ?? spawnDetachedStart)(port);
+      } catch (err) {
+        console.warn(
+          `⚠️  Drain-and-restart spawn failed (${spawnFailureCode(err)}); exiting without replacement`,
+        );
+        // Listen socket is already stopped; do not markRecycling — no child to inherit fences.
+        // ensure/tray children inherit OCX_SERVICE=1 without an installed service; clear it so
+        // syncCleanup can restore Codex/Grok fences instead of leaving clients pointed at a dead port.
+        delete process.env.OCX_SERVICE;
+        exitProcess(1);
+        return;
+      }
       (io.markRecycling ?? markRecyclingForExit)();
-      (io.exitProcess ?? ((code: number) => { process.exit(code); }))(0);
+      exitProcess(0);
     }, 200);
   }
 
