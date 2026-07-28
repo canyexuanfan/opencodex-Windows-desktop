@@ -4,6 +4,7 @@ import { namespacedToolName, type AdapterEvent, type OcxParsedRequest, type OcxP
 import { catalogModelSupportsReasoningSummaries } from "../codex/catalog";
 import { COMPACT_PROMPT, decodeCompactionSummary, SUMMARY_PREFIX } from "../responses/compaction";
 import { collectResponsesToolGroups } from "../responses/tool-groups";
+import { isHostedToolUnsupportedForModel } from "../responses/hosted-tool-policy";
 import { decodeServerSentEvents } from "../lib/sse-decoder";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
@@ -160,18 +161,6 @@ function scrubOcxCompactionItems(body: unknown): unknown {
 
   return changed ? { ...body, input } : body;
 }
-
-/**
- * Hosted (OpenAI-executed) tool types that specific native slugs reject at request time. Codex
- * attaches these for app skills (e.g. `image_generation` for imagegen) regardless of the target
- * model, and the passthrough path forwards the raw body untouched — so a slug that doesn't support
- * the tool 400s (`Tool 'image_generation' is not supported with gpt-5.3-codex-spark.`). Each entry
- * maps a model-slug matcher to the hosted tool types that must be stripped before forwarding.
- * Extend this when another native slug rejects a hosted tool (e.g. `code_interpreter`).
- */
-const UNSUPPORTED_HOSTED_TOOLS: ReadonlyArray<{ match: (model: string) => boolean; tools: ReadonlySet<string> }> = [
-  { match: model => model.includes("codex-spark"), tools: new Set(["image_generation", "tool_search"]) },
-];
 
 /**
  * Strip unsupported `reasoning` sub-parameters for native slugs that reject them (e.g. Spark).
@@ -621,6 +610,114 @@ function declaresImageGenClientTool(tool: unknown): boolean {
   return isImageGenClientName(tool.name);
 }
 
+/** Rewrite client image-gen selectors to the hosted tool without widening caller restrictions. */
+function preferHostedImageGenToolChoice(toolChoice: unknown): unknown {
+  if (!isPlainObject(toolChoice)) return toolChoice;
+  if ((toolChoice.type === "function" || toolChoice.type === "custom") && typeof toolChoice.name === "string") {
+    return isImageGenClientName(toolChoice.name) ? { type: HOSTED_IMAGE_GENERATION_TOOL } : toolChoice;
+  }
+  if (toolChoice.type !== "allowed_tools" || !Array.isArray(toolChoice.tools)) return toolChoice;
+  const hasHostedImageTool = toolChoice.tools.some(tool => isPlainObject(tool) && tool.type === HOSTED_IMAGE_GENERATION_TOOL);
+  let changed = false;
+  let addedHostedImageTool = false;
+  const tools: unknown[] = [];
+  for (const tool of toolChoice.tools) {
+    const isClientImageTool = isPlainObject(tool)
+      && (tool.type === "function" || tool.type === "custom")
+      && typeof tool.name === "string"
+      && isImageGenClientName(tool.name);
+    if (!isClientImageTool) {
+      tools.push(tool);
+      continue;
+    }
+    changed = true;
+    if (!hasHostedImageTool && !addedHostedImageTool) {
+      tools.push({ type: HOSTED_IMAGE_GENERATION_TOOL });
+      addedHostedImageTool = true;
+    }
+  }
+  return changed ? { ...toolChoice, tools } : toolChoice;
+}
+
+/**
+ * Some Responses-compatible gateways reserve the hosted image namespace even when the request
+ * does not explicitly declare `image_generation`. For an explicitly configured model, remove only
+ * colliding client declarations so the gateway's hosted tool can take precedence.
+ */
+function preferConfiguredHostedTools(
+  body: unknown,
+  provider: OcxProviderConfig,
+  modelId: string,
+  selectedModelId?: string,
+): unknown {
+  // A virtual model's advertised id takes precedence over its resolved wire-model id.
+  const preferredTools = (selectedModelId ? provider.modelPreferHostedTools?.[selectedModelId] : undefined)
+    ?? provider.modelPreferHostedTools?.[modelId];
+  if (!preferredTools?.includes(HOSTED_IMAGE_GENERATION_TOOL) || !isPlainObject(body)) return body;
+
+  const stripGroup = (tools: unknown[]): unknown[] => {
+    const filtered = tools.filter(tool => !declaresImageGenClientTool(tool));
+    return filtered.length === tools.length ? tools : filtered;
+  };
+
+  let changed = false;
+  let tools = body.tools;
+  let strippedTopLevelImageGenTool = false;
+  if (Array.isArray(body.tools)) {
+    tools = stripGroup(body.tools);
+    strippedTopLevelImageGenTool = tools !== body.tools;
+    changed ||= strippedTopLevelImageGenTool;
+  }
+
+  let input = body.input;
+  let strippedAdditionalToolsIndex = -1;
+  if (Array.isArray(body.input)) {
+    let nestedChanged = false;
+    const mappedInput = body.input.map((item, index) => {
+      if (!isPlainObject(item) || item.type !== "additional_tools" || !Array.isArray(item.tools)) return item;
+      const nestedTools = stripGroup(item.tools);
+      if (nestedTools === item.tools) return item;
+      if (strippedAdditionalToolsIndex === -1) strippedAdditionalToolsIndex = index;
+      nestedChanged = true;
+      return { ...item, tools: nestedTools };
+    });
+    if (nestedChanged) {
+      input = mappedInput;
+      changed = true;
+    }
+  }
+
+  const hasToolChoice = Object.hasOwn(body, "tool_choice");
+  const toolChoice = hasToolChoice ? preferHostedImageGenToolChoice(body.tool_choice) : body.tool_choice;
+  const toolChoiceChanged = hasToolChoice && toolChoice !== body.tool_choice;
+  const hasHostedImageGenTool = (toolGroup: unknown): boolean => Array.isArray(toolGroup)
+    && toolGroup.some(tool => isPlainObject(tool) && tool.type === HOSTED_IMAGE_GENERATION_TOOL);
+  const hasHostedImageGenDeclaration = hasHostedImageGenTool(tools)
+    || (Array.isArray(input) && input.some(item => isPlainObject(item)
+      && item.type === "additional_tools"
+      && hasHostedImageGenTool(item.tools)));
+  if ((strippedTopLevelImageGenTool || strippedAdditionalToolsIndex >= 0) && !hasHostedImageGenDeclaration) {
+    if (strippedTopLevelImageGenTool && Array.isArray(tools)) {
+      tools = [...tools, { type: HOSTED_IMAGE_GENERATION_TOOL }];
+    } else if (strippedAdditionalToolsIndex >= 0 && Array.isArray(input)) {
+      input = input.map((item, index) => index === strippedAdditionalToolsIndex
+        && isPlainObject(item)
+        && Array.isArray(item.tools)
+        ? { ...item, tools: [...item.tools, { type: HOSTED_IMAGE_GENERATION_TOOL }] }
+        : item);
+    }
+  }
+  changed ||= toolChoiceChanged;
+  if (!changed) return body;
+  const next: Record<string, unknown> = {
+    ...body,
+    ...(Array.isArray(body.tools) ? { tools } : {}),
+    ...(Array.isArray(body.input) ? { input } : {}),
+  };
+  if (toolChoiceChanged) next.tool_choice = toolChoice;
+  return next;
+}
+
 /**
  * Lower one complete Codex image-gen namespace to public Responses function tools.
  *
@@ -879,13 +976,9 @@ function normalizeImageGenClientTools(body: unknown): unknown {
 function stripUnsupportedHostedTools(body: unknown): unknown {
   if (!isPlainObject(body) || !Array.isArray(body.tools)) return body;
   const model = typeof body.model === "string" ? body.model : "";
-  const unsupported = UNSUPPORTED_HOSTED_TOOLS.filter(e => e.match(model));
-  if (unsupported.length === 0) return body;
-
   const tools = body.tools.filter(t => {
     const type = isPlainObject(t) && typeof t.type === "string" ? t.type : undefined;
-    if (!type) return true;
-    return !unsupported.some(e => e.tools.has(type));
+    return !type || !isHostedToolUnsupportedForModel(model, type);
   });
   return tools.length === body.tools.length ? body : { ...body, tools };
 }
@@ -1025,8 +1118,15 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       }
       if (forward) {
         outBody = stripUnsupportedForwardParams(outBody);
+      } else {
+        outBody = preferConfiguredHostedTools(
+          outBody,
+          provider,
+          parsed.modelId,
+          parsed._openAiVirtualSelectedModelId,
+        );
+        outBody = normalizeImageGenClientTools(outBody);
       }
-      else outBody = normalizeImageGenClientTools(outBody);
       if (forward || parsed._previousResponseInputExpanded === true) {
         outBody = repairOversizedReplayCallIds(outBody);
       }

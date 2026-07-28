@@ -28,6 +28,7 @@ import {
   isWirePinnedModel,
   MODEL_ADAPTER_OVERRIDE_ALLOWED,
   OPENAI_PROVIDER_TIER_VERSION,
+  pinnedWireAdapter,
   REASONING_SUMMARY_DELIVERY_VALUES,
   type OcxClaudeCodeConfig,
   type OcxConfig,
@@ -35,6 +36,8 @@ import {
   type OcxProviderConfig,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
+import { getProviderRegistryEntry } from "./providers/registry";
+import { resolveOpenAiVirtualModel } from "./providers/openai-virtual-models";
 import { parseDesktopProfile } from "./claude/desktop-profile";
 import { isCodexReasoningEffort, modelRecordValue } from "./reasoning-effort";
 import {
@@ -42,6 +45,7 @@ import {
   MAX_APP_OWNED_MEMORY_BUDGET_MB,
   MIN_APP_OWNED_MEMORY_BUDGET_MB,
 } from "./lib/app-owned-memory";
+import { isHostedToolUnsupportedForModel } from "./responses/hosted-tool-policy";
 
 let _atomicSeq = 0;
 
@@ -702,6 +706,60 @@ export function reasoningSummaryDeliveryRecordConfigError(
   return null;
 }
 
+const SUPPORTED_PREFERRED_HOSTED_TOOLS = new Set(["image_generation"]);
+
+export function modelPreferHostedToolsConfigError(
+  value: unknown,
+  field: string,
+  providerName: string,
+  provider: { adapter?: unknown; authMode?: unknown; modelAdapters?: unknown },
+): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${field} must be a plain object`;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return `${field} must be a plain object with own properties`;
+  const entries = Object.entries(value);
+  const registry = getProviderRegistryEntry(providerName);
+  if (entries.length > 0 && (registry?.authKind === "forward" || (!registry && provider.authMode === "forward"))) {
+    return `${field} is not supported on forward-auth Responses providers`;
+  }
+  const requestedWireFor = (modelId: string): unknown => provider.modelAdapters
+    && typeof provider.modelAdapters === "object"
+    && !Array.isArray(provider.modelAdapters)
+    ? (provider.modelAdapters as Record<string, unknown>)[modelId]
+    : undefined;
+  const resolveEffectiveWire = (modelId: string, currentWire: unknown): unknown => {
+    const pinned = pinnedWireAdapter(providerName, modelId);
+    if (pinned) return pinned;
+    const requestedWire = requestedWireFor(modelId);
+    return typeof requestedWire === "string" && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(requestedWire)
+      ? requestedWire
+      : currentWire;
+  };
+  for (const [key, entry] of entries) {
+    if (!key.trim()) return `${field} keys must be nonblank model ids`;
+    if (!Array.isArray(entry)) return `${field}.${key} must be an array`;
+    if (entry.length === 0) return `${field}.${key} must include image_generation`;
+    for (const tool of entry) {
+      if (typeof tool !== "string" || !SUPPORTED_PREFERRED_HOSTED_TOOLS.has(tool)) {
+        return `${field}.${key} supports only image_generation`;
+      }
+      if (isHostedToolUnsupportedForModel(key, tool)) {
+        return `${field}.${key} cannot prefer ${tool}: the model does not support it`;
+      }
+    }
+    let effectiveWire = resolveEffectiveWire(key, registry?.adapter ?? provider.adapter);
+    const virtualWireModel = resolveOpenAiVirtualModel(providerName, key)?.wireModelId;
+    if (virtualWireModel && virtualWireModel !== key) {
+      effectiveWire = resolveEffectiveWire(virtualWireModel, effectiveWire);
+    }
+    if (effectiveWire !== "openai-responses") {
+      return `${field}.${key} requires the openai-responses wire`;
+    }
+  }
+  return null;
+}
+
 /**
  * Validate a provider's per-model wire override map (#404).
  *
@@ -1004,6 +1062,19 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", name, "modelAdapters"],
         message: modelAdaptersError,
+      });
+    }
+    const preferHostedToolsError = modelPreferHostedToolsConfigError(
+      (provider as { modelPreferHostedTools?: unknown }).modelPreferHostedTools,
+      "modelPreferHostedTools",
+      name,
+      provider,
+    );
+    if (preferHostedToolsError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "modelPreferHostedTools"],
+        message: preferHostedToolsError,
       });
     }
     const maxInputError = positiveIntegerRecordConfigError(
