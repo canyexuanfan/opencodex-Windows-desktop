@@ -21,6 +21,7 @@ import {
   readRuntimePort,
   removePid,
   removeRuntimePort,
+  validateConfigCandidate,
   writeRuntimePort,
   writePid,
 } from "../src/config";
@@ -103,6 +104,23 @@ describe("opencodex config defaults", () => {
   test("Codex autostart can be disabled explicitly", () => {
     expect(codexAutoStartEnabled({ codexAutoStart: false })).toBe(false);
     expect(codexAutoStartEnabled({ codexAutoStart: true })).toBe(true);
+  });
+
+  test("config candidates reject blank server hostnames", () => {
+    const base = getDefaultConfig();
+
+    expect(validateConfigCandidate({ ...base, hostname: "" })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("hostname"),
+    });
+    expect(validateConfigCandidate({ ...base, hostname: "   " })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("hostname"),
+    });
+    expect(validateConfigCandidate({ ...base, hostname: "127.0.0.1" })).toMatchObject({
+      ok: true,
+      config: expect.objectContaining({ hostname: "127.0.0.1" }),
+    });
   });
 
   test("Codex shim auto-restore defaults on with config and environment opt-out precedence", () => {

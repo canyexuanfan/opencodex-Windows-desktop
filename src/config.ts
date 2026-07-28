@@ -527,6 +527,7 @@ export function modelAdapterRecordConfigError(
 
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
+  hostname: z.string().trim().min(1).optional(),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
