@@ -2769,3 +2769,4 @@ describe("Codex reasoning-effort capability clamp", () => {
     expect(models).toEqual(before);
   });
 });
+import { ManagementRequest as Request } from "./helpers/management-auth";

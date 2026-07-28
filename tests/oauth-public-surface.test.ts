@@ -100,3 +100,4 @@ describe("legacy ChatGPT OAuth public-surface exclusion", () => {
     expect(cfg.providers.chatgpt).toBeUndefined();
   });
 });
+import { ManagementRequest as Request } from "./helpers/management-auth";

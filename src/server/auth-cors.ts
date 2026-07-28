@@ -88,6 +88,27 @@ export function isAllowedRequestOrigin(req: Request, config: OcxConfig): boolean
   return !origin || isLoopbackOriginValue(origin) || isSameOriginAsRequest(req, origin) || isExtraAllowedOrigin(origin, config);
 }
 
+export function managementRequestOrigin(req: Request, config: OcxConfig): string | null {
+  const host = req.headers.get("Host");
+  const parsedHost = parseHttpHost(host);
+  if (!host || !parsedHost) return null;
+  if (!isApiAuthRequired(config) && !isLoopbackHostname(parsedHost.hostname)) return null;
+  try {
+    const protocol = new URL(req.url).protocol;
+    if (protocol !== "http:" && protocol !== "https:") return null;
+    return new URL(`${protocol}//${host}`).origin;
+  } catch {
+    return null;
+  }
+}
+
+export function isAllowedManagementOrigin(req: Request, config: OcxConfig): boolean {
+  const requestOrigin = managementRequestOrigin(req, config);
+  if (!requestOrigin) return false;
+  const origin = req.headers.get("Origin");
+  return !origin || origin === requestOrigin;
+}
+
 export function browserSecurityHeaders(): Record<string, string> {
   return {
     "X-Frame-Options": "DENY",
@@ -110,9 +131,30 @@ export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, s
   };
 }
 
+export function managementCorsHeaders(req?: Request, config?: OcxConfig): Record<string, string> {
+  const headers = corsHeaders();
+  const origin = req?.headers.get("Origin");
+  if (origin && req && config && isAllowedManagementOrigin(req, config)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
+}
+
 export function withCors(response: Response, req: Request, config: OcxConfig): Response {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(corsHeaders(req, config))) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+export function withManagementCors(response: Response, req: Request, config: OcxConfig): Response {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(managementCorsHeaders(req, config))) {
     headers.set(name, value);
   }
   return new Response(response.body, {
@@ -134,6 +176,11 @@ export function configuredApiAuthToken(_config: OcxConfig): string | undefined {
   return token || undefined;
 }
 
+export function configuredAdminAuthToken(): string | undefined {
+  const token = process.env.OPENCODEX_ADMIN_AUTH_TOKEN?.trim();
+  return token || undefined;
+}
+
 export function isLoopbackHostname(hostname: string | undefined): boolean {
   // A fully-qualified "localhost." is the same host as "localhost": curl and some clients
   // send the trailing dot verbatim, and refusing it 403s a legitimate loopback caller.
@@ -146,29 +193,46 @@ export function isApiAuthRequired(config: OcxConfig): boolean {
 }
 
 export function assertServerAuthConfig(config: OcxConfig): void {
-  if (isApiAuthRequired(config) && !configuredApiAuthToken(config)) {
-    throw new Error("OPENCODEX_API_AUTH_TOKEN is required when binding opencodex to a non-loopback hostname");
+  const hasConfiguredDataCredential = !!configuredApiAuthToken(config)
+    || (config.apiKeys ?? []).some(entry => !!entry.key.trim());
+  if (isApiAuthRequired(config) && !hasConfiguredDataCredential) {
+    throw new Error(
+      "A data-plane credential (OPENCODEX_API_AUTH_TOKEN or config.apiKeys) is required when binding opencodex to a non-loopback hostname",
+    );
   }
 }
 
-/** Whether `token` is one of the proxy's own admission secrets (env token or config API keys). */
+function secretEquals(actual: string, expected: string | undefined): boolean {
+  if (!expected) return false;
+  const enc = new TextEncoder();
+  const actualBytes = enc.encode(actual);
+  const expectedBytes = enc.encode(expected);
+  return expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+/** Whether `token` is a data-plane admission secret. */
+export function isDataPlaneAdmissionSecret(token: string, config: OcxConfig): boolean {
+  const actual = token.trim();
+  if (!actual) return false;
+  if (secretEquals(actual, configuredApiAuthToken(config))) return true;
+  for (const k of config.apiKeys ?? []) {
+    if (secretEquals(actual, k.key)) return true;
+  }
+  return false;
+}
+
+/** Whether `token` is the environment-provided management secret. */
+export function isManagementAdmissionSecret(token: string): boolean {
+  const actual = token.trim();
+  return !!actual && secretEquals(actual, configuredAdminAuthToken());
+}
+
+/** Whether `token` is one of the proxy's own admission secrets and must never reach an upstream. */
 export function isProxyAdmissionSecret(token: string, config: OcxConfig): boolean {
   const actual = token.trim();
   if (!actual) return false;
-  const enc = new TextEncoder();
-  const actualBytes = enc.encode(actual);
-  // Check env-based token
-  const expected = configuredApiAuthToken(config);
-  if (expected) {
-    const expectedBytes = enc.encode(expected);
-    if (expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes)) return true;
-  }
-  // Check config-based API keys
-  for (const k of config.apiKeys ?? []) {
-    const keyBytes = enc.encode(k.key);
-    if (keyBytes.length === actualBytes.length && timingSafeEqual(actualBytes, keyBytes)) return true;
-  }
-  return false;
+  if (/^ocx_(?:data|admin|session)_/.test(actual) || /^ocx_[0-9a-f]{40}$/.test(actual)) return true;
+  return isDataPlaneAdmissionSecret(actual, config) || isManagementAdmissionSecret(actual);
 }
 
 export class ForwardAdmissionCredentialError extends Error {
@@ -190,12 +254,11 @@ export function hasValidApiAuth(req: Request, config: OcxConfig): boolean {
     // Anthropic-SDK clients (Claude Code with ANTHROPIC_API_KEY) authenticate via x-api-key.
     || req.headers.get("x-api-key")?.trim();
   if (!actual) return false;
-  return isProxyAdmissionSecret(actual, config);
+  return isDataPlaneAdmissionSecret(actual, config);
 }
 
-export function requireApiAuth(req: Request, config: OcxConfig, kind: "management" | "data-plane"): Response | null {
+export function requireApiAuth(req: Request, config: OcxConfig, _kind: "data-plane"): Response | null {
   if (hasValidApiAuth(req, config)) return null;
-  if (kind === "management") return jsonResponse({ error: "opencodex API key required" }, 401);
   return formatErrorResponse(401, "authentication_error", "opencodex API key required");
 }
 
@@ -207,7 +270,7 @@ export function requireApiAuth(req: Request, config: OcxConfig, kind: "managemen
 export function requireResponsesApiAuth(req: Request, config: OcxConfig): Response | null {
   if (!isApiAuthRequired(config)) return null;
   const actual = req.headers.get("x-opencodex-api-key")?.trim();
-  if (actual && isProxyAdmissionSecret(actual, config)) return null;
+  if (actual && isDataPlaneAdmissionSecret(actual, config)) return null;
   return formatErrorResponse(401, "authentication_error", "opencodex API key required");
 }
 

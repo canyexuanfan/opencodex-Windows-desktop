@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, readRuntimePort, resolveEnvValue } from "../config";
 import { gracefulStopHost } from "../lib/process-control";
 import { maskAccountId } from "../lib/privacy";
-import { loadServiceTokenFromFile } from "../lib/service-secrets";
+import { configuredAdminToken } from "../lib/admin-secrets";
 import { readCodexTokens } from "../codex/auth-collision";
 import { collectOrcaCodexHomeDiagnostic, resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
@@ -571,7 +571,7 @@ export function formatServiceMemoryLines(report: ServiceMemoryReport): string[] 
   const lines: string[] = [];
   lines.push(`  --     doctor process Bun ${Bun.version} (this is NOT the service process)`);
   if (report.status === "unauthorized") {
-    lines.push("  --     proxy reachable but rejected the request — set OPENCODEX_API_AUTH_TOKEN to match the service");
+    lines.push("  --     proxy reachable but rejected the request — set OPENCODEX_ADMIN_AUTH_TOKEN to match the service");
     return lines;
   }
   if (report.status === "unreachable") {
@@ -756,7 +756,7 @@ export async function runDoctor(args: string[] = []): Promise<void> {
       console.log(`  --     doctor process Bun ${Bun.version} (this is NOT the service process)`);
       console.log("  --     no running ocx proxy found (no live pid/runtime record)");
     } else {
-      const token = process.env.OPENCODEX_API_AUTH_TOKEN ?? loadServiceTokenFromFile(process.env);
+      const token = configuredAdminToken();
       const report = await fetchServiceMemory(gracefulStopHost(runtime.hostname), runtime.port, token);
       for (const line of formatServiceMemoryLines(report)) console.log(line);
     }

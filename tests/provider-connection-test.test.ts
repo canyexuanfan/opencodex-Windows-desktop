@@ -187,3 +187,4 @@ describe("POST /api/oauth/login/cancel (WP040)", () => {
     expect(ok.body).toEqual({ ok: true, cancelled: false });
   });
 });
+import { ManagementRequest as Request } from "./helpers/management-auth";
