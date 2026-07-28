@@ -197,6 +197,39 @@ Binding to `0.0.0.0` exposes your proxy — and all configured provider credenti
 network. Only do this on trusted networks, and always set a strong `OPENCODEX_API_AUTH_TOKEN`.
 :::
 
+### SSH port forwarding
+
+You do not need a non-loopback bind to use a proxy on another machine. Forward the port
+over SSH and leave `hostname` at its `127.0.0.1` default:
+
+```bash
+ssh -L 20100:localhost:10100 you@remote
+```
+
+The local port does not have to match the remote one. opencodex treats any request whose
+`Host` resolves to `localhost`, `127.0.0.1`, or `::1` as loopback regardless of port, so
+`http://localhost:20100/v1` works for Codex CLI, Claude Code, the dashboard, and `curl`.
+
+Point the client at the forwarded port yourself — `ocx` only ever writes `127.0.0.1` with the
+local default port into client config, so a forwarded setup needs the base URL set by hand.
+
+Provider OAuth login is the one flow a single forward does not cover: the login callback
+listens on a fixed port on the *remote* machine. Either run `ocx login <provider>` there, or
+forward that port too:
+
+```bash
+ssh -L 20100:localhost:10100 -L 1455:localhost:1455 you@remote
+```
+
+:::caution[Forwarded loopback is unauthenticated]
+A loopback bind has no token authentication — that is what makes the default setup usable
+without configuration. A plain `ssh -L` keeps the listener on your own loopback interface, so
+nothing else can reach it. But `ssh -g -L`, container port publishing, and some devcontainer
+or Codespaces forwarding modes bind the *client* side to `0.0.0.0`, which exposes both the
+management API and the data plane to that network with no credential. Use `-L` without `-g`,
+or bind the forward explicitly to loopback (`ssh -L 127.0.0.1:20100:localhost:10100`).
+:::
+
 ## Providers (`OcxProviderConfig`)
 
 | Field | Type | Meaning |
