@@ -5,6 +5,11 @@
 The bundled React dashboard is built into `gui/dist` and served by the same Bun proxy. `ocx gui`
 starts the proxy when needed and opens `http://localhost:<port>`.
 
+All ordinary HTTP responses (excluding successful WebSocket upgrades) include `X-Frame-Options: DENY` and
+`Content-Security-Policy: frame-ancestors 'none'`. This prevents another page from framing the local
+dashboard or management responses. Embedding the dashboard in an iframe is intentionally
+unsupported; deployments that previously relied on such embedding must open it as a top-level page.
+
 ## API ownership
 
 `src/server/index.ts` authenticates and routes `/api/*`, then delegates the management surface to

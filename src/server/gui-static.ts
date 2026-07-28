@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { browserSecurityHeaders } from "./auth-cors";
 
 /** opencodex version, read from the packaged package.json (same source as the server bootstrap). */
 const VERSION = (() => {
@@ -54,8 +55,7 @@ function isFile(path: string): boolean {
   }
 }
 
-export function serveGuiFile(pathname: string): Response | null {
-  const guiDist = findGuiDist();
+export function serveGuiFile(pathname: string, guiDist = findGuiDist()): Response | null {
   if (!guiDist) return null;
   const filePath = resolveGuiFilePath(guiDist, pathname);
   if (!filePath) return null;
@@ -65,7 +65,7 @@ export function serveGuiFile(pathname: string): Response | null {
       const indexPath = join(guiDist, "index.html");
       if (isFile(indexPath)) {
         return new Response(Bun.file(indexPath), {
-          headers: { "Content-Type": "text/html" },
+          headers: { "Content-Type": "text/html", ...browserSecurityHeaders() },
         });
       }
     }
@@ -75,7 +75,7 @@ export function serveGuiFile(pathname: string): Response | null {
   const ext = extname(filePath);
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
   return new Response(Bun.file(filePath), {
-    headers: { "Content-Type": contentType },
+    headers: { "Content-Type": contentType, ...browserSecurityHeaders() },
   });
 }
 

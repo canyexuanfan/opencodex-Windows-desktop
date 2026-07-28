@@ -88,6 +88,13 @@ export function isAllowedRequestOrigin(req: Request, config: OcxConfig): boolean
   return !origin || isLoopbackOriginValue(origin) || isSameOriginAsRequest(req, origin) || isExtraAllowedOrigin(origin, config);
 }
 
+export function browserSecurityHeaders(): Record<string, string> {
+  return {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+  };
+}
+
 export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, string> {
   const origin = req?.headers.get("Origin");
   const allowOrigin = origin && req && config && isAllowedRequestOrigin(req, config) ? origin : _corsOrigin;
@@ -99,6 +106,7 @@ export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, s
     // block covers GPT-Live voice protocol headers relayed by the /v1/live call-create path.
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-OpenCodex-API-Key, X-Api-Key, Anthropic-Version, Anthropic-Beta, ChatGPT-Account-Id, OpenAI-Alpha, X-Session-Id, Session-Id, Thread-Id, Originator, X-OAI-Attestation",
     "Vary": "Origin",
+    ...browserSecurityHeaders(),
   };
 }
 
