@@ -23,19 +23,21 @@ Native passthrough SSE has TWO shapes, selected per request in
 `src/server/responses/core.ts`:
 
 - **Default: tee + background inspection.** `upstreamResponse.body.tee()` sends
-  branch[0] to the client (pure native relay on win32 without item-id repair —
-  the Bun#32111 crash workaround; a JS relay elsewhere) while branch[1] is
+  branch[0] to the client (pure native relay on win32 without any client-facing
+  rewrite — the Bun#32111 crash workaround; a JS relay elsewhere) while branch[1] is
   drained eagerly by `consumeForInspection`/`consumeForResponseLogMetadata`
   for terminal-outcome recording, quota, the passthrough continuation cache,
   and request logs. This is the only shape on the bundled Bun 1.3.14.
-- **Gated: eager bounded relay** (`src/server/relay-eager.ts`). win32-no-repair
-  only, armed by `decideEagerRelay(config.streamMode)` from
+- **Gated: eager bounded relay** (`src/server/relay-eager.ts`). win32 with no
+  client-facing rewrite only (neither image-gen aliases nor item-id repair), armed by
+  `decideEagerRelay(config.streamMode)` from
   `src/lib/bun-stream-caps.ts` — default-on only for runtimes proven to carry
   the Bun#32111 fix (`MIN_FIXED_BUN_VERSION`, null until a bundle bump), or by
   explicit `streamMode: "eager-relay"` opt-in. One eager reader + byte-bounded
-  client queue + post-cancel bounded discard-drain replaces the tee, preserving
-  the full inspection side-effect set (shared `createSseInspector` factory in
-  `relay.ts`) including the #44 late-terminal semantics.
+  client queue + post-cancel bounded discard-drain replaces the tee and goes
+  directly to the response without a JS rewrite wrapper, preserving the full
+  inspection side-effect set (shared `createSseInspector` factory in `relay.ts`)
+  including the #44 late-terminal semantics.
 
 The two-shape contract is mirror-commented in `src/server/index.ts` and
 source-invariant-tested by `tests/passthrough-abort.test.ts`; keep both in
@@ -60,13 +62,22 @@ explicit keyed Images provider accepts the proxy admission secret as either an O
 or `x-opencodex-api-key` because the provider key replaces caller authorization before fetch. The
 ChatGPT forward path still requires the dedicated header so its upstream bearer remains distinct.
 
-The API-key `openai-responses` path also prevents the standalone client tool from colliding with the
-hosted Responses tool. When a request declares `image_gen.imagegen` (as a flat function or an
-`image_gen` namespace), the adapter drops hosted `image_generation` while preserving unrelated
-tools. Conflict discovery spans both top-level `body.tools` and Codex Desktop Responses Lite
-`input[].type = "additional_tools"` containers because the platform validates their merged tool
-namespace. ChatGPT forward mode preserves the pair because that backend accepts it and owns native
-image generation.
+The API-key `openai-responses` path also adapts Codex's private standalone image tool to the public
+Responses tool surface. A complete `image_gen` namespace is lowered to safe
+`image_gen__<inner-name>` function aliases even when no hosted image tool is present, because public
+Responses runtimes may reserve the namespace itself and reject dotted function names. Native and
+legacy dotted calls replayed in `body.input` are encoded to the same aliases. When any client
+image-gen declaration is replaced by a usable `image_gen__<inner-name>` alias, the adapter also drops
+hosted `image_generation` and deduplicates aliases in stable container order. Empty or malformed
+namespaces do not remove the hosted fallback. Discovery and normalization span both top-level
+`body.tools` and Codex Desktop Responses Lite `input[].type = "additional_tools"` containers.
+
+Client-facing API-key responses perform the inverse mapping: JSON output and SSE function-call
+items restore `{ namespace: "image_gen", name: "<inner-name>" }` so Codex can dispatch the local
+extension. Inspection and continuation-cache branches keep the raw upstream alias, allowing stored
+replays to return upstream without leaking a client-only namespace shape. Malformed, empty, and
+unrelated namespaces remain untouched. ChatGPT forward mode preserves the private namespace and
+hosted tool because that backend understands their native semantics.
 
 Per-model `modelReasoningSummaryDelivery` is a narrow compatibility layer for
 `openai-responses` gateways whose summary capability is real but whose accepted delivery enum
