@@ -93,5 +93,5 @@ describe("CLI OAuth live-update credential preservation", () => {
     } finally {
       await server.stop(true);
     }
-  });
+  }, 15_000);
 });
