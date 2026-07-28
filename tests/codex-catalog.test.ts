@@ -1604,6 +1604,7 @@ describe("Codex catalog routed normalization", () => {
             baseUrl: "http://198.18.0.1/v1",
             apiKey: "sk-test",
             models: ["static-fallback"],
+            fetch: globalThis.fetch,
           },
         },
       });
@@ -1645,6 +1646,7 @@ describe("Codex catalog routed normalization", () => {
             baseUrl: "http://198.18.0.1/v1",
             allowPrivateNetwork: true,
             apiKey: "sk-test",
+            fetch: globalThis.fetch,
           },
         },
       });
