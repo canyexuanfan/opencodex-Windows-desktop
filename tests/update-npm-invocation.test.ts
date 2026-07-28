@@ -37,6 +37,45 @@ describe("Windows npm update invocation", () => {
     expect(String(invocation?.args.at(-1) ?? "").includes(cwd)).toBe(false);
   });
 
+  test("resolves the default global npm prefix when the cwd is its ancestor", () => {
+    // Regression: excluding the whole cwd subtree (rather than the cwd itself) hid npm's
+    // default Windows global prefix `%AppData%\npm` from anyone whose shell sits in their
+    // home directory, silently failing updates closed in a normal setup.
+    const home = "C:\\Users\\dev";
+    const appDataNpm = `${home}\\AppData\\Roaming\\npm\\npm.cmd`;
+    const env = {
+      PATH: `${home}\\AppData\\Roaming\\npm`,
+      PATHEXT: ".CMD",
+      SystemRoot: "C:\\Windows",
+    };
+
+    expect(resolveNpmCommand("win32", env, {
+      cwd: home,
+      exists: path => path === appDataNpm,
+    })).toBe(appDataNpm);
+  });
+
+  test("still skips the current directory when it is a PATH entry under the home tree", () => {
+    // The narrower rule must not lose the actual defense: a PATH entry equal to the
+    // launch directory stays excluded even though it sits inside the user's home.
+    const home = "C:\\Users\\dev";
+    const project = `${home}\\untrusted`;
+    const env = {
+      PATH: `${project};${home}\\AppData\\Roaming\\npm`,
+      PATHEXT: ".CMD",
+      SystemRoot: "C:\\Windows",
+    };
+    const existing = new Set([
+      `${project}\\npm.cmd`,
+      `${home}\\AppData\\Roaming\\npm\\npm.cmd`,
+    ]);
+
+    expect(resolveNpmCommand("win32", env, {
+      cwd: project,
+      exists: path => existing.has(path),
+    })).toBe(`${home}\\AppData\\Roaming\\npm\\npm.cmd`);
+  });
+
   test("fails closed when npm is available only from the current directory", () => {
     const env = {
       PATH: `${cwd};.`,

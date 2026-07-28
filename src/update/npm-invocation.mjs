@@ -12,13 +12,21 @@ function escapeCmdCommand(command) {
   return command.replace(CMD_META, "^$1");
 }
 
-function isInside(root, candidate) {
-  const relative = win32.relative(win32.resolve(root), win32.resolve(candidate));
-  return relative === "" || (
-    relative !== ".."
-    && !relative.startsWith(`..${win32.sep}`)
-    && !win32.isAbsolute(relative)
-  );
+/**
+ * Whether a PATH entry *is* the current directory. The hijack this guards against is
+ * cmd.exe resolving a bare `npm` out of the directory opencodex was launched from, so
+ * only that exact directory has to be skipped — every candidate we hand to spawn is an
+ * absolute path, which is what actually defeats the implicit cwd-first search.
+ *
+ * Deliberately not a subtree test: npm's default Windows global prefix is
+ * `%AppData%\npm` (`C:\Users\x\AppData\Roaming\npm`), so excluding everything under the
+ * cwd would fail closed for anyone whose shell sits in their home directory — a normal
+ * setup, not the untrusted-project case this hardening is for.
+ */
+function isCurrentDirectory(cwd, entry) {
+  const left = win32.resolve(entry);
+  const right = win32.resolve(cwd);
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 function cleanPathEntry(entry) {
@@ -45,9 +53,9 @@ export function resolveNpmCommand(
 
   for (const entry of pathEntries) {
     if (!win32.isAbsolute(entry)) continue;
+    if (isCurrentDirectory(cwd, entry)) continue;
     for (const extension of extensions) {
       const candidate = win32.join(entry, `npm${extension.toLowerCase()}`);
-      if (isInside(cwd, candidate)) continue;
       if (exists(candidate)) return win32.resolve(candidate);
     }
   }
