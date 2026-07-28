@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { getTrackedCodexWebSocketCountForAccount } from "../src/codex/websocket-registry";
@@ -681,18 +682,43 @@ describe("server local API auth", () => {
 
     const server = startServer(0);
     try {
-      const response = await fetch(new URL("/v1/responses", server.url), {
-        method: "GET",
-        headers: {
-          authorization: "Bearer inbound-main-token",
-          connection: "Upgrade",
-          upgrade: "websocket",
-          origin: "https://attacker.test",
-          "x-opencodex-api-key": "local-secret",
-        },
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = httpRequest({
+          hostname: "127.0.0.1",
+          port: server.port,
+          path: "/v1/responses",
+          method: "GET",
+          headers: {
+            authorization: "Bearer inbound-main-token",
+            connection: "Upgrade",
+            upgrade: "websocket",
+            origin: "https://attacker.test",
+            "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+            "sec-websocket-version": "13",
+            "x-opencodex-api-key": "local-secret",
+          },
+        }, incoming => {
+          let body = "";
+          incoming.setEncoding("utf8");
+          incoming.on("data", chunk => {
+            body += chunk;
+          });
+          incoming.on("end", () => {
+            resolve({ status: incoming.statusCode ?? 0, body });
+          });
+        });
+        req.setTimeout(5_000, () => {
+          req.destroy(new Error("hostile websocket handshake timed out"));
+        });
+        req.on("upgrade", (incoming, socket) => {
+          socket.destroy();
+          resolve({ status: incoming.statusCode ?? 0, body: "" });
+        });
+        req.on("error", reject);
+        req.end();
       });
       expect(response.status).toBe(403);
-      expect(await response.json()).toMatchObject({
+      expect(JSON.parse(response.body)).toMatchObject({
         error: { code: "origin_rejected" },
       });
     } finally {
