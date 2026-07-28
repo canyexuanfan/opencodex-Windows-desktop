@@ -6,7 +6,11 @@ import { deriveProviderPresets, providerConfigSeed } from "../src/providers/deri
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { routeModel } from "../src/router";
 import type { OcxConfig } from "../src/types";
+import { en } from "../gui/src/i18n/en";
+import { interpolate, type TFn } from "../gui/src/i18n/shared";
 import { formatProviderDisplayName, isCatalogProviderId } from "../gui/src/provider-icons";
+
+const englishT: TFn = (key, vars) => interpolate(en[key], vars);
 
 describe("Volcengine Ark providers", () => {
   test("publishes separate pay-as-you-go, Coding Plan, and Agent Plan contracts", () => {
@@ -150,9 +154,9 @@ describe("Volcengine Ark providers", () => {
   test("keeps registry response paths in provider seeds and GUI display metadata", () => {
     const agentPlan = PROVIDER_REGISTRY.find(provider => provider.id === "volcengine-agent-plan")!;
     expect(providerConfigSeed(agentPlan).responsesPath).toBe("/responses");
-    expect(formatProviderDisplayName("volcengine")).toBe("Volcengine Ark");
-    expect(formatProviderDisplayName("volcengine-coding-plan")).toBe("Volcengine Ark Coding Plan");
-    expect(formatProviderDisplayName("volcengine-agent-plan")).toBe("Volcengine Ark Agent Plan");
+    expect(formatProviderDisplayName("volcengine", englishT)).toBe("Volcengine Ark");
+    expect(formatProviderDisplayName("volcengine-coding-plan", englishT)).toBe("Volcengine Ark Coding Plan");
+    expect(formatProviderDisplayName("volcengine-agent-plan", englishT)).toBe("Volcengine Ark Agent Plan");
     expect(isCatalogProviderId("volcengine")).toBe(true);
     expect(isCatalogProviderId("volcengine-coding-plan")).toBe(true);
     expect(isCatalogProviderId("volcengine-agent-plan")).toBe(true);
