@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import * as z from "zod/v4";
 import { comboConfigIssues } from "./combos/types";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
+import { recordOwnedConfigPath } from "./lib/config-ownership";
 import { providerDestinationConfigError } from "./lib/destination-policy";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
 import {
@@ -90,6 +91,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
   truncate: target => truncateSync(target, 0),
   unlink: unlinkSync,
 }): void {
+  recordOwnedConfigPath(resolveConfigDir(), path);
   const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let hardened = false;
   try {

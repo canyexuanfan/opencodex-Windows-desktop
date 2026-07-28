@@ -6,6 +6,7 @@ import type { RequestOptions } from "node:https";
 import { basename, join, resolve, sep } from "node:path";
 import { getConfigDir } from "../config";
 import { assessUrlDestination, resolvePublicAddresses } from "../lib/destination-policy";
+import { recordOwnedConfigPath } from "../lib/config-ownership";
 
 const MAX_DECODED_BYTES_PER_IMAGE = 50 * 1024 * 1024;
 const MAX_DECODED_BYTES_PER_RESPONSE = 100 * 1024 * 1024;
@@ -243,6 +244,7 @@ export async function materializeInlineImage(
   budget?: ImageBudget,
 ): Promise<string> {
   const dir = getArtifactsDir();
+  recordOwnedConfigPath(getConfigDir(), dir);
   await mkdir(dir, { recursive: true, mode: 0o700 });
 
   const buf = decodeValidatedImageBase64(base64Data);
@@ -470,6 +472,7 @@ export async function downloadImageToArtifact(
   chargeImageBudget(budget, bytes.length);
 
   const dir = getArtifactsDir();
+  recordOwnedConfigPath(getConfigDir(), dir);
   await mkdir(dir, { recursive: true, mode: 0o700 });
 
   // Retention is post-batch via pruneArtifacts (see fulfill.ts).

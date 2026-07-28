@@ -6,6 +6,7 @@ import { resolveAutoContext, type AutoContextMode } from "../claude/context-wind
 import { PROXY_MARKER, defaultAuthDetectDeps, detectClaudeAuth, ownAdmissionTokens } from "../claude/auth-detect";
 import { resolveClaudeAuthMode } from "../claude/auth-mode";
 import type { OcxConfig } from "../types";
+import { recordOwnedConfigPath } from "../lib/config-ownership";
 
 /**
  * Does the opencodex dummy marker belong in the system environment?
@@ -72,8 +73,10 @@ function writeShellEnvFile(port: number, config: OcxConfig, modelEnv: Record<str
   if (config.claudeCode?.alwaysEnableEffort === true) {
     lines.push(conditional("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1"));
   }
+  const shellEnvPath = getShellEnvFilePath();
+  recordOwnedConfigPath(getConfigDir(), shellEnvPath);
   mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(getShellEnvFilePath(), lines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+  writeFileSync(shellEnvPath, lines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
 }
 
 function removeShellEnvFile(): void {
@@ -197,6 +200,7 @@ function ownedBaseUrl(port: number): string {
 }
 
 function writeTracking(port: number, injectedKeys: string[]): void {
+  recordOwnedConfigPath(getConfigDir(), getSystemEnvTrackingPath());
   mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
   writeFileSync(getSystemEnvTrackingPath(), JSON.stringify({
     pid: process.pid,
