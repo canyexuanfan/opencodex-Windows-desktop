@@ -54,6 +54,7 @@ export interface DerivedProviderPreset {
   label: string;
   adapter: string;
   baseUrl: string;
+  responsesPath?: string;
   defaultModel?: string;
   auth: "oauth" | "forward" | "key" | "local";
   codexAccountMode?: CodexAccountMode;
@@ -297,6 +298,7 @@ function entryToPreset(entry: ProviderRegistryEntry): DerivedProviderPreset {
     label: entry.label,
     adapter: entry.adapter,
     baseUrl: entry.baseUrl,
+    ...(entry.responsesPath ? { responsesPath: entry.responsesPath } : {}),
     auth: entry.authKind === "forward" ? "forward" : entry.authKind === "oauth" ? "oauth" : entry.authKind === "local" ? "local" : "key",
     ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
     ...(entry.codexAccountMode ? { provider: providerConfigSeed(entry) } : {}),

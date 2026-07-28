@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import { createResponsesPassthroughAdapter } from "../src/adapters/openai-responses";
+import { applyProviderConfigHints, buildCatalogEntries } from "../src/codex/catalog";
 import { KEY_LOGIN_PROVIDERS } from "../src/oauth/key-providers";
 import { deriveProviderPresets, providerConfigSeed } from "../src/providers/derive";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { routeModel } from "../src/router";
 import type { OcxConfig } from "../src/types";
+import { buildProviderPostBody } from "../gui/src/provider-payload";
 import { en } from "../gui/src/i18n/en";
 import { interpolate, type TFn } from "../gui/src/i18n/shared";
 import { formatProviderDisplayName, isCatalogProviderId } from "../gui/src/provider-icons";
@@ -53,6 +55,19 @@ describe("Volcengine Ark providers", () => {
         "minimax-m3",
       ],
       liveModels: false,
+      modelInputModalities: {
+        "kimi-k2.6": ["text", "image"],
+        "minimax-m3": ["text", "image"],
+      },
+      modelReasoningEfforts: {
+        "deepseek-v4-pro": ["high", "xhigh", "max"],
+        "deepseek-v4-flash": ["high", "xhigh", "max"],
+      },
+      modelReasoningEffortMap: {
+        "deepseek-v4-pro": { low: "high", medium: "high", high: "high", xhigh: "max", max: "max" },
+        "deepseek-v4-flash": { low: "high", medium: "high", high: "high", xhigh: "max", max: "max" },
+      },
+      preserveReasoningContentModels: ["deepseek-v4-pro", "deepseek-v4-flash"],
     });
     expect(PROVIDER_REGISTRY.find(provider => provider.id === "volcengine-agent-plan")).toMatchObject({
       label: "Volcengine Ark Agent Plan",
@@ -70,6 +85,10 @@ describe("Volcengine Ark providers", () => {
         "doubao-seed-2.0-pro",
       ],
       liveModels: false,
+      modelInputModalities: {
+        "kimi-k2.6": ["text", "image"],
+        "minimax-m3": ["text", "image"],
+      },
     });
   });
 
@@ -83,6 +102,7 @@ describe("Volcengine Ark providers", () => {
       baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
       defaultModel: "ark-code-latest",
       liveModels: false,
+      preserveReasoningContentModels: ["deepseek-v4-pro", "deepseek-v4-flash"],
     });
     expect(KEY_LOGIN_PROVIDERS["volcengine-agent-plan"]).toMatchObject({
       baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3",
@@ -94,6 +114,8 @@ describe("Volcengine Ark providers", () => {
     for (const id of ["volcengine", "volcengine-coding-plan", "volcengine-agent-plan"]) {
       expect(deriveProviderPresets().find(provider => provider.id === id)).toMatchObject({ auth: "key" });
     }
+    expect(deriveProviderPresets().find(provider => provider.id === "volcengine-agent-plan"))
+      .toMatchObject({ responsesPath: "/responses" });
   });
 
   test("routes a minimal Agent Plan config to its native Responses resource", () => {
@@ -149,6 +171,111 @@ describe("Volcengine Ark providers", () => {
     expect(request.url).toBe("https://ark.cn-beijing.volces.com/api/v3/chat/completions");
     expect(body.thinking).toEqual({ type: "enabled" });
     expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test.each(["deepseek-v4-pro", "deepseek-v4-flash"])(
+    "preserves %s tool-call reasoning and maps Codex efforts on Coding Plan",
+    modelId => {
+      const config: OcxConfig = {
+        port: 10100,
+        defaultProvider: "volcengine-coding-plan",
+        providers: {
+          "volcengine-coding-plan": {
+            adapter: "openai-chat",
+            baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
+            authMode: "key",
+            apiKey: "test-key",
+          },
+        },
+      };
+      const buildBody = (reasoning: string) => {
+        const route = routeModel(config, `volcengine-coding-plan/${modelId}`);
+        const request = createOpenAIChatAdapter(route.provider).buildRequest({
+          modelId: route.modelId,
+          context: {
+            messages: [
+              { role: "user", content: "inspect the repo", timestamp: 0 },
+              {
+                role: "assistant",
+                timestamp: 1,
+                content: [
+                  { type: "thinking", thinking: "I need to inspect files first." },
+                  { type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "README.md" } },
+                ],
+              },
+              {
+                role: "toolResult",
+                toolCallId: "call_1",
+                toolName: "read_file",
+                content: "contents",
+                isError: false,
+                timestamp: 2,
+              },
+            ],
+          },
+          stream: true,
+          options: { reasoning },
+        });
+        return JSON.parse(request.body) as {
+          reasoning_effort?: string;
+          messages: Array<Record<string, unknown>>;
+        };
+      };
+
+      expect(buildBody("medium").reasoning_effort).toBe("high");
+      const xhighBody = buildBody("xhigh");
+      expect(xhighBody.reasoning_effort).toBe("max");
+      expect(xhighBody.messages[1]?.reasoning_content).toBe("I need to inspect files first.");
+      expect(xhighBody.messages[1]).toHaveProperty("tool_calls");
+    },
+  );
+
+  test("publishes image inputs for the multimodal Coding and Agent Plan models", () => {
+    for (const providerId of ["volcengine-coding-plan", "volcengine-agent-plan"]) {
+      const registry = PROVIDER_REGISTRY.find(provider => provider.id === providerId)!;
+      for (const modelId of ["kimi-k2.6", "minimax-m3"]) {
+        const hinted = applyProviderConfigHints(
+          providerId,
+          providerConfigSeed(registry),
+          { provider: providerId, id: modelId },
+        );
+        expect(hinted.inputModalities).toEqual(["text", "image"]);
+
+        const catalog = buildCatalogEntries(null, [], [hinted]);
+        expect(catalog.find(entry => entry.slug === `${providerId}/${modelId}`)?.input_modalities)
+          .toEqual(["text", "image"]);
+      }
+    }
+  });
+
+  test("keeps Agent Plan response routing when the GUI saves it under a custom name", () => {
+    const preset = deriveProviderPresets().find(provider => provider.id === "volcengine-agent-plan")!;
+    const postBody = buildProviderPostBody(preset, {
+      name: "my-agent-plan",
+      adapter: preset.adapter,
+      baseUrl: preset.baseUrl,
+      responsesPath: preset.responsesPath,
+      authMode: preset.auth,
+      apiKey: "test-key",
+      defaultModel: preset.defaultModel ?? "",
+    });
+
+    expect(postBody).toMatchObject({
+      name: "my-agent-plan",
+      provider: {
+        adapter: "openai-responses",
+        baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3",
+        responsesPath: "/responses",
+      },
+    });
+    const request = createResponsesPassthroughAdapter(postBody.provider).buildRequest({
+      modelId: "deepseek-v4-pro",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "deepseek-v4-pro", input: "ping", stream: true },
+    }, { headers: new Headers() });
+    expect(request.url).toBe("https://ark.cn-beijing.volces.com/api/plan/v3/responses");
   });
 
   test("keeps registry response paths in provider seeds and GUI display metadata", () => {

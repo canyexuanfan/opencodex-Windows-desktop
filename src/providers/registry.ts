@@ -401,6 +401,10 @@ const VOLCENGINE_AGENT_PLAN_MODELS = [
   "minimax-m3",
   "doubao-seed-2.0-pro",
 ];
+const VOLCENGINE_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
+  "kimi-k2.6": ["text", "image"],
+  "minimax-m3": ["text", "image"],
+};
 const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "qwen3.8-max-preview": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
@@ -1139,6 +1143,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     defaultModel: "ark-code-latest",
     models: VOLCENGINE_CODING_PLAN_MODELS,
     liveModels: false,
+    modelInputModalities: VOLCENGINE_PLAN_INPUT_MODALITIES,
+    modelReasoningEfforts: Object.fromEntries(
+      DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_EFFORTS]),
+    ),
+    modelReasoningEffortMap: Object.fromEntries(
+      DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_REASONING_MAP]),
+    ),
+    preserveReasoningContentModels: DEEPSEEK_THINKING_MODELS,
     note: "Coding Plan subscription endpoint with plan-scoped model aliases. Use the plan key issued by the Ark console.",
   },
   {
@@ -1152,6 +1164,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     defaultModel: "deepseek-v4-pro",
     models: VOLCENGINE_AGENT_PLAN_MODELS,
     liveModels: false,
+    modelInputModalities: VOLCENGINE_PLAN_INPUT_MODALITIES,
     note: "Agent Plan subscription endpoint over the native Responses API with a static fallback catalog.",
   },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
