@@ -119,7 +119,7 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 62 個含まれています。キー方式 51、OAuth 7、ローカル 3、
+opencodex には組み込みプリセットが 65 個含まれています。キー方式 54、OAuth 7、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します。主な項目は以下のとおりです:
 
@@ -148,6 +148,7 @@ opencodex には組み込みプリセットが 62 個含まれています。キ
 | Qwen Cloud | トークンプラン(デフォルト): `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` · 従量課金: `https://dashscope.aliyuncs.com/compatible-mode/v1` · またはカスタム |
 | Tencent Cloud Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` |
 | SiliconFlow | `https://api.siliconflow.cn/v1` |
+| Volcengine Ark · Coding Plan · Agent Plan | `https://ark.cn-beijing.volces.com/api/v3` · `https://ark.cn-beijing.volces.com/api/coding/v3` · `https://ark.cn-beijing.volces.com/api/plan/v3` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
 | GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
@@ -156,6 +157,12 @@ opencodex には組み込みプリセットが 62 個含まれています。キ
 
 大半は bearer キーと共に `openai-chat` アダプターを使い、Anthropic 互換エンドポイントのみを公開する一部
 (例: **Xiaomi MiMo**)は `anthropic` アダプター(`x-api-key`)を使います。
+Volcengine Agent Plan は `openai-responses` アダプターでネイティブ Responses エンドポイントを使用します。
+
+> **Volcengine の 3 つの課金経路:** `volcengine` は従量課金 Ark API、
+> `volcengine-coding-plan` は Coding Plan の割り当て、`volcengine-agent-plan` は Agent Plan
+> の割り当てを使用します。同じ製品で発行されたキーとエンドポイントを組み合わせてください。
+> Plan 契約があっても通常の `/api/v3` 呼び出しには従量課金が発生する場合があります。
 
 **DeepInfra の discovery:** キー方式の OpenAI Chat Completions プロバイダー `deepinfra` は、
 `openai-chat` アダプターと Bearer API キーを使います。registry が所有する DeepInfra のモデル一覧 URL から

@@ -190,7 +190,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 62 built-in presets: 51 key-based, seven OAuth, three local, and the default
+opencodex ships 65 built-in presets: 54 key-based, seven OAuth, three local, and the default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it. Notable entries:
 
@@ -219,6 +219,7 @@ validates the key, and stores it. Notable entries:
 | Qwen Cloud | Token plan (default): `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` · Pay as you go: `https://dashscope.aliyuncs.com/compatible-mode/v1` · or Custom |
 | Tencent Cloud Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` |
 | SiliconFlow | `https://api.siliconflow.cn/v1` |
+| Volcengine Ark · Coding Plan · Agent Plan | `https://ark.cn-beijing.volces.com/api/v3` · `https://ark.cn-beijing.volces.com/api/coding/v3` · `https://ark.cn-beijing.volces.com/api/plan/v3` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
 | GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
@@ -227,6 +228,12 @@ validates the key, and stores it. Notable entries:
 
 Most use the `openai-chat` adapter with a bearer key; a few that expose only an Anthropic-compatible
 endpoint (e.g. **Xiaomi MiMo**) use the `anthropic` adapter (`x-api-key`).
+Volcengine Agent Plan uses its native Responses endpoint through `openai-responses`.
+
+> **Three Volcengine billing routes:** `volcengine` is the pay-as-you-go Ark API,
+> `volcengine-coding-plan` consumes Coding Plan quota, and `volcengine-agent-plan` consumes Agent
+> Plan quota. Use the key and endpoint issued for the same product; the ordinary `/api/v3` endpoint
+> can incur pay-as-you-go charges even when a Plan subscription exists.
 
 **DeepInfra discovery.** The key-based `deepinfra` OpenAI Chat Completions provider uses the
 `openai-chat` adapter with a Bearer API key. Its registry-owned model-list URL keeps only rows tagged

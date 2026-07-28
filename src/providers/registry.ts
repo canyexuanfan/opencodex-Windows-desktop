@@ -104,6 +104,8 @@ export interface ProviderRegistryEntry {
   adapter: string;
   baseUrl: string;
   apiKeyTransport?: OcxProviderConfig["apiKeyTransport"];
+  /** Relative Responses resource for key-auth openai-responses gateways with versioned bases. */
+  responsesPath?: string;
   authKind: ProviderAuthKind;
   codexAccountMode?: CodexAccountMode;
   /** OAuth preset may explicitly honor a persisted API-key billing mode. */
@@ -200,7 +202,7 @@ export interface ProviderRegistryEntry {
 
 export type ProviderConfigSeed = Pick<
   OcxProviderConfig,
-  "adapter" | "baseUrl" | "apiKeyTransport" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
+  "adapter" | "baseUrl" | "apiKeyTransport" | "responsesPath" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
@@ -1059,6 +1061,48 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelInputModalities: Object.fromEntries(TENCENT_CODING_PLAN_MODELS.map(id => [id, ["text"]])),
     noVisionModels: TENCENT_CODING_PLAN_MODELS,
     note: "Coding tools only. Tencent forbids general API automation, custom backends, and non-interactive batch use.",
+  },
+  {
+    id: "volcengine",
+    label: "Volcengine Ark",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apikey",
+    defaultModel: "doubao-seed-2-0-lite-260215",
+    models: ["doubao-seed-2-0-lite-260215"],
+    liveModels: true,
+    modelReasoningEfforts: {
+      "doubao-seed-2-0-lite-260215": THINKING_TOGGLE_EFFORTS,
+    },
+    modelReasoningEffortMap: {
+      "doubao-seed-2-0-lite-260215": THINKING_TOGGLE_MAP,
+    },
+    thinkingToggleModels: ["doubao-seed-2-0-lite-260215"],
+    note: "Pay-as-you-go Ark API. Calls on this endpoint do not consume Coding Plan or Agent Plan quota.",
+  },
+  {
+    id: "volcengine-coding-plan",
+    label: "Volcengine Ark Coding Plan",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
+    defaultModel: "ark-code-latest",
+    models: ["ark-code-latest"],
+    liveModels: true,
+    note: "Coding Plan subscription endpoint. Use the plan key issued by the Ark console.",
+  },
+  {
+    id: "volcengine-agent-plan",
+    label: "Volcengine Ark Agent Plan",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3",
+    responsesPath: "/responses",
+    adapter: "openai-responses",
+    authKind: "key",
+    dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
+    liveModels: true,
+    note: "Agent Plan subscription endpoint over the native Responses API.",
   },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
   { id: "qianfan", label: "Qianfan (Baidu)", baseUrl: "https://qianfan.baidubce.com/v2", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.bce.baidu.com/iam/#/iam/apikey/list" },

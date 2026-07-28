@@ -126,7 +126,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 62 встроенными пресетами: 51 на основе ключей, семь OAuth, три локальных и
+opencodex поставляется с 65 встроенными пресетами: 54 на основе ключей, семь OAuth, три локальных и
 пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его. Наиболее заметные записи:
 
@@ -155,6 +155,7 @@ opencodex поставляется с 62 встроенными пресетам
 | Qwen Cloud | Token plan (по умолчанию): `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` · Pay as you go: `https://dashscope.aliyuncs.com/compatible-mode/v1` · или Custom |
 | Tencent Cloud Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` |
 | SiliconFlow | `https://api.siliconflow.cn/v1` |
+| Volcengine Ark · Coding Plan · Agent Plan | `https://ark.cn-beijing.volces.com/api/v3` · `https://ark.cn-beijing.volces.com/api/coding/v3` · `https://ark.cn-beijing.volces.com/api/plan/v3` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
 | GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
@@ -164,6 +165,12 @@ opencodex поставляется с 62 встроенными пресетам
 Большинство использует адаптер `openai-chat` с bearer-ключом; немногие провайдеры, предоставляющие
 только Anthropic-совместимую конечную точку (например, **Xiaomi MiMo**), используют адаптер
 `anthropic` (`x-api-key`).
+Volcengine Agent Plan использует нативную конечную точку Responses через адаптер `openai-responses`.
+
+> **Три маршрута тарификации Volcengine:** `volcengine` — Ark API с оплатой по факту,
+> `volcengine-coding-plan` расходует квоту Coding Plan, а `volcengine-agent-plan` — квоту Agent
+> Plan. Используйте ключ и конечную точку одного продукта; обычный `/api/v3` может тарифицироваться
+> отдельно даже при активной подписке Plan.
 
 **Discovery для DeepInfra.** `deepinfra` — провайдер OpenAI Chat Completions с аутентификацией по
 ключу; он использует адаптер `openai-chat` и Bearer API-ключ. Принадлежащий registry URL списка
