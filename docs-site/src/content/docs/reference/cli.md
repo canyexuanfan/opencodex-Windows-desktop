@@ -530,3 +530,8 @@ Two dispatch targets are intentionally omitted from normal help: `__refresh-vers
 refreshes the update-notification cache in a detached process, and
 `__gui-update-worker <job-id> [latest|preview] [restart]` runs a dashboard update job. They are
 implementation details, not stable user-facing commands.
+
+The dashboard persists the detached update worker PID and automatically recovers an active job if
+that worker is no longer alive. Active records written by older releases without a PID are treated
+as stale after ten minutes. A live worker remains protected from concurrent updates even if the
+update takes longer than that window.

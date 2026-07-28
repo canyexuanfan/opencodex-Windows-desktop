@@ -387,6 +387,26 @@ retried. Guarded paths: the ChatGPT passthrough and generic adapter fetch in
 fallback. Adapters with their own `fetchResponse` (kiro, cursor, google) keep their own retry
 policies; kiro imports the shared abort/sleep helpers from this module.
 
+## Same-provider combo quota fallback
+
+For a failover combo with multiple models on the same Codex-login OpenAI provider, a pre-stream
+429/402 carrying only `x-codex-*-reset-at` may advance to the later model on the same account. The
+failed physical combo target still enters its normal target cooldown. An explicit `Retry-After`
+remains an account-wide instruction and blocks the later target; a quota response with neither an
+explicit retry delay nor a usable reset timestamp keeps the conservative default account cooldown.
+This exception is request-scoped and is not applied to direct requests, round-robin combos, or a
+combo whose remaining eligible targets use other providers.
+
+```text
+[Decision Log]
+- 목적과 의도: Let an ordered combo recover when one model-specific Codex quota window is exhausted but another model on the same account remains usable.
+- 기존 구현 및 제약 조건: Account health is shared across models, and recording a reset-derived 429 before combo advancement rejected the later model locally.
+- 검토한 주요 대안: Make every quota cooldown model-scoped; ignore all combo 429 cooldowns; or defer only reset-derived cooldown recording for an eligible later same-provider failover target.
+- 선택한 방식: Use the narrow request-scoped deferral while retaining target cooldown and all explicit Retry-After/default account cooldown behavior.
+- 다른 대안 대신 이 방식을 선택한 이유: Reset timestamps identify quota windows rather than a literal account-wide retry instruction, but widening the exception would risk hot retries and provider abuse.
+- 장점, 단점 및 영향: Same-account model fallback works without weakening explicit upstream backoff; the account health map intentionally does not remember that one deferred reset-derived failure, while the combo target map does.
+```
+
 ## Sidecars
 
 Web search and vision sidecars only run when the mode-aware `openai` forward ChatGPT authority

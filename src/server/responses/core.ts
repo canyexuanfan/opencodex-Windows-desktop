@@ -72,6 +72,7 @@ import {
   type CodexAuthContext,
 } from "../../codex/auth-context";
 import {
+  computeQuotaCooldown,
   formatCodexProviderForLog,
   previewCodexAccountForRequest,
   recordCodexUpstreamOutcome,
@@ -251,6 +252,7 @@ interface CodexPoolAccountRetryArgs {
   options: {
     abortSignal?: AbortSignal;
     onCodexAuthContextResolved?: (ctx: CodexAuthContext) => void;
+    deferCodexResetDerivedCooldown?: boolean;
   };
   firstAuthCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   firstResponse: Response;
@@ -275,6 +277,31 @@ type CodexPoolAccountRetryResult =
     error: unknown;
     authCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   };
+
+function codexQuotaOutcomeMeta(response: Response): {
+  retryAfter: string | null;
+  resetAt: string[];
+} {
+  return {
+    retryAfter: response.headers.get("retry-after"),
+    resetAt: [
+      response.headers.get("x-codex-primary-reset-at"),
+      response.headers.get("x-codex-secondary-reset-at"),
+      response.headers.get("x-codex-tertiary-reset-at"),
+    ].filter((value): value is string => !!value),
+  };
+}
+
+/**
+ * A reset timestamp describes a quota window, not an explicit instruction to
+ * stop using the whole account. A combo may therefore try a later model in the
+ * same request, while Retry-After and headerless quota failures remain blocking.
+ */
+function shouldDeferCodexResetDerivedCooldown(response: Response, enabled?: boolean): boolean {
+  return enabled === true
+    && (response.status === 429 || response.status === 402)
+    && computeQuotaCooldown(codexQuotaOutcomeMeta(response)).source === "reset-derived";
+}
 
 /**
  * One bounded alternate-account retry for Codex pool auth. Used for allow-listed
@@ -306,23 +333,20 @@ async function retryCodexPoolOnAlternateAccount(
     return { kind: "no-alternate" };
   }
 
-  const retryAfterRaw = firstResponse.headers.get("retry-after");
+  const quotaMeta = codexQuotaOutcomeMeta(firstResponse);
   if (outcomeStatus === 429 || outcomeStatus === 402) {
     const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
     applyAccountQuotaFromUpstreamHeaders(firstAuthCtx.accountId, firstResponse.headers);
   }
-  recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, outcomeStatus, {
-    retryAfter: retryAfterRaw,
-    resetAt: [
-      firstResponse.headers.get("x-codex-primary-reset-at"),
-      firstResponse.headers.get("x-codex-secondary-reset-at"),
-      firstResponse.headers.get("x-codex-tertiary-reset-at"),
-    ].filter(Boolean),
-    threadId: req.headers.get("x-codex-parent-thread-id"),
-    probeLeaseId: codexProbeLeaseId(firstAuthCtx),
-    // Retry already advanced the RR ring via excludeAccountId — reuse for promotion.
-    ...(retryAuthCtx.accountId ? { promoteAccountId: retryAuthCtx.accountId } : {}),
-  });
+  if (!shouldDeferCodexResetDerivedCooldown(firstResponse, options.deferCodexResetDerivedCooldown)) {
+    recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, outcomeStatus, {
+      ...quotaMeta,
+      threadId: req.headers.get("x-codex-parent-thread-id"),
+      probeLeaseId: codexProbeLeaseId(firstAuthCtx),
+      // Retry already advanced the RR ring via excludeAccountId — reuse for promotion.
+      ...(retryAuthCtx.accountId ? { promoteAccountId: retryAuthCtx.accountId } : {}),
+    });
+  }
 
   const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx);
   const retryProvider = applyCodexAuthContextToProvider(
@@ -469,6 +493,8 @@ export interface HandleResponsesOptions {
   promptCacheKeyIsSharedCohort?: boolean;
   /** Internal recursion guard; callers outside this module must not set it. */
   comboAttempt?: boolean;
+  /** Internal combo handoff: allow a later same-provider model after a reset-derived 429/402. */
+  deferCodexResetDerivedCooldown?: boolean;
   /** 030-owned handoff when a child consumed the original failure under bounds. */
   onConsumedComboFailure?: (failure: ConsumedComboFailure) => void;
 }
@@ -902,9 +928,17 @@ export async function handleComboResponses(
     const callbackGate = createChildPassthroughCallbackGate(options);
     let response: Response;
     try {
+      const currentTargetProvider = pick.target.provider;
+      const deferCodexResetDerivedCooldown = combo.strategy === "failover"
+        && combo.targets.slice(pick.targetIndex + 1).some(target =>
+          target.provider === currentTargetProvider
+          && payloadEligible(target)
+          && !isComboTargetInCooldown(comboId, target),
+        );
       response = await handleResponses(childRequest, config, childLog, {
         ...options,
         comboAttempt: true,
+        deferCodexResetDerivedCooldown,
         // Attempt-relative TTFT is recorded HERE (not via childLog.firstOutputMs — a later
         // Object.assign(logCtx, childLog) would overwrite the request-relative value).
         onFirstOutput: () => {
@@ -1488,7 +1522,7 @@ export async function handleResponses(
    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       // primary was the 5h window; it now carries weekly data for GPT plans.
       // Prefer primary when present, fall back to secondary for compatibility.
-      const retryAfterRaw = upstreamResponse.headers.get("retry-after");
+      const quotaMeta = codexQuotaOutcomeMeta(upstreamResponse);
       const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
       applyAccountQuotaFromUpstreamHeaders(authCtx.accountId, upstreamResponse.headers);
       if (terminalBodyWillRecord) {
@@ -1512,16 +1546,14 @@ export async function handleResponses(
           }
           options.onNativePassthroughTerminal?.(status);
         });
-      } else {
+      } else if (!shouldDeferCodexResetDerivedCooldown(
+        upstreamResponse,
+        options.deferCodexResetDerivedCooldown,
+      )) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
-        retryAfter: retryAfterRaw,
-         resetAt: [
-           upstreamResponse.headers.get("x-codex-primary-reset-at"),
-           upstreamResponse.headers.get("x-codex-secondary-reset-at"),
-           upstreamResponse.headers.get("x-codex-tertiary-reset-at"),
-         ].filter(Boolean),
-         threadId: req.headers.get("x-codex-parent-thread-id"),
-         probeLeaseId: codexProbeLeaseId(authCtx),
+          ...quotaMeta,
+          threadId: req.headers.get("x-codex-parent-thread-id"),
+          probeLeaseId: codexProbeLeaseId(authCtx),
         });
       }
     }
