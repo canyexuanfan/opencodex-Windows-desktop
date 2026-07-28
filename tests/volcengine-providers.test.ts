@@ -15,10 +15,23 @@ describe("Volcengine Ark providers", () => {
       baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
       adapter: "openai-chat",
       authKind: "key",
-      defaultModel: "doubao-seed-2-0-lite-260215",
-      models: ["doubao-seed-2-0-lite-260215"],
-      liveModels: true,
-      thinkingToggleModels: ["doubao-seed-2-0-lite-260215"],
+      defaultModel: "doubao-seed-2-1-pro-260628",
+      models: [
+        "doubao-seed-2-1-pro-260628",
+        "doubao-seed-2-1-turbo-260628",
+        "doubao-seed-evolving",
+        "deepseek-v4-pro-260425",
+        "deepseek-v4-flash-260425",
+        "deepseek-v3-2-251201",
+        "glm-5-2-260617",
+        "glm-4-7-251222",
+      ],
+      liveModels: false,
+      thinkingToggleModels: [
+        "doubao-seed-2-1-pro-260628",
+        "doubao-seed-2-1-turbo-260628",
+        "doubao-seed-evolving",
+      ],
     });
     expect(PROVIDER_REGISTRY.find(provider => provider.id === "volcengine-coding-plan")).toMatchObject({
       label: "Volcengine Ark Coding Plan",
@@ -26,8 +39,16 @@ describe("Volcengine Ark providers", () => {
       adapter: "openai-chat",
       authKind: "key",
       defaultModel: "ark-code-latest",
-      models: ["ark-code-latest"],
-      liveModels: true,
+      models: [
+        "ark-code-latest",
+        "doubao-seed-2.0-code",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k2.6",
+        "minimax-m3",
+      ],
+      liveModels: false,
     });
     expect(PROVIDER_REGISTRY.find(provider => provider.id === "volcengine-agent-plan")).toMatchObject({
       label: "Volcengine Ark Agent Plan",
@@ -35,26 +56,36 @@ describe("Volcengine Ark providers", () => {
       responsesPath: "/responses",
       adapter: "openai-responses",
       authKind: "key",
-      liveModels: true,
+      defaultModel: "deepseek-v4-pro",
+      models: [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k2.6",
+        "minimax-m3",
+        "doubao-seed-2.0-pro",
+      ],
+      liveModels: false,
     });
   });
 
   test("derives key login and dashboard presets from the canonical registry", () => {
     expect(KEY_LOGIN_PROVIDERS.volcengine).toMatchObject({
       baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
-      defaultModel: "doubao-seed-2-0-lite-260215",
-      liveModels: true,
+      defaultModel: "doubao-seed-2-1-pro-260628",
+      liveModels: false,
     });
     expect(KEY_LOGIN_PROVIDERS["volcengine-coding-plan"]).toMatchObject({
       baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
       defaultModel: "ark-code-latest",
-      liveModels: true,
+      liveModels: false,
     });
     expect(KEY_LOGIN_PROVIDERS["volcengine-agent-plan"]).toMatchObject({
       baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3",
       responsesPath: "/responses",
       adapter: "openai-responses",
-      liveModels: true,
+      defaultModel: "deepseek-v4-pro",
+      liveModels: false,
     });
     for (const id of ["volcengine", "volcengine-coding-plan", "volcengine-agent-plan"]) {
       expect(deriveProviderPresets().find(provider => provider.id === id)).toMatchObject({ auth: "key" });
@@ -74,7 +105,7 @@ describe("Volcengine Ark providers", () => {
         },
       },
     };
-    const route = routeModel(config, "volcengine-agent-plan/ark-agent-latest");
+    const route = routeModel(config, "volcengine-agent-plan/deepseek-v4-pro");
     expect(route.provider.responsesPath).toBe("/responses");
 
     const request = createResponsesPassthroughAdapter(route.provider).buildRequest({
@@ -100,7 +131,7 @@ describe("Volcengine Ark providers", () => {
         },
       },
     };
-    const route = routeModel(config, "volcengine/doubao-seed-2-0-lite-260215");
+    const route = routeModel(config, "volcengine/doubao-seed-2-1-pro-260628");
     const request = createOpenAIChatAdapter(route.provider).buildRequest({
       modelId: route.modelId,
       context: {

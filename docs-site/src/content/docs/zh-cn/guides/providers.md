@@ -153,6 +153,11 @@ ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提
 > **三条火山方舟计费线路：**`volcengine` 是按量付费方舟 API，`volcengine-coding-plan`
 > 消耗 Coding Plan 额度，`volcengine-agent-plan` 消耗 Agent Plan 额度。密钥与端点需要属于
 > 同一产品；已经订阅 Plan 时调用普通 `/api/v3` 端点仍可能产生按量费用。
+> 三个 preset 使用经过筛选的静态模型目录：方舟 `/models` 同时返回文本、Embedding、图片、
+> 视频和 3D 资源，Coding 网关也会返回这份宽泛目录，Agent Plan 网关没有 `/models` 资源。
+> 按量付费默认使用 `doubao-seed-2-1-pro-260628`，静态目录还包含当前 DeepSeek 和 GLM
+> 文本模型。Coding Plan 默认使用 `ark-code-latest`，Agent Plan 默认使用
+> `deepseek-v4-pro`。
 
 **DeepInfra 发现：**`deepinfra` 是使用 `openai-chat` adapter 和 Bearer API 密钥的密钥型
 OpenAI Chat Completions 提供商。registry 固定的 DeepInfra 模型列表 URL 仅保留带 `chat` 标签的记录，

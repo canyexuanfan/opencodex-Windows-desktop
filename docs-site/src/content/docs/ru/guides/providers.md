@@ -171,6 +171,12 @@ Volcengine Agent Plan использует нативную конечную т�
 > `volcengine-coding-plan` расходует квоту Coding Plan, а `volcengine-agent-plan` — квоту Agent
 > Plan. Используйте ключ и конечную точку одного продукта; обычный `/api/v3` может тарифицироваться
 > отдельно даже при активной подписке Plan.
+> Все три preset используют отобранные статические каталоги моделей. Ark `/models` возвращает
+> текстовые, embedding-, графические, видео- и 3D-ресурсы, а шлюз Coding выдаёт тот же широкий
+> каталог. У шлюза Agent Plan ресурса `/models` нет. Для pay-as-you-go модель по умолчанию —
+> `doubao-seed-2-1-pro-260628`; его статический каталог также включает актуальные текстовые модели
+> DeepSeek и GLM. Для Coding Plan модель по умолчанию — `ark-code-latest`, для Agent Plan —
+> `deepseek-v4-pro`.
 
 **Discovery для DeepInfra.** `deepinfra` — провайдер OpenAI Chat Completions с аутентификацией по
 ключу; он использует адаптер `openai-chat` и Bearer API-ключ. Принадлежащий registry URL списка

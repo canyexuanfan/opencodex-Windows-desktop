@@ -234,6 +234,12 @@ Volcengine Agent Plan uses its native Responses endpoint through `openai-respons
 > `volcengine-coding-plan` consumes Coding Plan quota, and `volcengine-agent-plan` consumes Agent
 > Plan quota. Use the key and endpoint issued for the same product; the ordinary `/api/v3` endpoint
 > can incur pay-as-you-go charges even when a Plan subscription exists.
+> The presets use curated static model catalogs because Ark's `/models` response also includes
+> embedding, image, video, and 3D resources, the Coding gateway returns that same broad catalog,
+> and the Agent Plan gateway has no `/models` resource. Pay-as-you-go defaults to
+> `doubao-seed-2-1-pro-260628`; its curated catalog also includes current DeepSeek and GLM text
+> models. Coding Plan defaults to `ark-code-latest`, while Agent Plan defaults to
+> `deepseek-v4-pro`.
 
 **DeepInfra discovery.** The key-based `deepinfra` OpenAI Chat Completions provider uses the
 `openai-chat` adapter with a Bearer API key. Its registry-owned model-list URL keeps only rows tagged

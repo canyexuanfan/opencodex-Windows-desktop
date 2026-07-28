@@ -163,6 +163,12 @@ Volcengine Agent Plan は `openai-responses` アダプターでネイティブ R
 > `volcengine-coding-plan` は Coding Plan の割り当て、`volcengine-agent-plan` は Agent Plan
 > の割り当てを使用します。同じ製品で発行されたキーとエンドポイントを組み合わせてください。
 > Plan 契約があっても通常の `/api/v3` 呼び出しには従量課金が発生する場合があります。
+> 3 つの preset は選別済みの静的モデルカタログを使用します。Ark の `/models` はテキストに加えて
+> Embedding、画像、動画、3D リソースも返し、Coding ゲートウェイも同じ広範なカタログを返します。
+> Agent Plan ゲートウェイには `/models` リソースがありません。従量課金のデフォルトは
+> `doubao-seed-2-1-pro-260628` で、静的カタログには現在の DeepSeek と GLM のテキストモデルも
+> 含まれます。Coding Plan のデフォルトは `ark-code-latest`、Agent Plan は
+> `deepseek-v4-pro` です。
 
 **DeepInfra の discovery:** キー方式の OpenAI Chat Completions プロバイダー `deepinfra` は、
 `openai-chat` アダプターと Bearer API キーを使います。registry が所有する DeepInfra のモデル一覧 URL から

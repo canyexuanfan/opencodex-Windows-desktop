@@ -366,6 +366,41 @@ const ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS = [
 // coding tools (not custom application backends or non-interactive batch automation).
 // Evidence: https://cloud.tencent.cn/document/product/1823/130092
 const TENCENT_CODING_PLAN_MODELS = ["tc-code-latest", "glm-5", "kimi-k2.5", "minimax-m2.5"];
+// Volcengine's authenticated /api/v3/models catalog mixes chat models with embedding,
+// image, video, and 3D generation resources. Keep the Codex-facing presets scoped to
+// models documented for text/agent or Coding Plan use.
+const VOLCENGINE_ARK_MODELS = [
+  "doubao-seed-2-1-pro-260628",
+  "doubao-seed-2-1-turbo-260628",
+  "doubao-seed-evolving",
+  "deepseek-v4-pro-260425",
+  "deepseek-v4-flash-260425",
+  "deepseek-v3-2-251201",
+  "glm-5-2-260617",
+  "glm-4-7-251222",
+];
+const VOLCENGINE_DOUBAO_THINKING_MODELS = [
+  "doubao-seed-2-1-pro-260628",
+  "doubao-seed-2-1-turbo-260628",
+  "doubao-seed-evolving",
+];
+const VOLCENGINE_CODING_PLAN_MODELS = [
+  "ark-code-latest",
+  "doubao-seed-2.0-code",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "glm-5.1",
+  "kimi-k2.6",
+  "minimax-m3",
+];
+const VOLCENGINE_AGENT_PLAN_MODELS = [
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "glm-5.1",
+  "kimi-k2.6",
+  "minimax-m3",
+  "doubao-seed-2.0-pro",
+];
 const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "qwen3.8-max-preview": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
@@ -1069,17 +1104,30 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apikey",
-    defaultModel: "doubao-seed-2-0-lite-260215",
-    models: ["doubao-seed-2-0-lite-260215"],
-    liveModels: true,
-    modelReasoningEfforts: {
-      "doubao-seed-2-0-lite-260215": THINKING_TOGGLE_EFFORTS,
-    },
-    modelReasoningEffortMap: {
-      "doubao-seed-2-0-lite-260215": THINKING_TOGGLE_MAP,
-    },
-    thinkingToggleModels: ["doubao-seed-2-0-lite-260215"],
-    note: "Pay-as-you-go Ark API. Calls on this endpoint do not consume Coding Plan or Agent Plan quota.",
+    defaultModel: "doubao-seed-2-1-pro-260628",
+    models: VOLCENGINE_ARK_MODELS,
+    liveModels: false,
+    modelReasoningEfforts: Object.fromEntries(
+      VOLCENGINE_DOUBAO_THINKING_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS]),
+    ),
+    modelReasoningEffortMap: Object.fromEntries(
+      VOLCENGINE_DOUBAO_THINKING_MODELS.map(id => [id, THINKING_TOGGLE_MAP]),
+    ),
+    thinkingToggleModels: VOLCENGINE_DOUBAO_THINKING_MODELS,
+    preserveReasoningContentModels: [
+      "deepseek-v4-pro-260425",
+      "deepseek-v4-flash-260425",
+      "glm-5-2-260617",
+      "glm-4-7-251222",
+    ],
+    noVisionModels: [
+      "deepseek-v4-pro-260425",
+      "deepseek-v4-flash-260425",
+      "deepseek-v3-2-251201",
+      "glm-5-2-260617",
+      "glm-4-7-251222",
+    ],
+    note: "Pay-as-you-go Ark API with a curated text/agent catalog. Calls on this endpoint do not consume Coding Plan or Agent Plan quota.",
   },
   {
     id: "volcengine-coding-plan",
@@ -1089,9 +1137,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "key",
     dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
     defaultModel: "ark-code-latest",
-    models: ["ark-code-latest"],
-    liveModels: true,
-    note: "Coding Plan subscription endpoint. Use the plan key issued by the Ark console.",
+    models: VOLCENGINE_CODING_PLAN_MODELS,
+    liveModels: false,
+    note: "Coding Plan subscription endpoint with plan-scoped model aliases. Use the plan key issued by the Ark console.",
   },
   {
     id: "volcengine-agent-plan",
@@ -1101,8 +1149,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-responses",
     authKind: "key",
     dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
-    liveModels: true,
-    note: "Agent Plan subscription endpoint over the native Responses API.",
+    defaultModel: "deepseek-v4-pro",
+    models: VOLCENGINE_AGENT_PLAN_MODELS,
+    liveModels: false,
+    note: "Agent Plan subscription endpoint over the native Responses API with a static fallback catalog.",
   },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
   { id: "qianfan", label: "Qianfan (Baidu)", baseUrl: "https://qianfan.baidubce.com/v2", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.bce.baidu.com/iam/#/iam/apikey/list" },
