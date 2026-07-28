@@ -529,7 +529,13 @@ export function modelAdapterRecordConfigError(
 
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
-  hostname: z.string().trim().min(1).optional(),
+  // A blank hostname degrades to undefined rather than failing the parse. `getDefaultConfig()`
+  // carries no `hostname` key, so the backup-and-defaults repair path below cannot merge one
+  // away — a hand-edited `"hostname": ""` would fail twice and reset providers/apiKeys to
+  // defaults, which is strictly worse than the bind bug this validation exists for. Degrading
+  // is safe: startServer() already falls back to 127.0.0.1 for a missing hostname. Write-time
+  // rejection lives in validateConfigCandidate() so bad values still surface to the caller.
+  hostname: z.string().trim().min(1).optional().catch(undefined),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
@@ -809,6 +815,19 @@ function warnDegradedStreamMode(rawParsed: unknown, validated: OcxConfig): void 
   }
 }
 
+/**
+ * Companion to {@link warnDegradedStreamMode} for a blank persisted `hostname`. The bind
+ * falls back to loopback, which is the safe direction but not what the file asked for —
+ * say so once instead of silently ignoring the field.
+ */
+function warnDegradedHostname(rawParsed: unknown, validated: OcxConfig): void {
+  if (!rawParsed || typeof rawParsed !== "object") return;
+  const raw = (rawParsed as Record<string, unknown>).hostname;
+  if (raw !== undefined && validated.hostname === undefined) {
+    console.warn(`⚠️  config.json hostname ${JSON.stringify(raw)} is not a usable bind address — falling back to 127.0.0.1`);
+  }
+}
+
 type NativeSubagentPersistedField = "injectionModel" | "injectionEffort" | "syncCodexSubagentDefaults";
 
 function rawConfigRecord(rawParsed: unknown): Record<string, unknown> | null {
@@ -883,6 +902,7 @@ export function loadConfig(): OcxConfig {
     if (result.success) {
       const config = result.data as OcxConfig;
       warnDegradedStreamMode(parsed, config);
+      warnDegradedHostname(parsed, config);
       warnDegradedNativeSubagentConfig(parsed, config);
       return normalizeNativeSubagentSync(config, parsed);
     }
@@ -899,6 +919,7 @@ export function loadConfig(): OcxConfig {
     if (retryResult.success) {
       warnConfigRepaired(configPath, result.error);
       const config = retryResult.data as OcxConfig;
+      warnDegradedHostname(parsed, config);
       warnDegradedNativeSubagentConfig(parsed, config);
       return normalizeNativeSubagentSync(config, parsed);
     }
@@ -974,8 +995,26 @@ function schemaDiagnosticsError(error: z.ZodError): string {
   return details.length > 0 ? `schema_invalid: ${details.join("; ")}` : "schema_invalid";
 }
 
+/**
+ * Reject a hostname the schema deliberately degrades on read. Load-time has to keep a
+ * blank value non-fatal (see the `hostname` field comment), but an incoming write is a
+ * live caller who can be told the value is wrong — silently rewriting it to loopback
+ * would look like the bind succeeded on the address they asked for.
+ */
+function blankHostnameError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const hostname = (value as Record<string, unknown>).hostname;
+  if (hostname === undefined) return null;
+  if (typeof hostname !== "string" || !hostname.trim()) {
+    return "schema_invalid: hostname: must be a nonblank bind address";
+  }
+  return null;
+}
+
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
 export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
+  const hostnameError = blankHostnameError(value);
+  if (hostnameError) return { ok: false, error: hostnameError };
   const result = configSchema.safeParse(value);
   if (result.success) return { ok: true, config: result.data as OcxConfig };
   return { ok: false, error: schemaDiagnosticsError(result.error) };

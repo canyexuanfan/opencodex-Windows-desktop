@@ -123,6 +123,46 @@ describe("opencodex config defaults", () => {
     });
   });
 
+  test("a blank hostname already on disk degrades without wiping providers or keys", () => {
+    // Regression: rejecting a blank hostname in the schema made loadConfig fail twice
+    // (getDefaultConfig() has no hostname key, so the merge-defaults repair cannot fix
+    // one), which backed the file up and returned defaults — resetting providers and
+    // apiKeys for exactly the users the blank-hostname hardening was meant to protect.
+    writeConfig({
+      port: 12345,
+      hostname: "",
+      defaultProvider: "custom",
+      providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "upstream-secret" } },
+      apiKeys: [{ id: "key-1", name: "default", key: "ocx_persisted", createdAt: "2026-07-28T00:00:00.000Z" }],
+    });
+
+    const config = loadConfig();
+
+    expect(config.hostname).toBeUndefined();
+    expect(config).toMatchObject({
+      port: 12345,
+      defaultProvider: "custom",
+      providers: { custom: { baseUrl: "https://example.test/v1", apiKey: "upstream-secret" } },
+      apiKeys: [expect.objectContaining({ id: "key-1", key: "ocx_persisted" })],
+    });
+    expect(backupNames()).toEqual([]);
+  });
+
+  test("a whitespace hostname on disk is treated the same as a blank one", () => {
+    writeConfig({
+      port: 12345,
+      hostname: "   ",
+      defaultProvider: "custom",
+      providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1" } },
+    });
+
+    const config = loadConfig();
+
+    expect(config.hostname).toBeUndefined();
+    expect(config.providers.custom.baseUrl).toBe("https://example.test/v1");
+    expect(backupNames()).toEqual([]);
+  });
+
   test("Codex shim auto-restore defaults on with config and environment opt-out precedence", () => {
     expect(getDefaultConfig().codexShimAutoRestore).toBe(true);
     expect(codexShimAutoRestoreEnabled({}, {})).toBe(true);
