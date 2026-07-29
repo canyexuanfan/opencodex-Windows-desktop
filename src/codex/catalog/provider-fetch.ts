@@ -71,6 +71,32 @@ export function isProviderModelsApiItems(value: unknown): value is ProviderModel
   );
 }
 
+/**
+ * Normalize OpenAI-compatible /models payloads for catalog discovery.
+ * Supports `{ data: [...] }` and top-level arrays (Together AI `#617`).
+ * Google's `{ models: [...] }` is handled by the connectivity probe only — catalog
+ * discovery must not treat a stray `models` key on openai-chat responses as valid.
+ */
+export function providerModelsListFromResponse(json: unknown): unknown {
+  if (Array.isArray(json)) return json;
+  if (json !== null && typeof json === "object" && !Array.isArray(json)) {
+    const data = (json as { data?: unknown }).data;
+    if (Array.isArray(data)) return data;
+  }
+  return undefined;
+}
+
+/** Connectivity-probe shape: also accepts Google `{ models: [...] }`. */
+export function providerModelsListFromProbeResponse(json: unknown): unknown {
+  if (Array.isArray(json)) return json;
+  if (json !== null && typeof json === "object" && !Array.isArray(json)) {
+    const obj = json as { data?: unknown; models?: unknown };
+    if (Array.isArray(obj.data)) return obj.data;
+    if (Array.isArray(obj.models)) return obj.models;
+  }
+  return undefined;
+}
+
 export function configuredContextWindow(prov: OcxProviderConfig, id: string): number | undefined {
   const configured = modelRecordValue(prov.modelContextWindows, id) ?? prov.contextWindow;
   return typeof configured === "number" && configured > 0 ? configured : undefined;
@@ -366,9 +392,7 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
       }
       return models;
     }
-    const data = json !== null && typeof json === "object" && !Array.isArray(json)
-      ? (json as { data?: unknown }).data
-      : undefined;
+    const data = providerModelsListFromResponse(json);
     if (!isProviderModelsApiItems(data)) {
       const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "invalid_response" });
       if (shouldLog) {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../../codex/catalog";
 import { catalogModelSlug, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
+import { providerModelsListFromProbeResponse } from "../../codex/catalog/provider-fetch";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -344,12 +345,9 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       if (!res.ok) {
         return jsonResponse({ ok: false, latencyMs, error: `upstream /models returned ${res.status}` });
       }
-      const json = await res.json().catch(() => null) as { data?: unknown; models?: unknown } | null;
-      // OpenAI-style lists use { data: [...] }; Google's /v1beta/models (the other shape
-      // buildModelsRequest can produce) returns { models: [...] }.
-      const list = json && typeof json === "object" && !Array.isArray(json)
-        ? (Array.isArray(json.data) ? json.data : Array.isArray(json.models) ? json.models : undefined)
-        : undefined;
+      const json = await res.json().catch(() => null);
+      // OpenAI-style { data }, Google { models }, and Together-style top-level arrays (#617).
+      const list = providerModelsListFromProbeResponse(json);
       if (!Array.isArray(list)) {
         return jsonResponse({ ok: false, latencyMs, error: "upstream /models returned an unexpected shape" });
       }
