@@ -276,10 +276,17 @@ async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Pro
   const grantedUnits = firstFinite(token, ["total_granted"]);
   const usedUnits = firstFinite(token, ["total_used"]);
   const availableUnits = firstFinite(token, ["total_available"]);
+  const reconciledUnits = usedUnits !== undefined && availableUnits !== undefined
+    ? usedUnits + availableUnits
+    : undefined;
+  const reconciliationTolerance = grantedUnits !== undefined
+    ? Math.max(1, Math.abs(grantedUnits)) * 1e-9
+    : 0;
   if (limitUsd === undefined || grantedUnits === undefined || usedUnits === undefined
     || availableUnits === undefined || limitUsd <= 0 || grantedUnits <= 0
     || usedUnits < 0 || availableUnits < 0
-    || usedUnits + availableUnits > grantedUnits) return null;
+    || reconciledUnits === undefined
+    || Math.abs(reconciledUnits - grantedUnits) > reconciliationTolerance) return null;
   const usdPerUnit = limitUsd / grantedUnits;
   const usedUsd = usedUnits * usdPerUnit;
   const remainingUsd = Math.max(0, availableUnits * usdPerUnit);

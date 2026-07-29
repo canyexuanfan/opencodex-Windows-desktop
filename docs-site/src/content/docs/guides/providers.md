@@ -330,7 +330,7 @@ not shown as a quota reset because expiration does not imply that credit repleni
 }
 ```
 
-Quota probes send the active key only to the canonical A6API host and reject redirects. Malformed,
+Quota probes send only the active key to the canonical A6API host and reject redirects. Malformed,
 negative, or internally inconsistent billing totals produce no report rather than a misleading bar.
 
 > **Tencent Cloud Coding Plan usage restriction:** Tencent documents this subscription for

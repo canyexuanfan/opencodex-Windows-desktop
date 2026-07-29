@@ -320,6 +320,7 @@ describe("fetchProviderQuotaReports", () => {
     { total_used: -1, total_available: 101 },
     { total_used: 1, total_available: -1 },
     { total_used: 80, total_available: 80 },
+    { total_used: 20, total_available: 70 },
   ])("A6API quota drops malformed usage totals", async usage => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -342,13 +343,20 @@ describe("fetchProviderQuotaReports", () => {
         : { data: { total_granted: 100, total_used: 25, total_available: 75 } }), { status: 200 });
     }) as typeof fetch;
 
-    const equivalent = await fetchProviderQuotaReports(a6apiOnlyConfig("https://API.A6API.COM:443/v1/"), true);
+    const canonicalUrls = [
+      "https://api.a6api.com",
+      "https://api.a6api.com/v1",
+      "https://API.A6API.COM:443/v1/",
+    ];
+    for (const baseUrl of canonicalUrls) {
+      const result = await fetchProviderQuotaReports(a6apiOnlyConfig(baseUrl), true);
+      expect(result.reports).toHaveLength(1);
+    }
     const credentialedUrl = "https://user" + "@api.a6api.com/v1";
     const credentialed = await fetchProviderQuotaReports(a6apiOnlyConfig(credentialedUrl), true);
 
-    expect(equivalent.reports).toHaveLength(1);
     expect(credentialed.reports).toEqual([]);
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(canonicalUrls.length * 2);
   });
 
   test("malformed API-key fields do not break unrelated quota reports", async () => {
