@@ -515,6 +515,7 @@ export const ja: Record<TKey, string> = {
   "logs.tokens.cacheWrite": "キャッシュ書き込み (w)",
   "logs.tokens.reasoning": "推論",
   "logs.tokens.noCache": "キャッシュデータなし",
+  "logs.tokens.contextTotal": "アクティブコンテキスト",
   "logs.tokens.noCacheNote": "このプロバイダーはキャッシュトークンを報告しません",
   "logs.tokens.noCacheCursor": "Cursor のキャッシュ詳細は未報告",
   "logs.tokens.noCacheCursorNote": "Cursor はキャッシュ read/write トークン数を公開しません。これは不明という意味で、キャッシュミスの確定ではありません",

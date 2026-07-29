@@ -530,6 +530,7 @@ export const de: Record<TKey, string> = {
   "logs.tokens.cacheWrite": "Cache-Schreiben (w)",
   "logs.tokens.reasoning": "Reasoning",
   "logs.tokens.noCache": "keine Cache-Daten",
+  "logs.tokens.contextTotal": "aktiver Kontext",
   "logs.tokens.noCacheNote": "dieser Anbieter meldet keine Cache-Tokens",
   "logs.tokens.noCacheCursor": "Cursor-Cache-Details nicht gemeldet",
   "logs.tokens.noCacheCursorNote": "Cursor liefert keine Cache-Read/Write-Tokenzahlen; das ist unbekannt und kein bestätigter Cache-Miss",

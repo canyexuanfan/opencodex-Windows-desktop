@@ -542,6 +542,7 @@ export const ko: Record<TKey, string> = {
   "logs.tokens.cacheWrite": "캐시 생성 (w)",
   "logs.tokens.reasoning": "추론",
   "logs.tokens.noCache": "캐시 미보고",
+  "logs.tokens.contextTotal": "활성 컨텍스트",
   "logs.tokens.noCacheNote": "이 프로바이더는 캐시 토큰 수치를 제공하지 않습니다",
   "logs.tokens.noCacheCursor": "Cursor 캐시 상세 미보고",
   "logs.tokens.noCacheCursorNote": "Cursor 프로토콜은 캐시 read/write 토큰 수치를 제공하지 않습니다. 캐시 미스가 확인됐다는 뜻은 아닙니다",

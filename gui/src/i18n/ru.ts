@@ -547,6 +547,7 @@ export const ru: Record<TKey, string> = {
   "logs.tokens.cacheWrite": "запись кэша (w)",
   "logs.tokens.reasoning": "рассуждения",
   "logs.tokens.noCache": "нет данных кэша",
+  "logs.tokens.contextTotal": "активный контекст",
   "logs.tokens.noCacheNote": "этот провайдер не сообщает данные о кэш-токенах",
   "logs.tokens.noCacheCursor": "детализация кэша Cursor не сообщается",
   "logs.tokens.noCacheCursorNote": "Cursor не передает число токенов чтения/записи кэша; это неизвестно, а не подтвержденный промах кэша",

@@ -542,6 +542,7 @@ export const zh: Record<TKey, string> = {
   "logs.tokens.cacheWrite": "缓存写入 (w)",
   "logs.tokens.reasoning": "推理",
   "logs.tokens.noCache": "无缓存数据",
+  "logs.tokens.contextTotal": "活动上下文",
   "logs.tokens.noCacheNote": "该提供商不报告缓存 token 数",
   "logs.tokens.noCacheCursor": "Cursor 未报告缓存明细",
   "logs.tokens.noCacheCursorNote": "Cursor 不提供缓存读写 token 数；这表示未知，并不代表已确认缓存未命中",

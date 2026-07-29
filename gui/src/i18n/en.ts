@@ -548,6 +548,7 @@ export const en = {
   "logs.tokens.cacheWrite": "cache write (w)",
   "logs.tokens.reasoning": "reasoning",
   "logs.tokens.noCache": "no cache data",
+  "logs.tokens.contextTotal": "active context",
   "logs.tokens.noCacheNote": "this provider does not report cache tokens",
   "logs.tokens.noCacheCursor": "Cursor cache detail unreported",
   "logs.tokens.noCacheCursorNote": "Cursor does not expose cache read/write token counts; this is unknown, not a confirmed cache miss",
