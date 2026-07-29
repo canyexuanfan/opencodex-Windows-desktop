@@ -10,6 +10,7 @@ import { resolveEnvValue } from "../config";
 import { getValidAccessToken, getValidAccessTokenForAccount } from "../oauth";
 import { getAccountCredential, getAccountSet, getCredential } from "../oauth/store";
 import { antigravityUserAgent } from "../adapters/client-fingerprint";
+import { apiKeyPoolEntryId } from "./api-keys";
 import { getProviderRegistryEntry, providerCodexAccountMode } from "./registry";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./openai-tiers";
@@ -90,7 +91,11 @@ export function clearProviderQuotaCache(): void {
 
 function cacheKey(config: OcxConfig): string {
   const providers = Object.entries(config.providers)
-    .map(([name, provider]) => `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${providerCodexAccountMode(name, provider) ?? "none"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)
+    .map(([name, provider]) => {
+      const resolvedKey = resolveEnvValue(provider.apiKey)?.trim();
+      const activeKeyId = resolvedKey ? apiKeyPoolEntryId(resolvedKey) : "none";
+      return `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${providerCodexAccountMode(name, provider) ?? "none"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}:${activeKeyId}`;
+    })
     .sort()
     .join("|");
   return `${config.defaultProvider}|${providers}`;
@@ -270,16 +275,16 @@ async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Pro
   const usedUnits = firstFinite(token, ["total_used"]);
   const availableUnits = firstFinite(token, ["total_available"]);
   if (limitUsd === undefined || grantedUnits === undefined || usedUnits === undefined
-    || availableUnits === undefined || limitUsd <= 0 || grantedUnits <= 0) return null;
+    || availableUnits === undefined || limitUsd <= 0 || grantedUnits <= 0
+    || usedUnits < 0 || availableUnits < 0) return null;
   const usdPerUnit = limitUsd / grantedUnits;
   const usedUsd = usedUnits * usdPerUnit;
   const remainingUsd = Math.max(0, availableUnits * usdPerUnit);
   const percent = normalizePercent((usedUsd / limitUsd) * 100);
   if (percent === undefined) return null;
-  const resetAt = normalizeResetAt(token?.expires_at);
   const label = `API credits ($${remainingUsd.toFixed(2)} of $${limitUsd.toFixed(2)} remaining)`;
   return report(provider, "a6api:billing", {
-    customWindows: [{ label, percent, ...(resetAt !== undefined ? { resetAt } : {}) }],
+    customWindows: [{ label, percent }],
     updatedAt: Date.now(),
   });
 }
@@ -1151,7 +1156,7 @@ async function maybeFetchProviderQuota(
     if (provider.authMode === "key" && isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
       return fetchKimiQuota(name, provider);
     }
-    if ((provider.authMode ?? "key") === "key" && name === "a6api") {
+    if ((provider.authMode ?? "key") === "key" && isCanonicalA6apiBaseUrl(provider.baseUrl)) {
       return fetchA6apiQuota(name, provider);
     }
     return null;

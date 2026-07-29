@@ -281,7 +281,6 @@ describe("fetchProviderQuotaReports", () => {
     expect(result.reports[0]?.quota.customWindows).toEqual([{
       label: "API credits ($15.00 of $20.00 remaining)",
       percent: 25,
-      resetAt: Date.parse("2026-08-01T00:00:00Z"),
     }]);
     expect(seen.map(row => row.url).sort()).toEqual([
       "https://api.a6api.com/api/usage/token/",
@@ -315,6 +314,59 @@ describe("fetchProviderQuotaReports", () => {
     const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
 
     expect(result.reports).toEqual([]);
+  });
+
+  test.each([
+    { total_used: -1, total_available: 101 },
+    { total_used: 1, total_available: -1 },
+  ])("A6API quota drops negative usage totals", async usage => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return new Response(JSON.stringify(url.includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, ...usage } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test("A6API quota is detected by canonical base URL for custom provider names", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 25, total_available: 75 } },
+    ), { status: 200 })) as typeof fetch;
+    const config = a6apiOnlyConfig();
+    config.defaultProvider = "my-a6";
+    config.providers = { "my-a6": config.providers.a6api! };
+
+    const result = await fetchProviderQuotaReports(config, true);
+
+    expect(result.reports[0]?.provider).toBe("my-a6");
+    expect(result.reports[0]?.quota.customWindows?.[0]?.percent).toBe(25);
+  });
+
+  test("A6API quota cache follows the active API key", async () => {
+    const authorizations: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      authorizations.push(headers?.Authorization ?? "");
+      const secondAccount = headers?.Authorization === "Bearer second-account-key";
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: secondAccount ? 30 : 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const first = await fetchProviderQuotaReports(config);
+    config.providers.a6api!.apiKey = "second-account-key";
+    const second = await fetchProviderQuotaReports(config);
+
+    expect(first.reports[0]?.quota.customWindows?.[0]?.label).toContain("of $10.00 remaining");
+    expect(second.reports[0]?.quota.customWindows?.[0]?.label).toContain("of $30.00 remaining");
+    expect(authorizations).toContain("Bearer second-account-key");
   });
 
   test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
