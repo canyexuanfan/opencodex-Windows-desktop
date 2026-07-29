@@ -440,12 +440,12 @@ ocx service uninstall
 ```
 
 On Windows, creating the Task Scheduler entry requires elevation. Recognized localized
-access-denied text keeps the existing guidance path. If that text is unreadable, the fallback for
-the owned, fixed `opencodex-proxy` task-create command additionally requires status 1 and a confirmed
-non-elevated token; the dashboard's Startup Safety action can then request UAC automatically. If
-that fallback cannot determine the token state, it retains the original scheduler error. Foreign
-tasks and operations can never emit the automatic-elevation marker. Approve the dashboard UAC
-prompt or rerun `ocx service install` in an elevated PowerShell window.
+access-denied text keeps the existing guidance path. If that text is unreadable, the fallback
+requires the owned command shape `/create /tn opencodex-proxy /xml <non-empty-path> /f`, status 1,
+and a confirmed non-elevated token; the dashboard's Startup Safety action can then request UAC
+automatically. If that fallback cannot determine the token state, it retains the original scheduler
+error. Foreign tasks and operations can never emit the automatic-elevation marker. Approve the
+dashboard UAC prompt or rerun `ocx service install` in an elevated PowerShell window.
 
 ### `ocx codex-shim <subcommand>`
 
