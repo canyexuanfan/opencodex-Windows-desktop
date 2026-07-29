@@ -14,6 +14,8 @@ import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 const origHome = process.env.HOME;
+const origLocalAppData = process.env.LOCALAPPDATA;
+const origUserProfile = process.env.USERPROFILE;
 const origRegion = process.env.KIRO_REGION;
 const origApiRegion = process.env.KIRO_API_REGION;
 const origArn = process.env.KIRO_PROFILE_ARN;
@@ -24,8 +26,12 @@ let tmp: string;
 
 beforeEach(() => {
   // isolate: empty HOME so no kiro-cli SQLite is read; deterministic region.
+  // The native store resolves per-platform (issue #710) and win32 prefers LOCALAPPDATA/USERPROFILE
+  // over HOME, so an empty HOME alone would no longer keep a Windows runner off its real profile.
   tmp = mkdtempSync(join(tmpdir(), "kiro-adapter-"));
   process.env.HOME = tmp;
+  process.env.LOCALAPPDATA = join(tmp, "AppData", "Local");
+  process.env.USERPROFILE = tmp;
   process.env.OPENCODEX_HOME = tmp;
   process.env.KIRO_REGION = "us-east-1";
   delete process.env.KIRO_API_REGION;
@@ -35,6 +41,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+  if (origLocalAppData === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = origLocalAppData;
+  if (origUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = origUserProfile;
   if (origRegion === undefined) delete process.env.KIRO_REGION; else process.env.KIRO_REGION = origRegion;
   if (origApiRegion === undefined) delete process.env.KIRO_API_REGION; else process.env.KIRO_API_REGION = origApiRegion;
   if (origArn === undefined) delete process.env.KIRO_PROFILE_ARN; else process.env.KIRO_PROFILE_ARN = origArn;
@@ -52,7 +60,12 @@ function parsedWith(messages: unknown[], tools?: unknown[], modelId = "claude-so
 }
 
 function seedKiroCliMetadata(profileArn: string, region: string): void {
-  const dir = join(tmp, "Library", "Application Support", "kiro-cli");
+  // Host-resolved layout (issue #710): mirrors resolveKiroCliNativeSessionEntries.
+  const dir = process.platform === "win32"
+    ? join(tmp, "AppData", "Local", "Kiro-Cli")
+    : process.platform === "darwin"
+      ? join(tmp, "Library", "Application Support", "kiro-cli")
+      : join(tmp, ".local", "share", "kiro-cli");
   mkdirSync(dir, { recursive: true });
   const db = new Database(join(dir, "data.sqlite3"));
   db.run("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)");
