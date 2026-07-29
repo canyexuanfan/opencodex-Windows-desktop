@@ -92,7 +92,9 @@ export function clearProviderQuotaCache(): void {
 function cacheKey(config: OcxConfig): string {
   const providers = Object.entries(config.providers)
     .map(([name, provider]) => {
-      const resolvedKey = resolveEnvValue(provider.apiKey)?.trim();
+      const resolvedKey = typeof provider.apiKey === "string"
+        ? resolveEnvValue(provider.apiKey)?.trim()
+        : undefined;
       const activeKeyId = resolvedKey ? apiKeyPoolEntryId(resolvedKey) : "none";
       return `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${providerCodexAccountMode(name, provider) ?? "none"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}:${activeKeyId}`;
     })
@@ -235,7 +237,7 @@ function isBuiltInChatGptForwardProvider(name: string, provider: OcxProviderConf
 }
 
 function isCanonicalA6apiBaseUrl(baseUrl: string): boolean {
-  const normalized = baseUrl.trim().replace(/\/+$/, "");
+  const normalized = normalizedBaseUrl(baseUrl);
   return normalized === A6API_BASE_URL || normalized === `${A6API_BASE_URL}/v1`;
 }
 
@@ -276,7 +278,8 @@ async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Pro
   const availableUnits = firstFinite(token, ["total_available"]);
   if (limitUsd === undefined || grantedUnits === undefined || usedUnits === undefined
     || availableUnits === undefined || limitUsd <= 0 || grantedUnits <= 0
-    || usedUnits < 0 || availableUnits < 0) return null;
+    || usedUnits < 0 || availableUnits < 0
+    || usedUnits + availableUnits > grantedUnits) return null;
   const usdPerUnit = limitUsd / grantedUnits;
   const usedUsd = usedUnits * usdPerUnit;
   const remainingUsd = Math.max(0, availableUnits * usdPerUnit);
@@ -732,7 +735,7 @@ export async function fetchProviderAccountQuotas(
 function normalizedBaseUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    if (url.search || url.hash) return null;
+    if (url.username || url.password || url.search || url.hash) return null;
     return `${url.origin.toLowerCase()}${url.pathname.replace(/\/+$/, "")}`;
   } catch {
     return null;

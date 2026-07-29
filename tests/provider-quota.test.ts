@@ -319,7 +319,8 @@ describe("fetchProviderQuotaReports", () => {
   test.each([
     { total_used: -1, total_available: 101 },
     { total_used: 1, total_available: -1 },
-  ])("A6API quota drops negative usage totals", async usage => {
+    { total_used: 80, total_available: 80 },
+  ])("A6API quota drops malformed usage totals", async usage => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       return new Response(JSON.stringify(url.includes("subscription")
@@ -330,6 +331,44 @@ describe("fetchProviderQuotaReports", () => {
     const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
 
     expect(result.reports).toEqual([]);
+  });
+
+  test("A6API quota accepts equivalent canonical HTTPS URLs only", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 25, total_available: 75 } }), { status: 200 });
+    }) as typeof fetch;
+
+    const equivalent = await fetchProviderQuotaReports(a6apiOnlyConfig("https://API.A6API.COM:443/v1/"), true);
+    const credentialedUrl = "https://user" + "@api.a6api.com/v1";
+    const credentialed = await fetchProviderQuotaReports(a6apiOnlyConfig(credentialedUrl), true);
+
+    expect(equivalent.reports).toHaveLength(1);
+    expect(credentialed.reports).toEqual([]);
+    expect(seen).toHaveLength(2);
+  });
+
+  test("malformed API-key fields do not break unrelated quota reports", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 25, total_available: 75 } },
+    ), { status: 200 })) as typeof fetch;
+    const config = a6apiOnlyConfig();
+    config.providers.broken = {
+      adapter: "openai-chat",
+      authMode: "key",
+      baseUrl: "https://example.com/v1",
+      apiKey: 42,
+    } as unknown as OcxConfig["providers"][string];
+
+    const result = await fetchProviderQuotaReports(config, true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.provider).toBe("a6api");
   });
 
   test("A6API quota is detected by canonical base URL for custom provider names", async () => {
