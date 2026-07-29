@@ -10,6 +10,8 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
+  readConfigDiagnostics,
+  reconcileLiveConfigFromDisk,
   saveConfigPreservingClaudeCode,
 } from "../../config";
 import {
@@ -19,7 +21,6 @@ import {
   listOAuthProviders,
   startLoginFlow,
   submitManualLoginCode,
-  upsertOAuthProvider,
 } from "../../oauth";
 import { removeCredential } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
@@ -27,9 +28,15 @@ import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/ke
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
-import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
+import { clearProviderQuotaCache, fetchProviderAccountQuotas, fetchProviderQuotaReports, supportsPerAccountQuota } from "../../providers/quota";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
+import {
+  normalizeAccountPoolStickyLimit,
+  normalizeAccountPoolStrategy,
+  parseAccountPoolStickyLimit,
+  parseAccountPoolStrategy,
+} from "../../codex/pool-rotation";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { resolveCodexHomeDir } from "../../codex/home";
@@ -59,6 +66,7 @@ import { buildApiAccessEndpoints } from "./api-access";
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+import { codexAccountNamespaceProviderCollisionError } from "../../codex/account-namespace-match";
 
 export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
@@ -80,6 +88,8 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const body = await req.json().catch(() => ({})) as { provider?: string; addAccount?: boolean; accountId?: string; reauth?: boolean };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    const namespaceCollision = codexAccountNamespaceProviderCollisionError(config.codexAccountNamespaces, provider);
+    if (namespaceCollision) return jsonResponse({ error: namespaceCollision }, 409);
     const accountId = body.accountId?.trim();
     const reauth = body.reauth === true || Boolean(accountId);
     try {
@@ -90,12 +100,19 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
           return jsonResponse({ error: "Unknown account for reauth" }, 404);
         }
       }
+      // Use persisted state, not the live object, as the merge base: another management
+      // request may already have mutated live config and yielded before its save.
+      const persistedBaseline = readConfigDiagnostics().config;
       // addAccount / reauth forces a fresh browser identity (skips local-CLI token import).
       const { url: authUrl, instructions, deviceCode } = await startLoginFlow(provider, {
         forceLogin: body.addAccount === true || reauth,
         ...(accountId ? { reauthAccountId: accountId } : {}),
+      }, {
+        // startLoginFlow returns the authorization URL before background persistence completes.
+        // Three-way reconcile settled disk changes so a failed login cannot leave a provider
+        // live-only and an in-flight management mutation cannot be erased before it saves.
+        onSettled: () => reconcileLiveConfigFromDisk(config, persistedBaseline),
       });
-      upsertOAuthProvider(config, provider); // mutate LIVE config — routing sees it without restart
       if (authUrl && !deviceCode) {
         // Open the browser server-side (the proxy runs on the user's machine) — the GUI's
         // window.open is popup-blocked because it runs after an await, not a direct click.
@@ -146,8 +163,9 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     await removeCredential(provider);
     clearLoginState(provider);
     // Drop cached/last-good quota rows tied to the removed credential.
-    const { clearProviderQuotaCache } = await import("../../providers/quota");
+    const { clearProviderQuotaCache, clearAccountQuotaCache } = await import("../../providers/quota");
     clearProviderQuotaCache();
+    clearAccountQuotaCache(provider);
     return jsonResponse({ success: true });
   }
 
@@ -163,18 +181,46 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       projectOAuthAccountHealth,
       projectStoredOAuthAccountHealth,
     } = await import("../../oauth/health");
-    const set = getAccountSet(provider);
-    const accounts = (status.accounts ?? []).map(summary => {
-      const full = set?.accounts.find(account => account.id === summary.id);
-      const health = full
-        ? projectStoredOAuthAccountHealth(provider, full)
-        : projectOAuthAccountHealth({
-          needsReauth: summary.needsReauth === true,
-          reauthReason: summary.needsReauth === true ? "refresh_failed" : undefined,
-        });
-      return { ...summary, ...oauthAccountHealthFields(provider, summary.id, health) };
+    const projectAccounts = () => {
+      const set = getAccountSet(provider);
+      const current = getLoginStatus(provider);
+      return {
+        activeAccountId: current.activeAccountId ?? null,
+        accounts: (current.accounts ?? []).map(summary => {
+          const full = set?.accounts.find(account => account.id === summary.id);
+          const health = full
+            ? projectStoredOAuthAccountHealth(provider, full)
+            : projectOAuthAccountHealth({
+              needsReauth: summary.needsReauth === true,
+              reauthReason: summary.needsReauth === true ? "refresh_failed" : undefined,
+            });
+          return { ...summary, ...oauthAccountHealthFields(provider, summary.id, health) };
+        }),
+      };
+    };
+    // Per-account rate limits: Anthropic reports usage per credential, so every logged-in
+    // account can show its own 5h/weekly bars (not just the active one). Opt-in via ?quota=1
+    // so the plain account list stays a cheap local read; ?refresh=1 bypasses the TTL.
+    const wantQuota = url.searchParams.get("quota") === "1" && supportsPerAccountQuota(provider);
+    if (!wantQuota) return jsonResponse(projectAccounts());
+    const forceRefresh = url.searchParams.get("refresh") === "1";
+    // Probing may refresh the active credential and mark needsReauth — project health
+    // from the post-probe store so the response is not stale.
+    const rows = await fetchProviderAccountQuotas(provider, forceRefresh);
+    const byId = new Map(rows.map(row => [row.accountId, row]));
+    const projected = projectAccounts();
+    return jsonResponse({
+      activeAccountId: projected.activeAccountId,
+      accounts: projected.accounts.map(account => {
+        const row = byId.get(account.id);
+        if (!row) return account;
+        return {
+          ...account,
+          quota: row.quota,
+          ...(row.unavailable ? { quotaUnavailable: true } : {}),
+        };
+      }),
     });
-    return jsonResponse({ activeAccountId: status.activeAccountId ?? null, accounts });
   }
   if (url.pathname === "/api/oauth/accounts/active" && req.method === "PUT") {
     const body = await req.json().catch(() => ({})) as { provider?: string; accountId?: string };
@@ -183,10 +229,104 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     if (!body.accountId) return jsonResponse({ error: "missing accountId" }, 400);
     const { setActiveAccount } = await import("../../oauth/store");
     if (!(await setActiveAccount(provider, body.accountId))) return jsonResponse({ error: "account not found" }, 404);
+    if (provider === "anthropic") {
+      const { resetAnthropicRoutingForManualSelection } = await import("../../oauth/anthropic-routing");
+      resetAnthropicRoutingForManualSelection(body.accountId);
+    }
     const { clearProviderQuotaCache } = await import("../../providers/quota");
     clearProviderQuotaCache();
     return jsonResponse({ ok: true, provider, activeAccountId: body.accountId });
   }
+
+  // Opt-in Anthropic OAuth account pool (#294): enable/threshold/strategy + clear cooldown.
+  if (url.pathname === "/api/oauth/accounts/pool" && req.method === "GET") {
+    const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
+    if (provider !== "anthropic") return jsonResponse({ error: "pool config is only supported for anthropic" }, 400);
+    const pool = config.anthropicAccountPool ?? {};
+    return jsonResponse({
+      provider,
+      enabled: pool.enabled === true,
+      autoSwitchThreshold: typeof pool.autoSwitchThreshold === "number" ? pool.autoSwitchThreshold : 80,
+      strategy: normalizeAccountPoolStrategy(pool.strategy),
+      stickyLimit: normalizeAccountPoolStickyLimit(pool.stickyLimit),
+      experimental: true,
+    });
+  }
+  if (url.pathname === "/api/oauth/accounts/pool" && (req.method === "PUT" || req.method === "PATCH")) {
+    const parsedBody = await req.json().catch(() => ({}));
+    if (!isPlainRecord(parsedBody)) {
+      return jsonResponse({ error: "body must be an object" }, 400);
+    }
+    const body = parsedBody as {
+      provider?: unknown;
+      enabled?: unknown;
+      autoSwitchThreshold?: unknown;
+      strategy?: unknown;
+      stickyLimit?: unknown;
+    };
+    const provider = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
+    if (provider !== "anthropic") return jsonResponse({ error: "pool config is only supported for anthropic" }, 400);
+    let enabled = config.anthropicAccountPool?.enabled === true;
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== "boolean") return jsonResponse({ error: "enabled must be a boolean" }, 400);
+      enabled = body.enabled;
+    }
+    let threshold = config.anthropicAccountPool?.autoSwitchThreshold ?? 80;
+    if (body.autoSwitchThreshold !== undefined) {
+      if (
+        typeof body.autoSwitchThreshold !== "number"
+        || !Number.isInteger(body.autoSwitchThreshold)
+        || body.autoSwitchThreshold < 0
+        || body.autoSwitchThreshold > 100
+      ) {
+        return jsonResponse({ error: "autoSwitchThreshold must be an integer 0-100" }, 400);
+      }
+      threshold = body.autoSwitchThreshold;
+    }
+    let strategy = config.anthropicAccountPool?.strategy;
+    if (body.strategy !== undefined) {
+      const parsed = parseAccountPoolStrategy(body.strategy);
+      if (parsed === null) {
+        return jsonResponse({ error: "strategy must be one of: quota, round-robin, fill-first" }, 400);
+      }
+      strategy = parsed;
+    }
+    let stickyLimit = config.anthropicAccountPool?.stickyLimit;
+    if (body.stickyLimit !== undefined) {
+      const parsed = parseAccountPoolStickyLimit(body.stickyLimit);
+      if (parsed === null) {
+        return jsonResponse({ error: "stickyLimit must be an integer 1-100" }, 400);
+      }
+      stickyLimit = parsed;
+    }
+    config.anthropicAccountPool = {
+      enabled,
+      autoSwitchThreshold: threshold,
+      ...(strategy !== undefined ? { strategy } : {}),
+      ...(stickyLimit !== undefined ? { stickyLimit } : {}),
+    };
+    saveConfigPreservingClaudeCode(config);
+    return jsonResponse({
+      ok: true,
+      provider,
+      enabled,
+      autoSwitchThreshold: threshold,
+      strategy: normalizeAccountPoolStrategy(strategy),
+      stickyLimit: normalizeAccountPoolStickyLimit(stickyLimit),
+      experimental: true,
+    });
+  }
+  if (url.pathname === "/api/oauth/accounts/clear-cooldown" && req.method === "POST") {
+    const body = await req.json().catch(() => ({})) as { provider?: unknown; accountId?: unknown };
+    const provider = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
+    const accountId = typeof body.accountId === "string" ? body.accountId.trim() : "";
+    if (provider !== "anthropic") return jsonResponse({ error: "clear-cooldown is only supported for anthropic" }, 400);
+    if (!accountId) return jsonResponse({ error: "missing accountId" }, 400);
+    const { clearAnthropicAccountCooldown } = await import("../../oauth/anthropic-routing");
+    const cleared = clearAnthropicAccountCooldown(accountId);
+    return jsonResponse({ ok: true, cleared });
+  }
+
   if (url.pathname === "/api/oauth/accounts/alias" && req.method === "PUT") {
     const body = await req.json().catch(() => ({})) as { provider?: unknown; accountId?: unknown; alias?: unknown };
     const provider = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
@@ -208,9 +348,15 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     if (!id) return jsonResponse({ error: "missing id" }, 400);
     const { removeAccount, getAccountSet } = await import("../../oauth/store");
     if (!(await removeAccount(provider, id))) return jsonResponse({ error: "account not found" }, 404);
+    if (provider === "anthropic") {
+      const { clearAnthropicAccountCooldown, clearAnthropicSessionAffinityForAccount } = await import("../../oauth/anthropic-routing");
+      clearAnthropicAccountCooldown(id);
+      clearAnthropicSessionAffinityForAccount(id);
+    }
     if (!getAccountSet(provider)) clearLoginState(provider);
-    const { clearProviderQuotaCache } = await import("../../providers/quota");
+    const { clearProviderQuotaCache, clearAccountQuotaCache } = await import("../../providers/quota");
     clearProviderQuotaCache();
+    clearAccountQuotaCache(provider);
     return jsonResponse({ ok: true });
   }
 
@@ -308,7 +454,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const salt = crypto.randomUUID();
     const hashInput = `${providerKeys}|${salt}|${Date.now()}`;
     const hashBuf = new Bun.CryptoHasher("sha256").update(hashInput).digest();
-    const key = "ocx_" + Buffer.from(hashBuf).toString("hex").slice(0, 40);
+    const key = "ocx_data_" + Buffer.from(hashBuf).toString("hex").slice(0, 40);
     const entry = { id: crypto.randomUUID(), name, key, createdAt: new Date().toISOString() };
     config.apiKeys = [...(config.apiKeys ?? []), entry];
     saveConfigPreservingClaudeCode(config);

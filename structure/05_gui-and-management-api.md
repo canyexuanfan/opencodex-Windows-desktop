@@ -5,6 +5,50 @@
 The bundled React dashboard is built into `gui/dist` and served by the same Bun proxy. `ocx gui`
 starts the proxy when needed and opens `http://localhost:<port>`.
 
+All ordinary HTTP responses (excluding successful WebSocket upgrades) include `X-Frame-Options: DENY` and
+`Content-Security-Policy: frame-ancestors 'none'`. This prevents another page from framing the local
+dashboard or management responses. Embedding the dashboard in an iframe is intentionally
+unsupported; deployments that previously relied on such embedding must open it as a top-level page.
+
+## Authentication boundaries
+
+OpenCodex uses three mutually exclusive admission credential classes:
+
+| Credential class | Sources | Allowed surface |
+| --- | --- | --- |
+| Data plane | `OPENCODEX_API_AUTH_TOKEN`, the `service-api-token` file loaded through `OCX_API_TOKEN_FILE`, and `config.apiKeys` | `/v1/*` HTTP endpoints and new data-plane WebSocket handshakes only |
+| Management plane | `OPENCODEX_ADMIN_AUTH_TOKEN` or the independent protected `admin-api-token` file | `/api/*` only |
+| GUI session | A short-lived token issued only with a legitimate same-origin local dashboard page | `/api/*` only, bound to the issuing origin |
+
+The service token file remains a delivery mechanism for the data-plane environment token; it is not
+a fourth credential class. A management credential that equals any configured data-plane credential
+does not enable management access. The data plane may continue to start, but `/api/*` remains closed.
+
+Management authentication never has a loopback bypass. If no management credential is available, or
+management token creation, validation, or permission hardening fails, every `/api/*` request returns
+503 while `/v1/*` and unauthenticated `/healthz` continue to operate. Windows ACL hardening results
+must be checked explicitly because an `icacls` timeout is a soft failure in the shared secret helper.
+
+Local dashboard page entry requires a loopback binding, a valid parseable loopback `Host`, and an
+exact request origin. A non-loopback dashboard uses the management token flow instead. The server
+issues an in-memory session for five minutes, capped at 128 live sessions. The session is bound to the
+exact protocol, host, and port; state-changing requests additionally require the session CSRF token.
+The dashboard never attaches its management session to `/v1/*` requests, and pages containing a
+session bootstrap are served with `Cache-Control: no-store`.
+
+Proxy admission credentials must never reach an upstream provider. The forwarding guard rejects the
+`ocx_data_`, `ocx_admin_`, and `ocx_session_` prefixes, historical keys matching
+`^ocx_[0-9a-f]{40}$`, both environment tokens by constant-time comparison, and manually configured
+data keys by constant-time comparison.
+
+Audit item #16 remains partially deferred. This credential split protects new WebSocket handshakes,
+but the following established-connection controls are intentionally outside this batch and must not
+be treated as implemented:
+
+- revoke an already established connection when its data key is deleted;
+- enforce an idle timeout;
+- reauthenticate subsequent frames after the handshake.
+
 ## API ownership
 
 `src/server/index.ts` authenticates and routes `/api/*`, then delegates the management surface to
@@ -15,12 +59,13 @@ starts the proxy when needed and opens `http://localhost:<port>`.
 | Config/settings | Read safe config/settings views; mutate supported settings only. Full `PUT /api/config` is disabled so masked secrets are not round-tripped. `PUT /api/settings` accepts `codexAutoStart` and/or `streamMode` (each optional, at least one required); `streamMode` persists the #314 stream-shape selection in config.json because Windows services do not inherit shell env. |
 | Startup safety | `GET /api/startup-health` reports whether injected Codex routing is restart-safe, with secret-free service/shim diagnostics. `POST /api/startup-action` provides allowlisted one-click installation for the background service or launcher shim. On Windows a healthy script shim is CLI-only; Codex Desktop requires the background service for full protection. |
 | Windows tray | `GET/POST /api/windows-tray` controls an owned, per-user HKCU login tray. The tray delegates fixed actions to the CLI and is never a proxy supervisor or restart-protection signal. |
+| Updates | `GET /api/update/check`, `POST /api/update/run`, and `GET /api/update/status` own dashboard self-update state. A launched worker PID is persisted in `update-job.json`; dead PIDs recover immediately, while legacy active records without a PID recover only after ten minutes. Live PIDs remain exclusive regardless of record age. |
 | Providers | Create/update/delete ordinary provider configs and enrich registry metadata. The reserved `openai` card exposes Pool(default)/Direct account mode; `openai-apikey` remains the separate API route. |
 | Models | Fetch routed model lists, disabled model visibility, and catalog-facing ids. |
 | OAuth | Login/status/logout for OAuth-backed providers, plus multiauth account management: `GET /api/oauth/accounts`, `PUT /api/oauth/accounts/active`, `PUT /api/oauth/accounts/alias`, `DELETE /api/oauth/accounts` list masked accounts per provider, switch the active one, edit its display-only alias, and remove one. Login accepts `addAccount: true` to force a fresh browser identity. Device flows return a structured `deviceCode`; the GUI highlights and copies it before the user opens the verification page. |
 | Key providers | Expose API-key provider presets for setup and dashboard flows. Multi-key pool per key-auth provider: `GET /api/providers/keys`, `POST /api/providers/keys`, `PUT /api/providers/keys/active`, `PUT /api/providers/keys/alias`, `DELETE /api/providers/keys` masked list, add (upsert + activate), switch, rename, and remove keys. `provider.apiKey` always mirrors the active pool entry so routing stays single-key. |
 | OpenAI account mode | Report one OpenAI Codex card with Pool/Direct controls and one API-key card. Mode PATCH persists live without restart or catalog identity changes; Pool owns account/quota controls and Direct uses caller/main login only. Main-account DTOs report real credential presence and terminal `needsReauth` state instead of treating missing/invalid native auth as an unknown quota. |
-| Subagents | Read/write the featured `subagentModels` list capped at five ids. |
+| Subagents | Read/write the featured `subagentModels` list capped at five ids. `GET/PUT /api/injection-model` manages the shared delegation model/effort selection, the independent OpenCodex guidance switch, and the default-off `syncCodexSubagentDefaults` opt-in for native Codex subagent defaults. When OpenCodex owns the active Codex routing, native `[agents]` defaults apply to newly created Codex tasks after sync/restart; external user-managed provider configs remain untouched. The defaults do not cause delegation and preserve existing user-owned defaults rather than overwriting them. PUT is partial-update: absent keys are unchanged, `null` clears, and non-object bodies are rejected with 400 before field validation. `syncCodexSubagentDefaults: true` requires a nonblank `model` and a supported Codex reasoning effort when effort is set; clearing `model` (null/empty) always clears effort and disables native-default sync even when the stored effort was invalid. |
 | V2 / Multi-agent mode | `GET/PUT /api/v2` — reports/sets the codex `multi_agent_v2` feature flag, the 3-state `multiAgentMode` override (`v1`/`default`/`v2`), and the logical maximum thread count. Selecting `v2` enables the native flag and migrates `[agents] max_threads` to the v2 key; selecting `v1` disables it and migrates the same value back. `default` leaves the native flag unchanged. PUT accepts `enabled`, `multiAgentMode`, and/or the compatibility-named `maxConcurrentThreadsPerSession`; contradictory mode/flag pairs are rejected before writes. Every transition is rollback-safe and resyncs the catalog. |
 | Logs & Debug | One sidebar entry (`/#logs`) with two tabs. Logs tab: request/runtime logs for local diagnosis. Debug tab (`/#logs/debug`; legacy `/#debug` deep links redirect there): provider + usage toggles, refresh/follow log viewer. `GET/PUT /api/debug`; `GET /api/debug/logs` and `GET /api/debug/usage-logs` (monotonic `after` cursor, legacy `since` accepted). CLI: `ocx debug provider|usage …` (both streams via running proxy API). |
 | Usage | `GET /api/usage` aggregate read-only summary derived from `~/.opencodex/usage.jsonl`; measured / reported / unreported / unsupported / estimated counts, daily zero-filled grid, model and provider breakdowns. Never exposes prompts. |
@@ -57,6 +102,21 @@ Windows it can also install an owned, per-user system tray. The resident tray ow
 home-scoped singleton, and HKCU Run registration; fixed proxy actions delegate to the CLI so drain,
 service conflict handling, native restore, and PID identity remain centralized. Tray presence never
 makes `startup.status` protected.
+
+Dashboard updates persist their detached worker PID before returning success. This lets a later run
+distinguish a live installer from a worker that crashed. Records created by older versions do not
+have a PID, so they remain exclusive for a conservative ten-minute window before automatic
+recovery; operators no longer need to delete `update-job.json` after a dead worker.
+
+```text
+[Decision Log]
+- 목적과 의도: Prevent a crashed dashboard update worker from permanently blocking every later update.
+- 기존 구현 및 제약 조건: The job file was written before spawn, the returned PID was not persisted, and active status had no liveness or freshness check.
+- 검토한 주요 대안: Require manual deletion; expire all jobs by age; or persist PID and use age only for legacy no-PID records.
+- 선택한 방식: Persist and verify PID liveness, with a ten-minute fallback only for legacy records.
+- 다른 대안 대신 이 방식을 선택한 이유: It recovers known-dead workers promptly without allowing a second installer beside a long-running live worker.
+- 장점, 단점 및 영향: New jobs self-recover after worker death and spawn failures become visible; legacy crashes may remain blocked for up to ten minutes.
+```
 
 ## UX boundary
 

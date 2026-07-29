@@ -13,6 +13,7 @@ import {
   cursorToolInputSchema,
   cursorToolWireName,
   isGenericToolUseCountDemoPrompt,
+  nonEmptyShellBridgeCommandFromArgs,
 } from "../src/adapters/cursor/tool-definitions";
 import type { OcxTool } from "../src/types";
 
@@ -141,6 +142,33 @@ describe("Cursor tool definitions", () => {
       cmd: "git status",
       workdir: "C:/repo",
     });
+  });
+
+  test("shell bridge command validation honors the schema-required command key", () => {
+    const execSchema = cursorToolArgNormalizeSchema({
+      name: "exec_command",
+      description: "Run a command",
+      parameters: {
+        type: "object",
+        properties: { cmd: { type: "string" } },
+        required: ["cmd"],
+      },
+    } as OcxTool);
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "echo hi" }), "exec_command", execSchema)).toBe("echo hi");
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ command: "echo hi" }), "exec_command", execSchema)).toBeUndefined();
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "", command: "echo hi" }), "exec_command", execSchema)).toBeUndefined();
+
+    const shellSchema = cursorToolArgNormalizeSchema({
+      name: "shell_command",
+      description: "Run a command",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      },
+    } as OcxTool);
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ command: "echo hi" }), "shell_command", shellSchema)).toBe("echo hi");
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "echo hi" }), "shell_command", shellSchema)).toBeUndefined();
   });
 
   test("does not alias namespaced exec_command tools", () => {
@@ -294,6 +322,23 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("`shell_command` and `exec_command` are aliases of the same bridge");
     expect(note).toContain("mcp_opencodex-responses_shell_command");
     expect(note).toContain("Never tell the user that shell or read access is blocked");
+  });
+
+  test("adds host-shell-neutral PowerShell and one-retry-stop guidance (#604)", () => {
+    const note = buildCursorToolGuidanceSystemNote([{ name: "shell_command", description: "Run", parameters: {} }]);
+    expect(note).toBeDefined();
+    if (!note) throw new Error("Expected Cursor tool guidance note");
+
+    expect(note).toContain("Windows PowerShell 5.1");
+    expect(note).toContain("cd /d");
+    expect(note).toContain("<<EOF");
+    expect(note).toContain("if ($?)");
+    expect(note).toContain("`&&`/`||` are unsupported parser errors");
+    expect(note).toContain("do not treat `;` as a substitute for `&&`");
+    expect(note).toContain("at most one corrected bridge attempt");
+    expect(note).toContain("Get-Content");
+    expect(note).toContain("`cat`/`ls`/`rg`");
+    expect(note).toContain("Codex client host");
   });
 
   test("adds codex-native edit guidance only when apply_patch is advertised", () => {

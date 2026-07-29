@@ -30,12 +30,18 @@ const helpEntries: Record<string, HelpEntry> = {
   uninstall: {
     usage: "ocx uninstall",
     summary: "Remove service/shim/config and restore native Codex.",
-    details: ["Alias: ocx remove"],
+    details: [
+      "Alias: ocx remove",
+      "Config cleanup requires ownership metadata created by a fresh install; legacy or shared directories are left in place.",
+    ],
   },
   remove: {
     usage: "ocx remove",
     summary: "Remove service/shim/config and restore native Codex.",
-    details: ["Alias of: ocx uninstall"],
+    details: [
+      "Alias of: ocx uninstall",
+      "Config cleanup requires ownership metadata created by a fresh install; legacy or shared directories are left in place.",
+    ],
   },
   service: {
     usage: "ocx service [install|start|stop|status|uninstall|remove]",
@@ -60,8 +66,22 @@ const helpEntries: Record<string, HelpEntry> = {
     ],
   },
   ensure: { usage: "ocx ensure", summary: "Ensure the proxy is running and Codex config/cache are current." },
-  sync: { usage: "ocx sync", summary: "Fetch provider models and inject them into Codex config." },
-  "sync-cache": { usage: "ocx sync-cache", summary: "Refresh Codex's model cache from the active catalog." },
+  sync: {
+    usage: "ocx sync [--restart-codex]",
+    summary: "Fetch provider models and inject them into Codex config.",
+    details: [
+      "After writing the catalog, warns if long-lived Codex app-server processes are still running.",
+      "--restart-codex sends SIGTERM only to matching app-server / code-mode-host processes (may interrupt active turns).",
+    ],
+  },
+  "sync-cache": {
+    usage: "ocx sync-cache [--restart-codex]",
+    summary: "Refresh Codex's model cache from the active catalog.",
+    details: [
+      "Warns when Codex app-server processes still hold an in-memory model list.",
+      "--restart-codex sends SIGTERM only to matching app-server / code-mode-host processes (may interrupt active turns).",
+    ],
+  },
   status: { usage: "ocx status", summary: "Check proxy server status." },
   doctor: { usage: "ocx doctor", summary: "Diagnose environment/network issues (paths, WSL /mnt, proxy env, ChatGPT reachability)." },
   debug: {
@@ -184,6 +204,20 @@ const helpEntries: Record<string, HelpEntry> = {
       "Claude Code settings: ocx claude config <status|set> ...",
     ],
   },
+  opencode: {
+    usage: "ocx opencode [opencode args...]",
+    summary: "Launch opencode wired to the proxy (runtime provider config).",
+    details: [
+      "Ensures the proxy is running, then execs `opencode` with the generated `provider.opencodex`",
+      "block injected through OpenCode's inline runtime layer (`OPENCODE_CONFIG_CONTENT`). Any",
+      "existing inline config in the environment is preserved and only `provider.opencodex` is",
+      "overwritten for this launch.",
+      "Global/project opencode.json may be read to warn about an existing provider.opencodex",
+      "override; on-disk files are never modified.",
+      "Routed models appear in the model picker as opencodex/<provider>/<model>.",
+      "Stop using `ocx opencode` and plain `opencode` behaves exactly as before.",
+    ],
+  },
   restart: {
     usage: "ocx restart",
     summary: "Stop the proxy and restart it (background). Equivalent to stop + ensure.",
@@ -232,8 +266,9 @@ Usage:
   ocx codex-shim <sub>        Auto-start proxy when \`codex\` launches (install|status|uninstall|remove)
   ocx tray <sub>              Windows status tray (install|start|stop|status|uninstall)
   ocx ensure                  Ensure the proxy is running and Codex config/cache are current
-  ocx sync                    Fetch models from providers and inject into Codex config
-  ocx sync-cache              Refresh Codex's model cache from the active catalog
+  ocx sync [--restart-codex]  Fetch models from providers and inject into Codex config
+  ocx sync-cache [--restart-codex]
+                              Refresh Codex's model cache from the active catalog
   ocx status                  Check proxy server status
   ocx doctor                  Diagnose environment/network issues (WSL, proxy, ChatGPT reachability)
   ocx debug <scope>           provider/usage/injection/claude on|off|status|reset
@@ -256,6 +291,7 @@ Usage:
   ocx config <sub>            Validated configuration show/get/set/import/export
   ocx claude [args...]        Launch Claude Code wired to the proxy (model discovery on)
   ocx claude desktop [sub]    Manage and apply Claude Desktop's four-family profile
+  ocx opencode [args...]      Launch opencode wired to the proxy (runtime provider config)
   ocx help [command]          Show help
   ocx --version | -v          Print version
 

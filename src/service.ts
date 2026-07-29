@@ -34,6 +34,7 @@ import {
 import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
+import { recordOwnedConfigPath } from "./lib/config-ownership";
 
 const LABEL = "com.opencodex.proxy";
 const TASK = "opencodex-proxy";
@@ -146,6 +147,7 @@ function writeServiceInstallState(backend: ServiceBackend = "scheduler"): void {
   };
   for (const path of serviceStatePaths()) {
     const dir = dirname(path);
+    recordOwnedConfigPath(getConfigDir(), path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(path, JSON.stringify(state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     try { chmodSync(path, 0o600); } catch { /* best-effort */ }
@@ -254,6 +256,7 @@ function writeServiceApiTokenFile(): string | null {
   if (!token) return null;
   const path = serviceApiTokenFilePath();
   const dir = getConfigDir();
+  recordOwnedConfigPath(dir, path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (process.platform === "win32") hardenSecretDir(dir, { required: true });
   writeFileSync(path, `${token}\n`, { encoding: "utf8", mode: 0o600 });
@@ -1112,6 +1115,7 @@ export function readWindowsSchedulerXmlState(
 function installLaunchd(): void {
   const dir = join(homedir(), "Library", "LaunchAgents");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  recordOwnedConfigPath(getConfigDir(), serviceStatePath());
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   writeServiceApiTokenFile();
   const p = plistPath();
@@ -1148,6 +1152,7 @@ function writeServiceAssetWithRetry(path: string, content: string, encoding: "ut
 }
 
 function installWindows(): void {
+  recordOwnedConfigPath(getConfigDir(), serviceStatePath());
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   writeServiceApiTokenFile();
   // Transactional backend switch: installing the scheduler backend removes a native
@@ -1183,6 +1188,7 @@ function installWindows(): void {
  * reported) — never a silent fallback to the scheduler.
  */
 async function installWindowsNative(): Promise<void> {
+  recordOwnedConfigPath(getConfigDir(), serviceStatePath());
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   writeServiceApiTokenFile();
   let hadScheduler = false;
@@ -1321,6 +1327,7 @@ function installSystemd(): void {
   ensureUserBusEnv(); // reach the user bus over a bare SSH session (F9)
   const dir = unitDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  recordOwnedConfigPath(getConfigDir(), serviceStatePath());
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   writeServiceApiTokenFile();
   writeFileSync(unitPath(), buildUnit(), "utf8");

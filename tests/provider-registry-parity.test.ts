@@ -374,6 +374,13 @@ describe("provider registry parity", () => {
         expect(entry?.[field]).toContain("kimi-for-coding");
       }
       expect(entry?.modelSuffixBracketStrip).toBe(true);
+      expect(entry?.promptCacheKey).toBe(true);
+      // Key-pool 429 rotation rebuilds the provider from the persisted config (not the routed
+      // one), so the flag must survive seeding/enrichment, not just the router's registry backfill.
+      expect(providerConfigSeed(entry!).promptCacheKey).toBe(true);
+      const enriched: OcxProviderConfig = { adapter: "openai-chat", baseUrl: entry!.baseUrl };
+      enrichProviderFromCatalog(providerId, enriched);
+      expect(enriched.promptCacheKey).toBe(true);
       expect(entry?.noReasoningModels).not.toContain("k3");
       expect(entry?.noReasoningModels).not.toContain("k3[1m]");
       expect(entry?.modelReasoningEfforts?.k3).toEqual(["low", "high", "max"]);
@@ -608,7 +615,8 @@ describe("provider registry parity", () => {
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("claude-sonnet-4-6");
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("claude-opus-4-6-thinking");
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gpt-oss-120b-medium");
-    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toHaveLength(5);
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gemini-3.1-flash-image");
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toHaveLength(6);
     // Effort ladders on collapsed base models.
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelReasoningEfforts?.["gemini-3.6-flash"]).toEqual(["low", "medium", "high"]);
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelReasoningEfforts?.["gemini-3.1-pro"]).toEqual(["low", "high"]);

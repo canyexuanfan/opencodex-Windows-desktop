@@ -1,6 +1,7 @@
 import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
+import { recordOwnedConfigPath } from "../lib/config-ownership";
 import { usageDisplayTotalTokens } from "./totals";
 import type { OcxUsage } from "../types";
 
@@ -11,6 +12,7 @@ export type AttemptRecoveryKind =
   | "connection-reset"
   | "oauth-401"
   | "key-429"
+  | "anthropic-oauth-429"
   | "image-413";
 
 export interface PersistedUsageAttempt {
@@ -140,6 +142,7 @@ const ATTEMPT_RECOVERY_KINDS = new Set<AttemptRecoveryKind>([
   "connection-reset",
   "oauth-401",
   "key-429",
+  "anthropic-oauth-429",
   "image-413",
 ]);
 const USAGE_STATUSES = new Set<UsageStatus>([
@@ -315,6 +318,7 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
 
 function ensureUsageLogDir(): void {
   const dir = getConfigDir();
+  recordOwnedConfigPath(dir, usageLogPath());
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   try { chmodSync(dir, 0o700); } catch { /* best-effort on platforms that ignore chmod */ }
 }

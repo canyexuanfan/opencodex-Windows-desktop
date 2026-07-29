@@ -185,15 +185,22 @@ function warnIfBaseUrlDiscarded(providerName: string, userBaseUrl: string, effec
   );
 }
 
+function usableResolvedApiKey(apiKey: string | undefined): string | undefined {
+  const resolved = resolveEnvValue(apiKey);
+  return typeof resolved === "string" && resolved.trim().length > 0 ? resolved : undefined;
+}
+
 function routedProviderConfig(providerName: string, provider: OcxProviderConfig): OcxProviderConfig {
   const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === providerName);
   if (!registryEntry) {
     assertProviderDestinationAllowed(providerName, provider);
-    return { ...provider, apiKey: resolveEnvValue(provider.apiKey) };
+    return { ...provider, apiKey: usableResolvedApiKey(provider.apiKey) };
   }
+  const resolvedApiKey = usableResolvedApiKey(provider.apiKey);
   const explicitKeyOverride = registryEntry.authKind === "oauth"
     && registryEntry.allowKeyAuthOverride === true
-    && provider.authMode === "key";
+    && provider.authMode === "key"
+    && resolvedApiKey !== undefined;
   const canonicalAuthMode = explicitKeyOverride
     ? "key"
     : registryEntry.authKind === "forward" || registryEntry.authKind === "oauth"
@@ -239,7 +246,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     adapter: registryEntry.adapter,
     baseUrl,
     authMode: canonicalAuthMode,
-    apiKey: resolveEnvValue(provider.apiKey),
+    apiKey: resolvedApiKey,
     // Backfill the Google wire mode + Vertex project/location from the registry when the user
     // config omits them, so a minimal `google-vertex`/`google-antigravity` entry still routes
     // through the correct branch (CCA/Vertex) instead of falling back to AI Studio.
@@ -286,7 +293,10 @@ function activeProviderEntries(config: OcxConfig): [string, OcxProviderConfig][]
 
 export class NoEnabledOpenAiProviderError extends Error {
   constructor(modelId: string) {
-    super(`No enabled OpenAI provider for model: ${modelId}. Run 'ocx init' to configure a provider, or check that your config has an enabled 'openai' provider.`);
+    super(
+      `Model ${modelId} requires the canonical openai provider. `
+      + `Run: ocx provider add openai && ocx sync && ocx restart`,
+    );
     this.name = "NoEnabledOpenAiProviderError";
   }
 }

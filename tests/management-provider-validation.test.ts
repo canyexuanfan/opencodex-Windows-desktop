@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import { managementFetch as fetch, ManagementRequest as Request } from "./helpers/management-auth";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
@@ -515,6 +516,44 @@ describe("provider management validation", () => {
     } finally {
       await server.stop(true);
     }
+  });
+
+  test("provider management rejects names owned by a Codex account namespace without mutating config", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const cfg = {
+      ...config("127.0.0.1"),
+      codexAccountNamespaces: { side: "side-account-id" },
+    };
+    saveConfig(cfg);
+    const beforeMemory = structuredClone(cfg);
+    const beforeDisk = readFileSync(join(TEST_DIR, "config.json"), "utf8");
+
+    const requestUrl = new URL("http://127.0.0.1/api/providers");
+    const response = await handleManagementAPI(
+      new Request(requestUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "side",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://side.example.test/v1",
+          },
+        }),
+      }),
+      requestUrl,
+      cfg,
+      { refreshCodexCatalog: async () => {} },
+    );
+
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toEqual({
+      error: "provider name must not collide with a configured Codex account namespace",
+    });
+    expect(cfg).toEqual(beforeMemory);
+    expect(readFileSync(join(TEST_DIR, "config.json"), "utf8")).toBe(beforeDisk);
   });
 
   test("provider management rejects base URLs with embedded credentials", async () => {
@@ -1593,6 +1632,7 @@ describe("provider management validation", () => {
       providers: {
         openai: { ...canonicalDirect },
         extra: { adapter: "openai-chat", baseUrl: "https://extra.example.test/v1", apiKey: "sk-existing", note: "old note" },
+        gateway: { adapter: "anthropic", baseUrl: "https://gateway.example.test/v1", apiKey: "sk-gateway" },
         nvidia: { adapter: "openai-chat", baseUrl: "https://integrate.api.nvidia.com/v1", apiKey: "sk-nvidia" },
         ollama: { adapter: "openai-chat", baseUrl: "http://localhost:11434/v1" },
       },
@@ -1633,6 +1673,17 @@ describe("provider management validation", () => {
     expect(keyWrite?.status).toBe(400);
     expect(await keyWrite?.json()).toMatchObject({ error: expect.stringContaining("API-key endpoints") });
     expect(liveConfig.providers.extra.apiKey).toBe("sk-existing");
+
+    // Key-auth Anthropic gateways can select bearer; other adapters and auth modes cannot.
+    const bearer = await patch("gateway", { apiKeyTransport: "bearer" });
+    expect(bearer?.status).toBe(200);
+    expect(liveConfig.providers.gateway.apiKeyTransport).toBe("bearer");
+    expect((await patch("gateway", { apiKeyTransport: "invalid" }))?.status).toBe(400);
+    expect((await patch("extra", { apiKeyTransport: "bearer" }))?.status).toBe(400);
+    expect((await patch("gateway", { authMode: "oauth" }))?.status).toBe(400);
+    const clearTransport = await patch("gateway", { apiKeyTransport: "" });
+    expect(clearTransport?.status).toBe(200);
+    expect(liveConfig.providers.gateway.apiKeyTransport).toBeUndefined();
 
     // authMode local is guarded by the registry: nvidia (key) → 400; ollama (local) → ok.
     const nvidiaLocal = await patch("nvidia", { authMode: "local" });

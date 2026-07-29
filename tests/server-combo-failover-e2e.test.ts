@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
+import { managementFetch as fetch, ManagementRequest as Request } from "./helpers/management-auth";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,11 @@ import { clearRequestLogsForTests, hydrateRequestLogsFromDisk, type RequestLogCo
 import { responseWithDeferredRequestLog } from "../src/server/relay";
 import { readUsageEntries } from "../src/usage/log";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
-import { formatCodexProviderForLog } from "../src/codex/routing";
+import {
+  clearCodexUpstreamHealth,
+  formatCodexProviderForLog,
+  getCodexUpstreamHealth,
+} from "../src/codex/routing";
 import { startServer } from "../src/server";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 
@@ -118,6 +123,7 @@ beforeEach(() => {
   process.env.OPENCODEX_HOME = testDir;
   clearComboSelectionState();
   clearComboTargetCooldowns();
+  clearCodexUpstreamHealth();
   customRunTurn = undefined;
   customFetchResponse = undefined;
   customTransientResponse = undefined;
@@ -139,6 +145,7 @@ afterEach(async () => {
   if (testDir) rmSync(testDir, { recursive: true, force: true });
   clearComboSelectionState();
   clearComboTargetCooldowns();
+  clearCodexUpstreamHealth();
   clearRequestLogsForTests();
 });
 
@@ -743,6 +750,152 @@ describe("server combo failover 030 activation matrix", () => {
       expect(JSON.stringify(receipt)).not.toContain(rawAccountId);
       expect(JSON.stringify(receipt)).not.toContain("acct-pool-safe");
     }
+  });
+
+  test("lets a same-provider combo try its next model after a reset-derived 429", async () => {
+    const rawAccountId = "combo-reset-account";
+    const config = comboConfig({
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "pool",
+      },
+    }, [
+      { provider: "openai", model: "gpt-5.3-codex-spark" },
+      { provider: "openai", model: "gpt-5.4" },
+    ]);
+    config.codexAccounts = [{
+      id: rawAccountId,
+      email: "combo-reset@example.test",
+      isMain: false,
+      logLabel: "preset01",
+    }];
+    config.activeCodexAccountId = rawAccountId;
+    config.autoSwitchThreshold = 0;
+    saveCodexAccountCredential(rawAccountId, {
+      accessToken: "combo-reset-access",
+      refreshToken: "combo-reset-refresh",
+      expiresAt: Date.now() + 300_000,
+      chatgptAccountId: "acct-combo-reset",
+    });
+    let calls = 0;
+    customTransientResponse = async () => {
+      calls += 1;
+      return calls === 1
+        ? Response.json(
+          { error: { message: "spark quota window exhausted", type: "rate_limit_error" } },
+          {
+            status: 429,
+            headers: { "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600) },
+          },
+        )
+        : Response.json(responsesSuccess("model fallback succeeded", "gpt-5.4"));
+    };
+
+    const response = await postLogged(config);
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(calls).toBe(2);
+    expect(getCodexUpstreamHealth(rawAccountId)?.cooldownUntil).toBeUndefined();
+  });
+
+  test("keeps explicit Retry-After account-wide during same-provider combo failover", async () => {
+    const rawAccountId = "combo-retry-after-account";
+    const config = comboConfig({
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "pool",
+      },
+    }, [
+      { provider: "openai", model: "gpt-5.3-codex-spark" },
+      { provider: "openai", model: "gpt-5.4" },
+    ]);
+    config.codexAccounts = [{
+      id: rawAccountId,
+      email: "combo-retry-after@example.test",
+      isMain: false,
+      logLabel: "pretry01",
+    }];
+    config.activeCodexAccountId = rawAccountId;
+    config.autoSwitchThreshold = 0;
+    saveCodexAccountCredential(rawAccountId, {
+      accessToken: "combo-retry-after-access",
+      refreshToken: "combo-retry-after-refresh",
+      expiresAt: Date.now() + 300_000,
+      chatgptAccountId: "acct-combo-retry-after",
+    });
+    let calls = 0;
+    customTransientResponse = async () => {
+      calls += 1;
+      return calls === 1
+        ? Response.json(
+          { error: { message: "retry later", type: "rate_limit_error" } },
+          {
+            status: 429,
+            headers: {
+              "retry-after": "120",
+              "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600),
+            },
+          },
+        )
+        : Response.json(responsesSuccess("must not reach second upstream", "gpt-5.4"));
+    };
+
+    const response = await postLogged(config);
+    expect(response.status).toBe(429);
+    await response.text();
+    expect(calls).toBe(1);
+    expect(getCodexUpstreamHealth(rawAccountId)?.cooldownSource).toBe("retry-after");
+  });
+
+  test("Spark reset cooldown fails over to the shared native quota on the same account (#590)", async () => {
+    const rawAccountId = "spark-scope-account";
+    const config = comboConfig({
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "pool",
+      },
+    }, [
+      { provider: "openai", model: "gpt-5.3-codex-spark" },
+      { provider: "openai", model: "gpt-5.6-terra" },
+    ]);
+    config.codexAccounts = [{
+      id: rawAccountId,
+      email: "pool@example.test",
+      isMain: false,
+      logLabel: "pspark1",
+    }];
+    config.activeCodexAccountId = rawAccountId;
+    config.autoSwitchThreshold = 0;
+    saveCodexAccountCredential(rawAccountId, {
+      accessToken: "pool-access-token",
+      refreshToken: "pool-refresh-token",
+      expiresAt: Date.now() + 300_000,
+      chatgptAccountId: "acct-pool-spark",
+    });
+
+    const resetAt = Math.floor((Date.now() + 4 * 24 * 60 * 60_000) / 1000);
+    let upstreamCalls = 0;
+    customTransientResponse = async () => {
+      upstreamCalls += 1;
+      if (upstreamCalls === 1) {
+        return Response.json({ error: { message: "Spark quota exhausted" } }, {
+          status: 429,
+          headers: { "x-codex-primary-reset-at": String(resetAt) },
+        });
+      }
+      return Response.json(responsesSuccess("Terra fallback", "gpt-5.6-terra"));
+    };
+
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    expect(upstreamCalls).toBe(2);
+    expect(await response.json()).toMatchObject({ model: "gpt-5.6-terra" });
   });
 
   test("keeps a failed estimate on A without overwriting B reported usage", async () => {

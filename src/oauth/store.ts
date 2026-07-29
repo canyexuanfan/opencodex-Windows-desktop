@@ -10,7 +10,7 @@
  * Exceptions:
  * - `chatgpt` stays single-slot (always replaced): codex-auth-api uses it as a scratch slot
  *   for Codex pool logins, which have their own ledger (codex-accounts.json).
- * - Credentials without identity (no accountId/email — e.g. kiro) replace the active slot
+ * - Credentials without identity (no accountId/email) replace the active slot
  *   instead of appending: their refresh tokens rotate, so a derived id would duplicate the
  *   same human on every re-login. Kimi extracts JWT `user_id`/`sub` as accountId; Cursor
  *   extracts JWT `sub` — both append distinct accounts under multiauth.
@@ -19,6 +19,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir, atomicWriteFile, backupInvalidConfig, hardenConfigDir, hardenExistingSecret } from "../config";
+import { recordOwnedConfigPath } from "../lib/config-ownership";
 import { validateCopilotApiBaseUrl } from "./github-copilot";
 import type { OAuthCredentialSource, OAuthCredentials, ProviderAccount, ProviderAccountSet } from "./types";
 
@@ -150,7 +151,7 @@ function sameFd(a: LockSnapshot,b: ReturnType<typeof fstatSync>): boolean { retu
 export function createOAuthFileLock(options: OAuthFileLockOptions): { acquire(): Promise<OAuthFileLockGuard> } {
  const wait=options.waitTimeoutMs??5000, stale=options.staleAfterMs??120000, min=options.pollMinMs??25,max=options.pollMaxMs??100,sleep=options.sleep??(ms=>Bun.sleep(ms)),now=options.now??Date.now,random=options.random??Math.random,write=options.writeMetadata??((fd,b)=>writeFileSync(fd,b,"utf8"));
  if(wait<0||stale<=0||min<0||max<min) throw new OAuthFileLockError("Invalid OAuth file-lock timing options");
- return { async acquire() { hardenConfigDir(); if(!existsSync(getConfigDir())) mkdirSync(getConfigDir(),{recursive:true,mode:0o700}); const ownerId=randomUUID(),started=now(); for(;;){ let fd:number|undefined; try { fd=openSync(options.path,"wx",0o600); const bytes=`${JSON.stringify({version:1,ownerId,pid:process.pid,createdAt:now()})}\n`; write(fd,bytes); const fs=fstatSync(fd); closeSync(fd); fd=undefined; const owned=snapshot(options.path); if(owned.bytes!==bytes||!sameFd(owned,fs)) throw new OAuthFileLockError("OAuth lock changed during creation"); let released=false; return {ownerId,release(){if(released)return;released=true;try{const a=snapshot(options.path);if(!sameSnapshot(owned,a))return;options.beforeReleaseUnlink?.();const b=snapshot(options.path);if(sameSnapshot(owned,b))unlinkSync(options.path);}catch(e){if(errorCode(e)!=="ENOENT")console.warn(`[oauth] lock release failed: ${e instanceof Error?e.message:String(e)}`);}}}; } catch(e) { if(fd!==undefined){let fs;try{fs=fstatSync(fd);}catch{}try{closeSync(fd);}catch{}if(fs)try{const a=snapshot(options.path);if(sameFd(a,fs)){options.beforeFailedCreateUnlink?.();const b=snapshot(options.path);if(sameSnapshot(a,b)&&sameFd(b,fs))unlinkSync(options.path);}}catch{}} if(errorCode(e)!=="EEXIST")throw e instanceof OAuthFileLockError?e:new OAuthFileLockError("Could not create OAuth file lock",{cause:e}); }
+ return { async acquire() { hardenConfigDir(); recordOwnedConfigPath(getConfigDir(),options.path); if(!existsSync(getConfigDir())) mkdirSync(getConfigDir(),{recursive:true,mode:0o700}); const ownerId=randomUUID(),started=now(); for(;;){ let fd:number|undefined; try { fd=openSync(options.path,"wx",0o600); const bytes=`${JSON.stringify({version:1,ownerId,pid:process.pid,createdAt:now()})}\n`; write(fd,bytes); const fs=fstatSync(fd); closeSync(fd); fd=undefined; const owned=snapshot(options.path); if(owned.bytes!==bytes||!sameFd(owned,fs)) throw new OAuthFileLockError("OAuth lock changed during creation"); let released=false; return {ownerId,release(){if(released)return;released=true;try{const a=snapshot(options.path);if(!sameSnapshot(owned,a))return;options.beforeReleaseUnlink?.();const b=snapshot(options.path);if(sameSnapshot(owned,b))unlinkSync(options.path);}catch(e){if(errorCode(e)!=="ENOENT")console.warn(`[oauth] lock release failed: ${e instanceof Error?e.message:String(e)}`);}}}; } catch(e) { if(fd!==undefined){let fs;try{fs=fstatSync(fd);}catch{}try{closeSync(fd);}catch{}if(fs)try{const a=snapshot(options.path);if(sameFd(a,fs)){options.beforeFailedCreateUnlink?.();const b=snapshot(options.path);if(sameSnapshot(a,b)&&sameFd(b,fs))unlinkSync(options.path);}}catch{}} if(errorCode(e)!=="EEXIST")throw e instanceof OAuthFileLockError?e:new OAuthFileLockError("Could not create OAuth file lock",{cause:e}); }
  try{const a=snapshot(options.path);let created=a.mtimeMs;try{const p=JSON.parse(a.bytes);if(typeof p.createdAt==="number")created=Math.max(created,p.createdAt);}catch{}if(now()-created>stale){options.beforeStaleUnlink?.();const b=snapshot(options.path);if(sameSnapshot(a,b))unlinkSync(options.path);continue;}}catch(e){if(errorCode(e)==="ENOENT")continue;throw new OAuthFileLockError("Could not inspect OAuth file lock",{cause:e});} const elapsed=now()-started;if(elapsed>=wait)throw new OAuthFileLockError(`Timed out after ${wait}ms waiting for OAuth file lock`);await sleep(Math.min(wait-elapsed,min+Math.floor(random()*(max-min+1)))); } } };
 }
 /** Wait long enough for slow IdP refreshes (e.g. Cursor 15s × 3 attempts) before timing out. */
@@ -205,6 +206,28 @@ function normalizeCredential(cred: unknown): OAuthCredentials | null {
     // become an SSRF springboard across reloads.
     const validated = validateCopilotApiBaseUrl(candidate.apiBaseUrl);
     if (validated) normalized.apiBaseUrl = validated;
+  }
+  if (candidate.kiro && typeof candidate.kiro === "object") {
+    const kiro = candidate.kiro;
+    const clean = (value: unknown, max: number): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const trimmed = value.trim();
+      return trimmed && trimmed.length <= max && !/[\x00-\x1f\x7f]/.test(trimmed) ? trimmed : undefined;
+    };
+    const profileArn = clean(kiro.profileArn, 1024);
+    const ssoRegion = clean(kiro.ssoRegion, 64);
+    const apiRegion = clean(kiro.apiRegion, 64);
+    const clientId = clean(kiro.clientId, 4096);
+    const clientSecret = clean(kiro.clientSecret, 4096);
+    if (profileArn || ssoRegion || apiRegion || clientId || clientSecret) {
+      normalized.kiro = {
+        ...(profileArn ? { profileArn } : {}),
+        ...(ssoRegion ? { ssoRegion } : {}),
+        ...(apiRegion ? { apiRegion } : {}),
+        ...(clientId ? { clientId } : {}),
+        ...(clientSecret ? { clientSecret } : {}),
+      };
+    }
   }
   return normalized;
 }
@@ -293,7 +316,11 @@ export function getCredential(provider: string): OAuthCredentials | null {
  * (rotating refresh tokens would fabricate duplicates) and single-slot providers replace the
  * active slot / whole set instead.
  */
-export async function saveCredential(provider: string, cred: OAuthCredentials): Promise<void> {
+export async function saveCredential(
+  provider: string,
+  cred: OAuthCredentials,
+  opts: { preserveIdentityless?: boolean } = {},
+): Promise<void> {
   const safe = normalizeCredential(cred);
   if (!safe) return;
   await mutateStore(store => {
@@ -317,7 +344,7 @@ export async function saveCredential(provider: string, cred: OAuthCredentials): 
       // active identity-less row in place prevents a stale duplicate that stays selectable
       // and would re-refresh into a second row with the same identity.
       const active = set.accounts.find(a => a.id === set.activeAccountId);
-      if (active && active.credential.accountId === undefined && active.credential.email === undefined) {
+      if (!opts.preserveIdentityless && active && active.credential.accountId === undefined && active.credential.email === undefined) {
         active.credential = safe;
         delete active.needsReauth;
         return;
@@ -415,6 +442,29 @@ export async function removeAccount(provider: string, accountId: string): Promis
     }
     if (set.activeAccountId === accountId) set.activeAccountId = set.accounts[0]!.id;
     return true;
+  });
+}
+
+/** Replace or clear a provider account set (used for transactional Kiro add-account rollback). */
+export async function replaceProviderAccountSet(
+  provider: string,
+  set: ProviderAccountSet | null,
+): Promise<void> {
+  await mutateStore(store => {
+    if (!set || set.accounts.length === 0) {
+      delete store[provider];
+      return;
+    }
+    store[provider] = {
+      activeAccountId: set.activeAccountId,
+      accounts: set.accounts.map(account => ({
+        id: account.id,
+        credential: { ...account.credential, ...(account.credential.kiro ? { kiro: { ...account.credential.kiro } } : {}) },
+        ...(account.alias ? { alias: account.alias } : {}),
+        ...(account.needsReauth ? { needsReauth: true } : {}),
+        ...(account.addedAt !== undefined ? { addedAt: account.addedAt } : {}),
+      })),
+    };
   });
 }
 

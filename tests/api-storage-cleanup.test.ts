@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { managementFetch as fetch } from "./helpers/management-auth";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -247,6 +248,149 @@ describe("POST /api/storage/cleanup", () => {
       await server.stop(true);
       if (previous === undefined) delete process.env.OPENCODEX_CLEANUP_TEST_HOOKS;
       else process.env.OPENCODEX_CLEANUP_TEST_HOOKS = previous;
+    }
+  });
+});
+
+describe("GET /api/storage/trash + POST restore", () => {
+  test("lists relative trash entries and restores without host paths", async () => {
+    seedArchived(isolatedCodexHome!.path);
+    const server = startServer(0);
+    try {
+      const previewRes = await fetch(new URL("/api/storage/cleanup/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50 }),
+      });
+      const preview = await previewRes.json();
+      const cleanupRes = await fetch(new URL("/api/storage/cleanup", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50, mode: "quarantine", digest: preview.digest }),
+      });
+      expect(cleanupRes.status).toBe(200);
+      const cleanup = await cleanupRes.json();
+      expect(cleanup.trashDir).toMatch(/^\.trash\//);
+
+      const listRes = await fetch(new URL("/api/storage/trash", server.url));
+      expect(listRes.status).toBe(200);
+      const listed = await listRes.json();
+      expect(listed.entries).toHaveLength(1);
+      expect(listed.entries[0].id).toBe(cleanup.trashDir);
+      expect(listed.entries[0].fileCount).toBe(1);
+      expect(JSON.stringify(listed)).not.toContain(isolatedCodexHome!.path.replaceAll("\\", "\\\\"));
+
+      const restoreRes = await fetch(new URL("/api/storage/trash/restore", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: cleanup.trashDir }),
+      });
+      expect(restoreRes.status).toBe(200);
+      const restored = await restoreRes.json();
+      expect(restored.ok).toBe(true);
+      expect(restored.count).toBe(1);
+      expect(restored.restoredPaths).toEqual(["archived_sessions/rollout-old.jsonl"]);
+      expect(JSON.stringify(restored)).not.toContain(isolatedCodexHome!.path.replaceAll("\\", "\\\\"));
+      expect(existsSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+
+      const listAfter = await (await fetch(new URL("/api/storage/trash", server.url))).json();
+      expect(listAfter.entries).toEqual([]);
+    } finally {
+      await server.stop(true);
+    }
+  }, { timeout: 20_000 });
+
+  test("restore returns 409 when Codex DB is busy", async () => {
+    seedArchived(isolatedCodexHome!.path);
+    const server = startServer(0);
+    try {
+      const previewRes = await fetch(new URL("/api/storage/cleanup/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50 }),
+      });
+      const preview = await previewRes.json();
+      const cleanupRes = await fetch(new URL("/api/storage/cleanup", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50, mode: "quarantine", digest: preview.digest }),
+      });
+      const cleanup = await cleanupRes.json();
+
+      const locker = new Database(join(isolatedCodexHome!.path, "state_5.sqlite"));
+      locker.exec("BEGIN EXCLUSIVE");
+      try {
+        const restoreRes = await fetch(new URL("/api/storage/trash/restore", server.url), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: cleanup.trashDir }),
+        });
+        expect(restoreRes.status).toBe(409);
+        const body = await restoreRes.json();
+        expect(body.ok).toBe(false);
+        expect(body.error).toBe("codex_busy");
+      } finally {
+        locker.exec("ROLLBACK");
+        locker.close();
+      }
+    } finally {
+      await server.stop(true);
+    }
+  }, { timeout: 20_000 });
+
+  test("rejects invalid and missing trash ids", async () => {
+    const server = startServer(0);
+    try {
+      const invalid = await fetch(new URL("/api/storage/trash/restore", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: "../etc/passwd" }),
+      });
+      expect(invalid.status).toBe(400);
+      expect((await invalid.json()).error).toBe("invalid_trash");
+
+      const missing = await fetch(new URL("/api/storage/trash/restore", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: ".trash/999999999" }),
+      });
+      expect(missing.status).toBe(404);
+      expect((await missing.json()).error).toBe("missing_trash");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("restore returns 409 when destination archived file already exists", async () => {
+    seedArchived(isolatedCodexHome!.path);
+    const server = startServer(0);
+    try {
+      const previewRes = await fetch(new URL("/api/storage/cleanup/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50 }),
+      });
+      const preview = await previewRes.json();
+      const cleanupRes = await fetch(new URL("/api/storage/cleanup", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ percent: 50, mode: "quarantine", digest: preview.digest }),
+      });
+      const cleanup = await cleanupRes.json();
+      expect(cleanup.ok).toBe(true);
+
+      writeFileSync(join(isolatedCodexHome!.path, "archived_sessions", "rollout-old.jsonl"), "COLLISION");
+      const restoreRes = await fetch(new URL("/api/storage/trash/restore", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: cleanup.trashDir }),
+      });
+      expect(restoreRes.status).toBe(409);
+      const body = await restoreRes.json();
+      expect(body.ok).toBe(false);
+      expect(body.error).toBe("dest_exists");
+    } finally {
+      await server.stop(true);
     }
   });
 });

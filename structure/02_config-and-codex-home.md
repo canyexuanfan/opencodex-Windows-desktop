@@ -71,6 +71,13 @@ requires_openai_auth = true
 Root TOML keys must be written before the first `[table]`. Re-injection strips stale opencodex
 blocks, stale root context-window overrides, and stale opencodex catalog paths before rewriting.
 
+Native Codex sub-agent defaults are a separate, explicit opt-in. When
+`syncCodexSubagentDefaults` is true and `injectionModel` is set, injection writes marker-owned
+`agents.default_subagent_model` and, when configured,
+`agents.default_subagent_reasoning_effort`. Unmarked values are user-owned and must never be
+overwritten. Disabling the option and fallback restore remove only marker-owned values; journal
+restore must preserve later user edits while stripping those managed values.
+
 If the root config selects a provider other than `openai` or `opencodex`, injection must leave the
 config byte-for-byte unchanged and skip profile creation/updates and history migration. External
 provider managers own that routing configuration, and replacing their provider id can hide
@@ -100,3 +107,14 @@ and `routeModel`, but user config overrides registry defaults per field/key.
 
 `ocx stop`, `ocx restore` / `ocx eject`, `ocx service stop`, and `ocx service uninstall` must strip
 opencodex config and routed catalog entries without damaging native Codex state.
+
+Full `ocx uninstall` config cleanup is ownership-manifest based. A fresh config directory receives a
+root-bound owner marker and an uninstall manifest before its first atomic config write. Uninstall
+validates both bounded metadata files, rejects path traversal and a symlink/junction config root,
+and removes only normalized manifest entries. Manifest-owned directory links are unlinked without
+traversing their targets. Unknown files remain in place and make the command report a partial
+uninstall with their exact paths.
+
+Legacy nonempty config directories are deliberately not retroactively claimed. If either ownership
+file is missing, malformed, or bound to another root, uninstall refuses config deletion and reports
+the residual directory for manual review; there is no recursive-delete fallback.

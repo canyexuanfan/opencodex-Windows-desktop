@@ -20,10 +20,14 @@ import {
 import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
 import { startMemoryWatchdog } from "./memory-watchdog";
+import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
+import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
+import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler } from "../storage/policy-scheduler";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { providerCodexAccountMode } from "../providers/registry";
+import type { StorageCleanupPolicy } from "../types";
 import {
   CodexAccountCooldownError,
   cooldownErrorMessage,
@@ -52,6 +56,8 @@ export {
   drainAndShutdown,
   getActiveTurnCount,
   isDraining,
+  isRecyclingForExit,
+  markRecyclingForExit,
   registerTurn,
   trackStreamLifetime,
   unregisterTurn,
@@ -98,8 +104,10 @@ export {
 import {
   assertServerAuthConfig,
   corsHeaders,
+  managementCorsHeaders,
   hasValidApiAuth,
   isAllowedRequestOrigin,
+  isAllowedManagementOrigin,
   isApiAuthRequired,
   isLoopbackHostname,
   jsonResponse,
@@ -108,6 +116,7 @@ import {
   safeConfigDTO,
   setCorsOrigin,
   withCors,
+  withManagementCors,
 } from "./auth-cors";
 export {
   assertServerAuthConfig,
@@ -129,6 +138,7 @@ import { handleImages } from "./images";
 import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
 import { handleSearch } from "./search";
 import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
+import { initializeManagementAuthState, issueGuiSession, requireManagementAuth } from "./management-auth";
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -220,14 +230,16 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
 // Source invariant for tests/passthrough-abort.test.ts after the pure module split:
 // if (isEventStream && upstreamResponse.body) {
 // const repairConfig = route.provider.responsesItemIdRepair;
-// #314 gated shape (win32-no-repair only; default OFF on the bundled known-bad runtime):
+// const needsClientRewrite = imageGenCallAliases.size > 0
+// #314 gated shape (win32-no-client-rewrite only; default OFF on the bundled known-bad runtime):
 // decideEagerRelay(config.streamMode ?? "auto")
 // relaySseEagerBounded(upstreamResponse.body, turnAc,
+// new Response(eagerBody,
 // Default shape (tee + background inspection):
 // upstreamResponse.body.tee()
 // const repairedBody = hasResponsesItemIdRepair(repairConfig)
 // process.platform === "win32"
-// && !hasResponsesItemIdRepair(repairConfig)
+// && !needsClientRewrite
 // ? nativeBody
 // relaySseWithFailedTail(repairedBody, upstream)
 // new Response(clientBody
@@ -242,6 +254,7 @@ export function startServer(port?: number) {
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   applyProxyEnv(config);
   assertServerAuthConfig(config);
+  const managementAuth = initializeManagementAuthState(config);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
@@ -288,6 +301,16 @@ export function startServer(port?: number) {
   // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
   // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
   startMemoryWatchdog();
+  // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
+  // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
+  // Heavy work runs in a Worker via the single-flight job controller.
+  // Keep live config.policy in sync when background runs advance nextRun/lastRun.
+  const applyPolicy = (policy: StorageCleanupPolicy) => {
+    config.storageCleanupPolicy = policy;
+  };
+  setStorageCleanupPolicyLiveSink(applyPolicy);
+  setStorageCleanupPolicyJobLiveApply(applyPolicy);
+  startStorageCleanupScheduler();
 
   const listenPort = port ?? config.port ?? 10100;
   setCorsOrigin(listenPort);
@@ -296,7 +319,8 @@ export function startServer(port?: number) {
   // resolves localhost→127.0.0.1): on Windows `localhost` resolves ::1-first, but the injected URL
   // is 127.0.0.1, so binding literal "localhost" would reintroduce the F4 refusal. Wildcards
   // (0.0.0.0/::) and specific hosts are left untouched so intentional exposure is preserved.
-  const bindHost = /^localhost$/i.test(config.hostname ?? "") ? "127.0.0.1" : (config.hostname ?? "127.0.0.1");
+  const configuredHost = config.hostname?.trim();
+  const bindHost = !configuredHost || /^localhost$/i.test(configuredHost) ? "127.0.0.1" : configuredHost;
 
   // Codex treats empty / non-JSON 503 bodies as "Unknown error" (#452). Keep Retry-After and
   // the server_is_overloaded code so clients can back off, but always return a JSON envelope.
@@ -319,10 +343,17 @@ export function startServer(port?: number) {
       markActivity(`${req.method} ${url.pathname}`);
 
       if (req.method === "OPTIONS") {
-        if (!isAllowedRequestOrigin(req, config)) {
+        const managementPreflight = url.pathname.startsWith("/api/");
+        const allowed = managementPreflight
+          ? isAllowedManagementOrigin(req, config)
+          : isAllowedRequestOrigin(req, config);
+        if (!allowed) {
           return new Response(null, { status: 403, headers: corsHeaders() });
         }
-        return new Response(null, { status: 204, headers: corsHeaders(req, config) });
+        return new Response(null, {
+          status: 204,
+          headers: managementPreflight ? managementCorsHeaders(req, config) : corsHeaders(req, config),
+        });
       }
 
       // Responses WebSocket (phase 120.2). Codex upgrades the same /v1/responses path; auth is
@@ -358,10 +389,11 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const apiAuthError = requireApiAuth(req, config, "management");
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const apiAuthError = requireManagementAuth(req, managementAuth, config);
+        if (apiAuthError) return withManagementCors(apiAuthError, req, config);
         const mgmtResponse = await handleManagementAPI(req, url, config);
-        if (mgmtResponse) return withCors(mgmtResponse, req, config);
+        if (mgmtResponse) return withManagementCors(mgmtResponse, req, config);
+        return withManagementCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
       }
 
       if (url.pathname === "/v1/models" && req.method === "GET") {
@@ -482,6 +514,36 @@ export function startServer(port?: number) {
         const response = await handleImages(req, config, endpoint, logCtx);
         addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
         return withCors(response, req, config);
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/v1/opencodex/artifacts/")) {
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const id = decodeURIComponent(url.pathname.slice("/v1/opencodex/artifacts/".length));
+        const { resolveArtifactPath } = await import("../images/artifacts");
+        const artifactPath = resolveArtifactPath(id);
+        if (!artifactPath) {
+          return withCors(formatErrorResponse(404, "not_found", "artifact not found"), req, config);
+        }
+        const file = Bun.file(artifactPath);
+        const ext = artifactPath.split(".").pop()?.toLowerCase();
+        const contentType =
+          ext === "png" ? "image/png"
+            : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+              : ext === "webp" ? "image/webp"
+                : ext === "gif" ? "image/gif"
+                  : "application/octet-stream";
+        return withCors(new Response(file, {
+          status: 200,
+          headers: {
+            "content-type": contentType,
+            "cache-control": "private, max-age=3600",
+            "x-content-type-options": "nosniff",
+          },
+        }), req, config);
       }
 
       if (url.pathname === "/v1/alpha/search" && req.method === "POST") {
@@ -675,7 +737,10 @@ export function startServer(port?: number) {
         return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
       }
 
-      const guiFile = serveGuiFile(url.pathname);
+      const guiSessionCandidate = req.method === "GET" && (url.pathname === "/" || !url.pathname.includes("."))
+        ? issueGuiSession(req, config, managementAuth)
+        : null;
+      const guiFile = serveGuiFile(url.pathname, undefined, guiSessionCandidate ?? undefined);
       if (guiFile) return guiFile;
       if (url.pathname === "/" && req.method === "GET") {
         return jsonResponse(rootFallbackPayload());
@@ -875,6 +940,9 @@ export function startServer(port?: number) {
       .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
       .catch(() => {});
   }
+
+  // Opt-in storage policy (default OFF). Never blocks listen; cancellable on shutdown.
+  scheduleStorageCleanupStartupRun();
 
   return server;
 }
