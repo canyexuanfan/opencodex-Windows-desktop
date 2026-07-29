@@ -56,11 +56,12 @@ carried onto it. That dual-track policy is over: maintaining two integration
 lines cost more than the port returned, and dogfooding the Go runtime kept
 surfacing new defects.
 
-`dev2-go` has been deleted. Its full history lives in
+`dev2-go` has been deleted, along with the `codex/260728-go-port-*` and
+`tmp/dev2-go-source-export` side branches. The full history lives in
 [lidge-jun/opencodex-go-archive](https://github.com/lidge-jun/opencodex-go-archive)
-and its final tip is tagged `archive/dev2-go` in this repository. There is no
+and the final tip is tagged `archive/dev2-go` in this repository. There is no
 carry or port obligation attached to a `dev` merge any more, and the
-`needs-go-port` label is retired.
+`needs-go-port` label is gone.
 
 Bun-native TypeScript is the only runtime line. If native code returns, the
 expectation is an incremental module (for example Rust via N-API) landing on

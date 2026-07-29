@@ -53,8 +53,10 @@ defects. Bun-native TypeScript on `dev` is the single runtime line again.
   published at
   [lidge-jun/opencodex-go-archive](https://github.com/lidge-jun/opencodex-go-archive),
   and its final tip stays reachable here as the `archive/dev2-go` tag.
-- A merge into `dev` carries no port obligation. The `needs-go-port` label is
-  retired and its open issues were closed against the archive.
+- A merge into `dev` carries no port obligation. The nine open `needs-go-port`
+  issues (#661, #663, #666, #670, #674, #678, #680, #685, #703) were closed as
+  not planned, and the `needs-go-port` label no longer exists on the
+  repository.
 - Future native work is expected to be an incremental module landing on `dev`
   (Rust via N-API is the current candidate), not a second integration branch.
   Reopening a parallel runtime line is an owner decision.
