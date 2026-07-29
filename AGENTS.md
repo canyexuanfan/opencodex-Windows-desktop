@@ -22,10 +22,63 @@ Bun-native TypeScript with no separate server compile step.
   changing shared subsystems.
 - `scripts/` — release and maintenance tooling; `scripts/release.ts` is the
   release authority.
-- `devlog/` — planning and investigation artifacts (mostly gitignored).
+- `devlog/` — maintainer-only planning and investigation notes. This is a
+  **private submodule** (`lidge-jun/opencodex-internal`), not a directory of
+  this repository. See "The `devlog` submodule" below.
 
 Read the nearest nested `AGENTS.md` before changing files in a scoped
 directory (`src/`, `gui/`, `docs-site/`, `scripts/`, `.github/`).
+
+## The `devlog` submodule
+
+Planning notes, triage matrices, and investigation artifacts live in the private
+`lidge-jun/opencodex-internal` repository, wired in as the `devlog` submodule.
+They quote live infrastructure state, provider behaviour, unfixed defects, and
+internal triage reasoning, so a public clone should carry the runtime and its
+docs and nothing else.
+
+The pointer is deliberately **loose**, so a missing or stale `devlog` can never
+fail a check:
+
+- `.gitmodules` declares `ignore = dirty`, `update = none`, and `shallow = true`.
+  A dirty or moved submodule working tree does not show up in `git status` on
+  the parent, and `git submodule update` will not touch it unless asked
+  explicitly.
+- No workflow checks it out. `actions/checkout` runs without `submodules:`, so
+  CI clones the public tree only and the private URL is never resolved.
+- Nothing in the build, test, typecheck, or privacy-scan path reads from
+  `devlog/`. Contributors without access see an empty directory and every gate
+  still passes.
+- `devlog/` stays listed in `.gitignore` for the working tree; the submodule
+  gitlink is tracked, its contents are not.
+
+Two rules keep it that way. Never commit anything under `devlog/` to *this*
+repository — commit inside the submodule, then update the pointer here as a
+separate commit. And never nest a git repository inside the submodule: a
+`160000` gitlink in a tree that CI does not initialize breaks
+`actions/checkout` for every contributor, which is exactly what happened before
+this split.
+
+## Security working notes
+
+**Security work is done in scratch space, never in a tracked directory.** That
+includes unreleased findings, severity assessments, draft advisories, exploit
+or bypass reasoning, reproduction steps for an unfixed defect, and
+pre-disclosure patch plans.
+
+Use `.tmp/` in the working tree (already gitignored) or a `mktemp -d` path.
+`devlog/` is **not** an acceptable location, and neither is a private
+repository: both get cloned across machines and CI, both outlive the embargo,
+and neither history is practical to purge afterwards.
+
+Only the published outcome reaches a repository — the fix itself, its
+regression test, the release note, the advisory once it is public. Draft the
+advisory in scratch space and delete the scratch directory once the advisory is
+live.
+
+This applies to `AGENTS.md`-following agents as much as to humans. If a task
+asks you to write up a security finding, put the write-up in scratch space and
+say where it is; do not add it to `devlog/`, `structure/`, or `docs-site/`.
 
 ## Commands
 
