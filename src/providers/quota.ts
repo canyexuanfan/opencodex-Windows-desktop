@@ -280,7 +280,7 @@ async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Pro
     ? usedUnits + availableUnits
     : undefined;
   const reconciliationTolerance = grantedUnits !== undefined
-    ? Math.max(1, Math.abs(grantedUnits)) * 1e-9
+    ? Math.abs(grantedUnits) * 1e-9
     : 0;
   if (limitUsd === undefined || grantedUnits === undefined || usedUnits === undefined
     || availableUnits === undefined || limitUsd <= 0 || grantedUnits <= 0

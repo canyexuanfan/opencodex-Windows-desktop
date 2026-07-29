@@ -334,6 +334,18 @@ describe("fetchProviderQuotaReports", () => {
     expect(result.reports).toEqual([]);
   });
 
+  test("A6API quota applies reconciliation tolerance relative to sub-unit grants", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 0.1, total_used: 0.05, total_available: 0.0500000005 } },
+    ), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
   test("A6API quota accepts equivalent canonical HTTPS URLs only", async () => {
     const seen: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {

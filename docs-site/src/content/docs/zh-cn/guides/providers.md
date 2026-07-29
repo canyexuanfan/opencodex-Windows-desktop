@@ -217,7 +217,7 @@ bearer 密钥；API 访问需要 Provider 套餐，Go/Pro 订阅用户的 CLI �
 
 使用 `openai-chat`、`authMode: "key"` 以及规范地址 `https://api.a6api.com` 或
 `https://api.a6api.com/v1` 的自定义提供商，会在仪表板和 `ocx account refresh <provider>`
-中显示 A6API 信用使用情况；提供商名称可以自定义。系统将令牌单位换算为 USD，并显示已用百分比和剩余额度。
+中显示 A6API 信用使用情况；提供商名称可以自定义。系统依据账户的 hard credit limit 将令牌单位换算为 USD，并显示已用百分比和剩余额度。
 令牌到期不代表额度补充，因此不会显示为配额重置。只有当前活动密钥会发送到规范主机，重定向会被拒绝；负数
 或内部不一致的计费总数不会生成报告。
 
