@@ -3,18 +3,12 @@ import type { AddressInfo } from "node:net";
 import { saveConfig } from "../../src/config";
 import { fetchProviderModels } from "../../src/codex/catalog/provider-fetch";
 import { providerOutboundGet } from "../../src/lib/provider-outbound";
+import { PROXY_ENV_KEYS } from "../../src/lib/proxy-env";
 import { handleManagementAPI } from "../../src/server/management-api";
 import type { OcxConfig } from "../../src/types";
 import { ManagementRequest as Request } from "../helpers/management-auth";
 
-const proxyKeys = [
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "ALL_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "all_proxy",
-] as const;
+const proxyKeys = PROXY_ENV_KEYS.flatMap(key => [key, key.toLowerCase()]);
 
 async function listen(server: ReturnType<typeof createServer>): Promise<number> {
   await new Promise<void>((resolve, reject) => {
@@ -95,6 +89,15 @@ try {
     models: [],
   }, 0);
 
+  for (const key of proxyKeys) delete process.env[key];
+  process.env.ALL_PROXY = proxyUrl;
+  const allProxyResponse = await providerOutboundGet(
+    "all-proxy",
+    { baseUrl: "http://all-proxy-only.invalid/v1", allowPrivateNetwork: false },
+    "http://all-proxy-only.invalid/v1/models",
+  );
+  const allProxy = { status: allProxyResponse.status, body: await allProxyResponse.text() };
+
   const localConfig = {
     port: 0,
     hostname: "127.0.0.1",
@@ -108,6 +111,8 @@ try {
       },
     },
   } as OcxConfig;
+  process.env.NO_PROXY = "localhost,127.0.0.1,::1,[::1]";
+  process.env.no_proxy = "localhost,127.0.0.1,::1,[::1]";
   const managementNoProxy = await probe(localConfig, "local");
 
   for (const key of proxyKeys) delete process.env[key];
@@ -122,6 +127,7 @@ try {
 
   console.log(JSON.stringify({
     outbound,
+    allProxy,
     managementProxy,
     proxyModels: proxyModels.map(model => model.id),
     managementNoProxy,

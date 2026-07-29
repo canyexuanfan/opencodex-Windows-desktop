@@ -6,6 +6,7 @@ import {
   resolvePublicAddresses,
 } from "./destination-policy";
 import { pinnedHttpGet } from "./pinned-http";
+import { outboundProxyConfigured } from "./proxy-env";
 import { publicProviderBaseUrl } from "./provider-url";
 
 type ProviderGetInit = Omit<RequestInit, "body" | "method" | "redirect">;
@@ -25,11 +26,8 @@ function pickPinnedAddress(addresses: Array<{ address: string; family: number }>
   return addresses.find(address => address.family === 4) ?? addresses[0]!;
 }
 
-function configuredProxyFor(url: URL): boolean {
-  const values = url.protocol === "https:"
-    ? [process.env.HTTPS_PROXY, process.env.https_proxy]
-    : [process.env.HTTP_PROXY, process.env.http_proxy];
-  return values.some(value => Boolean(value?.trim()));
+function configuredProxyFor(): boolean {
+  return outboundProxyConfigured();
 }
 
 function normalizeProxyHostname(hostname: string): string {
@@ -111,6 +109,9 @@ export async function providerOutboundGet(
   dependencies: ProviderOutboundDependencies = {},
 ): Promise<Response> {
   if (provider.fetch) {
+    // A caller-owned executor cannot be peer-pinned here. This branch keeps literal/config
+    // checks and redirect blocking, but does not provide the resolved-address guarantees of
+    // the built-in transport. Main-request migration must define that executor contract first.
     const assessment = assessUrlDestination(url);
     if (assessment?.kind === "metadata" || assessment?.kind === "link-local" || assessment?.kind === "unspecified") {
       throw new ProviderOutboundPolicyError(`provider URL targets ${assessment.detail}`);
@@ -125,7 +126,7 @@ export async function providerOutboundGet(
     return provider.fetch(url, { ...init, method: "GET", redirect: "manual" });
   }
   const parsed = new URL(url);
-  const proxyConfigured = configuredProxyFor(parsed);
+  const proxyConfigured = configuredProxyFor();
   const resolveAddresses = dependencies.resolveAddresses ?? resolvePublicAddresses;
   const pinnedGet = dependencies.pinnedGet ?? pinnedHttpGet;
   let resolved: Awaited<ReturnType<typeof resolvePublicAddresses>>;

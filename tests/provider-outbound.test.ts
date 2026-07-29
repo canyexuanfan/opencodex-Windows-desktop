@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderOutboundDependencies } from "../src/lib/provider-outbound";
+import { PROXY_ENV_KEYS } from "../src/lib/proxy-env";
 
-const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"] as const;
+const proxyKeys = PROXY_ENV_KEYS.flatMap(key => [key, key.toLowerCase()]);
 const originalProxyEnv = Object.fromEntries(proxyKeys.map(key => [key, process.env[key]]));
 
 afterEach(() => {
@@ -162,8 +163,12 @@ describe("provider outbound GET transport", () => {
         new Response(child.stderr).text(),
         child.exited,
       ]);
+      if (exitCode !== 0) {
+        throw new Error(`provider outbound fixture exited ${exitCode}: ${stderr.trim()}`);
+      }
       const result = JSON.parse(stdout.trim()) as {
         outbound: { status: number; body: string };
+        allProxy: { status: number; body: string };
         managementProxy: Record<string, unknown>;
         proxyModels: string[];
         managementNoProxy: Record<string, unknown>;
@@ -173,10 +178,13 @@ describe("provider outbound GET transport", () => {
         providerRequests: string[];
       };
 
-      expect(exitCode).toBe(0);
       expect(result.outbound).toEqual({
           status: 200,
           body: '{"data":[{"id":"proxied-model"}]}',
+      });
+      expect(result.allProxy).toEqual({
+        status: 200,
+        body: '{"data":[{"id":"proxied-model"}]}',
       });
       expect(result.managementProxy.ok).toBe(false);
       expect(String(result.managementProxy.error)).toContain("returned 302 redirect");
@@ -191,6 +199,7 @@ describe("provider outbound GET transport", () => {
         "http://proxy-only.invalid/v1/models",
         "http://connection-proxy.invalid/v1/models",
         "http://proxy-models.invalid/v1/models",
+        "http://all-proxy-only.invalid/v1/models",
       ]);
       expect(result.providerRequests).toEqual(["/v1/models", "/v1/models", "/v1/models"]);
       expect(stderr).toContain("cannot be pinned locally");

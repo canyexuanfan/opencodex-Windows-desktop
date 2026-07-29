@@ -82,8 +82,8 @@ transport. Without an outbound proxy, opencodex resolves the provider hostname o
 only to that validated address. HTTPS keeps the original hostname for Host, SNI, and certificate
 verification; certificate verification cannot be disabled by provider config.
 
-When `HTTP_PROXY` or `HTTPS_PROXY` applies, these two operations keep Bun's native fetch so existing
-proxy behavior is not silently bypassed. URL/literal checks still run. Successful local DNS answers
+When `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` applies, these two operations keep Bun's native fetch
+so existing proxy behavior is not silently bypassed. URL/literal checks still run. Successful local DNS answers
 are classified, but a local DNS failure is allowed through because proxy-only networks commonly
 delegate name resolution to the proxy. The proxy chooses the final route, DNS answer, and peer, so
 opencodex logs that this path cannot pin or verify the proxy-selected peer. This is an explicit
@@ -94,6 +94,8 @@ Private/local provider destinations require both `allowPrivateNetwork: true` and
 automatically. A LAN provider such as `192.168.1.50` must be added explicitly; otherwise connection
 tests and model discovery reject it with an actionable message instead of sending it to the proxy.
 Metadata and link-local destinations remain blocked even when `allowPrivateNetwork` is enabled.
+The safety guard accepts exact hosts, domain suffixes, optional ports, bracketed IPv6, and `*` in
+`NO_PROXY`; it does not interpret CIDR entries, so list each private provider host or address explicitly.
 
 Both direct and proxied diagnostic paths reject redirects and report a credential-stripped target;
 configure the final provider URL directly. Ordinary provider requests, streaming responses, and
