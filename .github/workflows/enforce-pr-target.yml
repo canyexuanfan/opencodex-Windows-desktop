@@ -42,7 +42,7 @@ jobs:
               path.join(process.cwd(), ".github", "scripts", "pr-quality.cjs"),
             );
 
-            const ALLOWED_BASES = ["dev", "dev2-go"];
+            const ALLOWED_BASES = ["dev"];
             const DEFAULT_BASE = "dev";
             const TITLE_PREFIX = "[WRONG BRANCH] ";
             const COMMENT_MARKER = "<!-- pr-quality-enforcer -->";
@@ -211,7 +211,7 @@ jobs:
                   "",
                   `This pull request currently targets ${inlineCode(pr.base.ref)}, but pull requests must target one of ${ALLOWED_BASES.map(inlineCode).join(" or ")}.`,
                   "",
-                  `@${pr.user.login} Please retarget this PR to ${inlineCode(DEFAULT_BASE)}. Most contributions go to ${inlineCode(DEFAULT_BASE)} first; use ${inlineCode("dev2-go")} only for scoped Go native-port work. \`main\` receives only release promotions. See our [Contributing guide](https://lidge-jun.github.io/opencodex/contributing/) for details. Thanks! 🙏`
+                  `@${pr.user.login} Please retarget this PR to ${inlineCode(DEFAULT_BASE)}. All contributions go to ${inlineCode(DEFAULT_BASE)}; \`main\` receives only release promotions. See our [Contributing guide](https://lidge-jun.github.io/opencodex/contributing/) for details. Thanks! 🙏`
                 );
               }
 

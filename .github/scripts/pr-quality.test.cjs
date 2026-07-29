@@ -115,7 +115,7 @@ describe("assessPrDescription", () => {
 });
 
 describe("collectPrQualityFailures", () => {
-  const allowed = ["dev", "dev2-go"];
+  const allowed = ["dev"];
 
   it("reports wrong_base without requiring ancestry inputs", () => {
     const failures = collectPrQualityFailures({

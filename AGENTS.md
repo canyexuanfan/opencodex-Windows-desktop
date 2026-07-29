@@ -16,7 +16,8 @@ Bun-native TypeScript with no separate server compile step.
   `tests/helpers/`, broader scenarios in `tests/e2e-style/`.
 - `gui/` — React + Vite dashboard; packaged output is served from `gui/dist`.
 - `docs-site/` — public docs (Astro + Starlight), deployed to GitHub Pages.
-- `go/` — Go native runtime (primary on the `dev2-go` line during transition).
+- `go/` — retired Go native-runtime experiment; kept only where the TypeScript
+  runtime still references it. New work does not go here.
 - `structure/` — maintainer invariants and architecture notes; read before
   changing shared subsystems.
 - `scripts/` — release and maintenance tooling; `scripts/release.ts` is the
@@ -42,34 +43,28 @@ non-trivial change. CI runs these on Linux, Windows, and macOS.
 
 ## Branch policy
 
-- `dev` — integration branch and the default target. A pull request goes here
-  unless it belongs to a scoped line below.
-- `dev2-go` — parallel integration line for the Go native port: `go/`,
-  `bin/native-runtime.mjs`, `src/lib/runtime-entry.ts`, and the Go
-  release-asset tooling. Open for pull requests: the target-branch check
-  accepts `dev` and `dev2-go` as integration targets. Keep it to scoped Go
-  native-port work — the check cannot tell an intentional target from a
-  mistaken one, so that boundary is a review decision. It converges back
-  through maintainer-controlled merges, and promotion to `main` still happens
-  only from `dev`.
+- `dev` — the single integration branch and the target for every pull request.
 - `main` — release branch. It only moves by maintainer-controlled promotion
   from `dev` (releases, docs deploys). Do not open feature PRs against `main`.
 - `preview` — prerelease train (`x.y.z-preview.*` versions).
 
-### Transition to `dev2-go`
+### The retired `dev2-go` line
 
-The project is moving its primary runtime to the Go native port, so `dev2-go`
-has to keep receiving everything that lands on `dev`. Pull requests against
-`dev` stay welcome and unchanged — the extra work belongs to the maintainer who
-merges them.
+The project previously ran a parallel `dev2-go` integration line that was
+rebuilding the runtime as a Go native port, and every merge into `dev` had to be
+carried onto it. That dual-track policy is over: maintaining two integration
+lines cost more than the port returned, and dogfooding the Go runtime kept
+surfacing new defects.
 
-A merge into `dev` does not finish the task. The merging maintainer also
-rebases that work onto `dev2-go`, ports whatever needs a Go counterpart under
-`go/`, and merges the port. The item is done only when both lines carry the
-change. If a change has no Go counterpart, say so in the merge or tracking
-issue; if the port has to wait, open a `needs-go-port` tracking issue against
-`dev2-go` naming the source commits before closing out the `dev` merge.
-[`MAINTAINERS.md`](./MAINTAINERS.md) holds the authoritative wording.
+`dev2-go` has been deleted. Its full history lives in
+[lidge-jun/opencodex-go-archive](https://github.com/lidge-jun/opencodex-go-archive)
+and its final tip is tagged `archive/dev2-go` in this repository. There is no
+carry or port obligation attached to a `dev` merge any more, and the
+`needs-go-port` label is retired.
+
+Bun-native TypeScript is the only runtime line. If native code returns, the
+expectation is an incremental module (for example Rust via N-API) landing on
+`dev`, not a second full-runtime branch.
 
 The Claude Desktop integration formerly carried on the `claudedesktop` branch is
 now fully merged into `dev`, and that branch has been retired. Desktop work
@@ -81,10 +76,10 @@ is ordinary maintenance rather than noise — open it as a normal pull request
 and name the source commits in the description.
 
 The **`enforce-target`** CI check rejects pull requests whose head
-ancestry sits on the **`main`** tip while far behind **`dev`** or **`dev2-go`**,
-and rejects empty, thin, or malformed descriptions; authors with repository
-push permission skip the ancestry heuristic only. As with approval requirements
-in [`MAINTAINERS.md`](./MAINTAINERS.md), this is enforced by convention until
+ancestry sits on the **`main`** tip while far behind **`dev`**, and rejects
+empty, thin, or malformed descriptions; authors with repository push permission
+skip the ancestry heuristic only. As with approval requirements in
+[`MAINTAINERS.md`](./MAINTAINERS.md), this is enforced by convention until
 branch protection is configured.
 
 [`MAINTAINERS.md`](./MAINTAINERS.md) is authoritative for review and merge
@@ -100,12 +95,8 @@ reviewers (Codex, CodeRabbit).
   language. Be detailed and specific: name the file and line, describe the
   concrete failure mode, and suggest a fix. Avoid vague or purely stylistic
   commentary.
-- **Branch targeting:** flag any pull request that targets neither `dev` nor
-  `dev2-go` (releases and maintainer promotions are the only exceptions).
-  `dev2-go` is accepted by the automation but scoped by review: if a pull
-  request targets it without touching `go/`, the native runtime entrypoint, or
-  the Go release-asset tooling, ask the author to retarget to `dev`. The
-  automation cannot make that judgement, which is why it is yours.
+- **Branch targeting:** flag any pull request that does not target `dev`
+  (releases and maintainer promotions are the only exceptions).
 - **Security boundary (highest priority):** changes touching authentication,
   credential/token handling, OAuth flows, GitHub Actions workflows, release
   automation (`scripts/release.ts`, `.github/workflows/release.yml`), or
