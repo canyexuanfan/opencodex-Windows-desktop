@@ -91,6 +91,7 @@ describe("kiro adapter — buildRequest", () => {
     expect(headers["user-agent"]).toContain("app/AmazonQ-For-CLI");
     expect(headers["x-amzn-kiro-agent-mode"]).toBeUndefined();
     expect(headers["x-amzn-kiro-profile-arn"]).toBeUndefined();
+    expect(headers["x-amzn-codewhisperer-optout"]).toBe("true");
     expect(headers.tokentype).toBeUndefined();
     expect(payload.profileArn).toBeUndefined();
     expect(payload.conversationState.agentTaskType).toBe("vibe");
@@ -98,24 +99,27 @@ describe("kiro adapter — buildRequest", () => {
     expect(payload.conversationState.currentMessage.userInputMessage).toMatchObject({
       content: "hi",
       origin: "KIRO_CLI",
-      userInputMessageContext: {
-        envState: {
-          operatingSystem: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux",
-          currentWorkingDirectory: process.cwd(),
-        },
-      },
     });
+    expect(payload.conversationState.currentMessage.userInputMessage).not.toHaveProperty("userInputMessageContext.envState");
   });
 
-  test("Kiro API keys use the CLI token type without exposing a profile ARN", async () => {
+  test("Kiro API keys force the CLI token type and ignore unrelated profile metadata", async () => {
     const apiKeyProvider = { ...provider, authMode: "key", apiKey: "ksk_example" } as unknown as OcxProviderConfig;
-    const request = await createKiroAdapter(apiKeyProvider).buildRequest(parsedWith([{ role: "user", content: "hi" }]));
-    const body = JSON.parse(request.body) as { profileArn?: string };
+    const parsed = parsedWith([{ role: "user", content: "hi" }]);
+    parsed._kiroAuthContext = {
+      profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/unrelated",
+    };
+    const request = await createKiroAdapter(apiKeyProvider).buildRequest(parsed);
+    const body = JSON.parse(request.body) as {
+      profileArn?: string;
+      conversationState: { currentMessage: { userInputMessage: { origin?: string } } };
+    };
 
     expect(request.headers.authorization).toBe("Bearer ksk_example");
     expect(request.headers.tokentype).toBe("API_KEY");
     expect(request.headers["x-amzn-kiro-profile-arn"]).toBeUndefined();
     expect(body.profileArn).toBeUndefined();
+    expect(body.conversationState.currentMessage.userInputMessage.origin).toBe("KIRO_CLI");
   });
 
   test("runtime URL uses KIRO_API_REGION separately from auth region", async () => {

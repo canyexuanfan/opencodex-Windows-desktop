@@ -89,7 +89,6 @@ interface KiroUserInputMessage {
   userInputMessageContext?: {
     tools?: unknown[];
     toolResults?: KiroToolResult[];
-    envState?: { operatingSystem: string; currentWorkingDirectory: string };
   };
   images?: KiroImage[];
 }
@@ -548,12 +547,6 @@ export function buildKiroPayload(
   }
   if (kiroTools.length > 0) {
     currentUim.userInputMessageContext = { ...(currentUim.userInputMessageContext ?? {}), tools: kiroTools };
-  }
-  if (wireClient === "cli") {
-    currentUim.userInputMessageContext = {
-      ...(currentUim.userInputMessageContext ?? {}),
-      envState: { operatingSystem: kiroCliPlatform(), currentWorkingDirectory: process.cwd() },
-    };
   }
   if (completionMode === "text_fallback") {
     if (currentUim.content !== KIRO_COMPLETION_RETRY_MESSAGE) {
@@ -1479,11 +1472,12 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       throw new Error("kiro token missing — run ocx login kiro");
     }
     const region = resolveKiroApiRegion(parsed._kiroAuthContext);
-    const profileArn = resolveKiroProfileArn(parsed._kiroAuthContext);
+    const resolvedProfileArn = resolveKiroProfileArn(parsed._kiroAuthContext);
+    const isApiKey = provider.apiKey.trim().startsWith("ksk_");
+    const profileArn = isApiKey ? undefined : resolvedProfileArn;
     // Builder ID and Kiro API keys have no profile ARN and are accepted only on Kiro's CLI
     // request path. Enterprise profiles retain the existing IDE-shaped request.
-    const wireClient: KiroWireClient = profileArn ? "ide" : "cli";
-    const isApiKey = provider.apiKey.trim().startsWith("ksk_");
+    const wireClient: KiroWireClient = isApiKey || !profileArn ? "cli" : "ide";
     const fp = fingerprint().slice(0, 64);
     const headers: Record<string, string> = wireClient === "cli" ? {
       authorization: `Bearer ${provider.apiKey}`,
@@ -1492,7 +1486,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       "x-amz-target": AMZ_TARGET,
       "user-agent": kiroCliUserAgent(true),
       "x-amz-user-agent": kiroCliUserAgent(false),
-      "x-amzn-codewhisperer-optout": "false",
+      "x-amzn-codewhisperer-optout": "true",
       "amz-sdk-request": "attempt=1; max=3",
       "amz-sdk-invocation-id": invocationId(),
       ...(isApiKey ? { tokentype: "API_KEY" } : {}),
