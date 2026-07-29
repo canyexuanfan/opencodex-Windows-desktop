@@ -6,6 +6,7 @@ import { isPublicOAuthProvider, listOAuthProviders, runLogin } from "./index";
 import { KEY_LOGIN_PROVIDERS, isKeyLoginProvider, validateApiKey, type KeyLoginProvider } from "./key-providers";
 import type { OcxProviderConfig } from "../types";
 import { configuredAdminToken } from "../lib/admin-secrets";
+import { codexAccountNamespaceProviderCollisionError } from "../codex/account-namespace-match";
 
 export function runningProxyUpdateHeaders(): Headers {
   const headers = new Headers({ "Content-Type": "application/json" });
@@ -107,6 +108,12 @@ export function providerConfigFromKeyLoginProvider(def: KeyLoginProvider, key: s
 
 async function handleKeyLogin(name: string): Promise<void> {
   const def = KEY_LOGIN_PROVIDERS[name];
+  const preflightConfig = loadConfig();
+  const namespaceCollision = codexAccountNamespaceProviderCollisionError(preflightConfig.codexAccountNamespaces, name);
+  if (namespaceCollision) {
+    console.error(`Error: ${namespaceCollision}.`);
+    process.exit(1);
+  }
   console.log(`\n🔑 ${def.label} — opening ${def.dashboardUrl} so you can create/copy an API key...`);
   openUrl(def.dashboardUrl);
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -136,6 +143,11 @@ async function handleKeyLogin(name: string): Promise<void> {
   }
   const provider = providerConfigFromKeyLoginProvider(def, key, baseUrl);
   const config = loadConfig();
+  const commitCollision = codexAccountNamespaceProviderCollisionError(config.codexAccountNamespaces, name);
+  if (commitCollision) {
+    console.error(`Error: ${commitCollision}.`);
+    process.exit(1);
+  }
   config.providers[name] = provider;
   saveConfig(config);
   await notifyRunningProxy(name, provider);

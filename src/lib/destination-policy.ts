@@ -226,14 +226,16 @@ export function assessUrlDestination(url: string): UrlDestinationAssessment | nu
  */
 export async function resolvePublicAddresses(
   url: string,
-  options?: { context?: string; allowPrivateNetwork?: boolean },
+  options?: string | { context?: string; allowPrivateNetwork?: boolean },
 ): Promise<{
   hostname: string;
   addresses: { address: string; family: number }[];
   privateNetwork: boolean;
 }> {
-  const context = options?.context?.trim() || "image URL";
-  const privateNetworkAllowed = options?.allowPrivateNetwork === true;
+  const context = typeof options === "string"
+    ? `${options.trim() || "image"} URL`
+    : options?.context?.trim() || "image URL";
+  const privateNetworkAllowed = typeof options === "object" && options?.allowPrivateNetwork === true;
   let hostname: string;
   try {
     hostname = normalizeHostname(new URL(url.trim()).hostname);

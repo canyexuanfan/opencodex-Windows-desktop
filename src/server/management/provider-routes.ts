@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../../codex/catalog";
 import { catalogModelSlug, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
+import { providerModelsListFromProbeResponse } from "../../codex/catalog/provider-fetch";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -30,6 +31,7 @@ import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
 import { CODEX_FORWARD_BASE_URL, isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { codexAccountNamespaceProviderCollisionError } from "../../codex/account-namespace-match";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { getProviderDiscoveryStatus } from "../../codex/model-cache";
@@ -99,6 +101,10 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     }
     if (!isValidProviderName(name)) {
       return jsonResponse({ error: "provider name must use letters, numbers, dot, underscore, or hyphen and cannot be a reserved object key" }, 400);
+    }
+    const namespaceCollision = codexAccountNamespaceProviderCollisionError(config.codexAccountNamespaces, name);
+    if (namespaceCollision) {
+      return jsonResponse({ error: namespaceCollision }, 409);
     }
     // Hostname destinations additionally get a DNS-resolved SSRF check at write time —
     // the sync check above only classifies literal IPs (review finding, PR #96).
@@ -351,12 +357,9 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       if (!res.ok) {
         return jsonResponse({ ok: false, latencyMs, error: `upstream /models returned ${res.status}` });
       }
-      const json = await res.json().catch(() => null) as { data?: unknown; models?: unknown } | null;
-      // OpenAI-style lists use { data: [...] }; Google's /v1beta/models (the other shape
-      // buildModelsRequest can produce) returns { models: [...] }.
-      const list = json && typeof json === "object" && !Array.isArray(json)
-        ? (Array.isArray(json.data) ? json.data : Array.isArray(json.models) ? json.models : undefined)
-        : undefined;
+      const json = await res.json().catch(() => null);
+      // OpenAI-style { data }, Google { models }, and Together-style top-level arrays (#617).
+      const list = providerModelsListFromProbeResponse(json);
       if (!Array.isArray(list)) {
         return jsonResponse({ ok: false, latencyMs, error: "upstream /models returned an unexpected shape" });
       }
