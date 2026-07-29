@@ -1,6 +1,7 @@
 import type { Server } from "bun";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
 import { formatPassthroughUpstreamError } from "./passthrough-error";
+import { describeUpstreamConnectFailure } from "./upstream-error";
 import {
   getConfigPath,
   multiAgentGuidanceEnabled,
@@ -1443,7 +1444,7 @@ export async function handleResponses(
       }
       const msg = outcome === "timeout"
         ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+        : describeUpstreamConnectFailure(err, connectMs);
       return formatErrorResponse(502, "upstream_error", msg);
     };
     try {
@@ -2101,9 +2102,7 @@ export async function handleResponses(
     cleanupUpstreamAbort();
     upstream.abort();
     if (options.abortSignal?.aborted) return clientCancelledResponse();
-    const msg = err instanceof Error && err.name === "TimeoutError"
-      ? `Provider connect timeout after ${connectMs}ms`
-      : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+    const msg = describeUpstreamConnectFailure(err, connectMs);
     return formatErrorResponse(502, "upstream_error", msg);
   }
 
@@ -2143,9 +2142,7 @@ export async function handleResponses(
         if (options.abortSignal?.aborted) {
           return { failed: clientCancelledResponse() };
         }
-        const msg = err instanceof Error && err.name === "TimeoutError"
-          ? `Provider connect timeout after ${connectMs}ms`
-          : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+        const msg = describeUpstreamConnectFailure(err, connectMs);
         return { failed: formatErrorResponse(502, "upstream_error", msg) };
       }
     };
