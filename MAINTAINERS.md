@@ -32,6 +32,15 @@ see [The retired `dev2-go` line](#the-retired-dev2-go-line).
 - Authors do not approve their own pull requests.
 - Authentication, credential handling, GitHub Actions, release automation, dependency installation,
   and other security-boundary changes require explicit security review.
+- A new or promoted provider preset is a credential-destination change. Before merge it needs the
+  primary-source evidence listed under [Adding a provider to the
+  catalog](https://opencodex.me/contributing/#evidence-required-for-a-canonical-preset): documented
+  OpenAI-compatible endpoints (including authenticated `GET /v1/models` when the entry declares
+  `liveModels`), terms of service and operating legal entity, resale or routing authorization for
+  aggregators, a named maintenance owner, and a citable verification date. Contributor affiliation
+  with the service is disclosed, not disqualifying, and it does not lower the evidence bar. When the
+  evidence is incomplete, prefer an inert `src/providers/free-directory.ts` reference row over a
+  canonical registry entry.
 - Security-sensitive and release-related changes should be reviewed by both maintainers when
   practical.
 - Direct pushes are reserved for maintainer-owned integration work, urgent repairs, or incident

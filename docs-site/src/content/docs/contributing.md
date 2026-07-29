@@ -147,6 +147,36 @@ API-key login, and OAuth config seeds. `enrichProviderFromCatalog()` copies mode
 capability classifications onto the saved provider config. OAuth protocol implementations still
 live in `src/oauth/`; registry metadata alone is not an OAuth flow.
 
+### Evidence required for a canonical preset
+
+A registry entry is a maintained promise: opencodex ships the destination that a user's API key is
+sent to. A preset therefore needs primary-source evidence, not a working code path. Pull requests
+that add or promote a provider must supply all of the following in the description:
+
+- **The documented OpenAI-compatible endpoints.** Link the vendor's own API reference for the chat
+  endpoint and, when the entry sets `liveModels: true`, for authenticated `GET /v1/models`. A
+  passing fixture test is not a substitute: it proves our code shape, not the upstream contract.
+- **Terms of service and the operating legal entity.** An empty or placeholder legal page does not
+  establish who runs the endpoint or under what terms user traffic is handled.
+- **Resale or routing authorization for aggregators.** A gateway that sells access to Claude, GPT,
+  Gemini, or other third-party models should show its authorization to route to them. Users read a
+  built-in preset as a maintained route, not as an unverified reseller.
+- **A named maintenance owner.** State who updates the preset when the base URL, authentication, or
+  catalog contract changes, and how a break will be reported.
+- **A citable verification date.** Record the primary source and the date it was checked, the same
+  way `lastVerified` works in `src/providers/free-directory.ts`. A date on an unverified row asserts
+  provenance nobody produced.
+
+Contributors adding their own service are welcome, and several current presets arrived that way.
+Disclose the affiliation in the pull-request description so reviewers can weigh it; affiliation is
+not a reason for rejection, and it does not lower the evidence bar either.
+
+When the evidence is incomplete, the honest home is a reference row in
+`src/providers/free-directory.ts` rather than the canonical registry. Directory rows carry an
+explicit `verification` grade (`official`, `primary`, `unverified`) and are inert: users can still
+reach the service through the custom OpenAI-compatible flow, while opencodex avoids advertising a
+preset it cannot stand behind. Promote the row to the registry once the evidence above exists.
+
 ## Adding an adapter
 
 Implement `ProviderAdapter` (see [Adapters](/reference/adapters/)) in `src/adapters/`,
