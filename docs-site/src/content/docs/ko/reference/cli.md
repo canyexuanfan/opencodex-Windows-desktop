@@ -379,6 +379,12 @@ ocx service status
 ocx service uninstall
 ```
 
+Windows에서 작업 스케줄러 항목을 만들려면 권한 상승이 필요합니다. 대시보드의 Startup Safety
+작업은 UAC를 자동으로 요청할 수 있습니다. 권한이 상승되지 않은 셸에서 `ocx service install`을
+직접 실행하면 OpenCodex가 시스템 언어와 무관한 조치 안내를 출력하므로, 대시보드에서 UAC를
+승인하거나 관리자 PowerShell에서 명령을 다시 실행하세요. 자동 권한 상승 복구는 OpenCodex가
+소유한 고정 `opencodex-proxy` 작업 생성 명령에만 적용됩니다.
+
 ### `ocx codex-shim <subcommand>`
 
 PATH에 있는 스크립트 기반 `codex` 런처를 가벼운 자동 시작 스크립트로 감쌉니다. 실제 `codex.exe`

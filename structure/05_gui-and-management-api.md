@@ -59,6 +59,22 @@ home-scoped singleton, and HKCU Run registration; fixed proxy actions delegate t
 service conflict handling, native restore, and PID identity remain centralized. Tray presence never
 makes `startup.status` protected.
 
+Windows Task Scheduler create failures must not depend solely on localized `schtasks.exe` text.
+When the owned fixed-shape `/create /tn opencodex-proxy /xml ... /f` command exits with status 1,
+the effective-token elevation probe may classify it as access denied only when the token is known
+to be non-elevated. An unavailable probe remains `other` and cannot trigger UAC. Query, run, delete,
+native-service, file-write, and foreign task failures never use this fallback.
+
+```text
+[Decision Log]
+- 목적과 의도: Make Windows scheduler installation recovery work on non-English systems without broadening the commands that may request UAC.
+- 기존 구현 및 제약 조건: Access-denied classification parsed English and German stderr. Chinese OEM output decoded as UTF-8 became mojibake, so the fixed scheduler-create failure lost its machine marker and the dashboard could not select its existing elevation transaction.
+- 검토한 주요 대안: Add translations and code-page decoders; elevate every scheduler failure; always launch installation elevated; or combine a native effective-token probe with the already fixed command shape and exit status.
+- 선택한 방식: Preserve text detection, then use the native token probe only for status-1 creation of the owned `opencodex-proxy` XML task. Unknown probe results fail closed.
+- 다른 대안 대신 이 방식을 선택한 이유: Windows localization and OEM code pages are open-ended, while the token state and owned command shape are stable security signals already bounded by the elevated transaction protocol.
+- 장점, 단점 및 영향: Non-English users receive stable guidance and dashboard UAC recovery. A non-permission status-1 failure from the exact owned command may be retried once elevated, but foreign operations cannot cross the elevation boundary and the elevated transaction still fails closed.
+```
+
 Dashboard updates persist their detached worker PID before returning success. This lets a later run
 distinguish a live installer from a worker that crashed. Records created by older versions do not
 have a PID, so they remain exclusive for a conservative ten-minute window before automatic

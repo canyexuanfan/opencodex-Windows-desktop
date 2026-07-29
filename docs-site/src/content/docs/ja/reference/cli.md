@@ -360,6 +360,12 @@ ocx service status
 ocx service uninstall
 ```
 
+Windows でタスク スケジューラのエントリを作成するには昇格が必要です。ダッシュボードの
+Startup Safety アクションは UAC を自動的に要求できます。昇格していないシェルから直接
+`ocx service install` を実行した場合は、システム言語に依存しない対処案内が表示されます。
+ダッシュボードで UAC を承認するか、管理者 PowerShell で再実行してください。自動昇格による
+復旧は、OpenCodex が所有する固定の `opencodex-proxy` タスク作成コマンドだけに限定されます。
+
 ### `ocx codex-shim <subcommand>`
 
 PATH 上のスクリプトベース `codex` ランチャーを軽量な自動起動スクリプトで包みます。実際の `codex.exe`
