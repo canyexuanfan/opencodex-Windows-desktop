@@ -171,6 +171,57 @@ test("non-streaming /v1/messages returns an Anthropic message JSON", async () =>
   }
 });
 
+test("native generated-agent passthrough preserves legacy thinking", async () => {
+  let captured: Record<string, unknown> | null = null;
+  const upstream = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      captured = await req.json() as Record<string, unknown>;
+      return Response.json({
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        model: "claude-haiku-4-5",
+        content: [{ type: "text", text: "ok" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    },
+  });
+  const config = mockConfig("http://127.0.0.1:1/v1", {
+    anthropicBaseUrl: upstream.url.toString().replace(/\/$/, ""),
+  });
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "sk-ant-test" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5",
+        max_tokens: 16,
+        system: [
+          { type: "text", text: "<!-- ocx-route: claude-haiku-4-5 -->" },
+          { type: "text", text: "<!-- ocx-effort: max -->" },
+        ],
+        thinking: { type: "enabled", budget_tokens: 31999 },
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured).toMatchObject({
+      model: "claude-haiku-4-5",
+      thinking: { type: "enabled", budget_tokens: 31999 },
+    });
+    expect(captured).not.toHaveProperty("output_config");
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
 test("native Anthropic passthrough clears the header deadline before streaming the body", async () => {
   const encoder = new TextEncoder();
   const upstream = Bun.serve({
