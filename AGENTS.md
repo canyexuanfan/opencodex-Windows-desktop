@@ -52,6 +52,21 @@ non-trivial change. CI runs these on Linux, Windows, and macOS.
   from `dev` (releases, docs deploys). Do not open feature PRs against `main`.
 - `preview` — prerelease train (`x.y.z-preview.*` versions).
 
+### Transition to `dev2-go`
+
+The project is moving its primary runtime to the Go native port, so `dev2-go`
+has to keep receiving everything that lands on `dev`. Pull requests against
+`dev` stay welcome and unchanged — the extra work belongs to the maintainer who
+merges them.
+
+A merge into `dev` does not finish the task. The merging maintainer also
+rebases that work onto `dev2-go`, ports whatever needs a Go counterpart under
+`go/`, and merges the port. The item is done only when both lines carry the
+change. If a change has no Go counterpart, say so in the merge or tracking
+issue; if the port has to wait, open a tracking issue against `dev2-go` naming
+the source commits before closing out the `dev` merge.
+[`MAINTAINERS.md`](./MAINTAINERS.md) holds the authoritative wording.
+
 The Claude Desktop integration formerly carried on the `claudedesktop` branch is
 now fully merged into `dev`, and that branch has been retired. Desktop work
 continues as normal pull requests against `dev`.
