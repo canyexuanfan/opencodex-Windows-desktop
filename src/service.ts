@@ -1042,6 +1042,43 @@ function taskXmlHasPrefixedTag(xml: string, tag: string): boolean {
  * Absence means the documented schema default (#432); a present element must still
  * match exactly, so a malformed or explicitly unsafe value never reads as healthy.
  */
+/**
+ * Decode XML's five predefined entities, exactly once.
+ *
+ * Task Scheduler re-encodes element text when it exports a task, so a needle we
+ * escaped ourselves can never match its output (#608). Compare decoded values
+ * instead of encoded ones.
+ *
+ * The single pass is the point: decoding twice would turn `&amp;quot;` into `"`,
+ * letting a doubly-encoded value impersonate the expected launcher path.
+ */
+function taskXmlDecodeEntities(value: string): string {
+  return value.replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) => (
+    name === "amp" ? "&"
+      : name === "lt" ? "<"
+        : name === "gt" ? ">"
+          : name === "quot" ? "\""
+            : "'"
+  ));
+}
+
+/**
+ * Exactly one unprefixed `<tag>` whose DECODED text equals `expected`.
+ *
+ * Unlike taskXmlOptionalValueEquals(), an absent element is NOT a pass: these
+ * elements name what actually gets executed, so a missing <Command>/<Arguments>
+ * must fail the health check rather than inherit a schema default.
+ */
+function taskXmlDecodedValueEquals(xml: string, tag: string, expected: string): boolean {
+  // Same reasoning as the optional helper: `<t:Arguments>` must not read as absent.
+  if (taskXmlHasPrefixedTag(xml, tag)) return false;
+  if (taskXmlElementCount(xml, tag) !== 1) return false;
+  // `[^<]*` refuses nested markup, so a decoy inside a child element cannot match.
+  const value = new RegExp(`<${tag}(?:\\s[^>]*?)?>([^<]*)<\\/${tag}>`, "i").exec(xml)?.[1];
+  if (value === undefined) return false;
+  return taskXmlDecodeEntities(value).trim() === expected.trim();
+}
+
 function taskXmlOptionalValueEquals(xml: string, tag: string, expected: string): boolean {
   // Check the prefixed form first: treating `<t:Enabled>false</t:Enabled>` as an
   // omission would turn an explicitly disabled task into a healthy one.
@@ -1079,8 +1116,11 @@ export function windowsTaskRegistrationHealthy(
     && taskXmlOptionalValueEquals(settings, "Enabled", "true")
     && /<MultipleInstancesPolicy>\s*IgnoreNew\s*<\/MultipleInstancesPolicy>/i.test(settings)
     && /<ExecutionTimeLimit>\s*PT0S\s*<\/ExecutionTimeLimit>/i.test(settings)
-    && action.includes(`<Command>${taskXmlString(wscript)}</Command>`)
-    && action.includes(`<Arguments>${taskXmlString(`/b /nologo "${launcher}"`)}</Arguments>`);
+    // Compare decoded VALUES, not encodings: Task Scheduler canonicalizes the
+    // quotes we wrote as `&quot;` back to literal `"` on export, so an escaped
+    // needle never matched and a healthy task read as permanently stale (#608).
+    && taskXmlDecodedValueEquals(action, "Command", wscript)
+    && taskXmlDecodedValueEquals(action, "Arguments", `/b /nologo "${launcher}"`);
 }
 
 export interface WindowsSchedulerXmlState {
