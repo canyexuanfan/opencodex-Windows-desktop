@@ -1024,18 +1024,27 @@ function rawClaudeSubagentEffort(rawParsed: unknown): unknown {
   return (claudeCode as Record<string, unknown>).subagentEffort;
 }
 
+function normalizePersistedClaudeCode(claudeCode: unknown): OcxConfig["claudeCode"] {
+  if (!claudeCode || typeof claudeCode !== "object" || Array.isArray(claudeCode)) {
+    return claudeCode as OcxConfig["claudeCode"];
+  }
+  const normalized = { ...claudeCode } as Record<string, unknown>;
+  if (Object.hasOwn(normalized, "subagentEffort") && !isClaudeSubagentEffort(normalized.subagentEffort)) {
+    delete normalized.subagentEffort;
+  }
+  return normalized as OcxConfig["claudeCode"];
+}
+
 function normalizeClaudeSubagentEffort(config: OcxConfig, rawParsed: unknown): OcxConfig {
   const rawEffort = rawClaudeSubagentEffort(rawParsed);
   if (rawEffort === undefined || isClaudeSubagentEffort(rawEffort)) return config;
-  const normalized = { ...config, claudeCode: { ...config.claudeCode } };
-  delete normalized.claudeCode!.subagentEffort;
-  return normalized;
+  return { ...config, claudeCode: normalizePersistedClaudeCode(config.claudeCode) };
 }
 
 function warnDegradedClaudeSubagentEffort(rawParsed: unknown): void {
   const rawEffort = rawClaudeSubagentEffort(rawParsed);
   if (rawEffort !== undefined && !isClaudeSubagentEffort(rawEffort)) {
-    console.warn(`⚠️  config.json claudeCode.subagentEffort ${JSON.stringify(rawEffort)} is invalid (expected ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}) — ignoring it. Other settings were preserved.`);
+    console.warn(`⚠️  config.json claudeCode.subagentEffort is invalid (expected ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}) — ignoring it. Other settings were preserved.`);
   }
 }
 
@@ -1517,10 +1526,11 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
   if (claudeCodeBaseline.has(config)) {
     if (onDisk !== undefined) {
       const baseline = claudeCodeBaseline.get(config);
-      const diskChanged = !deepEqual(onDisk.claudeCode, baseline);
+      const persistedClaudeCode = normalizePersistedClaudeCode(onDisk.claudeCode);
+      const diskChanged = !deepEqual(persistedClaudeCode, baseline);
       const weChanged = !deepEqual(config.claudeCode, baseline);
       if (diskChanged && !weChanged) {
-        config.claudeCode = onDisk.claudeCode as OcxConfig["claudeCode"];
+        config.claudeCode = persistedClaudeCode;
       }
     }
   }

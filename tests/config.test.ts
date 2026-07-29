@@ -162,13 +162,15 @@ describe("opencodex config defaults", () => {
     });
   });
 
-  test("an invalid persisted Claude Code subagent effort is ignored without wiping config", () => {
+  test("an invalid persisted Claude Code subagent effort is ignored without wiping config or logging its value", () => {
+    const invalidEffort = "credential-like-value";
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     writeConfig({
       port: 12345,
       defaultProvider: "custom",
       providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "upstream-secret" } },
       apiKeys: [{ id: "key-1", name: "default", key: "ocx_persisted", createdAt: "2026-07-28T00:00:00.000Z" }],
-      claudeCode: { subagentEffort: "ultra" },
+      claudeCode: { subagentEffort: invalidEffort },
     });
 
     const config = loadConfig();
@@ -188,6 +190,9 @@ describe("opencodex config defaults", () => {
     });
     expect(diagnostics.config.claudeCode?.subagentEffort).toBeUndefined();
     expect(backupNames()).toEqual([]);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls.flat().join(" ")).not.toContain(invalidEffort);
+    warnSpy.mockRestore();
   });
 
   test("a blank hostname already on disk degrades without wiping providers or keys", () => {
