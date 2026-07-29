@@ -13,8 +13,8 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /pull_request_target:/);
     assert.doesNotMatch(
       workflow,
-      /actions\/checkout@/,
-      "wrong-branch enforcer must not check out untrusted PR code",
+      /ref:\s*\$\{\{\s*github\.event\.pull_request\.head/,
+      "enforcer must not check out untrusted PR head code",
     );
   });
 
@@ -42,5 +42,34 @@ describe("enforce-pr-target workflow", () => {
   it("soft-fails ready-for-review restoration the same way", () => {
     assert.match(workflow, /readyConversionFailed/);
     assert.match(workflow, /Could not mark pull request ready for review/);
+  });
+
+  it("listens for synchronize so rebase can clear ancestry failures", () => {
+    assert.match(workflow, /synchronize/);
+  });
+
+  it("checks out trusted default-branch scripts only (never PR head)", () => {
+    assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
+    assert.match(workflow, /ref:\s*\$\{\{\s*github\.event\.repository\.default_branch\s*\}\}/);
+    assert.match(workflow, /sparse-checkout:\s*\.github\/scripts/);
+    assert.match(workflow, /persist-credentials:\s*false/);
+    assert.doesNotMatch(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.head/);
+  });
+
+  it("loads pr-quality via require from the checked-out scripts", () => {
+    assert.match(workflow, /pr-quality\.cjs/);
+    assert.match(workflow, /collectPrQualityFailures/);
+  });
+
+  it("strips stale WRONG BRANCH prefix on failure when base is corrected", () => {
+    const failureBlock = workflow.match(
+      /if \(failures\.length > 0\) \{([\s\S]*?)core\.setFailed\(/,
+    );
+    assert.ok(failureBlock, "workflow must have a failure path");
+    const failurePath = failureBlock[1];
+    assert.match(failurePath, /shouldStripTitlePrefix/);
+    assert.match(failurePath, /!hasWrongBase/);
+    assert.match(failurePath, /titlePrefixedByBot = false/);
+    assert.match(failurePath, /pr\.title\.slice\(TITLE_PREFIX\.length\)/);
   });
 });
