@@ -44,9 +44,16 @@ describe("windows elevation helpers", () => {
       stdout: "",
       status: 1,
     });
-    const message = formatWindowsSchtasksError(error, ["/create", "/tn", "opencodex-proxy"]);
+    const message = formatWindowsSchtasksError(error, [
+      "/create",
+      "/tn",
+      "opencodex-proxy",
+      "/xml",
+      "task.xml",
+      "/f",
+    ]);
     expect(message).toContain("Windows access denied while running Task Scheduler.");
-    expect(message).toContain("schtasks /create /tn opencodex-proxy");
+    expect(message).toContain("schtasks /create /tn opencodex-proxy /xml task.xml /f");
     expect(message).toContain("UAC prompt");
     expect(message).toContain(WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER);
     expect(isWindowsSchtasksCreateAccessDenied(message)).toBe(true);
@@ -71,7 +78,14 @@ describe("windows elevation helpers", () => {
 
   test("toWindowsSchtasksError preserves operation and reason", () => {
     const error = Object.assign(new Error("Command failed"), { stderr: "Access is denied." });
-    const structured = toWindowsSchtasksError(error, ["/create", "/xml", "task.xml", "/f"]);
+    const structured = toWindowsSchtasksError(error, [
+      "/create",
+      "/tn",
+      "opencodex-proxy",
+      "/xml",
+      "task.xml",
+      "/f",
+    ]);
     expect(structured).toBeInstanceOf(WindowsSchtasksError);
     expect(structured.operation).toBe("create");
     expect(structured.reason).toBe("access-denied");
@@ -120,11 +134,33 @@ describe("windows elevation helpers", () => {
         "task.xml",
         "/f",
       ]).reason).toBe("other");
+
+      const foreignDenied = toWindowsSchtasksError(
+        Object.assign(new Error("Command failed"), { stderr: "Access is denied.", status: 1 }),
+        ["/create", "/tn", "someone-elses-task", "/xml", "task.xml", "/f"],
+      );
+      expect(foreignDenied.reason).toBe("other");
+      expect(foreignDenied.message).toContain("Windows access denied while running Task Scheduler.");
+      expect(foreignDenied.machineMarker).toBeNull();
     } finally {
       setWindowsElevationProbeForTests(null);
     }
 
     setWindowsElevationProbeForTests(() => null);
+    try {
+      expect(toWindowsSchtasksError(error, [
+        "/create",
+        "/tn",
+        "opencodex-proxy",
+        "/xml",
+        "task.xml",
+        "/f",
+      ]).reason).toBe("other");
+    } finally {
+      setWindowsElevationProbeForTests(null);
+    }
+
+    setWindowsElevationProbeForTests(() => true);
     try {
       expect(toWindowsSchtasksError(error, [
         "/create",

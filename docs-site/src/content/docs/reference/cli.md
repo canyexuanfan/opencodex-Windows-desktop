@@ -439,11 +439,12 @@ ocx service status
 ocx service uninstall
 ```
 
-On Windows, creating the Task Scheduler entry requires elevation. The dashboard's Startup Safety
-action can request UAC automatically. A direct `ocx service install` from a non-elevated shell
-instead prints language-independent guidance; approve UAC from the dashboard or rerun it in an
-elevated PowerShell window. OpenCodex only uses the automatic elevation recovery for its owned,
-fixed `opencodex-proxy` task-create command.
+On Windows, creating the Task Scheduler entry requires elevation. For the owned, fixed
+`opencodex-proxy` task-create command, a confirmed non-elevated token receives language-independent
+guidance and the dashboard's Startup Safety action can request UAC automatically. Approve that UAC
+prompt or rerun `ocx service install` in an elevated PowerShell window. If the token probe is
+unavailable or the failure is outside that owned command, OpenCodex retains the original scheduler
+error and does not request elevation.
 
 ### `ocx codex-shim <subcommand>`
 

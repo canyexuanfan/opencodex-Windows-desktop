@@ -363,10 +363,11 @@ ocx service status
 ocx service uninstall
 ```
 
-在 Windows 上，创建任务计划程序条目需要提升权限。仪表板的 Startup Safety 操作可以自动请求
-UAC；如果在未提升权限的终端中直接运行 `ocx service install`，OpenCodex 会显示不依赖系统语言的
-处理说明。此时可在仪表板中批准 UAC，或在管理员 PowerShell 中重新运行该命令。自动提升恢复仅用于
-OpenCodex 自己固定的 `opencodex-proxy` 任务创建命令。
+在 Windows 上，创建任务计划程序条目需要提升权限。仅当固定且由 OpenCodex 所有的
+`opencodex-proxy` 任务创建命令失败，并确认当前 token 未提升时，OpenCodex 才会显示不依赖系统
+语言的说明，仪表板的 Startup Safety 操作也可自动请求 UAC。请批准该 UAC，或在管理员 PowerShell
+中重新运行 `ocx service install`。如果无法探测 token，或失败不属于该固定命令，OpenCodex 会保留
+原始计划程序错误且不会请求提升。
 
 ### `ocx codex-shim <subcommand>`
 

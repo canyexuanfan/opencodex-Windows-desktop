@@ -360,11 +360,12 @@ ocx service status
 ocx service uninstall
 ```
 
-Windows でタスク スケジューラのエントリを作成するには昇格が必要です。ダッシュボードの
-Startup Safety アクションは UAC を自動的に要求できます。昇格していないシェルから直接
-`ocx service install` を実行した場合は、システム言語に依存しない対処案内が表示されます。
-ダッシュボードで UAC を承認するか、管理者 PowerShell で再実行してください。自動昇格による
-復旧は、OpenCodex が所有する固定の `opencodex-proxy` タスク作成コマンドだけに限定されます。
+Windows でタスク スケジューラのエントリを作成するには昇格が必要です。OpenCodex が所有する
+固定の `opencodex-proxy` タスク作成コマンドで、現在のトークンが未昇格と確認できた場合に限り、
+システム言語に依存しない案内を表示し、ダッシュボードの Startup Safety アクションが UAC を
+自動的に要求できます。その UAC を承認するか、管理者 PowerShell で `ocx service install` を
+再実行してください。トークンを確認できない場合や固定コマンド以外の失敗では、元のスケジューラ
+エラーを保持し、昇格を要求しません。
 
 ### `ocx codex-shim <subcommand>`
 

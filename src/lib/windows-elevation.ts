@@ -18,12 +18,12 @@ export function setWindowsElevationSpawnForTests(next: ElevationSpawn | null): v
 
 type GetSystemDirectoryW = (buffer: Pointer, size: number) => number;
 type TrustedSystemDirectoryResolver = () => string;
-type IsUserAnAdmin = () => boolean;
+type IsUserAnAdmin = () => number;
 type WindowsElevationProbe = () => boolean | null;
 
 let getSystemDirectoryWFn: GetSystemDirectoryW | null | undefined;
 let trustedSystemDirectoryResolverForTests: TrustedSystemDirectoryResolver | null = null;
-let isUserAnAdminFn: IsUserAnAdmin | null | undefined;
+let isUserAnAdminFn: (() => boolean) | null | undefined;
 let windowsElevationProbeForTests: WindowsElevationProbe | null = null;
 
 /** Test-only seam to replace GetSystemDirectoryW-backed resolution. */
@@ -38,7 +38,7 @@ export function setWindowsElevationProbeForTests(next: WindowsElevationProbe | n
   windowsElevationProbeForTests = next;
 }
 
-function loadIsUserAnAdmin(): IsUserAnAdmin | null {
+function loadIsUserAnAdmin(): (() => boolean) | null {
   if (isUserAnAdminFn !== undefined) return isUserAnAdminFn;
   if (process.platform !== "win32") {
     isUserAnAdminFn = null;
@@ -48,10 +48,12 @@ function loadIsUserAnAdmin(): IsUserAnAdmin | null {
     const lib = dlopen("shell32.dll", {
       IsUserAnAdmin: {
         args: [],
-        returns: "bool",
+        // Win32 BOOL is a signed 32-bit integer, not C/C++ bool.
+        returns: "i32",
       },
     });
-    isUserAnAdminFn = () => lib.symbols.IsUserAnAdmin() as boolean;
+    const isUserAnAdmin = lib.symbols.IsUserAnAdmin as IsUserAnAdmin;
+    isUserAnAdminFn = () => isUserAnAdmin() !== 0;
   } catch {
     isUserAnAdminFn = null;
   }
@@ -320,10 +322,9 @@ function isOwnedSchedulerCreate(args: string[]): boolean {
 }
 
 function isWindowsSchtasksAccessDeniedError(error: unknown, args: string[]): boolean {
-  if (isWindowsAccessDeniedError(error)) return true;
-  return isOwnedSchedulerCreate(args)
-    && schedulerExitStatus(error) === 1
-    && isCurrentWindowsProcessElevated() === false;
+  if (!isOwnedSchedulerCreate(args)) return false;
+  return isWindowsAccessDeniedError(error)
+    || (schedulerExitStatus(error) === 1 && isCurrentWindowsProcessElevated() === false);
 }
 
 /** Structured Task Scheduler failure that survives formatting and process boundaries. */
@@ -361,7 +362,8 @@ export class WindowsElevationError extends Error {
 /** Replace raw schtasks access-denied output with dashboard-friendly guidance. */
 export function formatWindowsSchtasksError(error: unknown, args: string[]): string {
   const operation = schtasksOperationFromArgs(args);
-  const accessDenied = isWindowsSchtasksAccessDeniedError(error, args);
+  const ownedCreateAccessDenied = isWindowsSchtasksAccessDeniedError(error, args);
+  const accessDenied = ownedCreateAccessDenied || isWindowsAccessDeniedError(error);
   if (!accessDenied) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -371,7 +373,7 @@ export function formatWindowsSchtasksError(error: unknown, args: string[]): stri
     `Command: schtasks ${argsText}`,
     "Approve the Windows UAC prompt to install the background service, or run `ocx service install` from an elevated PowerShell window.",
   ].join(" ");
-  if (operation === "create") {
+  if (operation === "create" && ownedCreateAccessDenied) {
     return `${guidance}\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`;
   }
   return guidance;
