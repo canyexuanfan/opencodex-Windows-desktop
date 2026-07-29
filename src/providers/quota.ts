@@ -32,6 +32,7 @@ const CACHE_TTL_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
 const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
+const A6API_BASE_URL = "https://api.a6api.com";
 /** Keep a failed probe's previous row at most this long before dropping it. */
 const LAST_GOOD_MAX_AGE_MS = CODEX_CAPACITY_MAX_QUOTA_AGE_MS;
 const nativeMainReportGenerations = new WeakMap<ProviderQuotaReport, number>();
@@ -226,6 +227,61 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function isBuiltInChatGptForwardProvider(name: string, provider: OcxProviderConfig): boolean {
   return name === OPENAI_CODEX_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider);
+}
+
+function isCanonicalA6apiBaseUrl(baseUrl: string): boolean {
+  const normalized = baseUrl.trim().replace(/\/+$/, "");
+  return normalized === A6API_BASE_URL || normalized === `${A6API_BASE_URL}/v1`;
+}
+
+function a6apiPayload(value: unknown): Record<string, unknown> | null {
+  const body = asRecord(value);
+  return asRecord(body?.data) ?? body;
+}
+
+function firstFinite(record: Record<string, unknown> | null, names: string[]): number | undefined {
+  if (!record) return undefined;
+  for (const name of names) {
+    const value = toFiniteNumber(record[name]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaReport | null> {
+  // Never send a configured API key to a lookalike host or through a redirect.
+  if (!isCanonicalA6apiBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const headers = { Accept: "application/json", Authorization: `Bearer ${apiKey}` } as const;
+  const [subscriptionResponse, tokenResponse] = await Promise.all([
+    fetch(`${A6API_BASE_URL}/dashboard/billing/subscription`, {
+      headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }),
+    fetch(`${A6API_BASE_URL}/api/usage/token/`, {
+      headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }),
+  ]);
+  if (!subscriptionResponse.ok || !tokenResponse.ok) return null;
+  const subscription = a6apiPayload(await subscriptionResponse.json().catch(() => null));
+  const token = a6apiPayload(await tokenResponse.json().catch(() => null));
+  const limitUsd = firstFinite(subscription, ["hard_limit_usd"]);
+  const grantedUnits = firstFinite(token, ["total_granted"]);
+  const usedUnits = firstFinite(token, ["total_used"]);
+  const availableUnits = firstFinite(token, ["total_available"]);
+  if (limitUsd === undefined || grantedUnits === undefined || usedUnits === undefined
+    || availableUnits === undefined || limitUsd <= 0 || grantedUnits <= 0) return null;
+  const usdPerUnit = limitUsd / grantedUnits;
+  const usedUsd = usedUnits * usdPerUnit;
+  const remainingUsd = Math.max(0, availableUnits * usdPerUnit);
+  const percent = normalizePercent((usedUsd / limitUsd) * 100);
+  if (percent === undefined) return null;
+  const resetAt = normalizeResetAt(token?.expires_at);
+  const label = `API credits ($${remainingUsd.toFixed(2)} of $${limitUsd.toFixed(2)} remaining)`;
+  return report(provider, "a6api:billing", {
+    customWindows: [{ label, percent, ...(resetAt !== undefined ? { resetAt } : {}) }],
+    updatedAt: Date.now(),
+  });
 }
 
 function report(
@@ -1094,6 +1150,9 @@ async function maybeFetchProviderQuota(
     if (provider.authMode === "oauth" && name === "kimi") return fetchKimiQuota(name, provider);
     if (provider.authMode === "key" && isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
       return fetchKimiQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && name === "a6api") {
+      return fetchA6apiQuota(name, provider);
     }
     return null;
   } catch {

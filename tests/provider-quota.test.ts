@@ -248,6 +248,75 @@ describe("fetchProviderQuotaReports", () => {
     } as OcxConfig;
   }
 
+  function a6apiOnlyConfig(baseUrl = "https://api.a6api.com/v1"): OcxConfig {
+    return {
+      defaultProvider: "a6api",
+      providers: {
+        a6api: { adapter: "openai-chat", authMode: "key", baseUrl, apiKey: "a6api-secret" },
+      },
+    } as OcxConfig;
+  }
+
+  test("A6API quota converts provider units to USD and exposes a displayable credit window", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      if (url.endsWith("/dashboard/billing/subscription")) {
+        return new Response(JSON.stringify({ data: { hard_limit_usd: "20" } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: {
+        total_granted: "20000000",
+        total_used: "5000000",
+        total_available: "15000000",
+        expires_at: "2026-08-01T00:00:00Z",
+      } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("a6api:billing");
+    expect(result.reports[0]?.quota.customWindows).toEqual([{
+      label: "API credits ($15.00 of $20.00 remaining)",
+      percent: 25,
+      resetAt: Date.parse("2026-08-01T00:00:00Z"),
+    }]);
+    expect(seen.map(row => row.url).sort()).toEqual([
+      "https://api.a6api.com/api/usage/token/",
+      "https://api.a6api.com/dashboard/billing/subscription",
+    ]);
+    expect(seen.every(row => row.authorization === "Bearer a6api-secret")).toBe(true);
+    expect(seen.every(row => row.redirect === "error")).toBe(true);
+  });
+
+  test("A6API quota never sends API keys to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig("https://attacker.example/v1"), true);
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("A6API quota drops incomplete or zero-limit billing payloads", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return new Response(JSON.stringify(url.includes("subscription")
+        ? { data: { hard_limit_usd: 0 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
   test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
     await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
     const seen: string[] = [];
