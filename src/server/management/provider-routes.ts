@@ -24,6 +24,7 @@ import {
 } from "../../oauth";
 import { removeCredential } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
+import { providerOutboundGet, providerRedirectError } from "../../lib/provider-outbound";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
@@ -340,8 +341,19 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const { url: modelsUrl, headers } = buildModelsRequest(prov, apiKey, name);
     const started = Date.now();
     try {
-      const res = await fetch(modelsUrl, { headers, signal: AbortSignal.timeout(8000) });
+      const res = await providerOutboundGet(name, prov, modelsUrl, {
+        headers,
+        signal: AbortSignal.timeout(8000),
+      });
       const latencyMs = Date.now() - started;
+      const redirectError = await providerRedirectError(res, modelsUrl);
+      if (redirectError) {
+        return jsonResponse({
+          ok: false,
+          latencyMs,
+          error: redirectError,
+        });
+      }
       if (!res.ok) {
         return jsonResponse({ ok: false, latencyMs, error: `upstream /models returned ${res.status}` });
       }

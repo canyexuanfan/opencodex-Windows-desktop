@@ -52,7 +52,7 @@ async function providerDto(
 ): Promise<Record<string, unknown>> {
   const requestUrl = new URL("http://127.0.0.1/api/providers");
   const response = await handleManagementAPI(
-    new Request(requestUrl),
+    new Request(requestUrl, { headers: { Host: requestUrl.host } }),
     requestUrl,
     {
       providers: {

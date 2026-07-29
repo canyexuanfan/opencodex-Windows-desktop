@@ -5,6 +5,50 @@
 The bundled React dashboard is built into `gui/dist` and served by the same Bun proxy. `ocx gui`
 starts the proxy when needed and opens `http://localhost:<port>`.
 
+All ordinary HTTP responses (excluding successful WebSocket upgrades) include `X-Frame-Options: DENY` and
+`Content-Security-Policy: frame-ancestors 'none'`. This prevents another page from framing the local
+dashboard or management responses. Embedding the dashboard in an iframe is intentionally
+unsupported; deployments that previously relied on such embedding must open it as a top-level page.
+
+## Authentication boundaries
+
+OpenCodex uses three mutually exclusive admission credential classes:
+
+| Credential class | Sources | Allowed surface |
+| --- | --- | --- |
+| Data plane | `OPENCODEX_API_AUTH_TOKEN`, the `service-api-token` file loaded through `OCX_API_TOKEN_FILE`, and `config.apiKeys` | `/v1/*` HTTP endpoints and new data-plane WebSocket handshakes only |
+| Management plane | `OPENCODEX_ADMIN_AUTH_TOKEN` or the independent protected `admin-api-token` file | `/api/*` only |
+| GUI session | A short-lived token issued only with a legitimate same-origin local dashboard page | `/api/*` only, bound to the issuing origin |
+
+The service token file remains a delivery mechanism for the data-plane environment token; it is not
+a fourth credential class. A management credential that equals any configured data-plane credential
+does not enable management access. The data plane may continue to start, but `/api/*` remains closed.
+
+Management authentication never has a loopback bypass. If no management credential is available, or
+management token creation, validation, or permission hardening fails, every `/api/*` request returns
+503 while `/v1/*` and unauthenticated `/healthz` continue to operate. Windows ACL hardening results
+must be checked explicitly because an `icacls` timeout is a soft failure in the shared secret helper.
+
+Local dashboard page entry requires a loopback binding, a valid parseable loopback `Host`, and an
+exact request origin. A non-loopback dashboard uses the management token flow instead. The server
+issues an in-memory session for five minutes, capped at 128 live sessions. The session is bound to the
+exact protocol, host, and port; state-changing requests additionally require the session CSRF token.
+The dashboard never attaches its management session to `/v1/*` requests, and pages containing a
+session bootstrap are served with `Cache-Control: no-store`.
+
+Proxy admission credentials must never reach an upstream provider. The forwarding guard rejects the
+`ocx_data_`, `ocx_admin_`, and `ocx_session_` prefixes, historical keys matching
+`^ocx_[0-9a-f]{40}$`, both environment tokens by constant-time comparison, and manually configured
+data keys by constant-time comparison.
+
+Audit item #16 remains partially deferred. This credential split protects new WebSocket handshakes,
+but the following established-connection controls are intentionally outside this batch and must not
+be treated as implemented:
+
+- revoke an already established connection when its data key is deleted;
+- enforce an idle timeout;
+- reauthenticate subsequent frames after the handshake.
+
 ## API ownership
 
 `src/server/index.ts` authenticates and routes `/api/*`, then delegates the management surface to

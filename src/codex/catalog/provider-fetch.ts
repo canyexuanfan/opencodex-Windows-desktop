@@ -39,7 +39,11 @@ import {
   targetKey,
 } from "../../combos";
 import type { NormalizedComboConfig } from "../../combos/types";
-import { providerDestinationResolvedError } from "../../lib/destination-policy";
+import {
+  ProviderOutboundPolicyError,
+  providerOutboundGet,
+  providerRedirectError,
+} from "../../lib/provider-outbound";
 import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 
@@ -348,21 +352,20 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
     };
   };
   try {
-    const destinationError = await providerDestinationResolvedError(name, {
-      baseUrl: url,
-      allowPrivateNetwork: prov.allowPrivateNetwork,
+    const res = await providerOutboundGet(name, prov, url, {
+      headers,
+      signal: AbortSignal.timeout(8000),
     });
-    if (destinationError) {
-      const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "blocked" });
+    const redirectError = await providerRedirectError(res, url);
+    if (redirectError) {
+      const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "http", httpStatus: res.status });
       if (shouldLog) {
         console.warn(
-          `[opencodex] Provider model discovery for "${name}" was blocked by destination policy: ${destinationError} [urlClass=${urlClass}, fallback=${fallback}].`,
+          `[opencodex] Provider model discovery for "${name}" ${redirectError} [urlClass=${urlClass}, fallback=${fallback}].`,
         );
       }
       return models;
     }
-
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "http", httpStatus: res.status });
       if (shouldLog) {
@@ -445,6 +448,15 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
     setCached(name, live);
     return live;
   } catch (error) {
+    if (error instanceof ProviderOutboundPolicyError) {
+      const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "blocked" });
+      if (shouldLog) {
+        console.warn(
+          `[opencodex] Provider model discovery for "${name}" was blocked by destination policy: ${error.message} [urlClass=${urlClass}, fallback=${fallback}].`,
+        );
+      }
+      return models;
+    }
     const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "network" });
     if (shouldLog) {
       console.warn(

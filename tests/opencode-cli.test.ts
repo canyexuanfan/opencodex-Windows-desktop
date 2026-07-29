@@ -568,3 +568,4 @@ describe("ocx opencode not-found hint", () => {
     expect(opencodeNotFoundHint(0, null, "win32")).toBeNull();
   });
 });
+import { ManagementRequest as Request } from "./helpers/management-auth";
