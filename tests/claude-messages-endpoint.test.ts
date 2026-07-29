@@ -782,6 +782,36 @@ test("effort safety valve: routes with a definitive no-effort ladder get reasoni
   }
 });
 
+test("generated agent effort directive restores exact xhigh and max after Claude Code collapses them to a thinking budget", async () => {
+  const { server: upstream, captured } = mockChatUpstreamCapturing();
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    for (const effort of ["xhigh", "max"]) {
+      const response = await postMessages(server.url.toString(), {
+        model: "claude-haiku-4-5",
+        max_tokens: 32000,
+        stream: true,
+        system: [
+          { type: "text", text: "<!-- ocx-route: claude-ocx-mock--test-model -->" },
+          { type: "text", text: `<!-- ocx-effort: ${effort} -->` },
+        ],
+        thinking: { type: "enabled", budget_tokens: 31999 },
+        messages: [{ role: "user", content: "hi" }],
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+    expect(captured.map(body => ({ model: body.model, effort: body.reasoning_effort }))).toEqual([
+      { model: "test-model", effort: "xhigh" },
+      { model: "test-model", effort: "max" },
+    ]);
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
 test("unknown-ladder routes keep the requested effort (no false stripping)", async () => {
   const { server: upstream, captured } = mockChatUpstreamCapturing();
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));

@@ -142,6 +142,54 @@ describe("opencodex config defaults", () => {
     });
   });
 
+  test("config candidates validate Claude Code subagent effort levels", () => {
+    const base = getDefaultConfig();
+    for (const subagentEffort of ["low", "medium", "high", "xhigh", "max"]) {
+      expect(validateConfigCandidate({
+        ...base,
+        claudeCode: { ...base.claudeCode, subagentEffort },
+      })).toMatchObject({
+        ok: true,
+        config: { claudeCode: { subagentEffort } },
+      });
+    }
+    expect(validateConfigCandidate({
+      ...base,
+      claudeCode: { ...base.claudeCode, subagentEffort: "ultra" },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("claudeCode.subagentEffort"),
+    });
+  });
+
+  test("an invalid persisted Claude Code subagent effort is ignored without wiping config", () => {
+    writeConfig({
+      port: 12345,
+      defaultProvider: "custom",
+      providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "upstream-secret" } },
+      apiKeys: [{ id: "key-1", name: "default", key: "ocx_persisted", createdAt: "2026-07-28T00:00:00.000Z" }],
+      claudeCode: { subagentEffort: "ultra" },
+    });
+
+    const config = loadConfig();
+    const diagnostics = readConfigDiagnostics();
+
+    expect(config.claudeCode?.subagentEffort).toBeUndefined();
+    expect(config).toMatchObject({
+      port: 12345,
+      defaultProvider: "custom",
+      providers: { custom: { baseUrl: "https://example.test/v1", apiKey: "upstream-secret" } },
+      apiKeys: [expect.objectContaining({ id: "key-1", key: "ocx_persisted" })],
+    });
+    expect(diagnostics).toMatchObject({
+      source: "file",
+      error: null,
+      warnings: [expect.stringContaining("claudeCode.subagentEffort ignored")],
+    });
+    expect(diagnostics.config.claudeCode?.subagentEffort).toBeUndefined();
+    expect(backupNames()).toEqual([]);
+  });
+
   test("a blank hostname already on disk degrades without wiping providers or keys", () => {
     // Regression: rejecting a blank hostname in the schema made loadConfig fail twice
     // (getDefaultConfig() has no hostname key, so the merge-defaults repair cannot fix
