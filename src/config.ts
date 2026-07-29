@@ -20,6 +20,7 @@ import {
   MODEL_ADAPTER_OVERRIDE_ALLOWED,
   OPENAI_PROVIDER_TIER_VERSION,
   REASONING_SUMMARY_DELIVERY_VALUES,
+  type OcxClaudeCodeConfig,
   type OcxConfig,
   type OcxProviderConfig,
 } from "./types";
@@ -699,15 +700,18 @@ const configSchema = z.object({
   const claudeCode = (config as { claudeCode?: unknown }).claudeCode;
   if (claudeCode !== undefined && (!claudeCode || typeof claudeCode !== "object" || Array.isArray(claudeCode))) {
     ctx.addIssue({ code: "custom", path: ["claudeCode"], message: "claudeCode must be an object" });
-  } else if (claudeCode && "desktopProfile" in claudeCode && (claudeCode as { desktopProfile?: unknown }).desktopProfile !== undefined) {
-    try {
-      parseDesktopProfile((claudeCode as { desktopProfile?: unknown }).desktopProfile);
-    } catch (error) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["claudeCode", "desktopProfile"],
-        message: error instanceof Error ? error.message : String(error),
-      });
+  } else if (claudeCode) {
+    const claude = claudeCode as { desktopProfile?: unknown };
+    if (claude.desktopProfile !== undefined) {
+      try {
+        parseDesktopProfile(claude.desktopProfile);
+      } catch (error) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["claudeCode", "desktopProfile"],
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -1007,6 +1011,43 @@ function warnDegradedHostname(rawParsed: unknown, validated: OcxConfig): void {
   }
 }
 
+const CLAUDE_SUBAGENT_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+function isClaudeSubagentEffort(value: unknown): value is NonNullable<OcxClaudeCodeConfig["subagentEffort"]> {
+  return typeof value === "string" && CLAUDE_SUBAGENT_EFFORTS.includes(value as typeof CLAUDE_SUBAGENT_EFFORTS[number]);
+}
+
+function rawClaudeSubagentEffort(rawParsed: unknown): unknown {
+  const raw = rawConfigRecord(rawParsed);
+  const claudeCode = raw?.claudeCode;
+  if (!claudeCode || typeof claudeCode !== "object" || Array.isArray(claudeCode)) return undefined;
+  return (claudeCode as Record<string, unknown>).subagentEffort;
+}
+
+function normalizePersistedClaudeCode(claudeCode: unknown): OcxConfig["claudeCode"] {
+  if (!claudeCode || typeof claudeCode !== "object" || Array.isArray(claudeCode)) {
+    return claudeCode as OcxConfig["claudeCode"];
+  }
+  const normalized = { ...claudeCode } as Record<string, unknown>;
+  if (Object.hasOwn(normalized, "subagentEffort") && !isClaudeSubagentEffort(normalized.subagentEffort)) {
+    delete normalized.subagentEffort;
+  }
+  return normalized as OcxConfig["claudeCode"];
+}
+
+function normalizeClaudeSubagentEffort(config: OcxConfig, rawParsed: unknown): OcxConfig {
+  const rawEffort = rawClaudeSubagentEffort(rawParsed);
+  if (rawEffort === undefined || isClaudeSubagentEffort(rawEffort)) return config;
+  return { ...config, claudeCode: normalizePersistedClaudeCode(config.claudeCode) };
+}
+
+function warnDegradedClaudeSubagentEffort(rawParsed: unknown): void {
+  const rawEffort = rawClaudeSubagentEffort(rawParsed);
+  if (rawEffort !== undefined && !isClaudeSubagentEffort(rawEffort)) {
+    console.warn(`⚠️  config.json claudeCode.subagentEffort is invalid (expected ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}) — ignoring it. Other settings were preserved.`);
+  }
+}
+
 type NativeSubagentPersistedField = "injectionModel" | "injectionEffort" | "syncCodexSubagentDefaults";
 
 function rawConfigRecord(rawParsed: unknown): Record<string, unknown> | null {
@@ -1082,8 +1123,9 @@ export function loadConfig(): OcxConfig {
       const config = result.data as OcxConfig;
       warnDegradedStreamMode(parsed, config);
       warnDegradedHostname(parsed, config);
+      warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
-      return normalizeNativeSubagentSync(config, parsed);
+      return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
     }
     // Schema validation failed — merge defaults into the raw object instead of
     // discarding it entirely, so pool accounts and providers survive a missing
@@ -1099,8 +1141,9 @@ export function loadConfig(): OcxConfig {
       warnConfigRepaired(configPath, result.error);
       const config = retryResult.data as OcxConfig;
       warnDegradedHostname(parsed, config);
+      warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
-      return normalizeNativeSubagentSync(config, parsed);
+      return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
     }
     // Merge couldn't fix it — truly broken config
     warnAndBackupInvalidConfig(configPath, result.error);
@@ -1131,12 +1174,16 @@ function configPlaceholderWarnings(config: OcxConfig): string[] {
 }
 
 function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): ConfigDiagnostics {
-  // An unsafe hand-edited opt-in is disabled in memory instead of rejecting
+  // Unsafe hand-edited optional values are disabled in memory instead of rejecting
   // the entire config, which would hide unrelated providers/accounts. The next
   // ordinary save persists the normalized absence.
   const syncDisabledReason = nativeSubagentSyncDisabledReason(config, rawParsed);
-  const normalized = normalizeNativeSubagentSync(config, rawParsed);
+  const rawEffort = rawClaudeSubagentEffort(rawParsed);
+  const normalized = normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, rawParsed), rawParsed);
   const warnings = configPlaceholderWarnings(normalized);
+  if (rawEffort !== undefined && !isClaudeSubagentEffort(rawEffort)) {
+    warnings.push(`claudeCode.subagentEffort ignored: expected one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`);
+  }
   warnings.push(...malformedNativeSubagentFields(rawParsed).map(malformedNativeSubagentFieldWarning));
   if (syncDisabledReason) {
     warnings.push(`syncCodexSubagentDefaults ignored: ${syncDisabledReason}`);
@@ -1190,10 +1237,16 @@ function blankHostnameError(value: unknown): string | null {
   return null;
 }
 
+function claudeSubagentEffortError(value: unknown): string | null {
+  const effort = rawClaudeSubagentEffort(value);
+  if (effort === undefined || isClaudeSubagentEffort(effort)) return null;
+  return `schema_invalid: claudeCode.subagentEffort: must be one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`;
+}
+
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
 export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
-  const hostnameError = blankHostnameError(value);
-  if (hostnameError) return { ok: false, error: hostnameError };
+  const boundaryError = blankHostnameError(value) ?? claudeSubagentEffortError(value);
+  if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
   if (result.success) return { ok: true, config: result.data as OcxConfig };
   return { ok: false, error: schemaDiagnosticsError(result.error) };
@@ -1473,10 +1526,11 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
   if (claudeCodeBaseline.has(config)) {
     if (onDisk !== undefined) {
       const baseline = claudeCodeBaseline.get(config);
-      const diskChanged = !deepEqual(onDisk.claudeCode, baseline);
+      const persistedClaudeCode = normalizePersistedClaudeCode(onDisk.claudeCode);
+      const diskChanged = !deepEqual(persistedClaudeCode, baseline);
       const weChanged = !deepEqual(config.claudeCode, baseline);
       if (diskChanged && !weChanged) {
-        config.claudeCode = onDisk.claudeCode as OcxConfig["claudeCode"];
+        config.claudeCode = persistedClaudeCode;
       }
     }
   }
