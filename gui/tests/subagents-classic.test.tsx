@@ -93,8 +93,8 @@ function removeButtons(): HTMLButtonElement[] {
 test("renders one featured list and one picker, never the same list twice", async () => {
   await mount();
   expect(container.querySelector(".subagents-workspace-shell")).toBeTruthy();
-  // Two stacked sections: the featured roster, then the model picker.
-  expect(container.querySelectorAll(".subagents-workspace-section").length).toBe(2);
+  // Three stacked sections: the featured roster, the model picker, then delegation settings.
+  expect(container.querySelectorAll(".subagents-workspace-section").length).toBe(3);
   // The rail listed the featured models a second time, which read as a rendering bug.
   expect(container.querySelector(".subagents-workspace-rail")).toBeNull();
   const featuredHeadings = Array.from(container.querySelectorAll(".swi-featured-title"))

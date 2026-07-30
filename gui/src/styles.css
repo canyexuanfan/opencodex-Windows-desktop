@@ -648,6 +648,20 @@ a.btn, a.btn:hover { text-decoration: none; }
 .api-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .maintenance-head { align-items: flex-start; flex-wrap: wrap; }
 .maintenance-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+/*
+  Focus anchor for the update dialog, not a control: the visible entry point is the sidebar
+  footer orb, which also reports whether an update is waiting. This keeps `#dashboard/update`
+  openable and gives the dialog somewhere to return focus on close, without painting a second
+  button that does the same thing.
+*/
+.maintenance-update-anchor {
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: hidden;
+}
 .maintenance-notice { margin: 14px 0 0; align-items: flex-start; }
 .update-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .update-row .field-label { margin: 0; }
@@ -733,6 +747,90 @@ a.btn, a.btn:hover { text-decoration: none; }
   flex-direction: column;
   margin-bottom: 0;
 }
+
+/* ---- memory observability panel ---- */
+.mem-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.mem-head-title { display: flex; align-items: center; gap: 8px; }
+.mem-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mem-inflight { display: inline-flex; align-items: baseline; gap: 6px; }
+.mem-inflight-label { font-size: var(--text-label); color: var(--muted); }
+.mem-inflight-value { font-size: var(--text-control); font-weight: var(--weight-semibold); }
+/* :empty keeps an idle panel from reserving a row for an absent status message. */
+.mem-status { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.mem-status:empty { display: none; }
+/* Four scalars in the shared 6-column .stat-row left a third of the panel empty
+   and squeezed each figure into two lines. Give this row its own track count. */
+.mem-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 0; }
+@media (max-width: 900px) { .mem-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .mem-stats { grid-template-columns: minmax(0, 1fr); } }
+.mem-stats .stat-sub {
+  font-size: var(--text-caption);
+  color: var(--faint);
+  margin-top: 4px;
+}
+.stat .value--warn { color: var(--amber); }
+.stat .value--danger { color: var(--red); }
+
+/* Headline gauge: observed memory against the watchdog warn threshold. */
+.mem-pressure {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--raised);
+}
+.mem-pressure--warn { border-color: color-mix(in srgb, var(--amber) 42%, var(--border)); background: var(--amber-soft); }
+.mem-pressure--over { border-color: color-mix(in srgb, var(--red) 42%, var(--border)); background: var(--red-soft); }
+.mem-pressure-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.mem-pressure-label {
+  font-size: var(--text-label);
+  font-weight: var(--weight-medium);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.mem-pressure-metric { font-size: var(--text-caption); color: var(--faint); }
+.mem-pressure-figure {
+  font-size: var(--text-subtitle);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  white-space: nowrap;
+}
+.mem-pressure-limit { color: var(--faint); font-weight: var(--weight-regular); }
+.mem-pressure-track {
+  height: 5px;
+  border-radius: var(--radius-2xs);
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+  overflow: hidden;
+  margin: 8px 0 6px;
+}
+.mem-pressure-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: var(--radius-2xs);
+  background: var(--green);
+  transform: scaleX(var(--mem-scale, 0));
+  transform-origin: left center;
+  transition: transform var(--motion-normal);
+}
+.mem-pressure--warn .mem-pressure-fill { background: var(--amber); }
+.mem-pressure--over .mem-pressure-fill { background: var(--red); }
+.mem-pressure-foot { font-size: var(--text-caption); color: var(--muted); }
 
 .dash-overview-head .stat-row {
   margin-bottom: 0;
@@ -1071,9 +1169,9 @@ dialog.modal-overlay::backdrop {
 .modal-head h3 { font-size: var(--text-subtitle); }
 
 /* ---- codex auth page ---- */
-.card-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 6px; flex-wrap: wrap; min-width: 0; }
+.card-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px 4px; flex-wrap: wrap; min-width: 0; }
 .card-head strong { min-width: 0; overflow-wrap: anywhere; }
-.card-sub { font-size: var(--text-label); line-height: var(--leading-body); color: var(--muted); padding: 0 16px 10px; min-width: 0; overflow-wrap: anywhere; }
+.card-sub { font-size: var(--text-label); line-height: var(--leading-body); color: var(--muted); padding: 0 16px 8px; min-width: 0; overflow-wrap: anywhere; }
 .card-active { border-color: var(--accent-ring); }
 .card-right { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: var(--text-caption); color: var(--faint); }
 .btn-icon-danger.card-right {
@@ -1093,11 +1191,11 @@ dialog.modal-overlay::backdrop {
 .section-sep { display: flex; align-items: center; gap: 10px; margin: 20px 0 12px; }
 .section-label { font-size: var(--text-label); color: var(--muted); font-weight: var(--weight-medium); white-space: nowrap; }
 .sep-line { flex: 1; height: 1px; background: var(--border); }
-.quota-compact { padding: 2px 16px 12px; display: grid; gap: 4px; }
+.quota-compact { padding: 0 16px 10px; display: grid; gap: 4px; }
 /* Fixed slot so pending skeleton and real bars occupy the same vertical space.
    Sized for two compact rows — a 1-bar plan must not shrink the card under settings. */
 .codex-account-quota-slot {
-  min-height: 58px;
+  min-height: 48px;
   box-sizing: border-box;
 }
 /* Display:contents so main/section/empty keep the same margins as the ready tree. */
@@ -1159,11 +1257,11 @@ dialog.modal-overlay::backdrop {
   min-width: 2.25rem;
   justify-content: center;
 }
-/* Pending skeletons must fit the same 58px slot as ready bars — otherwise main shrinks. */
+/* Pending skeletons must fit the same 48px slot as ready bars — otherwise main shrinks. */
 .quota-compact--pending {
-  height: 58px;
-  min-height: 58px;
-  max-height: 58px;
+  height: 48px;
+  min-height: 48px;
+  max-height: 48px;
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -1947,12 +2045,20 @@ button.prov-account-row.active { cursor: default; }
 /* ── Setting row (label left, control right) ── */
 .setting-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; gap: 16px; }
 .setting-row + .setting-row { border-top: 1px solid var(--border-soft); }
-.dash-subagent-guidance-row {
+/* Dashboard keeps the model pick inline; the two switches live on the Subagents tab. */
+.dash-delegation-summary {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-soft);
+}
+.dash-delegation-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
 }
 .setting-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .setting-label .title { font-size: var(--text-body); font-weight: var(--weight-semibold); color: var(--text); }

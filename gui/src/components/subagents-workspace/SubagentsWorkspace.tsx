@@ -1,11 +1,15 @@
 /**
  * SubagentsWorkspace — a single stacked column for the Subagents tab: the featured roster
- * (reorder + save) followed by the model picker.
+ * (reorder + save), the model picker, then the delegation settings.
  *
  * The previous rail layout listed the featured models twice — once as a rail group, once in
  * the main pane — which read as a rendering bug rather than two views of one thing. There is
  * also nothing here that needs two panes: picking a model is one toggle, and the per-model
  * detail pane carried no information the row did not already show.
+ *
+ * The sticky strip is the same `SectionTabs` the Logs and Usage tabs use: every section stays
+ * in the document and scrolling still works: the strip only jumps to one and reports where
+ * you are.
  */
 import { useMemo, useState } from "react";
 import {
@@ -20,6 +24,10 @@ import {
 import { useT } from "../../i18n/shared";
 import { Trans } from "../../i18n/provider";
 import { modelLabel } from "../../model-display";
+import { SectionTabs } from "../section-tabs";
+import { sectionAnchorId } from "../../section-anchors";
+import SubagentDelegationSection from "./SubagentDelegationSection";
+import type { DelegationPatch, DelegationModelOption } from "../../pages/use-subagent-delegation";
 
 export interface SubagentsWorkspaceProps {
   available: string[];
@@ -28,6 +36,16 @@ export interface SubagentsWorkspaceProps {
   onToggle: (m: string) => void;
   onMove: (i: number, dir: -1 | 1) => void;
   onSave: () => void;
+  delegation: {
+    model: string;
+    effort: string;
+    efforts: string[];
+    available: DelegationModelOption[];
+    guidanceEnabled: boolean;
+    syncCodexDefaults: boolean;
+    saving: boolean;
+    onSave: (patch: DelegationPatch) => void;
+  };
 }
 
 export const FEATURED_MAX = 5;
@@ -39,6 +57,7 @@ export default function SubagentsWorkspace({
   onToggle,
   onMove,
   onSave,
+  delegation,
 }: SubagentsWorkspaceProps) {
   const t = useT();
   const [query, setQuery] = useState("");
@@ -51,10 +70,21 @@ export default function SubagentsWorkspace({
     return available.filter(m => !q || m.toLowerCase().includes(q));
   }, [available, query]);
 
+  const tabs = useMemo(() => [
+    { id: "featured", label: t("sub.featured"), meta: `${chosen.length}/${FEATURED_MAX}` },
+    { id: "models", label: t("sub.models"), meta: String(availableFiltered.length) },
+    { id: "settings", label: t("sub.settings") },
+  ], [t, chosen.length, availableFiltered.length]);
+
   return (
     <div className="subagents-workspace-shell">
+      <SectionTabs scope="subagents" items={tabs} ariaLabel={t("sub.sections")} />
       <div className="subagents-workspace-root">
-        <section className="subagents-workspace-section" aria-label={t("sub.featured")}>
+        <section
+          id={sectionAnchorId("subagents", "featured")}
+          className="subagents-workspace-section"
+          aria-label={t("sub.featured")}
+        >
           <div className="swi-featured-head">
             <h2 className="swi-featured-title">{t("sub.featured")}</h2>
             <span className="swi-featured-count">{chosen.length}/{FEATURED_MAX}</span>
@@ -114,7 +144,11 @@ export default function SubagentsWorkspace({
           </div>
         </section>
 
-        <section className="subagents-workspace-section" aria-label={t("sub.models")}>
+        <section
+          id={sectionAnchorId("subagents", "models")}
+          className="subagents-workspace-section"
+          aria-label={t("sub.models")}
+        >
           <div className="swi-featured-head">
             <h2 className="swi-featured-title">{t("sub.models")}</h2>
             <span className="swi-featured-count">{availableFiltered.length}</span>
@@ -171,6 +205,26 @@ export default function SubagentsWorkspace({
               )}
             </div>
           </div>
+        </section>
+
+        <section
+          id={sectionAnchorId("subagents", "settings")}
+          className="subagents-workspace-section"
+          aria-label={t("sub.settings")}
+        >
+          <div className="swi-featured-head">
+            <h2 className="swi-featured-title">{t("sub.settings")}</h2>
+          </div>
+          <SubagentDelegationSection
+            model={delegation.model}
+            effort={delegation.effort}
+            efforts={delegation.efforts}
+            available={delegation.available}
+            guidanceEnabled={delegation.guidanceEnabled}
+            syncCodexDefaults={delegation.syncCodexDefaults}
+            saving={delegation.saving}
+            onSave={delegation.onSave}
+          />
         </section>
       </div>
     </div>

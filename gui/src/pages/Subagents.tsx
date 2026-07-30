@@ -6,6 +6,7 @@ import SubagentsWorkspace, { FEATURED_MAX } from "../components/subagents-worksp
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
 import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { useSubagentDelegation } from "./use-subagent-delegation";
 
 type CachedSubagents = { available: string[]; chosen: string[] };
 
@@ -23,6 +24,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const [busy, setBusy] = useState(false);
   /** Sync guard: state-only `busy` can miss clicks before the disabled re-render commits. */
   const saveInFlight = useRef(false);
+  const delegation = useSubagentDelegation(apiBase);
 
   const loadSubagents = useCallback(async (): Promise<CachedSubagents> => {
     const res = await fetch(`${apiBase}/api/subagent-models`);
@@ -124,6 +126,16 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
         onToggle={toggle}
         onMove={move}
         onSave={() => { void save(); }}
+        delegation={{
+          model: delegation.model,
+          effort: delegation.effort,
+          efforts: delegation.efforts,
+          available: delegation.available,
+          guidanceEnabled: delegation.guidanceEnabled,
+          syncCodexDefaults: delegation.syncCodexDefaults,
+          saving: delegation.saving,
+          onSave: patch => { void delegation.save(patch); },
+        }}
       />
     </>
   );

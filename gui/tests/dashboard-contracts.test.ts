@@ -123,18 +123,18 @@ test("Dashboard workspace pane is a labelled section, not a nested main landmark
 
 test("native Codex subagent defaults stay separate from OpenCodex guidance", async () => {
   const core = await Bun.file(new URL("../src/pages/dashboard-core-poll.ts", import.meta.url)).text();
-  const sections = await Bun.file(new URL("../src/pages/dashboard-overview-sections.tsx", import.meta.url)).text();
+  // The controls live on the Subagents tab now; the Dashboard keeps only a link to them.
+  const sections = await Bun.file(new URL("../src/components/subagents-workspace/SubagentDelegationSection.tsx", import.meta.url)).text();
   const head = await Bun.file(new URL("../src/pages/dashboard-overview-head.tsx", import.meta.url)).text();
   expect(core).toContain("syncCodexSubagentDefaults: data.syncCodexSubagentDefaults === true");
-  expect(sections).toContain("saveInjection({ syncCodexSubagentDefaults: !syncCodexSubagentDefaults })");
-  expect(sections).toContain("disabled={injectionSaving || !injectionModel}");
-  expect(sections).not.toContain("injectionSaving || !multiAgentGuidanceEnabled");
+  expect(sections).toContain("onSave({ syncCodexSubagentDefaults: !syncCodexDefaults })");
+  expect(sections).toContain("disabled={saving || !model}");
+  expect(sections).not.toContain("saving || !guidanceEnabled");
   expect(sections).not.toContain("dash.injectionActive");
-  expect(en["dash.syncCodexSubagentDefaults"]).toBe("Use as native Codex subagent defaults");
   // Two promises this copy must keep, asserted by meaning rather than by an exact
   // sentence so the wording can be made plainer without breaking the contract:
-  // the toggle starts off, and it does not clobber hand-written [agents] settings.
-  expect(en["dash.syncCodexSubagentDefaultsHint"]).toMatch(/off by default/i);
+  // the off state is explained, and it does not clobber hand-written [agents] settings.
+  expect(en["dash.syncCodexSubagentDefaultsHint"]).toMatch(/\boff\b/i);
   expect(en["dash.syncCodexSubagentDefaultsHint"]).toMatch(/\[agents\][^.]*\b(left alone|preserved|not overwritten|untouched)\b/i);
   expect(en["dash.multiAgentGuidanceHint"]).not.toContain("proactive");
   expect(head).toContain("models.v2Mode_");
