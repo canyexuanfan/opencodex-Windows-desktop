@@ -28,6 +28,8 @@
 .dashboard-workspace-main .tbl-wrap {
   max-height: 520px;
   overflow-y: auto;
+  /* Inset table from border+surface so cells aren't flush to the frame. */
+  padding: var(--space-2);
 }
 
 .dashboard-workspace-main .tbl thead th {

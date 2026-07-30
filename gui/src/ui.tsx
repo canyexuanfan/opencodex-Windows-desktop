@@ -25,12 +25,12 @@ export function Notice({ tone, children }: { tone: "ok" | "err"; children: React
 
 export interface SelectOption { value: string; label: React.ReactNode }
 
-export function Select({ value, options, onChange, disabled, label, style, align, placement, dropdownStyle, portal = true, id }: {
-  value: string;
+export function Select({ value, options, onChange, disabled, label, id, style, align, placement, dropdownStyle, portal = true }: {  value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
   disabled?: boolean;
   label?: string;
+  id?: string;
   style?: CSSProperties;
   align?: "left" | "right";
   placement?: "below" | "right";
