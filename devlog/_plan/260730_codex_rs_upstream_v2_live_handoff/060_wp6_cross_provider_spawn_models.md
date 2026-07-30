@@ -390,3 +390,40 @@ assertion is carried forward as the one open item rather than being quietly roun
 to success. Criterion 7 is explicitly NOT claimed met by a green suite — it needs a real
 session against a live routed provider, which is a runtime check the user can make in
 one turn and this phase cannot make for them.
+
+---
+
+# Criterion 7 CLOSED by a live spawn + control (2026-07-31)
+
+The open item is resolved, and with a controlled experiment rather than a single happy
+path. Both runs used `codex exec --enable multi_agent_v2` against the real installed
+binary (`codex-cli 0.146.0-alpha.9.2`) with an isolated `CODEX_HOME`, the same auth, and
+the same prompt: spawn `opencode-go/glm-5.2` and report verbatim what happened.
+
+The only difference between the two runs is the field WP6 writes.
+
+| Catalog fed to the binary | Result |
+|---|---|
+| Produced by our writer (`mergeCatalogEntriesForSync`, default mode, v2 feature ON) — 21 routed rows stamped `"v2"` | **spawn succeeded**: `{"task_name":"/root/reply_ok"}` |
+| Byte-identical control with the pin stripped from those same 21 rows | **refused**: ``Unknown model `opencode-go/glm-5.2` for spawn_agent. Available models: gpt-5.5, gpt-5.6-sol, gpt-5.6-terra, gpt-5.4-mini, gpt-5.4`` |
+
+Three things this proves that the earlier `codex debug models` evidence could not:
+
+1. The spawn-time validator is genuinely reached, and it accepts a routed,
+   slash-namespaced, cross-provider model. Option B works end to end.
+2. The write-path half is load-bearing, not decorative. Stripping only the stamp — with
+   the roster filter, the feature flag, and everything else identical — reproduces the
+   exact upstream refusal. Widening our advisory roster alone would have shipped a
+   guidance surface that promised models the binary then rejected.
+3. The refusal message and its available-models list are unchanged, so the
+   unknown-model guardrail the user asked to keep is intact for genuinely bad input.
+
+Note on the live user config at the time of this test: the machine was in
+`multiAgentMode: "v1"` with the v2 feature OFF, so its on-disk catalog carried `"v1"` on
+every row and our new branch was correctly dormant there. The test therefore drove the
+production writer explicitly rather than reading whatever happened to be on disk — which
+is also why the feature-OFF byte-identity contract in `tests/codex-v2-gate.test.ts`
+matters: most users sit in exactly that dormant state.
+
+Criterion 7: **met**. Work-phase outcome upgraded from "DONE with one open item" to
+plain `DONE`.
