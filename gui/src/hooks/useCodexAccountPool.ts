@@ -58,6 +58,13 @@ export interface CodexAccountPoolController {
   accounts: CodexAccountEntry[];
   activeId: string | null;
   loadState: CodexAccountLoadState;
+  /**
+   * True while any load is in flight, including the forced quota refresh. `loadState` stays
+   * `ready` during a refresh so rows survive; this is what makes that wait visible.
+   */
+  refreshing: boolean;
+  /** True until the first load attempt settles, whether it succeeds or fails. */
+  initialLoading: boolean;
   switchingId: string | null;
   pauseUpdatingId: string | null;
   pausingExhausted: boolean;
@@ -93,6 +100,13 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [pauseUpdatingId, setPauseUpdatingId] = useState<string | null>(null);
   const [pausingExhausted, setPausingExhausted] = useState(false);
+  // A counter, not a boolean: the initial load, the 30s poll, quota-fill retries and explicit
+  // actions can all be in flight together, and an older one settling must not clear the
+  // indicator while a newer forced refresh is still running.
+  const [inflightCount, setInflightCount] = useState(0);
+  // "First attempt still pending", not "never succeeded": a failed first attempt settles this so
+  // the surface can show its error instead of an endless skeleton.
+  const [firstAttemptSettled, setFirstAttemptSettled] = useState(() => seed != null);
   // Pause leases live in a ref: pausing must not re-render, and the effect below reads
   // the live set rather than a captured snapshot.
   const [pauseCount, setPauseCount] = useState(0);
@@ -133,81 +147,89 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
 
   const load = useCallback(async (refreshQuota = false): Promise<boolean> => {
     const generation = ++loadGenerationRef.current;
-    // Snapshot subscribers so an unsubscribe mid-flight cannot desync begin/accept pairs.
-    const observers = [...observersRef.current];
-    const revisions = new Map<CodexAccountLoadObserver, number>();
-    for (const observer of observers) revisions.set(observer, observer.beginActiveRead());
-    // Soft refresh when boxes are already on screen — avoid full-page loading flash.
-    if (!refreshQuota && !hasLoadedRef.current) setLoadState("loading");
+    setInflightCount(count => count + 1);
+    // The try opens immediately after the increment so even a synchronous throw in the
+    // observer snapshot below cannot leave the counter stuck above zero.
+    try {
+      // Snapshot subscribers so an unsubscribe mid-flight cannot desync begin/accept pairs.
+      const observers = [...observersRef.current];
+      const revisions = new Map<CodexAccountLoadObserver, number>();
+      for (const observer of observers) revisions.set(observer, observer.beginActiveRead());
+      // Soft refresh when boxes are already on screen — avoid full-page loading flash.
+      if (!refreshQuota && !hasLoadedRef.current) setLoadState("loading");
 
-    let nextAccounts: CodexAccountEntry[] | null = null;
-    let nextActiveId: string | null | undefined;
+      let nextAccounts: CodexAccountEntry[] | null = null;
+      let nextActiveId: string | null | undefined;
 
-    const accountsTask = (async (): Promise<boolean> => {
-      try {
-        const response = await fetch(`${apiBase}/api/codex-auth/accounts${refreshQuota ? "?refresh=1" : ""}`);
-        if (!response.ok) throw new Error("account load failed");
-        const payload = await response.json();
-        if (loadGenerationRef.current === generation) {
-          nextAccounts = (payload.accounts ?? []) as CodexAccountEntry[];
-          setAccounts(nextAccounts);
-          hasAccountsRef.current = nextAccounts.length > 0;
-          hasLoadedRef.current = true;
-          // Progressive: paint account/quota boxes as soon as /accounts returns.
-          setLoadState("ready");
-        }
-        return true;
-      } catch {
-        return false;
-      }
-    })();
-
-    const activeTask = (async (): Promise<boolean> => {
-      try {
-        const response = await fetch(`${apiBase}/api/codex-auth/active`);
-        if (!response.ok) throw new Error("active account load failed");
-        const active = await response.json();
-        if (loadGenerationRef.current === generation) {
-          const serverActiveId = active.activeCodexAccountId ?? null;
-          const pending = pendingActiveIdRef.current;
-          if (pending && serverActiveId !== pending.id) {
-            // Stale read: keep the accepted value and let the next load reconcile.
-          } else {
-            pendingActiveIdRef.current = null;
-            nextActiveId = serverActiveId;
-            setActiveId(serverActiveId);
+      const accountsTask = (async (): Promise<boolean> => {
+        try {
+          const response = await fetch(`${apiBase}/api/codex-auth/accounts${refreshQuota ? "?refresh=1" : ""}`);
+          if (!response.ok) throw new Error("account load failed");
+          const payload = await response.json();
+          if (loadGenerationRef.current === generation) {
+            nextAccounts = (payload.accounts ?? []) as CodexAccountEntry[];
+            setAccounts(nextAccounts);
+            hasAccountsRef.current = nextAccounts.length > 0;
+            hasLoadedRef.current = true;
+            // Progressive: paint account/quota boxes as soon as /accounts returns.
+            setLoadState("ready");
           }
-          lastActiveRef.current = { value: active };
-          for (const observer of observers) {
-            observer.acceptActiveRead(active, revisions.get(observer)!);
-          }
+          return true;
+        } catch {
+          return false;
         }
-        return true;
-      } catch {
-        if (loadGenerationRef.current === generation) {
-          for (const observer of observers) observer.rejectActiveRead();
-        }
-        return false;
-      }
-    })();
+      })();
 
-    const [accountsOk, activeOk] = await Promise.all([accountsTask, activeTask]);
-    // A newer load already superseded this one; leave its state in place.
-    if (loadGenerationRef.current !== generation) return false;
-    if (accountsOk) {
-      setLoadState("ready");
-      hasLoadedRef.current = true;
-      const prior = lastGoodByBase.get(apiBase);
-      lastGoodByBase.set(apiBase, {
-        accounts: nextAccounts ?? prior?.accounts ?? [],
-        activeId: nextActiveId !== undefined ? nextActiveId : (prior?.activeId ?? null),
-      });
-      return activeOk;
+      const activeTask = (async (): Promise<boolean> => {
+        try {
+          const response = await fetch(`${apiBase}/api/codex-auth/active`);
+          if (!response.ok) throw new Error("active account load failed");
+          const active = await response.json();
+          if (loadGenerationRef.current === generation) {
+            const serverActiveId = active.activeCodexAccountId ?? null;
+            const pending = pendingActiveIdRef.current;
+            if (pending && serverActiveId !== pending.id) {
+              // Stale read: keep the accepted value and let the next load reconcile.
+            } else {
+              pendingActiveIdRef.current = null;
+              nextActiveId = serverActiveId;
+              setActiveId(serverActiveId);
+            }
+            lastActiveRef.current = { value: active };
+            for (const observer of observers) {
+              observer.acceptActiveRead(active, revisions.get(observer)!);
+            }
+          }
+          return true;
+        } catch {
+          if (loadGenerationRef.current === generation) {
+            for (const observer of observers) observer.rejectActiveRead();
+          }
+          return false;
+        }
+      })();
+
+      const [accountsOk, activeOk] = await Promise.all([accountsTask, activeTask]);
+      // A newer load already superseded this one; leave its state in place.
+      if (loadGenerationRef.current !== generation) return false;
+      if (accountsOk) {
+        setLoadState("ready");
+        hasLoadedRef.current = true;
+        const prior = lastGoodByBase.get(apiBase);
+        lastGoodByBase.set(apiBase, {
+          accounts: nextAccounts ?? prior?.accounts ?? [],
+          activeId: nextActiveId !== undefined ? nextActiveId : (prior?.activeId ?? null),
+        });
+        return activeOk;
+      }
+      // Cold failure only: after a successful load (including empty), keep rows and stay ready
+      // so a soft poll miss does not flash the skeleton / wipe the pool.
+      if (!hasLoadedRef.current) setLoadState("error");
+      return false;
+    } finally {
+      setInflightCount(count => Math.max(0, count - 1));
+      setFirstAttemptSettled(true);
     }
-    // Cold failure only: after a successful load (including empty), keep rows and stay ready
-    // so a soft poll miss does not flash the skeleton / wipe the pool.
-    if (!hasLoadedRef.current) setLoadState("error");
-    return false;
   }, [apiBase]);
 
   // Initial load plus background refresh. Owned here so mounting or unmounting a surface
@@ -397,6 +419,8 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
     accounts,
     activeId,
     loadState,
+    refreshing: inflightCount > 0,
+    initialLoading: !firstAttemptSettled,
     switchingId,
     pauseUpdatingId,
     pausingExhausted,

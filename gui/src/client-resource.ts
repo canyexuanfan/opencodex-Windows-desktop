@@ -4,6 +4,16 @@ export type ResourceSnapshot<T> = {
   data: T | undefined;
   error: unknown;
   loading: boolean;
+  /**
+   * A request is in flight. Unlike `loading`, this never means "replace the content":
+   * a quiet poll over cached data raises only this, so a slow revalidation stays visible
+   * without blanking the surface.
+   */
+  refreshing: boolean;
+  /** Set once a fetch resolved successfully for this key. Survives later failures. */
+  hasSucceeded: boolean;
+  /** False when the latest settled attempt failed, so stale-but-shown differs from healthy. */
+  lastAttemptOk: boolean;
 };
 
 type Store<T> = {
@@ -29,13 +39,27 @@ type Store<T> = {
  */
 const stores = new Map<string, Store<unknown>>();
 
-const EMPTY_SNAPSHOT: ResourceSnapshot<never> = { data: undefined, error: undefined, loading: false };
+const EMPTY_SNAPSHOT: ResourceSnapshot<never> = {
+  data: undefined,
+  error: undefined,
+  loading: false,
+  refreshing: false,
+  hasSucceeded: false,
+  lastAttemptOk: false,
+};
 
 function getStore<T>(key: string): Store<T> {
   let store = stores.get(key) as Store<T> | undefined;
   if (!store) {
     store = {
-      snapshot: { data: undefined, error: undefined, loading: false },
+      snapshot: {
+        data: undefined,
+        error: undefined,
+        loading: false,
+        refreshing: false,
+        hasSucceeded: false,
+        lastAttemptOk: false,
+      },
       listeners: new Set(),
       pollByListener: new Map(),
       fetcherByListener: new Map(),
@@ -117,18 +141,36 @@ async function runFetch<T>(
   const gen = ++store.generation;
 
   // Falsy cached values stay visible during polls; forceLoading is for identity changes (deps).
-  if (store.snapshot.data === undefined || options?.forceLoading) {
-    store.snapshot = { ...store.snapshot, loading: true };
-    emit(store);
-  }
+  // `refreshing` always rises so a slow revalidation is observable without blanking content.
+  const shouldShowLoading = store.snapshot.data === undefined || options?.forceLoading === true;
+  store.snapshot = {
+    ...store.snapshot,
+    loading: shouldShowLoading ? true : store.snapshot.loading,
+    refreshing: true,
+  };
+  emit(store);
 
   try {
     const data = await fetcher(controller.signal);
     if (gen !== store.generation || controller.signal.aborted) return;
-    store.snapshot = { data, error: undefined, loading: false };
+    store.snapshot = {
+      data,
+      error: undefined,
+      loading: false,
+      refreshing: false,
+      hasSucceeded: true,
+      lastAttemptOk: true,
+    };
   } catch (error) {
     if (gen !== store.generation || controller.signal.aborted) return;
-    store.snapshot = { ...store.snapshot, error, loading: false };
+    store.snapshot = {
+      ...store.snapshot,
+      // Normalize so a loader that rejects with `undefined` still reads as a failure.
+      error: error === undefined ? new Error("resource load failed") : error,
+      loading: false,
+      refreshing: false,
+      lastAttemptOk: false,
+    };
   } finally {
     if (store.inflight === controller) {
       store.inflight = null;
@@ -144,6 +186,11 @@ function abortInflightOwnedBy<T>(store: Store<T>, owner: () => void): boolean {
   store.inflight = null;
   store.inflightOwner = null;
   store.generation++;
+  // The aborted request will never reach its own settle path, so clear its progress marker here.
+  if (store.snapshot.refreshing) {
+    store.snapshot = { ...store.snapshot, refreshing: false };
+    emit(store);
+  }
   return true;
 }
 
@@ -296,7 +343,14 @@ export function setClientResourceData<T>(key: string, data: T) {
   store.inflight = null;
   store.inflightOwner = null;
   store.generation++;
-  store.snapshot = { data, error: undefined, loading: false };
+  store.snapshot = {
+    data,
+    error: undefined,
+    loading: false,
+    refreshing: false,
+    hasSucceeded: true,
+    lastAttemptOk: true,
+  };
   emit(store);
 }
 

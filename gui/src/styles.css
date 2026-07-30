@@ -917,6 +917,37 @@ select.input { appearance: none; }
 .spin { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: var(--radius-round); display: inline-block; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Shared data-surface loading primitives (WP2). Reuses .spin and the existing shimmer keyframes. */
+.data-surface-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  color: var(--muted);
+  font-size: var(--text-control);
+  line-height: var(--leading-body);
+}
+
+.data-surface-skeleton {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.data-surface-skeleton__row {
+  min-height: var(--control-lg);
+}
+
+.data-surface-skeleton__block {
+  display: block;
+  min-height: var(--control-lg);
+  width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--raised) 0%, var(--surface) 50%, var(--raised) 100%);
+  background-size: 200% 100%;
+  animation: codex-auth-skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
 /* glass fallbacks: solid surfaces when blur is unsupported or unwanted */
