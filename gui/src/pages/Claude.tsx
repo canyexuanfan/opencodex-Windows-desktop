@@ -62,13 +62,14 @@ export default function Claude({ apiBase }: { apiBase: string }) {
         </button>
       </div>
 
+      {/* Code stays mounted; Desktop mounts only when selected so its fetch is not forever-stale. */}
       <div
         id="claude-code-panel"
         role="tabpanel"
         aria-labelledby="claude-code-tab"
         hidden={tab !== "code"}
       >
-        {tab === "code" && <ClaudeCode apiBase={apiBase} />}
+        <ClaudeCode apiBase={apiBase} />
       </div>
       <div
         id="claude-desktop-panel"
@@ -76,7 +77,7 @@ export default function Claude({ apiBase }: { apiBase: string }) {
         aria-labelledby="claude-desktop-tab"
         hidden={tab !== "desktop"}
       >
-        {tab === "desktop" && <ClaudeDesktop apiBase={apiBase} />}
+        {tab === "desktop" ? <ClaudeDesktop apiBase={apiBase} /> : null}
       </div>
     </section>
   );
