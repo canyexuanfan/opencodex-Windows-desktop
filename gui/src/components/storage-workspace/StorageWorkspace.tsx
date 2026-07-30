@@ -70,7 +70,7 @@ export default function StorageWorkspace({ report, locale }: StorageWorkspacePro
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const sortedBuckets = useMemo(
-    () => [...report.buckets].sort((a, b) => b.bytes - a.bytes),
+    () => report.buckets.toSorted((a, b) => b.bytes - a.bytes),
     [report.buckets],
   );
   const selected = sortedBuckets.find(b => b.key === selectedKey) ?? null;

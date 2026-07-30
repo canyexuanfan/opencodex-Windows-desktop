@@ -21,7 +21,6 @@ function EndpointUrl({ url }: { url: string }) {
       hintKey="api.copyUrlHint"
       copiedKey="api.urlCopied"
       className="api-endpoint-url-btn"
-      as="button"
     >
       <code className="api-code api-code-inline api-endpoint-url">{url}</code>
     </CopyOnClickTip>
@@ -33,15 +32,12 @@ function CopyOnClickTip({
   hintKey,
   copiedKey,
   className,
-  as = "button",
   children,
 }: {
   text: string;
   hintKey: "api.copyUrlHint" | "api.copyExampleHint";
   copiedKey: "api.urlCopied" | "api.exampleCopied";
   className: string;
-  /** `div` for flow children like <pre> (invalid inside <button>). */
-  as?: "button" | "div";
   children: ReactNode;
 }) {
   const { t } = useI18n();
@@ -127,25 +123,10 @@ function CopyOnClickTip({
     },
     onKeyDown: (event: { key: string; preventDefault: () => void }) => {
       if (event.key === "Escape") closeTip();
-      if (as === "div" && (event.key === "Enter" || event.key === " ")) {
-        event.preventDefault();
-        void copyText();
-      }
     },
     "aria-label": t(hintKey),
     "aria-describedby": showTip ? tipId : undefined,
   };
-
-  if (as === "div") {
-    return (
-      <>
-        <div {...shared} role="button" tabIndex={0}>
-          {children}
-        </div>
-        {tip}
-      </>
-    );
-  }
 
   return (
     <>
@@ -164,9 +145,8 @@ function CopyableExample({ text }: { text: string }) {
       hintKey="api.copyExampleHint"
       copiedKey="api.exampleCopied"
       className="api-example-copy-btn"
-      as="div"
     >
-      <pre className="api-code api-example-pre">{text}</pre>
+      <code className="api-code api-example-pre">{text}</code>
     </CopyOnClickTip>
   );
 }
