@@ -193,3 +193,56 @@ GUI 스위트의 1 fail은 이 작업이 아니다. 다른 세션이 워크트�
 `tsc -b`를 통과하는지 확인했다. 그 사이 다른 세션이 PR 5건을 머지하면서 내 워크트리
 변경까지 `91fc79c93`에 함께 커밋했다. 결과물은 HEAD에 온전히 들어갔고 게이트도
 초록이라, 커밋 경계만 의도와 다르다.
+
+## WP4 — 재검증/폴링 (진행 중)
+
+`030_revalidation_policy.md` 소비. 감사에서 FAIL 4건이 나와 계획을 고쳐 쓴 내용은 그
+문서의 "감사 반영" 절에 있다. 요약: `-6` (`&quota=1` 통합)은 **취소**했고, `38→25`
+수치는 CDP 재측정 전까지 목표에서 뺐다.
+
+### 착지한 것: hidden 탭 폴링 중단 (`e694c92c0`)
+
+공용 리소스 store가 `document.visibilityState === "hidden"`이면 tick을 건너뛰고, 탭이
+돌아올 때 한 번 조용히 재검증한다. 남은 간격을 기다리지 않고 놓친 tick을 만회한다.
+
+옵션은 **subscriber 단위**다. 고정 key는 여러 consumer가 공유할 수 있고, 나중에 구독한
+일시정지 consumer 때문에 다른 쪽의 opt-out이 사라지면 안 된다. hidden tick에서는
+opt-out한 subscriber가 하나라도 있으면 실행하고, 없으면 건너뛴다.
+
+이 옵션이 필요한 이유가 재시작 재접속 폴이다. 그것 자체가 `pollMs: 1500` 키드 리소스이고
+([use-dashboard-data.ts](/Users/jun/Developer/new/700_projects/opencodex/gui/src/pages/use-dashboard-data.ts)),
+사용자가 다른 곳을 보는 동안 서버가 돌아오는 것을 알아채는 게 존재 이유다. hidden에서
+멈추면 유일한 사용 사례가 깨지므로 `pauseWhenHidden: false`를 준다.
+
+`visibilitychange` 리스너는 polling store마다 하나만 달고 폴이 멈추거나 store가 evict될
+때 떼어낸다(evict된 key마다 핸들러가 새는 것 방지). 재검증은 `replaceInflight: false`라
+visible 복귀 직후 마운트가 시작한 요청을 취소하지 않는다.
+
+테스트 3건: hidden에서 멈추고 복귀 시 1회, opt-out은 hidden에서도 계속, 공유 key에서
+opt-out 하나가 store의 hidden tick을 살린다.
+
+## 탭 레이아웃 되돌리기 (사용자 요청, `c63d1336b` + `5a40dde28`)
+
+WP4와 별개로 들어온 요청. 세 탭이 고정 높이 2분할 워크스페이스로 재구성되어 있었고,
+분할된 pane이 스크롤을 소유했다. Usage는 선택된 섹션만 렌더해서 스크롤로 리포트를 읽는
+것이 **아예** 불가능했다 — 휠이 `overscroll-behavior: contain`인 내부 컨테이너에 갇혀
+아래 페이지가 움직이지 않았다.
+
+| 탭 | 전 | 후 |
+|----|----|----|
+| Usage | 좌측 rail + 선택된 섹션 하나만 렌더 | 전 섹션이 문서에 남고, 고정된 밑줄 탭이 해당 위치로 스크롤 |
+| Storage | 고정 높이 2분할 + pane마다 내부 스크롤러 | 페이지 스크롤. 버킷 목록만 sticky + 자체 짧은 스크롤 |
+| Storage 정리 카드 | policy \| manual 좌우 분할, segmented pill 탭 | 전체 너비, 공용 밑줄 탭으로 전환 |
+| Subagents | rail + main. 추천 목록이 **두 번** 렌더 | v1 형태로 복귀: 추천(순서변경+저장) → 피커 |
+
+Usage의 활성 탭은 `IntersectionObserver`로 스크롤 위치를 따라간다. 마지막으로 클릭한
+곳이 아니라 지금 읽고 있는 곳을 가리킨다. `scroll-margin-top`으로 착지한 제목이 고정
+스트립에 가리지 않게 한다.
+
+Subagents의 중복은 실제 결함이었다. rail이 추천 모델을 한 번, main pane이 같은 목록을
+순서변경 컨트롤과 함께 또 한 번 그렸다. 두 개의 뷰라기보다 렌더링 버그로 읽혔고, 모델별
+상세 pane은 행이 이미 보여주는 것 외의 정보가 없었다.
+
+검증(로컬 symlink 본, 재빌드·재기동 후 CDP): Usage 5495px 스크롤·탭 4개·앵커 4개,
+Providers 탭 클릭 시 4330으로 스크롤하며 스트립은 top 0에 고정되고 제목은 56에 착지,
+Storage 1609px 스크롤·버킷 7개·rail이 top −2에 고정. 게이트 4종 green, GUI 422 pass.
