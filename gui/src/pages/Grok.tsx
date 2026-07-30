@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState, Notice, Switch } from "../ui";
 import { IconChevron } from "../icons";
 import { useT, type TKey } from "../i18n/shared";
 import { readJsonOrThrow } from "../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
+import { useDataSurface } from "../data-surface";
+import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
 import { makeCollapseStore, toggleInSet } from "./collapse-store";
 import { grokGroupView, type GrokCandidate } from "./grok-groups";
 
@@ -57,9 +59,6 @@ export default function Grok({ apiBase }: { apiBase: string }) {
   const t = useT();
   const cacheKey = `ocx.grok.status.v1:${apiBase}`;
   const cached = readSessionListCache<GrokStatus>(cacheKey);
-  const [status, setStatus] = useState<GrokStatus | null>(() => cached);
-  const [loading, setLoading] = useState(() => !cached);
-  const [error, setError] = useState("");
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set(cached?.excluded ?? []));
   const [savedExcluded, setSavedExcluded] = useState<Set<string>>(() => new Set(cached?.excluded ?? []));
   // null = no stored preference; groups start collapsed so the list opens on demand.
@@ -67,39 +66,39 @@ export default function Grok({ apiBase }: { apiBase: string }) {
   const [pending, setPending] = useState<"save" | "apply" | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const [announcement, setAnnouncement] = useState("");
-  const hasCacheRef = useRef(Boolean(cached));
 
-  const load = useCallback(async () => {
-    if (!hasCacheRef.current) setLoading(true);
-    setError("");
-    try {
-      const response = await fetch(`${apiBase}/api/grok`);
-      const payload = await readJsonOrThrow<GrokStatus & { error?: string }>(response, t("grok.loadFail"));
-      if (!payload) throw new Error(t("grok.loadFail"));
-      // Tolerate an older proxy that predates the selection routes: the page degrades
-      // to the read-only fence view instead of crashing on a missing field.
-      const next = { ...payload, candidates: payload.candidates ?? [], excluded: payload.excluded ?? [] };
-      setStatus(next);
-      const saved = new Set(payload.excluded ?? []);
-      setExcluded(saved);
-      setSavedExcluded(saved);
-      hasCacheRef.current = true;
-      writeSessionListCache(cacheKey, next);
-    } catch (err) {
-      if (!hasCacheRef.current) {
-        setError(err instanceof Error ? err.message : t("grok.loadFail"));
-      }
-    } finally {
-      setLoading(false);
-    }
+  const fetchStatus = useCallback(async (): Promise<GrokStatus> => {
+    const response = await fetch(`${apiBase}/api/grok`);
+    const payload = await readJsonOrThrow<GrokStatus & { error?: string }>(response, t("grok.loadFail"));
+    if (!payload) throw new Error(t("grok.loadFail"));
+    // Tolerate an older proxy that predates the selection routes: the page degrades
+    // to the read-only fence view instead of crashing on a missing field.
+    const next = { ...payload, candidates: payload.candidates ?? [], excluded: payload.excluded ?? [] };
+    writeSessionListCache(cacheKey, next);
+    return next;
   }, [apiBase, cacheKey, t]);
 
-  // Deferred like the Desktop page: kicking the fetch off synchronously inside the effect
-  // triggers cascading renders (and the react-doctor lint that guards against them).
+  // Request ownership lives in the shared resource layer, so a route change during the first
+  // load cannot drop the request the way the old deferred timer did.
+  const resource = useDataSurface<GrokStatus>(
+    `grok-status:${apiBase}`,
+    [apiBase],
+    fetchStatus,
+    { isEmpty: () => false },
+  );
+  const { state } = resource;
+  const load = resource.refresh;
+  const status = state.data ?? cached;
+
+  // Server selection wins over local edits, but only for a read the user did not initiate:
+  // reconciling on every render would fight the switches while the user is toggling them.
+  const serverExcluded = state.data?.excluded;
   useEffect(() => {
-    const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => window.clearTimeout(timer);
-  }, [load]);
+    if (!serverExcluded) return;
+    const next = new Set(serverExcluded);
+    setExcluded(next);
+    setSavedExcluded(next);
+  }, [serverExcluded]);
 
   const dirty = useMemo(
     () => excluded.size !== savedExcluded.size || [...excluded].some(id => !savedExcluded.has(id)),
@@ -184,13 +183,21 @@ export default function Grok({ apiBase }: { apiBase: string }) {
     }
   };
 
-  if (loading) return <section className="grok-page"><p className="page-sub">{t("grok.loading")}</p></section>;
-
-  if (error) {
+  // The skeleton owns the live region while cold, so no status line is rendered beside it.
+  if (state.showSkeleton && !status) {
     return (
       <section className="grok-page">
-        <div className="alert alert-err" role="alert">{error}</div>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
+        <DataSurfaceSkeleton label={t("grok.loading")} rows={4} />
+      </section>
+    );
+  }
+
+  if (state.kind === "failed-cold") {
+    const reason = state.error instanceof Error ? state.error.message : t("grok.loadFail");
+    return (
+      <section className="grok-page">
+        <div className="alert alert-err" role="alert">{reason}</div>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => load()}>{t("common.retry")}</button>
       </section>
     );
   }
@@ -202,6 +209,13 @@ export default function Grok({ apiBase }: { apiBase: string }) {
 
       <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
+
+      {/* A refresh that fails while cached data is on screen must say so instead of leaving the
+          page looking settled; the notice then owns the live region for this transition. */}
+      {state.showError && <Notice tone="err">{t("grok.loadFail")}</Notice>}
+      {state.refreshing && (
+        <DataSurfaceStatus live={!state.showError}>{t("grok.loading")}</DataSurfaceStatus>
+      )}
 
       {status && status.candidates.length > 0 && (
         <div className="claude-profile-bar">
