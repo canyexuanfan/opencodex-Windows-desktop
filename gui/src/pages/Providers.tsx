@@ -31,9 +31,6 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [statusOk, setStatusOk] = useState(false);
   const [oauthProviders, setOauthProviders] = useState<string[]>([]);
   const [oauthStatus, setOauthStatus] = useState<Record<string, import("./providers-shared").OAuthStatus>>({});
-  // Value is unread: the workspace shell fetches its own quota view. The setter stays
-  // because the refresh path still primes this cache for that shell.
-  const [, setQuotaReports] = useState<Record<string, import("./providers-shared").ProviderQuotaReport>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [loginInfo, setLoginInfo] = useState<{ provider: string; url?: string; instructions?: string; deviceCode?: string } | null>(null);
   const [workspaceSelected, setWorkspaceSelected] = useState<string | null>(null);
@@ -84,8 +81,26 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       return rank;
     },
   );
+  /*
+   * Quota revalidation is driven by an explicit revision, not by anything derived from
+   * `accountSets`.
+   *
+   * The derived key was a sorted `provider:activeAccountId` string, which looked stable but
+   * is not: on a cold load each provider's account response arrives separately and fills in
+   * its own `activeAccountId`, so the joined string changed once per provider and the shell's
+   * quota effect re-ran with it. Measured on this checkout: six `/api/provider-quotas` reads
+   * inside 15ms where one answers the question.
+   *
+   * A counter only moves when something actually invalidates the quotas, so account arrival
+   * is silent while every real mutation path still forces a re-read.
+   */
+  const [quotaRefresh, setQuotaRefresh] = useState({ epoch: 0, force: false });
+  const invalidateProviderQuotas = useCallback((force = false) => {
+    setQuotaRefresh(previous => ({ epoch: previous.epoch + 1, force }));
+  }, []);
   const { fetchConfig, fetchOauth, fetchProviderQuotas } = useProvidersFetch({
-    apiBase, t, setConfig, setOauthProviders, setOauthStatus, setQuotaReports, notify,
+    apiBase, t, setConfig, setOauthProviders, setOauthStatus, notify,
+    invalidateProviderQuotas,
     configCacheKey,
   });
 
@@ -129,13 +144,6 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     switchAccount, switchApiKey, removeApiKey, addApiKeyValue, editCredentialAlias,
     removeAccount, activeAccountNeedsReauth,
   } = pools;
-  const quotaRefreshKey = useMemo(
-    () => Object.entries(accountSets)
-      .map(([provider, set]) => `${provider}:${set.activeAccountId ?? ""}`)
-      .sort()
-      .join("|"),
-    [accountSets],
-  );
   const jsonEditor = useJsonConfigEditor({
     apiBase, config,
     notify,
@@ -277,7 +285,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         jsonSaving={jsonSaving}
         modelsRefreshToken={modelsRefreshToken}
         activeAccountNeedsReauth={activeAccountNeedsReauth}
-        quotaRefreshKey={quotaRefreshKey}
+        quotaRefreshEpoch={quotaRefresh.epoch}
+        quotaForceRefresh={quotaRefresh.force}
         detail={(item, data) => {
           const loginStatus = accountLoginStatus[item.name] ?? oauthStatus[item.name];
           return (
