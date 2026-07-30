@@ -90,7 +90,7 @@ user-agent 会获得易读的 CLI 形式，其他客户端会获得 Desktop 哈�
 
 **别名语法规则：**provider 不得包含 `/` 或 `--`，也不得等于 `native`。
 model ID 可以包含 `/` — 在别名中编码为 `~s`（例如 `openrouter/anthropic/claude-opus-4-8`
-→ `claude-ocx-openrouter--anthropic~sclaude-opus-4-8`）。model ID 中的字面 `~` 编码为 `~t`。
+→ `claude-ocx2-openrouter--anthropic~sclaude-opus-4-8`）。model ID 中的字面 `~` 编码为 `~t`。
 后面不是 `s`/`t` 的裸 `~` 视为字面波浪号，以便旧版已持久化的别名继续解析。
 易读形式无法表达的路由会回退到哈希别名。模型 ID **可以**包含 `--`（解析时只按第一个
 `--` 分割）；含 `--` 的原生 slug 会回退到哈希形式。

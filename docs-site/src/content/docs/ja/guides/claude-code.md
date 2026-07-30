@@ -83,7 +83,7 @@ Claude Desktop のフッターピッカーで実行中の 3P 会話のモデル�
 
 **エイリアス構文ルール:** provider には `/` や `--` を含められず `native` と同じでもいけません。
 model ID には `/` を含められ、エイリアス内では `~s` として符号化します(例: `openrouter/anthropic/claude-opus-4-8` →
-`claude-ocx-openrouter--anthropic~sclaude-opus-4-8`)。model ID のリテラル `~` は `~t` として符号化します。
+`claude-ocx2-openrouter--anthropic~sclaude-opus-4-8`)。model ID のリテラル `~` は `~t` として符号化します。
 `s`/`t` が続かない裸の `~` はリテラルのチルダとして扱い、古い永続化エイリアスも解決し続けます。
 読みやすい形式で表現できないルートはハッシュエイリアスに置き換えます。モデル
 ID には `--` を含め**られます**(解析時は最初の `--` だけを基準に分割します)。`--` を含む
