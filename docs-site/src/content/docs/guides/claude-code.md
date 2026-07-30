@@ -191,9 +191,12 @@ the alias back to the routed model. On older Claude Code versions the picker sta
 slots via
 `ANTHROPIC_MODEL` or type any routed id with `/model` (Claude Code passes strings through).
 
-**Alias grammar rules:** provider must not contain `/` or `--` or equal `native`; model must not
-contain `/`. Routes the readable form cannot express fall back to the hashed alias. Model ids
-MAY contain `--` (resolution splits on the first `--` only); native slugs containing `--` fall back to the hashed form.
+**Alias grammar rules:** provider must not contain `/` or `--` or equal `native`.
+Model ids may contain `/` — encoded as `~s` in the alias (e.g. `openrouter/anthropic/claude-opus-4-8`
+→ `claude-ocx-openrouter--anthropic~sclaude-opus-4-8`). Literal `~` in a model id is encoded as `~t`.
+Bare `~` not followed by `s`/`t` is treated as a literal tilde so older persisted aliases keep resolving.
+Routes the readable form cannot express fall back to the hashed alias. Model ids MAY contain `--`
+(resolution splits on the first `--` only); native slugs containing `--` fall back to the hashed form.
 
 **Model resolution order:** `[1m]` marker stripped → readable alias decoded → Desktop hashed
 alias decoded → `modelMap` exact match → date-stripped match (`-20250514` removed) → passthrough.
