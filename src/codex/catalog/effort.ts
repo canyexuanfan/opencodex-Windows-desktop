@@ -115,13 +115,18 @@ export function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel)
   // bare combo alias from a genuine native model row.
   if (model.provider === COMBO_NAMESPACE) entry.owned_by = model.owned_by ?? COMBO_NAMESPACE;
   // displayName is DISPLAY-ONLY: it relabels the picker row but never touches the routing
-  // slug, alias, or provider. deriveEntry already stamped the slug as display_name; a
-  // configured displayName overrides just the label. The `/` separator is rejected at every
-  // input boundary (CLI `ocx models add`, management API), so the catalog trusts its source.
-  // Combos carry no displayName, and natives never reach here (no CatalogModel), so genuine
-  // upstream marketing names and combo alias labels are preserved untouched.
+  // slug, alias, or provider. A configured displayName wins. Otherwise physical routed rows
+  // use the final segment of their native id, keeping provider/vendor namespaces out of the
+  // narrow picker label while the full route remains in slug + description. Aliased combos
+  // keep their public alias. Natives never reach here (no CatalogModel), so genuine upstream
+  // marketing names are preserved untouched.
   const displayName = typeof model.displayName === "string" ? model.displayName.trim() : "";
   if (displayName) entry.display_name = displayName;
+  else if (!model.alias) {
+    const nativeId = model.id.trim();
+    const finalSegment = nativeId.slice(nativeId.lastIndexOf("/") + 1).trim();
+    if (finalSegment) entry.display_name = finalSegment;
+  }
   if (typeof model.contextWindow === "number" && model.contextWindow > 0) {
     entry.context_window = model.contextWindow;
     entry.max_context_window = model.contextWindow;

@@ -736,22 +736,29 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
     expect(catalogModelSlug(model)).toBe("deepseek/deepseek-v4");
   });
 
-  test("absent displayName leaves display_name as the slug (unchanged behavior)", () => {
+  test("absent displayName uses the native model id without the provider namespace", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "anthropic", id: "claude-sonnet-4-6", owned_by: "anthropic" },
     ]);
     const row = entries.find(e => e.slug === "anthropic/claude-sonnet-4-6");
 
-    expect(row?.display_name).toBe("anthropic/claude-sonnet-4-6");
+    expect(row?.display_name).toBe("claude-sonnet-4-6");
     expect(row?.slug).toBe("anthropic/claude-sonnet-4-6");
   });
 
-  test("empty/whitespace displayName is ignored and falls back to the slug", () => {
+  test("namespaced native ids use only their final segment as the default label", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
-      { provider: "deepseek", id: "deepseek-v4", displayName: "   ", owned_by: "deepseek" },
+      { provider: "openrouter", id: "google/gemini-3.6-flash", displayName: "   ", owned_by: "openrouter" },
     ]);
-    const row = entries.find(e => e.slug === "deepseek/deepseek-v4");
-    expect(row?.display_name).toBe("deepseek/deepseek-v4");
+    const row = entries.find(e => e.slug === "openrouter/google-gemini-3.6-flash");
+    expect(row?.display_name).toBe("gemini-3.6-flash");
+    expect(row?.slug).toBe("openrouter/google-gemini-3.6-flash");
+  });
+
+  test("an aliased combo keeps its public alias when no displayName is configured", () => {
+    const withAlias = { provider: "combo", id: "x", alias: "fast-chat", owned_by: "combo" };
+    const entries = buildCatalogEntries(nativeTemplate(), [], [withAlias], undefined, false, "default", new Set(["fast-chat"]));
+    expect(entries.find(e => e.slug === "fast-chat")?.display_name).toBe("fast-chat");
   });
 
   test("displayName never affects the routing slug, alias, or provider", () => {
