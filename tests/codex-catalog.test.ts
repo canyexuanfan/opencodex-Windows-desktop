@@ -2071,9 +2071,11 @@ describe("Codex catalog routed normalization", () => {
   test("opencode-go high-risk models use official jawcode metadata in the Codex catalog", () => {
     const cases = [
       { id: "glm-5.2", context: 1_000_000, auto: 900_000, input: ["text"] },
-      { id: "qwen3.5-plus", context: 262_144, auto: 235_929, input: ["text", "image"] },
+      // Upstream raised qwen3.5-plus to a 1M window and cut minimax-m3 to the 512K tier that
+      // matches MiniMax's own <=512K pricing band; both are catalogue refreshes, not overrides.
+      { id: "qwen3.5-plus", context: 1_000_000, auto: 900_000, input: ["text", "image"] },
       { id: "kimi-k2.7-code", context: 262_144, auto: 235_929, input: ["text", "image"] },
-      { id: "minimax-m3", context: 1_000_000, auto: 900_000, input: ["text", "image"] },
+      { id: "minimax-m3", context: 512_000, auto: 460_800, input: ["text", "image"] },
       { id: "qwen3.7-max", context: 1_000_000, auto: 900_000, input: ["text"] },
     ] as const;
     const entries = buildCatalogEntries(nativeTemplate(), [], cases.map(({ id }) => ({ provider: "opencode-go", id })));
