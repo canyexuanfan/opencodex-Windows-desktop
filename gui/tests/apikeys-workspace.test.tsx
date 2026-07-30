@@ -157,6 +157,10 @@ test("workspace delete confirm calls onDelete and returns to overview", async ()
   await act(async () => {
     [...container.querySelectorAll("button")].find(b => b.textContent?.includes("Delete key"))!.click();
   });
+  // Confirm stays disabled briefly so a double-click cannot skip the confirm step.
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 350));
+  });
   await act(async () => {
     [...container.querySelectorAll("button")].find(b => b.textContent?.trim() === "Confirm")!.click();
   });

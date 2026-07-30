@@ -1403,9 +1403,11 @@ export default function Storage({ apiBase }: { apiBase: string }) {
     setScanStatus(null);
     const report = await fetchStorage();
     setTrashReloadToken(n => n + 1);
-    if (report && report.error === undefined) {
-      setScanStatus(t("storage.rescanned"));
-    }
+    setScanStatus(
+      report && report.error === undefined
+        ? t("storage.rescanned")
+        : t("storage.error"),
+    );
   }, [fetchStorage, t]);
 
   const onTrashEntriesChange = useCallback((entries: TrashEntry[]) => {

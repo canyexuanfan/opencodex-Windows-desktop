@@ -762,9 +762,8 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [range, setRange] = useState<Range>("30d");
   const [surface, setSurface] = useState<UsageSurface>("all");
-  const initialHeld = readHeldUsage(apiBase, "30d", "all");
-  const [data, setData] = useState<UsageResponse | null>(() => initialHeld);
-  const [loading, setLoading] = useState(() => !initialHeld);
+  const [data, setData] = useState<UsageResponse | null>(() => readHeldUsage(apiBase, "30d", "all"));
+  const [loading, setLoading] = useState(() => !readHeldUsage(apiBase, "30d", "all"));
   const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [selectedSection, setSelectedSection] = useState("overview");

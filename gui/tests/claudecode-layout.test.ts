@@ -13,7 +13,8 @@ test("ClaudeCode renders the denser workspace rail layout", async () => {
   expect(page).toContain("claude.workspace.settings");
 
   expect(app).toContain("<Claude apiBase={API_BASE} />");
-  expect(claude).toContain("<ClaudeCode apiBase={apiBase} />");
+  expect(claude).toContain("<ClaudeCode key={apiBase} apiBase={apiBase} />");
+  expect(claude).toContain("<ClaudeDesktop key={apiBase} apiBase={apiBase} active={tab === \"desktop\"} />");
 });
 
 test("ClaudeCode workspace sections remain available in source order", async () => {

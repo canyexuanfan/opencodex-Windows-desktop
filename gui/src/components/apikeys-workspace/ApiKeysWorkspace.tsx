@@ -2,7 +2,7 @@
  * ApiKeysWorkspace — rail + main for the API tab. Overview hosts the existing
  * endpoint/auth/generate/models/usage panels; selecting a key opens detail.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { IconChevron, IconTrash } from "../../icons";
 import { useT } from "../../i18n/shared";
 import type { ExternalModelRow } from "../../api-access-models";
@@ -79,22 +79,39 @@ export default function ApiKeysWorkspace({
   const t = useT();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /** Armed after a short delay so a double-click / retained focus cannot confirm immediately. */
+  const [confirmArmed, setConfirmArmed] = useState(false);
 
   const selected = selectedId ? (keys.find(k => k.id === selectedId) ?? null) : null;
 
-  const showOverview = () => {
-    setSelectedId(null);
+  const clearDeleteConfirm = () => {
     setConfirmDelete(false);
+    setConfirmArmed(false);
   };
 
-  const handleDeleteClick = () => {
-    if (!selected) return;
+  const showOverview = () => {
+    setSelectedId(null);
+    clearDeleteConfirm();
+  };
+
+  useEffect(() => {
     if (!confirmDelete) {
-      setConfirmDelete(true);
+      setConfirmArmed(false);
       return;
     }
+    const timer = window.setTimeout(() => setConfirmArmed(true), 300);
+    return () => window.clearTimeout(timer);
+  }, [confirmDelete]);
+
+  const handleRequestDelete = () => {
+    if (!selected) return;
+    setConfirmDelete(true);
+  };
+
+  const handleConfirmDelete = () => {
+    if (!selected || !confirmArmed) return;
     onDelete(selected.id);
-    setConfirmDelete(false);
+    clearDeleteConfirm();
     setSelectedId(null);
   };
 
@@ -128,7 +145,7 @@ export default function ApiKeysWorkspace({
                   key={k.id}
                   type="button"
                   className={`apikeys-workspace-rail-row${selectedId === k.id ? " apikeys-workspace-rail-row--selected" : ""}`}
-                  onClick={() => { setSelectedId(k.id); setConfirmDelete(false); }}
+                  onClick={() => { setSelectedId(k.id); clearDeleteConfirm(); }}
                   aria-current={selectedId === k.id ? "page" : undefined}
                 >
                   <span className="apikeys-workspace-rail-name">{k.name}</span>
@@ -156,18 +173,25 @@ export default function ApiKeysWorkspace({
                   <span className="awi-detail-actions">
                     {confirmDelete ? (
                       <>
-                        <button type="button" className="btn btn-danger btn-sm" onClick={handleDeleteClick}>
+                        <button
+                          key="confirm-delete"
+                          type="button"
+                          className="btn btn-danger btn-sm awi-confirm-delete"
+                          onClick={handleConfirmDelete}
+                          disabled={!confirmArmed}
+                        >
                           <IconTrash /> {t("api.confirm")}
                         </button>
-                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setConfirmDelete(false)}>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={clearDeleteConfirm}>
                           {t("common.cancel")}
                         </button>
                       </>
                     ) : (
                       <button
+                        key="request-delete"
                         type="button"
                         className="btn btn-danger btn-sm"
-                        onClick={handleDeleteClick}
+                        onClick={handleRequestDelete}
                         aria-label={t("api.deleteAria")}
                       >
                         <IconTrash /> {t("api.workspace.deleteKey")}

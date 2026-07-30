@@ -27,9 +27,10 @@ test("Subagents keeps the featured-slot contract: 5 slots, reorder, remove, save
     new URL("../src/components/subagents-workspace/SubagentsWorkspace.tsx", import.meta.url),
   ).text();
 
-  // Five-slot cap lives in the page toggle path and the workspace FEATURED_MAX.
-  expect(page).toContain("prev.length >= 5");
-  expect(workspace).toContain("FEATURED_MAX");
+  // Five-slot cap is a single exported FEATURED_MAX shared by page and workspace.
+  expect(page).toContain("prev.length >= FEATURED_MAX");
+  expect(page).toContain("FEATURED_MAX");
+  expect(workspace).toContain("export const FEATURED_MAX");
   expect(workspace).toContain("{chosen.length}/{FEATURED_MAX}");
 
   // Reorder / remove / save controls survive in the workspace main pane.

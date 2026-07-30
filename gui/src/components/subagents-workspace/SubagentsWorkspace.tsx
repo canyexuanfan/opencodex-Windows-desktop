@@ -28,7 +28,7 @@ export interface SubagentsWorkspaceProps {
   onSave: () => void;
 }
 
-const FEATURED_MAX = 5;
+export const FEATURED_MAX = 5;
 
 export default function SubagentsWorkspace({
   available,
@@ -156,7 +156,7 @@ export default function SubagentsWorkspace({
               </button>
               <div className="swi-detail-head">
                 <span className="swi-detail-icon"><IconBot style={{ width: 24, height: 24 }} /></span>
-                <h2 className="swi-detail-title">{selected}</h2>
+                <h2 className="swi-detail-title">{modelLabel(selected)}</h2>
               </div>
 
               <div className="swi-detail-section">
@@ -184,6 +184,9 @@ export default function SubagentsWorkspace({
                       <IconPlus /> {full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m: selected })}
                     </button>
                   )}
+                  <button type="button" className="btn btn-primary" onClick={onSave} disabled={busy}>
+                    {t("common.save")}
+                  </button>
                 </div>
               </div>
             </div>

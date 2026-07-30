@@ -121,22 +121,36 @@ function formatContextWindow(value: number | undefined, t: TFn): string | null {
     : t("claudeDesktop.contextK", { n: Math.round(value / 1_000) });
 }
 
-export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
+type CachedDesktop = { data: DesktopResponse; profile: DesktopProfile };
+
+function readDesktopCache(cacheKey: string): CachedDesktop | null {
+  return readSessionListCache<CachedDesktop>(cacheKey);
+}
+
+function seedDesktop(cacheKey: string) {
+  const cached = readDesktopCache(cacheKey);
+  return {
+    data: cached?.data ?? null,
+    profile: cached?.profile ?? null,
+    savedProfile: cached?.profile ? cloneProfile(cached.profile) : null,
+    destinations: cached?.data
+      ? Object.fromEntries(
+        cached.data.models.map(model => [model.route, cached.profile.assignments[model.route]?.family ?? "opus"]),
+      )
+      : {} as Record<string, Family>,
+    hasCache: Boolean(cached?.data),
+  };
+}
+
+export default function ClaudeDesktop({ apiBase, active = true }: { apiBase: string; active?: boolean }) {
   const t = useT();
   const cacheKey = `ocx.claude-desktop.v1:${apiBase}`;
-  const cached = readSessionListCache<{ data: DesktopResponse; profile: DesktopProfile }>(cacheKey);
+  const [data, setData] = useState<DesktopResponse | null>(() => seedDesktop(cacheKey).data);
+  const [profile, setProfile] = useState<DesktopProfile | null>(() => seedDesktop(cacheKey).profile);
+  const [savedProfile, setSavedProfile] = useState<DesktopProfile | null>(() => seedDesktop(cacheKey).savedProfile);
+  const [destinations, setDestinations] = useState<Record<string, Family>>(() => seedDesktop(cacheKey).destinations);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
-  const [data, setData] = useState<DesktopResponse | null>(() => cached?.data ?? null);
-  const [profile, setProfile] = useState<DesktopProfile | null>(() => cached?.profile ?? null);
-  const [savedProfile, setSavedProfile] = useState<DesktopProfile | null>(() => (
-    cached?.profile ? cloneProfile(cached.profile) : null
-  ));
-  const [destinations, setDestinations] = useState<Record<string, Family>>(() => (
-    cached?.data
-      ? Object.fromEntries(cached.data.models.map(model => [model.route, cached.profile.assignments[model.route]?.family ?? "opus"]))
-      : {}
-  ));
-  const [loading, setLoading] = useState(() => !cached?.data);
+  const [loading, setLoading] = useState(() => !seedDesktop(cacheKey).hasCache);
   const [loadError, setLoadError] = useState("");
   const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const [announcement, setAnnouncement] = useState("");
@@ -155,7 +169,7 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
   // is not, and restoring five open rows on reload would rebuild the wall this removes.
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
   const importRef = useRef<HTMLInputElement>(null);
-  const hasCacheRef = useRef(Boolean(cached?.data));
+  const hasCacheRef = useRef(seedDesktop(cacheKey).hasCache);
 
   const load = useCallback(async () => {
     if (!hasCacheRef.current) setLoading(true);
@@ -220,16 +234,17 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
     return result;
   }, [modelsByFamily, profile]);
 
-  // Poll Desktop status every 5s for applied-state + health.
+  // Poll Desktop status every 5s for applied-state + health (paused while tab is hidden).
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     let inFlight = false;
-    let active: ReturnType<typeof createBoundedFetch> | null = null;
+    let activeFetch: ReturnType<typeof createBoundedFetch> | null = null;
     const poll = () => {
       if (inFlight) return;
       inFlight = true;
       const bounded = createBoundedFetch(10_000);
-      active = bounded;
+      activeFetch = bounded;
       void fetch(`${apiBase}/api/claude-desktop/status`, { signal: bounded.signal })
         .then((response) => readJsonIfOk<DesktopStatus>(response))
         .then((data) => {
@@ -239,7 +254,7 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
         .catch(() => { /* offline / older proxy / aborted */ })
         .finally(() => {
           bounded.clear();
-          if (active === bounded) active = null;
+          if (activeFetch === bounded) activeFetch = null;
           inFlight = false;
         });
     };
@@ -248,10 +263,10 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
     return () => {
       cancelled = true;
       clearInterval(timer);
-      active?.controller.abort();
-      active?.clear();
+      activeFetch?.controller.abort();
+      activeFetch?.clear();
     };
-  }, [apiBase]);
+  }, [apiBase, active]);
 
   const moveModel = (route: string, family: Family) => {
     if (!profile || profile.assignments[route]?.family === family) return;

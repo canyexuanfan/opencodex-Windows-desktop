@@ -20,19 +20,22 @@ export { AutoConnectSetting, SmallFastModelSetting } from "./claude-code-setting
 
 type CachedClaudeCode = { state: ClaudeCodeState; rows: MapRow[] };
 
+function seedClaudeCode(cacheKey: string): CachedClaudeCode | null {
+  return readSessionListCache<CachedClaudeCode>(cacheKey);
+}
+
 export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const t = useT();
   const { locale } = useI18n();
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang ?? "en";
   const cacheKey = `ocx.claude-code.v1:${apiBase}`;
-  const cached = readSessionListCache<CachedClaudeCode>(cacheKey);
-  const [state, setState] = useState<ClaudeCodeState | null>(() => cached?.state ?? null);
-  const [rows, setRows] = useState<MapRow[]>(() => cached?.rows ?? []);
+  const [state, setState] = useState<ClaudeCodeState | null>(() => seedClaudeCode(cacheKey)?.state ?? null);
+  const [rows, setRows] = useState<MapRow[]>(() => seedClaudeCode(cacheKey)?.rows ?? []);
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
-  const [loading, setLoading] = useState(() => !cached?.state);
+  const [loading, setLoading] = useState(() => !seedClaudeCode(cacheKey)?.state);
   const [selectedSection, setSelectedSection] = useState("settings");
-  const hasCacheRef = useRef(Boolean(cached?.state));
+  const hasCacheRef = useRef(Boolean(seedClaudeCode(cacheKey)?.state));
 
   const load = useCallback(async () => {
     if (!hasCacheRef.current) setLoading(true);

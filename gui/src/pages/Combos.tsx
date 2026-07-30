@@ -46,21 +46,24 @@ function responseSucceeded(data: unknown): boolean {
     && (data as { success?: unknown }).success === true;
 }
 
+function seedCombos(cacheKey: string): CachedCombosPage | null {
+  return readSessionListCache<CachedCombosPage>(cacheKey);
+}
+
 export default function Combos({ apiBase }: { apiBase: string }) {
   const t = useT();
   const cacheKey = `ocx.combos.workspace.v1:${apiBase}`;
-  const cached = readSessionListCache<CachedCombosPage>(cacheKey);
-  const hasCacheRef = useRef(Boolean(cached));
-  const [combos, setCombos] = useState<ComboItem[]>(() => cached?.combos ?? []);
-  const [providers, setProviders] = useState<ProviderOption[]>(() => cached?.providers ?? []);
-  const [models, setModels] = useState<ModelOption[]>(() => cached?.models ?? []);
+  const [combos, setCombos] = useState<ComboItem[]>(() => seedCombos(cacheKey)?.combos ?? []);
+  const [providers, setProviders] = useState<ProviderOption[]>(() => seedCombos(cacheKey)?.providers ?? []);
+  const [models, setModels] = useState<ModelOption[]>(() => seedCombos(cacheKey)?.models ?? []);
   const [cataloguedComboIds, setCataloguedComboIds] = useState<ReadonlySet<string>>(
-    () => new Set(cached?.cataloguedComboIds ?? []),
+    () => new Set(seedCombos(cacheKey)?.cataloguedComboIds ?? []),
   );
-  const [loading, setLoading] = useState(() => !cached);
+  const [loading, setLoading] = useState(() => !seedCombos(cacheKey));
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
   const [adding, setAdding] = useState(false);
+  const hasCacheRef = useRef(Boolean(seedCombos(cacheKey)));
 
   const notify = (msg: string, ok: boolean) => {
     setStatus(msg);
@@ -77,7 +80,7 @@ export default function Combos({ apiBase }: { apiBase: string }) {
     return () => window.clearTimeout(timer);
   }, [status, statusOk]);
 
-  const fetchAll = useCallback(async () => {
+  const fetchAll = useCallback(async (opts?: { notifyOnFail?: boolean }) => {
     // Soft refresh: keep last-good workspace painted while revalidating.
     if (!hasCacheRef.current) setLoading(true);
     try {
@@ -166,7 +169,7 @@ export default function Combos({ apiBase }: { apiBase: string }) {
         cataloguedComboIds: [...catalogued],
       } satisfies CachedCombosPage);
     } catch {
-      if (!hasCacheRef.current) notify(t("cws.loadFailed"), false);
+      if (!hasCacheRef.current || opts?.notifyOnFail) notify(t("cws.loadFailed"), false);
     } finally {
       setLoading(false);
     }
@@ -262,7 +265,7 @@ export default function Combos({ apiBase }: { apiBase: string }) {
           models={models}
           cataloguedComboIds={cataloguedComboIds}
           loading={loading}
-          onRefresh={() => { void fetchAll(); }}
+          onRefresh={() => { void fetchAll({ notifyOnFail: true }); }}
           onSave={saveCombo}
           onRemove={removeCombo}
           onAdd={() => setAdding(true)}

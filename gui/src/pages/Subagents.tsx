@@ -2,24 +2,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { readJsonOrThrow } from "../fetch-json";
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
-import SubagentsWorkspace from "../components/subagents-workspace/SubagentsWorkspace";
+import SubagentsWorkspace, { FEATURED_MAX } from "../components/subagents-workspace/SubagentsWorkspace";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 
 type CachedSubagents = { available: string[]; chosen: string[] };
 
+function seedSubagents(cacheKey: string): CachedSubagents | null {
+  return readSessionListCache<CachedSubagents>(cacheKey);
+}
+
 export default function Subagents({ apiBase }: { apiBase: string }) {
   const t = useT();
   const cacheKey = `ocx.subagents.v1:${apiBase}`;
-  const cached = readSessionListCache<CachedSubagents>(cacheKey);
-  const [available, setAvailable] = useState<string[]>(() => cached?.available ?? []);
-  const [chosen, setChosen] = useState<string[]>(() => cached?.chosen ?? []);
+  const [available, setAvailable] = useState<string[]>(() => seedSubagents(cacheKey)?.available ?? []);
+  const [chosen, setChosen] = useState<string[]>(() => seedSubagents(cacheKey)?.chosen ?? []);
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
-  const [loading, setLoading] = useState(() => !cached);
+  const [loading, setLoading] = useState(() => !seedSubagents(cacheKey));
   const [busy, setBusy] = useState(false);
   /** Sync guard: state-only `busy` can miss clicks before the disabled re-render commits. */
   const saveInFlight = useRef(false);
-  const hasCacheRef = useRef(Boolean(cached));
+  const hasCacheRef = useRef(Boolean(seedSubagents(cacheKey)));
 
   const load = useCallback(async () => {
     if (!hasCacheRef.current) setLoading(true);
@@ -53,7 +56,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const toggle = (m: string) => {
     if (busy) return;
     setStatus("");
-    setChosen(prev => prev.includes(m) ? prev.filter(x => x !== m) : (prev.length >= 5 ? prev : [...prev, m]));
+    setChosen(prev => prev.includes(m) ? prev.filter(x => x !== m) : (prev.length >= FEATURED_MAX ? prev : [...prev, m]));
   };
   const move = (i: number, dir: -1 | 1) => {
     if (busy) return;
@@ -82,7 +85,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
       if (d?.applied) setChosen(d.applied);
       writeSessionListCache(cacheKey, { available, chosen: applied });
       setOk(true);
-      setStatus(t("sub.saved", { n: d?.applied?.length ?? 0, cmd: "ocx sync" }));
+      setStatus(t("sub.saved", { n: applied.length, cmd: "ocx sync" }));
     } catch (error) {
       setOk(false);
       setStatus(error instanceof Error && error.message ? error.message : t("sub.networkError"));

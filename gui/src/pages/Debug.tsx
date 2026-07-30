@@ -28,6 +28,7 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
   const [refreshing, setRefreshing] = useState(false);
   const afterRef = useRef(0);
   const mutationGenerationRef = useRef(0);
+  const logGenerationRef = useRef(0);
   const mutationQueueRef = useRef<Promise<void> | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Only reset the log viewer when the active stream identity changes — not when
@@ -91,42 +92,53 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
         ? `${apiBase}/api/debug/usage-logs`
         : `${apiBase}/api/debug/injection-logs`;
 
-  const fetchLogs = useCallback(async (initial: boolean) => {
+  const fetchLogs = useCallback(async (initial: boolean, signal?: AbortSignal) => {
+    const generation = ++logGenerationRef.current;
     if (!streamEnabled) {
-      setEntries([]);
-      afterRef.current = 0;
+      if (generation === logGenerationRef.current) {
+        setEntries([]);
+        afterRef.current = 0;
+      }
       return;
     }
     setRefreshing(true);
     try {
       const params = new URLSearchParams({ limit: "500" });
       if (!initial && afterRef.current > 0) params.set("after", String(afterRef.current));
-      const res = await fetch(`${logsPath}?${params}`);
-      if (!res.ok) return;
+      const res = await fetch(`${logsPath}?${params}`, { signal });
+      if (!res.ok || signal?.aborted || generation !== logGenerationRef.current) return;
       const next = await res.json() as import("./debug-shared").DebugLogEntry[];
+      if (signal?.aborted || generation !== logGenerationRef.current) return;
       if (next.length === 0) return;
       setEntries(prev => (initial ? next : [...prev, ...next]).slice(-2000));
       afterRef.current = next[next.length - 1]!.seq;
-    } catch { /* ignore */ } finally {
-      setRefreshing(false);
+    } catch {
+      /* ignore abort / network */
+    } finally {
+      if (generation === logGenerationRef.current) setRefreshing(false);
     }
   }, [logsPath, streamEnabled]);
 
   useEffect(() => {
     if (!active) return;
-    const identity = `${stream}:${streamEnabled}`;
+    const identity = `${apiBase}:${stream}:${streamEnabled}`;
     const changed = streamIdentityRef.current !== identity;
     streamIdentityRef.current = identity;
     if (!changed && entries.length > 0) return;
     afterRef.current = 0;
+    const controller = new AbortController();
     const timeout = window.setTimeout(() => {
       if (changed) setEntries([]);
-      void fetchLogs(true);
+      void fetchLogs(true, controller.signal);
     }, 0);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      window.clearTimeout(timeout);
+      logGenerationRef.current += 1;
+      controller.abort();
+    };
     // Intentionally omit fetchLogs/entries — identity gate prevents switch storms.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stream identity only
-  }, [active, stream, streamEnabled]);
+  }, [active, apiBase, stream, streamEnabled]);
 
   const pollLogs = useEffectEvent((initial: boolean) => {
     void fetchLogs(initial);
