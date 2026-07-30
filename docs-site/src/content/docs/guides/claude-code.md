@@ -204,9 +204,9 @@ Plain model ids (no `/` or `~`) keep the v1 prefix `claude-ocx-…`. Model ids t
 `~` mint the v2 prefix `claude-ocx2-…` with escapes (`/` → `~s`, `~` → `~t`), e.g.
 `openrouter/anthropic/claude-opus-4-8` → `claude-ocx2-openrouter--anthropic~sclaude-opus-4-8`.
 v1 aliases decode literally (so a historical model id that contained the two-char sequences
-`~s` / `~t` is preserved); v2 aliases expand the escapes. Routes the readable form cannot express
-fall back to the hashed alias. Model ids MAY contain `--` (resolution splits on the first `--`
-only); native slugs containing `--` fall back to the hashed form.
+`~s` / `~t` is preserved); v2 aliases expand the escapes. Routes that the readable form cannot
+express fall back to the hashed alias. Model ids MAY contain `--` (resolution splits on the first
+`--` only); native slugs containing `--` fall back to the hashed form.
 
 **Model resolution order:** `[1m]` marker stripped → readable alias decoded → Desktop hashed
 alias decoded → `modelMap` exact match → date-stripped match (`-20250514` removed) → passthrough.
