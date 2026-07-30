@@ -138,7 +138,10 @@ Codex 显示的模型来自一个磁盘上的目录（默认为 `$CODEX_HOME/ope
 4. **应用过滤**：`config.disabledModels`，以及每个提供商非空的 `selectedModels` allowlist。
 5. **重新排序**，使置顶模型排在最前（见下文），然后将合并后的目录写回。
 
-路由目录条目还会把 GPT-5 身份文案改为真实的上游模型名称。reasoning 选项会依据提供商和模型元数据，
+路由目录条目还会把 GPT-5 身份文案改为真实的上游模型名称。
+默认的选择器标签使用原生模型 ID 的最后一段，因此在较窄的选择器中，提供商命名空间不会遮住模型名称。
+完整的 `provider/model` 路由仍保留在目录 slug 和说明中。如果需要直观看出路由本身（例如
+`Claude Opus 5 (TeamClaude)`），请配置自定义显示名称；自定义名称仍然优先于默认标签。reasoning 选项会依据提供商和模型元数据，
 使用 Codex 的 `low | medium | high | xhigh | max | ultra` 档位；上游不支持的值会在发送请求前完成
 映射或下调。
 
