@@ -184,7 +184,9 @@ start and on `ocx sync`, opencodex:
 4. **Filters** `config.disabledModels` and each provider's non-empty `selectedModels` allowlist.
 5. **Re-ranks** so featured models sort first (see below), then writes the merged catalog back.
 
-Routed catalog entries also get their GPT-5 identity rewritten to the real upstream model name.
+The cloned catalog `base_instructions` identity line is rewritten to the real upstream model name
+as static catalog metadata. Runtime request identity is handled separately: routed adapters replace
+Codex's live GPT-5 identity line with a model-agnostic coding-agent introduction.
 When unique, their default picker label is the final segment of the native model id, so provider
 namespaces do not hide the model name in narrow pickers. Basename collisions retain enough native
 route context to distinguish the rows; if the same native id comes from multiple providers, the
