@@ -717,7 +717,6 @@ function UsageWorkspaceBody({
         <section className="usage-workspace-main" aria-label={t("usage.workspace.report")}>
           {empty ? <EmptyState title={t("usage.empty")} /> : sections.map(s => (
             <div key={s.id} id={sectionAnchorId("usage", s.id)} className="usw-body usw-section-block">
-              <h3 className="usw-section-heading">{s.label}</h3>
               {s.body}
             </div>
           ))}
