@@ -259,6 +259,45 @@ test("Logs: silent success clears a previous error; later silent failure keeps t
   await act(async () => { root.unmount(); });
 });
 
+// One failed tick on a two-second poll is noise worth swallowing, but an outage that never
+// recovers must not leave stale rows reading as current forever. Three consecutive failures
+// is the point where silence becomes a lie.
+test("Logs: a sustained poll outage says the rows are stale, and a recovery clears it", async () => {
+  let mode: "ok" | "fail" = "ok";
+
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    if (!url.includes("/api/logs")) return new Response(null, { status: 404 });
+    if (mode === "fail") return jsonResponse({ error: "down" }, 503);
+    return jsonResponse([sampleLog]);
+  }) as typeof fetch;
+
+  const { root, container } = await mountLogs();
+  await flushMicrotasks();
+  expectTableLoaded(container, "gpt-test");
+
+  mode = "fail";
+  // Below the limit the rows stay quiet: a single dropped tick is not worth an alarm.
+  await advanceSilentRefresh();
+  expect(container.textContent).not.toContain("Could not load request logs.");
+  await advanceSilentRefresh();
+  expect(container.textContent).not.toContain("Could not load request logs.");
+
+  // Third consecutive failure: the outage is not transient, so say so while keeping the rows.
+  await advanceSilentRefresh();
+  expect(container.textContent).toContain("Could not load request logs.");
+  expect(container.querySelector(".logs-table")).not.toBeNull();
+  expect(container.textContent).toContain("gpt-test");
+  expect(container.textContent).not.toContain("No requests yet.");
+
+  // A recovered poll must retract the notice rather than leaving a permanent scar.
+  mode = "ok";
+  await advanceSilentRefresh();
+  expectTableLoaded(container, "gpt-test");
+
+  await act(async () => { root.unmount(); });
+});
+
 test("Logs: disabling auto-refresh stops scheduled requests", async () => {
   const urls: string[] = [];
   globalThis.fetch = (async (input) => {

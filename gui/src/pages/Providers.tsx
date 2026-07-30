@@ -44,6 +44,9 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [modelsRefreshToken, setModelsRefreshToken] = useState(0);
   const [oauthTosPending, setOauthTosPending] = useState<{ provider: string; addAccount: boolean } | null>(null);
   const aliveRef = useRef(true);
+  // Which apiBase this instance has already bootstrapped. StrictMode double-invokes the mount
+  // effect and its deferred load is deliberately uncancellable, so the guard lives here.
+  const bootstrapKeyRef = useRef<string | null>(null);
   const removeBusyRef = useRef(false);
   const oauthLoginGenerationRef = useRef<Map<string, number>>(new Map());
 
@@ -149,12 +152,16 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     // Deferred by a microtask, not a timer. A timer had to be cancelled in cleanup, so navigating
     // away within the same tick dropped both requests with nothing to retry them and the page came
     // back empty on the next visit. A microtask cannot be cancelled, so the requests always go out.
+    // Guarded per identity because StrictMode double-invokes this effect on mount and an
+    // uncancellable microtask would otherwise bootstrap the page twice.
     // Quotas: workspace shell owns /api/provider-quotas — do not double-fetch on mount.
+    if (bootstrapKeyRef.current === apiBase) return;
+    bootstrapKeyRef.current = apiBase;
     void Promise.resolve().then(() => {
       void fetchConfig();
       void fetchOauth();
     });
-  }, [fetchConfig, fetchOauth]);
+  }, [apiBase, fetchConfig, fetchOauth]);
 
   const bumpModelsRefresh = () => setModelsRefreshToken(n => n + 1);
 

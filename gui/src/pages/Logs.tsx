@@ -247,6 +247,9 @@ function formatEstimatedUsdValue(value: number, localeTag?: string): string {
   }).format(value)}`;
 }
 
+/** Consecutive failed polls before a stale table is called out. Two seconds each, so ~6s. */
+const STALE_POLL_FAILURE_LIMIT = 3;
+
 const METRIC_REASON_KEYS = {
   usage_missing: "logs.detail.reason.usage_missing",
   usage_unsupported: "logs.detail.reason.usage_unsupported",
@@ -384,6 +387,26 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const logsState = logsResource.state;
   const logs = logsState.data ?? cachedLogs ?? [];
   const fetchLogs = logsResource.refresh;
+
+  // A single failed tick on a two-second poll is noise, but an outage that never recovers must not
+  // leave the user reading stale rows as if they were current. Count consecutive failures and speak
+  // up once it is clearly not transient.
+  const [pollFailing, setPollFailing] = useState(false);
+  const failureStreakRef = useRef(0);
+  const settledFailure = !logsResource.refreshing && logsState.showError;
+  const settledSuccess = !logsResource.refreshing && !logsState.showError && logsState.data !== undefined;
+  useEffect(() => {
+    if (settledSuccess) {
+      failureStreakRef.current = 0;
+      setPollFailing(false);
+      return;
+    }
+    if (!settledFailure) return;
+    failureStreakRef.current += 1;
+    if (failureStreakRef.current >= STALE_POLL_FAILURE_LIMIT) setPollFailing(true);
+    // `logsState.error` is in the deps so each new failed settlement counts once, rather than the
+    // effect re-running on unrelated re-renders.
+  }, [settledFailure, settledSuccess, logsState.error]);
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
   const conversationQuery = conversationFilter.trim();
@@ -554,6 +577,17 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           itself would talk over the table continuously. */}
       {logsResource.loading && logs.length > 0 && (
         <DataSurfaceStatus live={false}>{t("common.loading")}</DataSurfaceStatus>
+      )}
+
+      {/* A run of failed polls is no longer transient: say the rows below are stale rather than
+          letting them read as current. Cleared by the first successful poll. */}
+      {pollFailing && logs.length > 0 && (
+        <Notice tone="err">
+          {t("logs.loadError")}{" "}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => fetchLogs({ forceLoading: true })} disabled={logsResource.refreshing}>
+            {t("common.retry")}
+          </button>
+        </Notice>
       )}
 
       {/* A cold failure must not also render the empty state: "nothing came back" and "there is

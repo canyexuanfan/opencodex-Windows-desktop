@@ -111,6 +111,10 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   // the live set rather than a captured snapshot.
   const [pauseCount, setPauseCount] = useState(0);
   const pauseTokensRef = useRef<Set<PauseToken>>(new Set());
+  // Which apiBase this instance has already kicked its initial load for. StrictMode double-invokes
+  // the mount effect, and the deferred load is deliberately uncancellable, so the guard has to live
+  // here rather than in the effect's cleanup.
+  const initialLoadKeyRef = useRef<string | null>(null);
   const loadGenerationRef = useRef(0);
   // Set by switchAccount so a background load already in flight cannot roll the active
   // id back to a value the server had not yet committed when that request was issued.
@@ -247,8 +251,13 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
     // trying again — the account list simply looked empty in the meantime. A microtask still keeps
     // the state update out of the effect body (cascading renders), but nothing cancels it, so the
     // request always goes out.
+    //
+    // Guarded per identity because StrictMode runs this effect twice on mount: without the guard
+    // the uncancellable microtask fires two identical loads, doubling /accounts and /active.
+    if (initialLoadKeyRef.current === apiBase) return;
+    initialLoadKeyRef.current = apiBase;
     void Promise.resolve().then(() => { void load(); });
-  }, [enabled, load]);
+  }, [apiBase, enabled, load]);
 
   // Soft /accounts returns before background WHAM finishes. Re-poll cheaply until
   // credentialed rows have quota (or the user navigates away). Keyed on the boolean so

@@ -274,6 +274,16 @@ export function ensureStrictCatalogFields(
   if (!Array.isArray(entry.input_modalities) && !options.preserveExactInputModalities) {
     entry.input_modalities = ["text"];
   }
+  // Codex parses `input_modalities` as a closed enum. One out-of-enum value (zenmux advertises
+  // "video") makes its config loader reject the entire catalog, which takes down plugins, apps and
+  // MCP servers — not just that model. Normalize at the single point every entry passes through,
+  // because provider metadata, jawcode metadata and effort sync each write this field.
+  if (Array.isArray(entry.input_modalities)) {
+    const accepted = entry.input_modalities.filter(value =>
+      value === "text" || value === "image" || value === "audio");
+    // Never leave it empty: an entry with no modality at all is worse than a text-only one.
+    entry.input_modalities = accepted.length > 0 ? accepted : ["text"];
+  }
   const contextWindow = typeof entry.context_window === "number" && entry.context_window > 0 ? entry.context_window : 128000;
   entry.context_window = contextWindow;
   if (

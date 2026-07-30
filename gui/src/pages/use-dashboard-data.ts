@@ -4,6 +4,8 @@ import { useI18n } from "../i18n/shared";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import {
   PROJECT_CONFIG_DIAGNOSTICS_POLL_MS,
+  STARTUP_HEALTH_STALE_RETRY_MS,
+  probeNeedsFastRetry,
   seedStartupHealthFromSettings,
   type StartupHealthStatus,
 } from "../startup-health-ui";
@@ -185,6 +187,20 @@ export function useDashboardData(apiBase: string) {
     { pollMs: 30_000 },
   );
 
+  /*
+   * `/api/startup-health` answers instantly from a 30s cache and resolves the real probe in the
+   * background, so a cold answer is a conservative placeholder. Waiting for the next 30s tick is
+   * what made the chip look stuck until an unrelated action (refresh quota, tab hop) remounted it.
+   * Re-ask in ~2s while the server says it is still working.
+   */
+  const startupHealthStale = probeNeedsFastRetry(startupHealthPoll.data);
+  const refreshStartupHealth = startupHealthPoll.refresh;
+  useEffect(() => {
+    if (!startupHealthStale) return;
+    const timer = window.setTimeout(() => { void refreshStartupHealth(); }, STARTUP_HEALTH_STALE_RETRY_MS);
+    return () => window.clearTimeout(timer);
+  }, [startupHealthStale, refreshStartupHealth]);
+
   // Wave 1: status/uptime/providers must not wait on injection-model / usage.
   const overviewPoll = useKeyedClientResource(
     `dashboard-overview:${apiBase}`,
@@ -256,12 +272,15 @@ export function useDashboardData(apiBase: string) {
   /* eslint-disable react-hooks/set-state-in-effect -- mirror client-resource snapshots into mutable dashboard UI state that handlers also update */
   useEffect(() => {
     if (startupHealthPoll.data !== undefined) {
+      const probe = startupHealthPoll.data;
       startupHealthGenerationRef.current += 1;
-      setStartupHealth(startupHealthPoll.data);
-      startupHealthRef.current = startupHealthPoll.data;
+      setStartupHealth(probe.status);
+      startupHealthRef.current = probe.status;
       // Never persist hard errors — a cold SWR miss used to poison revisits.
-      if (startupHealthPoll.data !== "error") {
-        writeSessionListCache(`${STARTUP_CACHE_PREFIX}${apiBase}`, startupHealthPoll.data);
+      // A stale answer is a placeholder too: caching it makes the next visit start from
+      // the server's guess instead of asking again.
+      if (probe.status !== "error" && !probe.stale) {
+        writeSessionListCache(`${STARTUP_CACHE_PREFIX}${apiBase}`, probe.status);
       }
     }
   }, [startupHealthPoll.data, apiBase]);

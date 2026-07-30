@@ -288,11 +288,16 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         </>
       ) : (
         <>
+          {/* Keys and models revalidate independently and can be in flight together. Only one
+              region may announce per transition, so keys take precedence and models steps down to
+              visual-only while keys is speaking. */}
           {keysState.refreshing && keysData && (
             <DataSurfaceStatus live={!keysState.showError}>{t("api.activeKeysLoading")}</DataSurfaceStatus>
           )}
           {modelsState.refreshing && modelsState.data && (
-            <DataSurfaceStatus live={!modelsState.showError}>{t("api.modelsLoading")}</DataSurfaceStatus>
+            <DataSurfaceStatus live={!modelsState.showError && !(keysState.refreshing && keysData)}>
+              {t("api.modelsLoading")}
+            </DataSurfaceStatus>
           )}
           <ApiKeysWorkspace
         keys={keys}

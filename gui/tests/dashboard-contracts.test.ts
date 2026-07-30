@@ -175,3 +175,31 @@ test("fetchStartupHealth does not map abort into a sticky error status", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+// The chip used to sit on the server's conservative placeholder until the next 30s tick, which is
+// why an unrelated action (refresh quota, tab hop) looked like the thing that fixed it. The probe
+// has to carry `stale` through so the caller can re-ask in seconds.
+test("fetchStartupHealth reports whether the server answer is still being resolved", async () => {
+  const { fetchStartupHealth } = await import("../src/pages/dashboard-core-poll");
+  const { probeNeedsFastRetry } = await import("../src/startup-health-ui");
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => Response.json({ status: "at-risk", diagnosticStale: true })) as typeof fetch;
+    const stale = await fetchStartupHealth("http://test", new AbortController().signal);
+    expect(stale).toEqual({ status: "at-risk", stale: true });
+    expect(probeNeedsFastRetry(stale)).toBe(true);
+
+    globalThis.fetch = (async () => Response.json({ status: "protected", diagnosticStale: false })) as typeof fetch;
+    const settled = await fetchStartupHealth("http://test", new AbortController().signal);
+    expect(settled).toEqual({ status: "protected", stale: false });
+    expect(probeNeedsFastRetry(settled)).toBe(false);
+
+    // A hard failure is the normal poll's job; re-asking every 2s would just hammer it.
+    globalThis.fetch = (async () => new Response("nope", { status: 503 })) as typeof fetch;
+    const failed = await fetchStartupHealth("http://test", new AbortController().signal);
+    expect(failed).toEqual({ status: "error", stale: false });
+    expect(probeNeedsFastRetry(failed)).toBe(false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

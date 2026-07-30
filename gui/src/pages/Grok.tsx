@@ -5,6 +5,7 @@ import { useT, type TKey } from "../i18n/shared";
 import { readJsonOrThrow } from "../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
+import { setClientResourceData } from "../client-resource";
 import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
 import { makeCollapseStore, toggleInSet } from "./collapse-store";
 import { grokGroupView, type GrokCandidate } from "./grok-groups";
@@ -82,8 +83,9 @@ export default function Grok({ apiBase }: { apiBase: string }) {
 
   // Request ownership lives in the shared resource layer, so a route change during the first
   // load cannot drop the request the way the old deferred timer did.
+  const resourceKey = `grok-status:${apiBase}`;
   const resource = useDataSurface<GrokStatus>(
-    `grok-status:${apiBase}`,
+    resourceKey,
     [apiBase],
     fetchStatus,
     { isEmpty: () => false },
@@ -142,7 +144,11 @@ export default function Grok({ apiBase }: { apiBase: string }) {
         body: JSON.stringify({ excluded: [...excluded] }),
       });
       await readJsonOrThrow<{ error?: string }>(response, t("grok.saveFailed"));
-      // The draft is now the server's state; dropping it hands authority back to the next read.
+      // Publish the acknowledged selection into the resource store BEFORE dropping the draft.
+      // Clearing the draft alone would fall back to the previous snapshot, so the switch the user
+      // just saved would visibly revert while the page claimed to be up to date.
+      const acknowledged = [...excluded];
+      if (status) setClientResourceData(resourceKey, { ...status, excluded: acknowledged });
       setDraftExcluded(null);
 
       if (applyAfter) {
@@ -172,7 +178,7 @@ export default function Grok({ apiBase }: { apiBase: string }) {
         setMessage({ tone: "ok", text: t("grok.saved") });
         setAnnouncement(t("grok.saved"));
         if (status) {
-          writeSessionListCache(cacheKey, { ...status, excluded: [...excluded] });
+          writeSessionListCache(cacheKey, { ...status, excluded: acknowledged });
         }
       }
     } catch (err) {
