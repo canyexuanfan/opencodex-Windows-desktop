@@ -681,10 +681,144 @@ describe("management API logical v1/v2 switching", () => {
   });
 });
 
+describe("management API parity surface for the WP2 keys", () => {
+  const withConfig = (content: string, run: (path: string, deps: { toggleCodexMultiAgentV2: (enabled: boolean) => void; refreshCodexCatalog: () => Promise<void> }) => Promise<void>) => {
+    const path = fixtureConfig(content);
+    const oldCodexHome = process.env.CODEX_HOME;
+    const oldOcxHome = process.env.OPENCODEX_HOME;
+    process.env.CODEX_HOME = dirname(path);
+    process.env.OPENCODEX_HOME = mkdtempSync(join(tmpdir(), "ocx-api-parity-"));
+    const toggle = (enabled: boolean) => {
+      const current = readFileSync(path, "utf8");
+      writeFileSync(path, current.replace(/^enabled\s*=\s*(?:true|false)$/m, `enabled = ${enabled}`));
+    };
+    return run(path, { toggleCodexMultiAgentV2: toggle, refreshCodexCatalog: async () => {} })
+      .finally(() => {
+        if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
+        if (oldOcxHome === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = oldOcxHome;
+      });
+  };
+  const put = (payload: unknown) => new Request("http://localhost/api/v2", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const config = { providers: [] } as never;
+
+  test("GET reports the three keys tri-state plus the V2-disabled applicability flag", async () => {
+    await withConfig("[agents]\nmax_depth = 2\n", async (path, deps) => {
+      const res = await handleManagementAPI(new Request("http://localhost/api/v2"), new URL("http://localhost/api/v2"), config, deps);
+      expect(await res?.json()).toMatchObject({
+        enabled: false,
+        agentsEnabled: null,
+        agentsMaxDepth: 2,
+        subagentDeveloperInstructions: null,
+        agentsMaxDepthAppliesWhenV2Disabled: true,
+      });
+      const v2Path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
+      process.env.CODEX_HOME = dirname(v2Path);
+      const res2 = await handleManagementAPI(new Request("http://localhost/api/v2"), new URL("http://localhost/api/v2"), config, deps);
+      expect(await res2?.json()).toMatchObject({ enabled: true, agentsMaxDepthAppliesWhenV2Disabled: false });
+    });
+  });
+
+  test("PUT writes each new field independently and re-reads them", async () => {
+    await withConfig("[features.multi_agent_v2]\nenabled = false\n", async (path, deps) => {
+      const onlyNew = await handleManagementAPI(put({ agentsEnabled: false }), new URL("http://localhost/api/v2"), config, deps);
+      expect(onlyNew?.status).toBe(200);
+      expect(getAgentsEnabled(path)).toBe(false);
+      const depth = await handleManagementAPI(put({ agentsMaxDepth: 3 }), new URL("http://localhost/api/v2"), config, deps);
+      expect(depth?.status).toBe(200);
+      expect(getAgentsMaxDepth(path)).toBe(3);
+      const instructions = await handleManagementAPI(put({ subagentDeveloperInstructions: "be thorough" }), new URL("http://localhost/api/v2"), config, deps);
+      expect(instructions?.status).toBe(200);
+      expect(getSubagentDeveloperInstructions(path)).toBe("be thorough");
+    });
+  });
+
+  test("empty string writes an empty value; null removes the key", async () => {
+    await withConfig("[features.multi_agent_v2]\nenabled = false\n", async (path, deps) => {
+      await handleManagementAPI(put({ subagentDeveloperInstructions: "" }), new URL("http://localhost/api/v2"), config, deps);
+      expect(getSubagentDeveloperInstructions(path)).toBe("");
+      const cleared = await handleManagementAPI(put({ subagentDeveloperInstructions: null }), new URL("http://localhost/api/v2"), config, deps);
+      expect(await cleared?.json()).toMatchObject({ subagentDeveloperInstructions: null });
+      expect(getSubagentDeveloperInstructions(path)).toBe(null);
+    });
+  });
+
+  test("wrong types are rejected with field-specific 400 and untouched config", async () => {
+    await withConfig("[agents]\nmax_depth = 2\n", async (path, deps) => {
+      const before = readFileSync(path, "utf8");
+      for (const payload of [
+        { agentsEnabled: "yes" },
+        { agentsMaxDepth: 1.5 },
+        { agentsMaxDepth: 2_147_483_648 },
+        { subagentDeveloperInstructions: 42 },
+      ]) {
+        const res = await handleManagementAPI(put(payload), new URL("http://localhost/api/v2"), config, deps);
+        expect(res?.status).toBe(400);
+      }
+      expect(readFileSync(path, "utf8")).toBe(before);
+      const empty = await handleManagementAPI(put({}), new URL("http://localhost/api/v2"), config, deps);
+      expect(empty?.status).toBe(400);
+    });
+  });
+
+  test("agentsEnabled false with V2 enabled warns but does not reject", async () => {
+    await withConfig("[features.multi_agent_v2]\nenabled = true\n", async (path, deps) => {
+      const res = await handleManagementAPI(put({ agentsEnabled: false }), new URL("http://localhost/api/v2"), config, deps);
+      expect(res?.status).toBe(200);
+      const body = await res?.json();
+      expect(body.warnings).toContain("agents.enabled = false has no effect while features.multi_agent_v2 is enabled; upstream keeps V2 active.");
+      expect(getAgentsEnabled(path)).toBe(false);
+    });
+  });
+
+  test("null agentsEnabled unsets the key and is not confused with false", async () => {
+    await withConfig("[agents]\nenabled = false\n", async (path, deps) => {
+      expect(getAgentsEnabled(path)).toBe(false);
+      const res = await handleManagementAPI(put({ agentsEnabled: null }), new URL("http://localhost/api/v2"), config, deps);
+      expect(res?.status).toBe(200);
+      expect(getAgentsEnabled(path)).toBe(null);
+    });
+  });
+});
+
 describe("cli surface", () => {
   test("status lines describe the multi-agent surface", () => {
     expect(v2StatusLine(true)).toContain("ON");
     expect(v2StatusLine(false)).toContain("OFF");
+  });
+
+  test("status reports the WP2 keys with tri-state rendering and the V1-only label", async () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n\n[agents]\nenabled = false\nmax_depth = 2\n");
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = dirname(path);
+    const logs: string[] = [];
+    try {
+      expect(await cmdV2(["status"], { log: { log: (m?: unknown) => { logs.push(String(m)); }, error: (m?: unknown) => { logs.push(String(m)); } } })).toBe(0);
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
+    }
+    const out = logs.join("\n");
+    expect(out).toContain("agents.enabled: false");
+    expect(out).toContain("agents.max_depth: 2 (V1-only — ignored while multi_agent_v2 is enabled)");
+    expect(out).toContain("subagent_developer_instructions: (unset — children inherit)");
+  });
+
+  test("status renders empty-string instructions distinctly from unset", async () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = false\nsubagent_developer_instructions = \"\"\n");
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = dirname(path);
+    const logs: string[] = [];
+    try {
+      expect(await cmdV2(["status"], { log: { log: (m?: unknown) => { logs.push(String(m)); }, error: (m?: unknown) => { logs.push(String(m)); } } })).toBe(0);
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
+    }
+    const out = logs.join("\n");
+    expect(out).toContain('subagent_developer_instructions: "" (clears inherited instructions)');
+    expect(out).toContain("agents.enabled: (unset — upstream default true)");
+    expect(out).toContain("agents.max_depth: (unset — upstream default 1)");
+    expect(out).not.toContain("V1-only");
   });
 
   test("codexFeaturesInvocation: POSIX passthrough; win32 .cmd routed through cmd.exe (devlog 260715 020)", () => {
