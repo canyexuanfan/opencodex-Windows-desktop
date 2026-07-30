@@ -57,8 +57,11 @@ export function laneView<T extends LaneModel>(models: T[], search: string, limit
  * fresh install this still yields "Opus open, three empty families folded", which is the
  * shape the vertical stack was designed around.
  */
+/**
+ * Default family fold: every family starts collapsed so model lists open on demand.
+ */
 export function defaultCollapsedFamilies(counts: Readonly<Record<string, number>>): Set<string> {
-  return new Set(Object.keys(counts).filter(family => counts[family] === 0));
+  return new Set(Object.keys(counts));
 }
 
 /**
