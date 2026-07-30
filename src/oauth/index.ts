@@ -629,8 +629,9 @@ export function buildModelsRequest(prov: OcxProviderConfig, apiKey: string | und
  * configs on the next `ocx start`, instead of only fresh installs. The live `/models` fetch stays
  * the primary source; this keeps the static fallback (and models-not-in-/models) current.
  *
- * Only touches providers that are registry-managed AND still `authMode: "oauth"`, and only the
- * preset fields (never apiKey/baseUrl/user toggles). Persists + returns true when anything changed.
+ * Only touches providers that are registry-managed AND still `authMode: "oauth"`. Preset fields
+ * are refreshed, while the registry's `liveModels` default is filled only when the user has no
+ * explicit toggle. Persists + returns true when anything changed.
  */
 function cloneProviderField(value: unknown): unknown {
   if (Array.isArray(value)) return [...value];
@@ -671,6 +672,10 @@ export function reconcileOAuthProviders(config: OcxConfig): boolean {
       } else {
         delete prov[field];
       }
+      changed = true;
+    }
+    if (prov.liveModels === undefined && preset.liveModels !== undefined) {
+      prov.liveModels = preset.liveModels;
       changed = true;
     }
     // Heal a defaultModel that no longer exists in the refreshed list (e.g. a deprecated snapshot).
@@ -739,6 +744,9 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   if (namespaceCollision) throw new Error(namespaceCollision);
   const existing = config.providers[provider];
   const next: OcxProviderConfig = { ...def.providerConfig };
+  // `liveModels` is a user-facing provider toggle. A registry default seeds new rows, but an
+  // explicit choice must survive re-login and the post-credential latest-config upsert.
+  if (typeof existing?.liveModels === "boolean") next.liveModels = existing.liveModels;
   if (existing && getProviderRegistryEntry(provider)?.allowKeyAuthOverride === true) {
     // Shared sanitizeApiKeyValue trim / no-CRLF checks from api-key pool writes.
     let storedApiKey = sanitizeApiKeyValue(existing.apiKey);

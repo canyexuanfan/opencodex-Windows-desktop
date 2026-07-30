@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config";
-import { reconcileOAuthProviders } from "../src/oauth";
+import { OAUTH_PROVIDERS, reconcileOAuthProviders, upsertOAuthProvider } from "../src/oauth";
 import { getCredential, saveCredential } from "../src/oauth/store";
 import type { OcxConfig } from "../src/types";
 
@@ -61,6 +61,7 @@ describe("OAuth provider reconciliation", () => {
     expect(provider.models).not.toContain("gemini-3.6-flash-medium");
     expect(provider.models).not.toContain("gemini-3.6-flash-high");
     expect(provider.modelContextWindows?.["gemini-3.6-flash"]).toBe(1_048_576);
+    expect(provider.liveModels).toBe(false);
     expect(provider.project).toBe("config-project-sentinel");
     expect(provider.note).toBe("user-owned-note");
     expect(getCredential("google-antigravity")).toMatchObject({
@@ -71,6 +72,27 @@ describe("OAuth provider reconciliation", () => {
 
     const persisted = loadConfig();
     expect(persisted.providers["google-antigravity"]?.defaultModel).toBe("gemini-3.6-flash");
+    expect(persisted.providers["google-antigravity"]?.liveModels).toBe(false);
     expect(reconcileOAuthProviders(config)).toBe(false);
+  });
+
+  test("preserves an explicit Antigravity liveModels override during reconcile and re-login", () => {
+    const config = {
+      port: 10100,
+      defaultProvider: "google-antigravity",
+      providers: {
+        "google-antigravity": {
+          ...structuredClone(OAUTH_PROVIDERS["google-antigravity"].providerConfig),
+          liveModels: true,
+        },
+      },
+    } satisfies OcxConfig;
+
+    expect(reconcileOAuthProviders(config)).toBe(false);
+    expect(config.providers["google-antigravity"].liveModels).toBe(true);
+
+    upsertOAuthProvider(config, "google-antigravity");
+    expect(config.providers["google-antigravity"].liveModels).toBe(true);
+    expect(config.providers["google-antigravity"].models).toHaveLength(6);
   });
 });
