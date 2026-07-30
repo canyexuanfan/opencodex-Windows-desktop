@@ -804,12 +804,22 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (buffer.length > 0) {
           if ((yield* handleDataLine(buffer)) === "terminate") return;
         }
+        const hadPendingToolCallsAtEof = pendingToolCalls.length > 0;
         yield* flushToolCalls();
         // Reader EOF. A graceful close shows at least one terminal signal: `[DONE]` (returns above),
         // a non-null finish_reason (sawFinish), or a trailing usage chunk (providers emit usage only
         // at end-of-generation). If NONE of those were seen, the stream was cut mid-flight — fail
         // closed so the bridge emits a classified response.failed rather than a silent truncation.
         const sawFinish = finishReason !== undefined;
+        if (!sawFinish && pendingUsage === undefined && hadPendingToolCallsAtEof) {
+          debugProviderDiagnostic("openai-chat", "stream-truncated", {
+            finishReason: finishReason ?? null,
+            hadUsage: false,
+            pendingToolCalls: true,
+          });
+          yield { type: "error", message: "upstream stream ended without a terminal signal ([DONE] or finish_reason) - possible truncation" };
+          return;
+        }
         if (!sawFinish && pendingUsage === undefined && !sawOutput) {
           debugProviderDiagnostic("openai-chat", "stream-truncated", {
             finishReason: finishReason ?? null,
