@@ -52,6 +52,11 @@
   --red-soft:   light-dark(rgba(185, 28, 28, 0.09), rgba(248, 113, 113, 0.13));
   --amber:      light-dark(#9a4a08, #fbbf24);
   --amber-soft: light-dark(rgba(180, 83, 9, 0.10), rgba(251, 191, 36, 0.13));
+  /* Reserved for "something new is waiting" affordances (sidebar update orb). The base
+     palette is monochrome, so blue is the one hue that reads as an offer rather than a
+     warning (amber) or a failure (red). */
+  --blue:       light-dark(#1d4ed8, #7aa2ff);
+  --blue-soft:  light-dark(rgba(29, 78, 216, 0.10), rgba(122, 162, 255, 0.16));
 
   /* geometry: 4px base grid, three surface radii, and one pill radius */
   --space-0-5: 2px;
@@ -324,6 +329,47 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .sidebar-link { display: flex; align-items: center; gap: 9px; padding: 8px 10px; color: var(--muted); font-size: var(--text-control); border-radius: var(--radius-sm); text-decoration: none; }
 .sidebar-link:hover { background: var(--accent-soft); color: var(--text); text-decoration: none; }
 .sidebar-link svg { width: 16px; height: 16px; }
+
+/* GitHub row: the label keeps the full-width link affordance, the two circular
+   satellites (star, update) sit at the trailing edge without shrinking the label's
+   hover target. The update orb only exists when an update is available, so the row
+   is one or two circles wide — never a placeholder. */
+.sidebar-github-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sidebar-github-link { flex: 1 1 auto; min-width: 0; }
+.sidebar-github-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.sidebar-orb {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; flex: 0 0 28px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--radius-pill);
+  background: var(--raised); color: var(--muted); cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+.sidebar-orb svg { width: 14px; height: 14px; }
+.sidebar-orb:hover:not(:disabled) { background: var(--accent-soft); color: var(--text); border-color: var(--accent-ring); }
+.sidebar-orb:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+/* Already starred: a settled state, not a disabled control that looks broken. */
+.sidebar-orb--starred { color: var(--amber); cursor: default; opacity: 1; }
+/* Update pending: the one blue accent in the sidebar, so a waiting release is visible
+   at a glance without shouting like an error state. */
+.sidebar-orb--update {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+.sidebar-orb--update:hover:not(:disabled) {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  filter: brightness(1.06);
+}
+/* The dot repeats the "new" signal alongside the accessible name, so the meaning is
+   not carried by color alone. */
+.sidebar-orb-dot {
+  position: absolute; top: 1px; right: 1px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--blue); border: 1.5px solid var(--rail);
+}
 
 .lang-toggle { display: flex; align-items: center; gap: 9px; padding: 8px 10px; width: 100%; color: var(--muted); font-size: var(--text-control); border-radius: var(--radius-sm); transition: background var(--motion-fast), color var(--motion-fast); position: relative; }
 .lang-toggle:hover { background: var(--accent-soft); color: var(--text); }

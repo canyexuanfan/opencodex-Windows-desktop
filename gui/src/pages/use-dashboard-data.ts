@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyedClientResource } from "../client-resource";
+import { replaceHash } from "../hash-routing";
 import { useI18n } from "../i18n/shared";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import {
@@ -40,6 +41,7 @@ import {
   UPDATE_CHECK_MAX_AUTO_RETRIES,
   UPDATE_CHECK_RETRY_BASE_MS,
   defaultUpdateChannel,
+  hashRequestsUpdateDialog,
   mergeSidecarSetting,
   readDashboardSectionFromHash,
   requireJson,
@@ -159,6 +161,7 @@ export function useDashboardData(apiBase: string) {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
 
   useEffect(() => () => {
     updateRequestEpochRef.current += 1;
@@ -658,6 +661,35 @@ export function useDashboardData(apiBase: string) {
     setUpdateChannel(channel);
     void fetchUpdateCheck(channel, true);
   };
+
+  /**
+   * Sidebar update button deep link (`#dashboard/update`). Opening happens straight from
+   * the hashchange listener — an external event, not a render-time effect — so no
+   * intermediate state or ref hand-off is needed. The hash is normalized back to
+   * `#dashboard` before opening, so Back never re-triggers the dialog.
+   *
+   * `openUpdateDialogRef` keeps the listener registration stable while still calling the
+   * latest handler; it is only ever written inside an effect.
+   */
+  const openUpdateDialogRef = useRef(openUpdateDialog);
+  useEffect(() => {
+    openUpdateDialogRef.current = openUpdateDialog;
+  });
+  useEffect(() => {
+    const consume = () => {
+      if (!hashRequestsUpdateDialog()) return;
+      replaceHash("dashboard");
+      openUpdateDialogRef.current();
+    };
+    // A cold load straight onto the deep link: defer past mount so the open is not a
+    // render-phase side effect.
+    const initial = hashRequestsUpdateDialog() ? window.setTimeout(consume, 0) : null;
+    window.addEventListener("hashchange", consume);
+    return () => {
+      if (initial !== null) window.clearTimeout(initial);
+      window.removeEventListener("hashchange", consume);
+    };
+  }, []);
 
   const runUpdate = async () => {
     if (!updateCheck?.canUpdate) return;

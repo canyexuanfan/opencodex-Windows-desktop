@@ -178,7 +178,7 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
           <button
             ref={updateTriggerRef}
             type="button"
-            className="btn btn-primary"
+            className="btn btn-ghost"
             onClick={openUpdateDialog}
             disabled={updateLoading}
             aria-haspopup="dialog"
