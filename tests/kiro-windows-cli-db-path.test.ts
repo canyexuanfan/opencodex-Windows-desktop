@@ -55,11 +55,11 @@ describe("kiro-cli native session store resolution", () => {
     const entries = resolveKiroCliNativeSessionEntries({
       env: {},
       platform: "darwin",
-      home: "/Users/u",
+      home: "/Users/x",
     });
 
     expect(entries).toEqual([
-      { location: "kiro-cli-data", path: "/Users/u/Library/Application Support/kiro-cli/data.sqlite3" },
+      { location: "kiro-cli-data", path: "/Users/x/Library/Application Support/kiro-cli/data.sqlite3" },
     ]);
   });
 
