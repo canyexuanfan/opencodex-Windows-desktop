@@ -98,7 +98,9 @@ function stableJson(value: unknown): string {
 function providerCatalogFingerprint(name: string, prov: OcxProviderConfig): Record<string, unknown> {
   return {
     n: name,
-    live: prov.liveModels !== false,
+    // Preserve the persisted tri-state. Registry enrichment may turn an omitted value into
+    // `false` while an explicit `true` stays live, so those callers must not share a flight.
+    live: prov.liveModels ?? null,
     base: prov.baseUrl ?? "",
     adapter: prov.adapter ?? "",
     models: [...(prov.models ?? [])].sort(),
