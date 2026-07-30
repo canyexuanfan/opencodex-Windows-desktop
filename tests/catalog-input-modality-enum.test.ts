@@ -56,6 +56,8 @@ describe("catalog input_modalities stay inside the enum Codex accepts", () => {
  * refused it. All three now agree.
  */
 describe("custom-model API rejects out-of-enum input modalities", () => {
+  let persistCalls = 0;
+
   async function callCustomModels(
     method: "POST" | "PUT",
     body: unknown,
@@ -79,13 +81,19 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
           { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4", inputModalities: ["text", "image"] },
         ],
       } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
-      deps: {} as Parameters<typeof handleModelRoutes>[0]["deps"],
+      // This handler mutates and persists the config object it receives. The
+      // fixture must NEVER reach the process-global OPENCODEX_HOME; that exact bug
+      // replaced a real 41KB provider config with this `existing-uuid` fixture.
+      deps: {
+        saveConfigPreservingClaudeCode: () => { persistCalls++; },
+      } as Parameters<typeof handleModelRoutes>[0]["deps"],
       refreshCodexCatalogBestEffort: async () => {},
       syncClaudeAgentDefsBestEffort: async () => {},
     });
   }
 
   test("POST refuses a rejected modality with 400 instead of storing it", async () => {
+    persistCalls = 0;
     const res = await callCustomModels("POST", {
       provider: "deepseek",
       modelId: "deepseek-v5",
@@ -95,22 +103,27 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
     const payload = await res!.json() as { error?: string };
     // The message has to name the offending value; "invalid request" would leave the caller guessing.
     expect(payload.error).toContain("video");
+    expect(persistCalls).toBe(0);
   });
 
   test("PUT refuses a rejected modality too — edit was the path still open", async () => {
+    persistCalls = 0;
     const res = await callCustomModels("PUT", { inputModalities: ["video"] }, "/api/custom-models/existing-uuid");
     expect(res?.status).toBe(400);
     const payload = await res!.json() as { error?: string };
     expect(payload.error).toContain("video");
+    expect(persistCalls).toBe(0);
   });
 
   test("an accepted modality set still passes", async () => {
+    persistCalls = 0;
     const res = await callCustomModels("POST", {
       provider: "deepseek",
       modelId: "deepseek-v6",
       inputModalities: ["text", "image"],
     });
     expect(res?.status).not.toBe(400);
+    expect(persistCalls).toBe(1);
   });
 
   /*
@@ -120,6 +133,7 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
    * returns 400 is supposed to promise.
    */
   test("a non-string member is rejected, not quietly filtered away", async () => {
+    persistCalls = 0;
     const posted = await callCustomModels("POST", {
       provider: "deepseek",
       modelId: "deepseek-v7",
@@ -130,14 +144,17 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
 
     const put = await callCustomModels("PUT", { inputModalities: [42] }, "/api/custom-models/existing-uuid");
     expect(put?.status).toBe(400);
+    expect(persistCalls).toBe(0);
   });
 
   // `ocx models edit --modalities -` sends an empty array. That must clear the field, not 400.
   test("an empty array still clears the field rather than being rejected", async () => {
+    persistCalls = 0;
     // The fixture starts with ["text", "image"], so this asserts a real clear, not a no-op.
     const res = await callCustomModels("PUT", { inputModalities: [] }, "/api/custom-models/existing-uuid");
     expect(res?.status).toBe(200);
     const payload = await res!.json() as { inputModalities?: unknown };
     expect(payload.inputModalities).toBeUndefined();
+    expect(persistCalls).toBe(1);
   });
 });

@@ -92,6 +92,11 @@ import type { ManagementContext } from "./context";
 
 export async function handleModelRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
+  // A handler persists the exact config object passed in. Production defaults to
+  // the real store; tests that pass an in-memory fixture inject a no-op/spy. Do not
+  // bypass this seam with a dynamic config import — doing so replaced a user's
+  // ~/.opencodex/config.json with the `existing-uuid` test fixture.
+  const persistConfig = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
 
   if (url.pathname === "/api/models" && req.method === "GET") {
     const models = await fetchAllModels(config);
@@ -152,8 +157,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const disabled = Array.isArray(body.models) ? body.models.filter((m): m is string => typeof m === "string") : [];
     config.disabledModels = disabled;
-    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
-    save(config);
+    persistConfig(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true, disabled });
   }
@@ -252,7 +256,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     }
 
     config.disabledModels = disabled;
-    saveConfigPreservingClaudeCode(config);
+    persistConfig(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true, scope, provider, enabled: body.enabled, disabled });
   }
@@ -291,8 +295,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       addedAt: new Date().toISOString(),
     };
     config.customModels = [...existing, entry];
-    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
-    save(config);
+    persistConfig(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse(entry, 201);
   }
@@ -330,8 +333,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     }
     list[idx] = cm;
     config.customModels = list;
-    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
-    save(config);
+    persistConfig(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse(cm);
   }
@@ -345,8 +347,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     if (idx === -1) return jsonResponse({ error: "not found" }, 404);
     list.splice(idx, 1);
     config.customModels = list.length > 0 ? list : undefined;
-    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
-    save(config);
+    persistConfig(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true });
   }
@@ -382,8 +383,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     // Empty list clears the allowlist (provider reverts to exposing all models).
     if (models.length > 0) config.providers[provider].selectedModels = models;
     else delete config.providers[provider].selectedModels;
-    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
-    save(config);
+    persistConfig(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true, provider, selected: models });
   }

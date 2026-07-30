@@ -300,7 +300,18 @@ export function ensureStrictCatalogFields(
 
 export type MultiAgentMode = "v1" | "default" | "v2";
 
-export function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode): RawEntry[] {
+/**
+ * @param v2FeatureEnabled When the native multi_agent_v2 feature is on, "default"
+ *   mode stamps unpinned entries as "v2" instead of deleting the key. The native
+ *   binary validates spawn_agent models against THIS catalog with its own
+ *   `multi_agent_version == Some(V2)` test (codex-rs multi_agents_common.rs), so an
+ *   absent pin means a clean refusal at spawn time — exactly the cross-provider
+ *   spawns opencodex exists to enable (option B, devlog
+ *   260730_codex_rs_upstream_v2_live_handoff/060). Upstream pins are always
+ *   preserved: a genuine "v1" pin is a real capability statement and stays excluded.
+ *   With the feature off the output is byte-identical to the historical behavior.
+ */
+export function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode, v2FeatureEnabled = false): RawEntry[] {
   if (mode === "default") {
     // Restore upstream defaults: clear any stale forced multi_agent_version and
     // re-apply upstream pins from the snapshot for native entries that have one.
@@ -310,6 +321,8 @@ export function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode): 
       const upstreamPin = upstream?.multi_agent_version;
       if (typeof upstreamPin === "string") {
         entry.multi_agent_version = upstreamPin;
+      } else if (v2FeatureEnabled) {
+        entry.multi_agent_version = "v2";
       } else {
         delete entry.multi_agent_version;
       }

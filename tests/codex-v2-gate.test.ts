@@ -997,6 +997,60 @@ describe("3-state multi-agent mode", () => {
     expect(native.multi_agent_version).toBeUndefined();
   });
 
+  /*
+   * Option B's write half: the native binary validates spawn_agent models against the
+   * catalog WE write, so an unpinned routed model must be stamped "v2" there or it is
+   * refused at spawn time no matter what our own roster advertises. The stamp is gated
+   * on the feature being ON, which is why the default-mode test above stays green: it
+   * runs with the feature off and must remain byte-identical to the old behavior.
+   *
+   * Both callers of applyMultiAgentMode are covered, because a feature flag threaded
+   * through only one of them is the failure this contract exists to catch.
+   */
+  test("default mode + v2 feature ON stamps unpinned entries via BOTH catalog paths", () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = dirname(path);
+    try {
+      expect(isMultiAgentV2Enabled()).toBe(true);
+
+      // Path 1: buildCatalogEntries (fresh catalog).
+      const built = buildCatalogEntries(template(), ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"], [], [], false, "default");
+      // Unpinned native gains the stamp so the binary will accept it as a subagent.
+      expect(built.find(e => e.slug === "gpt-5.5")!.multi_agent_version).toBe("v2");
+      // Genuine upstream pins are never rewritten: "v1" stays excluded, "v2" stays "v2".
+      expect(built.find(e => e.slug === "gpt-5.6-luna")!.multi_agent_version).toBe("v1");
+      expect(built.find(e => e.slug === "gpt-5.6-sol")!.multi_agent_version).toBe("v2");
+
+      // Path 2: mergeCatalogEntriesForSync (existing catalog on disk).
+      const merged = mergeCatalogEntriesForSync(
+        [{ slug: "opencode-go/glm-5.2", display_name: "glm", visibility: "list", priority: 1 } as never],
+        [], new Map(), [], false,
+        new Set(), null, new Set(), new Set(), "default",
+      );
+      const routed = merged.find(e => e.slug === "opencode-go/glm-5.2");
+      if (routed) expect(routed.multi_agent_version).toBe("v2");
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
+    }
+  });
+
+  test("default mode + v2 feature OFF is byte-identical to the historical behavior", () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = false\n");
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = dirname(path);
+    try {
+      expect(isMultiAgentV2Enabled()).toBe(false);
+      const entries = buildCatalogEntries(template(), ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"], [], [], false, "default");
+      // No stamp: the key stays absent exactly as before this change.
+      expect(entries.find(e => e.slug === "gpt-5.5")!.multi_agent_version).toBeUndefined();
+      expect(entries.find(e => e.slug === "gpt-5.6-luna")!.multi_agent_version).toBe("v1");
+      expect(entries.find(e => e.slug === "gpt-5.6-sol")!.multi_agent_version).toBe("v2");
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
+    }
+  });
+
   test("mode v1 in mergeCatalogEntriesForSync overrides preserved genuine native", () => {
     const diskSol = {
       ...template(),
