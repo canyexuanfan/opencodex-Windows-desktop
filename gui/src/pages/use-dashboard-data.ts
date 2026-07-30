@@ -108,7 +108,6 @@ export function useDashboardData(apiBase: string) {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [maMode, setMaMode] = useState<MaMode>(() => cachedMaMode ?? "default");
-  const [maModeResolved, setMaModeResolved] = useState(() => cachedMaMode !== null);
   const [maBusy, setMaBusy] = useState(false);
   const [maHelpOpen, setMaHelpOpen] = useState(false);
   const [effortCapHelpOpen, setEffortCapHelpOpen] = useState(false);
@@ -284,9 +283,12 @@ export function useDashboardData(apiBase: string) {
   useEffect(() => {
     if (maModePoll.data === undefined) return;
     setMaMode(maModePoll.data.maMode);
-    setMaModeResolved(true);
     writeSessionListCache(`${MA_MODE_CACHE_PREFIX}${apiBase}`, maModePoll.data.maMode);
   }, [maModePoll.data, apiBase]);
+
+  // Derived — avoids setState-on-prop-change for the resolved flag. Cache / poll / optimistic
+  // save (which writes the same cache key) all count as resolved for MA UI.
+  const maModeResolved = maModePoll.data !== undefined || cachedMaMode !== null;
 
   useEffect(() => {
     const data = multiAgentPoll.data;
@@ -494,7 +496,6 @@ export function useDashboardData(apiBase: string) {
       });
       if (r.ok) {
         setMaMode(mode);
-        setMaModeResolved(true);
         writeSessionListCache(`${MA_MODE_CACHE_PREFIX}${apiBase}`, mode);
       }
     } catch { /* ignore */ }

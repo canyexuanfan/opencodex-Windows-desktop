@@ -25,7 +25,18 @@ export function settingsPollMayCommit(
     && started.mutation === current.mutation;
 }
 
-/** Snapshot + bump request epochs before issuing any poll fetches. */
+/** Snapshot + bump one request epoch before issuing a poll fetch. */
+export function beginPollEpoch(
+  request: { current: number },
+  mutation: { current: number },
+): SettingsPollEpoch {
+  return {
+    request: ++request.current,
+    mutation: mutation.current,
+  };
+}
+
+/** Snapshot + bump request epochs before issuing paired settings/shadow poll fetches. */
 export function beginPollEpochs(refs: {
   settingsRequest: { current: number };
   settingsMutation: { current: number };
@@ -36,14 +47,8 @@ export function beginPollEpochs(refs: {
   shadow: SettingsPollEpoch;
 } {
   return {
-    settings: {
-      request: ++refs.settingsRequest.current,
-      mutation: refs.settingsMutation.current,
-    },
-    shadow: {
-      request: ++refs.shadowRequest.current,
-      mutation: refs.shadowMutation.current,
-    },
+    settings: beginPollEpoch(refs.settingsRequest, refs.settingsMutation),
+    shadow: beginPollEpoch(refs.shadowRequest, refs.shadowMutation),
   };
 }
 

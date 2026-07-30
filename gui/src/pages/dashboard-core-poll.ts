@@ -1,5 +1,6 @@
 import { readJsonIfOk } from "../fetch-json";
 import {
+  beginPollEpoch,
   settingsPollMayCommit,
   mapStartupHealthProbe,
   type StartupHealthStatus,
@@ -145,8 +146,10 @@ export async function fetchDashboardSidecars(
   epochs: DashboardEpochRefs,
 ): Promise<DashboardSidecarPoll> {
   // Only bump shadow epochs — settings has its own poll and must not be invalidated here.
-  const shadowRequestEpoch = ++epochs.shadowCallRequestEpochRef.current;
-  const shadowMutationEpoch = epochs.shadowCallMutationEpochRef.current;
+  const { request: shadowRequestEpoch, mutation: shadowMutationEpoch } = beginPollEpoch(
+    epochs.shadowCallRequestEpochRef,
+    epochs.shadowCallMutationEpochRef,
+  );
 
   const [scRes, shRes] = await Promise.all([
     fetch(`${apiBase}/api/sidecar-settings`, { signal }),
@@ -200,8 +203,10 @@ export async function fetchDashboardSettings(
   signal: AbortSignal,
   epochs: DashboardEpochRefs,
 ): Promise<DashboardSettingsPoll> {
-  const settingsRequestEpoch = ++epochs.settingsRequestEpochRef.current;
-  const settingsMutationEpoch = epochs.settingsMutationEpochRef.current;
+  const { request: settingsRequestEpoch, mutation: settingsMutationEpoch } = beginPollEpoch(
+    epochs.settingsRequestEpochRef,
+    epochs.settingsMutationEpochRef,
+  );
 
   const sRes = await fetch(`${apiBase}/api/settings`, { signal });
   const nextSettings = await requireJson<SettingsData>(sRes);

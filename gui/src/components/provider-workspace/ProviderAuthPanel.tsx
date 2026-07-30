@@ -28,9 +28,11 @@ import type { AccountLoadState, OAuthAccountRow, ApiKeyRow, LoginHint, ProviderA
 
 const DOCTOR_CMD = "ocx doctor";
 const QUOTA_ENRICH_RESERVE_MS = 4_000;
+const EMPTY_OAUTH_ACCOUNTS: OAuthAccountRow[] = [];
+const EMPTY_API_KEYS: ApiKeyRow[] = [];
 
 export default function ProviderAuthPanel({
-  item, apiBase, oauth, accounts = [], keys = [], accountLoadState = "ready",
+  item, apiBase, oauth, accounts = EMPTY_OAUTH_ACCOUNTS, keys = EMPTY_API_KEYS, accountLoadState = "ready",
   switchingAccountId = null, busy = false, loginHint, authHandlers, onCodexActiveNeedsReauthChange,
   codexController,
 }: {

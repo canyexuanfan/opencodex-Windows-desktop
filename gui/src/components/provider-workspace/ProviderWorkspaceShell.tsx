@@ -108,16 +108,17 @@ export default function ProviderWorkspaceShell({
   const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
   const quotasCacheKey = `ocx.providers.quotas.v1:${apiBase}`;
   const usageCacheKey = `ocx.providers.usage.v1:${apiBase}`;
-  const cachedQuotas = readSessionListCache<Record<string, ProviderQuotaReportView>>(quotasCacheKey);
-  const cachedUsage = readSessionListCache<{
-    totals: Record<string, ProviderUsageTotals>;
-    models: Record<string, ProviderModelUsageRow[]>;
-  }>(usageCacheKey);
-  const [usageTotals, setUsageTotals] = useState<Record<string, ProviderUsageTotals>>(() => cachedUsage?.totals ?? {});
-  const [usageModels, setUsageModels] = useState<Record<string, ProviderModelUsageRow[]>>(() => cachedUsage?.models ?? {});
-  const [quotaReports, setQuotaReports] = useState<Record<string, ProviderQuotaReportView>>(() => cachedQuotas ?? {});
-  const [usageLoading, setUsageLoading] = useState(() => !cachedUsage);
-  const [quotasLoading, setQuotasLoading] = useState(() => !cachedQuotas);
+  const [usageTotals, setUsageTotals] = useState<Record<string, ProviderUsageTotals>>(() => (
+    readSessionListCache<{ totals: Record<string, ProviderUsageTotals> }>(usageCacheKey)?.totals ?? {}
+  ));
+  const [usageModels, setUsageModels] = useState<Record<string, ProviderModelUsageRow[]>>(() => (
+    readSessionListCache<{ models: Record<string, ProviderModelUsageRow[]> }>(usageCacheKey)?.models ?? {}
+  ));
+  const [quotaReports, setQuotaReports] = useState<Record<string, ProviderQuotaReportView>>(() => (
+    readSessionListCache<Record<string, ProviderQuotaReportView>>(quotasCacheKey) ?? {}
+  ));
+  const [usageLoading, setUsageLoading] = useState(() => !readSessionListCache(usageCacheKey));
+  const [quotasLoading, setQuotasLoading] = useState(() => !readSessionListCache(quotasCacheKey));
   const [modelsLoadEpoch, setModelsLoadEpoch] = useState(0);
   const filterWrapRef = useRef<HTMLDivElement>(null);
 
@@ -164,7 +165,9 @@ export default function ProviderWorkspaceShell({
     let cancelled = false;
     const timeout = window.setTimeout(() => {
       // Keep last-good paint when sessionStorage already seeded — don't flash loading skeletons.
-      if (!cachedUsage) setUsageLoading(true);
+      // Read inside the effect (keyed by usageCacheKey) so the seed check stays correct without
+      // closing over an unstable cachedUsage render value.
+      if (!readSessionListCache(usageCacheKey)) setUsageLoading(true);
       void fetch(`${apiBase}/api/usage?range=30d`)
         .then(r => readJsonIfOk<{
           providers?: Array<{ provider: string; requests: number; totalTokens?: number }>;
@@ -206,7 +209,7 @@ export default function ProviderWorkspaceShell({
   useEffect(() => {
     let cancelled = false;
     const timeout = window.setTimeout(() => {
-      if (!cachedQuotas) setQuotasLoading(true);
+      if (!readSessionListCache(quotasCacheKey)) setQuotasLoading(true);
       void fetch(`${apiBase}/api/provider-quotas`)
         .then(r => readJsonIfOk<{ reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown }> }>(r))
         .then((data) => {
