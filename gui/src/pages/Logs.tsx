@@ -368,9 +368,10 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     // failures flicker between the error banner, empty state, and stale table.
     if (!silent) setLoading(true);
     try {
-      const res = await fetch(`${apiBase}/api/logs`);
+      const res = await fetch(`${apiBase}/api/logs?limit=2000`);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
-      const next = await res.json() as LogEntry[];
+      const body = await res.json() as LogEntry[] | { logs?: LogEntry[] };
+      const next = Array.isArray(body) ? body : (body.logs ?? []);
       setLogs(next);
       writeSessionListCache(logsCacheKey(apiBase), next);
       setError(null);
