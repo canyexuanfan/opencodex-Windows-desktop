@@ -10,14 +10,20 @@ import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { buildCatalogEntries, mergeCatalogEntriesForSync, nativeEffortClamp, shouldApplyNativeEffortClamp, type MultiAgentMode } from "../src/codex/catalog";
 import {
+  getAgentsEnabled,
+  getAgentsMaxDepth,
   getAgentsMaxThreads,
   getLogicalMaxThreads,
   getMaxConcurrentThreads,
+  getSubagentDeveloperInstructions,
   hasAgentsMaxThreads,
   isMultiAgentV2Enabled,
   isTranslatableV1ChildLimit,
   isTranslatableV2TotalLimit,
+  setAgentsEnabled,
+  setAgentsMaxDepth,
   setMaxConcurrentThreads,
+  setSubagentDeveloperInstructions,
   transitionMultiAgentV2,
   v1ChildLimitToV2TotalLimit,
   v2TotalLimitToV1ChildLimit,
@@ -420,6 +426,161 @@ describe("v1<->v2 root-slot translation", () => {
     expect(result).toMatchObject({ ok: true, threadLimit: 11 });
     expect(getMaxConcurrentThreads(path)).toBe(11);
     expect(getAgentsMaxThreads(path)).toBe(null);
+  });
+});
+
+describe("config-surface parity: agents.enabled, max_depth, subagent_developer_instructions", () => {
+  test("getAgentsEnabled is tri-state: absent, true, false", () => {
+    expect(getAgentsEnabled(fixtureConfig("[agents]\nmax_threads = 4\n"))).toBe(null);
+    expect(getAgentsEnabled(fixtureConfig("[agents]\nenabled = true\n"))).toBe(true);
+    expect(getAgentsEnabled(fixtureConfig("[agents]\nenabled = false # off\n"))).toBe(false);
+    expect(getAgentsEnabled(fixtureConfig("[other]\nx = 1\n"))).toBe(null);
+  });
+
+  test("setAgentsEnabled creates the table, toggles, removes, and is idempotent", () => {
+    const path = fixtureConfig("# keep me\n[features]\nmulti_agent_v2 = false\n");
+    expect(setAgentsEnabled(false, path)).toEqual({ ok: true, changed: true });
+    expect(getAgentsEnabled(path)).toBe(false);
+    const afterCreate = readFileSync(path, "utf8");
+    expect(afterCreate).toContain("[agents]\nenabled = false");
+    expect(afterCreate).toContain("# keep me");
+    expect(afterCreate).toContain("multi_agent_v2 = false");
+    expect(setAgentsEnabled(false, path)).toEqual({ ok: true, changed: false });
+    expect(setAgentsEnabled(true, path)).toEqual({ ok: true, changed: true });
+    expect(getAgentsEnabled(path)).toBe(true);
+    expect(setAgentsEnabled(null, path)).toEqual({ ok: true, changed: true });
+    expect(getAgentsEnabled(path)).toBe(null);
+    expect(readFileSync(path, "utf8")).not.toContain("enabled =");
+    expect(setAgentsEnabled(null, path)).toEqual({ ok: true, changed: false });
+  });
+
+  test("max_depth parity is the signed-i32 contract, not >= 1", () => {
+    const path = fixtureConfig("[agents]\nmax_depth = -1\nmax_threads = 8\n");
+    expect(getAgentsMaxDepth(path)).toBe(-1);
+    expect(setAgentsMaxDepth(0, path)).toEqual({ ok: true, changed: true });
+    expect(getAgentsMaxDepth(path)).toBe(0);
+    expect(setAgentsMaxDepth(-2_147_483_648, path)).toEqual({ ok: true, changed: true });
+    expect(getAgentsMaxDepth(path)).toBe(-2_147_483_648);
+    expect(setAgentsMaxDepth(2_147_483_647, path)).toEqual({ ok: true, changed: true });
+    expect(getAgentsMaxDepth(path)).toBe(2_147_483_647);
+    // Out-of-i32 values would produce a config upstream cannot deserialize.
+    const before = readFileSync(path, "utf8");
+    expect(setAgentsMaxDepth(2_147_483_648, path).ok).toBe(false);
+    expect(setAgentsMaxDepth(-2_147_483_649, path).ok).toBe(false);
+    expect(setAgentsMaxDepth(1.5, path).ok).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    // A stored out-of-range value is unparseable upstream, so the reader treats it as absent.
+    const corrupt = fixtureConfig("[agents]\nmax_depth = 99999999999999999999\n");
+    expect(getAgentsMaxDepth(corrupt)).toBe(null);
+    // Sibling keys are never disturbed.
+    expect(getAgentsMaxThreads(path)).toBe(8);
+    expect(setAgentsMaxDepth(null, path)).toEqual({ ok: true, changed: true });
+    expect(getAgentsMaxDepth(path)).toBe(null);
+    expect(getAgentsMaxThreads(path)).toBe(8);
+  });
+
+  test("subagent_developer_instructions distinguishes absent from empty, and round-trips ordinary text", () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
+    expect(getSubagentDeveloperInstructions(path)).toBe(null);
+    expect(setSubagentDeveloperInstructions("", path)).toEqual({ ok: true, changed: true });
+    expect(getSubagentDeveloperInstructions(path)).toBe("");
+    expect(setSubagentDeveloperInstructions("You are a careful reviewer.", path)).toEqual({ ok: true, changed: true });
+    expect(getSubagentDeveloperInstructions(path)).toBe("You are a careful reviewer.");
+    expect(setSubagentDeveloperInstructions("You are a careful reviewer.", path)).toEqual({ ok: true, changed: false });
+    expect(setSubagentDeveloperInstructions(null, path)).toEqual({ ok: true, changed: true });
+    expect(getSubagentDeveloperInstructions(path)).toBe(null);
+    expect(readFileSync(path, "utf8")).toContain("enabled = true");
+  });
+
+  test("key name is emitted character-for-character (upstream deny_unknown_fields)", () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
+    setSubagentDeveloperInstructions("x", path);
+    const written = readFileSync(path, "utf8");
+    expect(written).toContain("subagent_developer_instructions = ");
+    expect(written).not.toContain("subagent_developer_instruction =");
+    expect(written).not.toContain("subagentDeveloperInstructions");
+  });
+
+  test("realistic instruction text with quotes, newlines, backslashes, and triple-quotes round-trips", () => {
+    const values = [
+      'has "quotes" inside',
+      "line one\nline two",
+      "back\\slash",
+      'triple """ quotes',
+      "crlf\r\nend",
+      'mixed \\" and \ttab',
+      "keep # not comment",
+    ];
+    for (const value of values) {
+      const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
+      expect(setSubagentDeveloperInstructions(value, path)).toEqual({ ok: true, changed: true });
+      expect(getSubagentDeveloperInstructions(path)).toBe(value);
+    }
+  });
+
+  test("control characters are asserted at the byte level (Bun 1.3.14 TOML.parse decodes \\t as \\f)", () => {
+    // Do NOT assert this through Bun.TOML.parse: its reader mis-decodes the \t escape
+    // and would fail against this correct encoder. Assert the emitted bytes directly.
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
+    setSubagentDeveloperInstructions("tab\there", path);
+    expect(readFileSync(path, "utf8")).toContain('subagent_developer_instructions = "tab\\there"');
+    expect(getSubagentDeveloperInstructions(path)).toBe("tab\there");
+  });
+
+  test("\\u fallback branch fires for control characters without a named escape", () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
+    setSubagentDeveloperInstructions("bellend", path);
+    expect(readFileSync(path, "utf8")).toContain('subagent_developer_instructions = "bell\\u0007end"');
+    expect(getSubagentDeveloperInstructions(path)).toBe("bellend");
+  });
+
+  test("inline form: values containing } and , round-trip without disturbing siblings", () => {
+    const path = fixtureConfig("[features]\nmulti_agent_v2 = { enabled = true, max_concurrent_threads_per_session = 9 } # keep\n");
+    const value = "close } brace, and comma";
+    expect(setSubagentDeveloperInstructions(value, path)).toEqual({ ok: true, changed: true });
+    expect(getSubagentDeveloperInstructions(path)).toBe(value);
+    expect(isMultiAgentV2Enabled(path)).toBe(true);
+    expect(getMaxConcurrentThreads(path)).toBe(9);
+    expect(readFileSync(path, "utf8")).toContain("# keep");
+    // Replacement and removal inside the inline table.
+    expect(setSubagentDeveloperInstructions("second", path)).toEqual({ ok: true, changed: true });
+    expect(getSubagentDeveloperInstructions(path)).toBe("second");
+    expect(setSubagentDeveloperInstructions("second", path)).toEqual({ ok: true, changed: false });
+    expect(setSubagentDeveloperInstructions(null, path)).toEqual({ ok: true, changed: true });
+    expect(getSubagentDeveloperInstructions(path)).toBe(null);
+    expect(getMaxConcurrentThreads(path)).toBe(9);
+    expect(isMultiAgentV2Enabled(path)).toBe(true);
+  });
+
+  test("user-authored TOML literal strings are read verbatim and survive edits", () => {
+    // A literal string ('...') has NO escapes: backslash is literal. A scanner that
+    // only understands basic strings would treat the } inside as the table close.
+    const path = fixtureConfig("[features]\nmulti_agent_v2 = { enabled = true, subagent_developer_instructions = 'keep } literal' }\n");
+    expect(getSubagentDeveloperInstructions(path)).toBe("keep } literal");
+    expect(setSubagentDeveloperInstructions("replaced", path)).toEqual({ ok: true, changed: true });
+    expect(getSubagentDeveloperInstructions(path)).toBe("replaced");
+    expect(isMultiAgentV2Enabled(path)).toBe(true);
+    const literalWithComma = fixtureConfig("[features]\nmulti_agent_v2 = { subagent_developer_instructions = 'a, b # c', enabled = false }\n");
+    expect(getSubagentDeveloperInstructions(literalWithComma)).toBe("a, b # c");
+  });
+
+  test("bare boolean form is upgraded in place to an inline table, preserving the flag and comment", () => {
+    const path = fixtureConfig("[features]\nmulti_agent_v2 = true # my flag\n");
+    expect(setSubagentDeveloperInstructions("instructions", path)).toEqual({ ok: true, changed: true });
+    const written = readFileSync(path, "utf8");
+    expect(written).toContain("multi_agent_v2 = { enabled = true, subagent_developer_instructions = \"instructions\" } # my flag");
+    expect(getSubagentDeveloperInstructions(path)).toBe("instructions");
+    expect(isMultiAgentV2Enabled(path)).toBe(true);
+  });
+
+  test("no existing v2 config creates a dedicated table carrying only the key", () => {
+    const path = fixtureConfig("[agents]\nmax_threads = 2\n");
+    expect(setSubagentDeveloperInstructions("fresh", path)).toEqual({ ok: true, changed: true });
+    const written = readFileSync(path, "utf8");
+    expect(written).toContain("[features.multi_agent_v2]\nsubagent_developer_instructions = \"fresh\"");
+    expect(written).toContain("max_threads = 2");
+    expect(getSubagentDeveloperInstructions(path)).toBe("fresh");
+    expect(setSubagentDeveloperInstructions(null, fixtureConfig("[agents]\nmax_threads = 2\n"))).toEqual({ ok: true, changed: false });
   });
 });
 
