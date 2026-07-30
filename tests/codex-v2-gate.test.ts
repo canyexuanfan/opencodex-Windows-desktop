@@ -430,6 +430,46 @@ describe("v1<->v2 root-slot translation", () => {
 });
 
 describe("config-surface parity: agents.enabled, max_depth, subagent_developer_instructions", () => {
+  test("opencodex mirrors exactly one upstream feature key", async () => {
+    const source = await Bun.file(new URL("../src/codex/features.ts", import.meta.url)).text();
+    // Upstream feature keys are snake_case, so the underscore requirement is the
+    // discriminator: JS member accesses on locals named `features` (features.match,
+    // features.slice, features.ts) are camelCase and never match, while a mirrored
+    // key matches wherever it is written — string, template, escape, or regex
+    // literal. Residual: a bare quoted key with no dotted prefix (e.g. passed to a
+    // future helper) is not caught here; the behavioral half below is the net for
+    // that case.
+    const referenced = new Set(
+      [...source.matchAll(/features\.([a-z0-9]+(?:_[a-z0-9]+)+)/g)].map(m => m[1]),
+    );
+    // multi_agent_v2 is deliberately mirrored because opencodex migrates its
+    // concurrency value across the v1/v2 boundary and exposes the multi-agent
+    // config surface. Every other upstream feature flag is delegated to
+    // `codex features` and must NOT be hardcoded in src/codex/features.ts: upstream
+    // reshapes flags freely (code_mode_host became a table; enable_fanout and
+    // item_ids are Stage::Removed but still accepted), and a mirrored list rots.
+    expect([...referenced].sort()).toEqual(["multi_agent_v2"]);
+  });
+
+  test("the retired/reshaped upstream flags do not perturb the v2 read surface", () => {
+    // Behavioral half of the delegation boundary: a config carrying the current
+    // upstream table shape for code_mode_host plus the two inert Removed keys must
+    // be indistinguishable from one without them, as far as this module sees.
+    const bare = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
+    const decorated = fixtureConfig(
+      "[features.multi_agent_v2]\nenabled = true\n\n[features.code_mode_host]\nenabled = true\n\n[features]\nenable_fanout = true\nitem_ids = false\n",
+    );
+    expect(isMultiAgentV2Enabled(decorated)).toBe(true);
+    expect(isMultiAgentV2Enabled(decorated)).toBe(isMultiAgentV2Enabled(bare));
+    const offDecorated = fixtureConfig("[features]\nenable_fanout = true\nitem_ids = false\n");
+    expect(isMultiAgentV2Enabled(offDecorated)).toBe(false);
+  });
+
+  test("feature toggling delegates to exactly the multi_agent_v2 native key", () => {
+    expect(codexFeaturesInvocation("enable").args).toEqual(["features", "enable", "multi_agent_v2"]);
+    expect(codexFeaturesInvocation("disable").args).toEqual(["features", "disable", "multi_agent_v2"]);
+  });
+
   test("getAgentsEnabled is tri-state: absent, true, false", () => {
     expect(getAgentsEnabled(fixtureConfig("[agents]\nmax_threads = 4\n"))).toBe(null);
     expect(getAgentsEnabled(fixtureConfig("[agents]\nenabled = true\n"))).toBe(true);

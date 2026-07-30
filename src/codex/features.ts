@@ -1,6 +1,19 @@
 /**
  * features.ts — codex feature-flag view for $CODEX_HOME/config.toml.
  *
+ * Scope boundary: this module mirrors ONLY `multi_agent_v2`, because opencodex has
+ * to migrate its concurrency value across the v1/v2 boundary and expose the
+ * multi-agent config surface. Every other upstream feature flag is delegated to
+ * the native `codex features` command (see src/cli/v2.ts) and must not be
+ * hardcoded here.
+ *
+ * Upstream reshapes flags freely: in the 1f0566d3f..5a1097ed2 range alone,
+ * `code_mode_host` changed from a boolean to a table (it is Stage::Stable and
+ * default-enabled upstream), `enable_fanout` and `item_ids` were retired to
+ * Stage::Removed ("useless but kept for backward compatibility"), and several
+ * under-development flags were added. Delegation is what keeps opencodex out of
+ * that churn.
+ *
  * Used by the catalog v2-gated-ultra policy (devlog/260709_v2_gated_ultra) and the
  * `ocx v2` toggle surface. The FLAG itself is never written here — toggling goes
  * through the official `codex features enable|disable` CLI (format-preserving).
