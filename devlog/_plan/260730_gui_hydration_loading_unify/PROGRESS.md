@@ -246,3 +246,52 @@ Subagents의 중복은 실제 결함이었다. rail이 추천 모델을 한 번,
 검증(로컬 symlink 본, 재빌드·재기동 후 CDP): Usage 5495px 스크롤·탭 4개·앵커 4개,
 Providers 탭 클릭 시 4330으로 스크롤하며 스트립은 top 0에 고정되고 제목은 56에 착지,
 Storage 1609px 스크롤·버킷 7개·rail이 top −2에 고정. 게이트 4종 green, GUI 422 pass.
+
+사용량 테이블의 높이 제한(`.usage-scroll`, 360px)도 같이 걷어냈다(`a6aa981fa`). 모델 82행이
+카드 안 스크롤바 뒤에 숨어 있었다. 대신 sticky 테이블 헤더를 넣으려다 뺐는데, `.tbl-wrap`이
+넓은 테이블 때문에 `overflow-x: auto`를 유지해야 하고 그러면 그 wrap이 sticky `th`의
+컨테이닝 블록이 되어 offset과 무관하게 wrap 자기 top에 붙는다(실측 −882로 밀려남).
+
+### WP4 실측: 파생 키가 quota를 6번 읽고 있었다 (`a149b8fb2`)
+
+계획의 인과 설명은 틀렸지만(감사 B1) **중복 자체는 실재했다**. 재측정으로 기전을 특정했다.
+
+CDP 초기자 추적 결과 cold `#providers`에서 `/api/provider-quotas`가 15ms 안에 6번,
+전부 같은 호출 지점에서 나갔다. 타임라인이 원인을 그대로 보여준다.
+
+```
++ 0ms  oauth/accounts?provider=anthropic … kiro (6개 동시)
++ 1ms  provider-quotas          ← 최초 1회
++10ms  accounts?…&quota=1 (3개)
++11ms  provider-quotas          ← 응답 도착마다 재실행
++13ms  provider-quotas
++15ms  provider-quotas, provider-quotas
+```
+
+`quotaRefreshKey`는 `provider:activeAccountId`를 정렬해 이어붙인 문자열이라 안정적으로
+보이지만, cold load에서는 provider별 응답이 **각자 자기 활성 id를 채우기 때문에** 그
+문자열이 provider 수만큼 바뀐다. 셸의 quota effect가 그 값을 의존성으로 두고 있었다.
+
+monotonic revision(`{epoch, force}`)으로 교체했다. 카운터는 실제로 quota를 무효화하는
+일이 있을 때만 움직이므로 계정 도착은 조용하고, 기존 `fetchProviderQuotas(true)` 12곳은
+그대로 동작한다(이제 fetch 대신 revision을 올린다). 부수 효과로 mutation이 셸의 자체
+fetch와 같은 데이터를 두고 경쟁하지 않는다.
+
+**강제 갱신이 이제 실제로 와이어에 도달한다.** 기존 effect는 항상 캐시된 뷰를 읽어서
+`fetchProviderQuotas(true)`를 불러도 서버 TTL이 들고 있던 값을 받았다. force bump일 때
+`?refresh=1`을 붙인다.
+
+| 지표 | 전 (3회 median) | 후 (3회) |
+|------|------|------|
+| cold `#providers` 총 요청 | 36 (33/36/37로 흔들림) | **31** (31/31/31) |
+| cold `/api/provider-quotas` | 6 | **1** |
+| warm revisit | 32 | 31 |
+
+감축 목표를 다시 쓴다. 원안의 `38 → 25`는 근거가 틀렸으므로 폐기하고, 실측 기준
+**36 → 31**을 기록한다. 남은 30개는 `/oauth/status` 7, `oauth/accounts` 6 + `&quota=1` 6,
+`providers/keys` 3, usage 2, codex-auth 2, config·presets·selected-models 각 1이다.
+`&quota=1` 6개는 점진 페인트를 지키기 위해 의도적으로 남겼다(감사 B2) — 서버측 감축은 WP5다.
+
+테스트는 소스 문자열이 아니라 행동을 고정한다. 회귀를 실제로 잡는지 확인하려고 파생 churn을
+임시 prop으로 되살려봤고, cold-read 케이스가 1 기대에 2로 **실패**했다. 값싼 계정 read가
+quota enrichment보다 먼저 나가는 것도 함께 고정한다(취소한 `&quota=1` 통합이 없앴을 동작).
