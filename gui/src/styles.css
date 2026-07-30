@@ -1914,10 +1914,6 @@ button.prov-account-row.active { cursor: default; }
 .daybar-tip-name { color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
 .daybar-tip-val { color: var(--muted); font-variant-numeric: tabular-nums; }
 
-/* Model / provider tables: cap height and scroll inside the box instead of growing unbounded. */
-.usage-scroll { max-height: 360px; overflow-y: auto; }
-.usage-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
-
 /* ── Toggle switch ── */
 .toggle { position: relative; display: inline-block; width: var(--toggle-w); height: var(--toggle-h); flex-shrink: 0; }
 .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }

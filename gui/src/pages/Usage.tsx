@@ -492,7 +492,7 @@ function UsageModelsTable({
     />
   );
   const table = (
-    <div className="tbl-wrap usage-scroll">
+    <div className="tbl-wrap">
       <table className="tbl">
         <thead>
           <tr>
@@ -554,7 +554,7 @@ function UsageProvidersTable({
   const sectionLabel = t("usage.section.providers");
   const titleId = "usage-providers-title";
   const table = (
-    <div className="tbl-wrap usage-scroll">
+    <div className="tbl-wrap">
       <table className="tbl">
         <thead>
           <tr>

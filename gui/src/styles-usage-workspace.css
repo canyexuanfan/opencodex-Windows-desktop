@@ -156,14 +156,6 @@
   margin-top: 0;
 }
 
-/*
-  No inner scroll cap: the section is full width now, and its own scroller would swallow the
-  wheel before the page moved.
-*/
-.usw-section .usage-scroll {
-  max-height: none;
-}
-
 /* ── Responsive ───────────────────────────────────────── */
 /* The layout is single-column at every width, so these blocks no longer switch the grid. */
 
