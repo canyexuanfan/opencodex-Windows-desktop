@@ -1229,7 +1229,27 @@ dialog.modal-overlay::backdrop {
 .codex-auto-switch-copy { flex: 1 1 auto; min-width: 0; }
 .codex-auto-switch-copy .card-sub { padding: 2px 0 0; }
 .codex-auto-switch-controls { display: flex; align-items: flex-end; gap: 12px; flex: 0 0 auto; margin-left: auto; }
-.codex-auto-switch-controls > .toggle { margin-left: auto; }
+/* The toggle now lives in the slot below, which carries the auto margin itself. */
+/*
+  Toggle slot: matches the height of the threshold compound so the 20px toggle centres against
+  it instead of sharing its baseline. A 20px control bottom-aligned with a ~32px one puts their
+  centres 6px apart, which is what read as a switch height bug.
+
+  The height tracks the input compound only, NOT the labelled column around it: the threshold
+  is a label stacked above the field, so stretching to the column's full height centred the
+  toggle against the label too and pushed the offset to 11px. Sizing to the field's own content
+  keeps the toggle on the field's centre line. The row stays bottom-aligned, which is what the
+  mobile breakpoint expects.
+*/
+.codex-auto-switch-toggle-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* Same box model as the input compound: 1px border + padding-driven line box. */
+  min-height: 36px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
 .codex-auto-switch-threshold { display: flex; flex-direction: column; align-items: flex-start; margin: 0; }
 .codex-auto-switch-threshold .field-label { margin-bottom: 4px; white-space: nowrap; }
 /* Combined number field: value (+ optional unit) + inbound stepper share one border. */
