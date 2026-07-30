@@ -428,6 +428,42 @@ describe("fetchProviderQuotaReports", () => {
     expect(authorizations).toContain("Bearer second-account-key");
   });
 
+  test("A6API quota drops a last-good row after a terminal-invalid refresh", async () => {
+    let malformed = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: malformed
+          ? { total_granted: 100, total_used: 20, total_available: 70 }
+          : { total_granted: 100, total_used: 20, total_available: 80 } },
+    ), { status: 200 })) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    malformed = true;
+    const invalid = await fetchProviderQuotaReports(config, true);
+
+    expect(valid.reports).toHaveLength(1);
+    expect(invalid.reports).toEqual([]);
+  });
+
+  test("A6API quota preserves a last-good row after a transient server failure", async () => {
+    let unavailable = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (unavailable) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    unavailable = true;
+    const transientFailure = await fetchProviderQuotaReports(config, true);
+
+    expect(transientFailure.reports).toEqual(valid.reports);
+  });
+
   test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
     await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
     const seen: string[] = [];
