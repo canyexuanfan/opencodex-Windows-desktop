@@ -447,6 +447,7 @@ describe("management and data-plane credential separation", () => {
     saveConfig(remoteConfig());
     const adminToken = `ocx_admin_${"c".repeat(43)}`;
     writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
+    process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
