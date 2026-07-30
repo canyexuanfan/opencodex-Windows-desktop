@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { logMatchesSurface } from "../src/pages/Logs";
+import { logMatchesSurface } from "../src/pages/logs-surface-filter";
 
 test("Logs surface filter matches Usage buckets including Grok", () => {
   expect(logMatchesSurface({}, "all")).toBe(true);

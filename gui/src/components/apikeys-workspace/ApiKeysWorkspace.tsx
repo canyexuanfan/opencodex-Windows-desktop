@@ -95,10 +95,9 @@ export default function ApiKeysWorkspace({
   };
 
   useEffect(() => {
-    if (!confirmDelete) {
-      setConfirmArmed(false);
-      return;
-    }
+    // Every path that closes confirmation goes through clearDeleteConfirm(), which
+    // already resets confirmArmed, so resetting again here was a redundant cascade.
+    if (!confirmDelete) return;
     const timer = window.setTimeout(() => setConfirmArmed(true), 300);
     return () => window.clearTimeout(timer);
   }, [confirmDelete]);

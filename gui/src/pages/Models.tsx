@@ -271,11 +271,16 @@ export default function Models({ apiBase }: { apiBase: string }) {
     [models, providers],
   );
 
+  // One-shot default collapse. It stays an effect on `groups` so CACHED groups collapse
+  // immediately on first paint, even when revalidation is slow or fails; moving it into
+  // the load() success path would render cached providers expanded and leave them
+  // expanded whenever the refresh errors.
   useEffect(() => {
     if (!needsDefaultCollapseRef.current) return;
     if (groups.length === 0) return;
     needsDefaultCollapseRef.current = false;
     const all = new Set(groups.map(group => group.provider));
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCollapsed(all);
     writeCollapsedProviders(all);
   }, [groups]);

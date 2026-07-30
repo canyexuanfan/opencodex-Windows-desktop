@@ -143,6 +143,9 @@ export default function CodexPoolStrategySetting({
   // Standalone fallback when no shared controller observer is wired (keeps tests without observer green).
   useEffect(() => {
     if (subscribeLoadObserver) return;
+    // Not a synchronous cascade: load() reaches `await fetch(...)` before it touches any
+    // setter, so state never updates during this effect's own render pass.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load, subscribeLoadObserver]);
 

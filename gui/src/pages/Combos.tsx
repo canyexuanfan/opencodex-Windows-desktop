@@ -235,8 +235,10 @@ export default function Combos({ apiBase }: { apiBase: string }) {
     }
   };
 
-  // Cold start only — cached empty lists paint the workspace immediately.
-  if (loading && !hasCacheRef.current) {
+  // Cold start only — cached empty lists paint the workspace immediately. `loading`
+  // already encodes that: it initializes to !seedCombos(cacheKey) and a refresh only
+  // sets it when the cache is empty, so reading the ref during render was redundant.
+  if (loading) {
     return (
       <div className="combos-workspace-shell">
         {status && (

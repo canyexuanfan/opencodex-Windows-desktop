@@ -16,16 +16,21 @@ afterEach(() => {
 
 describe("decodeSchtasksOutput", () => {
   test("decodes UTF-16LE BOM XML that would fail as UTF-8", () => {
+    // Pin <Command> the way the sibling describe block below does: buildWindowsTaskXml()
+    // resolves it through windowsWscript(), which falls back to a bare "wscript.exe" off
+    // Windows because the System32 path does not exist. Without this the fixture only
+    // matches on a Windows host and the decoder assertion fails everywhere else.
+    const wscript = "C:\\WINDOWS\\System32\\wscript.exe";
     const xml = buildWindowsTaskXml(
       "C:\\Users\\x\\.opencodex\\opencodex-service.cmd",
       "C:\\Users\\x\\.opencodex\\opencodex-service-launcher.vbs",
-    );
+    ).replace(/<Command>.*?<\/Command>/, `<Command>${wscript}</Command>`);
     const utf16 = Buffer.from(`\uFEFF${xml}`, "utf16le");
     const decoded = decodeSchtasksOutput(utf16);
     expect(decoded.startsWith("<?xml")).toBe(true);
     expect(windowsTaskRegistrationHealthy(
       decoded,
-      "C:\\WINDOWS\\System32\\wscript.exe",
+      wscript,
       "C:\\Users\\x\\.opencodex\\opencodex-service-launcher.vbs",
     )).toBe(true);
     // Sanity: the historical utf8 mis-decode is unhealthy.

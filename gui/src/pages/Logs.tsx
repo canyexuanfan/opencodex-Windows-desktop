@@ -13,6 +13,8 @@ import Debug from "./Debug";
 import type { LogsTab } from "./logs-tab-keydown";
 import { logsTabKeyDown, readTabFromHash, selectLogsTab } from "./logs-tab-keydown";
 import { speedLabel } from "./logs-speed-label";
+import type { LogSurface, LogSurfaceFilter } from "./logs-surface-filter";
+import { logMatchesSurface } from "./logs-surface-filter";
 
 function logsCacheKey(apiBase: string): string {
   return `ocx.logs.list.v1:${apiBase}`;
@@ -99,17 +101,6 @@ interface LogAttempt {
   reasoningWireField?: string;
   reasoningWireValue?: string | number;
   displayMetrics?: LogDisplayMetrics;
-}
-
-type LogSurface = "claude" | "claude-desktop" | "grok";
-type LogSurfaceFilter = "all" | "claude" | "codex" | "grok";
-
-/** Match Usage surface buckets: Claude includes Desktop; Codex is untagged. */
-export function logMatchesSurface(log: { surface?: LogSurface }, filter: LogSurfaceFilter): boolean {
-  if (filter === "all") return true;
-  if (filter === "claude") return log.surface === "claude" || log.surface === "claude-desktop";
-  if (filter === "grok") return log.surface === "grok";
-  return log.surface === undefined;
 }
 
 export interface LogEntry {

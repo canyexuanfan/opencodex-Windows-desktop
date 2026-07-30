@@ -60,8 +60,14 @@ export default function ProviderAuthPanel({
 
   // Soft &quota=1 enrichment lands after the local account list. Reserve stacked
   // bar height briefly so bars don't shove rows when WHAM returns.
+  //
+  // Deliberately a timed state machine, not a derived value: the reservation must EXPIRE
+  // after QUOTA_ENRICH_RESERVE_MS so a stalled enrichment cannot leave skeleton rows up
+  // forever. A plain `accounts.some(...)` boolean would drop that bound, so the rule is
+  // suppressed here rather than refactored away.
   useEffect(() => {
     if (accounts.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setReserveQuotaSlots(false);
       return;
     }

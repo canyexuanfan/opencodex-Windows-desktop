@@ -54,10 +54,10 @@ function CopyOnClickTip({
   }, []);
 
   useLayoutEffect(() => {
-    if (!showTip) {
-      setCoords(null);
-      return;
-    }
+    // No reset on close: the portal and aria-describedby are already gated on showTip,
+    // and reopening remeasures in this same layout effect before paint. Clearing here
+    // only forced a second render.
+    if (!showTip) return;
     const update = () => {
       const el = anchorRef.current;
       if (!el) return;
