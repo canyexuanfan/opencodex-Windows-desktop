@@ -201,8 +201,11 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     }
     // New-key scalar writes: each writer is individually atomic, so apply them in
     // sequence after the transition. A failure here is a persistence failure (the
-    // writers' ok:false or an atomicWriteFile throw), reported as 502 naming the
-    // failed key plus the requested writes that already landed.
+    // writers' ok:false result or a throw from the underlying atomic write helper),
+    // reported as 502 naming the failed key plus the writes that already landed.
+    // NOTE: do not name that helper literally here — tests/grok-writer-boundary.test.ts
+    // asserts this route file contains no direct write primitive, and matches on the
+    // symbol name even inside a comment.
     const scalarWrites: Array<{ field: string; run: () => { ok: true; changed: boolean } | { ok: false; error: string } }> = [];
     if (wantsAgentsEnabled) scalarWrites.push({ field: "agentsEnabled", run: () => setAgentsEnabled(body.agentsEnabled as boolean | null) });
     if (wantsMaxDepth) scalarWrites.push({ field: "agentsMaxDepth", run: () => setAgentsMaxDepth(body.agentsMaxDepth as number | null) });
