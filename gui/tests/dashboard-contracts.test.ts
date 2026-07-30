@@ -131,8 +131,11 @@ test("native Codex subagent defaults stay separate from OpenCodex guidance", asy
   expect(sections).not.toContain("injectionSaving || !multiAgentGuidanceEnabled");
   expect(sections).not.toContain("dash.injectionActive");
   expect(en["dash.syncCodexSubagentDefaults"]).toBe("Use as native Codex subagent defaults");
-  expect(en["dash.syncCodexSubagentDefaultsHint"]).toContain("Off by default");
-  expect(en["dash.syncCodexSubagentDefaultsHint"]).toContain("existing user-owned [agents] defaults are preserved rather than overwritten");
+  // Two promises this copy must keep, asserted by meaning rather than by an exact
+  // sentence so the wording can be made plainer without breaking the contract:
+  // the toggle starts off, and it does not clobber hand-written [agents] settings.
+  expect(en["dash.syncCodexSubagentDefaultsHint"]).toMatch(/off by default/i);
+  expect(en["dash.syncCodexSubagentDefaultsHint"]).toMatch(/\[agents\][^.]*\b(left alone|preserved|not overwritten|untouched)\b/i);
   expect(en["dash.multiAgentGuidanceHint"]).not.toContain("proactive");
   expect(head).toContain("models.v2Mode_");
 });
