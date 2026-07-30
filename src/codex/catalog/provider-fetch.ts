@@ -58,20 +58,68 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
 import type { CatalogModel } from "./parsing";
 import { disabledNativeSlugs, hasComboTargets, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
-import { deriveComboCatalogModel, getLastComboCatalogOmissions, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
+import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 
-/** Concurrent gatherRoutedModels callers with the same provider set share one live discovery.
- *  Keyed by gatherFlightKey so a different provider set cannot evict an in-flight gather. */
-const gatherInflight = new Map<string, Promise<CatalogModel[]>>();
+/** Concurrent gatherRoutedModels callers with the same catalog identity share one live discovery.
+ *  Keyed by gatherFlightKey so a different config cannot join or evict the wrong flight. */
+interface GatherFlightResult {
+  models: CatalogModel[];
+  comboOmissions: ComboCatalogOmission[];
+}
+
+const gatherInflight = new Map<string, Promise<GatherFlightResult>>();
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) => {
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      return Object.fromEntries(Object.entries(nested as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)));
+    }
+    return nested;
+  });
+}
+
+function providerCatalogFingerprint(name: string, prov: OcxProviderConfig): Record<string, unknown> {
+  return {
+    n: name,
+    live: prov.liveModels !== false,
+    base: prov.baseUrl ?? "",
+    adapter: prov.adapter ?? "",
+    models: [...(prov.models ?? [])].sort(),
+    defaultModel: prov.defaultModel ?? null,
+    ctx: prov.contextWindow ?? null,
+    ctxW: prov.modelContextWindows ?? null,
+    maxIn: prov.modelMaxInputTokens ?? null,
+    inMod: prov.modelInputModalities ?? null,
+    re: prov.modelReasoningEfforts ?? null,
+    defRe: prov.modelDefaultReasoningEfforts ?? null,
+    rsSum: prov.modelSupportsReasoningSummaries ?? null,
+    rsDel: prov.modelReasoningSummaryDelivery ?? null,
+    noVis: [...(prov.noVisionModels ?? [])].sort(),
+    ptc: prov.parallelToolCalls ?? null,
+    gMode: prov.googleMode ?? null,
+  };
+}
 
 function gatherFlightKey(config: OcxConfig): string {
   const providers = Object.entries(config.providers)
     .filter(([, prov]) => prov.disabled !== true)
-    .map(([name, prov]) => `${name}\0${prov.liveModels === false ? "0" : "1"}\0${prov.baseUrl ?? ""}`)
-    .sort()
-    .join("\n");
-  return `${providers}\n#${config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS}`;
+    .map(([name, prov]) => providerCatalogFingerprint(name, prov))
+    .sort((a, b) => String(a.n).localeCompare(String(b.n)));
+  const assembly = stableJson({
+    providers,
+    combos: config.combos ?? {},
+    customModels: (config.customModels ?? []).map((cm) => ({
+      p: cm.provider,
+      m: cm.modelId,
+      d: cm.displayName ?? null,
+      cw: cm.contextWindow ?? null,
+      im: cm.inputModalities ?? null,
+    })),
+    caps: config.providerContextCaps ?? null,
+  });
+  const digest = createHash("sha256").update(assembly).digest("hex").slice(0, 16);
+  return `${digest}#${config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS}`;
 }
 
 /** Drop in-flight gather so tests / full cache clears do not reuse a stale promise. */
@@ -594,27 +642,25 @@ export async function gatherRoutedModels(
   let promise = gatherInflight.get(key);
   if (!promise) {
     // Claim the slot synchronously before any await so same-key callers join this flight.
-    // Distinct keys keep their own entries — a second provider set must not evict the first.
-    const flight = gatherRoutedModelsUncached(config, options).finally(() => {
+    // Distinct keys keep their own entries — a second config must not evict the first.
+    const flight = gatherRoutedModelsUncached(config).finally(() => {
       if (gatherInflight.get(key) === flight) gatherInflight.delete(key);
     });
     gatherInflight.set(key, flight);
     promise = flight;
   }
-  const models = await promise;
+  const { models, comboOmissions } = await promise;
   if (options?.comboOmissions) {
-    const last = getLastComboCatalogOmissions();
     options.comboOmissions.length = 0;
-    options.comboOmissions.push(...last);
+    options.comboOmissions.push(...comboOmissions);
   }
   return models;
 }
 
 async function gatherRoutedModelsUncached(
   config: OcxConfig,
-  options?: { comboOmissions?: ComboCatalogOmission[] },
-): Promise<CatalogModel[]> {
-  // Per-invocation list: sync passes `comboOmissions` so overlapping gathers cannot race.
+): Promise<GatherFlightResult> {
+  // Flight-local list: joiners copy from the resolved promise, not a process-global last write.
   const localOmissions: ComboCatalogOmission[] = [];
   const ttlMs = config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS;
   // Persisted provider entries can predate newer registry fields (noVisionModels,
@@ -696,10 +742,6 @@ async function gatherRoutedModelsUncached(
     else warnUncataloguedComboOnce(id, combo, members, localOmissions);
   }
   replaceLastComboCatalogOmissions(localOmissions);
-  if (options?.comboOmissions) {
-    options.comboOmissions.length = 0;
-    options.comboOmissions.push(...localOmissions);
-  }
   all.sort((a, b) => (a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider)));
   // Enriched (registry-hydrated) provider clones, keyed by name — the same view used above so
   // custom rows get the same noVisionModels / inputModalities treatment as discovered rows.
@@ -733,7 +775,7 @@ async function gatherRoutedModelsUncached(
   // Custom rows override discovered rows that encode to the same Codex-facing slug.
   const customKeys = new Set(customModels.map(c => routedSlug(c.provider, c.id)));
   const deduped = all.filter(m => !customKeys.has(routedSlug(m.provider, m.id)));
-  return [...deduped, ...customModels];
+  return { models: [...deduped, ...customModels], comboOmissions: localOmissions };
 }
 
 export function augmentRoutedModelsWithRegistryOpenAiApiRows(

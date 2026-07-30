@@ -161,4 +161,84 @@ describe("gatherRoutedModels single-flight", () => {
     expect(b1.map(m => `${m.provider}/${m.id}`)).toEqual(["b/model-b"]);
     expect(a2).toEqual(a1);
   });
+
+  test("concurrent distinct keys keep flight-local combo omissions", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "m1" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+
+    const mk = (comboId: string, provider: string, baseUrl: string): OcxConfig => ({
+      port: 10100,
+      defaultProvider: provider,
+      providers: {
+        [provider]: {
+          adapter: "openai-chat",
+          baseUrl,
+          models: [],
+        },
+      },
+      combos: {
+        [comboId]: {
+          strategy: "failover",
+          stickyLimit: 1,
+          defaultEffort: "medium",
+          alias: null,
+          targets: [
+            { provider, model: "m1", weight: 1 },
+            { provider: "missing", model: "x", weight: 1 },
+          ],
+        },
+      },
+    });
+
+    const oA: ComboCatalogOmission[] = [];
+    const oB: ComboCatalogOmission[] = [];
+    await Promise.all([
+      gatherRoutedModels(mk("incomplete-a", "a", "https://a.example.test/v1"), { comboOmissions: oA }),
+      gatherRoutedModels(mk("incomplete-b", "b", "https://b.example.test/v1"), { comboOmissions: oB }),
+    ]);
+    expect(oA.some(item => item.id === "incomplete-a")).toBe(true);
+    expect(oB.some(item => item.id === "incomplete-b")).toBe(true);
+    expect(oA).not.toEqual(oB);
+  });
+
+  test("catalog-hint-only config changes do not join a prior flight", async () => {
+    let fetchCount = 0;
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+      return new Response(JSON.stringify({ data: [{ id: "m1" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const baseProv = {
+      adapter: "openai-chat" as const,
+      baseUrl: "https://hint.example.test/v1",
+      models: [] as string[],
+      liveModels: false as const,
+    };
+    // liveModels:false uses configured models — still fingerprints context hints.
+    const configA: OcxConfig = {
+      port: 10100,
+      defaultProvider: "p",
+      providers: {
+        p: { ...baseProv, models: ["m1"], modelContextWindows: { m1: 100_000 } },
+      },
+    };
+    const configB: OcxConfig = {
+      port: 10100,
+      defaultProvider: "p",
+      providers: {
+        p: { ...baseProv, models: ["m1"], modelContextWindows: { m1: 200_000 } },
+      },
+    };
+
+    const [a, b] = await Promise.all([gatherRoutedModels(configA), gatherRoutedModels(configB)]);
+    expect(fetchCount).toBe(0); // configured models, no live fetch
+    expect(a.find(m => m.id === "m1")?.contextWindow).toBe(100_000);
+    expect(b.find(m => m.id === "m1")?.contextWindow).toBe(200_000);
+  });
 });
