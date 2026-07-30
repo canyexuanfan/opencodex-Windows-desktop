@@ -30,7 +30,6 @@ export function Select({ value, options, onChange, disabled, label, id, style, a
   onChange: (value: string) => void;
   disabled?: boolean;
   label?: string;
-  id?: string;
   style?: CSSProperties;
   align?: "left" | "right";
   placement?: "below" | "right";

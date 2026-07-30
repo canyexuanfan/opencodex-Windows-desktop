@@ -192,12 +192,13 @@ test("successful key delete keeps last-good keys visible when follow-up refresh 
     expect(deleteBtn).toBeTruthy();
     await act(async () => {
       deleteBtn!.click();
-      await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 0));
+      await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 310));
     });
 
     const confirmBtn = [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("Confirm"));
     expect(confirmBtn).toBeTruthy();
+    expect(confirmBtn!.disabled).toBe(false);
 
     await act(async () => {
       confirmBtn!.click();

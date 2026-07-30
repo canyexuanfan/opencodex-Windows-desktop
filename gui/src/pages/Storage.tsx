@@ -132,7 +132,7 @@ function ArchivedCleanupPanel({
     if (!confirmOpen) return;
     previousFocusRef.current = document.activeElement as HTMLElement | null;
     cancelRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
+    const onKey = (e: WindowEventMap["keydown"]) => {
       if (e.key === "Escape" && !busyRef.current) closeConfirm();
     };
     window.addEventListener("keydown", onKey);
@@ -376,7 +376,7 @@ function QuarantineTrashPanel({
     if (!confirmEntry) return;
     previousFocusRef.current = document.activeElement as HTMLElement | null;
     cancelRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
+    const onKey = (e: WindowEventMap["keydown"]) => {
       if (e.key === "Escape" && !busyRef.current) closeConfirm();
     };
     window.addEventListener("keydown", onKey);

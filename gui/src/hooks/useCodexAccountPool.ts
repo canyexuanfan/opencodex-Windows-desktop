@@ -114,12 +114,11 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
 
   const subscribeLoadObserver = useCallback((observer: CodexAccountLoadObserver) => {
     observersRef.current.add(observer);
-    // Replay last /active for late subscribers that mount after a load finished.
-    const last = lastActiveRef.current?.value;
-    if (last !== undefined) {
-      const revision = observer.beginActiveRead();
-      observer.acceptActiveRead(last, revision);
-    }
+    // Subscribing stays silent. `acceptActiveRead` means "a read that started at this
+    // revision came back", and useCodexAutoSwitch / CodexPoolStrategySetting decide their
+    // editing and saving disposition from that. Synthesising one on subscribe can overwrite
+    // an in-flight draft or arm a spurious post-save refresh. Late surfaces seed themselves
+    // from readLastThreshold()/readLastActive(), which apply only while uninitialized.
     return () => { observersRef.current.delete(observer); };
   }, []);
 
