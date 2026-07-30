@@ -755,6 +755,42 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
     expect(row?.slug).toBe("openrouter/google-gemini-3.6-flash");
   });
 
+  test("basename collisions retain only the route context needed to distinguish rows", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "openrouter", id: "reka/reka-edge", owned_by: "openrouter" },
+      { provider: "openrouter", id: "rekaai/reka-edge", owned_by: "openrouter" },
+    ]);
+    const reka = entries.find(e => e.slug === "openrouter/reka-reka-edge");
+    const rekaAi = entries.find(e => e.slug === "openrouter/rekaai-reka-edge");
+
+    expect(reka?.display_name).toBe("reka/reka-edge");
+    expect(rekaAi?.display_name).toBe("rekaai/reka-edge");
+    expect(reka?.description).toContain("openrouter/reka-reka-edge");
+    expect(rekaAi?.description).toContain("openrouter/rekaai-reka-edge");
+  });
+
+  test("the same native id exposed by multiple providers also includes the provider", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "openrouter", id: "moonshotai/kimi-k3", owned_by: "openrouter" },
+      { provider: "nvidia", id: "moonshotai/kimi-k3", owned_by: "nvidia" },
+    ]);
+
+    expect(entries.find(e => e.slug === "openrouter/moonshotai-kimi-k3")?.display_name)
+      .toBe("moonshotai/kimi-k3 (openrouter)");
+    expect(entries.find(e => e.slug === "nvidia/moonshotai-kimi-k3")?.display_name)
+      .toBe("moonshotai/kimi-k3 (nvidia)");
+  });
+
+  test("explicit display names keep precedence when they collide with a default label", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "openrouter", id: "reka/reka-edge", displayName: "reka-edge", owned_by: "openrouter" },
+      { provider: "openrouter", id: "rekaai/reka-edge", owned_by: "openrouter" },
+    ]);
+
+    expect(entries.find(e => e.slug === "openrouter/reka-reka-edge")?.display_name).toBe("reka-edge");
+    expect(entries.find(e => e.slug === "openrouter/rekaai-reka-edge")?.display_name).toBe("rekaai/reka-edge");
+  });
+
   test("an aliased combo keeps its public alias when no displayName is configured", () => {
     const withAlias = { provider: "combo", id: "x", alias: "fast-chat", owned_by: "combo" };
     const entries = buildCatalogEntries(nativeTemplate(), [], [withAlias], undefined, false, "default", new Set(["fast-chat"]));

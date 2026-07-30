@@ -185,10 +185,12 @@ start and on `ocx sync`, opencodex:
 5. **Re-ranks** so featured models sort first (see below), then writes the merged catalog back.
 
 Routed catalog entries also get their GPT-5 identity rewritten to the real upstream model name.
-Their default picker label is the final segment of the native model id, so provider namespaces do
-not hide the model name in narrow pickers. The full `provider/model` route remains in the catalog
-slug and description. Configure a custom display name when the route itself matters visually (for
-example, `Claude Opus 5 (TeamClaude)`); custom names continue to take precedence.
+When unique, their default picker label is the final segment of the native model id, so provider
+namespaces do not hide the model name in narrow pickers. Basename collisions retain enough native
+route context to distinguish the rows; if the same native id comes from multiple providers, the
+provider is shown too. The full catalog slug remains in the description. Configure a custom display
+name when the route itself matters visually (for example, `Claude Opus 5 (TeamClaude)`); custom
+names continue to take precedence.
 Reasoning controls come from provider/model metadata across Codex's `low | medium | high | xhigh |
 max | ultra` ladder; unsupported values are mapped or clamped before the upstream request.
 
