@@ -22,7 +22,7 @@ The upstream statuses supplied to this unit are unchanged:
   mimalloc per-thread heaps; without scavenging/purge, that is allocator retention,
   not proof of a live JS object leak.  It also explicitly made its RSS assertion
   Linux-only because macOS reclaim is lazy.
-- [Bun PR #28743](https://github.com/oven-sh/bun/pull/28743) remains **open**.  It
+- [Bun PR #28743](https://github.com/oven-sh/bun/pull/28743) is **closed unmerged**.  It
   is the closest ownership path: fetch response bytes allocated on an HTTP thread
   can be freed after GC on a different thread and remain in mimalloc delayed/free
   caches.  It says macOS RSS is the wrong immediate pass/fail signal because
@@ -60,6 +60,34 @@ It is useful context, not an allocator attribution API.  In particular, a flat
 allocator page.
 
 ### Reproducible matrix
+
+#### Harness contract for cells D/E/F (closes audit blocker 4)
+
+Phase 1 implements only the proxy topology (cell B). Cells D/E/F must measure a
+process with NO proxy code in it, so "extend the harness" is not a sufficient
+instruction — mixing roles into one process would contaminate exactly the
+attribution this phase exists to produce.
+
+Shape: ONE controller CLI, but every measured role runs as its own spawned child.
+"One binary" means one orchestrator, not one measured process.
+
+| File | Role |
+|---|---|
+| `scripts/macos-rss-retention-harness.ts` | Controller. Parses `--cell A..F`, creates the run directory, spawns and stops role children, collates JSONL, invokes `ps` / `vmmap` / `footprint`. Orchestration only — never hosts a measured workload. |
+| `scripts/macos-rss-retention-harness-child.ts` | The proxy child from Phase 1, unchanged. Used by cells A-C and F. |
+| `scripts/macos-rss-retention-harness-worker.ts` | Role process selected by `--role`: `fixture-upstream`, `load-client`, `standalone-fetch-client` (cell D), `standalone-response-server` (cell E). |
+| `scripts/macos-rss-retention-harness-metrics.ts` | Shared sampler and record schema: `process.memoryUsage()`, `heapStats`, lifecycle markers, JSONL/IPC emission. Imported by every measured child so all cells emit directly comparable records. |
+
+Invariants that make the matrix trustworthy:
+
+- Each cell starts FRESH processes; no cell reuses a process from another cell,
+  because high-water-mark behavior makes a reused process carry prior peaks.
+- `vmmap` and `footprint` capture is MANDATORY per cell, not optional — RSS alone
+  cannot separate resident-but-reusable pages from live allocation.
+- The controller writes one machine-readable comparison artifact per run so cells
+  are diffed by tooling rather than by eye.
+- Cells D and E must contain no import path that reaches `src/server/`. State this
+  as a checked property, not an intention.
 
 Extend the Phase-1 harness; do not infer this from the production watchdog's
 60-second cadence (`DEFAULT_INTERVAL_MS` at
@@ -184,10 +212,21 @@ The existing watchdog samples one scalar every 60 seconds and warns when the
 largest of RSS/external/ArrayBuffers crosses a flat 4 GiB threshold
 ([`src/server/memory-watchdog.ts:31-45`](../../../src/server/memory-watchdog.ts#L31-L45),
 [`src/server/memory-watchdog.ts:123-139`](../../../src/server/memory-watchdog.ts#L123-L139)).
-That makes a first, stable high-water plateau look continuously alarming and misses
-whether the process is still growing.  Make **sustained RSS growth rate** the
-primary warning.  Retain 4 GiB as a separately rate-limited safety ceiling, not as
-evidence of a leak.
+Audit blocker 5 corrected an earlier misreading here and the rationale is amended
+accordingly. The current warning is NOT continuously noisy: `WARN_INTERVAL_MS`
+rate-limits it to once per 30 minutes
+([`src/server/memory-watchdog.ts:134-139`](../../../src/server/memory-watchdog.ts#L134-L139)).
+The real defect is different and narrower — the signal is **level-only**, so it
+cannot distinguish a process sitting at a harmless high-water plateau from one
+that is still climbing. Given that E3 proved plateau behavior is expected on this
+runtime, level alone is the wrong verdict input. Make **sustained RSS growth rate**
+the primary warning and retain 4 GiB as a separately rate-limited safety ceiling
+that reports a ceiling, not a leak.
+
+Tests must encode that corrected distinction: a stable ceiling still emits its
+rate-limited safety warning (unchanged behavior), while sustained growth emits the
+new growth reason. A test that merely asserts "no warning at plateau" would encode
+the misreading rather than the fix.
 
 Proposed diff contract (constants are deliberately conservative until Phase-1
 series calibrates them):

@@ -42,7 +42,9 @@ action stays as an operator escape hatch and must never be reported as the fix.
   (closed unmerged 2026-06-26) attributes it to freed pages retained in libpas
   caches and mimalloc per-thread heaps — allocator retention, not a live-object leak.
 - Closer to the fetch path: [oven-sh/bun#28743](https://github.com/oven-sh/bun/pull/28743),
-  open — HTTP-thread allocations freed on the JS thread land in a delayed-free list.
+  **closed unmerged** — HTTP-thread allocations freed on the JS thread land in a
+  delayed-free list. Historical diagnosis only; it is not an active upstream fix
+  path and must not be cited as one.
 - No Bun-specific `tee()` retention issue or fix exists. Do not conflate #1235 with one.
 
 ### E2 — two corrections to earlier assumptions
@@ -51,9 +53,13 @@ action stays as an operator escape hatch and must never be reported as the fix.
    merged 2026-06-21 but ships in no stable release. Latest stable is v1.3.14
    (2026-05-13), which the repository already bundles. Adopting a canary as the
    default runtime was rejected by the user and is moot regardless.
-2. **#32120 is not Windows-only.** Its issue [#32111](https://github.com/oven-sh/bun/issues/32111)
-   reproduces on Darwin arm64. It is an async-stream client-abort crash, not a
-   retention defect, so it does not explain this symptom either way.
+2. **#32120 is not Windows-only, and #32111 is closed rather than open.**
+   [#32111](https://github.com/oven-sh/bun/issues/32111) was CLOSED by merged
+   #32120. The precise status is "fixed upstream, present in no stable release" —
+   not "open defect". It still reproduces on Darwin arm64 under Bun 1.3.14, which
+   is the bundled runtime, so the crash risk is live for us even though the issue
+   is closed. It is an async-stream client-abort crash, not a retention defect, so
+   it does not explain the RSS symptom either way; it constrains Phase 3's gate.
 
 ### E3 — isolated reproduction (Bun 1.3.14, macOS arm64, 3 runs each)
 

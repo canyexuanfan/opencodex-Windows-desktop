@@ -5,11 +5,15 @@
 Enable the existing bounded eager relay for **Darwin and win32 only** when the
 client does not require a payload rewrite.  `streamMode: "auto"` remains tee on
 Bun 1.3.14; macOS can use the relay now only through the existing explicit
-`streamMode: "eager-relay"` operator opt-in.  That is deliberate: Bun#32111 is
-reproducible on Darwin arm64, and a process crash is worse than the measured
-memory growth.  Once a released Bun version is independently verified to contain
-the async-pull cancellation fix, setting `MIN_FIXED_BUN_VERSION` makes `auto`
-select this path on both supported platforms.
+`streamMode: "eager-relay"` operator opt-in.  That is deliberate, and the precise
+upstream status matters: Bun#32111 is **closed**, having been fixed by merged
+PR #32120 (2026-06-21) — but that fix ships in **no stable release**, and the
+bundled runtime is v1.3.14 (2026-05-13).  So the crash is fixed upstream and still
+live for us, and it reproduces on Darwin arm64, not only win32.  A process crash
+is worse than the measured memory growth, so `auto` stays on tee.  Once a released
+Bun version is independently verified to contain #32120, setting
+`MIN_FIXED_BUN_VERSION` makes `auto` select this path on both supported platforms —
+that is the single trigger that retires this gate.
 
 This does not claim to solve all macOS retention.  The isolated HTTP experiment
 reduced peak `external` from 363–461 MiB to 10–22 MiB, while retained RSS still
@@ -42,6 +46,47 @@ the proven tee amplifier; Phase 4 owns the allocator/HTTP residual.
   exceptional, configured traffic rather than the standard forward path.
 
 ## Shape and safety boundary
+
+### Cancellation semantics: an intentional #44 correction, not parity
+
+Audit blocker 3 surfaced a real behavioral divergence, and the resolution is to
+ACCEPT it deliberately rather than paper over it.
+
+Today the tee path cancels hard: `relay.ts:84-87` aborts `upstream` on client
+cancel, which propagates through `core.ts:2573-2581` to `turnAc` and cancels the
+inspection reader at `relay.ts:537-554`. A terminal that becomes observable just
+after the client disconnects is therefore DROPPED and the turn logs as a cancel.
+
+The eager path instead keeps reading inspection-only until a terminal, byte, or
+time bound (`relay-eager.ts:130-138`), and reports cancel only when no terminal
+was seen (`relay-eager.ts:161-168`).
+
+The #44 comment at `core.ts:1691-1694` states the intended policy directly:
+
+> A real terminal was parsed from the (teed) inspection stream — record it as the
+> outcome even if the client has already disconnected: the turn genuinely reached
+> that terminal, so it must log as completed/failed, not be dropped or downgraded
+> to a cancel.
+
+By that standard the eager behavior is MORE correct than the tee behavior it
+replaces. We adopt it knowingly: eager mode will record terminals the tee path
+drops. This is a deliberate, opt-in-scoped accounting change and must be called
+that in the release note — not described as parity.
+
+Required endpoint tests (all three; the third is the activation control):
+
+1. **Eager, terminal after cancel.** Upstream sends one delta, waits for the
+   client reader to cancel, then emits `response.completed`. Assert: the client
+   cancelled; the terminal lands inside the drain window;
+   `onNativePassthroughTerminal === ["completed"]`; `onNativePassthroughCancel`
+   was NOT called; continuation state was recorded; active turn count is back to 0.
+2. **Legacy tee characterization, same ordering.** Assert the opposite:
+   `onNativePassthroughCancel` fires, and no post-cancel terminal or continuation
+   is recorded. This pins the behavior we are knowingly changing.
+3. **No-terminal control.** After cancellation, hold the upstream open past the
+   drain byte/time bound. Assert: cancel is invoked exactly once, no synthetic
+   terminal is emitted, the turn is unregistered, and upstream reads stop. This
+   proves the drain bound itself fires rather than running unbounded.
 
 `decideEagerRelayForPlatform` is the single policy owner.  It does not weaken
 `decideEagerRelay`: the latter still treats `auto` as unsafe until an explicit,
