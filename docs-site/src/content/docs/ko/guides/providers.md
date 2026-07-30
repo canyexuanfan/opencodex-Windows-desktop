@@ -116,7 +116,7 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. `curl -fsSL https://cli.kiro.d
 
 ## 3. API 키 카탈로그
 
-opencodex v2.7.1에는 빌트인 프리셋이 50개 들어 있습니다. 키 방식 40개, OAuth 6개, 로컬 3개,
+opencodex에는 빌트인 프리셋이 61개 들어 있습니다. 키 방식 50개, OAuth 7개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
 입력한 키를 검증한 뒤 저장합니다. 주요 항목은 다음과 같습니다:
 
@@ -133,6 +133,7 @@ opencodex v2.7.1에는 빌트인 프리셋이 50개 들어 있습니다. 키 방
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -151,6 +152,11 @@ opencodex v2.7.1에는 빌트인 프리셋이 50개 들어 있습니다. 키 방
 
 대부분은 bearer 키와 함께 `openai-chat` 어댑터를 사용하며, Anthropic 호환 엔드포인트만 노출하는 일부
 (예: **Xiaomi MiMo**)는 `anthropic` 어댑터(`x-api-key`)를 사용합니다.
+
+**Hyperbolic 검색:** 프리셋은 설정된 bearer 키로 `/v1/models`를 읽고, 슬래시가 포함된 네이티브 모델 ID를
+보존하며 live discovery를 256 KiB와 raw 행 256개로 제한합니다. serverless text 및 vision-language chat만
+대상으로 하며 별도 image, audio, GPU 엔드포인트는 범위에서 제외합니다. 키는
+[Hyperbolic](https://app.hyperbolic.ai)에서 생성합니다.
 
 > **Tencent Cloud Coding Plan 사용 제한:** Tencent는 이 구독을 대화형 코딩 도구 전용으로
 > 안내합니다. 일반 API 자동화, 사용자 애플리케이션 백엔드 및 비대화형 일괄 호출은 금지되며

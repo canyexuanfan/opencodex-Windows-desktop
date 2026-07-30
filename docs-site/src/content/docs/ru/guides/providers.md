@@ -126,7 +126,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 53 встроенными пресетами: 42 на основе ключей, семь OAuth, три локальных и
+opencodex поставляется с 61 встроенным пресетом: 50 на основе ключей, семь OAuth, три локальных и
 пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его. Наиболее заметные записи:
 
@@ -143,6 +143,7 @@ opencodex поставляется с 53 встроенными пресетам
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -162,6 +163,11 @@ opencodex поставляется с 53 встроенными пресетам
 Большинство использует адаптер `openai-chat` с bearer-ключом; немногие провайдеры, предоставляющие
 только Anthropic-совместимую конечную точку (например, **Xiaomi MiMo**), используют адаптер
 `anthropic` (`x-api-key`).
+
+**Discovery для Hyperbolic.** Пресет читает `/v1/models` с настроенным bearer-ключом, сохраняет
+нативные id моделей со знаком `/` и ограничивает live discovery размером 256 KiB и 256 исходными
+строками. Он охватывает только serverless text и vision-language chat; отдельные image, audio и GPU
+endpoint в него не входят. Ключи создаются в [Hyperbolic](https://app.hyperbolic.ai).
 
 > **Ограничение Tencent Cloud Coding Plan:** Tencent разрешает использовать эту подписку только
 > в интерактивных инструментах программирования. Автоматизация общего API, серверы пользовательских

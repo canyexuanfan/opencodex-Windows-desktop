@@ -116,7 +116,7 @@ Kiro のログインには Kiro CLI が必要です。`curl -fsSL https://cli.ki
 
 ## 3. API キーカタログ
 
-opencodex v2.7.1 には組み込みプリセットが 50 個含まれています。キー方式 40、OAuth 6、ローカル 3、
+opencodex には組み込みプリセットが 61 個含まれています。キー方式 50、OAuth 7、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します。主な項目は以下のとおりです:
 
@@ -133,6 +133,7 @@ opencodex v2.7.1 には組み込みプリセットが 50 個含まれていま�
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -151,6 +152,11 @@ opencodex v2.7.1 には組み込みプリセットが 50 個含まれていま�
 
 大半は bearer キーと共に `openai-chat` アダプターを使い、Anthropic 互換エンドポイントのみを公開する一部
 (例: **Xiaomi MiMo**)は `anthropic` アダプター(`x-api-key`)を使います。
+
+**Hyperbolic の discovery:** preset は設定済みの bearer キーで `/v1/models` を読み、スラッシュを含む
+ネイティブモデル ID を保持し、live discovery を 256 KiB と raw 256 行に制限します。serverless text /
+vision-language chat のみを対象とし、別系統の image、audio、GPU endpoint は対象外です。キーは
+[Hyperbolic](https://app.hyperbolic.ai) で作成します。
 
 > **Tencent Cloud Coding Plan の利用制限:** Tencent はこのサブスクリプションを対話型
 > コーディングツール専用としています。一般的な API 自動化、カスタムアプリのバックエンド、
