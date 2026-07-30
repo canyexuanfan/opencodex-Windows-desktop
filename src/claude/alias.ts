@@ -9,7 +9,10 @@
  *
  * Reversibility rules:
  *  - providers containing `--` or `/` are not aliased (split boundary safety);
- *  - model ids containing `/` are not aliased (would be ambiguous on resolve);
+ *  - model ids MAY contain `/` — encoded as `~` so the alias stays slash-free
+ *    for Claude Code's picker (e.g. openrouter `anthropic/claude-opus-4-8` →
+ *    `claude-ocx-openrouter--anthropic~claude-opus-4-8`);
+ *  - model ids that already contain `~` are not aliased (encode collision);
  *  - model ids MAY contain `--` (resolve splits on the FIRST `--` only);
  *  - native OpenAI slugs use the pseudo-provider `native` and resolve back to
  *    the bare slug; a real provider named "native" is therefore never aliased.
@@ -18,18 +21,32 @@
 import { desktop3pAlias } from "./desktop-3p";
 
 export const CLAUDE_ALIAS_PREFIX = "claude-ocx-";
+/** Stand-in for "/" inside the model portion of a Claude Code alias. */
+const CLAUDE_ALIAS_SLASH_ENC = "~";
 const NATIVE_PSEUDO_PROVIDER = "native";
+
+function encodeModelId(modelId: string): string | null {
+  if (modelId.includes(CLAUDE_ALIAS_SLASH_ENC)) return null;
+  return modelId.replaceAll("/", CLAUDE_ALIAS_SLASH_ENC);
+}
+
+function decodeModelId(encoded: string): string {
+  return encoded.replaceAll(CLAUDE_ALIAS_SLASH_ENC, "/");
+}
 
 /** Alias for a routed "<provider>/<model>" pair; null when not representable. */
 export function aliasForRoute(provider: string, modelId: string): string | null {
   if (!provider || provider.includes("--") || provider.includes("/") || provider === NATIVE_PSEUDO_PROVIDER) return null;
-  if (!modelId || modelId.includes("/")) return null;
-  return `${CLAUDE_ALIAS_PREFIX}${provider}--${modelId}`;
+  if (!modelId) return null;
+  const encoded = encodeModelId(modelId);
+  if (encoded === null) return null;
+  return `${CLAUDE_ALIAS_PREFIX}${provider}--${encoded}`;
 }
 
 /** Alias for a native OpenAI slug (bare model id, no provider namespace). */
 export function aliasForNative(slug: string): string | null {
-  if (!slug || slug.includes("/") || slug.includes("--")) return null;
+  // Reject "/" and "~" — "~" is the slash stand-in; allowing it would round-trip wrong via decodeModelId.
+  if (!slug || slug.includes("/") || slug.includes("--") || slug.includes(CLAUDE_ALIAS_SLASH_ENC)) return null;
   return `${CLAUDE_ALIAS_PREFIX}${NATIVE_PSEUDO_PROVIDER}--${slug}`;
 }
 
@@ -43,7 +60,7 @@ export function resolveAlias(id: string): string | null {
   const sep = rest.indexOf("--");
   if (sep <= 0) return null;
   const provider = rest.slice(0, sep);
-  const model = rest.slice(sep + 2);
+  const model = decodeModelId(rest.slice(sep + 2));
   if (!model) return null;
   return provider === NATIVE_PSEUDO_PROVIDER ? model : `${provider}/${model}`;
 }

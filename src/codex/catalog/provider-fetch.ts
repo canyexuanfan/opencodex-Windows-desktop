@@ -58,8 +58,26 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
 import type { CatalogModel } from "./parsing";
 import { disabledNativeSlugs, hasComboTargets, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
-import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
+import { deriveComboCatalogModel, getLastComboCatalogOmissions, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
+
+/** Concurrent gatherRoutedModels callers with the same provider set share one live discovery.
+ *  Keyed by gatherFlightKey so a different provider set cannot evict an in-flight gather. */
+const gatherInflight = new Map<string, Promise<CatalogModel[]>>();
+
+function gatherFlightKey(config: OcxConfig): string {
+  const providers = Object.entries(config.providers)
+    .filter(([, prov]) => prov.disabled !== true)
+    .map(([name, prov]) => `${name}\0${prov.liveModels === false ? "0" : "1"}\0${prov.baseUrl ?? ""}`)
+    .sort()
+    .join("\n");
+  return `${providers}\n#${config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS}`;
+}
+
+/** Drop in-flight gather so tests / full cache clears do not reuse a stale promise. */
+export function clearGatherRoutedModelsInflight(): void {
+  gatherInflight.clear();
+}
 
 export function configuredContextWindow(prov: OcxProviderConfig, id: string): number | undefined {
   const configured = modelRecordValue(prov.modelContextWindows, id) ?? prov.contextWindow;
@@ -569,6 +587,30 @@ export function filterCatalogVisibleModels(
 }
 
 export async function gatherRoutedModels(
+  config: OcxConfig,
+  options?: { comboOmissions?: ComboCatalogOmission[] },
+): Promise<CatalogModel[]> {
+  const key = gatherFlightKey(config);
+  let promise = gatherInflight.get(key);
+  if (!promise) {
+    // Claim the slot synchronously before any await so same-key callers join this flight.
+    // Distinct keys keep their own entries — a second provider set must not evict the first.
+    const flight = gatherRoutedModelsUncached(config, options).finally(() => {
+      if (gatherInflight.get(key) === flight) gatherInflight.delete(key);
+    });
+    gatherInflight.set(key, flight);
+    promise = flight;
+  }
+  const models = await promise;
+  if (options?.comboOmissions) {
+    const last = getLastComboCatalogOmissions();
+    options.comboOmissions.length = 0;
+    options.comboOmissions.push(...last);
+  }
+  return models;
+}
+
+async function gatherRoutedModelsUncached(
   config: OcxConfig,
   options?: { comboOmissions?: ComboCatalogOmission[] },
 ): Promise<CatalogModel[]> {

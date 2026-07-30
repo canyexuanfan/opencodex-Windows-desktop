@@ -32,10 +32,23 @@ describe("claude discovery aliases", () => {
     expect(aliasForRoute("has--dashes", "m")).toBeNull();
     expect(aliasForRoute("has/slash", "m")).toBeNull();
     expect(aliasForRoute("native", "m")).toBeNull(); // reserved pseudo-provider
-    expect(aliasForRoute("p", "openrouter/meta-llama")).toBeNull(); // slash in model
+    expect(aliasForRoute("p", "has~tilde")).toBeNull(); // encode collision with slash stand-in
     expect(aliasForRoute("", "m")).toBeNull();
     expect(aliasForRoute("p", "")).toBeNull();
     expect(aliasForNative("a--b")).toBeNull();
+    expect(aliasForNative("a~b")).toBeNull(); // same encode collision as routed models
+  });
+
+  test("model ids with '/' encode as '~' and round-trip (OpenRouter-shaped)", () => {
+    const alias = aliasForRoute("openrouter", "anthropic/claude-opus-4-8");
+    expect(alias).toBe(`${CLAUDE_ALIAS_PREFIX}openrouter--anthropic~claude-opus-4-8`);
+    expect(resolveAlias(alias!)).toBe("openrouter/anthropic/claude-opus-4-8");
+    expect(claudeCodeAlias("openrouter", "meta-llama/llama-3.3-70b-instruct:free")).toBe(
+      `${CLAUDE_ALIAS_PREFIX}openrouter--meta-llama~llama-3.3-70b-instruct:free`,
+    );
+    expect(resolveAlias(claudeCodeAlias("openrouter", "meta-llama/llama-3.3-70b-instruct:free"))).toBe(
+      "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+    );
   });
 
   test("resolveAlias rejects non-aliases and malformed ids", () => {
@@ -49,7 +62,7 @@ describe("claude discovery aliases", () => {
   test("no collisions across a registry-shaped corpus", () => {
     const corpus: [string, string][] = [];
     for (const p of ["a", "b", "a-b", "ab"]) {
-      for (const m of ["x", "y-z", "y--z", "x.1"]) corpus.push([p, m]);
+      for (const m of ["x", "y-z", "y--z", "x.1", "org/model"]) corpus.push([p, m]);
     }
     const aliases = corpus.map(([p, m]) => aliasForRoute(p, m)).filter((a): a is string => a !== null);
     expect(new Set(aliases).size).toBe(aliases.length);
@@ -81,14 +94,24 @@ describe("claudeCodeAlias — readable-or-hash shared helper (devlog 050 / audit
     expect(claudeCodeAlias("anthropic", "claude-fable-5")).toBe("claude-fable-5");
   });
 
+  test("slash-containing model ids stay readable (no desktop-3p hash)", () => {
+    expect(claudeCodeAlias("openrouter", "anthropic/claude-opus-4-8")).toBe(
+      "claude-ocx-openrouter--anthropic~claude-opus-4-8",
+    );
+    expect(claudeCodeAlias("mock", "path/model")).toBe("claude-ocx-mock--path~model");
+    expect(resolveInboundModel("claude-ocx-openrouter--anthropic~claude-opus-4-8", undefined)).toBe(
+      "openrouter/anthropic/claude-opus-4-8",
+    );
+  });
+
   test("unrepresentable shapes fall back to the desktop-3p hash — model never disappears", () => {
-    // provider literally "native", provider with separators, model id with "/",
+    // provider literally "native", provider with separators, model id with "~",
     // native slug with "--" (audit 051 #2 null-case coverage).
     for (const id of [
       claudeCodeAlias("native", "gpt-5.6-sol"),
       claudeCodeAlias("weird--provider", "m1"),
       claudeCodeAlias("a/b", "m2"),
-      claudeCodeAlias("mock", "path/model"),
+      claudeCodeAlias("mock", "has~tilde"),
       claudeCodeNativeAlias("slug--with-sep"),
     ]) {
       expect(id).toMatch(/^claude-opus-4-8-[a-z][0-9a-z]{2}$/);

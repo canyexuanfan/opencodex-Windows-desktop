@@ -190,6 +190,12 @@ async function handleStart(options: { block?: boolean } = {}) {
   for (let attempt = 0; ; attempt++) {
     try {
       server = startServer(port);
+      // Prewarm the live provider model cache as soon as the port is bound so the
+      // first GUI /v1/models (and syncModelsToCodex below) share one discovery flight
+      // instead of racing duplicate upstream /models fetches.
+      void import("../codex/catalog").then(({ gatherRoutedModels }) => {
+        gatherRoutedModels(loadConfig()).catch(() => {});
+      });
       break;
     } catch (err) {
       if (!isAddrInUse(err) || attempt >= 2) throw err;
