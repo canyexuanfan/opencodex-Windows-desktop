@@ -348,3 +348,50 @@ slot은 `{enabled}` 바깥에 렌더해서 임계값 필드가 사라져도 토�
 소스 패치로는 그 화면이 바뀌지 않는다. 릴리스가 나가야 한다.
 
 게이트 4종 green, GUI 427 pass (86 파일).
+
+## WP8 — 카탈로그 enum 경계 (#759, `dc76c0ffe`)
+
+`070_catalog_enum_hardening.md` 소비. 감사에서 blocker 3건이 나왔고 **그중 하나는 내 주장이
+틀린 것이었다.** 문서에 전부 기록했다.
+
+### 내가 틀렸던 것
+
+"백업 복원 명령이 오염된 값을 다시 쓴다"고 썼는데 거짓이다. `writePristineCatalogBackup`은
+**routed 엔트리가 있는 카탈로그를 백업하지 않는다**
+([parsing.ts:428](/Users/jun/Developer/new/700_projects/opencodex/src/codex/catalog/parsing.ts:428)).
+`zenmux/...`는 routed라서 오염된 행이 애초에 백업에 못 들어간다. 복구 경로 서사를 폐기했다.
+
+### 범위를 좁힌 이유
+
+원안은 "Codex가 enum으로 읽는 다른 필드 전수 확인"과 "읽기 시 제자리 복구"를 포함했다. 둘 다 뺐다.
+
+읽기 복구는 위험하다. `readCatalog`가 pristine 백업과 `models_cache.json`도 읽으므로, 거기에 쓰기를
+넣으면 **들여다보기만 해도 복구 증거와 사용자 파일이 변형된다.** 게다가 opencodex 명령이 돌기
+전까지 Codex 앱을 고쳐주지도 못한다. `ocx sync`가 명시적 복구 경로다.
+
+전수 sanitizer는 잘못 만들면 정당한 값을 깨뜨린다. 놓친 닫힌 enum이 실제로 더 있었지만
+(`visibility`, `shell_type`, `web_search_tool_type`), 결정적인 건 `truncation_policy.mode`가
+업스트림 스냅샷에 **`bytes`와 `tokens` 둘 다** 정당하게 있다는 점이다. `"tokens"`로 하드코딩하는
+sanitizer는 유효한 엔트리를 손상시킨다. 그 네 필드는 프로바이더 데이터가 도달하지 않으므로
+(쓰기 지점이 `parsing.ts` 밖에 없고 값은 하드코딩) 실제 위험이 아니다.
+
+### 실질 산출물
+
+착지한 두 수정은 **엔트리 생성**을 봉합한다. 빠진 계약은 **이미 디스크에 있는 오염된 행**이다.
+프로바이더가 없으면 sync가 stale routed 행을 의도적으로 보존하므로, 그 행이 다시 읽히고 병합되어
+다시 쓰인다 — 나가는 길에 고쳐지지 않으면 같은 거부가 반복된다.
+
+테스트가 단정하는 것은 **모델이 살아남는 것**이다. "출력에 video가 없다"만 보면 미래의 sync가
+오염된 행을 정규화 대신 **버려도** 통과한다. 프로바이더 모델이 조용히 사라지는 걸 성공으로 읽는
+셈이다. 그래서 슬러그 존재 + modalities가 정확히 `["text","image"]`를 단정한다.
+
+회귀 감지력을 가정하지 않고 확인했다: enum 필터를 임시로 지우면 **실패**하고, 되돌리면 통과한다.
+
+검증: 카탈로그 스위트 142 pass (5파일), typecheck·privacy green. 사용자 실제 카탈로그도 재확인 —
+31개 모델, enum 밖 값 0개, 사고를 낸 `zenmux/meta-muse-spark-1.1`이 지금
+`['text','image','audio']`로 정상.
+
+### 남긴 후속 항목
+
+발견성이 약하다. Codex의 파싱 오류가 `ocx sync`를 알려주지 않으므로 사용자는 복구 방법을 모른다.
+CLI/문서 진단 결정이라 이 유닛에서 숨은 변형으로 풀지 않고 남긴다.
