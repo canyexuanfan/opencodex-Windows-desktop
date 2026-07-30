@@ -86,6 +86,7 @@ function providerCatalogFingerprint(name: string, prov: OcxProviderConfig): Reco
     base: prov.baseUrl ?? "",
     adapter: prov.adapter ?? "",
     models: [...(prov.models ?? [])].sort(),
+    selected: [...(prov.selectedModels ?? [])].sort(),
     defaultModel: prov.defaultModel ?? null,
     ctx: prov.contextWindow ?? null,
     ctxW: prov.modelContextWindows ?? null,
@@ -108,6 +109,7 @@ function gatherFlightKey(config: OcxConfig): string {
     .sort((a, b) => String(a.n).localeCompare(String(b.n)));
   const assembly = stableJson({
     providers,
+    disabledModels: [...(config.disabledModels ?? [])].sort(),
     combos: config.combos ?? {},
     customModels: (config.customModels ?? []).map((cm) => ({
       p: cm.provider,

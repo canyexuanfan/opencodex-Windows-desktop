@@ -57,6 +57,20 @@ describe("claude discovery aliases", () => {
     expect(resolveAlias(`${CLAUDE_ALIAS_PREFIX}demo--old~model`)).toBe("demo/old~model");
   });
 
+  test("~s/~t are reserved escapes: round-trip / and ~; legacy ~s decodes as slash", () => {
+    // Intentional encode/decode round-trips for the reserved escape alphabet.
+    expect(aliasForRoute("demo", "a/b")).toBe(`${CLAUDE_ALIAS_PREFIX}demo--a~sb`);
+    expect(resolveAlias(`${CLAUDE_ALIAS_PREFIX}demo--a~sb`)).toBe("demo/a/b");
+    expect(aliasForRoute("demo", "a~b")).toBe(`${CLAUDE_ALIAS_PREFIX}demo--a~tb`);
+    expect(resolveAlias(`${CLAUDE_ALIAS_PREFIX}demo--a~tb`)).toBe("demo/a~b");
+    expect(aliasForRoute("demo", "a~/b")).toBe(`${CLAUDE_ALIAS_PREFIX}demo--a~t~sb`);
+    expect(resolveAlias(`${CLAUDE_ALIAS_PREFIX}demo--a~t~sb`)).toBe("demo/a~/b");
+
+    // Pre-~s-encoding aliases that stored a literal "~s" sequence are not preserved:
+    // decode always treats ~s as "/". Document current behavior only.
+    expect(resolveAlias(`${CLAUDE_ALIAS_PREFIX}demo--old~smodel`)).toBe("demo/old/model");
+  });
+
   test("resolveAlias rejects non-aliases and malformed ids", () => {
     expect(resolveAlias("claude-sonnet-4-5")).toBeNull();
     expect(resolveAlias("gpt-5.5")).toBeNull();

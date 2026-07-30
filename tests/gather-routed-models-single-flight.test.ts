@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   clearGatherRoutedModelsInflight,
+  filterCatalogVisibleModels,
   gatherRoutedModels as gatherRoutedModelsDirect,
   resetCatalogRuntimeStateForTests,
   type ComboCatalogOmission,
@@ -241,4 +242,100 @@ describe("gatherRoutedModels single-flight", () => {
     expect(a.find(m => m.id === "m1")?.contextWindow).toBe(100_000);
     expect(b.find(m => m.id === "m1")?.contextWindow).toBe(200_000);
   });
+
+  test("selectedModels-only config changes do not share a flight", async () => {
+    let fetchCount = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+      await gate;
+      return new Response(
+        JSON.stringify({ data: [{ id: "keep-me" }, { id: "drop-me" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const base: OcxConfig = {
+      port: 10100,
+      defaultProvider: "p",
+      providers: {
+        p: {
+          adapter: "openai-chat",
+          baseUrl: "https://sel.example.test/v1",
+          models: [],
+        },
+      },
+    };
+    const withSel: OcxConfig = {
+      ...base,
+      providers: {
+        p: {
+          ...base.providers.p,
+          selectedModels: ["keep-me"],
+        },
+      },
+    };
+
+    const first = gatherRoutedModels(base);
+    const second = gatherRoutedModels(withSel);
+    await Promise.resolve();
+    // Distinct flight keys => two live discoveries (cannot reuse unfiltered result).
+    expect(fetchCount).toBe(2);
+    release();
+    const [all, withSelModels] = await Promise.all([first, second]);
+    // gather itself is unfiltered; visibility is applied by callers.
+    expect(all.map(m => m.id).sort()).toEqual(["drop-me", "keep-me"]);
+    expect(withSelModels.map(m => m.id).sort()).toEqual(["drop-me", "keep-me"]);
+    expect(filterCatalogVisibleModels(all, base).map(m => m.id).sort()).toEqual(["drop-me", "keep-me"]);
+    expect(filterCatalogVisibleModels(withSelModels, withSel).map(m => m.id)).toEqual(["keep-me"]);
+  });
+
+  test("disabledModels-only config changes do not share a flight", async () => {
+    let fetchCount = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+      await gate;
+      return new Response(
+        JSON.stringify({ data: [{ id: "keep-me" }, { id: "drop-me" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const base: OcxConfig = {
+      port: 10100,
+      defaultProvider: "p",
+      providers: {
+        p: {
+          adapter: "openai-chat",
+          baseUrl: "https://dis.example.test/v1",
+          models: [],
+        },
+      },
+    };
+    const withDisabled: OcxConfig = {
+      ...base,
+      disabledModels: ["p/drop-me"],
+    };
+
+    const first = gatherRoutedModels(base);
+    const second = gatherRoutedModels(withDisabled);
+    await Promise.resolve();
+    expect(fetchCount).toBe(2);
+    release();
+    const [all, withDisabledModels] = await Promise.all([first, second]);
+    expect(all.map(m => m.id).sort()).toEqual(["drop-me", "keep-me"]);
+    expect(withDisabledModels.map(m => m.id).sort()).toEqual(["drop-me", "keep-me"]);
+    expect(filterCatalogVisibleModels(all, base).map(m => m.id).sort()).toEqual(["drop-me", "keep-me"]);
+    expect(filterCatalogVisibleModels(withDisabledModels, withDisabled).map(m => m.id)).toEqual(["keep-me"]);
+  });
+
 });

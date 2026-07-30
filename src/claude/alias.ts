@@ -14,6 +14,10 @@
  *    `claude-ocx-openrouter--anthropic~sclaude-opus-4-8`);
  *  - model ids MAY contain `~` — encoded as `~t` (so slash encoding cannot
  *    collide with a literal tilde that older releases already persisted);
+ *  - `~s` / `~t` are reserved escape sequences: decode always treats them as
+ *    `/` and `~` respectively. Model ids that historically contained the literal
+ *    two-char sequences `~s` / `~t` are not preserved (extremely rare; encode would
+ *    write `~ts` / `~tt` for those characters after a literal tilde today);
  *  - bare `~` not followed by `s`/`t` is left as a literal tilde on decode
  *    (legacy aliases from before slash encoding);
  *  - model ids MAY contain `--` (resolve splits on the FIRST `--` only);
