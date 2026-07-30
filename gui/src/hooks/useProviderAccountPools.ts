@@ -239,8 +239,11 @@ export function useProviderAccountPools(deps: {
   );
   useEffect(() => {
     if (oauthCardProviders.length === 0) return;
-    const timeout = window.setTimeout(() => { void fetchAccountSets(oauthCardProviders); }, 0);
-    return () => window.clearTimeout(timeout);
+    // Deferred by a microtask, not a timer: a timer had to be cancelled in cleanup, so a mount
+    // followed by an immediate unmount (tab switch, provider list churn) issued no request and
+    // never retried. A microtask keeps the state update out of the effect body while still
+    // guaranteeing the request goes out.
+    void Promise.resolve().then(() => { void fetchAccountSets(oauthCardProviders); });
   }, [fetchAccountSets, oauthCardProviders]);
 
   const keyCardProviders = useMemo(
@@ -249,8 +252,7 @@ export function useProviderAccountPools(deps: {
   );
   useEffect(() => {
     if (keyCardProviders.length === 0) return;
-    const timeout = window.setTimeout(() => { void fetchKeyPools(keyCardProviders); }, 0);
-    return () => window.clearTimeout(timeout);
+    void Promise.resolve().then(() => { void fetchKeyPools(keyCardProviders); });
   }, [fetchKeyPools, keyCardProviders]);
 
   const activeAccountNeedsReauth = useMemo(

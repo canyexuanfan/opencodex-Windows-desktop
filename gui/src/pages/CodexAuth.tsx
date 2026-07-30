@@ -130,9 +130,12 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   }, [apiBase, configCacheKey]);
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => { void loadMode(); }, 0);
+    // Deferred by a microtask, not a timer: a timer had to be cancelled in cleanup, so a quick hop
+    // away from this tab left the banner with no mode read until the next poll. A microtask keeps
+    // the state update out of the effect body while still guaranteeing the request goes out.
+    void Promise.resolve().then(() => { void loadMode(); });
     const iv = window.setInterval(() => { void loadMode(); }, 30_000);
-    return () => { window.clearTimeout(timeout); window.clearInterval(iv); };
+    return () => { window.clearInterval(iv); };
   }, [loadMode]);
 
   const enableOpenAi = async () => {

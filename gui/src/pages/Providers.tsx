@@ -146,14 +146,14 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   } = jsonEditor;
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => {
+    // Deferred by a microtask, not a timer. A timer had to be cancelled in cleanup, so navigating
+    // away within the same tick dropped both requests with nothing to retry them and the page came
+    // back empty on the next visit. A microtask cannot be cancelled, so the requests always go out.
+    // Quotas: workspace shell owns /api/provider-quotas — do not double-fetch on mount.
+    void Promise.resolve().then(() => {
       void fetchConfig();
       void fetchOauth();
-      // Quotas: workspace shell owns /api/provider-quotas — do not double-fetch on mount.
-    }, 0);
-    return () => {
-      window.clearTimeout(timeout);
-    };
+    });
   }, [fetchConfig, fetchOauth]);
 
   const bumpModelsRefresh = () => setModelsRefreshToken(n => n + 1);

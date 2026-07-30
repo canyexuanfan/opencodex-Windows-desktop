@@ -70,11 +70,13 @@ export default function AnthropicAccountPoolSettings({
         setLoadError(true);
       }
     };
-    const timer = window.setTimeout(() => { void load(); }, 0);
+    // Deferred by a microtask, not a timer: a timer had to be cancelled in cleanup, so a
+    // mount-then-unmount dropped the request entirely. The abort controller below already covers
+    // in-flight cancellation, which is the part that actually needs to be cancellable.
+    void Promise.resolve().then(() => { void load(); });
     return () => {
       cancelled = true;
       ac.abort();
-      window.clearTimeout(timer);
     };
   }, [apiBase]);
 

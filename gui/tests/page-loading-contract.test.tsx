@@ -33,6 +33,9 @@ const MIGRATED = [
   { name: "Debug", file: "../src/pages/Debug.tsx" },
   { name: "ClaudeCode", file: "../src/pages/ClaudeCode.tsx" },
   { name: "ClaudeDesktop", file: "../src/pages/ClaudeDesktop.tsx" },
+  { name: "Storage", file: "../src/pages/Storage.tsx" },
+  { name: "ApiKeys", file: "../src/pages/ApiKeys.tsx" },
+  { name: "Models", file: "../src/pages/Models.tsx" },
 ] as const;
 
 test("every migrated surface subscribes through the shared resource layer", async () => {

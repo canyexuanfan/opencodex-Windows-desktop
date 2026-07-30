@@ -242,8 +242,12 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
     // CodexAccountPool under a page that already owns a controller would start a second
     // poll loop and issue duplicate requests on every mount.
     if (!enabled) return;
-    const timeout = window.setTimeout(() => { void load(); }, 0);
-    return () => window.clearTimeout(timeout);
+    // Deferred by a microtask, not a timer. A timer had to be cancelled in cleanup, which meant a
+    // fast tab hop issued no request at all and the pool waited a whole poll interval before
+    // trying again — the account list simply looked empty in the meantime. A microtask still keeps
+    // the state update out of the effect body (cascading renders), but nothing cancels it, so the
+    // request always goes out.
+    void Promise.resolve().then(() => { void load(); });
   }, [enabled, load]);
 
   // Soft /accounts returns before background WHAM finishes. Re-poll cheaply until
