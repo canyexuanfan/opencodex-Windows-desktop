@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { extractAutoSwitchThresholdPayload } from "../codex-auto-switch";
 import type { AccountQuota } from "../codex-quota-utils";
 import { accountNeedsReauth } from "../oauth-health-display";
 
@@ -123,13 +124,10 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   }, []);
 
   /** Last threshold an actual read returned, or undefined when none has succeeded yet. */
-  const readLastThreshold = useCallback(() => {
-    const active = lastActiveRef.current?.value;
-    if (active && typeof active === "object" && active !== null && "autoSwitchThreshold" in active) {
-      return (active as { autoSwitchThreshold: unknown }).autoSwitchThreshold;
-    }
-    return active;
-  }, []);
+  const readLastThreshold = useCallback(
+    () => extractAutoSwitchThresholdPayload(lastActiveRef.current?.value),
+    [],
+  );
 
   /** Full last /active payload, or undefined when none has succeeded yet. */
   const readLastActive = useCallback(() => lastActiveRef.current?.value, []);

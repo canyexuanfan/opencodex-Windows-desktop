@@ -6,7 +6,8 @@ export function clampNumberDraft(
   max: number,
   step = 1,
 ): string {
-  const parsed = Number(raw);
+  const trimmed = raw.trim();
+  const parsed = trimmed === "" ? NaN : Number(trimmed);
   const base = Number.isFinite(parsed) ? parsed : min;
   const next = Math.min(max, Math.max(min, base + delta));
   // Keep one decimal for GiB-style steps; integers otherwise.

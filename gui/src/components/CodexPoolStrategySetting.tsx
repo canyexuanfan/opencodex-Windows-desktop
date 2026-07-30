@@ -48,6 +48,8 @@ export default function CodexPoolStrategySetting({
   const hydratedRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  /** Set when an /active read arrives mid-save; triggers one post-save refresh. */
+  const deferredActiveRefreshRef = useRef(false);
   const revisionRef = useRef(0);
   const [loadError, setLoadError] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,17 +82,36 @@ export default function CodexPoolStrategySetting({
     try {
       const res = await fetch(`${apiBase}/api/codex-auth/active`);
       if (!res.ok) throw new Error("load");
-      applyServer(await res.json() as {
+      const payload = await res.json() as {
         accountPoolStrategy?: unknown;
         accountPoolStickyLimit?: unknown;
-      });
+      };
+      // A save started while this GET was in flight — retry once after it settles.
+      if (savingRef.current) {
+        deferredActiveRefreshRef.current = true;
+        return;
+      }
+      applyServer(payload);
     } catch {
-      setLoadError(true);
+      if (!savingRef.current) setLoadError(true);
     }
   }, [apiBase, applyServer]);
 
+  const scheduleDeferredActiveRefresh = useCallback(() => {
+    if (!deferredActiveRefreshRef.current) return;
+    deferredActiveRefreshRef.current = false;
+    queueMicrotask(() => {
+      if (savingRef.current) {
+        deferredActiveRefreshRef.current = true;
+        return;
+      }
+      void load();
+    });
+  }, [load]);
+
   // Shared /active observer (preferred): same payload the pool already fetched.
-  // Ignore stale polls that started before a PUT bumped revision, and never apply while saving.
+  // Ignore stale polls that started before a PUT bumped revision; mid-save reads
+  // arm one post-save /active refresh instead of being dropped forever.
   // Replay readLastActive on subscribe so late mounts hydrate without waiting a poll.
   useEffect(() => {
     if (!subscribeLoadObserver) return;
@@ -98,7 +119,10 @@ export default function CodexPoolStrategySetting({
       beginActiveRead: () => revisionRef.current,
       acceptActiveRead: (value, startedRevision) => {
         if (startedRevision !== revisionRef.current) return;
-        if (savingRef.current) return;
+        if (savingRef.current) {
+          deferredActiveRefreshRef.current = true;
+          return;
+        }
         applyActivePayload(value);
       },
       rejectActiveRead: () => {
@@ -154,7 +178,8 @@ export default function CodexPoolStrategySetting({
     }
     savingRef.current = false;
     setSaving(false);
-  }, [apiBase, stickyLimit, strategy, t]);
+    scheduleDeferredActiveRefresh();
+  }, [apiBase, scheduleDeferredActiveRefresh, stickyLimit, strategy, t]);
 
   // Block writes until /active confirms — defaults paint for CLS but must not overwrite server state.
   const controlsDisabled = saving || loadError || !hydrated;
