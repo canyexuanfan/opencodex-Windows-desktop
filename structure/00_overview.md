@@ -11,11 +11,11 @@ archaeology, debugging, or source research.
 | --- | --- |
 | [`00_overview.md`](00_overview.md) | Product boundary, local state, and non-negotiable invariants. |
 | [`01_runtime.md`](01_runtime.md) | Process lifecycle, CLI, server endpoints, config, providers, adapters. |
-| [`02_config-and-codex-home.md`](02_config-and-codex-home.md) | `CODEX_HOME`, config injection, profile files, restore rules. |
-| [`03_catalog-and-subagents.md`](03_catalog-and-subagents.md) | Shared Codex catalog, Codex App picker, subagent ordering. |
-| [`04_transports-and-sidecars.md`](04_transports-and-sidecars.md) | Responses HTTP/SSE, WebSocket opt-in, sidecars, compatibility guards. |
-| [`05_gui-and-management-api.md`](05_gui-and-management-api.md) | Dashboard serving and `/api/*` management surface. |
-| [`06_docs-and-release.md`](06_docs-and-release.md) | Public docs site, GitHub Pages, README ownership, release flow. |
+| [`02_config-and-codex-home.md`](02_config-and-codex-home.md) | `CODEX_HOME`, the config surface, both injection forms, profile files, restore rules, and Codex-home diagnostics. |
+| [`03_catalog-and-subagents.md`](03_catalog-and-subagents.md) | Shared Codex catalog and per-catalog backups, account namespaces and pool rotation, model cache, effort ceilings, multi-agent surface mode, and subagent ordering. |
+| [`04_transports-and-sidecars.md`](04_transports-and-sidecars.md) | Responses HTTP/SSE, WebSocket opt-in, per-provider transport hardening, the transport inventory, sidecars, and compatibility guards. |
+| [`05_gui-and-management-api.md`](05_gui-and-management-api.md) | Dashboard serving and surfaces, plus the `/api/*` management surface and which module owns each route area. |
+| [`06_docs-and-release.md`](06_docs-and-release.md) | Public docs site, GitHub Pages, the workflow map, branch and devlog policy, README ownership, release flow. |
 | [`07_design-methodology.md`](07_design-methodology.md) | Design process discipline for new GUI, CLI, and user-facing surfaces. |
 | [`08_openai-provider-tiers.md`](08_openai-provider-tiers.md) | OpenAI Pool/Direct account-mode and API credential/routing invariants. |
 
