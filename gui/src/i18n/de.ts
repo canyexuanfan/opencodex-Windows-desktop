@@ -574,6 +574,7 @@ export const de: Record<TKey, string> = {
   "debug.streamUsage": "Nutzung",
   "debug.streamInjection": "Injektion",
   "debug.loading": "Lade Diagnose-Einstellungen…",
+  "debug.loadFailed": "Diagnose-Einstellungen konnten nicht geladen werden.",
   "debug.emptyTitle": "Diagnose-Logging ist aus",
   "debug.empty": "Aktiviere Provider-Diagnose oder Nutzungs-Extraktion in der Karte oben. Zeilen erscheinen hier, nachdem du eine Anfrage über den Proxy gesendet hast.",
   "debug.noLinesTitle": "Warte auf Zeilen",

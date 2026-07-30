@@ -587,6 +587,7 @@ export const zh: Record<TKey, string> = {
   "debug.streamUsage": "Usage",
   "debug.streamInjection": "Injection",
   "debug.loading": "正在加载调试设置…",
+  "debug.loadFailed": "无法加载调试设置。",
   "debug.emptyTitle": "调试日志已关闭",
   "debug.empty": "请在上方卡片中开启 Provider debug 或 Usage extraction。通过代理发送请求后，诊断行会显示在这里。",
   "debug.noLinesTitle": "等待诊断行",

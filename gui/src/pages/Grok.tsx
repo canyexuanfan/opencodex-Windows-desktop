@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { EmptyState, Notice, Switch } from "../ui";
 import { IconChevron } from "../icons";
 import { useT, type TKey } from "../i18n/shared";
@@ -59,8 +59,10 @@ export default function Grok({ apiBase }: { apiBase: string }) {
   const t = useT();
   const cacheKey = `ocx.grok.status.v1:${apiBase}`;
   const cached = readSessionListCache<GrokStatus>(cacheKey);
-  const [excluded, setExcluded] = useState<Set<string>>(() => new Set(cached?.excluded ?? []));
-  const [savedExcluded, setSavedExcluded] = useState<Set<string>>(() => new Set(cached?.excluded ?? []));
+  // Local edits are an OVERLAY on the server's selection rather than a copy of it. Copying meant
+  // reconciling in an effect, which both fought the switches mid-interaction and tripped the
+  // cascading-render lint; `null` here means "no unsaved edits, follow the server".
+  const [draftExcluded, setDraftExcluded] = useState<Set<string> | null>(null);
   // null = no stored preference; groups start collapsed so the list opens on demand.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => GROUP_COLLAPSE.read() ?? new Set(DEFAULT_COLLAPSED_GROUPS));
   const [pending, setPending] = useState<"save" | "apply" | null>(null);
@@ -90,19 +92,16 @@ export default function Grok({ apiBase }: { apiBase: string }) {
   const load = resource.refresh;
   const status = state.data ?? cached;
 
-  // Server selection wins over local edits, but only for a read the user did not initiate:
-  // reconciling on every render would fight the switches while the user is toggling them.
-  const serverExcluded = state.data?.excluded;
-  useEffect(() => {
-    if (!serverExcluded) return;
-    const next = new Set(serverExcluded);
-    setExcluded(next);
-    setSavedExcluded(next);
-  }, [serverExcluded]);
+  const savedExcluded = useMemo(
+    () => new Set(status?.excluded ?? []),
+    [status],
+  );
+  const excluded = draftExcluded ?? savedExcluded;
 
   const dirty = useMemo(
-    () => excluded.size !== savedExcluded.size || [...excluded].some(id => !savedExcluded.has(id)),
-    [excluded, savedExcluded],
+    () => draftExcluded !== null
+      && (draftExcluded.size !== savedExcluded.size || [...draftExcluded].some(id => !savedExcluded.has(id))),
+    [draftExcluded, savedExcluded],
   );
 
   const aliasById = useMemo(
@@ -123,8 +122,9 @@ export default function Grok({ apiBase }: { apiBase: string }) {
   };
 
   const toggleModel = (id: string, currentlyExcluded: boolean) => {
-    setExcluded(current => {
-      const next = new Set(current);
+    setDraftExcluded(current => {
+      // First toggle forks the server selection into a draft; later toggles build on the draft.
+      const next = new Set(current ?? savedExcluded);
       if (currentlyExcluded) next.delete(id);
       else next.add(id);
       return next;
@@ -142,7 +142,8 @@ export default function Grok({ apiBase }: { apiBase: string }) {
         body: JSON.stringify({ excluded: [...excluded] }),
       });
       await readJsonOrThrow<{ error?: string }>(response, t("grok.saveFailed"));
-      setSavedExcluded(new Set(excluded));
+      // The draft is now the server's state; dropping it hands authority back to the next read.
+      setDraftExcluded(null);
 
       if (applyAfter) {
         setPending("apply");

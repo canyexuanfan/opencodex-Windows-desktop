@@ -3,6 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import Grok from "../src/pages/Grok";
+import { clearClientResourceStoresForTests } from "../src/client-resource";
 import { LanguageProvider } from "../src/i18n/provider";
 
 /**
@@ -36,6 +37,9 @@ const STATUS = () => ({
 
 beforeEach(() => {
   previousGlobals = Object.fromEntries(globals.map(k => [k, Reflect.get(globalThis, k)])) as typeof previousGlobals;
+  // The page reads through the shared resource layer, whose cache is module-level: without this
+  // the previous case's payload seeds the next mount and hides the state under test.
+  clearClientResourceStoresForTests();
   testWindow = new Window({ url: "http://localhost/" });
   Object.defineProperty(testWindow.navigator, "language", { configurable: true, value: "en-US" });
   Object.defineProperties(globalThis, {
@@ -78,6 +82,7 @@ afterEach(async () => {
     await act(async () => { current.unmount(); });
     root = null;
   }
+  clearClientResourceStoresForTests();
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
   }

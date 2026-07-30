@@ -587,6 +587,7 @@ export const ko: Record<TKey, string> = {
   "debug.streamUsage": "Usage",
   "debug.streamInjection": "Injection",
   "debug.loading": "디버그 설정 로딩 중…",
+  "debug.loadFailed": "디버그 설정을 불러오지 못했습니다.",
   "debug.emptyTitle": "디버그 로깅 꺼짐",
   "debug.empty": "위 카드에서 Provider debug 또는 Usage extraction을 켜세요. 프록시로 요청을 보낸 뒤 라인이 표시됩니다.",
   "debug.noLinesTitle": "라인 대기 중",

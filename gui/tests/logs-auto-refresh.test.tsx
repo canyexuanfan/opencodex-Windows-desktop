@@ -3,6 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
+import { clearClientResourceStoresForTests } from "../src/client-resource";
 import Logs from "../src/pages/Logs";
 
 const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT", "ResizeObserver"] as const;
@@ -92,11 +93,15 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   installLayoutStubs(testWindow);
   jest.useFakeTimers({ now: 1_700_000_000_000 });
+  // Logs reads through the shared resource layer now, and that cache is module-level: without
+  // this, one test's rows leak into the next one's cold mount and suppress its request.
+  clearClientResourceStoresForTests();
 });
 
 afterEach(() => {
   jest.useRealTimers();
   globalThis.fetch = originalFetch;
+  clearClientResourceStoresForTests();
   testWindow.close();
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });

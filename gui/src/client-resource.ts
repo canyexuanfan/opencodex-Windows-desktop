@@ -325,11 +325,17 @@ export function useKeyedClientResource<T>(
 ): ResourceSnapshot<T> & { refresh: (opts?: { forceLoading?: boolean }) => void } {
   const resource = useClientResource(key, load, options);
   const prevDepsRef = useRef<readonly unknown[] | null>(null);
+  const prevKeyRef = useRef<string | null>(null);
 
   useLayoutEffect(() => {
     const prev = prevDepsRef.current;
+    const prevKey = prevKeyRef.current;
     prevDepsRef.current = deps;
+    prevKeyRef.current = key;
     if (!depsChanged(prev, deps)) return;
+    // When the key moved with the deps, subscribing to the new key already started a cold fetch.
+    // Revalidating here as well would double every request on a keyed identity change.
+    if (prevKey !== null && prevKey !== key) return;
     resource.refresh({ forceLoading: true });
   });
 

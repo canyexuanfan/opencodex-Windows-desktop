@@ -594,6 +594,7 @@ export const en = {
   "debug.streamUsage": "Usage",
   "debug.streamInjection": "Injection",
   "debug.loading": "Loading debug settings…",
+  "debug.loadFailed": "Could not load debug settings.",
   "debug.emptyTitle": "Debug logging is off",
   "debug.empty": "Turn on Provider debug or Usage extraction in the card above. Lines appear here after you send a request through the proxy.",
   "debug.noLinesTitle": "Waiting for lines",

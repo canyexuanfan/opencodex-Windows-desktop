@@ -41,7 +41,8 @@ test("Usage workspace sections mount report panels in order", async () => {
 
 test("Usage loading and empty states guard the workspace body", async () => {
   const src = await Bun.file(new URL("../src/pages/Usage.tsx", import.meta.url)).text();
-  expect(src).toContain("loading && !data");
+  expect(src).toContain("state.showSkeleton && !data");
+  expect(src).toContain("DataSurfaceSkeleton");
   expect(src).toContain('t("usage.loading")');
   expect(src).toContain('t("usage.empty")');
   expect(src).toContain("data.summary.requests === 0");

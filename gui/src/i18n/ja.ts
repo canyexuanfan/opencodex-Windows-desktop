@@ -561,6 +561,7 @@ export const ja: Record<TKey, string> = {
   "debug.streamUsage": "使用量",
   "debug.streamInjection": "インジェクション",
   "debug.loading": "デバッグ設定を読み込み中…",
+  "debug.loadFailed": "デバッグ設定を読み込めませんでした。",
   "debug.emptyTitle": "デバッグログはオフです",
   "debug.empty": "上のカードでプロバイダーデバッグまたは使用量抽出をオンにしてください。プロキシ経由でリクエストを送信すると、ここに行が表示されます。",
   "debug.noLinesTitle": "行を待機中",

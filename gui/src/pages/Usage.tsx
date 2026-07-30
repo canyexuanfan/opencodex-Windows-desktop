@@ -5,6 +5,8 @@ import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
+import { useDataSurface } from "../data-surface";
+import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
 
 type Range = "all" | "30d" | "7d";
 type UsageSurface = "all" | "codex" | "claude" | "grok";
@@ -638,7 +640,6 @@ function UsageCoveragePanel({
  */
 function UsageWorkspaceBody({
   data,
-  loading,
   heatmap,
   weekBars,
   activeDays,
@@ -653,7 +654,6 @@ function UsageWorkspaceBody({
   t,
 }: {
   data: UsageResponse | null;
-  loading: boolean;
   heatmap: ReturnType<typeof buildHeatmap>;
   weekBars: UsageDay[];
   activeDays: number;
@@ -704,11 +704,7 @@ function UsageWorkspaceBody({
     },
   ];
   const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
-  const mainBody = loading && !data
-    ? <EmptyState title={t("usage.loading")} />
-    : empty
-      ? <EmptyState title={t("usage.empty")} />
-      : selected.body;
+  const mainBody = empty ? <EmptyState title={t("usage.empty")} /> : selected.body;
 
   return (
     <div className="usage-workspace-shell">
@@ -762,62 +758,28 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [range, setRange] = useState<Range>("30d");
   const [surface, setSurface] = useState<UsageSurface>("all");
-  const [data, setData] = useState<UsageResponse | null>(() => readHeldUsage(apiBase, "30d", "all"));
-  const [loading, setLoading] = useState(() => !readHeldUsage(apiBase, "30d", "all"));
-  const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [selectedSection, setSelectedSection] = useState("overview");
-  const loadGenerationRef = useRef(0);
 
-  const fetchUsage = useCallback(async (nextRange: Range, nextSurface: UsageSurface, signal: AbortSignal) => {
-    const generation = ++loadGenerationRef.current;
-    const held = readHeldUsage(apiBase, nextRange, nextSurface);
-    if (held) {
-      // Instant tab switch: show held data and revalidate quietly.
-      setData(held);
-      setLoading(false);
-      setError(null);
-    } else {
-      setLoading(true);
-      setError(null);
-      // Drop mismatched payload so we never paint the wrong surface/range.
-      setData(prev => (prev && prev.range === nextRange && prev.surface === nextSurface ? prev : null));
-    }
-    try {
-      const res = await fetch(`${apiBase}/api/usage?range=${nextRange}&surface=${nextSurface}`, { signal });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
-      const json = await res.json() as UsageResponse;
-      if (signal.aborted || generation !== loadGenerationRef.current) return;
-      writeHeldUsage(apiBase, nextRange, nextSurface, json);
-      setData(json);
-      setError(null);
-    } catch (cause) {
-      // A stale request (range/apiBase changed, or unmount) must not overwrite newer state.
-      if (signal.aborted || generation !== loadGenerationRef.current) return;
-      // Keep held data visible when a background revalidate fails.
-      if (held) return;
-      const detail = cause instanceof Error ? cause.message : "";
-      setError(detail ? `${t("usage.loadError")} ${detail}` : t("usage.loadError"));
-    } finally {
-      // Only the current request may clear loading — a superseded abort must not
-      // settle the UI while a newer fetch is still in flight.
-      if (generation === loadGenerationRef.current) setLoading(false);
-    }
-  }, [apiBase, t]);
+  const loadUsage = useCallback(async (signal: AbortSignal): Promise<UsageResponse> => {
+    const response = await fetch(`${apiBase}/api/usage?range=${range}&surface=${surface}`, { signal });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
+    const next = await response.json() as UsageResponse;
+    writeHeldUsage(apiBase, range, surface, next);
+    return next;
+  }, [apiBase, range, surface]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => {
-      void fetchUsage(range, surface, controller.signal);
-    }, 0);
-    return () => {
-      window.clearTimeout(timeout);
-      // Invalidate before abort so a superseded request's finally cannot clear
-      // loading in the gap before the deferred replacement increments generation.
-      loadGenerationRef.current += 1;
-      controller.abort();
-    };
-  }, [fetchUsage, range, surface]);
+  const cached = readHeldUsage(apiBase, range, surface);
+  // Range and surface identify different reports, so the key changes with both. That prevents
+  // a force-loading dependency revalidation from ever showing a previous report as this one.
+  const resource = useDataSurface<UsageResponse>(
+    usageCacheKey(apiBase, range, surface),
+    [apiBase, range, surface],
+    loadUsage,
+    { isEmpty: () => false },
+  );
+  const { state } = resource;
+  const data = state.data ?? cached ?? null;
 
   const heatmap = useMemo(() => buildHeatmap(data?.days ?? []), [data?.days]);
   const weekBars = useMemo(() => lastSevenDays(data?.days ?? []), [data?.days]);
@@ -847,35 +809,35 @@ export default function Usage({ apiBase }: { apiBase: string }) {
       </div>
       <p className="page-sub">{t("usage.subtitle")}</p>
 
-      {error ? (
+      {state.showSkeleton && !data ? (
+        <DataSurfaceSkeleton label={t("usage.loading")} rows={5} />
+      ) : state.kind === "failed-cold" ? (
         <Notice tone="err">
-          {error}{" "}
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => void fetchUsage(range, surface, new AbortController().signal)}
-            disabled={loading}
-          >
+          {state.error instanceof Error ? `${t("usage.loadError")} ${state.error.message}` : t("usage.loadError")}{" "}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => resource.refresh()}>
             {t("common.retry")}
           </button>
         </Notice>
       ) : (
-        <UsageWorkspaceBody
-          data={data}
-          loading={loading}
-          heatmap={heatmap}
-          weekBars={weekBars}
-          activeDays={activeDays}
-          filteredModels={filteredModels}
-          modelQuery={modelQuery}
-          onModelQuery={setModelQuery}
-          sortedProviders={sortedProviders}
-          range={range}
-          selectedSection={selectedSection}
-          onSelectSection={setSelectedSection}
-          locale={locale}
-          t={t}
-        />
+        <>
+          {state.showError && <Notice tone="err">{t("usage.loadError")}</Notice>}
+          {state.refreshing && <DataSurfaceStatus live={!state.showError}>{t("usage.loading")}</DataSurfaceStatus>}
+          <UsageWorkspaceBody
+            data={data}
+            heatmap={heatmap}
+            weekBars={weekBars}
+            activeDays={activeDays}
+            filteredModels={filteredModels}
+            modelQuery={modelQuery}
+            onModelQuery={setModelQuery}
+            sortedProviders={sortedProviders}
+            range={range}
+            selectedSection={selectedSection}
+            onSelectSection={setSelectedSection}
+            locale={locale}
+            t={t}
+          />
+        </>
       )}
     </>
   );
