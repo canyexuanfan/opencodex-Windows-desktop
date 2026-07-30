@@ -391,22 +391,21 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   // A single failed tick on a two-second poll is noise, but an outage that never recovers must not
   // leave the user reading stale rows as if they were current. Count consecutive failures and speak
   // up once it is clearly not transient.
-  const [pollFailing, setPollFailing] = useState(false);
-  const failureStreakRef = useRef(0);
   const settledFailure = !logsResource.refreshing && logsState.showError;
   const settledSuccess = !logsResource.refreshing && !logsState.showError && logsState.data !== undefined;
-  useEffect(() => {
-    if (settledSuccess) {
-      failureStreakRef.current = 0;
-      setPollFailing(false);
-      return;
-    }
-    if (!settledFailure) return;
-    failureStreakRef.current += 1;
-    if (failureStreakRef.current >= STALE_POLL_FAILURE_LIMIT) setPollFailing(true);
-    // `logsState.error` is in the deps so each new failed settlement counts once, rather than the
-    // effect re-running on unrelated re-renders.
-  }, [settledFailure, settledSuccess, logsState.error]);
+  // Derived from the settlement itself, so there is no second copy of this state to keep
+  // in sync and no frame painted with a stale banner. `streak` counts CONSECUTIVE failed
+  // settlements: it is stored keyed by the error identity that produced it, so repeated
+  // renders of the same failure do not inflate the count and a success clears it.
+  const [failureStreak, setFailureStreak] = useState<{ error: unknown; count: number }>(
+    { error: null, count: 0 },
+  );
+  if (settledSuccess && failureStreak.count !== 0) {
+    setFailureStreak({ error: null, count: 0 });
+  } else if (settledFailure && failureStreak.error !== logsState.error) {
+    setFailureStreak(previous => ({ error: logsState.error, count: previous.count + 1 }));
+  }
+  const pollFailing = failureStreak.count >= STALE_POLL_FAILURE_LIMIT;
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
   const conversationQuery = conversationFilter.trim();
