@@ -55,6 +55,14 @@ ocx claude
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `DISABLE_COMPACT` | Legacy context override when `maxContextTokens` is set (conditional) |
 Variables you export yourself always win. Extra arguments pass through: `ocx claude -p "hello"`.
 
+One exception is about *where* a variable comes from, not about precedence. The bundled Bun
+runtime auto-loads a project `.env` / `.env.local`, so a stray `ANTHROPIC_API_KEY` in the
+directory you happen to launch from used to look identical to a deliberate export — and it
+silently disabled a healthy claude.ai subscription in favour of API billing. `ocx claude` now
+ignores Anthropic credentials that only a project dotenv introduced. A value you exported in
+your shell still wins, in every auth mode. To use an API key deliberately, export it
+(`export ANTHROPIC_API_KEY=...`) rather than leaving it in a project file.
+
 ## Auth mode
 
 Claude Code needs a token in `ANTHROPIC_AUTH_TOKEN` to talk to a gateway, but setting that
