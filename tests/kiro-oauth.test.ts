@@ -654,7 +654,10 @@ describe("kiro oauth — import-first", () => {
     expect(missing.token).toBeNull();
     expect(missing.diagnostics).toContainEqual({ location: kiroCliDbLocation(), status: "token_missing" });
 
-    rmSync(join(tmp, "Library"), { recursive: true, force: true });
+    // Drop the seeded database before re-seeding. This has to follow the platform: removing only
+    // `Library` left the Linux store at `.local/share` in place, so the second seed hit
+    // "table auth_kv already exists" and the case failed on ubuntu CI while passing on macOS (#718).
+    rmSync(kiroCliDbDir(), { recursive: true, force: true });
     seedKiroCliRawValue("{not json");
 
     const invalid = inspectKiroCliSqlite();
