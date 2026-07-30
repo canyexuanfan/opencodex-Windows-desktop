@@ -138,7 +138,7 @@ ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提
 | SiliconFlow | `https://api.siliconflow.cn/v1` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
-| GitHub Copilot · GitLab Duo | `https://api.githubcopilot.com` · `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
+| GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | ……以及更多 | opencode zen、Vercel AI Gateway、Venice、NanoGPT、Synthetic、Qianfan、Alibaba、Parallel、ZenMux、LiteLLM |
 

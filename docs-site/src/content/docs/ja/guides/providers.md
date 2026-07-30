@@ -60,7 +60,7 @@ ChatGPT パススルーカタログには GPT-5.6 Sol/Terra/Luna の名前空間
 
 ## 2. アカウントログイン(OAuth)
 
-OAuth ログインを使うプロバイダープリセットは 6 つです。認証情報は
+OAuth ログインを使うプロバイダープリセットは 7 つです。認証情報は
 `~/.opencodex/auth.json` に保存され、自動更新されます。ログイン CLI は `chatgpt` も受け付けます。
 このコマンドは ChatGPT 認証情報を発行し `forward` モードのプロバイダーエントリを作成します。
 
@@ -146,7 +146,7 @@ opencodex には組み込みプリセットが 61 個含まれています。キ
 | SiliconFlow | `https://api.siliconflow.cn/v1` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
-| GitHub Copilot · GitLab Duo | `https://api.githubcopilot.com` · `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
+| GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | …その他多数 | opencode zen、Vercel AI Gateway、Venice、NanoGPT、Synthetic、Qianfan、Alibaba、Parallel、ZenMux、LiteLLM |
 
