@@ -64,20 +64,8 @@ type CachedOverview = {
 
 type MaMode = "v1" | "default" | "v2";
 
-function readCachedControls(apiBase: string): CachedControls | null {
-  try {
-    const raw = sessionStorage.getItem(`${CONTROLS_CACHE_PREFIX}${apiBase}`);
-    if (!raw) return null;
-    return JSON.parse(raw) as CachedControls;
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedControls(apiBase: string, value: CachedControls) {
-  try {
-    sessionStorage.setItem(`${CONTROLS_CACHE_PREFIX}${apiBase}`, JSON.stringify(value));
-  } catch { /* private mode / quota */ }
+function controlsCacheKey(apiBase: string): string {
+  return `${CONTROLS_CACHE_PREFIX}${apiBase}`;
 }
 
 export function useDashboardData(apiBase: string) {
@@ -86,7 +74,10 @@ export function useDashboardData(apiBase: string) {
   const [selectedSection, setSelectedSection] = useState<DashboardSection>(readDashboardSectionFromHash);
   const [modelQuery, setModelQuery] = useState("");
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
-  const cachedControls = useMemo(() => readCachedControls(apiBase), [apiBase]);
+  const cachedControls = useMemo(
+    () => readSessionListCache<CachedControls>(controlsCacheKey(apiBase)),
+    [apiBase],
+  );
   const cachedOverview = useMemo(
     () => readSessionListCache<CachedOverview>(`${OVERVIEW_CACHE_PREFIX}${apiBase}`),
     [apiBase],
@@ -281,12 +272,12 @@ export function useDashboardData(apiBase: string) {
     if (!data) return;
     if (data.health) {
       setHealth(data.health);
+      setProviders(data.providers);
       writeSessionListCache(`${OVERVIEW_CACHE_PREFIX}${apiBase}`, {
         health: data.health,
         providers: data.providers,
       });
     }
-    setProviders(data.providers);
     setError(data.error);
   }, [overviewPoll.data, apiBase]);
 
@@ -318,19 +309,19 @@ export function useDashboardData(apiBase: string) {
     const data = sidecarPoll.data;
     if (!data) return;
     setSidecar(data.sidecar);
-    setShadowCall(data.shadowCall);
-    const prev = readCachedControls(apiBase) ?? {};
-    writeCachedControls(apiBase, {
+    if (data.shadowCall !== undefined) setShadowCall(data.shadowCall);
+    const prev = readSessionListCache<CachedControls>(controlsCacheKey(apiBase)) ?? {};
+    writeSessionListCache(controlsCacheKey(apiBase), {
       ...prev,
       sidecar: data.sidecar,
-      shadowCall: data.shadowCall,
+      ...(data.shadowCall !== undefined ? { shadowCall: data.shadowCall } : {}),
     });
   }, [sidecarPoll.data, apiBase]);
 
   useEffect(() => {
     const data = settingsPoll.data;
     if (!data) return;
-    if (data.settings) setSettings(data.settings);
+    if (data.settings !== undefined) setSettings(data.settings);
     // Latest-wins: only seed from settings when no newer dedicated probe has committed
     // while this settings poll was in flight. Always merge against the live ref.
     if (
@@ -342,11 +333,13 @@ export function useDashboardData(apiBase: string) {
       startupHealthRef.current = merged;
       if (merged) writeSessionListCache(`${STARTUP_CACHE_PREFIX}${apiBase}`, merged);
     }
-    const prev = readCachedControls(apiBase) ?? {};
-    writeCachedControls(apiBase, {
-      ...prev,
-      settings: data.settings ?? undefined,
-    });
+    if (data.settings !== undefined) {
+      const prev = readSessionListCache<CachedControls>(controlsCacheKey(apiBase)) ?? {};
+      writeSessionListCache(controlsCacheKey(apiBase), {
+        ...prev,
+        settings: data.settings,
+      });
+    }
   }, [settingsPoll.data, apiBase]);
 
   useEffect(() => {
@@ -455,8 +448,8 @@ export function useDashboardData(apiBase: string) {
       });
       const data = await requireJson<SidecarData>(res, "save failed");
       setSidecar({ webSearch: data.webSearch, vision: data.vision });
-      const prev = readCachedControls(apiBase) ?? {};
-      writeCachedControls(apiBase, {
+      const prev = readSessionListCache<CachedControls>(controlsCacheKey(apiBase)) ?? {};
+      writeSessionListCache(controlsCacheKey(apiBase), {
         ...prev,
         sidecar: { webSearch: data.webSearch, vision: data.vision },
       });

@@ -16,11 +16,6 @@
 @import "./styles-combos-workspace.css";
 @import "./styles-models-workspace.css";
 @import "./styles-dashboard-workspace.css";
-@import "./styles-storage-workspace.css";
-@import "./styles-subagents-workspace.css";
-@import "./styles-usage-workspace.css";
-@import "./styles-claudecode-workspace.css";
-@import "./styles-apikeys-workspace.css";
 
 :root {
   /* default: follow the OS; [data-theme] below pins color-scheme so light-dark() obeys it */
@@ -1092,10 +1087,7 @@ dialog.modal-overlay::backdrop {
 .quota-reset-time { font-size: var(--text-caption); color: var(--muted); white-space: nowrap; }
 .quota-reset-time { font-family: var(--font-code); }
 .bar { height: 5px; background: var(--raised); border-radius: var(--radius-2xs); overflow: hidden; min-width: 0; }
-<<<<<<< HEAD
-=======
 /* Full-width fill scaled on X — avoids layout thrash from animating width. */
->>>>>>> 6cbe980c (perf(gui): progressive dashboard paint and Startup safety CLS)
 .bar-fill {
   height: 100%;
   width: 100%;
@@ -1386,7 +1378,6 @@ dialog.modal-overlay::backdrop {
   flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 .startup-runtime-notice__fix .btn {
   flex: 0 0 auto;

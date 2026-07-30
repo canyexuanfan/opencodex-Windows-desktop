@@ -43,7 +43,7 @@ export function useProvidersFetch({
       const provs: string[] = provData?.providers ?? [];
       setOauthProviders(provs);
       const oauthEntries = await Promise.all(provs.map(async p => {
-        const sRes = await fetch(`${apiBase}/api/oauth/status?provider=${p}`).catch(() => null);
+        const sRes = await fetch(`${apiBase}/api/oauth/status?provider=${encodeURIComponent(p)}`).catch(() => null);
         const s = sRes ? (await readJsonIfOk<OAuthStatus>(sRes) ?? { loggedIn: false }) : { loggedIn: false };
         return [p, s] as const;
       }));

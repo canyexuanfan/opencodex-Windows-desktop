@@ -51,10 +51,12 @@ export default function ProviderOverviewDashboard({
 
   const attention = useMemo(() => buildAttentionItems(sections, {}), [sections]);
   const attentionCount = attention.length;
-  const reauthCount = useMemo(
-    () => [...sections.ready, ...sections.needsSetup].filter(p => p.activeNeedsReauth).length,
+  const readyReauthCount = useMemo(
+    () => sections.ready.filter(p => p.activeNeedsReauth).length,
     [sections],
   );
+  const readyCount = sections.ready.length - readyReauthCount;
+  const needsAttentionCount = sections.needsSetup.length + readyReauthCount;
 
   /* Rate-limit rows: urgency first (highest utilisation), then name */
   const quotaProviders = useMemo(() => {
@@ -100,10 +102,10 @@ export default function ProviderOverviewDashboard({
       </div>
 
       <div className="pws-dashboard-summary">
-        <SummaryCard count={sections.ready.length} label={t("pws.status.ready")} tone="ok" />
+        <SummaryCard count={readyCount} label={t("pws.status.ready")} tone="ok" />
         <SummaryCard
-          count={sections.needsSetup.length}
-          label={reauthCount > 0 ? t("pws.status.needsAttention") : t("pws.status.needsSetup")}
+          count={needsAttentionCount}
+          label={readyReauthCount > 0 ? t("pws.status.needsAttention") : t("pws.status.needsSetup")}
           tone="warn"
         />
         <SummaryCard count={sections.disabled.length} label={t("prov.disabledBadge")} tone="muted" />

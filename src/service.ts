@@ -944,6 +944,8 @@ function taskXmlString(value: string): string {
  * RunLevel check. Schema default is LeastPrivilege (omitted on export). Elevated
  * `schtasks /create` often rewrites the registered task to HighestAvailable even when
  * the source XML asked for LeastPrivilege — still InteractiveToken / same user.
+ * Keep accepting HighestAvailable here: rejecting it would false-fail healthy elevated
+ * installs, and windowsTaskRegistrationHealthy tests encode that contract.
  */
 function taskXmlRunLevelAcceptable(principal: string): boolean {
   if (taskXmlHasPrefixedTag(principal, "RunLevel")) return false;
@@ -1298,9 +1300,12 @@ export interface RepairServiceDeps {
   stopScheduler?: () => void;
   startScheduler?: () => void;
   writeSchedulerState?: () => void;
+  writeNativeState?: () => void;
   repairNative?: () => void | Promise<void>;
   repairLaunchd?: () => void;
   repairSystemd?: () => void;
+  /** Test seam — defaults to process.platform so Linux CI cannot hit real installSystemd. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -1312,6 +1317,7 @@ export interface RepairServiceDeps {
  */
 export async function repairService(deps: RepairServiceDeps = {}): Promise<void> {
   const diagnose = deps.diagnose ?? diagnoseService;
+  const platform = deps.platform ?? process.platform;
   const diag = diagnose();
   if (!diag.supported) {
     throw new Error(`Background service is unsupported (${diag.summary}).`);
@@ -1329,9 +1335,10 @@ export async function repairService(deps: RepairServiceDeps = {}): Promise<void>
   (deps.assertEnv ?? assertServiceEnvironmentMatchesInstall)();
   (deps.assertAuth ?? assertServiceAuthEnvironment)();
 
-  if (process.platform === "win32") {
+  if (platform === "win32") {
     if (diag.backend === "native") {
       await (deps.repairNative ?? (() => installWinswService(defaultWinswEntry(import.meta.dir))))();
+      (deps.writeNativeState ?? (() => writeServiceInstallState("native")))();
       return;
     }
     try { (deps.stopScheduler ?? stopWindows)(); } catch { /* not running */ }
@@ -1340,15 +1347,15 @@ export async function repairService(deps: RepairServiceDeps = {}): Promise<void>
     (deps.writeSchedulerState ?? (() => writeServiceInstallState("scheduler")))();
     return;
   }
-  if (process.platform === "darwin") {
+  if (platform === "darwin") {
     (deps.repairLaunchd ?? installLaunchd)();
     return;
   }
-  if (process.platform === "linux") {
+  if (platform === "linux") {
     (deps.repairSystemd ?? installSystemd)();
     return;
   }
-  throw new Error(`Background service repair is unsupported on ${process.platform}.`);
+  throw new Error(`Background service repair is unsupported on ${platform}.`);
 }
 
 /**

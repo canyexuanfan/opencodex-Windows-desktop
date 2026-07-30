@@ -132,10 +132,6 @@ export default function Startup({ apiBase }: { apiBase: string }) {
       const [settings, trayResult] = await Promise.all([settingsPromise, trayPromise]);
       if (signal?.aborted || generation !== loadGenerationRef.current) return;
 
-      const notice = deriveCodexRuntimeNotice(settings?.codexRuntime, t, next.platform);
-      setCodexRuntimeWarning(notice.warning);
-      setCodexRuntimeFix(notice.fix);
-      setRuntimeNoticePending(false);
       const nextTray = next.platform === "win32" ? trayResult.tray : null;
       if (next.platform === "win32") {
         setTray(nextTray);
@@ -145,13 +141,28 @@ export default function Startup({ apiBase }: { apiBase: string }) {
         setTrayError(false);
       }
       setTrayLoading(false);
+      setRuntimeNoticePending(false);
 
-      writeSessionListCache(cacheKey, {
-        data: next,
-        warning: notice.warning,
-        fix: notice.fix,
-        tray: nextTray,
-      } satisfies StartupPageCache);
+      if (settings) {
+        const notice = deriveCodexRuntimeNotice(settings.codexRuntime, t, next.platform);
+        setCodexRuntimeWarning(notice.warning);
+        setCodexRuntimeFix(notice.fix);
+        writeSessionListCache(cacheKey, {
+          data: next,
+          warning: notice.warning,
+          fix: notice.fix,
+          tray: nextTray,
+        } satisfies StartupPageCache);
+      } else {
+        // Settings fetch failure: keep the last-good runtime notice in UI + cache.
+        const prev = readSessionListCache<StartupPageCache>(cacheKey);
+        writeSessionListCache(cacheKey, {
+          data: next,
+          warning: prev?.warning ?? null,
+          fix: prev?.fix ?? null,
+          tray: nextTray,
+        } satisfies StartupPageCache);
+      }
     } catch {
       if (signal?.aborted || generation !== loadGenerationRef.current) return;
       setFailed(true);
@@ -289,6 +300,7 @@ export default function Startup({ apiBase }: { apiBase: string }) {
           <StartupDetailsSection
             data={data}
             failed={failed}
+            loading={loading}
             installBusy={installBusy}
             installResult={installResult}
             onInstall={(action, opts) => { void runInstallAction(action, opts); }}

@@ -62,11 +62,16 @@ export type DashboardMultiAgentPoll = {
 /** Sidecar + shadow only — must not wait on /api/settings (startup-health). */
 export type DashboardSidecarPoll = {
   sidecar: SidecarData;
-  shadowCall: ShadowCallData | null;
+  /**
+   * `null` = authoritative endpoint failure (clear UI).
+   * `undefined` = lost poll authority (epoch gate) — do not commit.
+   */
+  shadowCall: ShadowCallData | null | undefined;
 };
 
 export type DashboardSettingsPoll = {
-  settings: SettingsData | null;
+  /** Absent when the poll lost authority — callers must keep prior settings/cache. */
+  settings: SettingsData | undefined;
   startupHealthSeed: SettingsData["startupHealth"] | null | undefined;
 };
 
@@ -149,7 +154,7 @@ export async function fetchDashboardSidecars(
   ]);
 
   const sidecar = await requireJson<SidecarData>(scRes);
-  let shadowCall: ShadowCallData | null = null;
+  let shadowCall: ShadowCallData | null | undefined = undefined;
   try {
     if (shRes.ok) {
       const nextShadow = await shRes.json() as ShadowCallData;
@@ -163,6 +168,15 @@ export async function fetchDashboardSidecars(
       )) {
         shadowCall = nextShadow;
       }
+    } else if (settingsPollMayCommit(
+      { request: shadowRequestEpoch, mutation: shadowMutationEpoch },
+      {
+        request: epochs.shadowCallRequestEpochRef.current,
+        mutation: epochs.shadowCallMutationEpochRef.current,
+        mutationInFlight: epochs.shadowCallMutationInFlightRef.current,
+      },
+    )) {
+      shadowCall = null;
     }
   } catch {
     if (settingsPollMayCommit(
@@ -191,7 +205,7 @@ export async function fetchDashboardSettings(
 
   const sRes = await fetch(`${apiBase}/api/settings`, { signal });
   const nextSettings = await requireJson<SettingsData>(sRes);
-  let settings: SettingsData | null = null;
+  let settings: SettingsData | undefined = undefined;
   let startupHealthSeed: SettingsData["startupHealth"] | null | undefined = undefined;
   if (settingsPollMayCommit(
     { request: settingsRequestEpoch, mutation: settingsMutationEpoch },
