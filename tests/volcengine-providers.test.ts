@@ -21,6 +21,7 @@ describe("Volcengine Ark providers", () => {
       baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
       adapter: "openai-chat",
       authKind: "key",
+      preserveCustomDestination: true,
       defaultModel: "doubao-seed-2-1-pro-260628",
       models: [
         "doubao-seed-2-1-pro-260628",
@@ -44,6 +45,7 @@ describe("Volcengine Ark providers", () => {
       baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
       adapter: "openai-chat",
       authKind: "key",
+      preserveCustomDestination: true,
       defaultModel: "ark-code-latest",
       models: [
         "ark-code-latest",
@@ -75,6 +77,7 @@ describe("Volcengine Ark providers", () => {
       responsesPath: "/responses",
       adapter: "openai-responses",
       authKind: "key",
+      preserveCustomDestination: true,
       defaultModel: "deepseek-v4-pro",
       models: [
         "deepseek-v4-pro",
@@ -143,6 +146,32 @@ describe("Volcengine Ark providers", () => {
     }, { headers: new Headers() });
     expect(request.url).toBe("https://ark.cn-beijing.volces.com/api/plan/v3/responses");
   });
+
+  test.each([
+    ["volcengine", "openai-chat", "https://custom.example.com/api/v3"],
+    ["volcengine-coding-plan", "openai-chat", "https://custom.example.com/api/coding/v3"],
+    ["volcengine-agent-plan", "openai-responses", "https://custom.example.com/api/plan/v3"],
+  ] as const)(
+    "preserves an existing same-name custom %s destination",
+    (providerId, adapter, baseUrl) => {
+      const config: OcxConfig = {
+        port: 10100,
+        defaultProvider: providerId,
+        providers: {
+          [providerId]: {
+            adapter,
+            baseUrl,
+            authMode: "key",
+            apiKey: "test-key",
+          },
+        },
+      };
+
+      const route = routeModel(config, `${providerId}/custom-model`);
+      expect(route.provider.baseUrl).toBe(baseUrl);
+      expect(route.provider.adapter).toBe(adapter);
+    },
+  );
 
   test("maps the documented Ark thinking toggle on the pay-as-you-go Chat wire", () => {
     const config: OcxConfig = {
