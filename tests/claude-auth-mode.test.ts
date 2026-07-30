@@ -160,7 +160,7 @@ const PRE_BUN = "OCX_PRE_BUN_ANTHROPIC_ENV";
 test("auto mode drops an Anthropic key that only Bun's dotenv introduced", () => {
   const env = buildClaudeEnv(
     cfg(), 10100,
-    { ANTHROPIC_API_KEY: "sk-ant-from-project-dotenv", [PRE_BUN]: "" },
+    { ANTHROPIC_API_KEY: "sk-ant-dotenv", [PRE_BUN]: "" },
     {},
     { authDetect: fileAuth("present") },
   );
@@ -183,7 +183,7 @@ test("a shell-exported Anthropic key survives the dotenv strip", () => {
 test("explicit subscription mode also drops a dotenv-only credential", () => {
   const env = buildClaudeEnv(
     cfg({ authMode: "subscription" }), 10100,
-    { ANTHROPIC_API_KEY: "sk-ant-from-project-dotenv", ANTHROPIC_AUTH_TOKEN: "token-from-dotenv", [PRE_BUN]: "" },
+    { ANTHROPIC_API_KEY: "sk-ant-dotenv", ANTHROPIC_AUTH_TOKEN: "token-from-dotenv", [PRE_BUN]: "" },
     {},
     { authDetect: fileAuth("present") },
   );
@@ -195,7 +195,7 @@ test("explicit subscription mode also drops a dotenv-only credential", () => {
 test("the configured admission key survives the dotenv strip", () => {
   const env = buildClaudeEnv(
     cfg(undefined, [{ key: "admission-key" }]), 10100,
-    { ANTHROPIC_API_KEY: "sk-ant-from-project-dotenv", [PRE_BUN]: "" },
+    { ANTHROPIC_API_KEY: "sk-ant-dotenv", [PRE_BUN]: "" },
     {},
     { authDetect: fileAuth("present") },
   );
@@ -221,7 +221,7 @@ test("without the launcher marker an inherited key is left alone", () => {
 test("a stripped dotenv key lets detection fall through to the proxy marker", () => {
   const env = buildClaudeEnv(
     cfg(), 10100,
-    { ANTHROPIC_API_KEY: "sk-ant-from-project-dotenv", [PRE_BUN]: "" },
+    { ANTHROPIC_API_KEY: "sk-ant-dotenv", [PRE_BUN]: "" },
     {},
     { authDetect: fileAuth("absent") },
   );
