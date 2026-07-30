@@ -30,12 +30,12 @@
 PR을 얹기 전에 기준선부터 확인했더니 **손대지 않은 dev HEAD에서 privacy:scan이
 exit 1**이다.
 
-```
-devlog/_plan/260730_devlog_publication_feasibility/030_wp3_wp4_execution_record.md:84
-  token-looking: sk-liveKeyShaped9x8w7v6u5t4s3r2q1p0
-:85 home-path: /Users/someoneelse/
-:86 email: stranger@third-party.example.org
-```
+세 건 모두 같은 파일에서 나온다:
+`devlog/_plan/260730_devlog_publication_feasibility/030_wp3_wp4_execution_record.md`
+의 84~86행이고, 종류는 각각 `token-looking`, `home-path`, `email`이다. 실제 값은
+여기 옮기지 않는다 — 옮기는 순간 이 문서가 같은 이유로 스캔에 걸린다. 실제로 처음
+이 문서를 쓸 때 값을 그대로 인용했다가 스캐너에 잡혔고, 그게 아래 예외가 파일 단위로
+묶여 있다는 가장 좋은 증거였다.
 
 실제 유출이 아니다. 그 파일의 "Proof the scanner is not dead" 절이 스캐너가 프로브를
 잡아낸 **출력을 그대로 인용**한 것이고, devlog가 추적 파일이 되면서 스캐너가 자기
