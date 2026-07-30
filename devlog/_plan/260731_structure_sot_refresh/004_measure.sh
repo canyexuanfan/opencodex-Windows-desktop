@@ -30,7 +30,9 @@ comm -23 "$out/documented_routes.txt" "$out/registered_routes.txt" > "$out/doc_o
 #    문서는 반드시 저장소 루트 기준 완전 경로를 쓴다: `src/chat/` 은 맞고 `chat/` 은 안 된다.
 #    `{a,b}` 중괄호 축약도 쓰지 않는다 — 이 검사가 통과시켜 버린다(4b 가 잡는다).
 : > "$out/dead_paths.txt"
-rg -oI '(src|gui/src|tests|scripts|docs-site|\.github)/[a-zA-Z0-9_./-]+\.(ts|tsx|mjs|cjs|json|yml|sh)' structure/ \
+# Alternation order matters: `tsx` must precede `ts`, otherwise a .tsx path is truncated to .ts and
+# reported as a false dead path.
+rg -oI '(src|gui/src|tests|scripts|docs-site|\.github)/[a-zA-Z0-9_./-]+\.(tsx|ts|mjs|cjs|json|yml|sh)' structure/ \
   | sed 's/^[^:]*://' | sort -u | while read -r p; do
     [ -e "$p" ] || echo "$p" >> "$out/dead_paths.txt"
   done

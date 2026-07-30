@@ -51,15 +51,20 @@ be treated as implemented:
 
 ## API ownership
 
-`src/server/index.ts` authenticates and routes `/api/*`, then delegates the management surface to
-`src/server/management-api.ts`:
+`src/server/index.ts` authenticates and routes `/api/*`, then delegates to
+`src/server/management-api.ts`, which composes the route modules under `src/server/management/`.
+Codex account routes live in `src/codex/auth-api.ts` because they own the credential store, not
+because they are a different plane.
+
+The registered route set is larger than the areas described below; the code is the route SOT. What
+this document owns is which module holds which area and what invariant that area must not break.
 
 | Endpoint area | Responsibility |
 | --- | --- |
 | Config/settings | Read safe config/settings views; mutate supported settings only. Full `PUT /api/config` is disabled so masked secrets are not round-tripped. `PUT /api/settings` accepts `codexAutoStart` and/or `streamMode` (each optional, at least one required); `streamMode` persists the #314 stream-shape selection in config.json because Windows services do not inherit shell env. |
 | Startup safety | `GET /api/startup-health` reports whether injected Codex routing is restart-safe, with secret-free service/shim diagnostics. `POST /api/startup-action` provides allowlisted one-click installation for the background service or launcher shim. On Windows a healthy script shim is CLI-only; Codex Desktop requires the background service for full protection. |
 | Windows tray | `GET/POST /api/windows-tray` controls an owned, per-user HKCU login tray. The tray delegates fixed actions to the CLI and is never a proxy supervisor or restart-protection signal. |
-| Updates | `GET /api/update/check`, `POST /api/update/run`, and `GET /api/update/status` own dashboard self-update state. A launched worker PID is persisted in `update-job.json`; dead PIDs recover immediately, while legacy active records without a PID recover only after ten minutes. Live PIDs remain exclusive regardless of record age. |
+| Updates | `GET /api/update/check`, `POST /api/update/run`, and `GET /api/update/status` own dashboard self-update state. A launched worker PID is persisted in `update-job.json`; dead PIDs recover immediately, while legacy active records without a PID recover only after ten minutes. Live PIDs remain exclusive regardless of record age. `GET /api/update/badge` backs the sidebar badge: it reports that an update exists and links to the update surface rather than gating other actions. |
 | Providers | Create/update/delete ordinary provider configs and enrich registry metadata. The reserved `openai` card exposes Pool(default)/Direct account mode; `openai-apikey` remains the separate API route. |
 | Models | Fetch routed model lists, disabled model visibility, and catalog-facing ids. |
 | OAuth | Login/status/logout for OAuth-backed providers, plus multiauth account management: `GET /api/oauth/accounts`, `PUT /api/oauth/accounts/active`, `PUT /api/oauth/accounts/alias`, `DELETE /api/oauth/accounts` list masked accounts per provider, switch the active one, edit its display-only alias, and remove one. Login accepts `addAccount: true` to force a fresh browser identity. Device flows return a structured `deviceCode`; the GUI highlights and copies it before the user opens the verification page. |
@@ -71,6 +76,17 @@ be treated as implemented:
 | Usage | `GET /api/usage` aggregate read-only summary derived from `~/.opencodex/usage.jsonl`; measured / reported / unreported / unsupported / estimated counts, daily zero-filled grid, model and provider breakdowns. Never exposes prompts. |
 | System | `GET /api/system/memory` — service-process runtime/memory identity (pid, Bun version/revision, platform, RSS/heap/external/ArrayBuffers scalars, observed memory = max(RSS, external, ArrayBuffers), `bun:jsc` heap context, streamMode + eager-relay gate decision, watchdog snapshot sliced to the last 60 samples). Scalar-only payload; rides the standard management auth gate and must never move to unauthenticated `/healthz`. Consumed by `ocx doctor`'s Memory/runtime section and the dashboard Memory observability card. |
 | Stop | `POST /api/stop` — restore native Codex, stop any installed service, and exit the proxy. |
+| Diagnostics/sync | `src/server/management/config-routes.ts` — `GET /api/diagnostics/project-config` reports project-level Codex config that bypasses managed routing; `POST /api/sync` re-runs catalog/config sync. The diagnostic reports the bypass; it does not rewrite the project file. |
+| Sidecar/shadow-call settings | `src/server/management/config-routes.ts` — `GET/PUT /api/sidecar-settings` and `GET/PUT /api/shadow-call-settings`. PUT accepts model and backend plus optional `webSearch.reasoning` and `vision.maxDescriptionsPerTurn`; the read and PUT-response payload reports model, backend, and the vision per-turn limit. Credentials live in the provider and OAuth stores instead. |
+| Storage | `src/server/management/logs-usage-routes.ts` — `GET /api/storage`, `POST /api/storage/cleanup/preview` and `/api/storage/cleanup`, `GET /api/storage/trash`, `POST /api/storage/trash/restore`, and `GET/PUT /api/storage/cleanup-policy` plus `POST /api/storage/cleanup-policy/run`. Cleanup takes an explicit `mode`: `quarantine` moves to trash and is restorable, `permanent` is not. The caller must name the mode — there is no default that silently deletes. |
+| Provider quotas and tests | `src/server/management/provider-routes.ts` — `GET /api/provider-quotas`, `POST /api/providers/test`, `GET/PUT /api/provider-context-caps`, `GET /api/provider-presets`. A quota read may be served from cache or force-refreshed; absent quota data is reported as unknown rather than as a measured zero. |
+| Models and visibility | `src/server/management/model-routes.ts` — `GET /api/models`, `PUT /api/disabled-models`, `PUT /api/model-visibility`, `PUT /api/selected-models`, `GET/POST /api/custom-models`. Visibility writes trigger catalog sync through the owning server path. |
+| Effort and fallback | `src/server/management/agent-settings-routes.ts` — `GET/PUT /api/effort-caps`, `/api/subagent-models`, `/api/subagent-model-fallback`. Caps clamp; they do not reject. |
+| Grok and Claude integrations | `src/server/management/agent-settings-routes.ts` — `GET /api/grok`, `PUT /api/grok/selection`, `POST /api/grok/apply`, `GET/PUT /api/claude-desktop`, `POST /api/claude-desktop/apply`, `GET /api/claude-desktop/status`, `GET/PUT /api/claude-code`. Apply writes an external app's profile, so its status probe must read the same resolved path it writes (see [`04_transports-and-sidecars.md`](04_transports-and-sidecars.md)). |
+| Combos | `src/server/management/combo-routes.ts` — `GET/PUT/DELETE /api/combos` own provider combination and failover definitions. |
+| Codex accounts | `src/codex/auth-api.ts` — `/api/codex-auth/*`: `accounts` list/add/remove, `accounts/alias`, `accounts/pause` and `accounts/pause-exhausted`, `accounts/clear-cooldown`, `active`, `auto-switch`, `pool-strategy`, `failover`, `quota`, `reset-credits` and `reset-credits/consume`, plus `login`, `login/code`, `login/cancel`, and `login-status`. Account ids are opaque handles and are serialized so the GUI can address an account; emails are masked and tokens are never serialized. |
+| Sidebar | `src/server/management/sidebar-routes.ts` — `GET/POST /api/github/star` and `GET /api/update/badge`. Sidebar state is cosmetic; a failed fetch degrades silently. |
+| Logs | `src/server/management/logs-usage-routes.ts` — `GET /api/logs`, `GET /api/claude/inbound-debug`, and `GET /api/debug/injection-logs` join the debug streams described above. |
 
 Provider writes must not round-trip masked API keys as real secrets. Dashboard actions that change
 model visibility or subagent selection should trigger catalog/cache sync behavior through the server
@@ -94,7 +110,9 @@ endpoint restores native Codex config, stops any installed service to prevent re
 
 ## Startup safety
 
-The dashboard sidebar exposes a **Startup safety** page. Its warning state is derived from active
+**Startup safety** is reachable by route (`/#startup`) and rendered by the app, but it is not a
+sidebar entry: it is entered from the dashboard's startup-state row, which links there whether the
+current state needs remediation or merely reports how routing is protected. Its warning state is derived from active
 Codex routing plus the actual service and launcher-shim installation state; the
 `codexAutoStart` preference alone is never presented as proof of restart protection. The page shows
 copyable repair commands (`ocx service install`, `ocx codex-shim install`, and `ocx restore`). On
@@ -139,6 +157,26 @@ recovery; operators no longer need to delete `update-job.json` after a dead work
 The dashboard is a local control surface, not a separate service. It should reflect the same config
 and catalog invariants documented in this folder rather than inventing parallel state.
 
+## Dashboard surfaces
+
+The sidebar exposes eleven pages (`gui/src/App.tsx` `NAV`). Several are workspace shells rather than
+single forms, and the shell pattern is the part worth keeping stable:
+
+| Surface | Shape |
+| --- | --- |
+| Providers | Rail of configured providers plus a detail pane whose tabs are Overview, Models, Usage, then Accounts or API Keys when the provider has an auth surface, then Settings (`gui/src/components/provider-workspace/ProviderDetails.tsx`). |
+| API keys | Rail plus per-key detail; masked values only (`gui/src/components/apikeys-workspace/`). |
+| Storage | Rail plus cleanup and trash detail (`gui/src/components/storage-workspace/`). |
+| Subagents | Featured-roster selection workspace (`gui/src/components/subagents-workspace/`). |
+| Combos | Rail, detail panel, and an add flow (`gui/src/components/ComboWorkspace.tsx`). |
+| Add provider | Catalog browser plus form and OAuth panes (`gui/src/components/provider-catalog/`, `gui/src/components/AddProviderModal.tsx`). |
+| Codex accounts | Account pool cards, add-account flow, switch and reset modals (`gui/src/components/CodexAccountPool.tsx`, `gui/src/components/AddCodexAccountModal.tsx`). |
+| Dashboard overview | Overview, Providers, and Models tabs at the page level (`gui/src/pages/Dashboard.tsx`), the 30-day token and coverage stats in the overview head (`gui/src/pages/dashboard-overview-head.tsx`), and the effort-cap, injection, maintenance, sidecar, and memory panels below it (`gui/src/pages/dashboard-overview-panels.tsx`). |
+
+Rail selection is component-local state today, so a reload returns to the workspace's default
+selection rather than the previously selected row. An OAuth ToS warning is shown before a login that
+requires acceptance (`gui/src/components/OAuthTosWarningModal.tsx`).
+
 The `/#codex-auth` add-account modal has a three-step manual-code UX contract on top of the existing
 OAuth polling API: submit request, waiting-for-login completion, and terminal success/failure. Once
 `POST /api/codex-auth/login/code` succeeds, the GUI must keep the input disabled, expose an
@@ -150,7 +188,10 @@ network failures as a visible warning instead of silently looking idle again.
 `src/usage/log.ts` writes append-only JSONL to `~/.opencodex/usage.jsonl` with file mode `0o600`.
 `src/usage/summary.ts` turns that file into the `/api/usage` shape — totals, daily zero-filled
 grid, model and provider breakdowns, and `measured / reported / unreported / unsupported / estimated` counts.
-Missing usage is never treated as zero. The dashboard Usage tab renders the same shape, and the
+A missing `usage.jsonl` returns a zeroed summary with 200, not an error: a fresh install has no
+usage and must not render as a failure. What the shape must never do is present an unmeasured
+request as a measured zero — that is what the `measured / reported / unreported / unsupported /
+estimated` split exists for, and why coverage is reported alongside totals. The dashboard Usage tab renders the same shape, and the
 main Dashboard surfaces a 30d token / coverage summary. The in-memory `requestLog` is capped at
 200 entries and is **not** the source of truth for aggregation — the JSONL on disk is.
 
