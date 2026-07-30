@@ -417,7 +417,13 @@ export function useDashboardData(apiBase: string) {
       }
       return { reconnecting: false as const };
     },
-    { pollMs: 1500, enabled: !!(updateJob?.id && updateJob.restart) },
+    {
+      pollMs: 1500,
+      enabled: !!(updateJob?.id && updateJob.restart),
+      // This poll exists to notice a restarted server coming back. Pausing it while the
+      // tab is hidden is exactly when it would be missed, so it opts out of the gate.
+      pauseWhenHidden: false,
+    },
   );
 
   /* eslint-disable react-hooks/set-state-in-effect -- mirror update-job client-resource snapshot into local job UI state */

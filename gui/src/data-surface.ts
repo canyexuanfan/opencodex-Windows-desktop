@@ -41,6 +41,8 @@ export type DataSurfaceOptions<T> = {
   isEmpty: (data: T) => boolean;
   pollMs?: number;
   enabled?: boolean;
+  /** Forwarded to the resource layer; see ClientResourceOptions.pauseWhenHidden. */
+  pauseWhenHidden?: boolean;
 };
 
 /**

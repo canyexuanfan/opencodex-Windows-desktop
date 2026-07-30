@@ -21,6 +21,13 @@ type Store<T> = {
   listeners: Set<() => void>;
   /** listener → requested poll interval (undefined = no poll from that subscriber) */
   pollByListener: Map<() => void, number | undefined>;
+  /**
+   * listener → whether that subscriber's poll may be skipped while the document is hidden.
+   *
+   * Per subscriber rather than per store: a fixed key can be shared by consumers with
+   * different needs, and one opt-out must not be lost because a peer subscribed later.
+   */
+  pauseWhenHiddenByListener: Map<() => void, boolean>;
   /** listener → fetcher owned by that subscriber */
   fetcherByListener: Map<() => void, (signal: AbortSignal) => Promise<T>>;
   subscriberCount: number;
@@ -30,6 +37,8 @@ type Store<T> = {
   inflight: AbortController | null;
   /** Subscriber that started the current in-flight request (if any). */
   inflightOwner: (() => void) | null;
+  /** Store-level visibilitychange handler, installed only while this store polls. */
+  visibilityListener: (() => void) | null;
   generation: number;
 };
 
@@ -62,12 +71,14 @@ function getStore<T>(key: string): Store<T> {
       },
       listeners: new Set(),
       pollByListener: new Map(),
+      pauseWhenHiddenByListener: new Map(),
       fetcherByListener: new Map(),
       subscriberCount: 0,
       pollTimer: null,
       pollIntervalMs: undefined,
       inflight: null,
       inflightOwner: null,
+      visibilityListener: null,
       generation: 0,
     };
     stores.set(key, store);
@@ -85,6 +96,32 @@ function clearPollTimer<T>(store: Store<T>) {
     store.pollTimer = null;
   }
   store.pollIntervalMs = undefined;
+}
+
+/** True when the document is currently hidden. Safe on non-browser runtimes. */
+function documentIsHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+/**
+ * Pick a subscriber whose poll may run right now.
+ *
+ * While the document is hidden only subscribers that opted out of pausing are eligible:
+ * a background tab has no one reading the paint, but a restart-reconnect poll still has
+ * to notice the server coming back. When nothing opted out, the tick is skipped entirely.
+ */
+function pickPollEntry<T>(
+  store: Store<T>,
+): { owner: () => void; fetcher: (signal: AbortSignal) => Promise<T> } | null {
+  if (!documentIsHidden()) return pickFetcherEntry(store);
+  for (const [listener, ms] of store.pollByListener) {
+    if (typeof ms !== "number" || ms <= 0) continue;
+    if (store.pauseWhenHiddenByListener.get(listener) === false) {
+      const fetcher = store.fetcherByListener.get(listener);
+      if (fetcher) return { owner: listener, fetcher };
+    }
+  }
+  return null;
 }
 
 /** Prefer a polling subscriber's fetcher; otherwise any remaining subscriber. */
@@ -117,13 +154,46 @@ function recomputePoll<T>(store: Store<T>) {
   }
   clearPollTimer(store);
   store.pollIntervalMs = pollMs;
-  if (pollMs === undefined) return;
+  if (pollMs === undefined) {
+    // No subscriber polls any more, so there is no skipped tick to make up on return.
+    removeVisibilityListener(store);
+    return;
+  }
   store.pollTimer = setInterval(() => {
-    const entry = pickFetcherEntry(store);
+    const entry = pickPollEntry(store);
     if (!entry) return;
     // Skip ticks while a request is in flight so slow polls can finish.
     void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner });
   }, pollMs);
+  ensureVisibilityListener(store);
+}
+
+/**
+ * One listener per polling store: when the tab comes back, the skipped ticks are made up
+ * with a single quiet revalidation instead of waiting out the remaining interval.
+ *
+ * `replaceInflight: false` keeps this from cancelling work a visible-again mount just
+ * started; if something is already loading, that request is the fresh answer.
+ */
+function ensureVisibilityListener<T>(store: Store<T>) {
+  if (typeof document === "undefined" || store.visibilityListener) return;
+  const onVisible = () => {
+    if (documentIsHidden()) return;
+    if (store.pollIntervalMs === undefined) return;
+    const entry = pickFetcherEntry(store);
+    if (!entry) return;
+    void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner });
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  store.visibilityListener = onVisible;
+}
+
+function removeVisibilityListener<T>(store: Store<T>) {
+  if (!store.visibilityListener) return;
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", store.visibilityListener);
+  }
+  store.visibilityListener = null;
 }
 
 async function runFetch<T>(
@@ -201,6 +271,9 @@ function abortInflightOwnedBy<T>(store: Store<T>, owner: () => void): boolean {
  */
 function scheduleStoreEviction(key: string, store: Store<unknown>) {
   clearPollTimer(store);
+  // The visibility listener exists to wake a poll; with no poll left there is nothing to
+  // wake, and leaving it attached would leak one handler per evicted store.
+  removeVisibilityListener(store);
   setTimeout(() => {
     if (store.subscriberCount !== 0) return;
     if (stores.get(key) !== store) return;
@@ -216,10 +289,12 @@ function subscribeResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
   pollMs: number | undefined,
   onStoreChange: () => void,
+  pauseWhenHidden = true,
 ) {
   const store = getStore<T>(key);
   store.listeners.add(onStoreChange);
   store.pollByListener.set(onStoreChange, pollMs);
+  store.pauseWhenHiddenByListener.set(onStoreChange, pauseWhenHidden);
   store.fetcherByListener.set(onStoreChange, fetcher);
   store.subscriberCount++;
 
@@ -232,6 +307,7 @@ function subscribeResource<T>(
   return () => {
     store.listeners.delete(onStoreChange);
     store.pollByListener.delete(onStoreChange);
+    store.pauseWhenHiddenByListener.delete(onStoreChange);
     store.fetcherByListener.delete(onStoreChange);
     store.subscriberCount--;
     // Drop this subscriber's in-flight work so a late resolve cannot stomp shared data.
@@ -252,13 +328,27 @@ function subscribeResource<T>(
 }
 
 /** Module-level fetch cache with useSyncExternalStore subscriptions (no fetch in useEffect). */
+export interface ClientResourceOptions {
+  pollMs?: number;
+  enabled?: boolean;
+  /**
+   * Whether this subscriber's poll may be skipped while the document is hidden.
+   * Defaults to true. Set false for polls whose whole purpose is to notice something
+   * happening off-screen — a restarting server, for instance.
+   */
+  pauseWhenHidden?: boolean;
+}
+
 export function useClientResource<T>(
   key: string,
   fetcher: (signal: AbortSignal) => Promise<T>,
-  options?: { pollMs?: number; enabled?: boolean },
+  options?: ClientResourceOptions,
 ): ResourceSnapshot<T> & { refresh: (opts?: { forceLoading?: boolean }) => void } {
   const enabled = options?.enabled !== false;
   const pollMs = options?.pollMs;
+  // Default true: a background tab has nobody reading the paint. Opt out for polls that
+  // must keep running while hidden, such as waiting for a restarted server to answer.
+  const pauseWhenHidden = options?.pauseWhenHidden !== false;
   const fetcherRef = useRef(fetcher);
   // Sync latest fetcher every commit. No dep array on purpose: inline fetchers are
   // reallocated every render; listing them would re-subscribe forever.
@@ -277,9 +367,9 @@ export function useClientResource<T>(
     (onStoreChange: () => void) => {
       if (!enabled) return () => {};
       listenerRef.current = onStoreChange;
-      return subscribeResource(key, stableFetcher, pollMs, onStoreChange);
+      return subscribeResource(key, stableFetcher, pollMs, onStoreChange, pauseWhenHidden);
     },
-    [key, stableFetcher, pollMs, enabled],
+    [key, stableFetcher, pollMs, enabled, pauseWhenHidden],
   );
 
   const getSnapshot = useCallback((): ResourceSnapshot<T> => {
@@ -321,7 +411,7 @@ export function useKeyedClientResource<T>(
   key: string,
   deps: readonly unknown[],
   load: (signal: AbortSignal) => Promise<T>,
-  options?: { pollMs?: number; enabled?: boolean },
+  options?: ClientResourceOptions,
 ): ResourceSnapshot<T> & { refresh: (opts?: { forceLoading?: boolean }) => void } {
   const resource = useClientResource(key, load, options);
   const prevDepsRef = useRef<readonly unknown[] | null>(null);
