@@ -659,10 +659,22 @@ const OAUTH_RECONCILE_FIELDS: (keyof OcxProviderConfig)[] = [
   "preserveReasoningContentModels",
 ];
 
+const GOOGLE_ANTIGRAVITY_PROVIDER = "google-antigravity";
+const GOOGLE_ANTIGRAVITY_STATIC_CATALOG_VERSION = 1 as const;
+
 export function reconcileOAuthProviders(config: OcxConfig): boolean {
   let changed = false;
+  const migrateAntigravityStaticCatalog =
+    config.googleAntigravityStaticCatalogVersion !== GOOGLE_ANTIGRAVITY_STATIC_CATALOG_VERSION;
   for (const [name, prov] of Object.entries(config.providers)) {
     const def = OAUTH_PROVIDERS[name];
+    // Normalize the canonical row before the OAuth-only reconciliation guard. Legacy GUI
+    // saves can carry an omitted or non-OAuth authMode, and stamping the migration marker
+    // while skipping such a row would make its materialized `true` look user-authored later.
+    if (name === GOOGLE_ANTIGRAVITY_PROVIDER && migrateAntigravityStaticCatalog && prov.liveModels !== false) {
+      prov.liveModels = false;
+      changed = true;
+    }
     if (!def || prov.authMode !== "oauth") continue;
     const preset = def.providerConfig;
     for (const field of OAUTH_RECONCILE_FIELDS) {
@@ -674,6 +686,9 @@ export function reconcileOAuthProviders(config: OcxConfig): boolean {
       }
       changed = true;
     }
+    // Before this marker existed, the GUI materialized an omitted `liveModels` as `true`
+    // on any settings save. The pre-guard normalization above resets that legacy state
+    // once; choices made after this migration are preserved by the version boundary.
     if (prov.liveModels === undefined && preset.liveModels !== undefined) {
       prov.liveModels = preset.liveModels;
       changed = true;
@@ -683,6 +698,10 @@ export function reconcileOAuthProviders(config: OcxConfig): boolean {
       prov.defaultModel = preset.defaultModel;
       changed = true;
     }
+  }
+  if (migrateAntigravityStaticCatalog) {
+    config.googleAntigravityStaticCatalogVersion = GOOGLE_ANTIGRAVITY_STATIC_CATALOG_VERSION;
+    changed = true;
   }
   if (changed) saveConfig(config);
   return changed;
@@ -745,8 +764,14 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   const existing = config.providers[provider];
   const next: OcxProviderConfig = { ...def.providerConfig };
   // `liveModels` is a user-facing provider toggle. A registry default seeds new rows, but an
-  // explicit choice must survive re-login and the post-credential latest-config upsert.
-  if (typeof existing?.liveModels === "boolean") next.liveModels = existing.liveModels;
+  // explicit post-migration choice must survive re-login and the latest-config upsert. A
+  // pre-marker Antigravity `true` may have been materialized by the old GUI, so it is reset
+  // once instead of being misclassified as user provenance.
+  const preserveExistingLiveModels = provider !== GOOGLE_ANTIGRAVITY_PROVIDER
+    || config.googleAntigravityStaticCatalogVersion === GOOGLE_ANTIGRAVITY_STATIC_CATALOG_VERSION;
+  if (preserveExistingLiveModels && typeof existing?.liveModels === "boolean") {
+    next.liveModels = existing.liveModels;
+  }
   if (existing && getProviderRegistryEntry(provider)?.allowKeyAuthOverride === true) {
     // Shared sanitizeApiKeyValue trim / no-CRLF checks from api-key pool writes.
     let storedApiKey = sanitizeApiKeyValue(existing.apiKey);
@@ -770,6 +795,9 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
     }
   }
   config.providers[provider] = next;
+  if (provider === GOOGLE_ANTIGRAVITY_PROVIDER) {
+    config.googleAntigravityStaticCatalogVersion = GOOGLE_ANTIGRAVITY_STATIC_CATALOG_VERSION;
+  }
 }
 
 interface RunLoginDeps {

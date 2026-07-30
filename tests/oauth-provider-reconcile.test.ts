@@ -41,6 +41,8 @@ describe("OAuth provider reconciliation", () => {
           modelContextWindows: { "gemini-3.5-flash-low": 1_048_576 },
           project: "config-project-sentinel",
           note: "user-owned-note",
+          // Older Provider Settings saves materialized this effective default.
+          liveModels: true,
         },
       },
     } satisfies OcxConfig;
@@ -62,6 +64,7 @@ describe("OAuth provider reconciliation", () => {
     expect(provider.models).not.toContain("gemini-3.6-flash-high");
     expect(provider.modelContextWindows?.["gemini-3.6-flash"]).toBe(1_048_576);
     expect(provider.liveModels).toBe(false);
+    expect(config.googleAntigravityStaticCatalogVersion).toBe(1);
     expect(provider.project).toBe("config-project-sentinel");
     expect(provider.note).toBe("user-owned-note");
     expect(getCredential("google-antigravity")).toMatchObject({
@@ -73,6 +76,7 @@ describe("OAuth provider reconciliation", () => {
     const persisted = loadConfig();
     expect(persisted.providers["google-antigravity"]?.defaultModel).toBe("gemini-3.6-flash");
     expect(persisted.providers["google-antigravity"]?.liveModels).toBe(false);
+    expect(persisted.googleAntigravityStaticCatalogVersion).toBe(1);
     expect(reconcileOAuthProviders(config)).toBe(false);
   });
 
@@ -80,6 +84,7 @@ describe("OAuth provider reconciliation", () => {
     const config = {
       port: 10100,
       defaultProvider: "google-antigravity",
+      googleAntigravityStaticCatalogVersion: 1,
       providers: {
         "google-antigravity": {
           ...structuredClone(OAUTH_PROVIDERS["google-antigravity"].providerConfig),
@@ -94,5 +99,55 @@ describe("OAuth provider reconciliation", () => {
     upsertOAuthProvider(config, "google-antigravity");
     expect(config.providers["google-antigravity"].liveModels).toBe(true);
     expect(config.providers["google-antigravity"].models).toHaveLength(6);
+  });
+
+  test("normalizes pre-marker Antigravity rows even when authMode is omitted or non-OAuth", () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-antigravity-authmode-reconcile-"));
+    homes.push(home);
+    process.env.OPENCODEX_HOME = home;
+
+    for (const authMode of [undefined, "key"] as const) {
+      const provider = {
+        ...structuredClone(OAUTH_PROVIDERS["google-antigravity"].providerConfig),
+        liveModels: true,
+      };
+      if (authMode === undefined) delete provider.authMode;
+      else provider.authMode = authMode;
+      const config = {
+        port: 10100,
+        defaultProvider: "google-antigravity",
+        providers: { "google-antigravity": provider },
+      } satisfies OcxConfig;
+
+      expect(reconcileOAuthProviders(config)).toBe(true);
+      expect(config.googleAntigravityStaticCatalogVersion).toBe(1);
+      expect(config.providers["google-antigravity"].liveModels).toBe(false);
+    }
+  });
+
+  test("seeds the static catalog during pre-marker re-login, then preserves later overrides", () => {
+    const config = {
+      port: 10100,
+      defaultProvider: "google-antigravity",
+      providers: {
+        "google-antigravity": {
+          ...structuredClone(OAUTH_PROVIDERS["google-antigravity"].providerConfig),
+          liveModels: true,
+        },
+      },
+    } satisfies OcxConfig;
+
+    upsertOAuthProvider(config, "google-antigravity");
+    expect(config.googleAntigravityStaticCatalogVersion).toBe(1);
+    expect(config.providers["google-antigravity"].liveModels).toBe(false);
+
+    config.providers["google-antigravity"].liveModels = true;
+    config.providers["google-antigravity"].authMode = "key";
+    upsertOAuthProvider(config, "google-antigravity");
+    expect(config.providers["google-antigravity"].liveModels).toBe(true);
+
+    config.providers["google-antigravity"].authMode = undefined;
+    upsertOAuthProvider(config, "google-antigravity");
+    expect(config.providers["google-antigravity"].liveModels).toBe(true);
   });
 });
