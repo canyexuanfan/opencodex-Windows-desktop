@@ -13,6 +13,7 @@ import {
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
 import { hardenSecretDir, hardenSecretPath, hardenSecretPathAsync } from "./lib/windows-secret-acl";
 import { recordOwnedConfigPath } from "./lib/config-ownership";
+import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
 import { providerDestinationConfigError } from "./lib/destination-policy";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
 import {
@@ -1282,6 +1283,9 @@ export function readConfigDiagnostics(): ConfigDiagnostics {
 
 export function saveConfig(config: OcxConfig): void {
   const dir = getConfigDir();
+  // First statement on purpose: a rejected write must leave nothing behind, not a
+  // freshly created/chmod'd directory. See src/lib/test-home-guard.ts.
+  assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
