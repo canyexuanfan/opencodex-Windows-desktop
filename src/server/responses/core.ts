@@ -1144,10 +1144,6 @@ export async function handleResponses(
   }
   if (parsed._compactionRequest === true) parsed._cursorIsolateConversation = true;
 
-  if (isThreadSpawnRequest(req.headers)) {
-    await maybePrimeSubagentQuota(config);
-  }
-
   let route: RouteResult;
   try {
     route = routeModel(config, parsed.modelId);
@@ -1156,6 +1152,17 @@ export async function handleResponses(
       return comboUnavailableResponse(err.message);
     }
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
+  }
+
+  const hasUnexpandedPreviousResponse = !!parsed.previousResponseId
+    && parsed._previousResponseInputExpanded !== true;
+  // A canonical replay miss must not poll quota upstream before the final fail-closed decision.
+  // Cached fallback state can still select a provider with native continuation support below.
+  if (
+    isThreadSpawnRequest(req.headers)
+    && !(hasUnexpandedPreviousResponse && isCanonicalOpenAiForwardProvider(route.provider))
+  ) {
+    await maybePrimeSubagentQuota(config);
   }
 
   let authCtx: CodexAuthContext = { kind: "main", accountId: null };
@@ -1204,6 +1211,20 @@ export async function handleResponses(
   // runs against the FINAL route so native-only fallback can rescue a routed primary.
   if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
     return unreadableEncryptedAgentTaskResponse();
+  }
+
+  // The canonical ChatGPT backend rejects previous_response_id, so a local replay miss leaves no
+  // safe way to recover the omitted history. Fail before auth, adapter construction, or upstream
+  // I/O instead of stripping the id and silently forwarding a context-free delta (#702).
+  if (
+    hasUnexpandedPreviousResponse
+    && isCanonicalOpenAiForwardProvider(route.provider)
+  ) {
+    return formatErrorResponse(
+      400,
+      "invalid_request_error",
+      "OpenAI forward continuation state is unavailable or expired; start a new session instead of reusing this previous_response_id.",
+    );
   }
 
   await applyFinalRouteRequestNormalization({ parsed, route, config, req, logCtx });
