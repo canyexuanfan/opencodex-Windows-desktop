@@ -15,12 +15,19 @@ const ALLOWED_INPUT_MODALITIES = new Set(["text", "image", "audio"]);
 function readInputModalities(raw: unknown): { values?: string[]; error?: string } {
   if (raw === undefined) return {};
   if (!Array.isArray(raw)) return { error: "inputModalities must be an array" };
-  const values = raw.filter((m): m is string => typeof m === "string");
-  const rejected = values.filter(m => !ALLOWED_INPUT_MODALITIES.has(m));
+  // Reject non-strings rather than filtering them out. Dropping them silently accepted a
+  // malformed POST and, worse, let a PUT of `[42]` clear the stored modalities while
+  // answering 200 — the opposite of the contract this validator exists to state. An empty
+  // array stays valid: that is how `ocx models edit --modalities -` clears the field.
+  const rejected: string[] = [];
+  for (const value of raw) {
+    if (typeof value !== "string") return { error: "inputModalities must contain only strings" };
+    if (!ALLOWED_INPUT_MODALITIES.has(value)) rejected.push(value);
+  }
   if (rejected.length > 0) {
     return { error: `unsupported input modality: ${rejected.join(", ")} (allowed: text, image, audio)` };
   }
-  return { values };
+  return { values: raw as string[] };
 }
 import type { CatalogModel } from "../../codex/catalog";
 import { catalogModelSlug, disabledNativeSlugs, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";

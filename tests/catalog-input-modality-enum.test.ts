@@ -110,4 +110,31 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
     });
     expect(res?.status).not.toBe(400);
   });
+
+  /*
+   * Filtering non-strings out instead of rejecting them was the subtler half of the same bug:
+   * a POST of ["text", 42] answered 201 and stored ["text"], and a PUT of [42] would have
+   * cleared the stored modalities while answering 200 — the opposite of what a validator that
+   * returns 400 is supposed to promise.
+   */
+  test("a non-string member is rejected, not quietly filtered away", async () => {
+    const posted = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v7",
+      inputModalities: ["text", 42],
+    });
+    expect(posted?.status).toBe(400);
+    expect((await posted!.json() as { error?: string }).error).toContain("strings");
+
+    const put = await callCustomModels("PUT", { inputModalities: [42] }, "/api/custom-models/existing-uuid");
+    expect(put?.status).toBe(400);
+  });
+
+  // `ocx models edit --modalities -` sends an empty array. That must clear the field, not 400.
+  test("an empty array still clears the field rather than being rejected", async () => {
+    const res = await callCustomModels("PUT", { inputModalities: [] }, "/api/custom-models/existing-uuid");
+    expect(res?.status).toBe(200);
+    const payload = await res!.json() as { inputModalities?: unknown };
+    expect(payload.inputModalities).toBeUndefined();
+  });
 });
