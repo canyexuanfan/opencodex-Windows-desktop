@@ -157,6 +157,47 @@ export function getMaxConcurrentThreads(configPath?: string): number | null {
   return Number.isFinite(value) && value >= 1 ? value : null;
 }
 
+/** Largest V1 child limit we translate. Well below Number.MAX_SAFE_INTEGER and far
+ *  above any real concurrency setting; upstream's usize saturates, ours would silently
+ *  lose precision. */
+const MAX_TRANSLATABLE_V1_CHILD_LIMIT = 1_000_000;
+/** The V2 side is one larger by construction: it counts the root agent's own slot, so
+ *  the image of the maximum V1 value must itself be translatable back. */
+const MAX_TRANSLATABLE_V2_TOTAL_LIMIT = MAX_TRANSLATABLE_V1_CHILD_LIMIT + 1;
+
+export function isTranslatableV1ChildLimit(limit: number): boolean {
+  return Number.isInteger(limit) && limit >= 1 && limit <= MAX_TRANSLATABLE_V1_CHILD_LIMIT;
+}
+
+export function isTranslatableV2TotalLimit(limit: number): boolean {
+  return Number.isInteger(limit) && limit >= 1 && limit <= MAX_TRANSLATABLE_V2_TOTAL_LIMIT;
+}
+
+/**
+ * Upstream counts the root agent inside the V2 thread limit but not inside the legacy
+ * `[agents]` limit (codex-rs core/src/config/mod.rs resolve_multi_agent_v2_config applies
+ * saturating_add(1) to the [agents] value; the inverse saturating_sub(1) appears at
+ * mod.rs:1555). These helpers keep our migrations on the same side of that boundary.
+ */
+export function v1ChildLimitToV2TotalLimit(childLimit: number): number {
+  if (!isTranslatableV1ChildLimit(childLimit)) {
+    throw new RangeError(`v1 child limit out of translatable range: ${childLimit}`);
+  }
+  return childLimit + 1;
+}
+
+/**
+ * Inverse of `v1ChildLimitToV2TotalLimit`. A V2 total of 1 means "root only, no
+ * children", which has no representable legacy child count >= 1, so it clamps to 1
+ * rather than writing 0 and tripping upstream's `>= 1` validation.
+ */
+export function v2TotalLimitToV1ChildLimit(totalLimit: number): number {
+  if (!isTranslatableV2TotalLimit(totalLimit)) {
+    throw new RangeError(`v2 total limit out of translatable range: ${totalLimit}`);
+  }
+  return Math.max(1, totalLimit - 1);
+}
+
 /**
  * Persist `features.multi_agent_v2.max_concurrent_threads_per_session = value`.
  * Scoped edit in either the dedicated table or `[features]` boolean/inline form.
@@ -313,11 +354,51 @@ function ensureDisabledV2Config(value: number | null, configPath?: string, migra
   return { ok: true, changed: true };
 }
 
-/** Active logical concurrency value, falling back to the inactive storage. */
+/**
+ * The effective concurrency limit expressed in the units of the currently ACTIVE
+ * backend: under V2 the total-thread limit upstream enforces, under V1 the child
+ * limit. The active backend's own key wins; the other backend's key is translated
+ * across the root-agent slot. Display path only — never throws: a stored value
+ * outside the translatable range is returned raw (at that magnitude the ±1 root
+ * slot is already below float precision, and crashing `ocx v2 status` or
+ * `GET /api/v2` is not a price worth paying for a translation that means nothing).
+ * Migration code uses `discoverStoredThreadLimit` instead, which keeps provenance.
+ */
 export function getLogicalMaxThreads(configPath?: string): number | null {
-  return isMultiAgentV2Enabled(configPath)
-    ? getMaxConcurrentThreads(configPath) ?? getAgentsMaxThreads(configPath)
-    : getAgentsMaxThreads(configPath) ?? getMaxConcurrentThreads(configPath);
+  if (isMultiAgentV2Enabled(configPath)) {
+    const v2 = getMaxConcurrentThreads(configPath);
+    if (v2 !== null) return v2;
+    const legacy = getAgentsMaxThreads(configPath);
+    if (legacy === null) return null;
+    return isTranslatableV1ChildLimit(legacy) ? v1ChildLimitToV2TotalLimit(legacy) : legacy;
+  }
+  const legacy = getAgentsMaxThreads(configPath);
+  if (legacy !== null) return legacy;
+  const v2 = getMaxConcurrentThreads(configPath);
+  if (v2 === null) return null;
+  return isTranslatableV2TotalLimit(v2) ? v2TotalLimitToV1ChildLimit(v2) : v2;
+}
+
+type ThreadLimitUnits = "v1-child" | "v2-total";
+
+/**
+ * Which storage the active limit lives in, in that storage's native units. The
+ * active backend's own key wins; the other backend's key is the fallback and keeps
+ * ITS units. Never translates and never throws. This is the migration-side sibling
+ * of `getLogicalMaxThreads`: a migration needs to know exactly which storage the
+ * value came from, and a display function's raw fallback would lose that.
+ */
+function discoverStoredThreadLimit(configPath?: string): { value: number; units: ThreadLimitUnits } | null {
+  if (isMultiAgentV2Enabled(configPath)) {
+    const v2 = getMaxConcurrentThreads(configPath);
+    if (v2 !== null) return { value: v2, units: "v2-total" };
+    const legacy = getAgentsMaxThreads(configPath);
+    return legacy === null ? null : { value: legacy, units: "v1-child" };
+  }
+  const legacy = getAgentsMaxThreads(configPath);
+  if (legacy !== null) return { value: legacy, units: "v1-child" };
+  const v2 = getMaxConcurrentThreads(configPath);
+  return v2 === null ? null : { value: v2, units: "v2-total" };
 }
 
 function activeThreadComment(content: string, v2Enabled: boolean): string | undefined {
@@ -403,7 +484,26 @@ export function transitionMultiAgentV2(
   const preflightError = transitionConfigError(original);
   if (preflightError) return { ok: false, error: preflightError };
   const beforeEnabled = isMultiAgentV2Enabled(path);
-  const threadLimit = options.threadLimit ?? getLogicalMaxThreads(path);
+  // A caller-supplied limit is already in the DESTINATION backend's units and is
+  // never translated. A discovered limit carries the units of the storage it was
+  // read from and crosses the root-slot boundary only when those units differ
+  // from the destination's — which covers both backend flips and same-state
+  // storage migrations (legacy-only under V2, V2-only under V1). The range
+  // check runs only when a translation is actually needed, and before the try
+  // block so an out-of-range stored value is a normal error result rather than
+  // a RangeError escaping the rollback contract.
+  const discovered = discoverStoredThreadLimit(path);
+  const destinationUnits: ThreadLimitUnits = enabled ? "v2-total" : "v1-child";
+  let threadLimit = options.threadLimit ?? discovered?.value ?? null;
+  if (options.threadLimit === undefined && discovered !== null && discovered.units !== destinationUnits) {
+    const translatable = discovered.units === "v1-child" ? isTranslatableV1ChildLimit : isTranslatableV2TotalLimit;
+    if (!translatable(discovered.value)) {
+      return { ok: false, error: `stored thread limit out of translatable range: ${discovered.value}` };
+    }
+    threadLimit = discovered.units === "v1-child"
+      ? v1ChildLimitToV2TotalLimit(discovered.value)
+      : v2TotalLimitToV1ChildLimit(discovered.value);
+  }
   const migratedComment = activeThreadComment(original, beforeEnabled);
   try {
     if (enabled) {

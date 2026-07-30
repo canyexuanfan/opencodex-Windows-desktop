@@ -15,8 +15,12 @@ import {
   getMaxConcurrentThreads,
   hasAgentsMaxThreads,
   isMultiAgentV2Enabled,
+  isTranslatableV1ChildLimit,
+  isTranslatableV2TotalLimit,
   setMaxConcurrentThreads,
   transitionMultiAgentV2,
+  v1ChildLimitToV2TotalLimit,
+  v2TotalLimitToV1ChildLimit,
 } from "../src/codex/features";
 import { cmdV2, codexFeaturesInvocation, v2StatusLine, multiAgentModeLine } from "../src/cli/v2";
 import { handleManagementAPI } from "../src/server/management-api";
@@ -202,7 +206,7 @@ describe("max_concurrent_threads_per_session reader/writer", () => {
     };
     expect(transitionMultiAgentV2(true, flipPrefixFlag, { configPath: prefixOnly }).ok).toBe(true);
     expect(readFileSync(prefixOnly, "utf8")).toContain("backup_max_concurrent_threads_per_session = 7");
-    expect(getMaxConcurrentThreads(prefixOnly)).toBe(100);
+    expect(getMaxConcurrentThreads(prefixOnly)).toBe(101);
     // Two transitions × several atomic writes; on Windows each write runs icacls and
     // can exceed bun's 5s default under CI load.
   }, { timeout: 20_000 });
@@ -217,9 +221,11 @@ describe("thread-limit-preserving v1/v2 transition", () => {
   test("off -> on carries the active legacy value and removes the boot conflict", () => {
     const path = fixtureConfig("# keep\n[agents]\nmax_threads = 100\nmax_depth = 2\n");
     const result = transitionMultiAgentV2(true, flipTableFlag(path), { configPath: path });
-    expect(result).toEqual({ ok: true, changed: true, threadLimit: 100 });
+    // The legacy key counts spawned children; the V2 key also counts the root agent's
+    // own slot, so crossing the boundary adds 1 (upstream saturating_add(1)).
+    expect(result).toEqual({ ok: true, changed: true, threadLimit: 101 });
     expect(isMultiAgentV2Enabled(path)).toBe(true);
-    expect(getMaxConcurrentThreads(path)).toBe(100);
+    expect(getMaxConcurrentThreads(path)).toBe(101);
     expect(getAgentsMaxThreads(path)).toBe(null);
     expect(readFileSync(path, "utf8")).toContain("max_depth = 2");
     expect(readFileSync(path, "utf8")).toContain("# keep");
@@ -228,16 +234,17 @@ describe("thread-limit-preserving v1/v2 transition", () => {
   test("on -> off carries the active v2 value and removes v2 limit storage", () => {
     const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\nmax_concurrent_threads_per_session = 64\n\n[agents]\nmax_depth = 2\n");
     const result = transitionMultiAgentV2(false, flipTableFlag(path), { configPath: path });
-    expect(result).toEqual({ ok: true, changed: true, threadLimit: 64 });
+    // V2 total 64 = 63 spawned children + the root slot; the legacy key counts only children.
+    expect(result).toEqual({ ok: true, changed: true, threadLimit: 63 });
     expect(isMultiAgentV2Enabled(path)).toBe(false);
-    expect(getAgentsMaxThreads(path)).toBe(64);
+    expect(getAgentsMaxThreads(path)).toBe(63);
     expect(getMaxConcurrentThreads(path)).toBe(null);
   });
 
   test("migration carries the active limit comment in both directions", () => {
     const path = fixtureConfig("[agents]\nmax_threads = 100 # tuned\n");
     expect(transitionMultiAgentV2(true, flipTableFlag(path), { configPath: path }).ok).toBe(true);
-    expect(readFileSync(path, "utf8")).toContain("max_concurrent_threads_per_session = 100 # tuned");
+    expect(readFileSync(path, "utf8")).toContain("max_concurrent_threads_per_session = 101 # tuned");
     expect(transitionMultiAgentV2(false, flipTableFlag(path), { configPath: path }).ok).toBe(true);
     expect(readFileSync(path, "utf8")).toContain("max_threads = 100 # tuned");
   });
@@ -258,7 +265,9 @@ describe("thread-limit-preserving v1/v2 transition", () => {
     expect(getLogicalMaxThreads(targetOnly)).toBe(32);
 
     const equal = fixtureConfig("[features.multi_agent_v2]\nenabled = false\nmax_concurrent_threads_per_session = 64\n\n[agents]\nmax_threads = 64\n");
-    expect(transitionMultiAgentV2(true, flipTableFlag(equal), { configPath: equal })).toMatchObject({ ok: true, threadLimit: 64 });
+    // The legacy key is the active storage under V1, so it is the migration source and
+    // gains the root slot on the way to V2.
+    expect(transitionMultiAgentV2(true, flipTableFlag(equal), { configPath: equal })).toMatchObject({ ok: true, threadLimit: 65 });
     expect(getAgentsMaxThreads(equal)).toBe(null);
 
     const disabled = fixtureConfig("[features.multi_agent_v2]\nenabled = false\nmax_concurrent_threads_per_session = 32\n\n[agents]\nmax_threads = 100\n");
@@ -308,8 +317,114 @@ describe("thread-limit-preserving v1/v2 transition", () => {
   });
 });
 
+describe("v1<->v2 root-slot translation", () => {
+  const flipTableFlag = (path: string) => (enabled: boolean) => {
+    const content = readFileSync(path, "utf8");
+    writeFileSync(path, content.replace(/^enabled\s*=\s*(?:true|false)$/m, `enabled = ${enabled}`));
+  };
+
+  test("round trip v1 -> v2 -> v1 is identity for every value 1..10", () => {
+    for (let child = 1; child <= 10; child++) {
+      expect(v2TotalLimitToV1ChildLimit(v1ChildLimitToV2TotalLimit(child))).toBe(child);
+    }
+  });
+
+  test("directional maxima: 1_000_000 -> 1_000_001 -> 1_000_000 round-trips", () => {
+    expect(isTranslatableV1ChildLimit(1_000_000)).toBe(true);
+    expect(isTranslatableV1ChildLimit(1_000_001)).toBe(false);
+    expect(isTranslatableV2TotalLimit(1_000_001)).toBe(true);
+    expect(isTranslatableV2TotalLimit(1_000_002)).toBe(false);
+    expect(v1ChildLimitToV2TotalLimit(1_000_000)).toBe(1_000_001);
+    expect(v2TotalLimitToV1ChildLimit(1_000_001)).toBe(1_000_000);
+  });
+
+  test("helpers throw RangeError outside their own directional range", () => {
+    expect(() => v1ChildLimitToV2TotalLimit(1_000_001)).toThrow(RangeError);
+    expect(() => v2TotalLimitToV1ChildLimit(1_000_002)).toThrow(RangeError);
+    expect(() => v1ChildLimitToV2TotalLimit(0)).toThrow(RangeError);
+    expect(() => v2TotalLimitToV1ChildLimit(0)).toThrow(RangeError);
+  });
+
+  test("clamp: V2 total 1 disables to legacy 1, never 0", () => {
+    expect(v2TotalLimitToV1ChildLimit(1)).toBe(1);
+    expect(v2TotalLimitToV1ChildLimit(2)).toBe(1);
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\nmax_concurrent_threads_per_session = 1\n");
+    const result = transitionMultiAgentV2(false, flipTableFlag(path), { configPath: path });
+    expect(result).toEqual({ ok: true, changed: true, threadLimit: 1 });
+    expect(getAgentsMaxThreads(path)).toBe(1);
+    expect(getMaxConcurrentThreads(path)).toBe(null);
+  });
+
+  test("read paths return out-of-range stored values raw instead of throwing", () => {
+    const hugeV2 = fixtureConfig("[features.multi_agent_v2]\nenabled = false\nmax_concurrent_threads_per_session = 100000000000000000000\n");
+    expect(getLogicalMaxThreads(hugeV2)).toBe(1e20);
+    const hugeLegacy = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n\n[agents]\nmax_threads = 100000000000000000000\n");
+    expect(getLogicalMaxThreads(hugeLegacy)).toBe(1e20);
+  });
+
+  test("legacy-only under V2: disable preserves an untranslatable value; automatic re-enable is rejected; explicit limit recovers", () => {
+    const original = "[features.multi_agent_v2]\nenabled = true\n\n[agents]\nmax_threads = 1000001\n";
+    const path = fixtureConfig(original);
+    // Disable: source and destination are both v1-child, so nothing crosses the
+    // boundary and the value is preserved untranslated.
+    const off = transitionMultiAgentV2(false, flipTableFlag(path), { configPath: path });
+    expect(off).toMatchObject({ ok: true, threadLimit: 1_000_001 });
+    expect(getAgentsMaxThreads(path)).toBe(1_000_001);
+    // Re-enable would need v1-child -> v2-total translation of a value beyond
+    // MAX_TRANSLATABLE_V1_CHILD_LIMIT, so it is rejected before any write.
+    const on = transitionMultiAgentV2(true, flipTableFlag(path), { configPath: path });
+    expect(on.ok).toBe(false);
+    expect(on.ok === false && on.error).toContain("out of translatable range");
+    expect(readFileSync(path, "utf8")).toBe(readFileSync(path, "utf8"));
+    expect(getAgentsMaxThreads(path)).toBe(1_000_001);
+    expect(isMultiAgentV2Enabled(path)).toBe(false);
+    // Escape hatch: an explicit destination-unit limit is never translated.
+    const recovered = transitionMultiAgentV2(true, flipTableFlag(path), { configPath: path, threadLimit: 5 });
+    expect(recovered).toEqual({ ok: true, changed: true, threadLimit: 5 });
+    expect(getMaxConcurrentThreads(path)).toBe(5);
+    expect(getAgentsMaxThreads(path)).toBe(null);
+  });
+
+  test("untranslatable V2 total disable is rejected with bytes unchanged; explicit limit recovers", () => {
+    const original = "[features.multi_agent_v2]\nenabled = true\nmax_concurrent_threads_per_session = 100000000000000000000\n";
+    const path = fixtureConfig(original);
+    const result = transitionMultiAgentV2(false, flipTableFlag(path), { configPath: path });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toContain("out of translatable range");
+    expect(readFileSync(path, "utf8")).toBe(original);
+    expect(isMultiAgentV2Enabled(path)).toBe(true);
+    const recovered = transitionMultiAgentV2(false, flipTableFlag(path), { configPath: path, threadLimit: 4 });
+    expect(recovered).toEqual({ ok: true, changed: true, threadLimit: 4 });
+    expect(getAgentsMaxThreads(path)).toBe(4);
+  });
+
+  test("idempotent re-enable on a V2 config leaves the limit unchanged", () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\nmax_concurrent_threads_per_session = 32\n");
+    const result = transitionMultiAgentV2(true, () => { /* no flip needed */ }, { configPath: path });
+    expect(result).toMatchObject({ ok: true, threadLimit: 32 });
+    expect(getMaxConcurrentThreads(path)).toBe(32);
+  });
+
+  test("idempotent re-disable on a V1 config leaves the legacy limit unchanged", () => {
+    const path = fixtureConfig("[agents]\nmax_threads = 100\n");
+    let calls = 0;
+    const result = transitionMultiAgentV2(false, () => { calls++; }, { configPath: path });
+    expect(result).toMatchObject({ ok: true, threadLimit: 100 });
+    expect(calls).toBe(0);
+    expect(getAgentsMaxThreads(path)).toBe(100);
+  });
+
+  test("same-state storage migration: legacy-only under V2 gains the root slot when the value moves to V2 storage", () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n\n[agents]\nmax_threads = 10\n");
+    const result = transitionMultiAgentV2(true, () => { /* already enabled */ }, { configPath: path });
+    expect(result).toMatchObject({ ok: true, threadLimit: 11 });
+    expect(getMaxConcurrentThreads(path)).toBe(11);
+    expect(getAgentsMaxThreads(path)).toBe(null);
+  });
+});
+
 describe("management API logical v1/v2 switching", () => {
-  test("mode-only switches preserve the logical limit in both directions", async () => {
+  test("mode-only switches translate the limit across the root-slot boundary in both directions", async () => {
     const path = fixtureConfig("[agents]\nmax_threads = 100\nmax_depth = 2\n");
     const oldCodexHome = process.env.CODEX_HOME;
     const oldOcxHome = process.env.OPENCODEX_HOME;
@@ -327,13 +442,13 @@ describe("management API logical v1/v2 switching", () => {
       });
       const v2Response = await handleManagementAPI(toV2, new URL(toV2.url), config, deps);
       expect(v2Response?.status).toBe(200);
-      expect(await v2Response?.json()).toMatchObject({ enabled: true, multiAgentMode: "v2", maxConcurrentThreadsPerSession: 100 });
-      expect(getMaxConcurrentThreads(path)).toBe(100);
+      expect(await v2Response?.json()).toMatchObject({ enabled: true, multiAgentMode: "v2", maxConcurrentThreadsPerSession: 101 });
+      expect(getMaxConcurrentThreads(path)).toBe(101);
       expect(getAgentsMaxThreads(path)).toBe(null);
 
       const getV2 = new Request("http://localhost/api/v2");
       const getV2Response = await handleManagementAPI(getV2, new URL(getV2.url), config, deps);
-      expect(await getV2Response?.json()).toMatchObject({ enabled: true, maxConcurrentThreadsPerSession: 100 });
+      expect(await getV2Response?.json()).toMatchObject({ enabled: true, maxConcurrentThreadsPerSession: 101 });
 
       const toV1 = new Request("http://localhost/api/v2", {
         method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ multiAgentMode: "v1" }),
@@ -361,11 +476,12 @@ describe("management API logical v1/v2 switching", () => {
         method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ multiAgentMode: "default", enabled: false }),
       });
       const defaultResponse = await handleManagementAPI(defaultWithFlag, new URL(defaultWithFlag.url), config, deps);
-      expect(await defaultResponse?.json()).toMatchObject({ enabled: false, multiAgentMode: "default", maxConcurrentThreadsPerSession: 77 });
+      // V2 total 77 crosses back to 76 spawned children once the root slot is out of scope.
+      expect(await defaultResponse?.json()).toMatchObject({ enabled: false, multiAgentMode: "default", maxConcurrentThreadsPerSession: 76 });
 
       const get = new Request("http://localhost/api/v2");
       const getResponse = await handleManagementAPI(get, new URL(get.url), config, deps);
-      expect(await getResponse?.json()).toMatchObject({ enabled: false, maxConcurrentThreadsPerSession: 77 });
+      expect(await getResponse?.json()).toMatchObject({ enabled: false, maxConcurrentThreadsPerSession: 76 });
     } finally {
       if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
       if (oldOcxHome === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = oldOcxHome;
@@ -440,7 +556,7 @@ describe("cli surface", () => {
     expect(exe).toEqual({ file: "C:\\bin\\codex.exe", args: ["features", "enable", "multi_agent_v2"], options: {} });
   });
 
-  test("mode v2/v1 preserves the same logical limit", async () => {
+  test("mode v2/v1 translates the limit across the root-slot boundary", async () => {
     const path = fixtureConfig("[agents]\nmax_threads = 100\n");
     const oldCodexHome = process.env.CODEX_HOME;
     const oldOcxHome = process.env.OPENCODEX_HOME;
@@ -461,18 +577,19 @@ describe("cli surface", () => {
     try {
       expect(await cmdV2(["mode", "v2"], deps)).toBe(0);
       expect(isMultiAgentV2Enabled(path)).toBe(true);
-      expect(getLogicalMaxThreads(path)).toBe(100);
+      expect(getLogicalMaxThreads(path)).toBe(101);
       expect(await cmdV2(["threads", "77"], deps)).toBe(0);
       expect(getLogicalMaxThreads(path)).toBe(77);
       expect(await cmdV2(["off"], deps)).toBe(0);
       expect(isMultiAgentV2Enabled(path)).toBe(false);
-      expect(getLogicalMaxThreads(path)).toBe(77);
+      // Explicit V2 total 77 was caller-supplied; disabling crosses back to 76 children.
+      expect(getLogicalMaxThreads(path)).toBe(76);
       expect(await cmdV2(["on"], deps)).toBe(0);
       expect(isMultiAgentV2Enabled(path)).toBe(true);
       expect(getLogicalMaxThreads(path)).toBe(77);
       expect(await cmdV2(["mode", "v1"], deps)).toBe(0);
       expect(isMultiAgentV2Enabled(path)).toBe(false);
-      expect(getLogicalMaxThreads(path)).toBe(77);
+      expect(getLogicalMaxThreads(path)).toBe(76);
     } finally {
       if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
       if (oldOcxHome === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = oldOcxHome;
