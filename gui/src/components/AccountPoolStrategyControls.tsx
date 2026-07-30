@@ -27,7 +27,8 @@ export interface AccountPoolStrategyControlsProps {
   strategyLabelHidden?: boolean;
   onStrategyChange(strategy: AccountPoolStrategy): void;
   onStickyDraftChange(value: string): void;
-  onStickyCommit(): void;
+  /** Optional draft overrides React state when steppers commit in the same tick as a draft change. */
+  onStickyCommit(nextDraft?: string): void;
 }
 
 /**
@@ -99,8 +100,16 @@ export default function AccountPoolStrategyControls({
               disabled={disabled}
               incrementLabel={t("accountPool.stickyLimitInc")}
               decrementLabel={t("accountPool.stickyLimitDec")}
-              onIncrement={() => onStickyDraftChange(clampNumberDraft(stickyDraft, 1, 1, 100))}
-              onDecrement={() => onStickyDraftChange(clampNumberDraft(stickyDraft, -1, 1, 100))}
+              onIncrement={() => {
+                const next = clampNumberDraft(stickyDraft, 1, 1, 100);
+                onStickyDraftChange(next);
+                onStickyCommit(next);
+              }}
+              onDecrement={() => {
+                const next = clampNumberDraft(stickyDraft, -1, 1, 100);
+                onStickyDraftChange(next);
+                onStickyCommit(next);
+              }}
             />
           </span>
           <div className="card-sub">{t("accountPool.stickyLimitHelp")}</div>

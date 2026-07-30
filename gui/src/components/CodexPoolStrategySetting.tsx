@@ -91,6 +91,7 @@ export default function CodexPoolStrategySetting({
 
   // Shared /active observer (preferred): same payload the pool already fetched.
   // Ignore stale polls that started before a PUT bumped revision, and never apply while saving.
+  // Replay readLastActive on subscribe so late mounts hydrate without waiting a poll.
   useEffect(() => {
     if (!subscribeLoadObserver) return;
     const observer: CodexAccountLoadObserver = {
@@ -104,14 +105,16 @@ export default function CodexPoolStrategySetting({
         if (!hydratedRef.current) setLoadError(true);
       },
     };
-    return subscribeLoadObserver(observer);
-  }, [subscribeLoadObserver, applyActivePayload]);
+    const unsubscribe = subscribeLoadObserver(observer);
+    if (!savingRef.current && readLastActive) applyActivePayload(readLastActive());
+    return unsubscribe;
+  }, [subscribeLoadObserver, applyActivePayload, readLastActive]);
 
   useEffect(() => {
-    if (!readLastActive) return;
+    if (!readLastActive || subscribeLoadObserver) return;
     if (savingRef.current) return;
     applyActivePayload(readLastActive());
-  }, [readLastActive, applyActivePayload]);
+  }, [readLastActive, applyActivePayload, subscribeLoadObserver]);
 
   // Standalone fallback when no shared controller observer is wired (keeps tests without observer green).
   useEffect(() => {
@@ -182,9 +185,9 @@ export default function CodexPoolStrategySetting({
             void save({ strategy: next });
           }}
           onStickyDraftChange={setStickyDraft}
-          onStickyCommit={() => {
+          onStickyCommit={(nextDraft) => {
             if (controlsDisabled) return;
-            const parsed = parseAccountPoolStickyLimitDraft(stickyDraft);
+            const parsed = parseAccountPoolStickyLimitDraft(nextDraft ?? stickyDraft);
             if (parsed === null) {
               setStickyDraft(String(stickyLimit));
               setError(t("accountPool.stickyLimitInvalid"));

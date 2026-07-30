@@ -130,7 +130,7 @@ export function CodexAccountPoolMainCard({
             plan={main?.plan}
             threshold={threshold}
             t={t}
-            pending={main?.quota == null}
+            pending={main != null && main.quota == null}
           />
         )}
     </div>

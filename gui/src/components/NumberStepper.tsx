@@ -25,6 +25,7 @@ export function NumberStepper({
         className="ocx-stepper__btn"
         disabled={disabled}
         aria-label={incrementLabel}
+        onMouseDown={(event) => event.preventDefault()}
         onClick={onIncrement}
       >
         <IconArrowUp width={10} height={10} aria-hidden="true" />
@@ -34,6 +35,7 @@ export function NumberStepper({
         className="ocx-stepper__btn"
         disabled={disabled}
         aria-label={decrementLabel}
+        onMouseDown={(event) => event.preventDefault()}
         onClick={onDecrement}
       >
         <IconArrowDown width={10} height={10} aria-hidden="true" />

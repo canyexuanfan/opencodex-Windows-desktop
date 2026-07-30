@@ -88,7 +88,7 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   const seed = lastGoodByBase.get(apiBase);
   const [accounts, setAccounts] = useState<CodexAccountEntry[]>(() => seed?.accounts ?? []);
   const [activeId, setActiveId] = useState<string | null>(() => seed?.activeId ?? null);
-  const [loadState, setLoadState] = useState<CodexAccountLoadState>(() => (seed?.accounts.length ? "ready" : "loading"));
+  const [loadState, setLoadState] = useState<CodexAccountLoadState>(() => (seed != null ? "ready" : "loading"));
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [pauseUpdatingId, setPauseUpdatingId] = useState<string | null>(null);
   const [pausingExhausted, setPausingExhausted] = useState(false);
@@ -106,10 +106,19 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   const lastActiveRef = useRef<{ value: unknown } | null>(null);
   const switchingRef = useRef<string | null>(null);
   const hasAccountsRef = useRef(Boolean(seed?.accounts.length));
+  // Distinct from hasAccountsRef: empty successful loads still count as loaded so soft
+  // polls do not flip the UI back to the cold skeleton.
+  const hasLoadedRef = useRef(seed != null);
   const pauseMutationRef = useRef<"bulk" | { accountId: string } | null>(null);
 
   const subscribeLoadObserver = useCallback((observer: CodexAccountLoadObserver) => {
     observersRef.current.add(observer);
+    // Replay last /active for late subscribers that mount after a load finished.
+    const last = lastActiveRef.current?.value;
+    if (last !== undefined) {
+      const revision = observer.beginActiveRead();
+      observer.acceptActiveRead(last, revision);
+    }
     return () => { observersRef.current.delete(observer); };
   }, []);
 
@@ -132,7 +141,7 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
     const revisions = new Map<CodexAccountLoadObserver, number>();
     for (const observer of observers) revisions.set(observer, observer.beginActiveRead());
     // Soft refresh when boxes are already on screen — avoid full-page loading flash.
-    if (!refreshQuota && !hasAccountsRef.current) setLoadState("loading");
+    if (!refreshQuota && !hasLoadedRef.current) setLoadState("loading");
 
     let nextAccounts: CodexAccountEntry[] | null = null;
     let nextActiveId: string | null | undefined;
@@ -146,6 +155,7 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
           nextAccounts = (payload.accounts ?? []) as CodexAccountEntry[];
           setAccounts(nextAccounts);
           hasAccountsRef.current = nextAccounts.length > 0;
+          hasLoadedRef.current = true;
           // Progressive: paint account/quota boxes as soon as /accounts returns.
           setLoadState("ready");
         }
@@ -189,6 +199,7 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
     if (loadGenerationRef.current !== generation) return false;
     if (accountsOk) {
       setLoadState("ready");
+      hasLoadedRef.current = true;
       const prior = lastGoodByBase.get(apiBase);
       lastGoodByBase.set(apiBase, {
         accounts: nextAccounts ?? prior?.accounts ?? [],
@@ -196,7 +207,9 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
       });
       return activeOk;
     }
-    if (!hasAccountsRef.current) setLoadState("error");
+    // Cold failure only: after a successful load (including empty), keep rows and stay ready
+    // so a soft poll miss does not flash the skeleton / wipe the pool.
+    if (!hasLoadedRef.current) setLoadState("error");
     return false;
   }, [apiBase]);
 

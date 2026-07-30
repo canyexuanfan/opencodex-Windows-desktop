@@ -28,14 +28,15 @@ export function CodexCreditItem({ index, grantedAt, expiresAt, isNext, locale, t
 export function CodexTicketBadge({ account, onClick, t }: { account: CodexAccountEntry; onClick: () => void; t: TFn }) {
   const credits = account.quota?.resetCredits;
   // Reserve badge width while WHAM quota is still null so the card-head does not grow
-  // when resetCredits arrives (0 or N).
-  if (credits === undefined) {
+  // when resetCredits arrives (0 or N). Quota loaded without resetCredits → no badge.
+  if (account.quota == null) {
     return (
       <span className="badge badge-muted codex-ticket-badge-slot" aria-hidden="true">
         <IconTicket width={12} />0
       </span>
     );
   }
+  if (credits === undefined) return null;
   const hasCredits = typeof credits === "number" && credits > 0;
   return (
     <button type="button"

@@ -138,6 +138,7 @@ export function setAccountQuotaFromParsed(
     if (existing?.monthlyResetAt !== undefined) next.monthlyResetAt = existing.monthlyResetAt;
     next.resetCredits = quota.resetCredits;
     accountQuota.set(accountId, next);
+    schedulePersistAccountQuotas();
     return;
   }
 
