@@ -240,7 +240,7 @@ require the proxy to be running (`ocx start`, or an installed service).
 | `live` | `--provider <name>`, `--json` | Read the running catalog, including models discovered at runtime. Rows are flagged `native`/`routed`, `custom`, and `enabled`/`disabled`. |
 | `add <provider> <modelId>` | `--display-name <name>`, `--context-window <tokens>`, `--modalities <text,image,audio>` | Register a model the provider catalog does not advertise. |
 | `edit <custom-id>` | `--model-id <id>`, `--display-name <name\|->`, `--context-window <tokens\|0>`, `--modalities <text,image,audio\|->`, `--json` | Edit a custom model. `-` clears a field; `0` clears the context window. |
-| `remove <custom-id\|provider/modelId>` | `--yes`, `--json` | Delete a custom model. Requires `--yes` when stdin is not an interactive terminal. |
+| `remove <custom-id\|provider/modelId>` | `--yes` | Delete a custom model. Requires `--yes` when stdin is not an interactive terminal. |
 | `list-custom` | `--json` | Show all custom models with the `custom-id` the other subcommands take. |
 | `enable <provider/model\|native-model>` | `--native`, `--json` | Make one model visible to Codex. |
 | `disable <provider/model\|native-model>` | `--native`, `--json` | Hide one model from Codex. |
@@ -252,7 +252,7 @@ require the proxy to be running (`ocx start`, or an installed service).
 ```bash
 ocx models live --json                                  # what Codex can actually see right now
 ocx models disable anthropic/claude-haiku-4             # hide one routed model
-ocx models enable gpt-5.6-sol --native                  # native models need --native
+ocx models enable gpt-5.6-sol                          # no slash, so it is treated as native
 ocx models provider zenmux off                          # hide a noisy provider wholesale
 ocx models selected anthropic --set claude-opus-5,claude-fable-5
 ocx models selected anthropic --clear                   # drop the allowlist again
@@ -261,10 +261,14 @@ ocx models list-custom --json                           # read the custom-id for
 ocx models remove deepseek/deepseek-v4 --yes
 ```
 
-A model selector is `provider/model` for routed models and a bare id with `--native` for native
-OpenAI models. `--modalities` accepts only `text`, `image`, and `audio`: Codex parses that field as
-a closed enum and rejects an entire catalog containing any other value, so the CLI refuses the bad
-value rather than writing a file Codex will not load.
+A model selector with a slash is routed (`anthropic/claude-opus-5`); a bare id is treated as a
+native OpenAI model, so `--native` is only needed to force that reading for an id that would
+otherwise look routed.
+
+`--modalities` accepts only `text`, `image`, and `audio`. Codex parses that field as a closed enum
+and rejects an entire catalog containing any other value, so `add`, `edit`, and the management API
+all refuse the bad value rather than storing something the catalog writer would have to strip
+later (#759).
 
 ### `ocx provider <subcommand>`
 

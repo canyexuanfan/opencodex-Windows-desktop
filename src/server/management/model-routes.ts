@@ -1,5 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+
+/**
+ * Codex parses a catalog entry's `input_modalities` as a closed enum, and one out-of-enum
+ * value makes it reject the ENTIRE catalog file — plugins, apps and MCP servers all stop
+ * loading over one model's metadata (#759).
+ *
+ * The catalog writer normalizes on the way out, but a rejected value stored here would still
+ * be handed back to the GUI and CLI as if it were real, and the offline `ocx models add` path
+ * already refuses it. Validate at ingress so all three paths agree.
+ */
+const ALLOWED_INPUT_MODALITIES = new Set(["text", "image", "audio"]);
+
+function readInputModalities(raw: unknown): { values?: string[]; error?: string } {
+  if (raw === undefined) return {};
+  if (!Array.isArray(raw)) return { error: "inputModalities must be an array" };
+  const values = raw.filter((m): m is string => typeof m === "string");
+  const rejected = values.filter(m => !ALLOWED_INPUT_MODALITIES.has(m));
+  if (rejected.length > 0) {
+    return { error: `unsupported input modality: ${rejected.join(", ")} (allowed: text, image, audio)` };
+  }
+  return { values };
+}
 import type { CatalogModel } from "../../codex/catalog";
 import { catalogModelSlug, disabledNativeSlugs, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
 import { getProviderLiveModelCount } from "../../codex/model-cache";
@@ -244,7 +266,9 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const displayName = typeof body.displayName === "string" && body.displayName.trim() ? body.displayName.trim() : undefined;
     if (displayName?.includes("/")) return jsonResponse({ error: "displayName must not contain /" }, 400);
     const contextWindow = typeof body.contextWindow === "number" && body.contextWindow > 0 ? Math.floor(body.contextWindow) : undefined;
-    const inputModalities = Array.isArray(body.inputModalities) ? body.inputModalities.filter((m): m is string => typeof m === "string") : undefined;
+    const modalities = readInputModalities(body.inputModalities);
+    if (modalities.error) return jsonResponse({ error: modalities.error }, 400);
+    const inputModalities = modalities.values;
     const existing = config.customModels ?? [];
     const newSlug = routedSlug(provider, modelId);
     if (existing.some(cm => routedSlug(cm.provider, cm.modelId) === newSlug)) {
@@ -289,7 +313,9 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       cm.contextWindow = typeof body.contextWindow === "number" && body.contextWindow > 0 ? Math.floor(body.contextWindow) : undefined;
     }
     if (body.inputModalities !== undefined) {
-      cm.inputModalities = Array.isArray(body.inputModalities) ? body.inputModalities.filter((m): m is string => typeof m === "string") : undefined;
+      const edited = readInputModalities(body.inputModalities);
+      if (edited.error) return jsonResponse({ error: edited.error }, 400);
+      cm.inputModalities = edited.values && edited.values.length > 0 ? edited.values : undefined;
     }
     const updatedSlug = routedSlug(cm.provider, cm.modelId);
     if (list.some((other, i) => i !== idx && routedSlug(other.provider, other.modelId) === updatedSlug)) {

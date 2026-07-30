@@ -189,7 +189,7 @@ GUI가 필요하지 않습니다. `add`, `remove`, `list-custom`은 설정 파�
 | `live` | `--provider <name>`, `--json` | 런타임에 발견된 모델까지 포함해 실제 카탈로그를 읽습니다. 각 행에 `native`/`routed`, `custom`, `enabled`/`disabled`가 표시됩니다. |
 | `add <provider> <modelId>` | `--display-name <name>`, `--context-window <tokens>`, `--modalities <text,image,audio>` | 프로바이더 카탈로그가 광고하지 않는 모델을 등록합니다. |
 | `edit <custom-id>` | `--model-id <id>`, `--display-name <name\|->`, `--context-window <tokens\|0>`, `--modalities <text,image,audio\|->`, `--json` | 커스텀 모델을 수정합니다. `-`는 필드를 비우고 `0`은 컨텍스트 윈도를 지웁니다. |
-| `remove <custom-id\|provider/modelId>` | `--yes`, `--json` | 커스텀 모델을 삭제합니다. stdin이 대화형 터미널이 아니면 `--yes`가 필요합니다. |
+| `remove <custom-id\|provider/modelId>` | `--yes` | 커스텀 모델을 삭제합니다. stdin이 대화형 터미널이 아니면 `--yes`가 필요합니다. |
 | `list-custom` | `--json` | 다른 하위 명령이 받는 `custom-id`와 함께 커스텀 모델을 보여줍니다. |
 | `enable <provider/model\|native-model>` | `--native`, `--json` | 모델 하나를 Codex에 노출합니다. |
 | `disable <provider/model\|native-model>` | `--native`, `--json` | 모델 하나를 Codex에서 숨깁니다. |
@@ -201,7 +201,7 @@ GUI가 필요하지 않습니다. `add`, `remove`, `list-custom`은 설정 파�
 ```bash
 ocx models live --json                                  # 지금 Codex가 실제로 보는 목록
 ocx models disable anthropic/claude-haiku-4             # 라우팅 모델 하나 숨기기
-ocx models enable gpt-5.6-sol --native                  # 네이티브 모델은 --native가 필요합니다
+ocx models enable gpt-5.6-sol                          # 슬래시가 없으면 네이티브로 처리됩니다
 ocx models provider zenmux off                          # 프로바이더 단위로 한 번에 숨기기
 ocx models selected anthropic --set claude-opus-5,claude-fable-5
 ocx models selected anthropic --clear                   # 허용 목록 해제
@@ -210,10 +210,13 @@ ocx models list-custom --json                           # edit/remove에 쓸 cus
 ocx models remove deepseek/deepseek-v4 --yes
 ```
 
-모델 선택자는 라우팅 모델은 `provider/model`, 네이티브 OpenAI 모델은 id만 쓰고 `--native`를
-붙입니다. `--modalities`는 `text`, `image`, `audio`만 받습니다. Codex가 이 필드를 닫힌 enum으로
-파싱해서 다른 값이 하나라도 있으면 **카탈로그 전체를 거부**하므로, CLI가 잘못된 값을 미리 거절해
-Codex가 읽지 못하는 파일을 쓰지 않게 합니다.
+슬래시가 있는 선택자는 라우팅 모델이고(`anthropic/claude-opus-5`), 슬래시가 없으면 네이티브
+OpenAI 모델로 처리됩니다. 따라서 `--native`는 라우팅처럼 보이는 id를 네이티브로 강제할 때만
+필요합니다.
+
+`--modalities`는 `text`, `image`, `audio`만 받습니다. Codex가 이 필드를 닫힌 enum으로 파싱해서
+다른 값이 하나라도 있으면 **카탈로그 전체를 거부**하므로, `add`와 `edit`, 관리 API가 모두 잘못된
+값을 거절합니다(#759).
 
 ### `ocx provider <subcommand>`
 

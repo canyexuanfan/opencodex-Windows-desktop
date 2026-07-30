@@ -48,3 +48,66 @@ describe("catalog input_modalities stay inside the enum Codex accepts", () => {
     expect(hints.inputModalities).toEqual(["text", "image", "audio"]);
   });
 });
+
+/*
+ * The management API is the third ingress, and it was the one still open: the catalog writer
+ * normalized on the way out, but a rejected value stored through /api/custom-models was handed
+ * back to the GUI and CLI as if it were real, while the offline `ocx models add` path already
+ * refused it. All three now agree.
+ */
+describe("custom-model API rejects out-of-enum input modalities", () => {
+  async function callCustomModels(
+    method: "POST" | "PUT",
+    body: unknown,
+    pathname = "/api/custom-models",
+  ): Promise<Response | null> {
+    const { handleModelRoutes } = await import("../src/server/management/model-routes");
+    const url = new URL(`http://127.0.0.1:10199${pathname}`);
+    const req = new Request(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return handleModelRoutes({
+      req,
+      url,
+      config: {
+        providers: { deepseek: { adapter: "openai-chat", baseUrl: "https://example.invalid/v1" } },
+        customModels: [
+          { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4" },
+        ],
+      } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
+      deps: {} as Parameters<typeof handleModelRoutes>[0]["deps"],
+      refreshCodexCatalogBestEffort: async () => {},
+      syncClaudeAgentDefsBestEffort: async () => {},
+    });
+  }
+
+  test("POST refuses a rejected modality with 400 instead of storing it", async () => {
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v5",
+      inputModalities: ["text", "video"],
+    });
+    expect(res?.status).toBe(400);
+    const payload = await res!.json() as { error?: string };
+    // The message has to name the offending value; "invalid request" would leave the caller guessing.
+    expect(payload.error).toContain("video");
+  });
+
+  test("PUT refuses a rejected modality too — edit was the path still open", async () => {
+    const res = await callCustomModels("PUT", { inputModalities: ["video"] }, "/api/custom-models/existing-uuid");
+    expect(res?.status).toBe(400);
+    const payload = await res!.json() as { error?: string };
+    expect(payload.error).toContain("video");
+  });
+
+  test("an accepted modality set still passes", async () => {
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v6",
+      inputModalities: ["text", "image"],
+    });
+    expect(res?.status).not.toBe(400);
+  });
+});
