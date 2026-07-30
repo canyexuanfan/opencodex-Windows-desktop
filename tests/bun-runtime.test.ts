@@ -1,10 +1,12 @@
 import { describe, it, expect, afterAll } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, overrideBunPath } from "../src/lib/bun-runtime";
 
-const tmp = mkdtempSync(join(tmpdir(), "ocx-bun-runtime-"));
+// realpath the temp root: on macOS /var is a symlink to /private/var, so a path built
+// from mkdtemp compares unequal to the same path resolved through process.cwd().
+const tmp = realpathSync(mkdtempSync(join(tmpdir(), "ocx-bun-runtime-")));
 const previousOverride = process.env.OPENCODEX_BUN_PATH;
 afterAll(() => {
   if (previousOverride === undefined) delete process.env.OPENCODEX_BUN_PATH;
