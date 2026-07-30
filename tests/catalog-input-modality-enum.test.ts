@@ -74,7 +74,9 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
       config: {
         providers: { deepseek: { adapter: "openai-chat", baseUrl: "https://example.invalid/v1" } },
         customModels: [
-          { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4" },
+          // Seeded WITH modalities on purpose: a fixture without them would let the
+          // clear-path test pass against a PUT that ignored the field entirely.
+          { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4", inputModalities: ["text", "image"] },
         ],
       } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
       deps: {} as Parameters<typeof handleModelRoutes>[0]["deps"],
@@ -132,6 +134,7 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
 
   // `ocx models edit --modalities -` sends an empty array. That must clear the field, not 400.
   test("an empty array still clears the field rather than being rejected", async () => {
+    // The fixture starts with ["text", "image"], so this asserts a real clear, not a no-op.
     const res = await callCustomModels("PUT", { inputModalities: [] }, "/api/custom-models/existing-uuid");
     expect(res?.status).toBe(200);
     const payload = await res!.json() as { inputModalities?: unknown };
