@@ -172,12 +172,48 @@ ocx v2 threads 16
 기존 `config.toml`을 그대로 복구합니다.
 변경 사항은 새 Codex 세션부터 적용되며, 실행 중인 세션은 고정된 surface를 유지합니다.
 
-### `ocx models [--provider <name>] [--json]`
+### `ocx models [subcommand]`
 
-설정된 프로바이더에 정적으로 시드된 모델을 나열합니다. `--provider`는 한 프로바이더만 고르고,
-`--json`은 모델 메타데이터와 함께 `liveModels`가 런타임 전용 항목을 추가할 수 있다는 안내를
-반환합니다. 실시간 카탈로그를 가져오는 명령은 아닙니다. 그 작업은 `ocx sync`나 대시보드를
-사용하세요.
+설정된 프로바이더에 정적으로 시드된 모델을 나열합니다. `--provider`는 한 프로바이더만 고르고
+`--json`은 모델 메타데이터를 반환합니다. 하위 명령이 없으면 정적 설정 기준 목록이며, 실시간
+카탈로그는 `ocx models live`로 읽습니다.
+
+대시보드가 제공하는 모델 단위 조작은 모두 여기에 있습니다. 헤드리스 설치에서 카탈로그를 관리할 때
+GUI가 필요하지 않습니다. `add`, `remove`, `list-custom`은 설정 파일을 대상으로 하고 실행 중인
+프록시에는 카탈로그 동기화로 반영됩니다. 나머지는 실행 중인 관리 API를 사용하므로 프록시가 떠
+있어야 합니다(`ocx start` 또는 설치된 서비스).
+
+| 하위 명령 | 플래그 | 동작 |
+| --- | --- | --- |
+| `list` (기본) | `--provider <name>`, `--json` | 설정에 시드된 모델을 나열합니다. |
+| `live` | `--provider <name>`, `--json` | 런타임에 발견된 모델까지 포함해 실제 카탈로그를 읽습니다. 각 행에 `native`/`routed`, `custom`, `enabled`/`disabled`가 표시됩니다. |
+| `add <provider> <modelId>` | `--display-name <name>`, `--context-window <tokens>`, `--modalities <text,image,audio>` | 프로바이더 카탈로그가 광고하지 않는 모델을 등록합니다. |
+| `edit <custom-id>` | `--model-id <id>`, `--display-name <name\|->`, `--context-window <tokens\|0>`, `--modalities <text,image,audio\|->`, `--json` | 커스텀 모델을 수정합니다. `-`는 필드를 비우고 `0`은 컨텍스트 윈도를 지웁니다. |
+| `remove <custom-id\|provider/modelId>` | `--yes`, `--json` | 커스텀 모델을 삭제합니다. stdin이 대화형 터미널이 아니면 `--yes`가 필요합니다. |
+| `list-custom` | `--json` | 다른 하위 명령이 받는 `custom-id`와 함께 커스텀 모델을 보여줍니다. |
+| `enable <provider/model\|native-model>` | `--native`, `--json` | 모델 하나를 Codex에 노출합니다. |
+| `disable <provider/model\|native-model>` | `--native`, `--json` | 모델 하나를 Codex에서 숨깁니다. |
+| `provider <name> <on\|off>` | `--json` | 한 프로바이더의 모든 모델을 한 번의 쓰기로 켜거나 끕니다. |
+| `selected <provider>` | `--set <id,id...>`, `--clear`, `--json` | 프로바이더 모델 허용 목록을 읽거나 교체합니다. `--clear`는 목록을 지워 전체 모델을 제공합니다. |
+| `context <status\|value <tokens>\|provider <name> <on\|off>\|all <on\|off>>` | `--json` | 컨텍스트 윈도 상한을 전역 또는 프로바이더 단위로 읽고 설정합니다. |
+| `shadow <status\|set> [model\|-]` | `--enabled <on\|off>`, `--json` | 백그라운드 shadow-call 모델을 읽거나 설정합니다. `-`는 모델을 지웁니다. |
+
+```bash
+ocx models live --json                                  # 지금 Codex가 실제로 보는 목록
+ocx models disable anthropic/claude-haiku-4             # 라우팅 모델 하나 숨기기
+ocx models enable gpt-5.6-sol --native                  # 네이티브 모델은 --native가 필요합니다
+ocx models provider zenmux off                          # 프로바이더 단위로 한 번에 숨기기
+ocx models selected anthropic --set claude-opus-5,claude-fable-5
+ocx models selected anthropic --clear                   # 허용 목록 해제
+ocx models add deepseek deepseek-v4 --display-name 'DeepSeek V4' --context-window 128000 --modalities text,image
+ocx models list-custom --json                           # edit/remove에 쓸 custom-id 확인
+ocx models remove deepseek/deepseek-v4 --yes
+```
+
+모델 선택자는 라우팅 모델은 `provider/model`, 네이티브 OpenAI 모델은 id만 쓰고 `--native`를
+붙입니다. `--modalities`는 `text`, `image`, `audio`만 받습니다. Codex가 이 필드를 닫힌 enum으로
+파싱해서 다른 값이 하나라도 있으면 **카탈로그 전체를 거부**하므로, CLI가 잘못된 값을 미리 거절해
+Codex가 읽지 못하는 파일을 쓰지 않게 합니다.
 
 ### `ocx provider <subcommand>`
 
