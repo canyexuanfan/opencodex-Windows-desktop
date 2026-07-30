@@ -76,18 +76,60 @@
   font-variant-numeric: tabular-nums;
 }
 
+/*
+  Picker box: the model list is the only long region on this tab, and letting it run to full
+  height pushed the Featured roster off screen. The box caps it so the tab fits one screen.
+*/
+.swi-picker-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: var(--space-2);
+}
+
+.swi-picker-box .subagents-workspace-rail-search {
+  flex: 0 0 auto;
+}
+
 .subagents-workspace-rail-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  /*
-    No inner scroll box. Stacked full width, an own scroller here traps the wheel: the list
-    consumes the gesture and the page underneath never moves, so the Featured section below
-    is unreachable by scrolling. Let the list grow and the page scroll normally.
-  */
   min-height: 0;
-  /* No scrollbar track to dodge any more; keep a little end breathing room. */
-  padding-block-end: var(--space-3);
+}
+
+/*
+  Inner scroller, scoped to the boxed picker. An earlier version trapped the wheel because it
+  contained the overscroll chain, so the page never moved once the pointer was over the list.
+  `overscroll-behavior: auto` hands the gesture back to the page at either end, which is the
+  same arrangement the storage rail uses.
+*/
+/*
+  One row is 42px tall with a 4px gap, so a clean box height is always `n * 46 - 4`. The
+  helpers below keep every cap on that grid; a plain `vh` cap lands mid-row and the list looks
+  clipped rather than scrollable.
+*/
+.swi-picker-box {
+  --swi-row-step: 46px;
+}
+
+.swi-picker-box .subagents-workspace-rail-list {
+  /* Fallback for engines without stepped-value functions: 10 rows. */
+  max-height: min(456px, 52vh);
+  overflow-y: auto;
+  overscroll-behavior: auto;
+  scrollbar-gutter: stable;
+}
+
+/* Round the viewport-relative cap down to a whole row count so the box never ends mid-row. */
+@supports (height: round(down, 50vh, 46px)) {
+  .swi-picker-box .subagents-workspace-rail-list {
+    max-height: calc(round(down, min(456px, 52vh) + 4px, var(--swi-row-step)) - 4px);
+  }
 }
 
 .subagents-workspace-rail-group {
@@ -455,11 +497,31 @@
   .subagents-workspace-root {
     min-height: auto;
   }
+
+  .swi-picker-box .subagents-workspace-rail-list {
+    max-height: min(318px, 46vh);
+  }
+
+  @supports (height: round(down, 50vh, 46px)) {
+    .swi-picker-box .subagents-workspace-rail-list {
+      max-height: calc(round(down, min(318px, 46vh) + 4px, var(--swi-row-step)) - 4px);
+    }
+  }
 }
 
 /* Mobile: sidebar is a drawer. */
 @media (max-width: 768px) {
   .subagents-workspace-root {
     min-height: auto;
+  }
+
+  .swi-picker-box .subagents-workspace-rail-list {
+    max-height: min(272px, 44vh);
+  }
+
+  @supports (height: round(down, 50vh, 46px)) {
+    .swi-picker-box .subagents-workspace-rail-list {
+      max-height: calc(round(down, min(272px, 44vh) + 4px, var(--swi-row-step)) - 4px);
+    }
   }
 }

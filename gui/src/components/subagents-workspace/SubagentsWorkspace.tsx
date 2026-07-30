@@ -119,55 +119,57 @@ export default function SubagentsWorkspace({
             <h2 className="swi-featured-title">{t("sub.models")}</h2>
             <span className="swi-featured-count">{availableFiltered.length}</span>
           </div>
-          <div className="subagents-workspace-rail-search">
-            <input
-              className="input"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder={t("sub.search")}
-              aria-label={t("sub.search")}
-            />
-          </div>
-          <div className="subagents-workspace-rail-list">
-            {availableFiltered.length === 0 ? (
-              <span className="subagents-workspace-rail-empty">{t("sub.noModels")}</span>
-            ) : (
-              availableFiltered.map(m => {
-                const isFeatured = chosenSet.has(m);
-                const priority = isFeatured ? chosen.indexOf(m) + 1 : null;
-                // A featured row can always be removed; only adding is blocked when full.
-                const blocked = !isFeatured && (full || busy);
-                return (
-                  <div
-                    key={m}
-                    className={`subagents-workspace-rail-row${isFeatured ? " subagents-workspace-rail-row--selected" : ""}`}
-                  >
-                    <span className="subagents-workspace-rail-row-main">
-                      <span className="swi-rail-priority">{priority ?? ""}</span>
-                      <IconBot className="swi-rail-icon" aria-hidden="true" />
-                      <span className="subagents-workspace-rail-name">{modelLabel(m)}</span>
-                    </span>
-                    <button
-                      type="button"
-                      className={`subagents-workspace-rail-toggle${isFeatured ? " subagents-workspace-rail-toggle--on" : ""}${blocked ? " subagents-workspace-rail-toggle--disabled" : ""}`}
-                      onClick={() => { if (!blocked) onToggle(m); }}
-                      disabled={blocked}
-                      aria-pressed={isFeatured}
-                      aria-label={isFeatured
-                        ? t("sub.workspace.removeFromFeatured", { m })
-                        : t("sub.workspace.addToFeatured", { m })}
-                      title={isFeatured
-                        ? t("sub.workspace.removeFromFeatured", { m })
-                        : full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m })}
+          <div className="swi-picker-box">
+            <div className="subagents-workspace-rail-search">
+              <input
+                className="input"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder={t("sub.search")}
+                aria-label={t("sub.search")}
+              />
+            </div>
+            <div className="subagents-workspace-rail-list">
+              {availableFiltered.length === 0 ? (
+                <span className="subagents-workspace-rail-empty">{t("sub.noModels")}</span>
+              ) : (
+                availableFiltered.map(m => {
+                  const isFeatured = chosenSet.has(m);
+                  const priority = isFeatured ? chosen.indexOf(m) + 1 : null;
+                  // A featured row can always be removed; only adding is blocked when full.
+                  const blocked = !isFeatured && (full || busy);
+                  return (
+                    <div
+                      key={m}
+                      className={`subagents-workspace-rail-row${isFeatured ? " subagents-workspace-rail-row--selected" : ""}`}
                     >
-                      {isFeatured
-                        ? <IconCheck style={{ width: 14, height: 14 }} />
-                        : <IconPlus style={{ width: 14, height: 14 }} />}
-                    </button>
-                  </div>
-                );
-              })
-            )}
+                      <span className="subagents-workspace-rail-row-main">
+                        <span className="swi-rail-priority">{priority ?? ""}</span>
+                        <IconBot className="swi-rail-icon" aria-hidden="true" />
+                        <span className="subagents-workspace-rail-name">{modelLabel(m)}</span>
+                      </span>
+                      <button
+                        type="button"
+                        className={`subagents-workspace-rail-toggle${isFeatured ? " subagents-workspace-rail-toggle--on" : ""}${blocked ? " subagents-workspace-rail-toggle--disabled" : ""}`}
+                        onClick={() => { if (!blocked) onToggle(m); }}
+                        disabled={blocked}
+                        aria-pressed={isFeatured}
+                        aria-label={isFeatured
+                          ? t("sub.workspace.removeFromFeatured", { m })
+                          : t("sub.workspace.addToFeatured", { m })}
+                        title={isFeatured
+                          ? t("sub.workspace.removeFromFeatured", { m })
+                          : full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m })}
+                      >
+                        {isFeatured
+                          ? <IconCheck style={{ width: 14, height: 14 }} />
+                          : <IconPlus style={{ width: 14, height: 14 }} />}
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         </section>
       </div>
