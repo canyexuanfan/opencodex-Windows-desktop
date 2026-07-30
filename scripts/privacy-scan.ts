@@ -37,6 +37,17 @@ const DEVLOG_PLACEHOLDER_EMAILS = new Set([
   ["work", "corp.com"].join("@"),
 ]);
 
+/**
+ * Exact fake probes preserved as historic scan evidence in the devlog publication
+ * record. Keep this limited to that file and those values: the record proves all
+ * three detectors worked on a staged file before the probe was removed. Construct
+ * the strings from fragments so this scanner does not report its own allowances.
+ */
+const DEVLOG_PUBLICATION_PROOF_FILE = "devlog/_plan/260730_devlog_publication_feasibility/030_wp3_wp4_execution_record.md";
+const DEVLOG_PUBLICATION_PROOF_TOKEN = ["sk-", "liveKeyShaped9", "x8w7v6u5", "t4s3r2q1p0"].join("");
+const DEVLOG_PUBLICATION_PROOF_HOME_USERNAME = ["someone", "else"].join("");
+const DEVLOG_PUBLICATION_PROOF_EMAIL = ["stranger", "third-party.example.org"].join("@");
+
 function gitLsFiles(): string[] {
   const result = Bun.spawnSync(["git", "ls-files"], { stdout: "pipe", stderr: "pipe" });
   if (!result.success) {
@@ -73,6 +84,7 @@ function lineAt(text: string, index: number): string {
 
 function isAllowedEmail(file: string, email: string): boolean {
   if (file === "scripts/privacy-scan.ts" && email === "a@b.com") return true;
+  if (file === DEVLOG_PUBLICATION_PROOF_FILE && email === DEVLOG_PUBLICATION_PROOF_EMAIL) return true;
   const domain = email.split("@").at(1)?.toLowerCase() ?? "";
   if (domain === "example.test" || domain === "example.com" || domain === "test.com" || domain.endsWith(".test")) {
     return true;
@@ -115,6 +127,7 @@ function isGitAttributionContext(line: string): boolean {
     || (/^\s*\|/.test(line) && /\b[0-9a-f]{7,40}\b/.test(line));
 }
 function isAllowedHomePath(file: string, username: string): boolean {
+  if (file === DEVLOG_PUBLICATION_PROOF_FILE && username === DEVLOG_PUBLICATION_PROOF_HOME_USERNAME) return true;
   if (file.startsWith("tests/") && (username === "example" || username === "test" || username === "x")) {
     return true;
   }
@@ -131,6 +144,7 @@ function isAllowedHomePath(file: string, username: string): boolean {
 }
 
 function isAllowedTokenLooking(file: string, token: string): boolean {
+  if (file === DEVLOG_PUBLICATION_PROOF_FILE && token === DEVLOG_PUBLICATION_PROOF_TOKEN) return true;
   if (file.startsWith("tests/")) {
     // Test fixture sentinels: sk-rawsentinel..., sk-test-...
     return /^sk-(?:rawsentinel|test-)\d+[a-z]*$/.test(token);
