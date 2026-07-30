@@ -41,7 +41,8 @@ describe("OAuth provider reconciliation", () => {
           modelContextWindows: { "gemini-3.5-flash-low": 1_048_576 },
           project: "config-project-sentinel",
           note: "user-owned-note",
-          // Older Provider Settings saves materialized this effective default.
+          // This is deliberately ambiguous: old Provider Settings saves and manual edits
+          // persisted the same value, so the versioned migration normalizes both once.
           liveModels: true,
         },
       },
@@ -101,7 +102,7 @@ describe("OAuth provider reconciliation", () => {
     expect(config.providers["google-antigravity"].models).toHaveLength(6);
   });
 
-  test("normalizes pre-marker Antigravity rows even when authMode is omitted or non-OAuth", () => {
+  test("normalizes ambiguous pre-marker Antigravity rows even when authMode is omitted or non-OAuth", () => {
     const home = mkdtempSync(join(tmpdir(), "ocx-antigravity-authmode-reconcile-"));
     homes.push(home);
     process.env.OPENCODEX_HOME = home;
@@ -125,7 +126,7 @@ describe("OAuth provider reconciliation", () => {
     }
   });
 
-  test("seeds the static catalog during pre-marker re-login, then preserves later overrides", () => {
+  test("normalizes ambiguous pre-marker true during re-login, then preserves later overrides", () => {
     const config = {
       port: 10100,
       defaultProvider: "google-antigravity",

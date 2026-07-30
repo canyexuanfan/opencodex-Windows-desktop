@@ -630,8 +630,10 @@ export function buildModelsRequest(prov: OcxProviderConfig, apiKey: string | und
  * the primary source; this keeps the static fallback (and models-not-in-/models) current.
  *
  * Only touches providers that are registry-managed AND still `authMode: "oauth"`. Preset fields
- * are refreshed, while the registry's `liveModels` default is filled only when the user has no
- * explicit toggle. Persists + returns true when anything changed.
+ * are refreshed, while the registry's `liveModels` default is normally filled only when no value
+ * is stored. Antigravity has one versioned exception below because its old GUI-generated `true`
+ * cannot be distinguished from a hand-written pre-migration `true`. Persists + returns true when
+ * anything changed.
  */
 function cloneProviderField(value: unknown): unknown {
   if (Array.isArray(value)) return [...value];
@@ -668,9 +670,11 @@ export function reconcileOAuthProviders(config: OcxConfig): boolean {
     config.googleAntigravityStaticCatalogVersion !== GOOGLE_ANTIGRAVITY_STATIC_CATALOG_VERSION;
   for (const [name, prov] of Object.entries(config.providers)) {
     const def = OAUTH_PROVIDERS[name];
-    // Normalize the canonical row before the OAuth-only reconciliation guard. Legacy GUI
-    // saves can carry an omitted or non-OAuth authMode, and stamping the migration marker
-    // while skipping such a row would make its materialized `true` look user-authored later.
+    // Normalize the canonical row before the OAuth-only reconciliation guard. The old GUI and a
+    // manual edit both persist the same bare `true`, with no source metadata, so every ambiguous
+    // pre-marker value is reset once. A deliberate live-discovery choice can be re-enabled after
+    // the marker and is then preserved. Do this before the guard so omitted/non-OAuth authMode
+    // rows do not get stamped without actually receiving the new static default.
     if (name === GOOGLE_ANTIGRAVITY_PROVIDER && migrateAntigravityStaticCatalog && prov.liveModels !== false) {
       prov.liveModels = false;
       changed = true;
@@ -686,9 +690,9 @@ export function reconcileOAuthProviders(config: OcxConfig): boolean {
       }
       changed = true;
     }
-    // Before this marker existed, the GUI materialized an omitted `liveModels` as `true`
-    // on any settings save. The pre-guard normalization above resets that legacy state
-    // once; choices made after this migration are preserved by the version boundary.
+    // Before this marker existed, the GUI materialized an omitted `liveModels` as `true` on any
+    // settings save. Since persisted values have no provenance, the pre-guard normalization above
+    // intentionally resets all pre-marker `true` values once. Later choices are version-bounded.
     if (prov.liveModels === undefined && preset.liveModels !== undefined) {
       prov.liveModels = preset.liveModels;
       changed = true;
@@ -764,9 +768,9 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   const existing = config.providers[provider];
   const next: OcxProviderConfig = { ...def.providerConfig };
   // `liveModels` is a user-facing provider toggle. A registry default seeds new rows, but an
-  // explicit post-migration choice must survive re-login and the latest-config upsert. A
-  // pre-marker Antigravity `true` may have been materialized by the old GUI, so it is reset
-  // once instead of being misclassified as user provenance.
+  // explicit post-migration choice must survive re-login and the latest-config upsert. Old GUI
+  // saves and manual edits left identical pre-marker `true` values, so that ambiguous state is
+  // reset once; users who deliberately forced discovery can re-enable it after migration.
   const preserveExistingLiveModels = provider !== GOOGLE_ANTIGRAVITY_PROVIDER
     || config.googleAntigravityStaticCatalogVersion === GOOGLE_ANTIGRAVITY_STATIC_CATALOG_VERSION;
   if (preserveExistingLiveModels && typeof existing?.liveModels === "boolean") {
