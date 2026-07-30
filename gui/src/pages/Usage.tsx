@@ -7,6 +7,8 @@ import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
 import { useDataSurface } from "../data-surface";
 import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { SectionTabs } from "../components/section-tabs";
+import { sectionAnchorId } from "../section-anchors";
 
 type Range = "all" | "30d" | "7d";
 type UsageSurface = "all" | "codex" | "claude" | "grok";
@@ -648,8 +650,6 @@ function UsageWorkspaceBody({
   onModelQuery,
   sortedProviders,
   range,
-  selectedSection,
-  onSelectSection,
   locale,
   t,
 }: {
@@ -662,8 +662,6 @@ function UsageWorkspaceBody({
   onModelQuery: (query: string) => void;
   sortedProviders: UsageProvider[];
   range: Range;
-  selectedSection: string;
-  onSelectSection: (id: string) => void;
   locale: Locale;
   t: TFn;
 }) {
@@ -703,33 +701,26 @@ function UsageWorkspaceBody({
       body: data ? <UsageCoveragePanel summary={data.summary} t={t} workspace /> : null,
     },
   ];
-  const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
-  const mainBody = empty ? <EmptyState title={t("usage.empty")} /> : selected.body;
-
   return (
     <div className="usage-workspace-shell">
       <div className="usage-workspace-root">
-        <aside className="usage-workspace-rail" aria-label={t("usage.workspace.sections")}>
-          <div className="usage-workspace-rail-header">
-            <span className="usage-workspace-rail-title">{t("usage.title")}</span>
-          </div>
-          <div className="usage-workspace-rail-list">
-            {sections.map(s => (
-              <button
-                key={s.id}
-                type="button"
-                className={`usage-workspace-rail-row${selectedSection === s.id ? " usage-workspace-rail-row--selected" : ""}`}
-                onClick={() => onSelectSection(s.id)}
-                aria-current={selectedSection === s.id ? "true" : undefined}
-              >
-                <span className="usage-workspace-rail-name">{s.label}</span>
-                <span className="usage-workspace-rail-meta">{s.meta}</span>
-              </button>
-            ))}
-          </div>
-        </aside>
+        {/*
+          Every section stays in the document and the page scrolls; the pinned strip scrolls
+          to one instead of swapping the panel. Switching by replacement meant only one
+          section existed at a time, so the report could not be read by scrolling at all.
+        */}
+        <SectionTabs
+          scope="usage"
+          ariaLabel={t("usage.workspace.sections")}
+          items={sections.map(s => ({ id: s.id, label: s.label, meta: s.meta }))}
+        />
         <section className="usage-workspace-main" aria-label={t("usage.workspace.report")}>
-          <div className="usw-body">{mainBody}</div>
+          {empty ? <EmptyState title={t("usage.empty")} /> : sections.map(s => (
+            <div key={s.id} id={sectionAnchorId("usage", s.id)} className="usw-body usw-section-block">
+              <h3 className="usw-section-heading">{s.label}</h3>
+              {s.body}
+            </div>
+          ))}
         </section>
       </div>
     </div>
@@ -759,7 +750,6 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [range, setRange] = useState<Range>("30d");
   const [surface, setSurface] = useState<UsageSurface>("all");
   const [modelQuery, setModelQuery] = useState("");
-  const [selectedSection, setSelectedSection] = useState("overview");
 
   const loadUsage = useCallback(async (signal: AbortSignal): Promise<UsageResponse> => {
     const response = await fetch(`${apiBase}/api/usage?range=${range}&surface=${surface}`, { signal });
@@ -832,8 +822,6 @@ export default function Usage({ apiBase }: { apiBase: string }) {
             onModelQuery={setModelQuery}
             sortedProviders={sortedProviders}
             range={range}
-            selectedSection={selectedSection}
-            onSelectSection={setSelectedSection}
             locale={locale}
             t={t}
           />

@@ -419,6 +419,30 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .page-tab:hover { color: var(--text); }
 .page-tab--active { color: var(--text); border-bottom-color: var(--accent); font-weight: var(--weight-semibold); }
 .page-tab:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
+
+/*
+  Sticky section strip: the page scrolls normally and every section stays in the document,
+  so the strip has to stay reachable while you read down the page.
+*/
+.section-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
+  /* The strip sits over content once pinned; without this the rows show through its gap. */
+  padding-top: 6px;
+  margin-top: 0;
+}
+.section-tab-meta {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-regular);
+  font-variant-numeric: tabular-nums;
+}
+.page-tab--active > .section-tab-meta { color: var(--text); }
+/* Keep a scrolled-to heading clear of the pinned strip. */
+[id*="-section-"] { scroll-margin-top: 56px; }
 .page-sub b { color: var(--text); font-weight: var(--weight-semibold); }
 .api-page h2 svg { width: 1em; height: 1em; vertical-align: -0.16em; }
 .api-page .page-sub code {

@@ -17,7 +17,12 @@
 
 .subagents-workspace-root {
   display: grid;
-  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+  /*
+    Single column at every width: the two-pane rail split read as cramped on this tab,
+    so the picker sits above the featured list instead of beside it. The responsive
+    blocks below are now the same shape as the default and only adjust the seam.
+  */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
   width: 100%;
   max-width: 100%;
@@ -30,9 +35,25 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  border-right: 1px solid var(--border);
-  padding-right: var(--space-3);
+  /* Stacked layout: the seam runs underneath, not down the side. */
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-3);
   min-width: 0;
+}
+
+/* Stacked sections: featured roster, then the picker. */
+.subagents-workspace-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.swi-rail-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--faint);
 }
 
 .subagents-workspace-rail-header {
@@ -59,12 +80,13 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  overflow-y: auto;
-  max-height: 560px;
+  /*
+    No inner scroll box. Stacked full width, an own scroller here traps the wheel: the list
+    consumes the gesture and the page underneath never moves, so the Featured section below
+    is unreachable by scrolling. Let the list grow and the page scroll normally.
+  */
   min-height: 0;
-  /* Keep +/- toggles clear of the scrollbar track (10px) and leave end breathing room. */
-  scrollbar-gutter: stable;
-  padding-inline-end: 12px;
+  /* No scrollbar track to dodge any more; keep a little end breathing room. */
   padding-block-end: var(--space-3);
 }
 
@@ -210,7 +232,7 @@
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  padding: 0 var(--space-2);
+  padding: 0;
 }
 
 .swi-featured-head {
@@ -426,45 +448,18 @@
 /* ── Responsive ───────────────────────────────────────── */
 
 /*
-  Stack rail above the main pane when the workspace shell is squeezed —
-  typically by the persistent desktop sidebar at ~900–1024px viewports —
-  not only at the mobile drawer breakpoint.
+  The layout is single-column at every width now, so these blocks no longer switch the
+  grid; they only cap the picker height where vertical space is tight.
 */
 @container subagents-workspace (max-width: 720px) {
   .subagents-workspace-root {
-    grid-template-columns: minmax(0, 1fr);
     min-height: auto;
-  }
-  .subagents-workspace-rail {
-    border-right: none;
-    padding-right: 0;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: var(--space-3);
-  }
-  .subagents-workspace-rail-list {
-    max-height: 320px;
-  }
-  .subagents-workspace-main {
-    padding: var(--space-2) 0 0;
   }
 }
 
-/* Mobile: sidebar is a drawer; still prefer rail-on-top for touch. */
+/* Mobile: sidebar is a drawer. */
 @media (max-width: 768px) {
   .subagents-workspace-root {
-    grid-template-columns: minmax(0, 1fr);
     min-height: auto;
-  }
-  .subagents-workspace-rail {
-    border-right: none;
-    padding-right: 0;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: var(--space-3);
-  }
-  .subagents-workspace-rail-list {
-    max-height: 320px;
-  }
-  .subagents-workspace-main {
-    padding: var(--space-2) 0 0;
   }
 }

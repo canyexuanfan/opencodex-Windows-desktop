@@ -1271,7 +1271,7 @@ function StorageCleanupCard({
 
   return (
     <section className="panel storage-cleanup-card" aria-labelledby="storage-cleanup-card-title">
-      <div className="usage-segmented storage-cleanup-card__tabs" role="tablist" aria-label={t("storage.cleanupCard.tabs")}>
+      <div className="page-tabs storage-cleanup-card__tabs" role="tablist" aria-label={t("storage.cleanupCard.tabs")}>
         {tabs.map(({ id, label, ref }) => (
           <button
             key={id}
@@ -1282,7 +1282,7 @@ function StorageCleanupCard({
             aria-selected={tab === id}
             aria-controls={`storage-cleanup-panel-${id}`}
             tabIndex={tab === id ? 0 : -1}
-            className={`usage-segmented-btn${tab === id ? " active" : ""}`}
+            className={`page-tab${tab === id ? " page-tab--active" : ""}`}
             onKeyDown={handleTabKey}
             onClick={() => selectTab(id)}
           >
