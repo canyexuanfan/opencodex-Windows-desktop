@@ -92,4 +92,14 @@ process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
 process.once("SIGHUP", () => void shutdown());
 process.once("exit", cleanupRuntimeFiles);
+process.stdin.setEncoding("utf8");
+let stdinBuffer = "";
+process.stdin.on("data", (chunk: string) => {
+  stdinBuffer += chunk;
+  const lines = stdinBuffer.split(/\r?\n/);
+  stdinBuffer = lines.pop() ?? "";
+  for (const line of lines) {
+    if (line.trim() === "stop") void shutdown();
+  }
+});
 void main();

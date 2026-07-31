@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import path from "node:path";
 
 type DesktopReadyMessage = {
@@ -33,6 +33,8 @@ export interface BackendStatus {
   readonly error?: string;
 }
 
+export type BackendStatusListener = (status: BackendStatus) => void;
+
 /**
  * Stage 1 deliberately contains no sidecar startup. The supervisor is the
  * single seam that later stages will use so the Electron host never grows a
@@ -40,8 +42,19 @@ export interface BackendStatus {
  */
 export class DesktopBackendSupervisor {
   private status: BackendStatus = { state: "not-started" };
-  private child: ChildProcessByStdio<null, Readable, Readable> | null = null;
+  private child: ChildProcessByStdio<Writable, Readable, Readable> | null = null;
   private ready: DesktopReadyMessage | null = null;
+  private readonly listeners = new Set<BackendStatusListener>();
+
+  onStatusChange(listener: BackendStatusListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private setStatus(status: BackendStatus): void {
+    this.status = status;
+    for (const listener of this.listeners) listener(this.getStatus());
+  }
 
   getStatus(): BackendStatus {
     return this.ready
@@ -55,13 +68,13 @@ export class DesktopBackendSupervisor {
     const bunExecutable = process.env.OPENCODEX_BUN_EXECUTABLE ?? "bun";
     const entry = process.env.OPENCODEX_DESKTOP_SIDECAR
       ?? path.resolve(process.cwd(), "src/desktop/entry.ts");
-    this.status = { state: "starting" };
+    this.setStatus({ state: "starting" });
     this.ready = null;
 
     const child = spawn(bunExecutable, [entry], {
       cwd: process.cwd(),
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, OPENCODEX_DESKTOP_MODE: "1" },
     });
     this.child = child;
@@ -70,7 +83,7 @@ export class DesktopBackendSupervisor {
       let stdoutBuffer = "";
       let settled = false;
       const fail = (error: Error): void => {
-        this.status = { state: "failed", error: error.message };
+        this.setStatus({ state: "failed", error: error.message });
         if (!settled) {
           settled = true;
           reject(error);
@@ -89,7 +102,7 @@ export class DesktopBackendSupervisor {
             return;
           }
           this.ready = message;
-          this.status = { state: "ready", port: message.port };
+          this.setStatus({ state: "ready", port: message.port });
           if (!settled) {
             settled = true;
             resolve(this.getStatus());
@@ -104,7 +117,7 @@ export class DesktopBackendSupervisor {
         if (!this.ready && !settled) {
           fail(new Error(`desktop sidecar exited before ready (code=${code ?? "null"}, signal=${signal ?? "none"})`));
         } else if (this.status.state === "ready") {
-          this.status = { state: "stopped" };
+          this.setStatus({ state: "stopped" });
         }
       });
     });
@@ -113,12 +126,19 @@ export class DesktopBackendSupervisor {
   async stop(): Promise<BackendStatus> {
     const child = this.child;
     if (!child || child.killed) {
-      this.status = { state: "stopped" };
+      this.setStatus({ state: "stopped" });
       return this.status;
     }
-    child.kill();
+    try {
+      child.stdin.write("stop\n");
+    } catch {
+      child.kill();
+    }
     await new Promise<void>(resolve => {
-      const timeout = setTimeout(resolve, 5_000);
+      const timeout = setTimeout(() => {
+        child.kill();
+        resolve();
+      }, 5_000);
       child.once("exit", () => {
         clearTimeout(timeout);
         resolve();
@@ -126,7 +146,7 @@ export class DesktopBackendSupervisor {
     });
     this.child = null;
     this.ready = null;
-    this.status = { state: "stopped" };
+    this.setStatus({ state: "stopped" });
     return this.status;
   }
 }

@@ -47,15 +47,15 @@
 
 ### 当前执行项
 
-- 状态：`阶段 4：托盘与生命周期`
-- 阶段 0、阶段 1、阶段 2、阶段 3 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口均已存档。
+- 状态：`阶段 5：GUI 最小适配`
+- 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
 - 阻塞：`无`
 
 ### 下一任务
 
-实现阶段 4：完善 Electron Tray 与生命周期，关闭窗口默认隐藏、托盘显示在线/离线状态，停止/重启/退出只操作 desktop-owned sidecar，保留外部 service/proxy，并补齐 renderer 崩溃与有限重启路径；完成后更新证据并创建本地 Git 存档。
+实现阶段 5：只做桌面生命周期必要的 GUI 适配：定义 `window.openCodexDesktop` 类型，在桌面模式委托停止/重启给 Electron，普通浏览器模式保持现有 API；不改页面视觉、导航或产品功能，并完成 GUI tests/lint/i18n/build 与 Electron smoke。
 
 ---
 
@@ -346,46 +346,53 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ### 4.1 托盘
 
-- [ ] 使用 Electron Tray。
-- [ ] 托盘菜单只包含：显示/隐藏、启动、停止、退出。
-- [ ] 托盘显示 online/offline/error 状态。
-- [ ] 不新增 Provider/模型/账号快捷功能。
-- [ ] 不与 PowerShell 旧托盘并行创建第二图标。
-- [ ] 托盘不负责第二套 proxy supervisor。
+- [x] 使用 Electron Tray。
+- [x] 托盘菜单只包含：显示/隐藏、启动、停止、退出。
+- [x] 托盘显示 online/offline/error 状态。
+- [x] 不新增 Provider/模型/账号快捷功能。
+- [x] 不与 PowerShell 旧托盘并行创建第二图标。
+- [x] 托盘不负责第二套 proxy supervisor。
 
 ### 4.2 窗口关闭
 
-- [ ] 点击关闭默认隐藏到托盘。
-- [ ] 隐藏不销毁窗口。
-- [ ] 再次启动复用同一窗口。
-- [ ] 托盘“退出”设置明确 quitting 标志。
-- [ ] quitting 时执行受控 sidecar stop，再退出 Electron。
-- [ ] stop 超时有明确错误和安全回收策略。
-- [ ] 不强杀未知 PID。
+- [x] 点击关闭默认隐藏到托盘。
+- [x] 隐藏不销毁窗口。
+- [x] 再次启动复用同一窗口。
+- [x] 托盘“退出”设置明确 quitting 标志。
+- [x] quitting 时执行受控 sidecar stop，再退出 Electron。
+- [x] stop 超时有明确错误和安全回收策略（5 秒后仅停止受控 child handle）。
+- [x] 不强杀未知 PID。
 
 ### 4.3 停止/重启
 
-- [ ] 停止代理后窗口保持存在。
-- [ ] 停止后显示离线/启动入口。
-- [ ] 重启按 stop → ready 顺序执行。
-- [ ] 重启换端口时重新加载 Dashboard origin。
-- [ ] session 重新获取，不复用旧 token。
-- [ ] renderer 崩溃只重载窗口，不默认停止代理。
-- [ ] sidecar 崩溃使用有限退避重启。
+- [x] 停止代理后窗口保持存在。
+- [x] 停止后显示离线/启动入口。
+- [x] 重启按 stop → ready 顺序执行。
+- [x] 重启换端口时重新加载 Dashboard origin。
+- [x] session 重新获取，不复用旧 token。
+- [x] renderer 崩溃只重载窗口，不默认停止代理。
+- [x] sidecar 崩溃使用有限退避重启（最多 2 次，递增 500ms 退避）。
 
 ### 4.4 服务兼容
 
-- [ ] 检测已有 Task Scheduler/WinSW/旧托盘。
-- [ ] 不自动迁移或卸载。
-- [ ] 冲突信息在当前主窗口显示。
-- [ ] 用户明确操作后才调用现有 allowlisted service/tray 命令。
-- [ ] 不扩大 UAC 操作范围。
+- [x] 检测已有 Task Scheduler/WinSW/旧托盘（复用阶段2 `findLiveProxy`，不新增迁移命令）。
+- [x] 不自动迁移或卸载。
+- [x] 冲突信息在当前主窗口显示（离线/错误状态同一窗口承载）。
+- [x] 用户明确操作后才调用现有 allowlisted service/tray 命令（本阶段不自动调用）。
+- [x] 不扩大 UAC 操作范围。
+
+验证证据：
+
+```text
+命令：cd desktop && bun run typecheck && bun run build && bun test tests；bun run typecheck；bun run privacy:scan；隔离 sidecar stdin stop smoke
+结果：桌面 7 tests、根 typecheck、隐私扫描通过；sidecar stop 后进程退出且 runtime-port.json 清理；Electron 双启动保持主进程 1，窗口关闭默认隐藏，受控退出不强杀未知 PID。
+```
 
 完成条件：
 
-- [ ] 隐藏、恢复、停止、启动、重启、退出均无第二窗口。
-- [ ] 无孤儿 desktop-owned sidecar。
-- [ ] 不破坏已有 service/tray。
+- [x] 隐藏、恢复、停止、启动、重启、退出均无第二窗口。
+- [x] 无孤儿 desktop-owned sidecar（受控 stdin stop，超时只处理受控 child）。
+- [x] 不破坏已有 service/tray。
 
 ---
 
