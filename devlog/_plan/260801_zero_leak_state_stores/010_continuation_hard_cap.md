@@ -9,10 +9,14 @@ Binding inputs: `000_state_store_inventory.md` §1, `005_impl_roadmap.md` locked
 
 Make the Responses continuation store authoritative but unconditionally bounded in RAM.
 An entry that would leave resident bytes above 64 MiB is synchronously written to a
-dedicated id-keyed spill file, fsynced, atomically renamed, and only then
-replaced by a small RAM stub. Any write failure removes the resident entry and records
-a bounded tombstone. A stub whose file is missing or corrupt produces the same explicit
-structured continuation-not-found response; it never forwards a naked delta.
+dedicated id-keyed, generation-distinct spill file, file-fsynced, atomically published
+(no-replace link/exclusive-copy),
+and only then replaced by a small RAM stub. This is process-crash durability, not a
+power-loss guarantee: this phase does not claim parent-directory fsync portability.
+Any write failure removes the resident entry and records a bounded tombstone. A stub
+whose file is missing or corrupt produces the same terminal structured
+continuation-not-found response telling the caller to resend the full context; it never
+forwards a naked delta and does not claim an automatic client retry.
 
 The legacy debounced `responses-state.json` path remains the persistence path for small
 resident entries. Its 2 MiB per-entry and 24 MiB snapshot selection rules are not reused
@@ -37,8 +41,8 @@ overlapping demotion authority and could raise the local store above the global 
   `states.size > 1`. This is the last-entry exemption to delete.
 - `src/responses/state.ts:336-350` returns the original request on every miss; the
   caller cannot distinguish ordinary absence from a known broken spill.
-- `src/responses/state.ts:363-408` reads provider metadata and exposes observe-only
-  metrics without loading, pruning, or serializing.
+- `src/responses/state.ts:363-369` reads provider metadata and does lazy-load/prune;
+  `:371-408` exposes observe-only metrics without loading, pruning, or serializing.
 - `src/responses/state.ts:415-455` synchronously stores expanded input plus output and
   immediately prunes/schedules persistence.
 - `src/server/responses/core.ts:1092-1115` expands before parsing and detects expansion
@@ -54,6 +58,24 @@ overlapping demotion authority and could raise the local store above the global 
 Inventory blast-radius constraint: “evicting/rejecting the newest row makes the next
 chained turn a naked delta.” This phase therefore spills or emits an explicit miss; it
 does not truncate replay history.
+
+### A-gate corrections (Banach) — consumer contract ledger
+
+The implementation and regression pass must account for every current consumer of the
+changed state contract:
+
+- `src/responses/parser.ts:269` consumes replay-prefix provenance; spill materialization
+  must set the provenance WeakMap on the exact expanded body just like a resident hit.
+- `src/server/lifecycle.ts:89` awaits `flushResponseState()` during shutdown; a concurrent
+  legacy snapshot flush must serialize the already-committed stub/tombstone representation
+  and must never inline, lose, or race a spill payload.
+- `src/server/management/system-routes.ts:88` publishes `responseStateMetrics()`;
+  `gui/src/components/MemoryObservabilityCard.tsx:27` owns its GUI type and
+  `tests/memory-watchdog.test.ts:181` owns the scalar/privacy contract. All added fields
+  remain finite numbers and expose no response ids, paths, digests, or payload content.
+- `tests/issue-702-expired-replay-state.test.ts:250-283` remains the fail-closed reference:
+  known broken local state must stop before upstream I/O, while an ordinary miss on an
+  upstream-capable API-key Responses provider retains its current native-continuation path.
 
 ## File changes
 
@@ -79,7 +101,7 @@ export interface ResponseSpillPayload {
 
 export interface ResponseSpillRef {
   version: 1;
-  fileName: string;     // sanitized response id + id digest + payload size
+  fileName: string;     // id slug + id digest + payload digest prefix + generation + size
   digest: string;       // lowercase SHA-256 of the exact UTF-8 file bytes
   payloadBytes: number;
 }
@@ -99,7 +121,10 @@ export function writeResponseSpillDurably(
   responseId: string,
   state: Omit<ResponseSpillPayload, "version" | "responseId">,
 ): ResponseSpillRef;
-export function readResponseSpill(ref: ResponseSpillRef): ResponseSpillReadResult;
+export function readResponseSpill(
+  responseId: string,
+  ref: ResponseSpillRef,
+): ResponseSpillReadResult;
 export function deleteResponseSpill(ref: ResponseSpillRef): void;
 export function recoverOrphanedResponseSpills(
   referencedFileNames: ReadonlySet<string>,
@@ -107,34 +132,66 @@ export function recoverOrphanedResponseSpills(
 ): ResponseSpillCleanupResult;
 ```
 
+#### A-gate corrections (Banach) — spill identity and process-crash durability
+
 `writeResponseSpillDurably()` transaction, in this exact order:
 
 1. Serialize `{version:1,responseId,createdAt,items,providers}` once and compute UTF-8
    bytes and SHA-256 from those exact bytes.
-2. Build an id-keyed basename
-   `<sanitized-id>.<id-digest-12>.<payloadBytes>.spill.json`. Normalize the id to NFC,
-   replace every character outside `[A-Za-z0-9._-]` with `_`, collapse repeated `_`,
-   trim the visible portion to 80 characters, and use `response` if it becomes empty.
-   `id-digest-12` is the first 12 lowercase hex characters of SHA-256(responseId), so
-   ids that sanitize/truncate to the same visible text cannot collide. Require the full
-   owned-file regex before joining it to the spill directory.
+2. Allocate a generation-unique basename
+   `<sanitized-id>.<id-digest-12>.<content-digest-24>.<generation>.<payloadBytes>.spill.json`.
+   Normalize the id to NFC, replace every character outside `[A-Za-z0-9._-]` with
+   `_`, collapse repeated `_`, trim the visible portion to 80 characters, and use
+   `response` if it becomes empty. `id-digest-12` is the first 12 lowercase hex
+   characters of SHA-256(responseId); `content-digest-24` is the first 24 lowercase
+   hex characters of the payload SHA-256 from step 1 (the prefix MUST be at least
+   16 hex characters). Without a
+   content component, re-spilling the same id with different content but equal
+   byte length would rename ONTO the live old file and destroy it before the stub
+   swap — a crash in that window leaves a persisted stub pointing at bytes with
+   the wrong digest. `generation` is a process-local monotonic counter; advance it
+   until the destination basename is absent. Old and new generations therefore
+   coexist on disk until the swap completes. Require the full owned-file regex
+   before joining it to the spill directory.
 3. Resolve `<config>/responses-state-spill/<basename>`; create/harden the directory
    to user-only permissions.
 4. Open a same-directory unique temp with `wx` and mode `0600`.
 5. Write all bytes, call `fsyncSync(fd)`, close the descriptor, and harden the temp.
-6. Rename temp to the id-keyed destination. If the basename already exists, accept it
-   only after regular-file, exact-size, response-id, and full-digest verification;
-   otherwise replace it through another same-directory temp. Replacement of a response
-   id deletes the old basename only after the new rename and stub swap succeed.
-7. Return the ref only after rename succeeds. On every failure, close/unlink the temp
+6. Link the temp to the newly allocated destination with an atomic NO-REPLACE
+   primitive (round-5 blocker 2: plain `renameSync` replaces an existing
+   destination on POSIX): use `fs.linkSync(temp, dest)` — which fails with
+   `EEXIST` when the destination exists — then `unlinkSync(temp)`; on Windows,
+   where `link` support varies by filesystem, fall back to `copyFileSync(temp,
+   dest, COPYFILE_EXCL)` + fsync of the copy. An `EEXIST` loss means another
+   writer allocated the same generation basename: advance the generation
+   counter and retry allocation (bounded retries), then treat persistent
+   failure as a sanitized write failure. The normal path never replaces an
+   existing destination: same-id/same-size and even same-content replacements
+   receive a distinct generation basename.
+   A different generation for the same id never shares a destination: the old generation's
+   file stays untouched through the publication and is unlinked only AFTER the new
+   publication and in-memory stub swap have both succeeded. A crash between publication
+   and swap leaves both
+   files; the stub still references the old valid generation and startup GC removes the
+   newer unreferenced file as an orphan.
+7. Return the ref only after publication succeeds. On every failure, close/unlink the temp
    best-effort and rethrow a sanitized error containing no response id or path.
 
-The id-keyed layout is selected over content-addressing because lifecycle, replacement,
-TTL, and tombstone ownership are all by response id. A sanitized visible component makes
-orphan diagnosis practical, the size component permits bounded startup accounting
-without opening every file, and the short id digest prevents collisions after
+The id+content+generation-keyed layout keeps lifecycle/TTL/tombstone ownership by response
+id while the content-digest and generation components provide replacement uniqueness.
+A sanitized visible component makes orphan diagnosis practical, the size component permits
+bounded startup accounting without opening every file, and the short id digest prevents collisions after
 sanitization/truncation. The full content digest remains in the stub and is verified on
 read; neither visible id nor filename size is trusted as integrity proof.
+
+Windows `renameSync(temp, existingDestination)` is not a portable atomic-replace
+primitive. Generation-distinct destination basenames make that caveat moot: 010 never
+intentionally publishes over the old file. The state owner preserves the old row and
+spill file while writing the candidate, swaps to the new stub only after the new
+publication succeeds, and only then unlinks the old file. File fsync before publication
+plus same-directory atomic no-replace publication (link / exclusive copy) is the
+process-crash durability boundary claimed here. Parent-directory fsync is
+not required by 010, so sudden-power-loss namespace durability remains outside the claim.
 
 This phase deliberately uses a synchronous transaction. `rememberResponseState()` is
 called from synchronous bridge completion callbacks (`src/bridge.ts:143,811-817` and
@@ -143,13 +200,31 @@ unbounded pending-write closure chain and a post-response stub race. The synchro
 path is the bounded in-flight window: at most one transaction exists on the JS thread,
 with no queue. Spills are exceptional, not the small-entry hot path.
 
-`readResponseSpill()` must reject symlinks/non-regular files, require the basename to
+`readResponseSpill(responseId, ref)` receives the trusted expected id from the in-memory
+map lookup. It must reject symlinks/non-regular files, require the basename to
 match the owned regex, require stat size to match both the filename size and
 `ref.payloadBytes`, enforce ref/content digest equality, validate the exact schema and
-matching `responseId`, and return `corrupt` on any parse,
+require `payload.responseId === responseId`, and return `corrupt` on any parse,
 shape, or digest failure. Never return partial items.
 
 ### MODIFY `src/responses/state.ts`
+
+### A-gate corrections (Banach) — failure-safe measurement and replacement
+
+Replace the current `JSON.stringify(entry.items).length` / weightless-on-error behavior at
+`src/responses/state.ts:52-60`. The one resident measurement serializes the complete retained
+payload `{responseId,createdAt,items,providers}` once and measures its UTF-8 bytes with
+`TextEncoder` or `Buffer.byteLength`; provider metadata and the map key are therefore part of
+admission accounting. Cached `sizeBytes` is this measured payload weight. A serialization
+failure rejects the candidate from resident storage and atomically replaces the old row, if
+any, with a bounded `spill-failed` tombstone before unlinking an old spill file; it must never
+retain a zero-weight or partially measured row.
+
+`setResidentEntry()` must not preserve the current delete-first behavior at
+`src/responses/state.ts:64-68`. Measure the complete candidate before mutating `states`. For
+an ordinary insert or resident-row replacement, commit the measured resident row and then
+run the normal synchronous prune/demotion loop. Replacement of an existing spill stub uses
+the separate literal-B2 transaction below and never installs an intermediary resident row.
 
 Replace the monomorphic row with this union:
 
@@ -191,7 +266,13 @@ export function previousResponseReplayFailure(body: unknown): PreviousResponseRe
 Centralize transitions; no caller mutates `states`, counters, or spill files directly:
 
 ```ts
+function measureResidentEntry(id: string, entry: ResidentInput): ResidentResponseState | null;
 function setResidentEntry(id: string, entry: ResidentInput): void;
+function replaceSpillEntryAtomically(
+  id: string,
+  expected: SpilledResponseState,
+  candidate: ResidentResponseState,
+): void;
 function swapResidentForSpill(id: string, expected: ResidentResponseState, ref: ResponseSpillRef): void;
 function replaceWithSpillFailure(id: string, expected?: StoredResponseState): void;
 function deleteEntry(id: string, options?: { deleteSpill?: boolean }): void;
@@ -200,9 +281,27 @@ function materializeEntry(id: string, entry: StoredResponseState):
   | { ok: false; failure: PreviousResponseReplayFailure };
 ```
 
-`deleteEntry()` subtracts the row's RAM `sizeBytes`; for a spill stub it also unlinks
-the dedicated file unless `deleteSpill:false` is used during a verified load/swap.
-Replacement and TTL/count eviction therefore remove old spill files.
+**Literal-B2 atomic replacement:** replacing an existing spill stub follows one transaction
+and never routes through `setResidentEntry()` or an intermediary resident row:
+
+1. Read `expected = states.get(id)` and measure the complete candidate while `expected`
+   remains installed and replay-addressable.
+2. Serialize the candidate and synchronously write, file-fsync, and publish the
+   distinct-generation spill file. Until publication succeeds, every lookup still sees and
+   can replay `expected`; the old file remains untouched.
+3. Build the new stub from the candidate's `createdAt`, provider metadata, measured stub
+   bytes, and returned `ResponseSpillRef`. Verify `states.get(id) === expected`, then perform
+   one accounting/map transition from the old stub directly to the new stub.
+4. Only after the new stub is installed, unlink `expected.spill` best-effort. A crash before
+   the swap leaves the old row/file authoritative and the new file orphan-recoverable; a
+   crash after the swap leaves the new row authoritative and the old file orphan-recoverable.
+5. Serialization or publication failure atomically replaces `expected` with the bounded
+   tombstone, then unlinks the old file; it never exposes a resident candidate or naked delta.
+
+`deleteEntry()` subtracts the row's RAM `sizeBytes`; for a spill stub it also unlinks the
+dedicated file unless `deleteSpill:false` is used during a verified atomic swap. TTL/count
+eviction therefore removes spill files. No `supersededSpill` field or secondary ownership
+state exists.
 
 Replace the byte loop with:
 
@@ -213,7 +312,11 @@ while (storedResponseBytes > byteCap() && states.size > 0) {
   const entry = states.get(oldestId)!;
   if (entry.kind !== "resident") { deleteEntry(oldestId); continue; }
   try {
-    const ref = writeResponseSpillDurably(oldestId, entry);
+    const ref = writeResponseSpillDurably(oldestId, {
+      createdAt: entry.createdAt,
+      items: entry.items,
+      ...(entry.providers ? { providers: entry.providers } : {}),
+    });
     swapResidentForSpill(oldestId, entry, ref); // only after durable success
   } catch {
     replaceWithSpillFailure(oldestId, entry);   // R2-1: no hot oversized row
@@ -229,7 +332,8 @@ Delete the `states.size > 1` exemption and update the old test-only cap comment.
 `expandPreviousResponseInput()` behavior:
 
 - resident: current expansion, unchanged;
-- spill: read and fully validate, expand from payload, set replay provenance;
+- spill: call `readResponseSpill(previousId, entry.spill)`, fully validate, expand from
+  payload, and set replay provenance on the exact expanded body;
 - missing/corrupt spill: leave body unchanged, set the failure WeakMap, increment the
   matching counter, delete the stub and bad/missing file best-effort, then insert a
   `spill-failed` tombstone for deterministic later calls;
@@ -258,7 +362,9 @@ export interface ResponseStateMetrics {
 ```
 
 `spillPayloadBytes` is the sum of refs, not file stat calls. `responseStateMetrics()`
-remains observe-only.
+remains observe-only. Update `src/server/management/system-routes.ts:88`, the GUI
+`ResponseState` type, and `tests/memory-watchdog.test.ts:181` so every new field is
+finite, scalar-only, and privacy-safe without making the metrics probe load/prune/read files.
 
 Snapshot compatibility:
 
@@ -272,6 +378,8 @@ Snapshot compatibility:
   also removes this test home's spill directory after deleting known refs.
 
 ### MODIFY `src/server/responses/core.ts`
+
+### A-gate corrections (Banach) — caller-driven recovery contract
 
 Immediately after `body = expandPreviousResponseInput(body)` and before parsing, inspect
 `previousResponseReplayFailure(body)`. Return one canonical response for all three known
@@ -289,14 +397,26 @@ Add a `classifyError()` branch in `src/lib/errors.ts` mapping that explicit type
 `{type:"invalid_request_error", code:"previous_response_not_found"}`. Do not expose
 the spill reason, response id, digest, path, or OS error. Remove the `:1445-1449`
 warn-and-forward path for known spill failures; ordinary upstream-capable misses retain
-their existing routing behavior.
+their existing routing behavior. The guaranteed recovery contract is this terminal 400
+telling the caller to resend full context without `previous_response_id`; no automatic
+Codex/client retry is claimed.
+
+Endpoint acceptance coverage exercises the route classes around
+`src/server/responses/core.ts:1228-1239,1338-1343,1445-1449`: for a known spill failure,
+each affected path returns status 400 with
+`error.type === "invalid_request_error"`,
+`error.code === "previous_response_not_found"`, and the canonical resend message before
+any auth/upstream I/O. Existing ordinary-miss behavior remains separately asserted,
+including the API-key provider case in `tests/issue-702-expired-replay-state.test.ts`.
 
 ## Regression tests
+
+### A-gate corrections (Banach) — contract redefinitions and added classes
 
 Extend `tests/responses-state.test.ts` with these exact tests/fixtures:
 
 - `spills the only oversized continuation and leaves resident bytes at or below cap`
-- `does not swap a resident row to a stub before fsync and rename succeed`
+- `does not swap a resident row to a stub before fsync and no-replace publication succeed`
 - `replays provider metadata and function_call_output history through a spill stub`
 - `replays a durable spill after simulated process restart`
 - `returns previous_response_not_found for a missing spill file without forwarding delta`
@@ -309,24 +429,55 @@ Extend `tests/responses-state.test.ts` with these exact tests/fixtures:
 - `startup orphan cleanup preserves referenced young live and unrelated files`
 - `concurrent flush and synchronous demotion cannot inline or lose the spill stub`
 - `small entries retain the legacy v2 debounced snapshot representation`
+- `re-spilling an id with changed content keeps the old generation until stub swap`
+  (A-gate blocker regression: crash simulated between new-generation publication and
+  stub swap — the stub must still replay the OLD generation intact, and startup
+  GC must remove the newer unreferenced generation file)
+- `same response id and equal-size replacement use distinct basenames and unlink old only after stub swap`
+- `spill-failed tombstone survives simulated process restart and returns the canonical failure`
+- `spill replay preserves replay-prefix provenance and compaction-marker acknowledgement`
+- `multibyte resident payload accounting uses complete UTF-8 bytes including provider metadata`
+- `serialization failure rejects the candidate and records a bounded tombstone`
+- `write fsync or publication failure cleans its temp and preserves no unmeasured resident payload`
+- `EEXIST publication loss advances the generation and retries within the bound`
+- `orphan cleanup obeys scan and cleanup caps rejects symlinks and counts failed unlink`
+- `response-state management metrics keep every added field finite scalar and privacy-safe`
 - redefine `tests/responses-state.test.ts:535` as
-  `byte cap spills the newest-only chain instead of exempting it`;
+  `byte cap spills over-cap rows instead of evicting prior continuation ids`;
+- redefine `tests/responses-state.test.ts:557` as
+  `byte accounting across restart preserves spilled ids and recomputes resident and stub bytes`;
 - redefine `tests/responses-state.test.ts:856` as
-  `oversized entries replay from dedicated spill across restart while small entries use snapshot`.
+  `oversized entries replay from dedicated spill across restart while small entries use snapshot`;
+- redefine `tests/responses-state.test.ts:960` as
+  `empty store reports every resident spill tombstone and counter metric as zero`;
+- redefine `tests/responses-state.test.ts:999` (including the exact object at `:1007`) as
+  `metrics remain side-effect free with the complete additive metric shape`.
 
-Add endpoint coverage in `tests/server-combo-failover-e2e.test.ts` (or the nearest
-Responses endpoint test) named:
+Every test intended to exercise spill sets `setResponseStateByteCapForTests(...)` below
+the fixture's measured UTF-8 payload size and restores it in `finally`. In particular, the
+current 3 MiB fixture at `tests/responses-state.test.ts:856` must run under a lower override;
+the 2 MiB legacy snapshot-entry cap alone does not trigger spill.
 
-- `known continuation spill failure returns structured previous_response_not_found before upstream I/O`.
+Add endpoint coverage in `tests/issue-702-expired-replay-state.test.ts` (the
+nearest existing expired-replay endpoint owner, per A-gate note; not the combo
+failover e2e) named:
+
+- `known continuation spill failure returns terminal structured previous_response_not_found before upstream I/O`.
 
 Fixtures must use an injected spill I/O seam, not chmod-only assertions that are unreliable
-on Windows. The durability-order test records `write`, `fsync`, `close`, `harden`, `rename`,
+on Windows. The durability-order test records `write`, `fsync`, `close`, `harden`, `publish`,
 `stub-swap` and asserts that order exactly.
+The seam is a module-level injectable in `spill-store.ts`
+(`setSpillIoForTest({write,fsync,link,copyFileExcl,unlink}| null)` — `publish` covers
+both the link path and the exclusive-copy fallback), and the `stub-swap`
+event is recorded by `state.ts` calling a `noteStubSwapForTest()` hook exported
+from the same seam — the order assertion therefore spans the
+`spill-store.ts`/`state.ts` boundary through one recorder.
 
 Verification:
 
 ```bash
-bun test tests/responses-state.test.ts tests/server-combo-failover-e2e.test.ts
+bun test tests/responses-state.test.ts tests/issue-702-expired-replay-state.test.ts
 bun run typecheck
 bun run test
 bun run privacy:scan

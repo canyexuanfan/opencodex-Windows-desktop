@@ -38,7 +38,7 @@ supplies the full source ledger (audit round 1).
 
 | Doc | WP | Content | Depends |
 |---|---|---|---|
-| `010_continuation_hard_cap.md` | wp2 | continuation last-entry cap hole → true hard cap; oversized entries demote to disk stub ONLY after atomic per-entry spill (fsync+rename); missing/corrupt spill = explicit continuation failure, never silent naked-delta (R1-2); contract redefinition | — |
+| `010_continuation_hard_cap.md` | wp2 | continuation last-entry cap hole → true hard cap; oversized entries demote to disk stub ONLY after atomic per-entry spill (fsync + no-replace publication); missing/corrupt spill = explicit continuation failure, never silent naked-delta (R1-2); contract redefinition | — |
 | `020_blob_and_replay_caps.md` | wp3 | Cursor blob byte cap split by PROVENANCE (local-regenerated evictable, remote-origin pinned within TTL — R1-3), Antigravity inner-call bounds, vision-LRU clamp-before-insert, image zero-weight sentinel accounting (R1-1) | — |
 | `030_eviction_mechanisms.md` | wp4 | store-by-store cleanup matrix with three mechanisms: TTL sweep / config-generation reconciliation / admission caps (R1-4). Covers: subagent quota-failure records, key/combo cooldowns, provider+codex quota history, routing health, warning memos, model-cache provider history, pool/combo history, XAI verdicts, guardian backoff, GCP source tokens, ownership/PID memos, OAuth/reauth reconciliation. Windows ACL memo: eviction-after-rename keyed by actual temp path, NO destination-level reuse (R1-5); explicit security review required | — |
 | `035_registry_admission_caps.md` | wp4b | remaining operational registries/flights: debug-subscriber count cap, active turns/sockets/workers hard admission CAP (reject beyond cap with a coherent busy error — S3-3) + leak metric, credential-refresh flights bounded distinct-grant admission (cap on concurrent grant fingerprints) + staleness replacement (S3-3), usage-read flight staleness guard PLUS bounded parse (stream/limit the full-log read so the in-flight value itself is byte-capped — S2-1), Cursor model-discovery response byte cap + gather-flight concurrency cap, OAuth pending-code value byte cap + auth flow/probe admission caps, MiMo JWT value byte cap, Cursor MCP manager payload caps, crash-ring + fixed-slot diagnostic + AFFINITY value-byte truncation (S2-2) | — |
@@ -83,12 +83,14 @@ prior unit is not reopened.
    oversized entries spill to a DEDICATED per-entry file (not the debounced
    monolithic snapshot, which is async/best-effort/2 MiB-skipping — R1-2).
    Demotion ordering is locked: RAM row becomes a stub ONLY after an atomic
-   successful spill (write-fsync-rename). Spill FAILURE (disk permissions,
+   successful spill (write-fsync + atomic NO-REPLACE publication — link or
+   exclusive copy; plain rename replaces existing destinations and is
+   unsuitable, 010 round-6). Spill FAILURE (disk permissions,
    exhaustion, I/O) evicts the row from RAM and records a small
    `spill-failed` tombstone for the response id: later continuation
-   against it returns the same explicit structured not-found contract as a
-   corrupt spill, and the client falls back to full-context resend — the
-   same recovery path TTL expiry produces today. Replay through a missing/
+   against it returns a terminal structured 400 telling the caller to resend
+   the full context without `previous_response_id` — caller-driven recovery,
+   not an automatic client fallback. Replay through a missing/
    corrupt stub likewise returns an EXPLICIT structured continuation error,
    never silent forwarding of the naked delta. The last-entry exemption is
    deleted; `storedResponseBytes > byteCap()` always spills or

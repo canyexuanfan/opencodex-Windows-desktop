@@ -48,3 +48,9 @@ already folded above. The two NET-NEW blockers from Godel:
 
 Both preserve the structured-error-over-silent-corruption principle. 005
 amended accordingly (failure ladder + admission ladder).
+
+## wp2 A-gate (reviewer Banach, FAIL 5) — adjudication
+
+| # | Blockers | Decision | Action |
+|---|---|---|---|
+| B1-B5 | Spill read lacked a trusted expected id; same-id/equal-size replacement collided and relied on non-portable rename-over-existing; automatic client fallback was unproven; resident measurement was incomplete/weightless on serialization failure; the 3 MiB restart fixture did not cross the 64 MiB spill threshold | ACCEPT | 010 now passes `responseId` into spill reads; uses payload-digest plus generation-distinct basenames and post-swap old-file unlink; defines caller-driven terminal structured 400 recovery; measures the complete retained payload in UTF-8 and tombstones serialization failures; lowers the test cap beneath spill fixtures; records all five current contract-test redefinitions, consumer seams, expanded regression classes, and process-crash-only durability. 005 receives the matching one-sentence recovery correction. |
