@@ -2,7 +2,8 @@
 
 Foundation phase. Every later phase writes to the key entry or its routes, so the
 entry gets a validated shape and a truthful CRUD surface first. Nothing here is
-visible in the GUI; phase 4 renders what this phase makes possible.
+visible in the GUI except one compatibility fix (below); phase 4 renders what this
+phase makes possible.
 
 Dependency position: first. Phase 2 reads `config.apiKeys` through a new
 resolver, phase 3 records the `id` this phase guarantees is stable, phase 4
@@ -17,7 +18,14 @@ IN
 - MODIFY `src/server/management/oauth-account-routes.ts` — random key generation,
   a longer displayed prefix, `PATCH` rename, DELETE that reports what it did,
   name validation.
+- MODIFY `gui/src/pages/api-keys-utils.ts` — **B-phase addition.** The salvaging
+  schema can now hand the GUI an empty `createdAt` (a working key whose date was
+  hand-edited to a non-string is kept rather than revoked), and
+  `formatCreatedDate` rendered that as `Invalid Date`. It returns an em dash
+  instead. Added here rather than deferred to phase 4 because this phase is what
+  makes the empty value reachable.
 - NEW `tests/api-keys-routes.test.ts` — the first direct test of these routes.
+- NEW `gui/tests/apikeys-created-date.test.ts` — the formatter's three cases.
 
 OUT
 
@@ -117,7 +125,9 @@ disk, not to retroactively outlaw it.
 | `src/types.ts` | MODIFY — extract `OcxApiKeyEntry` |
 | `src/config.ts` | MODIFY — `apiKeySchema`, wired into `configSchema` |
 | `src/server/management/oauth-account-routes.ts` | MODIFY — generation, prefix, PATCH, DELETE, validation |
+| `gui/src/pages/api-keys-utils.ts` | MODIFY — unknown-date fallback (B-phase addition) |
 | `tests/api-keys-routes.test.ts` | NEW |
+| `gui/tests/apikeys-created-date.test.ts` | NEW |
 
 ## Diffs
 
@@ -184,16 +194,9 @@ fields:
   // Starting from `unknown` is what makes both survivable.
   apiKeys: z.unknown().optional().transform(value => {
     if (value === undefined) return undefined;
-    if (!Array.isArray(value)) {
-      warnDegradedApiKeys("apiKeys is not an array; ignoring it");
-      return undefined;
-    }
-    const kept = value.filter(row => apiKeyEntrySchema.safeParse(row).success)
+    if (!Array.isArray(value)) return undefined;
+    return value.filter(row => apiKeyEntrySchema.safeParse(row).success)
       .map(row => apiKeyEntrySchema.parse(row));
-    if (kept.length !== value.length) {
-      warnDegradedApiKeys(`skipped ${value.length - kept.length} malformed apiKeys entr${value.length - kept.length === 1 ? "y" : "ies"}`);
-    }
-    return kept;
   }),
 ```
 
@@ -205,15 +208,77 @@ input                                  z.array(z.unknown())…   z.unknown()…
 "oops"                                 invalid_type  ✗         undefined  ✓
 ```
 
-`warnDegradedApiKeys` follows the existing `warnDegraded*` family
-(`src/config.ts:1128-1131`) — P confirms the exact helper signature rather than
-inventing a new logging path.
+**P amendment (wp2):** the transform does not warn from inside itself. The
+existing `warnDegraded*` helpers take `(rawParsed, validated)` and run *after*
+`safeParse` in `loadConfig` (`src/config.ts:998-1017`, called at `:1128-1131`) —
+they compare the raw object against the validated one. A transform has no access
+to that comparison and would fire on every read besides. So the warning follows
+the same shape as its siblings: `warnDegradedApiKeys(rawParsed, validated)`,
+declared beside them, comparing raw entry count to validated entry count and
+reporting the difference. It is wired into `loadConfig` next to
+`warnDegradedHostname` on both the success and the repaired-retry paths.
 
 One consequence to state plainly: a dropped entry is not re-saved, so a later
 mutation persists the config without it. That is the honest outcome for an entry
 the admission loop could not have used anyway (`secretEquals` would have thrown on
 a non-string `key`), but it is a deletion, and the warning above is what makes it
 visible rather than silent.
+
+### B-phase correction: what "salvage" actually had to mean
+
+The audit killed the first two spellings of this, and both failures were the same
+mistake — deciding what a key needs *before* checking what the code needs.
+
+**Only `key` is load-bearing.** Admission compares that one string
+(`src/server/auth-cors.ts` `isDataPlaneAdmissionSecret`) and reads nothing else.
+The first implementation required all four fields, so a numeric `name` in a
+hand-edited config silently revoked a working credential — on a remote bind, a
+server that would not start. `key` is now the only required field; `id`, `name`
+and `createdAt` degrade to `""`.
+
+**Usable means what admission means.** `min(1)` accepted `"   "` and
+`" ocx_data_x "`, neither of which can ever match: the presented token is trimmed,
+the stored one is not. Worse, such an entry can sit at `apiKeys[0]`, which
+`system-env.ts` and `cli/claude.ts` hand to launched clients — masking a valid key
+behind it. The predicate is now `value.length > 0 && value === value.trim()`.
+
+**A key you cannot revoke is not saved.** Degrading `id` to `""` left the user
+holding a live credential that PATCH and DELETE refuse to match and the GUI cannot
+select. Getting the repair right took three tries, and the two failures are worth
+recording because both looked reasonable:
+
+1. *Mint a UUID in the schema transform.* Wrong: the transform runs on every
+   parse, so the same credential answered to a different id after each load and
+   nothing could agree on it across a restart.
+2. *Repair once in `loadConfig`, then write the ids back.* Wrong for a worse
+   reason: it puts a file write on the **read** path. A loader that read the file,
+   then wrote its snapshot after another process saved a legitimate change, would
+   silently erase that change. No amount of atomic-write hardening fixes a lost
+   update.
+3. *Derive the id deterministically and never write.* `normalizeApiKeyIds` fills
+   an empty or duplicated id from the entry's position (`salvaged-1`, …) — same
+   file in, same ids out, no I/O and no randomness. The id is not derived from the
+   secret; a public identifier should never be a function of key material. It runs
+   as a shared post-parse step in `loadConfig` (both paths),
+   `readConfigDiagnostics` and `validateConfigCandidate`, because CLI `show`/`get`/
+   `export` read diagnostics and an id that exists on only one path is not stable.
+
+One more subtlety the audit caught in that third spelling: explicit ids must be
+**reserved before any synthesis**. Assigning `salvaged-1` to the first row would
+otherwise displace a later row that already legitimately owns `salvaged-1` from an
+earlier normalization, and the two would swap identities depending on array order.
+The first holder of an id keeps it; only later collisions move.
+
+A known limitation, stated rather than hidden: if a config still holds malformed
+ids and the user reorders or deletes rows by hand, the positional ids shift. That
+is inherent to positional derivation, and it resolves the moment any ordinary
+mutation (POST/PATCH/DELETE) saves the normalized ids back through the atomic
+write path.
+
+The warnings follow the same discipline: `isUsableApiKeySecret` is shared by the
+schema and the warning counters, so a dropped row can never be described as
+"repaired metadata — the key still works", and a duplicate id gets its own line
+because neither existing counter can see it.
 
 ### `oauth-account-routes.ts:443-445` — GET prefix
 

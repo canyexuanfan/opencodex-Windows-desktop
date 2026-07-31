@@ -37,5 +37,11 @@ export function deriveApiEndpoints(endpoint: string): ApiEndpointInfo {
 }
 
 export function formatCreatedDate(iso: string, localeTag?: string): string {
-  return new Date(iso).toLocaleDateString(localeTag);
+  // A hand-edited config can carry a non-string createdAt, which the server
+  // salvages to "" rather than discarding a working key. Rendering that as
+  // "Invalid Date" states something false about the key; an em dash says the
+  // one true thing, which is that we do not know when it was created.
+  const parsed = new Date(iso);
+  if (!iso || Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleDateString(localeTag);
 }
