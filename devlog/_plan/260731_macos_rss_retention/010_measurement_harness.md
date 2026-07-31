@@ -36,8 +36,11 @@ roots rather than pretending they do not exist.
 
 - `--mode calibration`: six fresh real-proxy runs, exactly
   `off/on/on/off/on/off`; each has 60 s warmup then 600 s observation.
-- `--mode parent-pressure`: after passing calibration, one equally instrumented
-  60+600 s no-load run for each topology; client cadence is emitted with zero counts.
+- `--mode parent-pressure`: after passing calibration, THREE equally instrumented
+  60+600 s no-load runs for each topology; client cadence is emitted with zero counts.
+  Three per topology, not one: each condition's envelope is built only from its OWN
+  no-load runs, so borrowing real-proxy calibration samples cannot inflate a control
+  envelope and mask a genuine topology delta.
 - `--mode workload`: calibration, controls, then nine serial runs in the Latin square
   `tee/single/direct`, `single/direct/tee`, `direct/tee/single`.
 - Every workload run warms for 60 s. Three persistent client states each execute one
@@ -46,8 +49,9 @@ roots rather than pretending they do not exist.
   A bounded one-frame parser extracts only `response.completed.response.id`.
 - Sampling continues through settle checkpoints 0/30/60/120/300/600 s. The coarse
   session floor is about 5.5 h (nine roughly 20+10-minute runs plus 66-minute
-  calibration), excluding controls/retries; warmups make the base about 5 h 45 m,
-  and three controls add about 33 m.
+  calibration), excluding retries; warmups make the base about 5 h 45 m, and the
+  nine no-load controls (three per topology, 11 min each) add about 1 h 39 m — so a
+  full `--mode workload` session is roughly **7 h 24 m** before any retry.
 
 The following complete listings are normative.
 
@@ -214,6 +218,10 @@ type Row = Record<string, unknown> & { type: string; wallMs: number };
 type Run = { id: string; condition: Condition; kind: Kind; sampler: boolean; series: string };
 const MiB = 1024 ** 2, WARM = 60_000, OBSERVE = 600_000, WAVES = 10;
 const EVENTS = 400, EVENT_BYTES = 65_536, WAVE_MS = 120_000, READ_MS = 25;
+// Pre-registered wave-start tolerance. A wave is allowed to be a little late from
+// scheduler jitter, but not so late that the locked 20-minute profile stretches.
+// Changing this after seeing a result restarts the whole calibration sequence.
+const WAVE_TOLERANCE_MS = 5_000;
 const SETTLE = [0,30,60,120,300,600] as const;
 const CONDITIONS: readonly Condition[] = [
   "real-proxy-legacy-tee","single-reader-inspection","direct-http-baseline",
@@ -387,6 +395,10 @@ async function oneTurn(base: string, run: string, wave: number, state: State, lo
 }
 async function workload(base: string, run: string, log: Log) {
   const states: State[] = [1,2,3].map(client => ({ client })); const origin = performance.now();
+  // Persist the origin so validateWorkload can anchor every wave to origin+N*WAVE_MS.
+  // Without it, drift is only visible as "each wave was internally concurrent", which
+  // is exactly how an overlong run used to pass validation.
+  log.add({ type: "workload-origin", run, wallMs: Date.now(), monotonicMs: origin });
   for (let wave = 0; wave < WAVES; wave++) {
     await pause(Math.max(0, origin + wave * WAVE_MS - performance.now()));
     await Promise.all(states.map(state => oneTurn(base, run, wave, state, log)));
@@ -507,14 +519,39 @@ const med = (v: number[]) => {
   const s = [...v].sort((a,b) => a-b), m = Math.floor(s.length/2);
   if (!s.length) throw Error("empty median"); return s.length%2 ? s[m]! : (s[m-1]!+s[m]!)/2;
 };
+// Ordinary least squares. This MUST centre on the arithmetic mean: centring on the
+// median is not OLS, and a wrong slope silently corrupts the sampler budget, the
+// no-load slope envelope, and the allocator-retention classification alike.
 function slope(v: Array<{ x: number; y: number }>) {
-  const mx = med(v.map(x => x.x)), my = med(v.map(x => x.y));
+  if (v.length < 2) return 0;
+  const mx = v.reduce((s,p) => s+p.x, 0)/v.length;
+  const my = v.reduce((s,p) => s+p.y, 0)/v.length;
   const top = v.reduce((s,p) => s+(p.x-mx)*(p.y-my),0);
   const bottom = v.reduce((s,p) => s+(p.x-mx)**2,0);
   return bottom ? top/bottom : 0;
 }
+
+/**
+ * Sampler integrity for ANY sampler-on run. Calibration and no-load control runs
+ * establish the sampler budget and the envelopes, so a degraded sampler there
+ * corrupts every downstream verdict while still looking valid. Applying this only
+ * to workload runs — as the previous revision did — leaves that door open.
+ */
+function assertSamplerIntegrity(run: Run) {
+  const self = rows(run.series);
+  if (self.length < 2) throw Error(`sampler empty: ${run.id}`);
+  const late = self.map(r => Number(r.latenessMs)).sort((a,b) => a-b);
+  const p99 = late[Math.min(late.length-1, Math.floor(late.length*0.99))]!;
+  if (p99 > 200) throw Error(`sampler p99 lateness ${Math.round(p99)}ms: ${run.id}`);
+  for (let i = 1; i < self.length; i++) {
+    if (Number(self[i]!.wallMs) - Number(self[i-1]!.wallMs) > 1_000) {
+      throw Error(`sampler gap >1s: ${run.id}`);
+    }
+  }
+}
 function calibrationVerdict(all: Row[], runs: Run[]) {
   if (runs.some((r,i) => r.sampler !== ORDER[i])) throw Error("calibration order");
+  runs.filter(r => r.sampler).forEach(assertSamplerIntegrity);
   const stat = (run: Run) => {
     const ps = all.filter(r => r.run === run.id && r.type === "ps-rss" && r.phase === "observation")
       .map(r => ({ x: r.wallMs, y: Number(r.rss) }));
@@ -551,12 +588,23 @@ function validateWorkload(all: Row[], run: Run) {
     const chain=ends.filter(r=>r.client===client).sort((a,b)=>Number(a.turn)-Number(b.turn));
     for(let i=1;i<chain.length;i++) if(chain[i]!.previous!==chain[i-1]!.completed) throw Error("chain");
   }
+  // Wave scheduling uses Math.max(0, ...), so an overlong wave cannot be detected by
+  // intra-wave checks alone: every later wave simply slides and the run quietly
+  // exceeds the locked 20-minute profile while still passing shape and concurrency.
+  // Anchor each wave to origin + N*120s with a pre-registered tolerance.
+  const origin=Number(m.find(r=>r.type==="workload-origin")?.wallMs);
+  if(!origin) throw Error("missing workload origin");
   for(let wave=0;wave<10;wave++) {
     const s=starts.filter(r=>r.wave===wave), e=ends.filter(r=>r.wave===wave);
     if(s.length!==3 || e.length!==3
       || Math.max(...s.map(r=>r.wallMs))-Math.min(...s.map(r=>r.wallMs))>1_000
       || Math.min(...e.map(r=>r.wallMs))<=Math.max(...s.map(r=>r.wallMs))) {
       throw Error("concurrency");
+    }
+    const target=origin+wave*WAVE_MS;
+    const drift=Math.max(...s.map(r=>Math.abs(Number(r.wallMs)-target)));
+    if(drift>WAVE_TOLERANCE_MS) {
+      throw Error(`wave ${wave} drift ${Math.round(drift)}ms > ${WAVE_TOLERANCE_MS}ms`);
     }
   }
   for(const kind of ["created","item","completed","done"]) {
@@ -590,8 +638,15 @@ function analysis(all: Row[], calibration: Run[], controls: Run[], work: Run[]) 
     }
     return { upper:Math.max(...p.map(x=>x.y-base)), slope:slopeEnvelope };
   };
+  // Each condition's envelope must come from ITS OWN no-load runs. Borrowing the
+  // real-proxy calibration samples (as the previous revision did) lets a noisy
+  // proxy idle inflate a control's envelope and mask a genuine topology delta,
+  // while still calling the basis "topology-matched".
   const env=Object.fromEntries(CONDITIONS.map(c=>{
-    const candidates=[...calibration.filter(r=>r.sampler),controls.find(r=>r.condition===c)!];
+    const own=controls.filter(r=>r.condition===c);
+    if(own.length<3) throw Error(`need 3 no-load controls for ${c}, got ${own.length}`);
+    own.forEach(assertSamplerIntegrity);
+    const candidates=own;
     return [c,Object.fromEntries((["rss","external","arrayBuffers"] as const).map(f=>{
       const e=candidates.map(r=>envelope(r,f));
       return [f,{upper:Math.max(...e.map(x=>x.upper)),slope:Math.max(...e.map(x=>x.slope))}];
@@ -665,7 +720,12 @@ async function main() {
     await log.flush(); const calibrated=calibrationVerdict(rows(log.path),runs);
     if(mode==="calibration"){writeSummary(root,{valid:true,calibrated});return;}
     const controls:Run[]=[];
-    for(const condition of CONDITIONS){const r={id:"control-"+condition,condition,kind:"parent-pressure" as const,sampler:true,series:""};await run(r);controls.push(r);}
+    // Three no-load controls per topology: analysis() builds each condition's envelope
+    // from its own controls only, and demands three of them.
+    for(const condition of CONDITIONS)for(let replica=1;replica<=3;replica++){
+      const r={id:"control-"+condition+"-"+replica,condition,kind:"parent-pressure" as const,sampler:true,series:""};
+      await run(r);controls.push(r);
+    }
     if(mode==="parent-pressure"){writeSummary(root,{valid:true,calibrated,controls});return;}
     const work:Run[]=[];
     for(let replica=0;replica<3;replica++)for(const condition of LATIN[replica]!){const r={id:"r"+(replica+1)+"-"+condition,condition,kind:"workload" as const,sampler:true,series:""};await run(r);work.push(r);}
