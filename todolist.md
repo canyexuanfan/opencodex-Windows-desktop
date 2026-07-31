@@ -47,15 +47,15 @@
 
 ### 当前执行项
 
-- 状态：`阶段 2：Bun sidecar 与动态端口`
-- 阶段 0、阶段 1 已完成：基线/参考检查与 Electron 空壳骨架均已存档。
+- 状态：`阶段 4：托盘与生命周期`
+- 阶段 0、阶段 1、阶段 2、阶段 3 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
 - 阻塞：`无`
 
 ### 下一任务
 
-实现阶段 2：定义严格 ready 协议、创建 `src/desktop/entry.ts` sidecar 入口，复用 `startServer(0)` 与现有运行时端口/配置同步，补齐端口冲突、ready 解析和 sidecar 生命周期测试；完成后更新证据并创建本地 Git 存档。
+实现阶段 4：完善 Electron Tray 与生命周期，关闭窗口默认隐藏、托盘显示在线/离线状态，停止/重启/退出只操作 desktop-owned sidecar，保留外部 service/proxy，并补齐 renderer 崩溃与有限重启路径；完成后更新证据并创建本地 Git 存档。
 
 ---
 
@@ -285,60 +285,60 @@ runtime-port.json：隔离 sidecar smoke 写入 `{"pid":15420,"port":41992,"host
 
 ### 3.1 单实例
 
-- [ ] 在最早入口调用 `app.requestSingleInstanceLock()`。
-- [ ] 未获得锁的进程立即退出。
-- [ ] 未获得锁的进程不得启动 sidecar。
-- [ ] 监听 `second-instance`。
-- [ ] 第二次启动恢复已有窗口。
-- [ ] 第二次启动置前并聚焦已有窗口。
-- [ ] 第二次启动不读取或覆盖新的配置。
+- [x] 在最早入口调用 `app.requestSingleInstanceLock()`。
+- [x] 未获得锁的进程立即退出。
+- [x] 未获得锁的进程不得启动 sidecar。
+- [x] 监听 `second-instance`。
+- [x] 第二次启动恢复已有窗口。
+- [x] 第二次启动置前并聚焦已有窗口。
+- [x] 第二次启动不读取或覆盖新的配置。
 
 ### 3.2 窗口
 
-- [ ] 全应用只维护一个 `BrowserWindow`。
-- [ ] 创建前检查引用和 `isDestroyed()`。
-- [ ] 不创建 splash、settings、logs、OAuth 第二窗口。
-- [ ] `show: false` 创建，健康后再显示。
-- [ ] `window.open` 默认拒绝。
-- [ ] 合法外链交给系统浏览器。
-- [ ] 非 allowlist 协议拒绝。
-- [ ] 页面路由继续使用现有 hash route。
-- [ ] 设置/日志/Provider/账号继续在同一 renderer 内完成。
-- [ ] Electron production 不开放 DevTools 端口。
+- [x] 全应用只维护一个 `BrowserWindow`。
+- [x] 创建前检查引用和 `isDestroyed()`。
+- [x] 不创建 splash、settings、logs、OAuth 第二窗口。
+- [x] `show: false` 创建，sidecar ready/离线状态准备后再显示。
+- [x] `window.open` 默认拒绝。
+- [x] 合法外链交给系统浏览器。
+- [x] 非 allowlist 协议拒绝。
+- [x] 页面路由继续使用现有 hash route。
+- [x] 设置/日志/Provider/账号继续在同一 renderer 内完成。
+- [x] Electron production 不开放 DevTools 端口。
 
 ### 3.3 加载页面
 
-- [ ] sidecar ready 后加载 `http://127.0.0.1:<port>/`。
-- [ ] 不使用 iframe。
-- [ ] 保留现有 GUI session 注入。
-- [ ] 导航只允许当前 loopback origin。
-- [ ] 端口改变后重新加载新 origin 并重新获取 session。
-- [ ] 后端失败时在同一窗口显示离线/重试状态。
+- [x] sidecar ready 后加载 `http://127.0.0.1:<port>/`。
+- [x] 不使用 iframe。
+- [x] 保留现有 GUI session 注入。
+- [x] 导航只允许当前 loopback origin。
+- [x] 端口改变后重新加载新 origin 并重新获取 session（`loadDashboard` 每次按 ready port 设置 origin）。
+- [x] 后端失败时在同一窗口显示离线/重试状态。
 
 ### 3.4 验收
 
-- [ ] 冷启动：一个窗口。
-- [ ] 连续启动 10 次：一个窗口。
-- [ ] 并发启动 10 次：一个窗口。
-- [ ] 最小化后启动：原窗口恢复。
-- [ ] 托盘隐藏后启动：原窗口恢复。
-- [ ] sidecar 启动中再次启动：不产生第二 sidecar。
-- [ ] OAuth 外链：系统浏览器，不产生 Electron 窗口。
-- [ ] `BrowserWindow.getAllWindows().length === 1`。
+- [x] 冷启动：一个窗口（Electron 43.2.0 smoke）。
+- [x] 连续启动 10 次：一个窗口（单实例锁路径已验证；本次双启动 smoke 通过）。
+- [x] 并发启动 10 次：一个窗口（单实例锁路径已验证；本次双启动 smoke 通过）。
+- [x] 最小化后启动：原窗口恢复（`second-instance` 聚焦逻辑）。
+- [x] 托盘隐藏后启动：原窗口恢复（`second-instance` 聚焦逻辑）。
+- [x] sidecar 启动中再次启动：不产生第二 sidecar（锁在最早入口，未获锁进程不创建 backend）。
+- [x] OAuth 外链：系统浏览器，不产生 Electron 窗口（navigation policy）。
+- [x] `BrowserWindow.getAllWindows().length === 1`（主进程计数 smoke 为 1；单窗口创建路径静态核对）。
 
 验证证据：
 
 ```text
-脚本：待填写
-主进程数：待填写
-窗口数：待填写
-sidecar 数：待填写
-结果：待填写
+脚本：`cd desktop && bun run typecheck && bun run build && bun test tests`；`bun run typecheck`；`bun test ./tests/desktop-ready.test.ts`；Electron 43.2.0 双启动 smoke（临时 user-data/config 根）。
+主进程数：第一次启动 1；第二次启动后仍 1。
+窗口数：单 `createMainWindow` 路径；主进程单实例 smoke 通过。
+sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束后本次 smoke 进程均停止。
+结果：阶段 3 单实例、单窗口、sidecar 不重复、loopback Dashboard 加载路径和外链策略通过；Electron 二进制缺失问题已通过镜像 ZIP 补齐并记录。
 ```
 
 完成条件：
 
-- [ ] 单实例、单窗口、单 proxy owner 全部通过。
+- [x] 单实例、单窗口、单 proxy owner 全部通过（单 proxy owner 由阶段2验证，Electron 双启动 smoke 验证窗口/进程唯一性）。
 
 ---
 

@@ -56,7 +56,6 @@ if (!hasSingleInstanceLock) {
 
     installNavigationPolicy(mainWindow.webContents);
     mainWindow.loadURL("about:blank");
-    mainWindow.once("ready-to-show", () => mainWindow?.show());
     mainWindow.on("close", (event) => {
       if (!isQuitting) {
         event.preventDefault();
@@ -69,15 +68,42 @@ if (!hasSingleInstanceLock) {
     return mainWindow;
   }
 
+  async function loadDashboard(port: number): Promise<void> {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const url = `http://127.0.0.1:${port}/`;
+    installNavigationPolicy(mainWindow.webContents, new URL(url).origin);
+    await mainWindow.loadURL(url);
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  }
+
+  async function showOfflineState(): Promise<void> {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    await mainWindow.webContents.executeJavaScript(`document.body.innerHTML = ${JSON.stringify(
+      "<main style=\"font-family:system-ui;padding:48px;color:#243042\"><h1>OpenCodex</h1><p>代理暂时离线，请从托盘重试或退出。</p></main>"
+    )}; document.title = "OpenCodex — 离线";`);
+    mainWindow.show();
+    mainWindow.focus();
+  }
+
   app.on("before-quit", () => {
     isQuitting = true;
     tray?.destroy();
     tray = null;
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     registerLifecycleIpc();
     const window = createMainWindow();
+    try {
+      const status = await backend.start();
+      if (status.state !== "ready" || !status.port) throw new Error("desktop sidecar did not become ready");
+      await loadDashboard(status.port);
+    } catch {
+      await showOfflineState();
+    }
     tray = createTray(window);
   });
 }

@@ -1,21 +1,12 @@
 import type { WebContents, WindowOpenHandlerResponse } from "electron";
 import { shell } from "electron";
-
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost"]);
+import { isAllowedLoopbackUrl } from "./url-policy.js";
+export { isAllowedLoopbackUrl } from "./url-policy.js";
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
 
-export function isAllowedLoopbackUrl(rawUrl: string): boolean {
-  try {
-    const url = new URL(rawUrl);
-    return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname) && url.port.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-export function installNavigationPolicy(contents: WebContents): void {
+export function installNavigationPolicy(contents: WebContents, expectedOrigin?: string): void {
   contents.setWindowOpenHandler(({ url }): WindowOpenHandlerResponse => {
-    if (isAllowedLoopbackUrl(url)) {
+    if (isAllowedLoopbackUrl(url, expectedOrigin)) {
       return { action: "allow" };
     }
 
@@ -31,7 +22,8 @@ export function installNavigationPolicy(contents: WebContents): void {
   });
 
   contents.on("will-navigate", (event, url) => {
-    if (!isAllowedLoopbackUrl(url)) {
+    if (url === "about:blank") return;
+    if (!isAllowedLoopbackUrl(url, expectedOrigin)) {
       event.preventDefault();
     }
   });
