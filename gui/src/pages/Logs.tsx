@@ -361,19 +361,25 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const [serverTimeZone, setServerTimeZone] = useState<string | undefined>();
   useEffect(() => {
     const controller = new AbortController();
-    void (async () => {
-      try {
-        const res = await fetch(`${apiBase}/api/settings`, { signal: controller.signal });
-        if (!res.ok) return;
-        const body = await res.json() as { timeZone?: unknown };
+    // Abort already rejects the in-flight fetch, but the flag keeps the guarantee
+    // local: the setter is visibly gated without having to reason about whether
+    // the abort propagates through the body read.
+    let cancelled = false;
+    fetch(`${apiBase}/api/settings`, { signal: controller.signal })
+      .then(res => (res.ok ? res.json() as Promise<{ timeZone?: unknown }> : null))
+      .then(body => {
+        if (cancelled || !body) return;
         if (typeof body.timeZone === "string" && body.timeZone.trim()) {
           setServerTimeZone(body.timeZone.trim());
         }
-      } catch {
+      })
+      .catch(() => {
         // Offline or an older proxy without the field: keep browser-local formatting.
-      }
-    })();
-    return () => controller.abort();
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
   }, [apiBase]);
   // The hash is the source of truth for the active tab (#logs vs #logs/debug),
   // so refresh/bookmark/back-forward keep the tab choice.
@@ -395,9 +401,10 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const selectTab = selectLogsTab;
 
   const loadLogs = useCallback(async (signal: AbortSignal): Promise<LogEntry[]> => {
-    const res = await fetch(`${apiBase}/api/logs`, { signal });
+    const res = await fetch(`${apiBase}/api/logs?limit=2000`, { signal });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
-    const next = await res.json() as LogEntry[];
+    const body = await res.json() as LogEntry[] | { logs?: LogEntry[] };
+    const next = Array.isArray(body) ? body : (body.logs ?? []);
     writeSessionListCache(logsCacheKey(apiBase), next);
     return next;
   }, [apiBase]);

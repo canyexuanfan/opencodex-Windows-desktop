@@ -6,7 +6,7 @@
  * restore it via the command.
  */
 import { execFileSync, execSync } from "node:child_process";
-import { findLiveProxy } from "./server/proxy-liveness";
+import { findLiveProxy, SERVICE_STOP_LIVENESS } from "./server/proxy-liveness";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -1723,11 +1723,18 @@ export async function proxyStillLiveAfterStop(deps: {
   /** Whether the stopped supervisor can respawn its child; only then is polling worth the wait. */
   canRespawn?: boolean;
 } = {}): Promise<{ port: number } | null> {
-  const findProxy = deps.findProxy ?? findLiveProxy;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
   const canRespawn = deps.canRespawn ?? process.platform === "win32";
   const deadline = now() + (canRespawn ? 7000 : 0);
+  // Single-shot (non-respawn) still needs one full SERVICE_STOP_LIVENESS budget; respawn
+  // polling shares the outer deadline so multi-candidate discovery cannot overrun it.
+  const findProxy = deps.findProxy ?? (() => {
+    const probeDeadline = canRespawn
+      ? deadline
+      : now() + (SERVICE_STOP_LIVENESS.timeoutMs! * SERVICE_STOP_LIVENESS.attempts! + 250);
+    return findLiveProxy({ ...SERVICE_STOP_LIVENESS, deadlineAt: probeDeadline, nowFn: now });
+  });
   for (;;) {
     try {
       const live = await findProxy();
@@ -1755,7 +1762,11 @@ async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult> {
   }
   // Orphan recovery: the pid file can be missing/stale while the service wrapper keeps
   // a live proxy running — mirror `ocx stop`'s identity-checked findLiveProxy fallback.
-  const live = await findLiveProxy({ timeoutMs: 1500 });
+  // Cap multi-candidate discovery so stop cleanup cannot hang for three full retry budgets.
+  const live = await findLiveProxy({
+    ...SERVICE_STOP_LIVENESS,
+    deadlineAt: Date.now() + 7000,
+  });
   const liveKillPid = verifiedKillTarget(live?.pid);
   if (liveKillPid !== null) {
     await stopProxy(liveKillPid);

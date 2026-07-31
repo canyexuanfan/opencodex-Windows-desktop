@@ -9,10 +9,8 @@ const config = { providers: [] } as unknown as OcxConfig;
  * #725: the dashboard rendered request-log timestamps in the BROWSER's zone, so a proxy
  * running in KST viewed from a UTC browser reported every request nine hours off.
  *
- * The zone rides on /api/settings rather than /api/logs. PR #790 put it in a
- * `{timeZone, logs}` envelope on /api/logs, which would have broken four tests that read
- * that response as an array (server-auth:1623, claude-native-passthrough:119,
- * openai-provider-option-e2e:489, server-403-permission-e2e:86) without touching any of them.
+ * The zone is on /api/settings and also on the /api/logs envelope (`{ timeZone, total, logs }`,
+ * #726). Consumers that still need the row list go through `logsFromApiBody`.
  */
 describe("log timestamp timezone (#725)", () => {
   test("/api/settings reports the server's IANA zone", async () => {
@@ -26,13 +24,19 @@ describe("log timestamp timezone (#725)", () => {
     expect(() => new Intl.DateTimeFormat("en-US", { timeZone: body.timeZone as string })).not.toThrow();
   });
 
-  test("/api/logs still returns a bare array", async () => {
-    // The contract four other suites depend on. If this ever becomes an object, those
-    // suites fail somewhere far from here, so assert it at the source.
+  test("/api/logs envelope includes a usable timeZone", async () => {
     const url = new URL("http://localhost/api/logs");
     const response = await handleManagementAPI(new Request(url), url, config);
     expect(response?.status).toBe(200);
-    expect(Array.isArray(await response!.json())).toBe(true);
+    const body = await response!.json() as {
+      timeZone?: unknown;
+      total?: unknown;
+      logs?: unknown;
+    };
+    expect(typeof body.timeZone).toBe("string");
+    expect(typeof body.total).toBe("number");
+    expect(Array.isArray(body.logs)).toBe(true);
+    expect(() => new Intl.DateTimeFormat("en-US", { timeZone: body.timeZone as string })).not.toThrow();
   });
 });
 
