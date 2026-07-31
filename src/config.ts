@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, truncateSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { Database } from "bun:sqlite";
 import * as z from "zod/v4";
 import {
   CODEX_ACCOUNT_NAMESPACE_COMBO_ALIAS_COLLISION_ERROR,
@@ -1309,6 +1310,12 @@ export type ConfigDiagnostics = {
   warnings?: string[];
 };
 
+type ConfigFileSnapshot = {
+  diagnostics: ConfigDiagnostics;
+  /** Exact file contents, including a possible BOM, used as the optimistic revision. */
+  raw?: string;
+};
+
 function configPlaceholderWarnings(config: OcxConfig): string[] {
   const warnings: string[] = [];
   for (const [name, provider] of Object.entries(config.providers)) {
@@ -1399,14 +1406,9 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
   return { ok: false, error: schemaDiagnosticsError(result.error) };
 }
 
-export function readConfigDiagnostics(): ConfigDiagnostics {
-  const configPath = getConfigPath();
-  if (!existsSync(configPath)) {
-    return { config: getDefaultConfig(), source: "default", error: null };
-  }
+function configDiagnosticsFromRaw(raw: string): ConfigDiagnostics {
   try {
-    const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
     const result = configSchema.safeParse(parsed);
     if (result.success) {
       return validFileConfigDiagnostics(normalizeApiKeyIds(result.data as OcxConfig), parsed);
@@ -1423,10 +1425,42 @@ export function readConfigDiagnostics(): ConfigDiagnostics {
   }
 }
 
-export function saveConfig(config: OcxConfig): void {
+function readConfigFileSnapshot(): ConfigFileSnapshot {
+  try {
+    const raw = readFileSync(getConfigPath(), "utf-8");
+    return { diagnostics: configDiagnosticsFromRaw(raw), raw };
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return {
+        diagnostics: { config: getDefaultConfig(), source: "default", error: null },
+      };
+    }
+    return {
+      diagnostics: { config: getDefaultConfig(), source: "fallback", error: "invalid_json" },
+    };
+  }
+}
+
+export function readConfigDiagnostics(): ConfigDiagnostics {
+  return readConfigFileSnapshot().diagnostics;
+}
+
+const CONFIG_MUTATION_DB_FILENAME = "config-mutation.sqlite";
+const CONFIG_MUTATION_DB_SIDECARS = ["-journal", "-wal", "-shm"] as const;
+
+export class ConfigMutationLockError extends Error {
+  readonly code = "CONFIG_MUTATION_LOCK_UNAVAILABLE";
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "ConfigMutationLockError";
+  }
+}
+
+function configMutationDatabasePath(): string {
   const dir = getConfigDir();
-  // First statement on purpose: a rejected write must leave nothing behind, not a
-  // freshly created/chmod'd directory. See src/lib/test-home-guard.ts.
+  // First statement on purpose: a rejected mutation must leave nothing behind, not a
+  // freshly created/chmod'd directory or database. See src/lib/test-home-guard.ts.
   assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -1436,8 +1470,163 @@ export function saveConfig(config: OcxConfig): void {
   if (process.platform === "win32") {
     hardenSecretDir(dir, { required: true });
   }
+  const path = join(dir, CONFIG_MUTATION_DB_FILENAME);
+  recordOwnedConfigPath(dir, path);
+  for (const suffix of CONFIG_MUTATION_DB_SIDECARS) {
+    recordOwnedConfigPath(dir, `${path}${suffix}`);
+  }
+  return path;
+}
+
+let configMutationLockDepth = 0;
+
+/**
+ * Serialize synchronous config and Codex credential-generation commits across processes with an
+ * OS-backed SQLite write transaction. `busy_timeout=0` is deliberate: runtime request paths must
+ * fail immediately under contention rather than freeze the Bun event loop. Process exit releases
+ * SQLite locks without stale-owner deletion or lease recovery races.
+ *
+ * Reentrancy is limited to the current synchronous call stack; never return a Promise from `fn`.
+ */
+export function withConfigMutationLockSync<T>(fn: () => T): T {
+  if (configMutationLockDepth > 0) {
+    configMutationLockDepth += 1;
+    try {
+      return fn();
+    } finally {
+      configMutationLockDepth -= 1;
+    }
+  }
+  const path = configMutationDatabasePath();
+  let database: Database | undefined;
+  let transactionOpen = false;
+  try {
+    database = new Database(path, { create: true });
+    try { chmodSync(path, 0o600); } catch { /* platform may ignore chmod */ }
+    database.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+    transactionOpen = true;
+  } catch (cause) {
+    try { database?.close(); } catch { /* acquisition already failed */ }
+    const code = cause && typeof cause === "object" && "code" in cause
+      ? String((cause as { code?: unknown }).code)
+      : "";
+    throw new ConfigMutationLockError(
+      code === "SQLITE_BUSY" ? "Config mutation already in progress" : "Could not acquire config mutation transaction",
+      { cause },
+    );
+  }
+
+  configMutationLockDepth = 1;
+  try {
+    const value = fn();
+    database.exec("COMMIT");
+    transactionOpen = false;
+    return value;
+  } catch (error) {
+    if (transactionOpen) {
+      try { database.exec("ROLLBACK"); } catch { /* close below still releases the OS lock */ }
+      transactionOpen = false;
+    }
+    throw error;
+  } finally {
+    configMutationLockDepth = 0;
+    try { database.close(); } catch { /* the OS lock is released with the handle */ }
+  }
+}
+
+function persistConfigUnlocked(config: OcxConfig): void {
   const configPath = getConfigPath();
   atomicWriteFile(configPath, JSON.stringify(config, null, 2) + "\n");
+}
+
+export function saveConfig(config: OcxConfig): void {
+  // Keep the real-home assertion ahead of even lock-directory preparation.
+  assertNotRealHomeUnderTest(getConfigDir());
+  withConfigMutationLockSync(() => persistConfigUnlocked(config));
+}
+
+export type PersistedConfigMutation<T> = {
+  changed: boolean;
+  value: T;
+};
+
+export type PersistedConfigMutationOutcome<T> =
+  | { status: "committed" | "unchanged"; value: T }
+  | { status: "unavailable"; reason: "missing" | "invalid" | "conflict" };
+
+const CONFIG_MUTATION_MAX_REBASE_ATTEMPTS = 3;
+let persistedConfigMutationBeforeCommitForTests: (() => void) | null = null;
+
+/** Test-only one-shot seam: inject a competing mutation after the first decision, before freshness revalidation. */
+export function setPersistedConfigMutationBeforeCommitForTests(hook: (() => void) | null): void {
+  persistedConfigMutationBeforeCommitForTests = hook;
+}
+
+function unavailableConfigMutationReason(snapshot: ConfigFileSnapshot): "missing" | "invalid" {
+  return snapshot.diagnostics.source === "default" ? "missing" : "invalid";
+}
+
+/**
+ * Patch a schema-valid on-disk config under the shared mutation lock. Cooperating writers are
+ * serialized; the callback is rerun on the newest snapshot so observed direct byte changes rebase
+ * and credential predicates are re-evaluated immediately before the atomic commit. A writer that
+ * ignores the coordinator can still change bytes after the final check because the filesystem has
+ * no portable conditional rename. Missing or malformed config always fails closed and is never
+ * recreated from a prior snapshot.
+ */
+export function mutatePersistedConfig<T>(
+  mutate: (config: OcxConfig) => PersistedConfigMutation<T>,
+): PersistedConfigMutationOutcome<T> {
+  // Avoid creating/opening the coordinator database for a read-path update that already knows
+  // there is no valid config. The same check runs again under the transaction for authority.
+  const observed = readConfigFileSnapshot();
+  if (observed.diagnostics.source !== "file" || observed.raw === undefined) {
+    return { status: "unavailable", reason: unavailableConfigMutationReason(observed) };
+  }
+  return withConfigMutationLockSync(() => {
+    let base = readConfigFileSnapshot();
+    for (let attempt = 0; attempt < CONFIG_MUTATION_MAX_REBASE_ATTEMPTS; attempt += 1) {
+      if (base.diagnostics.source !== "file" || base.raw === undefined) {
+        return { status: "unavailable", reason: unavailableConfigMutationReason(base) };
+      }
+
+      const tentativeConfig = structuredClone(base.diagnostics.config);
+      const tentative = mutate(tentativeConfig);
+      if (!tentative.changed) return { status: "unchanged", value: tentative.value };
+
+      const hook = persistedConfigMutationBeforeCommitForTests;
+      persistedConfigMutationBeforeCommitForTests = null;
+      hook?.();
+
+      const latest = readConfigFileSnapshot();
+      if (latest.diagnostics.source !== "file" || latest.raw === undefined) {
+        return { status: "unavailable", reason: unavailableConfigMutationReason(latest) };
+      }
+      if (latest.raw !== base.raw) {
+        base = latest;
+        continue;
+      }
+
+      // Re-run against a fresh clone even when config bytes are unchanged: a Codex credential
+      // generation lives in a separate file and may have changed at the injected seam.
+      const confirmedConfig = structuredClone(latest.diagnostics.config);
+      const confirmed = mutate(confirmedConfig);
+      if (!confirmed.changed) return { status: "unchanged", value: confirmed.value };
+
+      const commitBase = readConfigFileSnapshot();
+      if (commitBase.diagnostics.source !== "file" || commitBase.raw === undefined) {
+        return { status: "unavailable", reason: unavailableConfigMutationReason(commitBase) };
+      }
+      if (commitBase.raw !== latest.raw) {
+        base = commitBase;
+        continue;
+      }
+
+      persistConfigUnlocked(confirmedConfig);
+      return { status: "committed", value: confirmed.value };
+    }
+    return { status: "unavailable", reason: "conflict" };
+  });
 }
 
 export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolean {
@@ -1669,36 +1858,38 @@ function readPersistedServerBinding(
  * guarantee.
  */
 export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
-  const bindingBaseline = persistedLiveServerBinding.get(config);
-  const onDisk = claudeCodeBaseline.has(config) || bindingBaseline
-    ? readRawConfigJson()
-    : undefined;
-  if (claudeCodeBaseline.has(config)) {
-    if (onDisk !== undefined) {
-      const baseline = claudeCodeBaseline.get(config);
-      const persistedClaudeCode = normalizePersistedClaudeCode(onDisk.claudeCode);
-      const diskChanged = !deepEqual(persistedClaudeCode, baseline);
-      const weChanged = !deepEqual(config.claudeCode, baseline);
-      if (diskChanged && !weChanged) {
-        config.claudeCode = persistedClaudeCode;
+  withConfigMutationLockSync(() => {
+    const bindingBaseline = persistedLiveServerBinding.get(config);
+    const onDisk = claudeCodeBaseline.has(config) || bindingBaseline
+      ? readRawConfigJson()
+      : undefined;
+    if (claudeCodeBaseline.has(config)) {
+      if (onDisk !== undefined) {
+        const baseline = claudeCodeBaseline.get(config);
+        const persistedClaudeCode = normalizePersistedClaudeCode(onDisk.claudeCode);
+        const diskChanged = !deepEqual(persistedClaudeCode, baseline);
+        const weChanged = !deepEqual(config.claudeCode, baseline);
+        if (diskChanged && !weChanged) {
+          config.claudeCode = persistedClaudeCode;
+        }
       }
     }
-  }
-  const persistedBinding = bindingBaseline && onDisk
-    ? readPersistedServerBinding(onDisk, bindingBaseline)
-    : bindingBaseline;
-  if (persistedBinding) {
-    const persistedConfig: OcxConfig = { ...config, port: persistedBinding.port };
-    if (persistedBinding.hostname === undefined) delete persistedConfig.hostname;
-    else persistedConfig.hostname = persistedBinding.hostname;
-    saveConfig(persistedConfig);
-    persistedLiveServerBinding.set(config, persistedBinding);
-  } else {
-    saveConfig(config);
-  }
-  if (claudeCodeBaseline.has(config)) {
-    claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
-  }
+    const persistedBinding = bindingBaseline && onDisk
+      ? readPersistedServerBinding(onDisk, bindingBaseline)
+      : bindingBaseline;
+    if (persistedBinding) {
+      const persistedConfig: OcxConfig = { ...config, port: persistedBinding.port };
+      if (persistedBinding.hostname === undefined) delete persistedConfig.hostname;
+      else persistedConfig.hostname = persistedBinding.hostname;
+      persistConfigUnlocked(persistedConfig);
+      persistedLiveServerBinding.set(config, persistedBinding);
+    } else {
+      persistConfigUnlocked(config);
+    }
+    if (claudeCodeBaseline.has(config)) {
+      claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
+    }
+  });
 }
 
 export function codexAutoStartEnabled(config: Pick<OcxConfig, "codexAutoStart">): boolean {
