@@ -458,6 +458,8 @@ describe("executeArchivedCleanup", () => {
     expect(existsSync(join(home, ".trash", "77", "rollout-old.jsonl"))).toBe(false);
   });
 
+  // Windows CI: permanent cleanup + spawn/dynamic-tool SQLite work can exceed Bun's
+  // default 5s under runner load (timed out at 5.5s on PR #779).
   test("deletes spawn edges with parent_thread_id/child_thread_id and cascades dynamic tools", () => {
     home = buildHome({ withSpawnEdges: true, withDynamicTools: true });
     // Delete both sides of the edge together so referenced_history does not fire.
@@ -467,7 +469,7 @@ describe("executeArchivedCleanup", () => {
     expect(db.query("SELECT COUNT(*) AS n FROM thread_spawn_edges").get() as { n: number }).toEqual({ n: 0 });
     expect(db.query("SELECT COUNT(*) AS n FROM thread_dynamic_tools").get() as { n: number }).toEqual({ n: 0 });
     db.close();
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("rejects candidates still referenced by a live spawn edge", () => {
     home = buildHome({ withSpawnEdges: true });
