@@ -439,6 +439,7 @@ const providerConfigSchema = z.object({
   baseUrl: z.string().min(1),
   apiKeyTransport: z.enum(["x-api-key", "bearer"]).optional(),
   responsesPath: z.string().min(1).optional(),
+  statelessResponses: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   responsesItemIdRepair: z.object({

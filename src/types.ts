@@ -922,6 +922,13 @@ export interface OcxProviderConfig {
    */
   responsesPath?: string;
   /**
+   * Responses upstream that stores nothing server-side (DeepSeek documents "the API
+   * is stateless"). Stateful request parameters are dropped, `store` is pinned false,
+   * and orphaned tool results left by a replay miss are repaired rather than
+   * forwarded to an upstream that cannot resolve their pair.
+   */
+  statelessResponses?: boolean;
+  /**
    * Explicit opt-in for non-registry private-network destinations such as localhost, RFC1918,
    * link-local, or unique-local upstreams. Metadata endpoints remain blocked.
    */

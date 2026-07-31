@@ -14,6 +14,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { providerConfigSeed } from "../src/providers/derive";
 import { getProviderRegistryEntry } from "../src/providers/registry";
+import { createResponsesPassthroughAdapter } from "../src/adapters/openai-responses";
 import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 import { handleResponses } from "../src/server/responses/core";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
@@ -108,5 +109,87 @@ describe("the inbound scope survives the handleResponses replay", () => {
 
   test("a Chat replay reaches /chat/completions, not /responses", async () => {
     expect(await drive("chat")).toBe("https://api.deepseek.com/chat/completions");
+  });
+});
+
+/**
+ * DeepSeek documents "the API is stateless: responses and conversations are not
+ * stored on the server", so parameters that reference server-held state can never be
+ * honoured. Multi-turn context still works because the proxy expands
+ * previous_response_id into a full input replay before the adapter runs.
+ */
+describe("stateless Responses upstreams get no stateful parameters", () => {
+  function buildBody(provider: OcxProviderConfig, rawBody: Record<string, unknown>): Record<string, unknown> {
+    const built = createResponsesPassthroughAdapter(provider).buildRequest({
+      modelId: MODEL,
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: MODEL, input: "ping", ...rawBody },
+    } as Parameters<ReturnType<typeof createResponsesPassthroughAdapter>["buildRequest"]>[0], { headers: new Headers() });
+    return JSON.parse(String(built.body)) as Record<string, unknown>;
+  }
+
+  const STATEFUL = {
+    previous_response_id: "resp_abc",
+    conversation: "conv_abc",
+    background: true,
+    metadata: { k: "v" },
+    prompt: { id: "pmpt_abc" },
+  };
+
+  test("the documented stateful parameters are dropped and store is pinned", () => {
+    const body = buildBody({ ...deepseekProvider(), adapter: "openai-responses" }, STATEFUL);
+    for (const key of Object.keys(STATEFUL)) expect(body).not.toHaveProperty(key);
+    expect(body.store).toBe(false);
+  });
+
+  test("service_tier survives, because the server sets it for fast mode", () => {
+    // Deleting a configured knob inside an adapter would be action-at-a-distance;
+    // forwarding a parameter the upstream ignores is the reversible choice.
+    const body = buildBody({ ...deepseekProvider(), adapter: "openai-responses" }, { service_tier: "priority" });
+    expect(body.service_tier).toBe("priority");
+  });
+
+  test("a provider without the capability keeps every one of them", () => {
+    // Negative control: the strip must be capability-gated, not global.
+    const body = buildBody(
+      { adapter: "openai-responses", baseUrl: "https://api.openai.example", authMode: "key", apiKey: "sk-test" },
+      STATEFUL,
+    );
+    expect(body.previous_response_id).toBe("resp_abc");
+    expect(body.metadata).toEqual({ k: "v" });
+    expect(body.store).toBeUndefined();
+  });
+
+  test("the seed and backfill carry the capability, and only for declaring entries", () => {
+    expect(providerConfigSeed(getProviderRegistryEntry("deepseek")!).statelessResponses).toBe(true);
+    expect(providerConfigSeed(getProviderRegistryEntry("cerebras")!).statelessResponses).toBeUndefined();
+  });
+
+  test("a replay miss does not forward an orphaned tool result", () => {
+    // On a replay miss the delta can open with a function_call_output whose paired
+    // function_call sat in the prefix that was never expanded. A stateless upstream
+    // cannot resolve the pair from its own storage, so forwarding the orphan earns a
+    // 400 -- dropping stateful params is not much use if the body is unparseable.
+    const built = createResponsesPassthroughAdapter({ ...deepseekProvider(), adapter: "openai-responses" })
+      .buildRequest({
+        modelId: MODEL,
+        context: { messages: [] },
+        stream: true,
+        options: {},
+        previousResponseId: "resp_missing",
+        _rawBody: {
+          model: MODEL,
+          previous_response_id: "resp_missing",
+          input: [
+            { type: "function_call_output", call_id: "call_orphan", output: "42" },
+            { type: "message", role: "user", content: [{ type: "input_text", text: "and now?" }] },
+          ],
+        },
+      } as Parameters<ReturnType<typeof createResponsesPassthroughAdapter>["buildRequest"]>[0], { headers: new Headers() });
+    const input = (JSON.parse(String(built.body)) as { input: Array<{ type?: string; call_id?: string }> }).input;
+    expect(input.some(item => item.call_id === "call_orphan")).toBe(false);
+    expect(input.some(item => item.type === "message")).toBe(true);
   });
 });

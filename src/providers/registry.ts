@@ -155,6 +155,12 @@ export interface ProviderRegistryEntry {
    * per model. DeepSeek documents `POST /responses` with no `/v1` segment.
    */
   responsesPath?: string;
+  /**
+   * Responses upstream that stores nothing server-side. Stateful request parameters
+   * are dropped and `store` is pinned false, and orphaned tool results left by a
+   * replay miss are repaired rather than forwarded.
+   */
+  statelessResponses?: boolean;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -861,6 +867,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // construction and the wire above can never route.
     // Evidence: https://api-docs.deepseek.com/api/create-response/
     responsesPath: "/responses",
+    // "The API is stateless: responses and conversations are not stored on the
+    // server." https://api-docs.deepseek.com/api/create-response/
+    statelessResponses: true,
     /* [Decision Log]
     - 목적: DeepSeek V4 thinking mode multi-turn/tool-call requests must replay prior assistant reasoning_content.
     - 대안 분석: Globally preserve reasoning_content for all OpenAI-compatible models; preserve it for legacy deepseek-reasoner too; mark only V4 thinking models in registry metadata.
