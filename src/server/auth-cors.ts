@@ -89,6 +89,11 @@ function isExtraAllowedOrigin(origin: string, cfg: OcxConfig): boolean {
   });
 }
 
+function normalizedPort(url: URL): string {
+  if (url.port) return url.port;
+  return url.protocol === "https:" ? "443" : "80";
+}
+
 /** True when Origin and the process-derived origin share a host across http/https (TLS terminator). */
 function sameManagementHost(origin: string, requestOrigin: string): boolean {
   try {
@@ -98,8 +103,14 @@ function sameManagementHost(origin: string, requestOrigin: string): boolean {
     if (right.protocol !== "http:" && right.protocol !== "https:") return false;
     if (left.hostname.toLowerCase() !== right.hostname.toLowerCase()) return false;
     // Same scheme with unequal origins means a port (or rare URL) mismatch — keep fail-closed.
+    if (left.protocol === right.protocol) return false;
     // Cross-scheme only: browser https Origin vs process http Host behind a TLS terminator.
-    return left.protocol !== right.protocol;
+    if (left.protocol !== "https:" || right.protocol !== "http:") return false;
+    const leftPort = normalizedPort(left);
+    const rightPort = normalizedPort(right);
+    // Public https:443 in front of an internal http listener on :80 is the common terminator shape.
+    if (leftPort === rightPort) return true;
+    return leftPort === "443" && rightPort === "80";
   } catch {
     return false;
   }
