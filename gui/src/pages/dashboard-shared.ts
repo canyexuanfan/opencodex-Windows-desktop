@@ -44,6 +44,8 @@ export interface SettingsData {
   codexAutoStart: boolean;
   port: number;
   hostname: string;
+  /** IANA zone of the machine running the proxy, used to render log timestamps (#725). */
+  timeZone?: string;
   startupHealth?: {
     status: "native" | "protected" | "at-risk";
     routingKind: "native" | "opencodex-local" | "custom-local" | "custom-remote" | "unknown";
