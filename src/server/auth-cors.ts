@@ -89,33 +89,6 @@ function isExtraAllowedOrigin(origin: string, cfg: OcxConfig): boolean {
   });
 }
 
-function normalizedPort(url: URL): string {
-  if (url.port) return url.port;
-  return url.protocol === "https:" ? "443" : "80";
-}
-
-/** True when Origin and the process-derived origin share a host across http/https (TLS terminator). */
-function sameManagementHost(origin: string, requestOrigin: string): boolean {
-  try {
-    const left = new URL(origin);
-    const right = new URL(requestOrigin);
-    if (left.protocol !== "http:" && left.protocol !== "https:") return false;
-    if (right.protocol !== "http:" && right.protocol !== "https:") return false;
-    if (left.hostname.toLowerCase() !== right.hostname.toLowerCase()) return false;
-    // Same scheme with unequal origins means a port (or rare URL) mismatch — keep fail-closed.
-    if (left.protocol === right.protocol) return false;
-    // Cross-scheme only: browser https Origin vs process http Host behind a TLS terminator.
-    if (left.protocol !== "https:" || right.protocol !== "http:") return false;
-    const leftPort = normalizedPort(left);
-    const rightPort = normalizedPort(right);
-    // Public https:443 in front of an internal http listener on :80 is the common terminator shape.
-    if (leftPort === rightPort) return true;
-    return leftPort === "443" && rightPort === "80";
-  } catch {
-    return false;
-  }
-}
-
 export function managementRequestOrigin(req: Request, config: OcxConfig): string | null {
   const host = req.headers.get("Host");
   const parsedHost = parseHttpHost(host);
@@ -134,14 +107,9 @@ export function isAllowedManagementOrigin(req: Request, config: OcxConfig): bool
   const requestOrigin = managementRequestOrigin(req, config);
   if (!requestOrigin) return false;
   const origin = req.headers.get("Origin");
-  if (!origin) return true;
-  if (origin === requestOrigin) return true;
-  // Explicit operator allowlist (documented reverse-proxy deployments).
-  if (isExtraAllowedOrigin(origin, config)) return true;
-  // TLS-terminating reverse proxy: browser sends https://host while the process sees http://host.
-  // Hostname match is enough; credentials still required by requireManagementAuth.
-  if (sameManagementHost(origin, requestOrigin)) return true;
-  return false;
+  // Exact match against the process-derived origin, or an operator-listed corsAllowOrigins
+  // entry (covers TLS-terminator https://… when the process observes http://…).
+  return !origin || origin === requestOrigin || isExtraAllowedOrigin(origin, config);
 }
 
 export function browserSecurityHeaders(): Record<string, string> {
