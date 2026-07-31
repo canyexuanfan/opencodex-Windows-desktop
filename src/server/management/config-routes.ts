@@ -111,6 +111,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       );
     }
     return jsonResponse({
+      // The dashboard renders request-log timestamps. Without this it formats them in the
+      // BROWSER's zone, so a KST proxy viewed from a UTC browser reports every request nine
+      // hours off (#725). Carried on settings rather than /api/logs because that route's
+      // array response has four consumers that would have to change with it.
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       codexAutoStart: codexAutoStartEnabled(config),
       port: config.port,
       hostname: config.hostname ?? "127.0.0.1",
