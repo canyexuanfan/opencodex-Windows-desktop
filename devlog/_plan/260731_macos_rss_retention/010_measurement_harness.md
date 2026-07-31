@@ -578,6 +578,11 @@ function calibrationVerdict(all: Row[], runs: Run[]) {
   return { passed: true, final, peak, rssSlope };
 }
 function validateWorkload(all: Row[], run: Run) {
+  // Whole-run sampler integrity FIRST. The active-turn checks below only cover
+  // intervals while a turn is in flight, but the warm baseline and the 0..600s
+  // settle samples are what decide the residual and the retention verdict — a gap
+  // there would otherwise pass unnoticed.
+  assertSamplerIntegrity(run);
   const m = all.filter(r=>r.run===run.id), starts=m.filter(r=>r.type==="client-start");
   const ends=m.filter(r=>r.type==="client-end"), http=m.filter(r=>r.type==="client-http");
   if (Number(m.find(r=>r.type==="warm-end")?.actualMs)<WARM
