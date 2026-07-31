@@ -393,10 +393,14 @@ function isVolcengineArkTarget(provider: OcxProviderConfig): boolean {
 /**
  * Placeholder content for an assistant history entry carrying only tool calls or reasoning.
  *
- * Ark's error names the parameter it wants: `input.content.text`. It is not asking for non-empty
- * text, it is asking for the STRUCTURED content form — a `[{type:"text",text:""}]` array — and a
- * bare string of any kind, `""` or `" "`, does not provide that path. The empty text inside the
- * array stays empty, so nothing extra is fed to the model.
+ * UNVERIFIED HYPOTHESIS for Ark. The reported error names `input.content.text`, a nested path,
+ * which suggests Ark wants the structured content form `[{type:"text",text:""}]` rather than a
+ * bare string — no string value, `""` or `" "`, exposes a `content.text` path at all. But Ark's
+ * published examples only show array content for MULTIMODAL USER input, never for an assistant
+ * history entry, so this shape is inferred from the error message and not confirmed by the docs
+ * or by a live request. The empty inner text at least adds no tokens either way.
+ *
+ * Confirm against a real Ark endpoint before relying on this; #796 records what is still missing.
  *
  * Every other provider keeps the bare `""`, which xAI's validator specifically requires ("Each
  * message must have at least one content element"), so this cannot be applied globally.

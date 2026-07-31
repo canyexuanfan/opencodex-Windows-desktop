@@ -12,6 +12,10 @@ import type { OcxMessage, OcxParsedRequest, OcxProviderConfig } from "../src/typ
  * one content element" -- and the existing "" is what satisfies it. So the two contracts conflict
  * and the fix is host-gated, which is exactly what these tests have to prove: every case runs the
  * SAME input through Ark and a generic host and asserts the two diverge.
+ *
+ * Scope of these tests: they verify the WIRE SHAPE we emit and that the host gate is real. They
+ * cannot verify that Ark accepts it -- no request here reaches Volcengine. The array form is
+ * inferred from the error's nested parameter path and is still unconfirmed; see #796.
  */
 
 function providerFor(baseUrl: string): OcxProviderConfig {
@@ -62,8 +66,9 @@ describe("Volcengine Ark empty assistant content (#796)", () => {
   test("a tool-call-only assistant uses the structured content form for Ark", () => {
     const [assistant] = assistantsOf(wire(ark, history));
     expect(assistant.tool_calls).toHaveLength(1);
-    // Ark's error names `input.content.text` -- a nested path, so it is asking for the array
-    // form, not merely for non-empty text. The inner text stays empty.
+    // Ark's error names `input.content.text`, a nested path, which is why the array form is the
+    // working hypothesis -- no bare string exposes a `content.text` path. UNVERIFIED against a
+    // live endpoint: this test pins what we send, not that Ark accepts it.
     expect(assistant.content).toEqual([{ type: "text", text: "" }]);
   });
 
