@@ -137,6 +137,25 @@ async function waitForPolicyJob(
   throw new Error("policy job did not finish");
 }
 
+/** Windows can keep SQLite/job handles briefly after stop; retry only transient cleanup codes. */
+function removeTree(path: string): void {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "";
+      if (!new Set(["EPERM", "EBUSY", "ENOTEMPTY"]).has(code)) throw error;
+      lastError = error;
+      Bun.sleepSync(50);
+    }
+  }
+  throw lastError;
+}
+
 beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
   isolatedCodexHome = installIsolatedCodexHome("ocx-storage-mutation-race-codex-");
@@ -161,7 +180,7 @@ afterEach(() => {
   else process.env.OPENCODEX_HOME = previousHome;
   isolatedCodexHome?.restore();
   isolatedCodexHome = null;
-  if (testDir) rmSync(testDir, { recursive: true, force: true });
+  if (testDir) removeTree(testDir);
   testDir = "";
 });
 
@@ -231,7 +250,7 @@ describe("storage mutation coordinator", () => {
 
     const server = startServer(0);
     try {
-      await enablePolicyAndRun(server.url);
+      const { startedAt } = await enablePolicyAndRun(server.url);
       await Bun.sleep(80);
 
       const preview = await previewDigest(server.url, 50);
@@ -250,6 +269,10 @@ describe("storage mutation coordinator", () => {
       });
       expect(restoreRes.status).toBe(409);
       expect((await restoreRes.json()).error).toBe("storage_mutation_busy");
+
+      // Drain the blocked policy job before stop/teardown — leaving it mid-block leaves
+      // Windows holding OPENCODEX_HOME (SQLite/job handles) and afterEach rmSync fails EBUSY.
+      await waitForPolicyJob(server.url, startedAt);
     } finally {
       await server.stop(true);
     }

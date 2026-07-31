@@ -4,6 +4,7 @@ import {
   getValidCodexToken,
   isCodexAccountGenerationLive,
 } from "./account-store";
+import { ConfigMutationLockError } from "../config";
 import { markAccountNeedsReauth } from "./account-runtime-state";
 import { isCodexAccountUsable } from "./account-usability";
 import { reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
@@ -180,7 +181,9 @@ export class CodexThreadAffinityExpiredError extends Error {
 }
 
 export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown): boolean {
-  return !(cause instanceof CodexCredentialGenerationConflictError) && !(cause instanceof CodexCredentialRefreshLockTimeoutError);
+  return !(cause instanceof CodexCredentialGenerationConflictError)
+    && !(cause instanceof CodexCredentialRefreshLockTimeoutError)
+    && !(cause instanceof ConfigMutationLockError);
 }
 
 export interface ResolveCodexAuthContextOptions {

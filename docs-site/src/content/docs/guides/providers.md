@@ -190,7 +190,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 53 built-in presets: 42 key-based, seven OAuth, three local, and the default
+opencodex ships 62 built-in presets: 51 key-based, seven OAuth, three local, and the default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it. Notable entries:
 
@@ -207,6 +207,8 @@ validates the key, and stores it. Notable entries:
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| DeepInfra | `https://api.deepinfra.com/v1/openai` |
+| Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -225,6 +227,16 @@ validates the key, and stores it. Notable entries:
 
 Most use the `openai-chat` adapter with a bearer key; a few that expose only an Anthropic-compatible
 endpoint (e.g. **Xiaomi MiMo**) use the `anthropic` adapter (`x-api-key`).
+
+**DeepInfra discovery.** The key-based `deepinfra` OpenAI Chat Completions provider uses the
+`openai-chat` adapter with a Bearer API key. Its registry-owned model-list URL keeps only rows tagged
+`chat`, preserves slash-containing native model ids, and caps live discovery at 512 KiB and 512 raw
+rows. Create keys in [DeepInfra's dashboard](https://deepinfra.com/dash/api_keys).
+
+**Hyperbolic discovery.** The preset reads `/v1/models` with the configured bearer key, preserves
+slash-containing native model ids, and caps live discovery at 256 KiB and 256 raw rows. It covers
+serverless text and vision-language chat only; Hyperbolic's separate image, audio, and GPU endpoints
+are out of scope. Create keys at [Hyperbolic](https://app.hyperbolic.ai).
 
 > **Tencent Cloud Coding Plan usage restriction:** Tencent documents this subscription for
 > interactive coding tools only. General API automation, custom application backends, and
