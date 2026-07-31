@@ -38,3 +38,6 @@ devlog/**/security-advisory-draft*
 # Test-generated artifacts
 tests/.tmp-*/
 .claude/
+# Local third-party reference clones are never committed; keep only the index.
+reference/*
+!reference/README.md
