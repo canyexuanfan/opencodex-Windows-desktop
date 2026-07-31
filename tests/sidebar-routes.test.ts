@@ -51,6 +51,11 @@ describe("GET /api/update/badge", () => {
 });
 
 describe("GET /api/github/star", () => {
+  // These hit a real `gh` spawn (auth then api). AUTH_TIMEOUT_MS is 5s and API_TIMEOUT_MS
+  // is 10s in star-state.ts — Bun's default 5s test budget races the auth kill on a slow
+  // Windows credential helper and flakes as a timeout even when spawnGh is correct.
+  const STAR_ROUTE_TIMEOUT_MS = 20_000;
+
   test("is routed and reports one of the three known states", async () => {
     invalidateStarStatusCache();
     const { status, body } = await call("GET", "/api/github/star");
@@ -59,7 +64,7 @@ describe("GET /api/github/star", () => {
     expect(["starred", "not-starred", "unauthenticated"]).toContain(star.state);
     expect(star.repo).toBe("lidge-jun/opencodex");
     expect(star.url).toBe("https://github.com/lidge-jun/opencodex");
-  });
+  }, { timeout: STAR_ROUTE_TIMEOUT_MS });
 
   test("never serializes gh output, tokens, or account identifiers", async () => {
     invalidateStarStatusCache();
@@ -71,7 +76,7 @@ describe("GET /api/github/star", () => {
     expect(raw.toLowerCase()).not.toContain("scope");
     expect(raw).not.toContain("gho_");
     expect(raw).not.toContain("ghp_");
-  });
+  }, { timeout: STAR_ROUTE_TIMEOUT_MS });
 });
 
 describe("route surface", () => {
