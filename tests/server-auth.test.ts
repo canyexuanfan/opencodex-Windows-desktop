@@ -151,11 +151,28 @@ type PoolRetryHarness = {
   upstream: ReturnType<typeof Bun.serve>;
 };
 
+async function removeTestDirBestEffort(dir: string): Promise<void> {
+  if (!existsSync(dir)) return;
+  // Windows can keep the prior harness's ACL/icacls handles for a beat after
+  // stop; a single EBUSY must not take down the rest of the file.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      const code = err && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : "";
+      if (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") throw err;
+      await Bun.sleep(25 * (attempt + 1));
+    }
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
+
 async function startPoolRetryHarness(
   reply: (accountId: string, request: Request) => Response | Promise<Response>,
   options: { secondAccount?: boolean; streamMode?: "legacy-tee" | "eager-relay" } = {},
 ): Promise<PoolRetryHarness> {
-  if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+  await removeTestDirBestEffort(TEST_DIR);
   mkdirSync(TEST_DIR, { recursive: true });
   process.env.OPENCODEX_HOME = TEST_DIR;
   clearCodexUpstreamHealth();

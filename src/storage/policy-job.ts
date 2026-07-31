@@ -19,9 +19,11 @@ import {
   type PolicySkipReason,
 } from "./policy";
 import {
+  cancelQueuedStorageWorkerSpawns,
   drainStorageWorkers,
   registerStorageWorker,
   terminateStorageWorker,
+  withStorageWorkerSpawnGate,
 } from "./worker-lifecycle";
 
 export type PolicyJobStatus = "idle" | "running";
@@ -148,10 +150,27 @@ export function resetStorageCleanupPolicyJobForTests(): void {
  * worker still exiting at that moment trips a Bun-internal assertion on Windows
  * and takes the whole run down, so a suite that spawns workers must be able to
  * wait for them rather than fire-and-forget.
+ *
+ * Do not route through the sync reset's `void terminate(...)`: that used to
+ * deregister the worker before the thread exited, so a follow-up drain saw an
+ * empty registry and returned while Windows was still reclaiming the thread.
  */
 export async function resetStorageCleanupPolicyJobForTestsAsync(): Promise<void> {
-  resetStorageCleanupPolicyJobForTests();
-  await drainStorageWorkers();
+  disownActiveRun();
+  cancelQueuedStorageWorkerSpawns();
+  const worker = activeWorker;
+  activeWorker = null;
+  inflight = null;
+  testHooks = null;
+  state = { status: "idle" };
+  // Join the worker before releasing the mutation slot so a concurrent run
+  // cannot acquire CODEX_HOME while the aborted thread is still mutating.
+  try {
+    if (worker) await terminateStorageWorker(worker);
+    await drainStorageWorkers();
+  } finally {
+    releaseHeldMutationSlot();
+  }
 }
 
 /** Terminate an in-flight worker during process shutdown. */
@@ -161,6 +180,8 @@ export function abortStorageCleanupPolicyJob(): void {
     void terminateStorageWorker(activeWorker);
     activeWorker = null;
   }
+  // Sync path cannot join; prefer abortStorageCleanupPolicyJobAsync when the
+  // caller can await so the mutation slot stays held until the thread exits.
   releaseHeldMutationSlot();
   if (state.status === "running") {
     state = {
@@ -175,6 +196,37 @@ export function abortStorageCleanupPolicyJob(): void {
     };
   }
   inflight = null;
+}
+
+/**
+ * Shutdown path that joins worker threads. Prefer this over the sync abort when
+ * the caller can await (server drain, test teardown) so Windows isolate reclaim
+ * does not race a still-exiting storage worker.
+ */
+export async function abortStorageCleanupPolicyJobAsync(): Promise<void> {
+  disownActiveRun();
+  cancelQueuedStorageWorkerSpawns();
+  const worker = activeWorker;
+  activeWorker = null;
+  if (state.status === "running") {
+    state = {
+      ...state,
+      status: "idle",
+      finishedAt: Date.now(),
+      lastError: "aborted",
+      lastOutcome: {
+        ok: false,
+        error: "evaluation_failed",
+      },
+    };
+  }
+  inflight = null;
+  try {
+    if (worker) await terminateStorageWorker(worker);
+    await drainStorageWorkers();
+  } finally {
+    releaseHeldMutationSlot();
+  }
 }
 
 function outcomeFromResult(result: PolicyRunResult): PolicyJobOutcome {
@@ -232,21 +284,12 @@ function applyMutationBusy(): void {
 }
 
 function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Promise<PolicyRunResult> {
-  return new Promise((resolve, reject) => {
+  return withStorageWorkerSpawnGate(() => new Promise<PolicyRunResult>((resolve, reject) => {
     const requestId = crypto.randomUUID();
     let settled = false;
     const worker = new Worker(new URL("./policy-worker.ts", import.meta.url).href);
     registerStorageWorker(worker);
     activeWorker = worker;
-
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cancelActiveRun = null;
-      void terminateStorageWorker(worker);
-      if (activeWorker === worker) activeWorker = null;
-      reject(new Error("storage_cleanup_worker_timeout"));
-    }, WORKER_TIMEOUT_MS);
 
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -256,9 +299,14 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
       if (activeWorker === worker) activeWorker = null;
       // Settle the caller only after the thread is actually gone, so a suite
       // that awaits its request cannot reach the next test file with a worker
-      // still exiting behind it.
+      // still exiting behind it. Also keeps executeJob's finally from releasing
+      // the mutation slot while the thread may still mutate CODEX_HOME.
       void terminateStorageWorker(worker).then(fn, fn);
     };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("storage_cleanup_worker_timeout")));
+    }, WORKER_TIMEOUT_MS);
 
     cancelActiveRun = () => {
       finish(() => reject(new Error("aborted")));
@@ -296,7 +344,7 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
         ...(process.env.OPENCODEX_HOME ? { OPENCODEX_HOME: process.env.OPENCODEX_HOME } : {}),
       },
     });
-  });
+  }));
 }
 
 async function executeJob(opts: RequestPolicyRunOptions): Promise<void> {
