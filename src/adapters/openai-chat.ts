@@ -206,10 +206,10 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           }));
           // "" instead of null: strict validators (xAI: "Each message must have at least one
           // content element", langchain#34140) reject content-less assistant history entries.
-          if (!chatMsg.content) chatMsg.content = "";
+          if (!chatMsg.content) chatMsg.content = emptyAssistantContent(provider);
         }
         if (chatMsg.reasoning_content !== undefined && chatMsg.content === undefined && chatMsg.tool_calls === undefined) {
-          chatMsg.content = "";
+          chatMsg.content = emptyAssistantContent(provider);
         }
         out.push(chatMsg);
         pendingToolCalls = wireToolCalls.map(({ tc, id }) => ({ id, name: namespacedToolName(tc.namespace, tc.name) }));
@@ -238,7 +238,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           const name = safeToolName(msg.toolName);
           out.push({
             role: "assistant",
-            content: "",
+            content: emptyAssistantContent(provider),
             tool_calls: [{
               id: toolCallId,
               type: "function",
@@ -370,6 +370,35 @@ function isKimiSchemaTarget(provider: OcxProviderConfig): boolean {
   } catch {
     return false;
   }
+}
+
+// Volcengine Ark regional endpoints. Ark validates an assistant message's text field as a
+// REQUIRED parameter and treats "" as absent, so a tool-call-only assistant in history 400s with
+// `MissingParameter: input.content.text` (#796). Every other OpenAI-compatible provider accepts
+// "", and xAI actively requires it ("Each message must have at least one content element"), so
+// the two contracts are in direct conflict and this cannot be a global change.
+const VOLCENGINE_ARK_HOSTNAMES = new Set([
+  "ark.cn-beijing.volces.com",
+  "ark.ap-southeast.volces.com",
+]);
+
+function isVolcengineArkTarget(provider: OcxProviderConfig): boolean {
+  try {
+    return VOLCENGINE_ARK_HOSTNAMES.has(new URL(provider.baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Placeholder text for an assistant history entry that carries only tool calls or reasoning.
+ *
+ * A single space rather than "" for Ark: it satisfies Ark's non-empty text requirement while
+ * staying semantically empty for the model. Ark rejects "" outright, so there is no value that
+ * satisfies both contracts — hence the host gate.
+ */
+function emptyAssistantContent(provider: OcxProviderConfig): string {
+  return isVolcengineArkTarget(provider) ? " " : "";
 }
 
 /**
