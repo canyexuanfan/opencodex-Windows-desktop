@@ -89,6 +89,7 @@ import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../provid
 import { isUsageDebugEnabled } from "../../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve";
+import type { InboundWire } from "../../providers/registry";
 import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../../providers/key-failover";
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { resolveProviderTransport } from "../../providers/xai-transport";
@@ -249,6 +250,10 @@ interface CodexPoolAccountRetryArgs {
     abortSignal?: AbortSignal;
     onCodexAuthContextResolved?: (ctx: CodexAuthContext) => void;
     deferCodexResetDerivedCooldown?: boolean;
+    // Narrowed subset of HandleResponsesOptions: the retry rebuilds the adapter, so it
+    // needs the inbound scope or the retry could land on a different wire than the
+    // first attempt.
+    inboundWire?: InboundWire;
   };
   firstAuthCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   firstResponse: Response;
@@ -310,6 +315,7 @@ async function retryCodexPoolOnAlternateAccount(
     req, config, route, parsed, logCtx, options, firstAuthCtx, firstResponse,
     outcomeStatus, upstream, connectMs, passthroughEstimate, stream,
   } = args;
+  const inboundWire = options.inboundWire ?? "responses";
   let retryAuthCtx: CodexAuthContext | undefined;
   try {
     retryAuthCtx = await resolveCodexAuthContext(
@@ -353,7 +359,7 @@ async function retryCodexPoolOnAlternateAccount(
     "pool",
   );
   const retryAdapter = resolveAdapter(
-    resolveWireProtocolOverride(route.providerName, route.modelId, retryProvider),
+    resolveWireProtocolOverride(route.providerName, route.modelId, retryProvider, inboundWire),
     config.cacheRetention,
   );
   const request = await retryAdapter.buildRequest(parsed, { headers: retryHeaders });
@@ -494,6 +500,14 @@ export interface HandleResponsesOptions {
    * (system/tools hash), not a per-session id — do not use it for Anthropic pool affinity.
    */
   promptCacheKeyIsSharedCohort?: boolean;
+  /**
+   * Wire protocol the ORIGINAL client spoke. The Chat and Anthropic surfaces translate
+   * their body into a Responses shape and replay through this function, so without an
+   * explicit value the replay would look like a native Responses request and an
+   * inbound-scoped registry wire default would fire for a client that never asked for
+   * it. Omitted means a genuine Responses inbound.
+   */
+  inboundWire?: InboundWire;
   /** Internal recursion guard; callers outside this module must not set it. */
   comboAttempt?: boolean;
   /** Internal combo handoff: allow a later same-provider model after a reset-derived 429/402. */
@@ -730,8 +744,9 @@ async function applyFinalRouteRequestNormalization(args: {
   config: OcxConfig;
   req: Request;
   logCtx: RequestLogContext;
+  inboundWire: InboundWire;
 }): Promise<void> {
-  const { parsed, route, config, req, logCtx } = args;
+  const { parsed, route, config, req, logCtx, inboundWire } = args;
 
   // Apply the routed model id upstream: routing may strip a "<provider>/" namespace.
   if (route.modelId !== parsed.modelId) {
@@ -742,7 +757,7 @@ async function applyFinalRouteRequestNormalization(args: {
   }
   // Settle the wire once so logging, fast-mode, auth, and sidecars read the adapter
   // this request will actually use (#404).
-  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
@@ -1058,6 +1073,9 @@ export async function handleResponses(
   logCtx: RequestLogContext,
   options: HandleResponsesOptions = {},
 ): Promise<Response> {
+  // The Chat and Anthropic surfaces replay through here with a Responses-shaped body,
+  // so an omitted value means a genuine Responses inbound.
+  const inboundWire = options.inboundWire ?? "responses";
   let body: unknown;
   try {
     body = await readJsonRequestBody(req);
@@ -1221,7 +1239,7 @@ export async function handleResponses(
     );
   }
 
-  await applyFinalRouteRequestNormalization({ parsed, route, config, req, logCtx });
+  await applyFinalRouteRequestNormalization({ parsed, route, config, req, logCtx, inboundWire });
 
   {
     const finalAuth = await resolveResponsesCodexAuth(req, config, route, options);
@@ -1311,7 +1329,7 @@ export async function handleResponses(
     parsed.options.promptCacheKey,
     route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
   );
-  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
   const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
   logCtx.providerAdapter = adapter.name;
   sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name);
@@ -1891,7 +1909,7 @@ export async function handleResponses(
         if (!rotated) return null;
         route.provider = rotated;
         return resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
           config.cacheRetention,
         );
       },
@@ -1958,7 +1976,7 @@ export async function handleResponses(
         if (!rotated) return null;
         route.provider = rotated;
         return resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
           config.cacheRetention,
         );
       },
@@ -2204,7 +2222,7 @@ export async function handleResponses(
         );
         route.provider = refreshedProvider;
         activeAdapter = resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider),
+          resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider, inboundWire),
           config.cacheRetention,
         );
         const result = await rebuildAndRefetch("oauth-401");
@@ -2229,7 +2247,7 @@ export async function handleResponses(
         try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
         route.provider = rotated;
         activeAdapter = resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
           config.cacheRetention,
         );
         const result = await rebuildAndRefetch("key-429");
@@ -2261,7 +2279,7 @@ export async function handleResponses(
           promoteAnthropicActiveAccount(nextAccountId);
           logCtx.provider = formatAnthropicProviderForLog("anthropic", nextAccountId, config);
           activeAdapter = resolveAdapter(
-            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
             config.cacheRetention,
           );
           sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
@@ -2390,7 +2408,7 @@ export async function handleResponses(
           try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
           route.provider = rotated;
           activeAdapter = resolveAdapter(
-            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
             config.cacheRetention,
           );
           continue;
@@ -2418,7 +2436,7 @@ export async function handleResponses(
             promoteAnthropicActiveAccount(nextAccountId);
             logCtx.provider = formatAnthropicProviderForLog("anthropic", nextAccountId, config);
             activeAdapter = resolveAdapter(
-              resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+              resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
               config.cacheRetention,
             );
             sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
