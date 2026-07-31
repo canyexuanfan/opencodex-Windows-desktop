@@ -475,4 +475,73 @@ describe("management and data-plane credential separation", () => {
       await server.stop(true);
     }
   });
+
+  test("directory ACL timeout without opt-in keeps management unavailable even when the token file hardens", async () => {
+    delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+    delete process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL;
+    saveConfig(remoteConfig());
+    const adminToken = `ocx_admin_${"d".repeat(43)}`;
+    writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
+    process.env.USERNAME ??= "tester";
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(args => {
+      const target = args[0] ?? "";
+      // Directory harden times out; token-file harden succeeds.
+      if (target.endsWith("admin-api-token")) {
+        return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+      }
+      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+    });
+    // Drop any directory cache left by saveConfig so this case actually re-hardens.
+    resetHardenedStateForTests();
+    const state = initializeManagementAuthState(remoteConfig());
+    expect(state.available).toBe(false);
+    expect(managementAuthAclUnverified()).toBe(false);
+
+    const server = startServer(0);
+    try {
+      const settings = await fetch(new URL("/api/settings", server.url), {
+        headers: { "x-opencodex-api-key": adminToken },
+      });
+      expect(settings.status).toBe(503);
+      expect((await fetch(new URL("/healthz", server.url))).status).toBe(200);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("directory ACL timeout with opt-in surfaces aclUnverified when the token file hardens", async () => {
+    delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+    process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL = "1";
+    saveConfig(remoteConfig());
+    const adminToken = `ocx_admin_${"e".repeat(43)}`;
+    writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
+    process.env.USERNAME ??= "tester";
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(args => {
+      const target = args[0] ?? "";
+      if (target.endsWith("admin-api-token")) {
+        return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+      }
+      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+    });
+    resetHardenedStateForTests();
+    const state = initializeManagementAuthState(remoteConfig());
+    expect(state.available).toBe(true);
+    if (!state.available) return;
+    expect(state.aclUnverified).toBe(true);
+    expect(managementAuthAclUnverified()).toBe(true);
+
+    const server = startServer(0);
+    try {
+      const settings = await fetch(new URL("/api/settings", server.url), {
+        headers: { "x-opencodex-api-key": adminToken },
+      });
+      expect(settings.status).toBe(200);
+      const body = await settings.json() as { managementAuthAclUnverified?: boolean };
+      expect(body.managementAuthAclUnverified).toBe(true);
+    } finally {
+      await server.stop(true);
+    }
+  });
 });

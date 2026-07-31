@@ -53,7 +53,8 @@ function fail(reason: string): ManagementAuthState {
   return { available: false, reason };
 }
 
-function assertSafeDirectory(path: string): void {
+/** Returns true when the directory was accepted without verified NTFS ACL harden. */
+function assertSafeDirectory(path: string): boolean {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("management token directory is not a regular directory");
@@ -62,10 +63,11 @@ function assertSafeDirectory(path: string): void {
   if (!hardened.ok) {
     if (allowUnverifiedAdminTokenAcl() && /timed out|ETIMEDOUT|budget exhausted|previous attempt timed out/i.test(hardened.diagnostics ?? "")) {
       console.warn(`[opencodex] management token directory ACL unverified (${hardened.diagnostics}); continuing because OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL is set`);
-      return;
+      return true;
     }
     throw new Error("management token directory ACL hardening did not complete");
   }
+  return false;
 }
 
 function readExistingToken(path: string): { token: string; aclUnverified: boolean } {
@@ -177,7 +179,7 @@ export function initializeManagementAuthState(config: OcxConfig): ManagementAuth
   }
   try {
     const path = adminApiTokenFilePath();
-    assertSafeDirectory(dirname(path));
+    const directoryUnverified = assertSafeDirectory(dirname(path));
     let loaded: { token: string; aclUnverified: boolean };
     try {
       loaded = readExistingToken(path);
@@ -185,8 +187,9 @@ export function initializeManagementAuthState(config: OcxConfig): ManagementAuth
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       loaded = createTokenFile(path);
     }
-    lastManagementAuthAclUnverified = loaded.aclUnverified === true;
-    return ready(loaded.token, "file", config, { aclUnverified: loaded.aclUnverified });
+    const aclUnverified = directoryUnverified || loaded.aclUnverified === true;
+    lastManagementAuthAclUnverified = aclUnverified;
+    return ready(loaded.token, "file", config, { aclUnverified });
   } catch (error) {
     lastManagementAuthAclUnverified = false;
     return fail(error instanceof Error ? error.message : "management token initialization failed");
