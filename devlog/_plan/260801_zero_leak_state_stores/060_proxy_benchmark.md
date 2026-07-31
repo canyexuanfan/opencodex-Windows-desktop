@@ -31,9 +31,12 @@ the observed implementation, and rechecks OpenCodex after 010–055 land.
 
 ## Evidence URL ledger
 
-The current `005_impl_roadmap.md:16-30` contains Luna findings but, at HEAD
-`86a82246b827524d074ef0cfed37241b96722000`, no literal URLs. Seed repository/issue
-roots here; wp7 must replace or supplement each with commit-pinned file URLs.
+The current `005_impl_roadmap.md:16-30` contains Luna findings but no literal URLs.
+Source anchors were verified against `86a82246b827524d074ef0cfed37241b96722000`;
+the shared checkout later advanced to docs-only commit
+`860ec897bbc23e04a7b07e93bfcd1dac20e7609f` with `src/` and `tests/` byte-unchanged.
+Seed repository/issue roots here; wp7 must replace or supplement each with commit-pinned
+file URLs.
 
 | Subject | Discovery URL | Exact source permalink | Opened at wp7 | Notes |
 |---|---|---|---|---|

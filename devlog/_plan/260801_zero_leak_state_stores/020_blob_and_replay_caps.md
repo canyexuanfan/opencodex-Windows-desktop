@@ -201,6 +201,26 @@ Extend `getNormalizeStatsForTests()` and the 040 hook with `sentinelEntries`,
 `metadataBytes`, and `oldestAt`. Budget eviction removes the oldest row through the same
 centralized subtract helper.
 
+## Cap rationale
+
+- Cursor 16 MiB per blob is 32 times the external selected-root budget and still admits
+  native conversation-step/KV payloads, while rejecting protocol-scale allocations long
+  before the 32 MiB translator frame ceiling. The 64 MiB aggregate matches the existing
+  continuation/image-cache order of magnitude and gives four maximum entries or many
+  ordinary roots without allowing the 4,096 count cap to imply TiB retention.
+- Antigravity 256 calls is more than ten times the normal 20+ parallel-call acceptance;
+  2 MiB/session permits roughly 8 KiB per identity on average. A 64 KiB signature ceiling
+  is far above observed opaque signatures but prevents one value from consuming the
+  entire session budget.
+- Vision keeps the established 256 identities. The 1 MiB aggregate holds hundreds of
+  ordinary short descriptions; clamp-before-insert guarantees every retained value is
+  at most the existing 2,000-character presentation contract, so paid-call reuse remains
+  useful while pathological upstream prose cannot dominate the process.
+- Image normalization keeps a generous 4,096-row metadata ceiling so pass/miss reuse is
+  not destroyed by screenshot churn. The 20 MiB per-entry ceiling matches Anthropic's
+  final aggregate image-share contract and is above every normal ladder output; the
+  existing 64 MiB aggregate remains the stronger ordinary constraint.
+
 ## Regression tests
 
 `tests/cursor-blob.test.ts`:
@@ -263,4 +283,3 @@ bun run test
 - No image tier ladder, decode validation, wire mutation, demotion order, or 20 MiB
   request-level image budget.
 - No process-wide budget; 040 only consumes the accounting/demotion hooks defined here.
-

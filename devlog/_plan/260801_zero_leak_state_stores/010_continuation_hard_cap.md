@@ -18,6 +18,11 @@ The legacy debounced `responses-state.json` path remains the persistence path fo
 resident entries. Its 2 MiB per-entry and 24 MiB snapshot selection rules are not reused
 as the spill mechanism and are not relaxed.
 
+No new 010 configuration surface is added. Keep the owner-local RAM ceiling fixed at
+64 MiB and retain only the existing test override; 040 owns the configurable process-wide
+retained-state budget. A separate continuation knob would create two user settings with
+overlapping demotion authority and could raise the local store above the global budget.
+
 ## Current contract and verified anchors
 
 - `src/responses/state.ts:6-20` owns count, TTL, 64 MiB nominal RAM cap, legacy snapshot
