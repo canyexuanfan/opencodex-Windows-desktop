@@ -160,3 +160,35 @@ macOS의 claude 핑 테스트도 같은 계열이다. 90ms 침묵에 25ms 핑 �
 
 2번을 확인 안 하면 그냥 침묵이다. `020`에서 무력한 테스트 세 건을 지적해놓고
 같은 짓을 하는 셈이 된다.
+
+## 병행 단위 — `260731_windows_bun_stability`
+
+같은 문제를 다른 사람(`bitkyc08-arch`)이 독립적으로 조사해
+`devlog/_plan/260731_windows_bun_stability/000_research.md`에 남겼다. 결론이
+수렴한다 — 하나의 플레이크가 아니라 원인이 다른 여러 모드라는 것.
+
+그쪽이 **더 정확한 부분이 둘** 있어서 여기 반영한다.
+
+**1. 크래시 지문으로 `panic(thread` 를 쓰면 안 된다.** 스레드 표기가 런마다
+다르다 — `30613324981`은 `panic(thread 2852)`, `30606401943`은 `panic(main thread)`다.
+안정적인 지문은 `oh no: Bun has crashed` 또는 `Internal assertion failure`다.
+내가 위에서 쓴 `panic(thread N)` 표현은 그대로 두되, **grep은 저 두 문자열로 하라**는
+게 맞다.
+
+**2. 타임아웃은 `(fail)` 줄에 안 찍힌다.** 별도 줄에 `^ this test timed out after
+5000ms.`로 나온다. `(fail)`만 grep하면 예산 초과인지 로직 실패인지 구분을 못 한다.
+확인해보니 `30618324009`이 정확히 그렇다:
+
+```
+^ this test timed out after 5000ms.    (server-auth ×2)
+^ this test timed out after 20000ms.   (executeArchivedCleanup)
+```
+
+세 건 다 **예산 초과**였다. 로직 결함이 아니다. 특히 `executeArchivedCleanup`은
+이미 20초를 받고도 넘겼다 — 러너가 그만큼 느렸다는 뜻이다.
+
+**표본 크기도 그쪽이 낫다.** 실패 런 10건에서 모드 A(크래시)와 모드 B(테스트 실패)가
+상호 배타적임을 확인했다. 나는 2건만 봤다.
+
+두 문서를 합치지 않고 나란히 둔다. 이 문서는 **이 라운드에서 무엇을 고쳤는지**의
+기록이고, 그 문서는 **모드 분류와 개선 후보**의 조사다. 목적이 다르다.
