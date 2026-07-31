@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 5：GUI 最小适配`
+- 状态：`阶段 6：零依赖打包`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-实现阶段 5：只做桌面生命周期必要的 GUI 适配：定义 `window.openCodexDesktop` 类型，在桌面模式委托停止/重启给 Electron，普通浏览器模式保持现有 API；不改页面视觉、导航或产品功能，并完成 GUI tests/lint/i18n/build 与 Electron smoke。
+实现阶段 6：准备零依赖桌面打包，固定 Electron/Bun runtime 与 GUI/backend 资源，先完成打包前安全检查。
 
 ---
 
@@ -402,35 +402,42 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ### 5.1 preload 能力
 
-- [ ] 定义 `window.openCodexDesktop` 类型。
-- [ ] 只暴露 `getStatus`、`startProxy`、`stopProxy`、`restartProxy`、`requestExit` 等固定动作。
-- [ ] 不暴露任意命令执行。
-- [ ] 不暴露任意文件读写。
-- [ ] 普通浏览器模式没有 preload 时仍可工作。
+- [x] 定义 `window.openCodexDesktop` 类型。
+- [x] 只暴露 `getStatus`、`startProxy`、`stopProxy`、`restartProxy`、`requestExit` 等固定动作。
+- [x] 不暴露任意命令执行。
+- [x] 不暴露任意文件读写。
+- [x] 普通浏览器模式没有 preload 时仍可工作。
 
 ### 5.2 页面行为
 
-- [ ] 桌面模式下停止/重启委托 Electron 宿主。
-- [ ] 普通浏览器模式继续调用现有 API。
-- [ ] 桌面模式下不显示旧 PowerShell Tray 安装动作，或明确标记由桌面应用管理。
-- [ ] 不添加新导航项。
-- [ ] 不添加欢迎页/引导页。
-- [ ] 所有新文本进入全部 locale。
-- [ ] 新控件有 keyboard、aria、hover 和 focus-visible。
+- [x] 桌面模式下停止/重启委托 Electron 宿主。
+- [x] 普通浏览器模式继续调用现有 API。
+- [x] 桌面模式下不显示旧 PowerShell Tray 安装动作，或明确标记由桌面应用管理。
+- [x] 不添加新导航项。
+- [x] 不添加欢迎页/引导页。
+- [x] 所有新文本进入全部 locale。
+- [x] 新控件有 keyboard、aria、hover 和 focus-visible。
 
 ### 5.3 GUI 验证
 
-- [ ] `cd gui && bun test tests`。
-- [ ] `cd gui && bun run lint`。
-- [ ] `cd gui && bun run lint:i18n`。
-- [ ] `cd gui && bun run build`。
-- [ ] 普通浏览器模式 smoke。
-- [ ] Electron 模式 smoke。
+- [x] `cd gui && bun test tests`。
+- [x] `cd gui && bun run lint`。
+- [x] `cd gui && bun run lint:i18n`。
+- [x] `cd gui && bun run build`。
+- [x] 普通浏览器模式 smoke。
+- [x] Electron 模式 smoke。
+
+验证证据：
+
+```text
+命令：cd gui && bun test tests；bun run lint；bun run lint:i18n；bun run build；端口检查后 Vite 浏览器 smoke；cd desktop && bun run typecheck && bun run build && bun test tests；Electron 43.2.0 Windows x64 smoke
+结果：GUI 定向测试 12 通过，lint/i18n lint/build 通过；完整 GUI 测试 432 通过、7 个既有 Logs 测试因当前 Bun/Jest 兼容层缺少 jest.advanceTimersByTime 失败，已记录排查指南；浏览器 smoke 返回 200；桌面 7 tests/typecheck/build 通过；Electron 版本与启动 smoke 通过，未遗留 sidecar。
+```
 
 完成条件：
 
-- [ ] GUI 只发生桌面生命周期必要改动。
-- [ ] 没有视觉改版或产品功能扩张。
+- [x] GUI 只发生桌面生命周期必要改动。
+- [x] 没有视觉改版或产品功能扩张。
 
 ---
 

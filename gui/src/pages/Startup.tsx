@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IconRefresh } from "../icons";
+import { getDesktopLifecycleApi } from "../desktop-lifecycle";
 import { type TFn, useI18n } from "../i18n/shared";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { Notice } from "../ui";
@@ -182,6 +183,7 @@ export default function Startup({ apiBase }: { apiBase: string }) {
   const data = loadState.data ?? cached?.data ?? null;
   const loading = loadState.refreshing;
   const failed = Boolean(data?.diagnosticStale) || loadState.showError;
+  const isDesktopHost = getDesktopLifecycleApi() !== null;
 
   useEffect(() => {
     if (!data?.diagnosticStale) return;
@@ -305,7 +307,7 @@ export default function Startup({ apiBase }: { apiBase: string }) {
             installResult={installResult}
             onInstall={(action, opts) => { void runInstallAction(action, opts); }}
           />
-          {data.platform === "win32" && (
+          {data.platform === "win32" && !isDesktopHost && (
             <StartupTraySection
               tray={tray}
               trayLoading={trayLoading}
