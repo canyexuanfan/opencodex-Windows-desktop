@@ -658,18 +658,34 @@ describe("service lifecycle cleanup ordering", () => {
   test("service cleanup falls back to findLiveProxy and clears the pid file", async () => {
     const service = await readText("src/service.ts");
 
-    expect(service).toContain('import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort } from "./config";');
+    expect(service).toContain('verifyPidIdentity');
     expect(service).toContain("removeRuntimePort(pid);");
     expect(service).toContain('import { isProcessAlive, stopProxy } from "./lib/process-control";');
     expect(service).toContain('import { findLiveProxy } from "./server/proxy-liveness";');
     expect(service).toContain('type TrackedProxyCleanupResult = "none" | "stale" | "stopped";');
     expect(service).toContain("async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult>");
     expect(service).toContain("await findLiveProxy({ timeoutMs: 1500 })");
-    expect(service).toContain("await stopProxy(pid);");
+    expect(service).toContain("await stopProxy(trackedKillPid);");
+    expect(service).toContain("await stopProxy(liveKillPid);");
     expect(service).toContain("removePid(pid);");
     expect(service).toContain('return "stopped";');
   });
 
+
+  test("Windows scheduler stop waits through wrapper restart when schtasks /end fails", async () => {
+    const service = await readText("src/service.ts");
+    const stopCase = service.slice(service.indexOf('case "stop":'), service.indexOf('case "status":'));
+    expect(stopCase).toContain("schedulerEndOk = stopWindows()");
+    expect(stopCase).toContain("WINDOWS_SCHEDULER_WRAPPER_RESTART_MS");
+    expect(stopCase).toContain("await Bun.sleep(WINDOWS_SCHEDULER_WRAPPER_RESTART_MS)");
+  });
+
+  test("tracked proxy cleanup verifies health-reported pids before stopProxy", async () => {
+    const service = await readText("src/service.ts");
+    expect(service).toContain("function verifiedKillTarget(pid: number | null | undefined): number | null");
+    expect(service).toContain("const liveKillPid = verifiedKillTarget(live?.pid);");
+    expect(service).toContain("const trackedKillPid = verifiedKillTarget(pid);");
+  });
   test("service stop refuses success while the proxy is still live", async () => {
     const service = await readText("src/service.ts");
     const stopCase = service.slice(service.indexOf('case "stop":'), service.indexOf('case "status":'));

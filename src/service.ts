@@ -10,7 +10,7 @@ import { findLiveProxy } from "./server/proxy-liveness";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort } from "./config";
+import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort, verifyPidIdentity } from "./config";
 import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex/inject";
 import { stripGrokConfig } from "./grok/inject";
@@ -1430,7 +1430,25 @@ async function installWindowsNative(): Promise<void> {
   writeServiceInstallState("native");
 }
 function startWindows(): void { schtasks(["/run", "/tn", TASK]); }
-function stopWindows(): void { try { schtasks(["/end", "/tn", TASK]); } catch { /* not running */ } }
+/** Batch wrapper cooldown after a failed child exit (`ping -n 6` ≈ 5s). */
+export const WINDOWS_SCHEDULER_WRAPPER_RESTART_MS = 6500;
+
+export function isWindowsSchedulerEndBenign(error: unknown): boolean {
+  const detail = schtasksErrorDetail(error).toLowerCase();
+  return detail.includes("no running instance")
+    || detail.includes("not currently running")
+    || detail.includes("0x41330");
+}
+
+/** End the scheduler task; false when `/end` failed for a reason other than "not running". */
+export function stopWindows(): boolean {
+  try {
+    schtasks(["/end", "/tn", TASK]);
+    return true;
+  } catch (error) {
+    return isWindowsSchedulerEndBenign(error);
+  }
+}
 function statusWindows(): string { try { return schtasks(["/query", "/tn", TASK]); } catch { return ""; } }
 function statusWindowsXml(): string { try { return schtasks(["/query", "/tn", TASK, "/xml"]); } catch { return ""; } }
 function uninstallWindows(): void {
@@ -1609,13 +1627,20 @@ function platformOps(backend: ServiceBackend = "scheduler"): ServiceOps | null {
 
 type TrackedProxyCleanupResult = "none" | "stale" | "stopped";
 
+function verifiedKillTarget(pid: number | null | undefined): number | null {
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  const verified = verifyPidIdentity(pid);
+  return verified === pid ? verified : null;
+}
+
 async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult> {
   let stopped = false;
   const pid = readPid();
-  if (pid && isProcessAlive(pid)) {
-    await stopProxy(pid);
-    removePid(pid);
-    removeRuntimePort(pid);
+  const trackedKillPid = verifiedKillTarget(pid);
+  if (trackedKillPid !== null && isProcessAlive(trackedKillPid)) {
+    await stopProxy(trackedKillPid);
+    removePid(trackedKillPid);
+    removeRuntimePort(trackedKillPid);
     stopped = true;
   } else if (pid) {
     removePid(pid);
@@ -1624,10 +1649,11 @@ async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult> {
   // Orphan recovery: the pid file can be missing/stale while the service wrapper keeps
   // a live proxy running — mirror `ocx stop`'s identity-checked findLiveProxy fallback.
   const live = await findLiveProxy({ timeoutMs: 1500 });
-  if (live?.pid) {
-    await stopProxy(live.pid);
-    removePid(live.pid);
-    removeRuntimePort(live.pid);
+  const liveKillPid = verifiedKillTarget(live?.pid);
+  if (liveKillPid !== null) {
+    await stopProxy(liveKillPid);
+    removePid(liveKillPid);
+    removeRuntimePort(liveKillPid);
     stopped = true;
   }
   if (stopped) return "stopped";
@@ -1944,8 +1970,15 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       assertServiceEnvironmentMatchesInstall();
       // Only stop what is actually installed. The unguarded call ran a real `launchctl unload`
       // (and its Windows/Linux twins) even with nothing installed.
-      if (ops.status() !== null || isServiceInstalled()) ops.stop();
+      let schedulerEndOk = true;
+      if (ops.status() !== null || isServiceInstalled()) {
+        if (process.platform === "win32" && backend === "scheduler") schedulerEndOk = stopWindows();
+        else ops.stop();
+      }
       await stopTrackedProxyForServiceCommand();
+      if (process.platform === "win32" && backend === "scheduler" && !schedulerEndOk) {
+        await Bun.sleep(WINDOWS_SCHEDULER_WRAPPER_RESTART_MS);
+      }
       if (await findLiveProxy({ timeoutMs: 1500 })) {
         console.error("❌ Service stop did not terminate the proxy — it is still running. Check `ocx service status` and the service log.");
         process.exit(1);
