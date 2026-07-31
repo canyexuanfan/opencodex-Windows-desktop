@@ -391,14 +391,18 @@ function isVolcengineArkTarget(provider: OcxProviderConfig): boolean {
 }
 
 /**
- * Placeholder text for an assistant history entry that carries only tool calls or reasoning.
+ * Placeholder content for an assistant history entry carrying only tool calls or reasoning.
  *
- * A single space rather than "" for Ark: it satisfies Ark's non-empty text requirement while
- * staying semantically empty for the model. Ark rejects "" outright, so there is no value that
- * satisfies both contracts — hence the host gate.
+ * Ark's error names the parameter it wants: `input.content.text`. It is not asking for non-empty
+ * text, it is asking for the STRUCTURED content form — a `[{type:"text",text:""}]` array — and a
+ * bare string of any kind, `""` or `" "`, does not provide that path. The empty text inside the
+ * array stays empty, so nothing extra is fed to the model.
+ *
+ * Every other provider keeps the bare `""`, which xAI's validator specifically requires ("Each
+ * message must have at least one content element"), so this cannot be applied globally.
  */
-function emptyAssistantContent(provider: OcxProviderConfig): string {
-  return isVolcengineArkTarget(provider) ? " " : "";
+function emptyAssistantContent(provider: OcxProviderConfig): string | { type: "text"; text: string }[] {
+  return isVolcengineArkTarget(provider) ? [{ type: "text", text: "" }] : "";
 }
 
 /**

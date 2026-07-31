@@ -165,6 +165,20 @@ describe("openai-chat EOF mid tool call (#735)", () => {
     expect(events.some(e => e.type === "tool_call_end")).toBe(false);
   });
 
+  test("a tool call closed by [DONE] alone still completes normally", async () => {
+    // [DONE] flushes and returns BEFORE the EOF block, so this exercises a different early-return
+    // path than the finish_reason control below. It passes with the guard reverted -- that is the
+    // point: it pins the path the guard must never start intercepting.
+    const response = new Response([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"shell","arguments":"{\\"cmd\\":\\"ls\\"}"}}]}}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.some(e => e.type === "error")).toBe(false);
+    expect(events.filter(e => e.type === "tool_call_end")).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
   test("a tool call closed by finish_reason still completes normally", async () => {
     // The control: the guard must fire on MISSING terminal signals only, never on a well-formed
     // tool turn, or every tool call in the product breaks.

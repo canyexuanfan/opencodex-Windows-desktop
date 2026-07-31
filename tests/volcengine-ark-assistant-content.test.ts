@@ -59,12 +59,12 @@ describe("Volcengine Ark empty assistant content (#796)", () => {
     { role: "toolResult", toolCallId: "call_1", toolName: "shell", content: "file1.txt", isError: false, timestamp: 0 },
   ];
 
-  test("a tool-call-only assistant carries non-empty text for Ark", () => {
+  test("a tool-call-only assistant uses the structured content form for Ark", () => {
     const [assistant] = assistantsOf(wire(ark, history));
     expect(assistant.tool_calls).toHaveLength(1);
-    // The exact reproduction from the issue. "" is what Ark rejects.
-    expect(assistant.content).toBe(" ");
-    expect(String(assistant.content).length).toBeGreaterThan(0);
+    // Ark's error names `input.content.text` -- a nested path, so it is asking for the array
+    // form, not merely for non-empty text. The inner text stays empty.
+    expect(assistant.content).toEqual([{ type: "text", text: "" }]);
   });
 
   test("the same history still uses \"\" for every other provider", () => {
@@ -84,7 +84,7 @@ describe("Volcengine Ark empty assistant content (#796)", () => {
     ];
     const arkOrphan = assistantsOf(wire(ark, orphan)).find(m => m.tool_calls?.length);
     const genericOrphan = assistantsOf(wire(generic, orphan)).find(m => m.tool_calls?.length);
-    expect(arkOrphan?.content).toBe(" ");
+    expect(arkOrphan?.content).toEqual([{ type: "text", text: "" }]);
     expect(genericOrphan?.content).toBe("");
   });
 
@@ -99,6 +99,24 @@ describe("Volcengine Ark empty assistant content (#796)", () => {
   test("Ark's regional sibling endpoint gets the same treatment", () => {
     const sea = providerFor("https://ark.ap-southeast.volces.com/api/v3");
     const [assistant] = assistantsOf(wire(sea, history));
-    expect(assistant.content).toBe(" ");
+    expect(assistant.content).toEqual([{ type: "text", text: "" }]);
+  });
+
+  test("a reasoning-only assistant takes the same path", () => {
+    // The third placeholder site, reachable whenever an Ark model is listed in
+    // preserveReasoningContentModels -- public config, so it is not a theoretical branch.
+    const arkReasoning = providerFor("https://ark.cn-beijing.volces.com/api/v3");
+    arkReasoning.preserveReasoningContentModels = ["kimi-k3"];
+    const reasoningHistory: OcxMessage[] = [
+      { role: "user", content: "hi", timestamp: 0 },
+      { role: "assistant", content: [{ type: "thinking" as const, thinking: "deliberating" }], timestamp: 0 },
+    ];
+    const arkAssistant = assistantsOf(wire(arkReasoning, reasoningHistory))[0];
+    expect(arkAssistant.reasoning_content).toBe("deliberating");
+    expect(arkAssistant.content).toEqual([{ type: "text", text: "" }]);
+
+    const genericReasoning = providerFor("https://example.test/v1");
+    genericReasoning.preserveReasoningContentModels = ["kimi-k3"];
+    expect(assistantsOf(wire(genericReasoning, reasoningHistory))[0].content).toBe("");
   });
 });
