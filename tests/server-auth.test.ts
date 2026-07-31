@@ -1897,6 +1897,8 @@ describe("server local API auth", () => {
     }
   });
 
+  // Stall past BOUNDED_BODY_TIMEOUT_MS (5s). The old 7s test budget left ~1.9s of
+  // headroom and timed out on windows-latest under runner contention.
   test("stalled 400 body timeout never authorizes a pool retry", async () => {
     const prefix = unsupportedModelBody().slice(0, -1);
     const suffix = "}";
@@ -1919,7 +1921,7 @@ describe("server local API auth", () => {
     } finally {
       await stopPoolRetryHarness(harness);
     }
-  }, 7_000);
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("aborted 400 inspection never authorizes a pool retry", async () => {
     let releaseDispatch!: () => void;
