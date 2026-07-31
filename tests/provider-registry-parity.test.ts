@@ -255,6 +255,7 @@ describe("provider registry parity", () => {
     expect(PROVIDER_REGISTRY.find(entry => entry.id === "alibaba")?.baseUrlChoices).toEqual([
       { id: "intl", label: "International", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1" },
       { id: "china", label: "China", baseUrl: "https://coding.dashscope.aliyuncs.com/v1" },
+      { id: "custom", label: "Custom" },
     ]);
     expect(KEY_LOGIN_PROVIDERS["alibaba-token-plan"]).toMatchObject({
       label: "Alibaba Token Plan (Beijing)",
