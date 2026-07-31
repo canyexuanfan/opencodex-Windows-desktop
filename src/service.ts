@@ -18,7 +18,6 @@ import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
-import { findLiveProxy } from "./server/proxy-liveness";
 import { randomUUID } from "node:crypto";
 import {
   ELEVATION_REQUEST_TIMEOUT_MS,
@@ -2104,3 +2103,4 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       process.exit(1);
   }
 }
+
