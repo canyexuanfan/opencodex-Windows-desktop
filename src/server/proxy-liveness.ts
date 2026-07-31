@@ -30,7 +30,20 @@ export interface LivenessIo {
   readRuntimeFn?: (pid?: number) => { pid?: number; port: number; hostname?: string } | null;
   configFn?: () => { port?: number; hostname?: string };
   timeoutMs?: number;
+  /**
+   * How many times to retry a probe that failed with a transport error (timeout /
+   * connection refused). Definitive answers (non-OK HTTP, foreign /healthz body, pid
+   * mismatch) do not retry. Default 1 = no retry. Stop paths should pass 2–3 (#764).
+   */
+  attempts?: number;
+  sleepFn?: (ms: number) => Promise<void>;
 }
+
+/** Default probe options for service stop / orphan cleanup — a just-bound proxy can miss a single 750ms probe. */
+export const SERVICE_STOP_LIVENESS: Pick<LivenessIo, "timeoutMs" | "attempts"> = {
+  timeoutMs: 1500,
+  attempts: 3,
+};
 
 export interface LiveProxy {
   pid: number | null;
@@ -72,19 +85,29 @@ export async function proxyIdentityAt(
   io: LivenessIo = {},
 ): Promise<{ pid: number | null } | null> {
   const fetchFn = io.fetchFn ?? fetch;
-  try {
-    const res = await fetchFn(`http://${probeHostname(opts.hostname)}:${port}/healthz`, {
-      signal: AbortSignal.timeout(io.timeoutMs ?? 750),
-    });
-    if (!res.ok) return null;
-    const body = (await res.json().catch(() => null)) as HealthzIdentity | null;
-    if (!isOpencodexHealthz(body)) return null;
-    const pid = typeof body?.pid === "number" ? body.pid : null;
-    if (opts.expectedPid !== undefined && pid !== null && pid !== opts.expectedPid) return null;
-    return { pid };
-  } catch {
-    return null;
+  const sleepFn = io.sleepFn ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  const timeoutMs = io.timeoutMs ?? 750;
+  const attempts = Math.max(1, Math.min(Math.trunc(io.attempts ?? 1), 5));
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetchFn(`http://${probeHostname(opts.hostname)}:${port}/healthz`, {
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json().catch(() => null)) as HealthzIdentity | null;
+      if (!isOpencodexHealthz(body)) return null;
+      const pid = typeof body?.pid === "number" ? body.pid : null;
+      if (opts.expectedPid !== undefined && pid !== null && pid !== opts.expectedPid) return null;
+      return { pid };
+    } catch {
+      // Transport failure (timeout / refused) — retry while budget remains; a proxy that
+      // has only just begun listening can miss a single short probe (#764).
+      if (attempt >= attempts) return null;
+      await sleepFn(100);
+    }
   }
+  return null;
 }
 
 /**

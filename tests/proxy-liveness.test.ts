@@ -51,6 +51,37 @@ describe("proxyIdentityAt", () => {
     expect(await proxyIdentityAt(10100, { expectedPid: 1 }, { fetchFn: (async () => healthz(OURS)) as typeof fetch })).toBeNull();
     expect(await proxyIdentityAt(10100, {}, { fetchFn: (async () => { throw new Error("refused"); }) as typeof fetch })).toBeNull();
   });
+
+  test("retries transport failures and succeeds on a later attempt (#764)", async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const identity = await proxyIdentityAt(10100, {}, {
+      attempts: 3,
+      timeoutMs: 50,
+      sleepFn: async (ms) => { sleeps.push(ms); },
+      fetchFn: (async () => {
+        calls += 1;
+        if (calls < 3) throw new Error("timeout");
+        return healthz(OURS);
+      }) as typeof fetch,
+    });
+    expect(identity).toEqual({ pid: 4242 });
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([100, 100]);
+  });
+
+  test("does not retry a definitive foreign /healthz body", async () => {
+    let calls = 0;
+    const identity = await proxyIdentityAt(10100, {}, {
+      attempts: 3,
+      fetchFn: (async () => {
+        calls += 1;
+        return healthz({ ok: true });
+      }) as typeof fetch,
+    });
+    expect(identity).toBeNull();
+    expect(calls).toBe(1);
+  });
 });
 
 describe("findLiveProxy", () => {
