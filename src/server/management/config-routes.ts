@@ -24,6 +24,7 @@ import {
 import { removeCredential } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { isStreamMode } from "../../lib/bun-stream-caps";
+import { shadowSourceModels } from "../../lib/shadow-call";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
@@ -354,7 +355,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/shadow-call-settings" && req.method === "GET") {
     const sci = config.shadowCallIntercept ?? {};
-    return jsonResponse({ enabled: sci.enabled === true, model: sci.model ?? "" });
+    return jsonResponse({
+      enabled: sci.enabled === true,
+      model: sci.model ?? "",
+      sourceModels: shadowSourceModels(sci.sourceModels),
+    });
   }
 
   if (url.pathname === "/api/shadow-call-settings" && req.method === "PUT") {
@@ -376,7 +381,12 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     }
     saveConfigPreservingClaudeCode(config);
     const sci = config.shadowCallIntercept;
-    return jsonResponse({ ok: true, enabled: sci.enabled === true, model: sci.model ?? "" });
+    return jsonResponse({
+      ok: true,
+      enabled: sci.enabled === true,
+      model: sci.model ?? "",
+      sourceModels: shadowSourceModels(sci.sourceModels),
+    });
   }
   return null;
 }
