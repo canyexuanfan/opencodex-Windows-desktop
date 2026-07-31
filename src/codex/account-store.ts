@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, readFileSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getConfigDir, atomicWriteFile, backupInvalidConfig, hardenConfigDir, hardenExistingSecret } from "../config";
+import { getConfigDir, atomicWriteFile, backupInvalidConfig, hardenConfigDir, hardenExistingSecret, withConfigMutationLockSync } from "../config";
 import { assertNotRealHomeUnderTest } from "../lib/test-home-guard";
 import type { CodexAccountCredentialRecord, CodexAccountCredentials } from "../types";
 
@@ -121,44 +121,50 @@ export function getCodexAccountCredential(id: string): CodexAccountCredentials |
 }
 
 export function saveCodexAccountCredential(id: string, cred: CodexAccountCredentials): void {
-  const store = loadCodexAccountRecordStore();
-  const current = store[id];
-  const refreshGrantFingerprint = current?.credential?.refreshToken === cred.refreshToken
-    ? current.refreshGrantFingerprint ?? refreshGrantFingerprintForToken(cred.refreshToken)
-    : refreshGrantFingerprintForToken(cred.refreshToken);
-  store[id] = {
-    credential: cred,
-    generation: (current?.generation ?? 0) + 1,
-    refreshGrantFingerprint,
-    replacedAt: current ? Date.now() : undefined,
-    ...preservedValidationMetadata(current),
-  };
-  persist(store);
+  withConfigMutationLockSync(() => {
+    const store = loadCodexAccountRecordStore();
+    const current = store[id];
+    const refreshGrantFingerprint = current?.credential?.refreshToken === cred.refreshToken
+      ? current.refreshGrantFingerprint ?? refreshGrantFingerprintForToken(cred.refreshToken)
+      : refreshGrantFingerprintForToken(cred.refreshToken);
+    store[id] = {
+      credential: cred,
+      generation: (current?.generation ?? 0) + 1,
+      refreshGrantFingerprint,
+      replacedAt: current ? Date.now() : undefined,
+      ...preservedValidationMetadata(current),
+    };
+    persist(store);
+  });
 }
 
 export function markCodexAccountValidated(id: string, atMs: number = Date.now()): void {
-  const store = loadCodexAccountRecordStore();
-  const current = store[id];
-  if (!current || current.deletedAt != null || !current.credential) return;
-  store[id] = {
-    ...current,
-    lastCodexValidatedAt: atMs,
-    lastCodexValidationStatus: "ok",
-    lastCodexValidationError: undefined,
-  };
-  persist(store);
+  withConfigMutationLockSync(() => {
+    const store = loadCodexAccountRecordStore();
+    const current = store[id];
+    if (!current || current.deletedAt != null || !current.credential) return;
+    store[id] = {
+      ...current,
+      lastCodexValidatedAt: atMs,
+      lastCodexValidationStatus: "ok",
+      lastCodexValidationError: undefined,
+    };
+    persist(store);
+  });
 }
 
 export function markCodexAccountValidationFailed(id: string, reason: string): void {
-  const store = loadCodexAccountRecordStore();
-  const current = store[id];
-  if (!current || current.deletedAt != null || !current.credential) return;
-  store[id] = {
-    ...current,
-    lastCodexValidationStatus: "failed",
-    lastCodexValidationError: reason,
-  };
-  persist(store);
+  withConfigMutationLockSync(() => {
+    const store = loadCodexAccountRecordStore();
+    const current = store[id];
+    if (!current || current.deletedAt != null || !current.credential) return;
+    store[id] = {
+      ...current,
+      lastCodexValidationStatus: "failed",
+      lastCodexValidationError: reason,
+    };
+    persist(store);
+  });
 }
 
 export function removeCodexAccountCredential(id: string): void {
@@ -183,32 +189,36 @@ export function saveCodexAccountCredentialIfGeneration(
   generation: number,
   cred: CodexAccountCredentials,
 ): boolean {
-  const store = loadCodexAccountRecordStore();
-  const current = store[id];
-  if (!current || current.generation !== generation || current.deletedAt != null || !current.credential) {
-    return false;
-  }
-  const refreshGrantFingerprint = current.credential.refreshToken === cred.refreshToken
-    ? current.refreshGrantFingerprint ?? refreshGrantFingerprintForToken(cred.refreshToken)
-    : refreshGrantFingerprintForToken(cred.refreshToken);
-  store[id] = {
-    credential: cred,
-    generation: generation + 1,
-    refreshGrantFingerprint,
-    replacedAt: current.replacedAt,
-    ...preservedValidationMetadata(current),
-  };
-  persist(store);
-  return true;
+  return withConfigMutationLockSync(() => {
+    const store = loadCodexAccountRecordStore();
+    const current = store[id];
+    if (!current || current.generation !== generation || current.deletedAt != null || !current.credential) {
+      return false;
+    }
+    const refreshGrantFingerprint = current.credential.refreshToken === cred.refreshToken
+      ? current.refreshGrantFingerprint ?? refreshGrantFingerprintForToken(cred.refreshToken)
+      : refreshGrantFingerprintForToken(cred.refreshToken);
+    store[id] = {
+      credential: cred,
+      generation: generation + 1,
+      refreshGrantFingerprint,
+      replacedAt: current.replacedAt,
+      ...preservedValidationMetadata(current),
+    };
+    persist(store);
+    return true;
+  });
 }
 
 export function tombstoneCodexAccount(id: string): number {
-  const store = loadCodexAccountRecordStore();
-  const current = store[id];
-  const generation = (current?.generation ?? 0) + 1;
-  store[id] = { generation, deletedAt: Date.now() };
-  persist(store);
-  return generation;
+  return withConfigMutationLockSync(() => {
+    const store = loadCodexAccountRecordStore();
+    const current = store[id];
+    const generation = (current?.generation ?? 0) + 1;
+    store[id] = { generation, deletedAt: Date.now() };
+    persist(store);
+    return generation;
+  });
 }
 
 const CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token";

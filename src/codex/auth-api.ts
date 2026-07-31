@@ -1,4 +1,4 @@
-import { loadConfig, readConfigDiagnostics, saveConfigPreservingClaudeCode } from "../config";
+import { ConfigMutationLockError, loadConfig, mutatePersistedConfig, saveConfigPreservingClaudeCode } from "../config";
 import { withCodexAccountLogLabel } from "./account-label";
 import {
   getCodexAccountCredential,
@@ -467,29 +467,39 @@ interface FreshPoolPlanUpdate {
  */
 function reconcileFreshPoolAccountPlans(runtimeConfig: OcxConfig, updates: FreshPoolPlanUpdate[]): void {
   if (updates.length === 0) return;
-  const diagnostics = readConfigDiagnostics();
-  if (diagnostics.source !== "file") return;
-  const persistedConfig = diagnostics.config;
-  const accepted: FreshPoolPlanUpdate[] = [];
-  let persistedChanged = false;
-
-  for (const update of updates) {
-    if (!isCodexAccountGenerationLive(update.accountId, update.credentialGeneration)) continue;
-    const liveAccount = configuredPoolAccount(runtimeConfig, update.accountId);
-    const persistedAccount = configuredPoolAccount(persistedConfig, update.accountId);
-    if (!liveAccount || !persistedAccount) continue;
-    accepted.push(update);
-    if (persistedAccount.plan !== update.plan) {
-      persistedAccount.plan = update.plan;
-      persistedChanged = true;
-    }
+  let outcome: ReturnType<typeof mutatePersistedConfig<FreshPoolPlanUpdate[]>>;
+  try {
+    outcome = mutatePersistedConfig(persistedConfig => {
+      const accepted: FreshPoolPlanUpdate[] = [];
+      let changed = false;
+      for (const update of updates) {
+        if (!isCodexAccountGenerationLive(update.accountId, update.credentialGeneration)) continue;
+        const liveAccount = configuredPoolAccount(runtimeConfig, update.accountId);
+        const persistedAccount = configuredPoolAccount(persistedConfig, update.accountId);
+        if (!liveAccount || !persistedAccount) continue;
+        accepted.push(update);
+        if (persistedAccount.plan !== update.plan) {
+          persistedAccount.plan = update.plan;
+          changed = true;
+        }
+      }
+      return { changed, value: accepted };
+    });
+  } catch (error) {
+    // Plan persistence is derived metadata on a read route. Contention must fail closed without
+    // turning account listing into a 500; a later refresh can retry against the latest files.
+    if (error instanceof ConfigMutationLockError) return;
+    throw error;
   }
-
-  if (persistedChanged) saveConfigPreservingClaudeCode(persistedConfig);
-  for (const update of accepted) {
+  if (outcome.status === "unavailable") return;
+  for (const update of outcome.value) {
+    // A replacement immediately after the durable commit is allowed to supersede the result, but
+    // the long-lived object must never be updated from that stale generation.
     if (!isCodexAccountGenerationLive(update.accountId, update.credentialGeneration)) continue;
     const liveAccount = configuredPoolAccount(runtimeConfig, update.accountId);
-    if (liveAccount) liveAccount.plan = update.plan;
+    if (liveAccount) {
+      liveAccount.plan = update.plan;
+    }
   }
 }
 

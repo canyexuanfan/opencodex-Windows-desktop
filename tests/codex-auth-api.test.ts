@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { ServerWebSocket } from "bun";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../src/codex/account-label";
 import {
@@ -37,7 +38,12 @@ import {
   reconcileMainCodexAccountRuntimeState,
   resetMainCodexAccountIdentityTrackingForTests,
 } from "../src/codex/account-lifecycle";
-import { loadConfig, saveConfig } from "../src/config";
+import {
+  getConfigPath,
+  loadConfig,
+  saveConfig,
+  setPersistedConfigMutationBeforeCommitForTests,
+} from "../src/config";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -216,6 +222,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setPersistedConfigMutationBeforeCommitForTests(null);
   clearAccountNeedsReauth("__main__");
   clearAccountQuota();
   clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
@@ -747,24 +754,20 @@ describe("codex-auth API", () => {
       plan: "plus",
     });
     saveConfig(structuredClone(config));
-    const configModule = await import("../src/config");
-    const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode");
+    let configCommits = 0;
+    setPersistedConfigMutationBeforeCommitForTests(() => { configCommits += 1; });
     globalThis.fetch = (async () => Response.json({
       rate_limit: { primary_window: { used_percent: 8, reset_at: 1782628379 } },
     })) as typeof fetch;
 
-    try {
-      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
-      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
-      const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
 
-      expect(data.accounts.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
-      expect(config.codexAccounts?.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
-      expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
-      expect(saveSpy).not.toHaveBeenCalled();
-    } finally {
-      saveSpy.mockRestore();
-    }
+    expect(data.accounts.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
+    expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
+    expect(configCommits).toBe(0);
   });
 
   test("pool plan refresh performs no config write when the authoritative plan is unchanged", async () => {
@@ -775,25 +778,21 @@ describe("codex-auth API", () => {
       plan: "plus",
     });
     saveConfig(structuredClone(config));
-    const configModule = await import("../src/config");
-    const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode");
+    let configCommits = 0;
+    setPersistedConfigMutationBeforeCommitForTests(() => { configCommits += 1; });
     globalThis.fetch = (async () => Response.json({
       plan_type: "plus",
       rate_limit: { primary_window: { used_percent: 7, reset_at: 1782628379 } },
     })) as typeof fetch;
 
-    try {
-      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
-      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
-      const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
 
-      expect(data.accounts.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
-      expect(config.codexAccounts?.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
-      expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
-      expect(saveSpy).not.toHaveBeenCalled();
-    } finally {
-      saveSpy.mockRestore();
-    }
+    expect(data.accounts.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
+    expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
+    expect(configCommits).toBe(0);
   });
 
   test("pool plan refresh does not recreate a config file deleted while the server is running", async () => {
@@ -823,9 +822,8 @@ describe("codex-auth API", () => {
     seedPoolAccount(config, { id: "pool-plan-a", email: "pool-plan-a@example.com", plan: "plus" });
     seedPoolAccount(config, { id: "pool-plan-b", email: "pool-plan-b@example.com", plan: "free" });
     saveConfig(structuredClone(config));
-    const configModule = await import("../src/config");
-    const originalSave = configModule.saveConfigPreservingClaudeCode;
-    const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode").mockImplementation(originalSave);
+    let configCommits = 0;
+    setPersistedConfigMutationBeforeCommitForTests(() => { configCommits += 1; });
     globalThis.fetch = (async (_input, init) => {
       const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
       return Response.json({
@@ -834,18 +832,14 @@ describe("codex-auth API", () => {
       });
     }) as typeof fetch;
 
-    try {
-      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
-      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
-      expect(resp!.status).toBe(200);
-      expect(saveSpy).toHaveBeenCalledTimes(1);
-      expect(loadConfig().codexAccounts?.map(account => [account.id, account.plan])).toEqual([
-        ["pool-plan-a", "prolite"],
-        ["pool-plan-b", "pro"],
-      ]);
-    } finally {
-      saveSpy.mockRestore();
-    }
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    expect(resp!.status).toBe(200);
+    expect(configCommits).toBe(1);
+    expect(loadConfig().codexAccounts?.map(account => [account.id, account.plan])).toEqual([
+      ["pool-plan-a", "prolite"],
+      ["pool-plan-b", "pro"],
+    ]);
   });
 
   test("concurrent pool plan refreshes share token rotation, one WHAM read, and one config save", async () => {
@@ -857,9 +851,8 @@ describe("codex-auth API", () => {
       expiresAt: Date.now() - 1,
     });
     saveConfig(structuredClone(config));
-    const configModule = await import("../src/config");
-    const originalSave = configModule.saveConfigPreservingClaudeCode;
-    const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode").mockImplementation(originalSave);
+    let configCommits = 0;
+    setPersistedConfigMutationBeforeCommitForTests(() => { configCommits += 1; });
     let calls = 0;
     let tokenRefreshCalls = 0;
     let releaseFetch!: () => void;
@@ -904,9 +897,9 @@ describe("codex-auth API", () => {
         .toEqual(["pro", "pro"]);
       expect(tokenRefreshCalls).toBe(1);
       expect(calls).toBe(1);
-      expect(saveSpy).toHaveBeenCalledTimes(1);
+      expect(configCommits).toBe(1);
     } finally {
-      saveSpy.mockRestore();
+      setPersistedConfigMutationBeforeCommitForTests(null);
     }
   });
 
@@ -922,8 +915,7 @@ describe("codex-auth API", () => {
       defaultProvider: "custom",
     });
     seedPoolAccount(config, { id: "pool-plan-disk", email: "pool-plan-disk@example.com", plan: "plus" });
-    const configModule = await import("../src/config");
-    configModule.saveConfig(structuredClone(config));
+    saveConfig(structuredClone(config));
     let releaseFetch!: () => void;
     let markFetchStarted!: () => void;
     const fetchStarted = new Promise<void>(resolve => { markFetchStarted = resolve; });
@@ -942,7 +934,7 @@ describe("codex-auth API", () => {
     await fetchStarted;
     const editedOnDisk = loadConfig();
     editedOnDisk.providers.custom!.note = "manual-disk-note";
-    configModule.saveConfig(editedOnDisk);
+    saveConfig(editedOnDisk);
     releaseFetch();
     const resp = await pending;
     expect(resp!.status).toBe(200);
@@ -951,6 +943,170 @@ describe("codex-auth API", () => {
     expect(persisted.providers.custom?.note).toBe("manual-disk-note");
     expect(persisted.codexAccounts?.find(account => account.id === "pool-plan-disk")?.plan).toBe("prolite");
     expect(config.providers.custom?.note).toBe("runtime-note");
+  });
+
+  test("pool plan commit rebases an unrelated config write injected after its first checks", async () => {
+    const config = makeConfig({
+      providers: {
+        custom: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.test/v1",
+          note: "runtime-note",
+        },
+      },
+      defaultProvider: "custom",
+    });
+    seedPoolAccount(config, { id: "pool-plan-cas-edit", email: "pool-plan-cas-edit@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    let injected = false;
+    setPersistedConfigMutationBeforeCommitForTests(() => {
+      injected = true;
+      const concurrent = loadConfig();
+      concurrent.providers.custom!.note = "concurrent-disk-note";
+      saveConfig(concurrent);
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+    const persisted = loadConfig();
+
+    expect(injected).toBe(true);
+    expect(persisted.providers.custom?.note).toBe("concurrent-disk-note");
+    expect(persisted.codexAccounts?.find(account => account.id === "pool-plan-cas-edit")?.plan).toBe("prolite");
+    expect(config.providers.custom?.note).toBe("runtime-note");
+    expect(data.accounts.find(account => account.id === "pool-plan-cas-edit")?.plan).toBe("prolite");
+  });
+
+  test("pool plan commit does not recreate a config deleted after its first checks", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-plan-cas-delete", email: "pool-plan-cas-delete@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    let absentAtRecheck = false;
+    setPersistedConfigMutationBeforeCommitForTests(() => {
+      rmSync(getConfigPath(), { force: true });
+      absentAtRecheck = !existsSync(getConfigPath());
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(absentAtRecheck).toBe(true);
+    expect(existsSync(getConfigPath())).toBe(false);
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-cas-delete")?.plan).toBe("plus");
+    expect(data.accounts.find(account => account.id === "pool-plan-cas-delete")?.plan).toBe("plus");
+  });
+
+  test("pool plan commit leaves config malformed when malformed bytes arrive after its first checks", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-plan-cas-malformed", email: "pool-plan-cas-malformed@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    const malformed = "{ malformed concurrent config";
+    let malformedAtRecheck = false;
+    setPersistedConfigMutationBeforeCommitForTests(() => {
+      writeFileSync(getConfigPath(), malformed);
+      malformedAtRecheck = readFileSync(getConfigPath(), "utf8") === malformed;
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(malformedAtRecheck).toBe(true);
+    expect(readFileSync(getConfigPath(), "utf8")).toBe(malformed);
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-cas-malformed")?.plan).toBe("plus");
+    expect(data.accounts.find(account => account.id === "pool-plan-cas-malformed")?.plan).toBe("plus");
+  });
+
+  test("pool plan commit rejects an old plan after same-id credential replacement at its commit seam", async () => {
+    const accountId = "pool-plan-cas-generation";
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: accountId,
+      email: "old-generation@example.com",
+      plan: "plus",
+      accessToken: "old-generation-access",
+      refreshToken: "old-generation-refresh",
+      chatgptAccountId: "old-generation-account",
+    });
+    saveConfig(structuredClone(config));
+    const startingGeneration = readCodexAccountRecord(accountId)?.generation;
+    let replacementGeneration: number | undefined;
+    setPersistedConfigMutationBeforeCommitForTests(() => {
+      const replacementConfig = loadConfig();
+      const replacementAccount = replacementConfig.codexAccounts?.find(account => account.id === accountId);
+      if (!replacementAccount) throw new Error("replacement account missing");
+      replacementAccount.email = "replacement@example.test";
+      replacementAccount.plan = "free";
+      saveCodexAccountCredential(accountId, {
+        accessToken: "replacement-access",
+        refreshToken: "replacement-refresh",
+        expiresAt: Date.now() + 5 * 60_000,
+        chatgptAccountId: "replacement-account",
+      });
+      replacementGeneration = readCodexAccountRecord(accountId)?.generation;
+      saveConfig(replacementConfig);
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+    const persistedAccount = loadConfig().codexAccounts?.find(account => account.id === accountId);
+    const finalRecord = readCodexAccountRecord(accountId);
+
+    expect(startingGeneration).toBe(1);
+    expect(replacementGeneration).toBe(2);
+    expect(finalRecord?.generation).toBe(2);
+    expect(finalRecord?.credential?.accessToken).toBe("replacement-access");
+    expect(persistedAccount).toMatchObject({ email: "replacement@example.test", plan: "free" });
+    expect(config.codexAccounts?.find(account => account.id === accountId)?.plan).toBe("plus");
+    expect(data.accounts.find(account => account.id === accountId)?.plan).toBe("plus");
+  });
+
+  test("pool plan persistence fails closed without waiting behind a busy config writer", async () => {
+    const accountId = "pool-plan-lock-busy";
+    const config = makeConfig();
+    seedPoolAccount(config, { id: accountId, email: "pool-plan-lock-busy@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    const lockDatabase = new Database(join(TEST_DIR, "config-mutation.sqlite"), { create: true });
+    lockDatabase.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    try {
+      const startedAt = performance.now();
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      const elapsedMs = performance.now() - startedAt;
+      const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+      expect(elapsedMs).toBeLessThan(2_000);
+      expect(loadConfig().codexAccounts?.find(account => account.id === accountId)?.plan).toBe("plus");
+      expect(config.codexAccounts?.find(account => account.id === accountId)?.plan).toBe("plus");
+      expect(data.accounts.find(account => account.id === accountId)?.plan).toBe("plus");
+    } finally {
+      lockDatabase.exec("ROLLBACK");
+      lockDatabase.close();
+    }
   });
 
   test("pool plan refresh cannot update an account deleted and recreated during the WHAM request", async () => {
