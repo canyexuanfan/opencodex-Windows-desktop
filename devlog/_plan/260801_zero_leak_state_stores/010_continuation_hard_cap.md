@@ -300,8 +300,7 @@ and never routes through `setResidentEntry()` or an intermediary resident row:
 
 `deleteEntry()` subtracts the row's RAM `sizeBytes`; for a spill stub it also unlinks the
 dedicated file unless `deleteSpill:false` is used during a verified atomic swap. TTL/count
-eviction therefore removes spill files. No `supersededSpill` field or secondary ownership
-state exists.
+eviction therefore removes spill files. No secondary ownership state exists.
 
 Replace the byte loop with:
 
@@ -429,10 +428,10 @@ Extend `tests/responses-state.test.ts` with these exact tests/fixtures:
 - `startup orphan cleanup preserves referenced young live and unrelated files`
 - `concurrent flush and synchronous demotion cannot inline or lose the spill stub`
 - `small entries retain the legacy v2 debounced snapshot representation`
-- `re-spilling an id with changed content keeps the old generation until stub swap`
-  (A-gate blocker regression: crash simulated between new-generation publication and
-  stub swap — the stub must still replay the OLD generation intact, and startup
-  GC must remove the newer unreferenced generation file)
+- `same-id spill replacement keeps the old row replay-addressable until atomic stub swap`
+  (the injected publication hook replays the id before swap and gets the old payload;
+  after swap it gets the new payload; the old file exists through swap and is unlinked after)
+- `crash between new-generation publication and stub swap preserves the old row and reclaims the new orphan`
 - `same response id and equal-size replacement use distinct basenames and unlink old only after stub swap`
 - `spill-failed tombstone survives simulated process restart and returns the canonical failure`
 - `spill replay preserves replay-prefix provenance and compaction-marker acknowledgement`
