@@ -27,8 +27,19 @@ const liveWorkers = new Map<Worker, TrackedWorker>();
 /** Serialize spawns so a new Worker never overlaps a still-exiting predecessor. */
 let spawnGate: Promise<void> = Promise.resolve();
 
+/**
+ * Bumped by teardown so a spawn still queued on `spawnGate` (not yet in
+ * `liveWorkers`) cannot create a Worker after reset/shutdown reported idle.
+ */
+let spawnCancelEpoch = 0;
+
 /** Windows OS-join gap after the `close` event (not a CI job-timeout bump). */
 const WINDOWS_WORKER_JOIN_MS = 250;
+
+/** Invalidate spawn callbacks still waiting on the gate (reset / server drain). */
+export function cancelQueuedStorageWorkerSpawns(): void {
+  spawnCancelEpoch += 1;
+}
 
 /** Track a freshly spawned worker so teardown can wait for it later. */
 export function registerStorageWorker(worker: Worker): void {
@@ -56,8 +67,15 @@ export function registerStorageWorker(worker: Worker): void {
  * Used around `new Worker(...)` so tests cannot overlap Windows thread exit.
  */
 export function withStorageWorkerSpawnGate<T>(fn: () => Promise<T>): Promise<T> {
+  const epochAtEnqueue = spawnCancelEpoch;
   const run = spawnGate.then(async () => {
+    if (epochAtEnqueue !== spawnCancelEpoch) {
+      throw new Error("storage_worker_spawn_cancelled");
+    }
     await drainStorageWorkers();
+    if (epochAtEnqueue !== spawnCancelEpoch) {
+      throw new Error("storage_worker_spawn_cancelled");
+    }
     return fn();
   });
   spawnGate = run.then(

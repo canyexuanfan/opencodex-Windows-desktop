@@ -17,6 +17,7 @@ import {
   type StorageMutationCoordinatorTestHooks,
 } from "./storage-mutation-coordinator";
 import {
+  cancelQueuedStorageWorkerSpawns,
   drainStorageWorkers,
   registerStorageWorker,
   terminateStorageWorker,
@@ -90,6 +91,7 @@ export function resetRestoreTrashJobForTests(): void {
  * deregister from the sync reset.
  */
 export async function resetRestoreTrashJobForTestsAsync(): Promise<void> {
+  cancelQueuedStorageWorkerSpawns();
   const worker = activeWorker;
   activeWorker = null;
   cancelActiveRun?.();
@@ -112,6 +114,7 @@ export function abortRestoreTrashJob(): void {
 
 /** Await-able shutdown sibling; joins the restore worker thread before returning. */
 export async function abortRestoreTrashJobAsync(): Promise<void> {
+  cancelQueuedStorageWorkerSpawns();
   const worker = activeWorker;
   activeWorker = null;
   cancelActiveRun?.();

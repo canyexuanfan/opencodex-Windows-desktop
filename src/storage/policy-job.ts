@@ -19,6 +19,7 @@ import {
   type PolicySkipReason,
 } from "./policy";
 import {
+  cancelQueuedStorageWorkerSpawns,
   drainStorageWorkers,
   registerStorageWorker,
   terminateStorageWorker,
@@ -156,6 +157,7 @@ export function resetStorageCleanupPolicyJobForTests(): void {
  */
 export async function resetStorageCleanupPolicyJobForTestsAsync(): Promise<void> {
   disownActiveRun();
+  cancelQueuedStorageWorkerSpawns();
   const worker = activeWorker;
   activeWorker = null;
   inflight = null;
@@ -203,6 +205,7 @@ export function abortStorageCleanupPolicyJob(): void {
  */
 export async function abortStorageCleanupPolicyJobAsync(): Promise<void> {
   disownActiveRun();
+  cancelQueuedStorageWorkerSpawns();
   const worker = activeWorker;
   activeWorker = null;
   if (state.status === "running") {

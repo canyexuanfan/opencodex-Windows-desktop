@@ -6,7 +6,10 @@ import {
 } from "../storage/policy-job";
 import { abortRestoreTrashJobAsync } from "../storage/restore-job";
 import { stopStorageCleanupScheduler } from "../storage/policy-scheduler";
-import { drainStorageWorkers } from "../storage/worker-lifecycle";
+import {
+  cancelQueuedStorageWorkerSpawns,
+  drainStorageWorkers,
+} from "../storage/worker-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Active turn tracking + graceful shutdown drain
@@ -92,11 +95,23 @@ export async function drainAndShutdown(
   // Tear down opt-in storage policy timers / worker / live-config sink so they cannot fire after stop.
   // Await worker thread exit: on Windows, a still-exiting Bun Worker under
   // `bun test --isolate` panics the whole process at the next realm reclaim.
-  // A wedged worker must not prevent `server.stop` — log and continue.
+  // Abort each job independently so one wedged join cannot skip the other,
+  // then drain leftovers; failures must not prevent `server.stop`.
   stopStorageCleanupScheduler();
+  cancelQueuedStorageWorkerSpawns();
+  const shutdownJoins = await Promise.allSettled([
+    abortStorageCleanupPolicyJobAsync(),
+    abortRestoreTrashJobAsync(),
+  ]);
+  for (const result of shutdownJoins) {
+    if (result.status === "rejected") {
+      console.warn(
+        "[storage] worker abort during shutdown failed:",
+        result.reason instanceof Error ? result.reason.message : result.reason,
+      );
+    }
+  }
   try {
-    await abortStorageCleanupPolicyJobAsync();
-    await abortRestoreTrashJobAsync();
     await drainStorageWorkers();
   } catch (err) {
     console.warn(
