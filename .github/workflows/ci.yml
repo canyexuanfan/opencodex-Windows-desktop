@@ -81,15 +81,8 @@ jobs:
       - name: Typecheck
         run: bun x tsc --noEmit
 
-      # Keep --isolate on every OS. Shard so each Bun process covers fewer files:
-      # Bun 1.3.14 can still panic at isolate realm reclaim on Windows when many
-      # Worker-using suites share one process, even after storage Workers are
-      # deterministically terminated and awaited. No retries, no timeout bump.
-      - name: Test (shard 1/2)
-        run: bun test --isolate --shard=1/2 tests
-
-      - name: Test (shard 2/2)
-        run: bun test --isolate --shard=2/2 tests
+      - name: Test
+        run: bun test --isolate tests
 
       - name: GUI tests
         run: cd gui && bun test tests
