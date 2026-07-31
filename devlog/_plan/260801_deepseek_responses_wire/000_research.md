@@ -17,6 +17,26 @@ DeepSeek shipped a Responses API public beta on 2026-07-31.
 - Chat Completions and the Anthropic-compatible interface are unchanged and remain
   first-class. The Responses API is an addition, not a migration.
 
+Verified against the reference page itself (<https://api-docs.deepseek.com/api/create-response/>),
+not search snippets:
+
+- Route is `POST /responses`. The page header states it verbatim.
+- Statelessness, quoted: *"The API is stateless: responses and conversations are not
+  stored on the server. For multi-turn conversations, the client needs to send the
+  full conversation history in `input` on each request."* The sample response carries
+  `"store": false` and `"previous_response_id": null`.
+- `model` accepts exactly `deepseek-v4-flash`; the page says `deepseek-v4-pro` "is not
+  supported yet".
+- `reasoning.effort` accepts `none|minimal|low|medium|high|xhigh|max`.
+- Accepted input item types: `message`, `function_call`, `function_call_output`,
+  `reasoning`, `web_search_call`. Other types are **ignored**. Roles `user`,
+  `assistant`, `system`, `developer` (developer treated as system).
+- Image and file inputs are unsupported: `input_image` parts do not error but are
+  replaced with placeholder text — consistent with the existing `noVisionModels`
+  entry for this model.
+- Tools: `function` plus the server-side `web_search`; other built-in tool types are
+  ignored.
+
 ## What our tree already had
 
 `e743660fc` (zhouxun, 2026-07-31 15:08 +0800) added to the `deepseek` registry entry:
@@ -101,6 +121,34 @@ Our tree already handles parts of this generically: `stripUnsupportedReasoningPa
 `stripUnsupportedReasoningSummaryDelivery`, and `stripItemIdsWhenUnstored` cover the
 reasoning-summary and item-id cases. The gap is the top-level stateful set.
 
+Note on effort: DSCodex folds every requested effort into `high` or `max`. That is a
+product choice for its two-entry picker, not an upstream constraint — the reference
+page accepts the full `none|minimal|low|medium|high|xhigh|max` range, which is what
+`DEEPSEEK_THINKING_EFFORTS` already exposes. We do not copy the fold.
+
+## Defect 3 — the Responses URL is wrong for this provider (most severe)
+
+`createResponsesPassthroughAdapter()` builds the key-mode URL as:
+
+```ts
+if (provider.responsesPath === undefined) {
+  const base = provider.baseUrl.replace(/\/v1\/?$/, "");
+  url = `${base}/v1/responses`;
+}
+```
+
+The `deepseek` registry entry sets `baseUrl: "https://api.deepseek.com"` and no
+`responsesPath`, so the adapter targets `https://api.deepseek.com/v1/responses`
+while the documented route is `https://api.deepseek.com/responses`.
+
+Live probing cannot discriminate the two without a key: `api.deepseek.com` answers
+`401` for `/responses`, `/v1/responses` **and** `/v1/nonexistent-xyz` alike, so auth
+precedes routing and a 401 proves nothing about path validity. The reference page is
+therefore the evidence, and it states `POST /responses`.
+
+This makes the existing wire default effectively dead on the API-key path: Codex
+would reach an unrouted URL. It also explains why this defect survived review —
+nothing in the tree exercises it.
 ## Scope boundary
 
 In scope: `src/providers/registry.ts`, `src/server/adapter-resolve.ts`, its three
