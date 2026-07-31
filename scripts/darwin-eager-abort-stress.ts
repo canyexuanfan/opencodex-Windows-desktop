@@ -18,6 +18,8 @@ type AbortClass = "before-first-byte" | "mid-frame" | "during-backpressure";
 type ChildEvent =
   | { type: "ready"; port: number }
   | { type: "phase"; id: string; class: AbortClass }
+  | { type: "cancel-ack"; id: string }
+  | { type: "backpressure-unreachable"; id: string }
   | { type: "shutdown-ack" };
 
 type ChildExit = { code: number; signal: NodeJS.Signals | null };
@@ -99,7 +101,9 @@ let readyPort: number | null = null;
 function eventKey(event: ChildEvent): string {
   if (event.type === "ready") return "ready";
   if (event.type === "shutdown-ack") return "shutdown-ack";
-  return `phase:${event.id}:${event.class}`;
+  if (event.type === "phase") return `phase:${event.id}:${event.class}`;
+  if (event.type === "cancel-ack") return `cancel-ack:${event.id}`;
+  return `backpressure-unreachable:${event.id}`;
 }
 
 function noteEvent(event: ChildEvent): void {
@@ -142,7 +146,11 @@ async function consumeChildStdout(): Promise<void> {
       if (!line) continue;
       try {
         const event = JSON.parse(line) as ChildEvent;
-        if (event.type === "ready" || event.type === "phase" || event.type === "shutdown-ack") {
+        if (event.type === "ready"
+          || event.type === "phase"
+          || event.type === "cancel-ack"
+          || event.type === "backpressure-unreachable"
+          || event.type === "shutdown-ack") {
           noteEvent(event);
         }
       } catch { /* retained in the bounded stdout tail for failure diagnostics */ }
@@ -226,32 +234,33 @@ const counts: Record<AbortClass, number> = {
   "mid-frame": 0,
   "during-backpressure": 0,
 };
-
-async function settleExpectedAbort<T>(promise: Promise<T>, label: string): Promise<void> {
-  await guarded(promise.then(() => undefined, () => undefined), label, 1_000);
-}
+let backpressureUnreachableCount = 0;
 
 async function oneAbort(cls: AbortClass, ordinal: number): Promise<void> {
   const id = `${ordinal}-${cls}`;
   const url = `${base}/sse?id=${encodeURIComponent(id)}&class=${encodeURIComponent(cls)}`;
   const ac = new AbortController();
   const phase = waitForEvent(`phase:${id}:${cls}`);
+  const cancelAck = waitForEvent(`cancel-ack:${id}`);
 
   if (cls === "before-first-byte") {
     const request = fetch(url, { signal: ac.signal });
+    void request.catch(() => {});
     await guarded(phase, `${cls} phase ${ordinal}`);
     await Bun.sleep(Math.floor(rand() * 4));
     ac.abort();
-    await settleExpectedAbort(request, `${cls} abort settlement ${ordinal}`);
+    await guarded(cancelAck, `${cls} server cancel acknowledgement ${ordinal}`);
   } else if (cls === "mid-frame") {
     const response = await guarded(fetch(url, { signal: ac.signal }), `${cls} response ${ordinal}`);
     const reader = response.body?.getReader();
     if (!reader) throw new Error(`${cls} response ${ordinal} had no body`);
     const firstRead = reader.read();
+    void firstRead.catch(() => {});
     await guarded(phase, `${cls} phase ${ordinal}`);
     await Bun.sleep(Math.floor(rand() * 4));
     ac.abort();
-    await settleExpectedAbort(firstRead, `${cls} abort settlement ${ordinal}`);
+    void reader.cancel().catch(() => {});
+    await guarded(cancelAck, `${cls} server cancel acknowledgement ${ordinal}`);
   } else {
     const response = await guarded(fetch(url, { signal: ac.signal }), `${cls} response ${ordinal}`);
     if (!response.body) throw new Error(`${cls} response ${ordinal} had no body`);
@@ -260,11 +269,22 @@ async function oneAbort(cls: AbortClass, ordinal: number): Promise<void> {
     // emits its phase marker only after the actual relay producer has
     // plateaued behind the native HTTP sink.
     await guarded(reader.read(), `${cls} initial slow read ${ordinal}`);
-    await guarded(phase, `${cls} phase ${ordinal}`);
+    const reachability = await guarded(Promise.race([
+      phase.then(() => "phase" as const),
+      waitForEvent(`backpressure-unreachable:${id}`).then(() => "unreachable" as const),
+    ]), `${cls} phase or unreachable ${ordinal}`);
+    if (reachability === "unreachable") {
+      backpressureUnreachableCount += 1;
+      void reader.cancel().catch(() => {});
+      return;
+    }
     await Bun.sleep(Math.floor(rand() * 4));
     ac.abort();
-    await settleExpectedAbort(reader.cancel(), `${cls} abort settlement ${ordinal}`);
+    void reader.cancel().catch(() => {});
+    await guarded(cancelAck, `${cls} server cancel acknowledgement ${ordinal}`);
   }
+  // A phase marker proves the intended timing window; the per-id server ack
+  // proves the client abort crossed the network boundary and triggered teardown.
   counts[cls] += 1;
 }
 
@@ -277,6 +297,11 @@ for (let i = schedule.length - 1; i > 0; i--) {
   const j = Math.floor(rand() * (i + 1));
   [schedule[i], schedule[j]] = [schedule[j]!, schedule[i]!];
 }
+const requestedByClass: Record<AbortClass, number> = {
+  "before-first-byte": schedule.filter(cls => cls === "before-first-byte").length,
+  "mid-frame": schedule.filter(cls => cls === "mid-frame").length,
+  "during-backpressure": schedule.filter(cls => cls === "during-backpressure").length,
+};
 
 console.log(JSON.stringify({
   type: "START",
@@ -289,12 +314,13 @@ console.log(JSON.stringify({
   arch: process.arch,
 }));
 
-let outcome: "PASS" | "FAIL" = "FAIL";
+let outcome: "PASS" | "PASS-WITH-CAVEAT" | "FAIL" = "FAIL";
 let classification = "probe-error";
 let workloadOutcome = "not-complete";
 let childOutcome = "not-observed";
 let failure: string | undefined;
 let finalExit: ChildExit | null = null;
+let backpressureCaveat = false;
 
 async function waitForChildExit(timeoutMs: number): Promise<ChildExit> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -312,16 +338,29 @@ async function waitForChildExit(timeoutMs: number): Promise<ChildExit> {
 
 try {
   for (let i = 0; i < schedule.length; i++) await oneAbort(schedule[i]!, i);
-  workloadOutcome = "clean-completion";
   if (child.exitCode !== null) {
     throw new ChildExitedError(
       { code: child.exitCode, signal: child.signalCode },
       "post-workload liveness",
     );
   }
-  if (Object.values(counts).some(count => count < 50)
-    || Object.values(counts).reduce((sum, count) => sum + count, 0) < 200) {
-    throw new Error("verified abort counts did not meet the phase minimums");
+  if (counts["before-first-byte"] !== requestedByClass["before-first-byte"]
+    || counts["mid-frame"] !== requestedByClass["mid-frame"]
+    || counts["before-first-byte"] < 50
+    || counts["mid-frame"] < 50
+    || requestedByClass["during-backpressure"] < 50
+    || schedule.length < 200) {
+    throw new Error("server-acknowledged abort counts did not meet the request minimums");
+  }
+  if (counts["during-backpressure"] === requestedByClass["during-backpressure"]
+    && backpressureUnreachableCount === 0) {
+    workloadOutcome = "clean-completion";
+  } else if (counts["during-backpressure"] === 0
+    && backpressureUnreachableCount === requestedByClass["during-backpressure"]) {
+    backpressureCaveat = true;
+    workloadOutcome = "completed-with-caveat";
+  } else {
+    throw new Error("mixed backpressure reachability cannot satisfy the gate");
   }
 
   const shutdownResponse = await guarded(fetch(`${base}/shutdown`, { method: "POST" }), "shutdown request");
@@ -332,8 +371,8 @@ try {
     throw new ChildExitedError(finalExit, "expected teardown");
   }
   childOutcome = "expected-teardown";
-  classification = "clean";
-  outcome = "PASS";
+  classification = backpressureCaveat ? "backpressure-unreachable" : "clean";
+  outcome = backpressureCaveat ? "PASS-WITH-CAVEAT" : "PASS";
 } catch (error) {
   failure = error instanceof Error ? error.message : String(error);
   if (error instanceof ProbeTimeoutError) classification = "timeout";
@@ -360,8 +399,10 @@ console.log(JSON.stringify({
   seed: SEED,
   algorithm: "mulberry32",
   requestedTotal: schedule.length,
+  requestedByClass,
   verifiedTotal: Object.values(counts).reduce((sum, value) => sum + value, 0),
   verifiedByClass: counts,
+  backpressureUnreachableCount,
   durationMs: Date.now() - started,
   workloadOutcome,
   childOutcome,
@@ -372,4 +413,4 @@ console.log(JSON.stringify({
   arch: process.arch,
   ...(failure ? { failure, childStdoutTail, childStderrTail } : {}),
 }));
-process.exitCode = outcome === "PASS" ? 0 : 1;
+process.exitCode = outcome === "FAIL" ? 1 : 0;

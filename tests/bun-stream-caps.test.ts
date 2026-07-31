@@ -108,9 +108,8 @@ describe("selectEagerPath (platform policy matrix)", () => {
       .toEqual({ useEagerRelay: true, reason: "config-eager" });
   });
 
-  test("darwin + no rewrite + auto fixed runtime → tee with the reason retained", () => {
-    expect(selectEagerPath("darwin", false, "auto", "1.4.0", "1.4.0"))
-      .toEqual({ useEagerRelay: false, reason: "auto-fixed-runtime" });
+  test("darwin + no rewrite + auto fixed runtime → tee with no eager decision", () => {
+    expect(selectEagerPath("darwin", false, "auto", "1.4.0", "1.4.0")).toBeNull();
   });
 
   test("darwin + rewrite + config-eager → tee", () => {
@@ -121,11 +120,11 @@ describe("selectEagerPath (platform policy matrix)", () => {
     expect(selectEagerPath("linux", false, "eager-relay", "1.3.14", null)).toBeNull();
   });
 
-  test("legacy-tee forces tee on every platform", () => {
-    for (const platform of ["win32", "darwin", "linux"] as const) {
-      expect(selectEagerPath(platform, false, "legacy-tee", "9.9.9", "1.4.0")?.useEagerRelay ?? false)
-        .toBe(false);
-    }
+  test("legacy-tee is a Windows decision and null on ineligible platforms", () => {
+    expect(selectEagerPath("win32", false, "legacy-tee", "9.9.9", "1.4.0"))
+      .toEqual({ useEagerRelay: false, reason: "config-legacy" });
+    expect(selectEagerPath("darwin", false, "legacy-tee", "9.9.9", "1.4.0")).toBeNull();
+    expect(selectEagerPath("linux", false, "legacy-tee", "9.9.9", "1.4.0")).toBeNull();
   });
 });
 

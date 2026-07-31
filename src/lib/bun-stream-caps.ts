@@ -92,9 +92,8 @@ export function decideEagerRelay(
  * Apply the two-platform eager-relay policy to the runtime/config capability.
  * Windows preserves the decision for no-rewrite traffic. Darwin permits only
  * explicit config opt-in; `auto` remains tee even on a future fixed runtime.
- * Returns the normalized effective decision (`useEagerRelay` already reflects
- * platform policy; `reason` is retained), or null when the platform/rewrite
- * combination never reaches the eager path.
+ * Returns the normalized effective decision, or null when platform policy,
+ * rewrite needs, or a Darwin non-config-eager mode selects tee.
  */
 export function selectEagerPath(
   platform: NodeJS.Platform,
@@ -109,9 +108,5 @@ export function selectEagerPath(
 
   const decision = decideEagerRelay(mode, version, minFixed);
   if (platform === "win32") return decision;
-
-  return {
-    ...decision,
-    useEagerRelay: decision.useEagerRelay && decision.reason === "config-eager",
-  };
+  return decision.reason === "config-eager" ? decision : null;
 }

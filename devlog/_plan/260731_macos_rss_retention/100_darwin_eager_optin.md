@@ -188,22 +188,38 @@ Probe: `scripts/darwin-eager-abort-stress.ts` (parent watchdog) +
 `scripts/darwin-eager-abort-stress-child.ts` (Bun.serve serving the ACTUAL
 `relaySseEagerBounded` stream). Host: darwin arm64, Bun 1.3.14.
 
-Result: **PASS / clean.** `seed=260801`, `algorithm=mulberry32`,
-`requestedTotal=201`, `verifiedTotal=201`,
-`verifiedByClass={before-first-byte:67, mid-frame:67, during-backpressure:67}`
-(every abort phase-marker-verified by the child), `durationMs=117876`,
-`workloadOutcome=clean-completion`, `childOutcome=expected-teardown`,
-`childExitCode=0`, `childSignal=null`. Parent exit 0.
+Two runs, both `seed=260801`, `algorithm=mulberry32`, 201 aborts:
 
-Measured runtime note (recorded in the child source): on darwin Bun 1.3.14
-the native Response sink pulls a JS ReadableStream without pacing — an unread
-client still drains the upstream — so a parked producer is not reachable over
-HTTP on this runtime. The `during-backpressure` class therefore proves "abort
-during native-sink buffering with the queue bound exceeded" (≥1 MiB
-delivered, unread client), which is the Bun#32111-relevant load state.
+1. **Initial run (delivered-bytes marker): PASS / clean.**
+   `verifiedTotal=201` (67 per class), `durationMs=117876`,
+   `workloadOutcome=clean-completion`, `childOutcome=expected-teardown`,
+   `childExitCode=0`. At this point the during-backpressure marker fired on
+   ≥1 MiB delivered with an unread client (sink-buffered load), not on an
+   observed producer park.
+2. **Refined run (stall-detected park marker + honest fallback):
+   PASS-WITH-CAVEAT / backpressure-unreachable.**
+   `verifiedByClass={before-first-byte:67, mid-frame:67,
+   during-backpressure:0}`, `backpressureUnreachableCount=67`,
+   `childOutcome=expected-teardown`, `childExitCode=0`. The child now emits
+   `backpressure-unreachable` when it produces the full 4 MiB schedule
+   without ever observing a producer park.
 
-This is an opt-in safety probe result, not a Bun-1.3.14-is-safe claim; the
-`auto` posture on darwin is unchanged (tee).
+Measured runtime finding (why the class is unreachable): on darwin Bun
+1.3.14 the native Response sink pulls a JS ReadableStream WITHOUT pacing —
+an unread client still drains the entire upstream into native buffering.
+A parked eager producer therefore cannot exist over HTTP on this runtime;
+`maxQueueBytes` bounds the JS-side queue while the native sink absorbs the
+bytes. The 67 during-backpressure aborts still executed under
+multi-MiB sink-buffered load (the Bun#32111-relevant state); no crash, hang,
+or bad teardown was observed in any of the 402 aborts across both runs.
+
+Two implications recorded for later phases: (a) the eager path's memory win
+on darwin over HTTP is bounded by the native sink's buffering behavior, not
+only by `maxQueueBytes` — the tee-queue elimination and inspector bounds
+remain the effective mechanisms; (b) the gate PASSES for opt-in purposes —
+no crash under any abort class — but this remains an opt-in safety probe
+result, not a Bun-1.3.14-is-safe claim. The `auto` posture on darwin is
+unchanged (tee).
 ## wp5 C-review round 1 synthesis (reviewer Mendel, FAIL 3)
 
 | # | Finding | Decision | Fix |
