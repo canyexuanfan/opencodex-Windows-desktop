@@ -17,6 +17,7 @@
  * Requires: gh CLI (authed). Publishing is tokenless via Trusted Publishing (OIDC) — no NPM_TOKEN.
  */
 import { $ } from "bun";
+import { commandInvocation } from "../src/lib/win-exec";
 
 const args = process.argv.slice(2);
 interface GhRun {
@@ -39,30 +40,22 @@ const SERVICE_WORKFLOW = "service-lifecycle.yml";
 const CI_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
 const CI_POLL_MS = 10 * 1000;
 
-/**
- * On Windows, `npm`, `gh`, and `git` are usually `.cmd`/`.exe` shims rather than
- * bare files on PATH. `Bun.$` resolves those, but `Bun.spawn` does not: it looks
- * for a literal `npm` and fails. The preflight below is the FIRST thing the
- * release runs, so that mismatch aborted the script before a single shim was
- * invoked — which is why the release-helper tests saw exit 1 and an empty call
- * log on windows-latest while every other platform passed.
- *
- * `.cmd` is tried ahead of `.exe` because that is what npm and gh actually ship
- * on Windows; a real `.exe` (git) still resolves through PATHEXT lookup below.
- */
-function resolveCommandForPlatform(command: string[]): string[] {
-  if (process.platform !== "win32") return command;
-  const [bin, ...rest] = command;
-  if (!bin || bin.includes("\\") || bin.includes("/") || /\.[a-z]+$/i.test(bin)) return command;
-  for (const extension of [".cmd", ".exe", ".bat"]) {
-    const resolved = Bun.which(`${bin}${extension}`);
-    if (resolved) return [resolved, ...rest];
-  }
-  return [Bun.which(bin) ?? bin, ...rest];
-}
-
 async function runQuiet(command: string[]): Promise<CommandResult> {
-  const proc = Bun.spawn(resolveCommandForPlatform(command), { stdout: "pipe", stderr: "pipe" });
+  // Windows exposes npm and gh as `.cmd` shims. A shell-less spawn of a bare
+  // `npm` skips PATHEXT entirely and refuses `.cmd` targets outright, so this
+  // preflight — the first thing a release does — aborted before invoking a
+  // single command, and the release-helper tests saw exit 1 with an empty call
+  // log. `commandInvocation` is the module the CLI already uses for exactly
+  // this, escaping included; do not hand-roll a second resolver here.
+  const [bin, ...rest] = command;
+  const invocation = commandInvocation(bin ?? "", rest);
+  const proc = Bun.spawn([invocation.file, ...invocation.args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    // Load-bearing on the `cmd.exe /d /s /c` path: the invocation is already a
+    // fully escaped command LINE, so re-quoting it would corrupt the arguments.
+    ...(invocation.options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
