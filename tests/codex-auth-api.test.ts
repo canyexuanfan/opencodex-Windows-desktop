@@ -770,6 +770,27 @@ describe("codex-auth API", () => {
     expect(configCommits).toBe(0);
   });
 
+  test("pool plan refresh persists plan_type when WHAM omits rate_limit windows", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-only",
+      email: "pool-plan-only@example.com",
+      plan: "plus",
+    });
+    saveConfig(structuredClone(config));
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(data.accounts.find(account => account.id === "pool-plan-only")?.plan).toBe("prolite");
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-only")?.plan).toBe("prolite");
+    expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-only")?.plan).toBe("prolite");
+  });
+
   test("pool plan refresh performs no config write when the authoritative plan is unchanged", async () => {
     const config = makeConfig();
     seedPoolAccount(config, {
@@ -812,7 +833,8 @@ describe("codex-auth API", () => {
     const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
 
     expect(resp!.status).toBe(200);
-    expect(data.accounts.find(account => account.id === "pool-plan-config-deleted")?.plan).toBe("plus");
+    // Missing config fails closed on disk, but the response still surfaces the WHAM plan.
+    expect(data.accounts.find(account => account.id === "pool-plan-config-deleted")?.plan).toBe("pro");
     expect(config.codexAccounts?.find(account => account.id === "pool-plan-config-deleted")?.plan).toBe("plus");
     expect(existsSync(join(TEST_DIR, "config.json"))).toBe(false);
   });
@@ -1003,7 +1025,7 @@ describe("codex-auth API", () => {
     expect(absentAtRecheck).toBe(true);
     expect(existsSync(getConfigPath())).toBe(false);
     expect(config.codexAccounts?.find(account => account.id === "pool-plan-cas-delete")?.plan).toBe("plus");
-    expect(data.accounts.find(account => account.id === "pool-plan-cas-delete")?.plan).toBe("plus");
+    expect(data.accounts.find(account => account.id === "pool-plan-cas-delete")?.plan).toBe("prolite");
   });
 
   test("pool plan commit leaves config malformed when malformed bytes arrive after its first checks", async () => {
@@ -1028,7 +1050,7 @@ describe("codex-auth API", () => {
     expect(malformedAtRecheck).toBe(true);
     expect(readFileSync(getConfigPath(), "utf8")).toBe(malformed);
     expect(config.codexAccounts?.find(account => account.id === "pool-plan-cas-malformed")?.plan).toBe("plus");
-    expect(data.accounts.find(account => account.id === "pool-plan-cas-malformed")?.plan).toBe("plus");
+    expect(data.accounts.find(account => account.id === "pool-plan-cas-malformed")?.plan).toBe("prolite");
   });
 
   test("pool plan commit rejects an old plan after same-id credential replacement at its commit seam", async () => {
@@ -1102,7 +1124,8 @@ describe("codex-auth API", () => {
       expect(elapsedMs).toBeLessThan(2_000);
       expect(loadConfig().codexAccounts?.find(account => account.id === accountId)?.plan).toBe("plus");
       expect(config.codexAccounts?.find(account => account.id === accountId)?.plan).toBe("plus");
-      expect(data.accounts.find(account => account.id === accountId)?.plan).toBe("plus");
+      // Disk persistence fails closed under lock contention, but the response still reflects WHAM.
+      expect(data.accounts.find(account => account.id === accountId)?.plan).toBe("prolite");
     } finally {
       lockDatabase.exec("ROLLBACK");
       lockDatabase.close();

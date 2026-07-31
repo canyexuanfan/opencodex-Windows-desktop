@@ -534,6 +534,9 @@ async function fetchFreshPoolAccountQuota(
         quota: isCodexAccountGenerationLive(accountId, generation) ? existing ?? null : getAccountQuota(accountId),
         needsReauth: false,
         credentialGeneration: generation,
+        ...(freshPlan !== undefined
+          ? { freshPlan, freshCredentialGeneration: generation }
+          : {}),
       };
     }
     if (!isCodexAccountGenerationLive(accountId, generation)) {
@@ -702,12 +705,18 @@ export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = fa
       )];
     }
     const resultGeneration = quotaResult.credentialGeneration ?? quotaResult.freshCredentialGeneration;
-    const effectiveQuotaResult = resultGeneration !== undefined
-      && !isCodexAccountGenerationLive(accountId, resultGeneration)
+    const generationLive = resultGeneration === undefined
+      || isCodexAccountGenerationLive(accountId, resultGeneration);
+    const effectiveQuotaResult = !generationLive
       ? { quota: null, needsReauth: false }
       : quotaResult;
+    // Response DTO can show the WHAM plan even when disk persistence fails closed (lock busy /
+    // missing config). Persistence still remains generation-gated via reconcileFreshPoolAccountPlans.
+    const dtoAccount = generationLive && quotaResult.freshPlan
+      ? { ...currentAccount, plan: quotaResult.freshPlan }
+      : currentAccount;
     return [poolAccountDto(
-      currentAccount,
+      dtoAccount,
       effectiveQuotaResult,
       true,
       isCodexAccountPaused(runtimeConfig, accountId),
@@ -1170,172 +1179,185 @@ export async function handleCodexAuthAPI(
       }
 
       (async () => {
-        let completed = false;
-        for (let i = 0; i < 150; i++) {
-          await new Promise(r => setTimeout(r, 2000));
-          const st = getLoginStatus("chatgpt");
-          if (st.done && st.loggedIn) {
-            const { getCredential } = await import("../oauth/store");
-            const cred = getCredential("chatgpt");
-            if (cred) {
-              const oauthAccountId = cred.accountId;
-              if (!oauthAccountId) {
-                codexAuthLoginState.set(flowId, {
-                  status: "error",
-                  error: "Could not determine account identity from OAuth tokens. Please retry OAuth login.",
-                  doneAt: Date.now(),
-                });
-                completed = true;
-                break;
-              }
-
-              let email = cred.email || accountId;
-              let plan: string | undefined;
-              let quota: Omit<StoredAccountQuota, "updatedAt"> | null = null;
-              try {
-                const tokens = { access_token: cred.access, account_id: oauthAccountId };
-                const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-                  headers: { Authorization: `Bearer ${tokens.access_token}`, "ChatGPT-Account-Id": tokens.account_id },
-                  signal: AbortSignal.timeout(8000),
-                });
-                if (resp.ok) {
-                  const data = (await resp.json()) as WhamUsageResponse;
-                  email = data.email ?? email;
-                  plan = data.plan_type ?? undefined;
-                  quota = parseUsageQuota(data);
-                }
-              } catch { /* wham fetch is non-blocking */ }
-              // Reauth must refresh the same ChatGPT identity already bound to this pool slot.
-              // Otherwise a different login would silently overwrite credentials under a trusted id.
-              if (reauth) {
-                const existingCred = getCodexAccountCredential(accountId);
-                const poolAccount = configuredPoolAccount(getRuntimeConfig(config), accountId);
-                const expectedChatgptId = existingCred?.chatgptAccountId?.trim();
-                const expectedEmail = poolAccount?.email?.trim().toLowerCase();
-                const gotEmail = email.trim().toLowerCase();
-                if (expectedChatgptId) {
-                  if (expectedChatgptId !== oauthAccountId) {
-                    codexAuthLoginState.set(flowId, {
-                      status: "error",
-                      error: "Signed-in ChatGPT account does not match this pool account. Sign in with the same account, or remove it and add a new one.",
-                      doneAt: Date.now(),
-                    });
-                    completed = true;
-                    break;
-                  }
-                } else if (expectedEmail) {
-                  if (!gotEmail || gotEmail !== expectedEmail) {
-                    codexAuthLoginState.set(flowId, {
-                      status: "error",
-                      error: "Signed-in ChatGPT account does not match this pool account. Sign in with the same account, or remove it and add a new one.",
-                      doneAt: Date.now(),
-                    });
-                    completed = true;
-                    break;
-                  }
-                } else {
-                  // No chatgptAccountId and no pool email — refuse silent identity replacement
-                  // (including empty credential slots that still have a pool row).
+        try {
+          let completed = false;
+          for (let i = 0; i < 150; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            const st = getLoginStatus("chatgpt");
+            if (st.done && st.loggedIn) {
+              const { getCredential } = await import("../oauth/store");
+              const cred = getCredential("chatgpt");
+              if (cred) {
+                const oauthAccountId = cred.accountId;
+                if (!oauthAccountId) {
                   codexAuthLoginState.set(flowId, {
                     status: "error",
-                    error: "Cannot verify account identity for reauth. Remove this account and add it again.",
+                    error: "Could not determine account identity from OAuth tokens. Please retry OAuth login.",
                     doneAt: Date.now(),
                   });
                   completed = true;
                   break;
                 }
-              }
 
-              // 1.2: Duplicate check is scoped by personal vs workspace plan bucket.
-              const collision = checkAccountIdCollision(oauthAccountId, email, plan, reauth ? accountId : undefined);
-              if (collision.collision) {
-                codexAuthLoginState.set(flowId, {
-                  status: "error", error: collision.reason, doneAt: Date.now(),
+                let email = cred.email || accountId;
+                let plan: string | undefined;
+                let quota: Omit<StoredAccountQuota, "updatedAt"> | null = null;
+                try {
+                  const tokens = { access_token: cred.access, account_id: oauthAccountId };
+                  const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+                    headers: { Authorization: `Bearer ${tokens.access_token}`, "ChatGPT-Account-Id": tokens.account_id },
+                    signal: AbortSignal.timeout(8000),
+                  });
+                  if (resp.ok) {
+                    const data = (await resp.json()) as WhamUsageResponse;
+                    email = data.email ?? email;
+                    plan = data.plan_type ?? undefined;
+                    quota = parseUsageQuota(data);
+                  }
+                } catch { /* wham fetch is non-blocking */ }
+                // Reauth must refresh the same ChatGPT identity already bound to this pool slot.
+                // Otherwise a different login would silently overwrite credentials under a trusted id.
+                if (reauth) {
+                  const existingCred = getCodexAccountCredential(accountId);
+                  const poolAccount = configuredPoolAccount(getRuntimeConfig(config), accountId);
+                  const expectedChatgptId = existingCred?.chatgptAccountId?.trim();
+                  const expectedEmail = poolAccount?.email?.trim().toLowerCase();
+                  const gotEmail = email.trim().toLowerCase();
+                  if (expectedChatgptId) {
+                    if (expectedChatgptId !== oauthAccountId) {
+                      codexAuthLoginState.set(flowId, {
+                        status: "error",
+                        error: "Signed-in ChatGPT account does not match this pool account. Sign in with the same account, or remove it and add a new one.",
+                        doneAt: Date.now(),
+                      });
+                      completed = true;
+                      break;
+                    }
+                  } else if (expectedEmail) {
+                    if (!gotEmail || gotEmail !== expectedEmail) {
+                      codexAuthLoginState.set(flowId, {
+                        status: "error",
+                        error: "Signed-in ChatGPT account does not match this pool account. Sign in with the same account, or remove it and add a new one.",
+                        doneAt: Date.now(),
+                      });
+                      completed = true;
+                      break;
+                    }
+                  } else {
+                    // No chatgptAccountId and no pool email — refuse silent identity replacement
+                    // (including empty credential slots that still have a pool row).
+                    codexAuthLoginState.set(flowId, {
+                      status: "error",
+                      error: "Cannot verify account identity for reauth. Remove this account and add it again.",
+                      doneAt: Date.now(),
+                    });
+                    completed = true;
+                    break;
+                  }
+                }
+
+                // 1.2: Duplicate check is scoped by personal vs workspace plan bucket.
+                const collision = checkAccountIdCollision(oauthAccountId, email, plan, reauth ? accountId : undefined);
+                if (collision.collision) {
+                  codexAuthLoginState.set(flowId, {
+                    status: "error", error: collision.reason, doneAt: Date.now(),
+                  });
+                  completed = true;
+                  break;
+                }
+
+                const warmup = await verifyCodexAccountWarmup(accountId, cred.access, oauthAccountId);
+                if (!warmup.ok) {
+                  const body = await warmup.response.json().catch(() => ({})) as { error?: string; reason?: string };
+                  codexAuthLoginState.set(flowId, {
+                    status: "error",
+                    error: body.reason ? `${body.error ?? "Codex account warmup failed"} (${body.reason})` : body.error ?? "Codex account warmup failed",
+                    doneAt: Date.now(),
+                  });
+                  completed = true;
+                  break;
+                }
+
+                const latestConfig = getRuntimeConfig(config);
+                const accounts = latestConfig.codexAccounts ?? [];
+                const existingIdx = accounts.findIndex(account => account.id === accountId);
+                const commitConflict = codexAccountPersistenceConflict(
+                  latestConfig,
+                  accountId,
+                  reauth ? "reauth" : "create",
+                );
+                if (commitConflict) {
+                  codexAuthLoginState.set(flowId, {
+                    status: "error",
+                    error: commitConflict,
+                    doneAt: Date.now(),
+                  });
+                  completed = true;
+                  break;
+                }
+
+                saveCodexAccountCredential(accountId, {
+                  accessToken: cred.access,
+                  refreshToken: cred.refresh,
+                  expiresAt: cred.expires,
+                  chatgptAccountId: oauthAccountId,
                 });
+                // A successful reauthentication replaces the credential generation. Do not let a
+                // failed optional WHAM probe make the replacement inherit quota from the old record.
+                if (reauth) clearAccountQuota(accountId);
+                markCodexAccountValidated(accountId, warmup.validatedAt);
+                clearAccountNeedsReauth(accountId);
+                if (quota) {
+                  setAccountQuotaFromParsed(accountId, quota);
+                }
+
+                if (existingIdx >= 0) {
+                  // Keep the pool id stable; refresh display metadata after a successful login/reauth.
+                  accounts[existingIdx] = withCodexAccountLogLabel({
+                    ...accounts[existingIdx],
+                    email,
+                    plan: plan ?? accounts[existingIdx].plan,
+                    isMain: false,
+                  }, accounts);
+                  latestConfig.codexAccounts = accounts;
+                  saveRuntimeConfig(config, latestConfig);
+                } else {
+                  accounts.push(withCodexAccountLogLabel({ id: accountId, email, plan, isMain: false }, accounts));
+                  latestConfig.codexAccounts = accounts;
+                  saveRuntimeConfig(config, latestConfig);
+                }
+                codexAuthLoginState.set(flowId, { status: "done", accountId, email, doneAt: Date.now() });
                 completed = true;
-                break;
               }
-
-              const warmup = await verifyCodexAccountWarmup(accountId, cred.access, oauthAccountId);
-              if (!warmup.ok) {
-                const body = await warmup.response.json().catch(() => ({})) as { error?: string; reason?: string };
-                codexAuthLoginState.set(flowId, {
-                  status: "error",
-                  error: body.reason ? `${body.error ?? "Codex account warmup failed"} (${body.reason})` : body.error ?? "Codex account warmup failed",
-                  doneAt: Date.now(),
-                });
-                completed = true;
-                break;
-              }
-
-              const latestConfig = getRuntimeConfig(config);
-              const accounts = latestConfig.codexAccounts ?? [];
-              const existingIdx = accounts.findIndex(account => account.id === accountId);
-              const commitConflict = codexAccountPersistenceConflict(
-                latestConfig,
-                accountId,
-                reauth ? "reauth" : "create",
-              );
-              if (commitConflict) {
-                codexAuthLoginState.set(flowId, {
-                  status: "error",
-                  error: commitConflict,
-                  doneAt: Date.now(),
-                });
-                completed = true;
-                break;
-              }
-
-              saveCodexAccountCredential(accountId, {
-                accessToken: cred.access,
-                refreshToken: cred.refresh,
-                expiresAt: cred.expires,
-                chatgptAccountId: oauthAccountId,
-              });
-              // A successful reauthentication replaces the credential generation. Do not let a
-              // failed optional WHAM probe make the replacement inherit quota from the old record.
-              if (reauth) clearAccountQuota(accountId);
-              markCodexAccountValidated(accountId, warmup.validatedAt);
-              clearAccountNeedsReauth(accountId);
-              if (quota) {
-                setAccountQuotaFromParsed(accountId, quota);
-              }
-
-              if (existingIdx >= 0) {
-                // Keep the pool id stable; refresh display metadata after a successful login/reauth.
-                accounts[existingIdx] = withCodexAccountLogLabel({
-                  ...accounts[existingIdx],
-                  email,
-                  plan: plan ?? accounts[existingIdx].plan,
-                  isMain: false,
-                }, accounts);
-                latestConfig.codexAccounts = accounts;
-                saveRuntimeConfig(config, latestConfig);
-              } else {
-                accounts.push(withCodexAccountLogLabel({ id: accountId, email, plan, isMain: false }, accounts));
-                latestConfig.codexAccounts = accounts;
-                saveRuntimeConfig(config, latestConfig);
-              }
-              codexAuthLoginState.set(flowId, { status: "done", accountId, email, doneAt: Date.now() });
-              completed = true;
+              break;
             }
-            break;
+            if (st.done && st.error) {
+              codexAuthLoginState.set(flowId, { status: "error", error: st.error, doneAt: Date.now() });
+              completed = true;
+              break;
+            }
           }
-          if (st.done && st.error) {
-            codexAuthLoginState.set(flowId, { status: "error", error: st.error, doneAt: Date.now() });
-            completed = true;
-            break;
+          if (!completed) {
+            codexAuthLoginState.set(flowId, {
+              status: "error",
+              error: "Login timed out before OAuth completed.",
+              doneAt: Date.now(),
+            });
           }
-        }
-        if (!completed) {
+        } catch (error) {
+          const message = error instanceof ConfigMutationLockError
+            || error instanceof CodexCredentialRefreshLockTimeoutError
+            ? "Configuration is busy; retry login shortly."
+            : error instanceof Error ? error.message : String(error);
           codexAuthLoginState.set(flowId, {
             status: "error",
-            error: "Login timed out before OAuth completed.",
+            error: message,
             doneAt: Date.now(),
           });
+        } finally {
+          // TTL: keep completed flow state available for clients that miss a short polling window.
+          setTimeout(() => codexAuthLoginState.delete(flowId), 300_000);
         }
-        // TTL: keep completed flow state available for clients that miss a short polling window.
-        setTimeout(() => codexAuthLoginState.delete(flowId), 300_000);
       })();
 
       codexAuthLoginState.set(flowId, { status: "pending" });

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ConfigMutationLockError, loadConfig, saveConfig } from "../src/config";
-import { getCodexAccountCredential, saveCodexAccountCredential } from "../src/codex/account-store";
+import { ConfigMutationLockError, loadConfig, saveConfig, withConfigMutationLockSync } from "../src/config";
+import { CodexCredentialRefreshLockTimeoutError, getCodexAccountCredential, saveCodexAccountCredential } from "../src/codex/account-store";
 import type { OcxConfig } from "../src/types";
 
 let testRoot = "";
@@ -66,7 +66,14 @@ test("a live cross-process holder is not stolen and runtime writers fail immedia
   });
 
   try {
-    await waitForPath(readyPath);
+    try {
+      await waitForPath(readyPath);
+    } catch (error) {
+      child.kill();
+      await child.exited;
+      const stderr = await new Response(child.stderr).text().catch(() => "");
+      throw new Error(`${(error as Error).message}\nchild stderr: ${stderr}`);
+    }
     const startedAt = performance.now();
     expect(() => saveConfig(config(20200))).toThrow(ConfigMutationLockError);
     expect(() => saveCodexAccountCredential("busy-account", {
@@ -74,7 +81,7 @@ test("a live cross-process holder is not stolen and runtime writers fail immedia
       refreshToken: "busy-refresh",
       expiresAt: Date.now() + 60_000,
       chatgptAccountId: "busy-chatgpt-account",
-    })).toThrow(ConfigMutationLockError);
+    })).toThrow(CodexCredentialRefreshLockTimeoutError);
     expect(performance.now() - startedAt).toBeLessThan(1_000);
     expect(loadConfig().port).toBe(10100);
     expect(getCodexAccountCredential("busy-account")).toBeNull();
@@ -118,4 +125,13 @@ test("an abruptly exited holder releases the OS-backed transaction without stale
   expect(existsSync(enteredPath)).toBe(true);
   expect(() => saveConfig(config(30300))).not.toThrow();
   expect(loadConfig().port).toBe(30300);
+});
+
+test("a throwing mutation releases the lock and leaves writers available", () => {
+  saveConfig(config());
+  expect(() => withConfigMutationLockSync(() => {
+    throw new Error("mutation failed");
+  })).toThrow("mutation failed");
+  expect(() => saveConfig(config(50500))).not.toThrow();
+  expect(loadConfig().port).toBe(50500);
 });

@@ -167,7 +167,20 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 
   if (url.pathname.startsWith("/api/codex-auth/")) {
     const { handleCodexAuthAPI } = await import("../codex/auth-api");
-    return handleCodexAuthAPI(req, url, config);
+    const { ConfigMutationLockError } = await import("../config");
+    try {
+      return await handleCodexAuthAPI(req, url, config);
+    } catch (error) {
+      if (error instanceof ConfigMutationLockError) {
+        return jsonResponse(
+          { error: "Configuration is busy; retry shortly", code: "CONFIG_MUTATION_LOCK_UNAVAILABLE" },
+          503,
+          req,
+          config,
+        );
+      }
+      throw error;
+    }
   }
 
   return null;

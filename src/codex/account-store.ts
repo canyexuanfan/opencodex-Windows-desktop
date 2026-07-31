@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, readFileSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getConfigDir, atomicWriteFile, backupInvalidConfig, hardenConfigDir, hardenExistingSecret, withConfigMutationLockSync } from "../config";
+import {
+  ConfigMutationLockError,
+  getConfigDir,
+  atomicWriteFile,
+  backupInvalidConfig,
+  hardenConfigDir,
+  hardenExistingSecret,
+  withConfigMutationLockSync,
+} from "../config";
 import { assertNotRealHomeUnderTest } from "../lib/test-home-guard";
 import type { CodexAccountCredentialRecord, CodexAccountCredentials } from "../types";
 
@@ -121,7 +129,7 @@ export function getCodexAccountCredential(id: string): CodexAccountCredentials |
 }
 
 export function saveCodexAccountCredential(id: string, cred: CodexAccountCredentials): void {
-  withConfigMutationLockSync(() => {
+  withCredentialMutationLockSync(() => {
     const store = loadCodexAccountRecordStore();
     const current = store[id];
     const refreshGrantFingerprint = current?.credential?.refreshToken === cred.refreshToken
@@ -139,7 +147,7 @@ export function saveCodexAccountCredential(id: string, cred: CodexAccountCredent
 }
 
 export function markCodexAccountValidated(id: string, atMs: number = Date.now()): void {
-  withConfigMutationLockSync(() => {
+  withCredentialMutationLockSync(() => {
     const store = loadCodexAccountRecordStore();
     const current = store[id];
     if (!current || current.deletedAt != null || !current.credential) return;
@@ -154,7 +162,7 @@ export function markCodexAccountValidated(id: string, atMs: number = Date.now())
 }
 
 export function markCodexAccountValidationFailed(id: string, reason: string): void {
-  withConfigMutationLockSync(() => {
+  withCredentialMutationLockSync(() => {
     const store = loadCodexAccountRecordStore();
     const current = store[id];
     if (!current || current.deletedAt != null || !current.credential) return;
@@ -189,7 +197,7 @@ export function saveCodexAccountCredentialIfGeneration(
   generation: number,
   cred: CodexAccountCredentials,
 ): boolean {
-  return withConfigMutationLockSync(() => {
+  return withCredentialMutationLockSync(() => {
     const store = loadCodexAccountRecordStore();
     const current = store[id];
     if (!current || current.generation !== generation || current.deletedAt != null || !current.credential) {
@@ -211,7 +219,7 @@ export function saveCodexAccountCredentialIfGeneration(
 }
 
 export function tombstoneCodexAccount(id: string): number {
-  return withConfigMutationLockSync(() => {
+  return withCredentialMutationLockSync(() => {
     const store = loadCodexAccountRecordStore();
     const current = store[id];
     const generation = (current?.generation ?? 0) + 1;
@@ -244,6 +252,16 @@ export class CodexCredentialRefreshLockTimeoutError extends Error {
   constructor(message = "Timed out waiting for Codex account refresh lock") {
     super(message);
     this.name = "CodexCredentialRefreshLockTimeoutError";
+  }
+}
+
+/** Credential writers share the config mutation coordinator; contention is transient, not reauth. */
+function withCredentialMutationLockSync<T>(fn: () => T): T {
+  try {
+    return withConfigMutationLockSync(fn);
+  } catch (error) {
+    if (error instanceof ConfigMutationLockError) throw new CodexCredentialRefreshLockTimeoutError();
+    throw error;
   }
 }
 

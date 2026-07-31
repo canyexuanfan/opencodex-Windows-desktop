@@ -1388,7 +1388,7 @@ export function withConfigMutationLockSync<T>(fn: () => T): T {
     throw error;
   } finally {
     configMutationLockDepth = 0;
-    database.close();
+    try { database.close(); } catch { /* the OS lock is released with the handle */ }
   }
 }
 
