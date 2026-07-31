@@ -2,6 +2,7 @@ import type { OcxProviderConfig } from "../types";
 import {
   assessUrlDestination,
   DestinationDnsResolutionError,
+  providerAllowsPrivateNetwork,
   providerDestinationConfigError,
   resolvePublicAddresses,
 } from "./destination-policy";
@@ -116,7 +117,10 @@ export async function providerOutboundGet(
     if (assessment?.kind === "metadata" || assessment?.kind === "link-local" || assessment?.kind === "unspecified") {
       throw new ProviderOutboundPolicyError(`provider URL targets ${assessment.detail}`);
     }
-    if (!provider.allowPrivateNetwork) {
+    // Registry defaults count here too, not just the operator flag: a stock Ollama entry is
+    // local by definition and previously passed config validation only to be refused at the
+    // fetch (#758). Metadata/link-local/unspecified were already rejected above.
+    if (!providerAllowsPrivateNetwork(name, provider)) {
       const destinationError = providerDestinationConfigError(name, {
         baseUrl: url,
         allowPrivateNetwork: false,
@@ -133,7 +137,7 @@ export async function providerOutboundGet(
   try {
     resolved = await resolveAddresses(url, {
       context: "provider URL",
-      allowPrivateNetwork: provider.allowPrivateNetwork,
+      allowPrivateNetwork: providerAllowsPrivateNetwork(name, provider),
     });
   } catch (error) {
     const dnsResolutionFailed = error instanceof DestinationDnsResolutionError
