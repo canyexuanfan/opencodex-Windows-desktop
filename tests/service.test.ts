@@ -665,6 +665,7 @@ describe("service lifecycle cleanup ordering", () => {
     expect(service).toContain('type TrackedProxyCleanupResult = "none" | "stale" | "stopped";');
     expect(service).toContain("async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult>");
     expect(service).toContain("await findLiveProxy(SERVICE_STOP_LIVENESS)");
+    expect(service).toContain("(() => findLiveProxy(SERVICE_STOP_LIVENESS))");
     expect(service).toContain("SERVICE_STOP_LIVENESS");
     expect(service).toContain("await stopProxy(trackedKillPid);");
     expect(service).toContain("await stopProxy(liveKillPid);");
