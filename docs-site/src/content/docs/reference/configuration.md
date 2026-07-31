@@ -252,9 +252,22 @@ systemd, or Task Scheduler receives it. Clients must include the token in every 
 x-opencodex-api-key: your-secret-token
 ```
 
-An `Authorization: Bearer …` header is also accepted. Dashboard-generated `apiKeys` may be used in
-place of the environment token after startup; all candidates are compared in constant time
-(`timingSafeEqual`) to prevent timing side-channels.
+Which headers work depends on the endpoint, so `x-opencodex-api-key` is the one that always does:
+
+| Endpoint | `Authorization: Bearer` | `x-opencodex-api-key` | `x-api-key` |
+|---|---|---|---|
+| `/v1/responses` | not accepted | **required** | not accepted |
+| `/v1/chat/completions` | not accepted | **required** | not accepted |
+| `/v1/messages` | accepted | accepted | accepted |
+| `/v1/models` | accepted | accepted | accepted |
+
+Responses and Chat Completions accept only the dedicated header because `Authorization` on those
+transports may belong to Codex Direct passthrough, and the two bearer domains must not be
+confusable. The API tab in the dashboard renders this same table from the server, so it cannot
+drift from the code.
+
+Dashboard-generated `apiKeys` may be used in place of the environment token after startup; all
+candidates are compared in constant time (`timingSafeEqual`) to prevent timing side-channels.
 
 :::caution[LAN exposure]
 Binding to `0.0.0.0` exposes your proxy — and all configured provider credentials — to the local

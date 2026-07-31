@@ -136,8 +136,21 @@ ocx start
 x-opencodex-api-key: your-secret-token
 ```
 
-也可以使用 `Authorization: Bearer …` header。启动后，仪表盘生成的 `apiKeys` 可代替环境 token。
-所有候选值均用常量时间（`timingSafeEqual`）比较，避免 timing side-channel。
+接受哪些 header 取决于端点，始终可用的只有 `x-opencodex-api-key`：
+
+| 端点 | `Authorization: Bearer` | `x-opencodex-api-key` | `x-api-key` |
+|---|---|---|---|
+| `/v1/responses` | 不接受 | **必需** | 不接受 |
+| `/v1/chat/completions` | 不接受 | **必需** | 不接受 |
+| `/v1/messages` | 可用 | 可用 | 可用 |
+| `/v1/models` | 可用 | 可用 | 可用 |
+
+Responses 和 Chat Completions 只接受专用 header，因为这两条链路上的 `Authorization` 可能属于
+Codex Direct 透传，两个 bearer 域不能混淆。仪表盘的 API 标签页同样从服务端获取并渲染这张表，
+因此不会与代码脱节。
+
+启动后，仪表盘生成的 `apiKeys` 可代替环境 token。所有候选值均用常量时间（`timingSafeEqual`）
+比较，避免 timing side-channel。
 
 :::caution[LAN 暴露]
 绑定到 `0.0.0.0` 会把代理和所有已配置 provider credential 暴露到本地网络。只应在可信网络中

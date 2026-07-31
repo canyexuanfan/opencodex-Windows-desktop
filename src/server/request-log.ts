@@ -12,6 +12,8 @@ import type { AdapterRequest } from "../adapters/base";
 import { redactSecretString } from "../lib/redact";
 import {
   appendUsageEntry,
+  isKnownAdmissionKind,
+  isKnownInboundProtocol,
   isKnownUsageSurface,
   readRecentUsageEntries,
   usageForFinalLog,
@@ -39,6 +41,16 @@ export interface RequestLogContext {
   /** Best-effort chat/session correlation for Logs grouping (#330). Opaque; omit when unknown. */
   conversationId?: string;
   surface?: "claude" | "claude-desktop" | "grok";
+  /** The matched configured key's id. Set ONLY for admissionKind "configured" —
+   *  never a sentinel, so a hand-edited entry whose id happens to be "loopback"
+   *  cannot absorb unrelated traffic. */
+  apiKeyId?: string;
+  /** Which kind of admission opened this request. Carries no secret. */
+  admissionKind?: "configured" | "environment" | "loopback";
+  /** Which inbound wire was used. Orthogonal to `surface`, which names the client
+   *  product: widening that enum would merge Responses and Chat Completions,
+   *  since both leave it undefined. */
+  inboundProtocol?: "responses" | "chat" | "messages";
   requestedModel?: string;
   /** Internal structural combo identity; omitted from RequestLogEntry/JSONL. */
   comboId?: string;
@@ -92,6 +104,16 @@ export interface RequestLogEntry {
   /** TTFT: ms from request start to the first non-empty model output delta; unset for non-streaming/tool-only. */
   firstOutputMs?: number;
   surface?: "claude" | "claude-desktop" | "grok";
+  /** The matched configured key's id. Set ONLY for admissionKind "configured" —
+   *  never a sentinel, so a hand-edited entry whose id happens to be "loopback"
+   *  cannot absorb unrelated traffic. */
+  apiKeyId?: string;
+  /** Which kind of admission opened this request. Carries no secret. */
+  admissionKind?: "configured" | "environment" | "loopback";
+  /** Which inbound wire was used. Orthogonal to `surface`, which names the client
+   *  product: widening that enum would merge Responses and Chat Completions,
+   *  since both leave it undefined. */
+  inboundProtocol?: "responses" | "chat" | "messages";
   /** Best-effort chat/session correlation for Logs grouping (#330). */
   conversationId?: string;
   requestedModel?: string;
@@ -240,6 +262,12 @@ export function addRequestLog(entry: RequestLogEntry) {
       provider: entry.provider,
       model: entry.model,
       ...(isKnownUsageSurface(entry.surface) ? { surface: entry.surface } : {}),
+      // This function REBUILDS the persisted row field by field rather than
+      // spreading it, so a field missing here reaches /api/logs and never
+      // reaches usage.jsonl — which is where the per-key rollup reads from.
+      ...(entry.apiKeyId ? { apiKeyId: entry.apiKeyId } : {}),
+      ...(isKnownAdmissionKind(entry.admissionKind) ? { admissionKind: entry.admissionKind } : {}),
+      ...(isKnownInboundProtocol(entry.inboundProtocol) ? { inboundProtocol: entry.inboundProtocol } : {}),
       ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
       ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
       ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
@@ -695,6 +723,9 @@ export function addFinalRequestLog(
     model: isCombo ? logCtx.requestedModel! : logCtx.model,
     provider: isCombo ? "combo" : logCtx.provider,
     ...(logCtx.surface ? { surface: logCtx.surface } : {}),
+    ...(logCtx.apiKeyId ? { apiKeyId: logCtx.apiKeyId } : {}),
+    ...(logCtx.admissionKind ? { admissionKind: logCtx.admissionKind } : {}),
+    ...(logCtx.inboundProtocol ? { inboundProtocol: logCtx.inboundProtocol } : {}),
     ...(logCtx.conversationId ? { conversationId: logCtx.conversationId } : {}),
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
     ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
