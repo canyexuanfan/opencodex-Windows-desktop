@@ -198,24 +198,31 @@ full 4 MiB schedule without ever observing a producer park),
 `durationMs=2839`, `workloadOutcome=completed-with-caveat`,
 `childOutcome=expected-teardown`, `childExitCode=0`, `childSignal=null`.
 
-Measured runtime finding (why the class is unreachable): on darwin Bun
-1.3.14 the native Response sink pulls a JS ReadableStream WITHOUT pacing —
-an unread client still drains the entire upstream into native buffering.
-A parked eager producer therefore cannot exist over HTTP on this runtime;
-`maxQueueBytes` bounds the JS-side queue while the native sink absorbs the
-bytes. The 67 during-backpressure aborts still executed under
-multi-MiB sink-buffered load (the Bun#32111-relevant state); no crash, hang,
-or bad teardown was observed in any of the 402 aborts across both runs.
+Measured runtime finding (why the class went unreached in this probe): on
+darwin Bun 1.3.14, within the probe's 4 MiB schedule, the native Response
+sink pulled the JS ReadableStream without pacing — an unread client still
+drained the entire finite upstream into native buffering, so the producer
+never parked during any of the 67 trials. Whether pacing begins past some
+larger buffered threshold on a longer stream is untested; the observation
+is probe-scoped, not a runtime impossibility claim. `maxQueueBytes` bounds
+the JS-side queue while the native sink absorbs the bytes. The 67
+during-backpressure aborts still executed under multi-MiB sink-buffered
+load (the Bun#32111-relevant state); no crash, hang, or bad teardown was
+observed in any of the 402 aborts across both runs.
 
-**Gate interpretation:** PASS-WITH-CAVEAT satisfies the landing gate. The
-caveat means the abort-during-producer-park state is UNREACHABLE over HTTP
-on this exact runtime — production traffic through the opt-in cannot enter
-it either, so the untested state is also an unoccurrable state. What CAN
-occur (before-first-byte, mid-frame, and aborts under multi-MiB
-sink-buffered load) was exercised 134 ack-verified times in the final run
-plus 402 aborts across the pre-fix runs with zero crash/hang/teardown
-failures. The caveat is recorded so a future Bun that adds sink pacing
-re-arms the class. Still not a Bun-1.3.14-is-safe claim.
+**Gate interpretation:** PASS-WITH-CAVEAT satisfies the landing gate as a
+RISK-ACCEPTED class, not an impossibility proof. The probe establishes that
+within its finite 4 MiB schedule the darwin native sink absorbed everything
+without pacing, so the abort-during-producer-park state never arose IN THIS
+PROBE. That does not prove a longer production stream can never trigger sink
+pacing past some larger threshold — the park state is INCONCLUSIVE for
+production, accepted as residual risk because (a) the opt-in is explicit
+config only, (b) the states that demonstrably CAN occur (before-first-byte,
+mid-frame, aborts under multi-MiB sink-buffered load) were exercised 134
+ack-verified times plus 402 pre-fix aborts with zero crash/hang/teardown
+failures, and (c) the tee default remains one config flip away
+(`legacy-tee`) as rollback. The caveat is recorded so a future Bun that
+paces the sink re-arms the class. Still not a Bun-1.3.14-is-safe claim.
 
 Two implications recorded for later phases: (a) the eager path's memory win
 on darwin over HTTP is bounded by the native sink's buffering behavior, not
@@ -232,3 +239,15 @@ unchanged (tee).
 | C1-2 High | during-backpressure marker fires on 1 MiB produced, not on an actual producer pause; darwin native sink drains eagerly so the class can green without backpressure | ACCEPT | Child observes the REAL pause: inject a small maxQueueBytes via relaySseEagerBounded opts in the child and emit the phase marker only when the producer is actually parked (wake-gate instrumentation), or — if the darwin sink genuinely never applies receive backpressure — the class must detect that and report `backpressure-unreachable` honestly instead of green. Chunk-size comment corrected. |
 | C1-3 Med | selectEagerPath returns {useEagerRelay, decision} instead of the A-gate contract (normalized EagerRelayDecision \| null); core and system-routes consume different fields | ACCEPT | Return the normalized decision (useEagerRelay already folded in) or null; core tests decision?.useEagerRelay; single source of truth. |
 | Hygiene | Two conflicting probe-run records (114690 vs 117876) — the worker ran the probe despite instructions and recorded its own run | ACCEPT | Collapse to ONE record for the final post-fix gate run; earlier runs listed as history with provenance. Probe must be re-run after C1-1/C1-2 fixes anyway — the recorded PASS does not satisfy the gate as written. |
+
+## wp5 C-review round 2 synthesis (reviewer Gibbs, FAIL 2)
+
+| # | Finding | Decision | Fix |
+|---|---|---|---|
+| C2-1 High | 4 MiB finite probe cannot prove the park state is production-impossible; "cannot enter it" claim unsupported | ACCEPT | §Gate interpretation rewritten: park state is INCONCLUSIVE for production and RISK-ACCEPTED (explicit opt-in only, reachable states exercised clean, legacy-tee one flip away as rollback). No impossibility claim remains. |
+| C2-2 Med | 110 still carried the superseded PASS/clean 201/201 record, contradicting 100's authoritative PASS-WITH-CAVEAT | ACCEPT | 110 gate list corrected to reference the final authoritative record and marks its pre-repair full-suite/privacy figures as superseded (wp6 re-runs both). |
+
+Confirmed by the same round: C1-1 ack chain sound, C1-2 stall detection and
+all-or-nothing unreachable classification internally sound, C1-3 single
+normalized selector contract with darwin-auto never eager and win32
+unchanged.

@@ -42,10 +42,15 @@ Gates at close (run at wp5 D, HEAD a209188fb):
 
 - `bun run typecheck` — exit 0.
 - `bun run test` — 6421 pass, 3 skip, 0 fail, 31839 expect() calls, 460 files.
-- `bun run privacy:scan` — passed.
+  (Run predates the wp5 review repairs; wp6 re-runs the full suite as the
+  authoritative gate.)
+- `bun run privacy:scan` — passed. (Same caveat; wp6 re-runs.)
 - wp2 remote smoke calibration — passed (070 §Execution record).
-- wp5 abort-stress probe — PASS/clean, seed 260801, 201/201 verified
-  (100 §Abort-stress gate execution record).
+- wp5 abort-stress probe — FINAL authoritative record is
+  **PASS-WITH-CAVEAT / backpressure-unreachable** (seed 260801, 134
+  ack-verified aborts, 67 honest backpressure-unreachable trials, child exit
+  0 — see 100 §Abort-stress gate execution record; the earlier PASS/clean
+  201/201 figure here was from the pre-repair probe and is superseded).
 
 New regression surfaces: `tests/sse-inspector-bounds.test.ts` (19),
 bounded-drain/dispose coverage in `tests/consume-for-inspection-cancel.test.ts`,
