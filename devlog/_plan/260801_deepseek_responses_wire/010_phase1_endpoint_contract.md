@@ -55,7 +55,10 @@ and `enrichProviderFromRegistry()` must backfill it for already-saved configs
 + if (prov.responsesPath === undefined && seed.responsesPath !== undefined) prov.responsesPath = seed.responsesPath;
 ```
 
-`OcxProviderConfig.responsesPath` already exists (`src/types.ts:922`); no type change.
+`OcxProviderConfig.responsesPath` already exists (`src/types.ts:923`); no type change.
+Config validation also already exists (`providerResponsesPathConfigError`,
+`src/config.ts:486-493`), and `/responses` satisfies it: relative, leading slash, no
+scheme, no query or fragment.
 
 ## Accept criteria
 

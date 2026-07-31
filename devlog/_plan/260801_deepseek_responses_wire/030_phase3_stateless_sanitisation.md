@@ -51,6 +51,14 @@ Add the matching optional field to `OcxProviderConfig` beside `responsesPath`.
 
 Seed + backfill exactly as phase 1 does for `responsesPath`.
 
+### `src/config.ts` — no change (decision, audit finding 4)
+
+`responsesPath` carries explicit validation (`providerResponsesPathConfigError`,
+`config.ts:486-493`) because a malformed path silently breaks routing. A boolean has
+no malformed form, and `providerConfigSchema` is `.passthrough()`, so
+`statelessResponses` needs no schema line. Recording the decision rather than leaving
+it implicit.
+
 ### MODIFY `src/adapters/openai-responses.ts`
 
 New helper, placed next to `stripPreviousResponseId`:
@@ -65,7 +73,7 @@ New helper, placed next to `stripPreviousResponseId`:
  */
 function stripStatefulResponsesParams(body: unknown): unknown {
   if (!isPlainObject(body)) return body;
-  const drop = ["previous_response_id", "conversation", "background", "metadata", "service_tier"] as const;
+  const drop = ["previous_response_id", "conversation", "background", "metadata"] as const;
   const present = drop.some(k => Object.prototype.hasOwnProperty.call(body, k));
   if (!present && body.store === false) return body;
   const next: Record<string, unknown> = { ...body };
@@ -74,6 +82,20 @@ function stripStatefulResponsesParams(body: unknown): unknown {
   return next;
 }
 ```
+
+### `service_tier` is deliberately NOT dropped (audit blocker 3)
+
+DSCodex drops it, and the DeepSeek request schema does not list it. But `core.ts:758`
+writes `service_tier` for EVERY `openai-responses` route when `config.fastMode` is
+set. Silently deleting a configured knob inside an adapter — with no diagnostic — is
+worse than forwarding a parameter the upstream ignores: the research doc records that
+DeepSeek ignores unrecognised tool types and input items rather than erroring, and
+nothing in the reference page says an unknown top-level key is fatal.
+
+Dropping it would also make the adapter quietly override a server-level decision,
+which is the kind of action-at-a-distance that is hard to debug later. If DeepSeek
+turns out to reject it, that is a one-line addition to `drop` with real evidence
+behind it. Leaving it in is the reversible choice.
 
 Wire it in `buildRequest` immediately after the existing `stripPreviousResponseId`
 call, before the forward-only branch:
@@ -88,9 +110,13 @@ then runs with the correct premise — a small consistency win beyond the primar
 
 ## Accept criteria
 
-- Built body for a stateless provider contains none of the five dropped keys and
+- Built body for a stateless provider contains none of the four dropped keys and
   carries `store: false`.
 - A non-stateless Responses provider is byte-identical to before.
+- `service_tier` SURVIVES the strip (regression guard for the decision above).
+- A registry entry that does not declare the field does not acquire it from the seed
+  (negative control mirroring `tests/provider-model-discovery-contract.test.ts:175`),
+  so a future blanket seed cannot leak the capability provider-wide.
 
 ### Activation scenario (C-ACTIVATION-GROUNDING-01)
 
