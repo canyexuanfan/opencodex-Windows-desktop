@@ -143,6 +143,8 @@ export function ApiKeysModelsPanel({
   filteredModels,
   modelsLoading,
   modelsLoadFailed,
+  modelCount,
+  hasModelData,
   modelQuery,
   copiedModelId,
   modelTests,
@@ -150,6 +152,7 @@ export function ApiKeysModelsPanel({
   onModelQueryChange,
   onCopyModelId,
   onTestModel,
+  onRetryModels,
   canTestModels,
   sourceLabel,
   protocolLabel,
@@ -157,6 +160,12 @@ export function ApiKeysModelsPanel({
   filteredModels: ExternalModelRow[];
   modelsLoading: boolean;
   modelsLoadFailed: boolean;
+  /** The whole catalog, before the search box narrowed it. "No models" and
+   *  "no models matching this query" are different sentences. */
+  modelCount: number;
+  /** True once a catalog has loaded at least once, from network or cache.
+   *  Distinguishes a server that really has no models from a failed cold load. */
+  hasModelData: boolean;
   modelQuery: string;
   copiedModelId: string | null;
   modelTests: ModelTests;
@@ -164,6 +173,7 @@ export function ApiKeysModelsPanel({
   onModelQueryChange: (value: string) => void;
   onCopyModelId: (modelId: string) => void;
   onTestModel: (model: ExternalModelRow, protocol: GatewayInboundProtocol) => void;
+  onRetryModels: () => void;
   /** The GUI only ever holds the one-time key from a create, so an authenticated
    *  test is available in that window and honestly disabled outside it. */
   canTestModels: boolean;
@@ -186,14 +196,31 @@ export function ApiKeysModelsPanel({
         placeholder={t("api.modelsSearch")}
         aria-label={t("api.modelsSearch")}
       />
+      {/* The retry sits beside the catalog it repairs, not in a page banner that
+          outlives the panel. A failed refresh can coexist with last-good rows,
+          so this is rendered alongside the table rather than instead of it. */}
+      {modelsLoadFailed && (
+        <div className="api-models-error">
+          {/* The page-level notice this replaced was announced. Moving the
+              message next to its retry must not also make it silent. */}
+          <p className="muted small" role="alert">{t("api.modelsLoadFailed")}</p>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onRetryModels}>
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
       {modelsLoading ? (
         <DataSurfaceSkeleton label={t("api.modelsLoading")} rows={3} />
-      ) : modelsLoadFailed ? (
-        // The page-level notice owns the persistent announcement and retry surface. Keeping this
-        // panel mounted preserves the query field without adding a second live error region.
+      ) : !hasModelData ? (
+        // Failed cold: the error above is the whole story. Adding "no models"
+        // here would assert an empty catalog we never managed to read.
         null
       ) : filteredModels.length === 0 ? (
-        <p className="muted small" style={{ marginTop: "0.75rem" }}>{t("api.modelsEmpty")}</p>
+        <p className="muted small api-models-empty">
+          {modelCount === 0
+            ? t("api.modelsEmpty")
+            : t("api.modelsNoMatch", { query: modelQuery.trim() })}
+        </p>
       ) : (
         <div className="api-models-scroll">
           <table className="tbl">
@@ -308,9 +335,12 @@ export function ApiKeysUsagePanel({
   }'`;
 
   return (
-    <details className="awi-usage-fold">
-      <summary>{t("api.workspace.usageExamples")}</summary>
-      <div className="awi-usage-fold-body">
+    // Not a disclosure. These are the answer to "how do I call this?", and a
+    // closed <details> answered it only for someone who already suspected the
+    // examples were in there.
+    <section className="panel api-panel awi-usage-panel">
+      <h3 className="panel-title">{t("api.workspace.usageExamples")}</h3>
+      <div className="awi-usage-panel-body">
         <div className="awi-usage-example">
           <h4 className="awi-usage-example-title">{t("api.usageChatTitle")}</h4>
           <CopyableExample text={chatExample} />
@@ -328,6 +358,6 @@ export function ApiKeysUsagePanel({
           </div>
         )}
       </div>
-    </details>
+    </section>
   );
 }

@@ -185,6 +185,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   // can never be presented as the server's answer.
   const authMatrix = keysData?.authMatrix ?? [];
   const refreshKeys = keysResource.refresh;
+  const refreshModels = modelsResource.refresh;
 
   const filteredModels = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
@@ -381,7 +382,9 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
 
       {actionError && <Notice tone="err">{actionError}</Notice>}
       {keysState.showError && keysData && <Notice tone="err">{t("api.keysLoadFailed")}</Notice>}
-      {modelsState.showError && keysData && <Notice tone="err">{t("api.modelsLoadFailed")}</Notice>}
+      {/* The model failure is reported inside the models panel, beside the
+          retry that repairs it. A page banner said it a second time and stayed
+          up while the panel below it showed perfectly good cached rows. */}
 
       {keysState.showSkeleton && !keysData ? (
         <DataSurfaceSkeleton label={t("api.activeKeysLoading")} rows={4} />
@@ -398,7 +401,10 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
           {keysState.refreshing && keysData && (
             <DataSurfaceStatus live={!keysState.showError}>{t("api.activeKeysLoading")}</DataSurfaceStatus>
           )}
-          {modelsState.refreshing && modelsState.data && (
+          {/* `modelsState.data` alone misses the session-cached case: after a
+              failure the rows on screen come from `cachedModels`, and a retry
+              then ran with no visible progress at all. */}
+          {modelsState.refreshing && (modelsState.data !== undefined || cachedModels !== null) && (
             <DataSurfaceStatus live={!modelsState.showError && !(keysState.refreshing && keysData)}>
               {t("api.modelsLoading")}
             </DataSurfaceStatus>
@@ -419,6 +425,11 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         filteredModels={filteredModels}
         modelsLoading={modelsState.showSkeleton && !modelsState.data && !cachedModels}
         modelsLoadFailed={modelsState.showError}
+        modelCount={models.length}
+        // `readSessionListCache` answers `null`, not `undefined`, when it has
+        // nothing — comparing against `undefined` made a failed cold load look
+        // like a successfully-read empty catalog.
+        hasModelData={modelsState.data !== undefined || cachedModels !== null}
         modelQuery={modelQuery}
         copiedModelId={copiedModelId}
         modelTests={modelTests}
@@ -431,6 +442,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         onModelQueryChange={setModelQuery}
         onCopyModelId={(modelId) => { void copyModelId(modelId); }}
         onTestModel={(model, protocol) => { void testModel(model, protocol); }}
+        onRetryModels={() => { refreshModels({ forceLoading: true }); }}
         canTestModels={newKey !== null}
         sourceLabel={sourceLabel}
         protocolLabel={protocolLabel}

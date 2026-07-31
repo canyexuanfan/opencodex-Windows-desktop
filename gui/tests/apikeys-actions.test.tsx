@@ -79,6 +79,8 @@ async function mount(props: Partial<ApiKeysWorkspaceProps>): Promise<HTMLDivElem
     filteredModels: [],
     modelsLoading: false,
     modelsLoadFailed: false,
+    modelCount: 0,
+    hasModelData: true,
     modelQuery: "",
     copiedModelId: null,
     modelTests: {},
@@ -90,6 +92,7 @@ async function mount(props: Partial<ApiKeysWorkspaceProps>): Promise<HTMLDivElem
     onDelete: async () => true,
     onRename: async () => true,
     onModelQueryChange: () => {},
+    onRetryModels: () => {},
     onCopyModelId: () => {},
     onTestModel: () => {},
     sourceLabel: () => "proxy",
@@ -235,6 +238,7 @@ test("a failed delete keeps the detail pane open", async () => {
 test("without a fresh key the protocol chips are disabled, not silently passing", async () => {
   const container = await mount({
     filteredModels: [{ id: "gpt-5.4", displayName: "gpt-5.4", provider: "openai", native: true }],
+    modelCount: 1,
     canTestModels: false,
   });
   const chips = [...container.querySelectorAll(".api-model-test-chip button")] as HTMLButtonElement[];
@@ -248,6 +252,7 @@ test("without a fresh key the protocol chips are disabled, not silently passing"
 test("a protocol result belongs to its own chip", async () => {
   const container = await mount({
     filteredModels: [{ id: "gpt-5.4", displayName: "gpt-5.4", provider: "openai", native: true }],
+    modelCount: 1,
     canTestModels: true,
     modelTests: { "gpt-5.4": { chat: { state: "error", detail: "boom" } } },
   });

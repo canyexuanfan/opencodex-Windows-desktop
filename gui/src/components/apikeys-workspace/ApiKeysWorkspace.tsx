@@ -39,6 +39,8 @@ export interface ApiKeysWorkspaceProps {
   filteredModels: ExternalModelRow[];
   modelsLoading: boolean;
   modelsLoadFailed: boolean;
+  modelCount: number;
+  hasModelData: boolean;
   modelQuery: string;
   copiedModelId: string | null;
   modelTests: ModelTests;
@@ -52,6 +54,7 @@ export interface ApiKeysWorkspaceProps {
   onModelQueryChange: (value: string) => void;
   onCopyModelId: (modelId: string) => void;
   onTestModel: (model: ExternalModelRow, protocol: GatewayInboundProtocol) => void;
+  onRetryModels: () => void;
   sourceLabel: (model: ExternalModelRow) => string;
   protocolLabel: (protocol: GatewayInboundProtocol) => string;
 }
@@ -72,6 +75,8 @@ export default function ApiKeysWorkspace({
   filteredModels,
   modelsLoading,
   modelsLoadFailed,
+  modelCount,
+  hasModelData,
   modelQuery,
   copiedModelId,
   modelTests,
@@ -85,6 +90,7 @@ export default function ApiKeysWorkspace({
   onModelQueryChange,
   onCopyModelId,
   onTestModel,
+  onRetryModels,
   sourceLabel,
   protocolLabel,
 }: ApiKeysWorkspaceProps) {
@@ -413,6 +419,8 @@ export default function ApiKeysWorkspace({
                   filteredModels={filteredModels}
                   modelsLoading={modelsLoading}
                   modelsLoadFailed={modelsLoadFailed}
+                  modelCount={modelCount}
+                  hasModelData={hasModelData}
                   modelQuery={modelQuery}
                   copiedModelId={copiedModelId}
                   modelTests={modelTests}
@@ -420,6 +428,7 @@ export default function ApiKeysWorkspace({
                   onModelQueryChange={onModelQueryChange}
                   onCopyModelId={onCopyModelId}
                   onTestModel={onTestModel}
+                  onRetryModels={onRetryModels}
                   canTestModels={canTestModels}
                   sourceLabel={sourceLabel}
                   protocolLabel={protocolLabel}
