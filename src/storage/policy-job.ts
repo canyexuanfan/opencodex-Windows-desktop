@@ -160,10 +160,15 @@ export async function resetStorageCleanupPolicyJobForTestsAsync(): Promise<void>
   activeWorker = null;
   inflight = null;
   testHooks = null;
-  releaseHeldMutationSlot();
   state = { status: "idle" };
-  if (worker) await terminateStorageWorker(worker);
-  await drainStorageWorkers();
+  // Join the worker before releasing the mutation slot so a concurrent run
+  // cannot acquire CODEX_HOME while the aborted thread is still mutating.
+  try {
+    if (worker) await terminateStorageWorker(worker);
+    await drainStorageWorkers();
+  } finally {
+    releaseHeldMutationSlot();
+  }
 }
 
 /** Terminate an in-flight worker during process shutdown. */
@@ -173,6 +178,8 @@ export function abortStorageCleanupPolicyJob(): void {
     void terminateStorageWorker(activeWorker);
     activeWorker = null;
   }
+  // Sync path cannot join; prefer abortStorageCleanupPolicyJobAsync when the
+  // caller can await so the mutation slot stays held until the thread exits.
   releaseHeldMutationSlot();
   if (state.status === "running") {
     state = {
@@ -198,7 +205,6 @@ export async function abortStorageCleanupPolicyJobAsync(): Promise<void> {
   disownActiveRun();
   const worker = activeWorker;
   activeWorker = null;
-  releaseHeldMutationSlot();
   if (state.status === "running") {
     state = {
       ...state,
@@ -212,8 +218,12 @@ export async function abortStorageCleanupPolicyJobAsync(): Promise<void> {
     };
   }
   inflight = null;
-  if (worker) await terminateStorageWorker(worker);
-  await drainStorageWorkers();
+  try {
+    if (worker) await terminateStorageWorker(worker);
+    await drainStorageWorkers();
+  } finally {
+    releaseHeldMutationSlot();
+  }
 }
 
 function outcomeFromResult(result: PolicyRunResult): PolicyJobOutcome {
@@ -278,15 +288,6 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
     registerStorageWorker(worker);
     activeWorker = worker;
 
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cancelActiveRun = null;
-      void terminateStorageWorker(worker);
-      if (activeWorker === worker) activeWorker = null;
-      reject(new Error("storage_cleanup_worker_timeout"));
-    }, WORKER_TIMEOUT_MS);
-
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -295,9 +296,14 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
       if (activeWorker === worker) activeWorker = null;
       // Settle the caller only after the thread is actually gone, so a suite
       // that awaits its request cannot reach the next test file with a worker
-      // still exiting behind it.
+      // still exiting behind it. Also keeps executeJob's finally from releasing
+      // the mutation slot while the thread may still mutate CODEX_HOME.
       void terminateStorageWorker(worker).then(fn, fn);
     };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("storage_cleanup_worker_timeout")));
+    }, WORKER_TIMEOUT_MS);
 
     cancelActiveRun = () => {
       finish(() => reject(new Error("aborted")));

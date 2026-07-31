@@ -92,10 +92,18 @@ export async function drainAndShutdown(
   // Tear down opt-in storage policy timers / worker / live-config sink so they cannot fire after stop.
   // Await worker thread exit: on Windows, a still-exiting Bun Worker under
   // `bun test --isolate` panics the whole process at the next realm reclaim.
+  // A wedged worker must not prevent `server.stop` — log and continue.
   stopStorageCleanupScheduler();
-  await abortStorageCleanupPolicyJobAsync();
-  await abortRestoreTrashJobAsync();
-  await drainStorageWorkers();
+  try {
+    await abortStorageCleanupPolicyJobAsync();
+    await abortRestoreTrashJobAsync();
+    await drainStorageWorkers();
+  } catch (err) {
+    console.warn(
+      "[storage] worker drain during shutdown failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
   setStorageCleanupPolicyLiveSink(null);
   setStorageCleanupPolicyJobLiveApply(null);
   s?.stop(true);

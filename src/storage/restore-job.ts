@@ -152,23 +152,20 @@ function runInWorker(opts: {
     registerStorageWorker(worker);
     activeWorker = worker;
 
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cancelActiveRun = null;
-      void terminateStorageWorker(worker);
-      if (activeWorker === worker) activeWorker = null;
-      reject(new Error("restore_worker_timeout"));
-    }, WORKER_TIMEOUT_MS);
-
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
       cancelActiveRun = null;
       clearTimeout(timer);
       if (activeWorker === worker) activeWorker = null;
+      // Join before settle so mutation coordination inside the restore worker
+      // cannot overlap a follow-on run after a watchdog timeout.
       void terminateStorageWorker(worker).then(fn, fn);
     };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("restore_worker_timeout")));
+    }, WORKER_TIMEOUT_MS);
 
     cancelActiveRun = () => {
       finish(() => reject(new Error("aborted")));

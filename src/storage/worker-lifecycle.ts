@@ -94,12 +94,16 @@ export function terminateStorageWorker(worker: Worker, timeoutMs = 5_000): Promi
         tracked.resolveClosed();
       }
       await tracked.closed;
-      if (timedOut) {
-        throw new Error(`storage worker did not exit within ${timeoutMs}ms`);
-      }
+      // Always run the Windows settle before throwing on timeout: the timer
+      // only forces `closed`, it does not prove the OS thread has exited.
+      // Callers that catch and continue (e.g. drainAndShutdown) still need
+      // that gap before the next isolate reclaim or server.stop.
       if (process.platform === "win32") {
         await Bun.sleep(0);
         await Bun.sleep(WINDOWS_WORKER_JOIN_MS);
+      }
+      if (timedOut) {
+        throw new Error(`storage worker did not exit within ${timeoutMs}ms`);
       }
     } finally {
       clearTimeout(timer);
