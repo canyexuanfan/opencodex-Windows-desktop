@@ -130,7 +130,18 @@ function registryAllowsPrivateNetwork(name: string): boolean {
   return getProviderRegistryEntry(name)?.allowPrivateNetworkByDefault === true;
 }
 
-/** True when the provider config or registry default admits private/loopback destinations. */
+/**
+ * Whether a provider may reach loopback/private addresses.
+ *
+ * Two sources, and both have to be consulted at every boundary: the operator's explicit
+ * `allowPrivateNetwork`, and the registry's `allowPrivateNetworkByDefault` for entries that are
+ * local BY DEFINITION (Ollama, vLLM, LM Studio, LiteLLM). Config validation already read both;
+ * outbound discovery read only the first, so a stock Ollama entry passed validation and was then
+ * refused at the fetch (#758).
+ *
+ * This grants nothing new. Metadata, link-local and unspecified destinations are rejected before
+ * this is consulted, and a provider without either source still cannot reach a private address.
+ */
 export function providerAllowsPrivateNetwork(
   name: string,
   provider: Pick<OcxProviderConfig, "allowPrivateNetwork">,

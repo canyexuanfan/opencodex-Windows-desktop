@@ -676,10 +676,11 @@ describe("service lifecycle cleanup ordering", () => {
     const service = await readText("src/service.ts");
     const stopCase = service.slice(service.indexOf('case "stop":'), service.indexOf('case "status":'));
     // #764 is an /end that succeeds while the wrapper respawns; waiting only when
-    // /end errors cannot catch that path. Restart-window polling lives elsewhere.
+    // /end errors cannot catch that path. Restart-window polling is proxyStillLiveAfterStop.
     expect(stopCase).not.toContain("WINDOWS_SCHEDULER_WRAPPER_RESTART_MS");
     expect(stopCase).not.toContain("schedulerEndOk");
     expect(stopCase).not.toContain("await Bun.sleep(");
+    expect(stopCase).toContain("await proxyStillLiveAfterStop()");
   });
 
   test("tracked proxy cleanup verifies health-reported pids before stopProxy", async () => {
@@ -691,9 +692,10 @@ describe("service lifecycle cleanup ordering", () => {
   test("service stop refuses success while the proxy is still live", async () => {
     const service = await readText("src/service.ts");
     const stopCase = service.slice(service.indexOf('case "stop":'), service.indexOf('case "status":'));
-    expect(stopCase).toContain("await findLiveProxy({ timeoutMs: 1500 })");
-    expect(stopCase).toContain("Service stop did not terminate the proxy");
-    expect(stopCase).toContain("process.exit(1)");
+    expect(stopCase).toContain("await proxyStillLiveAfterStop()");
+    expect(stopCase).toContain("a proxy is still listening on port");
+    expect(stopCase).toContain("Native Codex was NOT restored");
+    expect(stopCase).toContain("process.exitCode = 1");
   });
 
   test("native install refuses Microsoft-account logins before removing the scheduler backend", async () => {

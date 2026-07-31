@@ -117,6 +117,9 @@ export async function providerOutboundGet(
     if (assessment?.kind === "metadata" || assessment?.kind === "link-local" || assessment?.kind === "unspecified") {
       throw new ProviderOutboundPolicyError(`provider URL targets ${assessment.detail}`);
     }
+    // Registry defaults count here too, not just the operator flag: a stock Ollama entry is
+    // local by definition and previously passed config validation only to be refused at the
+    // fetch (#758). Metadata/link-local/unspecified were already rejected above.
     const allowPrivate = providerAllowsPrivateNetwork(name, provider);
     if (!allowPrivate) {
       const destinationError = providerDestinationConfigError(name, {
