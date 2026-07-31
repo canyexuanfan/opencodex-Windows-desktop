@@ -118,7 +118,10 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const allowBenchmarkAddresses = name === "openai" && isCanonicalOpenAiForwardProvider(prov);
     const resolvedError = await providerDestinationResolvedError(name, prov, { allowBenchmarkAddresses });
     if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
-    if (body.setDefault && prov.disabled) {
+    if (body.setDefault !== undefined && typeof body.setDefault !== "boolean") {
+      return jsonResponse({ error: "setDefault must be a boolean" }, 400);
+    }
+    if (body.setDefault === true && prov.disabled) {
       return jsonResponse({ error: "cannot set a disabled provider as default", code: "default_provider_disabled" }, 400);
     }
     // Catalog providers (e.g. ollama-cloud) carry a models + vision/reasoning classification the GUI
@@ -130,7 +133,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const existingPool = config.providers[name]?.apiKeyPool;
     if (existingPool && !prov.apiKeyPool) prov.apiKeyPool = existingPool;
     config.providers[name] = stripRegistryOnlyStaticHeaders(name, prov);
-    if (body.setDefault) config.defaultProvider = name;
+    if (body.setDefault === true) config.defaultProvider = name;
     save(config);
     if (prov.apiKey && prov.apiKeyPool) {
       const { addProviderApiKey } = await import("../../providers/api-keys");
