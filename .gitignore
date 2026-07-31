@@ -41,3 +41,9 @@ tests/.tmp-*/
 # Local third-party reference clones are never committed; keep only the index.
 reference/*
 !reference/README.md
+
+# Desktop build staging and local artifacts.
+desktop/resources/staging/
+desktop/out/
+desktop/*.blockmap
+desktop/*.exe
