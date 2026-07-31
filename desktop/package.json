@@ -1,0 +1,35 @@
+{
+  "name": "@bitkyc08/opencodex-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenCodex Windows desktop host",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test tests"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "bun@1.3.14",
+  "dependencies": {
+    "electron": "43.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.3",
+    "electron-builder": "26.12.0",
+    "typescript": "5.9.3"
+  },
+  "build": {
+    "appId": "com.opencodex.desktop",
+    "productName": "OpenCodex",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": []
+  }
+}
