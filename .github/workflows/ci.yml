@@ -81,16 +81,15 @@ jobs:
       - name: Typecheck
         run: bun x tsc --noEmit
 
-      # Bun 1.3.14 can panic in the isolated-worker path on Windows.
-      # Keep isolation where stable, but avoid turning Windows CI into
-      # a roulette wheel until the upstream crash is fixed.
-      - name: Test (Windows)
-        if: runner.os == 'Windows'
-        run: bun test tests
+      # Keep --isolate on every OS. Shard so each Bun process covers fewer files:
+      # Bun 1.3.14 can still panic at isolate realm reclaim on Windows when many
+      # Worker-using suites share one process, even after storage Workers are
+      # deterministically terminated and awaited. No retries, no timeout bump.
+      - name: Test (shard 1/2)
+        run: bun test --isolate --shard=1/2 tests
 
-      - name: Test (Linux/macOS, isolated)
-        if: runner.os != 'Windows'
-        run: bun test --isolate tests
+      - name: Test (shard 2/2)
+        run: bun test --isolate --shard=2/2 tests
 
       - name: GUI tests
         run: cd gui && bun test tests

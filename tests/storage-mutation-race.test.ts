@@ -25,10 +25,12 @@ import {
 } from "../src/storage/cleanup-job";
 import {
   resetStorageCleanupPolicyJobForTests,
+  resetStorageCleanupPolicyJobForTestsAsync,
   setStorageCleanupPolicyJobTestHooks,
 } from "../src/storage/policy-job";
 import {
   resetRestoreTrashJobForTests,
+  resetRestoreTrashJobForTestsAsync,
   runRestoreTrashEntryJob,
   setRestoreTrashJobTestHooks,
 } from "../src/storage/restore-job";
@@ -149,10 +151,10 @@ beforeEach(() => {
   resetStorageMutationCoordinatorForTests();
 });
 
-afterEach(() => {
-  resetRestoreTrashJobForTests();
+afterEach(async () => {
+  await resetRestoreTrashJobForTestsAsync();
   resetArchivedCleanupJobForTests();
-  resetStorageCleanupPolicyJobForTests();
+  await resetStorageCleanupPolicyJobForTestsAsync();
   resetStorageMutationCoordinatorForTests();
   setRestoreTrashJobTestHooks(null);
   setArchivedCleanupJobTestHooks(null);

@@ -2,77 +2,122 @@
  * Deterministic teardown for the storage Bun Workers.
  *
  * `Worker.terminate()` returns void and does NOT wait for the thread to be
- * reclaimed. Every caller here used to fire it and move on, which is fine for
- * the proxy but not for `bun test --isolate`: the harness tears a test file's
- * realm down at the file boundary, and on Windows a worker that has not
- * finished exiting by then trips a Bun-internal assertion and kills the whole
- * run.
+ * reclaimed. Callers that fire-and-forget leave a window where
+ * `bun test --isolate` reclaims the file realm while a Windows worker thread
+ * is still exiting — Bun then panics with
+ * `workers_spawned(N) workers_terminated(N-1)` / Internal assertion failure.
  *
- * The crash header names the shape exactly — `workers_spawned(9)
- * workers_terminated(8)`, one worker still alive — and it lands right at the
- * `api-storage-policy` → `api-storage` file boundary, the only suite that
- * spawns policy workers. See `devlog/_plan/260730_remote_issue_merge_round/150`,
- * which reproduced the panic twice against an unchanged tree and left this
- * defence as the follow-up if it ever recurred. It recurred.
- *
- * So: keep a registry of live workers, and give shutdown/reset paths something
- * they can actually await. `close` is Bun's post-exit event for a worker
- * thread, so awaiting it is the real "the thread is gone" signal rather than a
- * timer we hope is long enough. The timeout only exists so a wedged worker
- * cannot hang a test teardown forever.
+ * Invariant: every registered worker has a `close` listener attached at spawn
+ * time (so we cannot miss `self.close()` / early exit), stays in `liveWorkers`
+ * until that close settles, and `drainStorageWorkers()` joins every in-flight
+ * terminate. Spawns are serialized through `withStorageWorkerSpawnGate` so the
+ * next Worker cannot be created until prior threads have exited. On Windows, a
+ * post-close settle covers the OS join gap Bun does not expose.
  */
 
-const liveWorkers = new Set<Worker>();
+type TrackedWorker = {
+  worker: Worker;
+  closed: Promise<void>;
+  resolveClosed: () => void;
+  terminatePromise?: Promise<void>;
+};
+
+const liveWorkers = new Map<Worker, TrackedWorker>();
+
+/** Serialize spawns so a new Worker never overlaps a still-exiting predecessor. */
+let spawnGate: Promise<void> = Promise.resolve();
+
+/** Windows OS-join gap after the `close` event (not a CI job-timeout bump). */
+const WINDOWS_WORKER_JOIN_MS = 250;
 
 /** Track a freshly spawned worker so teardown can wait for it later. */
 export function registerStorageWorker(worker: Worker): void {
-  liveWorkers.add(worker);
+  if (liveWorkers.has(worker)) return;
+
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>(resolve => {
+    resolveClosed = resolve;
+  });
+
+  const tracked: TrackedWorker = { worker, closed, resolveClosed };
+  liveWorkers.set(worker, tracked);
+
+  try {
+    worker.addEventListener("close", () => {
+      resolveClosed();
+    }, { once: true });
+  } catch {
+    // No close event — terminate path will still resolve via timeout/settle.
+  }
+}
+
+/**
+ * Run `fn` only after every previously gated spawn has finished tearing down.
+ * Used around `new Worker(...)` so tests cannot overlap Windows thread exit.
+ */
+export function withStorageWorkerSpawnGate<T>(fn: () => Promise<T>): Promise<T> {
+  const run = spawnGate.then(async () => {
+    await drainStorageWorkers();
+    return fn();
+  });
+  spawnGate = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 /**
  * Terminate a worker and resolve once its thread has actually exited.
  *
- * Safe to call twice: the second call finds the worker already deregistered and
- * resolves immediately.
+ * Safe to call twice: the second call joins the in-flight terminate promise.
  */
 export function terminateStorageWorker(worker: Worker, timeoutMs = 5_000): Promise<void> {
-  if (!liveWorkers.has(worker)) {
+  const tracked = liveWorkers.get(worker);
+  if (!tracked) {
     try { worker.terminate(); } catch { /* already gone */ }
     return Promise.resolve();
   }
-  liveWorkers.delete(worker);
+  if (tracked.terminatePromise) return tracked.terminatePromise;
 
-  return new Promise<void>(resolve => {
-    let done = false;
-    const settle = (): void => {
-      if (done) return;
-      done = true;
+  tracked.terminatePromise = (async () => {
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      tracked.resolveClosed();
+    }, timeoutMs);
+
+    try {
+      try {
+        worker.terminate();
+      } catch {
+        tracked.resolveClosed();
+      }
+      await tracked.closed;
+      if (timedOut) {
+        throw new Error(`storage worker did not exit within ${timeoutMs}ms`);
+      }
+      if (process.platform === "win32") {
+        await Bun.sleep(0);
+        await Bun.sleep(WINDOWS_WORKER_JOIN_MS);
+      }
+    } finally {
       clearTimeout(timer);
-      resolve();
-    };
-    // A worker that refuses to exit must not wedge teardown; the proxy path
-    // never awaits this, and a test teardown would rather continue than hang.
-    const timer = setTimeout(settle, timeoutMs);
-    try {
-      worker.addEventListener("close", settle, { once: true });
-    } catch {
-      // No close event available — fall back to the timeout above.
+      liveWorkers.delete(worker);
     }
-    try {
-      worker.terminate();
-    } catch {
-      settle();
-    }
-  });
+  })();
+
+  return tracked.terminatePromise;
 }
 
 /**
- * Await every worker this module still tracks. Used by test resets so no
- * storage worker outlives the file that spawned it.
+ * Await every worker this module still tracks (including terminations already
+ * in flight). Used by test resets so no storage worker outlives the file that
+ * spawned it.
  */
 export async function drainStorageWorkers(timeoutMs = 5_000): Promise<void> {
-  const pending = [...liveWorkers];
-  await Promise.all(pending.map(worker => terminateStorageWorker(worker, timeoutMs)));
+  const pending = [...liveWorkers.keys()].map(worker => terminateStorageWorker(worker, timeoutMs));
+  await Promise.all(pending);
 }
 
 /** Live worker count — exported so a regression test can assert the invariant. */

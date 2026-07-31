@@ -1,10 +1,12 @@
 import { flushResponseState } from "../responses/state";
 import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
 import {
-  abortStorageCleanupPolicyJob,
+  abortStorageCleanupPolicyJobAsync,
   setStorageCleanupPolicyJobLiveApply,
 } from "../storage/policy-job";
+import { abortRestoreTrashJobAsync } from "../storage/restore-job";
 import { stopStorageCleanupScheduler } from "../storage/policy-scheduler";
+import { drainStorageWorkers } from "../storage/worker-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Active turn tracking + graceful shutdown drain
@@ -88,8 +90,12 @@ export async function drainAndShutdown(
   // previous_response_id chain survives the restart this shutdown is usually part of.
   await flushResponseState();
   // Tear down opt-in storage policy timers / worker / live-config sink so they cannot fire after stop.
+  // Await worker thread exit: on Windows, a still-exiting Bun Worker under
+  // `bun test --isolate` panics the whole process at the next realm reclaim.
   stopStorageCleanupScheduler();
-  abortStorageCleanupPolicyJob();
+  await abortStorageCleanupPolicyJobAsync();
+  await abortRestoreTrashJobAsync();
+  await drainStorageWorkers();
   setStorageCleanupPolicyLiveSink(null);
   setStorageCleanupPolicyJobLiveApply(null);
   s?.stop(true);

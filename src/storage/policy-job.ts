@@ -22,6 +22,7 @@ import {
   drainStorageWorkers,
   registerStorageWorker,
   terminateStorageWorker,
+  withStorageWorkerSpawnGate,
 } from "./worker-lifecycle";
 
 export type PolicyJobStatus = "idle" | "running";
@@ -148,9 +149,20 @@ export function resetStorageCleanupPolicyJobForTests(): void {
  * worker still exiting at that moment trips a Bun-internal assertion on Windows
  * and takes the whole run down, so a suite that spawns workers must be able to
  * wait for them rather than fire-and-forget.
+ *
+ * Do not route through the sync reset's `void terminate(...)`: that used to
+ * deregister the worker before the thread exited, so a follow-up drain saw an
+ * empty registry and returned while Windows was still reclaiming the thread.
  */
 export async function resetStorageCleanupPolicyJobForTestsAsync(): Promise<void> {
-  resetStorageCleanupPolicyJobForTests();
+  disownActiveRun();
+  const worker = activeWorker;
+  activeWorker = null;
+  inflight = null;
+  testHooks = null;
+  releaseHeldMutationSlot();
+  state = { status: "idle" };
+  if (worker) await terminateStorageWorker(worker);
   await drainStorageWorkers();
 }
 
@@ -175,6 +187,33 @@ export function abortStorageCleanupPolicyJob(): void {
     };
   }
   inflight = null;
+}
+
+/**
+ * Shutdown path that joins worker threads. Prefer this over the sync abort when
+ * the caller can await (server drain, test teardown) so Windows isolate reclaim
+ * does not race a still-exiting storage worker.
+ */
+export async function abortStorageCleanupPolicyJobAsync(): Promise<void> {
+  disownActiveRun();
+  const worker = activeWorker;
+  activeWorker = null;
+  releaseHeldMutationSlot();
+  if (state.status === "running") {
+    state = {
+      ...state,
+      status: "idle",
+      finishedAt: Date.now(),
+      lastError: "aborted",
+      lastOutcome: {
+        ok: false,
+        error: "evaluation_failed",
+      },
+    };
+  }
+  inflight = null;
+  if (worker) await terminateStorageWorker(worker);
+  await drainStorageWorkers();
 }
 
 function outcomeFromResult(result: PolicyRunResult): PolicyJobOutcome {
@@ -232,7 +271,7 @@ function applyMutationBusy(): void {
 }
 
 function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Promise<PolicyRunResult> {
-  return new Promise((resolve, reject) => {
+  return withStorageWorkerSpawnGate(() => new Promise<PolicyRunResult>((resolve, reject) => {
     const requestId = crypto.randomUUID();
     let settled = false;
     const worker = new Worker(new URL("./policy-worker.ts", import.meta.url).href);
@@ -296,7 +335,7 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
         ...(process.env.OPENCODEX_HOME ? { OPENCODEX_HOME: process.env.OPENCODEX_HOME } : {}),
       },
     });
-  });
+  }));
 }
 
 async function executeJob(opts: RequestPolicyRunOptions): Promise<void> {
