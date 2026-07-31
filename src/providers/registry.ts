@@ -389,14 +389,14 @@ const VOLCENGINE_CODING_PLAN_MODELS = [
   "doubao-seed-2.0-code",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
-  "glm-5.1",
+  "glm-5.2",
   "kimi-k2.6",
   "minimax-m3",
 ];
 const VOLCENGINE_AGENT_PLAN_MODELS = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
-  "glm-5.1",
+  "glm-5.2",
   "kimi-k2.6",
   "minimax-m3",
   "doubao-seed-2.0-pro",
