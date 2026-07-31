@@ -106,11 +106,14 @@ describe("OAuth provider reconciliation", () => {
     const home = mkdtempSync(join(tmpdir(), "ocx-antigravity-authmode-reconcile-"));
     homes.push(home);
     process.env.OPENCODEX_HOME = home;
+    const preset = OAUTH_PROVIDERS["google-antigravity"].providerConfig;
 
     for (const authMode of [undefined, "key"] as const) {
       const provider = {
-        ...structuredClone(OAUTH_PROVIDERS["google-antigravity"].providerConfig),
+        ...structuredClone(preset),
         liveModels: true,
+        defaultModel: "gemini-3.5-flash-low",
+        models: ["gemini-3.5-flash-low", "gemini-3.5-flash-high"],
       };
       if (authMode === undefined) delete provider.authMode;
       else provider.authMode = authMode;
@@ -122,7 +125,11 @@ describe("OAuth provider reconciliation", () => {
 
       expect(reconcileOAuthProviders(config)).toBe(true);
       expect(config.googleAntigravityStaticCatalogVersion).toBe(1);
-      expect(config.providers["google-antigravity"].liveModels).toBe(false);
+      const migrated = config.providers["google-antigravity"];
+      expect(migrated.liveModels).toBe(false);
+      expect(migrated.defaultModel).toBe(preset.defaultModel);
+      expect(migrated.models).toEqual(preset.models);
+      expect(migrated.authMode).toBe(authMode);
     }
   });
 

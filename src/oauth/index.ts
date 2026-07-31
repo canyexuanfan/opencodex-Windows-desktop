@@ -679,7 +679,12 @@ export function reconcileOAuthProviders(config: OcxConfig): boolean {
       prov.liveModels = false;
       changed = true;
     }
-    if (!def || prov.authMode !== "oauth") continue;
+    // During the one-time Antigravity static-catalog migration, also refresh preset catalog
+    // fields when authMode is omitted or non-oauth. Otherwise liveModels flips to static while
+    // a stale models[] remains the published catalog forever.
+    const migrateAntigravityCatalogFields =
+      name === GOOGLE_ANTIGRAVITY_PROVIDER && migrateAntigravityStaticCatalog;
+    if (!def || (prov.authMode !== "oauth" && !migrateAntigravityCatalogFields)) continue;
     const preset = def.providerConfig;
     for (const field of OAUTH_RECONCILE_FIELDS) {
       if (JSON.stringify(prov[field]) === JSON.stringify(preset[field])) continue;
