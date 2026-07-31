@@ -250,7 +250,12 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
 // trackSseForRequestLog(
 // export function relaySseWithHeartbeat
 
-export function startServer(port?: number) {
+export type ServerStartOptions = {
+  /** Override the configured bind host for an owning desktop sidecar. */
+  hostname?: string;
+};
+
+export function startServer(port?: number, options: ServerStartOptions = {}) {
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   applyProxyEnv(config);
   assertServerAuthConfig(config);
@@ -319,7 +324,7 @@ export function startServer(port?: number) {
   // resolves localhost→127.0.0.1): on Windows `localhost` resolves ::1-first, but the injected URL
   // is 127.0.0.1, so binding literal "localhost" would reintroduce the F4 refusal. Wildcards
   // (0.0.0.0/::) and specific hosts are left untouched so intentional exposure is preserved.
-  const configuredHost = config.hostname?.trim();
+  const configuredHost = options.hostname?.trim() ?? config.hostname?.trim();
   const bindHost = !configuredHost || /^localhost$/i.test(configuredHost) ? "127.0.0.1" : configuredHost;
 
   // Codex treats empty / non-JSON 503 bodies as "Unknown error" (#452). Keep Retry-After and
