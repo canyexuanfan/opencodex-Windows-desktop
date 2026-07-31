@@ -34,7 +34,17 @@ only `internalBody` crosses the boundary. So editing just those two sites would:
    and keep `max_output_tokens`/`temperature`/`top_p`, while `core.ts:1314` still
    selected `openai-responses` — handing sampling params to a Responses upstream.
 
-`compact.ts:337` re-enters `handleResponses` too and inherits the same path.
+`compact.ts:337` also re-enters `handleResponses`, but its only caller is the native
+compact route (`index.ts:491`), so it is genuinely Responses-inbound and the default is
+correct there. Full entrypoint audit, all five verified:
+
+| Entry | Inbound | Needs an explicit `inboundWire`? |
+|---|---|---|
+| `index.ts:616` native `/v1/responses` | responses | no — default correct |
+| `index.ts:907` WebSocket bridge | responses | no — default correct |
+| `compact.ts:337` | responses | no — default correct |
+| `core.ts:941` combo child | inherited | no — `...options` propagates it |
+| `claude-messages.ts:685`, `chat-completions.ts:150` | anthropic / chat | **yes** |
 
 The inbound must therefore travel WITH the request, not as a defaulted parameter.
 
@@ -59,9 +69,9 @@ exactly this kind of caller-supplied context (`promptCacheKeyIsSharedCohort`,
 `core.ts:496`). `handleResponses` reads it once and passes it to the `core.ts` call
 sites that matter.
 
-> Amendment (audit blocker 1): an earlier sketch edited only the two pre-flight sites
+> Amendment (first audit, Critical): an earlier sketch edited only the two pre-flight sites
 > and defended the choice as "keeping the risky edit surface small". The reviewer
-> showed that inverted the risk — those two results are discarded, and the eleven
+> showed that inverted the risk — those two results are discarded, and the ten
 > `core.ts` sites are the ones that decide the wire. The option channel replaces it.
 
 ## Change map
@@ -145,18 +155,46 @@ Add the option (beside `promptCacheKeyIsSharedCohort`, ~line 496):
 +  inboundWire?: InboundWire;
 ```
 
-Thread it at both decision points — `applyFinalRouteRequestNormalization`
-(`core.ts:745`) and the adapter build (`core.ts:1314`) — plus the retry/fallback sites
-that rebuild the provider (`356, 1894, 1961, 2207, 2232, 2264, 2393, 2421`), all of
-which must agree with `1314` or the adapter and the normalization disagree:
+Thread it at all ten sites — every one must agree, or the adapter and the
+normalization disagree. Verified enclosing scopes on the current tree:
+
+| Site(s) | Enclosing function | How it reaches the option |
+|---|---|---|
+| 1314, 1894, 1961, 2207, 2232, 2264, 2393, 2421 | `handleResponses` (1055) | `options` is in scope directly |
+| 745 | `applyFinalRouteRequestNormalization` (727) | takes an args object; **add `inboundWire` to it** and pass from the call site |
+| 356 | `retryCodexPoolOnAlternateAccount` (306) | destructures `options` (310), but its type is NARROWED — see below |
+
+**`CodexPoolAccountRetryArgs.options` is not `HandleResponsesOptions`.** At
+`core.ts:248-252` it is a structural subset (`abortSignal`,
+`onCodexAuthContextResolved`, `deferCodexResetDerivedCooldown`). Passing the full
+options object at the call site is legal subtype assignment, but READING
+`options.inboundWire` inside the function is a type error. Add the field there too:
+
+```ts
+   options: {
+     abortSignal?: AbortSignal;
+     onCodexAuthContextResolved?: (ctx: CodexAuthContext) => void;
+     deferCodexResetDerivedCooldown?: boolean;
++    inboundWire?: InboundWire;
+   };
+```
+
+**Combo child replay (`core.ts:941`)** re-enters `handleResponses` with
+`{ ...options, comboAttempt: true, ... }`. The leading spread propagates
+`inboundWire` automatically — no edit needed, but the spread is load-bearing and
+must not be reordered away.
 
 ```ts
 -  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
 +  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inbound);
 ```
 
-where `inbound = options.inboundWire ?? "responses"`. `applyFinalRouteRequestNormalization`
-already receives `options: HandleResponsesOptions` (`core.ts:668`), so it reads it directly.
+where `inbound = options.inboundWire ?? "responses"`.
+
+> Stale check (this cycle's P): all ten line numbers still match, and
+> `applyFinalRouteRequestNormalization` does NOT currently receive `options` — it takes
+> `{ parsed, route, config, req, logCtx }`. The earlier draft claimed it already had
+> `options`; correcting that here rather than discovering it mid-build.
 
 ### MODIFY `src/server/claude-messages.ts`
 
@@ -198,9 +236,24 @@ the adapter that reaches the wire can no longer disagree.
 - **End-to-end, not just the resolver (audit blocker 1):** a test must prove the
   inbound survives the `handleResponses` replay. A resolver-only test would pass while
   the real behaviour stayed wrong — that false-confidence risk is the whole point of
-  this amendment. Assert that `options.inboundWire` reaches the adapter decision at
-  `core.ts:1314`, or failing a seam there, that `applyFinalRouteRequestNormalization`
-  leaves `route.provider.adapter === "openai-chat"` for an anthropic-inbound replay.
+  this amendment.
+
+  Seam: `handleResponses` is exported and already driven end-to-end with
+  `globalThis.fetch` stubbed — `tests/subagent-fallback-handle-responses.test.ts`
+  captures upstream URLs in `mockUpstream` (line 150) and types its options as
+  `Parameters<typeof handleResponses>[3]` (line 188). Drive a DeepSeek config through
+  it and assert the CAPTURED UPSTREAM URL:
+
+  | `inboundWire` | expected upstream URL |
+  |---|---|
+  | omitted / `"responses"` | `https://api.deepseek.com/responses` |
+  | `"anthropic"` / `"chat"` | `https://api.deepseek.com/chat/completions` |
+
+  The URL is externally observable and cannot pass while the replay wire is wrong.
+
+  > An earlier draft offered `applyFinalRouteRequestNormalization` as a fallback seam.
+  > It is not exported, and widening a module's public surface purely for a test is the
+  > wrong trade — the URL assertion is both stronger and requires no new export.
 
 ### Activation scenario (C-ACTIVATION-GROUNDING-01)
 
