@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { clearCodexWebSocketRegistry, getTrackedCodexWebSocketCountForAccount } from "../src/codex/websocket-registry";
+import { INTERNAL_DEADLINE_MS, SERVER_BUDGET_MS } from "./helpers/test-budget";
 import { clearAccountNeedsReauth, clearAccountQuota, getAccountQuota, isAccountNeedsReauth, markAccountNeedsReauth, updateAccountQuota } from "../src/codex/auth-api";
 import {
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
@@ -1294,7 +1295,7 @@ describe("server local API auth", () => {
       if (globalThis.fetch === matrixFetch) globalThis.fetch = originalGlobalFetch;
       await upstream.stop(true);
     }
-  }, { timeout: 30_000 });
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("internal web-search and vision never forward a non-ChatGPT bearer as Direct sidecar auth", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -2109,7 +2110,7 @@ describe("server local API auth", () => {
         // WebSocket, and waits for a two-hop retry across accounts — a second of that on a
         // contended runner is optimistic. The assertions below are unchanged; only the
         // room to reach them grew.
-        setTimeout(() => reject(new Error("websocket retry timed out")), 15_000);
+        setTimeout(() => reject(new Error("websocket retry timed out")), INTERNAL_DEADLINE_MS);
       });
       expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b"]);
       expect(registrySnapshots).toEqual([[1, 0], [0, 1]]);
