@@ -192,11 +192,13 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
     installCommandShim(shimDir, name);
   }
 
+  const pathPrefix = `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? process.env.Path ?? ""}`;
   const result = spawnSync(process.execPath, [releaseScriptPath, version], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      PATH: `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
+      PATH: pathPrefix,
+      ...(process.platform === "win32" ? { Path: pathPrefix } : {}),
       FAKE_RELEASE_LOG: logPath,
       FAKE_GIT_BRANCH: scenario.branch ?? "main",
       FAKE_GIT_HEAD_SHA: scenario.headSha ?? "abc123def456",
