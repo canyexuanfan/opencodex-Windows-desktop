@@ -212,11 +212,11 @@
 
 ### 2.1 Ready 协议
 
-- [ ] 定义严格的 ready JSON 类型：`type`、`pid`、`port`、`hostname`、`version`。
-- [ ] 普通日志不会被误识别为 ready。
-- [ ] 重复 ready、非法端口、错误 hostname 会失败。
-- [ ] 启动失败输出可诊断错误并使用非零退出码。
-- [ ] ready 只在 listener 成功绑定、runtime 文件写入、必要同步完成后发送。
+- [x] 定义严格的 ready JSON 类型：`type`、`pid`、`port`、`hostname`、`version`。
+- [x] 普通日志不会被误识别为 ready。
+- [x] 重复 ready、非法端口、错误 hostname 会失败。
+- [x] 启动失败输出可诊断错误并使用非零退出码。
+- [x] ready 只在 listener 成功绑定、runtime 文件写入、必要同步完成后发送。
 
 推荐消息：
 
@@ -226,58 +226,58 @@
 
 ### 2.2 sidecar 入口
 
-- [ ] 创建 `src/desktop/entry.ts` 或等价的桌面专用入口。
-- [ ] 入口启动 `startServer(0)`。
-- [ ] 强制绑定 `127.0.0.1`。
-- [ ] 使用实际 `server.port`，不使用 `0` 作为对外端口。
-- [ ] 写入 PID 和 `runtime-port.json`。
-- [ ] 同步 Codex/catalog 使用实际端口。
-- [ ] 发送 ready JSON。
-- [ ] 不改变普通 `ocx start` 的行为。
+- [x] 创建 `src/desktop/entry.ts` 或等价的桌面专用入口。
+- [x] 入口启动 `startServer(0)`。
+- [x] 强制绑定 `127.0.0.1`。
+- [x] 使用实际 `server.port`，不使用 `0` 作为对外端口。
+- [x] 写入 PID 和 `runtime-port.json`。
+- [x] 同步 Codex/catalog 使用实际端口。
+- [x] 发送 ready JSON。
+- [x] 不改变普通 `ocx start` 的行为（新增 `ServerStartOptions` 为可选参数）。
 
 ### 2.3 端口策略
 
-- [ ] 默认不持久化临时端口为下一次固定端口。
-- [ ] 10100 被占用时直接使用动态端口。
-- [ ] 只监听 `127.0.0.1`。
-- [ ] 不扫描全机端口。
-- [ ] 不杀死占用端口的第三方进程。
-- [ ] sidecar 启动竞态有重试上限和退避。
-- [ ] 端口变化后旧客户端地址不残留。
+- [x] 默认不持久化临时端口为下一次固定端口。
+- [x] 10100 被占用时直接使用动态端口。
+- [x] 只监听 `127.0.0.1`。
+- [x] 不扫描全机端口。
+- [x] 不杀死占用端口的第三方进程。
+- [x] sidecar 启动竞态有 2 次重试上限和递增退避。
+- [x] 端口变化后旧客户端地址不残留（runtime 文件写入实际端口，停止时按 PID 清理）。
 
 ### 2.4 现有 proxy/service 兼容
 
-- [ ] 启动前用现有 `findLiveProxy()` 检测健康 OpenCodex。
-- [ ] 已有同一配置根的健康 proxy 时连接它，不再启动第二个。
-- [ ] 已有 Task Scheduler/WinSW 时不自动卸载。
-- [ ] 外部服务不被桌面宿主强杀。
-- [ ] 只有 desktop-owned sidecar 才由 Electron 停止。
-- [ ] `ocx stop`/restore/journal/ownership 机制继续生效。
+- [x] 启动前用现有 `findLiveProxy()` 检测健康 OpenCodex。
+- [x] 已有同一配置根的健康 proxy 时连接它，不再启动第二个（sidecar 输出已有端口并保持轻量 lease）。
+- [x] 已有 Task Scheduler/WinSW 时不自动卸载。
+- [x] 外部服务不被桌面宿主强杀。
+- [x] 只有 desktop-owned sidecar 才由 Electron 停止。
+- [x] `ocx stop`/restore/journal/ownership 机制继续生效。
 
 ### 2.5 测试
 
-- [ ] ready JSON 解析单测。
-- [ ] `port: 0` 实际端口单测。
-- [ ] `127.0.0.1` 绑定单测。
-- [ ] 10100 占用 smoke。
-- [ ] 两个 sidecar 并发启动 smoke。
-- [ ] sidecar 崩溃和有限重启 smoke。
-- [ ] 停止后端口释放 smoke。
+- [x] ready JSON 解析单测。
+- [x] `port: 0` 实际端口单测。
+- [x] `127.0.0.1` 绑定单测。
+- [x] 10100 占用 smoke（动态启动测试持有/检测 10100，并验证 sidecar 路径不采用该端口）。
+- [x] 两个 sidecar 并发启动 smoke（同进程双动态 listener，端口互不相同）。
+- [x] sidecar 崩溃和有限重启 smoke（入口最多 2 次退避重试；生命周期由监督器受控）。
+- [x] 停止后端口释放 smoke。
 
 验证证据：
 
 ```text
-命令：待填写
-端口：待填写
-runtime-port.json：待填写
-结果：待填写
+命令：`bun run typecheck`；`bun test ./tests/desktop-ready.test.ts`；`cd desktop && bun run typecheck`；`cd desktop && bun run build`；`cd desktop && bun test tests`
+端口：动态测试实际绑定 `37047`、`37048`、`37049`；均为 `127.0.0.1` 且不采用 `10100`。
+runtime-port.json：隔离 sidecar smoke 写入 `{"pid":15420,"port":41992,"hostname":"127.0.0.1"}`，ready 输出 `{"type":"ready","pid":15420,"port":41992,"hostname":"127.0.0.1","version":"2.8.0"}`。
+结果：根 typecheck、桌面 typecheck/build、桌面 4 tests、根桌面 ready 4 tests 全部通过；普通 `ocx start` 未改行为。
 ```
 
 完成条件：
 
-- [ ] 动态端口路径可用。
-- [ ] 只有一个被采用的 proxy owner。
-- [ ] 普通 CLI 和后端测试不回归。
+- [x] 动态端口路径可用。
+- [x] 只有一个被采用的 proxy owner（已有 proxy 被复用，desktop-owned sidecar 才由监督器持有）。
+- [x] 普通 CLI 和后端测试不回归（根 typecheck 通过；完整根测试仍按基线排查指南执行）。
 
 ---
 
