@@ -1,10 +1,11 @@
 /**
  * /api/settings streamMode surface (#314 WP1) + config persistence round-trip.
  *
- * streamMode is persisted in config.json (Windows services do not inherit
- * shell env), degraded to "auto" with a warning when the persisted value is
- * invalid (must never trip loadConfig's backup-and-defaults repair path), and
- * settable alone via PUT (legacy codexAutoStart-only PUTs keep working).
+ * streamMode is persisted in config.json (including the macOS explicit eager
+ * opt-in; Windows services do not inherit shell env), degraded to "auto" with
+ * a warning when the persisted value is invalid (must never trip loadConfig's
+ * backup-and-defaults repair path), and settable alone via PUT (legacy
+ * codexAutoStart-only PUTs keep working).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -156,7 +157,7 @@ describe("PUT /api/settings", () => {
     expect(config.codexAutoStart).toBe(true);
   });
 
-  test("streamMode-only PUT works (Windows service escape hatch)", async () => {
+  test("streamMode-only PUT works (Windows/macOS stream-shape escape hatch)", async () => {
     const config = baseConfig();
     const res = await putSettings(config, { streamMode: "eager-relay" });
     expect(res!.status).toBe(200);

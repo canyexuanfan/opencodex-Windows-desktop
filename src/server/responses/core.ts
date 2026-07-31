@@ -127,13 +127,14 @@ import {
   consumeForInspection,
   consumeForResponseLogMetadata,
   createSseInspector,
+  markEagerRelaySseResponse,
   markNativePassthroughSseResponse,
   relaySseWithFailedTail,
   relayWithAbort,
   sanitizePassthroughHeaders,
 } from "../relay";
 import { relaySseEagerBounded } from "../relay-eager";
-import { decideEagerRelay } from "../../lib/bun-stream-caps";
+import { selectEagerPath } from "../../lib/bun-stream-caps";
 import { cancelBodyOnAbort } from "../../lib/abort";
 import {
   createResponsesItemIdPayloadRewrite,
@@ -1607,18 +1608,22 @@ export async function handleResponses(
     // async-pull segfault on Windows. Branch[0] goes directly to the Response (Bun
     // native relay, never enters JS Sink.write); branch[1] is consumed in the
     // background for terminal-outcome/quota inspection only.
-    // #314 alternative shape: on win32 (no repair) with a runtime carrying the
-    // Bun#32111 fix — or explicit `streamMode: "eager-relay"` opt-in — the tee
-    // is skipped entirely and relaySseEagerBounded provides a single eager
-    // bounded reader with inline inspection (see src/server/relay-eager.ts and
-    // devlog/_plan/260723_win_mem_safestream/020). Default on the bundled
-    // known-bad runtime remains the tee path below.
+    // #314 alternative shape: win32 no-rewrite traffic follows the runtime/config
+    // gate; darwin no-rewrite traffic joins it only for explicit
+    // `streamMode: "eager-relay"` opt-in. Darwin `auto` always stays tee. The
+    // eager shape skips tee and uses one bounded reader with inline inspection
+    // (src/server/relay-eager.ts; policy:
+    // devlog/_plan/260731_macos_rss_retention/100_darwin_eager_optin.md).
+    // The bundled known-bad runtime remains on tee by default on both platforms.
     if (isEventStream && upstreamResponse.body) {
       const repairConfig = route.provider.responsesItemIdRepair;
       const needsClientRewrite = imageGenCallAliases.size > 0 || hasResponsesItemIdRepair(repairConfig);
-      const winNoClientRewrite = process.platform === "win32" && !needsClientRewrite;
-      const eagerDecision = winNoClientRewrite ? decideEagerRelay(config.streamMode ?? "auto") : null;
-      if (eagerDecision?.useEagerRelay) {
+      const eagerPath = selectEagerPath(
+        process.platform,
+        needsClientRewrite,
+        config.streamMode ?? "auto",
+      );
+      if (eagerPath?.useEagerRelay) {
         const turnAc = new AbortController();
         linkAbortSignal(upstream, turnAc.signal);
         registerTurn(turnAc);
@@ -1669,13 +1674,15 @@ export async function handleResponses(
           onClientCancel: () => options.onNativePassthroughCancel?.(),
           onDone: () => unregisterTurn(turnAc),
         });
-        // The eager branch is reachable only through winNoClientRewrite, so it must stay a pure
-        // native relay without an image-gen or item-id JS pull wrapper on win32 (Bun#32111).
+        // selectEagerPath admits only no-rewrite traffic, so this stays a pure native relay on
+        // both eligible platforms; win32 must never enter an image/item-id JS pull wrapper (#32111).
         if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
-        return markNativePassthroughSseResponse(new Response(eagerBody, {
-          status: upstreamResponse.status,
-          headers,
-        }));
+        return markEagerRelaySseResponse(
+          markNativePassthroughSseResponse(new Response(eagerBody, {
+            status: upstreamResponse.status,
+            headers,
+          })),
+        );
       }
       const [nativeBody, inspectBody] = upstreamResponse.body.tee();
       const turnAc = new AbortController();

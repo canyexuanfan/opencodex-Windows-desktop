@@ -232,8 +232,10 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
 // if (isEventStream && upstreamResponse.body) {
 // const repairConfig = route.provider.responsesItemIdRepair;
 // const needsClientRewrite = imageGenCallAliases.size > 0
-// #314 gated shape (win32-no-client-rewrite only; default OFF on the bundled known-bad runtime):
-// decideEagerRelay(config.streamMode ?? "auto")
+// #314 gated shape: win32 no-rewrite traffic follows runtime/config policy; darwin no-rewrite
+// traffic requires explicit config-eager opt-in (`auto` always stays tee on darwin). Default OFF
+// on the bundled known-bad runtime; policy lives in 260731_macos_rss_retention phase 100.
+// selectEagerPath(process.platform, needsClientRewrite, config.streamMode ?? "auto")
 // relaySseEagerBounded(upstreamResponse.body, turnAc,
 // new Response(eagerBody,
 // Default shape (tee + background inspection):

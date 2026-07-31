@@ -6,6 +6,7 @@ import {
   isStreamMode,
   MIN_FIXED_BUN_VERSION,
   parseBunVersion,
+  selectEagerPath,
 } from "../src/lib/bun-stream-caps";
 
 describe("parseBunVersion", () => {
@@ -83,6 +84,48 @@ describe("decideEagerRelay (activation scenarios)", () => {
       useEagerRelay: false,
       reason: "config-legacy",
     });
+  });
+});
+
+describe("selectEagerPath (platform policy matrix)", () => {
+  test("win32 + no rewrite + config-eager → eager", () => {
+    expect(selectEagerPath("win32", false, "eager-relay", "1.3.14", null))
+      .toEqual({ useEagerRelay: true, reason: "config-eager" });
+  });
+
+  test("win32 + no rewrite + auto known-bad → tee", () => {
+    expect(selectEagerPath("win32", false, "auto", "1.3.14", null))
+      .toEqual({ useEagerRelay: false, reason: "auto-known-bad" });
+  });
+
+  test("win32 + no rewrite + auto fixed runtime → eager", () => {
+    expect(selectEagerPath("win32", false, "auto", "1.4.0", "1.4.0"))
+      .toEqual({ useEagerRelay: true, reason: "auto-fixed-runtime" });
+  });
+
+  test("darwin + no rewrite + config-eager → eager", () => {
+    expect(selectEagerPath("darwin", false, "eager-relay", "1.3.14", null))
+      .toEqual({ useEagerRelay: true, reason: "config-eager" });
+  });
+
+  test("darwin + no rewrite + auto fixed runtime → tee with the reason retained", () => {
+    expect(selectEagerPath("darwin", false, "auto", "1.4.0", "1.4.0"))
+      .toEqual({ useEagerRelay: false, reason: "auto-fixed-runtime" });
+  });
+
+  test("darwin + rewrite + config-eager → tee", () => {
+    expect(selectEagerPath("darwin", true, "eager-relay", "1.3.14", null)).toBeNull();
+  });
+
+  test("linux + config-eager → tee", () => {
+    expect(selectEagerPath("linux", false, "eager-relay", "1.3.14", null)).toBeNull();
+  });
+
+  test("legacy-tee forces tee on every platform", () => {
+    for (const platform of ["win32", "darwin", "linux"] as const) {
+      expect(selectEagerPath(platform, false, "legacy-tee", "9.9.9", "1.4.0")?.useEagerRelay ?? false)
+        .toBe(false);
+    }
   });
 });
 

@@ -13,6 +13,7 @@ import {
 } from "./request-log";
 
 const nativePassthroughSseResponses = new WeakSet<Response>();
+const eagerRelaySseResponses = new WeakSet<Response>();
 
 export const MAX_INSPECTION_SSE_FRAME_BYTES = 4 * 1024 * 1024;
 export const MAX_COMPLETED_OUTPUT_ITEMS = 256;
@@ -376,6 +377,16 @@ export function markNativePassthroughSseResponse(response: Response): Response {
 
 export function isNativePassthroughSseResponse(response: Response): boolean {
   return nativePassthroughSseResponses.has(response);
+}
+
+export function markEagerRelaySseResponse(response: Response): Response {
+  eagerRelaySseResponses.add(response);
+  return response;
+}
+
+/** Test-only path identity seam; runtime behavior must not branch on this marker. */
+export function isEagerRelaySseResponse(response: Response): boolean {
+  return eagerRelaySseResponses.has(response);
 }
 
 export function relaySseWithHeartbeat(

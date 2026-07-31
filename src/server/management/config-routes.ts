@@ -191,9 +191,9 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/settings" && req.method === "PUT") {
     // Each field is optional but at least one must be present; fields are
-    // validated when present. streamMode-only PUTs must work: Windows-memory
-    // troubleshooting docs tell service users to set it here (a service does
-    // not inherit shell env, so config.json is its only input). A stream-shape
+    // validated when present. streamMode-only PUTs must work: Windows/macOS
+    // memory troubleshooting can use this persisted stream-shape escape hatch
+    // (a Windows service does not inherit shell env). A stream-shape
     // change applies to NEW turns only — the config object is shared by
     // reference with the request handlers, no restart needed.
     let body: { codexAutoStart?: unknown; streamMode?: unknown };
