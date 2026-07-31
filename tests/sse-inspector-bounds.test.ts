@@ -104,11 +104,43 @@ describe("createSseInspector frame bounds", () => {
       parses += 1;
       return originalParse(text);
     }) as typeof JSON.parse;
+    const originalDecode = TextDecoder.prototype.decode;
+    let oversizedDecodedBytes = 0;
+    TextDecoder.prototype.decode = function (this: TextDecoder, input?: AllowSharedBufferSource, opts?: { stream?: boolean }) {
+      const byteLength = input && "byteLength" in input ? input.byteLength : 0;
+      if (byteLength >= MAX_INSPECTION_SSE_FRAME_BYTES) oversizedDecodedBytes += byteLength;
+      return originalDecode.call(this, input as Uint8Array<ArrayBuffer>, opts);
+    } as typeof TextDecoder.prototype.decode;
     try {
       inspector.feed(oversized);
       expect(parses).toBe(0);
+      // The ≥cap candidate must never be decoded, not merely never parsed.
+      expect(oversizedDecodedBytes).toBe(0);
       inspector.feed(frame(completedEvent("after-reject")));
       expect(parses).toBe(1);
+    } finally {
+      JSON.parse = originalParse;
+      TextDecoder.prototype.decode = originalDecode;
+      inspector.dispose();
+    }
+    expect(getInspectionCounters().frameCapOverflows).toBe(1);
+  });
+
+  test("finish while still discarding parses nothing and reports no terminal", () => {
+    const terminals: string[] = [];
+    const inspector = createSseInspector({ onTerminal: status => terminals.push(status) });
+    const originalParse = JSON.parse;
+    let parses = 0;
+    JSON.parse = ((text: string) => {
+      parses += 1;
+      return originalParse(text);
+    }) as typeof JSON.parse;
+    try {
+      // Overflow the candidate with NO delimiter, then EOF while discarding.
+      inspector.feed(encoder.encode(`data: ${"x".repeat(MAX_INSPECTION_SSE_FRAME_BYTES)}`));
+      inspector.finish();
+      expect(parses).toBe(0);
+      expect(terminals).toEqual([]);
     } finally {
       JSON.parse = originalParse;
       inspector.dispose();
@@ -317,6 +349,7 @@ describe("createSseInspector completed-item bounds", () => {
 
     inspector.feed(frame(doneItemEvent(0, { type: "message", id: "before-dispose" })));
     inspector.dispose();
+    inspector.dispose(); // idempotent: a second dispose must not throw or resurrect state
     inspector.feed(frame(completedEvent("after-dispose")));
     inspector.finish();
     expect(outputs).toEqual([[]]);

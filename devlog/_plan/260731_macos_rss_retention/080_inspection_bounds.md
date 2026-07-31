@@ -165,3 +165,11 @@ propagation. Change in the tee branch of `core.ts` (~1679 onward):
 - `fix(relay): bound the SSE inspector and clear reconstruction state`
 - `feat(observe): expose inspection retention counters on /api/system/memory`
 (second commit only if the diff separates cleanly; otherwise one commit)
+
+## wp3 C-review round 1 synthesis (reviewer Pauli, FAIL 3)
+
+| # | Finding | Decision | Fix |
+|---|---|---|---|
+| C1-1 High | Pump races every `reader.read()` against ONE shared pending `drainStop` promise → O(chunk-count) promise reactions retained on long streams (new unbounded retention, the exact class this phase removes) | ACCEPT | Remove the race entirely: drain-stop resolution now calls `reader.cancel()` directly (flag `drainStopped`), so the pending read settles and the loop breaks; no reaction accumulates. `drainStopped` checked before the done-path so a drain stop is not treated as clean EOF. |
+| C1-2 Med | `hasAuthoritativeOutput` treated non-array non-null output as authoritative — behavior drift: old code reconstructed whenever output was not a non-empty array; malformed `output:{}` would now reach `rememberResponseState` and be rejected, losing continuation state | ACCEPT | Authoritative = `Array.isArray(output) && output.length > 0`, restoring prior untainted behavior exactly. |
+| C1-3 Med | Missing regressions: oversized candidate never decoded (decode spy), `finish()` during discard parses nothing, repeated `dispose()` idempotent | ACCEPT | Tests added (TextDecoder.decode spy asserts no ≥cap decode; finish-while-discarding asserts zero JSON.parse and no terminal; double-dispose). C1-1's mechanism is structurally gone (no shared race), covered by the silent-upstream drain-timer test. |

@@ -17,6 +17,7 @@ const nativePassthroughSseResponses = new WeakSet<Response>();
 export const MAX_INSPECTION_SSE_FRAME_BYTES = 4 * 1024 * 1024;
 export const MAX_COMPLETED_OUTPUT_ITEMS = 256;
 export const MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES = 8 * 1024 * 1024;
+export const MAX_TAIL_ERROR_MESSAGE_CHARS = 512;
 
 export type InspectionCounters = {
   frameBufferHighWaterBytes: number;
@@ -75,6 +76,20 @@ export function relayWithAbort(
   });
 }
 
+export function buildFailedTailPayload(err: unknown): string {
+  const message = `Upstream stream terminated unexpectedly: ${err instanceof Error ? err.message : String(err)}`
+    .slice(0, MAX_TAIL_ERROR_MESSAGE_CHARS);
+  const failure = {
+    type: "upstream_error",
+    code: "upstream_reset",
+    message,
+  };
+  return JSON.stringify({
+    type: "response.failed",
+    response: { status: "failed", error: failure, last_error: failure },
+  });
+}
+
 /**
  * Relay a passthrough SSE body like relayWithAbort, but convert a MID-STREAM failure (upstream
  * reset after headers) into a clean terminal: any partial block is closed off, then a synthetic
@@ -100,15 +115,7 @@ export function relaySseWithFailedTail(
         }
         controller.enqueue(value);
       } catch (err) {
-        const failure = {
-          type: "upstream_error",
-          code: "upstream_reset",
-          message: `Upstream stream terminated unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
-        };
-        const payload = JSON.stringify({
-          type: "response.failed",
-          response: { status: "failed", error: failure, last_error: failure },
-        });
+        const payload = buildFailedTailPayload(err);
         try {
           // Leading blank line terminates a partial SSE block so the failed frame parses cleanly.
           controller.enqueue(encoder.encode(`\n\nevent: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`));
@@ -678,9 +685,12 @@ export function createSseInspector(handlers: SseInspectorHandlers): SseInspector
 
       let response = completedResponseFromParsedEvent(parsedEvent);
       if (response) {
+        // Authoritative output is a NON-EMPTY ARRAY only. Anything else
+        // (missing, null, scalar, object) keeps the historical backfill
+        // behavior so a malformed terminal cannot reach rememberResponseState
+        // and destroy continuation state (review C1-2).
         const hasAuthoritativeOutput = Array.isArray(response.output)
-          ? response.output.length > 0
-          : response.output !== undefined && response.output !== null;
+          && response.output.length > 0;
         if (!hasAuthoritativeOutput && reconstructionTainted) {
           clearCompletedItems();
           return;
@@ -796,8 +806,6 @@ export type InspectionConsumerOptions = {
 
 const DEFAULT_INSPECTION_DRAIN_MS = 15_000;
 const DEFAULT_INSPECTION_DRAIN_BYTES = 32 * 1024 * 1024;
-const INSPECTION_DRAIN_STOP = Symbol("inspection-drain-stop");
-
 type InspectionPumpOptions = InspectionConsumerOptions & {
   reader: ReadableStreamDefaultReader<Uint8Array>;
   inspector: SseInspector;
@@ -816,8 +824,7 @@ function startBoundedInspectionPump(options: InspectionPumpOptions): void {
   let drainedBytes = 0;
   let drainDeadline = Number.POSITIVE_INFINITY;
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
-  let resolveDrainStop!: (value: typeof INSPECTION_DRAIN_STOP) => void;
-  const drainStop = new Promise<typeof INSPECTION_DRAIN_STOP>(resolve => { resolveDrainStop = resolve; });
+  let drainStopped = false;
   const drainMs = options.drainBounds?.ms ?? DEFAULT_INSPECTION_DRAIN_MS;
   const drainBytes = options.drainBounds?.bytes ?? DEFAULT_INSPECTION_DRAIN_BYTES;
   const now = options.now ?? Date.now;
@@ -833,11 +840,21 @@ function startBoundedInspectionPump(options: InspectionPumpOptions): void {
     clientGoneReason = clientGoneSignal?.reason;
     drainDeadline = now() + drainMs;
     if (inspector.terminalSeen() || drainMs <= 0 || drainBytes <= 0) {
-      resolveDrainStop(INSPECTION_DRAIN_STOP);
+      stopDrain();
       return;
     }
-    drainTimer = setTimeout(() => resolveDrainStop(INSPECTION_DRAIN_STOP), drainMs);
+    drainTimer = setTimeout(stopDrain, drainMs);
     (drainTimer as { unref?: () => void }).unref?.();
+  };
+  // Ends the bounded drain by cancelling the reader: the pending read settles
+  // and the pump loop observes `drainStopped`. Deliberately NOT a shared
+  // Promise.race companion — racing every read against one pending promise
+  // retains O(chunk-count) reactions on long streams (review C1-1), the exact
+  // retention class this phase removes.
+  const stopDrain = () => {
+    if (drainStopped || cancelled) return;
+    drainStopped = true;
+    reader.cancel(clientGoneReason).catch(() => {});
   };
   const abortImmediately = () => {
     if (cancelled) return;
@@ -863,13 +880,13 @@ function startBoundedInspectionPump(options: InspectionPumpOptions): void {
     let boundEndedDrain = false;
     try {
       for (;;) {
-        const result = await Promise.race([reader.read(), drainStop]);
-        if (result === INSPECTION_DRAIN_STOP) {
+        const { done, value } = await reader.read();
+        if (drainStopped) {
+          // stopDrain() cancelled the reader; the settled read is the wake-up.
           clientGoneWithoutTerminal = !inspector.terminalSeen();
           boundEndedDrain = clientGoneWithoutTerminal;
           break;
         }
-        const { done, value } = result;
         if (done) {
           inspector.finish();
           if (clientGone) clientGoneWithoutTerminal = !inspector.terminalSeen();

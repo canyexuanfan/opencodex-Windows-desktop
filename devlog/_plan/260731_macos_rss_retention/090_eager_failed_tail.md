@@ -2,16 +2,26 @@
 
 Depends on 080 (080 adds the inspector `dispose()` hook invoked from the eager
 producer `finally`; audit round 1 blocker 8c). Design base:
-`052_single_reader_gap.md` §Gap 3 sketch. Target:
-`src/server/relay-eager.ts` only (plus tests). Schema evidence (Luna lane,
+`052_single_reader_gap.md` §Gap 3 sketch. Targets:
+`src/server/relay-eager.ts` AND `src/server/relay.ts` (the shared serializer
+extraction + `relaySseWithFailedTail` refactor live in relay.ts — wp4 A-gate
+correction), plus tests. Schema evidence (Luna lane,
 platform docs): terminal `response.failed` carries `status:"failed"` and a
 populated `error {code,message}`; the existing tee-path tail in
-`relaySseWithFailedTail` (`relay.ts:51`) already emits a compatible envelope —
+`relaySseWithFailedTail` (`relay.ts:86` post-wp3; payload at `:102-115`)
+already emits a compatible envelope —
 the eager tail reuses those exact bytes for parity.
+
+Post-wp3 anchors (A-gate refresh): eager producer catch `relay-eager.ts:156-162`;
+teardown `finally` `:163-176` with the condition
+`cancelled || upstream.signal.aborted` at `:168`. wp3 added optional
+`onClientGone` ownership to `relaySseWithFailedTail` (cancel branch `:89`,
+`:120-123`) — the serializer refactor must preserve that signature and cancel
+behavior exactly.
 
 ## Change
 
-In the producer `catch` block (`relay-eager.ts:154-160` today):
+In the producer `catch` block (`relay-eager.ts:156-162` today):
 
 - Capture `err`. When `!hooks.sawTerminal() && !cancelled &&
   !upstream.signal.aborted`:
@@ -60,9 +70,12 @@ In the producer `catch` block (`relay-eager.ts:154-160` today):
    payload and parses standalone (leading delimiter harmless).
 7. Concurrent cancel/reset race (cancel fires while the failing read is in
    flight) → no tail, exactly one accounting outcome.
-8. Exactly-one-terminal/one-`[DONE]`: tail path emits precisely one
-   `response.failed` frame and one `[DONE]` even on repeated producer error
-   paths.
+8. Exactly-one-terminal/one-`[DONE]`: for a single mid-stream reset, the
+   client byte stream contains precisely one `response.failed` frame and one
+   `[DONE]`, `onSynthetic("failed")` fires exactly once, and lifecycle
+   (`onDone`) completes. (A single producer catches one rejected read and
+   enters `finally`; "repeated producer errors" is not a realizable shape —
+   A-gate correction.)
 9. Teardown: upstream aborted and reader cancelled after the tail is emitted.
 10. Byte parity: tail bytes are identical to `relaySseWithFailedTail`'s tail
     for the same error message — both call `buildFailedTailPayload` (byte
