@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleManagementAPI } from "../src/server/management-api";
-import { invalidateStarStatusCache } from "../src/github/star-state";
+import { setStarDepsForTests } from "../src/github/star-state";
 import type { OcxConfig } from "../src/types";
 
 /**
@@ -8,12 +8,26 @@ import type { OcxConfig } from "../src/types";
  * machine; this file checks that the routes are actually reachable through the
  * management dispatcher and that the serialized bytes carry no `gh` output, token,
  * or account identifier.
+ *
+ * Star probes install a fake `gh` runner: the real Windows `gh.cmd` shim can burn
+ * the full auth timeout, which equals Bun's default 5s test deadline.
  */
 const config = {
   port: 10100,
   defaultProvider: "openai",
   providers: {},
 } as OcxConfig;
+
+beforeEach(() => {
+  setStarDepsForTests({
+    runGh: async () => ({ status: 1 }),
+    nowMs: () => Date.now(),
+  });
+});
+
+afterEach(() => {
+  setStarDepsForTests(null);
+});
 
 async function call(
   method: string,
@@ -52,7 +66,6 @@ describe("GET /api/update/badge", () => {
 
 describe("GET /api/github/star", () => {
   test("is routed and reports one of the three known states", async () => {
-    invalidateStarStatusCache();
     const { status, body } = await call("GET", "/api/github/star");
     expect(status).toBe(200);
     const star = body as Record<string, unknown>;
@@ -62,7 +75,6 @@ describe("GET /api/github/star", () => {
   });
 
   test("never serializes gh output, tokens, or account identifiers", async () => {
-    invalidateStarStatusCache();
     const { raw } = await call("GET", "/api/github/star");
     // `gh auth status` prints "Logged in to github.com account <name>" and the token
     // scopes; none of that may cross this boundary.

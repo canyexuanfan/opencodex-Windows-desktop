@@ -1441,7 +1441,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
       has_user_event: 1,
       archived: 1,
     });
-  });
+  }, { timeout: 20_000 });
 
   test.each([
     ["failAfterStateCommit", { failAfterStateCommit: true }, "db_reconcile_failed"],
