@@ -854,8 +854,10 @@ function startBoundedInspectionPump(options: InspectionPumpOptions): void {
       stopDrain();
       return;
     }
+    // Do not unref: on Bun/Windows a pending `reader.read()` can be the only
+    // wake source; an unref'd timer may never run, so a silent post-cancel
+    // drain (time bound, no bytes) hangs the suite until the job timeout.
     drainTimer = setTimeout(stopDrain, drainMs);
-    (drainTimer as { unref?: () => void }).unref?.();
   };
   // Ends the bounded drain by cancelling the reader: the pending read settles
   // and the pump loop observes `drainStopped`. Deliberately NOT a shared
