@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const desktopRoot = join(repoRoot, "desktop");
@@ -15,7 +15,10 @@ function fail(message: string): never {
 function copyRequired(source: string, target: string, label: string): void {
   if (!existsSync(source)) fail(`${label} not found: ${source}`);
   mkdirSync(dirname(target), { recursive: true });
-  cpSync(source, target, { recursive: true });
+  cpSync(source, target, {
+    recursive: true,
+    filter: candidate => basename(candidate).toLowerCase() !== "agents.md",
+  });
 }
 
 function listFiles(root: string, current = root): string[] {
