@@ -88,7 +88,7 @@ ocx logout <provider>
 | `xai` | `openai-chat` | `https://api.x.ai/v1` | Каталог Grok загружается в реальном времени; фолбэк по умолчанию — `grok-4.5`. |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Модели Claude; актуальный список моделей загружается из `/v1/models`. |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Модели Kimi K2.7/K2.6/K2.5 для кодинга. |
-| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | Первый вход импортирует существующую сессию после установки Kiro CLI (`curl -fsSL https://cli.kiro.dev/install | bash`) и входа через `kiro-cli login`. **Добавить аккаунт** выполняет выход из `kiro-cli`, запускает новый вход через браузер, переключает аккаунт самого `kiro-cli` и сохраняет метаданные профиля отдельно для каждого аккаунта. Существующие аккаунты OpenCodex сохраняются; при отмене или сбое восстанавливается предыдущая сессия `kiro-cli`. |
+| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | Первый вход импортирует существующую сессию после установки Kiro CLI (в Unix: `curl -fsSL https://cli.kiro.dev/install | bash`; в Windows PowerShell: `irm 'https://cli.kiro.dev/install.ps1' | iex`; затем выполните `kiro-cli login`). **Добавить аккаунт** выполняет выход из `kiro-cli`, запускает новый вход через браузер, переключает аккаунт самого `kiro-cli` и сохраняет метаданные профиля отдельно для каждого аккаунта. Существующие аккаунты OpenCodex сохраняются; при отмене или сбое восстанавливается предыдущая сессия `kiro-cli`. |
 | `google-antigravity` | `google` | `https://daily-cloudcode-pa.googleapis.com` | Google OAuth поверх протокола Cloud Code Assist. |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | Экспериментальный PKCE-вход, живой транспорт HTTP/2 и обнаружение моделей с фильтрацией по аккаунту. |
 | `github-copilot` | `openai-chat` | `https://api.githubcopilot.com` | Экспериментально. Device flow GitHub + обмен `copilot_internal` (OAuth-клиент VS Code). Требуется активная подписка Copilot; это не официальный сторонний API. |
@@ -113,7 +113,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ### Импорт учётных данных Kiro
 
-Для входа Kiro требуется Kiro CLI: установите его командой `curl -fsSL https://cli.kiro.dev/install | bash` и сначала выполните `kiro-cli login`. Если сессии `kiro-cli` нет, `ocx login kiro` использует вставленный токен доступа или переменную окружения `KIRO_ACCESS_TOKEN`.
+Для входа Kiro требуется Kiro CLI: в Unix установите его командой `curl -fsSL https://cli.kiro.dev/install | bash`, в Windows PowerShell — `irm 'https://cli.kiro.dev/install.ps1' | iex`, затем сначала выполните `kiro-cli login`. Если сессии `kiro-cli` нет, `ocx login kiro` использует вставленный токен доступа или переменную окружения `KIRO_ACCESS_TOKEN`.
 
 Обычный импорт `ocx login kiro` открывает базу SQLite CLI только для чтения и не изменяет базу, WAL или SHM.
 
