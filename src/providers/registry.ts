@@ -130,6 +130,13 @@ export interface ProviderRegistryEntry {
    * entry must remain distinguishable and must always win over a default.
    */
   modelWireDefaults?: Record<string, string>;
+  /**
+   * Responses-API resource path for providers whose route is not `/v1/responses`.
+   * Unlike `modelWireDefaults` above, this IS seeded into saved config: it describes
+   * the provider's fixed endpoint rather than a default a user might want to override
+   * per model. DeepSeek documents `POST /responses` with no `/v1` segment.
+   */
+  responsesPath?: string;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -823,6 +830,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // DeepSeek documents V4-Flash as a native Responses API model adapted for Codex. The
     // API id is `deepseek-v4-flash`; `DeepSeek-V4-Flash-0731` is a release/version label.
     modelWireDefaults: { "deepseek-v4-flash": "openai-responses" },
+    // DeepSeek's Responses route is `POST /responses` with no `/v1` segment. Without
+    // this the passthrough adapter falls back to its legacy `/v1/responses`
+    // construction and the wire above can never route.
+    // Evidence: https://api-docs.deepseek.com/api/create-response/
+    responsesPath: "/responses",
     /* [Decision Log]
     - 목적: DeepSeek V4 thinking mode multi-turn/tool-call requests must replay prior assistant reasoning_content.
     - 대안 분석: Globally preserve reasoning_content for all OpenAI-compatible models; preserve it for legacy deepseek-reasoner too; mark only V4 thinking models in registry metadata.
