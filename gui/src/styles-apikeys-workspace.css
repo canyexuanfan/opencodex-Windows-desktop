@@ -279,6 +279,107 @@
 }
 
 .awi-usage-fold,
+/* Auth matrix: open by default. It replaced a <details> whose contents were the
+   one thing a user needs before their first request succeeds. */
+.api-auth-matrix-block {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.api-auth-matrix-title {
+  margin: 0;
+  font-size: var(--text-label);
+  font-weight: 600;
+}
+
+.api-auth-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-label);
+}
+
+/* The header cells carry literal header names, which do not shorten. In the
+   narrow left column they were clipped mid-word at 1280x720, so the table gets
+   its own horizontal scroller rather than truncating what it is documenting. */
+.api-auth-matrix-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  max-width: 100%;
+}
+
+.api-auth-matrix th,
+.api-auth-matrix td {
+  text-align: left;
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.api-auth-matrix th {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.api-auth-matrix code {
+  font-size: inherit;
+}
+
+/* Rename form in the key detail pane. */
+.awi-rename {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+  min-width: 0;
+}
+
+.awi-rename-error,
+.awi-delete-error {
+  color: var(--danger, #c44);
+  font-size: var(--text-label);
+  margin: 0;
+  flex-basis: 100%;
+}
+
+.awi-rename-label {
+  font-size: var(--text-label);
+  color: var(--text-muted);
+}
+
+.awi-rename .input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* One test chip per protocol: the result belongs to the chip that produced it,
+   not to the row. */
+.api-model-test-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Three protocol chips plus Copy ID do not fit across a narrow catalog column —
+   laid out in a row they pushed the table wider than its panel and the last chip
+   was clipped at the edge. Stack them instead: the column grows down, which this
+   layout has room for, rather than sideways, which it does not. */
+.api-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.api-model-actions .btn {
+  white-space: nowrap;
+}
+
 .awi-inline-fold {
   border: 1px solid var(--border);
   border-radius: var(--radius);

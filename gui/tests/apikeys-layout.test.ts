@@ -3,8 +3,10 @@ import { expect, test } from "bun:test";
 async function apiKeysSources(): Promise<string> {
   const page = await Bun.file(new URL("../src/pages/ApiKeys.tsx", import.meta.url)).text();
   const panels = await Bun.file(new URL("../src/pages/api-keys-panels.tsx", import.meta.url)).text();
+  // The endpoints/auth surface moved into its own module when the matrix landed.
+  const endpointsPanel = await Bun.file(new URL("../src/pages/api-keys-endpoints-panel.tsx", import.meta.url)).text();
   const workspace = await Bun.file(new URL("../src/components/apikeys-workspace/ApiKeysWorkspace.tsx", import.meta.url)).text();
-  return `${page}\n${panels}\n${workspace}`;
+  return `${page}\n${panels}\n${endpointsPanel}\n${workspace}`;
 }
 
 test("ApiKeys uses workspace shell (no classic layout toggle)", async () => {
@@ -67,11 +69,16 @@ test("ApiKeys workspace keeps endpoint, generate, models, and usage panels", asy
   expect(src).toContain('t("api.usageResponsesTitle")');
   expect(src).toContain('awi-usage-fold');
   expect(src).toContain('t("api.workspace.usageExamples")');
-  // Auth lives folded under Endpoints — not a separate overview card.
+  // Auth is a server-driven matrix under Endpoints, not collapsed prose and not
+  // a separate overview card. The prose it replaced told users that Chat
+  // Completions accepts `Authorization: Bearer`, which the server rejects.
   expect(workspace).not.toContain("api-auth-list");
-  expect(src).toContain('awi-inline-fold');
+  expect(src).toContain("api-auth-matrix");
   expect(src).toContain('t("api.authTitle")');
-  expect(src).toContain('t("api.authChatCompletions")');
+  expect(src).not.toContain('t("api.authChatCompletions")');
+  expect(src).not.toContain("awi-inline-fold");
+  // The matrix must come from the payload, never from a hardcoded table.
+  expect(src).toContain("authMatrix.map");
 
   // Exactly one Messages usage example, gated on Claude inbound.
   expect(src.match(/api\.usageMessagesTitle/g)?.length).toBe(1);

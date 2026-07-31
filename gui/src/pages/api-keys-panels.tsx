@@ -1,208 +1,21 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 import { IconCheck, IconPlus, IconX } from "../icons";
 import { useI18n } from "../i18n/shared";
+import { CopyableExample } from "./api-keys-copy";
+export { ApiKeysEndpointsPanel } from "./api-keys-endpoints-panel";
 import {
   externalModelId,
   gatewayInboundProtocols,
   type ExternalModelRow,
+  type GatewayInboundProtocol,
 } from "../api-access-models";
 import {
+  API_KEY_NAME_MAX_LENGTH,
   formatCreatedDate,
   type ApiEndpointInfo,
   type ApiKeyEntry,
-  type ModelTestState,
+  type ModelTests,
 } from "./api-keys-utils";
 import { DataSurfaceSkeleton } from "../components/data-surface";
-
-function EndpointUrl({ url }: { url: string }) {
-  return (
-    <CopyOnClickTip
-      text={url}
-      hintKey="api.copyUrlHint"
-      copiedKey="api.urlCopied"
-      className="api-endpoint-url-btn"
-    >
-      <code className="api-code api-code-inline api-endpoint-url">{url}</code>
-    </CopyOnClickTip>
-  );
-}
-
-function CopyOnClickTip({
-  text,
-  hintKey,
-  copiedKey,
-  className,
-  children,
-}: {
-  text: string;
-  hintKey: "api.copyUrlHint" | "api.copyExampleHint";
-  copiedKey: "api.urlCopied" | "api.exampleCopied";
-  className: string;
-  children: ReactNode;
-}) {
-  const { t } = useI18n();
-  const tipId = useId();
-  const anchorRef = useRef<HTMLElement | null>(null);
-  const [hover, setHover] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
-  const copiedTimer = useRef<number | null>(null);
-  const showTip = hover || copied;
-
-  useEffect(() => () => {
-    if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
-  }, []);
-
-  useLayoutEffect(() => {
-    // No reset on close: the portal and aria-describedby are already gated on showTip,
-    // and reopening remeasures in this same layout effect before paint. Clearing here
-    // only forced a second render.
-    if (!showTip) return;
-    const update = () => {
-      const el = anchorRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      setCoords({
-        top: Math.max(8, rect.top - 8),
-        left: rect.left + rect.width / 2,
-      });
-    };
-    update();
-    window.addEventListener("scroll", update, true);
-    window.addEventListener("resize", update);
-    return () => {
-      window.removeEventListener("scroll", update, true);
-      window.removeEventListener("resize", update);
-    };
-  }, [showTip]);
-
-  const openTip = () => setHover(true);
-  const closeTip = () => setHover(false);
-
-  const copyText = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
-      copiedTimer.current = window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setCopied(false);
-    }
-  };
-
-  const tip = showTip && coords
-    ? createPortal(
-      <span
-        id={tipId}
-        className="ocx-tooltip-bubble api-copy-tip-fixed"
-        role="tooltip"
-        style={{ top: coords.top, left: coords.left }}
-      >
-        {copied ? t(copiedKey) : t(hintKey)}
-      </span>,
-      document.body,
-    )
-    : null;
-
-  const shared = {
-    ref: anchorRef as never,
-    className: `ocx-tooltip ${className}`,
-    onMouseEnter: openTip,
-    onMouseLeave: closeTip,
-    onFocus: openTip,
-    onBlur: closeTip,
-    onClick: (event: { currentTarget: EventTarget & Element; target: EventTarget | null; clientX: number; clientY: number }) => {
-      if (typeof window !== "undefined" && window.getSelection()?.toString()) return;
-      const target = event.target;
-      if (target instanceof HTMLElement && target !== event.currentTarget) {
-        const rect = target.getBoundingClientRect();
-        if (target.scrollHeight > target.clientHeight + 1 && event.clientX >= rect.right - 16) return;
-        if (target.scrollWidth > target.clientWidth + 1 && event.clientY >= rect.bottom - 16) return;
-      }
-      void copyText();
-    },
-    onKeyDown: (event: { key: string; preventDefault: () => void }) => {
-      if (event.key === "Escape") closeTip();
-    },
-    "aria-label": t(hintKey),
-    "aria-describedby": showTip ? tipId : undefined,
-  };
-
-  return (
-    <>
-      <button type="button" {...shared}>
-        {children}
-      </button>
-      {tip}
-    </>
-  );
-}
-
-function CopyableExample({ text }: { text: string }) {
-  return (
-    <CopyOnClickTip
-      text={text}
-      hintKey="api.copyExampleHint"
-      copiedKey="api.exampleCopied"
-      className="api-example-copy-btn"
-    >
-      <code className="api-code api-example-pre">{text}</code>
-    </CopyOnClickTip>
-  );
-}
-
-export function ApiKeysEndpointsPanel({
-  endpoints,
-  claudeCodeEnabled,
-}: {
-  endpoints: ApiEndpointInfo;
-  claudeCodeEnabled: boolean;
-}) {
-  const { t } = useI18n();
-  return (
-    <div className="panel api-panel">
-      <h3 className="panel-title">{t("api.endpointsTitle")}</h3>
-      <div className="api-endpoints">
-        <div>
-          <span className="muted small">{t("api.baseUrl")}</span>
-          <EndpointUrl url={endpoints.baseUrl} />
-        </div>
-        <div>
-          <span className="muted small">{t("api.responsesEndpoint")}</span>
-          <EndpointUrl url={endpoints.responses} />
-        </div>
-        <div>
-          <span className="muted small">{t("api.chatCompletionsEndpoint")}</span>
-          <EndpointUrl url={endpoints.chatCompletions} />
-        </div>
-        {claudeCodeEnabled && (
-          <div>
-            <span className="muted small">{t("api.messagesEndpoint")}</span>
-            <EndpointUrl url={endpoints.messages} />
-          </div>
-        )}
-        <div>
-          <span className="muted small">{t("api.modelsEndpoint")}</span>
-          <EndpointUrl url={endpoints.models} />
-        </div>
-      </div>
-      <p className="muted small">{t("api.endpointNote")}</p>
-      <details className="awi-inline-fold">
-        <summary>{t("api.authTitle")}</summary>
-        <div className="awi-inline-fold-body">
-          <ul className="api-auth-list muted small">
-            <li>{t("api.authChatCompletions")}</li>
-            <li>{t("api.authResponses")}</li>
-            {claudeCodeEnabled && <li>{t("api.authMessages")}</li>}
-            <li>{t("api.authLoopback")}</li>
-          </ul>
-          <p className="muted small">{t("api.authBaseUrlNote")}</p>
-        </div>
-      </details>
-    </div>
-  );
-}
 
 export function ApiKeysManagePanel({
   keys,
@@ -271,6 +84,7 @@ export function ApiKeysManagePanel({
             placeholder={t("api.keyNamePlaceholder")}
             aria-label={t("api.keyNamePlaceholder")}
             value={newName}
+            maxLength={API_KEY_NAME_MAX_LENGTH}
             onChange={e => onNewNameChange(e.target.value)}
             className="input"
           />
@@ -336,6 +150,7 @@ export function ApiKeysModelsPanel({
   onModelQueryChange,
   onCopyModelId,
   onTestModel,
+  canTestModels,
   sourceLabel,
   protocolLabel,
 }: {
@@ -344,13 +159,16 @@ export function ApiKeysModelsPanel({
   modelsLoadFailed: boolean;
   modelQuery: string;
   copiedModelId: string | null;
-  modelTests: Record<string, { state: ModelTestState; detail?: string }>;
+  modelTests: ModelTests;
   claudeCodeEnabled: boolean;
   onModelQueryChange: (value: string) => void;
   onCopyModelId: (modelId: string) => void;
-  onTestModel: (model: ExternalModelRow) => void;
+  onTestModel: (model: ExternalModelRow, protocol: GatewayInboundProtocol) => void;
+  /** The GUI only ever holds the one-time key from a create, so an authenticated
+   *  test is available in that window and honestly disabled outside it. */
+  canTestModels: boolean;
   sourceLabel: (model: ExternalModelRow) => string;
-  protocolLabel: (protocol: string) => string;
+  protocolLabel: (protocol: GatewayInboundProtocol) => string;
 }) {
   const { t } = useI18n();
   return (
@@ -384,13 +202,12 @@ export function ApiKeysModelsPanel({
                 <th>{t("api.colModel")}</th>
                 <th>{t("api.colSource")}</th>
                 <th>{t("api.colProtocols")}</th>
-                <th></th>
               </tr>
             </thead>
             <tbody>
               {filteredModels.map(model => {
                 const modelId = externalModelId(model);
-                const testState = modelTests[modelId]?.state ?? "idle";
+                const protocols = gatewayInboundProtocols(claudeCodeEnabled);
                 return (
                   <tr key={modelId}>
                     <td>
@@ -400,23 +217,49 @@ export function ApiKeysModelsPanel({
                       </div>
                     </td>
                     <td>{sourceLabel(model)}</td>
-                    <td>{gatewayInboundProtocols(claudeCodeEnabled).map(protocolLabel).join(", ")}</td>
                     <td>
+                      {/* The chips are the protocol list: each one names a
+                          protocol and tests it. A separate read-only column
+                          repeated them and cost the width that pushed these
+                          buttons out of the visible table entirely. */}
                       <div className="api-model-actions">
                         <button type="button" className="btn btn-sm btn-ghost" onClick={() => { onCopyModelId(modelId); }}>
                           {copiedModelId === modelId ? t("api.modelCopied") : t("api.copyModelId")}
                         </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          disabled={testState === "testing"}
-                          onClick={() => { onTestModel(model); }}
-                        >
-                          {testState === "testing" ? t("api.testingModel") : t("api.testModel")}
-                        </button>
+                        {/* One chip per protocol. A single button posting a chat
+                            body proved nothing about the Responses chip beside it. */}
+                        {protocols.map(protocol => {
+                          const result = modelTests[modelId]?.[protocol];
+                          const state = result?.state ?? "idle";
+                          return (
+                            <span key={protocol} className="api-model-test-chip">
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                disabled={state === "testing" || !canTestModels}
+                                title={canTestModels ? undefined : t("api.auth.testNeedsFreshKey")}
+                                onClick={() => { onTestModel(model, protocol); }}
+                              >
+                                {t("api.auth.testProtocol", { protocol: protocolLabel(protocol) })}
+                              </button>
+                              {state !== "idle" && (
+                                <span
+                                  className={`api-test-note api-test-note--${state}`}
+                                  role="status"
+                                  aria-live="polite"
+                                  aria-atomic="true"
+                                >
+                                  {state === "testing"
+                                    ? t("api.testingModel")
+                                    : state === "ok"
+                                      ? t("api.testSucceeded")
+                                      : result?.detail ?? t("api.testFailed")}
+                                </span>
+                              )}
+                            </span>
+                          );
+                        })}
                       </div>
-                      {testState === "ok" && <p className="muted small api-test-note api-test-note--ok">{t("api.testSucceeded")}</p>}
-                      {testState === "error" && <p className="muted small api-test-note api-test-note--error">{modelTests[modelId]?.detail ?? t("api.testFailed")}</p>}
                     </td>
                   </tr>
                 );
