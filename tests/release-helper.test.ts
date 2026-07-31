@@ -321,4 +321,31 @@ describe("release helper", () => {
     expect(git.file.toLowerCase()).toBe("c:\\shims\\git.exe");
     expect(git.options.windowsVerbatimArguments).toBeUndefined();
   });
+
+  /**
+   * The test above proves the LAUNCHER is correct; this one proves the release
+   * script actually uses it. That distinction is not academic: `runQuiet` was
+   * already routed through `commandInvocation` while every `git`/`bun`/`npm`
+   * call still went through `Bun.$`, and the suite stayed green on macOS while
+   * windows-latest failed. The built-in shell resolved PATH itself, walked past
+   * the extension-less shim it could not execute, and reached the real `git` —
+   * so the branch guard saw `dev` rather than the faked `main` and aborted
+   * before logging a single call.
+   *
+   * A source assertion is the honest check here: the failure is "which resolver
+   * ran", and no host-platform execution can observe that.
+   */
+  test("every external command goes through the shared launcher, not the built-in shell", () => {
+    const source = readFileSync(releaseScriptPath, "utf8");
+    const withoutComments = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+
+    // Bun.$ resolves PATH with its own shell; that is exactly the bypass.
+    expect(withoutComments).not.toMatch(/\$`/);
+    expect(withoutComments).not.toMatch(/from\s+"bun"/);
+
+    // And the launcher must still be the thing it reaches for.
+    expect(withoutComments).toContain("commandInvocation");
+  });
 });
