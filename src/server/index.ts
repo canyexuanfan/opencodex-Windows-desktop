@@ -4,6 +4,7 @@ import {
   buildWsErrorFrame,
   selectForwardHeaders,
   sendJsonFrame,
+  buildResponsesWsData,
   sendResponseToWebSocket,
   sendTextFrame,
   type WsData,
@@ -105,14 +106,13 @@ import {
   assertServerAuthConfig,
   corsHeaders,
   managementCorsHeaders,
-  hasValidApiAuth,
   isAllowedRequestOrigin,
   isAllowedManagementOrigin,
   isApiAuthRequired,
   isLoopbackHostname,
   jsonResponse,
-  requireApiAuth,
-  requireResponsesApiAuth,
+  resolveApiAuth,
+  resolveResponsesApiAuth,
   safeConfigDTO,
   setCorsOrigin,
   withCors,
@@ -362,8 +362,10 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        const apiAuthError = requireResponsesApiAuth(req, config);
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveResponsesApiAuth(req, config);
+        if (!admission) {
+          return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
+        }
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin"), req, config);
         }
@@ -376,9 +378,7 @@ export function startServer(port?: number) {
           return withCors(formatErrorResponse(426, "upgrade_required", "Responses WebSocket transport is disabled; use HTTP"), req, config);
         }
         if (server.upgrade(req, {
-          data: {
-            headers: selectForwardHeaders(req.headers),
-          },
+          data: buildResponsesWsData(selectForwardHeaders(req.headers), admission),
         })) return undefined as unknown as Response;
         return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, config);
       }
@@ -400,8 +400,8 @@ export function startServer(port?: number) {
         // Model discovery never forwards Authorization upstream, so the broader admission
         // set (Authorization / x-api-key / x-opencodex-api-key) is safe here and required by
         // remote OpenAI-style bearer clients and Claude gateway discovery (anthropic-version).
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
@@ -470,8 +470,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        const apiAuthError = requireResponsesApiAuth(req, config);
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveResponsesApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
@@ -502,8 +502,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
@@ -517,8 +517,8 @@ export function startServer(port?: number) {
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/v1/opencodex/artifacts/")) {
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
@@ -551,8 +551,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
@@ -575,8 +575,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        const apiAuthError = requireResponsesApiAuth(req, config);
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveResponsesApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
@@ -614,7 +614,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        if (!hasValidApiAuth(req, config)) {
+        const admission = resolveApiAuth(req, config);
+        if (!admission) {
           return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
         }
         if (!isAllowedRequestOrigin(req, config)) {
@@ -629,7 +630,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        if (!hasValidApiAuth(req, config)) {
+        const admission = resolveApiAuth(req, config);
+        if (!admission) {
           return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
         }
         if (!isAllowedRequestOrigin(req, config)) {
@@ -652,8 +654,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        const apiAuthError = requireResponsesApiAuth(req, config);
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveResponsesApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
@@ -675,8 +677,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
@@ -703,8 +705,8 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return drainingResponse(req);
         }
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
-        if (apiAuthError) return withCors(apiAuthError, req, config);
+        const admission = resolveApiAuth(req, config);
+        if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin"), req, config);
         }
