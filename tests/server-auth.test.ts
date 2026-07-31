@@ -1923,6 +1923,8 @@ describe("server local API auth", () => {
     }
   }, { timeout: SERVER_BUDGET_MS });
 
+  // Same windows-latest contention budget as the stalled-body case above: abort
+  // teardown and harness stop can exceed Bun's default 5s under runner load.
   test("aborted 400 inspection never authorizes a pool retry", async () => {
     let releaseDispatch!: () => void;
     const dispatched = new Promise<void>(resolve => { releaseDispatch = resolve; });
@@ -1944,7 +1946,7 @@ describe("server local API auth", () => {
     } finally {
       await stopPoolRetryHarness(harness);
     }
-  });
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("invalid JSON 400 never authorizes a pool retry", async () => {
     const body = '{"detail":';
@@ -1955,7 +1957,7 @@ describe("server local API auth", () => {
     } finally {
       await stopPoolRetryHarness(harness);
     }
-  });
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("missing or non-string detail never authorizes a pool retry", async () => {
     const bodies = ["{}", '{"detail":null}', '{"detail":400}', '{"detail":{"message":"unsupported"}}'];
