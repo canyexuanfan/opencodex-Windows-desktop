@@ -77,6 +77,20 @@ no measured-fix claim is made in this unit.
 2. `git push origin dev`.
 3. Verify `git rev-parse dev origin/dev` match; record hashes here.
 
+### Push record (2026-08-01)
+
+- origin/dev had advanced 18 commits mid-unit (PR #747/#750/#751 merges);
+  resolved with a merge commit `30fb76856`, full suite re-verified green on
+  the merged tree (6464 pass, 0 fail), privacy scan green.
+- `git push origin dev` → `8c8832137..1eae6478d dev -> dev` (pre-push hook
+  ran the full verification chain and passed).
+- All seven unit commits verified as ancestors of origin/dev post-push:
+  `976ff3a21`, `a9c5f16f0`, `41af6168e`, `316497fca`, `a209188fb`,
+  `d59d0c19c`, `1eae6478d`.
+- A concurrent session pushed `5f9434ab2` immediately after; local dev
+  fast-forwarded to match. Final parity: local dev == origin/dev ==
+  `5f9434ab2`.
+
 ## Live follow-up (post-push, documented not executed)
 
 - The running proxy (pid 63737 at investigation time) predates the patch;
