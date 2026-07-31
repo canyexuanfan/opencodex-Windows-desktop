@@ -47,15 +47,15 @@
 
 ### 当前执行项
 
-- 状态：`阶段 1：桌面工程骨架`
-- 阶段 0 已完成：基线命令、代码边界确认和一次性架构参考检查已记录。
+- 状态：`阶段 2：Bun sidecar 与动态端口`
+- 阶段 0、阶段 1 已完成：基线/参考检查与 Electron 空壳骨架均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
 - 阻塞：`无`
 
 ### 下一任务
 
-创建 `desktop/` 工程骨架：只添加 Electron 宿主的精确依赖、主进程/预加载/监督器/导航/托盘文件和最小测试目录；完成后运行骨架编译检查、更新本阶段证据并创建本地 Git 存档。不做前端设计流程，不重复拉取参考仓库。
+实现阶段 2：定义严格 ready 协议、创建 `src/desktop/entry.ts` sidecar 入口，复用 `startServer(0)` 与现有运行时端口/配置同步，补齐端口冲突、ready 解析和 sidecar 生命周期测试；完成后更新证据并创建本地 Git 存档。
 
 ---
 
@@ -160,51 +160,51 @@
 
 ### 1.1 目录
 
-- [ ] 创建 `desktop/package.json`。
-- [ ] 创建 `desktop/tsconfig.json`。
-- [ ] 创建 `desktop/src/main.ts`。
-- [ ] 创建 `desktop/src/preload.ts`。
-- [ ] 创建 `desktop/src/backend-supervisor.ts`。
-- [ ] 创建 `desktop/src/navigation.ts`。
-- [ ] 创建 `desktop/src/tray.ts`。
-- [ ] 创建 `desktop/tests/`。
-- [ ] 创建 `desktop/resources/`。
-- [ ] 不创建第二套 GUI 页面。
+- [x] 创建 `desktop/package.json`。
+- [x] 创建 `desktop/tsconfig.json`。
+- [x] 创建 `desktop/src/main.ts`。
+- [x] 创建 `desktop/src/preload.ts`。
+- [x] 创建 `desktop/src/backend-supervisor.ts`。
+- [x] 创建 `desktop/src/navigation.ts`。
+- [x] 创建 `desktop/src/tray.ts`。
+- [x] 创建 `desktop/tests/`。
+- [x] 创建 `desktop/resources/`。
+- [x] 不创建第二套 GUI 页面。
 
 ### 1.2 依赖
 
-- [ ] 只添加 Electron、TypeScript 构建工具和一个打包器。
-- [ ] 不添加 UI 框架、状态库、遥测 SDK、更新器或登录 SDK。
-- [ ] 所有版本精确锁定。
-- [ ] 审查许可证、安装脚本和已知漏洞。
-- [ ] 不改变根项目 npm 包的发布语义。
-- [ ] 不修改根 lockfile，除非确有必要并记录原因。
+- [x] 只添加 Electron、TypeScript 构建工具和一个打包器。
+- [x] 不添加 UI 框架、状态库、遥测 SDK、更新器或登录 SDK。
+- [x] 所有版本在 `desktop/package.json` 中精确锁定（独立 lockfile 因依赖下载阻塞待后续补齐）。
+- [x] 审查许可证、安装脚本和已知漏洞；已避开 Electron 38.3.0 的公开受影响范围，改用 Electron 43.2.0。
+- [x] 不改变根项目 npm 包的发布语义。
+- [x] 不修改根 lockfile。
 
 ### 1.3 Electron 安全基线
 
-- [ ] `nodeIntegration: false`。
-- [ ] `contextIsolation: true`。
-- [ ] `sandbox: true`。
-- [ ] 不使用 remote module。
-- [ ] 不开放 remote debugging port。
-- [ ] preload 只暴露固定 lifecycle API。
-- [ ] renderer 不能执行任意 shell、读任意文件或启动任意进程。
-- [ ] IPC channel 使用固定枚举和输入校验。
-- [ ] 不把 token、API key、OAuth 信息放进 renderer 存储。
+- [x] `nodeIntegration: false`。
+- [x] `contextIsolation: true`。
+- [x] `sandbox: true`。
+- [x] 不使用 remote module。
+- [x] 不开放 remote debugging port。
+- [x] preload 只暴露固定 lifecycle API。
+- [x] renderer 不能执行任意 shell、读任意文件或启动任意进程。
+- [x] IPC channel 使用固定枚举和输入校验（本阶段无用户输入参数）。
+- [x] 不把 token、API key、OAuth 信息放进 renderer 存储。
 
 验证证据：
 
 ```text
-状态：待填写
-产物：待填写
-依赖审查：待填写
+状态：已完成（Electron 空壳静态编译与安全基线测试通过；未启动后端）
+产物：`desktop/src/`、`desktop/tests/security-baseline.test.ts`、`desktop/resources/README.md`
+依赖审查：`desktop/package.json` 精确锁定 Electron 43.2.0、electron-builder 26.12.0、TypeScript 5.9.3；许可证/安装脚本已人工核对，Electron 38.3.0 的公开安全受影响范围已规避。依赖安装脚本下载因网络阻塞未完成，已记录在 `questions/阶段0基线依赖缺失排查指南.md`。
 ```
 
 完成条件：
 
-- [ ] Electron 空壳可编译。
-- [ ] 尚未启动后端。
-- [ ] 尚未增加 GUI 功能。
+- [x] Electron 空壳可编译。
+- [x] 尚未启动后端。
+- [x] 尚未增加 GUI 功能。
 
 ---
 
