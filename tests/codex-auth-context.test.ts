@@ -25,6 +25,7 @@ import {
   removeCodexAccountCredential,
   saveCodexAccountCredential,
 } from "../src/codex/account-store";
+import { ConfigMutationLockError } from "../src/config";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import { clearAccountNeedsReauth, isAccountNeedsReauth } from "../src/codex/auth-api";
 import {
@@ -519,6 +520,7 @@ describe("Codex auth context", () => {
   test("reauth marking is reserved for real token failures", () => {
     expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new CodexCredentialGenerationConflictError())).toBe(false);
     expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new CodexCredentialRefreshLockTimeoutError())).toBe(false);
+    expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new ConfigMutationLockError("busy"))).toBe(false);
     expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new Error("bad token"))).toBe(true);
   });
 
