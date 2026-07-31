@@ -937,6 +937,49 @@ describe("provider management validation", () => {
     }
   });
 
+  test("provider management switches the default and reassigns it when removed", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig({
+      port: 0,
+      defaultProvider: "alpha",
+      providers: {
+        alpha: { adapter: "openai-chat", baseUrl: "https://alpha.example.test/v1", liveModels: false },
+        beta: { adapter: "openai-chat", baseUrl: "https://beta.example.test/v1", liveModels: false },
+      },
+    });
+
+    const server = startServer(0);
+    try {
+      const setDefault = await fetch(new URL("/api/providers?name=beta", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ setDefault: true }),
+      });
+      expect(setDefault.status).toBe(200);
+      expect(await setDefault.json()).toMatchObject({ success: true, defaultProvider: "beta" });
+
+      const deleteDefault = await fetch(new URL("/api/providers?name=beta", server.url), { method: "DELETE" });
+      expect(deleteDefault.status).toBe(200);
+      expect(await deleteDefault.json()).toMatchObject({ success: true, defaultProvider: "alpha" });
+
+      const saved = await fetch(new URL("/api/config", server.url)).then(r => r.json()) as {
+        defaultProvider: string;
+        providers: Record<string, unknown>;
+      };
+      expect(saved.defaultProvider).toBe("alpha");
+      expect(saved.providers).toEqual(expect.objectContaining({ alpha: expect.any(Object) }));
+      expect(saved.providers.beta).toBeUndefined();
+
+      const deleteLast = await fetch(new URL("/api/providers?name=alpha", server.url), { method: "DELETE" });
+      expect(deleteLast.status).toBe(409);
+      expect(await deleteLast.json()).toMatchObject({ code: "last_provider" });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("provider management can disable and re-enable non-default providers", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });

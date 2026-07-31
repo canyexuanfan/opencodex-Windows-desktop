@@ -179,7 +179,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     fetchConfig, fetchOauth, fetchAccountSets, fetchProviderQuotas, bumpModelsRefresh,
   });
 
-  const { removeProvider, confirmRemoveProvider, setProviderDisabled, updateProvider } = useProvidersCrud({
+  const { removeProvider, confirmRemoveProvider, setProviderDisabled, setDefaultProvider, updateProvider } = useProvidersCrud({
     apiBase, t, removeBusyRef, workspaceSelected, setWorkspaceSelected, setRemoveConfirmName,
     notify, fetchConfig, fetchOauth, fetchProviderQuotas,
   });
@@ -328,6 +328,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             isDefault={item.name === config.defaultProvider}
             onRemoveProvider={removeProvider}
             onSetDisabled={setProviderDisabled}
+            onSetDefault={name => { void setDefaultProvider(name); }}
             onUpdateProvider={updateProvider}
             codexController={codexPool}
           />
@@ -343,6 +344,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         addModalAccountRows={addModalAccountRows}
         accountLoginStatus={accountLoginStatus}
         removeConfirmName={removeConfirmName}
+        removeDefaultProvider={removeConfirmName === config.defaultProvider ? Object.keys(config.providers).find(name => name !== removeConfirmName) ?? null : null}
         codexLoginOpen={codexLoginOpen}
         jsonLeaveOpen={jsonLeaveOpen}
         jsonSaving={jsonSaving}
