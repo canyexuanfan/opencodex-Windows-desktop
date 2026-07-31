@@ -244,6 +244,22 @@ describe("Windows tray packaging and command safety", () => {
     expect(source).not.toContain("Stop-Process");
   });
 
+  // This test really does launch PowerShell, which really does launch a Bun child, and
+  // then rebinds the port to prove the child did not inherit the listen socket. Those
+  // processes ARE the assertion — there is no version of this proof that fakes them.
+  //
+  // So the budget has to cover work the test genuinely performs. Production allows
+  // PowerShell 15s (`execFileSync` timeout in src/tray/windows.ts), while Bun's default
+  // test budget is 5s; a contended windows-latest runner lands between the two and the
+  // test fails at ~5.1s having done nothing wrong.
+  //
+  // Raising a budget is NOT the general answer to a flaky test. Earlier in this same
+  // round the sidebar route tests were fixed by DELETING their real `gh` spawn, because
+  // spawning a binary was incidental to what those tests claimed. The distinction is
+  // whether the wait is intrinsic to the assertion. Here it is; there it was not.
+  const PID_FILE_WAIT_MS = 20_000;
+  const TRAY_LAUNCH_TIMEOUT_MS = 45_000;
+
   test("launches the detached tray host without retaining the proxy listen socket", async () => {
     if (process.platform !== "win32") return;
     const directory = mkdtempSync(join(tmpdir(), "ocx-tray-inheritance-"));
@@ -267,10 +283,17 @@ describe("Windows tray packaging and command safety", () => {
         bun: process.execPath,
         cli: childPath,
       });
-      for (let attempt = 0; attempt < 100 && !existsSync(pidPath); attempt += 1) {
+      const pidDeadline = Date.now() + PID_FILE_WAIT_MS;
+      while (!existsSync(pidPath) && Date.now() < pidDeadline) {
         await Bun.sleep(25);
       }
-      expect(existsSync(pidPath)).toBe(true);
+      // Name what actually went wrong. A bare `false` here means "the pid file is
+      // missing" and nothing about whether PowerShell never started, the child died,
+      // or the runner was simply slow — which is most of the work in diagnosing it.
+      expect(
+        existsSync(pidPath),
+        `tray child never wrote ${pidPath} within ${PID_FILE_WAIT_MS}ms`,
+      ).toBe(true);
       childPid = Number(readFileSync(pidPath, "utf8"));
       expect(Number.isSafeInteger(childPid) && childPid > 0).toBe(true);
       expect(() => process.kill(childPid, 0)).not.toThrow();
@@ -293,7 +316,7 @@ describe("Windows tray packaging and command safety", () => {
       }
       rmSync(directory, { recursive: true, force: true });
     }
-  });
+  }, { timeout: TRAY_LAUNCH_TIMEOUT_MS });
 
   test("ships branded multi-size Windows tray icons", () => {
     const assets = join(import.meta.dir, "..", "src", "tray", "assets");
