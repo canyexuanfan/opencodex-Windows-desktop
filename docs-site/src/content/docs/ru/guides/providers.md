@@ -126,7 +126,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 53 встроенными пресетами: 42 на основе ключей, семь OAuth, три локальных и
+opencodex поставляется с 61 встроенным пресетом: 50 на основе ключей, семь OAuth, три локальных и
 пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его. Наиболее заметные записи:
 
@@ -143,6 +143,7 @@ opencodex поставляется с 53 встроенными пресетам
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -162,6 +163,12 @@ opencodex поставляется с 53 встроенными пресетам
 Большинство использует адаптер `openai-chat` с bearer-ключом; немногие провайдеры, предоставляющие
 только Anthropic-совместимую конечную точку (например, **Xiaomi MiMo**), используют адаптер
 `anthropic` (`x-api-key`).
+
+**Discovery для DeepInfra.** `deepinfra` — провайдер OpenAI Chat Completions с аутентификацией по
+ключу; он использует адаптер `openai-chat` и Bearer API-ключ. Принадлежащий registry URL списка
+моделей DeepInfra оставляет только строки с тегом `chat`, сохраняет нативные id моделей со знаком
+`/` и ограничивает live discovery 512 KiB и 512 исходными строками. Ключи создаются в
+[дашборде DeepInfra](https://deepinfra.com/dash/api_keys).
 
 > **Ограничение Tencent Cloud Coding Plan:** Tencent разрешает использовать эту подписку только
 > в интерактивных инструментах программирования. Автоматизация общего API, серверы пользовательских
