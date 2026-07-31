@@ -829,12 +829,26 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (buffer.length > 0) {
           if ((yield* handleDataLine(buffer)) === "terminate") return;
         }
-        yield* flushToolCalls();
         // Reader EOF. A graceful close shows at least one terminal signal: `[DONE]` (returns above),
         // a non-null finish_reason (sawFinish), or a trailing usage chunk (providers emit usage only
         // at end-of-generation). If NONE of those were seen, the stream was cut mid-flight — fail
         // closed so the bridge emits a classified response.failed rather than a silent truncation.
+        //
+        // Checked BEFORE flushToolCalls(), because that helper emits tool_call_end and there is no
+        // taking it back: a half-assembled argument string would reach the client as a completed
+        // call. Tool calls are buffered here (unlike the Anthropic adapter, which forwards
+        // fragments live), so this adapter can still decide.
         const sawFinish = finishReason !== undefined;
+        if (!sawFinish && pendingToolCalls.length > 0) {
+          debugProviderDiagnostic("openai-chat", "stream-truncated", {
+            finishReason: null,
+            hadUsage: pendingUsage !== undefined,
+            pendingToolCalls: pendingToolCalls.length,
+          });
+          yield { type: "error", message: "upstream stream ended mid tool call without a terminal signal — possible truncation" };
+          return;
+        }
+        yield* flushToolCalls();
         if (!sawFinish && pendingUsage === undefined) {
           debugProviderDiagnostic("openai-chat", "stream-truncated", {
             finishReason: finishReason ?? null,
