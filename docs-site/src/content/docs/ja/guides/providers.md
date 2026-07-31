@@ -119,7 +119,7 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 61 個含まれています。キー方式 50、OAuth 7、ローカル 3、
+opencodex には組み込みプリセットが 62 個含まれています。キー方式 51、OAuth 7、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します。主な項目は以下のとおりです:
 
@@ -137,6 +137,7 @@ opencodex には組み込みプリセットが 61 個含まれています。キ
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
+| Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -149,7 +150,7 @@ opencodex には組み込みプリセットが 61 個含まれています。キ
 | SiliconFlow | `https://api.siliconflow.cn/v1` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
-| GitHub Copilot · GitLab Duo | `https://api.githubcopilot.com` · `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
+| GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | …その他多数 | opencode zen、Vercel AI Gateway、Venice、NanoGPT、Synthetic、Qianfan、Alibaba、Parallel、ZenMux、LiteLLM |
 
@@ -160,6 +161,11 @@ opencodex には組み込みプリセットが 61 個含まれています。キ
 `openai-chat` アダプターと Bearer API キーを使います。registry が所有する DeepInfra のモデル一覧 URL から
 `chat` タグを持つ行だけを残し、スラッシュを含むネイティブモデル ID を保持します。live discovery は
 512 KiB、raw 512 行に制限します。キーは [DeepInfra dashboard](https://deepinfra.com/dash/api_keys) で作成します。
+
+**Hyperbolic の discovery:** preset は設定済みの bearer キーで `/v1/models` を読み、スラッシュを含む
+ネイティブモデル ID を保持し、live discovery を 256 KiB と raw 256 行に制限します。serverless text /
+vision-language chat のみを対象とし、別系統の image、audio、GPU endpoint は対象外です。キーは
+[Hyperbolic](https://app.hyperbolic.ai) で作成します。
 
 > **Tencent Cloud Coding Plan の利用制限:** Tencent はこのサブスクリプションを対話型
 > コーディングツール専用としています。一般的な API 自動化、カスタムアプリのバックエンド、
