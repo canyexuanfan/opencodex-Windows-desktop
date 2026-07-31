@@ -93,4 +93,36 @@ describe("service stop verification (#764)", () => {
     });
     expect(live).toEqual({ port: 10100 });
   });
+
+  test("the platform default drives the behavior, not just the explicit flag", async () => {
+    // Every other test passes canRespawn explicitly, so none of them exercises the DEFAULT --
+    // a regression to `?? false` would leave them all green while Windows silently lost the
+    // restart window it needs. These pin the derivation itself.
+    const original = process.platform;
+    const setPlatform = (value: string) =>
+      Object.defineProperty(process, "platform", { value, configurable: true });
+    try {
+      setPlatform("linux");
+      const linuxClock = fakeClock();
+      let linuxProbes = 0;
+      await proxyStillLiveAfterStop({
+        findProxy: async () => { linuxProbes += 1; return null; },
+        ...linuxClock,
+      });
+      expect(linuxProbes).toBe(1);
+      expect(linuxClock.now()).toBe(0);
+
+      setPlatform("win32");
+      const winClock = fakeClock();
+      let winProbes = 0;
+      await proxyStillLiveAfterStop({
+        findProxy: async () => { winProbes += 1; return null; },
+        ...winClock,
+      });
+      expect(winProbes).toBeGreaterThan(1);
+      expect(winClock.now()).toBeGreaterThanOrEqual(7000);
+    } finally {
+      Object.defineProperty(process, "platform", { value: original, configurable: true });
+    }
+  });
 });
