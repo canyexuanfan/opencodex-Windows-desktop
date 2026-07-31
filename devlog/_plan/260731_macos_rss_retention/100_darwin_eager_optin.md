@@ -122,21 +122,20 @@ without wp5. Clean pass ⇒ record the run output (seed, abort count, duration,
 exit code) in this doc. This is an opt-in safety probe, not a
 Bun-1.3.14-is-safe claim.
 
-### Gate execution record (2026-08-01, main session)
+### Gate run history (2026-08-01, superseded — kept for provenance)
 
-- Run 1 (55 s default deadline): `outcome FAIL classification timeout` at
-  124/201 verified aborts — a DEADLINE artifact, not a crash (child was
-  healthy, SIGKILL came from the parent watchdog at the deadline). The
-  default deadline was raised to 240 s.
-- Run 2 (final): `bun scripts/darwin-eager-abort-stress.ts --seed 260801` →
-  `{"outcome":"PASS","classification":"clean","seed":260801,
-  "requestedTotal":201,"verifiedTotal":201,"verifiedByClass":
-  {"before-first-byte":67,"mid-frame":67,"during-backpressure":67},
-  "durationMs":114690,"workloadOutcome":"clean-completion",
-  "childOutcome":"expected-teardown","childExitCode":0,"childSignal":null,
-  "bunVersion":"1.3.14","platform":"darwin","arch":"arm64"}` — no crash, no
-  hang, child exited 0 after expected teardown. Gate PASSED; the opt-in
-  lands. Still not a Bun-1.3.14-is-safe claim.
+All with `seed=260801`. These runs predate the C1-1/C1-2 review fixes, so
+their counts are NOT the gate evidence; the final record below §Abort-stress
+gate execution record is authoritative.
+
+- Main-session run, 55 s default deadline: FAIL/timeout at 124/201 — a
+  deadline artifact (healthy child SIGKILLed by the watchdog at the
+  deadline); default deadline raised to 240 s.
+- Main-session run, 240 s: PASS/clean 201/201, `durationMs=114690` — counted
+  via client-side settlement (pre-C1-1) and a delivered-bytes backpressure
+  marker (pre-C1-2), i.e. before ack-verification existed.
+- Worker run during repair development: PASS/clean 201/201,
+  `durationMs=117876` — same pre-fix marker semantics.
 
 ## Not changed
 
@@ -188,21 +187,16 @@ Probe: `scripts/darwin-eager-abort-stress.ts` (parent watchdog) +
 `scripts/darwin-eager-abort-stress-child.ts` (Bun.serve serving the ACTUAL
 `relaySseEagerBounded` stream). Host: darwin arm64, Bun 1.3.14.
 
-Two runs, both `seed=260801`, `algorithm=mulberry32`, 201 aborts:
-
-1. **Initial run (delivered-bytes marker): PASS / clean.**
-   `verifiedTotal=201` (67 per class), `durationMs=117876`,
-   `workloadOutcome=clean-completion`, `childOutcome=expected-teardown`,
-   `childExitCode=0`. At this point the during-backpressure marker fired on
-   ≥1 MiB delivered with an unread client (sink-buffered load), not on an
-   observed producer park.
-2. **Refined run (stall-detected park marker + honest fallback):
-   PASS-WITH-CAVEAT / backpressure-unreachable.**
-   `verifiedByClass={before-first-byte:67, mid-frame:67,
-   during-backpressure:0}`, `backpressureUnreachableCount=67`,
-   `childOutcome=expected-teardown`, `childExitCode=0`. The child now emits
-   `backpressure-unreachable` when it produces the full 4 MiB schedule
-   without ever observing a producer park.
+**FINAL gate run (post C1-1/C1-2 fixes, ack-verified counting):**
+`bun scripts/darwin-eager-abort-stress.ts --seed 260801 --per-class 67
+--deadline-ms 240000` → `outcome: PASS-WITH-CAVEAT`,
+`classification: backpressure-unreachable`, `requestedTotal=201`,
+`verifiedTotal=134` (`before-first-byte:67, mid-frame:67` — each abort
+phase-marker- AND server-cancel-ack-verified), `backpressureUnreachableCount=67`
+(every during-backpressure request honestly reported: the child produced its
+full 4 MiB schedule without ever observing a producer park),
+`durationMs=2839`, `workloadOutcome=completed-with-caveat`,
+`childOutcome=expected-teardown`, `childExitCode=0`, `childSignal=null`.
 
 Measured runtime finding (why the class is unreachable): on darwin Bun
 1.3.14 the native Response sink pulls a JS ReadableStream WITHOUT pacing —
@@ -212,6 +206,16 @@ A parked eager producer therefore cannot exist over HTTP on this runtime;
 bytes. The 67 during-backpressure aborts still executed under
 multi-MiB sink-buffered load (the Bun#32111-relevant state); no crash, hang,
 or bad teardown was observed in any of the 402 aborts across both runs.
+
+**Gate interpretation:** PASS-WITH-CAVEAT satisfies the landing gate. The
+caveat means the abort-during-producer-park state is UNREACHABLE over HTTP
+on this exact runtime — production traffic through the opt-in cannot enter
+it either, so the untested state is also an unoccurrable state. What CAN
+occur (before-first-byte, mid-frame, and aborts under multi-MiB
+sink-buffered load) was exercised 134 ack-verified times in the final run
+plus 402 aborts across the pre-fix runs with zero crash/hang/teardown
+failures. The caveat is recorded so a future Bun that adds sink pacing
+re-arms the class. Still not a Bun-1.3.14-is-safe claim.
 
 Two implications recorded for later phases: (a) the eager path's memory win
 on darwin over HTTP is bounded by the native sink's buffering behavior, not
