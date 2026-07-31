@@ -21,6 +21,22 @@ function fakeClock(startMs = 0) {
 }
 
 describe("service stop verification (#764)", () => {
+  test("a clean stop returns immediately when the supervisor cannot respawn", async () => {
+    // The regression this must not introduce: launchd and systemd do not bring a child back
+    // after unload/stop, so a single probe answers the question. Making every macOS and Linux
+    // user wait out a Windows-specific restart window would trade one bug for a worse daily one.
+    const clock = fakeClock();
+    let probes = 0;
+    const live = await proxyStillLiveAfterStop({
+      findProxy: async () => { probes += 1; return null; },
+      canRespawn: false,
+      ...clock,
+    });
+    expect(live).toBeNull();
+    expect(probes).toBe(1);
+    expect(clock.now()).toBe(0); // no sleeping at all
+  });
+
   test("a proxy that respawns inside the restart window is detected", async () => {
     // The reported failure: /end succeeded, the wrapper lived, and the child came back at ~5s.
     // A single probe immediately after the stop command would have seen nothing and passed.
@@ -31,6 +47,7 @@ describe("service stop verification (#764)", () => {
         probes += 1;
         return probes >= 5 ? { port: 10100 } : null;
       },
+      canRespawn: true,
       ...clock,
     });
     expect(live).toEqual({ port: 10100 });
@@ -44,6 +61,7 @@ describe("service stop verification (#764)", () => {
     let probes = 0;
     const live = await proxyStillLiveAfterStop({
       findProxy: async () => { probes += 1; return null; },
+      canRespawn: true,
       ...clock,
     });
     expect(live).toBeNull();
@@ -61,6 +79,7 @@ describe("service stop verification (#764)", () => {
         if (probes < 4) throw new Error("connection refused");
         return { port: 10100 };
       },
+      canRespawn: true,
       ...clock,
     });
     expect(live).toEqual({ port: 10100 });

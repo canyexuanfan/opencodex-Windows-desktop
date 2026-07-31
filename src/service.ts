@@ -1635,18 +1635,24 @@ type TrackedProxyCleanupResult = "none" | "stale" | "stopped";
  * native Codex on top of a running one (#764). The tracked-pid cleanup does not catch it either:
  * the respawned child writes a different pid, or none this process knows about.
  *
- * Probed rather than assumed, and bounded: the observed respawn window is ~5s, so a few seconds
- * of polling either sees it come back or it is genuinely gone.
+ * Probed rather than assumed, and bounded. The respawn risk is specific to a supervisor that can
+ * restart its child — the Windows scheduler wrapper — so only that case pays the restart window.
+ * Everywhere else a single probe answers the question, because nothing is going to bring the
+ * proxy back after `launchctl unload` or `systemctl stop`. Making every platform wait 7s on a
+ * stop that already succeeded would trade one bug for a worse everyday one.
  */
 export async function proxyStillLiveAfterStop(deps: {
   findProxy?: () => Promise<{ port: number } | null>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Whether the stopped supervisor can respawn its child; only then is polling worth the wait. */
+  canRespawn?: boolean;
 } = {}): Promise<{ port: number } | null> {
   const findProxy = deps.findProxy ?? findLiveProxy;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
-  const deadline = now() + 7000;
+  const canRespawn = deps.canRespawn ?? process.platform === "win32";
+  const deadline = now() + (canRespawn ? 7000 : 0);
   for (;;) {
     try {
       const live = await findProxy();
