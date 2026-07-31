@@ -6,9 +6,10 @@ import { hashLogConversationQuery, matchesLogConversationId } from "../log-conve
 import { statusCodeInfo } from "../status-codes";
 import { IconX } from "../icons";
 import { modelLabel } from "../model-display";
+import { setClientResourceData } from "../client-resource";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
-import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 import { EmptyState, Notice } from "../ui";
 import Debug from "./Debug";
 
@@ -285,22 +286,26 @@ function statusColor(status: number): string {
   return "var(--amber)";
 }
 
-function formatLogTimestamp(ts: number, localeTag?: string, timeZone?: string): string {
+/** Date and time as separate locale strings (no joining comma) for stacked table cells. */
+function formatLogDateParts(ts: number, localeTag?: string, timeZone?: string): { date: string; time: string } {
+  const zone = timeZone ? { timeZone } : undefined;
   try {
-    return new Date(ts).toLocaleTimeString(localeTag, timeZone ? { timeZone } : undefined);
+    return {
+      date: new Date(ts).toLocaleDateString(localeTag, zone),
+      time: new Date(ts).toLocaleTimeString(localeTag, zone),
+    };
   } catch {
-    // An IANA zone the browser's ICU build does not know throws RangeError, which would take
-    // the whole row render down. A timestamp in the wrong zone beats no log list at all.
-    return new Date(ts).toLocaleTimeString(localeTag);
+    // An IANA zone the browser's ICU build does not know throws RangeError.
+    return {
+      date: new Date(ts).toLocaleDateString(localeTag),
+      time: new Date(ts).toLocaleTimeString(localeTag),
+    };
   }
 }
 
 function formatLogDateTime(ts: number, localeTag?: string, timeZone?: string): string {
-  try {
-    return new Date(ts).toLocaleString(localeTag, timeZone ? { timeZone } : undefined);
-  } catch {
-    return new Date(ts).toLocaleString(localeTag);
-  }
+  const { date, time } = formatLogDateParts(ts, localeTag, timeZone);
+  return `${date} ${time}`;
 }
 
 function modelTitle(log: LogEntry): string {
@@ -346,7 +351,14 @@ function summarizeFilteredLogs(entries: LogEntry[]): {
 
 export default function Logs({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
-  const cachedLogs = readSessionListCache<LogEntry[]>(logsCacheKey(apiBase));
+  const resourceKey = logsCacheKey(apiBase);
+  const cachedLogs = readSessionListCache<LogEntry[]>(resourceKey);
+  // Seed before subscribe so a revisit with session cache does not flash "Loading…" over rows.
+  const seededKeyRef = useRef<string | null>(null);
+  if (seededKeyRef.current !== resourceKey) {
+    if (cachedLogs) setClientResourceData(resourceKey, cachedLogs);
+    seededKeyRef.current = resourceKey;
+  }
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [detail, setDetail] = useState<LogEntry | null>(null);
   const [surfaceFilter, setSurfaceFilter] = useState<LogSurfaceFilter>("all");
@@ -405,15 +417,15 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
     const body = await res.json() as LogEntry[] | { logs?: LogEntry[] };
     const next = Array.isArray(body) ? body : (body.logs ?? []);
-    writeSessionListCache(logsCacheKey(apiBase), next);
+    writeSessionListCache(resourceKey, next);
     return next;
-  }, [apiBase]);
+  }, [apiBase, resourceKey]);
 
   // The resource layer owns the request and the 2s poll. It keeps held rows through a quiet
   // poll on its own, which is what the old silent/non-silent split was hand-rolling — and an
   // empty successful response is now a real empty result rather than a cold load.
   const logsResource = useDataSurface<LogEntry[]>(
-    logsCacheKey(apiBase),
+    resourceKey,
     [apiBase],
     loadLogs,
     {
@@ -481,7 +493,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     : 0;
 
   return (
-    <>
+    <div className="logs-page">
       <div className="page-head">
         <h2>{t("nav.logs")}</h2>
         {tab === "logs" && (
@@ -610,12 +622,6 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           </button>
         </Notice>
       )}
-      {/* Progress is reported only for a forced read: a two-second heartbeat that announced
-          itself would talk over the table continuously. */}
-      {logsResource.loading && logs.length > 0 && (
-        <DataSurfaceStatus live={false}>{t("common.loading")}</DataSurfaceStatus>
-      )}
-
       {/* A run of failed polls is no longer transient: say the rows below are stale rather than
           letting them read as current. Cleared by the first successful poll. */}
       {pollFailing && logs.length > 0 && (
@@ -648,7 +654,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                <th>{t("logs.col.provider")}</th>
                <th>{t("logs.col.status")}</th>
                 <th>{t("logs.col.request")}</th>
-               <th className="num">{t("logs.col.duration")}</th>
+               <th className="num log-col-duration">{t("logs.col.duration")}</th>
              </tr>
             </thead>
             <tbody>
@@ -660,13 +666,19 @@ export default function Logs({ apiBase }: { apiBase: string }) {
               {virtualRows.map(virtualRow => {
                 const log = filteredLogs[filteredLogs.length - 1 - virtualRow.index];
                 const reasoningWire = reasoningWireLabel(log);
+                const when = formatLogDateParts(log.timestamp, localeTag, serverTimeZone);
                 return (
                <tr
                  key={log.requestId ?? `${log.timestamp}-${virtualRow.index}`}
                  data-index={virtualRow.index}
                  ref={rowVirtualizer.measureElement}
                >
-                 <td className="muted mono">{formatLogTimestamp(log.timestamp, localeTag, serverTimeZone)}</td>
+                 <td className="muted mono log-col-time">
+                   <span className="logs-stack-start">
+                     <span>{when.date}</span>
+                     <span>{when.time}</span>
+                   </span>
+                 </td>
                   <td className="num mono log-col-tokens" title={tokensTitle(log, t)}>
                     {(() => {
                       const tokenTotal = displayContextTokenTotal(log);
@@ -732,7 +744,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                     </span>
                  </td>
                   <td className="muted mono"><span className="log-reqid" title={log.requestId}>{log.requestId ?? "-"}</span></td>
-                 <td className="num">{log.durationMs}ms</td>
+                 <td className="num log-col-duration">{log.durationMs}ms</td>
                 </tr>
                 );
               })}
@@ -763,7 +775,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
         />
       )}
       </div>
-    </>
+    </div>
   );
 }
 

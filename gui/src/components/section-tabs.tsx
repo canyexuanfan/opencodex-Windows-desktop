@@ -8,8 +8,8 @@
  * The active tab follows the scroll position, so the strip reports where you are rather
  * than only where you last clicked.
  */
-import { useEffect, useRef, useState } from "react";
-import { sectionAnchorId, sectionAnchorPrefix } from "../section-anchors";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { SECTION_TAB_SCROLL_LOCK_MS, sectionAnchorId, sectionAnchorPrefix } from "../section-anchors";
 
 export interface SectionTabItem {
   id: string;
@@ -29,6 +29,19 @@ export function SectionTabs({
 }) {
   const [active, setActive] = useState(items[0]?.id ?? "");
   const stripRef = useRef<HTMLDivElement | null>(null);
+  /** While set, scroll-spy ignores intermediate sections during smooth scroll-to-click. */
+  const scrollLockRef = useRef<string | null>(null);
+  const scrollLockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearScrollLock = useCallback(() => {
+    scrollLockRef.current = null;
+    if (scrollLockTimerRef.current !== null) {
+      clearTimeout(scrollLockTimerRef.current);
+      scrollLockTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearScrollLock(), [clearScrollLock]);
 
   // Follow the scroll position. `rootMargin` biases the observer toward the top of the
   // viewport so the heading you are reading wins, not whatever is technically centred.
@@ -41,6 +54,16 @@ export function SectionTabs({
 
     const observer = new IntersectionObserver(
       entries => {
+        const locked = scrollLockRef.current;
+        if (locked) {
+          const lockedNode = document.getElementById(sectionAnchorId(scope, locked));
+          const lockedVisible = entries.some(entry => entry.isIntersecting && entry.target === lockedNode);
+          if (lockedVisible) {
+            clearScrollLock();
+            setActive(locked);
+          }
+          return;
+        }
         const visible = entries
           .filter(entry => entry.isIntersecting)
           .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
@@ -52,11 +75,14 @@ export function SectionTabs({
     );
     for (const node of nodes) observer.observe(node);
     return () => observer.disconnect();
-  }, [items, scope]);
+  }, [clearScrollLock, items, scope]);
 
   const go = (id: string) => {
     const target = document.getElementById(sectionAnchorId(scope, id));
     if (!target) return;
+    scrollLockRef.current = id;
+    if (scrollLockTimerRef.current !== null) clearTimeout(scrollLockTimerRef.current);
+    scrollLockTimerRef.current = setTimeout(clearScrollLock, SECTION_TAB_SCROLL_LOCK_MS);
     setActive(id);
     // `scroll-margin-top` on the target keeps the heading clear of the pinned strip.
     target.scrollIntoView({ behavior: "smooth", block: "start" });

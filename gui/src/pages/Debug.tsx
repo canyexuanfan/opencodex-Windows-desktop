@@ -4,7 +4,7 @@ import { setClientResourceData, useKeyedClientResource } from "../client-resourc
 import { useI18n } from "../i18n/shared";
 import { Notice } from "../ui";
 import { useDataSurface } from "../data-surface";
-import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { DebugClaudeInboundPanel } from "./debug-claude-inbound-panel";
 import { DebugLogViewer } from "./debug-log-viewer";
@@ -24,6 +24,12 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
   const { t } = useI18n();
   const settingsCacheKey = `ocx.debug.settings.v1:${apiBase}`;
   const cachedSettings = readSessionListCache<DebugSettings>(settingsCacheKey);
+  const debugResourceKey = debugSettingsKey(apiBase);
+  const seededKeyRef = useRef<string | null>(null);
+  if (seededKeyRef.current !== debugResourceKey) {
+    if (cachedSettings) setClientResourceData(debugResourceKey, cachedSettings);
+    seededKeyRef.current = debugResourceKey;
+  }
   const [debugBusy, setDebugBusy] = useState(false);
   const [stream, setStream] = useState<LogStream>("provider");
   const [entries, setEntries] = useState<import("./debug-shared").DebugLogEntry[]>([]);
@@ -39,7 +45,7 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
   const streamIdentityRef = useRef<string | null>(null);
 
   const debugPoll = useDataSurface<DebugSettings>(
-    debugSettingsKey(apiBase),
+    debugResourceKey,
     [apiBase],
     async (signal) => {
       const res = await fetch(`${apiBase}/api/debug`, { signal });
@@ -236,11 +242,6 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
         />
       )}
 
-      {/* Revalidation over a panel that is already rendered: keep the controls usable and say
-          that a read is in flight, instead of silently swapping values under the user. */}
-      {debug && debugState.refreshing && (
-        <DataSurfaceStatus live={!debugState.showError}>{t("debug.loading")}</DataSurfaceStatus>
-      )}
       {debug && debugState.showError && <Notice tone="err">{t("debug.loadFailed")}</Notice>}
 
       {debug?.claude && <DebugClaudeInboundPanel entries={claudeEntries} />}

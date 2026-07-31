@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IconRefresh } from "../icons";
 import { type TFn, useI18n } from "../i18n/shared";
+import { setClientResourceData } from "../client-resource";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { Notice } from "../ui";
 import { useDataSurface } from "../data-surface";
-import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 import {
   StartupDetailsSection,
   StartupHeroSection,
@@ -73,6 +74,12 @@ export default function Startup({ apiBase }: { apiBase: string }) {
   const { t } = useI18n();
   const cacheKey = `${STARTUP_PAGE_CACHE_PREFIX}${apiBase}`;
   const cached = useMemo(() => readSessionListCache<StartupPageCache>(cacheKey), [cacheKey]);
+  const startupResourceKey = `startup-page:${apiBase}`;
+  const seededKeyRef = useRef<string | null>(null);
+  if (seededKeyRef.current !== startupResourceKey) {
+    if (cached?.data) setClientResourceData(startupResourceKey, cached.data);
+    seededKeyRef.current = startupResourceKey;
+  }
 
   const [copied, setCopied] = useState<string | null>(null);
   const [tray, setTray] = useState<TrayStatusData | null>(() => cached?.tray ?? null);
@@ -107,6 +114,13 @@ export default function Startup({ apiBase }: { apiBase: string }) {
       if (!res.ok) throw new Error("fetch failed");
       const next = await res.json() as StartupHealthData;
       paintedRef.current = true;
+      const prevCache = readSessionListCache<StartupPageCache>(cacheKey);
+      writeSessionListCache(cacheKey, {
+        data: next,
+        warning: prevCache?.warning ?? null,
+        fix: prevCache?.fix ?? null,
+        tray: prevCache?.tray ?? null,
+      } satisfies StartupPageCache);
 
       const trayPromise = next.platform === "win32"
         ? fetch(`${apiBase}/api/windows-tray`, { signal })
@@ -172,7 +186,7 @@ export default function Startup({ apiBase }: { apiBase: string }) {
   }, [apiBase, cacheKey, t]);
 
   const startupResource = useDataSurface<StartupHealthData>(
-    `startup-page:${apiBase}`,
+    startupResourceKey,
     [apiBase],
     fetchStartup,
     { isEmpty: () => false },
@@ -180,7 +194,7 @@ export default function Startup({ apiBase }: { apiBase: string }) {
   const loadState = startupResource.state;
   const refresh = startupResource.refresh;
   const data = loadState.data ?? cached?.data ?? null;
-  const loading = loadState.refreshing;
+  const loading = loadState.refreshing && !data;
   const failed = Boolean(data?.diagnosticStale) || loadState.showError;
 
   useEffect(() => {
@@ -268,9 +282,6 @@ export default function Startup({ apiBase }: { apiBase: string }) {
       ) : data ? (
         <>
           {loadState.showError && <Notice tone="err">{t("startup.error")}</Notice>}
-          {loadState.refreshing && (
-            <DataSurfaceStatus live={!loadState.showError}>{t("startup.loading")}</DataSurfaceStatus>
-          )}
           {failed && (
             <div className="notice notice-warn startup-page-notice" role="alert">
               {t("startup.staleData")}

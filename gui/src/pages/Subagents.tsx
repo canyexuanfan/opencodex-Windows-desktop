@@ -1,11 +1,12 @@
 import { useCallback, useRef, useState } from "react";
+import { setClientResourceData } from "../client-resource";
 import { readJsonOrThrow } from "../fetch-json";
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
 import SubagentsWorkspace, { FEATURED_MAX } from "../components/subagents-workspace/SubagentsWorkspace";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
-import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 import { useSubagentDelegation } from "./use-subagent-delegation";
 
 type CachedSubagents = { available: string[]; chosen: string[] };
@@ -18,6 +19,12 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const t = useT();
   const cacheKey = `ocx.subagents.v1:${apiBase}`;
   const cached = seedSubagents(cacheKey);
+  // Seed before subscribe so a revisit does not flash "Loading…" under the page title.
+  const seededKeyRef = useRef<string | null>(null);
+  if (seededKeyRef.current !== cacheKey) {
+    if (cached) setClientResourceData(cacheKey, cached);
+    seededKeyRef.current = cacheKey;
+  }
   const [chosen, setChosen] = useState<string[]>(() => cached?.chosen ?? []);
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
@@ -118,7 +125,6 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
       </div>
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
       {state.showError && <Notice tone="err">{t("sub.loadFail")}</Notice>}
-      {state.refreshing && <DataSurfaceStatus live={!state.showError}>{t("sub.loading")}</DataSurfaceStatus>}
       <SubagentsWorkspace
         available={available}
         chosen={chosen}

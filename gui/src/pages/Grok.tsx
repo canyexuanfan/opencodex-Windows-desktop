@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { EmptyState, Notice, Switch } from "../ui";
 import { IconChevron } from "../icons";
 import { useT, type TKey } from "../i18n/shared";
@@ -6,7 +6,7 @@ import { readJsonOrThrow } from "../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
 import { setClientResourceData } from "../client-resource";
-import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 import { makeCollapseStore, toggleInSet } from "./collapse-store";
 import { grokGroupView, type GrokCandidate } from "./grok-groups";
 
@@ -84,6 +84,12 @@ export default function Grok({ apiBase }: { apiBase: string }) {
   // Request ownership lives in the shared resource layer, so a route change during the first
   // load cannot drop the request the way the old deferred timer did.
   const resourceKey = `grok-status:${apiBase}`;
+  // Seed before subscribe so a revisit does not flash a loading status under the page title.
+  const seededKeyRef = useRef<string | null>(null);
+  if (seededKeyRef.current !== resourceKey) {
+    if (cached) setClientResourceData(resourceKey, cached);
+    seededKeyRef.current = resourceKey;
+  }
   const resource = useDataSurface<GrokStatus>(
     resourceKey,
     [apiBase],
@@ -210,7 +216,7 @@ export default function Grok({ apiBase }: { apiBase: string }) {
   }
 
   return (
-    <section className="grok-page">
+    <section className="grok-page" aria-busy={state.refreshing || undefined}>
       <h2 className="page-title">{t("grok.title")}</h2>
       <p className="page-sub">{t("grok.subtitle")}</p>
 
@@ -220,9 +226,6 @@ export default function Grok({ apiBase }: { apiBase: string }) {
       {/* A refresh that fails while cached data is on screen must say so instead of leaving the
           page looking settled; the notice then owns the live region for this transition. */}
       {state.showError && <Notice tone="err">{t("grok.loadFail")}</Notice>}
-      {state.refreshing && (
-        <DataSurfaceStatus live={!state.showError}>{t("grok.loading")}</DataSurfaceStatus>
-      )}
 
       {status && status.candidates.length > 0 && (
         <div className="claude-profile-bar">

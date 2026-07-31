@@ -8,10 +8,11 @@ import {
   type ExternalModelRow,
   type GatewayInboundProtocol,
 } from "../api-access-models";
+import { setClientResourceData } from "../client-resource";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { createBoundedFetch } from "../bounded-fetch";
 import { useDataSurface } from "../data-surface";
-import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 import ApiKeysWorkspace from "../components/apikeys-workspace/ApiKeysWorkspace";
 import {
   DEFAULT_ENDPOINTS,
@@ -90,11 +91,24 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   // turn stale client state into an apparently authoritative empty auth table.
   const keysCacheKey = `ocx.apikeys.list.v2:${apiBase}`;
   const modelsCacheKey = `ocx.apikeys.models.v1:${apiBase}`;
+  const keysResourceKey = `api-keys:${apiBase}`;
+  const modelsResourceKey = `api-models:${apiBase}`;
   // A cache entry is arbitrary parsed JSON. Trusting it would reintroduce exactly
   // what the network path refuses: an empty matrix rendering as an authoritative
   // "no rules" table, or a row without `usage` throwing on first render.
   const cachedKeys = validCachedKeys(readSessionListCache<CachedKeysShape>(keysCacheKey));
   const cachedModels = readSessionListCache<ExternalModelRow[]>(modelsCacheKey);
+  // Seed before subscribe so a revisit does not flash loading status under the page title.
+  const seededKeysRef = useRef<string | null>(null);
+  if (seededKeysRef.current !== keysResourceKey) {
+    if (cachedKeys) setClientResourceData(keysResourceKey, cachedKeys);
+    seededKeysRef.current = keysResourceKey;
+  }
+  const seededModelsRef = useRef<string | null>(null);
+  if (seededModelsRef.current !== modelsResourceKey) {
+    if (cachedModels) setClientResourceData(modelsResourceKey, cachedModels);
+    seededModelsRef.current = modelsResourceKey;
+  }
   const [actionError, setActionError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [copiedModelId, setCopiedModelId] = useState<string | null>(null);
@@ -161,13 +175,13 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   // Keys and models intentionally remain independent resources: a slow catalog must never
   // block endpoint/key management, and each cache key retains its own session seed.
   const keysResource = useDataSurface<CachedKeysShape>(
-    `api-keys:${apiBase}`,
+    keysResourceKey,
     [apiBase],
     fetchKeys,
     { isEmpty: data => data.keys.length === 0 },
   );
   const modelsResource = useDataSurface<ExternalModelRow[]>(
-    `api-models:${apiBase}`,
+    modelsResourceKey,
     [apiBase],
     fetchModels,
     { isEmpty: models => models.length === 0 },
@@ -370,7 +384,10 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const subtitleParts = t("api.subtitle").split("{authHeader}");
 
   return (
-    <section className="api-page">
+    <section
+      className="api-page"
+      aria-busy={keysState.refreshing || modelsState.refreshing || undefined}
+    >
       <div className="page-head">
         <h2>{t("api.title")}</h2>
       </div>
@@ -395,20 +412,6 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         </>
       ) : (
         <>
-          {/* Keys and models revalidate independently and can be in flight together. Only one
-              region may announce per transition, so keys take precedence and models steps down to
-              visual-only while keys is speaking. */}
-          {keysState.refreshing && keysData && (
-            <DataSurfaceStatus live={!keysState.showError}>{t("api.activeKeysLoading")}</DataSurfaceStatus>
-          )}
-          {/* `modelsState.data` alone misses the session-cached case: after a
-              failure the rows on screen come from `cachedModels`, and a retry
-              then ran with no visible progress at all. */}
-          {modelsState.refreshing && (modelsState.data !== undefined || cachedModels !== null) && (
-            <DataSurfaceStatus live={!modelsState.showError && !(keysState.refreshing && keysData)}>
-              {t("api.modelsLoading")}
-            </DataSurfaceStatus>
-          )}
           <ApiKeysWorkspace
         keys={keys}
         attributionSince={attributionSince}
