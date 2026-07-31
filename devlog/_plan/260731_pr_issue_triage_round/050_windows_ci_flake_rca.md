@@ -80,3 +80,45 @@ PR #801(luvs01)이 Windows PowerShell 프로세스 열거 플레이크를 다룬
 
 PR #805(Wibias)가 #764의 `--native` 잔여를 닫는다. 지난 라운드에서 내가 열어둔
 바로 그 절반이다.
+
+## 추가 관측 — 진짜 원인은 따로 있었다
+
+수정을 올린 뒤(`ebd4cdf02`) Windows가 **여전히** 빨갰다. 그런데 로그를 끝까지
+읽으니 실패한 테스트가 **0개**였다:
+
+```
+Elapsed: 38396ms | User: 12062ms | Sys: 4421ms
+RSS: 0.63GB | Peak: 0.73GB | Commit: 1.18GB | Faults: 415745 | Machine: 17.18GB
+
+panic(thread 2852): Internal assertion failure
+oh no: Bun has crashed. This indicates a bug in Bun, not your code.
+##[error]Process completed with exit code 1.
+```
+
+테스트가 실패한 게 아니라 **Bun 런타임이 죽었다.** Bun v1.3.14, Windows x64,
+`bun test --isolate tests`.
+
+이게 "매번 다른 테스트가 죽는" 현상의 진짜 설명이다. 프로세스가 임의의 지점에서
+터지면, 그 순간 실행 중이던 테스트가 실패로 기록된다 — 그 테스트의 잘못이 아니라
+타이밍의 문제다. 그래서 tray → sidebar → server-auth로 옮겨다녔다.
+
+`010`에서 #744와 #693의 Windows 실패를 "Bun 런타임 패닉" 클래스로 분류해뒀는데,
+그게 이거였다. 그때는 별개 현상으로 봤지만 같은 것이다.
+
+**그럼 우리 수정은 헛수고였나.** 아니다. 두 수정은 여전히 옳다:
+
+- sidebar가 실제 `gh`를 띄우는 건 크래시와 무관하게 비결정적이었다. 5초 타임아웃이
+  0.25ms가 됐다.
+- server-auth가 한 테스트에서 하니스를 네 번 세우고 전역 `fetch`를 두고 경합한 것도
+  실재하는 결함이었다.
+
+다만 **그 둘을 고쳐도 Windows는 초록이 되지 않는다.** 남은 건 Bun 자체 버그다.
+`Faults: 415745`와 `Commit: 1.18GB`가 같이 찍힌 걸 보면 메모리 압박과 관련이
+있을 수 있지만, 그건 추측이고 확인하지 않았다.
+
+### 다음 사람에게
+
+Windows CI가 빨갈 때 **테스트 이름부터 보지 말고 로그 끝을 먼저 봐라.**
+`panic(thread N): Internal assertion failure`가 있으면 그 테스트는 무죄다.
+Bun 업스트림 이슈이고, 우리 쪽에서 고칠 수 있는 게 아니다. 크래시 리포트 링크가
+로그에 함께 찍힌다.
