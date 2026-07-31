@@ -661,10 +661,12 @@ describe("service lifecycle cleanup ordering", () => {
     expect(service).toContain('verifyPidIdentity');
     expect(service).toContain("removeRuntimePort(pid);");
     expect(service).toContain('import { isProcessAlive, stopProxy } from "./lib/process-control";');
-    expect(service).toContain('import { findLiveProxy } from "./server/proxy-liveness";');
+    expect(service).toContain('import { findLiveProxy, SERVICE_STOP_LIVENESS } from "./server/proxy-liveness";');
     expect(service).toContain('type TrackedProxyCleanupResult = "none" | "stale" | "stopped";');
     expect(service).toContain("async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult>");
-    expect(service).toContain("await findLiveProxy({ timeoutMs: 1500 })");
+    expect(service).toContain("...SERVICE_STOP_LIVENESS");
+    expect(service).toContain("deadlineAt:");
+    expect(service).toContain("SERVICE_STOP_LIVENESS");
     expect(service).toContain("await stopProxy(trackedKillPid);");
     expect(service).toContain("await stopProxy(liveKillPid);");
     expect(service).toContain("removePid(pid);");
