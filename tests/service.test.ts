@@ -672,12 +672,14 @@ describe("service lifecycle cleanup ordering", () => {
   });
 
 
-  test("Windows scheduler stop waits through wrapper restart when schtasks /end fails", async () => {
+  test("Windows scheduler stop does not wait on schtasks /end failure", async () => {
     const service = await readText("src/service.ts");
     const stopCase = service.slice(service.indexOf('case "stop":'), service.indexOf('case "status":'));
-    expect(stopCase).toContain("schedulerEndOk = stopWindows()");
-    expect(stopCase).toContain("WINDOWS_SCHEDULER_WRAPPER_RESTART_MS");
-    expect(stopCase).toContain("await Bun.sleep(WINDOWS_SCHEDULER_WRAPPER_RESTART_MS)");
+    // #764 is an /end that succeeds while the wrapper respawns; waiting only when
+    // /end errors cannot catch that path. Restart-window polling lives elsewhere.
+    expect(stopCase).not.toContain("WINDOWS_SCHEDULER_WRAPPER_RESTART_MS");
+    expect(stopCase).not.toContain("schedulerEndOk");
+    expect(stopCase).not.toContain("await Bun.sleep(");
   });
 
   test("tracked proxy cleanup verifies health-reported pids before stopProxy", async () => {

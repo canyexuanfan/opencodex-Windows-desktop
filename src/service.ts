@@ -1494,8 +1494,6 @@ async function installWindowsNative(): Promise<void> {
   writeServiceInstallState("native");
 }
 function startWindows(): void { schtasks(["/run", "/tn", TASK]); }
-/** Batch wrapper cooldown after a failed child exit (`ping -n 6` ≈ 5s). */
-export const WINDOWS_SCHEDULER_WRAPPER_RESTART_MS = 6500;
 
 export function isWindowsSchedulerEndBenign(error: unknown): boolean {
   const detail = schtasksErrorDetail(error).toLowerCase();
@@ -1504,13 +1502,19 @@ export function isWindowsSchedulerEndBenign(error: unknown): boolean {
     || detail.includes("0x41330");
 }
 
-/** End the scheduler task; false when `/end` failed for a reason other than "not running". */
-export function stopWindows(): boolean {
+/**
+ * End the scheduler task. "Already stopped" is success; other `/end` failures are
+ * swallowed so callers can still run tracked-proxy + live-proxy cleanup.
+ *
+ * Do not key a restart-window wait on `/end` failure: the #764 case is an `/end`
+ * that *succeeds* while the wrapper survives and respawns. That verification lives
+ * on the stop-verification path (poll across the restart window), not here.
+ */
+export function stopWindows(): void {
   try {
     schtasks(["/end", "/tn", TASK]);
-    return true;
   } catch (error) {
-    return isWindowsSchedulerEndBenign(error);
+    if (isWindowsSchedulerEndBenign(error)) return;
   }
 }
 function statusWindows(): string { try { return schtasks(["/query", "/tn", TASK]); } catch { return ""; } }
@@ -2030,19 +2034,17 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       ops.start();
       console.log("✅ service started.");
       break;
-    case "stop":
+    case "stop": {
       assertServiceEnvironmentMatchesInstall();
       // Only stop what is actually installed. The unguarded call ran a real `launchctl unload`
       // (and its Windows/Linux twins) even with nothing installed.
-      let schedulerEndOk = true;
       if (ops.status() !== null || isServiceInstalled()) {
-        if (process.platform === "win32" && backend === "scheduler") schedulerEndOk = stopWindows();
-        else ops.stop();
+        ops.stop();
       }
       await stopTrackedProxyForServiceCommand();
-      if (process.platform === "win32" && backend === "scheduler" && !schedulerEndOk) {
-        await Bun.sleep(WINDOWS_SCHEDULER_WRAPPER_RESTART_MS);
-      }
+      // Refuse success while a proxy still answers. Restart-window polling for the
+      // succeed-then-respawn scheduler case is owned by the separate stop-verification
+      // work; this keeps the immediate-survivor guard for orphan/PID cleanup paths.
       if (await findLiveProxy({ timeoutMs: 1500 })) {
         console.error("❌ Service stop did not terminate the proxy — it is still running. Check `ocx service status` and the service log.");
         process.exit(1);
@@ -2058,6 +2060,7 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
         else if (!grok.ok) console.error(`⚠️  ${grok.message}`);
       }
       break;
+    }
     case "status": {
       if (process.platform === "win32" && backend === "scheduler") {
         console.log(await inspectWindowsSchedulerServiceStatus());

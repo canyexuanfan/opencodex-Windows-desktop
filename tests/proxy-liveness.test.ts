@@ -140,6 +140,7 @@ describe("findLiveProxy", () => {
   test("a runtime record whose healthz reports a different pid is rejected", async () => {
     const live = await findLiveProxy({
       readPidFn: () => 1111,
+      verifyPidFn: () => null,
       readRuntimeFn: () => ({ port: 58195 }),
       configFn: () => ({ port: 58195 }),
       fetchFn: (async () => healthz({ ...OURS, pid: 9999 })) as typeof fetch,
