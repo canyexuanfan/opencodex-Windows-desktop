@@ -395,9 +395,10 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const selectTab = selectLogsTab;
 
   const loadLogs = useCallback(async (signal: AbortSignal): Promise<LogEntry[]> => {
-    const res = await fetch(`${apiBase}/api/logs`, { signal });
+    const res = await fetch(`${apiBase}/api/logs?limit=2000`, { signal });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
-    const next = await res.json() as LogEntry[];
+    const body = await res.json() as LogEntry[] | { logs?: LogEntry[] };
+    const next = Array.isArray(body) ? body : (body.logs ?? []);
     writeSessionListCache(logsCacheKey(apiBase), next);
     return next;
   }, [apiBase]);
