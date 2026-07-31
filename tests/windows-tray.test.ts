@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  buildWindowsTrayLauncherScript,
+  buildWindowsTrayPowerShellCommand,
   buildWindowsTrayRunCommand,
+  launchWindowsTrayHost,
   parseWindowsTrayRunValue,
   readWindowsTrayRunValueWithAsyncRunner,
   readWindowsTrayRunValueWithRunner,
@@ -38,11 +42,39 @@ describe("Windows tray packaging and command safety", () => {
   });
 
   test("quotes metacharacter and Unicode paths without shell interpolation", () => {
-    const powershellCommand = buildWindowsTrayRunCommand(entry, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    const powershellCommand = buildWindowsTrayPowerShellCommand(entry, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
     expect(powershellCommand).toContain(`-File "${entry.script}"`);
     expect(powershellCommand).toContain(`-OpenCodexHome "${entry.opencodexHome}"`);
     expect(powershellCommand).not.toContain("cmd /c");
     expect(powershellCommand).not.toContain("-Command");
+    const runCommand = buildWindowsTrayRunCommand({
+      ...entry,
+      launcherPath: `${entry.opencodexHome}\\opencodex-tray.vbs`,
+    });
+    expect(runCommand.toLowerCase()).toContain("wscript.exe");
+    expect(runCommand.length).toBeLessThanOrEqual(260);
+  });
+  test("keeps UNC backslashes literal in the VBS Run command", () => {
+    const uncRoot = "\\\\server\\share";
+    const uncEntry: WindowsTrayEntry = {
+      bun: `${uncRoot}\\tools\\bun.exe`,
+      cli: `${uncRoot}\\repo\\src\\cli\\index.ts`,
+      script: `${uncRoot}\\repo\\src\\tray\\windows-tray.ps1`,
+      codexHome: "C:\\Users\\Test\\.codex",
+      opencodexHome: `${uncRoot}\\opencodex`,
+    };
+    const launcher = buildWindowsTrayLauncherScript(uncEntry);
+    expect(launcher).toContain(`${uncRoot}\\tools\\bun.exe`);
+    expect(launcher).not.toMatch(/\\\\\\\\server/);
+  });
+
+
+  test("preserves non-ASCII paths in the tray launcher script and UTF-16LE install encoding", () => {
+    const launcher = buildWindowsTrayLauncherScript(entry);
+    expect(launcher).toContain("사용자 공간");
+    const encoded = Buffer.from("\uFEFF" + launcher, "utf16le");
+    expect(encoded.subarray(0, 2).equals(Buffer.from([0xff, 0xfe]))).toBe(true);
+    expect(encoded.toString("utf16le")).toContain("사용자 공간");
   });
 
   test("rejects quote and control-character path injection", () => {
@@ -195,7 +227,7 @@ describe("Windows tray packaging and command safety", () => {
     const source = readFileSync(join(import.meta.dir, "..", "src", "tray", "windows-tray.ps1"), "utf8");
     expect(typescript).not.toContain("\u0000");
     expect(typescript).toContain("OCX_TRAY_ENTRY_B64");
-    expect(typescript).toContain('detached: true');
+    expect(typescript).toContain("$startInfo.UseShellExecute = $true");
     expect(source).toContain("System.Threading.Mutex");
     expect(source).toContain("System.Threading.EventWaitHandle");
     expect(source).toContain("GetFullPath");
@@ -210,6 +242,57 @@ describe("Windows tray packaging and command safety", () => {
     expect(source).not.toContain("Invoke-Expression");
     expect(source).not.toContain("taskkill");
     expect(source).not.toContain("Stop-Process");
+  });
+
+  test("launches the detached tray host without retaining the proxy listen socket", async () => {
+    if (process.platform !== "win32") return;
+    const directory = mkdtempSync(join(tmpdir(), "ocx-tray-inheritance-"));
+    const pidPath = join(directory, "child.pid");
+    const childPath = join(directory, "child & %TEMP% 테스트.ts");
+    copyFileSync(join(import.meta.dir, "helpers", "windows-tray-inheritance-child.ts"), childPath);
+    const previousPidPath = process.env.OCX_TRAY_TEST_PID_FILE;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("ok"),
+    });
+    const port = server.port;
+    let childPid = 0;
+    let replacement: ReturnType<typeof Bun.serve> | undefined;
+
+    try {
+      process.env.OCX_TRAY_TEST_PID_FILE = pidPath;
+      launchWindowsTrayHost({
+        ...entry,
+        bun: process.execPath,
+        cli: childPath,
+      });
+      for (let attempt = 0; attempt < 100 && !existsSync(pidPath); attempt += 1) {
+        await Bun.sleep(25);
+      }
+      expect(existsSync(pidPath)).toBe(true);
+      childPid = Number(readFileSync(pidPath, "utf8"));
+      expect(Number.isSafeInteger(childPid) && childPid > 0).toBe(true);
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+
+      await server.stop(true);
+      replacement = Bun.serve({
+        hostname: "127.0.0.1",
+        port,
+        fetch: () => new Response("replacement"),
+      });
+      expect(replacement.port).toBe(port);
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+    } finally {
+      if (previousPidPath === undefined) delete process.env.OCX_TRAY_TEST_PID_FILE;
+      else process.env.OCX_TRAY_TEST_PID_FILE = previousPidPath;
+      if (replacement) await replacement.stop(true);
+      await server.stop(true);
+      if (childPid > 0) {
+        try { process.kill(childPid); } catch { /* exact test child already exited */ }
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("ships branded multi-size Windows tray icons", () => {
