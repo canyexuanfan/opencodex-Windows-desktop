@@ -106,16 +106,25 @@ Bun 패닉은 별개 문제다. 런처 커밋 두 개로 안 풀린다. 이슈�
 | #644 Windows tray home | 부분 — 공유 리졸버는 `codex/home.ts:143`에 있는데 `tray/windows.ts:78`, `service.ts:92`가 구형 중복 | `NEEDS-CHANGES` | diff에 `.codexclaw/`·`.DS_Store` 포함. 워크플로 권한 변경 |
 | #757 GPT-5.6 Pro 브라우저 provider | 살아 있음 — `registry.ts:1182-1193`에 browser provider 없음 | `NEEDS-CHANGES` | 의미 충돌 12파일. `stream:false` fail-closed 테스트 없음 |
 
-### 보안 리뷰 대기
+### 보안 리뷰 대기 6건
 
-| PR | 표면 | 판정 |
-|---|---|---|
-| #779 | 관리 CORS/Origin 경계 | `DEFER` — 준비 완료, 리뷰만 |
-| #750 | OAuth 자격증명·토큰 세대·영속 config | `DEFER` — 테스트 매우 강함. draft 해제 필요 |
-| #744 | OAuth 재조정·provider 자격증명 해석 순서 | `DEFER` — `registry.ts:799`에 `liveModels:false` 없음 확인 |
-| #693 | bearer 키를 A6API 2곳으로 전송 | `DEFER` |
-| #671 | 자격증명-모델 라우팅 | `DEFER` — `auth-context.ts:186`에 선택자 없음 |
-| #616 | 관리 validation + hosted tool wire 정책 | `DEFER` |
+`MAINTAINERS.md`가 명시적 보안 리뷰를 요구하는 표면을 건드리는 PR들이다.
+전부 `DEFER`. 리뷰는 메인테이너 판단이고 에이전트가 대신할 수 없다.
+
+**#779, #750, #744, #693, #671, #616.**
+
+표면별 상세 매핑은 이 문서에 적지 않는다. `AGENTS.md`의 규칙과
+`tests/repo-hygiene.test.ts`의 트립와이어에 따라, 아직 리뷰가 끝나지 않은 항목의
+경계 분석은 공개 devlog에 남기지 않는다. 스크래치:
+`.tmp/260731-acceptance-boundary-notes.md`.
+
+진행에 필요한 사실만 남긴다:
+
+- **#779**는 CI 초록이고 코드도 준비됐다. 리뷰만 남았다.
+- **#744**는 `registry.ts:799`에 `liveModels:false`가 없다는 결함 확인이 끝났다.
+- **#671**은 `auth-context.ts:186`에 해당 선택자가 없다.
+- **#750**은 테스트가 매우 강하다. draft 해제가 필요하다.
+- **#693**과 **#616**은 리뷰 대기 상태 그대로다.
 
 ## 이 매트릭스에서 나오는 것
 
