@@ -697,6 +697,8 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       const pendingToolCalls: PendingToolCall[] = [];
       let toolCallSeq = 0;
       const flushToolCalls = function* (): Generator<AdapterEvent> {
+        // Do not treat flushed tool calls as user-facing output for the finish-less EOF
+        // fallback — incomplete tool args must stay on the truncation path.
         for (const call of pendingToolCalls) {
           if (!call.id) call.id = `call_${++toolCallSeq}`;
           yield { type: "tool_call_start", id: call.id, name: call.name };
@@ -711,6 +713,9 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       // explicit `[DONE]` sentinel OR a chunk carrying a non-null `finish_reason` (some
       // OpenAI-compatible providers omit `[DONE]` but do send finish_reason).
       let finishReason: string | undefined;
+      // Only answer text enables the finish-less EOF fallback. Reasoning-only streams can be
+      // suppressed by hideThinkingSummary and must not complete as empty successful turns.
+      let sawUserFacingOutput = false;
 
       // Single per-line handler shared by the streaming loop and the EOF residual-frame flush, so
       // a final frame is parsed identically wherever it lands (no duplicated, drift-prone parsing).
@@ -780,6 +785,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             yield { type: "reasoning_raw_delta", text: delta.reasoning_content };
           }
           if (typeof delta.content === "string" && delta.content.length > 0) {
+            sawUserFacingOutput = true;
             yield { type: "text_delta", text: delta.content };
           }
 
@@ -837,10 +843,8 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (buffer.length > 0) {
           if ((yield* handleDataLine(buffer)) === "terminate") return;
         }
-        // Reader EOF. A graceful close shows at least one terminal signal: `[DONE]` (returns above),
-        // a non-null finish_reason (sawFinish), or a trailing usage chunk (providers emit usage only
-        // at end-of-generation). If NONE of those were seen, the stream was cut mid-flight — fail
-        // closed so the bridge emits a classified response.failed rather than a silent truncation.
+        // Reader EOF. Prefer failing closed before flushing pending tool calls so the bridge
+        // never sees a fabricated tool_call_end on a truncated mid-assembly stream.
         //
         // Checked BEFORE flushToolCalls(), because that helper emits tool_call_end and there is no
         // taking it back: a half-assembled argument string would reach the client as a completed
@@ -856,16 +860,19 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           yield { type: "error", message: "upstream stream ended mid tool call without a terminal signal — possible truncation" };
           return;
         }
-        yield* flushToolCalls();
-        if (!sawFinish && pendingUsage === undefined) {
+        // Finish-less EOF is only safe when answer text was emitted. Reasoning-only / usage-only
+        // truncations must stay on the error path (hideThinkingSummary can suppress reasoning).
+        // Trailing usage alone is not a terminal signal for this adapter (#735 / restore #773).
+        if (!sawFinish && !sawUserFacingOutput) {
           debugProviderDiagnostic("openai-chat", "stream-truncated", {
             finishReason: finishReason ?? null,
-            hadUsage: false,
+            hadUsage: pendingUsage !== undefined,
           });
           yield { type: "error", message: "upstream stream ended without a terminal signal ([DONE] or finish_reason) — possible truncation" };
           return;
         }
-        // Graceful close that omitted [DONE] but delivered finish_reason and/or final usage.
+        yield* flushToolCalls();
+        // Graceful close that omitted [DONE] but delivered finish_reason and/or answer text.
         const stopReason = finishReason === "length"
           ? "max_tokens"
           : finishReason === "content_filter"
