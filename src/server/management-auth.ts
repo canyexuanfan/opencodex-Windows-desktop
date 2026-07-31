@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
+import { allowUnverifiedAdminTokenAcl } from "../lib/allow-unverified-admin-token-acl";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxConfig } from "../types";
 import {
@@ -50,11 +51,6 @@ export type ManagementAuthState =
 
 function fail(reason: string): ManagementAuthState {
   return { available: false, reason };
-}
-
-function allowUnverifiedAdminTokenAcl(): boolean {
-  const raw = process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL?.trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes";
 }
 
 function assertSafeDirectory(path: string): void {

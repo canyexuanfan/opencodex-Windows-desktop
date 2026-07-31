@@ -64,6 +64,7 @@ function websocketHandshakeOpens(url: URL, token: string): Promise<boolean> {
 }
 
 beforeEach(() => {
+  delete process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL;
   testHome = mkdtempSync(join(tmpdir(), "ocx-management-auth-"));
   process.env.OPENCODEX_HOME = testHome;
   process.env.OPENCODEX_API_AUTH_TOKEN = "data-secret";

@@ -21,6 +21,7 @@ import { join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, loadConfig } from "../config";
 import { recordOwnedConfigPath } from "./config-ownership";
 import { durableBunPath } from "./bun-runtime";
+import { bakedAllowUnverifiedAdminTokenAcl } from "./allow-unverified-admin-token-acl";
 import { serviceApiTokenFilePath } from "./service-secrets";
 
 export const WINSW_VERSION = "2.12.0";
@@ -100,6 +101,7 @@ export function buildWinswXml(entry: WinswEntry, env: NodeJS.ProcessEnv = proces
     env.CODEX_HOME?.trim() ? `  <env name="CODEX_HOME" value="${xmlEscape(currentCodexHomeAbsolute())}"/>` : null,
     `  <env name="OPENCODEX_HOME" value="${xmlEscape(getConfigDir())}"/>`,
     aclTimeout ? `  <env name="OPENCODEX_ACL_TIMEOUT_MS" value="${xmlEscape(aclTimeout)}"/>` : null,
+    bakedAllowUnverifiedAdminTokenAcl(env) ? `  <env name="OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL" value="${xmlEscape(bakedAllowUnverifiedAdminTokenAcl(env)!)}"/>` : null,
   ].filter((line): line is string => Boolean(line));
   return `<?xml version="1.0" encoding="UTF-8"?>
 <service>
