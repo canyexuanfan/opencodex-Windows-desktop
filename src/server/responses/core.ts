@@ -89,6 +89,7 @@ import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../provid
 import { isUsageDebugEnabled } from "../../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve";
+import type { InboundWire } from "../../providers/registry";
 import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../../providers/key-failover";
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { resolveProviderTransport } from "../../providers/xai-transport";
@@ -127,13 +128,14 @@ import {
   consumeForInspection,
   consumeForResponseLogMetadata,
   createSseInspector,
+  markEagerRelaySseResponse,
   markNativePassthroughSseResponse,
   relaySseWithFailedTail,
   relayWithAbort,
   sanitizePassthroughHeaders,
 } from "../relay";
 import { relaySseEagerBounded } from "../relay-eager";
-import { decideEagerRelay } from "../../lib/bun-stream-caps";
+import { selectEagerPath } from "../../lib/bun-stream-caps";
 import { cancelBodyOnAbort } from "../../lib/abort";
 import {
   createResponsesItemIdPayloadRewrite,
@@ -248,6 +250,10 @@ interface CodexPoolAccountRetryArgs {
     abortSignal?: AbortSignal;
     onCodexAuthContextResolved?: (ctx: CodexAuthContext) => void;
     deferCodexResetDerivedCooldown?: boolean;
+    // Narrowed subset of HandleResponsesOptions: the retry rebuilds the adapter, so it
+    // needs the inbound scope or the retry could land on a different wire than the
+    // first attempt.
+    inboundWire?: InboundWire;
   };
   firstAuthCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   firstResponse: Response;
@@ -309,6 +315,7 @@ async function retryCodexPoolOnAlternateAccount(
     req, config, route, parsed, logCtx, options, firstAuthCtx, firstResponse,
     outcomeStatus, upstream, connectMs, passthroughEstimate, stream,
   } = args;
+  const inboundWire = options.inboundWire ?? "responses";
   let retryAuthCtx: CodexAuthContext | undefined;
   try {
     retryAuthCtx = await resolveCodexAuthContext(
@@ -352,7 +359,7 @@ async function retryCodexPoolOnAlternateAccount(
     "pool",
   );
   const retryAdapter = resolveAdapter(
-    resolveWireProtocolOverride(route.providerName, route.modelId, retryProvider),
+    resolveWireProtocolOverride(route.providerName, route.modelId, retryProvider, inboundWire),
     config.cacheRetention,
   );
   const request = await retryAdapter.buildRequest(parsed, { headers: retryHeaders });
@@ -493,6 +500,14 @@ export interface HandleResponsesOptions {
    * (system/tools hash), not a per-session id — do not use it for Anthropic pool affinity.
    */
   promptCacheKeyIsSharedCohort?: boolean;
+  /**
+   * Wire protocol the ORIGINAL client spoke. The Chat and Anthropic surfaces translate
+   * their body into a Responses shape and replay through this function, so without an
+   * explicit value the replay would look like a native Responses request and an
+   * inbound-scoped registry wire default would fire for a client that never asked for
+   * it. Omitted means a genuine Responses inbound.
+   */
+  inboundWire?: InboundWire;
   /** Internal recursion guard; callers outside this module must not set it. */
   comboAttempt?: boolean;
   /** Internal combo handoff: allow a later same-provider model after a reset-derived 429/402. */
@@ -729,8 +744,9 @@ async function applyFinalRouteRequestNormalization(args: {
   config: OcxConfig;
   req: Request;
   logCtx: RequestLogContext;
+  inboundWire: InboundWire;
 }): Promise<void> {
-  const { parsed, route, config, req, logCtx } = args;
+  const { parsed, route, config, req, logCtx, inboundWire } = args;
 
   // Apply the routed model id upstream: routing may strip a "<provider>/" namespace.
   if (route.modelId !== parsed.modelId) {
@@ -741,7 +757,7 @@ async function applyFinalRouteRequestNormalization(args: {
   }
   // Settle the wire once so logging, fast-mode, auth, and sidecars read the adapter
   // this request will actually use (#404).
-  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
@@ -1057,6 +1073,9 @@ export async function handleResponses(
   logCtx: RequestLogContext,
   options: HandleResponsesOptions = {},
 ): Promise<Response> {
+  // The Chat and Anthropic surfaces replay through here with a Responses-shaped body,
+  // so an omitted value means a genuine Responses inbound.
+  const inboundWire = options.inboundWire ?? "responses";
   let body: unknown;
   try {
     body = await readJsonRequestBody(req);
@@ -1220,7 +1239,7 @@ export async function handleResponses(
     );
   }
 
-  await applyFinalRouteRequestNormalization({ parsed, route, config, req, logCtx });
+  await applyFinalRouteRequestNormalization({ parsed, route, config, req, logCtx, inboundWire });
 
   {
     const finalAuth = await resolveResponsesCodexAuth(req, config, route, options);
@@ -1310,7 +1329,7 @@ export async function handleResponses(
     parsed.options.promptCacheKey,
     route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
   );
-  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
   const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
   logCtx.providerAdapter = adapter.name;
   sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name);
@@ -1607,18 +1626,22 @@ export async function handleResponses(
     // async-pull segfault on Windows. Branch[0] goes directly to the Response (Bun
     // native relay, never enters JS Sink.write); branch[1] is consumed in the
     // background for terminal-outcome/quota inspection only.
-    // #314 alternative shape: on win32 (no repair) with a runtime carrying the
-    // Bun#32111 fix — or explicit `streamMode: "eager-relay"` opt-in — the tee
-    // is skipped entirely and relaySseEagerBounded provides a single eager
-    // bounded reader with inline inspection (see src/server/relay-eager.ts and
-    // devlog/_plan/260723_win_mem_safestream/020). Default on the bundled
-    // known-bad runtime remains the tee path below.
+    // #314 alternative shape: win32 no-rewrite traffic follows the runtime/config
+    // gate; darwin no-rewrite traffic joins it only for explicit
+    // `streamMode: "eager-relay"` opt-in. Darwin `auto` always stays tee. The
+    // eager shape skips tee and uses one bounded reader with inline inspection
+    // (src/server/relay-eager.ts; policy:
+    // devlog/_plan/260731_macos_rss_retention/100_darwin_eager_optin.md).
+    // The bundled known-bad runtime remains on tee by default on both platforms.
     if (isEventStream && upstreamResponse.body) {
       const repairConfig = route.provider.responsesItemIdRepair;
       const needsClientRewrite = imageGenCallAliases.size > 0 || hasResponsesItemIdRepair(repairConfig);
-      const winNoClientRewrite = process.platform === "win32" && !needsClientRewrite;
-      const eagerDecision = winNoClientRewrite ? decideEagerRelay(config.streamMode ?? "auto") : null;
-      if (eagerDecision?.useEagerRelay) {
+      const eagerPath = selectEagerPath(
+        process.platform,
+        needsClientRewrite,
+        config.streamMode ?? "auto",
+      );
+      if (eagerPath?.useEagerRelay) {
         const turnAc = new AbortController();
         linkAbortSignal(upstream, turnAc.signal);
         registerTurn(turnAc);
@@ -1653,6 +1676,7 @@ export async function handleResponses(
         const eagerBody = relaySseEagerBounded(upstreamResponse.body, turnAc, {
           inspectChunk: chunk => inspector.feed(chunk),
           finishInspection: () => inspector.finish(),
+          disposeInspection: () => inspector.dispose(),
           sawTerminal: () => inspector.reported(),
           onSynthetic: kind => {
             if (!reportNativeTerminal) return;
@@ -1668,18 +1692,26 @@ export async function handleResponses(
           onClientCancel: () => options.onNativePassthroughCancel?.(),
           onDone: () => unregisterTurn(turnAc),
         });
-        // The eager branch is reachable only through winNoClientRewrite, so it must stay a pure
-        // native relay without an image-gen or item-id JS pull wrapper on win32 (Bun#32111).
+        // selectEagerPath admits only no-rewrite traffic, so this stays a pure native relay on
+        // both eligible platforms; win32 must never enter an image/item-id JS pull wrapper (#32111).
         if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
-        return markNativePassthroughSseResponse(new Response(eagerBody, {
-          status: upstreamResponse.status,
-          headers,
-        }));
+        return markEagerRelaySseResponse(
+          markNativePassthroughSseResponse(new Response(eagerBody, {
+            status: upstreamResponse.status,
+            headers,
+          })),
+        );
       }
       const [nativeBody, inspectBody] = upstreamResponse.body.tee();
       const turnAc = new AbortController();
+      const clientGone = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
       registerTurn(turnAc);
+      const inspectionConsumerOptions = {
+        clientGoneSignal: clientGone.signal,
+        drainBounds: { ms: 15_000, bytes: 32 * 1024 * 1024 },
+        upstream,
+      };
       if (recordTerminalOutcomes) {
         // A real terminal was parsed from the (teed) inspection stream — record it as the outcome
         // even if the client has already disconnected: the turn genuinely reached that terminal, so
@@ -1714,6 +1746,7 @@ export async function handleResponses(
           () => options.onNativePassthroughCancel?.(),
           rememberPassthroughResponse,
           options.onFirstOutput,
+          inspectionConsumerOptions,
         );
       } else {
         consumeForResponseLogMetadata(
@@ -1723,6 +1756,7 @@ export async function handleResponses(
           () => unregisterTurn(turnAc),
           rememberPassthroughResponse,
           options.onFirstOutput,
+          inspectionConsumerOptions,
         );
       }
       if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
@@ -1741,7 +1775,7 @@ export async function handleResponses(
         : nativeBody;
       const clientBody = process.platform === "win32" && !needsClientRewrite
         ? nativeBody
-        : relaySseWithFailedTail(rewrittenBody, upstream);
+        : relaySseWithFailedTail(rewrittenBody, upstream, reason => clientGone.abort(reason));
       return markNativePassthroughSseResponse(new Response(clientBody, {
         status: upstreamResponse.status,
         headers,
@@ -1875,7 +1909,7 @@ export async function handleResponses(
         if (!rotated) return null;
         route.provider = rotated;
         return resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
           config.cacheRetention,
         );
       },
@@ -1942,7 +1976,7 @@ export async function handleResponses(
         if (!rotated) return null;
         route.provider = rotated;
         return resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
           config.cacheRetention,
         );
       },
@@ -2188,7 +2222,7 @@ export async function handleResponses(
         );
         route.provider = refreshedProvider;
         activeAdapter = resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider),
+          resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider, inboundWire),
           config.cacheRetention,
         );
         const result = await rebuildAndRefetch("oauth-401");
@@ -2213,7 +2247,7 @@ export async function handleResponses(
         try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
         route.provider = rotated;
         activeAdapter = resolveAdapter(
-          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
           config.cacheRetention,
         );
         const result = await rebuildAndRefetch("key-429");
@@ -2245,7 +2279,7 @@ export async function handleResponses(
           promoteAnthropicActiveAccount(nextAccountId);
           logCtx.provider = formatAnthropicProviderForLog("anthropic", nextAccountId, config);
           activeAdapter = resolveAdapter(
-            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
             config.cacheRetention,
           );
           sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
@@ -2374,7 +2408,7 @@ export async function handleResponses(
           try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
           route.provider = rotated;
           activeAdapter = resolveAdapter(
-            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
             config.cacheRetention,
           );
           continue;
@@ -2402,7 +2436,7 @@ export async function handleResponses(
             promoteAnthropicActiveAccount(nextAccountId);
             logCtx.provider = formatAnthropicProviderForLog("anthropic", nextAccountId, config);
             activeAdapter = resolveAdapter(
-              resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+              resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
               config.cacheRetention,
             );
             sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { relaySseWithFailedTail } from "../src/server";
+import { relaySseWithFailedTail, relayWithAbort } from "../src/server";
+import { relaySseEagerBounded, type EagerRelayHooks } from "../src/server/relay-eager";
+import { MAX_TAIL_ERROR_MESSAGE_CHARS } from "../src/server/relay";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -29,6 +31,21 @@ async function drain(stream: ReadableStream<Uint8Array>): Promise<string> {
     if (done) return out;
     out += decoder.decode(value, { stream: true });
   }
+}
+
+const parityHooks: EagerRelayHooks = {
+  inspectChunk() {},
+  finishInspection() {},
+  sawTerminal: () => false,
+  onSynthetic() {},
+  onClientCancel() {},
+  onDone() {},
+};
+
+function failedMessage(text: string): string {
+  const payload = text.split("event: response.failed\ndata: ")[1]?.split("\n")[0];
+  if (!payload) throw new Error("missing response.failed payload");
+  return (JSON.parse(payload) as { response: { error: { message: string } } }).response.error.message;
 }
 
 describe("relaySseWithFailedTail", () => {
@@ -75,5 +92,48 @@ describe("relaySseWithFailedTail", () => {
     const reader = relayed.getReader();
     await reader.cancel(new DOMException("client closed", "AbortError"));
     expect(upstream.signal.aborted).toBe(true);
+  });
+
+  test("opt-in client-gone ownership cancels each branch reader without aborting upstream", async () => {
+    for (const kind of ["sse", "plain"] as const) {
+      const upstream = new AbortController();
+      const reasons: unknown[] = [];
+      let sourceCancels = 0;
+      const src = new ReadableStream<Uint8Array>({
+        pull() { /* stay pending */ },
+        cancel() { sourceCancels += 1; },
+      });
+      const relayed = kind === "sse"
+        ? relaySseWithFailedTail(src, upstream, reason => reasons.push(reason))
+        : relayWithAbort(src, upstream, reason => reasons.push(reason))!;
+      const reason = new DOMException(`${kind} client closed`, "AbortError");
+
+      await relayed.getReader().cancel(reason);
+
+      expect(reasons).toEqual([reason]);
+      expect(sourceCancels).toBe(1);
+      expect(upstream.signal.aborted).toBe(false);
+    }
+  });
+
+  test("(090-10) legacy and eager failed tails are byte-identical before and after message truncation", async () => {
+    for (const message of ["in-cap reset", `${"x".repeat(4_096)}-uncapped-suffix`]) {
+      const error = new Error(message);
+      const legacy = await drain(relaySseWithFailedTail(
+        sourceStream([], { failAfter: true, error }),
+        new AbortController(),
+      ));
+      const eager = await drain(relaySseEagerBounded(
+        sourceStream([], { failAfter: true, error }),
+        new AbortController(),
+        parityHooks,
+      ));
+
+      expect(encoder.encode(eager)).toEqual(encoder.encode(legacy));
+      if (message.length > MAX_TAIL_ERROR_MESSAGE_CHARS) {
+        expect(failedMessage(eager).length).toBe(MAX_TAIL_ERROR_MESSAGE_CHARS);
+        expect(failedMessage(legacy)).not.toContain("uncapped-suffix");
+      }
+    }
   });
 });

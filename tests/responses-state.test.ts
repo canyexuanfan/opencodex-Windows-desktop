@@ -300,6 +300,38 @@ describe("Responses previous_response_id state", () => {
     expect(expanded.input.some(item => item.type === "function_call" && item.name === "must_not_replay")).toBe(false);
   });
 
+  test("tainted inspector reconstruction never persists a truncated replay", () => {
+    const requestBody = { model: "gpt-5.5", input: "start" };
+    let callbacks = 0;
+    const inspector = createSseInspector({
+      onCompletedResponse: response => {
+        callbacks += 1;
+        rememberResponseState(requestBody, response, undefined, { force: true });
+      },
+    });
+    const events: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < 257; index += 1) {
+      events.push({
+        type: "response.output_item.done",
+        output_index: index,
+        item: { type: "message", id: `tainted-${index}`, role: "assistant", content: [] },
+      });
+    }
+    events.push({
+      type: "response.completed",
+      response: { id: "resp_tainted_reconstruction", status: "completed", output: [] },
+    });
+    feedInspector(inspector, events);
+
+    const next = {
+      model: "gpt-5.5",
+      previous_response_id: "resp_tainted_reconstruction",
+      input: "continue",
+    };
+    expect(callbacks).toBe(0);
+    expect(expandPreviousResponseInput(next)).toEqual(next);
+  });
+
   test("two previous_response_id continuations keep one replayed guidance item (#326)", () => {
     const guidance = "Use the delegated agent workflow.";
     const countRawGuidance = (body: unknown): number => {

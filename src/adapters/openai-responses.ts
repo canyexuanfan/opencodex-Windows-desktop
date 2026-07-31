@@ -526,6 +526,40 @@ function stripPreviousResponseId(body: unknown, strip: boolean): unknown {
 }
 
 /**
+ * Drop request parameters a stateless Responses upstream cannot implement, and pin
+ * `store` false.
+ *
+ * `previous_response_id` is listed here as well as in `stripPreviousResponseId`
+ * because that helper's strip is conditional on replay expansion, and it keeps the
+ * field for API-key providers on the premise that the platform offers real
+ * server-side storage. DeepSeek documents the opposite: "the API is stateless:
+ * responses and conversations are not stored on the server", so the field can never
+ * be honoured regardless of expansion state.
+ *
+ * `prompt` is a reference to a server-stored prompt template — the most stateful
+ * field in the accepted schema.
+ *
+ * `service_tier` is deliberately NOT dropped: the server writes it for fast mode
+ * (`responses/core.ts`), and silently deleting a configured knob inside an adapter is
+ * worse than forwarding a parameter the upstream ignores.
+ *
+ * MUST run before the composed sanitize chain below: `stripItemIdsWhenUnstored` keys
+ * off `store === false`, and a stateless upstream cannot resolve a stored item id.
+ * Returns a copy, so `parsed._rawBody` keeps the client's original `store` value and
+ * the local replay cache still records the turn.
+ */
+function stripStatefulResponsesParams(body: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  const drop = ["previous_response_id", "conversation", "background", "metadata", "prompt"] as const;
+  const present = drop.some(key => Object.prototype.hasOwnProperty.call(body, key));
+  if (!present && body.store === false) return body;
+  const next: Record<string, unknown> = { ...body };
+  for (const key of drop) delete next[key];
+  next.store = false;
+  return next;
+}
+
+/**
  * Remove top-level parameters the ChatGPT backend (`authMode: "forward"`) rejects
  * with `{"detail":"Unsupported parameter: …"}` (strict allowlist). Codex CLI never
  * sends these — it controls output length via `reasoning.effort` — but third-party
@@ -964,8 +998,17 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         parsed._rawBody,
         forward || parsed._previousResponseInputExpanded === true,
       );
-      if (forward) {
+      const stateless = provider.statelessResponses === true;
+      if (stateless) outBody = stripStatefulResponsesParams(outBody);
+      // A replay miss can leave a function_call_output whose paired function_call sat
+      // in the prefix that was never expanded. A stateless upstream cannot resolve the
+      // pair from its own storage either, so it needs the same repair the forward
+      // backend gets — dropping previous_response_id is not much use if the body that
+      // reaches the wire is unparseable.
+      if (forward || stateless) {
         outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
+      }
+      if (forward) {
         outBody = stripUnsupportedForwardParams(outBody);
       }
       else outBody = normalizeImageGenClientTools(outBody);

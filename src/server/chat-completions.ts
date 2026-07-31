@@ -78,7 +78,7 @@ export async function handleChatCompletions(
     const route = routeModel(config, internalBody.model as string);
     // Settle the wire once so every branch below reads the adapter this model will
     // actually use, not the provider-wide default (#404).
-    route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+    route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, "chat");
     logCtx.model = route.modelId;
     logCtx.providerAdapter = route.provider.adapter;
     logCtx.requestedModel = requestedModel;
@@ -149,6 +149,8 @@ export async function handleChatCompletions(
   };
   const upstream = await handleResponses(internalReq, config, logCtx, {
     abortSignal: req.signal,
+    // Body is Responses-shaped by now, but the client spoke Chat Completions.
+    inboundWire: "chat",
     ...(logIds ? { onFirstOutput: () => recordFirstOutput(logCtx, logIds.start) } : {}),
     onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForTerminalStatus(status), { terminalStatus: status, closeReason: "terminal" }),
     onNativePassthroughCancel: () => finalizeNativeLog(499, { closeReason: "client_cancel" }),

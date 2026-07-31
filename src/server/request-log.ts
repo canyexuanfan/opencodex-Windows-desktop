@@ -534,14 +534,26 @@ export function inspectResponseLogJson(logCtx: RequestLogContext, text: string):
 
 export function inspectResponseLogSsePayload(logCtx: RequestLogContext, payload: string | null): void {
   if (!payload || payload.trim() === "[DONE]") return;
-  const debugEnabled = isUsageDebugEnabled();
-  const sseAlreadyMarked = logCtx.usageDebugBodyKind === "sse";
+  let parsed: unknown | undefined;
   try {
-    applyResponseLogMetadata(logCtx, JSON.parse(payload));
+    parsed = JSON.parse(payload);
   } catch {
     /* SSE block payload may not be JSON; metadata inspection is best-effort */
   }
-  captureUpstreamError(logCtx, payload);
+  inspectResponseLogSsePayloadParsed(logCtx, payload, parsed);
+}
+
+/** Inspect an SSE payload using the caller's single best-effort JSON parse. */
+export function inspectResponseLogSsePayloadParsed(
+  logCtx: RequestLogContext,
+  payload: string | null,
+  parsed: unknown | undefined,
+): void {
+  if (!payload || payload.trim() === "[DONE]") return;
+  const debugEnabled = isUsageDebugEnabled();
+  const sseAlreadyMarked = logCtx.usageDebugBodyKind === "sse";
+  if (parsed !== undefined) applyResponseLogMetadata(logCtx, parsed);
+  captureUpstreamErrorParsed(logCtx, payload, parsed);
   if (debugEnabled) {
     if (!sseAlreadyMarked) {
       logCtx.usageDebugBodyKind = "sse";
@@ -563,8 +575,22 @@ export function inspectResponseLogSsePayload(logCtx: RequestLogContext, payload:
  */
 function captureUpstreamError(logCtx: RequestLogContext, text: string | null): void {
   if (!text) return;
+  let parsed: unknown | undefined;
   try {
-    const json = JSON.parse(text) as {
+    parsed = JSON.parse(text);
+  } catch {
+    /* retain the raw malformed payload for the bounded fallback below */
+  }
+  captureUpstreamErrorParsed(logCtx, text, parsed);
+}
+
+function captureUpstreamErrorParsed(
+  logCtx: RequestLogContext,
+  text: string,
+  parsed: unknown | undefined,
+): void {
+  if (parsed !== undefined && parsed !== null) {
+    const json = parsed as {
       type?: unknown;
       error?: { message?: unknown };
       last_error?: { message?: unknown };
@@ -596,12 +622,12 @@ function captureUpstreamError(logCtx: RequestLogContext, text: string | null): v
     if (typeof reason === "string" && reason.trim()) {
       logCtx.upstreamError = redactSecretString(incompleteReasonLabel(reason.trim())).slice(0, 500);
     }
-  } catch {
-    if (logCtx.upstreamError) return;
-    const trimmed = text.trim();
-    if (trimmed) {
-      logCtx.upstreamError = redactSecretString(trimmed).slice(0, 500);
-    }
+    return;
+  }
+  if (logCtx.upstreamError) return;
+  const trimmed = text.trim();
+  if (trimmed) {
+    logCtx.upstreamError = redactSecretString(trimmed).slice(0, 500);
   }
 }
 

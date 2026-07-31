@@ -19,11 +19,12 @@
  * `activeTurnCount` / `isDraining` are scalar lifecycle counters for the
  * dashboard drain-and-restart confirm UX — never request bodies or IDs.
  */
-import { decideEagerRelay } from "../../lib/bun-stream-caps";
+import { selectEagerPath } from "../../lib/bun-stream-caps";
 import { getActiveTurnCount, isDraining } from "../lifecycle";
 import { getActiveMemoryWatchdog, observedMemoryCounter } from "../memory-watchdog";
 import { responseStateMetrics } from "../../responses/state";
 import { jsonResponse } from "../auth-cors";
+import { getInspectionCounters } from "../relay";
 import type { ManagementContext } from "./context";
 import { acceptSystemRestart } from "./system-restart";
 
@@ -64,6 +65,12 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
       })()
       : null;
     const streamMode = config.streamMode ?? "auto";
+    /**
+     * No request-specific rewrite context exists on this route, so report the
+     * effective no-client-rewrite baseline. Individual rewrite requests still
+     * stay on tee even when this baseline says eager.
+     */
+    const eagerRelay = selectEagerPath(process.platform, false, streamMode);
     return jsonResponse({
       pid: process.pid,
       bunVersion: Bun.version,
@@ -79,8 +86,9 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
 	      observedMetric: observed.observedMetric,
 	      jscHeap,
       responseState: responseStateMetrics(),
+      inspectionCounters: getInspectionCounters(),
       streamMode,
-      eagerRelay: process.platform === "win32" ? decideEagerRelay(streamMode) : null,
+      eagerRelay,
       watchdog,
       activeTurnCount: getActiveTurnCount(),
       isDraining: isDraining(),

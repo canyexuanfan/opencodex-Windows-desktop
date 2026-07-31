@@ -10,6 +10,7 @@ import {
   type MemorySampleBase,
 } from "../src/server/memory-watchdog";
 import { handleManagementAPI } from "../src/server/management-api";
+import { selectEagerPath } from "../src/lib/bun-stream-caps";
 import type { OcxConfig } from "../src/types";
 
 function config(): OcxConfig {
@@ -178,6 +179,10 @@ describe("GET /api/system/memory", () => {
 	      heapUsed: number; external: number; arrayBuffers: number; observedBytes: number; observedMetric: string;
 	      jscHeap: { heapSize: number } | null;
 	      responseState: { count: number; totalBytes: number; largestBytes: number; oldestAgeMs: number };
+	      inspectionCounters: {
+	        frameBufferHighWaterBytes: number; completedItemsMaxCount: number; frameCapOverflows: number;
+	        itemCapEvictions: number; postCancelDrainStops: number;
+	      };
 	      streamMode: string; eagerRelay: unknown;
 	      watchdog: { samples: unknown[]; warnThresholdBytes: number; observedBytes: number; observedMetric: string } | null;
 	      activeTurnCount: number; isDraining: boolean;
@@ -198,10 +203,17 @@ describe("GET /api/system/memory", () => {
     expect(typeof body.responseState.largestBytes).toBe("number");
     expect(typeof body.responseState.oldestAgeMs).toBe("number");
     expect(body.responseState.count).toBeGreaterThanOrEqual(0);
+    expect(body.inspectionCounters).toEqual({
+      frameBufferHighWaterBytes: expect.any(Number),
+      completedItemsMaxCount: expect.any(Number),
+      frameCapOverflows: expect.any(Number),
+      itemCapEvictions: expect.any(Number),
+      postCancelDrainStops: expect.any(Number),
+    });
     expect(body.streamMode).toBe("auto");
-    // Non-win32 test runners report no gate decision; win32 reports one.
-    if (process.platform === "win32") expect(body.eagerRelay).not.toBeNull();
-    else expect(body.eagerRelay).toBeNull();
+    // This route has no rewrite context and reports the selector's effective
+    // no-rewrite baseline on win32/darwin, null elsewhere.
+    expect(body.eagerRelay).toEqual(selectEagerPath(process.platform, false, "auto"));
 	    expect(body.watchdog).not.toBeNull();
 	    expect(body.watchdog!.samples.length).toBeLessThanOrEqual(60);
 	    expect(typeof body.watchdog!.observedBytes).toBe("number");

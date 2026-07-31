@@ -596,7 +596,7 @@ export async function handleClaudeMessages(
     const route = routeModel(config, internalBody.model as string);
     // Settle the wire once so the sampling decision below reads the effective
     // adapter rather than the provider-wide default (#404).
-    route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+    route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, "anthropic");
     if (route.provider.adapter === "openai-responses") {
       nativeRoute = true;
       delete internalBody.max_output_tokens;
@@ -685,6 +685,10 @@ export async function handleClaudeMessages(
   const upstream = await handleResponses(internalReq, buildClaudeReplayConfig(config), logCtx, {
     abortSignal: req.signal,
     promptCacheKeyIsSharedCohort: cacheKeySource === "system",
+    // The body is Responses-shaped by now, but the client spoke Anthropic Messages.
+    // Without this the replay would look native and a Responses-scoped wire default
+    // would fire, disagreeing with the pre-flight decision above.
+    inboundWire: "anthropic",
     ...(logIds ? { onFirstOutput: () => recordFirstOutput(logCtx, logIds.start) } : {}),
     onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForTerminalStatus(status), { terminalStatus: status, closeReason: "terminal" }),
     onNativePassthroughCancel: () => finalizeNativeLog(499, { closeReason: "client_cancel" }),

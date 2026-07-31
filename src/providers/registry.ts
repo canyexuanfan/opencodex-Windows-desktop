@@ -18,6 +18,19 @@ import {
 export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
 
+/**
+ * Wire protocol a client spoke when it reached the proxy. Chat and Anthropic surfaces
+ * translate into a Responses-shaped body and replay through `handleResponses`, so the
+ * original inbound has to travel with the request or the replay looks native.
+ */
+export type InboundWire = "responses" | "chat" | "anthropic";
+
+/**
+ * A per-model wire default: a bare string applies to every inbound, while the object
+ * form applies only to the listed inbound protocols.
+ */
+export type ModelWireDefault = string | { wire: string; inbound: readonly InboundWire[] };
+
 export type ProviderModelDiscoveryScalar = string | number | boolean;
 
 export type ProviderModelDiscoveryPredicate =
@@ -128,8 +141,26 @@ export interface ProviderRegistryEntry {
    * Registry-only per-model wire defaults for mixed OpenAI-compatible gateways.
    * These are intentionally not seeded into saved config: an explicit `modelAdapters`
    * entry must remain distinguishable and must always win over a default.
+   *
+   * A bare string applies to every inbound protocol. The object form scopes the
+   * default to the inbound surfaces named in `inbound`, which is how a model that is
+   * native on two wires can serve each client on the wire it already speaks instead
+   * of paying a translation hop.
    */
-  modelWireDefaults?: Record<string, string>;
+  modelWireDefaults?: Record<string, ModelWireDefault>;
+  /**
+   * Responses-API resource path for providers whose route is not `/v1/responses`.
+   * Unlike `modelWireDefaults` above, this IS seeded into saved config: it describes
+   * the provider's fixed endpoint rather than a default a user might want to override
+   * per model. DeepSeek documents `POST /responses` with no `/v1` segment.
+   */
+  responsesPath?: string;
+  /**
+   * Responses upstream that stores nothing server-side. Stateful request parameters
+   * are dropped and `store` is pinned false, and orphaned tool results left by a
+   * replay miss are repaired rather than forwarded.
+   */
+  statelessResponses?: boolean;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -822,7 +853,23 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: { "deepseek-v4-flash": 1_000_000, "deepseek-v4-pro": 1_000_000 },
     // DeepSeek documents V4-Flash as a native Responses API model adapted for Codex. The
     // API id is `deepseek-v4-flash`; `DeepSeek-V4-Flash-0731` is a release/version label.
-    modelWireDefaults: { "deepseek-v4-flash": "openai-responses" },
+    modelWireDefaults: {
+      // Codex speaks Responses natively and DeepSeek ships a Codex-compatible
+      // apply_patch tool on that wire, so a Responses inbound goes straight out with
+      // no translation. Claude Code and OpenAI-compatible clients keep the
+      // provider-wide Chat wire: DeepSeek serves Chat Completions natively too, so
+      // translating them into Responses would add a hop onto our newest upstream path
+      // for no gain.
+      "deepseek-v4-flash": { wire: "openai-responses", inbound: ["responses"] },
+    },
+    // DeepSeek's Responses route is `POST /responses` with no `/v1` segment. Without
+    // this the passthrough adapter falls back to its legacy `/v1/responses`
+    // construction and the wire above can never route.
+    // Evidence: https://api-docs.deepseek.com/api/create-response/
+    responsesPath: "/responses",
+    // "The API is stateless: responses and conversations are not stored on the
+    // server." https://api-docs.deepseek.com/api/create-response/
+    statelessResponses: true,
     /* [Decision Log]
     - 목적: DeepSeek V4 thinking mode multi-turn/tool-call requests must replay prior assistant reasoning_content.
     - 대안 분석: Globally preserve reasoning_content for all OpenAI-compatible models; preserve it for legacy deepseek-reasoner too; mark only V4 thinking models in registry metadata.
@@ -1293,11 +1340,16 @@ export function providerModelWireDefault(
   provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
   modelId: string,
   allowedWires: ReadonlySet<string>,
+  inbound: InboundWire,
 ): string | undefined {
   if (!allowedWires.has(provider.adapter)) return undefined;
   const entry = getProviderRegistryEntry(id);
   if (!entry?.modelWireDefaults || !providerMatchesRegistryTransport(id, provider)) return undefined;
-  const wire = entry.modelWireDefaults[modelId.trim().toLowerCase()];
+  const declared = entry.modelWireDefaults[modelId.trim().toLowerCase()];
+  if (declared === undefined) return undefined;
+  // A bare string applies to every inbound; the object form only to the listed ones.
+  if (typeof declared !== "string" && !declared.inbound.includes(inbound)) return undefined;
+  const wire = typeof declared === "string" ? declared : declared.wire;
   return wire !== undefined && allowedWires.has(wire) ? wire : undefined;
 }
 
