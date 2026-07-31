@@ -23,11 +23,12 @@ type Recorded = {
   completed: unknown[];
   cancels: number;
   dones: number;
+  disposes: number;
   synthetics: string[];
 };
 
 function makeHooks(): { hooks: EagerRelayHooks; rec: Recorded; inspector: ReturnType<typeof createSseInspector> } {
-  const rec: Recorded = { terminals: [], completed: [], cancels: 0, dones: 0, synthetics: [] };
+  const rec: Recorded = { terminals: [], completed: [], cancels: 0, dones: 0, disposes: 0, synthetics: [] };
   const inspector = createSseInspector({
     onTerminal: (status, httpStatus) => rec.terminals.push({ status, httpStatus }),
     onCompletedResponse: r => rec.completed.push(r),
@@ -35,6 +36,7 @@ function makeHooks(): { hooks: EagerRelayHooks; rec: Recorded; inspector: Return
   const hooks: EagerRelayHooks = {
     inspectChunk: c => inspector.feed(c),
     finishInspection: () => inspector.finish(),
+    disposeInspection: () => { rec.disposes += 1; inspector.dispose(); },
     sawTerminal: () => inspector.reported(),
     onSynthetic: kind => rec.synthetics.push(kind),
     onClientCancel: () => { rec.cancels += 1; },
@@ -137,6 +139,7 @@ describe("relaySseEagerBounded — side-effect parity", () => {
     expect(rec.terminals).toEqual([{ status: "completed", httpStatus: undefined }]);
     expect(rec.completed.length).toBe(1);
     expect(rec.dones).toBe(1);
+    expect(rec.disposes).toBe(1);
     expect(rec.cancels).toBe(0);
     expect(rec.synthetics).toEqual([]);
   });

@@ -1653,6 +1653,7 @@ export async function handleResponses(
         const eagerBody = relaySseEagerBounded(upstreamResponse.body, turnAc, {
           inspectChunk: chunk => inspector.feed(chunk),
           finishInspection: () => inspector.finish(),
+          disposeInspection: () => inspector.dispose(),
           sawTerminal: () => inspector.reported(),
           onSynthetic: kind => {
             if (!reportNativeTerminal) return;
@@ -1678,8 +1679,14 @@ export async function handleResponses(
       }
       const [nativeBody, inspectBody] = upstreamResponse.body.tee();
       const turnAc = new AbortController();
+      const clientGone = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
       registerTurn(turnAc);
+      const inspectionConsumerOptions = {
+        clientGoneSignal: clientGone.signal,
+        drainBounds: { ms: 15_000, bytes: 32 * 1024 * 1024 },
+        upstream,
+      };
       if (recordTerminalOutcomes) {
         // A real terminal was parsed from the (teed) inspection stream — record it as the outcome
         // even if the client has already disconnected: the turn genuinely reached that terminal, so
@@ -1714,6 +1721,7 @@ export async function handleResponses(
           () => options.onNativePassthroughCancel?.(),
           rememberPassthroughResponse,
           options.onFirstOutput,
+          inspectionConsumerOptions,
         );
       } else {
         consumeForResponseLogMetadata(
@@ -1723,6 +1731,7 @@ export async function handleResponses(
           () => unregisterTurn(turnAc),
           rememberPassthroughResponse,
           options.onFirstOutput,
+          inspectionConsumerOptions,
         );
       }
       if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
@@ -1741,7 +1750,7 @@ export async function handleResponses(
         : nativeBody;
       const clientBody = process.platform === "win32" && !needsClientRewrite
         ? nativeBody
-        : relaySseWithFailedTail(rewrittenBody, upstream);
+        : relaySseWithFailedTail(rewrittenBody, upstream, reason => clientGone.abort(reason));
       return markNativePassthroughSseResponse(new Response(clientBody, {
         status: upstreamResponse.status,
         headers,

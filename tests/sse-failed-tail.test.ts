@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { relaySseWithFailedTail } from "../src/server";
+import { relaySseWithFailedTail, relayWithAbort } from "../src/server";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -75,5 +75,27 @@ describe("relaySseWithFailedTail", () => {
     const reader = relayed.getReader();
     await reader.cancel(new DOMException("client closed", "AbortError"));
     expect(upstream.signal.aborted).toBe(true);
+  });
+
+  test("opt-in client-gone ownership cancels each branch reader without aborting upstream", async () => {
+    for (const kind of ["sse", "plain"] as const) {
+      const upstream = new AbortController();
+      const reasons: unknown[] = [];
+      let sourceCancels = 0;
+      const src = new ReadableStream<Uint8Array>({
+        pull() { /* stay pending */ },
+        cancel() { sourceCancels += 1; },
+      });
+      const relayed = kind === "sse"
+        ? relaySseWithFailedTail(src, upstream, reason => reasons.push(reason))
+        : relayWithAbort(src, upstream, reason => reasons.push(reason))!;
+      const reason = new DOMException(`${kind} client closed`, "AbortError");
+
+      await relayed.getReader().cancel(reason);
+
+      expect(reasons).toEqual([reason]);
+      expect(sourceCancels).toBe(1);
+      expect(upstream.signal.aborted).toBe(false);
+    }
   });
 });

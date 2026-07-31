@@ -24,6 +24,7 @@ import { getActiveTurnCount, isDraining } from "../lifecycle";
 import { getActiveMemoryWatchdog, observedMemoryCounter } from "../memory-watchdog";
 import { responseStateMetrics } from "../../responses/state";
 import { jsonResponse } from "../auth-cors";
+import { getInspectionCounters } from "../relay";
 import type { ManagementContext } from "./context";
 import { acceptSystemRestart } from "./system-restart";
 
@@ -79,6 +80,7 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
 	      observedMetric: observed.observedMetric,
 	      jscHeap,
       responseState: responseStateMetrics(),
+      inspectionCounters: getInspectionCounters(),
       streamMode,
       eagerRelay: process.platform === "win32" ? decideEagerRelay(streamMode) : null,
       watchdog,

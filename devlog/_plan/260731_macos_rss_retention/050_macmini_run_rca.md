@@ -9,7 +9,7 @@ CPU-heavy workload was started, and no remote file was changed. The inspected ho
 and checkout were:
 
 - SSH alias: `macmini-cf` (not bare `macmini`).
-- Checkout: `/Users/junny/rss-measure/opencodex`.
+- Checkout: `~/rss-measure/opencodex`.
 - Remote state at inspection: clean `dev...origin/dev`, HEAD
   `afe2aa3d7e1e02b8b71a22ac93272fd31a62addb`.
 - The remote and local copies of `scripts/macos-rss-retention-harness.ts` both had
@@ -247,7 +247,7 @@ checkout. Before any harness invocation:
 
 ```bash
 ssh macmini-cf
-cd /Users/junny/rss-measure/opencodex
+cd ~/rss-measure/opencodex
 git status --short --branch
 git rev-parse HEAD
 shasum -a 256 scripts/macos-rss-retention-harness.ts
@@ -269,7 +269,7 @@ Required preconditions:
 Smoke only proves plumbing and must remain invalid measurement evidence:
 
 ```bash
-cd /Users/junny/rss-measure/opencodex
+cd ~/rss-measure/opencodex
 smoke_id="$(date -u +%Y-%m-%dT%H-%M-%S)-smoke"
 smoke_dir="$PWD/.tmp/macos-rss-retention/$smoke_id"
 OCX_RSS_HARNESS_SMOKE=1 bun scripts/macos-rss-retention-harness.ts \
@@ -292,7 +292,7 @@ tmux new-session -s ocx-rss-full
 Inside the tmux session:
 
 ```bash
-cd /Users/junny/rss-measure/opencodex
+cd ~/rss-measure/opencodex
 unset OCX_RSS_HARNESS_SMOKE
 full_id="$(date -u +%Y-%m-%dT%H-%M-%S)-full"
 full_dir="$PWD/.tmp/macos-rss-retention/$full_id"

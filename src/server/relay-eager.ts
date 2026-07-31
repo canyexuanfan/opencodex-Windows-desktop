@@ -29,6 +29,8 @@ export type EagerRelayHooks = {
   inspectChunk: (chunk: Uint8Array) => void;
   /** Flush inspection at upstream end (createSseInspector.finish). */
   finishInspection: () => void;
+  /** Drop inspector-owned frame/item state during producer teardown. */
+  disposeInspection?: () => void;
   /** True once inspection has reported a protocol terminal (inspector.reported). */
   sawTerminal: () => boolean;
   /** Record a synthetic terminal (caller decides incomplete vs failed-502). */
@@ -170,6 +172,7 @@ export function relaySseEagerBounded(
       if (!cancelled) {
         try { controllerRef?.close(); } catch { /* already closed/errored */ }
       }
+      try { hooks.disposeInspection?.(); } catch { /* inspection teardown must not block lifecycle cleanup */ }
       fireDone();
     }
   };
