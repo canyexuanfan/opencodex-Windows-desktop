@@ -767,11 +767,23 @@ export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchPara
     const offset = offsetRaw ? Number.parseInt(offsetRaw, 10) : 0;
     if (Number.isFinite(limit) && limit > 0) {
       const capped = Math.min(limit, MAX_LOG_SIZE);
-      const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
-      filtered = filtered.slice(start, start + capped);
+      const startOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
+      const end = filtered.length - startOffset;
+      if (end <= 0) filtered = [];
+      else {
+        const begin = Math.max(0, end - capped);
+        filtered = filtered.slice(begin, end);
+      }
     }
   }
   return filtered;
+}
+
+export function filteredRequestLogCount(logs: RequestLogEntry[], params: URLSearchParams): number {
+  const withoutPagination = new URLSearchParams(params);
+  withoutPagination.delete("limit");
+  withoutPagination.delete("offset");
+  return filterRequestLogs(logs, withoutPagination).length;
 }
 
 interface FinalizedUsageResult {

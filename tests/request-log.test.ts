@@ -546,8 +546,13 @@ describe("request log metadata", () => {
 
   test("filters logs by offset and limit", () => {
     const logs = Array.from({ length: 5 }, (_, i) => log({ requestId: `r${i}`, provider: "openai", status: 200 }));
-    expect(filterRequestLogs(logs, new URLSearchParams("limit=2")).map(entry => entry.requestId)).toEqual(["r0", "r1"]);
-    expect(filterRequestLogs(logs, new URLSearchParams("offset=2&limit=2")).map(entry => entry.requestId)).toEqual(["r2", "r3"]);
+    expect(filterRequestLogs(logs, new URLSearchParams("limit=2")).map(entry => entry.requestId)).toEqual(["r3", "r4"]);
+    expect(filterRequestLogs(logs, new URLSearchParams("offset=2&limit=2")).map(entry => entry.requestId)).toEqual(["r1", "r2"]);
+  });
+
+  test("limit returns newest rows when buffer exceeds limit", () => {
+    const logs = Array.from({ length: 10 }, (_, i) => log({ requestId: `r${i}`, provider: "openai", status: 200 }));
+    expect(filterRequestLogs(logs, new URLSearchParams("limit=3")).map(entry => entry.requestId)).toEqual(["r7", "r8", "r9"]);
   });
 
   test("deferred JSON logging preserves response service tier before final log", async () => {
