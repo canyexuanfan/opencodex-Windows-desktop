@@ -87,19 +87,18 @@ export function buildWinswXml(entry: WinswEntry, env: NodeJS.ProcessEnv = proces
   })();
   // Services never bake `--port 0` (parsePortOption rejects it); treat as default.
   const safeListenPort = listenPort > 0 && listenPort <= 65535 ? listenPort : 10100;
-  // SCM services do not inherit the interactive user environment. Bake install-time
-  // admin/ACL settings so `ocx service install --native` matches the scheduler case
-  // where a logon-time env block eventually appears (#764). The data-plane API token
-  // still uses a file pointer only — never embed OPENCODEX_API_AUTH_TOKEN.
-  const adminAuth = env.OPENCODEX_ADMIN_AUTH_TOKEN?.trim();
+  // SCM services do not inherit the interactive user environment (#764). Bake:
+  // - OPENCODEX_HOME so file-backed admin auth (`admin-api-token`) resolves
+  // - OPENCODEX_ACL_TIMEOUT_MS when set (not a secret)
+  // Never embed OPENCODEX_ADMIN_AUTH_TOKEN or OPENCODEX_API_AUTH_TOKEN values in XML —
+  // those stay file-pointer / generated-file only (uninstall retains the XML).
   const aclTimeout = env.OPENCODEX_ACL_TIMEOUT_MS?.trim();
   const envLines = [
     `  <env name="OCX_SERVICE" value="1"/>`,
     `  <env name="OCX_API_TOKEN_FILE" value="${xmlEscape(serviceApiTokenFilePath())}"/>`,
     `  <env name="PATH" value="${xmlEscape(env.PATH ?? "")}"/>`,
     env.CODEX_HOME?.trim() ? `  <env name="CODEX_HOME" value="${xmlEscape(currentCodexHomeAbsolute())}"/>` : null,
-    env.OPENCODEX_HOME?.trim() ? `  <env name="OPENCODEX_HOME" value="${xmlEscape(getConfigDir())}"/>` : null,
-    adminAuth ? `  <env name="OPENCODEX_ADMIN_AUTH_TOKEN" value="${xmlEscape(adminAuth)}"/>` : null,
+    `  <env name="OPENCODEX_HOME" value="${xmlEscape(getConfigDir())}"/>`,
     aclTimeout ? `  <env name="OPENCODEX_ACL_TIMEOUT_MS" value="${xmlEscape(aclTimeout)}"/>` : null,
   ].filter((line): line is string => Boolean(line));
   return `<?xml version="1.0" encoding="UTF-8"?>

@@ -30,21 +30,23 @@ describe("winsw xml", () => {
     expect(xml).toContain('<env name="OCX_SERVICE" value="1"/>');
     expect(xml).toContain('<env name="OCX_API_TOKEN_FILE"');
     expect(xml).toContain('<env name="PATH" value="C:\\bin;C:\\tools &amp; more"/>');
-    // The token VALUE never lands in the XML — only the file pointer.
+    expect(xml).toContain('<env name="OPENCODEX_HOME"');
+    // Token VALUES never land in the XML — only file pointers / non-secret budgets.
     expect(xml).not.toContain("OPENCODEX_API_AUTH_TOKEN");
     expect(xml).not.toContain("OPENCODEX_ADMIN_AUTH_TOKEN");
-    expect(xml).not.toContain("OPENCODEX_ACL_TIMEOUT_MS");
   });
 
-  test("bakes install-time admin auth and ACL timeout into the SCM env (#764)", () => {
+  test("bakes install-time ACL timeout and never embeds the admin token (#764)", () => {
     const xml = buildWinswXml(entry, {
       ...env,
       OPENCODEX_ADMIN_AUTH_TOKEN: "admin-secret & more",
       OPENCODEX_ACL_TIMEOUT_MS: "10000",
     });
 
-    expect(xml).toContain('<env name="OPENCODEX_ADMIN_AUTH_TOKEN" value="admin-secret &amp; more"/>');
     expect(xml).toContain('<env name="OPENCODEX_ACL_TIMEOUT_MS" value="10000"/>');
+    expect(xml).toContain('<env name="OPENCODEX_HOME"');
+    expect(xml).not.toContain("OPENCODEX_ADMIN_AUTH_TOKEN");
+    expect(xml).not.toContain("admin-secret");
   });
 
   test("escapes executable/arguments and configures restart + graceful stop", () => {
