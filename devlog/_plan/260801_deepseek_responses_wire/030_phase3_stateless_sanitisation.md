@@ -51,13 +51,21 @@ Add the matching optional field to `OcxProviderConfig` beside `responsesPath`.
 
 Seed + backfill exactly as phase 1 does for `responsesPath`.
 
-### `src/config.ts` — no change (decision, audit finding 4)
+### `src/config.ts` — one schema line (revised after the second audit)
 
-`responsesPath` carries explicit validation (`providerResponsesPathConfigError`,
-`config.ts:486-493`) because a malformed path silently breaks routing. A boolean has
-no malformed form, and `providerConfigSchema` is `.passthrough()`, so
-`statelessResponses` needs no schema line. Recording the decision rather than leaving
-it implicit.
+The first pass argued a boolean has no malformed form, so no schema entry was needed.
+That was half right: `providerConfigSchema` is `.passthrough()` (`config.ts:448`), so
+nothing breaks. But `responsesPath` carries a schema line (`config.ts:440`) IN
+ADDITION to its custom validator, and that line declares the surface rather than
+guarding a format. Without it, a user who writes `statelessResponses: "true"` sails
+through the schema and the strict `=== true` check silently disables the feature —
+fail-safe, but invisible.
+
+```ts
++  statelessResponses: z.boolean().optional(),
+```
+
+One line turns a silent typo into an error.
 
 ### MODIFY `src/adapters/openai-responses.ts`
 
@@ -73,7 +81,7 @@ New helper, placed next to `stripPreviousResponseId`:
  */
 function stripStatefulResponsesParams(body: unknown): unknown {
   if (!isPlainObject(body)) return body;
-  const drop = ["previous_response_id", "conversation", "background", "metadata"] as const;
+  const drop = ["previous_response_id", "conversation", "background", "metadata", "prompt"] as const;
   const present = drop.some(k => Object.prototype.hasOwnProperty.call(body, k));
   if (!present && body.store === false) return body;
   const next: Record<string, unknown> = { ...body };
@@ -82,6 +90,23 @@ function stripStatefulResponsesParams(body: unknown): unknown {
   return next;
 }
 ```
+
+`prompt` (`src/responses/schema.ts:156`) is a reference to a **server-stored prompt
+template** — the most stateful field in the accepted schema, and one a stateless
+upstream cannot resolve by construction. Added on the second audit's finding.
+
+The helper returns a COPY (`{ ...body }`), so `parsed._rawBody` keeps the client's
+original `store` value and `rememberResponseState` still records the turn. That is
+load-bearing for the multi-turn continuity argument below, so it must not become an
+in-place mutation.
+
+### Ordering constraint
+
+The strip must run BEFORE the composed sanitize chain (`openai-responses.ts:982`),
+because `stripItemIdsWhenUnstored` inside that chain keys off `store === false`. Its
+position after `stripPreviousResponseId` is readability only. A refactor that hoists
+it past the chain would silently break the premise, so the code carries a comment
+saying so.
 
 ### `service_tier` is deliberately NOT dropped (audit blocker 3)
 
@@ -97,6 +122,18 @@ which is the kind of action-at-a-distance that is hard to debug later. If DeepSe
 turns out to reject it, that is a one-line addition to `drop` with real evidence
 behind it. Leaving it in is the reversible choice.
 
+The second audit sharpened this: the real defect is at `core.ts:773`, where an
+OpenAI-specific commercial knob is applied by WIRE SHAPE
+(`adapter === "openai-responses"`) rather than by provider capability — and phase 2
+widened that set to include DeepSeek. The correct eventual fix narrows the write
+site, not the adapter. Recorded as a known follow-up rather than fixed here, which
+would expand this phase's scope.
+
+Honest gap: whether DeepSeek actually rejects an unknown `service_tier` is
+**UNVERIFIED**. No API key is available, so no authenticated probe is possible, and
+the reference page neither lists the field nor states that unknown top-level keys are
+fatal.
+
 Wire it in `buildRequest` immediately after the existing `stripPreviousResponseId`
 call, before the forward-only branch:
 
@@ -108,12 +145,43 @@ call, before the forward-only branch:
 Placing it here means `stripItemIdsWhenUnstored` (which keys off `store === false`)
 then runs with the correct premise — a small consistency win beyond the primary fix.
 
+### Orphan repair must extend to stateless providers (second audit, HIGH)
+
+Dropping `previous_response_id` is only half the story on a replay MISS (proxy
+restart, evicted entry). The delta input can begin with a `function_call_output`
+whose paired `function_call` lived in the prefix that was never expanded. Today
+`repairOrphanedInputItems` runs only under `if (forward)`
+(`openai-responses.ts:967`), and DeepSeek is key-auth — so we would hand the upstream
+an orphaned tool result and get a 400 or a silently context-free answer.
+
+A criterion that says "no stateful parameter reaches a stateless upstream" is worth
+little if the resulting body is unparseable, so the repair is in scope for this phase:
+
+```ts
+-      if (forward) {
++      const stateless = provider.statelessResponses === true;
++      if (forward || stateless) {
+         outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
++      }
++      if (forward) {
+         outBody = stripUnsupportedForwardParams(outBody);
+       }
+```
+
+`repairOrphanedInputItems` returns the original reference when pairs are intact, so
+the cost on the normal path is zero. The existing warn at `core.ts:1445` already fires
+for this provider, so the diagnostic was there while the repair was not.
+
 ## Accept criteria
 
 - Built body for a stateless provider contains none of the four dropped keys and
   carries `store: false`.
 - A non-stateless Responses provider is byte-identical to before.
 - `service_tier` SURVIVES the strip (regression guard for the decision above).
+- `prompt` is dropped (server-stored template reference).
+- On a replay MISS, an orphaned `function_call_output` is repaired for a stateless
+  provider rather than forwarded — the body must be parseable, not merely free of
+  stateful parameters.
 - A registry entry that does not declare the field does not acquire it from the seed
   (negative control mirroring `tests/provider-model-discovery-contract.test.ts:175`),
   so a future blanket seed cannot leak the capability provider-wide.
