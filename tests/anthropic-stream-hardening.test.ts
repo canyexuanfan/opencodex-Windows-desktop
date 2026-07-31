@@ -67,6 +67,28 @@ describe("anthropic stream hardening", () => {
     expect(start && "id" in start && start.id.startsWith("toolu_")).toBe(true);
   });
 
+  // A relay that sends `""` or `"   "` is the case `??` misses: the field is present,
+  // so no synthesis happened and the call went out with an id the client cannot echo
+  // back. Blank must be treated as absent (#765).
+  test("tool_use with a blank id synthesizes one instead of shipping it", async () => {
+    for (const blank of ['""', '"   "']) {
+      const response = new Response([
+        "event: content_block_start\n",
+        `data: {"type":"content_block_start","content_block":{"type":"tool_use","id":${blank},"name":"get_weather"}}\n\n`,
+        "event: content_block_delta\n",
+        'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+        "event: content_block_stop\n",
+        'data: {"type":"content_block_stop"}\n\n',
+        "event: message_stop\n",
+        'data: {"type":"message_stop"}\n\n',
+      ].join(""));
+      const events = await collect(createAnthropicAdapter(provider).parseStream(response));
+      const start = events.find(e => e.type === "tool_call_start");
+      expect(start && "id" in start && start.id.trim()).toBeTruthy();
+      expect(start && "id" in start && start.id.startsWith("toolu_")).toBe(true);
+    }
+  });
+
   test("empty EOF without content still errors", async () => {
     const response = new Response("");
     const events = await collect(createAnthropicAdapter(provider).parseStream(response));
