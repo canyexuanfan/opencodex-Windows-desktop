@@ -113,7 +113,7 @@ GUI はプロキシの JSON 管理 API を使うシンクライアントです�
 | `GET /api/codex-auth/accounts?refresh=1` | メインおよびプールアカウントを参照しクォータを強制更新し、メインの `hasCredential` / terminal `needsReauth` 状態を返します。 |
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 次のリクエストで使うアカウントとプールルーティングポリシーを設定します。 |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | ブラウザログインでプールアカウントを追加します。 |
-| `GET /api/logs?tail=50&provider=...&status=5xx` | tail、プロバイダー、正確な状態コードまたは状態等級で最近のリクエストメタデータを参照します。 |
+| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | tail、プロバイダー、正確な状態コードまたは状態等級で最近のリクエストメタデータを参照します。`limit`/`offset` は最新行から過去方向にページングします（`offset=0` が最新ページ）。応答は `{ timeZone, total, logs }` で、`total` はページング前の一致件数です。 |
 | `GET` / `PUT /api/subagent-models` | `spawn_agent` に優先公開するモデル 5 つを読むか設定します。 |
 | `POST /api/stop` | プロキシ/サービスを停止しネイティブ Codex を復元した後終了します。 |
 

@@ -79,7 +79,8 @@ async function spawnGh(args: string[], timeoutMs: number): Promise<{ status: num
   }
 }
 
-const defaultDeps: StarDeps = { runGh: spawnGh, nowMs: () => Date.now() };
+const productionDeps: StarDeps = { runGh: spawnGh, nowMs: () => Date.now() };
+let defaultDeps = productionDeps;
 
 let cached: { timestamp: number; state: StarState } | null = null;
 /** Coalesces concurrent probes so parallel sidebar polls share one `gh` run. */
@@ -146,6 +147,17 @@ export function invalidateStarStatusCache(): void {
   generation += 1;
   cached = null;
   inflight = null;
+}
+
+/**
+ * Route tests must not launch the user's `gh` executable: its installation,
+ * authentication helper, and Windows shim are all outside the route contract.
+ * Production keeps the real runner; tests install an explicit deterministic
+ * dependency and must reset it afterwards.
+ */
+export function setStarDepsForTests(deps: StarDeps | null): void {
+  defaultDeps = deps ?? productionDeps;
+  invalidateStarStatusCache();
 }
 
 /**

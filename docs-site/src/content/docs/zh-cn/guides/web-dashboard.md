@@ -107,7 +107,7 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 | `GET /api/codex-auth/accounts?refresh=1` | 列出主账号与池账号、强制刷新配额，并返回主账号的 `hasCredential` / terminal `needsReauth` 状态。 |
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 选择下一次请求使用的账号并配置账号池路由。 |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | 通过浏览器登录添加池账号。 |
-| `GET /api/logs?tail=50&provider=...&status=5xx` | 使用 tail、provider、精确状态码或状态类别筛选近期请求元数据。 |
+| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | 使用 tail、provider、精确状态码或状态类别筛选近期请求元数据。`limit`/`offset` 从最新一行向前分页（`offset=0` 为最新一页）。响应为 `{ timeZone, total, logs }`，其中 `total` 为分页前的匹配行数。 |
 | `GET` / `PUT /api/subagent-models` | 读取或设置五个置顶的 `spawn_agent` override 模型。 |
 | `POST /api/stop` | 停止代理/服务，恢复原生 Codex 并退出。 |
 

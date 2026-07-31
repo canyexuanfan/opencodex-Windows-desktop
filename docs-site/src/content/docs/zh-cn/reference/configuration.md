@@ -172,6 +172,7 @@ x-opencodex-api-key: your-secret-token
 | `modelReasoningEfforts?` | `Record<string,string[]>` | 模型级 reasoning label。空数组会隐藏该模型的 effort 控件。 |
 | `modelSupportsReasoningSummaries?` | `Record<string,boolean>` | 模型级 reasoning summary 能力。设为 `false` 时不再声明 summary 支持，并在 `openai-responses` 请求前移除 summary-delivery 字段。 |
 | `modelReasoningSummaryDelivery?` | `Record<string,"sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | 模型级 Responses delivery enum。已配置模型保持 summary 能力，适配器只改写现有的 `stream_options.reasoning_summary_delivery`；同一模型不能同时将 summary 能力设为 `false`。 |
+| `modelAdapters?` | `Record<string,string>` | 面向同一 gateway 混合使用不同 wire 的模型级覆盖。键是上游原生模型 id，值只能是 `openai-chat` 或 `openai-responses`。已验证的混合 wire 路由会由 registry 自动提供默认值（DeepSeek preset 会让 `deepseek-v4-flash` 使用原生 Responses）；显式配置优先，也可以把模型切回 Chat。上游固定单一 wire 的模型和 canonical ChatGPT forward provider 不接受覆盖。 |
 | `reasoningEffortMap?` | `Record<string,string>` | provider 级 reasoning label wire alias。只在上游需要不同值时使用。 |
 | `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | 模型级 reasoning label wire alias。 |
 | `noReasoningModels?` | `string[]` | 拒绝 reasoning/thinking 参数的模型；adapter 会为它们移除 `reasoning_effort`。 |
