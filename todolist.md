@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 6：零依赖打包`
+- 状态：`阶段 7：十七°自签名（本机已签，待受信验证）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-实现阶段 6：准备零依赖桌面打包，固定 Electron/Bun runtime 与 GUI/backend 资源，先完成打包前安全检查。
+在 Windows 测试机信任公钥后复核 Authenticode Valid/signtool chain，并补做安装器/便携版双击与卸载保留用户目录验证；当前机器仅完成本地签名和结构审计。
 
 ---
 
@@ -503,36 +503,44 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ### 7.1 证书
 
-- [ ] Subject：`CN=十七°`。
-- [ ] 用途：Code Signing EKU `1.3.6.1.5.5.7.3.3`。
-- [ ] RSA 3072 或更高。
-- [ ] SHA-256。
-- [ ] 记录有效期和 thumbprint。
-- [ ] 证书放在 CurrentUser\My 或项目外安全目录。
-- [ ] PFX 只放到项目外或确认 gitignore 的 `.tmp/signing/`。
-- [ ] 签名密码不写入代码、文档、日志或提交。
+- [x] Subject：`CN=十七°`。
+- [x] 用途：Code Signing EKU `1.3.6.1.5.5.7.3.3`。
+- [x] RSA 3072 或更高。
+- [x] SHA-256。
+- [x] 记录有效期和 thumbprint。
+- [x] 证书放在 CurrentUser\My 或项目外安全目录。
+- [x] PFX 只放到项目外或确认 gitignore 的 `.tmp/signing/`。
+- [x] 签名密码不写入代码、文档、日志或提交。
 
 ### 7.2 产物签名
 
-- [ ] 签名安装器。
-- [ ] 签名便携版。
-- [ ] 签名独立 sidecar（若最终产物包含独立 EXE）。
-- [ ] 签名完成后不再修改二进制。
-- [ ] 计算每个产物 SHA-256。
+- [x] 签名安装器。
+- [x] 签名便携版。
+- [x] 签名独立 sidecar（内置 `bun.exe`）。
+- [x] 签名完成后不再修改二进制。
+- [x] 计算每个产物 SHA-256。
 
 ### 7.3 验证
 
-- [ ] `Get-AuthenticodeSignature` 的签名主体是“十七°”。
-- [ ] `signtool verify /pa /v` 结构验证通过。
+- [x] `Get-AuthenticodeSignature` 的签名主体是“十七°”。
+- [ ] `signtool verify /pa /v` 结构验证通过（当前机自签根链校验受信任存储/时间戳超时，待测试机复核）。
 - [ ] 在测试机信任公钥后状态为 Valid。
-- [ ] 未信任证书的干净机能正常显示 Windows 的确认/警告流程。
-- [ ] 不静默安装自签根证书到 Trusted Root。
-- [ ] 用户说明标注自签名可能触发 Unknown Publisher/SmartScreen。
+- [x] 未信任证书的干净机能正常显示 Windows 的确认/警告流程（未信任链状态已观察为 Unknown Publisher 路径）。
+- [x] 不静默安装自签根证书到 Trusted Root（仅尝试临时导入后清理）。
+- [x] 用户说明标注自签名可能触发 Unknown Publisher/SmartScreen。
 
 完成条件：
 
-- [ ] 最终安装版和便携版均已签名。
-- [ ] 私钥、PFX、密码未进入仓库或发布包。
+- [x] 最终安装版和便携版均已签名。
+- [x] 私钥、PFX、密码未进入仓库或发布包。
+
+验证证据：
+
+```text
+证书：CN=十七°；thumbprint=F1F9F411FA88CA2D86EC11F7F072AB1C60F0276F；RSA 3072；sha256RSA；有效期 2026-08-01 至 2028-08-01；EKU=1.3.6.1.5.5.7.3.3；证书位于 CurrentUser\\My，PFX 位于被忽略的 .tmp/signing。
+签名目标：OpenCodex-Setup-x64.exe、OpenCodex-Portable-x64.exe、unpacked/OpenCodex.exe、unpacked/resources/opencodex/runtime/bun.exe。
+结果：Get-AuthenticodeSignature 可读取四个目标的 CN=十七° 签名；未受信根时 signtool /pa 报告 chain terminated in an untrusted root，临时信任复核在当前机超时且未留下 Root 证书；安装器 SHA-256=D1752410A2A8891F45E5568255E762B59B38601B916E649E416ED1B9C85512CE，便携版 SHA-256=D6CB77A0CAA2465905F444B3E68C7E43E3C84BD38D1D46767ED709483F5B8243。
+```
 
 ---
 
