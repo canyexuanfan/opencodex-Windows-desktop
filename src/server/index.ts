@@ -22,13 +22,8 @@ import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
 import { startMemoryWatchdog } from "./memory-watchdog";
 import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
-import {
-  abortStorageCleanupPolicyJobAsync,
-  setStorageCleanupPolicyJobLiveApply,
-} from "../storage/policy-job";
-import { abortRestoreTrashJobAsync } from "../storage/restore-job";
-import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler, stopStorageCleanupScheduler } from "../storage/policy-scheduler";
-import { drainStorageWorkers } from "../storage/worker-lifecycle";
+import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
+import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler } from "../storage/policy-scheduler";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
@@ -997,25 +992,6 @@ export function startServer(port?: number) {
 
   // Opt-in storage policy (default OFF). Never blocks listen; cancellable on shutdown.
   scheduleStorageCleanupStartupRun();
-
-  // Wrap stop so test `await server.stop(true)` (and any direct stop) joins
-  // storage Bun Workers before the listen socket goes away. Otherwise Windows
-  // `bun test --isolate` can panic when a worker thread is still exiting.
-  const bunStop = server.stop.bind(server);
-  Object.defineProperty(server, "stop", {
-    configurable: true,
-    enumerable: false,
-    writable: true,
-    value: async (closeActiveConnections?: boolean) => {
-      stopStorageCleanupScheduler();
-      await abortStorageCleanupPolicyJobAsync();
-      await abortRestoreTrashJobAsync();
-      await drainStorageWorkers();
-      setStorageCleanupPolicyLiveSink(null);
-      setStorageCleanupPolicyJobLiveApply(null);
-      bunStop(closeActiveConnections);
-    },
-  });
 
   return server;
 }
