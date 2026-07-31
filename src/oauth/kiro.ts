@@ -32,6 +32,8 @@ import { getAccountSet, saveAccountCredential } from "./store";
 const DEFAULT_REGION = "us-east-1";
 const REFRESH_URL = "https://prod.{region}.auth.desktop.kiro.dev/refreshToken";
 const OIDC_URL = "https://oidc.{region}.amazonaws.com/token";
+const KIRO_CLI_UNIX_INSTALL_COMMAND = "curl -fsSL https://cli.kiro.dev/install | bash";
+const KIRO_CLI_WINDOWS_INSTALL_COMMAND = "irm 'https://cli.kiro.dev/install.ps1' | iex";
 const KIRO_TERMINAL_REFRESH_ERRORS = new Set([
   "invalid_grant",
   "refresh_token_reused",
@@ -68,6 +70,12 @@ export type KiroCliRunner = (args: string[], signal?: AbortSignal) => Promise<Ki
 export interface KiroLoginOptions {
   forceLogin?: boolean;
   cliRunner?: KiroCliRunner;
+}
+
+export function kiroCliInstallGuidance(platform = process.platform): string {
+  return platform === "win32"
+    ? `install the Kiro CLI in PowerShell (\`${KIRO_CLI_WINDOWS_INSTALL_COMMAND}\`)`
+    : `install the Kiro CLI (\`${KIRO_CLI_UNIX_INSTALL_COMMAND}\`)`;
 }
 
 const pendingKiroLoginTransactions = new WeakMap<OAuthCredentials, KiroCliSessionSnapshot>();
@@ -357,7 +365,7 @@ export async function loginKiro(ctrl: OAuthController, options: KiroLoginOptions
       url: "",
       instructions:
         "No kiro-cli token found. Paste a Kiro access token below (starts with 'aoa'). " +
-        "Otherwise install the Kiro CLI (`curl -fsSL https://cli.kiro.dev/install | bash`), " +
+        `Otherwise ${kiroCliInstallGuidance()}, ` +
         "run `kiro-cli login`, and retry — or set KIRO_ACCESS_TOKEN.",
     });
     ctrl.onProgress?.("No kiro-cli token found. Paste a Kiro access token (starts with 'aoa'), or install the Kiro CLI and run `kiro-cli login` first.");
@@ -375,7 +383,7 @@ export async function loginKiro(ctrl: OAuthController, options: KiroLoginOptions
   }
 
   throw new Error(
-    "Kiro: no token found. Install the Kiro CLI (`curl -fsSL https://cli.kiro.dev/install | bash`) " +
+    `Kiro: no token found. ${kiroCliInstallGuidance()} ` +
       "and run `kiro-cli login` to import its session, or set KIRO_ACCESS_TOKEN. " +
       "Browser login is not supported for Kiro.",
   );
