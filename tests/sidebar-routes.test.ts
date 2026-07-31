@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleManagementAPI } from "../src/server/management-api";
-import { invalidateStarStatusCache } from "../src/github/star-state";
+import { setStarDepsForTests } from "../src/github/star-state";
 import type { OcxConfig } from "../src/types";
 
 /**
@@ -8,6 +8,9 @@ import type { OcxConfig } from "../src/types";
  * machine; this file checks that the routes are actually reachable through the
  * management dispatcher and that the serialized bytes carry no `gh` output, token,
  * or account identifier.
+ *
+ * Star probes must not spawn a real `gh` here: on Windows the bare CLI can hang until
+ * AUTH_TIMEOUT (5s), which trips Bun's default test timeout under CI contention.
  */
 const config = {
   port: 10100,
@@ -31,6 +34,17 @@ async function call(
   return { status: res.status, body: raw ? JSON.parse(raw) : null, raw, routed: true };
 }
 
+beforeEach(() => {
+  setStarDepsForTests({
+    runGh: async () => ({ status: 1 }),
+    nowMs: () => 1_000,
+  });
+});
+
+afterEach(() => {
+  setStarDepsForTests(null);
+});
+
 describe("GET /api/update/badge", () => {
   test("is routed and returns the badge shape", async () => {
     const { status, body } = await call("GET", "/api/update/badge");
@@ -52,7 +66,6 @@ describe("GET /api/update/badge", () => {
 
 describe("GET /api/github/star", () => {
   test("is routed and reports one of the three known states", async () => {
-    invalidateStarStatusCache();
     const { status, body } = await call("GET", "/api/github/star");
     expect(status).toBe(200);
     const star = body as Record<string, unknown>;
@@ -62,7 +75,6 @@ describe("GET /api/github/star", () => {
   });
 
   test("never serializes gh output, tokens, or account identifiers", async () => {
-    invalidateStarStatusCache();
     const { raw } = await call("GET", "/api/github/star");
     // `gh auth status` prints "Logged in to github.com account <name>" and the token
     // scopes; none of that may cross this boundary.
