@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { ConfigMutationLockError, loadConfig, saveConfig, withConfigMutationLockSync } from "../src/config";
 import { CodexCredentialRefreshLockTimeoutError, getCodexAccountCredential, saveCodexAccountCredential } from "../src/codex/account-store";
 import type { OcxConfig } from "../src/types";
+import { ManagementRequest, managementHeaders } from "./helpers/management-auth";
 
 let testRoot = "";
 let previousOpencodexHome: string | undefined;
@@ -134,4 +135,49 @@ test("a throwing mutation releases the lock and leaves writers available", () =>
   })).toThrow("mutation failed");
   expect(() => saveConfig(config(50500))).not.toThrow();
   expect(loadConfig().port).toBe(50500);
+});
+
+test("management API maps config mutation lock contention to retryable 503", async () => {
+  saveConfig(config());
+  const readyPath = join(testRoot, "mgmt-holder-ready");
+  const releasePath = join(testRoot, "mgmt-holder-release");
+  const configModuleUrl = pathToFileURL(join(import.meta.dir, "../src/config.ts")).href;
+  const childSource = `
+    import { existsSync, writeFileSync } from "node:fs";
+    import { withConfigMutationLockSync } from ${JSON.stringify(configModuleUrl)};
+    withConfigMutationLockSync(() => {
+      writeFileSync(${JSON.stringify(readyPath)}, "ready");
+      while (!existsSync(${JSON.stringify(releasePath)})) Bun.sleepSync(10);
+    });
+  `;
+  const child = Bun.spawn([process.execPath, "-e", childSource], {
+    cwd: join(import.meta.dir, ".."),
+    env: { ...process.env, OPENCODEX_HOME: testRoot },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  try {
+    await waitForPath(readyPath);
+    const { handleManagementAPI } = await import("../src/server/management-api");
+    const url = new URL("http://localhost/api/codex-auth/auto-switch");
+    const response = await handleManagementAPI(
+      new ManagementRequest(url, {
+        method: "PUT",
+        headers: managementHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ threshold: 50 }),
+      }),
+      url,
+      config(),
+    );
+    expect(response?.status).toBe(503);
+    expect(await response!.json()).toMatchObject({
+      error: "Configuration is busy; retry shortly",
+      code: "CONFIG_MUTATION_LOCK_UNAVAILABLE",
+    });
+  } finally {
+    writeFileSync(releasePath, "release");
+    expect(await waitForOwnedChild(child)).toBe(0);
+  }
 });

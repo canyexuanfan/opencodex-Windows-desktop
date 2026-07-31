@@ -168,10 +168,13 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname.startsWith("/api/codex-auth/")) {
     const { handleCodexAuthAPI } = await import("../codex/auth-api");
     const { ConfigMutationLockError } = await import("../config");
+    const { CodexCredentialRefreshLockTimeoutError } = await import("../codex/account-store");
     try {
       return await handleCodexAuthAPI(req, url, config);
     } catch (error) {
-      if (error instanceof ConfigMutationLockError) {
+      // Credential writers remap ConfigMutationLockError to CodexCredentialRefreshLockTimeoutError;
+      // treat both as the same retryable busy response.
+      if (error instanceof ConfigMutationLockError || error instanceof CodexCredentialRefreshLockTimeoutError) {
         return jsonResponse(
           { error: "Configuration is busy; retry shortly", code: "CONFIG_MUTATION_LOCK_UNAVAILABLE" },
           503,

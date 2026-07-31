@@ -1211,7 +1211,7 @@ export async function handleCodexAuthAPI(
                   if (resp.ok) {
                     const data = (await resp.json()) as WhamUsageResponse;
                     email = data.email ?? email;
-                    plan = data.plan_type ?? undefined;
+                    plan = nonEmptyPlan(data.plan_type) ?? undefined;
                     quota = parseUsageQuota(data);
                   }
                 } catch { /* wham fetch is non-blocking */ }
