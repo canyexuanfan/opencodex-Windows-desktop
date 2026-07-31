@@ -111,6 +111,7 @@ import {
   isApiAuthRequired,
   isLoopbackHostname,
   jsonResponse,
+  admissionFields,
   resolveApiAuth,
   resolveResponsesApiAuth,
   safeConfigDTO,
@@ -477,7 +478,12 @@ export function startServer(port?: number) {
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
-        const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+        const logCtx: RequestLogContext = {
+          model: "unknown",
+          provider: "unknown",
+          ...admissionFields(admission),
+          inboundProtocol: "responses",
+        };
         let response: Response;
         try {
           response = await handleResponsesCompact(req, config, logCtx);
@@ -509,7 +515,11 @@ export function startServer(port?: number) {
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
-        const logCtx: RequestLogContext = { model: "image_gen", provider: "unknown" };
+        const logCtx: RequestLogContext = {
+          model: "image_gen",
+          provider: "unknown",
+          ...admissionFields(admission),
+        };
         const endpoint = url.pathname.endsWith("/edits") ? "edits" as const : "generations" as const;
         const response = await handleImages(req, config, endpoint, logCtx);
         addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
@@ -558,7 +568,11 @@ export function startServer(port?: number) {
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
-        const logCtx: RequestLogContext = { model: "web_search", provider: "unknown" };
+        const logCtx: RequestLogContext = {
+          model: "web_search",
+          provider: "unknown",
+          ...admissionFields(admission),
+        };
         const response = await handleSearch(req, config, logCtx);
         addFinalRequestLog(
           requestId,
@@ -582,7 +596,12 @@ export function startServer(port?: number) {
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
-        const logCtx = { model: "unknown", provider: "unknown" };
+        const logCtx: RequestLogContext = {
+          model: "unknown",
+          provider: "unknown",
+          ...admissionFields(admission),
+          inboundProtocol: "responses",
+        };
         let logged = false;
         const finalizeNativePassthroughLog = (
           status: number,
@@ -639,7 +658,12 @@ export function startServer(port?: number) {
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
-        const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+        const logCtx: RequestLogContext = {
+          model: "unknown",
+          provider: "unknown",
+          ...admissionFields(admission),
+          inboundProtocol: "messages",
+        };
         // Logging is finalized inside handleClaudeMessages (Responses-vocab tap on the
         // pre-translation stream + native passthrough callbacks) — do not re-wrap the
         // translated Anthropic stream here.
@@ -661,7 +685,12 @@ export function startServer(port?: number) {
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
-        const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+        const logCtx: RequestLogContext = {
+          model: "unknown",
+          provider: "unknown",
+          ...admissionFields(admission),
+          inboundProtocol: "chat",
+        };
         const response = await handleChatCompletions(req, config, logCtx, { requestId, start });
         return withCors(response, req, config);
       }
@@ -684,7 +713,11 @@ export function startServer(port?: number) {
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
-        const logCtx: RequestLogContext = { model: "gpt-live", provider: "unknown" };
+        const logCtx: RequestLogContext = {
+          model: "gpt-live",
+          provider: "unknown",
+          ...admissionFields(admission),
+        };
         const response = await handleLive(req, config, logCtx);
         addFinalRequestLog(
           requestId,
@@ -712,7 +745,11 @@ export function startServer(port?: number) {
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
-        const logCtx: RequestLogContext = { model: "gpt-live", provider: "unknown" };
+        const logCtx: RequestLogContext = {
+          model: "gpt-live",
+          provider: "unknown",
+          ...admissionFields(admission),
+        };
         const resolved = await resolveLiveSidebandUpgrade(req, config, logCtx, liveSidebandTarget);
         if (resolved instanceof Response) {
           addFinalRequestLog(requestId, start, logCtx, resolved.status);
@@ -835,7 +872,17 @@ export function startServer(port?: number) {
         void (async () => {
           const start = Date.now();
           const requestId = nextRequestLogId(start);
-          const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+          // Resolved once at the handshake — a frame has no request headers left
+          // to re-resolve from. Optional on WsData like every other member, so
+          // narrow rather than assume: an unattributed frame is preferable to a
+          // fabricated attribution.
+          const wsAdmission = ws.data.admission;
+          const logCtx: RequestLogContext = {
+            model: "unknown",
+            provider: "unknown",
+            ...(wsAdmission ? admissionFields(wsAdmission) : {}),
+            inboundProtocol: "responses",
+          };
           let logged = false;
           const finalizeLog = (
             status: number,

@@ -248,6 +248,49 @@ export function isDataPlaneAdmissionSecret(token: string, config: OcxConfig): bo
   return resolveDataPlaneAdmissionSecret(token, config) !== null;
 }
 
+/**
+ * Split an admission into the fields a log row records.
+ *
+ * `apiKeyId` is set only for a configured key. The other two kinds have no
+ * configured entry to name, and folding them into the id as sentinel strings
+ * would collide with a hand-edited entry that happens to be called `loopback` —
+ * ids are only validated as non-empty strings.
+ */
+export function admissionFields(admission: DataPlaneAdmission): {
+  admissionKind: DataPlaneAdmission["kind"];
+  apiKeyId?: string;
+} {
+  return admission.kind === "configured"
+    ? { admissionKind: "configured", apiKeyId: admission.keyId }
+    : { admissionKind: admission.kind };
+}
+
+export type ApiAuthDisposition = "required" | "accepted" | "rejected";
+
+export interface ApiAuthMatrixRow {
+  endpoint: string;
+  bearer: ApiAuthDisposition;
+  dedicated: ApiAuthDisposition;
+  xApiKey: ApiAuthDisposition;
+}
+
+/**
+ * Which headers each data-plane endpoint actually accepts, shipped to the GUI so
+ * it stops describing the rule from memory. The dashboard has been telling users
+ * that Chat Completions takes `Authorization: Bearer`, which this file has never
+ * allowed — that route uses the dedicated-header-only wrapper because
+ * `Authorization` there may belong to Codex Direct passthrough.
+ *
+ * It lives next to the wrappers it describes, and a test drives real requests
+ * against every cell rather than reading the table back to itself.
+ */
+export const AUTH_MATRIX: readonly ApiAuthMatrixRow[] = [
+  { endpoint: "/v1/responses", bearer: "rejected", dedicated: "required", xApiKey: "rejected" },
+  { endpoint: "/v1/chat/completions", bearer: "rejected", dedicated: "required", xApiKey: "rejected" },
+  { endpoint: "/v1/messages", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
+  { endpoint: "/v1/models", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
+];
+
 /** Whether `token` is the environment-provided management secret. */
 export function isManagementAdmissionSecret(token: string): boolean {
   const actual = token.trim();

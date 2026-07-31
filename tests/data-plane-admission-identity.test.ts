@@ -213,12 +213,8 @@ describe("the Responses WebSocket handshake", () => {
     expect(payload.headers).toBe(headers);
   });
 
-  test("phase 2 writes nothing into a request-log context", async () => {
-    // The telemetry fields belong to phase 3. If they appear here, the phases
-    // have been merged and this one is no longer independently verifiable.
-    const source = await Bun.file(new URL("../src/server/index.ts", import.meta.url)).text();
-    for (const phase3Symbol of ["apiKeyId", "admissionKind", "inboundProtocol"]) {
-      expect(source).not.toContain(phase3Symbol);
-    }
-  });
+  // The phase-2 guard that asserted no telemetry symbols existed yet has served
+  // its purpose and is gone: phase 3 is what adds them, and a guard that must be
+  // deleted by the next commit is a scheduling note, not a test. What survives is
+  // the payload assertion above, which stays true regardless of who consumes it.
 });
