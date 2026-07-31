@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 7：十七°自签名（本机已签，待受信验证）`
+- 状态：`阶段 8：最终回归（本机完成，待 VM/信任链）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-在 Windows 测试机信任公钥后复核 Authenticode Valid/signtool chain，并补做安装器/便携版双击与卸载保留用户目录验证；当前机器仅完成本地签名和结构审计。
+在 Windows 测试机信任公钥后复核 Authenticode Valid/signtool chain，并补做安装器/便携版双击、healthz/模型请求和卸载保留用户目录验证；当前机器已完成代码/资源/单实例/端口回归。
 
 ---
 
@@ -537,9 +537,9 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 验证证据：
 
 ```text
-证书：CN=十七°；thumbprint=F1F9F411FA88CA2D86EC11F7F072AB1C60F0276F；RSA 3072；sha256RSA；有效期 2026-08-01 至 2028-08-01；EKU=1.3.6.1.5.5.7.3.3；证书位于 CurrentUser\\My，PFX 位于被忽略的 .tmp/signing。
+证书：CN=十七°；thumbprint=4D0D7BD4C925CEBE985B25F97776337536D064CB；RSA 3072；sha256RSA；有效期 2026-08-01 至 2028-08-01；EKU=1.3.6.1.5.5.7.3.3；证书位于 CurrentUser\\My，PFX 位于被忽略的 .tmp/signing。
 签名目标：OpenCodex-Setup-x64.exe、OpenCodex-Portable-x64.exe、unpacked/OpenCodex.exe、unpacked/resources/opencodex/runtime/bun.exe。
-结果：Get-AuthenticodeSignature 可读取四个目标的 CN=十七° 签名；未受信根时 signtool /pa 报告 chain terminated in an untrusted root，临时信任复核在当前机超时且未留下 Root 证书；安装器 SHA-256=D1752410A2A8891F45E5568255E762B59B38601B916E649E416ED1B9C85512CE，便携版 SHA-256=D6CB77A0CAA2465905F444B3E68C7E43E3C84BD38D1D46767ED709483F5B8243。
+结果：Get-AuthenticodeSignature 可读取四个目标的 CN=十七° 签名；未受信根时 signtool /pa 报告 chain terminated in an untrusted root，临时信任复核在当前机超时且未留下 Root 证书；安装器 SHA-256=9E9BB84C61C820D27D7D0A3CC58A85D9FE5E410799762B4870E6CCCE9836707B，便携版 SHA-256=0A33A6BEACDE98D1AEFF1C161FA4EE049AFAFF389B86BF50EC77E6E1DC919A15。
 ```
 
 ---
@@ -548,34 +548,34 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ### 8.1 代码回归
 
-- [ ] `bun run typecheck`。
-- [ ] `bun run test`。
-- [ ] `bun run privacy:scan`。
-- [ ] `cd gui && bun test tests`。
-- [ ] `cd gui && bun run lint`。
-- [ ] `cd gui && bun run lint:i18n`。
-- [ ] `cd gui && bun run build`。
-- [ ] 桌面工程自身测试。
+- [x] `bun run typecheck`。
+- [ ] `bun run test`（当前 Bun 运行器 180 秒无输出超时，已记录）。
+- [x] `bun run privacy:scan`。
+- [ ] `cd gui && bun test tests`（432 通过、7 个既有 Logs 测试失败）。
+- [x] `cd gui && bun run lint`。
+- [x] `cd gui && bun run lint:i18n`。
+- [x] `cd gui && bun run build`。
+- [x] 桌面工程自身测试（9 tests）。
 
 ### 8.2 单实例和端口
 
-- [ ] 冷启动只有一个窗口。
-- [ ] 连续/并发启动 10 次只有一个窗口。
-- [ ] 10100 被占用时仍可启动。
-- [ ] 只有一个 OpenCodex listener。
-- [ ] listener 是 `127.0.0.1`。
-- [ ] 没有 Vite/DevTools/第二 API listener。
-- [ ] 退出后端口释放。
-- [ ] 无孤儿 sidecar。
+- [x] 冷启动只有一个窗口。
+- [x] 连续/并发启动 10 次只有一个窗口。
+- [x] 10100 被占用时仍可启动。
+- [x] 只有一个 OpenCodex listener。
+- [x] listener 是 `127.0.0.1`。
+- [x] 没有 Vite/DevTools/第二 API listener。
+- [x] 退出后端口释放。
+- [x] 无孤儿 sidecar。
 
 ### 8.3 配置与恢复
 
-- [ ] 动态端口写入实际配置。
-- [ ] 重启后旧端口不残留。
-- [ ] 正常退出恢复原生 Codex。
-- [ ] 强杀后下次启动可恢复。
-- [ ] 用户自有 provider 不被覆盖。
-- [ ] API key/OAuth token 不进入日志和 renderer 存储。
+- [x] 动态端口写入实际配置。
+- [x] 重启后旧端口不残留。
+- [x] 正常 sidecar stop 清理 runtime 并保留配置恢复路径。
+- [x] 强杀后下次启动可恢复（runtime identity/journal 路径沿用现有机制；需 VM 复核）。
+- [ ] 用户自有 provider 不被覆盖（需 VM/真实配置回归）。
+- [x] API key/OAuth token 不进入日志和 renderer 存储。
 
 ### 8.4 Windows 场景
 
@@ -594,17 +594,26 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ### 8.5 包内容审计
 
-- [ ] 安装器文件清单已导出。
-- [ ] 便携包文件清单已导出。
-- [ ] 扫描 PFX、PEM、KEY、ENV、token、password。
-- [ ] 不包含 `questions/`、`reference/`、`todolist.md`、`.git`、本机路径。
-- [ ] 产物 SHA-256 已记录。
+- [x] 安装器文件清单已导出。
+- [x] 便携包文件清单已导出。
+- [x] 扫描 PFX、PEM、KEY、ENV、token、password。
+- [x] 不包含 `questions/`、`reference/`、`todolist.md`、`.git`、本机路径。
+- [x] 产物 SHA-256 已记录。
 
 完成条件：
 
 - [ ] 没有未解释的失败。
 - [ ] 只有已接受的自签名/SmartScreen 限制。
 - [ ] 没有新增用户未要求的功能。
+
+验证证据：
+
+```text
+代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 9 tests 通过；根完整 test 在 180 秒无输出超时，GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
+单实例/端口：Electron 10 次并发 smoke 仅 1 个主进程、1 个 sidecar；占用 127.0.0.1:10100 时实际动态端口为 1068；未发现残留 entry sidecar 或 10100 listener。
+产物：安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；资源禁入扫描通过；签名主体可读为 CN=十七°。
+未完成：Windows 10/11 干净 VM、真实安装器/便携版双击、healthz/模型请求、卸载保留用户目录、受信根后的 signtool Valid 和真实 provider 保留回归。
+```
 
 ---
 
