@@ -41,18 +41,37 @@ type Run = {
 };
 
 const MiB = 1024 ** 2;
-const WARM = 60_000;
-const OBSERVE = 600_000;
-const WAVES = 10;
-const EVENTS = 400;
+
+/**
+ * Smoke mode exists to prove the pipeline runs end to end without waiting out a
+ * ~7h session. It shortens durations ONLY, and every artifact it produces is
+ * stamped `smoke: true` and `valid: false` so a shortened run can never be
+ * mistaken for, or compared against, a real measurement. The pre-registered
+ * measurement constants below are untouched in a real run.
+ */
+const SMOKE = process.env.OCX_RSS_HARNESS_SMOKE === "1";
+
+const WARM = SMOKE ? 2_000 : 60_000;
+const OBSERVE = SMOKE ? 6_000 : 600_000;
+const WAVES = SMOKE ? 2 : 10;
+const EVENTS = SMOKE ? 20 : 400;
 const EVENT_BYTES = 65_536;
-const WAVE_MS = 120_000;
+const WAVE_MS = SMOKE ? 4_000 : 120_000;
 const READ_MS = 25;
 
 // Scheduler jitter is tolerated, but not enough drift to stretch the locked profile.
 // Changing this after seeing a result invalidates and restarts the full calibration sequence.
 const WAVE_TOLERANCE_MS = 5_000;
-const SETTLE = [0, 30, 60, 120, 300, 600] as const;
+
+/**
+ * Total turns in a run: three clients, one turn each per wave. Derive it rather
+ * than writing 30 in the validators — a literal silently becomes a lie the moment
+ * the wave count changes, and the validator would then reject a correct run (or,
+ * worse, accept a truncated one).
+ */
+const CLIENTS = 3;
+const TURNS = CLIENTS * WAVES;
+const SETTLE = SMOKE ? ([0, 2, 4] as const) : ([0, 30, 60, 120, 300, 600] as const);
 const CONDITIONS: readonly Condition[] = [
   "real-proxy-legacy-tee",
   "single-reader-inspection",
@@ -504,7 +523,7 @@ async function oneTurn(
 
 async function workload(base: string, run: string, log: Log): Promise<void> {
   // These three chain heads persist across all ten waves: one turn per client per wave.
-  const states: State[] = [1, 2, 3].map(client => ({ client }));
+  const states: State[] = Array.from({ length: CLIENTS }, (_, index) => ({ client: index + 1 }));
   const origin = performance.now();
   log.add({
     type: "workload-origin",
@@ -931,7 +950,14 @@ function calibrationVerdict(all: Row[], runs: Run[]) {
         && row.phase === "observation"
       ))
       .map(row => ({ x: row.wallMs, y: Number(row.rss) }));
-    if (samples.length < 590) throw new Error("calibration incomplete");
+    // Derive the floor from OBSERVE rather than hard-coding 590: the `ps` observer
+    // ticks once per second, and allowing ~2% slack absorbs scheduler jitter without
+    // accepting a truncated run. A hard-coded count silently becomes wrong the moment
+    // the observation window changes.
+    const expected = Math.floor((OBSERVE / 1_000) * 0.98);
+    if (samples.length < expected) {
+      throw new Error(`calibration incomplete: ${samples.length} < ${expected} ps samples`);
+    }
     return {
       final: samples.at(-1)!.y,
       peak: Math.max(...samples.map(sample => sample.y)),
@@ -983,11 +1009,11 @@ function validateWorkload(all: Row[], run: Run): void {
   const http = manifest.filter(row => row.type === "client-http");
   if (
     Number(manifest.find(row => row.type === "warm-end")?.actualMs) < WARM
-    || starts.length !== 30
-    || ends.length !== 30
+    || starts.length !== TURNS
+    || ends.length !== TURNS
     || http.some(row => row.status !== 200)
     || manifest.filter(row => row.type === "upstream-pull" && row.kind === "delta").length
-      !== 30 * EVENTS
+      !== TURNS * EVENTS
     || manifest.filter(row => row.type === "settle").length !== SETTLE.length
   ) {
     throw new Error("shape invalid");
@@ -1035,7 +1061,7 @@ function validateWorkload(all: Row[], run: Run): void {
   for (const kind of ["created", "item", "completed", "done"]) {
     if (
       manifest.filter(row => row.type === "upstream-pull" && row.kind === kind).length
-      !== 30
+      !== TURNS
     ) {
       throw new Error("fixture event count");
     }
@@ -1234,7 +1260,12 @@ function analysis(
 
 function writeSummary(root: string, value: unknown): void {
   const temporary = join(root, "summary.json.tmp-" + process.pid);
-  writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+  // A smoke run is a plumbing check, never evidence: stamp it so no later phase can
+  // read a shortened series as a measurement.
+  const stamped = SMOKE && value && typeof value === "object"
+    ? { ...(value as Record<string, unknown>), smoke: true, valid: false }
+    : value;
+  writeFileSync(temporary, JSON.stringify(stamped, null, 2) + "\n", { mode: 0o600 });
   renameSync(temporary, join(root, "summary.json"));
 }
 
