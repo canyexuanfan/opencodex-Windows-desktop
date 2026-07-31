@@ -38,3 +38,18 @@ execution and verification contract; the hunks in 050 are the source of truth.
 ## Commit
 
 One commit: `fix(rss-harness): clamp pauses to monotonic deadlines and split warm-gate errors`.
+
+## Execution record (wp2 closed 2026-08-01)
+
+- 050 diff applied verbatim: `git apply --check` then `git apply`, commit
+  `a7264bc3f` (40 insertions, 11 deletions, harness file only).
+- `bun run typecheck` exit 0 after apply.
+- A-gate reviewer (independent, isolated-clone verification): PASS — patch
+  applies cleanly, no gate weakened, child-exit-first ordering correct.
+- Remote smoke calibration on `macmini-cf` (Darwin arm64, patched file synced
+  by sha256 `302c1386…`, child/sampler files verified identical):
+  run `2026-07-31T19-42-41-smoke-wp2`, exit 0, summary
+  `{"valid":false,"calibrated":{"passed":true,"final":-884736,"peak":-884736,
+  "rssSlope":0.3987},"smoke":true}` — calibration PASSED, no warm/observation
+  gate trip (the previous 04-36-07 failure mode is gone), smoke self-stamp
+  `valid:false` per contract. No full measurement claim.
