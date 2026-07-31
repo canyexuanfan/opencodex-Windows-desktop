@@ -46,6 +46,7 @@ export const ALIBABA_CODING_CN_BASE_URL = "https://coding.dashscope.aliyuncs.com
 export const ALIBABA_CODING_BASE_URL_CHOICES: readonly ProviderBaseUrlChoice[] = [
   { id: "intl", label: "International", baseUrl: ALIBABA_CODING_INTL_BASE_URL },
   { id: "china", label: "China", baseUrl: ALIBABA_CODING_CN_BASE_URL },
+  { id: "custom", label: "Custom" },
 ];
 
 /** Match a saved baseUrl to a known choice id (`custom` when it does not match). */
