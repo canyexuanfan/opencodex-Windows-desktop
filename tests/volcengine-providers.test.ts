@@ -5,6 +5,7 @@ import { applyProviderConfigHints, buildCatalogEntries } from "../src/codex/cata
 import { KEY_LOGIN_PROVIDERS } from "../src/oauth/key-providers";
 import { deriveProviderPresets, providerConfigSeed } from "../src/providers/derive";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
+import { safeConfigDTO } from "../src/server/auth-cors";
 import { routeModel } from "../src/router";
 import type { OcxConfig } from "../src/types";
 import { buildProviderPostBody } from "../gui/src/provider-payload";
@@ -316,5 +317,78 @@ describe("Volcengine Ark providers", () => {
     expect(isCatalogProviderId("volcengine")).toBe(true);
     expect(isCatalogProviderId("volcengine-coding-plan")).toBe(true);
     expect(isCatalogProviderId("volcengine-agent-plan")).toBe(true);
+  });
+
+  // Volcengine documents Plan quota as valid only inside supported AI coding tools and warns
+  // that other API use of the key may suspend the subscription or ban the account. The note is
+  // the only surface that tells a user this, so both Plan presets must carry it and the
+  // pay-as-you-go route — which has no such restriction — must not.
+  test("both Plan presets disclose the coding-tools-only restriction", () => {
+    const codingPlan = PROVIDER_REGISTRY.find(provider => provider.id === "volcengine-coding-plan")!;
+    const agentPlan = PROVIDER_REGISTRY.find(provider => provider.id === "volcengine-agent-plan")!;
+    const payg = PROVIDER_REGISTRY.find(provider => provider.id === "volcengine")!;
+
+    expect(codingPlan.note).toContain("Coding tools only");
+    expect(codingPlan.note).toMatch(/suspend the subscription or ban the account/);
+    expect(agentPlan.note).toContain("Coding tools only");
+    expect(payg.note).not.toContain("Coding tools only");
+  });
+
+  test("Plan presets declare their text-only models so the vision sidecar cannot over-advertise", () => {
+    for (const id of ["volcengine-coding-plan", "volcengine-agent-plan"]) {
+      const entry = PROVIDER_REGISTRY.find(provider => provider.id === id)!;
+      const multimodal = Object.entries(entry.modelInputModalities ?? {})
+        .filter(([, modalities]) => modalities.includes("image"))
+        .map(([model]) => model);
+
+      // Every advertised model is either declared multimodal or declared text-only —
+      // nothing is left to the default.
+      for (const model of entry.models ?? []) {
+        const declared = multimodal.includes(model) || (entry.noVisionModels ?? []).includes(model);
+        expect(declared).toBe(true);
+      }
+      // A text-only model is never also advertised as accepting images.
+      for (const model of entry.noVisionModels ?? []) {
+        expect(multimodal).not.toContain(model);
+      }
+    }
+  });
+
+  // The dashboard lets a preset be saved under any name. Resolving the note by name alone
+  // silently dropped the usage restriction for a renamed row — the user kept the same
+  // credential destination but lost the warning about it.
+  test("the Plan restriction survives saving the preset under a custom name", () => {
+    const codingPlan = PROVIDER_REGISTRY.find(provider => provider.id === "volcengine-coding-plan")!;
+    const dto = safeConfigDTO({
+      port: 10100,
+      defaultProvider: "my-volc",
+      providers: {
+        "my-volc": {
+          adapter: codingPlan.adapter,
+          baseUrl: codingPlan.baseUrl,
+          authMode: "key",
+          apiKey: "sk-test-not-a-real-key",
+        },
+      },
+    } as unknown as OcxConfig) as { providers: Record<string, { note?: string }> };
+
+    expect(dto.providers["my-volc"].note).toContain("Coding tools only");
+  });
+
+  test("an unrelated destination does not inherit a Volcengine restriction", () => {
+    const dto = safeConfigDTO({
+      port: 10100,
+      defaultProvider: "somewhere-else",
+      providers: {
+        "somewhere-else": {
+          adapter: "openai-chat",
+          baseUrl: "https://api.example.test/v1",
+          authMode: "key",
+          apiKey: "sk-test-not-a-real-key",
+        },
+      },
+    } as unknown as OcxConfig) as { providers: Record<string, { note?: string }> };
+
+    expect(dto.providers["somewhere-else"].note).toBeUndefined();
   });
 });

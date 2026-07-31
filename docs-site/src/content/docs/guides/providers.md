@@ -241,6 +241,12 @@ Volcengine Agent Plan uses its native Responses endpoint through `openai-respons
 > models. Coding Plan defaults to `ark-code-latest`, while Agent Plan defaults to
 > `deepseek-v4-pro`.
 
+> **Volcengine Plan usage restriction:** Volcengine documents Coding Plan and Agent Plan quota as
+> valid only inside supported AI coding tools, and warns that using a plan key for general API
+> calls may suspend the subscription or ban the account. Routing Codex or Claude Code through
+> opencodex is the documented use; pointing other automation at a plan key is not. The
+> pay-as-you-go `volcengine` route carries no such restriction.
+
 **DeepInfra discovery.** The key-based `deepinfra` OpenAI Chat Completions provider uses the
 `openai-chat` adapter with a Bearer API key. Its registry-owned model-list URL keeps only rows tagged
 `chat`, preserves slash-containing native model ids, and caps live discovery at 512 KiB and 512 raw
