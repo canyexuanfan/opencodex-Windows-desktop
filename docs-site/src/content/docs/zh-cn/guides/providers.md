@@ -108,7 +108,7 @@ Kiro 登录需要 Kiro CLI：Unix 使用 `curl -fsSL https://cli.kiro.dev/instal
 
 ## 3. API 密钥目录
 
-opencodex v2.7.1 内置 50 个预设：40 个密钥预设、6 个 OAuth 预设、3 个本地预设，以及默认的
+opencodex 内置 61 个预设：50 个密钥预设、7 个 OAuth 预设、3 个本地预设，以及默认的
 ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提供商的控制台，验证并保存密钥。
 主要条目包括：
 
@@ -125,6 +125,7 @@ ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -142,6 +143,11 @@ ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提
 | ……以及更多 | opencode zen、Vercel AI Gateway、Venice、NanoGPT、Synthetic、Qianfan、Alibaba、Parallel、ZenMux、LiteLLM |
 
 大多数使用带 bearer 密钥的 `openai-chat` adapter；少数仅暴露 Anthropic 兼容端点的提供商（例如 **Xiaomi MiMo**）使用 `anthropic` adapter（`x-api-key`）。
+
+**DeepInfra 发现：**`deepinfra` 是使用 `openai-chat` adapter 和 Bearer API 密钥的密钥型
+OpenAI Chat Completions 提供商。registry 固定的 DeepInfra 模型列表 URL 仅保留带 `chat` 标签的记录，
+同时保留含 `/` 的原生模型 id，并把实时发现限制为 512 KiB 和 512 条原始记录。
+密钥可在 [DeepInfra 控制台](https://deepinfra.com/dash/api_keys)创建。
 
 > **腾讯云 Coding Plan 使用限制：**腾讯将此订阅限定为交互式编程工具使用。禁止通用 API
 > 自动化、自定义应用后端和非交互式批量调用；违规使用可能导致套餐密钥被停用。

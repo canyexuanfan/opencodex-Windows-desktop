@@ -829,6 +829,27 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   // llama-3.3-70b was deprecated by Cerebras on 2026-02-16. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://cloud.cerebras.ai/platform/apikeys", defaultModel: "gpt-oss-120b" },
+  {
+    id: "deepinfra",
+    label: "DeepInfra",
+    baseUrl: "https://api.deepinfra.com/v1/openai",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://deepinfra.com/dash/api_keys",
+    liveModels: true,
+    preserveCustomDestination: true,
+    modelDiscovery: {
+      // DeepInfra documents the OpenAI model catalog outside the chat-compatible `/v1/openai`
+      // namespace, so keep this destination registry-owned instead of deriving it from baseUrl.
+      url: "https://api.deepinfra.com/v1/models",
+      maxResponseBytes: 512 * 1024,
+      maxModels: 512,
+      filter: {
+        allOf: [{ path: ["metadata", "tags"], containsAny: ["chat"] }],
+      },
+    },
+    note: "OpenAI-compatible chat models only; live discovery excludes non-chat rows from DeepInfra's mixed model catalog.",
+  },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
   { id: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://fireworks.ai/account/api-keys" },
