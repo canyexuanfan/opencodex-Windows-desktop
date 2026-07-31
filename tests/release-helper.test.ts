@@ -192,15 +192,6 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
     installCommandShim(shimDir, name);
   }
 
-<<<<<<< HEAD
-  const pathPrefix = `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? process.env.Path ?? ""}`;
-  const result = spawnSync(process.execPath, [releaseScriptPath, version], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PATH: pathPrefix,
-      ...(process.platform === "win32" ? { Path: pathPrefix } : {}),
-=======
   // Windows names the variable `Path`, and `...process.env` copies it in under
   // that spelling. Adding a separate `PATH` key leaves BOTH present, and which
   // one wins is not something this test should be gambling on — the child saw
@@ -218,7 +209,6 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
     env: {
       ...inheritedEnv,
       [pathKey]: pathValue,
->>>>>>> upstream/dev
       FAKE_RELEASE_LOG: logPath,
       FAKE_GIT_BRANCH: scenario.branch ?? "main",
       FAKE_GIT_HEAD_SHA: scenario.headSha ?? "abc123def456",
