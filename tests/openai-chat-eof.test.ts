@@ -142,4 +142,43 @@ describe("openai-chat stream EOF fail-closed", () => {
     expect(events.at(-1)?.type).toBe("done");
     expect(events.some(e => e.type === "error")).toBe(false);
   });
+
+  test("EOF with pending tool calls and no finish_reason fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":"{\\"a\\":"}}]}}]}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+    expect(events.some(e => e.type === "tool_call_end")).toBe(false);
+  });
+
+  test("reasoning-only EOF without finish_reason fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+  });
+
+  test("usage-only EOF with pending tool calls fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":"{}"}}]}}]}\n\n' +
+        'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+    expect(events.some(e => e.type === "tool_call_end")).toBe(false);
+  });
+
+  test("usage-only EOF without answer text fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+  });
 });
