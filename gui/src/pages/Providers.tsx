@@ -344,7 +344,9 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         addModalAccountRows={addModalAccountRows}
         accountLoginStatus={accountLoginStatus}
         removeConfirmName={removeConfirmName}
-        removeDefaultProvider={removeConfirmName === config.defaultProvider ? Object.keys(config.providers).find(name => name !== removeConfirmName) ?? null : null}
+        removeDefaultProvider={removeConfirmName === config.defaultProvider
+          ? Object.entries(config.providers).find(([name, provider]) => name !== removeConfirmName && provider.disabled !== true)?.[0] ?? null
+          : null}
         codexLoginOpen={codexLoginOpen}
         jsonLeaveOpen={jsonLeaveOpen}
         jsonSaving={jsonSaving}

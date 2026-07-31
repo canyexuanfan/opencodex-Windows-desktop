@@ -1,8 +1,9 @@
 import { useCallback } from "react";
 import type { TFn } from "../i18n/shared";
 import type { ProviderUpdatePatch } from "../components/provider-workspace/types";
+import { apiErrorMessage } from "../api-error";
 
-type ProviderError = { code?: unknown; combos?: unknown };
+type ProviderError = { code?: unknown; combos?: unknown; error?: unknown };
 
 function providerErrorMessage(data: ProviderError, t: TFn, fallback: string): string {
   switch (data.code) {
@@ -12,7 +13,8 @@ function providerErrorMessage(data: ProviderError, t: TFn, fallback: string): st
       return t("prov.removeHasDependentCombos", { combos: combos || "—" });
     }
     case "default_provider_disabled": return t("prov.defaultDisabled");
-    default: return fallback;
+    default:
+      return typeof data.error === "string" && data.error.trim() ? data.error.trim() : fallback;
   }
 }
 
@@ -79,7 +81,7 @@ export function useProvidersCrud({
       body: JSON.stringify({ disabled }),
     });
     if (!res.ok) {
-      notify(disabled ? t("prov.disableFail", { name }) : t("prov.enableFail", { name }), false);
+      notify(await apiErrorMessage(res, disabled ? t("prov.disableFail", { name }) : t("prov.enableFail", { name })), false);
       return;
     }
     notify(disabled ? t("prov.disabled", { name }) : t("prov.enabled", { name }), true);
@@ -96,7 +98,7 @@ export function useProvidersCrud({
         body: JSON.stringify(patch),
       });
       if (!res.ok) {
-        return { ok: false, error: t("prov.updateFail") };
+        return { ok: false, error: await apiErrorMessage(res, t("prov.updateFail")) };
       }
       // Await refresh so callers (e.g. notes editor) only leave edit mode once
       // item.note reflects the saved value.

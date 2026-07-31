@@ -436,13 +436,19 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
     // Config validation requires a default provider. Reassigning before deletion keeps
     // the persisted config valid and makes removal of the current default a one-step UI
-    // operation. Object-key order is the documented configuration order and is stable
-    // through JSON persistence, so "first remaining provider" is deterministic.
+    // operation. Prefer the first remaining *enabled* provider so DELETE cannot leave a
+    // disabled default that setDefault / disable already refuse. Object-key order is the
+    // documented configuration order and is stable through JSON persistence.
     const fallbackDefault = name === config.defaultProvider
-      ? Object.keys(config.providers).find(provider => provider !== name)
+      ? Object.entries(config.providers)
+        .find(([provider, providerConfig]) => provider !== name && providerConfig.disabled !== true)
+        ?.[0]
       : undefined;
     if (name === config.defaultProvider && !fallbackDefault) {
-      return jsonResponse({ error: "cannot delete the only configured provider", code: "last_provider" }, 409);
+      return jsonResponse({
+        error: "cannot delete the default provider when no enabled replacement remains",
+        code: "last_provider",
+      }, 409);
     }
     const dependentCombos = Object.entries(config.combos ?? {})
       .filter(([, combo]) => combo.targets.some(target => target.provider === name))

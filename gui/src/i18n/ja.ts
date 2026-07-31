@@ -309,7 +309,7 @@ export const ja: Record<TKey, string> = {
   "prov.removed": "\"{name}\" を削除しました。",
   "prov.removedDefault": "\"{name}\" を削除しました。既定のプロバイダーは \"{defaultProvider}\" になりました。",
   "prov.removeFail": "\"{name}\" の削除に失敗しました。",
-  "prov.removeLastProvider": "設定済みの唯一のプロバイダーは削除できません。",
+  "prov.removeLastProvider": "このプロバイダーは、他に有効なプロバイダーを既定にできない場合は削除できません。",
   "prov.removeHasDependentCombos": "先に依存するコンボを削除または更新してください: {combos}。",
   "prov.setDefault": "既定に設定",
   "prov.setDefaultSuccess": "\"{name}\" を既定のプロバイダーに設定しました。",

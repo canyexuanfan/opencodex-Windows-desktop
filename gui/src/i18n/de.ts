@@ -303,7 +303,7 @@ export const de: Record<TKey, string> = {
   "prov.removed": "\"{name}\" entfernt.",
   "prov.removedDefault": "\"{name}\" entfernt. Standardanbieter ist jetzt \"{defaultProvider}\".",
   "prov.removeFail": "\"{name}\" konnte nicht entfernt werden.",
-  "prov.removeLastProvider": "Der einzige konfigurierte Anbieter kann nicht entfernt werden.",
+  "prov.removeLastProvider": "Der Standardanbieter kann nicht entfernt werden, wenn kein anderer aktivierter Anbieter Standard werden kann.",
   "prov.removeHasDependentCombos": "Entferne oder aktualisiere zuerst diese abhängigen Combos: {combos}.",
   "prov.setDefault": "Als Standard festlegen",
   "prov.setDefaultSuccess": "\"{name}\" ist jetzt der Standardanbieter.",

@@ -309,7 +309,7 @@ export const zh: Record<TKey, string> = {
   "prov.removed": "已移除 \"{name}\"。",
   "prov.removedDefault": "已移除 \"{name}\"。默认提供方现为 \"{defaultProvider}\"。",
   "prov.removeFail": "移除 \"{name}\" 失败。",
-  "prov.removeLastProvider": "不能移除唯一已配置的提供方。",
+  "prov.removeLastProvider": "如果没有其他已启用的提供方可以成为默认，则无法移除此提供方。",
   "prov.removeHasDependentCombos": "请先移除或更新依赖它的组合：{combos}。",
   "prov.setDefault": "设为默认",
   "prov.setDefaultSuccess": "\"{name}\" 已设为默认提供方。",

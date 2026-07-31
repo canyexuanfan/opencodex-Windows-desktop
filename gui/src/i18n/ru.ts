@@ -314,7 +314,7 @@ export const ru: Record<TKey, string> = {
   "prov.removed": "Провайдер \"{name}\" удалён.",
   "prov.removedDefault": "Провайдер \"{name}\" удалён. Провайдером по умолчанию теперь является \"{defaultProvider}\".",
   "prov.removeFail": "Не удалось удалить \"{name}\".",
-  "prov.removeLastProvider": "Нельзя удалить единственного настроенного провайдера.",
+  "prov.removeLastProvider": "Нельзя удалить этого провайдера, если ни один другой включённый провайдер не может стать провайдером по умолчанию.",
   "prov.removeHasDependentCombos": "Сначала удалите или обновите зависимые комбо: {combos}.",
   "prov.setDefault": "Сделать основным",
   "prov.setDefaultSuccess": "\"{name}\" теперь провайдер по умолчанию.",

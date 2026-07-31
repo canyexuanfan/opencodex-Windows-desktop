@@ -318,7 +318,7 @@ export const en = {
   "prov.removed": "Removed \"{name}\".",
   "prov.removedDefault": "Removed \"{name}\". Default provider is now \"{defaultProvider}\".",
   "prov.removeFail": "Failed to remove \"{name}\".",
-  "prov.removeLastProvider": "You can't remove the only configured provider.",
+  "prov.removeLastProvider": "You can't remove this provider when no other enabled provider can become the default.",
   "prov.removeHasDependentCombos": "Remove or update these dependent combos first: {combos}.",
   "prov.setDefault": "Set as default",
   "prov.setDefaultSuccess": "\"{name}\" is now the default provider.",

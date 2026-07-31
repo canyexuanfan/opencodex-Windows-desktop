@@ -31,7 +31,7 @@ bun run dev:gui
 | **启动安全** | 显示注入的 Codex 路由能否在重启后继续工作，并分别显示服务、launcher shim 状态和准确的修复命令。 |
 | **Windows 托盘** | 安装用户登录托盘，一键控制代理启动、停止、重启、面板和状态。托盘不是代理重启服务。 |
 | **Codex 自动启动** | 允许已安装的 Codex launcher shim 运行 `ocx ensure`。此开关不会安装 shim 或后台服务。 |
-| **Providers** | 添加、编辑、启用/禁用、删除 provider，并在支持时管理 OAuth 账号池和 API key 池。Claude（Anthropic）OAuth 池中，每个已登录账号显示各自的 5 小时与周限额条（用量按凭证计）；探测失败时保留上次已知数值并标记为暂时不可用。 |
+| **Providers** | 添加、编辑、设为默认、启用/禁用、删除 provider，并在支持时管理 OAuth 账号池和 API key 池。删除当前默认时，会切换到剩余的第一个已启用 provider（若存在）。Claude（Anthropic）OAuth 池中，每个已登录账号显示各自的 5 小时与周限额条（用量按凭证计）；探测失败时保留上次已知数值并标记为暂时不可用。 |
 | **Add provider** | 搜索 registry preset，选择账号登录、API key 服务、本地服务器或自定义 endpoint。 |
 | **Codex Auth** | 添加 ChatGPT/Codex 池账号，选择下一 session 的账号，刷新 5h / 每周 / 30d 配额，启用或停用配额自动切换，设置其 1–100% 阈值和临时故障 failover。 |
 | **Subagents** | 在 `spawn_agent` override 列表中置顶最多五个原生或路由模型。 |
@@ -99,7 +99,7 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 | `GET` / `PUT /api/sidecar-settings` | 读取或设置 search/vision sidecar 模型。 |
 | `GET` / `PUT /api/injection-model` | 读取或设置委派指引模型/强度、指引开关及 Codex 原生子代理默认值同步开关。 |
 | `GET` / `PUT /api/v2` | 读取或设置界面模式、Codex feature flag 和 v2 thread 上限。 |
-| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | 列出、添加/替换、启用/禁用或删除 provider。 |
+| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | 列出、添加/替换、启用/禁用、设为默认（单独 `{ "setDefault": true }`）或删除 provider。删除当前默认时，会改派到剩余的第一个已启用 provider（若存在）。 |
 | `GET /api/models` · `PUT /api/disabled-models` | 列出原生/路由模型，并更新共享的 disabled-model 集合。 |
 | `GET /api/selected-models` · `PUT /api/model-visibility` | 读取 provider allowlist，并原子地更改单个模型或 provider 分组的最终可见状态。 |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | 读取 API key 和 OAuth provider 目录。 |
