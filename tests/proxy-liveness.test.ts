@@ -82,6 +82,39 @@ describe("proxyIdentityAt", () => {
     expect(identity).toBeNull();
     expect(calls).toBe(1);
   });
+
+  test("NaN attempts fall back to a single probe", async () => {
+    let calls = 0;
+    const identity = await proxyIdentityAt(10100, {}, {
+      attempts: Number.NaN,
+      fetchFn: (async () => {
+        calls += 1;
+        return healthz(OURS);
+      }) as typeof fetch,
+    });
+    expect(identity).toEqual({ pid: 4242 });
+    expect(calls).toBe(1);
+  });
+
+  test("honors an aggregate deadline across transport retries", async () => {
+    let calls = 0;
+    let clock = 1_000;
+    const identity = await proxyIdentityAt(10100, {}, {
+      attempts: 3,
+      timeoutMs: 1_500,
+      deadlineAt: 1_000 + 1_200,
+      nowFn: () => clock,
+      sleepFn: async () => { clock += 100; },
+      fetchFn: (async () => {
+        calls += 1;
+        clock += 1_500;
+        throw new Error("timeout");
+      }) as typeof fetch,
+    });
+    expect(identity).toBeNull();
+    // First attempt spends the budget; remaining retries must not fire.
+    expect(calls).toBe(1);
+  });
 });
 
 describe("findLiveProxy", () => {

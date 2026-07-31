@@ -37,6 +37,14 @@ export interface LivenessIo {
    */
   attempts?: number;
   sleepFn?: (ms: number) => Promise<void>;
+  /**
+   * Absolute wall-clock deadline for discovery. When set, each probe attempt aborts
+   * once the remaining budget cannot cover another fetch — so multi-candidate
+   * `findLiveProxy` under `SERVICE_STOP_LIVENESS` cannot overrun the stop-path
+   * verification window (#764 / CodeRabbit).
+   */
+  deadlineAt?: number;
+  nowFn?: () => number;
 }
 
 /** Default probe options for service stop / orphan cleanup — a just-bound proxy can miss a single 750ms probe. */
@@ -86,10 +94,17 @@ export async function proxyIdentityAt(
 ): Promise<{ pid: number | null } | null> {
   const fetchFn = io.fetchFn ?? fetch;
   const sleepFn = io.sleepFn ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
-  const timeoutMs = io.timeoutMs ?? 750;
-  const attempts = Math.max(1, Math.min(Math.trunc(io.attempts ?? 1), 5));
+  const nowFn = io.nowFn ?? Date.now;
+  const baseTimeoutMs = io.timeoutMs ?? 750;
+  const requestedAttempts = Math.trunc(io.attempts ?? 1);
+  const attempts = Number.isNaN(requestedAttempts)
+    ? 1
+    : Math.max(1, Math.min(requestedAttempts, 5));
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    const remainingMs = io.deadlineAt === undefined ? baseTimeoutMs : io.deadlineAt - nowFn();
+    if (remainingMs <= 0) return null;
+    const timeoutMs = Math.min(baseTimeoutMs, remainingMs);
     try {
       const res = await fetchFn(`http://${probeHostname(opts.hostname)}:${port}/healthz`, {
         signal: AbortSignal.timeout(timeoutMs),
@@ -104,6 +119,7 @@ export async function proxyIdentityAt(
       // Transport failure (timeout / refused) — retry while budget remains; a proxy that
       // has only just begun listening can miss a single short probe (#764).
       if (attempt >= attempts) return null;
+      if (io.deadlineAt !== undefined && io.deadlineAt - nowFn() <= 0) return null;
       await sleepFn(100);
     }
   }
