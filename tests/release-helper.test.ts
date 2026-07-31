@@ -192,6 +192,7 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
     installCommandShim(shimDir, name);
   }
 
+<<<<<<< HEAD
   const pathPrefix = `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? process.env.Path ?? ""}`;
   const result = spawnSync(process.execPath, [releaseScriptPath, version], {
     cwd: repoRoot,
@@ -199,6 +200,25 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
       ...process.env,
       PATH: pathPrefix,
       ...(process.platform === "win32" ? { Path: pathPrefix } : {}),
+=======
+  // Windows names the variable `Path`, and `...process.env` copies it in under
+  // that spelling. Adding a separate `PATH` key leaves BOTH present, and which
+  // one wins is not something this test should be gambling on — the child saw
+  // the real git instead of the shim, so the branch guard read `dev` and the
+  // script aborted before logging a single call. Strip every case variant, then
+  // set exactly one.
+  const inheritedEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"),
+  );
+  const pathKey = process.platform === "win32" ? "Path" : "PATH";
+  const pathValue = `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? process.env.Path ?? ""}`;
+
+  const result = spawnSync(process.execPath, [releaseScriptPath, version], {
+    cwd: repoRoot,
+    env: {
+      ...inheritedEnv,
+      [pathKey]: pathValue,
+>>>>>>> upstream/dev
       FAKE_RELEASE_LOG: logPath,
       FAKE_GIT_BRANCH: scenario.branch ?? "main",
       FAKE_GIT_HEAD_SHA: scenario.headSha ?? "abc123def456",
