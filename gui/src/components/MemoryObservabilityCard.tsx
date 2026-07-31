@@ -3,6 +3,7 @@ import { formatUptime } from "../formatUptime";
 import { IconActivity } from "../icons";
 import { useI18n, type Locale, type TFn } from "../i18n/shared";
 import { createBoundedFetch, type BoundedFetch } from "../bounded-fetch";
+import { getDesktopLifecycleApi } from "../desktop-lifecycle";
 
 /**
  * Memory observability card. Polls GET /api/system/memory (#314 WP3) every 5s
@@ -353,6 +354,12 @@ export default function MemoryObservabilityCard({ apiBase }: { apiBase: string }
       setRestartFromPid(typeof data?.pid === "number" ? data.pid : null);
       setRestartPhase("draining");
       try {
+        const desktop = getDesktopLifecycleApi();
+        if (desktop) {
+          setRestartPhase("reconnecting");
+          await desktop.restartProxy();
+          return;
+        }
         const res = await fetch(`${apiBase}/api/system/restart`, { method: "POST" });
         if (!res.ok) throw new Error("restart_failed");
         // Proxy will drain then exit; memory poll will trip reconnecting or pid change.

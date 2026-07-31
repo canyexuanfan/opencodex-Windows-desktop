@@ -23,6 +23,7 @@ import { readJsonIfOk } from "./fetch-json";
 import { type Page } from "./app-routing";
 import { useAppRouteState } from "./use-app-route-state";
 import { requestProxyStop } from "./stop-proxy";
+import { getDesktopLifecycleApi } from "./desktop-lifecycle";
 
 installApiAuthFetch();
 
@@ -187,6 +188,16 @@ export default function App() {
   const handleStop = async () => {
     if (!confirm(t("dash.stopConfirm"))) return;
     setStopping(true);
+    const desktop = getDesktopLifecycleApi();
+    if (desktop) {
+      try {
+        await desktop.stopProxy();
+      } catch {
+        setStopping(false);
+        alert(t("dash.stopFailed", { status: "desktop" }));
+      }
+      return;
+    }
     const outcome = await requestProxyStop(API_BASE, {
       formatFailure: status => t("dash.stopFailed", { status: String(status) }),
     });
