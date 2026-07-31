@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { handleManagementAPI } from "../src/server/management-api";
-import { setStarDepsForTests } from "../src/github/star-state";
+import { invalidateStarStatusCache, setStarDepsForTests, type StarDeps } from "../src/github/star-state";
 import type { OcxConfig } from "../src/types";
 
 /**
@@ -8,26 +8,12 @@ import type { OcxConfig } from "../src/types";
  * machine; this file checks that the routes are actually reachable through the
  * management dispatcher and that the serialized bytes carry no `gh` output, token,
  * or account identifier.
- *
- * Star probes install a fake `gh` runner: the real Windows `gh.cmd` shim can burn
- * the full auth timeout, which equals Bun's default 5s test deadline.
  */
 const config = {
   port: 10100,
   defaultProvider: "openai",
   providers: {},
 } as OcxConfig;
-
-beforeEach(() => {
-  setStarDepsForTests({
-    runGh: async () => ({ status: 1 }),
-    nowMs: () => Date.now(),
-  });
-});
-
-afterEach(() => {
-  setStarDepsForTests(null);
-});
 
 async function call(
   method: string,
@@ -44,6 +30,27 @@ async function call(
   const raw = await res.text();
   return { status: res.status, body: raw ? JSON.parse(raw) : null, raw, routed: true };
 }
+
+async function withStarDeps<T>(deps: StarDeps, run: () => Promise<T>): Promise<T> {
+  setStarDepsForTests(deps);
+  try {
+    return await run();
+  } finally {
+    setStarDepsForTests(null);
+  }
+}
+
+// Why there is no per-test timeout here any more.
+//
+// 600ef52f2 raised these two tests to a 20s budget, and the diagnosis behind it was
+// right: star-state's 5s AUTH kill raced Bun's 5s default, so a slow Windows
+// credential helper failed the test even when spawnGh resolved `gh` correctly.
+//
+// The budget is moot once the route stops spawning `gh` at all. What these tests
+// actually claim is that the route is reachable, answers in the documented shape, and
+// never serializes gh output — none of which needs a real process. Injecting the
+// existing StarDeps seam makes them deterministic in microseconds instead of buying
+// headroom against an external binary's worst case.
 
 describe("GET /api/update/badge", () => {
   test("is routed and returns the badge shape", async () => {
@@ -66,23 +73,43 @@ describe("GET /api/update/badge", () => {
 
 describe("GET /api/github/star", () => {
   test("is routed and reports one of the three known states", async () => {
-    const { status, body } = await call("GET", "/api/github/star");
-    expect(status).toBe(200);
-    const star = body as Record<string, unknown>;
-    expect(["starred", "not-starred", "unauthenticated"]).toContain(star.state);
-    expect(star.repo).toBe("lidge-jun/opencodex");
-    expect(star.url).toBe("https://github.com/lidge-jun/opencodex");
+    const calls: string[][] = [];
+    await withStarDeps({
+      nowMs: () => 0,
+      // An absent CLI is the deterministic equivalent of a runner where `gh`
+      // cannot start. The route must still answer without spawning anything.
+      async runGh(args) { calls.push(args); return null; },
+    }, async () => {
+      invalidateStarStatusCache();
+      const { status, body } = await call("GET", "/api/github/star");
+      expect(status).toBe(200);
+      const star = body as Record<string, unknown>;
+      expect(["starred", "not-starred", "unauthenticated"]).toContain(star.state);
+      expect(star.repo).toBe("lidge-jun/opencodex");
+      expect(star.url).toBe("https://github.com/lidge-jun/opencodex");
+    });
+    expect(calls).toEqual([["auth", "status", "--hostname", "github.com"]]);
   });
 
   test("never serializes gh output, tokens, or account identifiers", async () => {
-    const { raw } = await call("GET", "/api/github/star");
-    // `gh auth status` prints "Logged in to github.com account <name>" and the token
-    // scopes; none of that may cross this boundary.
-    expect(raw.toLowerCase()).not.toContain("logged in");
-    expect(raw.toLowerCase()).not.toContain("token");
-    expect(raw.toLowerCase()).not.toContain("scope");
-    expect(raw).not.toContain("gho_");
-    expect(raw).not.toContain("ghp_");
+    const calls: string[][] = [];
+    await withStarDeps({
+      nowMs: () => 0,
+      // A non-zero status models a CLI whose credential helper has stalled or
+      // failed, without executing that external helper in this route test.
+      async runGh(args) { calls.push(args); return { status: 1 }; },
+    }, async () => {
+      invalidateStarStatusCache();
+      const { raw } = await call("GET", "/api/github/star");
+      // `gh auth status` prints "Logged in to github.com account <name>" and the token
+      // scopes; none of that may cross this boundary.
+      expect(raw.toLowerCase()).not.toContain("logged in");
+      expect(raw.toLowerCase()).not.toContain("token");
+      expect(raw.toLowerCase()).not.toContain("scope");
+      expect(raw).not.toContain("gho_");
+      expect(raw).not.toContain("ghp_");
+    });
+    expect(calls).toEqual([["auth", "status", "--hostname", "github.com"]]);
   });
 });
 

@@ -12,11 +12,18 @@ async function collect(gen: AsyncGenerator<AdapterEvent>): Promise<AdapterEvent[
 }
 
 describe("openai-chat stream EOF fail-closed", () => {
-  test("truncated stream (no [DONE], no finish_reason) yields a terminal error, not a clean done", async () => {
+  test("truncated stream (no [DONE], no finish_reason) yields done when content was emitted", async () => {
     const response = new Response('data: {"choices":[{"delta":{"content":"par"}}]}\n\n');
     const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
     const last = events[events.length - 1];
-    expect(last.type).toBe("error");
+    expect(last.type).toBe("done");
+    expect(events.some(e => e.type === "error")).toBe(false);
+  });
+
+  test("empty EOF without content still errors", async () => {
+    const response = new Response("");
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
     expect(events.some(e => e.type === "done")).toBe(false);
   });
 
@@ -128,9 +135,48 @@ describe("openai-chat stream EOF fail-closed", () => {
     expect(events.some(e => e.type === "error")).toBe(false);
   });
 
-  test("genuinely truncated stream WITHOUT a trailing newline still fails closed", async () => {
-    // Mid-content frame, no terminator, no newline — must remain a terminal error.
+  test("genuinely truncated stream WITHOUT a trailing newline completes when content was emitted", async () => {
+    // Mid-content frame, no terminator, no newline — content was yielded, so accept done.
     const response = new Response('data: {"choices":[{"delta":{"content":"par"}}]}');
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("done");
+    expect(events.some(e => e.type === "error")).toBe(false);
+  });
+
+  test("EOF with pending tool calls and no finish_reason fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":"{\\"a\\":"}}]}}]}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+    expect(events.some(e => e.type === "tool_call_end")).toBe(false);
+  });
+
+  test("reasoning-only EOF without finish_reason fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+  });
+
+  test("usage-only EOF with pending tool calls fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":"{}"}}]}}]}\n\n' +
+        'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+    expect(events.some(e => e.type === "tool_call_end")).toBe(false);
+  });
+
+  test("usage-only EOF without answer text fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+    );
     const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
     expect(events.at(-1)?.type).toBe("error");
     expect(events.some(e => e.type === "done")).toBe(false);

@@ -1949,14 +1949,18 @@ describe("server local API auth", () => {
   });
 
   test("missing or non-string detail never authorizes a pool retry", async () => {
-    for (const body of ["{}", '{"detail":null}', '{"detail":400}', '{"detail":{"message":"unsupported"}}']) {
-      const harness = await startPoolRetryHarness(() => rejectionResponse(body));
-      try {
+    const bodies = ["{}", '{"detail":null}', '{"detail":400}', '{"detail":{"message":"unsupported"}}'];
+    let nextBody = 0;
+    const harness = await startPoolRetryHarness(() => rejectionResponse(bodies[nextBody++]!));
+    try {
+      for (const body of bodies) {
+        const priorDispatches = harness.dispatches.length;
         await expectOriginal400(await harness.request(), body);
-        expect(harness.dispatches).toEqual(["acct-pool-a"]);
-      } finally {
-        await stopPoolRetryHarness(harness);
+        expect(harness.dispatches.slice(priorDispatches)).toEqual(["acct-pool-a"]);
       }
+      expect(nextBody).toBe(bodies.length);
+    } finally {
+      await stopPoolRetryHarness(harness);
     }
   });
 

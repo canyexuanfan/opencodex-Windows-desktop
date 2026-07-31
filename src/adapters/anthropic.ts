@@ -266,6 +266,16 @@ function synthesizeToolUseId(): string {
   return `toolu_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
 }
 
+/**
+ * A tool_use id that a client can actually echo back. `??` only catches a missing
+ * field, so an Anthropic-compatible relay that sends `""` or `"   "` produced a
+ * call whose id round-trips as blank — the next turn then cannot pair the result
+ * with its call. Treat blank as absent and synthesize (#765).
+ */
+function usableToolUseId(id: unknown): string {
+  return typeof id === "string" && id.trim() ? id : synthesizeToolUseId();
+}
+
 function toolUseArguments(input: unknown): string {
   if (typeof input === "string") {
     const trimmed = input.trim();
@@ -824,7 +834,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 if (!block) break;
                 currentBlockType = block.type;
                 if (block.type === "tool_use") {
-                  currentToolCallId = block.id ?? synthesizeToolUseId();
+                  currentToolCallId = usableToolUseId(block.id);
                   currentToolCallName = toolNames.fromWire(block.name ?? "");
                   currentToolCallJson = "";
                   yield { type: "tool_call_start", id: currentToolCallId, name: currentToolCallName };
@@ -938,7 +948,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
           } else if (block.type === "redacted_thinking" && typeof block.data === "string") {
             events.push({ type: "redacted_thinking", data: block.data });
           } else if (block.type === "tool_use") {
-            const id = block.id ?? synthesizeToolUseId();
+            const id = usableToolUseId(block.id);
             events.push({ type: "tool_call_start", id, name: toolNames.fromWire(block.name ?? "") });
             events.push({ type: "tool_call_delta", arguments: toolUseArguments(block.input) });
             events.push({ type: "tool_call_end" });

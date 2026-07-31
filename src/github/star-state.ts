@@ -79,24 +79,8 @@ async function spawnGh(args: string[], timeoutMs: number): Promise<{ status: num
   }
 }
 
-const defaultDeps: StarDeps = { runGh: spawnGh, nowMs: () => Date.now() };
-/**
- * Route tests call the real management dispatcher, which has no place to pass
- * `StarDeps`. Without an override, Windows CI spawns the real `gh.cmd` shim and
- * burns the full `AUTH_TIMEOUT_MS` — equal to Bun's default test timeout — so
- * `GET /api/github/star` flakes as a 5s hang. Tests install a fast fake here.
- */
-let overrideDeps: StarDeps | null = null;
-
-function resolveDeps(deps?: StarDeps): StarDeps {
-  return deps ?? overrideDeps ?? defaultDeps;
-}
-
-/** Test-only: swap the `gh` runner used when callers omit `deps`. Pass `null` to clear. */
-export function setStarDepsForTests(deps: StarDeps | null): void {
-  overrideDeps = deps;
-  invalidateStarStatusCache();
-}
+const productionDeps: StarDeps = { runGh: spawnGh, nowMs: () => Date.now() };
+let defaultDeps = productionDeps;
 
 let cached: { timestamp: number; state: StarState } | null = null;
 /** Coalesces concurrent probes so parallel sidebar polls share one `gh` run. */
@@ -114,11 +98,10 @@ let generation = 0;
  * starred and 404 when not, so a non-zero exit is only meaningful once we know
  * the CLI is authenticated — hence the auth check first.
  */
-export async function probeStarState(deps?: StarDeps): Promise<StarState> {
-  const resolved = resolveDeps(deps);
-  const auth = await resolved.runGh(["auth", "status", "--hostname", GH_HOSTNAME], AUTH_TIMEOUT_MS);
+export async function probeStarState(deps: StarDeps = defaultDeps): Promise<StarState> {
+  const auth = await deps.runGh(["auth", "status", "--hostname", GH_HOSTNAME], AUTH_TIMEOUT_MS);
   if (!auth || auth.status !== 0) return "unauthenticated";
-  const starred = await resolved.runGh(
+  const starred = await deps.runGh(
     ["api", "--hostname", GH_HOSTNAME, `/user/starred/${STAR_REPO}`],
     API_TIMEOUT_MS,
   );
@@ -127,9 +110,8 @@ export async function probeStarState(deps?: StarDeps): Promise<StarState> {
 }
 
 /** Cached star state; `gh` is only spawned when the cache is cold or expired. */
-export async function getStarStatus(deps?: StarDeps): Promise<StarStatus> {
-  const resolved = resolveDeps(deps);
-  const now = resolved.nowMs();
+export async function getStarStatus(deps: StarDeps = defaultDeps): Promise<StarStatus> {
+  const now = deps.nowMs();
   if (cached && now - cached.timestamp < CACHE_TTL_MS) {
     return { state: cached.state, repo: STAR_REPO, url: STAR_REPO_URL };
   }
@@ -142,7 +124,7 @@ export async function getStarStatus(deps?: StarDeps): Promise<StarStatus> {
     // The slot is cleared inside the same continuation that commits the cache. Using
     // `.finally()` for that defers it by a microtask, which leaves a window where the
     // next caller awaits an already-settled probe instead of starting a fresh one.
-    const probe = probeStarState(resolved).then(
+    const probe = probeStarState(deps).then(
       state => {
         if (inflight === probe) inflight = null;
         // A write landed while this read was in flight — its result is authoritative.
@@ -168,6 +150,17 @@ export function invalidateStarStatusCache(): void {
 }
 
 /**
+ * Route tests must not launch the user's `gh` executable: its installation,
+ * authentication helper, and Windows shim are all outside the route contract.
+ * Production keeps the real runner; tests install an explicit deterministic
+ * dependency and must reset it afterwards.
+ */
+export function setStarDepsForTests(deps: StarDeps | null): void {
+  defaultDeps = deps ?? productionDeps;
+  invalidateStarStatusCache();
+}
+
+/**
  * Star the repository through the user's `gh` login. Returns the resulting
  * state so the caller does not need a second round trip; an unauthenticated
  * `gh` reports back rather than failing loudly, because the sidebar renders
@@ -178,20 +171,19 @@ export function invalidateStarStatusCache(): void {
  * management API.
  */
 export async function starRepository(
-  deps?: StarDeps,
+  deps: StarDeps = defaultDeps,
 ): Promise<{ ok: boolean; status: StarStatus; code?: StarErrorCode }> {
-  const resolved = resolveDeps(deps);
-  const auth = await resolved.runGh(["auth", "status", "--hostname", GH_HOSTNAME], AUTH_TIMEOUT_MS);
+  const auth = await deps.runGh(["auth", "status", "--hostname", GH_HOSTNAME], AUTH_TIMEOUT_MS);
   if (!auth || auth.status !== 0) {
     generation += 1;
-    cached = { timestamp: resolved.nowMs(), state: "unauthenticated" };
+    cached = { timestamp: deps.nowMs(), state: "unauthenticated" };
     return {
       ok: false,
       status: { state: "unauthenticated", repo: STAR_REPO, url: STAR_REPO_URL },
       code: "gh_unavailable",
     };
   }
-  const result = await resolved.runGh(
+  const result = await deps.runGh(
     ["api", "--hostname", GH_HOSTNAME, "-X", "PUT", `/user/starred/${STAR_REPO}`],
     API_TIMEOUT_MS,
   );
@@ -206,6 +198,6 @@ export async function starRepository(
   // Authoritative: this call just starred the repo. Bumping the generation makes any
   // read that is still in flight discard its now-obsolete observation.
   generation += 1;
-  cached = { timestamp: resolved.nowMs(), state: "starred" };
+  cached = { timestamp: deps.nowMs(), state: "starred" };
   return { ok: true, status: { state: "starred", repo: STAR_REPO, url: STAR_REPO_URL } };
 }
