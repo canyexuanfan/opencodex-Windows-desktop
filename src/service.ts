@@ -1626,6 +1626,39 @@ function platformOps(backend: ServiceBackend = "scheduler"): ServiceOps | null {
 
 type TrackedProxyCleanupResult = "none" | "stale" | "stopped";
 
+/**
+ * Whether a proxy is still answering after the service manager claimed to stop it.
+ *
+ * `ops.stop()` reports the outcome of the STOP COMMAND, not of the process. A Windows scheduler
+ * task whose wrapper survives `schtasks /end` respawns its child a few seconds later, so a stop
+ * that returned success can still leave a live proxy — and `ocx service stop` then restored
+ * native Codex on top of a running one (#764). The tracked-pid cleanup does not catch it either:
+ * the respawned child writes a different pid, or none this process knows about.
+ *
+ * Probed rather than assumed, and bounded: the observed respawn window is ~5s, so a few seconds
+ * of polling either sees it come back or it is genuinely gone.
+ */
+export async function proxyStillLiveAfterStop(deps: {
+  findProxy?: () => Promise<{ port: number } | null>;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+} = {}): Promise<{ port: number } | null> {
+  const findProxy = deps.findProxy ?? findLiveProxy;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  const now = deps.now ?? Date.now;
+  const deadline = now() + 7000;
+  for (;;) {
+    try {
+      const live = await findProxy();
+      if (live) return live;
+    } catch {
+      // A probe failure is not proof the proxy is gone; keep polling until the deadline.
+    }
+    if (now() >= deadline) return null;
+    await sleep(1000);
+  }
+}
+
 async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult> {
   const pid = readPid();
   if (!pid) return "none";
@@ -1952,6 +1985,20 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       if (ops.status() !== null || isServiceInstalled()) ops.stop();
       await stopTrackedProxyForServiceCommand();
       {
+        // Verify rather than trust the stop command: a surviving wrapper respawns its child
+        // seconds later, and restoring native Codex on top of a live proxy is the failure #764
+        // reports as "stop reports success without stopping the proxy".
+        const survivor = await proxyStillLiveAfterStop();
+        if (survivor) {
+          console.error(
+            `❌ service stop did not take effect: a proxy is still listening on port ${survivor.port}.`
+            + "\nNative Codex was NOT restored, because doing so while the proxy is running leaves"
+            + " both pointing at each other. Check for a second service backend (`ocx service status`)"
+            + " or a manually started proxy, then re-run `ocx service stop`.",
+          );
+          process.exitCode = 1;
+          break;
+        }
         const restore = restoreNativeCodex();
         if (restore.success) console.log("✅ service stopped + native Codex restored.");
         else console.error(`⚠️ service stopped, but native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` (or check $CODEX_HOME/config.toml) before using native Codex.`);
