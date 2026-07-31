@@ -83,7 +83,7 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
     expect(fetches).toBe(0);
   });
 
-  test("static catalog cannot masquerade as a live connection", async () => {
+  test("static catalog reports a neutral non-applicable connection test", async () => {
     const config = baseConfig({
       staticprov: {
         adapter: "openai-chat",
@@ -94,11 +94,10 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
       },
     });
     const { body } = await probe(config, "staticprov");
-    expect(body.ok).toBe(false);
-    expect(String(body.error)).toContain("static catalog only");
+    expect(body).toEqual({ applicable: false, reason: "static_catalog", latencyMs: 0 });
   });
 
-  test("Google Antigravity uses the static-only probe without network access (#723)", async () => {
+  test("Google Antigravity reports not-applicable without credentials or network access (#723)", async () => {
     let fetches = 0;
     globalThis.fetch = (async () => {
       fetches += 1;
@@ -110,8 +109,7 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
 
     const { body } = await probe(config, "google-antigravity");
 
-    expect(body.ok).toBe(false);
-    expect(String(body.error)).toContain("static catalog only");
+    expect(body).toEqual({ applicable: false, reason: "static_catalog", latencyMs: 0 });
     expect(fetches).toBe(0);
   });
 
