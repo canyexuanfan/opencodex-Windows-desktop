@@ -10,19 +10,18 @@ import { isProxyAdmissionSecret } from "../src/server/auth-cors";
 import {
   initializeManagementAuthState,
   issueGuiSession,
-  managementAuthAclUnverified,
   requireManagementAuth,
 } from "../src/server/management-auth";
 import {
   resetHardenedStateForTests,
   setIcaclsRunnerForTests,
   setPlatformForTests,
+  hardenSecretDir,
 } from "../src/lib/windows-secret-acl";
 
 const previousHome = process.env.OPENCODEX_HOME;
 const previousDataToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousAdminToken = process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
-const previousAllowUnverifiedAcl = process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL;
 let testHome = "";
 
 function remoteConfig(): OcxConfig {
@@ -64,7 +63,6 @@ function websocketHandshakeOpens(url: URL, token: string): Promise<boolean> {
 }
 
 beforeEach(() => {
-  delete process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL;
   testHome = mkdtempSync(join(tmpdir(), "ocx-management-auth-"));
   process.env.OPENCODEX_HOME = testHome;
   process.env.OPENCODEX_API_AUTH_TOKEN = "data-secret";
@@ -81,8 +79,6 @@ afterEach(() => {
   else process.env.OPENCODEX_API_AUTH_TOKEN = previousDataToken;
   if (previousAdminToken === undefined) delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
   else process.env.OPENCODEX_ADMIN_AUTH_TOKEN = previousAdminToken;
-  if (previousAllowUnverifiedAcl === undefined) delete process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL;
-  else process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL = previousAllowUnverifiedAcl;
   if (testHome) rmSync(testHome, { recursive: true, force: true });
   testHome = "";
 });
@@ -209,7 +205,11 @@ describe("management and data-plane credential separation", () => {
         headers: { "x-opencodex-api-key": "ocx_admin_unhardened" },
       });
       expect(management.status).toBe(503);
-      expect(await management.json()).toEqual({ error: "management API unavailable" });
+      const body = await management.json() as { error?: string; hint?: string; reason?: string };
+      expect(body.error).toBe("management API unavailable");
+      expect(body.hint).toContain("OPENCODEX_ADMIN_AUTH_TOKEN");
+      expect(typeof body.reason).toBe("string");
+      expect(body.reason!.length).toBeGreaterThan(0);
     } finally {
       await server.stop(true);
     }
@@ -442,43 +442,8 @@ describe("management and data-plane credential separation", () => {
     }
   });
 
-  test("OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL soft-fails timeouts and surfaces aclUnverified", async () => {
+  test("directory ACL timeout keeps management unavailable and names OPENCODEX_ADMIN_AUTH_TOKEN", async () => {
     delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
-    process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL = "1";
-    saveConfig(remoteConfig());
-    const adminToken = `ocx_admin_${"c".repeat(43)}`;
-    writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
-    process.env.USERNAME ??= "tester";
-    setPlatformForTests("win32");
-    setIcaclsRunnerForTests(args => {
-      const target = args[0] ?? "";
-      if (target.endsWith("admin-api-token")) {
-        return { success: false, exitCode: null, timedOut: true, stdout: "" };
-      }
-      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
-    });
-    const state = initializeManagementAuthState(remoteConfig());
-    expect(state.available).toBe(true);
-    if (!state.available) return;
-    expect(state.aclUnverified).toBe(true);
-    expect(managementAuthAclUnverified()).toBe(true);
-
-    const server = startServer(0);
-    try {
-      const settings = await fetch(new URL("/api/settings", server.url), {
-        headers: { "x-opencodex-api-key": adminToken },
-      });
-      expect(settings.status).toBe(200);
-      const body = await settings.json() as { managementAuthAclUnverified?: boolean };
-      expect(body.managementAuthAclUnverified).toBe(true);
-    } finally {
-      await server.stop(true);
-    }
-  });
-
-  test("directory ACL timeout without opt-in keeps management unavailable even when the token file hardens", async () => {
-    delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
-    delete process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL;
     saveConfig(remoteConfig());
     const adminToken = `ocx_admin_${"d".repeat(43)}`;
     writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
@@ -486,17 +451,16 @@ describe("management and data-plane credential separation", () => {
     setPlatformForTests("win32");
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
-      // Directory harden times out; token-file harden succeeds.
       if (target.endsWith("admin-api-token")) {
         return { success: true, exitCode: 0, timedOut: false, stdout: "" };
       }
       return { success: false, exitCode: null, timedOut: true, stdout: "" };
     });
-    // Drop any directory cache left by saveConfig so this case actually re-hardens.
     resetHardenedStateForTests();
     const state = initializeManagementAuthState(remoteConfig());
     expect(state.available).toBe(false);
-    expect(managementAuthAclUnverified()).toBe(false);
+    if (state.available) return;
+    expect(state.reason).toContain("OPENCODEX_ADMIN_AUTH_TOKEN");
 
     const server = startServer(0);
     try {
@@ -504,42 +468,70 @@ describe("management and data-plane credential separation", () => {
         headers: { "x-opencodex-api-key": adminToken },
       });
       expect(settings.status).toBe(503);
+      const body = await settings.json() as { error?: string; hint?: string; reason?: string };
+      expect(body.error).toBe("management API unavailable");
+      expect(body.hint).toContain("OPENCODEX_ADMIN_AUTH_TOKEN");
+      expect(body.reason).toContain("OPENCODEX_ADMIN_AUTH_TOKEN");
       expect((await fetch(new URL("/healthz", server.url))).status).toBe(200);
     } finally {
       await server.stop(true);
     }
   });
 
-  test("directory ACL timeout with opt-in surfaces aclUnverified when the token file hardens", async () => {
+  test("required management harden retries after a soft loadConfig directory timeout", async () => {
     delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
-    process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL = "1";
     saveConfig(remoteConfig());
-    const adminToken = `ocx_admin_${"e".repeat(43)}`;
+    const adminToken = `ocx_admin_${"f".repeat(43)}`;
     writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
+
+    let softPhase = true;
+    let requiredPhaseCalls = 0;
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
       if (target.endsWith("admin-api-token")) {
         return { success: true, exitCode: 0, timedOut: false, stdout: "" };
       }
-      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      if (softPhase) {
+        return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      }
+      requiredPhaseCalls += 1;
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
     });
     resetHardenedStateForTests();
+
+    const soft = hardenSecretDir(testHome, { required: false });
+    expect(soft.ok).toBe(false);
+    expect(soft.diagnostics).toMatch(/timed out|budget exhausted|previous attempt/i);
+
+    softPhase = false;
     const state = initializeManagementAuthState(remoteConfig());
     expect(state.available).toBe(true);
     if (!state.available) return;
-    expect(state.aclUnverified).toBe(true);
-    expect(managementAuthAclUnverified()).toBe(true);
+    expect(state.source).toBe("file");
+    expect(requiredPhaseCalls).toBeGreaterThan(0);
+  });
+
+  test("OPENCODEX_ADMIN_AUTH_TOKEN bypasses file-backed ACL hardening", async () => {
+    process.env.OPENCODEX_ADMIN_AUTH_TOKEN = "env-admin-secret";
+    saveConfig(remoteConfig());
+    process.env.USERNAME ??= "tester";
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    resetHardenedStateForTests();
+
+    const state = initializeManagementAuthState(remoteConfig());
+    expect(state.available).toBe(true);
+    if (!state.available) return;
+    expect(state.source).toBe("environment");
 
     const server = startServer(0);
     try {
-      const settings = await fetch(new URL("/api/settings", server.url), {
-        headers: { "x-opencodex-api-key": adminToken },
+      const management = await fetch(new URL("/api/config", server.url), {
+        headers: { "x-opencodex-api-key": "env-admin-secret" },
       });
-      expect(settings.status).toBe(200);
-      const body = await settings.json() as { managementAuthAclUnverified?: boolean };
-      expect(body.managementAuthAclUnverified).toBe(true);
+      expect(management.status).toBe(200);
     } finally {
       await server.stop(true);
     }

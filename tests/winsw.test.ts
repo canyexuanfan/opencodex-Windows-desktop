@@ -73,10 +73,6 @@ describe("winsw xml", () => {
     expect(xml).toContain('<log mode="roll-by-size">');
     expect(xml).toContain(`<id>${WINSW_SERVICE_ID}</id>`);
   });
-  test("carries OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL when install env opts in", () => {
-    const xml = buildWinswXml(entry, { ...env, OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL: "true" });
-    expect(xml).toContain('<env name="OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL" value="true"/>');
-  });
   test("honors OCX_BAKE_PORT when building WinSW arguments", () => {
     const xml = buildWinswXml(entry, { ...env, OCX_BAKE_PORT: "14444" });
     expect(xml).toContain("start --port 14444");

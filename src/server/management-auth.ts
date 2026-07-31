@@ -13,7 +13,6 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
-import { allowUnverifiedAdminTokenAcl } from "../lib/allow-unverified-admin-token-acl";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxConfig } from "../types";
 import {
@@ -44,8 +43,6 @@ export type ManagementAuthState =
     token: string;
     source: "environment" | "file";
     sessions: Map<string, GuiSessionRecord>;
-    /** Set when file-backed token was accepted despite unverified Windows ACL harden. */
-    aclUnverified?: boolean;
   }
   | { available: false; reason: string };
 
@@ -53,55 +50,46 @@ function fail(reason: string): ManagementAuthState {
   return { available: false, reason };
 }
 
-/** Returns true when the directory was accepted without verified NTFS ACL harden. */
-function assertSafeDirectory(path: string): boolean {
+function assertSafeDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("management token directory is not a regular directory");
   chmodSync(path, 0o700);
   const hardened = hardenSecretDir(path, { required: true });
   if (!hardened.ok) {
-    if (allowUnverifiedAdminTokenAcl() && /timed out|ETIMEDOUT|budget exhausted|previous attempt timed out/i.test(hardened.diagnostics ?? "")) {
-      console.warn(`[opencodex] management token directory ACL unverified (${hardened.diagnostics}); continuing because OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL is set`);
-      return true;
-    }
-    throw new Error("management token directory ACL hardening did not complete");
+    throw new Error(
+      "management token directory ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+    );
   }
-  return false;
 }
 
-function readExistingToken(path: string): { token: string; aclUnverified: boolean } {
+function readExistingToken(path: string): string {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512) {
     throw new Error("management token path is not a regular secret file");
   }
   chmodSync(path, 0o600);
   const hardened = hardenSecretPath(path, { required: true });
-  let aclUnverified = false;
   if (!hardened.ok) {
-    if (allowUnverifiedAdminTokenAcl() && /timed out|ETIMEDOUT|budget exhausted|previous attempt timed out/i.test(hardened.diagnostics ?? "")) {
-      console.warn(`[opencodex] management token file ACL unverified (${hardened.diagnostics}); continuing because OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL is set`);
-      aclUnverified = true;
-    } else {
-      throw new Error("management token file ACL hardening did not complete");
-    }
+    throw new Error(
+      "management token file ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+    );
   }
   const token = readFileSync(path, "utf8").trim();
   if (!/^ocx_admin_[A-Za-z0-9_-]{43}$/.test(token)) throw new Error("management token file is invalid");
-  return { token, aclUnverified };
+  return token;
 }
 
 function removeBestEffort(path: string): void {
   try { unlinkSync(path); } catch { /* fail-closed state is preserved by the caller */ }
 }
 
-function createTokenFile(path: string): { token: string; aclUnverified: boolean } {
+function createTokenFile(path: string): string {
   const directory = dirname(path);
   const token = `ocx_admin_${randomBytes(32).toString("base64url")}`;
   const temporary = join(directory, `.${randomUUID()}.admin-token.tmp`);
   let linked = false;
   let fd: number | null = null;
-  let aclUnverified = false;
   try {
     fd = openSync(temporary, "wx", 0o600);
     writeFileSync(fd, `${token}\n`, "utf8");
@@ -111,12 +99,9 @@ function createTokenFile(path: string): { token: string; aclUnverified: boolean 
     chmodSync(temporary, 0o600);
     const temporaryHardened = hardenSecretPath(temporary, { required: true });
     if (!temporaryHardened.ok) {
-      if (allowUnverifiedAdminTokenAcl() && /timed out|ETIMEDOUT|budget exhausted|previous attempt timed out/i.test(temporaryHardened.diagnostics ?? "")) {
-        console.warn(`[opencodex] management token temporary ACL unverified (${temporaryHardened.diagnostics}); continuing because OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL is set`);
-        aclUnverified = true;
-      } else {
-        throw new Error("management token temporary ACL hardening did not complete");
-      }
+      throw new Error(
+        "management token temporary ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+      );
     }
     try {
       linkSync(temporary, path);
@@ -127,14 +112,11 @@ function createTokenFile(path: string): { token: string; aclUnverified: boolean 
     }
     const finalHardened = hardenSecretPath(path, { required: true });
     if (!finalHardened.ok) {
-      if (allowUnverifiedAdminTokenAcl() && /timed out|ETIMEDOUT|budget exhausted|previous attempt timed out/i.test(finalHardened.diagnostics ?? "")) {
-        console.warn(`[opencodex] management token file ACL unverified (${finalHardened.diagnostics}); continuing because OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL is set`);
-        aclUnverified = true;
-      } else {
-        throw new Error("management token file ACL hardening did not complete");
-      }
+      throw new Error(
+        "management token file ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+      );
     }
-    return { token, aclUnverified };
+    return token;
   } catch (error) {
     if (linked) removeBestEffort(path);
     throw error;
@@ -146,52 +128,30 @@ function createTokenFile(path: string): { token: string; aclUnverified: boolean 
   }
 }
 
-function ready(
-  token: string,
-  source: "environment" | "file",
-  config: OcxConfig,
-  options: { aclUnverified?: boolean } = {},
-): ManagementAuthState {
+function ready(token: string, source: "environment" | "file", config: OcxConfig): ManagementAuthState {
   if (isDataPlaneAdmissionSecret(token, config)) {
     return fail("management credential conflicts with a data-plane credential");
   }
-  return {
-    available: true,
-    token,
-    source,
-    sessions: new Map(),
-    ...(options.aclUnverified ? { aclUnverified: true } : {}),
-  };
-}
-
-let lastManagementAuthAclUnverified = false;
-
-/** Whether the current process accepted a file-backed admin token without verified NTFS ACL harden. */
-export function managementAuthAclUnverified(): boolean {
-  return lastManagementAuthAclUnverified;
+  return { available: true, token, source, sessions: new Map() };
 }
 
 export function initializeManagementAuthState(config: OcxConfig): ManagementAuthState {
   const environmentToken = process.env.OPENCODEX_ADMIN_AUTH_TOKEN?.trim();
   if (environmentToken) {
-    lastManagementAuthAclUnverified = false;
     return ready(environmentToken, "environment", config);
   }
   try {
     const path = adminApiTokenFilePath();
-    const directoryUnverified = assertSafeDirectory(dirname(path));
-    let loaded: { token: string; aclUnverified: boolean };
+    assertSafeDirectory(dirname(path));
+    let token: string;
     try {
-      loaded = readExistingToken(path);
+      token = readExistingToken(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      loaded = createTokenFile(path);
+      token = createTokenFile(path);
     }
-    const aclUnverified = directoryUnverified || loaded.aclUnverified === true;
-    lastManagementAuthAclUnverified = aclUnverified;
-    return ready(loaded.token, "file", config, { aclUnverified });
+    return ready(token, "file", config);
   } catch (error) {
-    lastManagementAuthAclUnverified = false;
     return fail(error instanceof Error ? error.message : "management token initialization failed");
   }
 }
@@ -246,7 +206,11 @@ export function requireManagementAuth(
   config?: OcxConfig,
 ): Response | null {
   if (!state.available) {
-    return Response.json({ error: "management API unavailable" }, { status: 503 });
+    return Response.json({
+      error: "management API unavailable",
+      reason: state.reason,
+      hint: "Set OPENCODEX_ADMIN_AUTH_TOKEN to bypass file-backed admin token ACL hardening",
+    }, { status: 503 });
   }
   const actual = req.headers.get("x-opencodex-api-key")?.trim()
     || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();

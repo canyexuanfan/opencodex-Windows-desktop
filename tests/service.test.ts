@@ -501,17 +501,6 @@ describe("Windows service task", () => {
     expect(script).toContain('"%OCX_BUN%" "%OCX_CLI%" start --port');
     expect(script).not.toContain('"C:\\Bun&Dir\\100%bun^\\bun.exe"');
   });
-  test("bakes OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL when install env opts in", () => {
-    const previous = process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL;
-    try {
-      process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL = "yes";
-      const script = buildWindowsServiceScript({ bun: "C:\\OpenCodex\\bun.exe", cli: "C:\\OpenCodex\\cli.ts" });
-      expect(script).toContain('set "OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL=yes"');
-    } finally {
-      if (previous === undefined) delete process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL;
-      else process.env.OPENCODEX_ALLOW_UNVERIFIED_ADMIN_TOKEN_ACL = previous;
-    }
-  });
 
   test("switches the wrapper console to UTF-8 and sleeps via ping (timeout dies without console stdin)", () => {
     const script = buildWindowsServiceScript({ bun: "C:\\OpenCodex\\bun.exe", cli: "C:\\OpenCodex\\cli.ts" });
