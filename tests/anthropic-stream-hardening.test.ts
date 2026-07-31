@@ -103,4 +103,65 @@ describe("anthropic non-stream tool_use input", () => {
       arguments: "{}",
     });
   });
+
+  test("streamed tool arguments are validated at block close, matching the non-stream path", async () => {
+    // The streaming path used to forward each partial_json fragment verbatim, so a relay emitting
+    // malformed JSON produced arguments:"not json" while the SAME payload through parseResponse
+    // produced "{}". Two paths, two answers for one defect. Fragments are buffered and validated
+    // once the block closes, so both now degrade identically.
+    const response = new Response([
+      "event: content_block_start\n",
+      'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_9","name":"get_weather"}}\n\n',
+      "event: content_block_delta\n",
+      'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"not "}}\n\n',
+      "event: content_block_delta\n",
+      'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"json"}}\n\n',
+      "event: content_block_stop\n",
+      'data: {"type":"content_block_stop"}\n\n',
+      "event: message_stop\n",
+      'data: {"type":"message_stop"}\n\n',
+    ].join(""));
+    const events = await collect(createAnthropicAdapter(provider).parseStream(response));
+    expect(events.filter(e => e.type === "tool_call_delta")).toMatchObject([
+      { type: "tool_call_delta", arguments: "{}" },
+    ]);
+  });
+
+  test("streamed tool arguments are reassembled intact when the JSON is valid", async () => {
+    // The buffering must not corrupt the normal case: fragments split mid-token still arrive as
+    // one well-formed argument string.
+    const response = new Response([
+      "event: content_block_start\n",
+      'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_10","name":"get_weather"}}\n\n',
+      "event: content_block_delta\n",
+      'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\\"city\\":"}}\n\n',
+      "event: content_block_delta\n",
+      'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"\\"Paris\\"}"}}\n\n',
+      "event: content_block_stop\n",
+      'data: {"type":"content_block_stop"}\n\n',
+      "event: message_stop\n",
+      'data: {"type":"message_stop"}\n\n',
+    ].join(""));
+    const events = await collect(createAnthropicAdapter(provider).parseStream(response));
+    expect(events.filter(e => e.type === "tool_call_delta")).toMatchObject([
+      { type: "tool_call_delta", arguments: '{"city":"Paris"}' },
+    ]);
+  });
+
+  test("EOF after message_delta.stop_reason settles instead of erroring", async () => {
+    // The blocker the other EOF tests could not see: they assert the pre-existing error path, so
+    // reverting the stop-reason fallback leaves them green. This drives the fallback itself -- a
+    // stream that reported why it stopped but never sent message_stop.
+    const response = new Response([
+      "event: content_block_start\n",
+      'data: {"type":"content_block_start","content_block":{"type":"text","text":""}}\n\n',
+      "event: content_block_delta\n",
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      "event: message_delta\n",
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    ].join(""));
+    const events = await collect(createAnthropicAdapter(provider).parseStream(response));
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "end_turn" });
+    expect(events.some(e => e.type === "error")).toBe(false);
+  });
 });

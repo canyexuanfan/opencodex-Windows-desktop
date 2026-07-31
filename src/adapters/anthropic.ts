@@ -765,6 +765,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       let currentBlockType = "";
       let currentToolCallId = "";
       let currentToolCallName = "";
+      let currentToolCallJson = "";
       let pendingUsage: Record<string, number> | undefined;
       let pendingStopReason: string | undefined;
       let emittedDone = false;
@@ -808,6 +809,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 if (block.type === "tool_use") {
                   currentToolCallId = block.id ?? synthesizeToolUseId();
                   currentToolCallName = toolNames.fromWire(block.name ?? "");
+                  currentToolCallJson = "";
                   yield { type: "tool_call_start", id: currentToolCallId, name: currentToolCallName };
                 }
                 if (block.type === "redacted_thinking" && typeof block.data === "string") {
@@ -833,14 +835,21 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                   // so a stray signature on a non-thinking block can never be captured.
                   yield { type: "thinking_signature", signature: delta.signature };
                 } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string" && currentBlockType === "tool_use") {
-                  yield { type: "tool_call_delta", arguments: delta.partial_json };
+                  // Buffered rather than forwarded per-delta so the assembled arguments can be
+                  // validated at content_block_stop, the same bar the non-stream path applies in
+                  // toolUseArguments(). A tool call cannot run before its arguments are complete,
+                  // so holding the fragments costs nothing and keeps the two paths from
+                  // disagreeing about what a malformed payload becomes.
+                  currentToolCallJson += delta.partial_json;
                 }
                 break;
               }
               case "content_block_stop": {
                 if (currentBlockType === "tool_use") {
+                  yield { type: "tool_call_delta", arguments: toolUseArguments(currentToolCallJson) };
                   yield { type: "tool_call_end" };
                   currentToolCallId = "";
+                  currentToolCallJson = "";
                 }
                 currentBlockType = "";
                 break;
