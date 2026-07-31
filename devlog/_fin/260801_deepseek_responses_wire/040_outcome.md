@@ -76,6 +76,28 @@ rather than by provider capability. Phase 2 widened that set to include DeepSeek
 correct fix narrows the write site; it was left out of scope here rather than expanded
 into mid-phase.
 
-## Not pushed
+## Pushed and verified on the remote
 
-Eight commits sit on local `dev`. Pushing needs explicit approval and was not given.
+All nine commits are on `origin/dev` (each confirmed with
+`git merge-base --is-ancestor`), and the remote file content carries all three fixes:
+`responsesPath: "/responses"`, the inbound-scoped `modelWireDefaults` entry, and
+`statelessResponses: true`. The clone-isolation guard is on the remote too.
+
+CI on `5f9434ab2` — the last SHA whose code tree is identical to HEAD, since the only
+later commit touches a devlog file — ran all 14 tests of
+`tests/deepseek-inbound-wire.test.ts` green on both `ubuntu-latest` and
+`macos-latest`, along with the three `npm-global` jobs.
+
+The `windows-latest` job did not report. It is a pre-existing platform problem, not a
+regression from this unit:
+
+- The DeepSeek suite is not implicated — every DeepSeek-named assertion in that job
+  passed, and 2107 tests had already passed when the job stalled.
+- The job went silent after the SSE/relay tests at 22:04 and was cancelled by timeout
+  at 22:18.
+- The three runs immediately BEFORE this unit's commits reached the branch
+  (`8c8832137`, `18545f87e`, `89cb08fc9`) already failed, `8c8832137` with
+  `panic(thread 8988): Internal assertion failure` / `oh no: Bun has crashed`.
+
+That belongs to the open Windows Bun stability work
+(`devlog/_plan/260731_windows_bun_stability/`), not here.
