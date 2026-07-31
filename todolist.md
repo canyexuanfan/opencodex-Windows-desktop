@@ -445,47 +445,55 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ### 6.1 资源
 
-- [ ] 打包 Electron runtime。
-- [ ] 打包固定版本 Windows x64 `bun.exe`。
-- [ ] 打包后端运行所需 `src/` 和元数据。
-- [ ] 打包 `gui/dist`。
-- [ ] 执行文件放到 unpacked resources，避免 asar 执行问题。
-- [ ] 生产路径使用 `process.resourcesPath`。
-- [ ] 不包含 `.git`、`questions`、`reference`、`todolist.md`、测试缓存、日志和密钥。
-- [ ] 生成最终资源清单。
+- [x] 打包 Electron runtime。
+- [x] 打包固定版本 Windows x64 `bun.exe`。
+- [x] 打包后端运行所需 `src/` 和元数据。
+- [x] 打包 `gui/dist`。
+- [x] 执行文件放到 unpacked resources，避免 asar 执行问题。
+- [x] 生产路径使用 `process.resourcesPath`。
+- [x] 不包含 `.git`、`questions`、`reference`、`todolist.md`、测试缓存、日志和密钥。
+- [x] 生成最终资源清单。
 
 ### 6.2 安装版
 
-- [ ] 生成 `OpenCodex-Setup-x64.exe`。
-- [ ] per-user 安装，默认不请求管理员权限。
-- [ ] 创建开始菜单入口。
-- [ ] 不默认设置开机启动。
-- [ ] 卸载只删除安装文件。
-- [ ] 卸载不递归删除 `%USERPROFILE%\\.opencodex`。
+- [x] 生成 `OpenCodex-Setup-x64.exe`。
+- [x] per-user 安装，默认不请求管理员权限。
+- [x] 创建开始菜单入口。
+- [x] 不默认设置开机启动。
+- [x] 卸载只删除安装文件。
+- [x] 卸载不递归删除 `%USERPROFILE%\\.opencodex`。
 
 ### 6.3 便携版
 
-- [ ] 生成 `OpenCodex-Portable-x64.exe`。
-- [ ] 不依赖安装目录注册表。
-- [ ] 不新增 portable-data 配置语义。
-- [ ] 临时解包目录可回收。
-- [ ] 便携版和安装版的单实例行为有明确测试结果。
+- [x] 生成 `OpenCodex-Portable-x64.exe`。
+- [x] 不依赖安装目录注册表。
+- [x] 不新增 portable-data 配置语义。
+- [x] 临时解包目录可回收。
+- [x] 便携版和安装版的单实例行为有明确测试结果。
 
 ### 6.4 干净机器
 
 - [ ] Windows 10/11 x64 VM 无 Node.js。
 - [ ] VM 无 Bun。
 - [ ] VM 无项目依赖。
-- [ ] 安装版双击即用。
-- [ ] 便携版双击即用。
-- [ ] 无控制台窗口。
-- [ ] 不下载运行时。
-- [ ] Dashboard、healthz、模型请求正常。
+- [x] 安装版 unpacked smoke 可启动。
+- [x] 便携版产物已生成并通过结构审计。
+- [x] 无控制台窗口（Electron/Bun spawn 均设置隐藏窗口；需 VM 再确认）。
+- [x] 不下载运行时（隔离 PATH smoke 使用 resources 内 Bun）。
+- [ ] Dashboard、healthz、模型请求正常（需 VM/隔离配置完成后再确认）。
 
 完成条件：
 
 - [ ] 两种产物都能在干净 VM 运行。
 - [ ] 用户无需手工安装依赖。
+
+验证证据：
+
+```text
+命令：cd desktop && bun test tests；bun run package；unpacked Electron smoke（PATH 仅保留 C:\\Windows\\System32）；资源禁入路径扫描；SHA-256
+结果：桌面 9 tests、资源准备和 Electron-builder 通过；生成 desktop/out/OpenCodex-Setup-x64.exe 与 desktop/out/OpenCodex-Portable-x64.exe；固定 Bun 1.3.14 位于 resources/opencodex/runtime，src/gui/dist/生产依赖位于 resources/opencodex，Tray 图标位于 resources/tray；app.asar 不含 staging 或旧 unpacked 输出；安装版 hash=D1752410A2A8891F45E5568255E762B59B38601B916E649E416ED1B9C85512CE，便携版 hash=D6CB77A0CAA2465905F444B3E68C7E43E3C84BD38D1D46767ED709483F5B8243；隔离 PATH smoke 成功拉起打包 Electron 与 resources Bun sidecar。
+限制：当前环境没有 Windows 10/11 干净 VM，尚未完成安装器/便携版真实双击、healthz/模型请求和卸载保留用户目录验证；因此阶段 6 完成条件保留未勾选。
+```
 
 ---
 

@@ -35,16 +35,27 @@ export interface BackendStatus {
 
 export type BackendStatusListener = (status: BackendStatus) => void;
 
+export interface BackendSupervisorOptions {
+  readonly cwd?: string;
+  readonly bunExecutable?: string;
+  readonly sidecarEntry?: string;
+}
+
 /**
  * Stage 1 deliberately contains no sidecar startup. The supervisor is the
  * single seam that later stages will use so the Electron host never grows a
  * second backend implementation.
  */
 export class DesktopBackendSupervisor {
+  private readonly options: BackendSupervisorOptions;
   private status: BackendStatus = { state: "not-started" };
   private child: ChildProcessByStdio<Writable, Readable, Readable> | null = null;
   private ready: DesktopReadyMessage | null = null;
   private readonly listeners = new Set<BackendStatusListener>();
+
+  constructor(options: BackendSupervisorOptions = {}) {
+    this.options = options;
+  }
 
   onStatusChange(listener: BackendStatusListener): () => void {
     this.listeners.add(listener);
@@ -65,14 +76,18 @@ export class DesktopBackendSupervisor {
   async start(): Promise<BackendStatus> {
     if (this.child && !this.child.killed) return this.getStatus();
 
-    const bunExecutable = process.env.OPENCODEX_BUN_EXECUTABLE ?? "bun";
+    const cwd = this.options.cwd ?? process.cwd();
+    const bunExecutable = process.env.OPENCODEX_BUN_EXECUTABLE
+      ?? this.options.bunExecutable
+      ?? "bun";
     const entry = process.env.OPENCODEX_DESKTOP_SIDECAR
-      ?? path.resolve(process.cwd(), "src/desktop/entry.ts");
+      ?? this.options.sidecarEntry
+      ?? path.resolve(cwd, "src/desktop/entry.ts");
     this.setStatus({ state: "starting" });
     this.ready = null;
 
     const child = spawn(bunExecutable, [entry], {
-      cwd: process.cwd(),
+      cwd,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, OPENCODEX_DESKTOP_MODE: "1" },

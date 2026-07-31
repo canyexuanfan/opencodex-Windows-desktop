@@ -16,7 +16,12 @@ if (!hasSingleInstanceLock) {
   let manualStopRequested = false;
   let recoveryAttempts = 0;
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
-  const backend = new DesktopBackendSupervisor();
+  const packagedRoot = app.isPackaged ? path.join(process.resourcesPath, "opencodex") : process.cwd();
+  const backend = new DesktopBackendSupervisor({
+    cwd: packagedRoot,
+    bunExecutable: app.isPackaged ? path.join(packagedRoot, "runtime", "bun.exe") : undefined,
+    sidecarEntry: app.isPackaged ? path.join(packagedRoot, "src", "desktop", "entry.ts") : undefined,
+  });
 
   const focusMainWindow = (): void => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
