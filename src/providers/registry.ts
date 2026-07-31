@@ -123,6 +123,12 @@ export interface ProviderRegistryEntry {
   defaultModel?: string;
   models?: string[];
   liveModels?: boolean;
+  /**
+   * Registry-only per-model wire defaults for mixed OpenAI-compatible gateways.
+   * These are intentionally not seeded into saved config: an explicit `modelAdapters`
+   * entry must remain distinguishable and must always win over a default.
+   */
+  modelWireDefaults?: Record<string, string>;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -813,6 +819,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: ["deepseek-chat", "deepseek-reasoner", ...DEEPSEEK_THINKING_MODELS],
     defaultModel: "deepseek-v4-flash",
     modelContextWindows: { "deepseek-v4-flash": 1_000_000, "deepseek-v4-pro": 1_000_000 },
+    // DeepSeek documents V4-Flash as a native Responses API model adapted for Codex. The
+    // API id is `deepseek-v4-flash`; `DeepSeek-V4-Flash-0731` is a release/version label.
+    modelWireDefaults: { "deepseek-v4-flash": "openai-responses" },
     /* [Decision Log]
     - 목적: DeepSeek V4 thinking mode multi-turn/tool-call requests must replay prior assistant reasoning_content.
     - 대안 분석: Globally preserve reasoning_content for all OpenAI-compatible models; preserve it for legacy deepseek-reasoner too; mark only V4 thinking models in registry metadata.
@@ -1233,6 +1242,25 @@ export function providerMatchesRegistryTransport(
   if (provider.adapter !== entry.adapter) return false;
   if (provider.authMode !== undefined && provider.authMode !== "key") return false;
   return normalizedProviderEndpoint(provider.baseUrl) === normalizedProviderEndpoint(entry.baseUrl);
+}
+
+/**
+ * Resolve a registry-only default for a mixed-wire provider. Defaults only move a provider
+ * between the two OpenAI-shaped adapters and never override a provider configured on another
+ * wire. The resolver receives the allow-list so this helper cannot accidentally widen the
+ * adapter-selection boundary when a new registry entry is added.
+ */
+export function providerModelWireDefault(
+  id: string,
+  provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
+  modelId: string,
+  allowedWires: ReadonlySet<string>,
+): string | undefined {
+  if (!allowedWires.has(provider.adapter)) return undefined;
+  const entry = getProviderRegistryEntry(id);
+  if (!entry?.modelWireDefaults || !providerMatchesRegistryTransport(id, provider)) return undefined;
+  const wire = entry.modelWireDefaults[modelId.trim().toLowerCase()];
+  return wire !== undefined && allowedWires.has(wire) ? wire : undefined;
 }
 
 /**
