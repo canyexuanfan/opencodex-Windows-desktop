@@ -295,7 +295,10 @@ export function backupConfigBeforeOpenAiTierMigration(
     write: (target, bytes) => writeFileSync(target, bytes),
     harden: target => {
       try { chmodSync(target, 0o600); } catch { /* platform may ignore chmod */ }
-      if (process.platform === "win32") hardenSecretPath(target, { required: true });
+      // Soft-fail: a wedged/failed icacls on CI temp volumes must not abort
+      // startServer mid-suite (timeout + EBUSY cascade on shared TEST_DIR).
+      // chmod above still applies; live credential writes keep required:true.
+      if (process.platform === "win32") hardenSecretPath(target, { required: false });
     },
     publishNoReplace: (temp, backup) => linkSync(temp, backup),
     truncate: target => truncateSync(target, 0),
