@@ -980,6 +980,48 @@ describe("provider management validation", () => {
     }
   });
 
+  test("provider management rejects POST setDefault for a disabled provider", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig({
+      port: 0,
+      defaultProvider: "alpha",
+      providers: {
+        alpha: { adapter: "openai-chat", baseUrl: "https://alpha.example.test/v1", liveModels: false },
+      },
+    });
+
+    const server = startServer(0);
+    try {
+      const createDisabledDefault = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "beta",
+          setDefault: true,
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://beta.example.test/v1",
+            liveModels: false,
+            disabled: true,
+          },
+        }),
+      });
+      expect(createDisabledDefault.status).toBe(400);
+      expect(await createDisabledDefault.json()).toMatchObject({ code: "default_provider_disabled" });
+
+      const saved = await fetch(new URL("/api/config", server.url)).then(r => r.json()) as {
+        defaultProvider: string;
+        providers: Record<string, unknown>;
+      };
+      expect(saved.defaultProvider).toBe("alpha");
+      expect(saved.providers.beta).toBeUndefined();
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("provider management refuses to delete the default when only a disabled replacement remains", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });

@@ -99,7 +99,7 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 | `GET` / `PUT /api/sidecar-settings` | 读取或设置 search/vision sidecar 模型。 |
 | `GET` / `PUT /api/injection-model` | 读取或设置委派指引模型/强度、指引开关及 Codex 原生子代理默认值同步开关。 |
 | `GET` / `PUT /api/v2` | 读取或设置界面模式、Codex feature flag 和 v2 thread 上限。 |
-| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | 列出、添加/替换、启用/禁用、设为默认（单独 `{ "setDefault": true }`，且仅已启用）或删除 provider。删除当前默认时，会改派到剩余的第一个已启用 provider（若存在）；否则返回 `409`（`code: "last_provider"`）并保留当前默认。 |
+| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | 列出、添加/替换、启用/禁用、设为默认或删除 provider。`PATCH` 用单独的 `{ "setDefault": true }`（仅已启用）；`POST` 创建/替换时也可带 `setDefault`（同样仅已启用）。删除当前默认时，会改派到剩余的第一个已启用 provider（若存在）；否则返回 `409`（`code: "last_provider"`）并保留当前默认。 |
 | `GET /api/models` · `PUT /api/disabled-models` | 列出原生/路由模型，并更新共享的 disabled-model 集合。 |
 | `GET /api/selected-models` · `PUT /api/model-visibility` | 读取 provider allowlist，并原子地更改单个模型或 provider 分组的最终可见状态。 |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | 读取 API key 和 OAuth provider 目录。 |

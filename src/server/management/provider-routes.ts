@@ -118,6 +118,9 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const allowBenchmarkAddresses = name === "openai" && isCanonicalOpenAiForwardProvider(prov);
     const resolvedError = await providerDestinationResolvedError(name, prov, { allowBenchmarkAddresses });
     if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
+    if (body.setDefault && prov.disabled) {
+      return jsonResponse({ error: "cannot set a disabled provider as default", code: "default_provider_disabled" }, 400);
+    }
     // Catalog providers (e.g. ollama-cloud) carry a models + vision/reasoning classification the GUI
     // doesn't send — merge it in so the sidecars are gated correctly.
     enrichProviderFromCatalog(name, prov);

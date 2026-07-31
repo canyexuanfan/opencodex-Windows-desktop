@@ -107,7 +107,7 @@ GUI는 프록시의 JSON 관리 API를 사용하는 얇은 클라이언트입니
 | `GET` / `PUT /api/sidecar-settings` | 검색/비전 사이드카 모델 설정을 읽거나 바꿉니다. |
 | `GET` / `PUT /api/injection-model` | 위임 가이드의 모델/강도, 가이드 토글, Codex 네이티브 서브에이전트 기본값 동기화 토글을 읽거나 바꿉니다. |
 | `GET` / `PUT /api/v2` | 서피스 모드, Codex 기능 플래그, v2 thread 상한을 읽거나 바꿉니다. |
-| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | 프로바이더 목록 조회, 추가/교체, 활성화/비활성화, 기본 설정(`{ "setDefault": true }`만, 활성 프로바이더), 제거. 현재 기본을 삭제하면 남아 있는 첫 번째 활성 프로바이더로 재지정됩니다(있는 경우); 없으면 `409`(`code: "last_provider"`)를 반환하고 현재 기본을 유지합니다. |
+| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | 프로바이더 목록 조회, 추가/교체, 활성화/비활성화, 기본 설정, 제거. `PATCH`는 활성 프로바이더에 `{ "setDefault": true }`만 보냅니다. `POST`는 생성/교체 시 `setDefault`를 함께 보낼 수 있으며 역시 활성만 허용합니다. 현재 기본을 삭제하면 남아 있는 첫 번째 활성 프로바이더로 재지정됩니다(있는 경우); 없으면 `409`(`code: "last_provider"`)를 반환하고 현재 기본을 유지합니다. |
 | `GET /api/models` · `PUT /api/disabled-models` | 네이티브/라우팅 모델 행을 조회하고 공용 disabled model 목록을 갱신합니다. |
 | `GET /api/selected-models` · `PUT /api/model-visibility` | 프로바이더 allowlist를 읽고 개별 모델 또는 프로바이더 그룹의 최종 노출 상태를 원자적으로 변경합니다. |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | API key 및 OAuth 프로바이더 카탈로그를 읽습니다. |

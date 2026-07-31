@@ -105,7 +105,7 @@ GUI はプロキシの JSON 管理 API を使うシンクライアントです�
 | `GET` / `PUT /api/sidecar-settings` | 検索/ビジョンサイドカーモデル設定を読むか変えます。 |
 | `GET` / `PUT /api/injection-model` | 委任ガイダンスのモデル/effort、ガイダンストグル、Codex ネイティブサブエージェント既定値の同期トグルを読み取りまたは変更します。 |
 | `GET` / `PUT /api/v2` | サーフェスモード、Codex 機能フラグ、v2 スレッド上限を読むか変えます。 |
-| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | プロバイダー一覧の参照、追加/差替、有効化/無効化、既定設定（`{ "setDefault": true }` のみ、有効なプロバイダー）、削除。現在の既定を削除すると、残っている最初の有効なプロバイダーに再割当てします（存在する場合）。なければ `409`（`code: "last_provider"`）を返し、現在の既定を保持します。 |
+| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | プロバイダー一覧の参照、追加/差替、有効化/無効化、既定設定、削除。`PATCH` は有効なプロバイダーに対して `{ "setDefault": true }` のみ。`POST` は作成/差替時に `setDefault` を含められ、こちらも有効なプロバイダーのみ。現在の既定を削除すると、残っている最初の有効なプロバイダーに再割当てします（存在する場合）。なければ `409`（`code: "last_provider"`）を返し、現在の既定を保持します。 |
 | `GET /api/models` · `PUT /api/disabled-models` | ネイティブ/ルーティングモデル行を参照し共有 disabled model 一覧を更新します。 |
 | `GET /api/selected-models` · `PUT /api/model-visibility` | プロバイダー allowlist を読み取り、モデルまたはプロバイダーグループの最終表示状態を原子的に変更します。 |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | API キーおよび OAuth プロバイダーカタログを読みます。 |
