@@ -12,6 +12,7 @@ interface UsageSummaryCacheEntry {
   revisionKey: string;
   expiresAt: number;
   summary: CachedUsageSummary;
+  revisionReadAt: number;
   sizeBytes: number;
 }
 
@@ -24,10 +25,10 @@ function recomputeOldestUsageSummary(): void {
   oldestUsageSummaryKey = undefined;
   oldestUsageSummaryAt = null;
   for (const [key, entry] of usageSummaryCache) {
-    const generatedAt = entry.summary.generatedAt;
-    if (oldestUsageSummaryAt !== null && generatedAt >= oldestUsageSummaryAt) continue;
+    const readAt = entry.revisionReadAt;
+    if (oldestUsageSummaryAt !== null && readAt >= oldestUsageSummaryAt) continue;
     oldestUsageSummaryKey = key;
-    oldestUsageSummaryAt = generatedAt;
+    oldestUsageSummaryAt = readAt;
   }
 }
 
@@ -56,9 +57,9 @@ export function setUsageSummaryCacheEntry(
   const sizeBytes = Buffer.byteLength(JSON.stringify({ key, ...entry }), "utf8");
   usageSummaryCache.set(key, { ...entry, sizeBytes });
   usageSummaryCacheBytes += sizeBytes;
-  if (oldestUsageSummaryAt === null || entry.summary.generatedAt < oldestUsageSummaryAt) {
+  if (oldestUsageSummaryAt === null || entry.revisionReadAt < oldestUsageSummaryAt) {
     oldestUsageSummaryKey = key;
-    oldestUsageSummaryAt = entry.summary.generatedAt;
+    oldestUsageSummaryAt = entry.revisionReadAt;
   }
   enforceAppOwnedMemoryBudget();
 }

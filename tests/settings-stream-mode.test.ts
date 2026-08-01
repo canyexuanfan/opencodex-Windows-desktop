@@ -23,7 +23,9 @@ import {
 } from "../src/lib/app-owned-memory";
 import {
   evictOldestUsageSummaryForBudget,
+  getUsageSummaryCacheEntry,
   resetUsageSummaryCacheForTests,
+  setUsageSummaryCacheEntry,
   usageSummaryRetainedStoreSnapshot,
 } from "../src/server/management/usage-summary-cache";
 
@@ -183,6 +185,31 @@ describe("usage summary retained-store accounting", () => {
     expect(released).toBeGreaterThan(0);
     expect(after.count).toBe(1);
     expect(after.bytes).toBe(before.bytes - released);
+  });
+
+  test("oldest eviction follows revision read completion order, not generatedAt", async () => {
+    for (const range of ["30d", "7d"]) {
+      const req = new Request(`http://127.0.0.1:10100/api/usage?range=${range}`);
+      expect((await handleManagementAPI(req, new URL(req.url), baseConfig()))!.status).toBe(200);
+    }
+    const seed = getUsageSummaryCacheEntry("30d:all");
+    expect(seed).toBeDefined();
+    // Simulate an older-started slow read that COMPLETES last: its generatedAt
+    // is older than everything else, but its revisionReadAt is the newest.
+    setUsageSummaryCacheEntry("slow:stale-generated", {
+      revisionKey: "slow-read",
+      expiresAt: Date.now() + 60_000,
+      revisionReadAt: Date.now() + 10_000,
+      summary: { ...seed!.summary, generatedAt: 1 },
+    });
+    const before = usageSummaryRetainedStoreSnapshot();
+    expect(before.count).toBe(3);
+    // The slow-read entry has the minimum generatedAt; a generatedAt-keyed
+    // implementation would evict it first. Completion order must win instead.
+    const released = evictOldestUsageSummaryForBudget();
+    expect(released).toBeGreaterThan(0);
+    expect(getUsageSummaryCacheEntry("slow:stale-generated")).toBeDefined();
+    expect(usageSummaryRetainedStoreSnapshot().count).toBe(2);
   });
 });
 

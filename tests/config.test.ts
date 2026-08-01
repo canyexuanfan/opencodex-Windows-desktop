@@ -142,9 +142,12 @@ describe("opencodex config defaults", () => {
     });
   });
 
-  test("appOwnedMemoryBudgetMb accepts integer bounds 64 and 4096", () => {
+  test("appOwnedMemoryBudgetMb accepts integer bounds and rejects raw invalid candidates before normalization", () => {
     expect(validateConfigCandidate({ ...getDefaultConfig(), appOwnedMemoryBudgetMb: 64 }).ok).toBe(true);
     expect(validateConfigCandidate({ ...getDefaultConfig(), appOwnedMemoryBudgetMb: 4096 }).ok).toBe(true);
+    for (const value of [63, 4097, 64.5, "64", Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(validateConfigCandidate({ ...getDefaultConfig(), appOwnedMemoryBudgetMb: value }).ok).toBe(false);
+    }
   });
 
   test("Codex autostart can be disabled explicitly", () => {

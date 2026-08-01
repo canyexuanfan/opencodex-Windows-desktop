@@ -197,6 +197,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       }
       if (cached) discardUsageSummaryCacheEntry(cacheKey);
       const snapshot = await readUsageSnapshotForManagement(effectiveReadLimit);
+      const revisionReadAt = Date.now();
       const summary = {
         ...summarizeUsage(snapshot.entries, range, now, surface),
         historyTruncated: snapshot.truncatedPrefixBytes > 0 || snapshot.entriesTruncated,
@@ -207,6 +208,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       setUsageSummaryCacheEntry(cacheKey, {
         revisionKey: `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`,
         expiresAt: usageSummaryExpiresAt(snapshot.entries, range, surface, now),
+        revisionReadAt,
         summary,
       });
       return jsonResponse(summary);

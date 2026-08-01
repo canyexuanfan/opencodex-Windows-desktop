@@ -73,7 +73,6 @@ const enforcementCounters = {
   oldestAtContractViolations: 0,
 };
 let isEnforcing = false;
-let inProgressSnapshot: AppOwnedBytesSnapshot | null = null;
 
 export function resolveAppOwnedMemoryBudgetBytes(value: unknown): number {
   return typeof value === "number"
@@ -128,7 +127,6 @@ export function appOwnedBytesSnapshot(): AppOwnedBytesSnapshot {
 
 function appOwnedBytesSnapshotFrom(
   retained: ReadonlyMap<string, RetainedStoreSnapshot>,
-  includeObserved = true,
 ): AppOwnedBytesSnapshot {
   const stores: Record<string, RetainedStoreSnapshot> = {};
   let retainedBytes = 0;
@@ -143,10 +141,8 @@ function appOwnedBytesSnapshotFrom(
   }
 
   const observedInFlight: AppOwnedBytesSnapshot["observedInFlight"] = {};
-  if (includeObserved) {
-    for (const registration of observedBuffers.values()) {
-      observedInFlight[registration.id] = observedSnapshot(registration);
-    }
+  for (const registration of observedBuffers.values()) {
+    observedInFlight[registration.id] = observedSnapshot(registration);
   }
 
   return {
@@ -207,15 +203,12 @@ function warnPinnedSaturation(): void {
 }
 
 export function enforceAppOwnedMemoryBudget(): AppOwnedBytesSnapshot {
-  if (isEnforcing) {
-    return inProgressSnapshot ?? appOwnedBytesSnapshotFrom(new Map(), false);
-  }
+  if (isEnforcing) return appOwnedBytesSnapshot();
   isEnforcing = true;
   enforcementCounters.runs += 1;
   try {
     const ineligible = new Set<string>();
     const current = retainedSnapshots();
-    inProgressSnapshot = appOwnedBytesSnapshotFrom(current.stores, false);
     while (current.total > budgetBytes) {
       const candidate = nextCandidate(current.stores, ineligible);
       if (!candidate) {
@@ -243,11 +236,9 @@ export function enforceAppOwnedMemoryBudget(): AppOwnedBytesSnapshot {
         enforcementCounters.bytesReleased += actualReleased;
       }
       current.total = nextTotal;
-      inProgressSnapshot = appOwnedBytesSnapshotFrom(current.stores, false);
     }
     return appOwnedBytesSnapshotFrom(current.stores);
   } finally {
-    inProgressSnapshot = null;
     isEnforcing = false;
   }
 }
@@ -264,5 +255,4 @@ export function resetAppOwnedMemoryForTests(): void {
   enforcementCounters.snapshotFailures = 0;
   enforcementCounters.oldestAtContractViolations = 0;
   isEnforcing = false;
-  inProgressSnapshot = null;
 }

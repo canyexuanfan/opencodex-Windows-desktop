@@ -172,18 +172,18 @@ describe("state-store sweeper", () => {
     clearSpy.mockRestore();
   });
 
-  test("periodic sweep enforces bytes that become evictable during reconciliation", () => {
+  test("periodic sweep enforces bytes that become evictable via TTL expiry without write traffic", () => {
     const timers: Array<() => void> = [];
     const setSpy = spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
       timers.push(callback);
       return { unref() {} };
     }) as typeof setInterval);
     const clearSpy = spyOn(globalThis, "clearInterval").mockImplementation(() => {});
-    let pinned = true;
+    let expired = false;
     let retained = 4;
     registerStateStore({
-      name: "class-transition",
-      sweepExpired: () => { pinned = false; return 0; },
+      name: "ttl-transition",
+      sweepExpired: now => { expired = now >= 42; return 0; },
     });
     registerRetainedStore({
       id: "sweep-transition",
@@ -191,9 +191,9 @@ describe("state-store sweeper", () => {
       snapshot: () => ({
         count: retained > 0 ? 1 : 0,
         bytes: retained,
-        evictableBytes: pinned ? 0 : retained,
-        pinnedBytes: pinned ? retained : 0,
-        oldestAt: !pinned && retained > 0 ? 1 : null,
+        evictableBytes: expired ? retained : 0,
+        pinnedBytes: expired ? 0 : retained,
+        oldestAt: expired && retained > 0 ? 1 : null,
       }),
       evictOldest: () => {
         const released = retained;
@@ -205,6 +205,7 @@ describe("state-store sweeper", () => {
     registerAppOwnedMemorySweepFallback();
 
     startStateStoreSweeper({ intervalMs: 10, now: () => 42 });
+    expect(retained).toBe(4);
     timers[0]!();
 
     expect(retained).toBe(0);

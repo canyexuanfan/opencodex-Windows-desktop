@@ -23,38 +23,37 @@ calls it beside 040's retained-store registration at startup, and registers only
 `grok_apply_flight`) through 040's `registerObservedBuffer()`. Once 050 lands those
 current/high-water counters become visible, but they remain pinned observation-only state
 and are never evicted by this budget. Their hard admission is owned by 050.
+All 040 implementation items below are delivered; the 050 observed-owner instrumentation
+just described is the only remaining cross-phase integration and is not part of wp5 repair.
 
-## Current code and anchors
+## Delivered implementation and anchors
 
-- `src/server/management/system-routes.ts:1-30` documents scalar/privacy constraints.
-- `src/server/management/system-routes.ts:35-97` assembles process memory,
-  `responseState`, inspector counters, watchdog, and active-turn scalars.
-- `src/responses/state.ts:640-695` is the observe-only retained-store seam
-  (`responseStateMetrics()` — resident/stub/tombstone counts, payload bytes, spill
-  counters from 010). It does NOT yet expose `evictableBytes`, `pinnedBytes`, or the
-  oldest-resident timestamp; this phase adds all-row accounting plus a resident-only
-  eviction API
-  (see the continuation pre-work section below).
-- `src/server/memory-watchdog.ts:53-60,102-155` owns a separate warn-only RSS/native
-  watchdog with a 360-sample bounded ring; it does not manage app-owned state.
-- `src/types.ts:531-535` starts the top-level `OcxConfig` runtime fields beside the
-  existing management usage-memory control.
-- `src/config.ts:739-748` begins the Zod config schema; positive-integer helpers are
-  at `:566-585`. Load-time degradation and write-time rejection are SEPARATE
-  boundaries: the schema rule degrades malformed persisted edits to the default, and
-  a raw-candidate guard beside the hostname guard at `src/config.ts:1416-1444` makes
-  `validateConfigCandidate` reject invalid candidates before Zod can normalize them.
-  The actual MANAGEMENT boundary is `/api/settings` PUT
-  (`src/server/management/config-routes.ts:74-78,113-142,192-227`) — full `/api/config` PUT
-  is disabled — so this phase adds `appOwnedMemoryBudgetMb` to `/api/settings`
-  GET/PUT: the PUT validates the integer 64..4096 range, persists, then calls
-  `configureAppOwnedMemoryBudget` + `enforceAppOwnedMemoryBudget` synchronously.
-  Tests extend `tests/settings-stream-mode.test.ts`.
-- `src/server/index.ts:264-273,311-317` starts process-wide singletons: state
-  reconciliation at 266/273, watchdog at 316, state-store sweeper at 317. The
-  app-owned registrations + first enforcement run belong beside the sweeper start.
-- `tests/memory-watchdog.test.ts:162-236` pins the current endpoint scalar shape
-  (11 responseState scalars, no appOwnedBytes yet).
+- `src/lib/app-owned-memory.ts:1-257` is the delivered coordinator: retained and
+  observed registrations, configurable byte budget, scalar snapshots, deterministic
+  category/owner ordering, failure counters, and synchronous single-flight enforcement.
+- `src/lib/app-owned-memory-stores.ts:71-157` owns the fixed retained-store registration
+  array, registers it in array order, and registers the named app-owned post-sweep hook.
+- `src/server/management/system-routes.ts:77-99` assembles process memory,
+  `responseState`, privacy-safe `appOwnedBytes` at `:92`, inspector counters, watchdog,
+  and active-turn scalars. `src/server/memory-watchdog.ts:53-60,102-155` remains a
+  separate warn-only RSS/native watchdog; it does not manage app-owned state.
+- `src/responses/state.ts:621-652` exports all-row continuation accounting and
+  resident-only durable demotion; `responseStateMetrics()` remains the compatibility
+  observe-only seam at `src/responses/state.ts:756-787`.
+- `src/server/request-log.ts:151-192` and `src/codex/model-cache.ts:45-68,158-168,215-226`
+  deliver owner-local UTF-8 byte accounting, exact replacement accounting, oldest-row
+  timestamps, and centralized eviction callbacks.
+- `src/types.ts:708` exposes `appOwnedMemoryBudgetMb`; `src/config.ts:747-751` degrades
+  malformed persisted edits to 256 MiB, while the raw-candidate guard at
+  `src/config.ts:1448-1465` rejects invalid writes before schema normalization.
+  `/api/settings` GET/PUT reports, validates, persists, configures, and synchronously
+  enforces the field at `src/server/management/config-routes.ts:120-149,200-250`.
+- Startup registers stores, the post-sweep fallback, the configured budget, and the
+  first enforcement pass before starting the sweeper at `src/server/index.ts:326-330`.
+- Delivered regressions live in `tests/app-owned-memory.test.ts`,
+  `tests/state-store-sweeper.test.ts`, `tests/responses-state.test.ts`,
+  `tests/cursor-blob.test.ts`, `tests/memory-watchdog.test.ts`, `tests/config.test.ts`,
+  `tests/cli-headless-parity.test.ts`, and `tests/settings-stream-mode.test.ts`.
 
 ## Config decision
 
@@ -79,20 +78,21 @@ forcing cross-store demotion before retained state becomes multi-GiB. MiB is rea
 management write boundary. On load, malformed legacy hand edits degrade to the default
 without resetting unrelated config, following existing schema doctrine.
 
-Because the schema intentionally catches an invalid persisted value, add
+Because the schema intentionally catches an invalid persisted value, the delivered
 `appOwnedMemoryBudgetError(value: unknown): string | null` beside
-`blankHostnameError()` and include it in `validateConfigCandidate()` BEFORE
+`blankHostnameError()` is included in `validateConfigCandidate()` BEFORE
 `configSchema.safeParse()`. It inspects the raw candidate's own
 `appOwnedMemoryBudgetMb` value and rejects nonnumeric, non-finite, fractional, below-64,
-or above-4096 values. Extend `tests/cli-headless-parity.test.ts:167-186` with the named
+or above-4096 values. `tests/cli-headless-parity.test.ts:189-216` carries the named
 behavioral regression `config set and import reject an invalid app-owned memory budget
 without persisting the normalized default`; assert both CLI paths return nonzero and the
 previous file remains byte-for-byte/field-for-field unchanged.
 
-Update English and translated configuration tables. This is a user-facing operational
-control, so docs cannot be English-only or imply it caps RSS/native memory.
+The English and translated configuration tables (`ja`, `ko`, `ru`, `zh-cn`) are
+synchronized. They describe an evictable retained-state budget and explicitly do not
+claim to cap RSS/native memory.
 
-## NEW `src/lib/app-owned-memory.ts`
+## Delivered coordinator — `src/lib/app-owned-memory.ts`
 
 ```ts
 export type AppOwnedRetainedCategory = "logs" | "caches" | "blobs" | "continuation";
@@ -151,7 +151,7 @@ exposed in `GET /api/system/memory`; no error text or dynamic owner data is reta
 
 ## Retained-store registrations
 
-Add `src/lib/app-owned-memory-stores.ts` with one fixed
+`src/lib/app-owned-memory-stores.ts:71-149` delivers one fixed
 `APP_OWNED_RETAINED_STORE_REGISTRATIONS` readonly array and
 `registerDefaultAppOwnedMemoryStores()`. The array order is exactly the store-id order in
 the table below and is the deterministic owner tie-break order. Startup registers this
@@ -159,9 +159,9 @@ array once; test re-registration of an existing static id replaces its callbacks
 preserving its array index. 040 does not add an observed-owner array entry; the named 050
 integration point is defined in Outcome.
 
-Register hooks delivered by 010/020/035 and existing owners. The delivered 035 hook
-shapes use `entries` (not `count`) and omit pinned/evictable fields, so each
-registration is a NAMED ADAPTER in `app-owned-memory` registration code mapping the
+The fixed array registers hooks delivered by 010/020/035 and existing owners. The
+delivered 035 hook shapes use `entries` (not `count`) and omit pinned/evictable fields, so each
+registration uses a named adapter in `app-owned-memory-stores.ts` mapping the
 owner hook onto `RetainedStoreSnapshot` (rings: `evictableBytes = bytes`,
 `pinnedBytes = 0`). Delivered hooks:
 
@@ -181,24 +181,18 @@ owner hook onto `RetainedStoreSnapshot` (rings: `evictableBytes = bytes`,
 | blobs | `cursor_blobs` | Remove the oldest EVICTABLE row (unpinned local, or expired unpinned remote — 020 round-4). Live remote and request-pinned blobs report as pinned. |
 | continuation | `responses_continuation` | Demote oldest resident row through 010 durable spill. Spill stubs/tombstones are not repeatedly demoted. |
 
-The request-log owner (`src/server/request-log.ts:150-154,218-246`) must add per-entry
-UTF-8 byte accounting and a centralized oldest delete. Normalize individual retained
-diagnostic strings per 035, but preserve retry/failover attempt structure. The
-current mutation anchor is `src/server/request-log.ts:244-246` (push/shift only, no
-byte hook yet).
+The request-log owner now has per-entry UTF-8 byte accounting and one centralized oldest
+delete at `src/server/request-log.ts:151-192`; successful retention updates accounting
+before invoking enforcement at `:172-178`. Individual retained diagnostic strings stay
+normalized per 035 while retry/failover attempt structure remains intact.
 
-Model cache and usage summary values receive owner-local byte accounting before they can
-register. Usage summary overflow aggregates excess model cardinality into an `other`
-bucket without dropping token/cost totals; it is not permissible to delete totals.
-Current owners: `src/codex/model-cache.ts:16-19,43-49,121-149` (unaccounted model arrays
-with an existing `fetchedAt`) and
-`src/server/management/logs-usage-routes.ts:82-86,187-211` +
-`src/usage/summary.ts:415-417` (unaccounted summaries, unbounded model breakdown —
-the `other` bucket does not exist yet and is created in this phase). The `other`
-contract covers BOTH the top-level `models` aggregation (`src/usage/summary.ts:415-417`)
-AND every per-day `days[].models` breakdown (`src/usage/summary.ts:290-337`), each of
-which independently builds an unbounded provider/model map; unique request counts,
-attempts, tokens, and cost are preserved in the bucket wherever applicable.
+Model-cache values now carry owner-local `sizeBytes` and `fetchedAt`, replace exactly,
+and expose snapshot/oldest eviction at `src/codex/model-cache.ts:17-20,45-68`,
+`:158-168`, and `:215-226`. Usage-summary cache accounting and oldest eviction are delivered at
+`src/server/management/usage-summary-cache.ts:1-80`. Cardinality overflow preserves
+totals in `other` for every per-day breakdown at `src/usage/summary.ts:340-361` and for
+the top-level model aggregation at `src/usage/summary.ts:434-482`; unique request counts,
+attempts, tokens, and cost remain preserved wherever applicable.
 
 Every registration's `oldestAt` is the timestamp of the exact row its
 `evictOldest()` would remove next, never merely the oldest pinned or unrelated row:
@@ -216,17 +210,11 @@ Every registration's `oldestAt` is the timestamp of the exact row its
 
 ## Continuation pre-work (fold-in of verified external findings)
 
-040 adds these exact owner exports to `src/responses/state.ts` beside the observe-only
-metrics seam at `src/responses/state.ts:640-695`:
+040 delivers these owner exports at `src/responses/state.ts:621-652`, beside the
+compatibility observe-only metrics seam at `src/responses/state.ts:756-787`:
 
 ```ts
-export function responseContinuationRetainedStoreSnapshot(): {
-  count: number;
-  bytes: number;
-  evictableBytes: number;
-  pinnedBytes: number;
-  oldestAt: number | null;
-};
+export function responseContinuationRetainedStoreSnapshot(): RetainedStoreSnapshot;
 export function evictOldestResponseContinuationForBudget(): number;
 ```
 
@@ -242,38 +230,35 @@ resident through the durable spill/tombstone path and returns NET released RAM:
 `gross resident sizeBytes - actual replacement stub/tombstone sizeBytes`; no resident or
 no net release returns 0.
 
-Three verified defects sit exactly on this phase's continuation/sweeper seam and are
-repaired here BEFORE the budget work builds on them:
+Three verified defects on this phase's continuation/sweeper seam were repaired before
+the budget coordinator was built on them:
 
-1. **Bounded snapshot retry (state.ts:448-487, VALID High).** `persistNow()` loops
-   until `revision === stateRevision`; sustained traffic keeps it spinning and
-   `flushResponseState()` (:511-518) never settles at shutdown. Fix: cap the rewrite
-   loop at 4 attempts. If the final write is still revision-unstable, schedule a
-   follow-up flush and DO NOT drain `pendingSpillUnlinks` — only a revision-stable
-   snapshot may authorize unlinking superseded spill generations (:488-493).
+1. **Bounded snapshot retry (VALID High).** `writeBoundedSnapshot()` now caps rewrite
+   attempts at four (`src/responses/state.ts:485-526`). If the final write is still
+   revision-unstable, `persistNow()` (`:543-558`) schedules a
+   follow-up flush and does not drain `pendingSpillUnlinks` — only a revision-stable
+   snapshot may authorize unlinking superseded spill generations (`:528-557`).
    Follow-up contract: the follow-up retains the SAME captured `path` (the guard at
-   :501-508 against recomputing `snapshotPath()` stays intact). Background
-   persistence uses an unref'd timer. Explicit `flushResponseState()` (shutdown path,
-   `src/server/lifecycle.ts:164-166`) AWAITS one bounded same-path follow-up pass
+   `:535-564` against recomputing `snapshotPath()` stays intact). Background
+   persistence uses an unref'd timer. Explicit `flushResponseState()` (`:566-578`,
+   called by `src/server/lifecycle.ts:164-166`) awaits one bounded same-path follow-up pass
    after the cap; if that pass is still unstable it returns with a best-effort
    snapshot and intact pending unlinks — shutdown is never blocked indefinitely.
    Test: revision churn during atomic write settles within the bound and leaves
    pending unlinks intact until a stable snapshot lands.
 
-2. **Resident-first demotion (state.ts:539-556, VALID High/data loss).** The RAM-cap
-   loop deletes the oldest spill stub/tombstone (including its durable spill file,
-   :131-143) whenever it precedes a resident. Fix: scan for the oldest RESIDENT and
-   demote it first; delete stubs/tombstones only when no resident remains and
-   bounded metadata alone exceeds the cap. This also makes the 040 continuation
-   `evictOldest()` callback resident-only by construction.
+2. **Resident-first demotion (VALID High/data loss).** The delivered RAM-cap loop at
+   `src/responses/state.ts:587-619` scans for and demotes the oldest resident first;
+   it deletes stubs/tombstones only when no resident remains and bounded metadata alone
+   exceeds the cap. The 040 continuation `evictOldest()` callback at `:631-652` is
+   resident-only by construction and returns net released bytes.
    Test: mixed older-stub/newer-resident state demotes the resident and keeps the
    stub's durable spill file on disk.
 
-3. **GCP ADC expiry sweep unwired (VALID Medium).** `sweepExpiredGcpAdcTokens()`
-   (`src/lib/gcp-adc.ts:71-80`) is exported but `STATE_STORE_REGISTRATIONS`
-   registers only `reconcileGcpAdcTokens` (`src/lib/state-store-registrations.ts:97`).
-   Wire the expiry sweep into the registration's TTL callback. Test: expired ADC
-   token is swept by the periodic pass.
+3. **GCP ADC expiry sweep (VALID Medium).** `sweepExpiredGcpAdcTokens()` remains at
+   `src/lib/gcp-adc.ts:71-80` and is now wired beside `reconcileGcpAdcTokens` in
+   `STATE_STORE_REGISTRATIONS` at `src/lib/state-store-registrations.ts:97`.
+   `tests/gcp-adc.test.ts:94-105` proves the periodic registration removes expiry.
 
 A fourth external claim (sweeper partial-pass fence dropping newly-added-owner
 writes) was audited INVALID against current source — every fenced writer also
@@ -314,11 +299,18 @@ The complete trigger set is:
 - synchronously after every valid live budget change;
 - after a pin/class transition makes existing bytes newly evictable: Cursor
   `releaseHydratedBlob()` / `releaseCursorBlobRequestScope()` after class reconciliation
-  (`src/adapters/cursor/native-exec.ts:146-183,196-208,343-365`) and the remote-blob TTL
+  (`src/adapters/cursor/native-exec.ts:147-190,202-214,365-370`) and the remote-blob TTL
   expiry timer after it recomputes class accounting; and
 - as a fail-safe after each existing periodic sweep tick finishes expiry/liveness
-  reconciliation (`src/lib/state-store-sweeper.ts:130-140`), covering coarse TTL expiry
-  and pin-release reconciliation without adding another timer.
+  reconciliation. The sweeper exposes only the generic named
+  `registerStateSweepAfterTick({ name, afterTick })` registry
+  (`src/lib/state-store-sweeper.ts:20-23,58-65,108-116`), invokes its isolated callbacks
+  after both sweep phases at `:155-164`, and remains independent of app-owned-memory.
+  `registerAppOwnedMemorySweepFallback()` registers the static
+  `app-owned-memory-budget` callback in `src/lib/app-owned-memory-stores.ts:152-157`;
+  startup calls it beside the other singleton registrations at
+  `src/server/index.ts:326-330`. This covers TTL/class transitions with no write traffic
+  and adds no second timer.
 
 Observation happens first: update owner bytes/classification, then enforce. Never reject
 new request admission as the first lever.
@@ -347,14 +339,15 @@ Edge contracts:
 
 ## `/api/system/memory` payload
 
-At `src/server/management/system-routes.ts:76-97` (beside `responseState` at :90), add:
+Delivered at `src/server/management/system-routes.ts:77-99`, beside `responseState` at
+`:91`:
 
 ```ts
 appOwnedBytes: appOwnedBytesSnapshot(),
 ```
 
 Retain `responseState` for compatibility during this unit; it may duplicate a scalar
-subset. `appOwnedBytes` contains only static store ids, categories, counts, byte totals,
+subset. `appOwnedBytes` contains only static store ids, counts, byte totals,
 timestamps/ages, and counters. It must never include keys, ids, model/provider names,
 paths, hashes, errors, commands, tool arguments, prompts, URLs, or account data.
 
@@ -367,7 +360,15 @@ Recommended wire example:
   "evictableBytes": 0,
   "pinnedBytes": 0,
   "overBudgetBytes": 0,
-  "stores": {},
+  "stores": {
+    "request_log": {
+      "count": 0,
+      "bytes": 0,
+      "evictableBytes": 0,
+      "pinnedBytes": 0,
+      "oldestAt": null
+    }
+  },
   "observedInFlight": {},
   "enforcement": {
     "runs": 0,
@@ -382,7 +383,7 @@ Recommended wire example:
 
 ## Regression tests
 
-Add `tests/app-owned-memory.test.ts`:
+Delivered in `tests/app-owned-memory.test.ts`:
 
 - `snapshot is observe-only and never calls an eviction callback`
 - `replacement registration cannot double-count one store id`
@@ -405,26 +406,27 @@ Add `tests/app-owned-memory.test.ts`:
 - `observed-buffer registry is wired but empty until 050 and never participates in eviction`
 - `budget decrease enforces synchronously in the documented order`.
 
-Continuation pre-work tests (extend `tests/responses-state.test.ts` and
-`tests/state-store-sweeper.test.ts` / `tests/gcp-adc.test.ts`):
+Delivered continuation/sweeper tests in `tests/responses-state.test.ts`,
+`tests/state-store-sweeper.test.ts`, and `tests/gcp-adc.test.ts`:
 
 - `persistNow settles within the bounded rewrite attempts under revision churn`
 - `unstable final snapshot defers spill unlinks until a stable snapshot`
 - `RAM cap demotes the oldest resident before deleting any older spill stub`
 - `stub-only over-cap state still deletes bounded metadata oldest-first`
 - `expired GCP ADC token is removed by the periodic sweep registration`
-- `partial reconcile failure keeps live-key writes accepted for new owners`.
+- `partial reconcile failure keeps live-key writes accepted for new owners`
+- `periodic sweep enforces bytes that become evictable via TTL expiry without write traffic`.
 
-Extend `tests/memory-watchdog.test.ts`:
+Delivered in `tests/memory-watchdog.test.ts`:
 
 - `GET system memory includes privacy-safe appOwnedBytes scalars`
 - `GET system memory does not load prune serialize or evict retained stores`
 - `payload contains no dynamic store keys paths ids or diagnostic text`.
 
-Config tests:
+Delivered config tests:
 
 - `appOwnedMemoryBudgetMb defaults to 256 MiB`
-- `accepts integer bounds 64 and 4096`
+- `appOwnedMemoryBudgetMb accepts integer bounds and rejects raw invalid candidates before normalization`
 - `settings PUT rejects below/above/fractional/nonnumeric budget values`
 - `settings PUT applies a valid budget change synchronously through enforcement`
 - `malformed persisted value degrades to default without dropping providers`
