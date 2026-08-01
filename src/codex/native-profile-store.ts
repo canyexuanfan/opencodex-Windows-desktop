@@ -1,0 +1,401 @@
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { getConfigDir } from "../config";
+import { extractAccountId } from "../oauth/chatgpt";
+import { getCodexHome, readRootTomlString } from "./paths";
+import {
+  NativeProfileError,
+  type EncryptedNativeEnvelopeV1,
+  type NativeMainProfileRecordV1,
+  type NativeMainProfileVaultV1,
+  type NativeProfileKey,
+  type NativeProfileKeyProvider,
+  type NativeProfilePublic,
+  type NativeProfileSwitchJournalV1,
+} from "./native-profile-types";
+
+const DOMAIN_HOME = "opencodex-native-profile-home-v1\0";
+const DOMAIN_IDENTITY = "opencodex-native-profile-identity-v1\0";
+const KEYRING_SERVICE = "opencodex.native-main-profile.v1";
+const MAX_AUTH_BYTES = 4 * 1024 * 1024;
+const MAX_METADATA_BYTES = 4 * 1024 * 1024;
+const MAX_PROFILES = 32;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const HASH_RE = /^[0-9a-f]{64}$/;
+
+export interface NativeProfileContext {
+  codexHome: string;
+  configDir: string;
+  rootDir: string;
+  stagingRoot: string;
+  homeId: string;
+  authPath: string;
+  vaultPath: string;
+  journalPath: string;
+  lockPath: string;
+}
+
+export interface NativeEnvelopeSnapshot {
+  raw: Buffer;
+  text: string;
+  digest: string;
+  accountId: string;
+}
+
+export type NativeEnvelopeReadResult =
+  | { status: "ok"; envelope: NativeEnvelopeSnapshot }
+  | { status: "missing" | "invalid" | "unreadable" };
+
+export class OsNativeProfileKeyProvider implements NativeProfileKeyProvider {
+  private async entry(homeId: string): Promise<import("@napi-rs/keyring").AsyncEntry> {
+    try {
+      const { AsyncEntry } = await import("@napi-rs/keyring");
+      return new AsyncEntry(KEYRING_SERVICE, homeId);
+    } catch {
+      throw new NativeProfileError(
+        "KEYRING_UNAVAILABLE",
+        "The native OS credential store is unavailable; no plaintext fallback is permitted.",
+        503,
+        true,
+      );
+    }
+  }
+
+  async get(homeId: string): Promise<NativeProfileKey | null> {
+    try {
+      const secret = await (await this.entry(homeId)).getSecret(AbortSignal.timeout(8_000));
+      if (!secret) return null;
+      const key = Buffer.from(secret);
+      if (key.byteLength !== 32) {
+        key.fill(0);
+        throw new NativeProfileError("KEYRING_UNAVAILABLE", "The OS credential-store key is invalid.", 503);
+      }
+      return { keyRef: `${KEYRING_SERVICE}:${homeId}`, key };
+    } catch (error) {
+      if (error instanceof NativeProfileError) throw error;
+      throw new NativeProfileError(
+        "KEYRING_UNAVAILABLE",
+        "The native OS credential store could not be read.",
+        503,
+        true,
+      );
+    }
+  }
+
+  async create(homeId: string): Promise<NativeProfileKey> {
+    const existing = await this.get(homeId);
+    if (existing) return existing;
+    const key = randomBytes(32);
+    try {
+      const entry = await this.entry(homeId);
+      await entry.setSecret(key, AbortSignal.timeout(8_000));
+      const stored = await entry.getSecret(AbortSignal.timeout(8_000));
+      const verified = stored ? Buffer.from(stored) : null;
+      if (!verified || verified.byteLength !== key.byteLength || !timingSafeEqual(verified, key)) {
+        verified?.fill(0);
+        throw new NativeProfileError("KEYRING_UNAVAILABLE", "The OS credential-store key could not be verified.", 503);
+      }
+      verified.fill(0);
+      return { keyRef: `${KEYRING_SERVICE}:${homeId}`, key: Buffer.from(key) };
+    } catch (error) {
+      if (error instanceof NativeProfileError) throw error;
+      throw new NativeProfileError(
+        "KEYRING_UNAVAILABLE",
+        "The native OS credential store could not save the profile key.",
+        503,
+        true,
+      );
+    } finally {
+      key.fill(0);
+    }
+  }
+}
+
+function canonicalExistingDirectory(path: string, label: string): string {
+  const absolute = resolve(path);
+  try {
+    if (!statSync(absolute).isDirectory()) throw new Error("not a directory");
+    return realpathSync.native(absolute);
+  } catch {
+    throw new NativeProfileError("CODEX_HOME_UNAVAILABLE", `${label} is not an accessible directory.`, 409);
+  }
+}
+
+export function resolveNativeProfileContext(options: { codexHome?: string; configDir?: string } = {}): NativeProfileContext {
+  const codexHome = canonicalExistingDirectory(options.codexHome ?? getCodexHome(), "The effective CODEX_HOME");
+  const configDir = resolve(options.configDir ?? getConfigDir());
+  const homeBytes = process.platform === "win32" ? codexHome.toLowerCase() : codexHome;
+  const homeId = createHash("sha256").update(DOMAIN_HOME).update(homeBytes).digest("hex");
+  const rootDir = join(configDir, "native-main-profiles");
+  return {
+    codexHome,
+    configDir,
+    rootDir,
+    stagingRoot: join(rootDir, "staging", homeId),
+    homeId,
+    authPath: join(codexHome, "auth.json"),
+    vaultPath: join(rootDir, `${homeId}.vault.json`),
+    journalPath: join(rootDir, `${homeId}.journal.json`),
+    lockPath: join(rootDir, `${homeId}.lock`),
+  };
+}
+
+function readBounded(path: string, limit: number): Buffer {
+  const stat = statSync(path);
+  if (!stat.isFile() || stat.size > limit) throw new Error("invalid bounded file");
+  return readFileSync(path);
+}
+
+export function resolveNativeCredentialStoreMode(context: NativeProfileContext): string {
+  const path = join(context.codexHome, "config.toml");
+  let content: string;
+  try {
+    content = readBounded(path, 1024 * 1024).toString("utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "file";
+    throw new NativeProfileError("UNSUPPORTED_AUTH_STORE", "The Codex credential-store configuration is unreadable.", 409);
+  }
+  const mode = readRootTomlString(content, "cli_auth_credentials_store");
+  if (mode === null && /^\s*cli_auth_credentials_store\s*=/m.test(content)) {
+    throw new NativeProfileError("UNSUPPORTED_AUTH_STORE", "The Codex credential-store mode is invalid.", 409);
+  }
+  return mode ?? "file";
+}
+
+export function requireFileCredentialStore(context: NativeProfileContext): void {
+  const mode = resolveNativeCredentialStoreMode(context);
+  if (mode !== "file") {
+    throw new NativeProfileError(
+      "UNSUPPORTED_AUTH_STORE",
+      `Native profile switching supports Codex credential-store mode "file" only; current mode is "${mode}".`,
+      409,
+    );
+  }
+}
+
+export function parseNativeEnvelopeBytes(raw: Buffer): NativeEnvelopeSnapshot {
+  if (raw.byteLength === 0 || raw.byteLength > MAX_AUTH_BYTES) {
+    throw new NativeProfileError("AUTH_INVALID", "The native Codex credential envelope is invalid.", 409);
+  }
+  const text = raw.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(raw)) {
+    throw new NativeProfileError("AUTH_INVALID", "The native Codex credential envelope is not valid UTF-8.", 409);
+  }
+  try {
+    const parsed = JSON.parse(text.replace(/^\uFEFF/, "")) as {
+      auth_mode?: unknown;
+      tokens?: {
+        id_token?: unknown;
+        access_token?: unknown;
+        refresh_token?: unknown;
+        account_id?: unknown;
+      };
+    };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("root");
+    if (parsed.auth_mode !== undefined && parsed.auth_mode !== "chatgpt") throw new Error("mode");
+    const tokens = parsed.tokens;
+    if (
+      !tokens
+      || typeof tokens.id_token !== "string" || tokens.id_token.length === 0
+      || typeof tokens.access_token !== "string" || tokens.access_token.length === 0
+      || typeof tokens.refresh_token !== "string" || tokens.refresh_token.length === 0
+    ) throw new Error("tokens");
+    const derived = extractAccountId(tokens.id_token, tokens.access_token);
+    const explicit = typeof tokens.account_id === "string" && tokens.account_id.trim() ? tokens.account_id.trim() : null;
+    if (derived && explicit && derived !== explicit) throw new Error("identity mismatch");
+    const accountId = derived ?? explicit;
+    if (!accountId) throw new Error("identity");
+    return {
+      raw,
+      text,
+      accountId,
+      digest: createHash("sha256").update(raw).digest("hex"),
+    };
+  } catch (error) {
+    if (error instanceof NativeProfileError) throw error;
+    throw new NativeProfileError("AUTH_INVALID", "The native Codex credential envelope is invalid.", 409);
+  }
+}
+
+export function readNativeEnvelopeResult(path: string): NativeEnvelopeReadResult {
+  let raw: Buffer;
+  try {
+    raw = readBounded(path, MAX_AUTH_BYTES);
+  } catch (error) {
+    return { status: (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable" };
+  }
+  try {
+    return { status: "ok", envelope: parseNativeEnvelopeBytes(raw) };
+  } catch {
+    raw.fill(0);
+    return { status: "invalid" };
+  }
+}
+
+export function readNativeEnvelope(path: string): NativeEnvelopeSnapshot {
+  const result = readNativeEnvelopeResult(path);
+  if (result.status === "ok") return result.envelope;
+  const code = result.status === "missing" ? "AUTH_MISSING" : result.status === "invalid" ? "AUTH_INVALID" : "AUTH_UNREADABLE";
+  throw new NativeProfileError(code, `The native Codex credential envelope is ${result.status}.`, 409);
+}
+
+export function nativeIdentityHash(key: Uint8Array, accountId: string): string {
+  return createHmac("sha256", key).update(DOMAIN_IDENTITY).update(accountId).digest("hex");
+}
+
+export function nativeIdentityHint(identityHash: string): string {
+  return `account-${identityHash.slice(0, 8)}`;
+}
+
+function aad(context: NativeProfileContext, profileId: string, identityHash: string, digest: string): Buffer {
+  return Buffer.from(JSON.stringify([1, context.homeId, profileId, identityHash, digest]), "utf8");
+}
+
+export function encryptNativeEnvelope(
+  context: NativeProfileContext,
+  profileId: string,
+  identityHash: string,
+  envelope: NativeEnvelopeSnapshot,
+  key: NativeProfileKey,
+): EncryptedNativeEnvelopeV1 {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key.key, nonce);
+  cipher.setAAD(aad(context, profileId, identityHash, envelope.digest));
+  const ciphertext = Buffer.concat([cipher.update(envelope.raw), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    cipher: "aes-256-gcm",
+    keyRef: key.keyRef,
+    nonce: nonce.toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+    tag: tag.toString("base64"),
+    envelopeSha256: envelope.digest,
+  };
+}
+
+export function decryptNativeEnvelope(
+  context: NativeProfileContext,
+  profileId: string,
+  identityHash: string,
+  payload: EncryptedNativeEnvelopeV1,
+  key: NativeProfileKey,
+): NativeEnvelopeSnapshot {
+  let raw: Buffer | null = null;
+  try {
+    if (payload.keyRef !== key.keyRef || payload.cipher !== "aes-256-gcm") throw new Error("key");
+    const decipher = createDecipheriv("aes-256-gcm", key.key, Buffer.from(payload.nonce, "base64"));
+    decipher.setAAD(aad(context, profileId, identityHash, payload.envelopeSha256));
+    decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
+    raw = Buffer.concat([decipher.update(Buffer.from(payload.ciphertext, "base64")), decipher.final()]);
+    const parsed = parseNativeEnvelopeBytes(raw);
+    if (parsed.digest !== payload.envelopeSha256) throw new Error("digest");
+    return parsed;
+  } catch {
+    raw?.fill(0);
+    throw new NativeProfileError("PROFILE_DECRYPT_FAILED", "The selected native profile could not be decrypted or verified.", 409);
+  }
+}
+
+function isEncryptedPayload(value: unknown): value is EncryptedNativeEnvelopeV1 {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.cipher === "aes-256-gcm"
+    && typeof v.keyRef === "string" && v.keyRef.length > 0
+    && typeof v.nonce === "string" && v.nonce.length > 0
+    && typeof v.ciphertext === "string" && v.ciphertext.length > 0
+    && typeof v.tag === "string" && v.tag.length > 0
+    && typeof v.envelopeSha256 === "string" && HASH_RE.test(v.envelopeSha256);
+}
+
+function parseVaultObject(value: unknown, homeId: string): NativeMainProfileVaultV1 {
+  if (!value || typeof value !== "object") throw new Error("root");
+  const vault = value as NativeMainProfileVaultV1;
+  if (vault.version !== 1 || vault.homeId !== homeId || !Number.isSafeInteger(vault.revision) || vault.revision < 0) throw new Error("header");
+  if (!Array.isArray(vault.profiles) || vault.profiles.length > MAX_PROFILES) throw new Error("profiles");
+  if (vault.activeProfileId !== null && (typeof vault.activeProfileId !== "string" || !UUID_RE.test(vault.activeProfileId))) throw new Error("active");
+  const ids = new Set<string>();
+  const labels = new Set<string>();
+  const identities = new Set<string>();
+  let activeCount = 0;
+  for (const profile of vault.profiles) {
+    if (!profile || typeof profile !== "object" || !UUID_RE.test(profile.id) || ids.has(profile.id)) throw new Error("id");
+    const label = profile.label?.trim();
+    if (!label || label.length > 64 || /[\u0000-\u001f\u007f]/.test(label)) throw new Error("label");
+    const normalizedLabel = label.toLowerCase();
+    if (labels.has(normalizedLabel) || !HASH_RE.test(profile.identityHash) || identities.has(profile.identityHash)) throw new Error("identity");
+    if (profile.identityHint !== nativeIdentityHint(profile.identityHash)) throw new Error("hint");
+    if (profile.state === "active") {
+      activeCount += 1;
+      if (profile.payload !== null || profile.id !== vault.activeProfileId) throw new Error("active payload");
+    } else if (profile.state === "inactive") {
+      if (!isEncryptedPayload(profile.payload)) throw new Error("inactive payload");
+    } else throw new Error("state");
+    ids.add(profile.id);
+    labels.add(normalizedLabel);
+    identities.add(profile.identityHash);
+  }
+  if ((vault.profiles.length === 0 && vault.activeProfileId !== null) || (vault.profiles.length > 0 && activeCount !== 1)) throw new Error("active count");
+  return vault;
+}
+
+export function readNativeProfileVault(context: NativeProfileContext): NativeMainProfileVaultV1 | null {
+  if (!existsSync(context.vaultPath)) return null;
+  try {
+    return parseVaultObject(JSON.parse(readBounded(context.vaultPath, MAX_METADATA_BYTES).toString("utf8")), context.homeId);
+  } catch {
+    throw new NativeProfileError("VAULT_INVALID", "The encrypted native-profile vault is invalid.", 409);
+  }
+}
+
+export function readNativeProfileJournal(context: NativeProfileContext): NativeProfileSwitchJournalV1 | null {
+  if (!existsSync(context.journalPath)) return null;
+  try {
+    const journal = JSON.parse(readBounded(context.journalPath, MAX_METADATA_BYTES).toString("utf8")) as NativeProfileSwitchJournalV1;
+    if (
+      journal.version !== 1 || journal.homeId !== context.homeId || !UUID_RE.test(journal.transactionId)
+      || !["prepared", "auth-replaced", "vault-committed"].includes(journal.phase)
+      || !UUID_RE.test(journal.sourceProfileId) || !UUID_RE.test(journal.targetProfileId)
+      || !HASH_RE.test(journal.sourceIdentityHash) || !HASH_RE.test(journal.targetIdentityHash)
+      || !isEncryptedPayload(journal.sourcePayload) || !isEncryptedPayload(journal.targetPayload)
+    ) throw new Error("journal");
+    journal.beforeVault = parseVaultObject(journal.beforeVault, context.homeId);
+    journal.afterVault = parseVaultObject(journal.afterVault, context.homeId);
+    return journal;
+  } catch {
+    throw new NativeProfileError("RECOVERY_REQUIRED", "The native-profile recovery journal is invalid.", 409);
+  }
+}
+
+export function serializeNativeProfileMetadata(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+export function validateNativeProfileLabel(label: string): string {
+  const trimmed = label.trim();
+  if (!trimmed || trimmed.length > 64 || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new NativeProfileError("INVALID_REQUEST", "Profile labels must contain 1-64 printable characters.", 400);
+  }
+  return trimmed;
+}
+
+export function assertUniqueNativeProfileLabel(
+  vault: NativeMainProfileVaultV1,
+  label: string,
+  excludeId?: string,
+): void {
+  if (vault.profiles.some(profile => profile.id !== excludeId && profile.label.toLowerCase() === label.toLowerCase())) {
+    throw new NativeProfileError("PROFILE_ALREADY_EXISTS", "A native profile already uses that label.", 409);
+  }
+}
+
+export function publicNativeProfile(profile: NativeMainProfileRecordV1): NativeProfilePublic {
+  return { id: profile.id, label: profile.label, identityHint: profile.identityHint, state: profile.state };
+}

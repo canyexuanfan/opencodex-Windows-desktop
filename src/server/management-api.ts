@@ -192,6 +192,11 @@ export async function handleManagementAPI(
       : { success: false, message: `Proxy stopping, but native Codex restore failed: ${restore.message}. Run \`ocx restore\`.${grokNote}` });
   }
 
+  if (url.pathname.startsWith("/api/native-main-profiles")) {
+    const { handleNativeProfileAPI } = await import("../codex/native-profile-api");
+    return handleNativeProfileAPI(req, url, config);
+  }
+
   if (url.pathname.startsWith("/api/codex-auth/")) {
     const { handleCodexAuthAPI } = await import("../codex/auth-api");
     const { ConfigMutationLockError } = await import("../config");

@@ -1,6 +1,6 @@
 # Native main profile switching design spike (#656)
 
-Status: fork-only design spike, not implementation-ready
+Status: implementation candidate for maintainer and security review
 
 Issue: https://github.com/lidge-jun/opencodex/issues/656
 
@@ -200,7 +200,7 @@ Requirements:
 - Decrypted buffers are short-lived and cleared on a best-effort basis.
 - Crypto code uses a Bun-compatible `node:crypto` surface and is tested with both bundled Bun and Bun 1.4 canary.
 
-The current OpenCodex tree has no suitable cross-platform OS-keyring primitive. Selecting that dependency or platform adapter is a maintainer decision and is a blocking design gate for production code. A random key in a neighboring ACL-only file is not an acceptable substitute.
+The implementation candidate uses `@napi-rs/keyring` 1.3.0, a Rust N-API binding over the native platform credential stores. It is loaded only for native-profile operations and has no shell, PowerShell, environment-variable, or adjacent-file fallback. A missing native binary or unavailable key store fails closed. A random key in a neighboring ACL-only file remains an unacceptable substitute.
 
 ## Credential capability probe
 
@@ -452,15 +452,14 @@ The first behavior-changing PR should include:
 
 A smaller read-only `doctor` PR can precede it only if maintainers want the credential-mode diagnostics separately. No PR should add a partial write path that lacks rollback proof.
 
-## Open design gates
+## Implementation choices proposed by the PR
 
-The design is ready for maintainer review after these choices are confirmed:
+The PR makes the recommended choices concrete instead of blocking on a separate policy round:
 
-1. OS key provider: approve a cross-platform dependency or platform adapter for the vault master key.
-2. File-only v1: confirm that `keyring`, `auto`, and `ephemeral` should fail closed rather than delaying the entire feature.
-3. Stale inactive profile: allow owner transfer with a required restart when the access token is expired but the unique refresh token is present.
-4. Process policy: approve fail-closed busy detection and manual restart for the first PR.
-5. Staged login: approve invoking official `codex login` in an isolated file-mode home for adding profiles.
+1. Use `@napi-rs/keyring` as the OS-protected master-key provider and fail closed without it.
+2. Support file-mode Codex credentials only in v1; reject `keyring`, `auto`, and `ephemeral` before writes.
+3. Transfer an expired target envelope without refreshing it in OpenCodex; official Codex owns refresh after restart.
+4. Detect native Codex processes best-effort, never terminate them, and require explicit stopped confirmation when detection is unavailable.
+5. Invoke official `codex login` in an ACL-restricted staging home and remove its plaintext envelope before reporting success.
 
-Recommended answers are yes to items 2 through 5. Item 1 needs a dependency decision before production implementation can safely begin.
-
+These are reviewable implementation decisions, not claims of governance authority. Maintainers can accept, narrow, or replace them against working code and failure-injection evidence.

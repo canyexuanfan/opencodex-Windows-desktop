@@ -40,6 +40,25 @@ export function reconcileMainCodexAccountRuntimeState(): boolean {
   return true;
 }
 
+/**
+ * Apply a transaction-confirmed physical native-login change without waiting for
+ * a later auth.json observation. The caller owns credential commit/rollback.
+ */
+export function applyConfirmedMainCodexAccountTransition(
+  fromAccountId: string,
+  toAccountId: string,
+): boolean {
+  if (!fromAccountId || !toAccountId || fromAccountId === toAccountId) {
+    if (toAccountId) observedMainChatgptAccountId = toAccountId;
+    return false;
+  }
+  observedMainChatgptAccountId = toAccountId;
+  purgeCodexAccountRuntimeState(MAIN_CODEX_ACCOUNT_ID);
+  setMainAccountPlan(null);
+  invalidateCodexWebSocketsForAccount(MAIN_CODEX_ACCOUNT_ID);
+  return true;
+}
+
 export function resetMainCodexAccountIdentityTrackingForTests(): void {
   observedMainChatgptAccountId = undefined;
 }

@@ -210,6 +210,25 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 Inspect Codex reset credits for an account. Consuming a credit is destructive and requires both
 `--consume` and `--yes`.
 
+### `ocx account main <subcommand>`
+
+Manage named native Codex main-login profiles without changing OpenCodex account-pool routing:
+
+```text
+ocx account main doctor
+ocx account main list
+ocx account main register <name>
+ocx account main add <name>
+ocx account main switch <name>
+ocx account main recover
+```
+
+Version 1 supports file-based Codex authentication, encrypts stored profiles with AES-256-GCM, and
+keeps the encryption key in the operating-system credential store. `add` stages the official Codex
+login flow before importing the resulting credential. Close Codex before switching profiles; a
+successful switch preserves local tasks and history, then requires Codex to be restarted. Use
+`doctor` to inspect profile state and `recover` to finish or roll back an interrupted transition.
+
 ## Models
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`

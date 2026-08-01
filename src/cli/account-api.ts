@@ -35,6 +35,8 @@ export interface AccountDeps {
   loadConfigImpl?: () => OcxConfig;
   stdinImpl?: AccountStdin;
   stdinTimeoutMs?: number;
+  /** Test/platform injection for the official Codex login in a restricted staging home. */
+  runCodexLoginImpl?: (codexHome: string) => Promise<number>;
 }
 
 export function classifyAccount(config: OcxConfig, name: string): ClassifyResult {
