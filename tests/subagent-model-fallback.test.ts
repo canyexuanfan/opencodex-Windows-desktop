@@ -76,7 +76,7 @@ function codexHomeFixture(): string {
 }
 
 // Credential writes can hit Windows ACL harden stalls under full-suite isolate
-// load (GHA: hook timed out ~7.6s on model_fallback terminator case).
+// load (GHA windows-latest: beforeEach/afterEach hook timed out ~7.6s).
 beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), "ocx-subagent-fb-"));
   process.env.OPENCODEX_HOME = testDir;
