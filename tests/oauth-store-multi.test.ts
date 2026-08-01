@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { STORE_BUDGET_MS } from "./helpers/test-budget";
+import { INTERNAL_DEADLINE_MS, STORE_BUDGET_MS } from "./helpers/test-budget";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -281,7 +281,7 @@ describe("multi-account auth store", () => {
       releaseFirst();
       await Promise.allSettled(accepted);
     }
-  }, STORE_BUDGET_MS); // 128 serialized load-modify-persist store mutations; windows-latest measured ~7.3s against Bun's 5s default.
+  }, { timeout: STORE_BUDGET_MS }); // 128 serialized load-modify-persist store mutations; windows-latest measured ~7.3s against Bun's 5s default.
 
   test("OAuth 30 second wait timeout releases an unstarted lease and never enters the chain", async () => {
     let releaseFirst!: () => void;
@@ -292,14 +292,35 @@ describe("multi-account auth store", () => {
       firstStarted();
       await firstGate;
     }, ["provider", "running-account"]);
-    await started;
-    let entered = false;
-    const timedOut = mutateStore(() => { entered = true; }, ["provider", "waiting-account"], { waitMs: 10 });
-    await expect(timedOut).rejects.toBeInstanceOf(OAuthMutationBusyError);
-    expect(entered).toBe(false);
-    expect(oauthMutationTailSnapshot().active).toBe(1);
-    releaseFirst();
-    await blocker;
-    expect(oauthMutationTailSnapshot().active).toBe(0);
-  });
+    let timedOut: Promise<unknown> | undefined;
+    try {
+      await started;
+      let entered = false;
+      timedOut = mutateStore(() => { entered = true; }, ["provider", "waiting-account"], { waitMs: 10 });
+      // serializeMutation wait timers are unref'd. Under `bun test --isolate` on a
+      // loaded Windows runner the timer can starve, so awaiting reject alone can
+      // hang the file until the 20-minute job ceiling (seen after the 129-slot case).
+      await Promise.race([
+        timedOut.then(
+          () => {
+            throw new Error("expected OAuthMutationBusyError from waitMs timeout");
+          },
+          (error: unknown) => {
+            expect(error).toBeInstanceOf(OAuthMutationBusyError);
+          },
+        ),
+        Bun.sleep(INTERNAL_DEADLINE_MS).then(() => {
+          throw new Error(`OAuth mutation waitMs reject did not fire within ${INTERNAL_DEADLINE_MS}ms`);
+        }),
+      ]);
+      expect(entered).toBe(false);
+      expect(oauthMutationTailSnapshot().active).toBe(1);
+      releaseFirst();
+      await blocker;
+      expect(oauthMutationTailSnapshot().active).toBe(0);
+    } finally {
+      releaseFirst();
+      await Promise.allSettled([blocker, ...(timedOut ? [timedOut] : [])]);
+    }
+  }, { timeout: STORE_BUDGET_MS });
 });

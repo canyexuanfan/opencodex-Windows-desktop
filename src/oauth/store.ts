@@ -416,7 +416,9 @@ function serializeMutation<T>(work: () => Promise<T>, retainedValues: readonly u
     release();
     rejectResult(new OAuthMutationBusyError("OAuth mutation queue wait timed out"));
   }, waitMs);
-  entry.timeout.unref?.();
+  // Keep the wait timer ref'd: unref'd waiters can stall forever under bun test
+  // --isolate after a full admission queue (windows-latest hung oauth-store-multi
+  // past the 20-minute job ceiling with no further output).
   mutationWaiters.push(entry);
   drainOAuthMutations();
   return result;
