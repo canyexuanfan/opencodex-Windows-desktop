@@ -871,3 +871,11 @@ Codex / Claude Code / 其他现有客户端
 - [x] 验证通过：`bun test tests/package-static.test.ts` 4/4、23 断言；`bun run build` 通过；`electron-builder.exe --win nsis portable` 使用隔离缓存完成 NSIS/Portable 构建与签名。
 - [x] 最新产物：Setup SHA-256=`CCD74E3B8D5C323BBE53AF438AC925F76A425C8E089F1B5B2FD0DE1BF364AAC5`；Portable SHA-256=`6507AF4C776C9BB88A909DAAFA5E8ACED422E8CB85A7D75ACDDFD4C88929D62A`。
 - [ ] 当前会话未操作真实 Codex；真实可见目录页仍需用户用最新 `desktop/out/OpenCodex-Setup-x64.exe` 点选确认。
+
+# 阶段 25：默认安装目录恢复 Windows 预期（2026-08-02）
+- [x] 默认安装模式改为“所有用户”，启用 elevation 并默认选择 per-machine，使安装向导默认路径回到 `Program Files\OpenCodex`。
+- [x] 保留“仅为我安装”能力：用户选择当前用户模式时仍使用 `%LocalAppData%\Programs\OpenCodex`，不强制所有人都走管理员安装。
+- [x] 目录页子文件夹保护继续生效：自定义 nsDialogs 页面仍会在浏览回填和离开页面时补齐 `OpenCodex`。
+- [x] 验证通过：`bun test tests/package-static.test.ts` 4/4、23 断言；`bun run build` 通过；隔离缓存下 `electron-builder.exe --win nsis portable` 构建与签名成功。
+- [x] 最新产物：Setup SHA-256=`1FD2B41F54981FAF2F72B098774E3464D690D49D5666E73E300517E500134FC5`；Portable SHA-256=`B5DA492D1E8C6EBC5BC8D6AE7964F35F8190406956FA4F397C38AE5D0E11CE73`。
+- [ ] 当前会话仍未重启或修改真实 Codex；真实安装向导默认目录和浏览回填需用户用最新安装包目视确认。
