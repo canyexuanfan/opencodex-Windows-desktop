@@ -75,6 +75,14 @@ GitHub Actions intentionally stay small:
   Open issues labeled `needs-info` with no activity for 14 days get a warning; after 7 more idle
   days they close as not planned. Any update clears the stale warning. To keep long-lived work open,
   remove `needs-info` (for example when promoting an issue to `roadmap`).
+- **Issue quality** (`.github/workflows/enforce-issue-quality.yml`) validates template structure on
+  new and edited issues, applies kind labels (`bug`, `enhancement`, `provider-compatibility`,
+  `documentation`), and adds orthogonal **area** labels from the form Area field plus light
+  title/body heuristics: `provider`, `account-pool`, `catalog`, `gui`, `cli`, `proxy`, `platform`,
+  `streaming`, `tools`, `install`, and `service`. Kind/process labels stay separate so you can
+  filter `bug` + `account-pool` without collapsing those axes. Prefer the Area dropdown over
+  inventing per-provider labels. Maintainers can re-apply area labels to all open issues with
+  workflow_dispatch `backfill_open_areas` after the workflow is on the default branch.
 
 Use the helper for releases:
 

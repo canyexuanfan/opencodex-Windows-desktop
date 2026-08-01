@@ -17,18 +17,27 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: Issue number to validate and enforce
-        required: true
+        description: Issue number to validate and enforce (omit when backfilling open area labels)
+        required: false
         type: number
+      backfill_open_areas:
+        description: Apply orthogonal area labels to all open issues (area pass only; no quality closure)
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
-  group: issue-quality-${{ github.event.issue.number || inputs.issue_number }}
+  group: issue-quality-${{ github.event.issue.number || inputs.issue_number || (inputs.backfill_open_areas && 'backfill-open-areas') || 'manual' }}
   cancel-in-progress: false
 
 jobs:
   translate:
     name: Translate non-English issues
-    if: github.event_name == 'issues' || github.event_name == 'workflow_dispatch'
+    if: >
+      github.event_name == 'issues' ||
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.backfill_open_areas != true &&
+       inputs.issue_number != '')
     runs-on: ubuntu-latest
     # Serialize per-issue control-state RMW; workflow concurrency still cancels
     # superseded runs, but this queue avoids interleaved comment upserts.
@@ -686,7 +695,11 @@ jobs:
             }
 
   validate:
-    if: github.event_name == 'issues' || github.event_name == 'workflow_dispatch'
+    if: >
+      github.event_name == 'issues' ||
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.backfill_open_areas != true &&
+       inputs.issue_number != '')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -716,6 +729,8 @@ jobs:
               shouldReopen,
               shouldEnforceClosure,
               labelForKind,
+              detectAreaLabels,
+              AREA_LABELS,
               rejectsWorkflowDispatchPullRequest,
               rejectsWorkflowDispatchNonDefaultBranch,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-quality.cjs"));
@@ -877,6 +892,60 @@ jobs:
                 core.info(`Applied kind label "${kindLabel}".`);
               } catch (err) {
                 core.warning(`Failed to apply kind label "${kindLabel}": ${err.message || err}`);
+              }
+            }
+
+            // -----------------------------------------------------------------
+            // Orthogonal area labels (additive only)
+            // -----------------------------------------------------------------
+            async function ensureLabel(name) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+                return;
+              } catch (err) {
+                if (err.status !== 404) {
+                  core.warning(`Failed to look up label "${name}": ${err.message || err}`);
+                  return;
+                }
+              }
+              const meta = AREA_LABELS[name];
+              const color = meta?.color || (name === "documentation" ? "0075ca" : "EDEDED");
+              const description = meta?.description
+                || (name === "documentation"
+                  ? "Improvements or additions to documentation"
+                  : name);
+              try {
+                await github.rest.issues.createLabel({
+                  owner, repo, name, color, description,
+                });
+                core.info(`Created label "${name}".`);
+              } catch (err) {
+                if (err.status === 422) {
+                  core.info(`Label "${name}" appeared concurrently; continuing.`);
+                  return;
+                }
+                core.warning(`Failed to create label "${name}": ${err.message || err}`);
+              }
+            }
+
+            const areaLabels = detectAreaLabels({
+              title: issue.title,
+              body: issueBody,
+              labels,
+            });
+            const areaLabelsToAdd = areaLabels.filter((name) => !labels.includes(name));
+            for (const name of areaLabelsToAdd) {
+              await ensureLabel(name);
+            }
+            if (areaLabelsToAdd.length > 0) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number, labels: areaLabelsToAdd,
+                });
+                labels.push(...areaLabelsToAdd);
+                core.info(`Applied area label(s): ${areaLabelsToAdd.join(", ")}`);
+              } catch (err) {
+                core.warning(`Failed to apply area labels: ${err.message || err}`);
               }
             }
 
@@ -1044,3 +1113,114 @@ jobs:
               "",
               "Once the report passes the automated checks, it will be reopened automatically unless a maintainer has changed its state.",
             ].join("\n"));
+
+  backfill-open-areas:
+    name: Backfill open issue area labels
+    if: github.event_name == 'workflow_dispatch' && inputs.backfill_open_areas == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout trusted workflow code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Apply area labels to open issues
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const path = require("path");
+            const {
+              detectAreaLabels,
+              AREA_LABELS,
+              rejectsWorkflowDispatchNonDefaultBranch,
+            } = require(path.join(process.cwd(), ".github", "scripts", "issue-quality.cjs"));
+            const { stripTranslationBlock } = require(
+              path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"),
+            );
+
+            const nonDefaultBranchFailure = rejectsWorkflowDispatchNonDefaultBranch(
+              context.eventName,
+              context.ref,
+              context.payload.repository?.default_branch,
+            );
+            if (nonDefaultBranchFailure) {
+              core.setFailed(nonDefaultBranchFailure);
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+
+            async function ensureLabel(name) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+                return;
+              } catch (err) {
+                if (err.status !== 404) {
+                  core.warning(`Failed to look up label "${name}": ${err.message || err}`);
+                  return;
+                }
+              }
+              const meta = AREA_LABELS[name];
+              const color = meta?.color || (name === "documentation" ? "0075ca" : "EDEDED");
+              const description = meta?.description
+                || (name === "documentation"
+                  ? "Improvements or additions to documentation"
+                  : name);
+              try {
+                await github.rest.issues.createLabel({
+                  owner, repo, name, color, description,
+                });
+                core.info(`Created label "${name}".`);
+              } catch (err) {
+                if (err.status === 422) return;
+                core.warning(`Failed to create label "${name}": ${err.message || err}`);
+              }
+            }
+
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            });
+            // listForRepo includes PRs; skip pull requests.
+            const issues = openIssues.filter((item) => !item.pull_request);
+            core.info(`Backfilling area labels on ${issues.length} open issue(s).`);
+
+            let updated = 0;
+            for (const issue of issues) {
+              const labels = (issue.labels || []).map((l) =>
+                typeof l === "string" ? l : l.name,
+              );
+              const issueBody = stripTranslationBlock(issue.body || "");
+              const areaLabels = detectAreaLabels({
+                title: issue.title,
+                body: issueBody,
+                labels,
+              });
+              const toAdd = areaLabels.filter((name) => !labels.includes(name));
+              if (toAdd.length === 0) continue;
+              for (const name of toAdd) {
+                await ensureLabel(name);
+              }
+              try {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  labels: toAdd,
+                });
+                updated += 1;
+                core.info(`#${issue.number}: +${toAdd.join(", ")}`);
+              } catch (err) {
+                core.warning(`#${issue.number}: failed to label: ${err.message || err}`);
+              }
+              // Soft rate-limit pacing for large open queues.
+              await new Promise((resolve) => setTimeout(resolve, 200));
+            }
+            core.info(`Backfill complete: updated ${updated} / ${issues.length} open issue(s).`);

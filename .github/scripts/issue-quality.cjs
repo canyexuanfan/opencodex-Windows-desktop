@@ -251,11 +251,194 @@ const KIND_TO_LABEL = {
 };
 
 /**
+ * Orthogonal product-area labels (additive beside kind/process labels).
+ * Colors/descriptions are used when the workflow ensures labels exist.
+ */
+const AREA_LABELS = {
+  provider: {
+    color: "1D76DB",
+    description: "Provider adapters, OpenAI-compat presets, upstream API quirks",
+  },
+  "account-pool": {
+    color: "5319E7",
+    description: "OAuth, credentials, Codex pool, quota, failover, plans",
+  },
+  catalog: {
+    color: "006B75",
+    description: "Model catalog, slugs, visibility, routed entries",
+  },
+  gui: {
+    color: "D93F0B",
+    description: "Dashboard, tray, settings UI",
+  },
+  cli: {
+    color: "FBCA04",
+    description: "CLI, config inject, packaging flags",
+  },
+  proxy: {
+    color: "0E8A16",
+    description: "HTTP proxy, routing, reverse-proxy / management auth",
+  },
+  platform: {
+    color: "BFDADC",
+    description: "OS/service/tray/ACL (Windows-heavy, not Windows-only)",
+  },
+  streaming: {
+    color: "C5DEF5",
+    description: "SSE, WebSocket, terminal stream frames",
+  },
+  tools: {
+    color: "F9D0C4",
+    description: "tool_calls, MCP, web-search / sidecar tools",
+  },
+  install: {
+    color: "EDEDED",
+    description: "Installation or packaging",
+  },
+  service: {
+    color: "EDEDED",
+    description: "Service lifecycle (WinSW/launchd/scheduler)",
+  },
+};
+
+/** Canonical Area dropdown text → area label(s). Keys are lowercased. */
+const AREA_FIELD_TO_LABELS = {
+  cli: ["cli"],
+  "proxy and routing": ["proxy"],
+  dashboard: ["gui"],
+  "provider adapter": ["provider"],
+  "provider adapters": ["provider"],
+  "authentication and account pool": ["account-pool"],
+  "catalog / models": ["catalog"],
+  streaming: ["streaming"],
+  "tools / mcp / web search": ["tools"],
+  "installation or packaging": ["install"],
+  "service lifecycle": ["service"],
+  "service lifecycle (config injection)": ["service"],
+  "platform (windows / macos / linux)": ["platform"],
+  documentation: ["documentation"],
+  // No dedicated label; heuristics still run in detectAreaLabels.
+  "multiple areas": [],
+  other: [],
+};
+
+const AREA_HEURISTICS = [
+  {
+    label: "account-pool",
+    re: /\b(oauth|reauth|needsreauth|quota|account pool|codex.?auth|auto[- ]?switch|failover|refresh token|plan_type|chatgpt[- ]account|reset credit)\b/i,
+  },
+  {
+    label: "catalog",
+    re: /\b(catalog|model list|model visibility|virtual model|routed (catalog|entries|slug)|model slug)\b/i,
+  },
+  {
+    label: "gui",
+    re: /\b(dashboard|\bgui\b|tray|sidebar|settings tab)\b/i,
+  },
+  {
+    label: "cli",
+    re: /\b(ocx\b|config\.toml|config inject)\b/i,
+  },
+  {
+    label: "proxy",
+    re: /\b(reverse[- ]proxy|management api|admin[- ]token|\/api\/\*|bind(s)? the (old )?port|proxy running)\b/i,
+  },
+  {
+    label: "platform",
+    re: /\b(windows|macos|mac os|win32|darwin|wsl|winsw|launchd|systemd|icacls|\bacl\b)\b/i,
+  },
+  {
+    label: "streaming",
+    re: /\b(sse|websocket|\bws\b|stream(ing)?\b.{0,40}\b(truncat|terminal)|terminal (sse )?frame|without a terminal)\b/i,
+  },
+  {
+    label: "tools",
+    re: /\b(tool_calls?|tool[- ]calls?|\bmcp\b|web[- ]search|tool[- ]recall)\b/i,
+  },
+  {
+    label: "install",
+    re: /\b(npm (global )?install|packaging|release asset|npx ocx)\b/i,
+  },
+  {
+    label: "service",
+    re: /\b(ocx service|winsw|scheduler backend|launchd service)\b/i,
+  },
+  {
+    label: "provider",
+    re: /\b(provider adapter|openai[- ]compatible|provider[- ]compat|adapter quirk|upstream api|built[- ]in provider|provider preset)\b/i,
+  },
+];
+
+/**
  * Map a detected issue kind to its triage label. Returns null when unknown.
  */
 function labelForKind(kind) {
   if (!kind || typeof kind !== "string") return null;
   return KIND_TO_LABEL[kind] || null;
+}
+
+/**
+ * Map a template Area dropdown value to orthogonal area label names.
+ * Returns [] for Other / Multiple areas / unknown / empty.
+ *
+ * @param {unknown} areaText
+ * @returns {string[]}
+ */
+function mapAreaFieldToLabels(areaText) {
+  if (typeof areaText !== "string") return [];
+  const key = areaText.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!key) return [];
+  return AREA_FIELD_TO_LABELS[key] ? [...AREA_FIELD_TO_LABELS[key]] : [];
+}
+
+/**
+ * Conservative title/body heuristics for orthogonal area labels.
+ *
+ * @param {string} title
+ * @param {string} body
+ * @returns {string[]}
+ */
+function heuristicAreaLabels(title, body) {
+  const text = `${title || ""}\n${body || ""}`;
+  const out = [];
+  for (const { label, re } of AREA_HEURISTICS) {
+    if (re.test(text)) out.push(label);
+  }
+  return out;
+}
+
+/**
+ * Detect additive product-area labels from Area field, form defaults, and
+ * title/body heuristics. Never invents per-provider labels.
+ *
+ * @param {{ title?: string, body?: string, labels?: string[] }} issue
+ * @returns {string[]}
+ */
+function detectAreaLabels(issue) {
+  const title = typeof issue?.title === "string" ? issue.title : "";
+  const body = typeof issue?.body === "string" ? issue.body : "";
+  const labels = Array.isArray(issue?.labels) ? issue.labels : [];
+
+  const areaSection = extractSection(body, "Area");
+  const fromArea = mapAreaFieldToLabels(areaSection);
+  const fromHeur = heuristicAreaLabels(title, body);
+  const fromForm = [];
+  if (labels.includes("provider-compatibility")) fromForm.push("provider");
+  // Provider-compat form uses this heading instead of Area.
+  if (extractSection(body, "Provider or upstream service") !== null) {
+    fromForm.push("provider");
+  }
+
+  const seen = new Set();
+  const out = [];
+  for (const label of [...fromArea, ...fromForm, ...fromHeur]) {
+    if (!label || seen.has(label)) continue;
+    // `documentation` is a kind label and also an Area mapping target.
+    if (label !== "documentation" && !AREA_LABELS[label]) continue;
+    seen.add(label);
+    out.push(label);
+  }
+  return out;
 }
 
 function countHeadings(body, headings) {
@@ -952,6 +1135,11 @@ module.exports = {
   hasConcreteDetail,
   labelForKind,
   KIND_TO_LABEL,
+  AREA_LABELS,
+  AREA_FIELD_TO_LABELS,
+  mapAreaFieldToLabels,
+  heuristicAreaLabels,
+  detectAreaLabels,
   hasSubstantialStructuredContent,
   rejectsWorkflowDispatchPullRequest,
   rejectsWorkflowDispatchNonDefaultBranch,
