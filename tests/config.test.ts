@@ -1615,7 +1615,10 @@ describe("config.ts – Windows ACL hardening integration", () => {
     try {
       const spy = spyOn(windowsAcl, "hardenSecretDir").mockReturnValue({ ok: true });
       saveConfig(getDefaultConfig());
-      expect(spy).toHaveBeenCalledWith(testDir, { required: true });
+      expect(spy).toHaveBeenCalledWith(testDir, {
+        required: true,
+        timeoutMemoKey: `${testDir}::config-mutation`,
+      });
       expect(existsSync(getConfigPath())).toBe(true);
       spy.mockRestore();
     } finally {

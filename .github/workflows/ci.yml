@@ -40,6 +40,7 @@ on:
 permissions:
   contents: read
 
+# Retrigger CI after dir-fsync / oauth deadline follow-ups (tip 34a1ac46).
 concurrency:
   group: cross-platform-ci-${{ github.ref }}
   cancel-in-progress: true

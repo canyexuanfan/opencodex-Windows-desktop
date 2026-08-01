@@ -1530,7 +1530,10 @@ function configMutationDatabasePath(): string {
   }
   if (windowsSecretAclApplies()) {
     try {
-      hardenSecretDir(dir, { required: true });
+      // Distinct timeout memo from management-token directory harden: a required
+      // management-dir timeout must not poison config mutation on the same home
+      // (windows-latest server-management-auth cases).
+      hardenSecretDir(dir, { required: true, timeoutMemoKey: `${dir}::config-mutation` });
     } catch (error) {
       if (!warnedConfigMutationDirectoryAcl) {
         warnedConfigMutationDirectoryAcl = true;

@@ -336,9 +336,10 @@ function waitForBackgroundShellClose(entry: BackgroundShellEntry): Promise<boole
   return new Promise(resolveWait => {
     let settled = false;
     // Deliberately REF'D: this is the bounded kill-grace wait that shutdown
-    // drain awaits. Bun on Windows can starve unref'd timers when a pending
-    // promise is the only other work, which would leave drainAndShutdown
-    // waiting on this resolution forever. The timer self-clears within the
+    // drain awaits. Bun on Windows / under `bun test --isolate` can starve
+    // unref'd timers when a pending promise is the only other work, which
+    // would leave drainAndShutdown waiting forever (same class as oauth
+    // serializeMutation wait timers). The timer self-clears within the
     // 2-second grace window (or earlier on close), so a ref cannot keep the
     // process alive beyond that bound.
     const timer = backgroundShellRuntime.setTimer(() => {
