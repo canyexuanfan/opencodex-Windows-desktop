@@ -76,15 +76,16 @@ export function hasKeyPoolFailover(provider: OcxProviderConfig): boolean {
 /**
  * Normalize a provider's `retryOn429` policy, or return null when the knob is absent,
  * explicitly disabled, or the provider is not key-auth (OAuth/forward credentials must not be
- * replayed on the same token, and forward passthrough never reaches the recovery loop anyway).
- * The returned policy is fully defaulted so callers never re-check fields.
+ * replayed on the same token, forward passthrough never reaches the recovery loop anyway, and
+ * local runtimes have no remote key to preserve). The returned policy is fully defaulted so
+ * callers never re-check fields.
  */
 export function rateLimitRetryPolicyFor(
   provider: Pick<OcxProviderConfig, "retryOn429" | "authMode">,
 ): Required<RateLimitRetryPolicy> | null {
   const policy = provider.retryOn429;
   if (!policy || policy.enabled === false) return null;
-  if (provider.authMode === "oauth" || provider.authMode === "forward") return null;
+  if (provider.authMode === "oauth" || provider.authMode === "forward" || provider.authMode === "local") return null;
   return {
     enabled: policy.enabled ?? DEFAULT_RATE_LIMIT_RETRY.enabled,
     attempts: policy.attempts ?? DEFAULT_RATE_LIMIT_RETRY.attempts,
@@ -97,7 +98,8 @@ export function rateLimitRetryPolicyFor(
 /**
  * Wait before the next same-target replay: upstream Retry-After (seconds or HTTP-date) when
  * `respectRetryAfter` is on and the header parses, capped at `maxIntervalMs`; otherwise the
- * fixed `intervalMs`. Malformed headers fall back to the fixed interval.
+ * fixed `intervalMs`, also capped at `maxIntervalMs` (a single wait never exceeds the cap).
+ * Malformed headers fall back to the fixed interval.
  */
 export function rateLimitRetryDelayMs(
   policy: Required<RateLimitRetryPolicy>,
@@ -109,7 +111,7 @@ export function rateLimitRetryDelayMs(
     const parsed = parseRetryAfterMs(raw, now);
     if (parsed !== undefined) return Math.min(parsed, policy.maxIntervalMs);
   }
-  return policy.intervalMs;
+  return Math.min(policy.intervalMs, policy.maxIntervalMs);
 }
 
 /**

@@ -1,5 +1,5 @@
 import type { AdapterRequest, IncomingMeta, ProviderAdapter } from "../adapters/base";
-import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxThinkingContent, OcxUsage } from "../types";
+import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxThinkingContent, OcxUsage, RateLimitRetryPolicy } from "../types";
 import { namespacedToolName } from "../types";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
@@ -7,7 +7,8 @@ import { runAnthropicWebSearch } from "./anthropic-executor";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { fetchWithResetRetry } from "../lib/upstream-retry";
+import { fetchWithResetRetry, sleepWithAbort } from "../lib/upstream-retry";
+import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   isTranslatorBudgetExceededError,
   TRANSLATOR_MAX_TURN_BYTES,
@@ -244,6 +245,8 @@ export interface WebSearchLoopDeps {
    * or null when the pool is exhausted (same semantics as the normal routed path).
    */
   on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
+  /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
+  retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
 }
 
 /**
@@ -355,6 +358,30 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       };
 
       let prepared = await fetchOnce(adapter);
+      // Same-target 429 wait-and-retry (opt-in `retryOn429`) BEFORE key rotation: a primary-key
+      // rate-limit blip replays on the SAME key; rotation only runs after attempts exhaust.
+      const rateLimitRetryPolicy = deps.retryOn429Policy ?? null;
+      let rateLimitRetries = 0;
+      while (
+        prepared.response.status === 429
+        && rateLimitRetryPolicy !== null
+        && rateLimitRetries < rateLimitRetryPolicy.attempts
+      ) {
+        rateLimitRetries += 1;
+        try {
+          await sleepWithAbort(
+            rateLimitRetryDelayMs(rateLimitRetryPolicy, prepared.response.headers.get("retry-after"), Date.now()),
+            signal,
+          );
+        } catch {
+          try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+          throw new LoopError(499, "client closed request during web-search");
+        }
+        try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // Stall-watchdog seam between bounded retry fetches.
+        yield { type: "heartbeat" };
+        prepared = await fetchOnce(adapter);
+      }
       // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
       // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).
       while (prepared.response.status === 429 && deps.on429) {

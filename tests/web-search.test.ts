@@ -623,6 +623,59 @@ describe("web-search sidecar native web_search_call emission", () => {
     ]);
   });
 
+  test("retryOn429 replays on the same key before on429 rotation", async () => {
+    globalThis.fetch = (() => Promise.resolve(new Response(
+      'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+      { headers: { "Content-Type": "text/event-stream" } },
+    ))) as typeof fetch;
+
+    let sends = 0;
+    let rotations = 0;
+    const retryingAdapter: ProviderAdapter = {
+      name: "mock-retry429",
+      buildRequest: () => ({
+        url: "https://routed.test/v1",
+        method: "POST",
+        headers: {},
+        body: "{}",
+      }),
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1) {
+          return new Response("rate limited", { status: 429, headers: { "retry-after": "30" } });
+        }
+        return new Response("{}", { status: 200 });
+      },
+      async *parseStream() {
+        yield { type: "text_delta", text: "answer after same-key retry" };
+        yield { type: "done" };
+      },
+      async parseResponse() { throw new Error("parseResponse must be unreachable"); },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: retryingAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      retryOn429Policy: { enabled: true, attempts: 2, intervalMs: 120, maxIntervalMs: 60_000, respectRetryAfter: false },
+      on429: () => {
+        rotations += 1;
+        return null;
+      },
+    });
+    expect(response.status).toBe(200);
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as { type: string; content?: { text?: string }[] }[];
+    expect(output.find(o => o.type === "message")?.content?.[0]?.text).toBe("answer after same-key retry");
+    expect(sends).toBe(2);
+    expect(rotations).toBe(0);
+  });
+
   test("loop 429 with exhausted pool (on429 null) surfaces the provider error", async () => {
     const firstAdapter: ProviderAdapter = {
       name: "mock-429",

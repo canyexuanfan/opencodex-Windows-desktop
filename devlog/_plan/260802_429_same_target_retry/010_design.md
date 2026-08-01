@@ -28,16 +28,25 @@ existing multi-key failover runs. Default off → zero behavior change for exist
   dropped, never a config-rejecting error; the outer provider schema stays passthrough).
 - `src/providers/key-failover.ts`: `rateLimitRetryPolicyFor` (normalize/default) and
   `rateLimitRetryDelayMs` (Retry-After seconds/HTTP-date → capped, else `intervalMs`),
-  reusing the existing `parseRetryAfterMs` cooldown parser. Key-auth providers only: OAuth and
-  forward credentials are never replayed on the same token.
+  reusing the existing `parseRetryAfterMs` cooldown parser; the fixed fallback is capped at
+  `maxIntervalMs` too, so a single wait never exceeds the cap. API-key providers only
+  (`authMode: "key"`): OAuth/forward credentials are never replayed on the same token, and
+  local runtimes have no remote key to preserve.
 - `src/usage/log.ts`: new `AttemptRecoveryKind` member `"rate-limit-429"`.
 - `src/server/responses/core.ts`: in the pre-stream recovery loop, BEFORE the multi-key
   failover `while`, wait then `rebuildAndRefetch("rate-limit-429")`. Abort during the wait
   cancels the client request (the unread 429 body is released first). The retry budget lives
   OUTSIDE the recovery loop, so a 413/401 replay that comes back 429 cannot re-arm a fresh
   budget — bounded to `attempts` per request. After attempts are exhausted the existing
-  failover and error mapping run unchanged. Covers Responses, chat completions, and routed
-  Claude messages (they all enter `handleResponses`).
+  failover and error mapping run unchanged. The same wait-and-replay applies to the other
+  key-auth surfaces that bypass that loop:
+  - Responses passthrough wire (`openai-responses` key-auth gateways, e.g. the built-in
+    DeepSeek preset) — pre-relay, before the forward-pool logic;
+  - image/video bridge and web-search sidecar loops (`src/images/loop.ts`,
+    `src/web-search/loop.ts`) — before their `on429` key rotation;
+  - Anthropic terminal-guard continuations — before key/account failover.
+  Covers Responses, chat completions, and routed Claude messages (they all enter
+  `handleResponses`).
 
 ## Safety
 
@@ -68,4 +77,9 @@ existing multi-key failover runs. Default off → zero behavior change for exist
 - `tests/usage-log.test.ts` — the `rate-limit-429` recovery kind survives persisted usage logs.
 - `tests/server-rate-limit-retry-e2e.test.ts` — single-key replay to success, immediate
   passthrough without the knob, exhausted attempts surface 429, and retry-before-failover
-  ordering with a 2-key pool.
+  ordering with a 2-key pool, plus key-auth `openai-responses` passthrough replaying 429 on
+  the same key.
+- `tests/terminal-guard-server.test.ts` — an Anthropic terminal-guard continuation that 429s
+  is replayed on the same key before the error surfaces (3 upstream sends).
+- `tests/images/loop.test.ts` + `tests/web-search.test.ts` — the bridge loops replay 429 on
+  the same key before `on429` rotation runs (same-key sends counted, rotations zero).

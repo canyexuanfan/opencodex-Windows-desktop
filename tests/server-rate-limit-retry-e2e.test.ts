@@ -233,4 +233,63 @@ describe("server same-target 429 retry (end-to-end)", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("key-auth openai-responses passthrough replays 429 on the same key", async () => {
+    const originalFetch = globalThis.fetch;
+    let sends = 0;
+    const seenAuth: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://passthrough.test/v1/responses") {
+        sends += 1;
+        const auth = new Headers(init?.headers).get("authorization") ?? "";
+        seenAuth.push(auth);
+        if (sends === 1) {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({
+          id: "resp-ok",
+          object: "response",
+          status: "completed",
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok after retry" }] }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    let server: ReturnType<typeof startServer> | null = null;
+    try {
+      const config = {
+        port: 0,
+        hostname: "127.0.0.1",
+        defaultProvider: "passthrough",
+        providers: {
+          passthrough: {
+            adapter: "openai-responses",
+            baseUrl: "https://passthrough.test/v1",
+            authMode: "key",
+            apiKey: "key-alpha-000111222333",
+            retryOn429: { attempts: 2, intervalMs: 120, respectRetryAfter: false },
+          },
+        },
+      } as OcxConfig;
+      saveConfig(config);
+      server = startServer(0);
+      const res = await postResponses(server.url, "passthrough/model");
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toContain("ok after retry");
+      expect(sends).toBe(2);
+      expect(seenAuth).toEqual([
+        "Bearer key-alpha-000111222333",
+        "Bearer key-alpha-000111222333",
+      ]);
+    } finally {
+      server?.stop(true);
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

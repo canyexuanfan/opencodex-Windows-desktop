@@ -14,12 +14,13 @@ import type { AdapterRequest, IncomingMeta, ProviderAdapter } from "../adapters/
 import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createAdapterEventQueue } from "../adapters/run-turn-queue";
-import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderContinuationState, OcxRequestOptions, OcxThinkingContent, OcxUsage } from "../types";
+import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderContinuationState, OcxRequestOptions, OcxThinkingContent, OcxUsage, RateLimitRetryPolicy } from "../types";
 import { namespacedToolName } from "../types";
 import { bridgeToResponsesSSE } from "../bridge";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { fetchWithResetRetry } from "../lib/upstream-retry";
+import { fetchWithResetRetry, sleepWithAbort } from "../lib/upstream-retry";
+import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   isTranslatorBudgetExceededError,
   TRANSLATOR_MAX_TURN_BYTES,
@@ -233,6 +234,8 @@ export interface ImageBridgeDeps {
    * rotated key, or null when the pool is exhausted.
    */
   on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
+  /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
+  retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
   /** Called when the bridged Responses stream completes (parity with runTurn / routed paths). */
   onCompletedResponse?: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => void;
   /** WebSocket Responses path only — leave response id empty for protocol compatibility. */
@@ -461,6 +464,30 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
       };
 
       let prepared = await fetchOnce(adapter);
+      // Same-target 429 wait-and-retry (opt-in `retryOn429`) BEFORE key rotation: a primary-key
+      // rate-limit blip replays on the SAME key; rotation only runs after attempts exhaust.
+      const rateLimitRetryPolicy = deps.retryOn429Policy ?? null;
+      let rateLimitRetries = 0;
+      while (
+        prepared.response.status === 429
+        && rateLimitRetryPolicy !== null
+        && rateLimitRetries < rateLimitRetryPolicy.attempts
+      ) {
+        rateLimitRetries += 1;
+        try {
+          await sleepWithAbort(
+            rateLimitRetryDelayMs(rateLimitRetryPolicy, prepared.response.headers.get("retry-after"), Date.now()),
+            signal,
+          );
+        } catch {
+          try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+          throw new LoopError(499, "client closed request during image-bridge");
+        }
+        try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // Stall-watchdog seam between bounded retry fetches.
+        yield { type: "heartbeat" };
+        prepared = await fetchOnce(adapter);
+      }
       // 429 key-failover parity with web-search / normal routed path.
       while (prepared.response.status === 429 && deps.on429) {
         const rotated = deps.on429(prepared.response.headers.get("retry-after"));

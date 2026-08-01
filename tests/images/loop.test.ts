@@ -177,6 +177,39 @@ describe("runWithImageBridge", () => {
     expect(buildRequestCalls).toBe(1);
   });
 
+  test("retryOn429 replays on the same key before on429 rotation", async () => {
+    let sends = 0;
+    let rotations = 0;
+    const retryingAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1) {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      },
+    };
+    streamQueue = [[{ type: "text_delta" as const, text: "recovered" }, { type: "done" as const }]];
+    const response = await runWithImageBridge({
+      parsed: makeParsed(),
+      adapter: retryingAdapter,
+      plan,
+      retryOn429Policy: { enabled: true, attempts: 2, intervalMs: 120, maxIntervalMs: 60_000, respectRetryAfter: false },
+      on429: () => {
+        rotations += 1;
+        return null;
+      },
+    });
+    const sse = await response.text();
+    expect(sse).toContain("recovered");
+    expect(sends).toBe(2);
+    expect(rotations).toBe(0);
+  });
+
   test("forced-final clears named image tool_choice", async () => {
     streamQueue = [
       [{ type: "text_delta" as const, text: "done" }, { type: "done" as const }],

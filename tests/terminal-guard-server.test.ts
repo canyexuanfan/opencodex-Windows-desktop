@@ -78,4 +78,47 @@ describe("server terminal guard integration", () => {
     expect(messages.at(-1)?.content?.[0]?.text).toContain("你刚才只描述了计划");
   });
 
+  test("terminal-guard continuation 429 replays on the same key before surfacing", async () => {
+    const retryConfig = {
+      ...config,
+      providers: {
+        "claude-se": {
+          adapter: "anthropic",
+          baseUrl: "https://example.test",
+          apiKey: "sk-test",
+          retryOn429: { attempts: 1, intervalMs: 120, respectRetryAfter: false },
+        },
+      },
+    } as unknown as OcxConfig;
+    let sends = 0;
+    globalThis.fetch = (async (_input, init) => {
+      sends += 1;
+      if (sends === 2) {
+        return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return anthropicSse(sends === 1 ? firstTurn : continuationTurn);
+    }) as typeof fetch;
+
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "se-claude-opus-4.8",
+        input: "请检查这个问题并修复代码",
+        stream: true,
+        tools: [{ type: "function", name: "exec_command", description: "run a command", parameters: { type: "object" } }],
+      }),
+    }), retryConfig, { model: "", provider: "" });
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    // initial turn + 429 continuation + replayed continuation
+    expect(sends).toBe(3);
+    expect(text).toContain("response.completed");
+    expect(text).toContain("exec_command");
+  });
+
 });

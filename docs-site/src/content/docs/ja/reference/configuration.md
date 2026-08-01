@@ -194,7 +194,7 @@ timing side channel を防ぐため定数時間（`timingSafeEqual`）で比較�
 | `parallelToolCalls?` | `boolean` | 並列ツール呼び出しをオン/オフします。OpenAI Chat はデフォルト on で、chat 以外のアダプターは明示的な `true` でのみサポートを公表します。 |
 | `autoToolChoiceOnlyModels?` | `string[]` | `tool_choice` で `auto` または `none` だけを受け付けるモデル。強制/指定選択は downgrade します。 |
 | `preserveReasoningContentModels?` | `string[]` | 前の assistant `reasoning_content` を chat history に維持すべきモデル。 |
-| `retryOn429?` | `{ enabled?: boolean; attempts?: number; intervalMs?: number; maxIntervalMs?: number; respectRetryAfter?: boolean }` | key-auth プロバイダーのみ。オプトインの同一ターゲット 429 リトライ: 待機(上流の `Retry-After` または固定間隔)してから、キー フェイルオーバーの前に同一キーで同一リクエストを再送します。Codex 自体は 429 をリトライしないため、単一キーのプロバイダーでは唯一の防御です。デフォルト: `enabled: true`、`attempts: 3`、`intervalMs: 5000`、`maxIntervalMs: 60000`(1回の待機は 600000 で上限)、`respectRetryAfter: true`。 |
+| `retryOn429?` | `{ enabled?: boolean; attempts?: number; intervalMs?: number; maxIntervalMs?: number; respectRetryAfter?: boolean }` | API-key プロバイダーのみ(`authMode: "key"`)。オプトインの同一ターゲット 429 リトライ: `retryOn429` が無ければ無効で、オブジェクトがあれば `enabled: false` でない限り有効になります。429 時に待機(上流の `Retry-After` または固定間隔)してから、キー フェイルオーバーの前に同一キーで同一リクエストを再送します — メインのテキストターン回復ループ、Responses passthrough、画像/動画ブリッジ、web-search サイドカー、ターミナル継続要求をすべてカバーします。Codex 自体は 429 をリトライしないため、単一キーのプロバイダーでは唯一の防御です。デフォルト: `enabled: true`、`attempts: 3`、`intervalMs: 5000`、`maxIntervalMs: 60000`(1回の待機は `maxIntervalMs` で上限、その上限は 600000)、`respectRetryAfter: true`。 |
 | `thinkingToggleModels?` | `string[]` | effort 段階の代わりに vendor `thinking.enabled` toggle を使う chat モデル。 |
 | `thinkingBudgetModels?` | `string[]` | 整数 `thinking_budget` を使う chat モデル。effort を budget 比率にマッピングします。 |
 | `noVisionModels?` | `string[]` | テキスト専用モデル。[ビジョンサイドカー](/ja/guides/sidecars/) が画像を説明します。Ollama の `:size` タグも一致させます。 |

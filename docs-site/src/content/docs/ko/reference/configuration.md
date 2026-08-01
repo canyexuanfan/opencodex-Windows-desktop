@@ -204,7 +204,7 @@ timing side channel을 막기 위해 상수 시간(`timingSafeEqual`)으로 비�
 | `parallelToolCalls?` | `boolean` | 병렬 툴 호출을 켜거나 끕니다. OpenAI Chat은 기본 on이며, chat 외 어댑터는 명시적인 `true`에서만 지원을 알립니다. |
 | `autoToolChoiceOnlyModels?` | `string[]` | `tool_choice`에서 `auto` 또는 `none`만 받는 모델. 강제/지정 선택은 downgrade합니다. |
 | `preserveReasoningContentModels?` | `string[]` | 이전 assistant `reasoning_content`를 chat history에 유지해야 하는 모델. |
-| `retryOn429?` | `{ enabled?: boolean; attempts?: number; intervalMs?: number; maxIntervalMs?: number; respectRetryAfter?: boolean }` | key-auth 프로바이더 전용. 동일 대상 429 재시도: 대기(업스트림 `Retry-After` 또는 고정 간격) 후 키 장애 조치 전에 동일 키로 동일 요청을 재전송합니다. Codex 자체는 429를 재시도하지 않으므로 단일 키 프로바이더의 유일한 방어선입니다. 기본값: `enabled: true`, `attempts: 3`, `intervalMs: 5000`, `maxIntervalMs: 60000`(단일 대기는 600000으로 상한), `respectRetryAfter: true`. |
+| `retryOn429?` | `{ enabled?: boolean; attempts?: number; intervalMs?: number; maxIntervalMs?: number; respectRetryAfter?: boolean }` | API-key 프로바이더 전용(`authMode: "key"`). 동일 대상 429 재시도: `retryOn429`가 없으면 기능이 꺼져 있고, 객체가 있으면 `enabled: false`가 아닌 한 활성화됩니다. 429 시 대기(업스트림 `Retry-After` 또는 고정 간격) 후 키 장애 조치 전에 동일 키로 동일 요청을 재전송합니다 — 일반 텍스트 턴 복구 루프, Responses passthrough, 이미지/비디오 브리지, web-search 사이드카, 터미널 연속 요청을 모두 포함합니다. Codex 자체는 429를 재시도하지 않으므로 단일 키 프로바이더의 유일한 방어선입니다. 기본값: `enabled: true`, `attempts: 3`, `intervalMs: 5000`, `maxIntervalMs: 60000`(단일 대기는 `maxIntervalMs`로 상한, 그 자체는 600000으로 상한), `respectRetryAfter: true`. |
 | `thinkingToggleModels?` | `string[]` | effort 단계 대신 vendor `thinking.enabled` toggle을 쓰는 chat 모델. |
 | `thinkingBudgetModels?` | `string[]` | 정수 `thinking_budget`을 쓰는 chat 모델. effort를 budget 비율로 매핑합니다. |
 | `noVisionModels?` | `string[]` | 텍스트 전용 모델. [비전 사이드카](/ko/guides/sidecars/)가 이미지를 설명합니다. Ollama의 `:size` 태그도 일치시킵니다. |

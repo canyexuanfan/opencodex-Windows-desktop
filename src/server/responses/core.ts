@@ -1628,6 +1628,48 @@ async function handleResponsesInner(
       request.releaseBodyObservation?.();
     }
 
+    // Same-target 429 wait-and-retry (opt-in `retryOn429`) for key-auth providers on the
+    // passthrough wire. This branch returns before the recovery loop below, so Responses-shaped
+    // key-auth gateways (e.g. the built-in DeepSeek preset) would otherwise surface 429
+    // immediately with no same-key replay. Pre-stream only — nothing has been relayed yet, so
+    // the replay is lossless (same invariant as the recovery loop). Forward/OAuth providers
+    // keep their pool logic below (rateLimitRetryPolicyFor returns null for them).
+    const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+    let rateLimitRetries = 0;
+    while (
+      upstreamResponse.status === 429
+      && rateLimitPolicy !== null
+      && rateLimitRetries < rateLimitPolicy.attempts
+    ) {
+      rateLimitRetries += 1;
+      try {
+        await sleepWithAbort(
+          rateLimitRetryDelayMs(rateLimitPolicy, upstreamResponse.headers.get("retry-after"), Date.now()),
+          options.abortSignal,
+        );
+      } catch {
+        cancelResponseBodyBestEffort(upstreamResponse);
+        upstream.abort();
+        return clientCancelledResponse();
+      }
+      cancelResponseBodyBestEffort(upstreamResponse);
+      try {
+        upstreamResponse = await fetchWithTransientRetry(
+          recovery => {
+            noteAttemptSend(logCtx.activeAttempt, passthroughEstimate, recovery);
+            return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+            }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+          },
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+        );
+      } catch (err) {
+        return transportFailureResponse(err);
+      }
+    }
+
     if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       let poolRetryOutcome: number | undefined;
       if (await shouldRetryCodexPoolAccountModel400(
@@ -2048,6 +2090,7 @@ async function handleResponsesInner(
           config.cacheRetention,
         );
       },
+      retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
       ...(options.forceEmptyResponseId ? { forceEmptyResponseId: true } : {}),
       onCompletedResponse: (response, providerState) =>
@@ -2116,6 +2159,7 @@ async function handleResponsesInner(
           config.cacheRetention,
         );
       },
+      retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
     });
     // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
     // in-flight web-search turns instead of skipping them during graceful shutdown.
@@ -2528,49 +2572,51 @@ async function handleResponsesInner(
   const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
     let imageTierBias = 0;
     let response: Response | undefined;
+    const fetchContinuation = async (): Promise<Response> => {
+      const continuationRequest = await activeAdapter.buildRequest(nextParsed, {
+        headers: selectedForwardHeaders,
+        translatorBudget,
+        ...(imageTierBias > 0 ? { imageTierBias } : {}),
+      });
+      recordAdapterReasoning(logCtx, continuationRequest);
+      const continuationEstimate = typeof continuationRequest.usageLog?.inputTokens === "number"
+        ? continuationRequest.usageLog.inputTokens
+        : undefined;
+      if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
+      try {
+        if (activeAdapter.fetchResponse) {
+          noteAttemptSend(logCtx.activeAttempt, continuationEstimate);
+          return await activeAdapter.fetchResponse(continuationRequest, {
+            abortSignal: upstream.signal,
+            timeoutMs: connectMs,
+            stream: nextParsed.stream,
+          });
+        }
+        return await fetchWithResetRetry(
+          recovery => {
+            noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery);
+            return fetchWithHeaderTimeout(
+              continuationRequest.url,
+              applyUpstreamRecoveryInit({
+                method: continuationRequest.method,
+                headers: continuationRequest.headers,
+                body: continuationRequest.body,
+              }, recovery),
+              upstream.signal,
+              connectMs,
+              nextParsed.stream,
+              providerFetch(route.provider),
+            );
+          },
+          { abortSignal: upstream.signal, label: safeHostLabel(continuationRequest.url) },
+          );
+      } finally {
+        continuationRequest.releaseBodyObservation?.();
+      }
+    };
     while (true) {
       try {
-        const continuationRequest = await activeAdapter.buildRequest(nextParsed, {
-          headers: selectedForwardHeaders,
-          translatorBudget,
-          ...(imageTierBias > 0 ? { imageTierBias } : {}),
-        });
-        recordAdapterReasoning(logCtx, continuationRequest);
-        const continuationEstimate = typeof continuationRequest.usageLog?.inputTokens === "number"
-          ? continuationRequest.usageLog.inputTokens
-          : undefined;
-        if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
-        try {
-          if (activeAdapter.fetchResponse) {
-            noteAttemptSend(logCtx.activeAttempt, continuationEstimate);
-            response = await activeAdapter.fetchResponse(continuationRequest, {
-              abortSignal: upstream.signal,
-              timeoutMs: connectMs,
-              stream: nextParsed.stream,
-            });
-          } else {
-            response = await fetchWithResetRetry(
-              recovery => {
-                noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery);
-                return fetchWithHeaderTimeout(
-                  continuationRequest.url,
-                  applyUpstreamRecoveryInit({
-                    method: continuationRequest.method,
-                    headers: continuationRequest.headers,
-                    body: continuationRequest.body,
-                  }, recovery),
-                  upstream.signal,
-                  connectMs,
-                  nextParsed.stream,
-                  providerFetch(route.provider),
-                );
-              },
-              { abortSignal: upstream.signal, label: safeHostLabel(continuationRequest.url) },
-              );
-          }
-        } finally {
-          continuationRequest.releaseBodyObservation?.();
-        }
+        response = await fetchContinuation();
       } catch (error) {
         if (options.abortSignal?.aborted) {
           yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
@@ -2578,6 +2624,44 @@ async function handleResponsesInner(
           yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };
         }
         return;
+      }
+
+      // Same-target 429 wait-and-retry (opt-in `retryOn429`) before key/account failover:
+      // a primary-key rate-limit blip replays on the SAME key, matching the main recovery
+      // loop; only after the attempts are exhausted does the continuation fail over.
+      const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+      let rateLimitRetries = 0;
+      while (
+        response.status === 429
+        && rateLimitPolicy !== null
+        && rateLimitRetries < rateLimitPolicy.attempts
+      ) {
+        rateLimitRetries += 1;
+        try {
+          await sleepWithAbort(
+            rateLimitRetryDelayMs(rateLimitPolicy, response.headers.get("retry-after"), Date.now()),
+            options.abortSignal,
+          );
+        } catch {
+          try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+          if (options.abortSignal?.aborted) {
+            yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+          } else {
+            yield { type: "error", message: "Provider continuation failed: retry wait interrupted" };
+          }
+          return;
+        }
+        try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        try {
+          response = await fetchContinuation();
+        } catch (error) {
+          if (options.abortSignal?.aborted) {
+            yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+          } else {
+            yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };
+          }
+          return;
+        }
       }
 
       if (response.status === 429 && hasKeyPoolFailover(route.provider)) {

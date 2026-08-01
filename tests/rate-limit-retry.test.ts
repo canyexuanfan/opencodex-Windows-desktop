@@ -12,13 +12,17 @@ describe("rateLimitRetryPolicyFor", () => {
     expect(rateLimitRetryPolicyFor({ retryOn429: { enabled: false } } as OcxProviderConfig)).toBeNull();
   });
 
-  test("null for OAuth and forward providers (same-token replays are never attempted)", () => {
+  test("null for OAuth, forward, and local providers (no remote key to preserve)", () => {
     expect(rateLimitRetryPolicyFor({
       authMode: "oauth",
       retryOn429: {},
     } as OcxProviderConfig)).toBeNull();
     expect(rateLimitRetryPolicyFor({
       authMode: "forward",
+      retryOn429: {},
+    } as OcxProviderConfig)).toBeNull();
+    expect(rateLimitRetryPolicyFor({
+      authMode: "local",
       retryOn429: {},
     } as OcxProviderConfig)).toBeNull();
     expect(rateLimitRetryPolicyFor({
@@ -70,6 +74,14 @@ describe("rateLimitRetryDelayMs", () => {
 
   test("Retry-After 0 retries immediately instead of falling back to the interval", () => {
     expect(rateLimitRetryDelayMs(policy, "0", 1_000_000)).toBe(1);
+  });
+
+  test("fixed fallback is capped at maxIntervalMs (a single wait never exceeds the cap)", () => {
+    const p = rateLimitRetryPolicyFor({
+      retryOn429: { intervalMs: 600_000, maxIntervalMs: 100 },
+    } as OcxProviderConfig)!;
+    expect(rateLimitRetryDelayMs(p, null, 1_000_000)).toBe(100);
+    expect(rateLimitRetryDelayMs(p, "3600", 1_000_000)).toBe(100);
   });
 
   test("malformed Retry-After falls back to the fixed interval", () => {
