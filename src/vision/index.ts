@@ -7,6 +7,7 @@ import type { CodexAuthContext } from "../codex/auth-context";
 import { getAccountSet } from "../oauth/store";
 import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import type { SidecarOutcomeRecorder } from "../web-search/executor";
+import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
 
 export { describeImage } from "./describe";
 export { describeImageAnthropic, parseAnthropicVisionSSE } from "./anthropic-describe";
@@ -403,7 +404,10 @@ export async function describeImagesInPlace(
         outcome = { text: "", error: error instanceof Error ? error.message : String(error) };
       }
       const successfulText = outcome.error ? "" : clamp(outcome.text.trim(), DESC_MAX_CHARS);
-      if (identity.persistent && successfulText) descriptionCache.set(identity.key, successfulText);
+      if (identity.persistent && successfulText) {
+        descriptionCache.set(identity.key, successfulText);
+        enforceAppOwnedMemoryBudget();
+      }
       const resolvedOutcome = outcome.error ? outcome : { ...outcome, text: successfulText };
       resolveOutcome(resolvedOutcome);
     });

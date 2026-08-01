@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { create, fromBinary } from "@bufbuild/protobuf";
 import {
@@ -17,6 +17,11 @@ import {
   type CursorBlobRequestScopeToken,
 } from "../src/adapters/cursor/native-exec";
 import {
+  configureAppOwnedMemoryBudget,
+  registerRetainedStore,
+  resetAppOwnedMemoryForTests,
+} from "../src/lib/app-owned-memory";
+import {
   CURSOR_EXTERNAL_ROOT_BYTE_LIMIT,
   CURSOR_EXTERNAL_ROOT_BLOB_LIMIT,
   CURSOR_ROUTING_LEVEL_PARAMETER_ID,
@@ -33,8 +38,14 @@ import {
   SetBlobArgsSchema,
 } from "../src/adapters/cursor/gen/agent_pb";
 
-beforeEach(() => resetCursorBlobStateForTests());
-afterEach(() => setCursorBlobLimitsForTests());
+beforeEach(() => {
+  resetCursorBlobStateForTests();
+  resetAppOwnedMemoryForTests();
+});
+afterEach(() => {
+  setCursorBlobLimitsForTests();
+  resetAppOwnedMemoryForTests();
+});
 
 function sha256(data: Uint8Array): Uint8Array {
   return new Uint8Array(createHash("sha256").update(data).digest());
@@ -889,6 +900,50 @@ describe("Cursor bounded blob store", () => {
       expectBlobHit(localId, bytes("loc"));
     } finally {
       Date.now = originalNow;
+    }
+  });
+
+  test("pin release and remote TTL expiry trigger enforcement after class reconciliation", () => {
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    registerRetainedStore({
+      id: "cursor_blobs",
+      category: "blobs",
+      snapshot: cursorBlobRetainedStoreSnapshot,
+      evictOldest: evictOldestCursorBlobForBudget,
+    });
+    configureAppOwnedMemoryBudget(0);
+
+    const hydratedScope = createCursorBlobRequestScope();
+    const hydrated = storeCursorBlob(bytes("hydrate"), hydratedScope);
+    sealCursorBlobRequestScope(hydratedScope);
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(7);
+    hydrateBlob(hydrated, hydratedScope);
+    expect(cursorBlobRetainedStoreSnapshot().count).toBe(0);
+
+    const releasedScope = createCursorBlobRequestScope();
+    storeCursorBlob(bytes("release"), releasedScope);
+    sealCursorBlobRequestScope(releasedScope);
+    releaseCursorBlobRequestScope(releasedScope);
+    expect(cursorBlobRetainedStoreSnapshot().count).toBe(0);
+
+    const originalNow = Date.now;
+    const timers: Array<() => void> = [];
+    const setTimeoutSpy = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      timers.push(callback);
+      return { unref() {} };
+    }) as typeof setTimeout);
+    Date.now = () => 100;
+    try {
+      setCursorBlobLimitsForTests({ ttlMs: 10 });
+      setBlobReply(sha256(bytes("remote")), bytes("remote"));
+      expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({ count: 1, pinnedBytes: 6 });
+      Date.now = () => 111;
+      timers.at(-1)!();
+      expect(cursorBlobRetainedStoreSnapshot().count).toBe(0);
+    } finally {
+      Date.now = originalNow;
+      setTimeoutSpy.mockRestore();
+      warning.mockRestore();
     }
   });
 

@@ -7,6 +7,7 @@
 
 import type { DebugLogEntry } from "./debug-log-buffer";
 import { retainedUtf8Bytes, truncateRetainedUtf8 } from "./admission";
+import { enforceAppOwnedMemoryBudget } from "./app-owned-memory";
 
 const MAX_LINES = 2_000;
 const MAX_DEBUG_LINE_BYTES = 16 * 1024;
@@ -29,6 +30,7 @@ export function injectionDebugLog(line: string): void {
   buffer.push(entry);
   bufferBytes += retainedUtf8Bytes(retainedLine);
   while (buffer.length > MAX_LINES) removeOldestEntry();
+  enforceAppOwnedMemoryBudget();
   console.log(line);
 }
 

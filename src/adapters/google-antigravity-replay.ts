@@ -1,3 +1,5 @@
+import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
+
 /**
  * Antigravity (Cloud Code Assist) thoughtSignature reasoning-replay cache.
  *
@@ -21,6 +23,7 @@ interface ReplayEntry {
   byCall: Map<string, ReplayCall>;
   bytes: number;
   expiresAtMs: number;
+  oldestAtMs: number | null;
 }
 
 const MIN_SIGNATURE_LEN = 16;
@@ -47,6 +50,8 @@ const replayCache = new Map<string, ReplayEntry>();
 const utf8 = new TextEncoder();
 let replayLimits = { ...DEFAULT_REPLAY_LIMITS };
 let replayBytes = 0;
+let replayOldestSessionKey: string | undefined;
+let replayOldestAt: number | null = null;
 
 function replayKey(model: string, sessionId: string): string {
   return `${model}::session:${sessionId}`;
@@ -87,7 +92,30 @@ function deleteReplaySession(key: string): number {
   if (!entry) return 0;
   replayCache.delete(key);
   replayBytes -= entry.bytes;
+  if (replayOldestSessionKey === key) recomputeReplayOldestCandidate();
   return entry.bytes;
+}
+
+function recomputeReplayOldestCandidate(): void {
+  replayOldestSessionKey = undefined;
+  replayOldestAt = null;
+  for (const [key, entry] of replayCache) {
+    if (entry.oldestAtMs === null || (replayOldestAt !== null && entry.oldestAtMs >= replayOldestAt)) continue;
+    replayOldestSessionKey = key;
+    replayOldestAt = entry.oldestAtMs;
+  }
+}
+
+function refreshReplaySessionCandidate(key: string, entry: ReplayEntry): void {
+  entry.oldestAtMs = entry.byCall.values().next().value?.touchedAtMs ?? null;
+  if (replayOldestSessionKey === key) {
+    recomputeReplayOldestCandidate();
+    return;
+  }
+  if (entry.oldestAtMs !== null && (replayOldestAt === null || entry.oldestAtMs < replayOldestAt)) {
+    replayOldestSessionKey = key;
+    replayOldestAt = entry.oldestAtMs;
+  }
 }
 
 function deleteExpiredReplaySessions(now: number): void {
@@ -138,7 +166,12 @@ export function observeAntigravityReplay(model: string, sessionId: string, parts
   const now = Date.now();
   deleteExpiredReplaySessions(now);
   const key = replayKey(model, sessionId);
-  const entry = replayCache.get(key) ?? { byCall: new Map<string, ReplayCall>(), bytes: 0, expiresAtMs: 0 };
+  const entry = replayCache.get(key) ?? {
+    byCall: new Map<string, ReplayCall>(),
+    bytes: 0,
+    expiresAtMs: 0,
+    oldestAtMs: null,
+  };
   let inserted = false;
   for (const raw of parts) {
     if (!raw || typeof raw !== "object") continue;
@@ -161,7 +194,9 @@ export function observeAntigravityReplay(model: string, sessionId: string, parts
   evictInnerCalls(entry);
   entry.expiresAtMs = now + REPLAY_TTL_MS;
   replayCache.set(key, entry);
+  refreshReplaySessionCandidate(key, entry);
   evictIfNeeded();
+  enforceAppOwnedMemoryBudget();
 }
 
 /**
@@ -177,6 +212,7 @@ export function applyAntigravityReplay(model: string, sessionId: string, content
   if (!entry) {
     return contents;
   }
+  let touched = false;
   for (const c of contents as { role?: string; parts?: unknown[] }[]) {
     if (!c || typeof c !== "object" || c.role !== "model" || !Array.isArray(c.parts)) continue;
     for (const raw of c.parts) {
@@ -191,9 +227,11 @@ export function applyAntigravityReplay(model: string, sessionId: string, content
         part.thoughtSignature = call.signature;
         entry.byCall.delete(ck);
         entry.byCall.set(ck, { ...call, touchedAtMs: now });
+        touched = true;
       }
     }
   }
+  if (touched) refreshReplaySessionCandidate(replayKey(model, sessionId), entry);
   return contents;
 }
 
@@ -224,27 +262,17 @@ export function antigravityReplayRetainedStoreSnapshot(): {
   pinnedBytes: number;
   oldestAt: number | null;
 } {
-  let oldestAt: number | null = null;
-  for (const entry of replayCache.values()) {
-    for (const call of entry.byCall.values()) {
-      oldestAt = oldestAt === null ? call.touchedAtMs : Math.min(oldestAt, call.touchedAtMs);
-    }
-  }
-  return { count: replayCache.size, bytes: replayBytes, evictableBytes: replayBytes, pinnedBytes: 0, oldestAt };
+  return {
+    count: replayCache.size,
+    bytes: replayBytes,
+    evictableBytes: replayBytes,
+    pinnedBytes: 0,
+    oldestAt: replayOldestAt,
+  };
 }
 
 export function evictOldestAntigravityReplayForBudget(): number {
-  let oldestKey: string | undefined;
-  let oldestAt = Number.POSITIVE_INFINITY;
-  for (const [key, entry] of replayCache) {
-    let sessionOldest = entry.expiresAtMs;
-    for (const call of entry.byCall.values()) sessionOldest = Math.min(sessionOldest, call.touchedAtMs);
-    if (sessionOldest < oldestAt) {
-      oldestAt = sessionOldest;
-      oldestKey = key;
-    }
-  }
-  return oldestKey === undefined ? 0 : deleteReplaySession(oldestKey);
+  return replayOldestSessionKey === undefined ? 0 : deleteReplaySession(replayOldestSessionKey);
 }
 
 export function setAntigravityReplayLimitsForTests(limits?: Partial<ReplayLimits>): void {
@@ -256,4 +284,6 @@ export function setAntigravityReplayLimitsForTests(limits?: Partial<ReplayLimits
 export function __resetAntigravityReplayCache(): void {
   replayCache.clear();
   replayBytes = 0;
+  replayOldestSessionKey = undefined;
+  replayOldestAt = null;
 }

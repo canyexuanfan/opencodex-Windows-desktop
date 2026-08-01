@@ -23,6 +23,7 @@ import { createSseInspector } from "../src/server/relay";
 import {
   clearResponseStateForTests,
   clearResponseStateMemoryForTests,
+  evictOldestResponseContinuationForBudget,
   expandPreviousResponseInput,
   flushResponseState,
   previousResponseConversationId,
@@ -32,7 +33,11 @@ import {
   recoverStaleResponseStateTemps,
   rememberResponseState,
   responseStateMetrics,
+  responseStatePersistPendingForTests,
+  responseContinuationRetainedStoreSnapshot,
+  runPendingResponseStatePersistForTests,
   setResponseStateByteCapForTests,
+  setResponseStatePersistAttemptHookForTests,
   getStoredResponseBytesForTests,
 } from "../src/responses/state";
 import {
@@ -988,6 +993,108 @@ describe("Responses previous_response_id state", () => {
     expect(files.length).toBeGreaterThan(1); // deferral is real, not immediate unlink
     void dir;
   }, BULK_DURABLE_IO_BUDGET_MS); // 140 fsync'd durable writes ARE the assertion; Windows CI measured ~18s.
+
+  test("persistNow settles within the bounded rewrite attempts under revision churn", async () => {
+    rememberLarge("resp_churn_seed", "seed");
+    let attempts = 0;
+    setResponseStatePersistAttemptHookForTests(() => {
+      attempts += 1;
+      rememberLarge(`resp_churn_${attempts}`, `churn-${attempts}`);
+    });
+    await flushResponseState();
+    expect(attempts).toBe(8); // four attempts plus one awaited four-attempt shutdown follow-up
+    setResponseStatePersistAttemptHookForTests(null);
+    await flushResponseState();
+  });
+
+  test("persistent snapshot I/O failure does not schedule background retry passes", async () => {
+    const blockedHome = join(home, "not-a-directory");
+    writeFileSync(blockedHome, "file blocks config directory creation");
+    process.env["OPENCODEX_HOME"] = blockedHome;
+    rememberLarge("resp_persist_failure", "payload");
+    expect(responseStatePersistPendingForTests()).toBe(true);
+
+    await runPendingResponseStatePersistForTests();
+
+    expect(responseStatePersistPendingForTests()).toBe(false);
+  });
+
+  test("background revision churn schedules exactly one follow-up pass", async () => {
+    rememberLarge("resp_background_churn_seed", "seed");
+    let attempts = 0;
+    setResponseStatePersistAttemptHookForTests(() => {
+      attempts += 1;
+      rememberLarge(`resp_background_churn_${attempts}`, `churn-${attempts}`);
+    });
+
+    await runPendingResponseStatePersistForTests();
+
+    expect(attempts).toBe(4);
+    expect(responseStatePersistPendingForTests()).toBe(true);
+    setResponseStatePersistAttemptHookForTests(null);
+    await runPendingResponseStatePersistForTests();
+    expect(responseStatePersistPendingForTests()).toBe(false);
+  });
+
+  test("unstable final snapshot defers spill unlinks until a stable snapshot", async () => {
+    setResponseStateByteCapForTests(1_024);
+    rememberLarge("resp_unstable_unlink", "old".repeat(3_000));
+    await flushResponseState();
+    const oldFile = spillFileNames(home)[0]!;
+    rememberLarge("resp_unstable_unlink", "new".repeat(3_000));
+    expect(spillFileNames(home)).toHaveLength(2);
+    let attempts = 0;
+    setResponseStatePersistAttemptHookForTests(() => {
+      attempts += 1;
+      rememberLarge(`resp_unstable_revision_${attempts}`, `r-${attempts}`);
+    });
+    await flushResponseState();
+    expect(attempts).toBe(8);
+    expect(existsSync(join(responseSpillDirectory(home), oldFile))).toBe(true);
+    setResponseStatePersistAttemptHookForTests(null);
+    await flushResponseState();
+    expect(existsSync(join(responseSpillDirectory(home), oldFile))).toBe(false);
+  });
+
+  test("RAM cap demotes the oldest resident before deleting any older spill stub", async () => {
+    setResponseStateByteCapForTests(1_024);
+    rememberLarge("resp_older_stub", "old".repeat(3_000));
+    await flushResponseState();
+    const oldFile = spillFileNames(home)[0]!;
+    setResponseStateByteCapForTests(1_000_000);
+    rememberLarge("resp_newer_resident", "new".repeat(1_000));
+    expect(responseStateMetrics()).toMatchObject({ residentCount: 1, spillStubCount: 1 });
+    setResponseStateByteCapForTests(1_024);
+    rememberLarge("resp_prune_trigger", "trigger");
+    expect(existsSync(join(responseSpillDirectory(home), oldFile))).toBe(true);
+    expect(responseStateMetrics().spillStubCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test("continuation demotion releases resident bytes minus retained replacement stub bytes", () => {
+    setResponseStateByteCapForTests(1_000_000);
+    rememberLarge("resp_budget_net_release", "resident".repeat(1_000));
+    const before = responseContinuationRetainedStoreSnapshot();
+
+    const released = evictOldestResponseContinuationForBudget();
+    const after = responseContinuationRetainedStoreSnapshot();
+
+    expect(after.pinnedBytes).toBeGreaterThan(0);
+    expect(released).toBe(before.bytes - after.bytes);
+    expect(released).toBeGreaterThan(0);
+  });
+
+  test("stub-only over-cap state still deletes bounded metadata oldest-first", () => {
+    setResponseStateByteCapForTests(1_024);
+    rememberLarge("resp_stub_oldest", "a".repeat(4_000));
+    rememberLarge("resp_stub_newer", "b".repeat(4_000));
+    expect(responseStateMetrics()).toMatchObject({ residentCount: 0, spillStubCount: 2 });
+    setResponseStateByteCapForTests(1);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    rememberResponseState({ input: "trigger" }, fixedResponse("resp_stub_prune", [circular]));
+    expect(responseStateMetrics()).toMatchObject({ count: 0, residentCount: 0, spillStubCount: 0, tombstoneCount: 0 });
+    expect(spillFileNames(home)).toEqual([]);
+  });
 
   test("write fsync or publication failure cleans its temp and preserves no unmeasured resident payload", () => {
     const failures = [

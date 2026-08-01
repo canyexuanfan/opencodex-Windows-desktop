@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { STORE_BUDGET_MS } from "./helpers/test-budget";
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,7 +107,7 @@ describe("usage log", () => {
     expect(snapshot.truncatedPrefixBytes).toBe(0);
     expect(snapshot.entriesTruncated).toBe(true);
     expect(snapshot.entriesDropped).toBe(1);
-  });
+  }, STORE_BUDGET_MS); // parsing 200,001 rows IS the entry-cap assertion; windows-latest measured ~5.05s against Bun's 5s default.
 
   test("stale usage-read flight is replaced and old completion cannot clear new owner", async () => {
     writeFileSync(

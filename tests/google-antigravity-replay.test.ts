@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
   antigravityReplayMetrics,
   antigravityReplayRetainedStoreSnapshot,
@@ -199,6 +199,22 @@ describe("antigravity reasoning-replay cache", () => {
     } finally {
       Date.now = originalNow;
     }
+  });
+
+  test("retained-store snapshot does not iterate a large replay map", () => {
+    for (let i = 0; i < 512; i += 1) {
+      observeAntigravityReplay(MODEL, `large-${i}`, [fcPart(`call-${i}`, { i }, `sig-${i}-${"x".repeat(20)}`)]);
+    }
+    const values = spyOn(Map.prototype, "values").mockImplementation(() => {
+      throw new Error("snapshot iterated Map entries");
+    });
+    let snapshot: ReturnType<typeof antigravityReplayRetainedStoreSnapshot>;
+    try {
+      snapshot = antigravityReplayRetainedStoreSnapshot();
+    } finally {
+      values.mockRestore();
+    }
+    expect(snapshot!).toMatchObject({ count: 512, evictableBytes: snapshot!.bytes });
   });
 });
 

@@ -5,6 +5,7 @@ import { recordOwnedConfigPath } from "./config-ownership";
 import { redactSecretString, redactUrlForLog } from "./redact";
 import { sidecarBreadcrumb, activityBreadcrumb } from "./sidecar-tracker";
 import { retainedUtf8Bytes, truncateRetainedUtf8 } from "./admission";
+import { enforceAppOwnedMemoryBudget } from "./app-owned-memory";
 
 /**
  * Process-level safety net for the long-running proxy daemon.
@@ -259,6 +260,7 @@ function instrumentFetch(): void {
     fetchRing.push(trace);
     fetchRingBytes += fetchTraceBytes(trace);
     while (fetchRing.length > FETCH_RING_MAX) removeOldestFetchTrace();
+    enforceAppOwnedMemoryBudget();
     let p: ReturnType<typeof fetch>;
     try {
       p = original.apply(this, args);

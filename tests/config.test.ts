@@ -134,6 +134,19 @@ describe("opencodex config defaults", () => {
     expect(codexAutoStartEnabled({})).toBe(true);
   });
 
+  test("appOwnedMemoryBudgetMb defaults to 256 MiB", () => {
+    expect(getDefaultConfig().appOwnedMemoryBudgetMb).toBe(256);
+    expect(validateConfigCandidate({ ...getDefaultConfig(), appOwnedMemoryBudgetMb: undefined })).toMatchObject({
+      ok: true,
+      config: { appOwnedMemoryBudgetMb: 256 },
+    });
+  });
+
+  test("appOwnedMemoryBudgetMb accepts integer bounds 64 and 4096", () => {
+    expect(validateConfigCandidate({ ...getDefaultConfig(), appOwnedMemoryBudgetMb: 64 }).ok).toBe(true);
+    expect(validateConfigCandidate({ ...getDefaultConfig(), appOwnedMemoryBudgetMb: 4096 }).ok).toBe(true);
+  });
+
   test("Codex autostart can be disabled explicitly", () => {
     expect(codexAutoStartEnabled({ codexAutoStart: false })).toBe(false);
     expect(codexAutoStartEnabled({ codexAutoStart: true })).toBe(true);

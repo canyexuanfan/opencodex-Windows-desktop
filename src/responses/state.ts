@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicWriteFileAsync, getConfigDir } from "../config";
+import { enforceAppOwnedMemoryBudget, type RetainedStoreSnapshot } from "../lib/app-owned-memory";
 import type { OcxProviderContinuationState } from "../types";
 import {
   deleteResponseSpill,
@@ -26,6 +27,7 @@ const STALE_TEMP_GRACE_MS = 15 * 60 * 1_000;
 const STALE_TEMP_MAX_ENTRIES = 4_096;
 const STALE_TEMP_MAX_CLEANUPS = 512;
 const RESPONSE_STATE_TEMP_NAME = /^responses-state\.json\.ocx\.(\d+)\.(\d+)\.tmp$/;
+const MAX_SNAPSHOT_REWRITE_ATTEMPTS = 4;
 
 interface ResidentResponseState {
   kind: "resident";
@@ -59,6 +61,9 @@ export type PreviousResponseReplayFailure = {
 
 const states = new Map<string, StoredResponseState>();
 let storedResponseBytes = 0;
+let residentResponseBytes = 0;
+let oldestResidentId: string | undefined;
+let oldestResidentAt: number | null = null;
 let byteCapOverride: number | null = null;
 let stateRevision = 0;
 const spillCounters = { writes: 0, writeFailures: 0, readFailures: 0 };
@@ -107,14 +112,38 @@ function measureResidentEntry(id: string, entry: ResidentInput): ResidentRespons
   return sizeBytes === null ? null : { kind: "resident", ...entry, sizeBytes };
 }
 
+function recomputeOldestResident(): void {
+  oldestResidentId = undefined;
+  oldestResidentAt = null;
+  for (const [id, state] of states) {
+    if (state.kind !== "resident") continue;
+    if (oldestResidentAt !== null && state.createdAt >= oldestResidentAt) continue;
+    oldestResidentId = id;
+    oldestResidentAt = state.createdAt;
+  }
+}
+
 function replaceMapEntry(id: string, next: StoredResponseState, expected?: StoredResponseState): boolean {
   const existing = states.get(id);
   if (expected && existing !== expected) return false;
   storedResponseBytes -= existing?.sizeBytes ?? 0;
   storedResponseBytes += next.sizeBytes;
+  if (existing?.kind === "resident") {
+    residentResponseBytes -= existing.sizeBytes;
+  }
+  if (next.kind === "resident") {
+    residentResponseBytes += next.sizeBytes;
+  }
   if (storedResponseBytes < 0) storedResponseBytes = 0;
+  if (residentResponseBytes < 0) residentResponseBytes = 0;
   if (existing) states.delete(id);
   states.set(id, next);
+  if (oldestResidentId === id) {
+    recomputeOldestResident();
+  } else if (next.kind === "resident" && (oldestResidentAt === null || next.createdAt < oldestResidentAt)) {
+    oldestResidentId = id;
+    oldestResidentAt = next.createdAt;
+  }
   stateRevision += 1;
   return true;
 }
@@ -137,8 +166,13 @@ function deleteEntry(id: string, options: { deleteSpill?: boolean } = {}): void 
   const existing = states.get(id);
   if (!existing) return;
   storedResponseBytes -= existing.sizeBytes;
+  if (existing.kind === "resident") {
+    residentResponseBytes -= existing.sizeBytes;
+  }
   if (storedResponseBytes < 0) storedResponseBytes = 0;
+  if (residentResponseBytes < 0) residentResponseBytes = 0;
   states.delete(id);
+  if (oldestResidentId === id) recomputeOldestResident();
   stateRevision += 1;
   if (options.deleteSpill !== false) deleteOwnedSpills(existing);
 }
@@ -236,6 +270,7 @@ let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingPersistPath: string | null = null;
 /** Single-flight gate: overlapping response-state writes serialize (#612). */
 let persistGate: Promise<void> = Promise.resolve();
+let persistAttemptHookForTests: (() => void) | null = null;
 
 function now(): number {
   return Date.now();
@@ -445,20 +480,16 @@ function ensureLoaded(): void {
   pruneResponses();
 }
 
-async function persistNow(path: string): Promise<void> {
-  if (persistTimer) {
-    clearTimeout(persistTimer);
-    persistTimer = null;
-  }
-  pendingPersistPath = null;
+type SnapshotWriteOutcome = "stable" | "unstable" | "failed";
 
+async function writeBoundedSnapshot(path: string): Promise<SnapshotWriteOutcome> {
   // Serialize writers so concurrent flush + debounce cannot race on temps / ACL (#612).
   const previous = persistGate;
   let release!: () => void;
   persistGate = new Promise<void>(resolve => { release = resolve; });
   await previous;
   try {
-    for (;;) {
+    for (let attempt = 0; attempt < MAX_SNAPSHOT_REWRITE_ATTEMPTS; attempt += 1) {
       const revision = stateRevision;
       const entries: Array<[string, unknown]> = [];
       let total = 0;
@@ -483,39 +514,67 @@ async function persistNow(path: string): Promise<void> {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
       try { chmodSync(dirname(path), 0o700); } catch { /* best-effort (e.g. Windows) */ }
       await atomicWriteFileAsync(path, JSON.stringify({ version: 2, states: entries }));
-      if (revision === stateRevision) break;
+      persistAttemptHookForTests?.();
+      if (revision === stateRevision) return "stable";
     }
-    // Snapshot is durable: every stub it references is the NEW generation, so
-    // superseded generations can no longer be reloaded — unlink them now.
-    while (pendingSpillUnlinks.length > 0) {
-      const ref = pendingSpillUnlinks.shift()!;
-      deleteResponseSpill(ref);
-    }
+    return "unstable";
   } catch {
-    /* best-effort: disk trouble must never affect request handling */
+    return "failed";
   } finally {
     release();
   }
 }
 
-function schedulePersist(): void {
-  if (persistTimer) return;
-  // Resolve the target path NOW: tests (and anything else) may swap OPENCODEX_HOME before the
-  // debounce fires, and a late write must land in the home that owned the recorded state.
-  pendingPersistPath = snapshotPath();
-  const path = pendingPersistPath;
+function drainPendingSpillUnlinks(): void {
+  while (pendingSpillUnlinks.length > 0) {
+    const ref = pendingSpillUnlinks.shift()!;
+    deleteResponseSpill(ref);
+  }
+}
+
+function schedulePersistAt(path: string, replace = false): void {
+  if (persistTimer && !replace) return;
+  if (persistTimer) clearTimeout(persistTimer);
+  pendingPersistPath = path;
   persistTimer = setTimeout(() => { void persistNow(path); }, SNAPSHOT_DEBOUNCE_MS);
   (persistTimer as { unref?: () => void }).unref?.();
+}
+
+async function persistNow(path: string, awaitFollowUp = false): Promise<void> {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  pendingPersistPath = null;
+  let outcome = await writeBoundedSnapshot(path);
+  if (outcome === "unstable" && awaitFollowUp) {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = null;
+    pendingPersistPath = null;
+    outcome = await writeBoundedSnapshot(path);
+  }
+  if (outcome === "stable") drainPendingSpillUnlinks();
+  else if (outcome === "unstable" && !awaitFollowUp) schedulePersistAt(path, true);
+}
+
+function schedulePersist(): void {
+  // Resolve the target path NOW: tests (and anything else) may swap OPENCODEX_HOME before the
+  // debounce fires, and a late write must land in the home that owned the recorded state.
+  schedulePersistAt(snapshotPath());
 }
 
 /** Flush any pending debounced snapshot write (graceful shutdown / deterministic tests). */
 export async function flushResponseState(): Promise<void> {
   if (persistTimer) {
-    await persistNow(pendingPersistPath ?? snapshotPath());
+    await persistNow(pendingPersistPath ?? snapshotPath(), true);
     return;
   }
   // No pending timer: still await any in-flight write so shutdown does not race (#612).
   await persistGate;
+  // A bounded background pass may have scheduled its same-path follow-up while
+  // this flush was waiting on the single-flight gate. Shutdown owns one awaited
+  // bounded follow-up rather than returning behind that unref'd timer.
+  if (persistTimer) await persistNow(pendingPersistPath ?? snapshotPath(), true);
 }
 
 function inputItems(input: unknown): unknown[] {
@@ -537,7 +596,8 @@ function pruneResponses(at = now()): void {
   // Unconditional RAM cap. Resident payloads demote durably; stubs/tombstones are
   // deleted only when even their bounded metadata cannot fit the override.
   while (storedResponseBytes > byteCap() && states.size > 0) {
-    const oldestId = states.keys().next().value as string | undefined;
+    const oldestResident = [...states].find(([, entry]) => entry.kind === "resident");
+    const oldestId = oldestResident?.[0] ?? states.keys().next().value as string | undefined;
     if (!oldestId) break;
     const entry = states.get(oldestId)!;
     if (entry.kind !== "resident") {
@@ -556,6 +616,39 @@ function pruneResponses(at = now()): void {
       replaceWithSpillFailure(oldestId, entry);
     }
   }
+}
+
+export function responseContinuationRetainedStoreSnapshot(): RetainedStoreSnapshot {
+  return {
+    count: states.size,
+    bytes: storedResponseBytes,
+    evictableBytes: residentResponseBytes,
+    pinnedBytes: Math.max(0, storedResponseBytes - residentResponseBytes),
+    oldestAt: oldestResidentAt,
+  };
+}
+
+export function evictOldestResponseContinuationForBudget(): number {
+  if (oldestResidentId === undefined) return 0;
+  const id = oldestResidentId;
+  const entry = states.get(id);
+  if (!entry || entry.kind !== "resident") return 0;
+  try {
+    const ref = writeResponseSpillDurably(id, {
+      createdAt: entry.createdAt,
+      items: entry.items,
+      ...(entry.providers ? { providers: entry.providers } : {}),
+    });
+    if (swapResidentForSpill(id, entry, ref)) spillCounters.writes += 1;
+  } catch {
+    spillCounters.writeFailures += 1;
+    replaceWithSpillFailure(id, entry);
+  }
+  schedulePersist();
+  const replacement = states.get(id);
+  return !replacement || replacement.kind === "resident"
+    ? 0
+    : Math.max(0, entry.sizeBytes - replacement.sizeBytes);
 }
 
 function materializeEntry(
@@ -737,7 +830,24 @@ export function rememberResponseState(
     // checkpoint must not be reused — but the conversation id string itself is still valid.
     ...(Object.keys(normalizedProviderState).length > 0 ? { providers: normalizedProviderState } : {}),
   });
+  enforceAppOwnedMemoryBudget();
   schedulePersist();
+}
+
+/** Test-only persistence churn hook; invoked after each atomic snapshot rewrite. */
+export function setResponseStatePersistAttemptHookForTests(hook: (() => void) | null): void {
+  persistAttemptHookForTests = hook;
+}
+
+/** Test-only: deterministically run the pending background debounce pass. */
+export async function runPendingResponseStatePersistForTests(): Promise<void> {
+  if (!persistTimer) return;
+  await persistNow(pendingPersistPath ?? snapshotPath());
+}
+
+/** Test-only: observe whether a debounce/follow-up pass is pending. */
+export function responseStatePersistPendingForTests(): boolean {
+  return persistTimer !== null;
 }
 
 /** Memory-only reset (simulates a process restart: the snapshot file survives). */
@@ -749,11 +859,15 @@ export function clearResponseStateMemoryForTests(): void {
   pendingPersistPath = null;
   states.clear();
   storedResponseBytes = 0;
+  residentResponseBytes = 0;
+  oldestResidentId = undefined;
+  oldestResidentAt = null;
   stateRevision = 0;
   pendingSpillUnlinks.length = 0;
   spillCounters.writes = 0;
   spillCounters.writeFailures = 0;
   spillCounters.readFailures = 0;
+  persistAttemptHookForTests = null;
   loaded = false;
 }
 

@@ -25,6 +25,13 @@ import { removeCredential } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { isStreamMode } from "../../lib/bun-stream-caps";
 import { shadowSourceModels } from "../../lib/shadow-call";
+import {
+  configureAppOwnedMemoryBudget,
+  enforceAppOwnedMemoryBudget,
+  MAX_APP_OWNED_MEMORY_BUDGET_MB,
+  MIN_APP_OWNED_MEMORY_BUDGET_MB,
+  resolveAppOwnedMemoryBudgetBytes,
+} from "../../lib/app-owned-memory";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
@@ -120,6 +127,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       port: config.port,
       hostname: config.hostname ?? "127.0.0.1",
       streamMode: config.streamMode ?? "auto",
+      appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
       startupHealth: await getCachedStartupHealth(config),
       codexRuntime: {
         path: displayCodexRuntimePath(resolved.runtime.command),
@@ -196,16 +204,24 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     // (a Windows service does not inherit shell env). A stream-shape
     // change applies to NEW turns only — the config object is shared by
     // reference with the request handlers, no restart needed.
-    let body: { codexAutoStart?: unknown; streamMode?: unknown };
+    let body: { codexAutoStart?: unknown; streamMode?: unknown; appOwnedMemoryBudgetMb?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
-    if (body.codexAutoStart === undefined && body.streamMode === undefined) {
-      return jsonResponse({ error: "codexAutoStart boolean is required" }, 400);
+    if (body.codexAutoStart === undefined && body.streamMode === undefined && body.appOwnedMemoryBudgetMb === undefined) {
+      return jsonResponse({ error: "provide codexAutoStart, streamMode, or appOwnedMemoryBudgetMb" }, 400);
     }
     if (body.codexAutoStart !== undefined && typeof body.codexAutoStart !== "boolean") {
       return jsonResponse({ error: "codexAutoStart boolean is required" }, 400);
     }
     if (body.streamMode !== undefined && !isStreamMode(body.streamMode)) {
       return jsonResponse({ error: "streamMode must be auto, legacy-tee, or eager-relay" }, 400);
+    }
+    if (body.appOwnedMemoryBudgetMb !== undefined && (
+      typeof body.appOwnedMemoryBudgetMb !== "number"
+      || !Number.isInteger(body.appOwnedMemoryBudgetMb)
+      || body.appOwnedMemoryBudgetMb < MIN_APP_OWNED_MEMORY_BUDGET_MB
+      || body.appOwnedMemoryBudgetMb > MAX_APP_OWNED_MEMORY_BUDGET_MB
+    )) {
+      return jsonResponse({ error: `appOwnedMemoryBudgetMb must be an integer from ${MIN_APP_OWNED_MEMORY_BUDGET_MB} to ${MAX_APP_OWNED_MEMORY_BUDGET_MB}` }, 400);
     }
     if (typeof body.codexAutoStart === "boolean") {
       config.codexAutoStart = body.codexAutoStart;
@@ -217,12 +233,20 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         config.streamMode = body.streamMode as "legacy-tee" | "eager-relay";
       }
     }
+    if (typeof body.appOwnedMemoryBudgetMb === "number") {
+      config.appOwnedMemoryBudgetMb = body.appOwnedMemoryBudgetMb;
+    }
     saveConfigPreservingClaudeCode(config);
+    if (typeof body.appOwnedMemoryBudgetMb === "number") {
+      configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(body.appOwnedMemoryBudgetMb));
+      enforceAppOwnedMemoryBudget();
+    }
     invalidateStartupHealthCache();
     return jsonResponse({
       ok: true,
       codexAutoStart: codexAutoStartEnabled(config),
       streamMode: config.streamMode ?? "auto",
+      appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
       startupHealth: await getCachedStartupHealth(config),
     });
   }

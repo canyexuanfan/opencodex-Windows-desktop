@@ -25,6 +25,7 @@ import { selectEagerPath } from "../../lib/bun-stream-caps";
 import { getActiveTurnCount, isDraining } from "../lifecycle";
 import { getActiveMemoryWatchdog, observedMemoryCounter } from "../memory-watchdog";
 import { responseStateMetrics } from "../../responses/state";
+import { appOwnedBytesSnapshot } from "../../lib/app-owned-memory";
 import { jsonResponse } from "../auth-cors";
 import { getInspectionCounters } from "../relay";
 import type { ManagementContext } from "./context";
@@ -88,6 +89,7 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
 	      observedMetric: observed.observedMetric,
 	      jscHeap,
       responseState: responseStateMetrics(),
+      appOwnedBytes: appOwnedBytesSnapshot(),
       inspectionCounters: getInspectionCounters(),
       streamMode,
       eagerRelay,

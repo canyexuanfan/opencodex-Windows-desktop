@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { enforceAppOwnedMemoryBudget } from "../../lib/app-owned-memory";
 import { create } from "@bufbuild/protobuf";
 import {
   DiagnosticsErrorSchema,
@@ -166,6 +167,11 @@ function recomputeBlobClassAccounting(): void {
   scheduleBlobExpiryAccounting(now);
 }
 
+function reconcileBlobClassAccountingAndEnforce(): void {
+  recomputeBlobClassAccounting();
+  enforceAppOwnedMemoryBudget();
+}
+
 function scheduleBlobExpiryAccounting(now: number): void {
   if (blobExpiryAccountingTimer) clearTimeout(blobExpiryAccountingTimer);
   blobExpiryAccountingTimer = undefined;
@@ -178,7 +184,7 @@ function scheduleBlobExpiryAccounting(now: number): void {
   if (!Number.isFinite(nextExpiry)) return;
   blobExpiryAccountingTimer = setTimeout(() => {
     blobExpiryAccountingTimer = undefined;
-    recomputeBlobClassAccounting();
+    reconcileBlobClassAccountingAndEnforce();
   }, Math.max(0, nextExpiry - now));
   blobExpiryAccountingTimer.unref?.();
 }
@@ -205,7 +211,7 @@ function releaseHydratedBlob(k: string, requestScope?: CursorBlobRequestScopeTok
     state?.keys.delete(k);
     if (state?.sealed && state.keys.size === 0) blobRequestScopes.delete(scope);
   }
-  if (changed) recomputeBlobClassAccounting();
+  if (changed) reconcileBlobClassAccountingAndEnforce();
 }
 
 function setBlob(
@@ -306,7 +312,7 @@ function setBlob(
   blobs.set(k, entry);
   blobBytes += entry.sizeBytes;
   for (const scope of entry.requestPins) blobRequestScopes.get(scope)?.keys.add(k);
-  recomputeBlobClassAccounting();
+  reconcileBlobClassAccountingAndEnforce();
   return { admitted: true, replaced: existing !== undefined };
 }
 
@@ -361,7 +367,7 @@ export function releaseCursorBlobRequestScope(scope: CursorBlobRequestScopeToken
   if (!state) return;
   for (const k of state.keys) blobs.get(k)?.requestPins.delete(scope);
   blobRequestScopes.delete(scope);
-  recomputeBlobClassAccounting();
+  reconcileBlobClassAccountingAndEnforce();
 }
 
 export function storeCursorBlob(data: Uint8Array, requestScope?: CursorBlobRequestScopeToken): Uint8Array {

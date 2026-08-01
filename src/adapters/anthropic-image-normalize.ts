@@ -20,6 +20,7 @@ import {
   TOTAL_IMAGE_BASE64_BUDGET,
   type ImageBlockRef,
 } from "./anthropic-image-guard";
+import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
 
 /** One ladder position: dimension cap, JPEG quality attempts, per-image base64 cap. */
 export interface TierSpec {
@@ -168,6 +169,7 @@ function cachePut(key: string, value: CacheValue): boolean {
   cacheBytes += next.sizeBytes;
   cacheMetadataBytes += next.metadataBytes;
   if (typeof value === "string") cacheSentinelEntries++;
+  enforceAppOwnedMemoryBudget();
   return true;
 }
 

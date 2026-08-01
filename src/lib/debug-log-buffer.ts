@@ -31,6 +31,7 @@ export function appendDebugLogLine(line: string): void {
   buffer.push(entry);
   bufferBytes += retainedUtf8Bytes(retainedLine);
   while (buffer.length > MAX_LINES) removeOldestEntry();
+  enforceAppOwnedMemoryBudget();
   for (const listener of listeners.keys()) {
     try { listener(entry); } catch { /* listeners must not break logging */ }
   }
@@ -79,3 +80,4 @@ export function resetDebugLogBufferForTests(): void {
   nextSeq = 1;
 }
 import { createAdmissionGate, ResourceAdmissionError, retainedUtf8Bytes, truncateRetainedUtf8, type AdmissionLease, type AdmissionMetrics } from "./admission";
+import { enforceAppOwnedMemoryBudget } from "./app-owned-memory";

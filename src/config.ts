@@ -36,6 +36,11 @@ import {
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
 import { parseDesktopProfile } from "./claude/desktop-profile";
 import { isCodexReasoningEffort, modelRecordValue } from "./reasoning-effort";
+import {
+  DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES,
+  MAX_APP_OWNED_MEMORY_BUDGET_MB,
+  MIN_APP_OWNED_MEMORY_BUDGET_MB,
+} from "./lib/app-owned-memory";
 
 let _atomicSeq = 0;
 
@@ -739,6 +744,11 @@ const apiKeyEntrySchema = z.object({
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
+  appOwnedMemoryBudgetMb: z.number().int()
+    .min(MIN_APP_OWNED_MEMORY_BUDGET_MB)
+    .max(MAX_APP_OWNED_MEMORY_BUDGET_MB)
+    .default(DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024))
+    .catch(DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024)),
   // A blank hostname degrades to undefined rather than failing the parse. `getDefaultConfig()`
   // carries no `hostname` key, so the backup-and-defaults repair path below cannot merge one
   // away — a hand-edited `"hostname": ""` would fail twice and reset providers/apiKeys to
@@ -1435,9 +1445,20 @@ function claudeSubagentEffortError(value: unknown): string | null {
   return `schema_invalid: claudeCode.subagentEffort: must be one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`;
 }
 
+function appOwnedMemoryBudgetError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const budget = (value as Record<string, unknown>).appOwnedMemoryBudgetMb;
+  if (budget === undefined) return null;
+  if (typeof budget !== "number" || !Number.isInteger(budget)
+    || budget < MIN_APP_OWNED_MEMORY_BUDGET_MB || budget > MAX_APP_OWNED_MEMORY_BUDGET_MB) {
+    return `schema_invalid: appOwnedMemoryBudgetMb: must be an integer from ${MIN_APP_OWNED_MEMORY_BUDGET_MB} to ${MAX_APP_OWNED_MEMORY_BUDGET_MB}`;
+  }
+  return null;
+}
+
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
 export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
-  const boundaryError = blankHostnameError(value) ?? claudeSubagentEffortError(value);
+  const boundaryError = blankHostnameError(value) ?? claudeSubagentEffortError(value) ?? appOwnedMemoryBudgetError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
   if (result.success) return { ok: true, config: normalizeApiKeyIds(result.data as OcxConfig) };
@@ -1956,6 +1977,7 @@ export function getDefaultConfig(): OcxConfig {
   return {
     port: 10100,
     managementUsageMaxReadBytes: 64 * 1024 * 1024,
+    appOwnedMemoryBudgetMb: DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024),
     // Fresh/re-initialized configs are already written in the current three-tier
     // OpenAI shape. Mark them as such so startup does not mistake them for a
     // legacy config and collide with an immutable backup from an earlier setup.

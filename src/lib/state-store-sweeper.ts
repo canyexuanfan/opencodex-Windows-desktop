@@ -17,6 +17,11 @@ export interface StateStoreRegistration {
   reconcileGeneration?: (context: GenerationContext) => number;
 }
 
+export interface StateSweepAfterTickRegistration {
+  name: string;
+  afterTick(): void;
+}
+
 export interface StateSweepResult {
   storesVisited: number;
   rowsRemoved: number;
@@ -30,6 +35,7 @@ export interface StateStoreSweeperOptions {
 }
 
 const registrations = new Map<string, StateStoreRegistration>();
+const afterTickRegistrations = new Map<string, StateSweepAfterTickRegistration>();
 let configGeneration = 0;
 let attemptSequence = 0;
 let generationContextBuilder: (() => GenerationContext) | null = null;
@@ -45,6 +51,15 @@ export function registerStateStore(registration: StateStoreRegistration): () => 
   return () => {
     if (registrations.get(registration.name) === registration) {
       registrations.delete(registration.name);
+    }
+  };
+}
+
+export function registerStateSweepAfterTick(registration: StateSweepAfterTickRegistration): () => void {
+  afterTickRegistrations.set(registration.name, registration);
+  return () => {
+    if (afterTickRegistrations.get(registration.name) === registration) {
+      afterTickRegistrations.delete(registration.name);
     }
   };
 }
@@ -88,6 +103,16 @@ export function sweepExpiredOnWrite(now = Date.now()): StateSweepResult {
 
 export function sweepLiveness(): StateSweepResult {
   return runCallbacks(registration => registration.sweepLiveness);
+}
+
+function runAfterTickCallbacks(): void {
+  for (const registration of afterTickRegistrations.values()) {
+    try {
+      registration.afterTick();
+    } catch {
+      logCallbackFailure(registration.name);
+    }
+  }
 }
 
 export function captureConfigGeneration(): number {
@@ -135,6 +160,7 @@ export function startStateStoreSweeper(
   interval = setInterval(() => {
     sweepExpired(now());
     sweepLiveness();
+    runAfterTickCallbacks();
   }, options.intervalMs ?? STATE_SWEEP_INTERVAL_MS);
   interval.unref?.();
   return { stop: stopStateStoreSweeper };
@@ -150,6 +176,7 @@ export function stopStateStoreSweeper(): void {
 export function resetStateStoreSweeperForTests(): void {
   stopStateStoreSweeper();
   registrations.clear();
+  afterTickRegistrations.clear();
   configGeneration = 0;
   attemptSequence = 0;
   generationContextBuilder = null;

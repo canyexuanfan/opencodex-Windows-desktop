@@ -15,6 +15,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { isClaudeDebugEnabled } from "../lib/debug-settings";
 import { retainedUtf8Bytes, truncateRetainedUtf8 } from "../lib/admission";
+import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
 
 export interface ClaudeInboundDebugEntry {
   /** Monotonic capture id — unique even when several entries share Date.now(). */
@@ -138,6 +139,7 @@ export function captureClaudeInbound(
   ring.push(entry);
   ringBytes += entryBytes(entry);
   if (ring.length > RING_LIMIT) removeOldest();
+  enforceAppOwnedMemoryBudget();
 }
 
 /** Newest-first snapshot for /api/claude/inbound-debug. */

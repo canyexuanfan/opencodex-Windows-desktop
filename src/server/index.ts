@@ -26,6 +26,15 @@ import {
   setLiveStateStoreConfig,
 } from "../lib/state-store-registrations";
 import { startStateStoreSweeper } from "../lib/state-store-sweeper";
+import {
+  configureAppOwnedMemoryBudget,
+  enforceAppOwnedMemoryBudget,
+  resolveAppOwnedMemoryBudgetBytes,
+} from "../lib/app-owned-memory";
+import {
+  registerAppOwnedMemorySweepFallback,
+  registerDefaultAppOwnedMemoryStores,
+} from "../lib/app-owned-memory-stores";
 import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
 import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
 import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler } from "../storage/policy-scheduler";
@@ -314,6 +323,10 @@ export function startServer(port?: number) {
   // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
   // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
   startMemoryWatchdog();
+  registerDefaultAppOwnedMemoryStores();
+  registerAppOwnedMemorySweepFallback();
+  configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(config.appOwnedMemoryBudgetMb));
+  enforceAppOwnedMemoryBudget();
   startStateStoreSweeper();
   // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
   // tick for daily/weekly; startup evaluation is fire-and-forget after listen.

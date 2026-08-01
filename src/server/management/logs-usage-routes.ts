@@ -77,14 +77,13 @@ import { applySystemEnvToggle } from "../system-env";
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+import {
+  discardUsageSummaryCacheEntry,
+  getUsageSummaryCacheEntry,
+  setUsageSummaryCacheEntry,
+} from "./usage-summary-cache";
 
 const USAGE_DAY_MS = 86_400_000;
-const usageSummaryCache = new Map<string, {
-  revisionKey: string;
-  expiresAt: number;
-  summary: UsageSummary & { historyTruncated: boolean; truncatedPrefixBytes: number; entriesTruncated: boolean; entriesDropped: number };
-}>();
-
 function usageEntryMatchesSurface(entry: PersistedUsageEntry, surface: UsageSurface): boolean {
   if (surface === "claude") return entry.surface === "claude" || entry.surface === "claude-desktop";
   if (surface === "grok") return entry.surface === "grok";
@@ -192,10 +191,11 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       const cacheKey = `${range}:${surface}`;
       const effectiveReadLimit = config.managementUsageMaxReadBytes ?? 64 * 1024 * 1024;
       const observedRevisionKey = `${usageLogRevisionKey(currentUsageLogRevision())}\0${effectiveReadLimit}`;
-      const cached = usageSummaryCache.get(cacheKey);
+      const cached = getUsageSummaryCacheEntry(cacheKey);
       if (cached && cached.revisionKey === observedRevisionKey && now < cached.expiresAt) {
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }
+      if (cached) discardUsageSummaryCacheEntry(cacheKey);
       const snapshot = await readUsageSnapshotForManagement(effectiveReadLimit);
       const summary = {
         ...summarizeUsage(snapshot.entries, range, now, surface),
@@ -204,7 +204,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         entriesTruncated: snapshot.entriesTruncated,
         entriesDropped: snapshot.entriesDropped,
       };
-      usageSummaryCache.set(cacheKey, {
+      setUsageSummaryCacheEntry(cacheKey, {
         revisionKey: `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`,
         expiresAt: usageSummaryExpiresAt(snapshot.entries, range, surface, now),
         summary,

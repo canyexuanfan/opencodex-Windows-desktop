@@ -30,6 +30,13 @@ import {
   getCachedProviderAccountQuota,
 } from "../src/providers/quota";
 import type { OcxConfig } from "../src/types";
+import { __resetVertexTokenCache, getVertexAccessToken } from "../src/lib/gcp-adc";
+import {
+  configureAppOwnedMemoryBudget,
+  registerRetainedStore,
+  resetAppOwnedMemoryForTests,
+} from "../src/lib/app-owned-memory";
+import { registerAppOwnedMemorySweepFallback } from "../src/lib/app-owned-memory-stores";
 
 function context(
   generation: number,
@@ -47,9 +54,13 @@ function context(
   };
 }
 
-beforeEach(() => resetStateStoreSweeperForTests());
+beforeEach(() => {
+  resetStateStoreSweeperForTests();
+  resetAppOwnedMemoryForTests();
+});
 afterEach(() => {
   resetStateStoreSweeperForTests();
+  resetAppOwnedMemoryForTests();
   setOcxStartProcessCacheForTests([]);
   setOcxStartProcessProbeForTests(null);
 });
@@ -161,6 +172,47 @@ describe("state-store sweeper", () => {
     clearSpy.mockRestore();
   });
 
+  test("periodic sweep enforces bytes that become evictable during reconciliation", () => {
+    const timers: Array<() => void> = [];
+    const setSpy = spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      timers.push(callback);
+      return { unref() {} };
+    }) as typeof setInterval);
+    const clearSpy = spyOn(globalThis, "clearInterval").mockImplementation(() => {});
+    let pinned = true;
+    let retained = 4;
+    registerStateStore({
+      name: "class-transition",
+      sweepExpired: () => { pinned = false; return 0; },
+    });
+    registerRetainedStore({
+      id: "sweep-transition",
+      category: "caches",
+      snapshot: () => ({
+        count: retained > 0 ? 1 : 0,
+        bytes: retained,
+        evictableBytes: pinned ? 0 : retained,
+        pinnedBytes: pinned ? retained : 0,
+        oldestAt: !pinned && retained > 0 ? 1 : null,
+      }),
+      evictOldest: () => {
+        const released = retained;
+        retained = 0;
+        return released;
+      },
+    });
+    configureAppOwnedMemoryBudget(0);
+    registerAppOwnedMemorySweepFallback();
+
+    startStateStoreSweeper({ intervalMs: 10, now: () => 42 });
+    timers[0]!();
+
+    expect(retained).toBe(0);
+    stopStateStoreSweeper();
+    setSpy.mockRestore();
+    clearSpy.mockRestore();
+  });
+
   test("reconciliation runs only for a newer complete generation", () => {
     const seen: number[] = [];
     registerStateStore({ name: "owner", reconcileGeneration: next => { seen.push(next.generation); return 1; } });
@@ -230,6 +282,52 @@ describe("state-store sweeper", () => {
     expect(ownerGeneration).toBe(2);
     expect([...liveProviders]).toEqual(["build-1"]);
     warning.mockRestore();
+  });
+
+  test("partial reconcile failure keeps live-key writes accepted for new owners", async () => {
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    const previousCredentials = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const previousCloudSdk = process.env.CLOUDSDK_CONFIG;
+    const home = mkdtempSync(join(tmpdir(), "ocx-sweeper-gcp-live-"));
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    process.env.CLOUDSDK_CONFIG = home;
+    __resetVertexTokenCache();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const startedPromise = new Promise<void>(resolve => { started = resolve; });
+    let fetches = 0;
+    const fetchImpl = (async () => {
+      fetches += 1;
+      started();
+      await gate;
+      return new Response(JSON.stringify({ access_token: "metadata-live", expires_in: 3600 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      const gcp = STATE_STORE_REGISTRATIONS.find(row => row.name === "gcp-adc")!;
+      registerStateStore(gcp);
+      registerStateStore({ name: "later-failure", reconcileGeneration: () => { throw new Error("partial"); } });
+      const late = getVertexAccessToken({ fetch: fetchImpl });
+      await startedPromise;
+      reconcileStateGeneration(context(0));
+      expect(captureConfigGeneration()).toBe(0);
+      release();
+      expect(await late).toBe("metadata-live");
+      expect(await getVertexAccessToken({ fetch: fetchImpl })).toBe("metadata-live");
+      expect(fetches).toBe(1);
+    } finally {
+      release();
+      __resetVertexTokenCache();
+      warning.mockRestore();
+      if (previousCredentials === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      else process.env.GOOGLE_APPLICATION_CREDENTIALS = previousCredentials;
+      if (previousCloudSdk === undefined) delete process.env.CLOUDSDK_CONFIG;
+      else process.env.CLOUDSDK_CONFIG = previousCloudSdk;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("liveness callbacks are separate from write-trigger sweeps", () => {

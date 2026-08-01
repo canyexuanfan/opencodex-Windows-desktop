@@ -332,8 +332,10 @@ export async function getVertexAccessToken(options?: { signal?: AbortSignal; fet
   return promise;
 }
 
-/** Test seam: clears every cached token + in-flight promise. */
+/** Test seam: restores complete process-local token and reconciliation state. */
 export function __resetVertexTokenCache(): void {
   tokenCache.clear();
   inflight.clear();
+  lastReconciledGeneration = 0;
+  liveSources = new Set();
 }

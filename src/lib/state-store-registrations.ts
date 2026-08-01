@@ -25,7 +25,7 @@ import {
   listLiveConfigOwnershipRoots,
   reconcileConfigOwnershipRoots,
 } from "./config-ownership";
-import { reconcileGcpAdcTokens } from "./gcp-adc";
+import { reconcileGcpAdcTokens, sweepExpiredGcpAdcTokens } from "./gcp-adc";
 import {
   reconcileOAuthFlowState,
   sweepExpiredXaiPermanentFailureVerdicts,
@@ -94,7 +94,7 @@ export const STATE_STORE_REGISTRATIONS = [
   { name: "guardian-backoff", reconcileGeneration: reconcileGuardianBackoff },
   { name: "codex-reauth", reconcileGeneration: reconcileCodexReauthState },
   { name: "oauth-reauth", reconcileGeneration: reconcileOAuthReauthState },
-  { name: "gcp-adc", reconcileGeneration: reconcileGcpAdcTokens },
+  { name: "gcp-adc", sweepExpired: sweepExpiredGcpAdcTokens, reconcileGeneration: reconcileGcpAdcTokens },
   { name: "config-ownership", reconcileGeneration: reconcileConfigOwnershipRoots },
   { name: "oauth-flow-state", reconcileGeneration: reconcileOAuthFlowState },
   { name: "ocx-start-process-cache", sweepLiveness: sweepDeadOcxStartProcessCache },
