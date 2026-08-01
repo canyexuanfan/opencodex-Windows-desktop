@@ -34,12 +34,17 @@ let spawnGate: Promise<void> = Promise.resolve();
 let spawnCancelEpoch = 0;
 
 /**
- * Windows OS-join gap after the `close` event (not a CI job-timeout bump).
- * Under GHA load, 250ms still left `workers_spawned(N) workers_terminated(N-1)`
- * panics mid-suite; 750ms covers the deferred thread reclaim without touching
- * the cross-platform job budget.
+ * OS-join gap after the `close` event (not a CI job-timeout bump).
+ * Windows GHA at 250ms still left `workers_spawned(N) workers_terminated(N-1)`
+ * panics; 750ms covers deferred reclaim. Darwin under `bun test --isolate`
+ * also segfaults when the next spawn follows too closely after terminate even
+ * with balanced spawned/terminated counts (Bun 1.3.14), so apply a shorter
+ * settle there too. Linux keeps the close-event join only.
  */
-const WINDOWS_WORKER_JOIN_MS = 750;
+const WORKER_JOIN_SETTLE_MS =
+  process.platform === "win32" ? 750
+  : process.platform === "darwin" ? 100
+  : 0;
 
 /** Invalidate spawn callbacks still waiting on the gate (reset / server drain). */
 export function cancelQueuedStorageWorkerSpawns(): void {
@@ -117,13 +122,13 @@ export function terminateStorageWorker(worker: Worker, timeoutMs = 5_000): Promi
         tracked.resolveClosed();
       }
       await tracked.closed;
-      // Always run the Windows settle before throwing on timeout: the timer
+      // Always run the platform settle before throwing on timeout: the timer
       // only forces `closed`, it does not prove the OS thread has exited.
       // Callers that catch and continue (e.g. drainAndShutdown) still need
       // that gap before the next isolate reclaim or server.stop.
-      if (process.platform === "win32") {
+      if (WORKER_JOIN_SETTLE_MS > 0) {
         await Bun.sleep(0);
-        await Bun.sleep(WINDOWS_WORKER_JOIN_MS);
+        await Bun.sleep(WORKER_JOIN_SETTLE_MS);
       }
       if (timedOut) {
         throw new Error(`storage worker did not exit within ${timeoutMs}ms`);
