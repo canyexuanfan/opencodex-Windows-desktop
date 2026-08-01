@@ -2,13 +2,19 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, useEffect, useState } from "react";
 import type { Root } from "react-dom/client";
-import { useClientResource, useKeyedClientResource } from "../src/client-resource";
+import {
+  clearClientResourceStoresForTests,
+  setClientResourceData,
+  useClientResource,
+  useKeyedClientResource,
+} from "../src/client-resource";
 
 const globals = ["document", "window", "navigator", "IS_REACT_ACT_ENVIRONMENT"] as const;
 let previousGlobals: Record<(typeof globals)[number], unknown>;
 let testWindow: Window;
 
 beforeEach(() => {
+  clearClientResourceStoresForTests();
   previousGlobals = Object.fromEntries(globals.map((key) => [key, Reflect.get(globalThis, key)])) as typeof previousGlobals;
   testWindow = new Window({ url: "http://localhost/" });
   Object.defineProperties(globalThis, {
@@ -20,6 +26,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearClientResourceStoresForTests();
   testWindow.close();
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
@@ -546,6 +553,75 @@ test("store is evicted after the last subscriber leaves", async () => {
   });
   await waitFor(() => snap.data === "v2");
   expect(fetches).toBe(2);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("pre-subscribe seed still quiet-revalidates on first subscribe", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `seed-revalidate-${Date.now()}`;
+  let fetches = 0;
+  setClientResourceData(KEY, "seeded");
+
+  function Page() {
+    const resource = useClientResource(KEY, async () => {
+      fetches += 1;
+      return "fresh";
+    });
+    return <span>{resource.data ?? ""}</span>;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  // Without seedNeedsRevalidate the mount would skip the fetch entirely (gets stay 0).
+  await waitFor(() => fetches === 1 && container.textContent === "fresh");
+  expect(fetches).toBe(1);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("StrictMode remount still quiet-revalidates a pre-subscribe seed", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const { StrictMode } = await import("react");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `seed-strictmode-${Date.now()}`;
+  let fetches = 0;
+  setClientResourceData(KEY, "seeded");
+
+  function Page() {
+    const resource = useClientResource(KEY, async () => {
+      fetches += 1;
+      return "fresh";
+    });
+    return <span>{resource.data ?? ""}</span>;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <StrictMode>
+        <Page />
+      </StrictMode>,
+    );
+  });
+  // Dev StrictMode aborts the first subscribe's fetch; the remount must still revalidate.
+  await waitFor(() => container.textContent === "fresh");
+  expect(fetches).toBeGreaterThanOrEqual(1);
 
   await act(async () => {
     root.unmount();
