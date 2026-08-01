@@ -14,9 +14,15 @@ test("Electron shell keeps the security baseline explicit", () => {
 });
 
 test("preload exposes only fixed lifecycle channels", () => {
-  const preload = readFileSync(resolve(sourceRoot, "preload.ts"), "utf8");
+  const preload = readFileSync(resolve(sourceRoot, "preload.cts"), "utf8");
   expect(preload).toContain("contextBridge.exposeInMainWorld");
   expect(preload).toContain("desktop:get-status");
   expect(preload).not.toContain("execute");
   expect(preload).not.toContain("readFile");
+});
+
+test("sandbox preload points at the CommonJS build output", () => {
+  const main = readFileSync(resolve(sourceRoot, "main.ts"), "utf8");
+  expect(main).toContain('preload: path.join(import.meta.dirname, "preload.cjs")');
+  expect(main).not.toContain('preload: path.join(import.meta.dirname, "preload.js")');
 });

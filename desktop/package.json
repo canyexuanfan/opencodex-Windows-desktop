@@ -39,6 +39,11 @@
         "to": "opencodex"
       },
       {
+        "from": "resources/staging/opencodex/node_modules",
+        "to": "opencodex/node_modules",
+        "filter": ["**/*", "!bun{,/**/*}", "!@oven{,/**/*}"]
+      },
+      {
         "from": "../src/tray/assets",
         "to": "tray"
       }

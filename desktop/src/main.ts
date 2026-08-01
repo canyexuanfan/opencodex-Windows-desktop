@@ -153,7 +153,7 @@ if (!hasSingleInstanceLock) {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
-        preload: path.join(import.meta.dirname, "preload.js"),
+        preload: path.join(import.meta.dirname, "preload.cjs"),
       },
     });
 
