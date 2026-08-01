@@ -1527,7 +1527,10 @@ function configMutationDatabasePath(): string {
     try { chmodSync(dir, 0o700); } catch { /* best-effort on existing dir */ }
   }
   if (process.platform === "win32") {
-    hardenSecretDir(dir, { required: true });
+    // Distinct timeout memo from management-token directory harden: a required
+    // management-dir timeout must not poison config mutation on the same home
+    // (windows-latest server-management-auth cases).
+    hardenSecretDir(dir, { required: true, timeoutMemoKey: `${dir}::config-mutation` });
   }
   const path = join(dir, CONFIG_MUTATION_DB_FILENAME);
   recordOwnedConfigPath(dir, path);
