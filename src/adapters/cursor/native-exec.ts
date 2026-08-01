@@ -87,7 +87,7 @@ export function cursorUnsafeNativeLocalExecEnabled(input: Pick<CursorNativeExecC
 const BLOB_TTL_MS = 15 * 60_000;
 const BLOB_MAX_ENTRIES = 4_096;
 const BLOB_MAX_ENTRY_BYTES = 16 * 1024 * 1024;
-const BLOB_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+export const CURSOR_BLOB_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 
 type CursorBlobProvenance = "local-regenerated" | "remote-setBlobArgs";
 export type CursorBlobRequestScopeToken = symbol;
@@ -121,7 +121,7 @@ const DEFAULT_BLOB_LIMITS: CursorBlobLimits = {
   ttlMs: BLOB_TTL_MS,
   maxEntries: BLOB_MAX_ENTRIES,
   maxEntryBytes: BLOB_MAX_ENTRY_BYTES,
-  maxTotalBytes: BLOB_MAX_TOTAL_BYTES,
+  maxTotalBytes: CURSOR_BLOB_MAX_TOTAL_BYTES,
 };
 
 const blobs = new Map<string, CursorBlobEntry>();

@@ -132,6 +132,26 @@ describe("debug frame logging", () => {
     expect(tail[0]!.line).toContain("two");
   });
 
+  test("provider and injection debug rings evict the oldest on entry 2001", () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      for (let index = 1; index <= 2_001; index++) {
+        appendDebugLogLine(`provider-${index}`);
+        injectionDebugLog(`injection-${index}`);
+      }
+      const provider = getDebugLogEntries({ limit: 3_000 });
+      const injection = getInjectionDebugLogEntries({ limit: 3_000 });
+      expect(provider).toHaveLength(2_000);
+      expect(injection).toHaveLength(2_000);
+      expect(provider[0]?.line).toBe("provider-2");
+      expect(injection[0]?.line).toBe("injection-2");
+      expect(provider.at(-1)?.line).toBe("provider-2001");
+      expect(injection.at(-1)?.line).toBe("injection-2001");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   test("same-millisecond bursts keep every line via seq cursor", () => {
     const now = Date.now();
     const spy = spyOn(Date, "now").mockReturnValue(now);

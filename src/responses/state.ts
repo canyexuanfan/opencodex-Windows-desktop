@@ -19,7 +19,7 @@ const SNAPSHOT_DEBOUNCE_MS = 2_000;
 /** In-memory high-water byte cap across all entries. Forced store:false retention (kiro/cursor
  * continuation chains) stores the full expanded input each turn — ~quadratic bytes per chain —
  * so a count cap alone cannot bound memory. Oldest-first eviction applies past this mark. */
-const MAX_STORED_RESPONSE_BYTES = 64 * 1024 * 1024;
+export const MAX_STORED_RESPONSE_BYTES = 64 * 1024 * 1024;
 /** Legacy snapshot selection only. Spill demotion is governed solely by the RAM cap above. */
 const SNAPSHOT_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const SNAPSHOT_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
@@ -616,6 +616,18 @@ function pruneResponses(at = now()): void {
       replaceWithSpillFailure(oldestId, entry);
     }
   }
+}
+
+/** Periodic TTL-only sweep; count/byte eviction remains owned by mutation paths. */
+export function sweepExpiredResponseStates(at = now()): number {
+  let removed = 0;
+  for (const [id, state] of states) {
+    if (at - state.createdAt <= RESPONSE_TTL_MS) continue;
+    deleteEntry(id);
+    removed += 1;
+  }
+  if (removed > 0) schedulePersist();
+  return removed;
 }
 
 export function responseContinuationRetainedStoreSnapshot(): RetainedStoreSnapshot {

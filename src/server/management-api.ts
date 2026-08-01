@@ -70,6 +70,7 @@ import type { ManagementContext } from "./management/context";
 export type { ManagementApiDeps } from "./management/context";
 import { fetchAllModels } from "./management/shared";
 import { CatalogGatherBusyError } from "../codex/catalog/provider-fetch";
+import { managementBodyTooLargeResponse } from "./management/body";
 
 // installed npm version instead of a stale hardcode.
 export const VERSION = (() => {
@@ -136,6 +137,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     ??     (await handleSystemRoutes(ctx))
       ?? (await handleSidebarRoutes(ctx));
   } catch (error) {
+    const tooLarge = managementBodyTooLargeResponse(error, req, config);
+    if (tooLarge) return tooLarge;
     if (error instanceof OAuthMutationBusyError) {
       return new Response(JSON.stringify({ error: { type: "server_error", code: "oauth_mutation_busy", message: error.message } }), {
         status: 503,

@@ -28,10 +28,11 @@ interface ReplayEntry {
 
 const MIN_SIGNATURE_LEN = 16;
 const REPLAY_TTL_MS = 60 * 60 * 1000; // 1h
-const REPLAY_MAX_ENTRIES = 10_240;
+export const ANTIGRAVITY_REPLAY_MAX_ENTRIES = 10_240;
 const REPLAY_EVICT_BATCH = 128;
 const REPLAY_MAX_CALLS_PER_SESSION = 256;
-const REPLAY_MAX_BYTES_PER_SESSION = 2 * 1024 * 1024;
+export const ANTIGRAVITY_REPLAY_MAX_BYTES_PER_SESSION = 2 * 1024 * 1024;
+export const ANTIGRAVITY_REPLAY_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const REPLAY_MAX_SIGNATURE_BYTES = 64 * 1024;
 
 interface ReplayLimits {
@@ -42,7 +43,7 @@ interface ReplayLimits {
 
 const DEFAULT_REPLAY_LIMITS: ReplayLimits = {
   maxCallsPerSession: REPLAY_MAX_CALLS_PER_SESSION,
-  maxBytesPerSession: REPLAY_MAX_BYTES_PER_SESSION,
+  maxBytesPerSession: ANTIGRAVITY_REPLAY_MAX_BYTES_PER_SESSION,
   maxSignatureBytes: REPLAY_MAX_SIGNATURE_BYTES,
 };
 
@@ -122,6 +123,12 @@ function deleteExpiredReplaySessions(now: number): void {
   for (const [key, entry] of replayCache) if (entry.expiresAtMs <= now) deleteReplaySession(key);
 }
 
+export function sweepExpiredAntigravityReplay(now = Date.now()): number {
+  const before = replayCache.size;
+  deleteExpiredReplaySessions(now);
+  return before - replayCache.size;
+}
+
 function deleteReplayCall(entry: ReplayEntry, callKey: string): number {
   const call = entry.byCall.get(callKey);
   if (!call) return 0;
@@ -143,11 +150,18 @@ function evictInnerCalls(entry: ReplayEntry): void {
 }
 
 function evictIfNeeded(): void {
-  if (replayCache.size <= REPLAY_MAX_ENTRIES) return;
-  const oldest = [...replayCache.entries()]
-    .sort((a, b) => a[1].expiresAtMs - b[1].expiresAtMs)
-    .slice(0, REPLAY_EVICT_BATCH);
-  for (const [key] of oldest) deleteReplaySession(key);
+  if (replayCache.size > ANTIGRAVITY_REPLAY_MAX_ENTRIES) {
+    const oldest = [...replayCache.entries()]
+      .sort((a, b) => a[1].expiresAtMs - b[1].expiresAtMs)
+      .slice(0, REPLAY_EVICT_BATCH);
+    for (const [key] of oldest) deleteReplaySession(key);
+  }
+  while (replayBytes > ANTIGRAVITY_REPLAY_MAX_TOTAL_BYTES) {
+    const oldestKey = [...replayCache.entries()]
+      .sort((a, b) => a[1].expiresAtMs - b[1].expiresAtMs)[0]?.[0];
+    if (oldestKey === undefined) return;
+    deleteReplaySession(oldestKey);
+  }
 }
 
 /** Gemini/Flash/Agent use the replay cache; Claude does not (inline sanitization instead). */

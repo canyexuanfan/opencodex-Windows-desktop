@@ -37,6 +37,16 @@ import {
   resetAppOwnedMemoryForTests,
 } from "../src/lib/app-owned-memory";
 import { registerAppOwnedMemorySweepFallback } from "../src/lib/app-owned-memory-stores";
+import {
+  clearResponseStateMemoryForTests,
+  rememberResponseState,
+  responseStateMetrics,
+} from "../src/responses/state";
+import {
+  __resetAntigravityReplayCache,
+  antigravityReplayMetrics,
+  observeAntigravityReplay,
+} from "../src/adapters/google-antigravity-replay";
 
 function context(
   generation: number,
@@ -57,15 +67,67 @@ function context(
 beforeEach(() => {
   resetStateStoreSweeperForTests();
   resetAppOwnedMemoryForTests();
+  clearResponseStateMemoryForTests();
+  __resetAntigravityReplayCache();
 });
 afterEach(() => {
   resetStateStoreSweeperForTests();
   resetAppOwnedMemoryForTests();
+  clearResponseStateMemoryForTests();
+  __resetAntigravityReplayCache();
   setOcxStartProcessCacheForTests([]);
   setOcxStartProcessProbeForTests(null);
 });
 
 describe("state-store sweeper", () => {
+  test("production registrations cover the hand-maintained owner inventory", () => {
+    expect(STATE_STORE_REGISTRATIONS.map(registration => registration.name)).toEqual([
+      "subagent-model-health",
+      "api-key-cooldowns",
+      "combo-target-cooldowns",
+      "anthropic-routing-health",
+      "xai-refresh-verdicts",
+      "responses-continuation",
+      "antigravity-replay",
+      "config-warning-memos",
+      "catalog-warning-memos",
+      "provider-fetch-warning-memos",
+      "combo-warning-memos",
+      "router-warning-memos",
+      "codex-quota",
+      "provider-quota-history",
+      "codex-routing-health",
+      "model-cache-history",
+      "pool-rotation",
+      "combo-rotation",
+      "guardian-backoff",
+      "codex-reauth",
+      "oauth-reauth",
+      "gcp-adc",
+      "config-ownership",
+      "oauth-flow-state",
+      "ocx-start-process-cache",
+    ]);
+  });
+
+  test("a sweeper tick expires continuation and Antigravity rows without store traffic", () => {
+    rememberResponseState({ input: "old" }, { id: "resp_sweeper_ttl", output: [], status: "completed" });
+    observeAntigravityReplay("gemini-3-pro", "session-old", [{
+      thoughtSignature: "signature-long-enough-for-sweep",
+      functionCall: { name: "lookup", args: { q: "old" } },
+    }]);
+    expect(responseStateMetrics().count).toBe(1);
+    expect(antigravityReplayMetrics().sessions).toBe(1);
+
+    for (const name of ["responses-continuation", "antigravity-replay"]) {
+      registerStateStore(STATE_STORE_REGISTRATIONS.find(registration => registration.name === name)!);
+    }
+    const result = sweepExpired(Date.now() + 60 * 60 * 1_000 + 1);
+    expect(result.rowsRemoved).toBe(2);
+    expect(responseStateMetrics().count).toBe(0);
+    expect(antigravityReplayMetrics().sessions).toBe(0);
+  });
+
   test("global fake-clock sweep invokes every production clock registration", () => {
     const visits: string[] = [];
     for (const registration of STATE_STORE_REGISTRATIONS) {

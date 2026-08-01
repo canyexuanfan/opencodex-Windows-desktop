@@ -42,6 +42,7 @@ import {
 } from "../src/responses/state";
 import {
   readResponseSpill,
+  deleteResponseSpill,
   recoverOrphanedResponseSpills,
   responseSpillDirectory,
   setSpillIoForTest,
@@ -605,7 +606,15 @@ describe("Responses previous_response_id state", () => {
     setSpillIoForTest({ record: event => events.push(event) });
     setResponseStateByteCapForTests(1_024);
     rememberLarge("resp_durable_order", "x".repeat(8_000));
-    expect(events).toEqual(["write", "fsync", "close", "harden", "publish", "stub-swap"]);
+    expect(events).toEqual(["write", "fsync", "close", "harden", "publish", "dir-fsync", "stub-swap"]);
+  });
+
+  test("directory fsync follows spill unlink", () => {
+    const ref = writeResponseSpillDurably("resp_unlink_order", { createdAt: Date.now(), items: ["x"] });
+    const events: string[] = [];
+    setSpillIoForTest({ record: event => events.push(event) });
+    deleteResponseSpill(ref);
+    expect(events).toEqual(["dir-fsync"]);
   });
 
   test("spill temp cleanup forgets successful ACL memos and retains failed removals", () => {

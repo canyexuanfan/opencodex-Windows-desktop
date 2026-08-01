@@ -66,7 +66,7 @@ export interface ResponseSpillIoForTest {
    *  null for end-of-directory. Lets tests prove the scan cap binds without
    *  materializing thousands of real files. */
   readdirEntry?: () => string | null;
-  record?: (event: "write" | "fsync" | "close" | "harden" | "publish" | "stub-swap") => void;
+  record?: (event: "write" | "fsync" | "close" | "harden" | "publish" | "dir-fsync" | "stub-swap") => void;
 }
 
 let spillIoForTest: ResponseSpillIoForTest | null = null;
@@ -76,8 +76,24 @@ export function setSpillIoForTest(io: ResponseSpillIoForTest | null): void {
   spillIoForTest = io;
 }
 
-function record(event: "write" | "fsync" | "close" | "harden" | "publish" | "stub-swap"): void {
+function record(event: "write" | "fsync" | "close" | "harden" | "publish" | "dir-fsync" | "stub-swap"): void {
   spillIoForTest?.record?.(event);
+}
+
+function fsyncDirectoryBestEffort(dir: string): void {
+  let fd: number | null = null;
+  try {
+    fd = openSync(dir, "r");
+    if (spillIoForTest?.fsync) spillIoForTest.fsync(fd);
+    else fsyncSync(fd);
+    record("dir-fsync");
+  } catch {
+    // Windows and some filesystems do not support fsync on directory handles.
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* best effort */ }
+    }
+  }
 }
 
 export function noteStubSwapForTest(): void {
@@ -251,6 +267,7 @@ export function writeResponseSpillDurably(
       const destinationPath = join(dir, fileName);
       try {
         publishNoReplace(publishTempPath, destinationPath);
+        fsyncDirectoryBestEffort(dir);
         unlink(publishTempPath);
         tempPath = null;
         return { version: 1, fileName, digest, payloadBytes: bytes.byteLength };
@@ -301,7 +318,11 @@ export function readResponseSpill(responseId: string, ref: ResponseSpillRef): Re
 
 export function deleteResponseSpill(ref: ResponseSpillRef): void {
   if (!validSpillRef(ref)) return;
-  try { unlink(join(responseSpillDirectory(), ref.fileName)); } catch { /* best effort */ }
+  const dir = responseSpillDirectory();
+  try {
+    unlink(join(dir, ref.fileName));
+    fsyncDirectoryBestEffort(dir);
+  } catch { /* best effort */ }
 }
 
 export function recoverOrphanedResponseSpills(

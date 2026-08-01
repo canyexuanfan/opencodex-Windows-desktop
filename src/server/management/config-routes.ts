@@ -71,6 +71,7 @@ import { displayCodexRuntimePath, effortClampAppliesToRuntime, loadLastEffortCla
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 
 export async function handleConfigRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
@@ -155,7 +156,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/startup-action" && req.method === "POST") {
     let body: { action?: unknown; repair?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!body || !["install-service", "install-shim"].includes(String(body.action))) {
       return jsonResponse({ error: "action must be install-service or install-shim" }, 400);
     }
@@ -184,7 +185,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/windows-tray" && req.method === "POST") {
     let body: { action?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!body || !["install", "start", "stop", "uninstall"].includes(String(body.action))) {
       return jsonResponse({ error: "action must be install, start, stop, or uninstall" }, 400);
     }
@@ -205,7 +206,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     // change applies to NEW turns only — the config object is shared by
     // reference with the request handlers, no restart needed.
     let body: { codexAutoStart?: unknown; streamMode?: unknown; appOwnedMemoryBudgetMb?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (body.codexAutoStart === undefined && body.streamMode === undefined && body.appOwnedMemoryBudgetMb === undefined) {
       return jsonResponse({ error: "provide codexAutoStart, streamMode, or appOwnedMemoryBudgetMb" }, 400);
     }
@@ -279,7 +280,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/update/run" && req.method === "POST") {
     const { normalizeUpdateChannel, startUpdateJob, UpdateJobError } = await import("../../update/job");
     let body: { tag?: unknown; restart?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (body.tag !== undefined && body.tag !== "latest" && body.tag !== "preview") {
       return jsonResponse({ error: "tag must be latest or preview" }, 400);
     }
@@ -318,7 +319,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/sidecar-settings" && req.method === "PUT") {
     let raw: unknown;
-    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     // Strict shape (review F2): reject non-object bodies and non-object sections instead of throwing
     // on `null` or silently accepting arrays/strings as no-op updates.
     if (!isPlainRecord(raw)) return jsonResponse({ error: "body must be a JSON object" }, 400);
@@ -393,7 +394,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/shadow-call-settings" && req.method === "PUT") {
     let raw: unknown;
-    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!isPlainRecord(raw)) return jsonResponse({ error: "body must be a JSON object" }, 400);
     const body = raw as { enabled?: unknown; model?: unknown };
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") {

@@ -13,6 +13,7 @@ import {
 } from "../src/adapters/cursor/framing";
 import {
   CURSOR_MAX_CONNECT_FRAME_BYTES,
+  CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES,
   CURSOR_MAX_PENDING_FRAMES,
   createTranslatorBudget,
 } from "../src/lib/translator-budget";
@@ -151,14 +152,13 @@ describe("Cursor Connect envelope framing", () => {
     expect(copies).toBe(0);
   });
 
-  test("Cursor pending-to-frame lease transfer admits an exact 32 MiB payload", () => {
+  test("Cursor pending-to-frame copy reports a 32 MiB overlap at the 16 MiB live maximum", () => {
     const budget = createTranslatorBudget();
-    const encoded = encodeConnectFrame(new Uint8Array(CURSOR_MAX_CONNECT_FRAME_BYTES));
-    budget.chargeRetained(CURSOR_MAX_CONNECT_FRAME_BYTES, { kind: "cursor_transport" });
-    budget.releaseRetained(CURSOR_MAX_CONNECT_FRAME_BYTES, { kind: "cursor_transport" });
+    const encoded = encodeConnectFrame(new Uint8Array(CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES));
+    budget.chargeRetained(CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES, { kind: "cursor_transport" });
     const decoded = decodeAvailableConnectFrames(
       encoded,
-      CURSOR_MAX_CONNECT_FRAME_BYTES,
+      CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES,
       1,
       copied => budget.reserveTransient(copied, { kind: "cursor_transport" }),
     );
@@ -167,6 +167,29 @@ describe("Cursor Connect envelope framing", () => {
       currentBytes: CURSOR_MAX_CONNECT_FRAME_BYTES,
       highWaterBytes: CURSOR_MAX_CONNECT_FRAME_BYTES,
     });
+    budget.releaseRetained(CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES, { kind: "cursor_transport" });
+    expect(budget.snapshot().currentBytes).toBe(CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES);
+    budget.dispose();
+  });
+
+  test("Cursor batch decode rolls earlier frame reservations back when a later frame is rejected", () => {
+    const payloadBytes = 10 * 1024 * 1024;
+    const first = encodeConnectFrame(new Uint8Array(payloadBytes));
+    const second = encodeConnectFrame(new Uint8Array(payloadBytes));
+    const input = new Uint8Array(first.byteLength + second.byteLength);
+    input.set(first, 0);
+    input.set(second, first.byteLength);
+    const budget = createTranslatorBudget();
+    budget.chargeRetained(2 * payloadBytes, { kind: "cursor_transport" });
+
+    expect(() => decodeAvailableConnectFrames(
+      input,
+      CURSOR_MAX_CONNECT_FRAME_BYTES,
+      2,
+      copied => budget.reserveTransient(copied, { kind: "cursor_transport" }),
+    )).toThrow(expect.objectContaining({ code: "translation_buffer_limit" }));
+    expect(budget.snapshot().currentBytes).toBe(2 * payloadBytes);
+
     budget.dispose();
   });
 

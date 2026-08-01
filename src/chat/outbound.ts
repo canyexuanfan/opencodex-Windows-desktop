@@ -136,6 +136,19 @@ function chunkBase(id: string, model: string, created: number): Rec {
   };
 }
 
+function appendedUtf8Bytes(previous: string, previousBytes: number, fragment: string): number {
+  let nextBytes = previousBytes + Buffer.byteLength(fragment);
+  const previousLast = previous.charCodeAt(previous.length - 1);
+  const fragmentFirst = fragment.charCodeAt(0);
+  if (previousLast >= 0xd800 && previousLast <= 0xdbff
+    && fragmentFirst >= 0xdc00 && fragmentFirst <= 0xdfff) {
+    // Buffer.byteLength() replaces each isolated surrogate with three bytes, while the joined
+    // pair is one four-byte scalar. Preserve full-string sizing without re-encoding the prefix.
+    nextBytes -= 2;
+  }
+  return nextBytes;
+}
+
 /**
  * Streaming: Responses SSE bytes -> Chat Completions SSE bytes.
  */
@@ -158,6 +171,7 @@ export function responsesSseToChatCompletionsSse(
   const toolCallIdByIndex = new Map<number, string>();
   const toolNameByIndex = new Map<number, string>();
   const toolArgumentsByIndex = new Map<number, string>();
+  const toolArgumentBytesByIndex = new Map<number, number>();
   const emittedToolIndexes = new Set<number>();
   let nextToolIndex = 0;
   let sseIterator: AsyncGenerator<{ event?: string; data: string }> | undefined;
@@ -184,12 +198,33 @@ export function responsesSseToChatCompletionsSse(
   const replaceToolArguments = (toolIndex: number, next: string) => {
     const previous = toolArgumentsByIndex.get(toolIndex) ?? "";
     if (previous === next && toolArgumentsByIndex.has(toolIndex)) return;
+    const previousBytes = toolArgumentBytesByIndex.get(toolIndex) ?? 0;
+    const nextBytes = Buffer.byteLength(next);
     const callId = toolCallIdByIndex.get(toolIndex);
     const scope = { kind: "tool_args" as const, ...(callId ? { callId } : {}) };
-    const reservation = translatorBudget.reserveTransient(Buffer.byteLength(next), scope);
+    const reservation = translatorBudget.reserveTransient(nextBytes, scope);
     toolArgumentsByIndex.set(toolIndex, next);
+    toolArgumentBytesByIndex.set(toolIndex, nextBytes);
     reservation.commitRetained();
-    translatorBudget.releaseRetained(Buffer.byteLength(previous), scope);
+    translatorBudget.releaseRetained(previousBytes, scope);
+  };
+  const appendToolArguments = (toolIndex: number, fragment: string) => {
+    const previous = toolArgumentsByIndex.get(toolIndex) ?? "";
+    const previousBytes = toolArgumentBytesByIndex.get(toolIndex) ?? 0;
+    const nextBytes = appendedUtf8Bytes(previous, previousBytes, fragment);
+    const callId = toolCallIdByIndex.get(toolIndex);
+    const scope = { kind: "tool_args" as const, ...(callId ? { callId } : {}) };
+    const reservation = translatorBudget.reserveTransient(nextBytes, scope);
+    try {
+      const next = previous + fragment;
+      toolArgumentsByIndex.set(toolIndex, next);
+      toolArgumentBytesByIndex.set(toolIndex, nextBytes);
+      reservation.commitRetained();
+      translatorBudget.releaseRetained(previousBytes, scope);
+    } catch (error) {
+      reservation.release();
+      throw error;
+    }
   };
       const emit = (payload: Rec | "[DONE]") => {
         if (failed) return;
@@ -354,7 +389,7 @@ export function responsesSseToChatCompletionsSse(
             const toolIndex = (itemId ? toolIndexByItemId.get(itemId) : undefined)
               ?? (nextToolIndex > 0 ? nextToolIndex - 1 : 0);
             ensureRole();
-            replaceToolArguments(toolIndex, (toolArgumentsByIndex.get(toolIndex) ?? "") + data.delta);
+            appendToolArguments(toolIndex, data.delta);
             break;
           }
           case "response.function_call_arguments.done": {
@@ -593,7 +628,7 @@ export async function collectChatCompletion(
   let buffer = "";
   let content = "";
   let reasoning = "";
-  const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+  const toolCalls = new Map<number, { id: string; name: string; arguments: string; argumentBytes: number }>();
   let finishReason = "stop";
   let usage: unknown;
   let streamError: ChatCompletionsStreamError | null = null;
@@ -662,21 +697,26 @@ export async function collectChatCompletion(
             for (const tc of delta.tool_calls) {
               if (!isRec(tc)) continue;
               const index = typeof tc.index === "number" ? tc.index : 0;
-              const current = toolCalls.get(index) ?? { id: "", name: "", arguments: "" };
+              const current = toolCalls.get(index) ?? { id: "", name: "", arguments: "", argumentBytes: 0 };
               if (typeof tc.id === "string") current.id = tc.id;
               const fn = isRec(tc.function) ? tc.function : {};
               // Done-frame final arguments are authoritative last-write-wins snapshots.
               if (typeof fn.name === "string" && fn.name.length > 0) current.name = fn.name;
               if (typeof fn.arguments === "string") {
-                const previousArguments = current.arguments;
-                if (fn.arguments.startsWith("{") || fn.arguments.startsWith("[") || current.arguments.length === 0) {
-                  current.arguments = fn.arguments;
-                } else {
-                  current.arguments += fn.arguments;
+                const replace = fn.arguments.startsWith("{") || fn.arguments.startsWith("[") || current.arguments.length === 0;
+                const nextBytes = replace
+                  ? Buffer.byteLength(fn.arguments)
+                  : appendedUtf8Bytes(current.arguments, current.argumentBytes, fn.arguments);
+                const reservation = translatorBudget.reserveTransient(nextBytes, { kind: "retained_collectors" });
+                try {
+                  current.arguments = replace ? fn.arguments : current.arguments + fn.arguments;
+                  reservation.commitRetained();
+                  translatorBudget.releaseRetained(current.argumentBytes, { kind: "retained_collectors" });
+                  current.argumentBytes = nextBytes;
+                } catch (error) {
+                  reservation.release();
+                  throw error;
                 }
-                const reservation = translatorBudget.reserveTransient(Buffer.byteLength(current.arguments), { kind: "retained_collectors" });
-                reservation.commitRetained();
-                translatorBudget.releaseRetained(Buffer.byteLength(previousArguments), { kind: "retained_collectors" });
               }
               toolCalls.set(index, current);
             }

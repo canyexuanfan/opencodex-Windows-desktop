@@ -67,19 +67,22 @@ import { buildApiAccessEndpoints } from "./api-access";
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+import { readManagementJsonBody, readManagementJsonBodyOr, rethrowManagementBodyTooLarge } from "./body";
 import { codexAccountNamespaceProviderCollisionError } from "../../codex/account-namespace-match";
 
 /**
- * Parses a JSON object body, or null. Never throws: `await req.json()` rejects on
+ * Parses a bounded JSON object body, or null. Malformed JSON is swallowed; an
+ * oversized body still throws so the management dispatcher can return 413.
  * a malformed body, which used to surface as a 500 from the key routes.
  */
 async function readJsonBody(req: Request): Promise<Record<string, unknown> | null> {
   try {
-    const parsed: unknown = await req.json();
+    const parsed: unknown = await readManagementJsonBody(req);
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? parsed as Record<string, unknown>
       : null;
-  } catch {
+  } catch (error) {
+    rethrowManagementBodyTooLarge(error);
     return null;
   }
 }
@@ -125,7 +128,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   // the provider's loopback callback server (inside this process) captures the redirect in the
   // background, then the credential is persisted. The GUI opens the URL and polls /api/oauth/status.
   if (url.pathname === "/api/oauth/login" && req.method === "POST") {
-    const body = await req.json().catch(() => ({})) as { provider?: string; addAccount?: boolean; accountId?: string; reauth?: boolean };
+    const body = await readManagementJsonBodyOr(req, {}) as { provider?: string; addAccount?: boolean; accountId?: string; reauth?: boolean };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const namespaceCollision = codexAccountNamespaceProviderCollisionError(config.codexAccountNamespaces, provider);
@@ -172,7 +175,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   // Cancel an in-progress browser/device OAuth login (GUI "Cancel" / modal close). Guarded by
   // the same public predicate as /api/oauth/login — only publicly startable flows are cancellable.
   if (url.pathname === "/api/oauth/login/cancel" && req.method === "POST") {
-    const body = await req.json().catch(() => ({})) as { provider?: string };
+    const body = await readManagementJsonBodyOr(req, {}) as { provider?: string };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const { cancelLoginFlow } = await import("../../oauth");
@@ -183,7 +186,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   // Manual fallback for browser OAuth: paste the final redirect URL (or authorization code)
   // when the browser cannot reach the loopback callback (remote/SSH/blocked localhost).
   if (url.pathname === "/api/oauth/login/code" && req.method === "POST") {
-    const body = await req.json().catch(() => ({})) as { provider?: string; input?: string; code?: string };
+    const body = await readManagementJsonBodyOr(req, {}) as { provider?: string; input?: string; code?: string };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const input = typeof body.input === "string" ? body.input : typeof body.code === "string" ? body.code : "";
@@ -268,7 +271,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     });
   }
   if (url.pathname === "/api/oauth/accounts/active" && req.method === "PUT") {
-    const body = await req.json().catch(() => ({})) as { provider?: string; accountId?: string };
+    const body = await readManagementJsonBodyOr(req, {}) as { provider?: string; accountId?: string };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     if (!body.accountId) return jsonResponse({ error: "missing accountId" }, 400);
@@ -298,7 +301,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     });
   }
   if (url.pathname === "/api/oauth/accounts/pool" && (req.method === "PUT" || req.method === "PATCH")) {
-    const parsedBody = await req.json().catch(() => ({}));
+    const parsedBody = await readManagementJsonBodyOr(req, {});
     if (!isPlainRecord(parsedBody)) {
       return jsonResponse({ error: "body must be an object" }, 400);
     }
@@ -363,7 +366,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     });
   }
   if (url.pathname === "/api/oauth/accounts/clear-cooldown" && req.method === "POST") {
-    const body = await req.json().catch(() => ({})) as { provider?: unknown; accountId?: unknown };
+    const body = await readManagementJsonBodyOr(req, {}) as { provider?: unknown; accountId?: unknown };
     const provider = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
     const accountId = typeof body.accountId === "string" ? body.accountId.trim() : "";
     if (provider !== "anthropic") return jsonResponse({ error: "clear-cooldown is only supported for anthropic" }, 400);
@@ -374,7 +377,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   }
 
   if (url.pathname === "/api/oauth/accounts/alias" && req.method === "PUT") {
-    const body = await req.json().catch(() => ({})) as { provider?: unknown; accountId?: unknown; alias?: unknown };
+    const body = await readManagementJsonBodyOr(req, {}) as { provider?: unknown; accountId?: unknown; alias?: unknown };
     const provider = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
     const accountId = typeof body.accountId === "string" ? body.accountId.trim() : "";
     const alias = typeof body.alias === "string" ? body.alias.trim() : "";
@@ -417,7 +420,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     return jsonResponse(listProviderApiKeys(config, name));
   }
   if (url.pathname === "/api/providers/keys" && req.method === "POST") {
-    const body = await req.json().catch(() => ({})) as { name?: string; key?: string; label?: string };
+    const body = await readManagementJsonBodyOr(req, {}) as { name?: string; key?: string; label?: string };
     const name = (body.name ?? "").trim();
     if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
     if (typeof body.key !== "string" || !body.key.trim()) return jsonResponse({ error: "key is required" }, 400);
@@ -433,7 +436,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     return jsonResponse({ ok: true, id: result.id }, 201);
   }
   if (url.pathname === "/api/providers/keys/active" && req.method === "PUT") {
-    const body = await req.json().catch(() => ({})) as { name?: string; id?: string };
+    const body = await readManagementJsonBodyOr(req, {}) as { name?: string; id?: string };
     const name = (body.name ?? "").trim();
     if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
     if (!body.id) return jsonResponse({ error: "missing id" }, 400);
@@ -448,7 +451,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     return jsonResponse({ ok: true, name, activeId: body.id });
   }
   if (url.pathname === "/api/providers/keys/alias" && req.method === "PUT") {
-    const body = await req.json().catch(() => ({})) as { name?: unknown; id?: unknown; alias?: unknown };
+    const body = await readManagementJsonBodyOr(req, {}) as { name?: unknown; id?: unknown; alias?: unknown };
     const name = typeof body.name === "string" ? body.name.trim() : "";
     const id = typeof body.id === "string" ? body.id.trim() : "";
     const alias = typeof body.alias === "string" ? body.alias.trim() : "";

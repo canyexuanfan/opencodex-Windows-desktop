@@ -77,6 +77,7 @@ import { applySystemEnvToggle } from "../system-env";
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import {
   discardUsageSummaryCacheEntry,
   getUsageSummaryCacheEntry,
@@ -160,7 +161,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/debug" && req.method === "PUT") {
     let body: { debug?: unknown; usage?: unknown; injection?: unknown; claude?: unknown; reset?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (body.reset === true) return jsonResponse(clearDebugSettings());
     if (body.reset === "debug" || body.reset === "provider") return jsonResponse(clearDebugSetting("debug"));
     if (body.reset === "usage") return jsonResponse(clearDebugSetting("usage"));
@@ -267,7 +268,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/cleanup/preview" && req.method === "POST") {
     let body: { percent?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid_json" }, 400); }
     const percent = typeof body?.percent === "number" ? body.percent : Number.NaN;
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
       return jsonResponse({ error: "invalid_percent" }, 400);
@@ -291,7 +292,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/cleanup" && req.method === "POST") {
     let body: { percent?: unknown; mode?: unknown; digest?: unknown; _test?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid_json" }, 400); }
     const percent = typeof body?.percent === "number" ? body.percent : Number.NaN;
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
       return jsonResponse({ error: "invalid_percent" }, 400);
@@ -392,7 +393,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/trash/restore" && req.method === "POST") {
     let body: { id?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid_json" }, 400); }
     const id = typeof body?.id === "string" ? body.id : "";
     if (!id.trim()) {
       return jsonResponse({ error: "invalid_trash", message: "Trash entry id is required." }, 400);
@@ -472,7 +473,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/cleanup-policy" && req.method === "PUT") {
     let raw: unknown;
-    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid_json" }, 400); }
     const previous = normalizeStorageCleanupPolicy(config.storageCleanupPolicy);
     const parsed = parseStorageCleanupPolicyInput(raw, previous);
     if (!parsed.ok) return jsonResponse({ error: parsed.error }, 400);

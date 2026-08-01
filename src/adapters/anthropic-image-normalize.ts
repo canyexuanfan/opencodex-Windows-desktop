@@ -99,7 +99,7 @@ type ProcessResult =
  * not entry count. Entries are immutable snapshots — demotions write NEW tier-suffixed
  * keys, never mutate stored values.
  */
-const CACHE_BYTE_CAP = 64 * MiB;
+export const IMAGE_NORMALIZE_CACHE_MAX_BYTES = 64 * MiB;
 const CACHE_MAX_ENTRIES = 4_096;
 const CACHE_MAX_ENTRY_BYTES = 20 * MiB;
 // "pass" = validated pass-through; "miss" = this position's ladder cannot meet its hard
@@ -117,7 +117,7 @@ interface NormalizeCacheLimits {
   maxEntryBytes: number;
 }
 const DEFAULT_CACHE_LIMITS: NormalizeCacheLimits = {
-  maxBytes: CACHE_BYTE_CAP,
+  maxBytes: IMAGE_NORMALIZE_CACHE_MAX_BYTES,
   maxEntries: CACHE_MAX_ENTRIES,
   maxEntryBytes: CACHE_MAX_ENTRY_BYTES,
 };

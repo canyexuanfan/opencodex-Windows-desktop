@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   appOwnedBytesSnapshot,
+  APP_OWNED_WORST_CASE_PINNED_BYTES,
   configureAppOwnedMemoryBudget,
   enforceAppOwnedMemoryBudget,
   registerObservedBuffer,
@@ -9,6 +10,11 @@ import {
   type AppOwnedRetainedCategory,
   type RetainedStoreSnapshot,
 } from "../src/lib/app-owned-memory";
+import { CURSOR_BLOB_MAX_TOTAL_BYTES } from "../src/adapters/cursor/native-exec";
+import { MAX_STORED_RESPONSE_BYTES } from "../src/responses/state";
+import { IMAGE_NORMALIZE_CACHE_MAX_BYTES } from "../src/adapters/anthropic-image-normalize";
+import { VISION_DESCRIPTION_CACHE_MAX_BYTES } from "../src/vision";
+import { ANTIGRAVITY_REPLAY_MAX_TOTAL_BYTES } from "../src/adapters/google-antigravity-replay";
 import {
   clearRequestLogsForTests,
   evictOldestRequestLogForBudget,
@@ -74,6 +80,15 @@ afterEach(() => {
 });
 
 describe("app-owned retained memory", () => {
+  test("independent store caps keep worst-case pinned headroom below the hard ceiling", () => {
+    const boundedStoreBytes = CURSOR_BLOB_MAX_TOTAL_BYTES
+      + MAX_STORED_RESPONSE_BYTES
+      + IMAGE_NORMALIZE_CACHE_MAX_BYTES
+      + VISION_DESCRIPTION_CACHE_MAX_BYTES
+      + ANTIGRAVITY_REPLAY_MAX_TOTAL_BYTES;
+    expect(boundedStoreBytes).toBeLessThan(APP_OWNED_WORST_CASE_PINNED_BYTES);
+  });
+
   test("snapshot is observe-only and never calls an eviction callback", () => {
     const order: string[] = [];
     registerRows("logs", "logs", [{ bytes: 4, at: 1 }], order);

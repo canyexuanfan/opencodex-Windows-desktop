@@ -38,6 +38,13 @@ function assertBodySizeWithinLimit(body: Uint8Array, maxBytes: number): Uint8Arr
   return body;
 }
 
+function declaredBodyLength(req: Request): number | null {
+  const raw = req.headers.get("content-length");
+  if (raw === null || raw.trim() === "") return null;
+  const length = Number(raw);
+  return Number.isFinite(length) && length >= 0 ? length : null;
+}
+
 function inflateDeflateBody(compressed: Uint8Array<ArrayBuffer>, opts: { maxOutputLength: number }): Uint8Array {
   // HTTP "deflate" appears both zlib-wrapped and raw in the wild (Bun.deflateSync emits raw,
   // which the previous Bun.inflateSync accepted). Try zlib-wrapped first, fall back to raw —
@@ -78,20 +85,34 @@ export function decodeRequestBody(
   return assertBodySizeWithinLimit(decoded, maxBytes);
 }
 
-/** Parse a JSON request body, transparently decoding compressed payloads. */
-export async function readJsonRequestBody(req: Request, budget?: TranslatorBudget): Promise<unknown> {
+/** Parse a bounded JSON request body, transparently decoding compressed payloads. */
+export async function readBoundedJsonRequestBody(
+  req: Request,
+  maxBytes: number,
+  budget?: TranslatorBudget,
+): Promise<unknown> {
   const encoding = req.headers.get("content-encoding");
-  const declaredLength = Number(req.headers.get("content-length"));
-  const releaseReservation = budget && Number.isFinite(declaredLength) && declaredLength > 0
+  const declaredLength = declaredBodyLength(req);
+  // Reject an honest oversized declaration before req.arrayBuffer() can allocate it.
+  // Missing, malformed, or dishonest declarations remain covered by decodeRequestBody's
+  // post-read cap below.
+  if (declaredLength !== null && declaredLength > maxBytes) {
+    throw new DecompressedBodyTooLargeError(declaredLength, maxBytes);
+  }
+  const releaseReservation = budget && declaredLength !== null && declaredLength > 0
     ? budget.observeAcceptedRequestCopy(declaredLength)
     : undefined;
-  const raw = new Uint8Array(await req.arrayBuffer());
-  releaseReservation?.();
+  let raw: Uint8Array;
+  try {
+    raw = new Uint8Array(await req.arrayBuffer());
+  } finally {
+    releaseReservation?.();
+  }
   const releaseRaw = budget?.observeAcceptedRequestCopy(raw.byteLength);
   let releaseDecoded: (() => void) | undefined;
   let releaseText: (() => void) | undefined;
   try {
-    const decoded = decodeRequestBody(raw, encoding);
+    const decoded = decodeRequestBody(raw, encoding, maxBytes);
     releaseDecoded = decoded === raw ? undefined : budget?.observeAcceptedRequestCopy(decoded.byteLength);
     const text = new TextDecoder().decode(decoded);
     releaseText = budget?.observeAcceptedRequestCopy(new TextEncoder().encode(text).byteLength);
@@ -103,4 +124,9 @@ export async function readJsonRequestBody(req: Request, budget?: TranslatorBudge
     releaseDecoded?.();
     releaseRaw?.();
   }
+}
+
+/** Parse a JSON data-plane body using the shared 256 MiB admission cap. */
+export function readJsonRequestBody(req: Request, budget?: TranslatorBudget): Promise<unknown> {
+  return readBoundedJsonRequestBody(req, MAX_DECOMPRESSED_BODY_BYTES, budget);
 }

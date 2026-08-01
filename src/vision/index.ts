@@ -18,7 +18,7 @@ const DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-5";
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_DESCRIPTIONS_PER_TURN = 8;
 const DESCRIPTION_CACHE_MAX_ENTRIES = 256;
-const DESCRIPTION_CACHE_MAX_BYTES = 1024 * 1024;
+export const VISION_DESCRIPTION_CACHE_MAX_BYTES = 1024 * 1024;
 const descriptionEncoder = new TextEncoder();
 /** Max images described in parallel — keeps first-token latency bounded without flooding the backend. */
 const VISION_CONCURRENCY = 3;
@@ -91,7 +91,7 @@ class BoundedLruDescriptionCache implements VisionDescriptionCache {
 
 let descriptionCacheLimits = {
   maxEntries: DESCRIPTION_CACHE_MAX_ENTRIES,
-  maxBytes: DESCRIPTION_CACHE_MAX_BYTES,
+  maxBytes: VISION_DESCRIPTION_CACHE_MAX_BYTES,
 };
 
 function defaultDescriptionCache(): VisionDescriptionCache {
@@ -113,8 +113,8 @@ export function setVisionDescriptionCacheLimitsForTests(
   limits?: { maxEntries?: number; maxBytes?: number },
 ): void {
   descriptionCacheLimits = limits
-    ? { maxEntries: limits.maxEntries ?? DESCRIPTION_CACHE_MAX_ENTRIES, maxBytes: limits.maxBytes ?? DESCRIPTION_CACHE_MAX_BYTES }
-    : { maxEntries: DESCRIPTION_CACHE_MAX_ENTRIES, maxBytes: DESCRIPTION_CACHE_MAX_BYTES };
+    ? { maxEntries: limits.maxEntries ?? DESCRIPTION_CACHE_MAX_ENTRIES, maxBytes: limits.maxBytes ?? VISION_DESCRIPTION_CACHE_MAX_BYTES }
+    : { maxEntries: DESCRIPTION_CACHE_MAX_ENTRIES, maxBytes: VISION_DESCRIPTION_CACHE_MAX_BYTES };
   descriptionCache = defaultDescriptionCache();
 }
 

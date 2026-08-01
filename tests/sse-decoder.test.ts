@@ -89,20 +89,39 @@ describe("text/event-stream decoder", () => {
     expect("kind" in records[0]).toBe(false);
   });
 
-  test("admits 17 MiB and exact 32 MiB events without transient double-counting", async () => {
+  test("admits 17 MiB and exact 32 MiB logical events while accounting source/value overlap", async () => {
     for (const size of [17 * 1024 * 1024, TRANSLATOR_MAX_SSE_EVENT_BYTES]) {
       const payload = "x".repeat(size);
-      const records = await collect([`data: ${payload}\n\n`]);
-      expect(records).toHaveLength(1);
-      expect(records[0]?.data.length).toBe(size);
+      const translatorBudget = createTranslatorBudget({ maxTurnBytes: 4 * TRANSLATOR_MAX_SSE_EVENT_BYTES });
+      try {
+        const records = [];
+        for await (const record of decodeServerSentEvents(
+          chunkedStream([`data: ${payload}\n\n`]),
+          { translatorBudget },
+        )) records.push(record);
+        expect(records).toHaveLength(1);
+        expect(records[0]?.data.length).toBe(size);
+        expect(translatorBudget.snapshot().highWaterBytes).toBeGreaterThanOrEqual(3 * size);
+        expect(translatorBudget.snapshot().currentBytes).toBe(0);
+      } finally {
+        translatorBudget.dispose();
+      }
     }
   }, 60_000);
 
   test("rejects an SSE event one byte over 32 MiB", async () => {
     const payload = "x".repeat(TRANSLATOR_MAX_SSE_EVENT_BYTES + 1);
-    await expect(collect([`data: ${payload}\n\n`])).rejects.toMatchObject({
-      code: "translation_buffer_limit",
-    });
+    const translatorBudget = createTranslatorBudget({ maxTurnBytes: 4 * TRANSLATOR_MAX_SSE_EVENT_BYTES });
+    try {
+      await expect(async () => {
+        for await (const _record of decodeServerSentEvents(
+          chunkedStream([`data: ${payload}\n\n`]),
+          { translatorBudget },
+        )) { /* unreachable */ }
+      }).toThrow(expect.objectContaining({ code: "translation_buffer_limit" }));
+    } finally {
+      translatorBudget.dispose();
+    }
   }, 60_000);
 
   test("rejects a 20 MiB event while the consumer turn already retains 20 MiB", async () => {

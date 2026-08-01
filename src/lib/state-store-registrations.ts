@@ -34,6 +34,8 @@ import { sweepExpiredAnthropicRoutingHealth } from "../oauth/anthropic-routing";
 import { listLiveOAuthAccountKeys, reconcileOAuthReauthState } from "../oauth/store";
 import { reconcileGuardianBackoff } from "../oauth/token-guardian";
 import { sweepExpiredApiKeyCooldowns } from "../providers/key-failover";
+import { sweepExpiredResponseStates } from "../responses/state";
+import { sweepExpiredAntigravityReplay } from "../adapters/google-antigravity-replay";
 import { reconcileProviderAccountQuotaRows } from "../providers/quota";
 import { reconcileRouterWarningMemos } from "../router";
 import type { OcxConfig } from "../types";
@@ -80,6 +82,8 @@ export const STATE_STORE_REGISTRATIONS = [
   },
   { name: "anthropic-routing-health", sweepExpired: sweepExpiredAnthropicRoutingHealth },
   { name: "xai-refresh-verdicts", sweepExpired: sweepExpiredXaiPermanentFailureVerdicts },
+  { name: "responses-continuation", sweepExpired: sweepExpiredResponseStates },
+  { name: "antigravity-replay", sweepExpired: sweepExpiredAntigravityReplay },
   { name: "config-warning-memos", reconcileGeneration: (context: GenerationContext) => reconcileConfigWarningMemos(context.generation) },
   { name: "catalog-warning-memos", reconcileGeneration: (context: GenerationContext) => reconcileCatalogWarningMemos(context.generation) },
   { name: "provider-fetch-warning-memos", reconcileGeneration: (context: GenerationContext) => reconcileProviderFetchWarnings(context.generation) },

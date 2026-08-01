@@ -35,7 +35,6 @@ export async function* decodeServerSentEvents(
   const translatorBudget = options.translatorBudget;
   const reader = source.getReader();
   const decoder = new TextDecoder();
-  const budgetEncoder = new TextEncoder();
   let lineBuffer = "";
   let lineRawBytes = 0;
   let lineRetainedBytes = 0;
@@ -82,14 +81,14 @@ export async function* decodeServerSentEvents(
         throw new TranslatorBudgetExceededError("live_transient", TRANSLATOR_MAX_SSE_EVENT_BYTES);
       }
     }
-    const reservation = translatorBudget.reserveTransient(nextRetainedBytes, scope);
+    const reservation = translatorBudget.reserveTransient(nextRawBytes, scope);
     try {
       const fragment = sourceValue.slice(start, end);
       lineBuffer += fragment;
       reservation.commitRetained();
       translatorBudget.releaseRetained(lineRetainedBytes, scope);
       lineRawBytes = nextRawBytes;
-      lineRetainedBytes = nextRetainedBytes;
+      lineRetainedBytes = nextRawBytes;
     } catch (error) {
       reservation.release();
       throw error;
@@ -143,55 +142,113 @@ export async function* decodeServerSentEvents(
   };
 
   const acceptLine = (): { record: ServerSentEvent | SseRecord; bytes: number } | undefined => {
-    const line = lineBuffer.endsWith("\r") ? lineBuffer.slice(0, -1) : lineBuffer;
-    const retainedLineBytes = lineRetainedBytes;
+    let line = lineBuffer;
+    let retainedLineBytes = lineRetainedBytes;
+    let lineOwned = true;
+    const releaseLine = (): void => {
+      if (!lineOwned) return;
+      lineOwned = false;
+      translatorBudget.releaseRetained(retainedLineBytes, scope);
+    };
     lineBuffer = "";
     lineRawBytes = 0;
     lineRetainedBytes = 0;
-    if (line === "") {
-      translatorBudget.releaseRetained(retainedLineBytes, scope);
-      return dispatch();
-    }
-    if (line.startsWith(":")) {
-      if (!includeComments) {
-        translatorBudget.releaseRetained(retainedLineBytes, scope);
-        return undefined;
+    try {
+      if (line.endsWith("\r")) {
+        const nextLineBytes = retainedLineBytes - 1;
+        const reservation = translatorBudget.reserveTransient(nextLineBytes, scope);
+        try {
+          const nextLine = line.slice(0, -1);
+          reservation.commitRetained();
+          translatorBudget.releaseRetained(retainedLineBytes, scope);
+          line = nextLine;
+          retainedLineBytes = nextLineBytes;
+        } catch (error) {
+          reservation.release();
+          throw error;
+        }
       }
-      let comment = line.slice(1);
-      if (comment.startsWith(" ")) comment = comment.slice(1);
-      return { record: { kind: "comment", comment }, bytes: retainedLineBytes };
-    }
+      if (line === "") {
+        releaseLine();
+        return dispatch();
+      }
+      if (line.startsWith(":")) {
+        if (!includeComments) {
+          releaseLine();
+          return undefined;
+        }
+        const commentStart = line[1] === " " ? 2 : 1;
+        const commentBytes = utf8SliceBytes(line, commentStart, line.length);
+        translatorBudget.chargeRetained(commentBytes, scope);
+        try {
+          const comment = line.slice(commentStart);
+          releaseLine();
+          return { record: { kind: "comment", comment }, bytes: commentBytes };
+        } catch (error) {
+          translatorBudget.releaseRetained(commentBytes, scope);
+          throw error;
+        }
+      }
 
-    const colon = line.indexOf(":");
-    const field = colon < 0 ? line : line.slice(0, colon);
-    let value = colon < 0 ? "" : line.slice(colon + 1);
-    if (value.startsWith(" ")) value = value.slice(1);
+      const colon = line.indexOf(":");
+      const fieldEnd = colon < 0 ? line.length : colon;
+      const fieldBytes = utf8SliceBytes(line, 0, fieldEnd);
+      const fieldReservation = translatorBudget.reserveTransient(fieldBytes, scope);
+      let field = "";
+      try {
+        field = line.slice(0, fieldEnd);
+        fieldReservation.commitRetained();
+      } catch (error) {
+        fieldReservation.release();
+        throw error;
+      }
+      try {
+        let valueStart = colon < 0 ? line.length : colon + 1;
+        if (line[valueStart] === " ") valueStart += 1;
+        const valueBytes = utf8SliceBytes(line, valueStart, line.length);
 
-    if (field === "event") {
-      const valueBytes = budgetEncoder.encode(value).byteLength;
-      const reservation = translatorBudget.reserveTransient(valueBytes, scope);
-      reservation.commitRetained();
-      translatorBudget.releaseRetained(eventBytes + retainedLineBytes, scope);
-      event = value;
-      eventBytes = valueBytes;
-    }
-    else if (field === "data") {
-      const valueBytes = budgetEncoder.encode(value).byteLength;
-      const nextEventBytes = dataLinesBytes + valueBytes + dataLines.length;
-      if (nextEventBytes > TRANSLATOR_MAX_SSE_EVENT_BYTES) {
-        throw new TranslatorBudgetExceededError("live_transient", TRANSLATOR_MAX_SSE_EVENT_BYTES);
+        if (field === "event") {
+          const reservation = translatorBudget.reserveTransient(valueBytes, scope);
+          try {
+            const value = line.slice(valueStart);
+            reservation.commitRetained();
+            translatorBudget.releaseRetained(eventBytes, scope);
+            event = value;
+            eventBytes = valueBytes;
+            releaseLine();
+          } catch (error) {
+            reservation.release();
+            throw error;
+          }
+        }
+        else if (field === "data") {
+          const nextEventBytes = dataLinesBytes + valueBytes + dataLines.length;
+          if (nextEventBytes > TRANSLATOR_MAX_SSE_EVENT_BYTES) {
+            throw new TranslatorBudgetExceededError("live_transient", TRANSLATOR_MAX_SSE_EVENT_BYTES);
+          }
+          // The extracted value is a distinct retained allocation while the source line is still
+          // live. Admit that insertion before slicing/pushing, then release the source owner.
+          translatorBudget.chargeRetained(valueBytes, scope);
+          try {
+            const value = line.slice(valueStart);
+            dataLines.push(value);
+            dataLinesBytes += valueBytes;
+            releaseLine();
+          } catch (error) {
+            translatorBudget.releaseRetained(valueBytes, scope);
+            throw error;
+          }
+        } else {
+          releaseLine();
+        }
+      } finally {
+        translatorBudget.releaseRetained(fieldBytes, scope);
       }
-      // The admitted line allocation transfers to the extracted data value. No second
-      // physical owner is retained after this function returns.
-      dataLines.push(value);
-      dataLinesBytes += valueBytes;
-      if (retainedLineBytes > valueBytes) {
-        translatorBudget.releaseRetained(retainedLineBytes - valueBytes, scope);
-      }
-    } else {
-      translatorBudget.releaseRetained(retainedLineBytes, scope);
+      return undefined;
+    } catch (error) {
+      releaseLine();
+      throw error;
     }
-    return undefined;
   };
 
   const consumeDecoded = async function* (
@@ -221,8 +278,18 @@ export async function* decodeServerSentEvents(
     while (true) {
       const { done, value } = await reader.read();
       if (value) {
-        const decoded = decoder.decode(value, { stream: !done });
-        yield* consumeDecoded(decoded);
+        const sourceBytes = value.byteLength;
+        const sourceReservation = translatorBudget.reserveTransient(sourceBytes, scope);
+        let sourceCommitted = false;
+        try {
+          const decoded = decoder.decode(value, { stream: !done });
+          sourceReservation.commitRetained();
+          sourceCommitted = true;
+          yield* consumeDecoded(decoded);
+        } finally {
+          if (sourceCommitted) translatorBudget.releaseRetained(sourceBytes, scope);
+          else sourceReservation.release();
+        }
       }
       if (!done) continue;
       const finalDecoded = decoder.decode();

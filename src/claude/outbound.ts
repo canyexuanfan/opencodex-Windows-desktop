@@ -82,6 +82,17 @@ function sseFrame(name: string, data: Rec): string {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+function appendedUtf8Bytes(previous: string, previousBytes: number, fragment: string): number {
+  let nextBytes = previousBytes + Buffer.byteLength(fragment);
+  const previousLast = previous.charCodeAt(previous.length - 1);
+  const fragmentFirst = fragment.charCodeAt(0);
+  if (previousLast >= 0xd800 && previousLast <= 0xdbff
+    && fragmentFirst >= 0xdc00 && fragmentFirst <= 0xdfff) {
+    nextBytes -= 2;
+  }
+  return nextBytes;
+}
+
 /**
  * Claude Code / Anthropic WebSearch domain filters are optional and mutually exclusive.
  * Empty arrays are rejected ("ambiguous"); both fields together are rejected. Routed models
@@ -173,6 +184,7 @@ interface OpenBlock {
   /** Buffer WebSearch args and emit one sanitized input_json_delta on close (#381). */
   bufferWebSearchArgs?: boolean;
   argsBuf?: string;
+  argsBufBytes?: number;
   webSearchArgsEmitted?: boolean;
   callId?: string;
 }
@@ -188,6 +200,7 @@ export function responsesSseToAnthropicSse(
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
+  let bufferBytes = 0;
   let started = false;
   let terminated = false;
   let cancelled = false;
@@ -197,6 +210,17 @@ export function responsesSseToAnthropicSse(
   let webSearchRequests = 0;
   let pingTimer: ReturnType<typeof setInterval> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const utf8SliceBytes = (value: string, start: number, end: number): number => {
+    let bytes = 0;
+    for (let index = start; index < end; index++) {
+      const codePoint = value.codePointAt(index)!;
+      if (codePoint <= 0x7f) bytes += 1;
+      else if (codePoint <= 0x7ff) bytes += 2;
+      else if (codePoint <= 0xffff) bytes += 3;
+      else { bytes += 4; index += 1; }
+    }
+    return bytes;
+  };
   const queuedLiveFrameBytes: number[] = [];
   const releaseDeliveredFrame = () => {
     const bytes = queuedLiveFrameBytes.shift();
@@ -362,6 +386,7 @@ export function responsesSseToAnthropicSse(
               itemId: typeof item.id === "string" ? item.id : undefined,
               bufferWebSearchArgs,
               argsBuf: "",
+              argsBufBytes: 0,
               webSearchArgsEmitted: false,
             };
             break;
@@ -371,17 +396,22 @@ export function responsesSseToAnthropicSse(
             if (!open || open.kind !== "tool_use") break;
             if (open.bufferWebSearchArgs) {
               const previous = open.argsBuf ?? "";
-              const next = previous + data.delta;
-              const reservation = translatorBudget.reserveTransient(Buffer.byteLength(next), {
+              const previousBytes = open.argsBufBytes ?? 0;
+              const nextBytes = appendedUtf8Bytes(previous, previousBytes, data.delta);
+              const scope = {
                 kind: "tool_args",
                 ...(open.callId ? { callId: open.callId } : {}),
-              });
-              open.argsBuf = next;
-              reservation.commitRetained();
-              translatorBudget.releaseRetained(Buffer.byteLength(previous), {
-                kind: "tool_args",
-                ...(open.callId ? { callId: open.callId } : {}),
-              });
+              } as const;
+              const reservation = translatorBudget.reserveTransient(nextBytes, scope);
+              try {
+                open.argsBuf = previous + data.delta;
+                open.argsBufBytes = nextBytes;
+                reservation.commitRetained();
+                translatorBudget.releaseRetained(previousBytes, scope);
+              } catch (error) {
+                reservation.release();
+                throw error;
+              }
               break;
             }
             emit("content_block_delta", {
@@ -499,43 +529,103 @@ export function responsesSseToAnthropicSse(
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            const nextBuffer = buffer + decoder.decode(value, { stream: true });
-            const previousBufferBytes = encoder.encode(buffer).byteLength;
-            const appendReservation = translatorBudget.reserveTransient(
-              encoder.encode(nextBuffer).byteLength,
-              { kind: "live_transient" },
-            );
-            buffer = nextBuffer;
-            appendReservation.commitRetained();
-            translatorBudget.releaseRetained(previousBufferBytes, { kind: "live_transient" });
-            let sep: number;
-            while ((sep = buffer.indexOf("\n\n")) !== -1) {
-              const rawFrame = buffer.slice(0, sep);
-              buffer = buffer.slice(sep + 2);
-              const residualReservation = translatorBudget.reserveTransient(
-                encoder.encode(buffer).byteLength,
-                { kind: "live_transient" },
-              );
-              residualReservation.commitRetained();
-              translatorBudget.releaseRetained(
-                encoder.encode(rawFrame).byteLength + encoder.encode(buffer).byteLength + 2,
-                { kind: "live_transient" },
-              );
-              let eventName = "";
-              let dataLine = "";
-              for (const line of rawFrame.split("\n")) {
-                if (line.startsWith("event: ")) eventName = line.slice(7).trim();
-                else if (line.startsWith("data: ")) dataLine += line.slice(6);
+            const decodedReservation = translatorBudget.reserveTransient(value.byteLength, { kind: "live_transient" });
+            let decodedCommitted = false;
+            try {
+              const fragment = decoder.decode(value, { stream: true });
+              decodedReservation.commitRetained();
+              decodedCommitted = true;
+              const nextBufferBytes = appendedUtf8Bytes(buffer, bufferBytes, fragment);
+              const appendReservation = translatorBudget.reserveTransient(nextBufferBytes, { kind: "live_transient" });
+              try {
+                buffer += fragment;
+                appendReservation.commitRetained();
+                translatorBudget.releaseRetained(bufferBytes, { kind: "live_transient" });
+                bufferBytes = nextBufferBytes;
+              } catch (error) {
+                appendReservation.release();
+                throw error;
               }
-              if (!dataLine) continue;
-              let data: unknown;
-              try { data = JSON.parse(dataLine); } catch { continue; }
-              if (!isRec(data)) continue;
-              // Responses-compatible gateways may omit the optional SSE event field
-              // while retaining the event name in the JSON payload's required type.
-              const resolvedEventName = eventName || (typeof data.type === "string" ? data.type : "");
-              if (!resolvedEventName || terminated) continue;
-              handleFrame(resolvedEventName, data);
+              let sep: number;
+              while ((sep = buffer.indexOf("\n\n")) !== -1) {
+                const rawFrameBytes = utf8SliceBytes(buffer, 0, sep);
+                const residualBytes = bufferBytes - rawFrameBytes - 2;
+                const rawReservation = translatorBudget.reserveTransient(rawFrameBytes, { kind: "live_transient" });
+                let residualReservation: ReturnType<TranslatorBudget["reserveTransient"]> | undefined;
+                try {
+                  residualReservation = translatorBudget.reserveTransient(residualBytes, { kind: "live_transient" });
+                  const rawFrame = buffer.slice(0, sep);
+                  const residual = buffer.slice(sep + 2);
+                  rawReservation.commitRetained();
+                  residualReservation.commitRetained();
+                  residualReservation = undefined;
+                  buffer = residual;
+                  translatorBudget.releaseRetained(bufferBytes, { kind: "live_transient" });
+                  bufferBytes = residualBytes;
+                  try {
+                    let eventName = "";
+                    let dataLine = "";
+                    let dataLineBytes = 0;
+                    try {
+                      let lineStart = 0;
+                      while (lineStart <= rawFrame.length) {
+                        const newline = rawFrame.indexOf("\n", lineStart);
+                        const lineEnd = newline === -1 ? rawFrame.length : newline;
+                        if (rawFrame.startsWith("event: ", lineStart)) {
+                          eventName = rawFrame.slice(lineStart + 7, lineEnd).trim();
+                        } else if (rawFrame.startsWith("data: ", lineStart)) {
+                          const fragmentStart = lineStart + 6;
+                          const fragmentBytes = utf8SliceBytes(rawFrame, fragmentStart, lineEnd);
+                          const fragmentReservation = translatorBudget.reserveTransient(fragmentBytes, { kind: "live_transient" });
+                          let fragmentCommitted = false;
+                          try {
+                            const fragment = rawFrame.slice(fragmentStart, lineEnd);
+                            fragmentReservation.commitRetained();
+                            fragmentCommitted = true;
+                            const nextDataLineBytes = appendedUtf8Bytes(dataLine, dataLineBytes, fragment);
+                            const dataReservation = translatorBudget.reserveTransient(nextDataLineBytes, { kind: "live_transient" });
+                            try {
+                              dataLine += fragment;
+                              dataReservation.commitRetained();
+                              translatorBudget.releaseRetained(dataLineBytes, { kind: "live_transient" });
+                              dataLineBytes = nextDataLineBytes;
+                            } catch (error) {
+                              dataReservation.release();
+                              throw error;
+                            }
+                          } finally {
+                            if (fragmentCommitted) {
+                              translatorBudget.releaseRetained(fragmentBytes, { kind: "live_transient" });
+                            } else fragmentReservation.release();
+                          }
+                        }
+                        if (newline === -1) break;
+                        lineStart = newline + 1;
+                      }
+                      if (!dataLine) continue;
+                      let data: unknown;
+                      try { data = JSON.parse(dataLine); } catch { continue; }
+                      if (!isRec(data)) continue;
+                      // Responses-compatible gateways may omit the optional SSE event field
+                      // while retaining the event name in the JSON payload's required type.
+                      const resolvedEventName = eventName || (typeof data.type === "string" ? data.type : "");
+                      if (!resolvedEventName || terminated) continue;
+                      handleFrame(resolvedEventName, data);
+                    } finally {
+                      translatorBudget.releaseRetained(dataLineBytes, { kind: "live_transient" });
+                    }
+                  } finally {
+                    translatorBudget.releaseRetained(rawFrameBytes, { kind: "live_transient" });
+                  }
+                } catch (error) {
+                  rawReservation.release();
+                  residualReservation?.release();
+                  throw error;
+                }
+              }
+            } finally {
+              if (decodedCommitted) translatorBudget.releaseRetained(value.byteLength, { kind: "live_transient" });
+              else decodedReservation.release();
             }
           }
           // EOF without a terminal frame is a TRUNCATION, not success (devlog 100:
@@ -549,7 +639,7 @@ export function responsesSseToAnthropicSse(
             fail(413, "upstream translation buffer exceeded the safe limit", false, "translation_buffer_limit");
           } else fail(500, err instanceof Error ? err.message : String(err));
         } finally {
-          translatorBudget.releaseRetained(encoder.encode(buffer).byteLength, { kind: "live_transient" });
+          translatorBudget.releaseRetained(bufferBytes, { kind: "live_transient" });
           if (pingTimer !== undefined) clearInterval(pingTimer);
           reader.releaseLock();
           if (!cancelled) controller.close();

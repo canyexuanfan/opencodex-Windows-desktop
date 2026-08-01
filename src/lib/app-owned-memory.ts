@@ -41,6 +41,13 @@ export interface AppOwnedBytesSnapshot {
 }
 
 export const DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
+/**
+ * The budget above is an eviction target, not a hard resident limit: active/pinned
+ * state may temporarily keep retained bytes above it. Every pin-capable owner has
+ * its own finite admission cap; their documented aggregate must remain below this
+ * process-owned hard ceiling.
+ */
+export const APP_OWNED_WORST_CASE_PINNED_BYTES = 512 * 1024 * 1024;
 export const MIN_APP_OWNED_MEMORY_BUDGET_MB = 64;
 export const MAX_APP_OWNED_MEMORY_BUDGET_MB = 4_096;
 

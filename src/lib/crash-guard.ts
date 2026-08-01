@@ -231,6 +231,19 @@ function setFetchTraceRejected(trace: FetchTrace, value: string): void {
   if (retained) fetchRingBytes += retainedUtf8Bytes(trace.rejected);
 }
 
+function appendFetchTrace(url: string, origin: string): FetchTrace {
+  const trace: FetchTrace = {
+    url: truncateRetainedUtf8(redactUrlForLog(url), MAX_DIAGNOSTIC_VALUE_BYTES),
+    at: Date.now(),
+    origin: truncateRetainedUtf8(origin, MAX_DIAGNOSTIC_VALUE_BYTES),
+    settled: false,
+  };
+  fetchRing.push(trace);
+  fetchRingBytes += fetchTraceBytes(trace);
+  while (fetchRing.length > FETCH_RING_MAX) removeOldestFetchTrace();
+  return trace;
+}
+
 /**
  * The recurring native-only rejection carries no source location, and every JS `await fetch(...)`
  * is already try/caught — so the offending promise is created INSIDE Bun's fetch and rejects off the
@@ -251,15 +264,7 @@ function instrumentFetch(): void {
       url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request)?.url ?? "";
     } catch { /* best-effort */ }
     const origin = (new Error().stack ?? "").split("\n").slice(2, 5).map(l => l.trim()).join(" <- ");
-    const trace: FetchTrace = {
-      url: truncateRetainedUtf8(redactUrlForLog(url), MAX_DIAGNOSTIC_VALUE_BYTES),
-      at: Date.now(),
-      origin: truncateRetainedUtf8(origin, MAX_DIAGNOSTIC_VALUE_BYTES),
-      settled: false,
-    };
-    fetchRing.push(trace);
-    fetchRingBytes += fetchTraceBytes(trace);
-    while (fetchRing.length > FETCH_RING_MAX) removeOldestFetchTrace();
+    const trace = appendFetchTrace(url, origin);
     enforceAppOwnedMemoryBudget();
     let p: ReturnType<typeof fetch>;
     try {
@@ -282,6 +287,23 @@ export function crashRingMetrics(): { entries: number; bytes: number; oldestAt: 
 
 export function evictOldestCrashTraceForBudget(): number {
   return removeOldestFetchTrace();
+}
+
+export function appendCrashTraceForTests(url: string, origin: string, rejected?: string): void {
+  const trace = appendFetchTrace(url, origin);
+  if (rejected !== undefined) {
+    trace.settled = true;
+    setFetchTraceRejected(trace, rejected);
+  }
+}
+
+export function crashRingEntriesForTests(): readonly Readonly<FetchTrace>[] {
+  return fetchRing.map(trace => ({ ...trace }));
+}
+
+export function resetCrashRingForTests(): void {
+  fetchRing.length = 0;
+  fetchRingBytes = 0;
 }
 
 /** Render the recent fetch ring (pending first) for the crash breadcrumb. */
