@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -446,7 +447,7 @@ describe("management and data-plane credential separation", () => {
     } finally {
       await server.stop(true);
     }
-  });
+  }, SERVER_BUDGET_MS); // binds a real server + live fetches; windows runner measured ~5.04s against Bun's 5s default.
 
   test("an existing management token ACL hardening failure keeps management unavailable", async () => {
     delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
@@ -482,14 +483,7 @@ describe("management and data-plane credential separation", () => {
     setPlatformForTests("win32");
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
-      if (target.endsWith("admin-api-token")) {
-        return { success: true, exitCode: 0, timedOut: false, stdout: "" };
-      }
-      // Directory ACE carries (OI)(CI). Timeout only directories so management auth
-      // fails closed while secret file hardens (config.json.tmp) can still
-      // succeed — startServer must persist config on real Windows.
-      const grant = args.find(arg => typeof arg === "string" && arg.includes("(F)")) ?? "";
-      if (grant.includes("(OI)(CI)")) {
+      if (target === testHome) {
         return { success: false, exitCode: null, timedOut: true, stdout: "" };
       }
       return { success: true, exitCode: 0, timedOut: false, stdout: "" };
@@ -556,11 +550,9 @@ describe("management and data-plane credential separation", () => {
     saveConfig(remoteConfig());
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
-    // Stall directory ACL only. Env admin bypasses the file-backed token path;
-    // secret file hardens for config persistence must still succeed on win32.
     setIcaclsRunnerForTests(args => {
-      const grant = args.find(arg => typeof arg === "string" && arg.includes("(F)")) ?? "";
-      if (grant.includes("(OI)(CI)")) {
+      const target = args[0] ?? "";
+      if (target === testHome || target.endsWith("admin-api-token")) {
         return { success: false, exitCode: null, timedOut: true, stdout: "" };
       }
       return { success: true, exitCode: 0, timedOut: false, stdout: "" };
