@@ -1138,6 +1138,8 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(existsSync(join(home, ".trash", "1700000000300", "rollout-old.jsonl"))).toBe(true);
   });
 
+  // Windows CI: quarantine + multi-satellite restore (state/tools/spawn/logs remap)
+  // measured ~8s on windows-latest against Bun's default 5s harness timeout.
   test("quarantine retains satellite-backup and restores satellite + state dependents", () => {
     home = buildHome({ withSatelliteStores: true, withDynamicTools: true, withSpawnEdges: true });
     // 100%: spawn edge told→tmid stays inside the delete set (cross-boundary edges refuse cleanup).
@@ -1176,7 +1178,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     const logs = new Database(join(home, "logs_3.sqlite"), { readonly: true });
     expect(logs.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id='told'").get()).toEqual({ n: 1 });
     logs.close();
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("rejects malformed satellite-backup.json without destroying trash", () => {
     home = buildHome();
