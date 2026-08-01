@@ -212,32 +212,13 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
 
 export function DashboardSidecarPanels({ d }: { d: Dash }) {
   const {
-    t, settings, settingsSaving, toggleCodexAutoStart,
+    t,
     sidecar, sidecarSaving, sidecarModels, models, saveSidecar,
     shadowCall, shadowCallSaving, shadowCallHelpTriggerRef, shadowCallHelpOpen, setShadowCallHelpOpen, saveShadowCall,
   } = d;
 
   return (
     <>
-      <div className="panel">
-        <div className="spread">
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="font-semibold">{t("dash.codexAutoStart")}</div>
-            <div className="muted setting-hint">{t("dash.codexAutoStartHint")}</div>
-          </div>
-          <button
-            type="button"
-            className={`switch ${settings?.codexAutoStart ?? true ? "on" : ""}`}
-            onClick={toggleCodexAutoStart}
-            disabled={!settings || settingsSaving}
-            aria-label={t("dash.codexAutoStart")}
-            aria-pressed={settings?.codexAutoStart ?? true}
-          >
-            <span className="knob" />
-          </button>
-        </div>
-      </div>
-
       <div className="dash-sidecar-grid">
         <div className="panel dash-sidecar-card" aria-busy={!sidecar || undefined}>
           <div className="dash-sidecar-card__row">

@@ -118,7 +118,7 @@ describe("GUI update execution decisions", () => {
 
   test("restart waits on the captured pre-update port unconditionally and pins the spawn to it", async () => {
     // The stop-first update flow clears pid/runtime state before restartAfterUpdate runs,
-    // so the wait must fire even with no readable pid — driven here via the io seam.
+    // so the wait must fire even with no readable pid —driven here via the io seam.
     const waited: Array<{ port: number; hostname: string; opts?: { killOcxHolders?: boolean; onlyKillPids?: number[] } }> = [];
     const spawned: Array<{ port?: number }> = [];
     const job: UpdateJobState = {
@@ -663,7 +663,7 @@ describe("GUI update execution decisions", () => {
     });
     expect(ok).toBe(true);
     expect(restartCalls).toBe(1);
-    // Soft probe-first must not run — otherwise the clock would advance before restart.
+    // Soft probe-first must not run —otherwise the clock would advance before restart.
     expect(nowBeforeRestart).toBe(0);
     expect(readUpdateJob(job.id)?.log.some(line => line.includes("skipping redundant restart"))).toBe(false);
     expect(readUpdateJob(job.id)?.log.some(line => line.includes("npm self-update did not leave"))).toBe(false);
@@ -776,7 +776,7 @@ describe("GUI update execution decisions", () => {
       installer: "npm",
       restart: true,
       command: "node /pkg/bin/ocx.mjs update --tag latest",
-      releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/latest",
       log: [],
     };
     writeFileSync(updateJobPath(), `${JSON.stringify(job)}\n`);
@@ -812,7 +812,7 @@ describe("GUI update execution decisions", () => {
       installer: "bun",
       restart: true,
       command: "bun add -g @bitkyc08/opencodex@2.7.41",
-      releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/latest",
       log: [],
       pid: 777,
     };
@@ -830,7 +830,7 @@ describe("GUI update execution decisions", () => {
         updateAvailable: true,
         canUpdate: true,
         command: "bun add -g @bitkyc08/opencodex@2.7.41",
-        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+        releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/latest",
       }),
       spawnWorkerFn: () => ({
         pid: 888,
@@ -855,7 +855,7 @@ describe("GUI update execution decisions", () => {
         updateAvailable: true,
         canUpdate: true,
         command: "bun add -g @bitkyc08/opencodex@2.7.41",
-        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+        releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/latest",
       }),
       spawnWorkerFn: () => { throw new Error("spawn denied"); },
     })).toThrow("Could not start update worker");
@@ -893,10 +893,10 @@ describe("immutable update target (WP160)", () => {
   });
 
   test("transient registry failure skips the gate; anomalous metadata fails closed", () => {
-    // Unknown version — registry unavailable lane.
+    // Unknown version —registry unavailable lane.
     expect(checkUpdatePackageIntegrity(null).ok).toBe("skipped");
 
-    // Nonzero exit and timeout (status null) are transient — skip, never abort.
+    // Nonzero exit and timeout (status null) are transient —skip, never abort.
     expect(checkUpdatePackageIntegrity("2.7.24", fakeSpawn({ status: 1, stdout: "" })).ok).toBe("skipped");
     expect(checkUpdatePackageIntegrity("2.7.24", fakeSpawn({ status: null, stdout: "" })).ok).toBe("skipped");
 

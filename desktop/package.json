@@ -52,6 +52,7 @@
       "output": "out"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         { "target": "nsis", "arch": ["x64"] },
         { "target": "portable", "arch": ["x64"] }
@@ -67,6 +68,8 @@
       "selectPerMachineByDefault": true,
       "allowToChangeInstallationDirectory": false,
       "include": "build/installer.nsh",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
       "unicode": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
