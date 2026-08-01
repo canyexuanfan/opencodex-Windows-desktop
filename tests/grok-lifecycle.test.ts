@@ -41,6 +41,13 @@ describe("Grok fence lifecycle wiring", () => {
     expect(spawnBranch).toContain("config.hostname ? { hostname: config.hostname }");
   });
 
+  test("ensure repairs marker-owned Codex routing when autostart is disabled or startup fails", () => {
+    const ensureFn = sliceFn(CLI_SOURCE, "async function handleEnsure(", "async function handleTrayProxyStart(");
+    expect(ensureFn).toContain("if (isCodexRoutingInjected())");
+    expect(ensureFn).toContain("const restored = restoreNativeCodex();");
+    expect(ensureFn).toContain("Proxy did not become healthy; ${restored.message}");
+  });
+
   test("handleStop gates shared teardown on ownership but still reverts system env", () => {
     const stopFn = sliceFn(CLI_SOURCE, "async function handleStop(", "async function handleUninstall(");
 

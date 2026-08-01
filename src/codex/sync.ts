@@ -1,10 +1,11 @@
-import { currentExternalCodexModelProvider, injectCodexConfig } from "./inject";
+import { currentExternalCodexModelProvider, injectCodexConfig, restoreNativeCodex } from "./inject";
 import { printProjectCodexConfigWarnings, groupProjectCodexConfigWarningsByPath, type ProjectCodexConfigWarning } from "./project-config-warnings";
 import { refreshCodexModelCatalog } from "./refresh";
 import { applyProxyEnv, loadConfig } from "../config";
 import type { OcxConfig } from "../types";
 import { collectOrcaCodexHomeDiagnostic } from "./home";
 import { summarizeComboCatalogOmissions, type ComboCatalogOmission } from "./catalog/aggregation";
+import { findLiveProxy } from "../server/proxy-liveness";
 
 export interface CodexSyncResult {
   ok: boolean;
@@ -21,11 +22,24 @@ export interface CodexSyncResult {
   projectConfigGrouped?: { path: string; issues: string[]; bypass: string }[];
 }
 
-interface CodexSyncDeps {
+export interface CodexSyncDeps {
   refreshCodexModelCatalog: typeof refreshCodexModelCatalog;
   injectCodexConfig: typeof injectCodexConfig;
   currentExternalCodexModelProvider?: typeof currentExternalCodexModelProvider;
   collectCodexHomeDiagnostic?: typeof collectOrcaCodexHomeDiagnostic;
+  /** Identity-checked liveness gate. Tests may provide a deterministic live proxy. */
+  findLiveProxy?: typeof findLiveProxy;
+  /** Restore marker-owned routing when the liveness gate finds no proxy. */
+  restoreNativeCodex?: typeof restoreNativeCodex;
+}
+
+export interface CodexSyncOptions {
+  /**
+   * The management API is executing inside the already-serving proxy process. Its request URL
+   * therefore proves the listener is alive; passing that port avoids a second self-probe while
+   * retaining the liveness gate for every CLI/desktop caller.
+   */
+  trustedServerPort?: number;
 }
 
 const defaultDeps: CodexSyncDeps = {
@@ -51,11 +65,13 @@ export async function syncModelsToCodex(
   config: OcxConfig = loadConfig(),
   log: Pick<Console, "log" | "error"> | null = console,
   deps: CodexSyncDeps = defaultDeps,
+  options: CodexSyncOptions = {},
 ): Promise<CodexSyncResult> {
-  const p = port ?? config.port ?? 10100;
   const externalProvider = (deps.currentExternalCodexModelProvider ?? currentExternalCodexModelProvider)();
   if (externalProvider) {
-    const result = await deps.injectCodexConfig(p, config, {});
+    // External providers are intentionally preserved and do not require a local proxy. The
+    // endpoint in this diagnostic is only advisory; do not let it become a config mutation.
+    const result = await deps.injectCodexConfig(port ?? config.port ?? 10100, config, {});
     log?.log(result.message);
     reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
     return {
@@ -68,6 +84,38 @@ export async function syncModelsToCodex(
       message: result.message,
       ...(result.nativeSubagentDefaultsWarning ? { nativeSubagentDefaultsWarning: result.nativeSubagentDefaultsWarning } : {}),
     };
+  }
+
+  // Never write a marker-owned Codex route unless an identity-checked OpenCodex proxy is alive.
+  // The old `port ?? config.port ?? 10100` fallback could persist a dead dynamic port after a
+  // crash/restart. `findLiveProxy` resolves runtime-port.json first and verifies /healthz, so the
+  // returned port is the single source of truth even when the configured port has drifted.
+  const locateLive = deps.findLiveProxy ?? findLiveProxy;
+  const live = options.trustedServerPort !== undefined
+    ? { pid: process.pid, port: options.trustedServerPort, hostname: config.hostname, source: "runtime" as const }
+    : await locateLive({
+      configFn: () => ({ port: config.port, hostname: config.hostname }),
+    });
+  if (!live) {
+    const restored = (deps.restoreNativeCodex ?? restoreNativeCodex)();
+    const message = restored.success
+      ? "Codex sync skipped: no healthy OpenCodex proxy found; native Codex routing was restored. Start the proxy before syncing again."
+      : `Codex sync skipped: no healthy OpenCodex proxy found, and native Codex routing could not be restored: ${restored.message}`;
+    log?.error(message);
+    reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
+    return {
+      ok: false,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message,
+    };
+  }
+  const p = live.port;
+  if (port !== undefined && port !== p) {
+    log?.error(`Codex sync corrected a stale port ${port} to the live OpenCodex port ${p}.`);
   }
 
   applyProxyEnv(config); // `ocx ensure`/`ocx sync` fetch provider models outside the server process

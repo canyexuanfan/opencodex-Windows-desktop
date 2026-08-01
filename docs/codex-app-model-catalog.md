@@ -179,6 +179,11 @@ ocx sync
 ocx status
 ```
 
+`ocx sync` only writes marker-owned Codex routing after an identity-checked `/healthz` probe finds
+the running proxy. The actual port comes from the live runtime record, so a stale configured port
+is corrected automatically; when no healthy proxy exists, the native Codex route is restored and
+the sync exits with an actionable message. Start the proxy before running `ocx sync` again.
+
 Expected high-level result:
 
 - active model provider is `opencodex`

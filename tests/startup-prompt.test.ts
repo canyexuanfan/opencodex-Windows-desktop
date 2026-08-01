@@ -81,6 +81,13 @@ describe("startup star prompt", () => {
     expect(init).toContain("installCodexShim");
   });
 
+  test("ocx init never injects a dead route before a proxy is healthy", async () => {
+    const init = await readText("src/cli/init.ts");
+    expect(init).toContain("findLiveProxy({");
+    expect(init).toContain("Proxy is not running; Codex routing was not injected");
+    expect(init).toContain("injectCodexConfig(live.port, config)");
+  });
+
   test("ocx service install gets the prompt too, after the service is up", async () => {
     const service = await readText("src/service.ts");
     const installIndex = service.indexOf("await ops.install()");
