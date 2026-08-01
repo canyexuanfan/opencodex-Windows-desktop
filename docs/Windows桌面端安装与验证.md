@@ -1,0 +1,36 @@
+# OpenCodex Windows 桌面端安装与验证
+
+本说明对应当前本地构建的 Windows x64 桌面产物。安装版和便携版都已经包含运行所需的 Bun 与代理资源，用户不需要另外安装 Node.js、Bun 或项目依赖。
+
+## 产物
+
+- 安装版：`desktop/out/OpenCodex-Setup-x64.exe`
+- 便携版：`desktop/out/OpenCodex-Portable-x64.exe`
+
+当前本地产物 SHA-256：
+
+- 安装版：`9E9BB84C61C820D27D7D0A3CC58A85D9FE5E410799762B4870E6CCCE9836707B`
+- 便携版：`0A33A6BEACDE98D1AEFF1C161FA4EE049AFAFF389B86BF50EC77E6E1DC919A15`
+
+## 安装和启动
+
+1. 双击安装版，按向导完成当前用户安装；默认不需要管理员权限。
+2. 或者将便携版放到有写权限的目录后直接双击运行。
+3. 启动后只会保留一个 OpenCodex 主窗口；再次启动会聚焦已有窗口。
+4. 外部 OAuth、文档和帮助链接会交给系统默认浏览器打开。
+
+桌面端会为本地代理自动选择可用的 `127.0.0.1` 动态端口。用户不需要手工配置端口，也不应把该端口暴露到局域网或公网。
+
+## 配置与卸载
+
+桌面端沿用现有 Codex 配置、Provider、模型、OAuth、路由、日志和存储能力。正常退出、重启和代理恢复流程不会主动删除用户配置。
+
+卸载安装版只移除应用本身；如需清理用户数据，请在确认不再需要后由用户自行处理 `%USERPROFILE%\\.opencodex`。便携版不会注册系统服务，也不会自动删除已有 CLI proxy、Task Scheduler、WinSW、旧托盘或用户配置。
+
+## 签名和 SmartScreen
+
+当前构建使用主体为 `CN=十七°` 的自签名代码证书。由于该证书不是公共受信 CA 签发，Windows SmartScreen 或首次运行提示仍可能出现“Windows 已保护你的电脑”等警告；这是当前发布限制，不代表安装包缺少签名。生产分发前应替换为受信任的商业代码签名证书，并在 Windows 10/11 干净 x64 环境重新验证安装器、便携版、健康检查和模型请求。
+
+## 当前验证边界
+
+本地已完成构建、资源禁入扫描、签名读取、SHA-256 计算、单实例/动态端口 smoke、根 typecheck/privacy scan、GUI lint/i18n lint/build 和桌面测试。Windows 10/11 干净 VM 双击、受信根后的 Authenticode `Valid`、真实 provider 保留和卸载保留用户目录仍待独立测试机完成。

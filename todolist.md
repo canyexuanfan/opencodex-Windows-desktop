@@ -20,8 +20,8 @@
 - [x] 读取与当前问题有关的 `questions/` 排查指南。
 - [x] 运行 `git status --short --branch`。
 - [x] 确认只修改当前工作包允许的文件。
-- [ ] 启动任何服务器前先检查端口；端口被占用时换端口并记录。
-- [ ] 完成后只更新本文件相关状态、验证证据和下一任务。
+- [x] 启动任何服务器前先检查端口；端口被占用时换端口并记录。
+- [x] 完成后只更新本文件相关状态、验证证据和下一任务。
 
 新线程提示词：
 
@@ -619,31 +619,43 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ## 12. 发布门
 
-- [ ] 本地产出安装版和便携版。
-- [ ] 产物签名和 SHA-256 已验证。
-- [ ] 用户安装说明已写好。
-- [ ] 说明默认动态 loopback 端口，用户无需配置。
-- [ ] 说明“十七°”自签名和 SmartScreen 行为。
-- [ ] 审计 Git 实际将被跟踪的文件。
-- [ ] 默认不提交 `questions/`、`todolist.md`、PFX、私钥、临时脚本和过程资料。
-- [ ] 未获当前任务明确授权，不执行 `git push`。
-- [ ] 未获当前任务明确授权，不创建 GitHub Release。
-- [ ] 未获当前任务明确授权，不上传安装包。
+- [x] 本地产出安装版和便携版。
+- [x] 产物签名和 SHA-256 已验证。
+- [x] 用户安装说明已写好（`docs/Windows桌面端安装与验证.md`）。
+- [x] 说明默认动态 loopback 端口，用户无需配置。
+- [x] 说明“十七°”自签名和 SmartScreen 行为。
+- [x] 审计 Git 实际将被跟踪的文件。
+- [x] 默认不提交 `questions/`、`todolist.md`、PFX、私钥、临时脚本和过程资料。
+- [x] 未获当前任务明确授权，不执行 `git push`。
+- [x] 未获当前任务明确授权，不创建 GitHub Release。
+- [x] 未获当前任务明确授权，不上传安装包。
+
+发布门证据：
+
+```text
+本地安装版：desktop/out/OpenCodex-Setup-x64.exe
+本地便携版：desktop/out/OpenCodex-Portable-x64.exe
+安装版 SHA-256：9E9BB84C61C820D27D7D0A3CC58A85D9FE5E410799762B4870E6CCCE9836707B
+便携版 SHA-256：0A33A6BEACDE98D1AEFF1C161FA4EE049AFAFF389B86BF50EC77E6E1DC919A15
+签名主体：CN=十七°；自签名根未进入受信存储，SmartScreen/Authenticode Valid 仍需测试机复核。
+安装说明：docs/Windows桌面端安装与验证.md
+Git 边界：本次仅本地提交和 tag，不 push、不创建 Release、不上传安装包。
+```
 
 ---
 
 ## 13. 必须持续保持的不变量
 
-- [ ] `/api/*` 管理认证和 `/v1/*` 数据认证继续分离。
-- [ ] GUI session、CSRF 和 CSP 不被 Electron 绕过。
+- [x] `/api/*` 管理认证和 `/v1/*` 数据认证继续分离。
+- [x] GUI session、CSRF 和 CSP 不被 Electron 绕过。
 - [ ] `CODEX_HOME` 显式配置优先级不变。
 - [ ] `ocx stop`、restore、service stop/uninstall 后原生 Codex 可用。
 - [ ] 普通 CLI 和 macOS/Linux 行为不被桌面代码破坏。
-- [ ] Electron 逻辑不渗入 Provider/Adapter 核心。
-- [ ] 生成的 `gui/dist` 不手改。
-- [ ] 所有新 GUI 文本进入 i18n。
+- [x] Electron 逻辑不渗入 Provider/Adapter 核心。
+- [x] 生成的 `gui/dist` 不手改。
+- [x] 所有新 GUI 文本进入 i18n。
 - [ ] 所有交互控件有键盘、hover、focus-visible 状态。
-- [ ] 依赖、打包、签名变更有验证记录。
+- [x] 依赖、打包、签名变更有验证记录。
 
 ---
 
