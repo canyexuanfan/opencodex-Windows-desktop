@@ -104,29 +104,77 @@ function nodeBin(): string {
 }
 
 /**
- * Bind probe via a fresh Node process. The update worker's Bun runtime can return
- * spurious listen errors while npm replaces its own binary; Node is not that binary.
+ * Strict bind script: exit 0 only after listen+close. Any listen error (including
+ * Windows ghost-TCB failures under Bun) is busy — matches published `ocx start`
+ * probes that treat every listen error as unavailable.
  */
-async function nodePortAvailable(port: number, hostname = "127.0.0.1"): Promise<boolean> {
-  const script = [
+function strictBindProbeScript(port: number, hostname: string): string {
+  return [
     "const net=require('net');",
     "const s=net.createServer();",
-    "s.once('error',e=>process.exit(e&&e.code==='EADDRINUSE'?2:0));",
+    "s.once('error',()=>process.exit(2));",
     `s.listen(${Math.trunc(port)},${JSON.stringify(hostname)},()=>s.close(()=>process.exit(0)));`,
     "setTimeout(()=>process.exit(3),2500);",
   ].join("");
-  return await new Promise(resolve => {
-    try {
-      const r = spawnSync(nodeBin(), ["-e", script], {
-        windowsHide: true,
-        timeout: 4000,
-        stdio: "ignore",
-      });
-      resolve(r.status === 0);
-    } catch {
-      resolve(false);
+}
+
+function spawnBindProbe(bin: string, script: string): boolean {
+  try {
+    const r = spawnSync(bin, ["-e", script], {
+      windowsHide: true,
+      timeout: 4000,
+      stdio: "ignore",
+    });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Live global package Bun — not the npm rename tree the update worker may still
+ * be executing from (`@bitkyc08/.opencodex-*`).
+ */
+function livePackageBunPath(): string | null {
+  const launcher = packageLauncherPath();
+  const root = join(dirname(launcher), "..");
+  for (const name of ["bun.exe", "bun"]) {
+    const candidate = join(root, "node_modules", "bun", "bin", name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Port is free for post-update `ocx start` only when both Node and the live
+ * package Bun can actually bind. Node alone is not enough: published starts run
+ * under Bun and fail on ghost LISTEN rows that Node sometimes tolerates.
+ */
+async function strictRuntimePortAvailable(port: number, hostname = "127.0.0.1"): Promise<boolean> {
+  const script = strictBindProbeScript(port, hostname);
+  if (!spawnBindProbe(nodeBin(), script)) return false;
+  const bun = livePackageBunPath();
+  if (bun && !spawnBindProbe(bun, script)) return false;
+  // Fallback: worker runtime (Bun) when the live package binary is missing.
+  if (!bun && !spawnBindProbe(process.execPath, script)) return false;
+  return true;
+}
+
+async function waitForStrictRuntimeBind(
+  port: number,
+  hostname: string,
+  timeoutMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (process.platform === "win32") {
+      try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
     }
-  });
+    if (await strictRuntimePortAvailable(port, hostname)) return true;
+    await sleep(500);
+  }
+  return false;
 }
 
 function packageLauncherPath(): string {
@@ -402,7 +450,11 @@ function runLoggedCommand(job: UpdateJobState, bin: string, args: string[], time
   return { status: result.status, signal: result.signal };
 }
 
-function spawnDetachedStart(job: UpdateJobState, installer: Installer, port?: number): void {
+function spawnDetachedStart(
+  job: UpdateJobState,
+  installer: Installer,
+  port?: number,
+): ReturnType<typeof spawn> {
   const cmd = restartCommand(false, installer, packageLauncherPath(), port);
   const env = { ...process.env };
   delete env.OCX_SERVICE;
@@ -431,6 +483,7 @@ function spawnDetachedStart(job: UpdateJobState, installer: Installer, port?: nu
     } catch { /* best-effort */ }
   });
   child.unref();
+  return child;
 }
 
 /** Identity snapshot used to prove an npm self-update actually replaced the pre-update process. */
@@ -627,24 +680,16 @@ async function restartAfterUpdate(
       updateJob(job, {}, `Live holder(s) remain on port ${port}; not starting on another port. Retry 'ocx start --port ${port}'.`);
       return;
     }
-    // No live LISTEN owner — Bun bind probes can still fail while npm replaces
-    // the worker binary. Wait for a fresh Node bind to succeed, then start.
-    updateJob(job, {}, `No live holders on port ${port}; waiting for Node bind probe before pinned start.`);
+    // No live LISTEN owner — ghost TCBs still block Bun's published start probe.
+    // Drop rows until both Node and the live package Bun can bind.
+    updateJob(job, {}, `No live holders on port ${port}; waiting for Node+Bun bind probes before pinned start.`);
     const sleep = io.sleepMs ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
-    const probeDeadline = Date.now() + 15_000;
-    while (Date.now() < probeDeadline) {
-      if (process.platform === "win32") {
-        try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
-      }
-      if (await nodePortAvailable(port, hostname)) break;
-      await sleep(500);
-    }
+    await waitForStrictRuntimeBind(port, hostname, 20_000, sleep);
   }
   const spawnStart = io.spawnStart ?? spawnDetachedStart;
   // Production path only: injected spawnStart keeps unit tests deterministic (one call).
-  // After npm self-update, Windows often leaves ghost LISTEN rows that make a free-port
-  // probe look busy even though nothing is healthy — so retry on missing /healthz, not
-  // on "port is free". Drop TCBs between attempts and re-wait for a Node bind window.
+  // Published `ocx start --port` may spend up to ~30s reclaiming ghost rows; retry on
+  // missing /healthz, kill the previous detached attempt, and re-wait for a Bun bind.
   if (io.spawnStart) {
     spawnStart(job, job.installer, port);
     return;
@@ -654,7 +699,9 @@ async function restartAfterUpdate(
     !!(await proxyIdentityAt(p, { hostname: host }))
   ));
   const attempts = 3;
-  const perAttemptHealthMs = 8_000;
+  // Longer than published hard-pin reclaim (30s) so a slow start can still report healthy.
+  const perAttemptHealthMs = 40_000;
+  let lastChild: ReturnType<typeof spawn> | null = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1) {
       updateJob(
@@ -663,19 +710,17 @@ async function restartAfterUpdate(
         `Pinned start attempt ${attempt - 1} did not become healthy on port ${port}; `
           + `retrying (${attempt}/${attempts}).`,
       );
-      if (process.platform === "win32") {
-        try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
+      if (lastChild?.pid && aliveFn(lastChild.pid)) {
+        try { killProxy(lastChild.pid); } catch { /* best-effort */ }
       }
-      const bindDeadline = Date.now() + 10_000;
-      while (Date.now() < bindDeadline) {
-        if (process.platform === "win32") {
-          try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
-        }
-        if (await nodePortAvailable(port, hostname)) break;
-        await sleep(500);
-      }
+      lastChild = null;
+      await waitForStrictRuntimeBind(port, hostname, 15_000, sleep);
+    } else if (freed) {
+      // Reclaim reported free via the worker's lenient probe; still require a strict
+      // Bun bind before spawning a published start that treats any listen error as busy.
+      await waitForStrictRuntimeBind(port, hostname, 10_000, sleep);
     }
-    spawnStart(job, job.installer, port);
+    lastChild = spawnDetachedStart(job, job.installer, port);
     const healthDeadline = Date.now() + perAttemptHealthMs;
     while (Date.now() < healthDeadline) {
       if (await probe(port, hostname)) return;

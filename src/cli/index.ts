@@ -133,7 +133,10 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
       intervalMs: 100,
       scanIntervalMs: 500,
       killOcxHolders: false,
-      dropTcpRows: false,
+      // Stop-first Windows updates leave ghost LISTEN rows with a dead PID.
+      // Bun's bind probe treats those as busy even when Node can bind; dropping
+      // the orphan TCBs is what lets hard-pinned `ocx start --port` recover.
+      dropTcpRows: true,
     });
   }
   try {
