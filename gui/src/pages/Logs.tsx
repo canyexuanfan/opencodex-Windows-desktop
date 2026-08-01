@@ -468,7 +468,10 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   } else if (settledFailure && failureStreak.error !== logsState.error) {
     setFailureStreak(previous => ({ error: logsState.error, count: previous.count + 1 }));
   }
-  const pollFailing = failureStreak.count >= STALE_POLL_FAILURE_LIMIT;
+  // Auto-refresh off: one settled failure is enough — there is no next poll to recover quietly.
+  const pollFailing =
+    failureStreak.count >= STALE_POLL_FAILURE_LIMIT
+    || (!autoRefresh && settledFailure);
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
   const conversationQuery = conversationFilter.trim();
@@ -635,8 +638,8 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           </button>
         </Notice>
       )}
-      {/* A run of failed polls is no longer transient: say the rows below are stale rather than
-          letting them read as current. Cleared by the first successful poll. */}
+      {/* Stale rows after a sustained poll outage, or any settled failure while auto-refresh is
+          off (no next tick will recover). Cleared by the first successful fetch. */}
       {pollFailing && logs.length > 0 && (
         <Notice tone="err">
           {t("logs.loadError")}{" "}

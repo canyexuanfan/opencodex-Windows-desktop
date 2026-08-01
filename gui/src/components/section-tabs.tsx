@@ -43,17 +43,19 @@ export function SectionTabs({
   /** Timeout path: drop the click lock and re-read the visible section. */
   const expireScrollLock = useCallback(() => {
     clearScrollLock();
-    // If the user interrupted smooth scroll, the target may never intersect — without a
-    // resync `active` would stay on the clicked tab while another section is on screen.
+    // If the user interrupted smooth scroll, the target may never cross the observer threshold —
+    // without a resync `active` would stay on the clicked tab while another section is on screen.
+    // Prefer the heading nearest the sticky-strip reading line (not only those with top <= 120),
+    // so a destination that stopped mid-viewport still wins over an off-screen prior heading.
     let bestId: string | null = null;
-    let bestTop = Number.NEGATIVE_INFINITY;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    const readingLine = 72;
     for (const item of items) {
       const node = document.getElementById(sectionAnchorId(scope, item.id));
       if (!node) continue;
-      const top = node.getBoundingClientRect().top;
-      // Match the observer bias: prefer a heading near the top of the viewport.
-      if (top <= 120 && top > bestTop) {
-        bestTop = top;
+      const distance = Math.abs(node.getBoundingClientRect().top - readingLine);
+      if (distance < bestDistance) {
+        bestDistance = distance;
         bestId = item.id;
       }
     }
