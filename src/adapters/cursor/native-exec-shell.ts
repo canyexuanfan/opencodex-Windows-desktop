@@ -335,12 +335,14 @@ function waitForBackgroundShellClose(entry: BackgroundShellEntry): Promise<boole
   if (backgroundShells.get(entry.shellId) !== entry) return Promise.resolve(true);
   return new Promise(resolveWait => {
     let settled = false;
+    // Do not unref: shutdown/drain awaits this grace window. On Bun Windows,
+    // an unref'd timer that is the sole waiter never fires and hangs the suite
+    // (and windows-latest job) until the runner timeout.
     const timer = backgroundShellRuntime.setTimer(() => {
       if (settled) return;
       settled = true;
       resolveWait(false);
     }, CURSOR_BACKGROUND_SHELL_TERM_GRACE_MS);
-    unrefTimer(timer);
     void entry.closePromise.then(() => {
       if (settled) return;
       settled = true;

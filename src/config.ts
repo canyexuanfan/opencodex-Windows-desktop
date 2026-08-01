@@ -103,11 +103,29 @@ function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
+/** True when required NTFS harden failed closed on a transient icacls timeout. */
+function isWindowsAclTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timed out|previous attempt timed out/i.test(message);
+}
+
 export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO = {
   write: (target, value) => writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 }),
   harden: target => {
     try { chmodSync(target, 0o600); } catch { /* platform may ignore chmod */ }
-    if (process.platform === "win32") hardenSecretPath(target, { required: true });
+    if (process.platform === "win32") {
+      try {
+        hardenSecretPath(target, { required: true });
+      } catch (err) {
+        // Data-plane invariant: ACL timeout must not abort atomic config writes /
+        // server start (management-auth catches the same class of failure).
+        if (!isWindowsAclTimeoutError(err)) throw err;
+        console.warn(
+          "[opencodex] atomic config write ACL harden timed out:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   },
   rename: renameAtomicFile,
   truncate: target => truncateSync(target, 0),
@@ -1527,7 +1545,16 @@ function configMutationDatabasePath(): string {
     try { chmodSync(dir, 0o700); } catch { /* best-effort on existing dir */ }
   }
   if (process.platform === "win32") {
-    hardenSecretDir(dir, { required: true });
+    try {
+      hardenSecretDir(dir, { required: true });
+    } catch (err) {
+      // Match management-auth: ACL timeout must not abort process start / data plane.
+      if (!isWindowsAclTimeoutError(err)) throw err;
+      console.warn(
+        "[opencodex] config mutation directory ACL harden timed out:",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   const path = join(dir, CONFIG_MUTATION_DB_FILENAME);
   recordOwnedConfigPath(dir, path);

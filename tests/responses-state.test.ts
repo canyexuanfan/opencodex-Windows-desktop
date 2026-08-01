@@ -603,7 +603,9 @@ describe("Responses previous_response_id state", () => {
 
   test("does not swap a resident row to a stub before fsync and no-replace publication succeed", () => {
     const events: string[] = [];
-    setSpillIoForTest({ record: event => events.push(event) });
+    // Inject fsync: Windows often rejects fsync on directory handles; the production
+    // path is best-effort, but this test still needs a deterministic event order.
+    setSpillIoForTest({ record: event => events.push(event), fsync: () => {} });
     setResponseStateByteCapForTests(1_024);
     rememberLarge("resp_durable_order", "x".repeat(8_000));
     expect(events).toEqual(["write", "fsync", "close", "harden", "publish", "dir-fsync", "stub-swap"]);
@@ -612,7 +614,7 @@ describe("Responses previous_response_id state", () => {
   test("directory fsync follows spill unlink", () => {
     const ref = writeResponseSpillDurably("resp_unlink_order", { createdAt: Date.now(), items: ["x"] });
     const events: string[] = [];
-    setSpillIoForTest({ record: event => events.push(event) });
+    setSpillIoForTest({ record: event => events.push(event), fsync: () => {} });
     deleteResponseSpill(ref);
     expect(events).toEqual(["dir-fsync"]);
   });

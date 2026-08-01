@@ -118,10 +118,10 @@ describe("background shell shutdown drain", () => {
   test("shell drain rejection or unresolved termination still calls server.stop", async () => {
     const unresolvedChild = installShutdownShell();
     setBackgroundShellRuntimeForTests({
+      // Keep the timer ref'd: drain awaits unresolved termination, and Bun
+      // Windows will not fire an unref'd sole waiter (hangs windows-latest).
       setTimer(callback) {
-        const timer = setTimeout(callback, 0);
-        timer.unref?.();
-        return timer;
+        return setTimeout(callback, 0);
       },
     });
     const unresolvedServer = fakeServer();
