@@ -756,3 +756,5 @@ Codex / Claude Code / 其他现有客户端
 - [x] Dashboard `/api/sync` 使用正在处理请求的服务端口作为可信 in-process 端口；不绕过外部 CLI/桌面调用的健康门。
 - [x] 回归：同步/生命周期/启动 36/36，Codex 注入 27/27，桌面测试 14/14，桌面静态 4/4，根 typecheck 和 privacy scan 通过。
 - [x] 本次源码修复后的最终安装版/便携版已重新构建并签名：Setup `99294DDA0792B2C534AAD6CFCE93FB5CA999DE8884442AD6A1D575BFEBA5C622`，Portable `6338C18E448DC0B6C573AA53CC7662EB1A11026A05EB7005F80C44F3BE527558`；主体 `CN=十七°`，PFX/私钥已清理，本机自签链仍待受信测试机复核。
+- [x] 本机隔离冒烟补证：Setup 静默安装返回 0，指定安装目录保留 `OpenCodex` 程序名子文件夹且包含 `OpenCodex.exe` 与内置 `resources/opencodex/runtime/bun.exe`；Portable 在隔离 `--user-data-dir` 下启动并取得动态端口，`/healthz=200/service=opencodex`、`/v1/models=200`；结束后按精确父子 PID 停止测试进程并确认临时目录清理完成。
+- [ ] 外部验收仍保留：干净 Windows 10/11 VM 双击、中文/空格安装路径真实向导、受信证书链 `Valid`、真实 Provider 配置保留与完整根测试。
