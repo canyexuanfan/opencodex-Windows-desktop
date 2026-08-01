@@ -84,11 +84,17 @@ function fsyncDirectoryBestEffort(dir: string): void {
   let fd: number | null = null;
   try {
     fd = openSync(dir, "r");
-    if (spillIoForTest?.fsync) spillIoForTest.fsync(fd);
-    else fsyncSync(fd);
+    try {
+      if (spillIoForTest?.fsync) spillIoForTest.fsync(fd);
+      else fsyncSync(fd);
+    } catch {
+      // Windows and some filesystems do not support fsync on directory handles.
+      // Still record the sync step for ordering tests — open succeeded and the
+      // best-effort attempt ran after publish / before stub-swap.
+    }
     record("dir-fsync");
   } catch {
-    // Windows and some filesystems do not support fsync on directory handles.
+    // Directory missing or unreadable — nothing to sync.
   } finally {
     if (fd !== null) {
       try { closeSync(fd); } catch { /* best effort */ }
