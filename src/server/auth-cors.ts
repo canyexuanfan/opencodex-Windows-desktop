@@ -70,22 +70,23 @@ export function isSameOriginAsRequest(req: Request, origin: string): boolean {
 }
 
 export function isAllowedRequestOrigin(req: Request, config: OcxConfig): boolean {
-  function isExtraAllowedOrigin(origin: string, cfg: OcxConfig): boolean {
-    if (!cfg.corsAllowOrigins?.length) return false;
-    return cfg.corsAllowOrigins.some(allowed => {
-      try {
-        return new URL(allowed).origin === new URL(origin).origin;
-      } catch {
-        return allowed === origin;
-      }
-    });
-  }
   const origin = req.headers.get("Origin");
   if (!isApiAuthRequired(config)) {
     if (!isLoopbackRequestHost(req.headers.get("Host"))) return false;
     return !origin || isLoopbackOriginValue(origin) || isExtraAllowedOrigin(origin, config);
   }
   return !origin || isLoopbackOriginValue(origin) || isSameOriginAsRequest(req, origin) || isExtraAllowedOrigin(origin, config);
+}
+
+function isExtraAllowedOrigin(origin: string, cfg: OcxConfig): boolean {
+  if (!cfg.corsAllowOrigins?.length) return false;
+  return cfg.corsAllowOrigins.some(allowed => {
+    try {
+      return new URL(allowed).origin === new URL(origin).origin;
+    } catch {
+      return allowed === origin;
+    }
+  });
 }
 
 export function managementRequestOrigin(req: Request, config: OcxConfig): string | null {
@@ -106,7 +107,9 @@ export function isAllowedManagementOrigin(req: Request, config: OcxConfig): bool
   const requestOrigin = managementRequestOrigin(req, config);
   if (!requestOrigin) return false;
   const origin = req.headers.get("Origin");
-  return !origin || origin === requestOrigin;
+  // Exact match against the process-derived origin, or an operator-listed corsAllowOrigins
+  // entry (covers TLS-terminator https://… when the process observes http://…).
+  return !origin || origin === requestOrigin || isExtraAllowedOrigin(origin, config);
 }
 
 export function browserSecurityHeaders(): Record<string, string> {

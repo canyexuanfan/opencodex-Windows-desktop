@@ -220,7 +220,7 @@ describe("previewArchivedCleanup", () => {
       "archived_sessions/rollout-new.jsonl",
     ]);
     expect(listed.some(c => c.relPath.includes("sessions/2026"))).toBe(false);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("percent selects oldest subset and includes digest", () => {
     home = buildHome();
@@ -236,7 +236,7 @@ describe("previewArchivedCleanup", () => {
     expect(preview.bytes).toBe(preview.candidates[0]!.bytes);
     expect(preview.digest).toBe(computePreviewDigest(preview.candidates, 50));
     expect(preview.digest).toMatch(/^[a-f0-9]{64}$/);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("treats .jsonl and .jsonl.zst as one logical rollout", () => {
     home = buildHome();
@@ -250,7 +250,7 @@ describe("previewArchivedCleanup", () => {
       "archived_sessions/rollout-old.jsonl.zst",
     ]);
     expect(listed.filter(c => c.relPath.includes("rollout-old"))).toHaveLength(1);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 });
 
 describe("normalizeArchivedRolloutPath", () => {
@@ -267,7 +267,7 @@ describe("normalizeArchivedRolloutPath", () => {
     // ISO timestamps in filenames must not be treated as Windows drive letters.
     expect(normalizeArchivedRolloutPath("archived_sessions/rollout-2026-01-01T10:00:00.jsonl", home))
       .toBe("archived_sessions/rollout-2026-01-01T10:00:00.jsonl");
-  });
+  }, { timeout: STORE_BUDGET_MS });
 });
 
 describe("executeArchivedCleanup", () => {
@@ -458,6 +458,8 @@ describe("executeArchivedCleanup", () => {
     expect(existsSync(join(home, ".trash", "77", "rollout-old.jsonl"))).toBe(false);
   });
 
+  // Windows CI: permanent cleanup + spawn/dynamic-tool SQLite work can exceed Bun's
+  // default 5s under runner load (timed out at 5.5s on PR #779).
   test("deletes spawn edges with parent_thread_id/child_thread_id and cascades dynamic tools", () => {
     home = buildHome({ withSpawnEdges: true, withDynamicTools: true });
     // Delete both sides of the edge together so referenced_history does not fire.
@@ -467,7 +469,7 @@ describe("executeArchivedCleanup", () => {
     expect(db.query("SELECT COUNT(*) AS n FROM thread_spawn_edges").get() as { n: number }).toEqual({ n: 0 });
     expect(db.query("SELECT COUNT(*) AS n FROM thread_dynamic_tools").get() as { n: number }).toEqual({ n: 0 });
     db.close();
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("rejects candidates still referenced by a live spawn edge", () => {
     home = buildHome({ withSpawnEdges: true });

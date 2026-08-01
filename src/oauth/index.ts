@@ -23,6 +23,8 @@ import { captureConfigGeneration, sweepExpiredOnWrite, type GenerationContext } 
 import { retainedUtf8Bytes } from "../lib/admission";
 import { randomUUID } from "node:crypto";
 export {
+  CODEX_HEALTH_AUTH_FAILED_NOTE,
+  CODEX_HEALTH_MANAGEMENT_API_UNAVAILABLE_NOTE,
   CODEX_HEALTH_UNAVAILABLE_NOTE,
   MASKED_ACCOUNT_FALLBACK,
   collectOAuthHealthEntries,

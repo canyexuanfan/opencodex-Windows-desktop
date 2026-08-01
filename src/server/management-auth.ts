@@ -56,7 +56,11 @@ function assertSafeDirectory(path: string): void {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("management token directory is not a regular directory");
   chmodSync(path, 0o700);
   const hardened = hardenSecretDir(path, { required: true });
-  if (!hardened.ok) throw new Error("management token directory ACL hardening did not complete");
+  if (!hardened.ok) {
+    throw new Error(
+      "management token directory ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+    );
+  }
 }
 
 function readExistingToken(path: string): string {
@@ -66,7 +70,11 @@ function readExistingToken(path: string): string {
   }
   chmodSync(path, 0o600);
   const hardened = hardenSecretPath(path, { required: true });
-  if (!hardened.ok) throw new Error("management token file ACL hardening did not complete");
+  if (!hardened.ok) {
+    throw new Error(
+      "management token file ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+    );
+  }
   const token = readFileSync(path, "utf8").trim();
   if (!/^ocx_admin_[A-Za-z0-9_-]{43}$/.test(token)) throw new Error("management token file is invalid");
   return token;
@@ -99,7 +107,11 @@ function createTokenFile(path: string): string {
     fd = null;
     chmodSync(temporary, 0o600);
     const temporaryHardened = hardenSecretPath(temporary, { required: true });
-    if (!temporaryHardened.ok) throw new Error("management token temporary ACL hardening did not complete");
+    if (!temporaryHardened.ok) {
+      throw new Error(
+        "management token temporary ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+      );
+    }
     try {
       linkSync(temporary, path);
       linked = true;
@@ -108,7 +120,11 @@ function createTokenFile(path: string): string {
       throw error;
     }
     const finalHardened = hardenSecretPath(path, { required: true });
-    if (!finalHardened.ok) throw new Error("management token file ACL hardening did not complete");
+    if (!finalHardened.ok) {
+      throw new Error(
+        "management token file ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+      );
+    }
     return token;
   } catch (error) {
     if (linked) removeManagementTokenPathBestEffort(path);
@@ -199,7 +215,11 @@ export function requireManagementAuth(
   config?: OcxConfig,
 ): Response | null {
   if (!state.available) {
-    return Response.json({ error: "management API unavailable" }, { status: 503 });
+    return Response.json({
+      error: "management API unavailable",
+      reason: state.reason,
+      hint: "Set OPENCODEX_ADMIN_AUTH_TOKEN to bypass file-backed admin token ACL hardening",
+    }, { status: 503 });
   }
   const actual = req.headers.get("x-opencodex-api-key")?.trim()
     || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
