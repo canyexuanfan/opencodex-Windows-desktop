@@ -68,7 +68,7 @@
       "allowToChangeInstallationDirectory": false,
       "include": "build/installer.nsh",
       "unicode": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "menuCategory": "OpenCodex",
       "runAfterFinish": false,
