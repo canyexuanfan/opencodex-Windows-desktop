@@ -895,3 +895,21 @@ Codex / Claude Code / 其他现有客户端
 - [x] 重新生成资源树、安装包和便携包；直接调用 electron-builder 内部 `getEffectiveOptions()` 确认 `"always"` 转换为 `DesktopShortcutCreationPolicy.ALWAYS(1)`；Setup SHA-256=`87F3E316C8C1FBD910EE8C79D700E2E6BBD46DD01E2A81F53DC9012EDFEEE5AF`，Portable SHA-256=`43409EC00AE439546E780C3B35659C7E6424A371C97426969A2338F4E3EA702C`。
 - [x] 本轮构建临时目录已按精确路径清理，未重启、关闭或修改当前正在使用的真实 Codex。
 - [ ] 真实双击安装后的桌面快捷方式落点、图标显示和卸载清理仍需用户用最新安装包在当前桌面或干净 VM 中确认。
+
+# 阶段 28：仓库链接与桌面启动语义收口（2026-08-02）
+- [x] 桌面端打开即自动启动/复用本地 OpenCodex 代理；截图中的“在线”代表代理已在线，普通桌面用户主路径是打开软件即可用，必要时点击“开启/重启代理”。
+- [x] 将产品入口统一到用户 fork：`package.json` repository/homepage/bugs、后端 `/api/github/star`、GUI Sidebar fallback、CLI 首次 star prompt、GUI 更新 release notes URL 均指向 `canyexuanfan/opencodex-Windows-desktop`。
+- [x] 从 Dashboard 概览移除容易误导的 Codex CLI shim 许可开关；启动安全页继续提供 service/shim 安装和风险诊断，但它不再作为桌面端日常开启代理步骤展示。
+- [x] 验证通过：`bun run typecheck`、`cd gui && bun run lint:i18n`、`cd gui && bun run lint`、`cd gui && bun run build`、`cd desktop && bun run build`、`cd desktop && bun test tests/package-static.test.ts`、非沙箱 bundled Bun 1.3.14 focused 测试 68/68、`git diff --check`。
+- [x] 已重新生成桌面资源和安装包；中间包 Setup SHA-256=`4CA2FE68EB4EE06D94404F164584FF172B9A180A3EC9B1E2EB0C666B1FEDAFF2`，Portable SHA-256=`2565A04FEA63E6841D9DEF31D9D3CB532BD719CB627B33FF0F692988023C4328`，后续已被阶段 29 图标包取代。
+- [ ] 真实 GitHub Star 操作需用户本机 `gh` 登录且由用户确认后执行；本轮只迁移目标仓库，不代用户 star、不 push、不发 release。
+
+# 阶段 29：桌面应用图标收口（2026-08-02）
+- [x] 确认仓库已有 OpenCodex 图标资产：`src/tray/assets/opencodex-tray.png`、`src/tray/assets/opencodex-tray-*.ico`、`gui/public/favicon.png`、`gui/public/logo.png`；本轮复用现有资产，不重新设计品牌图形。
+- [x] 生成 `desktop/build/icon.ico` 与 `desktop/build/icon.png`，作为 Windows 应用/安装器图标源。
+- [x] `desktop/package.json` 配置 `win.icon`、`nsis.installerIcon`、`nsis.uninstallerIcon`，使 exe、安装器、卸载器和快捷方式不再回退到 Electron 默认图标。
+- [x] `desktop/src/main.ts` 给 `BrowserWindow` 设置运行时窗口图标，并兼容打包后的 `process.resourcesPath/tray` 与开发时仓库路径。
+- [x] 扩展 `desktop/tests/package-static.test.ts`，把图标配置纳入安装包静态契约。
+- [x] 验证通过：`cd desktop && bun run build`、`cd desktop && bun test tests/package-static.test.ts` 4/4、`git diff --check`、`electron-builder --win nsis portable`；重打包日志不再出现 `default Electron icon is used`。
+- [x] 最新安装包：Setup SHA-256=`5A886C5089DC51BA47EFC76CD168EAF86002FE8B924D581E293BC9103D05F3E9`，Portable SHA-256=`EE4E816643E28D9ED257CAF3857300F4A715EB2ADBA06E6670425503033F2CC1`。
+- [ ] 真实 Windows 桌面快捷方式图标缓存刷新仍需用户安装最新版后肉眼确认；若 Windows 仍显示旧缓存，可删除旧快捷方式或刷新图标缓存后复核。

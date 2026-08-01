@@ -16,7 +16,7 @@ import {
 
 const VERSION_FILENAME = "version.json";
 const REFRESH_INTERVAL_MS = 20 * 60 * 60 * 1000; // 20h, matching codex-rs
-const RELEASE_NOTES_URL = "https://github.com/lidge-jun/opencodex/releases/latest";
+const RELEASE_NOTES_URL = "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/latest";
 
 export interface VersionCache {
   latest_version: string;

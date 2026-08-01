@@ -57,8 +57,8 @@ describe("GET /api/github/star", () => {
     expect(status).toBe(200);
     const star = body as Record<string, unknown>;
     expect(["starred", "not-starred", "unauthenticated"]).toContain(star.state);
-    expect(star.repo).toBe("lidge-jun/opencodex");
-    expect(star.url).toBe("https://github.com/lidge-jun/opencodex");
+    expect(star.repo).toBe("canyexuanfan/opencodex-Windows-desktop");
+    expect(star.url).toBe("https://github.com/canyexuanfan/opencodex-Windows-desktop");
   });
 
   test("never serializes gh output, tokens, or account identifiers", async () => {
@@ -86,7 +86,7 @@ describe("route surface", () => {
     for (const path of ["/api/update/badge", "/api/github/star"]) {
       const blocked = await call("GET", path, { origin: "https://evil.example" });
       expect(blocked.status).toBe(403);
-      expect(blocked.raw).not.toContain("lidge-jun");
+      expect(blocked.raw).not.toContain("canyexuanfan");
     }
   });
 });

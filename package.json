@@ -88,11 +88,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lidge-jun/opencodex.git"
+    "url": "git+https://github.com/canyexuanfan/opencodex-Windows-desktop.git"
   },
-  "homepage": "https://lidge-jun.github.io/opencodex/",
+  "homepage": "https://github.com/canyexuanfan/opencodex-Windows-desktop",
   "bugs": {
-    "url": "https://github.com/lidge-jun/opencodex/issues"
+    "url": "https://github.com/canyexuanfan/opencodex-Windows-desktop/issues"
   },
   "license": "MIT"
 }

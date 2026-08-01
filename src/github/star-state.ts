@@ -15,7 +15,7 @@
  */
 import { commandInvocation } from "../lib/win-exec";
 
-export const STAR_REPO = "lidge-jun/opencodex";
+export const STAR_REPO = "canyexuanfan/opencodex-Windows-desktop";
 export const STAR_REPO_URL = `https://github.com/${STAR_REPO}`;
 /**
  * Every `gh` call pins the host. `gh` honours `GH_HOST` and a GHES login, so an

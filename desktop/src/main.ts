@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { DesktopBackendSupervisor, type BackendStatus } from "./backend-supervisor.js";
 import { installNavigationPolicy, type NavigationPolicy } from "./navigation.js";
 import { createTray, type TrayController, type TrayStatus } from "./tray.js";
@@ -30,6 +31,16 @@ if (!hasSingleInstanceLock) {
     if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
   };
+
+  function desktopIconPath(): string | undefined {
+    const candidates = app.isPackaged
+      ? [path.join(process.resourcesPath, "tray", "opencodex-tray-online.ico")]
+      : [
+        path.resolve(process.cwd(), "src", "tray", "assets", "opencodex-tray-online.ico"),
+        path.resolve(process.cwd(), "..", "src", "tray", "assets", "opencodex-tray-online.ico"),
+      ];
+    return candidates.find(candidate => existsSync(candidate));
+  }
 
   function trayStatus(status: BackendStatus): TrayStatus {
     if (status.state === "ready") return "online";
@@ -167,6 +178,7 @@ if (!hasSingleInstanceLock) {
 
   function createMainWindow(): BrowserWindow {
     if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+    const icon = desktopIconPath();
 
     mainWindow = new BrowserWindow({
       show: false,
@@ -174,6 +186,7 @@ if (!hasSingleInstanceLock) {
       height: 820,
       minWidth: 960,
       minHeight: 640,
+      ...(icon ? { icon } : {}),
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,

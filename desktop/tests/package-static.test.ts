@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const packageJson = JSON.parse(readFileSync(path.resolve(import.meta.dir, "..", "package.json"), "utf8")) as {
   build?: {
     files?: string[];
     extraResources?: Array<{ from?: string; to?: string; filter?: string[] }>;
-    win?: { target?: Array<{ target?: string; arch?: string[] }>; requestedExecutionLevel?: string };
-    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; selectPerMachineByDefault?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; unicode?: boolean; createDesktopShortcut?: boolean | "always"; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
+    win?: { icon?: string; target?: Array<{ target?: string; arch?: string[] }>; requestedExecutionLevel?: string };
+    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; selectPerMachineByDefault?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; installerIcon?: string; uninstallerIcon?: string; unicode?: boolean; createDesktopShortcut?: boolean | "always"; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
     portable?: { artifactName?: string };
   };
 };
@@ -43,18 +43,22 @@ describe("desktop package contract", () => {
       { target: "portable", arch: ["x64"] },
     ]));
     expect(packageJson.build?.win?.requestedExecutionLevel).toBe("asInvoker");
+    expect(packageJson.build?.win?.icon).toBe("build/icon.ico");
     expect(packageJson.build?.nsis).toMatchObject({
       oneClick: false,
       perMachine: false,
       allowElevation: true,
       selectPerMachineByDefault: true,
       allowToChangeInstallationDirectory: false,
+      installerIcon: "build/icon.ico",
+      uninstallerIcon: "build/icon.ico",
       unicode: true,
       createDesktopShortcut: "always",
       createStartMenuShortcut: true,
       deleteAppDataOnUninstall: false,
     });
     expect(packageJson.build?.portable?.artifactName).toBe("OpenCodex-Portable-x64.${ext}");
+    expect(existsSync(path.resolve(import.meta.dir, "..", "build", "icon.ico"))).toBe(true);
   });
 
   test("keeps the application-name subfolder when the install directory is changed", () => {

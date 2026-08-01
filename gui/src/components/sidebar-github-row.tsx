@@ -34,7 +34,7 @@ interface UpdateBadge {
 
 const STAR_POLL_MS = 5 * 60_000;
 const BADGE_POLL_MS = 10 * 60_000;
-const REPO_URL = "https://github.com/lidge-jun/opencodex";
+const REPO_URL = "https://github.com/canyexuanfan/opencodex-Windows-desktop";
 
 async function readJson<T>(url: string, signal: AbortSignal): Promise<T | null> {
   const res = await fetch(url, { signal });
