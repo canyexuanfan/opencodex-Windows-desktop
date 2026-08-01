@@ -1302,7 +1302,7 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
 
     expect(body.tools).toEqual([
       { type: "image_generation" },
-      { type: "function", name: "exec_command", parameters: {} },
+      { type: "function", name: "exec_command", parameters: { type: "object" } },
     ]);
     expect(body.tool_choice).toEqual({
       type: "allowed_tools",
