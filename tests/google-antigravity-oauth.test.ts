@@ -84,10 +84,15 @@ describe("antigravity refresh", () => {
       if (url.includes(":loadCodeAssist")) return new Response(JSON.stringify({ cloudaicompanionProject: "proj-R" }), { status: 200 });
       return new Response("no", { status: 404 });
     });
+    const issuedAt = Date.now();
     const cred = await refreshAntigravityToken("refresh-tok");
     expect(cred.access).toBe("fresh-access");
     expect(cred.refresh).toBe("refresh-tok");
     expect(cred.projectId).toBe("proj-R");
+    // A one-hour Google token must retain roughly 55 minutes after the provider margin. The
+    // previous 50-minute margin stored only ten minutes and caused repeated refreshes in use.
+    expect(cred.expires - issuedAt).toBeGreaterThanOrEqual(54 * 60 * 1000);
+    expect(cred.expires - issuedAt).toBeLessThanOrEqual(60 * 60 * 1000);
   });
 
   test("refresh failure carries status only, not the response body", async () => {
