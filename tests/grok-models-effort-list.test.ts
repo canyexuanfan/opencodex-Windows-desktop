@@ -58,6 +58,12 @@ describe("raw /v1/models list reasoning-effort advertisement (Grok Build discove
         { value: "high", label: "High Effort", default: true },
         { value: "max", label: "Max Effort" },
       ]);
+      // Native rows advertise the canonical upstream ladder with the same medium-first
+      // default the Codex catalog resolver uses, so /effort works for ocx-gpt-* too.
+      const native = body.data.find(m => m.id === "gpt-5.6-sol");
+      expect(native).toBeDefined();
+      expect(native!.supports_reasoning_effort).toBe(true);
+      expect(native!.reasoning_effort).toBe("medium");
     } finally {
       await server.stop(true);
     }
@@ -79,7 +85,25 @@ describe("raw /v1/models list reasoning-effort advertisement (Grok Build discove
     }
   });
 
-  test("an invalid configured default falls back to the first tier", async () => {
+  test("a ladder without a configured default uses the canonical medium default", async () => {
+    const config = effortConfig();
+    config.providers.kimi!.modelDefaultReasoningEfforts = {};
+    config.providers.kimi!.modelReasoningEfforts = { k3: ["low", "medium", "high"] };
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/v1/models", server.url));
+      const body = await res.json() as { data: Array<Record<string, unknown>> };
+      const k3 = body.data.find(m => m.id === "kimi/k3");
+      expect(k3!.reasoning_effort).toBe("medium");
+      const options = k3!.reasoning_efforts as Array<Record<string, unknown>>;
+      expect(options[1]).toEqual({ value: "medium", label: "Medium Effort", default: true });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("an invalid configured default falls back with the canonical medium/high/first order", async () => {
     const config = effortConfig();
     config.providers.kimi!.modelDefaultReasoningEfforts = { k3: "medium" };
     saveConfig(config);
@@ -88,9 +112,10 @@ describe("raw /v1/models list reasoning-effort advertisement (Grok Build discove
       const res = await fetch(new URL("/v1/models", server.url));
       const body = await res.json() as { data: Array<Record<string, unknown>> };
       const k3 = body.data.find(m => m.id === "kimi/k3");
-      expect(k3!.reasoning_effort).toBe("low");
+      // k3's ladder is low/high/max: no medium, so the canonical fallback picks high.
+      expect(k3!.reasoning_effort).toBe("high");
       const options = k3!.reasoning_efforts as Array<Record<string, unknown>>;
-      expect(options[0]).toEqual({ value: "low", label: "Low Effort", default: true });
+      expect(options[1]).toEqual({ value: "high", label: "High Effort", default: true });
     } finally {
       await server.stop(true);
     }
