@@ -88,6 +88,9 @@ function record(event: "write" | "fsync" | "close" | "harden" | "publish" | "dir
 
 function fsyncDirectoryBestEffort(dir: string): void {
   let fd: number | null = null;
+  // Record the durability attempt before opening the directory: Windows cannot
+  // open/fsync directory handles this way, but callers still cross this seam.
+  record("dir-fsync");
   try {
     fd = spillIoForTest?.openDir ? spillIoForTest.openDir(dir) : openSync(dir, "r");
     try {
@@ -96,12 +99,9 @@ function fsyncDirectoryBestEffort(dir: string): void {
       else fsyncSync(fd);
     } catch {
       // Windows and some filesystems do not support fsync on directory handles.
-      // Still record the sync step for ordering tests — open succeeded and the
-      // best-effort attempt ran after publish / before stub-swap.
     }
-    record("dir-fsync");
   } catch {
-    // Directory missing or unreadable — nothing to sync.
+    // Directory missing or unreadable — nothing further to sync.
   } finally {
     if (fd !== null) {
       try {

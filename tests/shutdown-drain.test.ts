@@ -121,6 +121,12 @@ describe("background shell shutdown drain", () => {
       // Collapse grace waits to next tick; keep the timer ref'd so isolate does
       // not starve the waiter the way an unref'd setTimeout can.
       setTimer(callback) {
+        // Keep this fixture timer REF'D: Bun on Windows can stop servicing
+        // unref'd timers while the test's only pending work is a promise,
+        // which left drainAndShutdown waiting forever and hung the isolate
+        // process until the 20-minute CI job timeout (same starvation the
+        // OAuth queue tests hit). A ref'd 0ms timer fires immediately and
+        // cannot keep the process alive.
         return setTimeout(callback, 0);
       },
     });

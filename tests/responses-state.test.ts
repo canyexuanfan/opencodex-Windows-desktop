@@ -636,7 +636,7 @@ describe("Responses previous_response_id state", () => {
     expect(closed).toHaveLength(1);
   });
 
-  test("directory fsync open failure does not record dir-fsync", () => {
+  test("directory fsync records even when directory open fails", () => {
     const events: string[] = [];
     setSpillIoForTest({
       record: event => events.push(event),
@@ -645,7 +645,9 @@ describe("Responses previous_response_id state", () => {
       },
     });
     writeResponseSpillDurably("resp_dir_open_fail", { createdAt: Date.now(), items: ["x"] });
-    expect(events).not.toContain("dir-fsync");
+    // Record happens before open so Windows (no directory-handle fsync) still
+    // observes the durability seam in ordering tests.
+    expect(events).toContain("dir-fsync");
     expect(events).toContain("publish");
   });
 
