@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -446,7 +447,7 @@ describe("management and data-plane credential separation", () => {
     } finally {
       await server.stop(true);
     }
-  });
+  }, SERVER_BUDGET_MS); // binds a real server + live fetches; windows runner measured ~5.04s against Bun's 5s default.
 
   test("an existing management token ACL hardening failure keeps management unavailable", async () => {
     delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
@@ -482,10 +483,10 @@ describe("management and data-plane credential separation", () => {
     setPlatformForTests("win32");
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
-      if (target.endsWith("admin-api-token")) {
-        return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+      if (target === testHome) {
+        return { success: false, exitCode: null, timedOut: true, stdout: "" };
       }
-      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
     });
     resetHardenedStateForTests();
     // Probe only: startServer would re-harden the same home for config mutation
@@ -537,11 +538,11 @@ describe("management and data-plane credential separation", () => {
     saveConfig(remoteConfig());
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
-    // Env management auth never needs the token file. Time out only that path so
-    // startServer's config-mutation directory harden can still succeed on win32.
+    // Env auth bypasses the token file; directory ACL on the home may time out.
+    // Config-mutation harden soft-fails that timeout, so startServer still boots.
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
-      if (target.endsWith("admin-api-token")) {
+      if (target === testHome || target.endsWith("admin-api-token")) {
         return { success: false, exitCode: null, timedOut: true, stdout: "" };
       }
       return { success: true, exitCode: 0, timedOut: false, stdout: "" };
