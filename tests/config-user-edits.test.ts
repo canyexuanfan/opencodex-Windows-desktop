@@ -183,7 +183,7 @@ test("invalid retryOn429 values never log the raw value", () => {
     const logged = warn.mock.calls.map(call => call.join(" ")).join("\n");
     expect(logged).not.toContain("sk-super-secret-abc123");
     // Anchor the type-only diagnostic to the exact field so unrelated warnings can't satisfy it.
-    expect(logged).toContain("providers.test.retryOn429 (string) is invalid");
+    expect(logged).toContain('providers."test".retryOn429 (string) is invalid');
   } finally {
     warn.mockRestore();
   }
@@ -235,6 +235,55 @@ test("unrecognized retryOn429 field names are JSON-escaped before logging", () =
     // still names the field for typo debugging.
     expect(logged).not.toContain("evil\nattempt");
     expect(logged).toContain('"evil\\nattempt"');
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("provider names are redacted before retryOn429 load warnings", () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    writeDiskConfig({
+      providers: {
+        "sk-super-secret-9876": {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:1/v1",
+          apiKey: "k",
+          allowPrivateNetwork: true,
+          retryOn429: "enabled",
+        },
+      },
+    });
+    loadConfig();
+    const logged = warn.mock.calls.map(call => call.join(" ")).join("\n");
+    // The sanitizer runs before schema validation, so a secret-shaped provider NAME must
+    // never reach the log either.
+    expect(logged).not.toContain("sk-super-secret-9876");
+    expect(logged).toContain("[REDACTED]");
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("provider names with control characters are JSON-escaped before retryOn429 load warnings", () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    writeDiskConfig({
+      providers: {
+        "evil\nprovider": {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:1/v1",
+          apiKey: "k",
+          allowPrivateNetwork: true,
+          retryOn429: "enabled",
+        },
+      },
+    });
+    loadConfig();
+    const logged = warn.mock.calls.map(call => call.join(" ")).join("\n");
+    // The raw newline must never forge a log line; the escaped form still names the provider.
+    expect(logged).not.toContain("evil\nprovider");
+    expect(logged).toContain('"evil\\nprovider"');
   } finally {
     warn.mockRestore();
   }

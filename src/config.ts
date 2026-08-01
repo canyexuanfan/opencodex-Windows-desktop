@@ -1124,6 +1124,9 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
   const providers = root.providers;
   if (!providers || typeof providers !== "object" || Array.isArray(providers)) return;
   for (const [name, provider] of Object.entries(providers as Record<string, unknown>)) {
+    // This sanitizer runs BEFORE schema validation, so the provider name is untrusted: redact
+    // secret-shaped names and JSON-escape control characters before it reaches any warning.
+    const safeProviderName = JSON.stringify(redactSecretString(name));
     if (!provider || typeof provider !== "object" || Array.isArray(provider)) continue;
     const p = provider as Record<string, unknown>;
     const policy = p.retryOn429;
@@ -1131,7 +1134,7 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
     if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
       delete p.retryOn429;
       // Never serialize the value: an accidental `retryOn429: "sk-..."` would leak the secret.
-      console.warn(`⚠️  config.json providers.${name}.retryOn429 (${typeof policy}) is invalid — ignoring the policy`);
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429 (${typeof policy}) is invalid — ignoring the policy`);
       continue;
     }
     const policyRecord = policy as Record<string, unknown>;
@@ -1139,7 +1142,7 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
     // drop the whole policy so a hand-edit that tried to disable retries stays disabled.
     if ("enabled" in policyRecord && typeof policyRecord.enabled !== "boolean") {
       delete p.retryOn429;
-      console.warn(`⚠️  config.json providers.${name}.retryOn429.enabled (${typeof policyRecord.enabled}) is invalid — ignoring the whole policy`);
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.enabled (${typeof policyRecord.enabled}) is invalid — ignoring the whole policy`);
       continue;
     }
     const fields: Array<[string, (value: unknown) => boolean]> = [
@@ -1155,7 +1158,7 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
       if (value === undefined) continue;
       if (isValid(value)) cleaned[key] = value;
       // Log only the received type, never the value (provider config can hold secrets).
-      else console.warn(`⚠️  config.json providers.${name}.retryOn429.${key} (${typeof value}) is invalid — ignoring the field`);
+      else console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.${key} (${typeof value}) is invalid — ignoring the field`);
     }
     const knownKeys = new Set(fields.map(([key]) => key));
     for (const key of Object.keys(policyRecord)) {
@@ -1164,7 +1167,7 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
         // property name (`retryOn429: { "sk-...": true }`). Ordinary typos (e.g. `attempt`)
         // stay readable, secret-shaped names become [REDACTED]. JSON-escape afterwards so a
         // control-character property name (newline/ANSI) can never forge a log line.
-        console.warn(`⚠️  config.json providers.${name}.retryOn429.${JSON.stringify(redactSecretString(key))} is not a recognized field — ignoring it`);
+        console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.${JSON.stringify(redactSecretString(key))} is not a recognized field — ignoring it`);
       }
     }
     p.retryOn429 = cleaned;
