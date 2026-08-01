@@ -2,8 +2,10 @@
  * Reclaim a listen port after stop/update so restart can stay on the configured
  * port instead of hopping to an ephemeral one (Windows CLOSE_WAIT / leftover ocx).
  *
- * Killing is never the default: a process may be killed only when the caller
- * supplies a non-empty explicit PID allowlist for a process it just stopped.
+ * Killing is never the default. A process may be killed only when the caller
+ * sets `killOcxHolders` and either supplies a non-empty `onlyKillPids` allowlist
+ * or enables `killAllOcxOnPort` for revalidated ocx listeners. Foreign (non-ocx)
+ * processes are never killed.
  */
 import { execFileSync } from "node:child_process";
 import { verifyPidIdentity } from "../config";

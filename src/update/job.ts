@@ -537,10 +537,7 @@ function preparePortForPinnedStart(
   aliveFn: (pid: number) => boolean,
   verifyOcx: (pid: number) => number | null = verifyPidIdentity,
 ): void {
-  if (process.platform === "win32") {
-    try { stopWindows(); } catch { /* already stopped */ }
-    killWindowsServiceWrapperProcesses();
-  }
+  stopWindowsServiceWrappersBestEffort();
   const pid = readPid();
   if (pid) {
     updateJob(job, {}, `Clearing pre-start proxy PID ${pid} before pinned start.`);
@@ -720,10 +717,7 @@ async function restartAfterUpdate(
     // schtasks /end often leaves the hidden cmd/wscript wrapper alive; its :loop
     // respawns `ocx start` a few seconds later and races port reclaim. End the
     // task again and best-effort kill those wrappers before we touch the socket.
-    if (process.platform === "win32") {
-      try { stopWindows(); } catch { /* already stopped */ }
-      killWindowsServiceWrapperProcesses();
-    }
+    stopWindowsServiceWrappersBestEffort();
     // Stop-first update already unloaded the service; reclaim the socket, then
     // reinstall wrappers that bake `--port`.
     const preServiceAllow = reclaimKillAllowlist();
@@ -801,10 +795,7 @@ async function restartAfterUpdate(
       // below are the path that repairs stuck Windows listeners.
     }
   }
-  if (process.platform === "win32" && serviceInstalled) {
-    try { stopWindows(); } catch { /* already stopped */ }
-    killWindowsServiceWrapperProcesses();
-  }
+  if (serviceInstalled) stopWindowsServiceWrappersBestEffort();
   // Reclaim the captured port before the pinned start. Spawning `--port` while the old
   // socket is still busy is how Windows updates used to fail health checks (or hop).
   // killAllOcxOnPort covers wrapper-respawned bun PIDs minted during the wait.
@@ -935,6 +926,13 @@ function formatPortHolders(
     return `${pid}(${tags.join(",")})`;
   });
   return `holders=[${holders.join(", ") || "none"}] allow=[${allow.join(", ") || "none"}]`;
+}
+
+/** End the Windows scheduler task and best-effort kill surviving :loop wrappers. */
+function stopWindowsServiceWrappersBestEffort(): void {
+  if (process.platform !== "win32") return;
+  try { stopWindows(); } catch { /* already stopped */ }
+  killWindowsServiceWrapperProcesses();
 }
 
 /**
