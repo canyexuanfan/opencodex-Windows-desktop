@@ -60,6 +60,7 @@ namespaced selected id를 bare id로 바꿉니다.
 | `accountPoolStickyLimit?` | `number` | `1` | 한 round-robin 선택이 다음으로 넘어가기 전에 유지하는 성공적 새 세션 bind 수. 범위 1–100. `accountPoolStrategy`가 `round-robin`일 때만 적용. |
 | `upstreamFailoverThreshold?` | `number` | `3` | 일시적인 업스트림 실패가 연속으로 발생한 뒤, 이후 새 세션을 다른 적합한 pool 계정으로 failover할 횟수. `0`이면 실패 기반 failover를 끕니다. |
 | `modelCacheTtlMs?` | `number` | `300000` | 프로바이더별 `/models` 캐시의 유효 기간(5분). |
+| `appOwnedMemoryBudgetMb?` | `number` | `256` | 제거 가능한 앱 소유 유지 상태(로그, 캐시, Blob, 연속 응답 페이로드)의 프로세스 전체 상한(MiB)입니다. 유효 범위는 64~4096이며 RSS나 네이티브 런타임 메모리 상한이 아닙니다. |
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic prompt cache 정책. 끔, 5분 ephemeral, 1시간 extended 중 하나입니다. |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | 웹 검색 사이드카 옵션(아래 참조). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | 비전 사이드카 옵션(아래 참조). |
