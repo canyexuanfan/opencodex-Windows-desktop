@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort, verifyPidIdentity } from "../config";
 import { isProcessAlive, killProxy } from "../lib/process-control";
@@ -104,7 +104,13 @@ function nodeBin(): string {
 
 function packageLauncherPath(): string {
   // This module lives at src/update/job.ts — the launcher is <pkg-root>/bin/ocx.mjs.
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "ocx.mjs");
+  // After `npm install -g`, import.meta.url can still point at npm's renamed temp
+  // tree (`@bitkyc08/.opencodex-*`). Prefer the live package path when that happens.
+  const fromMeta = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "ocx.mjs");
+  if (!/[\\/]\.opencodex-/i.test(fromMeta) && existsSync(fromMeta)) return fromMeta;
+  const live = fromMeta.replace(/[\\/]@bitkyc08[\\/]\.opencodex-[^\\/]+/i, `${sep}@bitkyc08${sep}opencodex`);
+  if (live !== fromMeta && existsSync(live)) return live;
+  return fromMeta;
 }
 
 function formatCommand(bin: string, args: string[]): string {
@@ -425,6 +431,8 @@ export interface RestartIo {
   listListenPidsFn?: (port: number) => number[];
   /** Identity check for listeners discovered via {@link listListenPidsFn}. */
   verifyOcxFn?: (pid: number) => number | null;
+  /** Liveness check when deciding whether a reclaim timeout still has live holders. */
+  isAliveFn?: (pid: number) => boolean;
 }
 
 async function restartAfterUpdate(
@@ -453,6 +461,7 @@ async function restartAfterUpdate(
   const waitFn = io.waitForPort ?? reclaimListenPort;
   const listPids = io.listListenPidsFn ?? listListenPids;
   const verifyOcx = io.verifyOcxFn ?? verifyPidIdentity;
+  const aliveFn = io.isAliveFn ?? isProcessAlive;
   // Pre-update PID plus any ocx still LISTENing on the captured port. After a
   // stop-first npm self-update Windows often leaves a respawned bun/node child
   // that is not the captured PID; treating it as protected blocks reclaim and
@@ -553,13 +562,20 @@ async function restartAfterUpdate(
   const directAllow = reclaimKillAllowlist();
   const freed = await waitFn(port, hostname, reclaimOptsFor(directAllow));
   if (!freed) {
+    const liveHolders = listPids(port).filter(pid => pid !== process.pid && aliveFn(pid));
     updateJob(
       job,
       {},
-      `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket); not starting on another port. Retry 'ocx start --port ${port}'.`
+      `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket).`
         + ` ${formatPortHolders(port, listPids, verifyOcx, directAllow)}`,
     );
-    return;
+    if (liveHolders.length > 0) {
+      updateJob(job, {}, `Live holder(s) remain on port ${port}; not starting on another port. Retry 'ocx start --port ${port}'.`);
+      return;
+    }
+    // No live LISTEN owner — bind probes can still fail while npm replaces the
+    // worker's Bun binary. Attempt the pinned start anyway.
+    updateJob(job, {}, `No live holders on port ${port}; attempting pinned start despite reclaim timeout.`);
   }
   (io.spawnStart ?? spawnDetachedStart)(job, job.installer, port);
 }

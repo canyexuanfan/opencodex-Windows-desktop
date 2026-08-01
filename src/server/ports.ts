@@ -16,7 +16,13 @@ export function isAddrInUse(err: unknown): boolean {
 export async function isPortAvailable(port: number, hostname = "127.0.0.1"): Promise<boolean> {
   return await new Promise(resolve => {
     const server = createServer();
-    server.once("error", () => resolve(false));
+    server.once("error", (err) => {
+      // Only a real address-in-use conflict means busy. Other listen failures
+      // (runtime glitches while npm replaces the running Bun binary mid-update)
+      // must not look like a stuck port — reclaim would wait out the full timeout
+      // and never spawn the post-update start.
+      resolve(!isAddrInUse(err));
+    });
     server.once("listening", () => {
       server.close(() => resolve(true));
     });

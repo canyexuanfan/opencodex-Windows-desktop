@@ -226,7 +226,7 @@ describe("GUI update execution decisions", () => {
     expect(optsSeen).toEqual([[100, 200]]);
   });
 
-  test("restart refuses to spawn when the captured port never becomes free", async () => {
+  test("restart refuses to spawn when a live holder still owns the captured port", async () => {
     const spawned: Array<{ port?: number }> = [];
     const job: UpdateJobState = {
       id: "restart-busy",
@@ -242,16 +242,47 @@ describe("GUI update execution decisions", () => {
       log: [],
     };
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
-    await restartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1" }, {
+    await restartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1", oldPid: 100 }, {
       serviceInstalledFn: () => false,
       waitForPort: async () => false,
+      listListenPidsFn: () => [555],
+      isAliveFn: pid => pid === 555,
       spawnStart: (_job, _installer, port) => {
         spawned.push({ port });
       },
     });
     expect(spawned).toEqual([]);
     const saved = readUpdateJob(job.id);
-    expect(saved?.log.some(line => line.includes("still busy") && line.includes("not starting on another port"))).toBe(true);
+    expect(saved?.log.some(line => line.includes("Live holder(s) remain"))).toBe(true);
+  });
+
+  test("restart attempts pinned start when reclaim times out with only dead holders", async () => {
+    const spawned: Array<{ port?: number }> = [];
+    const job: UpdateJobState = {
+      id: "restart-busy-dead",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.39",
+      latestVersion: "2.7.40",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    await restartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1", oldPid: 100 }, {
+      serviceInstalledFn: () => false,
+      waitForPort: async () => false,
+      listListenPidsFn: () => [100],
+      isAliveFn: () => false,
+      spawnStart: (_job, _installer, port) => {
+        spawned.push({ port });
+      },
+    });
+    expect(spawned).toEqual([{ port: 10100 }]);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("attempting pinned start despite reclaim timeout"))).toBe(true);
   });
 
   test("service restart waits on the captured port and clears OCX_BAKE_PORT after install", async () => {
