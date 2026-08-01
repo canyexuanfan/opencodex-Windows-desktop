@@ -9,7 +9,7 @@
  * Modelled after src/codex/routing.ts cooldown logic but scoped to plain API-key pools.
  */
 import { saveConfigPreservingClaudeCode } from "../config";
-import type { OcxConfig, OcxProviderConfig } from "../types";
+import type { OcxConfig, OcxProviderConfig, RateLimitRetryPolicy } from "../types";
 import { resolveProviderTransport, type OcxProviderTransport } from "./xai-transport";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
 
@@ -21,6 +21,14 @@ interface KeyCooldown {
 
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 10 * 60_000; // cap at 10 min for api-key rotation
+
+const DEFAULT_RATE_LIMIT_RETRY = {
+  enabled: true,
+  attempts: 3,
+  intervalMs: 5_000,
+  maxIntervalMs: 60_000,
+  respectRetryAfter: true,
+} as const satisfies Required<RateLimitRetryPolicy>;
 
 /** Map<`${providerName}\0${keyId}`, KeyCooldown> */
 const keyCooldowns = new Map<string, KeyCooldown>();
@@ -63,6 +71,42 @@ function isKeyInCooldown(providerName: string, keyId: string, now = Date.now()):
 export function hasKeyPoolFailover(provider: OcxProviderConfig): boolean {
   if (provider.authMode === "oauth" || provider.authMode === "forward") return false;
   return (provider.apiKeyPool?.length ?? 0) >= 2;
+}
+
+/**
+ * Normalize a provider's `retryOn429` policy, or return null when the knob is absent or
+ * explicitly disabled. The returned policy is fully defaulted so callers never re-check fields.
+ */
+export function rateLimitRetryPolicyFor(
+  provider: Pick<OcxProviderConfig, "retryOn429">,
+): Required<RateLimitRetryPolicy> | null {
+  const policy = provider.retryOn429;
+  if (!policy || policy.enabled === false) return null;
+  return {
+    enabled: policy.enabled ?? DEFAULT_RATE_LIMIT_RETRY.enabled,
+    attempts: policy.attempts ?? DEFAULT_RATE_LIMIT_RETRY.attempts,
+    intervalMs: policy.intervalMs ?? DEFAULT_RATE_LIMIT_RETRY.intervalMs,
+    maxIntervalMs: policy.maxIntervalMs ?? DEFAULT_RATE_LIMIT_RETRY.maxIntervalMs,
+    respectRetryAfter: policy.respectRetryAfter ?? DEFAULT_RATE_LIMIT_RETRY.respectRetryAfter,
+  };
+}
+
+/**
+ * Wait before the next same-target replay: upstream Retry-After (seconds or HTTP-date) when
+ * `respectRetryAfter` is on and the header parses, capped at `maxIntervalMs`; otherwise the
+ * fixed `intervalMs`. Malformed headers fall back to the fixed interval.
+ */
+export function rateLimitRetryDelayMs(
+  policy: Required<RateLimitRetryPolicy>,
+  retryAfterHeader: string | null | undefined,
+  now = Date.now(),
+): number {
+  const raw = retryAfterHeader?.trim();
+  if (policy.respectRetryAfter && raw) {
+    const parsed = parseRetryAfterMs(raw, now);
+    if (parsed !== undefined) return Math.min(parsed, policy.maxIntervalMs);
+  }
+  return policy.intervalMs;
 }
 
 /**

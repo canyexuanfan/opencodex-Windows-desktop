@@ -85,7 +85,13 @@ import {
   recordCodexUpstreamOutcome,
   type CodexUpstreamOutcome,
 } from "../../codex/routing";
-import { fetchWithResetRetry, fetchWithTransientRetry, applyUpstreamRecoveryInit } from "../../lib/upstream-retry";
+import {
+  applyUpstreamRecoveryInit,
+  cancelResponseBodyBestEffort,
+  fetchWithResetRetry,
+  fetchWithTransientRetry,
+  sleepWithAbort,
+} from "../../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
@@ -96,7 +102,12 @@ import { isUsageDebugEnabled } from "../../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve";
 import type { InboundWire } from "../../providers/registry";
-import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../../providers/key-failover";
+import {
+  hasKeyPoolFailover,
+  rateLimitRetryDelayMs,
+  rateLimitRetryPolicyFor,
+  rotateProviderTransportOn429,
+} from "../../providers/key-failover";
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { resolveProviderTransport } from "../../providers/xai-transport";
 import type { WsData } from "../ws-bridge";
@@ -2363,6 +2374,36 @@ async function handleResponsesInner(
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
         continue recovery;
+      }
+
+      // Same-target 429 wait-and-retry (opt-in `retryOn429`, issue #487). Codex never retries
+      // 429 itself (it retries 5xx only), and single-key pools cannot use the failover below,
+      // so wait (Retry-After or the fixed interval) and replay the IDENTICAL request on the
+      // same key first. Pre-stream only: a 429 arrives before any bytes are relayed, so the
+      // replay is lossless. Runs before key failover so "primary-first" setups keep the same
+      // key on rate-limit blips; only after the attempts are exhausted does failover run.
+      const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+      let rateLimitRetries = 0;
+      while (
+        upstreamResponse.status === 429
+        && rateLimitPolicy !== null
+        && rateLimitRetries < rateLimitPolicy.attempts
+      ) {
+        rateLimitRetries += 1;
+        try {
+          await sleepWithAbort(
+            rateLimitRetryDelayMs(rateLimitPolicy, upstreamResponse.headers.get("retry-after"), Date.now()),
+            options.abortSignal,
+          );
+        } catch {
+          cleanupUpstreamAbort();
+          upstream.abort();
+          return clientCancelledResponse();
+        }
+        cancelResponseBodyBestEffort(upstreamResponse);
+        const result = await rebuildAndRefetch("rate-limit-429");
+        if ("failed" in result) return result.failed;
+        upstreamResponse = result;
       }
 
       // Multi-key 429 failover: rotate to the next pool key (cooldown-aware) and retry the

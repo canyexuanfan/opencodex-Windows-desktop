@@ -483,6 +483,13 @@ const providerConfigSchema = z.object({
   responsesPath: z.string().min(1).optional(),
   statelessResponses: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
+  retryOn429: z.object({
+    enabled: z.boolean().optional(),
+    attempts: z.number().int().min(1).max(20).optional(),
+    intervalMs: z.number().int().min(100).max(600_000).optional(),
+    maxIntervalMs: z.number().int().min(100).max(3_600_000).optional(),
+    respectRetryAfter: z.boolean().optional(),
+  }).optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   responsesItemIdRepair: z.object({
     message: z.array(z.string().min(1)).optional(),

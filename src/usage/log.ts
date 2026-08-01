@@ -12,6 +12,7 @@ export type AttemptRecoveryKind =
   | "connection-reset"
   | "oauth-401"
   | "key-429"
+  | "rate-limit-429"
   | "anthropic-oauth-429"
   | "image-413";
 

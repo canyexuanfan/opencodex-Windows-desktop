@@ -905,6 +905,25 @@ export interface ResponsesItemIdRepairConfig {
   repairMissingTerminalIds?: boolean;
 }
 
+/**
+ * Same-target 429 wait-and-retry policy (`providers.<name>.retryOn429`). When present and not
+ * explicitly disabled, the proxy waits and replays the identical request on the same key before
+ * any key failover. All fields optional; the runtime applies defaults (attempts=3,
+ * intervalMs=5000, maxIntervalMs=60000, respectRetryAfter=true, enabled=true).
+ */
+export interface RateLimitRetryPolicy {
+  /** Master switch. The presence of the object also enables the policy (default true). */
+  enabled?: boolean;
+  /** Extra replay attempts after the first 429 (1..20, default 3). */
+  attempts?: number;
+  /** Fixed wait between attempts when the upstream sends no usable Retry-After (default 5000). */
+  intervalMs?: number;
+  /** Cap for any single wait, including an upstream Retry-After (default 60000). */
+  maxIntervalMs?: number;
+  /** Prefer the upstream Retry-After header when present and parseable (default true). */
+  respectRetryAfter?: boolean;
+}
+
 export interface OcxProviderConfig {
   adapter: string;
   /** Cursor MCP compatibility bounds; positive integers when configured. */
@@ -1083,6 +1102,13 @@ export interface OcxProviderConfig {
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
   preserveReasoningContentModels?: string[];
+  /**
+   * Opt-in same-target 429 retry policy. Codex itself never retries 429 (it retries 5xx only,
+   * openai/codex#30471), and single-key pools have no failover, so the proxy waits and replays
+   * the identical request on the same key before any failover. Pre-stream only: a 429 arrives
+   * before any response bytes are relayed, so the replay is lossless.
+   */
+  retryOn429?: RateLimitRetryPolicy;
   /**
    * Model ids whose OpenAI-compatible chat endpoint accepts `reasoning_split: true` and returns
    * thinking separately in `reasoning_content` / `reasoning_details` instead of visible content.

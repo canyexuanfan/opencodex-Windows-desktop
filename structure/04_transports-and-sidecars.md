@@ -219,6 +219,14 @@ ordinary 5xx errors are not replayed. Completion fallback rebuilds only replayab
 the original user/tool-result turn for reasoning-only attempts, supplies neutral non-empty carriers
 for empty tool output, and validates role alternation plus tool-use/result pairing before transport.
 
+Provider-level `retryOn429` (devlog 260802_429_same_target_retry) is the generic, opt-in
+same-target 429 retry for key-auth providers, primarily single-key pools that cannot use
+multi-key failover. In the pre-stream recovery loop, a 429 waits (`Retry-After` or the fixed
+interval, capped) and replays the identical request on the same key before any failover, up to
+`attempts` extra times. Codex never retries 429 client-side (openai/codex#30471), so this is the
+only defense for those providers; the final 429 still carries `Retry-After` for clients that
+honor it.
+
 [Decision Log]
 - 목적과 의도: Prevent Kiro progress from becoming a false final answer, reject invalid empty completion retries, and stop concurrent transient 429s from consuming independent retry budgets.
 - 기존 구현 및 제약 조건: Kiro text has no trustworthy phase; stop metadata arrives only at stream end; the private completion tool is adapter-owned; normal parallel tool traffic must remain parallel; client cancellation must interrupt all waits.
