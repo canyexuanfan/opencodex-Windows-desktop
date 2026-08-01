@@ -232,3 +232,40 @@ each batch read-only with `gh` access. Results appended below per batch.
 - 671 — needs-author-work: code accepted; needs explicit credential-
   selection security sign-off + resolve/falsify account-context/docs P2s.
   Land before #715.
+
+### Batch: issues 425/418/417/415/414/386/241/201/178/177/95/92 (oldest)
+
+- 425 — actionable, high. Design accepted; namespace foundation landed;
+  green PR #671 implements exact-account routing.
+- 418 — needs-info: one same-run three-boundary `spawn_agent` trace needed
+  to assign provider emission vs proxy translation vs Codex lifecycle.
+- 417 — upstream-blocked. Relay tests exonerate ocx; openai/codex#35161
+  OPEN.
+- 415 — design-blocked: needs capability/citation/auth/quota matrix first.
+- 414 — actionable, high. Exa-first scope concrete behind existing sidecar
+  backend config.
+- 386 — actionable, med. Superseded by maintainer branch `feat/macos-app`;
+  finish review + CI artifact proof + release integration.
+- 241 — upstream-blocked: Desktop remote native-only allowlist filters a
+  correct catalog; no linked upstream ticket exists.
+- 201 — needs-info: TRAE International exists but enterprise page still
+  says CLI "coming soon"; no sanctioned international inference/auth API
+  (verified 2026-08-02 via trae.ai/enterprise).
+- 178 — design-blocked: Factory's Droid Exec is an agent backend, not a
+  model-inference provider.
+- 177 — design-blocked: Warp's Oz API launches environment-backed agents,
+  not selectable model inference.
+- 95 — tracking roadmap item (tenant isolation, attribution, load).
+- 92 — upstream-blocked. Note: the openai/codex#32453 cited earlier in the
+  thread is OPEN but concerns unrelated stale-model compaction/429
+  behavior; the real encryption limitation has no linked upstream ticket.
+
+## Independent spot-verification (web, 2026-08-02)
+
+- Anthropic docs: Claude Sonnet 4.6 and Opus 4.7 both support the 1M-token
+  context window (GA on the API). PR #839's intent is externally correct;
+  the conflict is with the repo's generated 200k metadata contract, which
+  must be reconciled as source of truth.
+- openai/codex#32453 remains OPEN (unrelated to #92's encryption path).
+- trae.ai/enterprise still lists CLI as "coming soon" — no sanctioned
+  international API for #201.
