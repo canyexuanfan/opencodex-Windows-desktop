@@ -885,4 +885,4 @@ Codex / Claude Code / 其他现有客户端
 - [x] 精确删除真实用户 hive 中两条残留记录：`HKEY_USERS\S-1-5-21-4236703995-3469167350-429386209-1001\Software\65450dd5-cb01-5699-92e3-de59ccbfbe4d` 与对应 `...\Uninstall\65450dd5-cb01-5699-92e3-de59ccbfbe4d`。
 - [x] 复核两条 key 均已不存在；`C:\tmp\opencodex-ui-smoke-20260802` 已不存在。
 - [x] 本次清理未重启、关闭或修改当前正在使用的真实 Codex 配置。
-- [ ] 其余历史 `C:\tmp\OpenCodex*` / `C:\tmp\opencodex-*` 测试目录需要单独清点后逐项确认删除；不再执行宽范围接管 ACL 或批量硬删。
+- [x] 用户明确授权后，已删除 `C:\tmp` 下全部名称匹配 `OpenCodex*` / `opencodex-*` 的 27 个测试目录；复核结果为 `NO_REMAINING_CTMP_OPENCODEX_DIRS`，且未执行 ACL 接管。
