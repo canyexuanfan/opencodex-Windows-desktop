@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { STORE_BUDGET_MS } from "./helpers/test-budget";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  resetHardenedStateForTests,
+  setIcaclsRunnerForTests,
+} from "../src/lib/windows-secret-acl";
 import {
   getAccountCredential,
   getAccountSet,
@@ -39,9 +42,18 @@ describe("multi-account auth store", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
+    resetHardenedStateForTests();
+    setIcaclsRunnerForTests(() => ({
+      success: true,
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+    }));
   });
 
   afterEach(() => {
+    setIcaclsRunnerForTests(null);
+    resetHardenedStateForTests();
     if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousOpencodexHome;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -273,7 +285,7 @@ describe("multi-account auth store", () => {
     await Promise.all(accepted);
     expect(executions).toBe(128);
     expect(oauthMutationTailSnapshot().active).toBe(0);
-  }, STORE_BUDGET_MS); // 128 serialized load-modify-persist store mutations; windows-latest measured ~7.3s against Bun's 5s default.
+  });
 
   test("OAuth 30 second wait timeout releases an unstarted lease and never enters the chain", async () => {
     let releaseFirst!: () => void;
@@ -287,11 +299,21 @@ describe("multi-account auth store", () => {
     await started;
     let entered = false;
     const timedOut = mutateStore(() => { entered = true; }, ["provider", "waiting-account"], { waitMs: 10 });
-    await expect(timedOut).rejects.toBeInstanceOf(OAuthMutationBusyError);
-    expect(entered).toBe(false);
-    expect(oauthMutationTailSnapshot().active).toBe(1);
-    releaseFirst();
-    await blocker;
+    // Bun 1.3.14 on Windows does not service the production-unref'ed queue timer
+    // when the test is otherwise waiting only on promises. Keep a test-owned
+    // ref'ed timer active, and release the blocker if the assertion itself fails.
+    const timerWakeup = setInterval(() => {}, 5);
+    const cleanupFallback = setTimeout(releaseFirst, 1_000);
+    try {
+      await expect(timedOut).rejects.toBeInstanceOf(OAuthMutationBusyError);
+      expect(entered).toBe(false);
+      expect(oauthMutationTailSnapshot().active).toBe(1);
+    } finally {
+      clearInterval(timerWakeup);
+      clearTimeout(cleanupFallback);
+      releaseFirst();
+      await blocker;
+    }
     expect(oauthMutationTailSnapshot().active).toBe(0);
   });
 });

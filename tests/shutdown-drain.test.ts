@@ -118,9 +118,13 @@ describe("background shell shutdown drain", () => {
   test("shell drain rejection or unresolved termination still calls server.stop", async () => {
     const unresolvedChild = installShutdownShell();
     setBackgroundShellRuntimeForTests({
-      // Keep the timer ref'd: drain awaits unresolved termination, and Bun
-      // Windows will not fire an unref'd sole waiter (hangs windows-latest).
       setTimer(callback) {
+        // Keep this fixture timer REF'D: Bun on Windows can stop servicing
+        // unref'd timers while the test's only pending work is a promise,
+        // which left drainAndShutdown waiting forever and hung the isolate
+        // process until the 20-minute CI job timeout (same starvation the
+        // OAuth queue tests hit). A ref'd 0ms timer fires immediately and
+        // cannot keep the process alive.
         return setTimeout(callback, 0);
       },
     });

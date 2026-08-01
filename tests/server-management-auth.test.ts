@@ -485,7 +485,14 @@ describe("management and data-plane credential separation", () => {
       if (target.endsWith("admin-api-token")) {
         return { success: true, exitCode: 0, timedOut: false, stdout: "" };
       }
-      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      // Directory ACE carries (OI)(CI). Timeout only directories so management auth
+      // fails closed while secret file hardens (config.json.tmp) can still
+      // succeed — startServer must persist config on real Windows.
+      const grant = args.find(arg => typeof arg === "string" && arg.includes("(F)")) ?? "";
+      if (grant.includes("(OI)(CI)")) {
+        return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      }
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
     });
     resetHardenedStateForTests();
     const state = initializeManagementAuthState(remoteConfig());
@@ -549,7 +556,15 @@ describe("management and data-plane credential separation", () => {
     saveConfig(remoteConfig());
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
-    setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    // Stall directory ACL only. Env admin bypasses the file-backed token path;
+    // secret file hardens for config persistence must still succeed on win32.
+    setIcaclsRunnerForTests(args => {
+      const grant = args.find(arg => typeof arg === "string" && arg.includes("(F)")) ?? "";
+      if (grant.includes("(OI)(CI)")) {
+        return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      }
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
     resetHardenedStateForTests();
 
     const state = initializeManagementAuthState(remoteConfig());
