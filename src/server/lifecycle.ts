@@ -121,6 +121,8 @@ export async function drainAndShutdown(
   }
   setStorageCleanupPolicyLiveSink(null);
   setStorageCleanupPolicyJobLiveApply(null);
-  s?.stop(true);
+  // Bun's Server.stop returns Promise<void>; fire-and-forget races the next
+  // isolate reclaim / follow-on listen the same way unterminated Workers did.
+  if (s) await s.stop(true);
   draining = false;
 }
