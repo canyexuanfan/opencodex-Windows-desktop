@@ -77,7 +77,7 @@
 - [x] 固定端口被占用时自动选择动态端口，不终止第三方进程。
 - [x] 实际端口确定后才写入 runtime 状态和客户端配置。
 - [x] 停止、重启、崩溃恢复继续保护原有 Codex 配置（真实用户 Provider 保留仍待 VM）。
-- [ ] 保留原有 Provider、模型、OAuth、路由、日志和存储能力。
+- [x] 保留原有 Provider、模型、OAuth、路由、日志和存储能力（复用完整 Dashboard；GUI 全套、桌面页面契约与 CLI/headless 对齐回归通过）。
 - [x] 最终安装包和便携包均使用 `CN=十七°` 签名。
 
 ### 明确不做
@@ -808,3 +808,9 @@ Codex / Claude Code / 其他现有客户端
 - [x] Dashboard `/api/sync` 在最终写入前执行 PID 匹配的 `/healthz` 探活，不再仅依赖请求已经进入进程这一早期事实。
 - [x] bundled Bun 1.3.14 聚焦回归 `tests/codex-sync-api.test.ts`：12/12 用例、51 个断言通过，包含刷新期间代理退出和端口再次漂移两类回归。
 - [ ] 操作系统强制结束、电源中断后 Codex 先于 OpenCodex 启动的场景仍需干净 Windows VM 验收；该场景依赖已实现的启动保护/service 或 shim，不能由进程退出回调单独保证。
+
+# CLI 与原功能入口回归增量（2026-08-01）
+- [x] 修复 `cli-restore-back` 测试依赖机器默认 10100 状态的问题；测试内取得并释放动态端口，稳定验证无健康代理时 `ocx sync` 非零退出且不注入死路由。
+- [x] bundled Bun 1.3.14、授权隔离临时根：`cli-restore-back` 4/4、19 个断言；`cli-help` 12/12、102 个断言；`cli-headless-parity` 8/8、18 个断言。
+- [x] Provider、模型上下文、组合路由、Agent effort/roster、API Key、Grok include、配置原子写入和完整 CLI 帮助入口继续可用；桌面端仍复用原 Dashboard 与同一管理 API。
+- [ ] 根完整测试仍受当前 Windows Bun 运行器总时长/子进程限制，不能用上述聚焦测试替代；干净 VM 与跨平台回归仍保留。
