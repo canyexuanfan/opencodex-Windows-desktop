@@ -81,7 +81,16 @@ jobs:
       - name: Typecheck
         run: bun x tsc --noEmit
 
-      - name: Test
+      # Bun 1.3.14 under `--isolate` segfaults on macOS Silicon CI after storage
+      # Worker suites finish with balanced workers_spawned/terminated (exit 133 /
+      # Trace/BPT). Caps/settles in the teardown suite did not stop it. Run the
+      # same tests without isolate on macOS; keep isolate on Linux/Windows.
+      - name: Test (macOS)
+        if: runner.os == 'macOS'
+        run: bun test tests
+
+      - name: Test (Linux/Windows, isolated)
+        if: runner.os != 'macOS'
         run: bun test --isolate tests
 
       - name: GUI tests

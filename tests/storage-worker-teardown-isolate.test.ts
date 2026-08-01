@@ -8,9 +8,10 @@
  *
  * A second Bun 1.3.14 failure mode is a post-suite segfault with a *balanced*
  * `workers_spawned === workers_terminated` count (exit 133 / Trace/BPT on
- * macOS Silicon CI). That is a runtime crash after green assertions — keep the
- * heavy churn on win32, and leave darwin with a single-cycle proof plus a
- * brief settle before the isolate file boundary.
+ * macOS Silicon CI). Caps/settles here were not enough under GHA load, so
+ * cross-platform CI runs macOS without `--isolate` (see `.github/workflows/ci.yml`).
+ * Keep the heavy churn on win32; darwin stays at a single-cycle proof for local
+ * isolate runs.
  *
  * These cases hammer the exact failure window: fire-and-forget terminate must
  * still be joinable by drain, and repeated spawn → reset cycles must leave the
