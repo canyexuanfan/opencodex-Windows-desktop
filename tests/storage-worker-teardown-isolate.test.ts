@@ -7,11 +7,12 @@
  * workers_terminated(N-1)` on Windows and kills the whole run.
  *
  * A second Bun 1.3.14 failure mode is a mid-file / post-suite segfault with a
- * *balanced* `workers_spawned === workers_terminated` count (exit 133 /
- * Trace/BPT on macOS Silicon). Churn caps and short settles were not enough
- * under GHA load. Keep isolate everywhere, skip Worker-spawning cases on
- * darwin (platform-cap meta-test still runs), and keep OS-join settle in
- * `worker-lifecycle` for win32/darwin.
+ * *balanced* `workers_spawned === workers_terminated` count (exit 132/133).
+ * Seen on macOS Silicon and ubuntu GHA even after the first green assertion in
+ * this file. Churn caps and short settles were not enough. Keep isolate
+ * everywhere; skip Worker-spawning hammers on non-Windows (platform-cap
+ * meta-test still runs); win32 keeps the regression for the original panic.
+ * OS-join settle stays in `worker-lifecycle` for win32/darwin.
  *
  * These cases hammer the exact failure window: fire-and-forget terminate must
  * still be joinable by drain, and repeated spawn → reset cycles must leave the
@@ -40,18 +41,17 @@ let testDir = "";
 let previousHome: string | undefined;
 
 /**
- * Bun 1.3.14 macOS Silicon: Worker spawn in this file still segfaults the
- * isolate process after green assertions (balanced counts). Skip the hammer
- * cases on darwin; win32/linux keep full coverage.
+ * Bun 1.3.14: Worker spawn in this file still segfaults the isolate process
+ * after green assertions with balanced counts on darwin and linux GHA. Skip
+ * hammers off Windows; win32 keeps full coverage for the original panic.
  */
-const skipDarwinWorkerSpawn = process.platform === "darwin";
+const skipNonWindowsWorkerSpawn = process.platform !== "win32";
 
 /** Spawn/reset iterations for the heavy churn case — platform-stressed carefully. */
 function workerChurnCyclesForIsolate(): number {
   if (process.platform === "win32") return 8;
-  // Darwin cases are skipped; keep the cap documented for the meta-test.
+  // Non-Windows hammers are skipped; keep caps documented for the meta-test.
   if (process.platform === "darwin") return 1;
-  // Linux: short loop — eight cycles segfaulted with balanced counts on ubuntu CI.
   return 2;
 }
 
@@ -92,7 +92,7 @@ async function waitForLiveWorker(timeoutMs = 10_000): Promise<void> {
   throw new Error("no storage worker was ever spawned; this test would prove nothing");
 }
 
-test.skipIf(skipDarwinWorkerSpawn)("drain joins a fire-and-forget terminate before the isolate boundary", async () => {
+test.skipIf(skipNonWindowsWorkerSpawn)("drain joins a fire-and-forget terminate before the isolate boundary", async () => {
   // Reproduces the old race: sync reset void-terminates (and used to deregister
   // immediately), then drain returned on an empty set while the thread exited.
   setStorageCleanupPolicyJobTestHooks({ blockMs: 800 });
@@ -110,7 +110,7 @@ test.skipIf(skipDarwinWorkerSpawn)("drain joins a fire-and-forget terminate befo
   expect(liveStorageWorkerCount()).toBe(0);
 }, { timeout: 30_000 });
 
-test.skipIf(skipDarwinWorkerSpawn)("repeated Windows-style spawn/reset cycles leave no live workers", async () => {
+test.skipIf(skipNonWindowsWorkerSpawn)("repeated Windows-style spawn/reset cycles leave no live workers", async () => {
   const cycles = workerChurnCyclesForIsolate();
   for (let i = 0; i < cycles; i++) {
     // Fresh CODEX_HOME each cycle so a prior worker's SQLite handle cannot
@@ -131,11 +131,11 @@ test.skipIf(skipDarwinWorkerSpawn)("repeated Windows-style spawn/reset cycles le
   }
 }, { timeout: 60_000 });
 
-test.skipIf(skipDarwinWorkerSpawn)("async beforeEach-style join between cycles leaves no live workers", async () => {
+test.skipIf(skipNonWindowsWorkerSpawn)("async beforeEach-style join between cycles leaves no live workers", async () => {
   // Mirrors storage-mutation-race: each case must await join before the next
   // spawn. A sync beforeEach reset used to fire-and-forget terminate and leave
   // workers_spawned(N) workers_terminated(N-1) for the next isolate reclaim.
-  const cycles = process.platform === "win32" ? 6 : 2;
+  const cycles = 6;
   for (let i = 0; i < cycles; i++) {
     await resetStorageCleanupPolicyJobForTestsAsync();
     await drainStorageWorkers();
@@ -164,7 +164,7 @@ test("isolate worker churn stays platform-capped", () => {
   else expect(cycles).toBe(2);
 });
 
-test.skipIf(skipDarwinWorkerSpawn)("terminateStorageWorker is joinable and idempotent across callers", async () => {
+test.skipIf(skipNonWindowsWorkerSpawn)("terminateStorageWorker is joinable and idempotent across callers", async () => {
   setStorageCleanupPolicyJobTestHooks({ blockMs: 500 });
   seedArchived(isolatedCodexHome!.path);
   const started = requestStorageCleanupPolicyRun({
