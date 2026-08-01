@@ -7,7 +7,7 @@ const packageJson = JSON.parse(readFileSync(path.resolve(import.meta.dir, "..", 
     files?: string[];
     extraResources?: Array<{ from?: string; to?: string; filter?: string[] }>;
     win?: { target?: Array<{ target?: string; arch?: string[] }>; requestedExecutionLevel?: string };
-    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; selectPerMachineByDefault?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; unicode?: boolean; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
+    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; selectPerMachineByDefault?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; unicode?: boolean; createDesktopShortcut?: boolean; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
     portable?: { artifactName?: string };
   };
 };
@@ -50,6 +50,7 @@ describe("desktop package contract", () => {
       selectPerMachineByDefault: true,
       allowToChangeInstallationDirectory: false,
       unicode: true,
+      createDesktopShortcut: true,
       createStartMenuShortcut: true,
       deleteAppDataOnUninstall: false,
     });
