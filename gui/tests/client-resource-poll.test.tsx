@@ -30,11 +30,13 @@ afterEach(() => {
  * 1s was enough on an idle machine and not enough on a loaded CI runner: the
  * visibility test waits for a poll that only fires after a real 20ms interval
  * plus a React commit, and macOS CI blew through the budget mid-suite while the
- * same file passed in isolation. The assertions below are about *whether* the
- * fetch happens, never about how fast, so a longer ceiling costs nothing on a
- * healthy run — it only stops a busy runner from reading as a product bug.
+ * same file passed in isolation. Windows GHA later timed out the same waits at
+ * 5s under suite load (`waitFor timed out` on #827). The assertions below are
+ * about *whether* the fetch happens, never about how fast, so a longer ceiling
+ * costs nothing on a healthy run — it only stops a busy runner from reading as
+ * a product bug.
  */
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
   const start = Date.now();
   while (!predicate()) {
     if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
