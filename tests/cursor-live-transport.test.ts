@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { create } from "@bufbuild/protobuf";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createLiveCursorTransport, CursorMissingCredentialError, parseConnectEndStreamError, resolveCursorToken } from "../src/adapters/cursor/live-transport";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
 import { prepareCursorRunRequest } from "../src/adapters/cursor/protobuf-request";
@@ -8,8 +12,100 @@ import {
   resetCursorBlobStateForTests,
   setCursorBlobLimitsForTests,
 } from "../src/adapters/cursor/native-exec";
+import {
+  backgroundShellSpawnExec,
+  resetBackgroundShellStateForTests,
+  setBackgroundShellRuntimeForTests,
+} from "../src/adapters/cursor/native-exec-shell";
+import { BackgroundShellSpawnArgsSchema, ExecServerMessageSchema } from "../src/adapters/cursor/gen/agent_pb";
+
+class TransportFakeChild extends EventEmitter {
+  readonly stdin = new PassThrough();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly pid = 4321;
+}
+
+afterEach(async () => {
+  await resetBackgroundShellStateForTests();
+});
+
+function spawnTransportOwnedShell(sessionId: string) {
+  const child = new TransportFakeChild();
+  let killCalls = 0;
+  setBackgroundShellRuntimeForTests({
+    spawn: (() => child as unknown as ChildProcessWithoutNullStreams) as typeof import("node:child_process").spawn,
+    kill: () => { killCalls++; return true; },
+  });
+  backgroundShellSpawnExec(create(ExecServerMessageSchema, {
+    id: 1,
+    execId: "transport-close",
+    message: {
+      case: "backgroundShellSpawnArgs",
+      value: create(BackgroundShellSpawnArgsSchema, { command: "fixture" }),
+    },
+  }), sessionId);
+  return { child, killCalls: () => killCalls };
+}
 
 describe("Cursor live transport", () => {
+  test("async LiveCursorTransport.close waits for session shell cleanup", async () => {
+    const transport = createLiveCursorTransport({
+      provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      translatorBudget: createTestTranslatorBudget(),
+      headers: new Headers(),
+    });
+    const sessionId = (transport as unknown as { sessionId: string }).sessionId;
+    const fake = spawnTransportOwnedShell(sessionId);
+    let closed = false;
+    const closing = Promise.resolve(transport.close?.()).then(() => { closed = true; });
+    await Promise.resolve();
+    expect(fake.killCalls()).toBe(1);
+    expect(closed).toBe(false);
+    fake.child.emit("close", 0, null);
+    await closing;
+    expect(closed).toBe(true);
+  });
+
+  test("cancel and close share one idempotent session cleanup promise", async () => {
+    const transport = createLiveCursorTransport({
+      provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      translatorBudget: createTestTranslatorBudget(),
+      headers: new Headers(),
+    });
+    const internals = transport as unknown as { sessionId: string; cancelCursorRun(): void };
+    const fake = spawnTransportOwnedShell(internals.sessionId);
+    internals.cancelCursorRun();
+    const closing = Promise.resolve(transport.close?.());
+    await Promise.resolve();
+    expect(fake.killCalls()).toBe(1);
+    fake.child.emit("close", 0, null);
+    await closing;
+    expect(fake.killCalls()).toBe(1);
+  });
+
+  test("initial and MCP-rebuilt native exec contexts keep the same session owner", async () => {
+    const transport = createLiveCursorTransport({
+      provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      translatorBudget: createTestTranslatorBudget(),
+      headers: new Headers(),
+    });
+    const internals = transport as unknown as {
+      sessionId: string;
+      execContext: { sessionId?: string };
+      mcpManager?: { listToolHandles(): Promise<unknown[]>; dispose(): Promise<void> };
+      prepareMcp(): Promise<void>;
+    };
+    expect(internals.execContext.sessionId).toBe(internals.sessionId);
+    internals.mcpManager = {
+      listToolHandles: async () => [],
+      dispose: async () => {},
+    };
+    await internals.prepareMcp();
+    expect(internals.execContext.sessionId).toBe(internals.sessionId);
+    await transport.close?.();
+  });
+
   test("fails before network when no Cursor credential is configured", () => {
     const prev = process.env.OPENCODEX_CURSOR_TEST_TOKEN;
     delete process.env.OPENCODEX_CURSOR_TEST_TOKEN;

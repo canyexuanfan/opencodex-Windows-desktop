@@ -15,6 +15,11 @@ import { createAdmissionGate, type AdmissionLease, type AdmissionMetrics } from 
 import { codexWebSocketAdmissionMetrics } from "../codex/websocket-registry";
 import { storageMutationAdmissionMetrics } from "../storage/storage-mutation-coordinator";
 import { storageWorkerAdmissionMetrics } from "../storage/worker-lifecycle";
+import {
+  backgroundShellAdmissionMetrics,
+  beginBackgroundShellShutdown,
+  terminateAllBackgroundShells,
+} from "../adapters/cursor/native-exec-shell";
 
 // ---------------------------------------------------------------------------
 // Active turn tracking + graceful shutdown drain
@@ -87,6 +92,7 @@ export function activeRegistryMetrics(): Record<string, AdmissionMetrics> {
   return {
     activeTurns: { ...turns, releaseMisses: turns.releaseMisses + turnReleaseMisses },
     codexWebSockets: codexWebSocketAdmissionMetrics(),
+    cursorBackgroundShells: backgroundShellAdmissionMetrics(),
     storageHomeSlots: storageMutationAdmissionMetrics(),
     storageWorkerReservations: storageWorkerAdmissionMetrics(),
   };
@@ -153,47 +159,67 @@ export async function drainAndShutdown(
 ): Promise<void> {
   const s = server ?? _serverRef;
   draining = true;
-  const deadline = Date.now() + timeoutMs;
-  while (admittedTurns.size > 0 && Date.now() < deadline) {
-    await Bun.sleep(100);
-  }
-  if (admittedTurns.size > 0) {
-    console.warn(`⚠️  Aborting ${admittedTurns.size} in-flight turn(s) after ${timeoutMs}ms deadline`);
-    abortAndReleaseAllTurns(new Error("server shutdown"));
-  }
-  // Debounced replay-state snapshot may still be pending; flush so the last completed turn's
-  // previous_response_id chain survives the restart this shutdown is usually part of.
-  await flushResponseState();
-  // Tear down opt-in storage policy timers / worker / live-config sink so they cannot fire after stop.
-  // Await worker thread exit: on Windows, a still-exiting Bun Worker under
-  // `bun test --isolate` panics the whole process at the next realm reclaim.
-  // Abort each job independently so one wedged join cannot skip the other,
-  // then drain leftovers; failures must not prevent `server.stop`.
-  stopStorageCleanupScheduler();
-  stopStateStoreSweeper();
-  cancelQueuedStorageWorkerSpawns();
-  const shutdownJoins = await Promise.allSettled([
-    abortStorageCleanupPolicyJobAsync(),
-    abortRestoreTrashJobAsync(),
-  ]);
-  for (const result of shutdownJoins) {
-    if (result.status === "rejected") {
+  beginBackgroundShellShutdown();
+  try {
+    const deadline = Date.now() + timeoutMs;
+    while (admittedTurns.size > 0 && Date.now() < deadline) {
+      await Bun.sleep(100);
+    }
+    if (admittedTurns.size > 0) {
+      console.warn(`⚠️  Aborting ${admittedTurns.size} in-flight turn(s) after ${timeoutMs}ms deadline`);
+      abortAndReleaseAllTurns(new Error("server shutdown"));
+    }
+
+    const shellDrain = await Promise.allSettled([terminateAllBackgroundShells()]);
+    const shellResult = shellDrain[0]!;
+    if (shellResult.status === "rejected") {
+      console.warn("[cursor] background shell drain failed", { rejected: 1 });
+    } else if (shellResult.value.unresolved > 0 || shellResult.value.killFailures > 0) {
+      console.warn("[cursor] background shell drain incomplete", shellResult.value);
+    }
+
+    // Debounced replay-state snapshot may still be pending; flush so the last completed turn's
+    // previous_response_id chain survives the restart this shutdown is usually part of.
+    const responseStateFlush = await Promise.allSettled([flushResponseState()]);
+    if (responseStateFlush[0]?.status === "rejected") {
+      console.warn("[responses] state flush during shutdown failed");
+    }
+
+    // Tear down opt-in storage policy timers / worker / live-config sink so they cannot fire after stop.
+    // Await worker thread exit: on Windows, a still-exiting Bun Worker under
+    // `bun test --isolate` panics the whole process at the next realm reclaim.
+    // Abort each job independently so one wedged join cannot skip the other,
+    // then drain leftovers; failures must not prevent `server.stop`.
+    stopStorageCleanupScheduler();
+    stopStateStoreSweeper();
+    cancelQueuedStorageWorkerSpawns();
+    const shutdownJoins = await Promise.allSettled([
+      abortStorageCleanupPolicyJobAsync(),
+      abortRestoreTrashJobAsync(),
+    ]);
+    for (const result of shutdownJoins) {
+      if (result.status === "rejected") {
+        console.warn(
+          "[storage] worker abort during shutdown failed:",
+          result.reason instanceof Error ? result.reason.message : result.reason,
+        );
+      }
+    }
+    try {
+      await drainStorageWorkers();
+    } catch (err) {
       console.warn(
-        "[storage] worker abort during shutdown failed:",
-        result.reason instanceof Error ? result.reason.message : result.reason,
+        "[storage] worker drain during shutdown failed:",
+        err instanceof Error ? err.message : err,
       );
     }
+    setStorageCleanupPolicyLiveSink(null);
+    setStorageCleanupPolicyJobLiveApply(null);
+  } finally {
+    try {
+      s?.stop(true);
+    } finally {
+      draining = false;
+    }
   }
-  try {
-    await drainStorageWorkers();
-  } catch (err) {
-    console.warn(
-      "[storage] worker drain during shutdown failed:",
-      err instanceof Error ? err.message : err,
-    );
-  }
-  setStorageCleanupPolicyLiveSink(null);
-  setStorageCleanupPolicyJobLiveApply(null);
-  s?.stop(true);
-  draining = false;
 }

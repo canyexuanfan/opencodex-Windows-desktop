@@ -62,6 +62,8 @@ export type CursorNativeExecDeps = CursorNativeNetworkDeps & CursorNativeToolDep
  * never told any MCP tools exist, so it never sends `mcpArgs`.
  */
 export interface CursorNativeExecContext extends CursorNativeExecDeps {
+  /** Stable owner for background shells created by this transport session. */
+  sessionId?: string;
   mcpToolDefs?: McpToolDefinition[];
   clientToolDefs?: McpToolDefinition[];
   /** Unsafe opt-in escape hatch for Cursor server-driven local fs/shell/fetch execution. */
@@ -492,8 +494,8 @@ export async function handleCursorNativeExec(execMsg: ExecServerMessage, deps: C
   if (execCase === "grepArgs") return [grepExec(execMsg)];
   if (execCase === "shellArgs") return [shellExec(execMsg)];
   if (execCase === "shellStreamArgs") return shellStreamExec(execMsg);
-  if (execCase === "backgroundShellSpawnArgs") return [backgroundShellSpawnExec(execMsg)];
-  if (execCase === "writeShellStdinArgs") return [writeShellStdinExec(execMsg)];
+  if (execCase === "backgroundShellSpawnArgs") return [backgroundShellSpawnExec(execMsg, deps.sessionId ?? "")];
+  if (execCase === "writeShellStdinArgs") return [writeShellStdinExec(execMsg, deps.sessionId ?? "")];
   if (execCase === "fetchArgs") return [await fetchExec(execMsg, deps)];
   if (execCase === "mcpArgs" && execMsg.message.value.providerIdentifier === OCX_RESPONSES_TOOL_PROVIDER) {
     return [execBytes(execMsg, "mcpResult", create(McpResultSchema, {
