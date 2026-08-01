@@ -50,7 +50,9 @@ const MONTHLY_WINDOW_MIN_MINUTES = MONTHLY_WINDOW_MIN_SECONDS / 60;
 
 const accountQuota = new Map<string, StoredAccountQuota>();
 
-export const CODEX_UNKNOWN_USAGE_SCORE = 100;
+// Valid upstream percentages are normalized to 0..100. Keep "unknown" outside that domain so an
+// actually exhausted account is still eligible for threshold rotation.
+export const CODEX_UNKNOWN_USAGE_SCORE = 101;
 export const CODEX_EXHAUSTED_USAGE_PERCENT = 100;
 
 export function isCodexQuotaExhausted(
