@@ -16,6 +16,8 @@ const DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-5";
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_DESCRIPTIONS_PER_TURN = 8;
 const DESCRIPTION_CACHE_MAX_ENTRIES = 256;
+const DESCRIPTION_CACHE_MAX_BYTES = 1024 * 1024;
+const descriptionEncoder = new TextEncoder();
 /** Max images described in parallel — keeps first-token latency bounded without flooding the backend. */
 const VISION_CONCURRENCY = 3;
 /** Per-image description hard cap (chars) so multi-image turns can't blow the main model's context. */
@@ -27,45 +29,107 @@ export interface VisionDescriptionCache {
   get(key: string): string | undefined;
   set(key: string, value: string): void;
   clear(): void;
+  snapshot?(): { count: number; bytes: number; oldestAt: number | null };
+  evictOldest?(): number;
 }
 
 class BoundedLruDescriptionCache implements VisionDescriptionCache {
-  private readonly entries = new Map<string, string>();
+  private readonly entries = new Map<string, { value: string; sizeBytes: number; storedAt: number }>();
+  private bytes = 0;
 
-  constructor(private readonly maxEntries: number) {}
+  constructor(private readonly maxEntries: number, private readonly maxBytes: number) {}
 
   get(key: string): string | undefined {
-    const value = this.entries.get(key);
-    if (value === undefined) return undefined;
+    const entry = this.entries.get(key);
+    if (entry === undefined) return undefined;
     this.entries.delete(key);
-    this.entries.set(key, value);
-    return value;
+    entry.storedAt = Date.now();
+    this.entries.set(key, entry);
+    return entry.value;
   }
 
   set(key: string, value: string): void {
-    this.entries.delete(key);
-    this.entries.set(key, value);
-    while (this.entries.size > this.maxEntries) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest === undefined) break;
-      this.entries.delete(oldest);
+    const existing = this.entries.get(key);
+    if (existing) {
+      this.entries.delete(key);
+      this.bytes -= existing.sizeBytes;
     }
+    const sizeBytes = descriptionEncoder.encode(key).byteLength + descriptionEncoder.encode(value).byteLength;
+    if (sizeBytes > this.maxBytes || this.maxEntries <= 0) return;
+    while (this.entries.size + 1 > this.maxEntries || this.bytes + sizeBytes > this.maxBytes) {
+      if (this.evictOldest() === 0) return;
+    }
+    this.entries.set(key, { value, sizeBytes, storedAt: Date.now() });
+    this.bytes += sizeBytes;
   }
 
   clear(): void {
     this.entries.clear();
+    this.bytes = 0;
+  }
+
+  snapshot(): { count: number; bytes: number; oldestAt: number | null } {
+    return {
+      count: this.entries.size,
+      bytes: this.bytes,
+      oldestAt: this.entries.values().next().value?.storedAt ?? null,
+    };
+  }
+
+  evictOldest(): number {
+    const oldest = this.entries.keys().next().value;
+    if (oldest === undefined) return 0;
+    const entry = this.entries.get(oldest);
+    if (!entry) return 0;
+    this.entries.delete(oldest);
+    this.bytes -= entry.sizeBytes;
+    return entry.sizeBytes;
   }
 }
 
-let descriptionCache: VisionDescriptionCache = new BoundedLruDescriptionCache(DESCRIPTION_CACHE_MAX_ENTRIES);
+let descriptionCacheLimits = {
+  maxEntries: DESCRIPTION_CACHE_MAX_ENTRIES,
+  maxBytes: DESCRIPTION_CACHE_MAX_BYTES,
+};
+
+function defaultDescriptionCache(): VisionDescriptionCache {
+  return new BoundedLruDescriptionCache(descriptionCacheLimits.maxEntries, descriptionCacheLimits.maxBytes);
+}
+
+let descriptionCache: VisionDescriptionCache = defaultDescriptionCache();
 
 /** Replace the process cache (primarily for deterministic tests). Passing undefined restores the default LRU. */
 export function setVisionDescriptionCache(cache?: VisionDescriptionCache): void {
-  descriptionCache = cache ?? new BoundedLruDescriptionCache(DESCRIPTION_CACHE_MAX_ENTRIES);
+  descriptionCache = cache ?? defaultDescriptionCache();
 }
 
 export function resetVisionDescriptionCache(): void {
   descriptionCache.clear();
+}
+
+export function setVisionDescriptionCacheLimitsForTests(
+  limits?: { maxEntries?: number; maxBytes?: number },
+): void {
+  descriptionCacheLimits = limits
+    ? { maxEntries: limits.maxEntries ?? DESCRIPTION_CACHE_MAX_ENTRIES, maxBytes: limits.maxBytes ?? DESCRIPTION_CACHE_MAX_BYTES }
+    : { maxEntries: DESCRIPTION_CACHE_MAX_ENTRIES, maxBytes: DESCRIPTION_CACHE_MAX_BYTES };
+  descriptionCache = defaultDescriptionCache();
+}
+
+export function visionDescriptionRetainedStoreSnapshot(): {
+  count: number;
+  bytes: number;
+  evictableBytes: number;
+  pinnedBytes: number;
+  oldestAt: number | null;
+} {
+  const snapshot = descriptionCache.snapshot?.();
+  if (!snapshot) return { count: 0, bytes: 0, evictableBytes: 0, pinnedBytes: 0, oldestAt: null };
+  return { ...snapshot, evictableBytes: snapshot.bytes, pinnedBytes: 0 };
+}
+
+export function evictOldestVisionDescriptionForBudget(): number {
+  return descriptionCache.evictOldest?.() ?? 0;
 }
 
 /** Runtime config is permissive: zero is intentional; malformed values fall back to the bounded default. */
@@ -338,9 +402,10 @@ export async function describeImagesInPlace(
       } catch (error) {
         outcome = { text: "", error: error instanceof Error ? error.message : String(error) };
       }
-      const successfulText = outcome.error ? "" : outcome.text.trim();
+      const successfulText = outcome.error ? "" : clamp(outcome.text.trim(), DESC_MAX_CHARS);
       if (identity.persistent && successfulText) descriptionCache.set(identity.key, successfulText);
-      resolveOutcome(outcome);
+      const resolvedOutcome = outcome.error ? outcome : { ...outcome, text: successfulText };
+      resolveOutcome(resolvedOutcome);
     });
   }
 

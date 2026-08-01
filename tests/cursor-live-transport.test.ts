@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createLiveCursorTransport, CursorMissingCredentialError, parseConnectEndStreamError, resolveCursorToken } from "../src/adapters/cursor/live-transport";
 import { prepareCursorRunRequest } from "../src/adapters/cursor/protobuf-request";
+import {
+  CursorBlobAdmissionError,
+  cursorBlobRetainedStoreSnapshot,
+  resetCursorBlobStateForTests,
+  setCursorBlobLimitsForTests,
+} from "../src/adapters/cursor/native-exec";
 
 describe("Cursor live transport", () => {
   test("fails before network when no Cursor credential is configured", () => {
@@ -53,6 +59,80 @@ describe("Cursor live transport", () => {
 
     await expect(iterator.next()).rejects.toThrow("Cursor MCP preparation failed: fixture discovery failed");
     await transport.close?.();
+  });
+
+  test("request construction one byte above the per-blob boundary fails before writing a request and returns no unstored hash", async () => {
+    resetCursorBlobStateForTests();
+    const serialized = new TextEncoder().encode(JSON.stringify({ role: "system", content: "x" }));
+    setCursorBlobLimitsForTests({ maxEntryBytes: serialized.byteLength - 1, maxTotalBytes: 256 });
+    const transport = createLiveCursorTransport({
+      provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      headers: new Headers(),
+    });
+    let opened = false;
+    (transport as unknown as { open(): void }).open = () => { opened = true; };
+    const iterator = transport.run({
+      modelId: "composer-2.5",
+      conversationId: "capacity-before-wire",
+      system: ["x"],
+      messages: [{ role: "user", content: "hi" }],
+    })[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toBeInstanceOf(CursorBlobAdmissionError);
+    expect(opened).toBe(false);
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(0);
+    transport.close?.();
+    setCursorBlobLimitsForTests();
+  });
+
+  test("stream close error and abort release every remaining request-scope pin", async () => {
+    type OpenFn = (
+      encoded: Uint8Array,
+      signal: AbortSignal | undefined,
+      state: unknown,
+      push: unknown,
+      fail: (error: Error) => void,
+      finish: () => void,
+    ) => void;
+    const runCase = async (kind: "close" | "error" | "abort") => {
+      resetCursorBlobStateForTests();
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+        headers: new Headers(),
+      });
+      let onOpened!: () => void;
+      const opened = new Promise<void>(resolve => { onOpened = resolve; });
+      let failTurn!: (error: Error) => void;
+      (transport as unknown as { open: OpenFn }).open = (_encoded, signal, _state, _push, fail) => {
+        failTurn = fail;
+        if (kind === "abort") signal?.addEventListener("abort", () => fail(new Error("aborted")), { once: true });
+        onOpened();
+      };
+      const controller = new AbortController();
+      const iterator = transport.run({
+        modelId: "composer-2.5",
+        conversationId: `terminal-${kind}`,
+        system: ["system"],
+        messages: [{ role: "user", content: "hi" }],
+      }, controller.signal)[Symbol.asyncIterator]();
+      const pending = iterator.next();
+      await opened;
+      expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBeGreaterThan(0);
+      if (kind === "close") {
+        transport.close?.();
+        failTurn(new Error("closed"));
+      } else if (kind === "abort") {
+        controller.abort();
+      } else {
+        failTurn(new Error("stream error"));
+      }
+      await expect(pending).rejects.toBeInstanceOf(Error);
+      expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(0);
+      transport.close?.();
+    };
+
+    await runCase("close");
+    await runCase("error");
+    await runCase("abort");
   });
 });
 

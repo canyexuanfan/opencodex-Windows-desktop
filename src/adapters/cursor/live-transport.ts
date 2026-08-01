@@ -41,7 +41,13 @@ import { debugProviderDiagnostic } from "../../lib/debug";
 import { classifyCursorError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
 import { mcpArgsFromToolCall } from "./protobuf-events";
 import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
-import { handleCursorNativeExec, handleCursorNativeKv, type CursorNativeExecContext } from "./native-exec";
+import {
+  handleCursorNativeExec,
+  handleCursorNativeKv,
+  releaseCursorBlobRequestScope,
+  type CursorBlobRequestScopeToken,
+  type CursorNativeExecContext,
+} from "./native-exec";
 import { effectiveCursorNativeExecAllow } from "./exec-policy";
 import { resolveMcpServers } from "./mcp-config";
 import { CursorMcpManager } from "./mcp-manager";
@@ -397,6 +403,7 @@ class LiveCursorTransport implements CursorTransport {
   private readonly desktopDeps: CursorNativeToolDeps;
   private execContext: CursorNativeExecContext = {};
   private mcpPrepared?: Promise<void>;
+  private blobRequestScope?: CursorBlobRequestScopeToken;
   // Per-turn diagnostic counters/timestamps when provider debug is on (`ocx debug provider on`). Stamped in open(), cleared on
   // close; safe to read after a stream failure because open() owns the only writer before run().
   private turnStartedAt = 0;
@@ -522,24 +529,31 @@ class LiveCursorTransport implements CursorTransport {
     const prepared = prepareCursorRunRequest(request, {
       estimateInputTokens: contextUsage.carryForwardTokens === undefined,
     });
-    state = createCursorProtobufEventState({
-      clientToolNames: clientToolDefs.map(tool => tool.toolName || tool.name),
-      parallelToolCalls: request.parallelToolCalls,
-      toolSchemas,
-      cursorToolNameMap,
-      contextUsage,
-      ...(prepared.estimatedInputTokens !== undefined
-        ? { estimatedInputTokens: prepared.estimatedInputTokens }
-        : {}),
-    });
-
-    this.open(prepared.bytes, signal, state, push, err => {
-      failure = err;
-      wake();
-    }, () => {
-      done = true;
-      wake();
-    });
+    this.blobRequestScope = prepared.blobRequestScope;
+    try {
+      state = createCursorProtobufEventState({
+        clientToolNames: clientToolDefs.map(tool => tool.toolName || tool.name),
+        parallelToolCalls: request.parallelToolCalls,
+        toolSchemas,
+        cursorToolNameMap,
+        contextUsage,
+        ...(prepared.estimatedInputTokens !== undefined
+          ? { estimatedInputTokens: prepared.estimatedInputTokens }
+          : {}),
+      });
+      this.open(prepared.bytes, signal, state, push, err => {
+        this.releaseBlobRequestScope();
+        failure = err;
+        wake();
+      }, () => {
+        this.releaseBlobRequestScope();
+        done = true;
+        wake();
+      });
+    } catch (error) {
+      this.releaseBlobRequestScope();
+      throw error;
+    }
 
     while (!done || queue.length > 0) {
       while (queue.length > 0) {
@@ -582,6 +596,7 @@ class LiveCursorTransport implements CursorTransport {
     this.clearFirstFrameTimer();
     this.stream?.close();
     this.session?.close();
+    this.releaseBlobRequestScope();
     void this.mcpManager?.dispose();
   }
 
@@ -596,7 +611,15 @@ class LiveCursorTransport implements CursorTransport {
       this.stream?.destroy();
     }
     this.session?.close();
+    this.releaseBlobRequestScope();
     void this.mcpManager?.dispose();
+  }
+
+  private releaseBlobRequestScope(): void {
+    const scope = this.blobRequestScope;
+    if (!scope) return;
+    this.blobRequestScope = undefined;
+    releaseCursorBlobRequestScope(scope);
   }
 
   private clearPendingFinalize(): void {
@@ -824,7 +847,7 @@ class LiveCursorTransport implements CursorTransport {
     if (!this.stream) return;
     debugProviderDiagnostic("cursor", "frame", describeCursorServerFrame(message));
     if (message.message.case === "kvServerMessage") {
-      this.stream.write(encodeConnectFrame(handleCursorNativeKv(message.message.value)));
+      this.stream.write(encodeConnectFrame(handleCursorNativeKv(message.message.value, this.blobRequestScope)));
       return;
     }
     if (message.message.case === "execServerMessage") {
