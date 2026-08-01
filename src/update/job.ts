@@ -6,7 +6,7 @@ import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort } f
 import { isProcessAlive, killProxy } from "../lib/process-control";
 import { reclaimListenPort } from "../server/port-reclaim";
 import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
-import { isServiceInstalled } from "../service";
+import { isServiceInstalled, isServiceViable } from "../service";
 import {
   type Channel,
   type Installer,
@@ -394,6 +394,12 @@ export interface RestartIo {
   waitForPort?: typeof reclaimListenPort;
   spawnStart?: (job: UpdateJobState, installer: Installer, port?: number) => void;
   serviceInstalledFn?: () => boolean;
+  /**
+   * After a service reinstall exits 0, only trust the service path when this is true.
+   * Defaults to {@link isServiceViable} — installed-but-stale assets must fall through
+   * to a direct proxy start so dashboard updates never leave /healthz dead.
+   */
+  serviceViableFn?: () => boolean;
   probeProxy?: (port: number, hostname?: string) => Promise<boolean>;
   /** Richer /healthz read for update-correlated restart evidence (pid + version). */
   probeProxyIdentity?: (port: number, hostname?: string) => Promise<RestartProxyIdentity | null>;
@@ -472,9 +478,22 @@ async function restartAfterUpdate(
       if (prevBake === undefined) delete process.env.OCX_BAKE_PORT;
       else process.env.OCX_BAKE_PORT = prevBake;
     }
-    if (serviceOk) return;
+    if (serviceOk) {
+      // Exit 0 is not enough: a reinstall can leave stale/missing assets (or a
+      // disabled/conflicting manager) that never brings /healthz back. Fall through
+      // to a direct start so browser-dashboard updates do not require a viable
+      // Background Service for recovery.
+      const viable = (io.serviceViableFn ?? isServiceViable)();
+      if (viable) return;
+      updateJob(
+        job,
+        {},
+        "Service reinstall exited 0 but the background service is not viable (stale or missing assets, disabled, or conflicting); falling back to a direct proxy start.",
+      );
+    }
     // Fall through to the direct proxy start below so the update never leaves the
-    // proxy stopped when the service reinstall could not run.
+    // proxy stopped when the service reinstall could not run or did not leave a
+    // viable supervisor.
   }
 
   const pid = readPid();
@@ -679,6 +698,10 @@ export function npmSelfUpdateRestartEvidence(
  * and/or target version) so a surviving pre-update process cannot look like success.
  * After an explicit npm restart the same evidence is required again — health alone is
  * not enough when a no-op restart or failed port reclaim leaves the old proxy up.
+ *
+ * Browser-dashboard update recovery must not require a viable Background Service: when
+ * no service is installed (or reinstall leaves a non-viable/stale manager), the explicit
+ * path always falls through to a direct `ocx start --port` so /healthz can recover.
  */
 export async function finishGuiUpdateRestart(
   job: UpdateJobState,

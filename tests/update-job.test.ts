@@ -240,6 +240,7 @@ describe("GUI update execution decisions", () => {
     try {
       await restartAfterUpdateForTests(job, { port: 18765, hostname: "127.0.0.1" }, {
         serviceInstalledFn: () => true,
+        serviceViableFn: () => true,
         waitForPort: async (port, hostname) => {
           waited.push({ port, hostname: hostname ?? "" });
           expect(process.env.OCX_BAKE_PORT).toBeUndefined();
@@ -277,6 +278,7 @@ describe("GUI update execution decisions", () => {
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
     await restartAfterUpdateForTests(job, { port: 19999, hostname: "127.0.0.1" }, {
       serviceInstalledFn: () => true,
+      serviceViableFn: () => false,
       waitForPort: async () => true,
       runService: () => ({ status: 1 }),
       spawnStart: (_job, _installer, port) => {
@@ -285,6 +287,79 @@ describe("GUI update execution decisions", () => {
     });
     // The fallback must fire: direct proxy start instead of throwing.
     expect(spawned).toEqual([{ port: 19999 }]);
+  });
+
+  test("service reinstall exit 0 with non-viable assets falls back to direct start", async () => {
+    const spawned: Array<{ port: number }> = [];
+    const job: UpdateJobState = {
+      id: "svc-stale-fallback",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.42",
+      latestVersion: "2.7.43",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    await restartAfterUpdateForTests(job, { port: 19100, hostname: "127.0.0.1" }, {
+      serviceInstalledFn: () => true,
+      // Installed but stale/missing assets — the status line users see after a dead update.
+      serviceViableFn: () => false,
+      waitForPort: async () => true,
+      runService: () => ({ status: 0 }),
+      spawnStart: (_job, _installer, port) => {
+        spawned.push({ port: port ?? 0 });
+      },
+    });
+    expect(spawned).toEqual([{ port: 19100 }]);
+    expect(readUpdateJob(job.id)?.log.some(line =>
+      line.includes("not viable") && line.includes("direct proxy start"),
+    )).toBe(true);
+  });
+
+  test("dashboard update recovery does not require a Background Service", async () => {
+    let now = 0;
+    let restartCalls = 0;
+    const job: UpdateJobState = {
+      id: "no-bg-service-recovery",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.42",
+      latestVersion: "2.7.43",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      releaseNotesUrl: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await finishGuiUpdateRestart(
+      job,
+      { port: 10100, hostname: "127.0.0.1", oldPid: 501 },
+      "npm",
+      {
+        // No Background Service installed — interactive dashboard update must still recover.
+        serviceInstalledFn: () => false,
+        serviceViableFn: () => false,
+        waitForPort: async () => true,
+        spawnStart: () => { restartCalls += 1; },
+        probeProxy: async () => restartCalls > 0,
+        probeProxyIdentity: async () => (
+          restartCalls > 0 ? { pid: 777, version: "2.7.43" } : null
+        ),
+        now: () => now,
+        sleepMs: async (ms) => { now += ms; },
+      },
+    );
+    expect(ok).toBe(true);
+    expect(restartCalls).toBe(1);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("skipping redundant restart"))).toBe(false);
   });
 
   test("restart confirmation fails when the proxy never becomes healthy", async () => {
