@@ -695,11 +695,17 @@ jobs:
             }
 
   validate:
+    # Wait for translate so area heuristics can read the inline English block
+    # when translation wrote one. Still run if translate was skipped or failed —
+    # quality closure must not depend on translation success.
+    needs: translate
     if: >
-      github.event_name == 'issues' ||
-      (github.event_name == 'workflow_dispatch' &&
-       inputs.backfill_open_areas != true &&
-       inputs.issue_number != '')
+      always() &&
+      needs.translate.result != 'cancelled' &&
+      (github.event_name == 'issues' ||
+       (github.event_name == 'workflow_dispatch' &&
+        inputs.backfill_open_areas != true &&
+        inputs.issue_number != ''))
     runs-on: ubuntu-latest
     permissions:
       contents: read
