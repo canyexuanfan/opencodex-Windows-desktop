@@ -7,7 +7,7 @@ const packageJson = JSON.parse(readFileSync(path.resolve(import.meta.dir, "..", 
     files?: string[];
     extraResources?: Array<{ from?: string; to?: string; filter?: string[] }>;
     win?: { target?: Array<{ target?: string; arch?: string[] }>; requestedExecutionLevel?: string };
-    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; unicode?: boolean; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
+    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; selectPerMachineByDefault?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; unicode?: boolean; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
     portable?: { artifactName?: string };
   };
 };
@@ -37,7 +37,7 @@ describe("desktop package contract", () => {
     expect(packageJson.build?.files).toContain("!resources/**/*");
   });
 
-  test("builds x64 NSIS and portable artifacts without elevation defaults", () => {
+  test("builds x64 NSIS and portable artifacts with a normal Windows default", () => {
     expect(packageJson.build?.win?.target).toEqual(expect.arrayContaining([
       { target: "nsis", arch: ["x64"] },
       { target: "portable", arch: ["x64"] },
@@ -46,7 +46,8 @@ describe("desktop package contract", () => {
     expect(packageJson.build?.nsis).toMatchObject({
       oneClick: false,
       perMachine: false,
-      allowElevation: false,
+      allowElevation: true,
+      selectPerMachineByDefault: true,
       allowToChangeInstallationDirectory: false,
       unicode: true,
       createStartMenuShortcut: true,
