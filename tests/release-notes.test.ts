@@ -219,6 +219,8 @@ describe("assembleReleaseNotes", () => {
     });
 
     expect(notes).toContain("dist-tag `latest`");
+    expect(notes).toContain("Download `OpenCodex-Setup-x64.exe`");
+    expect(notes).toContain("Only the installer build is published");
     expect(notes).toContain("## What's Changed\n### Bug Fixes\n* fix A");
     expect(notes).toContain("## Since preview\n\n## What's Changed\n### Bug Fixes\n* fix B");
     expect(notes).toContain("## Commits\n\n- release: v2.7.39 (357acee6)");

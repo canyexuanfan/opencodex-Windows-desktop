@@ -260,13 +260,14 @@ const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
  * images through the proxy's vision sidecar (src/codex/catalog/provider-fetch.ts), a claim nobody
  * has verified for BigModel-hosted GLM.
  */
-const ZHIPU_BIGMODEL_TEXT_MODELS = ["glm-4.6", "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1"];
-const ZHIPU_BIGMODEL_MODELS = [...ZHIPU_BIGMODEL_TEXT_MODELS, "glm-4.6v"];
+const ZHIPU_BIGMODEL_TEXT_MODELS = ["glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7", "glm-4.7-flashx", "glm-4.7-flash", "glm-4.6"];
+const ZHIPU_BIGMODEL_MODELS = [...ZHIPU_BIGMODEL_TEXT_MODELS, "glm-5v-turbo", "glm-4.6v"];
 const ZHIPU_BIGMODEL_INPUT_MODALITIES: Record<string, string[]> = {
   ...Object.fromEntries(ZHIPU_BIGMODEL_TEXT_MODELS.map(id => [id, ["text"]])),
+  "glm-5v-turbo": ["text", "image"],
   "glm-4.6v": ["text", "image"],
 };
-const ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS = ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1"];
+const ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS = ["glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo", "glm-5v-turbo", "glm-4.7", "glm-4.6"];
 const THINKING_BUDGET_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const THINKING_BUDGET_MODELS = [
   "qwen3.5-397b", "qwen3.6-35b",
@@ -890,8 +891,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   // (to api.z.ai and to the BigModel *coding* path), and routedProviderConfig() canonicalizes a
   // saved provider onto the registry baseUrl — reusing either id would silently retarget an
   // existing config's endpoint and send its API key to another host.
-  // Evidence: docs.bigmodel.cn/api-reference (OpenAI-compatible chat completions),
-  // docs.bigmodel.cn/cn/guide/models/text/glm-4.6 (thinking: {type: enabled|disabled}).
+  // Evidence: docs.bigmodel.cn/cn/api/introduction (OpenAI-compatible chat completions),
+  // docs.bigmodel.cn/cn/guide/models/text/glm-5.2 (current HOT text model),
+  // docs.bigmodel.cn/cn/guide/models/vlm/glm-5v-turbo (current vision/coding model).
   // Originally proposed in #536 by @Lucinegogo.
   {
     id: "zhipu-bigmodel",
@@ -899,15 +901,25 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     adapter: "openai-chat",
     authKind: "key",
-    dashboardUrl: "https://bigmodel.cn/console/usercenter/apikeys",
-    defaultModel: "glm-4.6",
+    dashboardUrl: "https://bigmodel.cn/apikey/platform",
+    defaultModel: "glm-5.2",
     models: ZHIPU_BIGMODEL_MODELS,
     // The GLM families here are the same ones the `zai` metadata bundle already describes, so the
     // bundle owns context windows and modalities for the whole list instead of a hand-copied table.
     jawcodeBundle: "zai",
-    // Declared explicitly for the default model so its window survives a bundle-lookup miss:
+    // Declared explicitly for current BigModel ids so their windows survive a bundle-lookup miss:
     // without it, catalog normalization falls back to a generic 128k and compacts ~76,800 early.
-    modelContextWindows: { "glm-4.6": 204_800 },
+    modelContextWindows: {
+      "glm-5.2": 1_000_000,
+      "glm-5.1": 200_000,
+      "glm-5": 200_000,
+      "glm-5-turbo": 200_000,
+      "glm-5v-turbo": 200_000,
+      "glm-4.7": 200_000,
+      "glm-4.7-flashx": 200_000,
+      "glm-4.7-flash": 200_000,
+      "glm-4.6": 204_800,
+    },
     modelInputModalities: ZHIPU_BIGMODEL_INPUT_MODALITIES,
     // GLM exposes a binary thinking knob, not an effort ladder: the adapter emits
     // `thinking: {type}` for these ids and would otherwise send a rejected reasoning_effort.

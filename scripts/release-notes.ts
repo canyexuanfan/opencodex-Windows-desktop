@@ -298,6 +298,12 @@ export function assembleReleaseNotes(input: {
 }): string {
   const parts: string[] = [];
   parts.push(input.npmMetadata.trim());
+  parts.push([
+    "## Windows desktop installer",
+    "",
+    "Download `OpenCodex-Setup-x64.exe` from this release for the Windows desktop app.",
+    "Only the installer build is published. Portable builds are intentionally reserved for a future advanced/portable track if users ask for it.",
+  ].join("\n"));
 
   const carried = (input.carriedPreviewNotes ?? "").trim();
   if (hasNonWhitespace(carried)) {

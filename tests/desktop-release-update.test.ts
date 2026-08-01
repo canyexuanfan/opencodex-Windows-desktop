@@ -13,7 +13,7 @@ describe("desktop installer release update check", () => {
     expect(desktopVersionFromReleaseTag("no-version")).toBeNull();
   });
 
-  test("latest channel reads the fork release and selects the Windows setup asset", async () => {
+  test("latest channel reads the fork release and selects only the installer asset", async () => {
     const calls: string[] = [];
     const release = await fetchDesktopInstallerRelease("latest", async (url) => {
       calls.push(url);
@@ -22,10 +22,11 @@ describe("desktop installer release update check", () => {
         status: 200,
         async json() {
           return {
-            tag_name: "v0.1.1",
-            html_url: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v0.1.1",
+            tag_name: "v2.8.1",
+            html_url: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.8.1",
             assets: [
               { name: "OpenCodex-Portable-x64.exe", browser_download_url: "https://example.invalid/portable.exe" },
+              { name: "OpenCodex-Windows-Setup-2.8.1-x64.exe", browser_download_url: "https://example.invalid/versioned.exe" },
               { name: DESKTOP_SETUP_ASSET_NAME, browser_download_url: "https://example.invalid/OpenCodex-Setup-x64.exe" },
             ],
           };
@@ -35,8 +36,8 @@ describe("desktop installer release update check", () => {
 
     expect(calls).toEqual([`${DESKTOP_RELEASES_API_URL}/latest`]);
     expect(release).toEqual({
-      latestVersion: "0.1.1",
-      releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v0.1.1",
+      latestVersion: "2.8.1",
+      releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.8.1",
       downloadUrl: "https://example.invalid/OpenCodex-Setup-x64.exe",
       assetName: DESKTOP_SETUP_ASSET_NAME,
     });
@@ -48,14 +49,14 @@ describe("desktop installer release update check", () => {
       status: 200,
       async json() {
         return [
-          { tag_name: "v0.1.1", prerelease: false, assets: [{ name: DESKTOP_SETUP_ASSET_NAME, browser_download_url: "https://example.invalid/stable.exe" }] },
-          { tag_name: "v0.1.2-preview.1", prerelease: true, html_url: "https://example.invalid/preview", assets: [] },
+          { tag_name: "v2.8.1", prerelease: false, assets: [{ name: DESKTOP_SETUP_ASSET_NAME, browser_download_url: "https://example.invalid/stable.exe" }] },
+          { tag_name: "v2.8.2-preview.1", prerelease: true, html_url: "https://example.invalid/preview", assets: [] },
         ];
       },
     }));
 
     expect(release).toEqual({
-      latestVersion: "0.1.2-preview.1",
+      latestVersion: "2.8.2-preview.1",
       releaseNotesUrl: "https://example.invalid/preview",
       downloadUrl: null,
       assetName: null,
