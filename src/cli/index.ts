@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
-import { currentExternalCodexModelProvider, restoreNativeCodex, shouldInjectApiAuthHeader } from "../codex/inject";
+import { currentExternalCodexModelProvider, isCodexRoutingInjected, restoreNativeCodex, shouldInjectApiAuthHeader } from "../codex/inject";
 import { stripGrokConfig } from "../grok/inject";
 import { restoreLegacyOpenaiHistory } from "../codex/history-provider";
 import { reconcileJournal } from "../codex/journal";
@@ -353,6 +353,13 @@ async function handleEnsure() {
   if (!currentExternalCodexModelProvider()) reconcileJournal();
   const config = loadConfig();
   if (!codexAutoStartEnabled(config)) {
+    // `ensure` is also the Codex shim's launch boundary. If the proxy was killed while its
+    // marker-owned route survived, repair that route before allowing Codex to start natively.
+    if (isCodexRoutingInjected()) {
+      const restored = restoreNativeCodex();
+      if (restored.success) console.log(`⚠️  ${restored.message}`);
+      else console.error(`⚠️  Native Codex restore failed: ${restored.message}`);
+    }
     console.log("Codex autostart is disabled.");
     return;
   }
@@ -386,6 +393,11 @@ async function handleEnsure() {
 
   const port = (await waitForProxy())?.port;
   if (!port) {
+    if (isCodexRoutingInjected()) {
+      const restored = restoreNativeCodex();
+      if (restored.success) console.error(`⚠️  Proxy did not become healthy; ${restored.message}`);
+      else console.error(`⚠️  Proxy did not become healthy and native Codex restore failed: ${restored.message}`);
+    }
     console.error("❌ Proxy did not become healthy after starting.");
     process.exit(1);
   }

@@ -44,3 +44,15 @@
 
 - 2026-08-01：确认桌面端缺少 Codex 路由恢复调用，待实现并验证。
 - ✅ 2026-08-01：`src/desktop/entry.ts` 已在正常 stop 前恢复 native Codex，并在无健康外部 proxy 时启动前清理 stale marker；`bun test ./desktop/tests/lifecycle-static.test.ts`、`Push-Location desktop; bun test ./tests`（13/13）和 `bun run typecheck` 通过。真实子进程 smoke 受当前沙箱 EPERM 限制，已明确记录而未伪称通过。
+
+## 2026-08-01 复现线索：未运行代理仍被注入及端口漂移
+
+用户复现：`ocx status` 显示代理未运行/默认端口不可达，但 `config.toml` 仍保留此前动态端口的 `openai_base_url`（例如 37692、1496）。审计确认 `syncModelsToCodex(undefined)` 会回退到 `config.port`/10100，并且 `ocx init` 直接调用 `injectCodexConfig`，因此注入前没有统一的 `/healthz` 存活门槛；这能把死端口写进 Codex 配置。`findLiveProxy()` 已具备 runtime-port + `/healthz` 身份探测，应该成为同步和注入流程的唯一实际端口来源。
+
+排查策略：同步前必须找到健康的 OpenCodex proxy；若没有健康实例，先 `restoreNativeCodex()` 并返回失败结果，绝不刷新/写入 Codex 路由。若调用方传入的端口与健康实例端口不一致，以健康实例的 runtime-port 端口为准。`ocx init` 在代理未运行时不再提前写入死路由；`ocx ensure` 启动失败或自动启动关闭时也执行 stale route 恢复。
+
+- ❌ 2026-08-01：首次运行 `bun test ./tests/codex-sync-api.test.ts` 后，既有同步单测均因未提供健康 proxy mock 而提前恢复；随后清理测试临时目录又遇到 Windows `EACCES`。这证明新 liveness 门槛已生效，但测试夹具需要显式提供 live runtime 端口，并按既有临时目录权限经验重试。
+- ❌ 2026-08-01：补齐同步测试的 live-port mock 后重跑，测试夹具残留目录 `tests/.tmp-codex-sync-api` 仍被 Bun/Windows 锁定，所有用例在 `beforeEach` 的递归清理处失败；代码验证需改用授权临时根或先确认锁定进程，再重新执行。
+- ❌ 2026-08-01：确认没有残留 Bun/Node 测试进程后，默认 PowerShell 对该精确测试目录执行 `Remove-Item -Recurse -Force` 仍在子目录 `opencodex` 返回 `UnauthorizedAccessException`；不能把普通清理失败误报为代码失败，后续使用授权临时根运行并保留该环境限制。
+
+- ✅ 2026-08-01：`syncModelsToCodex` 已强制使用 `findLiveProxy()` 的 runtime-port + `/healthz` 结果；无健康代理时先恢复 marker-owned Codex 路由并拒绝刷新/注入，传入端口漂移时改用实际 live 端口。`ocx init`、`ocx ensure` 和管理 API 已分别接入未运行恢复、启动失败恢复和可信服务端口路径。回归结果：同步/生命周期/启动测试 36/36，注入测试 27/27，桌面测试 14/14，桌面静态测试 4/4，typecheck 和 privacy scan 通过。

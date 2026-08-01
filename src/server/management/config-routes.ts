@@ -231,7 +231,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sync" && req.method === "POST") {
     const { syncModelsToCodex } = await import("../../codex/sync");
     const { attachStaleAppServerHint } = await import("../../codex/app-server-processes");
-    const result = await syncModelsToCodex(undefined, config, null);
+    // This handler runs inside the serving proxy. The request URL's port is the listener that
+    // just accepted the request, so it is a trusted in-process liveness proof; CLI/desktop sync
+    // calls still perform the independent runtime-port + /healthz gate.
+    const trustedServerPort = Number(url.port) || config.port || 10100;
+    const result = await syncModelsToCodex(trustedServerPort, config, null, undefined, { trustedServerPort });
     return jsonResponse({
       ...attachStaleAppServerHint(result),
       ...(result.ok ? {} : { error: result.message }),

@@ -641,8 +641,8 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 ```text
 本地安装版：desktop/out/OpenCodex-Setup-x64.exe
 本地便携版：desktop/out/OpenCodex-Portable-x64.exe
-安装版 SHA-256：9E9BB84C61C820D27D7D0A3CC58A85D9FE5E410799762B4870E6CCCE9836707B
-便携版 SHA-256：0A33A6BEACDE98D1AEFF1C161FA4EE049AFAFF389B86BF50EC77E6E1DC919A15
+安装版 SHA-256：99294DDA0792B2C534AAD6CFCE93FB5CA999DE8884442AD6A1D575BFEBA5C622
+便携版 SHA-256：6338C18E448DC0B6C573AA53CC7662EB1A11026A05EB7005F80C44F3BE527558
 签名主体：CN=十七°；自签名根未进入受信存储，SmartScreen/Authenticode Valid 仍需测试机复核。
 安装说明：docs/Windows桌面端安装与验证.md
 Git 边界：本次仅本地提交和 tag，不 push、不创建 Release、不上传安装包。
@@ -744,7 +744,15 @@ Codex / Claude Code / 其他现有客户端
 - [x] 桌面 sidecar 停止前调用 `restoreNativeCodex()`，下次启动清理上次崩溃残留的 marker-owned 路由；健康外部 proxy 不受影响。
 - [x] 桌面托盘补齐原有重启代理入口；Dashboard 继续复用原 GUI 的 Provider、模型/组合、Codex OAuth、Claude/Grok、日志、用量、存储和 API Key 能力。
 - [x] 能力对齐静态守护测试覆盖原 Dashboard 页面渲染分支与桌面 host 加载路径；桌面测试 14/14、根 `codex-inject` 27/27、desktop/root typecheck 和 privacy scan 通过。
-- [x] 依据当前 HEAD 重新生成资源与安装包：`bun run package:resources`（4259 文件）、desktop build、NSIS/Portable 构建通过；当前产物 SHA-256：Setup `F15AF1930DE546542B3383A6BF932CBD64A045D6A15AA5E77B38C396D5620019`，Portable `4492455CE28C51EDFB7B832783F8744F8508A6FAA1D057E31102A1A1D315CC0B`；签名主体为 `CN=十七°`，本机自签链仍是 `UnknownError`。
+- [x] （路由健康门修复前版本）依据当时 HEAD 重新生成资源与安装包：`bun run package:resources`（4259 文件）、desktop build、NSIS/Portable 构建通过；该版 SHA-256 已由后续路由健康门版本替代。
 - [x] GUI 全套回归：使用项目 bundled Bun 1.3.14 在 `gui` 工作目录执行 `test tests`，439/439 通过；默认 Bun 1.2.20 的 431/8 失败已确认是运行器兼容差异。
 - [ ] 根完整测试使用 bundled Bun 1.3.14、授权临时目录和隔离 HOME，420 秒仍未完成；未将局部测试替代根全套结果。
 - [ ] 仍需在干净 Windows VM 完成安装器、真实 Provider 保留和签名信任链验收。
+
+# Codex 路由健康门增量（2026-08-01）
+
+- [x] `syncModelsToCodex` 注入前统一通过 `runtime-port.json` + `/healthz` 身份探活；无健康代理时恢复 native Codex 并拒绝刷新/写入死路由。
+- [x] 调用方传入端口漂移时以健康代理的实际监听端口为准；`ocx init` 不再在代理未运行时提前注入，`ocx ensure` 在自动启动关闭/启动失败时恢复 stale marker 路由。
+- [x] Dashboard `/api/sync` 使用正在处理请求的服务端口作为可信 in-process 端口；不绕过外部 CLI/桌面调用的健康门。
+- [x] 回归：同步/生命周期/启动 36/36，Codex 注入 27/27，桌面测试 14/14，桌面静态 4/4，根 typecheck 和 privacy scan 通过。
+- [x] 本次源码修复后的最终安装版/便携版已重新构建并签名：Setup `99294DDA0792B2C534AAD6CFCE93FB5CA999DE8884442AD6A1D575BFEBA5C622`，Portable `6338C18E448DC0B6C573AA53CC7662EB1A11026A05EB7005F80C44F3BE527558`；主体 `CN=十七°`，PFX/私钥已清理，本机自签链仍待受信测试机复核。

@@ -66,6 +66,7 @@ describe("GUI/CLI Codex sync backend", () => {
       },
       currentExternalCodexModelProvider: () => null,
       collectCodexHomeDiagnostic: () => homeDiagnostic(),
+      findLiveProxy: async () => ({ pid: null, port: 12345, source: "config" as const }),
     });
 
     expect(injectedPort).toBe(12345);
@@ -81,6 +82,53 @@ describe("GUI/CLI Codex sync backend", () => {
     });
     expect(logs).toContain("   Target Codex home: C:\\Users\\[USER]\\.codex");
     expect(errors).toEqual([]);
+  });
+
+  test("restores native routing and refuses injection when no healthy proxy exists", async () => {
+    let injected = false;
+    let restored = false;
+    const result = await syncModelsToCodex(37692, config, null, {
+      refreshCodexModelCatalog: async () => { throw new Error("must not refresh without a proxy"); },
+      injectCodexConfig: async () => {
+        injected = true;
+        return { success: true, message: "unexpected injection" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => null,
+      restoreNativeCodex: () => {
+        restored = true;
+        return { success: true, message: "native restored" };
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("no healthy OpenCodex proxy");
+    expect(injected).toBe(false);
+    expect(restored).toBe(true);
+  });
+
+  test("uses the identity-checked live port when the requested port drifted", async () => {
+    let injectedPort = 0;
+    const errors: string[] = [];
+    const result = await syncModelsToCodex(1496, config, { log: () => {}, error: line => errors.push(String(line)) }, {
+      refreshCodexModelCatalog: async () => ({
+        added: 0,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: false,
+        cacheSynced: false,
+      }),
+      injectCodexConfig: async (port) => {
+        injectedPort = port;
+        return { success: true, message: "injected" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => ({ pid: 42, port: 37692, source: "runtime" as const }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(injectedPort).toBe(37692);
+    expect(errors).toContain("Codex sync corrected a stale port 1496 to the live OpenCodex port 37692.");
   });
 
   test("surfaces combo catalog omissions in sync result and CLI stderr (#484)", async () => {
@@ -104,6 +152,7 @@ describe("GUI/CLI Codex sync backend", () => {
       injectCodexConfig: async () => ({ success: true, message: "injected" }),
       currentExternalCodexModelProvider: () => null,
       collectCodexHomeDiagnostic: () => homeDiagnostic(),
+      findLiveProxy: async () => ({ pid: null, port: 12345, source: "config" as const }),
     });
 
     expect(result.comboOmissions).toEqual([omission]);
@@ -133,6 +182,7 @@ describe("GUI/CLI Codex sync backend", () => {
       injectCodexConfig: async () => ({ success: true, message: "injected" }),
       currentExternalCodexModelProvider: () => null,
       collectCodexHomeDiagnostic: () => homeDiagnostic(),
+      findLiveProxy: async () => ({ pid: null, port: 12345, source: "config" as const }),
     });
 
     expect(result.comboOmissions).toEqual([omission]);
@@ -157,6 +207,7 @@ describe("GUI/CLI Codex sync backend", () => {
         return { success: true, message: "injected fallback" };
       },
       currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => ({ pid: null, port: 10100, source: "config" as const }),
     });
 
     expect(injectedCatalogPath).toBeUndefined();
@@ -179,6 +230,7 @@ describe("GUI/CLI Codex sync backend", () => {
         nativeSubagentDefaultsWarning: "Native Codex sub-agent defaults were not injected: user-owned agents.default_subagent_model preserved.",
       }),
       currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => ({ pid: null, port: 10100, source: "config" as const }),
     });
 
     expect(result.ok).toBe(true);

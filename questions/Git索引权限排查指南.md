@@ -46,3 +46,4 @@ fatal: Unable to create 'F:/workbuddy/opencodex/.git/index.lock': Permission den
 - ✅ 2026-08-01：本阶段默认权限再次无法创建 `.git/index.lock`；确认锁文件不存在后，使用最小授权并按 sparse-checkout 规则执行 `git add --sparse -- desktop/package.json desktop/tests/package-static.test.ts questions/中文空格安装路径排查指南.md questions/阶段0基线依赖缺失排查指南.md todolist.md` 成功暂存，用户已有的两个未跟踪文件仍未纳入。
 - ❌ 2026-08-01：preload 修复收尾再次在默认权限下执行精确 `git add --sparse`，仍无法创建 `.git/index.lock`；未改变索引，需等待可用的最小 Git 元数据授权后暂存。
 - ❌ 2026-08-01：按既有最小授权规则重试精确 `git add --sparse`，平台因当前执行额度耗尽拒绝授权请求；未绕过授权边界，也未改变索引，提交/tag 暂时无法完成。
+- ❌ 2026-08-01：本阶段路由健康门修复完成后按最小文件清单执行 `git add --sparse`，确认没有 `.git/index.lock` 残留但默认权限仍无法创建锁文件；按既有记录改用最小范围授权重试，未改动未跟踪用户文档。
