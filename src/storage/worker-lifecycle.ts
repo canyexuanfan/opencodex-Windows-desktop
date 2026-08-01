@@ -122,6 +122,9 @@ export function terminateStorageWorker(worker: Worker, timeoutMs = 5_000): Promi
         tracked.resolveClosed();
       }
       await tracked.closed;
+      // Disarm before the OS-join settle: a late timer firing during the sleep
+      // would set timedOut after close already won and throw a false timeout.
+      clearTimeout(timer);
       // Always run the platform settle before throwing on timeout: the timer
       // only forces `closed`, it does not prove the OS thread has exited.
       // Callers that catch and continue (e.g. drainAndShutdown) still need
