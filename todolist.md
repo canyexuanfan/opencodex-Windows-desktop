@@ -879,3 +879,10 @@ Codex / Claude Code / 其他现有客户端
 - [x] 验证通过：`bun test tests/package-static.test.ts` 4/4、23 断言；`bun run build` 通过；隔离缓存下 `electron-builder.exe --win nsis portable` 构建与签名成功。
 - [x] 最新产物：Setup SHA-256=`1FD2B41F54981FAF2F72B098774E3464D690D49D5666E73E300517E500134FC5`；Portable SHA-256=`B5DA492D1E8C6EBC5BC8D6AE7964F35F8190406956FA4F397C38AE5D0E11CE73`。
 - [ ] 当前会话仍未重启或修改真实 Codex；真实安装向导默认目录和浏览回填需用户用最新安装包目视确认。
+
+# 阶段 26：测试残留清理与真实用户安装记录恢复（2026-08-02）
+- [x] 定位安装器“已存在当前用户安装”的根因：前序安装器 smoke 测试留下的 `wzm33` 用户注册表记录仍指向 `C:\tmp\opencodex-ui-smoke-20260802\父目录 安装\OpenCodex`，而该测试安装目录已不存在。
+- [x] 精确删除真实用户 hive 中两条残留记录：`HKEY_USERS\S-1-5-21-4236703995-3469167350-429386209-1001\Software\65450dd5-cb01-5699-92e3-de59ccbfbe4d` 与对应 `...\Uninstall\65450dd5-cb01-5699-92e3-de59ccbfbe4d`。
+- [x] 复核两条 key 均已不存在；`C:\tmp\opencodex-ui-smoke-20260802` 已不存在。
+- [x] 本次清理未重启、关闭或修改当前正在使用的真实 Codex 配置。
+- [ ] 其余历史 `C:\tmp\OpenCodex*` / `C:\tmp\opencodex-*` 测试目录需要单独清点后逐项确认删除；不再执行宽范围接管 ACL 或批量硬删。
