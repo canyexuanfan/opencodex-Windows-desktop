@@ -21,10 +21,27 @@ import { join } from "node:path";
 import { getConfigDir, atomicWriteFile, backupInvalidConfig, hardenConfigDir, hardenExistingSecret } from "../config";
 import { assertNotRealHomeUnderTest } from "../lib/test-home-guard";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
+import {
+  captureConfigGeneration,
+  type GenerationContext,
+} from "../lib/state-store-sweeper";
 import { validateCopilotApiBaseUrl } from "./github-copilot";
 import type { OAuthCredentialSource, OAuthCredentials, ProviderAccount, ProviderAccountSet } from "./types";
 
 type AuthStore = Record<string, ProviderAccountSet>;
+let lastReconciledGeneration = 0;
+let liveOAuthAccountKeys = new Set<string>();
+
+function oauthAccountKey(provider: string, accountId: string): string {
+  return `${provider}\0${accountId}`;
+}
+
+export function reconcileOAuthReauthState(context: GenerationContext): number {
+  if (context.generation <= lastReconciledGeneration) return 0;
+  liveOAuthAccountKeys = new Set(context.oauthAccountKeys);
+  lastReconciledGeneration = context.generation;
+  return 0;
+}
 
 /** Providers whose account set is pinned to a single slot (see module doc). */
 const SINGLE_SLOT_PROVIDERS = new Set(["chatgpt"]);
@@ -395,6 +412,17 @@ export function listAccounts(provider: string): ProviderAccount[] {
   return loadAuthStore()[provider]?.accounts ?? [];
 }
 
+export function listLiveOAuthAccountKeys(
+  providerNames: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const [provider, accountSet] of Object.entries(loadAuthStore())) {
+    if (!providerNames.has(provider)) continue;
+    for (const account of accountSet.accounts) keys.add(`${provider}\0${account.id}`);
+  }
+  return keys;
+}
+
 export function getAccountCredential(provider: string, accountId: string): OAuthCredentials | null {
   return loadAuthStore()[provider]?.accounts.find(a => a.id === accountId)?.credential ?? null;
 }
@@ -432,7 +460,7 @@ export async function setAccountAlias(provider: string, accountId: string, alias
 
 /** Remove one account by id; active removal promotes the first remaining account. */
 export async function removeAccount(provider: string, accountId: string): Promise<boolean> {
-  return await mutateStore(store => {
+  const removed = await mutateStore(store => {
     const set = store[provider];
     if (!set) return false;
     const before = set.accounts.length;
@@ -445,6 +473,7 @@ export async function removeAccount(provider: string, accountId: string): Promis
     if (set.activeAccountId === accountId) set.activeAccountId = set.accounts[0]!.id;
     return true;
   });
+  return removed;
 }
 
 /** Replace or clear a provider account set (used for transactional Kiro add-account rollback). */
@@ -470,7 +499,13 @@ export async function replaceProviderAccountSet(
   });
 }
 
-export async function markAccountNeedsReauth(provider: string, accountId: string, needsReauth: boolean): Promise<void> {
+export async function markAccountNeedsReauth(
+  provider: string,
+  accountId: string,
+  needsReauth: boolean,
+  writerGeneration = captureConfigGeneration(),
+): Promise<void> {
+  if (writerGeneration < lastReconciledGeneration && !liveOAuthAccountKeys.has(oauthAccountKey(provider, accountId))) return;
   await mutateStore(store => {
     const account = store[provider]?.accounts.find(a => a.id === accountId);
     if (!account) return;
@@ -480,4 +515,4 @@ export async function markAccountNeedsReauth(provider: string, accountId: string
 }
 
 export async function mergeAccountCredential(provider:string,accountId:string,credential:OAuthCredentials,opts:{expectedGeneration?:string;afterPrePersistRead?:()=>void|Promise<void>}={}):Promise<{superseded:false}|{superseded:true;stored:OAuthCredentials}>{const safe=normalizeCredential(credential);if(!safe)throw new Error("Refusing to persist invalid OAuth credential");return await mutateStore(async store=>{await opts.afterPrePersistRead?.();const account=store[provider]?.accounts.find(x=>x.id===accountId);if(!account)throw new Error(`OAuth account disappeared before persist: ${provider}`);if(opts.expectedGeneration!==undefined&&credentialGeneration(account.credential)!==opts.expectedGeneration)return{superseded:true,stored:account.credential};account.credential=safe;delete account.needsReauth;return{superseded:false};});}
-export async function markAccountNeedsReauthIfGeneration(provider:string,accountId:string,generation:string):Promise<boolean>{return await mutateStore(store=>{const account=store[provider]?.accounts.find(x=>x.id===accountId);if(!account?.credential||credentialGeneration(account.credential)!==generation)return false;account.needsReauth=true;return true;});}
+export async function markAccountNeedsReauthIfGeneration(provider:string,accountId:string,generation:string,writerGeneration=captureConfigGeneration()):Promise<boolean>{const key=oauthAccountKey(provider,accountId);if(writerGeneration<lastReconciledGeneration&&!liveOAuthAccountKeys.has(key))return false;return await mutateStore(store=>{const account=store[provider]?.accounts.find(x=>x.id===accountId);if(!account?.credential||credentialGeneration(account.credential)!==generation)return false;if(writerGeneration<lastReconciledGeneration&&!liveOAuthAccountKeys.has(key))return false;account.needsReauth=true;return true;});}

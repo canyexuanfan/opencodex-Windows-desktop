@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -27,7 +27,7 @@ import {
 } from "../src/config";
 
 import * as windowsAcl from "../src/lib/windows-secret-acl";
-import { hardenConfigDir, hardenExistingSecret, renameAtomicFile, saveConfig } from "../src/config";
+import { AtomicWriteResidualTempError, atomicWriteFile, hardenConfigDir, hardenExistingSecret, renameAtomicFile, saveConfig } from "../src/config";
 let testDir = "";
 
 beforeEach(() => {
@@ -1431,6 +1431,90 @@ describe("opencodex config defaults", () => {
 });
 
 describe("config.ts – Windows ACL hardening integration", () => {
+  test("successive atomic temps for one destination are each hardened and then forgotten", () => {
+    const destination = join(testDir, "atomic-secret.json");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    windowsAcl.resetHardenedStateForTests();
+    windowsAcl.setPlatformForTests("win32");
+    let grants = 0;
+    windowsAcl.setIcaclsRunnerForTests(args => {
+      if (args.includes("/grant:r")) grants += 1;
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    const io = {
+      write: (path: string, content: string) => writeFileSync(path, content, { mode: 0o600 }),
+      harden: (path: string) => {
+        chmodSync(path, 0o600);
+        windowsAcl.hardenSecretPath(path, { required: true });
+      },
+      rename: renameSync,
+      truncate: (path: string) => truncateSync(path, 0),
+      unlink: unlinkSync,
+    };
+    try {
+      atomicWriteFile(destination, "first", io);
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(0);
+      atomicWriteFile(destination, "second", io);
+      expect(readFileSync(destination, "utf8")).toBe("second");
+      expect(grants).toBe(2);
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(0);
+    } finally {
+      windowsAcl.setIcaclsRunnerForTests(null);
+      windowsAcl.setPlatformForTests(null);
+      windowsAcl.resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+
+  test("failed residual unlink retains the exact temp memo until later cleanup", () => {
+    const destination = join(testDir, "residual-secret.json");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    windowsAcl.resetHardenedStateForTests();
+    windowsAcl.setPlatformForTests("win32");
+    windowsAcl.setIcaclsRunnerForTests(() => ({
+      success: true,
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+    }));
+    let residual: string | null = null;
+    try {
+      atomicWriteFile(destination, "secret", {
+        write: (path, content) => writeFileSync(path, content, { mode: 0o600 }),
+        harden: path => { windowsAcl.hardenSecretPath(path, { required: true }); },
+        rename: () => {
+          const error = new Error("rename failed") as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        },
+        truncate: path => truncateSync(path, 0),
+        unlink: path => {
+          residual = path;
+          const error = new Error("unlink failed") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        },
+      });
+      throw new Error("expected residual error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AtomicWriteResidualTempError);
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(1);
+      expect(residual).not.toBeNull();
+      unlinkSync(residual!);
+      windowsAcl.forgetHardenedSecretPath(residual!);
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(0);
+    } finally {
+      windowsAcl.setIcaclsRunnerForTests(null);
+      windowsAcl.setPlatformForTests(null);
+      windowsAcl.resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+
   test("hardenConfigDir delegates to hardenSecretDir with required:false on win32", () => {
     const origPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });

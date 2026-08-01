@@ -170,6 +170,16 @@ export function resetHardenedStateForTests(): void {
   timedOutPaths.clear();
 }
 
+/** Forget a successful harden only after this exact ephemeral path is gone. */
+export function forgetHardenedSecretPath(targetPath: string): void {
+  hardenedPaths.delete(targetPath);
+}
+
+/** Test seam for proving ephemeral success memos do not grow across replacements. */
+export function hardenedSecretPathCountForTests(): number {
+  return hardenedPaths.size;
+}
+
 function effectivePlatform(): string {
   return platformOverride ?? platform;
 }

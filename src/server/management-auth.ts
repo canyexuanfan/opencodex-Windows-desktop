@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
-import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxConfig } from "../types";
 import {
   isAllowedManagementOrigin,
@@ -72,8 +72,17 @@ function readExistingToken(path: string): string {
   return token;
 }
 
-function removeBestEffort(path: string): void {
-  try { unlinkSync(path); } catch { /* fail-closed state is preserved by the caller */ }
+export function removeManagementTokenPathBestEffort(
+  path: string,
+  remove: (path: string) => void = unlinkSync,
+): void {
+  try {
+    remove(path);
+    forgetHardenedSecretPath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetHardenedSecretPath(path);
+    /* other failures retain fail-closed state for the caller */
+  }
 }
 
 function createTokenFile(path: string): string {
@@ -102,13 +111,13 @@ function createTokenFile(path: string): string {
     if (!finalHardened.ok) throw new Error("management token file ACL hardening did not complete");
     return token;
   } catch (error) {
-    if (linked) removeBestEffort(path);
+    if (linked) removeManagementTokenPathBestEffort(path);
     throw error;
   } finally {
     if (fd !== null) {
       try { closeSync(fd); } catch { /* best effort */ }
     }
-    removeBestEffort(temporary);
+    removeManagementTokenPathBestEffort(temporary);
   }
 }
 

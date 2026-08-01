@@ -28,6 +28,7 @@ import {
   seedPoolRotationAccount,
 } from "../codex/pool-rotation";
 import type { OcxAccountPoolRotationStrategy, OcxConfig } from "../types";
+import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
 
 const PROVIDER = "anthropic";
 const DEFAULT_COOLDOWN_MS = 60_000;
@@ -108,6 +109,16 @@ export function getAnthropicAccountHealthSnapshot(
 
 export function clearAnthropicAccountCooldown(accountId: string): boolean {
   return upstreamHealth.delete(accountId);
+}
+
+export function sweepExpiredAnthropicRoutingHealth(now = Date.now()): number {
+  let removed = 0;
+  for (const [accountId, health] of upstreamHealth) {
+    if (health.cooldownUntil > now) continue;
+    upstreamHealth.delete(accountId);
+    removed += 1;
+  }
+  return removed;
 }
 
 /** Test / logout helper. */
@@ -464,6 +475,7 @@ export function rotateAnthropicAccountOn429(
     cooldownUntil: now + cooldownMs,
     cooldownSource: parsedRetry ? "retry-after" : "default",
   });
+  sweepExpiredOnWrite(now);
   clearAnthropicSessionAffinityForAccount(failedAccountId);
   notePoolRotationFailure(POOL_KEY_ANTHROPIC, failedAccountId);
 

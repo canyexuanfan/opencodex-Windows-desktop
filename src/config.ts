@@ -13,7 +13,12 @@ import {
   MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET,
 } from "./codex/account-namespace-match";
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
-import { hardenSecretDir, hardenSecretPath, hardenSecretPathAsync } from "./lib/windows-secret-acl";
+import {
+  forgetHardenedSecretPath,
+  hardenSecretDir,
+  hardenSecretPath,
+  hardenSecretPathAsync,
+} from "./lib/windows-secret-acl";
 import { recordOwnedConfigPath } from "./lib/config-ownership";
 import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
 import { providerDestinationConfigError } from "./lib/destination-policy";
@@ -111,6 +116,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
     io.harden(tmp);
     hardened = true;
     io.rename(tmp, path);
+    forgetHardenedSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -137,6 +143,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
     if (!removed && !hardened) {
       try { io.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
+    if (removed) forgetHardenedSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -195,6 +202,7 @@ export async function atomicWriteFileAsync(
     await effective.harden(tmp);
     hardened = true;
     await effective.rename(tmp, path);
+    forgetHardenedSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -221,6 +229,7 @@ export async function atomicWriteFileAsync(
     if (!removed && !hardened) {
       try { await effective.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
+    if (removed) forgetHardenedSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -337,7 +346,10 @@ export function backupConfigBeforeOpenAiTierMigration(
 
   const scrubUnpublishedTemp = (): void => {
     cleanupAttempted = true;
-    if (!io.exists(temp)) return;
+    if (!io.exists(temp)) {
+      forgetHardenedSecretPath(temp);
+      return;
+    }
     let scrubbed = false;
     try {
       io.truncate(temp);
@@ -352,12 +364,19 @@ export function backupConfigBeforeOpenAiTierMigration(
     try {
       io.unlink(temp);
       removed = true;
+      forgetHardenedSecretPath(temp);
     } catch (error) {
-      if (isMissingPathError(error) || !io.exists(temp)) removed = true;
+      if (isMissingPathError(error) || !io.exists(temp)) {
+        removed = true;
+        forgetHardenedSecretPath(temp);
+      }
       else {
-        try { io.unlink(temp); removed = true; }
+        try { io.unlink(temp); removed = true; forgetHardenedSecretPath(temp); }
         catch (retryError) {
-          if (isMissingPathError(retryError) || !io.exists(temp)) removed = true;
+          if (isMissingPathError(retryError) || !io.exists(temp)) {
+            removed = true;
+            forgetHardenedSecretPath(temp);
+          }
         }
       }
     }
@@ -381,10 +400,18 @@ export function backupConfigBeforeOpenAiTierMigration(
     published = true;
     try {
       io.unlink(temp);
-    } catch {
-      try {
+      forgetHardenedSecretPath(temp);
+    } catch (firstError) {
+      if (isMissingPathError(firstError) || !io.exists(temp)) {
+        forgetHardenedSecretPath(temp);
+      } else try {
         io.unlink(temp);
-      } catch {
+        forgetHardenedSecretPath(temp);
+      } catch (secondError) {
+        if (isMissingPathError(secondError) || !io.exists(temp)) {
+          forgetHardenedSecretPath(temp);
+          return "created";
+        }
         // temp and backup are hard links to the same inode. Roll back the backup
         // link before any truncation so the downgrade snapshot is never zeroed.
         try { io.unlink(backup); } catch { throw new OpenAiTierBackupRollbackError(); }
@@ -436,6 +463,15 @@ function resolveRuntimePortPath(): string {
 }
 
 const warnedConfigFallbacks = new Set<string>();
+let lastWarningReconciledGeneration = 0;
+
+export function reconcileConfigWarningMemos(generation: number): number {
+  if (generation <= lastWarningReconciledGeneration) return 0;
+  const removed = warnedConfigFallbacks.size;
+  warnedConfigFallbacks.clear();
+  lastWarningReconciledGeneration = generation;
+  return removed;
+}
 
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
@@ -2113,6 +2149,48 @@ export function isOcxStartCommandLine(commandLine: string): boolean {
 
 /** Per-process memo: waitForProxy/findLiveProxy used to spawn powershell on every 150ms poll. */
 const ocxStartProcessCache = new Map<number, boolean>();
+let ocxStartProcessSweepCursor = 0;
+let ocxStartProcessProbe: (pid: number) => void = pid => { process.kill(pid, 0); };
+
+export function setOcxStartProcessProbeForTests(probe: ((pid: number) => void) | null): void {
+  ocxStartProcessProbe = probe ?? (pid => { process.kill(pid, 0); });
+}
+
+export function setOcxStartProcessCacheForTests(entries: Iterable<readonly [number, boolean]>): void {
+  ocxStartProcessCache.clear();
+  for (const [pid, value] of entries) ocxStartProcessCache.set(pid, value);
+  ocxStartProcessSweepCursor = 0;
+}
+
+export function sweepDeadOcxStartProcessCache(maxProbes = 64): number {
+  const pids: number[] = [];
+  let removed = 0;
+  for (const pid of ocxStartProcessCache.keys()) {
+    if (Number.isSafeInteger(pid) && pid > 0) pids.push(pid);
+    else if (ocxStartProcessCache.delete(pid)) removed += 1;
+  }
+  if (pids.length === 0 || maxProbes <= 0) {
+    ocxStartProcessSweepCursor = 0;
+    return removed;
+  }
+  const probeCount = Math.min(Math.floor(maxProbes), pids.length);
+  const start = ocxStartProcessSweepCursor % pids.length;
+  for (let offset = 0; offset < probeCount; offset += 1) {
+    const pid = pids[(start + offset) % pids.length]!;
+    try {
+      ocxStartProcessProbe(pid);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+      if (ocxStartProcessCache.delete(pid)) removed += 1;
+    }
+  }
+  ocxStartProcessSweepCursor = (start + probeCount) % pids.length;
+  return removed;
+}
+
+export function ocxStartProcessCacheSizeForTests(): number {
+  return ocxStartProcessCache.size;
+}
 
 function isLikelyOcxStartProcess(pid: number): boolean {
   const cached = ocxStartProcessCache.get(pid);

@@ -51,6 +51,8 @@ export {
 } from "./quota";
 import { extractAccountId, decodeJwtPayload } from "../oauth/chatgpt";
 import { getMainAccountPlan, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
+import { captureConfigGeneration } from "../lib/state-store-sweeper";
+import { reconcileLiveStateStores } from "../lib/state-store-registrations";
 import {
   clearMainAccountInfoCache,
   getMainAccountInfoCache,
@@ -347,6 +349,7 @@ async function retryMainAccountInfoIfIdentityChanged(
 }
 
 async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaining: number): Promise<MainAccountInfoFetchResult> {
+  const writerGeneration = captureConfigGeneration();
   reconcileMainCodexAccountRuntimeState();
   const tokenRead = readCodexTokensResult();
   if (tokenRead.status !== "ok") {
@@ -376,7 +379,7 @@ async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaini
       if (retried) return retried;
       if (terminalAuthFailure) {
         clearMainAccountInfoCache();
-        markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+        markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID, writerGeneration);
       }
       return { info: EMPTY_MAIN_ACCOUNT_INFO };
     }
@@ -398,7 +401,7 @@ async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaini
     // score and auto-switch the main account exactly like a pool account (Option A).
     setMainAccountPlan(result.plan);
     if (result.quota) {
-      setAccountQuotaFromParsed(MAIN_CODEX_ACCOUNT_ID, result.quota);
+      setAccountQuotaFromParsed(MAIN_CODEX_ACCOUNT_ID, result.quota, writerGeneration);
     }
     return {
       info: result,
@@ -509,6 +512,7 @@ async function fetchFreshPoolAccountQuota(
   configuredPlan?: string,
   onCredentialGeneration?: (generation: number) => void,
 ): Promise<PoolQuotaResult> {
+  const writerGeneration = captureConfigGeneration();
   let requestCredentialGeneration = readCodexAccountRecord(accountId)?.generation;
   try {
     const { accessToken, chatgptAccountId, generation } = await getValidCodexToken(accountId);
@@ -542,7 +546,7 @@ async function fetchFreshPoolAccountQuota(
     if (!isCodexAccountGenerationLive(accountId, generation)) {
       return { quota: null, needsReauth: false, credentialGeneration: generation };
     }
-    setAccountQuotaFromParsed(accountId, quota);
+    setAccountQuotaFromParsed(accountId, quota, writerGeneration);
     return {
       quota: getAccountQuota(accountId),
       needsReauth: false,
@@ -859,6 +863,7 @@ export async function handleCodexAuthAPI(
     accounts.push(withCodexAccountLogLabel({ id: body.id, email: body.email, plan: body.plan, isMain: false }, accounts));
     latestConfig.codexAccounts = accounts;
     saveRuntimeConfig(config, latestConfig);
+    reconcileLiveStateStores();
     return jsonResponse({ ok: true });
   }
 
@@ -873,6 +878,7 @@ export async function handleCodexAuthAPI(
     }
     deleteCodexAccount(runtimeConfig, id);
     saveRuntimeConfig(config, runtimeConfig);
+    reconcileLiveStateStores();
     return jsonResponse({ ok: true });
   }
 
@@ -1326,6 +1332,7 @@ export async function handleCodexAuthAPI(
                   latestConfig.codexAccounts = accounts;
                   saveRuntimeConfig(config, latestConfig);
                 }
+                reconcileLiveStateStores();
                 codexAuthLoginState.set(flowId, { status: "done", accountId, email, doneAt: Date.now() });
                 completed = true;
               }

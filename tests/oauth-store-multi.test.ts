@@ -5,8 +5,12 @@ import {
   getAccountCredential,
   getAccountSet,
   getCredential,
+  credentialGeneration,
   listAccounts,
   markAccountNeedsReauth,
+  markAccountNeedsReauthIfGeneration,
+  mutateStore,
+  reconcileOAuthReauthState,
   removeAccount,
   removeCredential,
   saveAccountCredential,
@@ -211,5 +215,36 @@ describe("multi-account auth store", () => {
     const set = getAccountSet("xai")!;
     expect(set.accounts.length).toBe(1);
     expect(set.activeAccountId).toBe("ok"); // dangling active healed
+  });
+
+  test("queued generation-checked reauth mutation rechecks liveness after reconciliation", async () => {
+    await saveCredential("xai", cred({ email: "race@example.com", accountId: "race-account" }));
+    const accountId = getAccountSet("xai")!.activeAccountId;
+    const generation = credentialGeneration(getAccountCredential("xai", accountId)!);
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const enteredGate = new Promise<void>(resolve => { entered = resolve; });
+    const blocker = mutateStore(async () => {
+      entered();
+      await gate;
+    });
+    await enteredGate;
+
+    const pending = markAccountNeedsReauthIfGeneration("xai", accountId, generation, 0);
+    reconcileOAuthReauthState({
+      generation: 1,
+      providerNames: new Set(),
+      comboIds: new Set(),
+      comboTargets: new Set(),
+      codexAccountIds: new Set(),
+      oauthAccountKeys: new Set(),
+      configRoots: new Set(),
+    });
+    release();
+    await blocker;
+
+    expect(await pending).toBe(false);
+    expect(getAccountSet("xai")!.accounts[0]?.needsReauth).toBeUndefined();
   });
 });

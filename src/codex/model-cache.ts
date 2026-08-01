@@ -8,6 +8,7 @@
  * restarts, so an in-memory cache is sufficient here (no SQLite layer needed).
  */
 import type { CatalogModel } from "./catalog";
+import type { GenerationContext } from "../lib/state-store-sweeper";
 
 /** Default freshness window. Matches Codex's own 5-min models cache so the two stay in step. */
 export const DEFAULT_MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -54,6 +55,7 @@ const discoveryStatus = new Map<string, ProviderModelDiscoveryStatus>();
  * custom-only, and the provider's configured fallback would wrongly stay authoritative.
  */
 const liveModelCounts = new Map<string, number>();
+let lastReconciledGeneration = 0;
 
 export function markModelsFetchFailure(provider: string, now = Date.now()): void {
   failureAt.set(provider, now);
@@ -145,4 +147,25 @@ export function clearModelCache(provider?: string): void {
     discoveryStatus.clear();
     liveModelCounts.clear();
   }
+}
+
+export function reconcileModelCacheProviders(
+  validProviders: ReadonlySet<string>,
+  generation = lastReconciledGeneration + 1,
+): number {
+  if (generation <= lastReconciledGeneration) return 0;
+  const removedProviders = new Set<string>();
+  for (const store of [cache, failureAt, discoveryStatus, liveModelCounts]) {
+    for (const provider of store.keys()) {
+      if (validProviders.has(provider)) continue;
+      store.delete(provider);
+      removedProviders.add(provider);
+    }
+  }
+  lastReconciledGeneration = generation;
+  return removedProviders.size;
+}
+
+export function reconcileModelCacheGeneration(context: GenerationContext): number {
+  return reconcileModelCacheProviders(context.providerNames, context.generation);
 }

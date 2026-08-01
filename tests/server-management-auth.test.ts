@@ -10,9 +10,12 @@ import { isProxyAdmissionSecret } from "../src/server/auth-cors";
 import {
   initializeManagementAuthState,
   issueGuiSession,
+  removeManagementTokenPathBestEffort,
   requireManagementAuth,
 } from "../src/server/management-auth";
 import {
+  hardenSecretPath,
+  hardenedSecretPathCountForTests,
   resetHardenedStateForTests,
   setIcaclsRunnerForTests,
   setPlatformForTests,
@@ -83,6 +86,34 @@ afterEach(() => {
 });
 
 describe("management and data-plane credential separation", () => {
+  test("management-token temp cleanup forgets successful ACL memos and retains failed removals", () => {
+    const temporary = join(testHome, ".admin-token.tmp");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    try {
+      writeFileSync(temporary, "secret", { mode: 0o600 });
+      hardenSecretPath(temporary, { required: true });
+      removeManagementTokenPathBestEffort(temporary);
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+
+      writeFileSync(temporary, "secret", { mode: 0o600 });
+      hardenSecretPath(temporary, { required: true });
+      removeManagementTokenPathBestEffort(temporary, () => {
+        throw Object.assign(new Error("injected unlink failure"), { code: "EPERM" });
+      });
+      expect(hardenedSecretPathCountForTests()).toBe(1);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+
   test("data and management environment tokens authorize only their own planes", async () => {
     saveConfig(remoteConfig());
     const server = startServer(0);

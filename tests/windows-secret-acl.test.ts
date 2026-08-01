@@ -15,8 +15,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   hardenSecretDir,
+  forgetHardenedSecretPath,
   hardenSecretPath,
   hardenSecretPathAsync,
+  hardenedSecretPathCountForTests,
   resetHardenedStateForTests,
   setAsyncIcaclsRunnerForTests,
   setIcaclsRunnerForTests,
@@ -102,6 +104,40 @@ describe("hardenSecretPath – required mode (required: true)", () => {
 
     expect(result.ok).toBe(true);
     expect(existsSync(filePath)).toBe(false);
+  });
+});
+
+describe("ephemeral harden success memo lifecycle", () => {
+  test("forgetHardenedSecretPath releases only the actual temp and a second temp hardens again", () => {
+    const tempA = join(testDir, "config.json.ocx.1.1.tmp");
+    const tempB = join(testDir, "config.json.ocx.1.2.tmp");
+    writeFileSync(tempA, "first", "utf8");
+    writeFileSync(tempB, "second", "utf8");
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    let grants = 0;
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/grant:r")) grants += 1;
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    try {
+      expect(hardenSecretPath(tempA, { required: true })).toEqual({ ok: true });
+      expect(hardenedSecretPathCountForTests()).toBe(1);
+      forgetHardenedSecretPath(tempA);
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+
+      expect(hardenSecretPath(tempB, { required: true })).toEqual({ ok: true });
+      expect(grants).toBe(2);
+      expect(hardenedSecretPathCountForTests()).toBe(1);
+      forgetHardenedSecretPath(tempB);
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+    }
   });
 });
 

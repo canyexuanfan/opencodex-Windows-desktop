@@ -42,6 +42,13 @@ import {
   writeResponseSpillDurably,
 } from "../src/responses/spill-store";
 import { adapterNeedsForcedContinuation, injectDeveloperMessage } from "../src/server/responses";
+import {
+  hardenSecretPath,
+  hardenedSecretPathCountForTests,
+  resetHardenedStateForTests,
+  setIcaclsRunnerForTests,
+  setPlatformForTests,
+} from "../src/lib/windows-secret-acl";
 
 function feedInspector(
   inspector: ReturnType<typeof createSseInspector>,
@@ -98,6 +105,9 @@ describe("Responses previous_response_id state", () => {
 
   afterEach(() => {
     setSpillIoForTest(null);
+    setIcaclsRunnerForTests(null);
+    setPlatformForTests(null);
+    resetHardenedStateForTests();
     setResponseStateByteCapForTests(null);
     clearResponseStateForTests();
     rmSync(home, { recursive: true, force: true });
@@ -590,6 +600,42 @@ describe("Responses previous_response_id state", () => {
     setResponseStateByteCapForTests(1_024);
     rememberLarge("resp_durable_order", "x".repeat(8_000));
     expect(events).toEqual(["write", "fsync", "close", "harden", "publish", "stub-swap"]);
+  });
+
+  test("spill temp cleanup forgets successful ACL memos and retains failed removals", () => {
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    const seedTempMemo = (event: string): void => {
+      if (event !== "harden") return;
+      const tempName = readdirSync(responseSpillDirectory(home)).find(name => name.endsWith(".tmp"));
+      expect(tempName).toBeTruthy();
+      hardenSecretPath(join(responseSpillDirectory(home), tempName!), { required: true });
+    };
+    try {
+      setSpillIoForTest({ record: seedTempMemo });
+      writeResponseSpillDurably("resp_acl_success", { createdAt: Date.now(), items: ["success"] });
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+
+      setSpillIoForTest({
+        record: seedTempMemo,
+        unlink: () => { throw Object.assign(new Error("injected unlink failure"), { code: "EPERM" }); },
+      });
+      expect(() => writeResponseSpillDurably("resp_acl_failure", {
+        createdAt: Date.now(),
+        items: ["failure"],
+      })).toThrow("Response spill write failed");
+      expect(hardenedSecretPathCountForTests()).toBe(1);
+    } finally {
+      setSpillIoForTest(null);
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
   });
 
   test("replays provider metadata and function_call_output history through a spill stub", () => {

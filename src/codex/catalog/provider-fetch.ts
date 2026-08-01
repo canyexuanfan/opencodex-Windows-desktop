@@ -217,6 +217,15 @@ export function isDatedVariantId(liveId: string, configuredId: string): boolean 
 }
 
 export const lastDropWarnSignature = new Map<string, string>();
+let lastWarningReconciledGeneration = 0;
+
+export function reconcileProviderFetchWarnings(generation: number): number {
+  if (generation <= lastWarningReconciledGeneration) return 0;
+  const removed = lastDropWarnSignature.size;
+  lastDropWarnSignature.clear();
+  lastWarningReconciledGeneration = generation;
+  return removed;
+}
 
 export const QUIET_AUTHORITATIVE_CATALOG_PROVIDERS = new Set(["kimi", "xai"]);
 

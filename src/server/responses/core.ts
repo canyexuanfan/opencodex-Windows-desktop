@@ -175,6 +175,7 @@ export function sidecarOutcomeRecorder(
     ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
       threadId,
       probeLeaseId: authCtx.probeLeaseId,
+      writerGeneration: authCtx.writerGeneration,
     })
     : undefined;
 }
@@ -343,7 +344,11 @@ async function retryCodexPoolOnAlternateAccount(
   const quotaMeta = codexQuotaOutcomeMeta(firstResponse);
   if (outcomeStatus === 429 || outcomeStatus === 402) {
     const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
-    applyAccountQuotaFromUpstreamHeaders(firstAuthCtx.accountId, firstResponse.headers);
+    applyAccountQuotaFromUpstreamHeaders(
+      firstAuthCtx.accountId,
+      firstResponse.headers,
+      firstAuthCtx.writerGeneration,
+    );
   }
   if (!shouldDeferCodexResetDerivedCooldown(firstResponse, options.deferCodexResetDerivedCooldown)) {
     recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, outcomeStatus, {
@@ -352,6 +357,7 @@ async function retryCodexPoolOnAlternateAccount(
       modelId: route.modelId,
       probeLeaseId: codexProbeLeaseId(firstAuthCtx),
       probeQuotaScope: codexProbeQuotaScope(firstAuthCtx),
+      writerGeneration: firstAuthCtx.writerGeneration,
       // Retry already advanced the RR ring via excludeAccountId — reuse for promotion.
       ...(retryAuthCtx.accountId ? { promoteAccountId: retryAuthCtx.accountId } : {}),
     });
@@ -427,6 +433,7 @@ export function codexForwardTerminalOutcomeRecorder(
         modelId,
         probeLeaseId: codexProbeLeaseId(authCtx),
         probeQuotaScope: codexProbeQuotaScope(authCtx),
+        writerGeneration: authCtx.writerGeneration,
       });
       return;
     }
@@ -447,6 +454,7 @@ export function codexForwardTerminalOutcomeRecorder(
       modelId,
       probeLeaseId: codexProbeLeaseId(authCtx),
       probeQuotaScope: codexProbeQuotaScope(authCtx),
+      writerGeneration: authCtx.writerGeneration,
     });
   };
 }
@@ -999,7 +1007,7 @@ export async function handleComboResponses(
       );
       (logCtx.attempts ??= []).push(attempt);
       attemptRetained = true;
-      noteComboSuccess(comboId, combo, pick.target);
+      noteComboSuccess(comboId, combo, pick.target, pick.writerGeneration);
       Object.assign(logCtx, childLog, {
         requestedModel,
         model: requestedModel,
@@ -1485,6 +1493,7 @@ export async function handleResponses(
           modelId: route.modelId,
           probeLeaseId: codexProbeLeaseId(authCtx),
           probeQuotaScope: codexProbeQuotaScope(authCtx),
+          writerGeneration: authCtx.writerGeneration,
         });
       }
       const msg = outcome === "timeout"
@@ -1581,7 +1590,11 @@ export async function handleResponses(
       // Prefer primary when present, fall back to secondary for compatibility.
       const quotaMeta = codexQuotaOutcomeMeta(upstreamResponse);
       const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
-      applyAccountQuotaFromUpstreamHeaders(authCtx.accountId, upstreamResponse.headers);
+      applyAccountQuotaFromUpstreamHeaders(
+        authCtx.accountId,
+        upstreamResponse.headers,
+        authCtx.writerGeneration,
+      );
       if (terminalBodyWillRecord) {
         options.setTerminalOutcomeRecorder?.((status, httpStatusOverride) => {
           terminalRecorder(status, httpStatusOverride);
@@ -1613,6 +1626,7 @@ export async function handleResponses(
           modelId: route.modelId,
           probeLeaseId: codexProbeLeaseId(authCtx),
           probeQuotaScope: codexProbeQuotaScope(authCtx),
+          writerGeneration: authCtx.writerGeneration,
         });
       }
     }

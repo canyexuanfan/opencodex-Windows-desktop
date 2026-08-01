@@ -25,12 +25,14 @@ import { formatErrorResponse } from "../bridge";
 import { getAccountQuota } from "./quota";
 import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
+import { captureConfigGeneration } from "../lib/state-store-sweeper";
 
 export type CodexAuthContext =
   | { kind: "main"; accountId: null }
   | {
       kind: "pool";
       accountId: string;
+      writerGeneration: number;
       generation: number;
       accessToken: string;
       chatgptAccountId: string;
@@ -50,6 +52,7 @@ export type CodexAuthContext =
       // (Option A). Distinct from "main" (passthrough fallback that forwards the client token).
       kind: "main-pool";
       accountId: string;
+      writerGeneration: number;
       accessToken: string;
       chatgptAccountId: string;
       /** See `pool.probeLeaseId`. */
@@ -198,6 +201,7 @@ export async function resolveCodexAuthContext(
   mode: CodexAccountMode,
   options: ResolveCodexAuthContextOptions = {},
 ): Promise<CodexAuthContext> {
+  const writerGeneration = captureConfigGeneration();
   if (mode === "direct") {
     if (!hasCallerCodexBearer(headers)) throw new CodexDirectAuthenticationError();
     return { kind: "main", accountId: null };
@@ -257,6 +261,7 @@ export async function resolveCodexAuthContext(
     return {
       kind: "main-pool",
       accountId,
+      writerGeneration,
       accessToken: token.accessToken,
       chatgptAccountId: token.chatgptAccountId,
       ...(quotaScope ? { quotaScope } : {}),
@@ -270,6 +275,7 @@ export async function resolveCodexAuthContext(
     return {
       kind: "pool",
       accountId,
+      writerGeneration,
       generation: token.generation,
       accessToken: token.accessToken,
       chatgptAccountId: token.chatgptAccountId,
@@ -281,7 +287,7 @@ export async function resolveCodexAuthContext(
     if (probeLeaseId && probeQuotaScope) releaseCodexQuotaScopeProbeLease(accountId, probeQuotaScope, probeLeaseId);
     else if (probeLeaseId) releaseCodexQuotaProbeLease(accountId, probeLeaseId);
     if (shouldMarkAccountNeedsReauthForCodexAuthFailure(cause)) {
-      markAccountNeedsReauth(accountId);
+      markAccountNeedsReauth(accountId, writerGeneration);
     }
     throw new CodexAuthContextError(accountId, cause);
   }

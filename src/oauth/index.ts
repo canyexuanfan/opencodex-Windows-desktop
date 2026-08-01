@@ -19,6 +19,7 @@ import { resolveProviderModelDiscoveryUrl } from "../providers/model-discovery";
 import { resolveProviderTransport } from "../providers/xai-transport";
 import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 import { logOAuthEvent } from "./log";
+import { captureConfigGeneration, sweepExpiredOnWrite, type GenerationContext } from "../lib/state-store-sweeper";
 export {
   CODEX_HEALTH_UNAVAILABLE_NOTE,
   MASKED_ACCOUNT_FALLBACK,
@@ -59,6 +60,7 @@ interface AnthropicRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefres
 interface GenericRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; afterPrePersistRead?:()=>void|Promise<void> }
 function verdictKey(p:string,a:string,c:OAuthCredentials){return `${p}\0${a}\0${credentialGeneration(c)}`;}
 function cached(p:string,a:string,c:OAuthCredentials,now:()=>number){const k=verdictKey(p,a,c),u=permanentRefreshFailures.get(k);if(u===undefined)return false;if(u<=now()){permanentRefreshFailures.delete(k);return false;}return true;}
+export function sweepExpiredXaiPermanentFailureVerdicts(now=Date.now()):number{let removed=0;for(const[key,until]of permanentRefreshFailures){if(until>now)continue;permanentRefreshFailures.delete(key);removed+=1;}return removed;}
 
 export interface LoginOpts { forceLogin?: boolean; /** When set, persist into this account slot and require matching identity. */ reauthAccountId?: string }
 
@@ -323,7 +325,7 @@ function merged(fresh: OAuthCredentials, previous: OAuthCredentials): OAuthCrede
     ...(fresh.kiro === undefined && previous.kiro ? { kiro: previous.kiro } : {}),
   };
 }
-export async function refreshXaiAccountWithLock(provider:string,accountId:string,def:OAuthProviderDef,callerCredential:OAuthCredentials,deps:XaiRefreshDeps={}):Promise<string>{const now=deps.now??Date.now;const guard=await(deps.intentLock??createOAuthRefreshIntentLock(provider,accountId)).acquire();try{const stored=getAccountCredential(provider,accountId);if(!stored)throw new OAuthLoginRequiredError(provider);const active=getAccountSet(provider)?.activeAccountId===accountId,candidate=authoritative(stored,active,now);if(credentialGeneration(candidate)!==credentialGeneration(callerCredential)&&candidate.expires>now()+REFRESH_SKEW_MS){if(credentialGeneration(candidate)!==credentialGeneration(stored)){const o=await mergeAccountCredential(provider,accountId,candidate,{expectedGeneration:credentialGeneration(stored),afterPrePersistRead:deps.afterPrePersistRead});if(o.superseded){if(o.stored.expires>now()+REFRESH_SKEW_MS)return o.stored.access;throw new OAuthLoginRequiredError(provider);}}return candidate.access;}if(cached(provider,accountId,candidate,now))throw new OAuthLoginRequiredError(provider);const generation=credentialGeneration(candidate);try{const fresh=merged(await def.refresh(candidate.refresh),candidate);const o=await mergeAccountCredential(provider,accountId,fresh,{expectedGeneration:generation,afterPrePersistRead:deps.afterPrePersistRead});if(o.superseded){if(o.stored.expires>now()+REFRESH_SKEW_MS)return o.stored.access;throw new OAuthLoginRequiredError(provider);}permanentRefreshFailures.delete(verdictKey(provider,accountId,candidate));if(candidate.source==="local-cli")console.warn(XAI_LOCAL_CLI_DETACH_WARNING);return fresh.access;}catch(error){if(!terminal(error))throw error;permanentRefreshFailures.set(verdictKey(provider,accountId,candidate),now()+XAI_PERMANENT_FAILURE_TTL_MS);await markAccountNeedsReauthIfGeneration(provider,accountId,generation);throw new OAuthLoginRequiredError(provider);}}finally{guard.release();}}
+export async function refreshXaiAccountWithLock(provider:string,accountId:string,def:OAuthProviderDef,callerCredential:OAuthCredentials,deps:XaiRefreshDeps={}):Promise<string>{const writerGeneration=captureConfigGeneration();const now=deps.now??Date.now;const guard=await(deps.intentLock??createOAuthRefreshIntentLock(provider,accountId)).acquire();try{const stored=getAccountCredential(provider,accountId);if(!stored)throw new OAuthLoginRequiredError(provider);const active=getAccountSet(provider)?.activeAccountId===accountId,candidate=authoritative(stored,active,now);if(credentialGeneration(candidate)!==credentialGeneration(callerCredential)&&candidate.expires>now()+REFRESH_SKEW_MS){if(credentialGeneration(candidate)!==credentialGeneration(stored)){const o=await mergeAccountCredential(provider,accountId,candidate,{expectedGeneration:credentialGeneration(stored),afterPrePersistRead:deps.afterPrePersistRead});if(o.superseded){if(o.stored.expires>now()+REFRESH_SKEW_MS)return o.stored.access;throw new OAuthLoginRequiredError(provider);}}return candidate.access;}if(cached(provider,accountId,candidate,now))throw new OAuthLoginRequiredError(provider);const generation=credentialGeneration(candidate);try{const fresh=merged(await def.refresh(candidate.refresh),candidate);const o=await mergeAccountCredential(provider,accountId,fresh,{expectedGeneration:generation,afterPrePersistRead:deps.afterPrePersistRead});if(o.superseded){if(o.stored.expires>now()+REFRESH_SKEW_MS)return o.stored.access;throw new OAuthLoginRequiredError(provider);}permanentRefreshFailures.delete(verdictKey(provider,accountId,candidate));if(candidate.source==="local-cli")console.warn(XAI_LOCAL_CLI_DETACH_WARNING);return fresh.access;}catch(error){if(!terminal(error))throw error;const failedAt=now();permanentRefreshFailures.set(verdictKey(provider,accountId,candidate),failedAt+XAI_PERMANENT_FAILURE_TTL_MS);sweepExpiredOnWrite(failedAt);await markAccountNeedsReauthIfGeneration(provider,accountId,generation,writerGeneration);throw new OAuthLoginRequiredError(provider);}}finally{guard.release();}}
 
 function newerClaudeCredential(stored: OAuthCredentials, now: number): OAuthCredentials | undefined {
   if (stored.source !== "local-cli") return undefined;
@@ -339,6 +341,7 @@ export async function refreshAnthropicAccountWithLock(
   callerCredential: OAuthCredentials,
   deps: AnthropicRefreshDeps = {},
 ): Promise<string> {
+  const writerGeneration = captureConfigGeneration();
   const now = deps.now ?? Date.now;
   const guard = await (deps.intentLock ?? createOAuthRefreshIntentLock(provider, accountId)).acquire();
   try {
@@ -362,7 +365,7 @@ export async function refreshAnthropicAccountWithLock(
       return disk.access;
     }
     if (pendingIntent?.uncertain || pendingIntent?.generation === generation) {
-      await markAccountNeedsReauthIfGeneration(provider, accountId, generation);
+      await markAccountNeedsReauthIfGeneration(provider, accountId, generation, writerGeneration);
       throw new OAuthLoginRequiredError(provider);
     }
     if (pendingIntent) clearOAuthRefreshIntent(provider, accountId, pendingIntent.generation);
@@ -389,7 +392,7 @@ export async function refreshAnthropicAccountWithLock(
       return fresh.access;
     } catch (error) {
       if (!terminal(error)) throw error;
-      await markAccountNeedsReauthIfGeneration(provider, accountId, generation);
+      await markAccountNeedsReauthIfGeneration(provider, accountId, generation, writerGeneration);
       clearOAuthRefreshIntent(provider, accountId, generation);
       throw new OAuthLoginRequiredError(provider);
     }
@@ -405,6 +408,7 @@ export async function refreshGenericAccountWithLock(
   callerCredential: OAuthCredentials,
   deps: GenericRefreshDeps = {},
 ): Promise<string> {
+  const writerGeneration = captureConfigGeneration();
   logOAuthEvent("OAuth refresh started", { provider, accountId });
   const guard = await (deps.intentLock ?? createOAuthRefreshIntentLock(provider, accountId)).acquire();
   try {
@@ -432,7 +436,7 @@ export async function refreshGenericAccountWithLock(
       return fresh.access;
     } catch (error) {
       if (!terminal(error)) throw error;
-      await markAccountNeedsReauthIfGeneration(provider, accountId, generation);
+      await markAccountNeedsReauthIfGeneration(provider, accountId, generation, writerGeneration);
       throw new OAuthLoginRequiredError(provider);
     }
   } finally {
@@ -831,6 +835,20 @@ interface ManualCodeSlot {
   expectedState?: string;
 }
 const loginManual = new Map<string, ManualCodeSlot>();
+let lastOAuthFlowReconciledGeneration = 0;
+
+export function reconcileOAuthFlowState(context: GenerationContext): number {
+  if (context.generation <= lastOAuthFlowReconciledGeneration) return 0;
+  let removed = 0;
+  for (const [provider, state] of loginState) {
+    if (context.providerNames.has(provider) || !state.done || loginAbort.has(provider)) continue;
+    if (loginState.delete(provider)) removed += 1;
+    if (loginManual.delete(provider)) removed += 1;
+    if (loginAbort.delete(provider)) removed += 1;
+  }
+  lastOAuthFlowReconciledGeneration = context.generation;
+  return removed;
+}
 
 function clearManualCodeSlot(provider: string): void {
   loginManual.delete(provider);

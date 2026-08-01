@@ -53,6 +53,7 @@ import {
 } from "../../lib/debug-settings";
 import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../../types";
 import { drainAndShutdown } from "../lifecycle";
+import { reconcileLiveStateStores } from "../../lib/state-store-registrations";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "../request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
 import type { PersistedUsageAttempt } from "../../usage/log";
@@ -186,6 +187,7 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
       }
     }
     saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
     clearComboSelectionState(id);
     clearComboTargetCooldowns(id);
     if (renameFrom) {
@@ -207,6 +209,7 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
     delete config.combos![id];
     if (Object.keys(config.combos!).length === 0) delete config.combos;
     saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
     clearComboSelectionState(id);
     clearComboTargetCooldowns(id);
     await refreshCodexCatalogBestEffort();

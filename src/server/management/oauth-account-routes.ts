@@ -24,6 +24,7 @@ import {
 } from "../../oauth";
 import { removeCredential } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
+import { reconcileLiveStateStores } from "../../lib/state-store-registrations";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
@@ -150,7 +151,10 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
         // startLoginFlow returns the authorization URL before background persistence completes.
         // Three-way reconcile settled disk changes so a failed login cannot leave a provider
         // live-only and an in-flight management mutation cannot be erased before it saves.
-        onSettled: () => reconcileLiveConfigFromDisk(config, persistedBaseline),
+        onSettled: () => {
+          reconcileLiveConfigFromDisk(config, persistedBaseline);
+          reconcileLiveStateStores();
+        },
       });
       if (authUrl && !deviceCode) {
         // Open the browser server-side (the proxy runs on the user's machine) — the GUI's
@@ -200,6 +204,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     await removeCredential(provider);
+    reconcileLiveStateStores();
     clearLoginState(provider);
     // Drop cached/last-good quota rows tied to the removed credential.
     const { clearProviderQuotaCache, clearAccountQuotaCache } = await import("../../providers/quota");
@@ -345,6 +350,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       ...(stickyLimit !== undefined ? { stickyLimit } : {}),
     };
     saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
     return jsonResponse({
       ok: true,
       provider,
@@ -387,6 +393,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     if (!id) return jsonResponse({ error: "missing id" }, 400);
     const { removeAccount, getAccountSet } = await import("../../oauth/store");
     if (!(await removeAccount(provider, id))) return jsonResponse({ error: "account not found" }, 404);
+    reconcileLiveStateStores();
     if (provider === "anthropic") {
       const { clearAnthropicAccountCooldown, clearAnthropicSessionAffinityForAccount } = await import("../../oauth/anthropic-routing");
       clearAnthropicAccountCooldown(id);
@@ -514,6 +521,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const entry = { id: randomUUID(), name, key, createdAt: new Date().toISOString() };
     config.apiKeys = [...(config.apiKeys ?? []), entry];
     saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
     return jsonResponse({ id: entry.id, name: entry.name, key: entry.key, createdAt: entry.createdAt }, 201, req, config);
   }
 
@@ -527,6 +535,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     if (!entry) return jsonResponse({ error: "key not found" }, 404, req, config);
     entry.name = nameField.value;
     saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
     // Never echo key material from a rename.
     return jsonResponse({ id: entry.id, name: entry.name, createdAt: entry.createdAt }, 200, req, config);
   }
@@ -540,6 +549,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     // A stale id must not read as a successful revocation.
     if (config.apiKeys.length === before) return jsonResponse({ error: "key not found" }, 404, req, config);
     saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
     return jsonResponse({ success: true }, 200, req, config);
   }
   return null;

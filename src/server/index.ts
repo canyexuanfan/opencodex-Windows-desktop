@@ -21,6 +21,11 @@ import {
 import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
 import { startMemoryWatchdog } from "./memory-watchdog";
+import {
+  reconcileLiveStateStores,
+  setLiveStateStoreConfig,
+} from "../lib/state-store-registrations";
+import { startStateStoreSweeper } from "../lib/state-store-sweeper";
 import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
 import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
 import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler } from "../storage/policy-scheduler";
@@ -255,12 +260,14 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
 
 export function startServer(port?: number) {
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
+  setLiveStateStoreConfig(config);
   applyProxyEnv(config);
   assertServerAuthConfig(config);
   const managementAuth = initializeManagementAuthState(config);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
+  reconcileLiveStateStores();
   // Seed default featured subagent models on first run only (UNSET → defaults). A user-set list,
   // even [], is left alone so GUI removals persist.
   if (config.subagentModels === undefined) {
@@ -304,6 +311,7 @@ export function startServer(port?: number) {
   // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
   // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
   startMemoryWatchdog();
+  startStateStoreSweeper();
   // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
   // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
   // Heavy work runs in a Worker via the single-flight job controller.

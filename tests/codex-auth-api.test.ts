@@ -44,6 +44,12 @@ import {
   saveConfig,
   setPersistedConfigMutationBeforeCommitForTests,
 } from "../src/config";
+import { captureConfigGeneration, registerStateStore } from "../src/lib/state-store-sweeper";
+import {
+  reconcileLiveStateStores,
+  setLiveStateStoreConfig,
+  STATE_STORE_REGISTRATIONS,
+} from "../src/lib/state-store-registrations";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -2393,6 +2399,10 @@ describe("codex-auth API", () => {
       expiresAt: Date.now() + 5 * 60_000,
       chatgptAccountId: "acct-delete",
     });
+    for (const registration of STATE_STORE_REGISTRATIONS) registerStateStore(registration);
+    setLiveStateStoreConfig(config);
+    reconcileLiveStateStores();
+    const preDeletionWriterGeneration = captureConfigGeneration();
     updateAccountQuota("pool-delete", 70);
     expect(resolveCodexAccountForThread("delete-thread", config)).toBe("pool-delete");
     recordCodexUpstreamOutcome(config, "pool-delete", 500);
@@ -2425,6 +2435,7 @@ describe("codex-auth API", () => {
     const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
 
     expect(resp!.status).toBe(200);
+    expect(captureConfigGeneration()).toBeGreaterThan(preDeletionWriterGeneration);
     expect(config.codexAccounts).toEqual([]);
     expect(config.activeCodexAccountId).toBeUndefined();
     expect(config.pausedCodexAccountIds).toBeUndefined();
@@ -2436,6 +2447,24 @@ describe("codex-auth API", () => {
     expect(cancelled).toBe(true);
     expect(closed).toEqual([{ code: 4001, reason: "Codex account invalidated" }]);
     expect(getTrackedCodexWebSocketCountForAccount("pool-delete")).toBe(0);
+
+    updateAccountQuota(
+      "pool-delete",
+      99,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      preDeletionWriterGeneration,
+    );
+    recordCodexUpstreamOutcome(config, "pool-delete", 429, {
+      now: Date.now(),
+      writerGeneration: preDeletionWriterGeneration,
+    });
+    markAccountNeedsReauth("pool-delete", preDeletionWriterGeneration);
+    expect(getAccountQuota("pool-delete")).toBeNull();
+    expect(getCodexUpstreamHealth("pool-delete")).toBeNull();
+    expect(isAccountNeedsReauth("pool-delete")).toBe(false);
   });
 
   test.each([

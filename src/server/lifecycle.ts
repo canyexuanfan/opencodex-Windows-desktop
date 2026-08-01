@@ -6,6 +6,7 @@ import {
 } from "../storage/policy-job";
 import { abortRestoreTrashJobAsync } from "../storage/restore-job";
 import { stopStorageCleanupScheduler } from "../storage/policy-scheduler";
+import { stopStateStoreSweeper } from "../lib/state-store-sweeper";
 import {
   cancelQueuedStorageWorkerSpawns,
   drainStorageWorkers,
@@ -98,6 +99,7 @@ export async function drainAndShutdown(
   // Abort each job independently so one wedged join cannot skip the other,
   // then drain leftovers; failures must not prevent `server.stop`.
   stopStorageCleanupScheduler();
+  stopStateStoreSweeper();
   cancelQueuedStorageWorkerSpawns();
   const shutdownJoins = await Promise.allSettled([
     abortStorageCleanupPolicyJobAsync(),
