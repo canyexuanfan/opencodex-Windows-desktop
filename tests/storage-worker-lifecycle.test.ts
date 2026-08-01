@@ -144,6 +144,8 @@ test("close that wins before OS-join settle does not throw a late timeout", asyn
     },
   } as unknown as Worker;
   registerStorageWorker(worker);
+  expect(liveStorageWorkerCount()).toBe(1);
+  expect(closeListeners.length).toBe(1);
   const done = terminateStorageWorker(worker, 80);
   for (const fn of closeListeners) fn();
   await expect(done).resolves.toBeUndefined();
