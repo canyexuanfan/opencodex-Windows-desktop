@@ -346,10 +346,6 @@ export function backupConfigBeforeOpenAiTierMigration(
 
   const scrubUnpublishedTemp = (): void => {
     cleanupAttempted = true;
-    if (!io.exists(temp)) {
-      forgetHardenedSecretPath(temp);
-      return;
-    }
     let scrubbed = false;
     try {
       io.truncate(temp);
@@ -364,22 +360,20 @@ export function backupConfigBeforeOpenAiTierMigration(
     try {
       io.unlink(temp);
       removed = true;
-      forgetHardenedSecretPath(temp);
     } catch (error) {
-      if (isMissingPathError(error) || !io.exists(temp)) {
+      if (isMissingPathError(error)) {
         removed = true;
-        forgetHardenedSecretPath(temp);
       }
       else {
-        try { io.unlink(temp); removed = true; forgetHardenedSecretPath(temp); }
+        try { io.unlink(temp); removed = true; }
         catch (retryError) {
-          if (isMissingPathError(retryError) || !io.exists(temp)) {
+          if (isMissingPathError(retryError)) {
             removed = true;
-            forgetHardenedSecretPath(temp);
           }
         }
       }
     }
+    if (removed) forgetHardenedSecretPath(temp);
     if (!removed && !scrubbed) throw new OpenAiTierBackupSecretResidualError(temp);
     if (!removed) throw new OpenAiTierBackupCleanupError();
   };
@@ -402,13 +396,13 @@ export function backupConfigBeforeOpenAiTierMigration(
       io.unlink(temp);
       forgetHardenedSecretPath(temp);
     } catch (firstError) {
-      if (isMissingPathError(firstError) || !io.exists(temp)) {
+      if (isMissingPathError(firstError)) {
         forgetHardenedSecretPath(temp);
       } else try {
         io.unlink(temp);
         forgetHardenedSecretPath(temp);
       } catch (secondError) {
-        if (isMissingPathError(secondError) || !io.exists(temp)) {
+        if (isMissingPathError(secondError)) {
           forgetHardenedSecretPath(temp);
           return "created";
         }

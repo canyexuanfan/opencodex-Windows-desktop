@@ -83,3 +83,23 @@ amended accordingly (failure ladder + admission ladder).
 | WP4-A3 | PID memo eviction requires process identity/liveness proof, but 030 names neither an owner export/call site nor its regressions | ACCEPT | Reclassified PID memos to `sweepDeadOcxStartProcessCache(64)`: timer-only round-robin probing, delete only on `process.kill(pid, 0)` `ESRCH`, with live/EPERM/unknown preservation and bounded-cost regressions. |
 
 All three accepted and incorporated into 030. Re-audit verdict: **PASS**.
+
+## wp4 C-review round 1 (Hegel, FAIL 6) — adjudication
+
+| # | Blocker | Decision | Action |
+|---|---|---|---|
+| B1 | Reconciliation attempts reused a single generation value, so two overlapping sweeps could cross-accept each other's stale writes | ACCEPT | Sweeper issues a unique `attemptSequence` per reconciliation pass; per-owner last-reconciled generation compares against the exact issuing attempt. |
+| B2 | Provider-quota rows were reconciled without the stale-writer fence, so an in-flight quota update could resurrect a deleted provider row post-sweep | ACCEPT | Quota store writes now capture writer generation and drop deleted-key commits like every other fenced owner. |
+| B3 | Reauth fence was read before the topology snapshot, leaving a window where a reauth completing mid-sweep landed unfenced | ACCEPT | Fence generation is captured inside the same synchronous snapshot section as the topology read. |
+| B4 | Dead-process probe accepted PID 0/negative values, where `process.kill(0, 0)` signals the whole process group | ACCEPT | Probe validates `pid > 0` before kill; non-positive PIDs are treated as unknown and preserved. |
+| B5 | Windows ACL memo release keyed off `existsSync` returning false, deleting the memo when the file was merely unreadable | ACCEPT | Memo release restricted to successful unlink or ENOENT (round 1 repair; tightened further after round 2). |
+| B6 | Regression tests asserted sweep-ran flags rather than observable store state, giving false confidence | ACCEPT | Tests rewritten to assert row presence/absence and byte counts after sweep, not internal flags. |
+
+Repair delta (13 files) verified: focused 387 pass, typecheck 0, privacy pass. Amended into `819450ac8`.
+
+## wp4 C-review round 2 (Hegel, FAIL 2) — adjudication
+
+| # | Blocker | Decision | Action |
+|---|---|---|---|
+| R2-B5 | `!io.exists(temp)` branches in `src/config.ts` (365–408) still treated a false existence check as proof of removal: unlink EPERM + `exists()` false returned "created", left the temp file on disk, and dropped the ACL memo count to zero | ACCEPT | Memo release now requires a completed rename/unlink or an unlink throwing ENOENT; existence predicates removed from every memo-release decision. Regression: simulated EPERM-with-exists-false asserts memo retention and non-success status. |
+| R2-B6 | `comboTopologyGeneration` in `src/combos/resolve.ts` rejected an old completion whenever ANY combo member changed, dropping completions whose exact `${comboId}::${targetKey}` was still live — violating the live-key acceptance rule; `tests/combos.test.ts:642` codified the prohibited drop | ACCEPT | Fencing narrowed to owner generation plus exact live target key: completions for surviving targets accepted, removed targets rejected. Test updated to assert both directions. |

@@ -24,16 +24,14 @@ interface SelectionState {
 const selectionState = new Map<string, SelectionState>();
 let lastReconciledGeneration = 0;
 let liveComboTargets = new Set<string>();
-const comboTopologyGeneration = new Map<string, number>();
 
 function comboTargetOwnerKey(comboId: string, key: string): string {
   return `${comboId}::${key}`;
 }
 
 function mayCommitComboState(comboId: string, key: string, writerGeneration: number): boolean {
-  return writerGeneration >= (comboTopologyGeneration.get(comboId) ?? 0)
-    && (writerGeneration >= lastReconciledGeneration
-      || liveComboTargets.has(comboTargetOwnerKey(comboId, key)));
+  return writerGeneration >= lastReconciledGeneration
+    || liveComboTargets.has(comboTargetOwnerKey(comboId, key));
 }
 
 export class UnknownComboError extends Error {
@@ -195,24 +193,19 @@ export function reconcileComboRotationState(context: GenerationContext): number 
   for (const [comboId, state] of selectionState) {
     if (!context.comboIds.has(comboId)) {
       selectionState.delete(comboId);
-      comboTopologyGeneration.set(comboId, context.generation);
       removed += 1;
       continue;
     }
-    let topologyChanged = false;
     if (state.activeKey && !context.comboTargets.has(comboTargetOwnerKey(comboId, state.activeKey))) {
       delete state.activeKey;
       state.successes = 0;
-      topologyChanged = true;
       removed += 1;
     }
     for (const key of state.currentWeights.keys()) {
       if (context.comboTargets.has(comboTargetOwnerKey(comboId, key))) continue;
       state.currentWeights.delete(key);
-      topologyChanged = true;
       removed += 1;
     }
-    if (topologyChanged) comboTopologyGeneration.set(comboId, context.generation);
   }
   liveComboTargets = new Set(context.comboTargets);
   lastReconciledGeneration = context.generation;
@@ -223,12 +216,10 @@ export function clearComboSelectionState(comboId?: string): void {
   if (comboId === undefined) {
     selectionState.clear();
     liveComboTargets.clear();
-    comboTopologyGeneration.clear();
     lastReconciledGeneration = 0;
     return;
   }
   selectionState.delete(comboId);
-  comboTopologyGeneration.delete(comboId);
 }
 
 export function tryPickComboModel(config: OcxConfig, modelId: string): ComboPick | null {

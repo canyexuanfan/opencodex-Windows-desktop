@@ -124,9 +124,13 @@ function virtualBackupIO(initial: Record<string, string>, fail: {
   return { io, files, calls };
 }
 
-function aclBackupIO(options: { failTempUnlink?: () => boolean; vanishAfterHarden?: boolean } = {}): OpenAiTierBackupIO {
+function aclBackupIO(options: {
+  failTempUnlink?: () => boolean;
+  hideTempFromExists?: boolean;
+  vanishAfterHarden?: boolean;
+} = {}): OpenAiTierBackupIO {
   return {
-    exists: existsSync,
+    exists: path => options.hideTempFromExists && path.endsWith(".tmp") ? false : existsSync(path),
     read: path => readFileSync(path),
     createExclusive: path => { writeFileSync(path, new Uint8Array(), { flag: "wx", mode: 0o600 }); },
     write: (path, bytes) => writeFileSync(path, bytes),
@@ -310,6 +314,36 @@ describe("OpenAI provider option startup coordinator", () => {
       for (const name of readdirSync(root)) {
         if (name.endsWith(".tmp")) unlinkSync(join(root, name));
       }
+    } finally {
+      windowsAcl.setIcaclsRunnerForTests(null);
+      windowsAcl.setPlatformForTests(null);
+      windowsAcl.resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("backup unlink EPERM retains its ACL memo when exists falsely reports the temp absent", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-backup-hidden-acl-"));
+    const source = join(root, "config.json");
+    const backup = `${source}.pre-openai-tiers-v2.bak`;
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    windowsAcl.resetHardenedStateForTests();
+    windowsAcl.setPlatformForTests("win32");
+    windowsAcl.setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    try {
+      writeFileSync(source, "original-secret");
+      expect(() => backupConfigBeforeOpenAiTierMigration(source, aclBackupIO({
+        failTempUnlink: () => true,
+        hideTempFromExists: true,
+      }))).toThrow(OpenAiTierBackupCleanupError);
+      expect(existsSync(backup)).toBe(false);
+      const residuals = readdirSync(root).filter(name => name.endsWith(".tmp"));
+      expect(residuals).toHaveLength(1);
+      expect(existsSync(join(root, residuals[0]!))).toBe(true);
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(1);
     } finally {
       windowsAcl.setIcaclsRunnerForTests(null);
       windowsAcl.setPlatformForTests(null);

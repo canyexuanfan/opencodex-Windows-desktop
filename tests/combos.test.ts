@@ -644,10 +644,9 @@ describe("persisted combo config parity", () => {
 });
 
 describe("combo generation reconciliation", () => {
-  test("a removed combo member fences a late success even when its target is still active", () => {
+  test("a surviving target accepts a late completion after a sibling topology change", () => {
     clearComboSelectionState();
     const original = rrConfig(2, [1, 1]);
-    const originalCombo = getCombo(original, "free")!;
     const oldPick = pickComboTarget(original, "free")!;
     expect(oldPick.target.provider).toBe("a");
 
@@ -674,9 +673,28 @@ describe("combo generation reconciliation", () => {
         },
       },
     });
-    expect(pickComboTarget(current, "free")?.target.provider).toBe("a");
-    noteComboSuccess("free", originalCombo, oldPick.target, oldPick.writerGeneration);
-    noteComboSuccess("free", getCombo(current, "free")!, oldPick.target, 10_000);
-    expect(pickComboTarget(current, "free")?.target.provider).toBe("a");
+    noteComboFailure("free", oldPick.target, oldPick.writerGeneration);
+    expect(pickComboTarget(current, "free")?.target.provider).toBe("c");
+  });
+
+  test("a removed target rejects a late completion", () => {
+    clearComboSelectionState();
+    const original = rrConfig(1, [1, 1]);
+    const originalCombo = getCombo(original, "free")!;
+
+    reconcileComboRotationState({
+      generation: 10_000,
+      providerNames: new Set(["a", "c"]),
+      comboIds: new Set(["free"]),
+      comboTargets: new Set(["free::a/m1", "free::c/m3"]),
+      codexAccountIds: new Set(),
+      oauthAccountKeys: new Set(),
+      configRoots: new Set(),
+    });
+
+    const removedPick = pickComboTarget(original, "free", { exclude: ["a/m1"] })!;
+    expect(removedPick.target.provider).toBe("b");
+    noteComboSuccess("free", originalCombo, removedPick.target, 0);
+    expect(pickComboTarget(original, "free")?.target.provider).toBe("b");
   });
 });
