@@ -79,6 +79,7 @@ export function setRestoreTrashJobTestHooks(hooks: RestoreJobTestHooks | null): 
  * test beforeEach/afterEach under `bun test --isolate` on Windows.
  */
 export function resetRestoreTrashJobForTests(): void {
+  cancelQueuedStorageWorkerSpawns();
   if (activeWorker) {
     void terminateStorageWorker(activeWorker);
     activeWorker = null;
@@ -113,6 +114,7 @@ export async function resetRestoreTrashJobForTestsAsync(): Promise<void> {
 
 /** Terminate an in-flight worker during process shutdown. */
 export function abortRestoreTrashJob(): void {
+  cancelQueuedStorageWorkerSpawns();
   if (activeWorker) {
     void terminateStorageWorker(activeWorker);
     activeWorker = null;

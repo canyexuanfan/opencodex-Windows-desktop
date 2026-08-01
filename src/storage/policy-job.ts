@@ -138,6 +138,9 @@ function disownActiveRun(): void {
  */
 export function resetStorageCleanupPolicyJobForTests(): void {
   disownActiveRun();
+  // Invalidate spawnGate callbacks that have not created a Worker yet — otherwise
+  // they can still spawn after this sync path releases the mutation slot.
+  cancelQueuedStorageWorkerSpawns();
   if (activeWorker) {
     void terminateStorageWorker(activeWorker);
     activeWorker = null;
@@ -181,6 +184,7 @@ export async function resetStorageCleanupPolicyJobForTestsAsync(): Promise<void>
 /** Terminate an in-flight worker during process shutdown. */
 export function abortStorageCleanupPolicyJob(): void {
   disownActiveRun();
+  cancelQueuedStorageWorkerSpawns();
   if (activeWorker) {
     void terminateStorageWorker(activeWorker);
     activeWorker = null;
