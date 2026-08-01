@@ -261,6 +261,52 @@ describe("runWithImageBridge", () => {
     expect(sse).toContain("Provider error 429");
   });
 
+  test("retryOn429 budget is not re-armed after on429 rotation returns a new adapter", async () => {
+    let sends = 0;
+    let retrySends = 0;
+    let rotations = 0;
+    const retryingAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      fetchResponse: async () => {
+        sends += 1;
+        return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    };
+    streamQueue = [[{ type: "text_delta" as const, text: "unused" }, { type: "done" as const }]];
+    const response = await runWithImageBridge({
+      parsed: makeParsed(),
+      adapter: retryingAdapter,
+      plan,
+      retryOn429Policy: { enabled: true, attempts: 1, intervalMs: 50, maxIntervalMs: 60_000, respectRetryAfter: false },
+      on429: () => {
+        rotations += 1;
+        // First rotation returns a new adapter that also 429s; the exhausted budget must not
+        // re-arm for it. Second call returns null to terminate the pool.
+        return rotations === 1
+          ? ({
+              ...mockAdapter,
+              fetchResponse: async () => {
+                sends += 1;
+                return new Response("{}", { status: 429 });
+              },
+            } as ProviderAdapter)
+          : null;
+      },
+      onAttemptSend: recovery => {
+        if (recovery === "rate-limit-429") retrySends += 1;
+      },
+    });
+    const sse = await response.text();
+    // initial 429 + 1 same-key replay + 1 rotated send (no replay on the rotated adapter) = 3.
+    expect(sends).toBe(3);
+    expect(retrySends).toBe(1);
+    expect(rotations).toBe(2);
+    expect(sse).toContain("Provider error 429");
+  });
+
   test("forced-final clears named image tool_choice", async () => {
     streamQueue = [
       [{ type: "text_delta" as const, text: "done" }, { type: "done" as const }],

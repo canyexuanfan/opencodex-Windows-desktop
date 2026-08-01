@@ -87,7 +87,6 @@ import {
 } from "../../codex/routing";
 import {
   applyUpstreamRecoveryInit,
-  cancelResponseBodyBestEffort,
   fetchWithResetRetry,
   fetchWithTransientRetry,
   sleepWithAbort,
@@ -1656,13 +1655,20 @@ async function handleResponsesInner(
       rateLimitRetries += 1;
       // Release the unread 429 body before the backoff (only the header is needed for the wait).
       const retryAfterHeader = upstreamResponse.headers.get("retry-after");
-      cancelResponseBodyBestEffort(upstreamResponse);
+      // AWAIT the cancellation so the resource-release guarantee is real, not best-effort.
+      try { await upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already closed */ }
       try {
         await sleepWithAbort(
           rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
           options.abortSignal,
         );
       } catch {
+        upstream.abort();
+        return clientCancelledResponse();
+      }
+      // Client cancellation wins over any stale timer edge: re-check before dispatching the
+      // replay so the wire never starts work for a request the client already abandoned.
+      if (options.abortSignal?.aborted || upstream.signal.aborted) {
         upstream.abort();
         return clientCancelledResponse();
       }
@@ -2355,6 +2361,12 @@ async function handleResponsesInner(
     request.releaseBodyObservation?.();
   }
 
+  // Same-target 429 retry budget is per REQUEST: it lives OUTSIDE the recovery loop (so a 413/401
+  // replay that comes back 429 cannot silently re-arm a fresh budget) and is SHARED with the
+  // terminal-guard continuation below, so the main loop + one continuation can never exceed
+  // `attempts` same-key replays in total (bounded per request).
+  const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+  let rateLimitRetries = 0;
   if (!upstreamResponse.ok) {
     // Recovery loop: multi-key 429 failover + at most ONE anthropic 413 tightened retry
     // (devlog/260714_image_normalization_pipeline/030). One mutable activeAdapter serves
@@ -2364,10 +2376,6 @@ async function handleResponsesInner(
     let imageTierBias = 0;
     let imageRetryAttempted = false;
     let oauth401ReplayAttempted = false;
-    // Same-target 429 retry budget lives OUTSIDE the recovery loop so a 413/401 replay that
-    // comes back 429 cannot silently re-arm a fresh budget (bounded to `attempts` per request).
-    const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
-    let rateLimitRetries = 0;
     /**
      * Rebuild the request from the current parsed input (and any image-tier bias) and refetch
      * it once, tagging the attempt with the given recovery kind. Rebuilds are deterministic
@@ -2462,13 +2470,21 @@ async function handleResponsesInner(
         // wait, and under a 429 storm the sockets would otherwise accumulate for the whole
         // configured interval (same pattern as the key-failover branch below).
         const retryAfterHeader = upstreamResponse.headers.get("retry-after");
-        cancelResponseBodyBestEffort(upstreamResponse);
+        // AWAIT the cancellation so the resource-release guarantee is real, not best-effort.
+        try { await upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already closed */ }
         try {
           await sleepWithAbort(
             rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
             options.abortSignal,
           );
         } catch {
+          cleanupUpstreamAbort();
+          upstream.abort();
+          return clientCancelledResponse();
+        }
+        // Client cancellation wins over any stale timer edge: re-check before dispatching the
+        // replay so an adapter never starts work for a request the client already abandoned.
+        if (options.abortSignal?.aborted || upstream.signal.aborted) {
           cleanupUpstreamAbort();
           upstream.abort();
           return clientCancelledResponse();
@@ -2601,11 +2617,6 @@ async function handleResponsesInner(
   const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
     let imageTierBias = 0;
     let response: Response | undefined;
-    // Same-target 429 budget is per REQUEST, not per failover iteration: a key/account rotation
-    // or a 413 tier retry that comes back 429 must not re-arm a fresh budget (parity with the
-    // main recovery loop above).
-    const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
-    let rateLimitRetries = 0;
     /**
      * Build and fetch one terminal-guard continuation. `replay` marks a same-target 429
      * replay so its send records the `rate-limit-429` recovery kind; the adapter rebuild is
@@ -2676,7 +2687,8 @@ async function handleResponsesInner(
         rateLimitRetries += 1;
         // Release the unread 429 body before the backoff (only the header is needed for the wait).
         const retryAfterHeader = response.headers.get("retry-after");
-        try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // AWAIT the cancellation so the resource-release guarantee is real, not best-effort.
+        try { await response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
         try {
           await sleepWithAbort(
             rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
@@ -2691,6 +2703,12 @@ async function handleResponsesInner(
           } else {
             yield { type: "error", message: "Provider continuation failed: retry wait interrupted" };
           }
+          return;
+        }
+        // Client cancellation wins over any stale timer edge: re-check before dispatching the
+        // replay so the continuation never starts work for a request the client abandoned.
+        if (options.abortSignal?.aborted || upstream.signal.aborted) {
+          yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
           return;
         }
         try {

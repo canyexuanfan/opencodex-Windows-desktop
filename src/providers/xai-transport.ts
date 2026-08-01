@@ -128,9 +128,14 @@ export function resolveProviderTransport(
     provider.headers,
     XAI_GROK_COMPATIBILITY.headers.requestId,
   );
+  // Pin the request id per resolved transport (= per logical request until key rotation):
+  // same-target 429 replays must carry the SAME x-grok-req-id as the original dispatch, and
+  // transient retries reuse one id so the upstream can dedupe them. A rotated key resolves a
+  // fresh transport, which gets its own id.
+  const requestId = configuredRequestId ?? randomUUID();
   const baseFetch = provider.fetch ?? globalThis.fetch;
   const attemptFetch = ((input, init) =>
-    baseFetch(input, withGeneratedRequestId(init, configuredRequestId, stableHeaders))) as typeof globalThis.fetch;
+    baseFetch(input, withGeneratedRequestId(init, requestId, stableHeaders))) as typeof globalThis.fetch;
 
   return {
     ...provider,

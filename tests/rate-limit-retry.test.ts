@@ -82,6 +82,11 @@ describe("rateLimitRetryDelayMs", () => {
     expect(rateLimitRetryDelayMs(policy, "Wed, 21 Oct 2026 07:28:00 GMT", now)).toBe(1);
   });
 
+  test("a far-future HTTP-date Retry-After is capped at maxIntervalMs", () => {
+    const now = Date.parse("2026-10-21T07:27:30Z");
+    expect(rateLimitRetryDelayMs(policy, "Wed, 21 Oct 2027 07:28:00 GMT", now)).toBe(60_000);
+  });
+
   test("Retry-After 0 retries immediately instead of falling back to the interval", () => {
     expect(rateLimitRetryDelayMs(policy, "0", 1_000_000)).toBe(1);
   });

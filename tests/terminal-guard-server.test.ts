@@ -172,4 +172,102 @@ describe("server terminal guard integration", () => {
     expect(sends).toBe(4);
   });
 
+  test("terminal-guard continuation shares the request-wide 429 budget with the main loop", async () => {
+    const budgetConfig = {
+      ...config,
+      providers: {
+        "claude-se": {
+          adapter: "anthropic",
+          baseUrl: "https://example.test",
+          apiKey: "sk-test",
+          retryOn429: { attempts: 1, intervalMs: 120, respectRetryAfter: false },
+        },
+      },
+    } as unknown as OcxConfig;
+    let sends = 0;
+    globalThis.fetch = (async () => {
+      sends += 1;
+      if (sends === 1) {
+        // The main recovery loop consumes the only same-key replay...
+        return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (sends === 2) {
+        // ...the replay succeeds and the terminal-guard continuation starts.
+        return anthropicSse(firstTurn);
+      }
+      // Continuation 429 with the request budget already spent: surfaces, never replays.
+      return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "se-claude-opus-4.8",
+        input: "请检查这个问题并修复代码",
+        stream: true,
+        tools: [{ type: "function", name: "exec_command", description: "run a command", parameters: { type: "object" } }],
+      }),
+    }), budgetConfig, { model: "", provider: "" });
+
+    const text = await response.text();
+    // main 429 -> same-key replay -> continuation 429 (no budget left) = exactly 3 sends.
+    expect(sends).toBe(3);
+    expect(text).toContain("Provider continuation error 429");
+  });
+
+  test("terminal-guard continuation abort during the 429 wait yields 499 without replaying", async () => {
+    const abortConfig = {
+      ...config,
+      providers: {
+        "claude-se": {
+          adapter: "anthropic",
+          baseUrl: "https://example.test",
+          apiKey: "sk-test",
+          retryOn429: { attempts: 3, intervalMs: 30_000, respectRetryAfter: false },
+        },
+      },
+    } as unknown as OcxConfig;
+    let sends = 0;
+    globalThis.fetch = (async () => {
+      sends += 1;
+      if (sends === 1) {
+        return anthropicSse(firstTurn);
+      }
+      return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const abort = new AbortController();
+    const pending = handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "se-claude-opus-4.8",
+        input: "请检查这个问题并修复代码",
+        stream: true,
+        tools: [{ type: "function", name: "exec_command", description: "run a command", parameters: { type: "object" } }],
+      }),
+    }), abortConfig, { model: "", provider: "" }, { abortSignal: abort.signal });
+
+    // The terminal-guard continuation runs inside the SSE producer, so consume the body to
+    // drive it, then wait until the continuation's 429 lands and its retry sleep is running.
+    const response = await pending;
+    const textPromise = response.text();
+    for (let i = 0; i < 100 && sends < 2; i += 1) await Bun.sleep(10);
+    expect(sends).toBe(2);
+    abort.abort(new DOMException("client disconnected", "AbortError"));
+    const text = await textPromise;
+    expect(text).toContain("client closed request during terminal continuation");
+    expect(sends).toBe(2);
+  });
+
 });
