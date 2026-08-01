@@ -117,7 +117,7 @@ describe("Codex account auto-switch threshold", () => {
     expect(html).toContain('value="95"');
     expect(html).toContain('min="1"');
     expect(html).toContain('max="100"');
-    expect(html).toContain('aria-label="Switch threshold, percent"');
+    expect(html).toContain('aria-label="Usage threshold, percent"');
     expect(html).toContain("95% usage or above");
     expect(html).toContain("including an already-bound task");
     expect(html).toContain('aria-pressed="true"');
@@ -212,7 +212,7 @@ describe("Codex account auto-switch threshold", () => {
 
   test("surfaces load failure without hiding the toggle", () => {
     const failed = renderSetting(DEFAULT_AUTO_SWITCH_THRESHOLD, String(DEFAULT_AUTO_SWITCH_THRESHOLD), false, true);
-    expect(failed).toContain("Automatic switching setting could not be loaded.");
+    expect(failed).toContain("Usage-based switching setting could not be loaded.");
     expect(failed).toContain("Retry");
     expect(failed).toContain('aria-pressed="true"');
   });
