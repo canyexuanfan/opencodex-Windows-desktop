@@ -548,6 +548,21 @@ describe("async hardenSecretPath (issue #612)", () => {
     expect(calls).toBe(0); // destination-keyed memo; not a parent-directory shortcut
   });
 
+  test("optional timeout memo does not poison a later required harden of the same path", () => {
+    setIcaclsRunnerForTests(() => timeout);
+    const first = hardenSecretPath(secretFile(), { required: false });
+    expect(first.ok).toBe(false);
+
+    let calls = 0;
+    setIcaclsRunnerForTests(() => {
+      calls += 1;
+      return ok;
+    });
+    const second = hardenSecretPath(secretFile(), { required: true });
+    expect(second.ok).toBe(true);
+    expect(calls).toBeGreaterThan(0);
+  });
+
   test("async harden still grants owner before inheritance removal", async () => {
     const steps: string[] = [];
     setAsyncIcaclsRunnerForTests(async args => {

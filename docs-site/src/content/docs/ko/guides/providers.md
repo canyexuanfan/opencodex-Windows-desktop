@@ -119,7 +119,7 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL http
 
 ## 3. API 키 카탈로그
 
-opencodex에는 빌트인 프리셋이 62개 들어 있습니다. 키 방식 51개, OAuth 7개, 로컬 3개,
+opencodex에는 빌트인 프리셋이 65개 들어 있습니다. 키 방식 54개, OAuth 7개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
 입력한 키를 검증한 뒤 저장합니다. 주요 항목은 다음과 같습니다:
 
@@ -148,6 +148,7 @@ opencodex에는 빌트인 프리셋이 62개 들어 있습니다. 키 방식 51�
 | Qwen Cloud | Token plan(기본): `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` · 종량제: `https://dashscope.aliyuncs.com/compatible-mode/v1` · 또는 사용자 지정 |
 | Tencent Cloud Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` |
 | SiliconFlow | `https://api.siliconflow.cn/v1` |
+| Volcengine Ark · Coding Plan · Agent Plan | `https://ark.cn-beijing.volces.com/api/v3` · `https://ark.cn-beijing.volces.com/api/coding/v3` · `https://ark.cn-beijing.volces.com/api/plan/v3` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
 | GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
@@ -156,6 +157,17 @@ opencodex에는 빌트인 프리셋이 62개 들어 있습니다. 키 방식 51�
 
 대부분은 bearer 키와 함께 `openai-chat` 어댑터를 사용하며, Anthropic 호환 엔드포인트만 노출하는 일부
 (예: **Xiaomi MiMo**)는 `anthropic` 어댑터(`x-api-key`)를 사용합니다.
+Volcengine Agent Plan은 `openai-responses` 어댑터로 네이티브 Responses 엔드포인트를 사용합니다.
+
+> **Volcengine의 세 가지 과금 경로:** `volcengine`은 종량제 Ark API,
+> `volcengine-coding-plan`은 Coding Plan 할당량, `volcengine-agent-plan`은 Agent Plan
+> 할당량을 사용합니다. 같은 상품에서 발급된 키와 엔드포인트를 함께 사용해야 하며, Plan 구독이
+> 있어도 일반 `/api/v3` 엔드포인트 호출에는 종량제 요금이 발생할 수 있습니다.
+> 세 preset은 선별된 정적 모델 카탈로그를 사용합니다. Ark의 `/models`는 텍스트와 함께
+> Embedding, 이미지, 비디오, 3D 리소스도 반환하고 Coding 게이트웨이도 같은 광범위한 카탈로그를
+> 반환합니다. Agent Plan 게이트웨이에는 `/models` 리소스가 없습니다. 종량제 기본값은
+> `doubao-seed-2-1-pro-260628`이며 정적 카탈로그에는 현재 DeepSeek와 GLM 텍스트 모델도
+> 포함됩니다. Coding Plan의 기본값은 `ark-code-latest`, Agent Plan은 `deepseek-v4-pro`입니다.
 
 **DeepInfra 검색:** 키 기반 OpenAI Chat Completions 제공자인 `deepinfra`는 `openai-chat` 어댑터와
 Bearer API 키를 사용합니다. registry가 소유하는 DeepInfra 모델 목록 URL에서 `chat` 태그가 있는 행만

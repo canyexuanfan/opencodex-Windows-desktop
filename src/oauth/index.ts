@@ -20,6 +20,8 @@ import { resolveProviderTransport } from "../providers/xai-transport";
 import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 import { logOAuthEvent } from "./log";
 export {
+  CODEX_HEALTH_AUTH_FAILED_NOTE,
+  CODEX_HEALTH_MANAGEMENT_API_UNAVAILABLE_NOTE,
   CODEX_HEALTH_UNAVAILABLE_NOTE,
   MASKED_ACCOUNT_FALLBACK,
   collectOAuthHealthEntries,

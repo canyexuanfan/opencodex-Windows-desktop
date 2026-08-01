@@ -363,7 +363,11 @@ async function describeAclStateAfterTimeoutAsync(targetPath: string, deadline: n
 function timeoutMemoKey(targetPath: string, opts: HardenOptions): string {
   // Destination-path memo only (issue #612). Never a parent directory — directory ACLs
   // are not authoritative for newly created temps.
-  return opts.timeoutMemoKey ?? targetPath;
+  //
+  // Namespace by required-ness (#766): a soft `required:false` timeout during loadConfig
+  // must not poison a later `required:true` management-token harden of the same path.
+  const base = opts.timeoutMemoKey ?? targetPath;
+  return `${opts.required ? "required" : "optional"}:${base}`;
 }
 
 /**
