@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { STORE_BUDGET_MS } from "./helpers/test-budget";
+import { INTERNAL_DEADLINE_MS, STORE_BUDGET_MS } from "./helpers/test-budget";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  resetHardenedStateForTests,
+  setIcaclsRunnerForTests,
+} from "../src/lib/windows-secret-acl";
 import {
   getAccountCredential,
   getAccountSet,
@@ -39,9 +43,18 @@ describe("multi-account auth store", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
+    resetHardenedStateForTests();
+    setIcaclsRunnerForTests(() => ({
+      success: true,
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+    }));
   });
 
   afterEach(() => {
+    setIcaclsRunnerForTests(null);
+    resetHardenedStateForTests();
     if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousOpencodexHome;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -251,6 +264,9 @@ describe("multi-account auth store", () => {
     expect(getAccountSet("xai")!.accounts[0]?.needsReauth).toBeUndefined();
   });
 
+  // Filling the 128-slot admission queue then draining it exceeds the default
+  // 5s case budget on a loaded Windows isolate runner; an early timeout also
+  // leaves the gate closed and hangs the file realm until the job ceiling.
   test("OAuth mutation 129 rejects before enqueue while every accepted mutation executes once", async () => {
     let releaseFirst!: () => void;
     let firstStarted!: () => void;
@@ -262,18 +278,23 @@ describe("multi-account auth store", () => {
       firstStarted();
       await firstGate;
     }, ["provider", "account"] )];
-    await started;
-    for (let i = 1; i < 128; i++) {
-      accepted.push(mutateStore(() => { executions++; }, ["provider", `account-${i}`]));
+    try {
+      await started;
+      for (let i = 1; i < 128; i++) {
+        accepted.push(mutateStore(() => { executions++; }, ["provider", `account-${i}`]));
+      }
+      expect(oauthMutationTailSnapshot().active).toBe(128);
+      await expect(mutateStore(() => { executions++; }, ["rejected"])).rejects.toBeInstanceOf(OAuthMutationBusyError);
+      expect(oauthMutationTailSnapshot().active).toBe(128);
+      releaseFirst();
+      await Promise.all(accepted);
+      expect(executions).toBe(128);
+      expect(oauthMutationTailSnapshot().active).toBe(0);
+    } finally {
+      releaseFirst();
+      await Promise.allSettled(accepted);
     }
-    expect(oauthMutationTailSnapshot().active).toBe(128);
-    await expect(mutateStore(() => { executions++; }, ["rejected"])).rejects.toBeInstanceOf(OAuthMutationBusyError);
-    expect(oauthMutationTailSnapshot().active).toBe(128);
-    releaseFirst();
-    await Promise.all(accepted);
-    expect(executions).toBe(128);
-    expect(oauthMutationTailSnapshot().active).toBe(0);
-  }, STORE_BUDGET_MS); // 128 serialized load-modify-persist store mutations; windows-latest measured ~7.3s against Bun's 5s default.
+  }, { timeout: STORE_BUDGET_MS }); // 128 serialized load-modify-persist store mutations; windows-latest measured ~7.3s against Bun's 5s default.
 
   test("OAuth 30 second wait timeout releases an unstarted lease and never enters the chain", async () => {
     let releaseFirst!: () => void;
@@ -284,14 +305,43 @@ describe("multi-account auth store", () => {
       firstStarted();
       await firstGate;
     }, ["provider", "running-account"]);
-    await started;
-    let entered = false;
-    const timedOut = mutateStore(() => { entered = true; }, ["provider", "waiting-account"], { waitMs: 10 });
-    await expect(timedOut).rejects.toBeInstanceOf(OAuthMutationBusyError);
-    expect(entered).toBe(false);
-    expect(oauthMutationTailSnapshot().active).toBe(1);
-    releaseFirst();
-    await blocker;
-    expect(oauthMutationTailSnapshot().active).toBe(0);
-  });
+    let timedOut: Promise<unknown> | undefined;
+    try {
+      await started;
+      let entered = false;
+      timedOut = mutateStore(() => { entered = true; }, ["provider", "waiting-account"], { waitMs: 10 });
+      // Belt-and-suspenders with the ref'd wait timer in store.ts: if reject still
+      // never fires under isolate load, fail the case instead of hanging the job.
+      // Use a clearable setTimeout (not Bun.sleep) so a settled race cannot keep
+      // the isolate alive for the remainder of INTERNAL_DEADLINE_MS.
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          timedOut.then(
+            () => {
+              throw new Error("expected OAuthMutationBusyError from waitMs timeout");
+            },
+            (error: unknown) => {
+              expect(error).toBeInstanceOf(OAuthMutationBusyError);
+            },
+          ),
+          new Promise<never>((_, reject) => {
+            deadlineTimer = setTimeout(() => {
+              reject(new Error(`OAuth mutation waitMs reject did not fire within ${INTERNAL_DEADLINE_MS}ms`));
+            }, INTERNAL_DEADLINE_MS);
+          }),
+        ]);
+      } finally {
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      }
+      expect(entered).toBe(false);
+      expect(oauthMutationTailSnapshot().active).toBe(1);
+      releaseFirst();
+      await blocker;
+      expect(oauthMutationTailSnapshot().active).toBe(0);
+    } finally {
+      releaseFirst();
+      await Promise.allSettled([blocker, ...(timedOut ? [timedOut] : [])]);
+    }
+  }, { timeout: STORE_BUDGET_MS });
 });
