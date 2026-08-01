@@ -340,7 +340,10 @@ function waitForBackgroundShellClose(entry: BackgroundShellEntry): Promise<boole
       settled = true;
       resolveWait(false);
     }, CURSOR_BACKGROUND_SHELL_TERM_GRACE_MS);
-    unrefTimer(timer);
+    // Keep the grace timer ref'd. Idle/absolute lifecycle timers may unref so a
+    // quiet shell does not pin the process, but terminate/shutdown waits must
+    // still resolve under `bun test --isolate` (unref'd waiters can stall the
+    // file forever — same class as oauth serializeMutation wait timers).
     void entry.closePromise.then(() => {
       if (settled) return;
       settled = true;
