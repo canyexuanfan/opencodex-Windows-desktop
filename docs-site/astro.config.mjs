@@ -75,6 +75,7 @@ export default defineConfig({
             { label: "Installation", translations: { ko: "설치", "zh-CN": "安装", ru: "Установка", ja: "インストール" }, slug: "getting-started/installation" },
             { label: "Quickstart", translations: { ko: "빠른 시작", "zh-CN": "快速开始", ru: "Быстрый старт", ja: "クイックスタート" }, slug: "getting-started/quickstart" },
             { label: "How It Works", translations: { ko: "동작 원리", "zh-CN": "工作原理", ru: "Как это работает", ja: "仕組み" }, slug: "getting-started/how-it-works" },
+            { label: "Agent Quickstart", translations: { ko: "에이전트 퀵스타트", "zh-CN": "Agent 快速上手", ru: "Быстрый старт для агентов", ja: "エージェント向けクイックスタート" }, slug: "getting-started/for-agents" },
           ],
         },
         {
@@ -86,6 +87,7 @@ export default defineConfig({
             { label: "Codex Integration", translations: { ko: "Codex 통합", "zh-CN": "Codex 集成", ru: "Интеграция с Codex", ja: "Codex 連携" }, slug: "guides/codex-integration" },
             { label: "Codex App Model Picker", translations: { ko: "Codex App 모델 선택기", "zh-CN": "Codex App 模型选择器", ru: "Выбор модели в Codex App", ja: "Codex App モデルピッカー" }, slug: "guides/codex-app-models" },
             { label: "Model Ordering", translations: { ko: "모델 정렬에 관하여", "zh-CN": "模型排序", ru: "Сортировка моделей", ja: "モデルの並び順" }, slug: "guides/model-ordering" },
+            { label: "Combos", translations: { ko: "콤보", "zh-CN": "组合", ru: "Комбо", ja: "コンボ" }, slug: "guides/combos" },
             { label: "Claude Code", translations: { ko: "Claude Code", "zh-CN": "Claude Code", ru: "Claude Code", ja: "Claude Code" }, slug: "guides/claude-code" },
             { label: "Grok Build", translations: { ko: "Grok Build", "zh-CN": "Grok Build", ru: "Grok Build", ja: "Grok Build" }, slug: "guides/grok-build" },
             { label: "opencode", translations: { ko: "opencode", "zh-CN": "opencode", ru: "opencode", ja: "opencode" }, slug: "guides/opencode" },
@@ -118,6 +120,8 @@ export default defineConfig({
             { label: "Configuration", translations: { ko: "설정", "zh-CN": "配置", ru: "Конфигурация", ja: "設定" }, slug: "reference/configuration" },
             { label: "Adapters", translations: { ko: "어댑터", "zh-CN": "适配器", ru: "Адаптеры", ja: "アダプター" }, slug: "reference/adapters" },
             { label: "Architecture", translations: { ko: "아키텍처", "zh-CN": "架构", ru: "Архитектура", ja: "アーキテクチャ" }, slug: "reference/architecture" },
+            { label: "Proxy API Formats", translations: { ko: "프록시 API 형식", "zh-CN": "代理 API 格式", ru: "Форматы API прокси", ja: "プロキシAPI形式" }, slug: "reference/proxy-formats" },
+            { label: "Management API", translations: { ko: "관리 API", "zh-CN": "管理 API", ru: "API управления", ja: "管理API" }, slug: "reference/management-api" },
           ],
         },
         {
