@@ -42,7 +42,7 @@ function parseRetryAfterMs(value: string | null | undefined, now = Date.now()): 
   if (!text) return undefined;
   if (/^\d+(?:\.\d+)?$/.test(text)) {
     const seconds = Number(text);
-    if (Number.isFinite(seconds) && seconds > 0) {
+    if (Number.isFinite(seconds) && seconds >= 0) {
       return Math.min(Math.max(Math.ceil(seconds * 1000), 1), MAX_COOLDOWN_MS);
     }
   }
@@ -74,14 +74,17 @@ export function hasKeyPoolFailover(provider: OcxProviderConfig): boolean {
 }
 
 /**
- * Normalize a provider's `retryOn429` policy, or return null when the knob is absent or
- * explicitly disabled. The returned policy is fully defaulted so callers never re-check fields.
+ * Normalize a provider's `retryOn429` policy, or return null when the knob is absent,
+ * explicitly disabled, or the provider is not key-auth (OAuth/forward credentials must not be
+ * replayed on the same token, and forward passthrough never reaches the recovery loop anyway).
+ * The returned policy is fully defaulted so callers never re-check fields.
  */
 export function rateLimitRetryPolicyFor(
-  provider: Pick<OcxProviderConfig, "retryOn429">,
+  provider: Pick<OcxProviderConfig, "retryOn429" | "authMode">,
 ): Required<RateLimitRetryPolicy> | null {
   const policy = provider.retryOn429;
   if (!policy || policy.enabled === false) return null;
+  if (provider.authMode === "oauth" || provider.authMode === "forward") return null;
   return {
     enabled: policy.enabled ?? DEFAULT_RATE_LIMIT_RETRY.enabled,
     attempts: policy.attempts ?? DEFAULT_RATE_LIMIT_RETRY.attempts,

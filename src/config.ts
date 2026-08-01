@@ -487,7 +487,9 @@ const providerConfigSchema = z.object({
     enabled: z.boolean().optional(),
     attempts: z.number().int().min(1).max(20).optional(),
     intervalMs: z.number().int().min(100).max(600_000).optional(),
-    maxIntervalMs: z.number().int().min(100).max(3_600_000).optional(),
+    // The effective cap for a single wait is MAX_COOLDOWN_MS (10 min) in key-failover.ts;
+    // larger configured values would be dead config.
+    maxIntervalMs: z.number().int().min(100).max(600_000).optional(),
     respectRetryAfter: z.boolean().optional(),
   }).optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),

@@ -2303,6 +2303,10 @@ async function handleResponsesInner(
     let imageTierBias = 0;
     let imageRetryAttempted = false;
     let oauth401ReplayAttempted = false;
+    // Same-target 429 retry budget lives OUTSIDE the recovery loop so a 413/401 replay that
+    // comes back 429 cannot silently re-arm a fresh budget (bounded to `attempts` per request).
+    const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+    let rateLimitRetries = 0;
     const rebuildAndRefetch = async (
       recovery: AttemptRecoveryKind,
     ): Promise<Response | { failed: Response }> => {
@@ -2382,8 +2386,6 @@ async function handleResponsesInner(
       // same key first. Pre-stream only: a 429 arrives before any bytes are relayed, so the
       // replay is lossless. Runs before key failover so "primary-first" setups keep the same
       // key on rate-limit blips; only after the attempts are exhausted does failover run.
-      const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
-      let rateLimitRetries = 0;
       while (
         upstreamResponse.status === 429
         && rateLimitPolicy !== null
@@ -2396,6 +2398,7 @@ async function handleResponsesInner(
             options.abortSignal,
           );
         } catch {
+          cancelResponseBodyBestEffort(upstreamResponse);
           cleanupUpstreamAbort();
           upstream.abort();
           return clientCancelledResponse();

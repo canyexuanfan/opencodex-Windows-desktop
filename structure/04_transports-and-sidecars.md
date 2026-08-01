@@ -223,9 +223,16 @@ Provider-level `retryOn429` (devlog 260802_429_same_target_retry) is the generic
 same-target 429 retry for key-auth providers, primarily single-key pools that cannot use
 multi-key failover. In the pre-stream recovery loop, a 429 waits (`Retry-After` or the fixed
 interval, capped) and replays the identical request on the same key before any failover, up to
-`attempts` extra times. Codex never retries 429 client-side (openai/codex#30471), so this is the
-only defense for those providers; the final 429 still carries `Retry-After` for clients that
-honor it.
+`attempts` extra times per request (the budget lives outside the recovery loop, so a 413/401
+replay cannot re-arm it). Codex never retries 429 client-side (openai/codex#30471), so this is
+the only defense for those providers; the final 429 still carries `Retry-After` for clients that
+honor it. Concurrent requests each honor their own policy — there is no process-wide shared
+cooldown (unlike the Kiro pattern), so a rate-limit storm multiplies upstream volume by at most
+`attempts + 1` per request. The wait is abort-aware: once the server observes the client
+disconnect (Bun propagates it asynchronously, observed 1–10 s), the sleep is interrupted, the
+unread 429 body is released, and the request is cancelled with 499 before any replay; because
+the propagation is async, a replay may precede the cancel if the interval elapses first
+(bounded by the same `attempts` budget).
 
 [Decision Log]
 - 목적과 의도: Prevent Kiro progress from becoming a false final answer, reject invalid empty completion retries, and stop concurrent transient 429s from consuming independent retry budgets.
