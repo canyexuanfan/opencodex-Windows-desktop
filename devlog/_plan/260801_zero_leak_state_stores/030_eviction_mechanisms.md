@@ -110,16 +110,34 @@ would create an import cycle, add explicit wiring in NEW
   object (the `1256/1649` doctrine: an ad-hoc `loadConfig()` snapshot must
   not be used — absence in a transient snapshot does not prove not-live;
   round-2 blocker 5). The context is built ONCE per reconcile, synchronously
-  in a single microtask after the triggering commit has REPLACED the server
-  config, so every owner read observes the same committed state, then stamped
-  with the next `configGeneration`.
-- **Trigger sites (exact):** successful config load/commit
-  (`loadConfig`/`saveConfig` success paths in config.ts), account
-  add/remove/reauth commit sites (the locked table's list governs — "rename"
-  above was shorthand for the same account-mutation commits), and catalog
-  replacement. "Successful load" means every load that REPLACES the server
-  config object, including the initial one. Each calls
-  `reconcileStateGeneration(buildGenerationContext())`. Never from the timer.
+  in a single microtask after the triggering commit is VISIBLE ON the live
+  server config object (whether the trigger replaced it or mutated it in
+  place — see the three trigger shapes below), so every owner read observes
+  the same committed state, then stamped with the attempt's unique
+  `candidateGeneration` (see §Failure semantics — `++attemptSequence`, not
+  `configGeneration + 1`).
+- **Trigger sites (exact, round-4 blocker 5):** the trigger is "the LIVE
+  server config object now reflects a committed topology change", which in
+  this codebase happens through THREE distinct shapes, each of which calls
+  `reconcileStateGeneration(buildGenerationContext())` AFTER its mutation is
+  visible on the live object:
+  1. Initial server startup, after `serverConfig` is captured
+     (server/index.ts:256) and registrations are wired.
+  2. Management routes that mutate the live object IN PLACE (combo/provider/
+     account routes, e.g. combo-routes.ts:133/207): the route handler calls
+     the trigger after its in-place mutation + successful `saveConfig()`.
+     `saveConfig()` itself is NOT a trigger — it merely persists its argument
+     (config.ts:1543) and cannot know whether that argument is the live
+     object or an ad-hoc snapshot.
+  3. OAuth flows that load-modify-save a SEPARATE snapshot (oauth/index.ts:
+     765): these are NOT triggers at save time. Their changes become
+     reconciliation-relevant only when adopted into live server state, which
+     happens through the existing `reconcileOAuthProviders`/account-refresh
+     path on the live object — THAT adoption site calls the trigger. An
+     ad-hoc snapshot save with no live adoption never reconciles (correct:
+     the live topology has not changed).
+  `buildGenerationContext()` reads ONLY the live server config object and
+  owner registries — never a `loadConfig()` snapshot. Never from the timer.
 - **Failure semantics:** each successful owner atomically records its current
   live-key set/topology and `lastReconciledGeneration`. If a callback throws,
   log the static registration name, leave that owner on its prior generation,
@@ -130,12 +148,20 @@ would create an import cycle, add explicit wiring in NEW
   called once from `state-store-registrations.ts`; the retry invokes it
   fresh (round-2 blocker 4).
   A reconciliation attempt stamps its complete context with
-  `candidateGeneration = configGeneration + 1`. Successful owners may retain
-  that candidate stamp; the global `configGeneration` advances to it only when
-  every callback succeeds. On partial failure, writers captured from the still-
-  current global generation compare stale against any owner already stamped
-  with the candidate, and the fresh retry completes the remaining owners
-  without reusing an old context.
+  `candidateGeneration = ++attemptSequence` — a SEPARATE monotonic attempt
+  counter that never resets and never reuses a value (round-4 blocker 2:
+  deriving candidates from `configGeneration + 1` lets two different attempts
+  share a candidate after an interleaved config change, so an owner stamped
+  by attempt 1 would wrongly reject attempt 2's replacement and keep an
+  obsolete live set). Every attempt therefore carries a unique generation;
+  owners ALWAYS accept a context whose candidate is strictly greater than
+  their `lastReconciledGeneration` and replace their live set wholesale.
+  Successful owners retain the candidate stamp; the global `configGeneration`
+  advances to the attempt's candidate only when every callback succeeds. On
+  partial failure, writers captured from the still-current global generation
+  compare stale against any owner already stamped with the candidate, and the
+  fresh retry (a NEW attempt with a NEW higher candidate) completes or
+  re-replaces every owner without reusing an old context.
   Partial reconciliation is deletion-only: a failed callback leaves extra
   rows but never deletes a live key.
 - **Combo topology reconciliation:** remove a whole selection row when its
@@ -185,10 +211,10 @@ The inventory shorthand `catalog/*` resolves to `src/codex/catalog/*` in this ch
 Each owner exports a semantic sweep/reconcile function. The coordinator passes complete
 sets; it must not recreate owner-local key strings. The single `configGeneration` counter
 lives in the sweeper (§Generation protocol supersedes earlier drafts of this paragraph);
-config.ts triggers reconciliation beside the canonical loaded-config owner. Call it only
-after successful initial load, successful disk commit, account add/delete/reauth commit,
-or catalog sync with the complete provider/combo topology. Failed parse/save and
-speculative routing do not advance it.
+the trigger sites are exactly the three shapes in §Generation protocol (startup capture,
+in-place management-route commits after successful save, and OAuth live-adoption sites —
+`saveConfig()` alone is never a trigger). Failed parse/save and speculative routing do
+not advance it.
 
 ## Windows ACL delete-after-rename contract
 
