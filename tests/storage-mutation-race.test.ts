@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
+import { drainAndShutdown } from "../src/server/lifecycle";
 import type { OcxConfig } from "../src/types";
 import {
   resetArchivedCleanupJobForTests,
@@ -27,6 +28,7 @@ import {
   resetStorageCleanupPolicyJobForTestsAsync,
   setStorageCleanupPolicyJobTestHooks,
 } from "../src/storage/policy-job";
+import { stopStorageCleanupScheduler } from "../src/storage/policy-scheduler";
 import {
   resetRestoreTrashJobForTestsAsync,
   runRestoreTrashEntryJob,
@@ -35,7 +37,10 @@ import {
 import {
   resetStorageMutationCoordinatorForTests,
 } from "../src/storage/storage-mutation-coordinator";
-import { drainStorageWorkers } from "../src/storage/worker-lifecycle";
+import {
+  cancelQueuedStorageWorkerSpawns,
+  drainStorageWorkers,
+} from "../src/storage/worker-lifecycle";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
 let testDir = "";
@@ -163,6 +168,11 @@ beforeEach(async () => {
   testDir = mkdtempSync(join(tmpdir(), "ocx-storage-mutation-race-"));
   process.env.OPENCODEX_HOME = testDir;
   saveConfig(baseConfig());
+  // startServer arms the unref'd policy scheduler; bare server.stop does not
+  // clear it. A tick after enablePolicyAndRun can spawn a Worker behind the
+  // suite drain and trip Windows `bun test --isolate` reclaim.
+  stopStorageCleanupScheduler();
+  cancelQueuedStorageWorkerSpawns();
   await resetRestoreTrashJobForTestsAsync();
   resetArchivedCleanupJobForTests();
   await resetStorageCleanupPolicyJobForTestsAsync();
@@ -171,6 +181,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  stopStorageCleanupScheduler();
+  cancelQueuedStorageWorkerSpawns();
   await resetRestoreTrashJobForTestsAsync();
   resetArchivedCleanupJobForTests();
   await resetStorageCleanupPolicyJobForTestsAsync();
@@ -186,6 +198,11 @@ afterEach(async () => {
   if (testDir) removeTree(testDir);
   testDir = "";
 });
+
+async function stopRaceServer(server: ReturnType<typeof startServer>): Promise<void> {
+  // Joins storage Workers + clears the scheduler; Bun.serve.stop alone does not.
+  await drainAndShutdown(server, 5_000);
+}
 
 describe("storage mutation coordinator", () => {
   test("policy run is rejected while restore holds the shared mutation slot", async () => {
@@ -215,7 +232,7 @@ describe("storage mutation coordinator", () => {
       const restoreResult = await restorePromise;
       expect(restoreResult.ok).toBe(true);
     } finally {
-      await server.stop(true);
+      await stopRaceServer(server);
     }
   }, { timeout: 30_000 });
 
@@ -242,7 +259,7 @@ describe("storage mutation coordinator", () => {
       const cleanupRes = await cleanupPromise;
       expect(cleanupRes.status).toBe(200);
     } finally {
-      await server.stop(true);
+      await stopRaceServer(server);
     }
   }, { timeout: 30_000 });
 
@@ -277,7 +294,7 @@ describe("storage mutation coordinator", () => {
       // Windows holding OPENCODEX_HOME (SQLite/job handles) and afterEach rmSync fails EBUSY.
       await waitForPolicyJob(server.url, startedAt);
     } finally {
-      await server.stop(true);
+      await stopRaceServer(server);
     }
   }, { timeout: 30_000 });
 
@@ -356,7 +373,7 @@ describe("storage mutation coordinator", () => {
       expect(threadCount(home)).toBe(2);
       expect(readFileSync(restoredPath, "utf8")).toBe("o".repeat(100));
     } finally {
-      await server.stop(true);
+      await stopRaceServer(server);
     }
   }, { timeout: 45_000 });
 
@@ -397,7 +414,7 @@ describe("storage mutation coordinator", () => {
       expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
       expect(threadCount(home)).toBe(1);
     } finally {
-      await server.stop(true);
+      await stopRaceServer(server);
     }
   }, { timeout: 30_000 });
 
@@ -434,7 +451,7 @@ describe("storage mutation coordinator", () => {
       const firstRes = await first;
       expect(firstRes.status).toBe(200);
     } finally {
-      await server.stop(true);
+      await stopRaceServer(server);
     }
   }, { timeout: 30_000 });
 });

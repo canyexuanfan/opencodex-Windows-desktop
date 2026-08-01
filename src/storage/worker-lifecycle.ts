@@ -33,8 +33,13 @@ let spawnGate: Promise<void> = Promise.resolve();
  */
 let spawnCancelEpoch = 0;
 
-/** Windows OS-join gap after the `close` event (not a CI job-timeout bump). */
-const WINDOWS_WORKER_JOIN_MS = 250;
+/**
+ * Windows OS-join gap after the `close` event (not a CI job-timeout bump).
+ * Under GHA load, 250ms still left `workers_spawned(N) workers_terminated(N-1)`
+ * panics mid-suite; 750ms covers the deferred thread reclaim without touching
+ * the cross-platform job budget.
+ */
+const WINDOWS_WORKER_JOIN_MS = 750;
 
 /** Invalidate spawn callbacks still waiting on the gate (reset / server drain). */
 export function cancelQueuedStorageWorkerSpawns(): void {

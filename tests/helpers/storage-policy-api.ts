@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../../src/config";
 import { startServer } from "../../src/server";
+import { drainAndShutdown } from "../../src/server/lifecycle";
 import type { OcxConfig } from "../../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./isolated-codex-home";
 import {
@@ -138,4 +139,16 @@ export async function uninstallPolicyApiHarness(h: PolicyApiHarness): Promise<vo
   if (h.testDir) rmSync(h.testDir, { recursive: true, force: true });
 }
 
-export { fetch, startServer, setStorageCleanupPolicyJobTestHooks, setArchivedCleanupJobTestHooks, stopStorageCleanupScheduler, resetStorageCleanupPolicyJobForTestsAsync };
+/** Prefer over Bun.serve.stop — joins Workers and clears the policy scheduler. */
+export async function stopPolicyServer(server: ReturnType<typeof startServer>): Promise<void> {
+  await drainAndShutdown(server, 5_000);
+}
+
+export {
+  fetch,
+  startServer,
+  setStorageCleanupPolicyJobTestHooks,
+  setArchivedCleanupJobTestHooks,
+  stopStorageCleanupScheduler,
+  resetStorageCleanupPolicyJobForTestsAsync,
+};

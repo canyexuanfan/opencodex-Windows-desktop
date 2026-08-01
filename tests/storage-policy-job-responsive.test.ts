@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
+import { drainAndShutdown } from "../src/server/lifecycle";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import {
@@ -141,8 +142,7 @@ describe("storage cleanup policy job responsiveness", () => {
         await Bun.sleep(50);
       }
     } finally {
-      await server.stop(true);
-      stopStorageCleanupScheduler();
+      await drainAndShutdown(server, 5_000);
       await resetStorageCleanupPolicyJobForTestsAsync();
     }
   }, { timeout: 30_000 });

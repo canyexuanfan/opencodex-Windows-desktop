@@ -8,7 +8,7 @@ import {
   installPolicyApiHarness,
   seedArchived,
   startServer,
-  stopStorageCleanupScheduler,
+  stopPolicyServer,
   uninstallPolicyApiHarness,
   waitForJobIdle,
   type PolicyApiHarness,
@@ -68,8 +68,7 @@ test("POST run starts job promptly; skipped/success land on GET", async () => {
     expect(ranDone.lastRun?.removed).toBe(1);
     expect(JSON.stringify(ranDone)).not.toContain(harness.isolatedCodexHome.path.replaceAll("\\", "\\\\"));
   } finally {
-    await server.stop(true);
-    stopStorageCleanupScheduler();
+    await stopPolicyServer(server);
     await resetStorageCleanupPolicyJobForTestsAsync();
   }
 }, { timeout: 30_000 });
