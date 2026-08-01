@@ -722,7 +722,7 @@ describe("GUI update execution decisions", () => {
     )).toBe(true);
   });
 
-  test("npm finish fails when port reclaim leaves the pre-update proxy healthy", async () => {
+  test("npm finish fails when port reclaim leaves a live pre-update holder", async () => {
     let now = 0;
     const job: UpdateJobState = {
       id: "npm-reclaim-stale",
@@ -744,11 +744,13 @@ describe("GUI update execution decisions", () => {
       { port: 10100, hostname: "127.0.0.1", oldPid: 111 },
       "npm",
       {
-        // Direct path: reclaim failure returns without spawning a replacement.
+        // Live holder after reclaim timeout — must not spawn a second listener.
         serviceInstalledFn: () => false,
         waitForPort: async () => false,
+        listListenPidsFn: () => [111],
+        isAliveFn: pid => pid === 111,
         spawnStart: () => {
-          throw new Error("must not spawn when reclaim failed");
+          throw new Error("must not spawn when a live holder remains");
         },
         probeProxy: async () => true,
         probeProxyIdentity: async () => ({ pid: 111, version: "2.7.40" }),
@@ -761,10 +763,7 @@ describe("GUI update execution decisions", () => {
       status: "failed",
       restarted: false,
     });
-    expect(readUpdateJob(job.id)?.error).toContain("still the pre-update PID");
-    expect(readUpdateJob(job.id)?.log.some(line =>
-      line.includes("still busy") && line.includes("not starting on another port"),
-    )).toBe(true);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("Live holder(s) remain"))).toBe(true);
   });
 
   test("npm finish skips the soft probe for direct installs and restarts immediately", async () => {
