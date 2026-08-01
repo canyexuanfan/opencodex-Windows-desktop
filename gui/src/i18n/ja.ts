@@ -179,6 +179,7 @@ export const ja: Record<TKey, string> = {
   "dash.cannotConnect": "プロキシに接続できません。起動していますか?",
   "dash.runStart": "{cmd} を実行してプロキシを起動してください。",
   "dash.stop": "プロキシを停止",
+  "dash.externalManaged": "外部 CLI が管理",
   "dash.stopConfirm": "プロキシを停止してネイティブの Codex に戻しますか?",
   "dash.stopFailed": "プロキシを停止できませんでした (HTTP {status})。",
   "dash.stopping": "停止中…",

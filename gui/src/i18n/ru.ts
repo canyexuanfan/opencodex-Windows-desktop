@@ -179,6 +179,7 @@ export const ru: Record<TKey, string> = {
   "dash.cannotConnect": "Не удаётся подключиться к прокси. Он запущен?",
   "dash.runStart": "Выполните {cmd}, чтобы запустить прокси.",
   "dash.stop": "Остановить прокси",
+  "dash.externalManaged": "Управляется внешним CLI",
   "dash.stopConfirm": "Остановить прокси и восстановить нативный Codex?",
   "dash.stopFailed": "Не удалось остановить прокси (HTTP {status}).",
   "dash.stopping": "Остановка…",

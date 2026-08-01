@@ -3,6 +3,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 
 export type TrayStatus = "online" | "offline" | "error" | "starting";
+export type TrayOwnership = "desktop" | "external" | undefined;
 
 export type TrayActions = {
   readonly start: () => void;
@@ -13,6 +14,7 @@ export type TrayActions = {
 export type TrayController = {
   readonly tray: Tray;
   setStatus: (status: TrayStatus) => void;
+  setOwnership: (ownership: TrayOwnership) => void;
   destroy: () => void;
 };
 
@@ -31,11 +33,14 @@ function iconForStatus(status: TrayStatus) {
 export function createTray(mainWindow: BrowserWindow, actions: TrayActions): TrayController {
   const tray = new Tray(iconForStatus("offline"));
   let status: TrayStatus = "offline";
+  let ownership: TrayOwnership;
 
   const rebuildMenu = (): void => {
-    const statusLabel = status === "online"
+    const baseStatusLabel = status === "online"
       ? "\u72b6\u6001\uff1a\u5728\u7ebf"
       : status === "starting" ? "\u72b6\u6001\uff1a\u542f\u52a8\u4e2d" : status === "error" ? "\u72b6\u6001\uff1a\u9519\u8bef" : "\u72b6\u6001\uff1a\u79bb\u7ebf";
+    const statusLabel = ownership === "external" ? `${baseStatusLabel}\uff08\u5916\u90e8 CLI\uff09` : baseStatusLabel;
+    const ownsLifecycle = ownership !== "external";
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: statusLabel, enabled: false },
       { type: "separator" },
@@ -48,8 +53,8 @@ export function createTray(mainWindow: BrowserWindow, actions: TrayActions): Tra
       },
       { label: "\u9690\u85cf OpenCodex", click: () => mainWindow.hide() },
       { label: "\u542f\u52a8\u4ee3\u7406", click: actions.start },
-      { label: "\u505c\u6b62\u4ee3\u7406", click: actions.stop },
-      { label: "\u91cd\u542f\u4ee3\u7406", click: actions.restart },
+      { label: "\u505c\u6b62\u4ee3\u7406", enabled: ownsLifecycle, click: actions.stop },
+      { label: "\u91cd\u542f\u4ee3\u7406", enabled: ownsLifecycle, click: actions.restart },
       { type: "separator" },
       { label: "\u9000\u51fa OpenCodex", click: () => app.quit() },
     ]));
@@ -70,6 +75,10 @@ export function createTray(mainWindow: BrowserWindow, actions: TrayActions): Tra
     tray,
     setStatus(nextStatus) {
       status = nextStatus;
+      rebuildMenu();
+    },
+    setOwnership(nextOwnership) {
+      ownership = nextOwnership;
       rebuildMenu();
     },
     destroy: () => tray.destroy(),

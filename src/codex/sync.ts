@@ -49,6 +49,38 @@ const defaultDeps: CodexSyncDeps = {
   injectCodexConfig,
 };
 
+let codexSyncsBlocked = false;
+let activeCodexSyncs = 0;
+
+/** Prevent new Codex config syncs while an owned proxy prepares a fail-closed shutdown. */
+export function blockCodexSyncsForShutdown(): void {
+  codexSyncsBlocked = true;
+}
+
+/** Re-open syncs when a fail-closed shutdown is refused and the proxy stays online. */
+export function unblockCodexSyncsAfterRefusal(): void {
+  codexSyncsBlocked = false;
+}
+
+/** Wait for syncs that entered before the shutdown gate. False means the proxy must stay online. */
+export async function waitForActiveCodexSyncs(timeoutMs = 5_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (activeCodexSyncs > 0 && Date.now() < deadline) await Bun.sleep(25);
+  return activeCodexSyncs === 0;
+}
+
+function blockedSyncResult(): CodexSyncResult {
+  return {
+    ok: false,
+    added: 0,
+    catalogPath: null,
+    catalogExists: false,
+    catalogWritten: false,
+    cacheSynced: false,
+    message: "Codex sync refused: OpenCodex is preparing a safe shutdown.",
+  };
+}
+
 function reportCodexHomeTarget(
   log: Pick<Console, "log" | "error"> | null,
   collectDiagnostic: typeof collectOrcaCodexHomeDiagnostic,
@@ -62,7 +94,7 @@ function reportCodexHomeTarget(
   }
 }
 
-export async function syncModelsToCodex(
+async function syncModelsToCodexImpl(
   port?: number,
   config: OcxConfig = loadConfig(),
   log: Pick<Console, "log" | "error"> | null = console,
@@ -215,4 +247,20 @@ export async function syncModelsToCodex(
       projectConfigGrouped: groupProjectCodexConfigWarningsByPath(projectConfigWarnings),
     } : {}),
   };
+}
+
+export async function syncModelsToCodex(
+  port?: number,
+  config: OcxConfig = loadConfig(),
+  log: Pick<Console, "log" | "error"> | null = console,
+  deps: CodexSyncDeps = defaultDeps,
+  options: CodexSyncOptions = {},
+): Promise<CodexSyncResult> {
+  if (codexSyncsBlocked) return blockedSyncResult();
+  activeCodexSyncs += 1;
+  try {
+    return await syncModelsToCodexImpl(port, config, log, deps, options);
+  } finally {
+    activeCodexSyncs -= 1;
+  }
 }

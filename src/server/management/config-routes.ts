@@ -112,7 +112,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     }
     return jsonResponse({
       codexAutoStart: codexAutoStartEnabled(config),
-      port: config.port,
+      port: Number(url.port) || config.port,
       hostname: config.hostname ?? "127.0.0.1",
       streamMode: config.streamMode ?? "auto",
       startupHealth: await getCachedStartupHealth(config),
