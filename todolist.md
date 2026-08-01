@@ -913,3 +913,16 @@ Codex / Claude Code / 其他现有客户端
 - [x] 验证通过：`cd desktop && bun run build`、`cd desktop && bun test tests/package-static.test.ts` 4/4、`git diff --check`、`electron-builder --win nsis portable`；重打包日志不再出现 `default Electron icon is used`。
 - [x] 最新安装包：Setup SHA-256=`5A886C5089DC51BA47EFC76CD168EAF86002FE8B924D581E293BC9103D05F3E9`，Portable SHA-256=`EE4E816643E28D9ED257CAF3857300F4A715EB2ADBA06E6670425503033F2CC1`。
 - [ ] 真实 Windows 桌面快捷方式图标缓存刷新仍需用户安装最新版后肉眼确认；若 Windows 仍显示旧缓存，可删除旧快捷方式或刷新图标缓存后复核。
+
+# 阶段 30：快捷方式图标与桌面安装包更新检查收尾（2026-08-02）
+
+- [x] 修复桌面快捷方式/开始菜单图标未刷新的真实缺口：NSIS `customInstall` 会在安装阶段强制删除并重建开始菜单和桌面 `.lnk`，快捷方式图标显式指向安装目录内 `resources\tray\opencodex-tray-online.ico`，并通知 Windows Shell 刷新图标。
+- [x] 桌面启动 sidecar 时注入 `OPENCODEX_DESKTOP=1`、`OPENCODEX_DESKTOP_MODE=1` 和 `OPENCODEX_DESKTOP_VERSION=app.getVersion()`，避免桌面安装包更新检查误用后端代理版本。
+- [x] 桌面端“检查更新”改为检查用户 fork：`https://api.github.com/repos/canyexuanfan/opencodex-Windows-desktop/releases`，并识别 `OpenCodex-Setup-x64.exe`；缺少 Windows 安装包资产时明确返回 `desktop_asset_missing`，不再回退到 npm。
+- [x] GUI 更新弹窗改为通用说明；桌面模式下展示 Windows 安装包、下载入口和发布页入口，同时禁用 CLI 一键更新，避免运行中自覆盖安装。
+- [x] `/api/update/run` 在桌面模式下直接返回 `desktop_installer_manual`，即使绕过 UI 调接口也不会触发 CLI/npm 自更新。
+- [x] 验证通过：`bun run typecheck`、`cd gui && bun run lint:i18n`、`cd gui && bun run lint`、`cd gui && bun run build`、`cd desktop && bun run build`、`cd desktop && bun test tests/package-static.test.ts tests/backend-supervisor.test.ts` 11/11、`bun test tests/desktop-release-update.test.ts` 3/3、非沙箱 `bun test tests/update-job.test.ts tests/desktop-release-update.test.ts` 39/39、`git diff --check`。
+- [x] 重新生成资源树和安装包；`win-unpacked` 确认包含新的 fork Release 更新源码、无 tag 默认通道修复和 `resources\tray\opencodex-tray-online.ico`。最新 Setup SHA-256=`7D39DFEB8D68377A2689C53BF283A7441DF880B0AE5CB09A30195423B3D3316E`；Portable SHA-256=`A272B60BCBBF942A7AFC595FCFB800E594F2603BEAB022F0FBFC07A6F04A5E52`。
+- [x] 已清理本轮可控构建临时目录：`F:\workbuddy\opencodex\.tmp\desktop-resource-stage30-20260802`、`F:\workbuddy\opencodex\.tmp\electron-builder-cache-stage30-20260802`、`F:\workbuddy\opencodex\.tmp\electron-builder-cache-stage30-final-20260802`、`C:\tmp\opencodex-resource-stage30-20260802`、`C:\tmp\opencodex-resource-stage30-final-20260802`。
+- [x] 用户授权后，已精确删除本轮默认沙箱失败留在 `%TEMP%` 下的 19 个 `ocx-update-job-30000-*` 测试目录；复核结果为 `NO_REMAINING_OCX_UPDATE_JOB_30000_DIRS`。
+- [ ] 真实安装后的桌面快捷方式/开始菜单图标仍需用户用最新 `desktop/out/OpenCodex-Setup-x64.exe` 安装目视确认；Windows 图标缓存仍可能短暂显示旧图标。

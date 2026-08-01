@@ -66,6 +66,18 @@ test("owned sidecar stop requires an explicit acknowledgement and exit code zero
   expect(await supervisor.stop()).toEqual({ state: "stopped" });
 }, 30_000);
 
+test("owned sidecar receives desktop mode and desktop package version", async () => {
+  const supervisor = new DesktopBackendSupervisor({
+    findExternalBackend: async () => null,
+    bunExecutable: process.execPath,
+    sidecarEntry: resolve(import.meta.dir, "fixtures/backend-env-sidecar.ts"),
+    desktopVersion: "0.1.7",
+  });
+
+  expect((await supervisor.start()).state).toBe("ready");
+  expect(await supervisor.stop()).toEqual({ state: "stopped" });
+}, 30_000);
+
 test("owned sidecar exit without acknowledgement is never reported as a safe stop", async () => {
   const supervisor = new DesktopBackendSupervisor({
     findExternalBackend: async () => null,

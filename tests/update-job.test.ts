@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   checkForUpdate,
+  checkForUpdateForRuntime,
   confirmRestartAfterUpdateForTests,
   finishGuiUpdateRestart,
   npmSelfUpdateRestartEvidence,
@@ -84,6 +85,58 @@ describe("GUI update check", () => {
 
     expect(result.canUpdate).toBe(false);
     expect(result.reason).toBe("already_latest");
+  });
+
+  test("desktop runtime checks the fork GitHub installer release instead of npm", async () => {
+    let registryCalls = 0;
+    const result = await checkForUpdateForRuntime("latest", {
+      currentVersion: () => "2.8.0",
+      detectInstall: () => "npm",
+      latestVersion: () => {
+        registryCalls += 1;
+        return "9.9.9";
+      },
+      isDesktopRuntime: () => true,
+      desktopCurrentVersion: () => "0.1.0",
+      fetchDesktopInstallerRelease: async channel => ({
+        latestVersion: channel === "latest" ? "0.1.1" : "0.1.0-preview.1",
+        releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v0.1.1",
+        downloadUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/download/v0.1.1/OpenCodex-Setup-x64.exe",
+        assetName: "OpenCodex-Setup-x64.exe",
+      }),
+    });
+
+    expect(registryCalls).toBe(0);
+    expect(result.installer).toBe("desktop");
+    expect(result.installKind).toBe("desktop-installer");
+    expect(result.currentVersion).toBe("0.1.0");
+    expect(result.latestVersion).toBe("0.1.1");
+    expect(result.updateAvailable).toBe(true);
+    expect(result.canUpdate).toBe(false);
+    expect(result.reason).toBe("desktop_installer_manual");
+    expect(result.downloadUrl).toContain("OpenCodex-Setup-x64.exe");
+    expect(result.releaseNotesUrl).toContain("canyexuanfan/opencodex-Windows-desktop");
+  });
+
+  test("desktop runtime reports a missing Windows installer asset explicitly", async () => {
+    const result = await checkForUpdateForRuntime("latest", {
+      currentVersion: () => "2.8.0",
+      detectInstall: () => "npm",
+      latestVersion: () => "9.9.9",
+      isDesktopRuntime: () => true,
+      desktopCurrentVersion: () => "0.1.0",
+      fetchDesktopInstallerRelease: async () => ({
+        latestVersion: "0.1.1",
+        releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v0.1.1",
+        downloadUrl: null,
+        assetName: null,
+      }),
+    });
+
+    expect(result.updateAvailable).toBe(true);
+    expect(result.canUpdate).toBe(false);
+    expect(result.reason).toBe("desktop_asset_missing");
+    expect(result.command).toContain("github.com/canyexuanfan/opencodex-Windows-desktop");
   });
 });
 

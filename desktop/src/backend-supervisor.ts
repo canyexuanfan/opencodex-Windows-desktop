@@ -155,6 +155,7 @@ export interface BackendSupervisorOptions {
   readonly cwd?: string;
   readonly bunExecutable?: string;
   readonly sidecarEntry?: string;
+  readonly desktopVersion?: string;
   readonly findExternalBackend?: () => Promise<ExternalBackend | null>;
   readonly externalProbeIntervalMs?: number;
 }
@@ -258,7 +259,12 @@ export class DesktopBackendSupervisor {
       cwd,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, OPENCODEX_DESKTOP_MODE: "1" },
+      env: {
+        ...process.env,
+        OPENCODEX_DESKTOP: "1",
+        OPENCODEX_DESKTOP_MODE: "1",
+        ...(this.options.desktopVersion ? { OPENCODEX_DESKTOP_VERSION: this.options.desktopVersion } : {}),
+      },
     });
     this.child = child;
 

@@ -79,6 +79,16 @@ describe("desktop package contract", () => {
     expect(customInstaller).toContain("Call ocxEnsureInstallDir");
   });
 
+  test("rewrites Windows shortcuts with the bundled OpenCodex icon", () => {
+    expect(customInstaller).toContain("!macro customInstall");
+    expect(customInstaller).toContain('StrCpy $0 "$INSTDIR\\resources\\tray\\opencodex-tray-online.ico"');
+    expect(customInstaller).toContain('Delete "$newStartMenuLink"');
+    expect(customInstaller).toContain('CreateShortCut "$newStartMenuLink" "$appExe" "" "$0"');
+    expect(customInstaller).toContain('Delete "$newDesktopLink"');
+    expect(customInstaller).toContain('CreateShortCut "$newDesktopLink" "$appExe" "" "$0"');
+    expect(customInstaller).toContain("Shell32::SHChangeNotify");
+  });
+
   test("copies production dependencies instead of preserving development cache hardlinks", () => {
     expect(resourcePreparation).toContain('"--backend=copyfile"');
   });

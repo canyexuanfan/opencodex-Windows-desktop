@@ -23,6 +23,7 @@ if (!hasSingleInstanceLock) {
     cwd: packagedRoot,
     bunExecutable: app.isPackaged ? path.join(packagedRoot, "runtime", "bun.exe") : undefined,
     sidecarEntry: app.isPackaged ? path.join(packagedRoot, "src", "desktop", "entry.ts") : undefined,
+    desktopVersion: app.getVersion(),
   });
 
   const focusMainWindow = (): void => {

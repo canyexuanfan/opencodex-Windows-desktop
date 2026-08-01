@@ -252,16 +252,16 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   }
 
   if (url.pathname === "/api/update/check" && req.method === "GET") {
-    const { checkForUpdate, normalizeUpdateChannel } = await import("../../update/job");
+    const { checkForUpdateForRuntime, normalizeUpdateChannel } = await import("../../update/job");
     const rawTag = url.searchParams.get("tag");
     if (rawTag && rawTag !== "latest" && rawTag !== "preview") {
       return jsonResponse({ error: "tag must be latest or preview" }, 400);
     }
-    return jsonResponse(checkForUpdate(normalizeUpdateChannel(rawTag)));
+    return jsonResponse(await checkForUpdateForRuntime(rawTag ? normalizeUpdateChannel(rawTag) : undefined));
   }
 
   if (url.pathname === "/api/update/run" && req.method === "POST") {
-    const { normalizeUpdateChannel, startUpdateJob, UpdateJobError } = await import("../../update/job");
+    const { normalizeUpdateChannel, startUpdateJob, UpdateJobError, isDesktopRuntime } = await import("../../update/job");
     let body: { tag?: unknown; restart?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (body.tag !== undefined && body.tag !== "latest" && body.tag !== "preview") {
@@ -269,6 +269,12 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     }
     if (body.restart !== undefined && typeof body.restart !== "boolean") {
       return jsonResponse({ error: "restart boolean is required" }, 400);
+    }
+    if (isDesktopRuntime()) {
+      return jsonResponse({
+        error: "Desktop updates are delivered as Windows installers. Download and run the installer from GitHub Releases.",
+        code: "desktop_installer_manual",
+      }, 409);
     }
     try {
       return jsonResponse({ ok: true, job: startUpdateJob(normalizeUpdateChannel(body.tag as string | undefined), body.restart !== false) });

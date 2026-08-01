@@ -69,13 +69,30 @@ export function DashboardDialogs(d: Dash) {
                   {updateCheck.updateAvailable ? t("dash.updateAvailable") : t("dash.updateCurrent")}
                 </span>
               </div>
-              <div className="muted update-command">{t("dash.updateCommand")} <code className="chip">{updateCheck.command}</code></div>
+              <div className="muted update-command">
+                {updateCheck.installKind === "desktop-installer" ? t("dash.updateDesktopInstaller") : t("dash.updateCommand")}
+                {" "}
+                <code className="chip">{updateCheck.command}</code>
+              </div>
+              {updateCheck.installKind === "desktop-installer" && (
+                <div className="notice-warn" role="status">
+                  <IconAlert /> {t("dash.updateDesktopInstallerHint")}
+                  {updateCheck.downloadUrl && (
+                    <a className="btn btn-ghost btn-sm" href={updateCheck.downloadUrl} target="_blank" rel="noreferrer" style={{ marginLeft: 12 }}>
+                      {t("dash.updateDownloadInstaller")}
+                    </a>
+                  )}
+                  <a className="btn btn-ghost btn-sm" href={updateCheck.releaseNotesUrl} target="_blank" rel="noreferrer" style={{ marginLeft: 8 }}>
+                    {t("dash.updateReleaseNotes")}
+                  </a>
+                </div>
+              )}
               {updateCheck.reason === "source_checkout" && (
                 <div className="notice-warn" role="status"><IconAlert /> {t("dash.updateSource")}</div>
               )}
-              {updateCheck.reason === "latest_unavailable" && (
+              {(updateCheck.reason === "latest_unavailable" || updateCheck.reason === "desktop_release_unavailable") && (
                 <div className="notice-warn" role="status">
-                  <IconAlert /> {t("dash.updateUnavailable")}
+                  <IconAlert /> {updateCheck.reason === "desktop_release_unavailable" ? t("dash.updateDesktopReleaseUnavailable") : t("dash.updateUnavailable")}
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"
@@ -87,7 +104,7 @@ export function DashboardDialogs(d: Dash) {
                   </button>
                 </div>
               )}
-              {!updateCheck.canUpdate && updateCheck.reason !== "latest_unavailable" && updateCheck.reason !== "source_checkout" && (
+              {!updateCheck.canUpdate && updateCheck.reason !== "latest_unavailable" && updateCheck.reason !== "desktop_release_unavailable" && updateCheck.reason !== "source_checkout" && (
                 <div className="update-recheck">
                   <span className="muted update-recheck-reason">
                     {t("dash.updateCannotAuto", { reason: updateReasonLabel(updateCheck.reason, t) })}

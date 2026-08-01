@@ -7,6 +7,7 @@ import { isProcessAlive, killProxy } from "../lib/process-control";
 import { reclaimListenPort } from "../server/port-reclaim";
 import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
 import { isServiceInstalled } from "../service";
+import { DESKTOP_RELEASE_NOTES_URL, fetchDesktopInstallerRelease, type DesktopInstallerRelease } from "./desktop-release";
 import {
   type Channel,
   type Installer,
@@ -22,7 +23,7 @@ import {
 import { isNewer } from "./notify";
 import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
 
-const RELEASE_NOTES_URL = "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/latest";
+const RELEASE_NOTES_URL = DESKTOP_RELEASE_NOTES_URL;
 const UPDATE_JOB_FILENAME = "update-job.json";
 const UPDATE_TIMEOUT_MS = 180_000;
 const RESTART_TIMEOUT_MS = 60_000;
@@ -39,11 +40,14 @@ export interface UpdateCheckResult {
   currentVersion: string;
   latestVersion: string | null;
   channel: Channel;
-  installer: Installer;
+  installer: Installer | "desktop";
   updateAvailable: boolean;
   canUpdate: boolean;
   command: string;
   releaseNotesUrl: string;
+  installKind?: "package" | "source" | "desktop-installer";
+  downloadUrl?: string;
+  assetName?: string;
   reason?: string;
 }
 
@@ -55,7 +59,7 @@ export interface UpdateJobState {
   currentVersion: string;
   latestVersion: string | null;
   channel: Channel;
-  installer: Installer;
+  installer: Installer | "desktop";
   restart: boolean;
   command: string;
   releaseNotesUrl: string;
@@ -79,6 +83,12 @@ export interface UpdateCheckDeps {
   latestVersion: (tag: Channel) => string | null;
 }
 
+export interface RuntimeUpdateCheckDeps extends UpdateCheckDeps {
+  isDesktopRuntime: () => boolean;
+  desktopCurrentVersion: () => string;
+  fetchDesktopInstallerRelease: (channel: Channel) => Promise<DesktopInstallerRelease | null>;
+}
+
 interface UpdateWorkerProcess {
   pid?: number;
   unref(): void;
@@ -98,6 +108,13 @@ const defaultCheckDeps: UpdateCheckDeps = {
   latestVersion,
 };
 
+const defaultRuntimeCheckDeps: RuntimeUpdateCheckDeps = {
+  ...defaultCheckDeps,
+  isDesktopRuntime,
+  desktopCurrentVersion,
+  fetchDesktopInstallerRelease,
+};
+
 function nodeBin(): string {
   return process.platform === "win32" ? "node.exe" : "node";
 }
@@ -113,6 +130,20 @@ function formatCommand(bin: string, args: string[]): string {
 
 function manualSourceCommand(): string {
   return "git pull && bun install && bun run build:gui";
+}
+
+function desktopInstallerCommand(release: Pick<DesktopInstallerRelease, "assetName" | "downloadUrl" | "releaseNotesUrl">): string {
+  if (release.assetName && release.downloadUrl) return `Download and run ${release.assetName} from GitHub Releases`;
+  return `Open ${release.releaseNotesUrl}`;
+}
+
+export function isDesktopRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OPENCODEX_DESKTOP === "1" || env.OPENCODEX_DESKTOP_MODE === "1";
+}
+
+export function desktopCurrentVersion(env: NodeJS.ProcessEnv = process.env): string {
+  const desktopVersion = env.OPENCODEX_DESKTOP_VERSION?.trim();
+  return desktopVersion || currentVersion();
 }
 
 export function normalizeUpdateChannel(raw: string | null | undefined, current = currentVersion()): Channel {
@@ -234,6 +265,54 @@ export function checkForUpdate(
     canUpdate: installer !== "source" && updateAvailable,
     command,
     releaseNotesUrl: RELEASE_NOTES_URL,
+    installKind: installer === "source" ? "source" : "package",
+    ...(reason ? { reason } : {}),
+  };
+}
+
+export async function checkForUpdateForRuntime(
+  requestedChannel?: Channel,
+  deps: RuntimeUpdateCheckDeps = defaultRuntimeCheckDeps,
+): Promise<UpdateCheckResult> {
+  if (!deps.isDesktopRuntime()) {
+    return checkForUpdate(requestedChannel, deps);
+  }
+
+  const current = deps.desktopCurrentVersion();
+  const channel = requestedChannel ?? normalizeUpdateChannel(null, current);
+  const release = await deps.fetchDesktopInstallerRelease(channel).catch(() => null);
+  if (!release) {
+    return {
+      currentVersion: current,
+      latestVersion: null,
+      channel,
+      installer: "desktop",
+      updateAvailable: false,
+      canUpdate: false,
+      command: desktopInstallerCommand({ assetName: null, downloadUrl: null, releaseNotesUrl: RELEASE_NOTES_URL }),
+      releaseNotesUrl: RELEASE_NOTES_URL,
+      installKind: "desktop-installer",
+      reason: "desktop_release_unavailable",
+    };
+  }
+
+  const updateAvailable = isNewer(release.latestVersion, current, channel);
+  let reason: string | undefined;
+  if (!updateAvailable) reason = "already_latest";
+  else if (!release.downloadUrl || !release.assetName) reason = "desktop_asset_missing";
+  else reason = "desktop_installer_manual";
+
+  return {
+    currentVersion: current,
+    latestVersion: release.latestVersion,
+    channel,
+    installer: "desktop",
+    updateAvailable,
+    canUpdate: false,
+    command: desktopInstallerCommand(release),
+    releaseNotesUrl: release.releaseNotesUrl,
+    installKind: "desktop-installer",
+    ...(release.downloadUrl && release.assetName ? { downloadUrl: release.downloadUrl, assetName: release.assetName } : {}),
     ...(reason ? { reason } : {}),
   };
 }
@@ -418,6 +497,14 @@ async function restartAfterUpdate(
   captured?: { port: number; hostname: string; oldPid?: number },
   io: RestartIo = {},
 ): Promise<void> {
+  const installer = job.installer;
+  if (installer === "desktop") {
+    updateJob(job, {
+      status: "failed",
+      error: "Desktop updates are delivered as Windows installers. Download and run the installer from GitHub Releases.",
+    });
+    return;
+  }
   const serviceInstalled = (io.serviceInstalledFn ?? isServiceInstalled)();
   const config = loadConfig();
   // The stop-first update flow has already cleared pid/runtime state by the time we run,
@@ -435,7 +522,7 @@ async function restartAfterUpdate(
       svcArgs = serviceReinstallArgs();
     } catch { /* fallback to default service install */ }
   }
-  const cmd = restartCommand(serviceInstalled, job.installer, packageLauncherPath(), port, svcArgs);
+  const cmd = restartCommand(serviceInstalled, installer, packageLauncherPath(), port, svcArgs);
   const waitFn = io.waitForPort ?? reclaimListenPort;
   const reclaimOpts = {
     timeoutMs: RESTART_PORT_RECLAIM_MS,
@@ -490,7 +577,7 @@ async function restartAfterUpdate(
     updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket); not starting on another port. Retry 'ocx start --port ${port}'.`);
     return;
   }
-  (io.spawnStart ?? spawnDetachedStart)(job, job.installer, port);
+  (io.spawnStart ?? spawnDetachedStart)(job, installer, port);
 }
 
 /** Exposed for tests: drives the non-service restart path with injected io. */
@@ -813,6 +900,9 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
   try {
     if (!check.canUpdate) {
       throw new Error(check.reason ?? "No update is available");
+    }
+    if (check.installer === "desktop") {
+      throw new Error("Desktop updates are delivered as Windows installers. Download and run the installer from GitHub Releases.");
     }
 
     // Pre-flight integrity metadata check (same lanes as the CLI): anomalous registry

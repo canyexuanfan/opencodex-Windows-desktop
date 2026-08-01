@@ -62,7 +62,7 @@ export interface SidecarPatch {
 export interface ShadowCallData { enabled: boolean; model: string; sourceModels?: string[] }
 export interface UsageSummary30d { summary: { requests: number; totalTokens: number; coverageRatio: number } }
 export type UpdateChannel = "latest" | "preview";
-export type Installer = "npm" | "bun" | "source";
+export type Installer = "npm" | "bun" | "source" | "desktop";
 export type UpdateJobStatus = "running" | "restarting" | "succeeded" | "failed";
 export interface SyncResult {
   ok: boolean;
@@ -96,6 +96,9 @@ export interface UpdateCheckData {
   canUpdate: boolean;
   command: string;
   releaseNotesUrl: string;
+  installKind?: "package" | "source" | "desktop-installer";
+  downloadUrl?: string;
+  assetName?: string;
   reason?: string;
 }
 export interface UpdateJob {
@@ -125,6 +128,9 @@ export function updateReasonLabel(reason: string | undefined, t: (key: TKey) => 
     case "source_checkout": return t("dash.updateReason.source_checkout");
     case "latest_unavailable": return t("dash.updateReason.latest_unavailable");
     case "already_latest": return t("dash.updateReason.already_latest");
+    case "desktop_release_unavailable": return t("dash.updateReason.desktop_release_unavailable");
+    case "desktop_asset_missing": return t("dash.updateReason.desktop_asset_missing");
+    case "desktop_installer_manual": return t("dash.updateReason.desktop_installer_manual");
     default: return t("dash.updateReason.unknown");
   }
 }
