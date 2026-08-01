@@ -58,12 +58,12 @@ describe("raw /v1/models list reasoning-effort advertisement (Grok Build discove
         { value: "high", label: "High Effort", default: true },
         { value: "max", label: "Max Effort" },
       ]);
-      // Native rows advertise the canonical upstream ladder with the same medium-first
-      // default the Codex catalog resolver uses, so /effort works for ocx-gpt-* too.
+      // Native rows advertise the upstream ladder and preserve the pinned upstream default
+      // (gpt-5.6-sol => low), matching the Codex catalog path.
       const native = body.data.find(m => m.id === "gpt-5.6-sol");
       expect(native).toBeDefined();
       expect(native!.supports_reasoning_effort).toBe(true);
-      expect(native!.reasoning_effort).toBe("medium");
+      expect(native!.reasoning_effort).toBe("low");
       expect((native!.reasoning_efforts as Array<{ value: string }>).map(option => option.value)).toEqual([
         "low", "medium", "high", "xhigh", "max", "ultra",
       ]);

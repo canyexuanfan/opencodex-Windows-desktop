@@ -103,6 +103,12 @@ export function nativeReasoningEfforts(slug: string): string[] {
   return ["low", "medium", "high", "xhigh"];
 }
 
+/** Upstream-pinned default for a native slug, when present and non-empty. */
+export function nativeDefaultReasoningEffort(slug: string): string | undefined {
+  const level = UPSTREAM_NATIVE_ENTRIES.get(slug)?.default_reasoning_level;
+  return typeof level === "string" && level.length > 0 ? level : undefined;
+}
+
 export function nativeParallelToolCalls(slug: string): boolean {
   return UPSTREAM_NATIVE_ENTRIES.get(slug)?.supports_parallel_tool_calls === true
     || false;

@@ -474,7 +474,7 @@ export function startServer(port?: number) {
           }
           throw error;
         }
-        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, nativeReasoningEfforts, orderForSubagents, filterCatalogVisibleModels, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
         const nativeSlugs = nativeOpenAiSlugs();
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
@@ -554,7 +554,7 @@ export function startServer(port?: number) {
             object: "model",
             created: 0,
             owned_by: "openai",
-            ...grokEffortFields(nativeReasoningEfforts(id)),
+            ...grokEffortFields(nativeReasoningEfforts(id), nativeDefaultReasoningEffort(id)),
           })),
           ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => ({
             id: m.alias ?? `${m.provider}/${m.id}`,
