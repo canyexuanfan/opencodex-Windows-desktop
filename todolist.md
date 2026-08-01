@@ -766,3 +766,8 @@ Codex / Claude Code / 其他现有客户端
 - [x] 中文/空格父目录真实安装：`/S /D=<父目录>` 返回 0，生成 `父目录/OpenCodex/OpenCodex.exe` 与内置 Bun，父目录无散落程序文件；从该路径启动取得动态端口 2430，`/healthz=200`、`/v1/models=200`，卸载器返回 0 且隔离目录清理完成。
 - [x] Provider 保留补证：隔离 `OPENCODEX_HOME/CODEX_HOME/--user-data-dir` 写入 `my-custom` Provider 后启动便携包，动态端口 51263、`/healthz=200`、`/v1/models=200`；Provider 的 adapter/baseUrl/apiKey/defaultModel/defaultProvider 均保持原值，仅按既有配置迁移补充默认字段；测试进程与隔离目录已清理。
 - [ ] 干净 Windows 10/11 VM、受信证书链 `Valid`、真实 Provider 配置保留仍待外部验收。
+
+# 桌面功能对齐契约增量（2026-08-01）
+- [x] 桌面静态回归不再只依赖手写页面清单：`desktop/tests/lifecycle-static.test.ts` 自动解析 `gui/src/app-routing.ts` 的 `Page` 联合类型，并逐项断言 `gui/src/App.tsx` 存在对应渲染分支；当前桌面测试 14/14、84 个断言通过。
+- [x] GUI 交互源代码审计确认全局 `:focus-visible`、导航/按钮/标签 hover 状态，以及 Provider、模型、组合、Subagent、Storage、API 等工作区的行级 hover/focus 规则仍存在；桌面端继续复用同一 `gui/dist`，未创建缩水版页面。
+- [ ] 全量交互控件的真实鼠标/键盘视觉验收仍需 Windows 桌面人工或自动化 UI 测试环境，不以静态 CSS 命中替代最终验收。
