@@ -413,6 +413,23 @@ function spawnDetachedStart(job: UpdateJobState, installer: Installer, port?: nu
     windowsHide: true,
     env,
   });
+  child.once("error", err => {
+    try {
+      updateJob(job, {}, `Pinned start spawn error: ${err instanceof Error ? err.message : String(err)}`);
+    } catch { /* best-effort */ }
+  });
+  // Foreground `ocx start` keeps the listen process; EADDRINUSE/ghost races exit quickly
+  // with stdio ignored — surface that so the job log explains a silent miss.
+  child.once("exit", (code, signal) => {
+    if (code === 0 && !signal) return;
+    try {
+      updateJob(
+        job,
+        {},
+        `Pinned start exited early (code=${code ?? "null"} signal=${signal ?? "null"}).`,
+      );
+    } catch { /* best-effort */ }
+  });
   child.unref();
 }
 
@@ -624,19 +641,45 @@ async function restartAfterUpdate(
     }
   }
   const spawnStart = io.spawnStart ?? spawnDetachedStart;
-  spawnStart(job, job.installer, port);
-  // First detached start after npm self-update often loses the race with draining
-  // TCBs on Windows (stdio is ignored, so the failure is silent). If Node can still
-  // bind a few seconds later, retry once.
-  if (!io.spawnStart) {
-    const sleep = io.sleepMs ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
-    await sleep(2500);
-    if (await nodePortAvailable(port, hostname)) {
-      updateJob(job, {}, `Pinned start did not bind port ${port}; retrying once.`);
+  // Production path only: injected spawnStart keeps unit tests deterministic (one call).
+  // After npm self-update, Windows often leaves ghost LISTEN rows that make a free-port
+  // probe look busy even though nothing is healthy — so retry on missing /healthz, not
+  // on "port is free". Drop TCBs between attempts and re-wait for a Node bind window.
+  if (io.spawnStart) {
+    spawnStart(job, job.installer, port);
+    return;
+  }
+  const sleep = io.sleepMs ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  const probe = io.probeProxy ?? (async (p: number, host?: string) => (
+    !!(await proxyIdentityAt(p, { hostname: host }))
+  ));
+  const attempts = 3;
+  const perAttemptHealthMs = 8_000;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) {
+      updateJob(
+        job,
+        {},
+        `Pinned start attempt ${attempt - 1} did not become healthy on port ${port}; `
+          + `retrying (${attempt}/${attempts}).`,
+      );
       if (process.platform === "win32") {
         try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
       }
-      spawnStart(job, job.installer, port);
+      const bindDeadline = Date.now() + 10_000;
+      while (Date.now() < bindDeadline) {
+        if (process.platform === "win32") {
+          try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
+        }
+        if (await nodePortAvailable(port, hostname)) break;
+        await sleep(500);
+      }
+    }
+    spawnStart(job, job.installer, port);
+    const healthDeadline = Date.now() + perAttemptHealthMs;
+    while (Date.now() < healthDeadline) {
+      if (await probe(port, hostname)) return;
+      await sleep(500);
     }
   }
 }
