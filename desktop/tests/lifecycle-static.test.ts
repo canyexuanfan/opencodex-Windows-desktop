@@ -10,6 +10,10 @@ test("main process owns tray lifecycle and bounded recovery", () => {
   expect(main).toContain("backend.stop()");
   expect(main).toContain("OpenCodex 无法安全退出");
   expect(main).toContain("代理仍保持运行");
+  expect(main).toContain("Menu.setApplicationMenu(null)");
+  expect(main).toContain("autoHideMenuBar: true");
+  expect(main).toContain("mainWindow.setMenuBarVisibility(false)");
+  expect(main).toContain('mainWindow.webContents.send("desktop:status-changed", status)');
   expect(main).toContain('document.getElementById("start")');
   expect(main).toContain("button:hover:not(:disabled)");
   expect(main).toContain("button:disabled{opacity:");
@@ -17,6 +21,11 @@ test("main process owns tray lifecycle and bounded recovery", () => {
   expect(main).toContain("recoveryAttempts >= 2");
   expect(main).toContain("render-process-gone");
   expect(main).toContain("restart: () => void restartProxy().catch(() => {})");
+  const stopStart = main.indexOf("async function stopProxy");
+  const restartStart = main.indexOf("async function restartProxy");
+  const stopBody = main.slice(stopStart, restartStart);
+  expect(stopBody).not.toContain("showOfflineState()");
+  expect(stopBody).toContain("publishBackendStatus(status)");
 });
 
 test("tray exposes status and the five lifecycle actions", () => {

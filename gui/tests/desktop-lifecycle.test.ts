@@ -17,6 +17,7 @@ describe("desktop lifecycle bridge", () => {
       stopProxy: async () => ({}),
       restartProxy: async () => ({}),
       requestExit: async () => ({}),
+      onStatusChange: () => () => {},
     };
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
     Object.defineProperty(globalThis, "window", { configurable: true, value: { openCodexDesktop: bridge } });

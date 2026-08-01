@@ -13,6 +13,8 @@ Dashboard 添加 Provider 时展示的“获取 API 密钥”链接可能过期�
 - ❌ 2026-08-02：查看 `registry.ts` 局部内容时使用 `Select-Object -Index 860..925`，Windows PowerShell 未自动展开 range，报参数转换失败。下一步改用 `-Skip/-First`。
 - ❌ 2026-08-02：用 `rg` 混合搜索 `modelInputModalities` 与数组字面量时正则括号/引号转义不完整，报 `unclosed group`。下一步拆成固定字符串搜索。
 - ❌ 2026-08-02：并行验证里用一条 `rg` 同时扫描多个带引号的旧值，PowerShell 再次报 `字符串缺少终止符`。下一步继续采用固定字符串分条扫描，避免复合正则。
+- ❌ 2026-08-02：首轮全量 `dashboardUrl` 探活使用 Windows `curl.exe`，大量登录控制台因 Schannel 证书吊销检查、特殊 URL 参数或超时返回 `network-unknown`，不能作为死链结论。下一步改用 Node `fetch` 的 HEAD/GET 双阶段复核。
+- ❌ 2026-08-02：修复 Fireworks 后再次用复合 `rg` 同时扫描旧 Fireworks/Xiaomi URL，PowerShell 再次触发 `字符串缺少终止符`。下一步继续固定字符串分条扫描。
 
 ## 深层问题分析
 
@@ -48,6 +50,11 @@ Dashboard 添加 Provider 时展示的“获取 API 密钥”链接可能过期�
 - ❌ 2026-08-02：PowerShell `Select-Object -Index` range 写法失败，改用 `-Skip/-First`。
 - ❌ 2026-08-02：复杂 `rg` 正则转义失败，改为固定字符串分次搜索。
 - ❌ 2026-08-02：旧值复合扫描再次触发 PowerShell 引号解析失败，改为固定字符串分条扫描。
+- ❌ 2026-08-02：Windows `curl.exe` 全量 URL 探活对 35/50 个 URL 返回 TLS/超时/参数类未知结果，不能据此宣称“全部链接正常”；已切换 Node `fetch` 复核。
+- ❌ 2026-08-02：复合 `rg` 同时搜索旧 Fireworks/Xiaomi URL 再次被 PowerShell 引号解析打断，后续使用固定字符串逐条扫描。
 - ✅ 2026-08-02：修复 BigModel 确认失效入口：`zhipu-bigmodel` 与免费目录 `glm-cn` 的 API Key 入口统一为 `https://bigmodel.cn/apikey/platform`；旧 `https://bigmodel.cn/console/usercenter/apikeys` 和 `https://open.bigmodel.cn/usercenter/apikeys` 在源码、测试、GUI、docs、README 扫描中均无命中。
 - ✅ 2026-08-02：按官方文档更新 BigModel 静态模型：默认模型改为 `glm-5.2`，补入 `glm-5.2`、`glm-5-turbo`、`glm-5v-turbo`、`glm-4.7-flashx`，保留兼容旧模型 `glm-4.6`/`glm-4.6v`；`glm-5.2` 上下文显式设为 1M，`glm-5v-turbo` 标记文本+图像输入。
 - ✅ 2026-08-02：验证通过：`bun test tests\zhipu-bigmodel-provider.test.ts tests\provider-registry-parity.test.ts` 35/35、565 个断言；`bun run typecheck`；`cd desktop && bun run build`；重新生成桌面资源树并只重打 NSIS 安装版。最终 Setup SHA-256=`D49E64B1265966B15DB0FABB5A8CB2CC08E24E8D02802612BC93A05F0CFFE446`。
+- ✅ 2026-08-02：对 50 个唯一 `dashboardUrl` 改用 Node `fetch` 复核，确认 Fireworks 旧入口 `https://fireworks.ai/account/api-keys` 跳转后 404；修复 registry 与 free-directory 的 Fireworks/Fire Pass 入口为 `https://app.fireworks.ai/settings/users/api-keys`。
+- ✅ 2026-08-02：将 Xiaomi MiMo 与 MiMo Free 的控制台入口从主页 `https://xiaomimimo.com` 改为可达控制台 `https://platform.xiaomimimo.com`；旧 Fireworks 与旧 Xiaomi URL 固定字符串扫描均无命中。
+- ✅ 2026-08-02：补充 provider 回归：已知旧 dashboard URL 禁止回归；手写 `models` 且设置 `defaultModel` 的 registry 条目必须保证默认模型在候选列表中。

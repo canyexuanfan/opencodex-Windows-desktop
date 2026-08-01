@@ -947,5 +947,18 @@ Codex / Claude Code / 其他现有客户端
 - [x] 补齐 BigModel 静态候选模型：`glm-5.2`、`glm-5.1`、`glm-5`、`glm-5-turbo`、`glm-4.7`、`glm-4.7-flashx`、`glm-4.7-flash`、`glm-4.6`、`glm-5v-turbo`、`glm-4.6v`；`glm-5.2` 上下文显式 1M，`glm-5v-turbo` 标记文本+图像输入。
 - [x] 旧值扫描通过：源码/测试/GUI/docs/README 中不再出现旧 BigModel API Key 死链；`defaultModel: "glm-4.6"` 不再存在。
 - [x] 验证通过：`bun test tests\zhipu-bigmodel-provider.test.ts tests\provider-registry-parity.test.ts` 35/35、565 个断言；`bun run typecheck`；`cd desktop && bun run build`。
-- [x] 已重新生成桌面资源树并只重打 NSIS 安装版；`desktop/out` 仅有 `OpenCodex-Setup-x64.exe` 与 `.blockmap`，无 Portable。最终 Setup SHA-256=`D49E64B1265966B15DB0FABB5A8CB2CC08E24E8D02802612BC93A05F0CFFE446`。
-- [ ] 其余 Provider 控制台链接已提取 50 个唯一 `dashboardUrl`，但本机 Node/PowerShell 网络探活对大量登录控制台返回超时或 `fetch failed`，不能把网络异常等同于死链；后续若要做到“持续全量死链监控”，应接入 CI/人工可联网环境，以 404/410/DNS 为失败标准。
+- [x] 已重新生成桌面资源树并只重打 NSIS 安装版；`desktop/out` 仅有 `OpenCodex-Setup-x64.exe` 与 `.blockmap`，无 Portable。该阶段 Setup SHA-256=`D49E64B1265966B15DB0FABB5A8CB2CC08E24E8D02802612BC93A05F0CFFE446`，已由阶段 33 新包取代。
+- [x] 其余 Provider 控制台链接已提取 50 个唯一 `dashboardUrl` 并以 Node `fetch` 复核；已修复确认 404 的 Fireworks/Fire Pass 旧入口，Xiaomi MiMo/MiMo Free 入口也从主页调整到平台控制台。当前未发现新的确认 404/410 死链；少数登录控制台仍可能因网络/认证返回超时或 `fetch failed`，不能把这类网络异常当作死链。
+- [x] 补充 Provider 回归测试：已知过期 dashboard URL 不得回归；手写 `models` 且设置 `defaultModel` 的 Provider 必须保证默认模型在候选列表内。
+
+# 阶段 33：停止代理保留仪表盘与隐藏 Electron 菜单（2026-08-02）
+
+- [x] 修复桌面端手动“停止代理”的交互：成功停止后不再切到单独离线空白页，而是保留当前 Dashboard，仅把左下角按钮从“停止代理”切换为“开启代理”。
+- [x] 保留离线兜底页的用途：仅首启代理失败、渲染崩溃或用户选择离线退出时使用，不再用于正常停止代理路径。
+- [x] 桌面主进程新增状态推送，停止/启动代理后通过 preload 通知 React 状态；GUI 侧根据 `running/stopped/starting/failed` 切换按钮文案、禁用态和绿色开启样式。
+- [x] 隐藏 Electron 默认菜单栏：主窗口设置 `autoHideMenuBar`、运行时关闭 menu bar，并在 app ready 后移除默认应用菜单，避免显示 `File/Edit/View/Window`。
+- [x] 验证通过：`cd gui && bun test tests\app-stop.test.ts tests\desktop-lifecycle.test.ts` 8/8、18 个断言；`cd desktop && bun test tests\lifecycle-static.test.ts tests\security-baseline.test.ts` 7/7、78 个断言；`bun test tests\provider-registry-parity.test.ts tests\zhipu-bigmodel-provider.test.ts` 37/37、596 个断言；`cd gui && bun run lint:i18n`、`cd gui && bun run lint`、`cd gui && bun run build`、`cd desktop && bun run build`、`cd desktop && bun test tests` 24/24、147 个断言、`bun run typecheck`。
+- [x] GUI 完整测试已用项目锁定 Bun 1.3.14 复跑通过：`cd gui && ..\node_modules\bun\bin\bun.exe test tests` 443/443、2056 个断言。系统 Bun 1.2.20 运行同套 GUI 测试时仍有既有 Logs 用例因 `jest.advanceTimersByTime` 兼容层缺失失败，已按环境限制记录。
+- [x] 已重新生成桌面资源树并只重打 NSIS 安装版；`desktop/out` 仅有 `OpenCodex-Setup-x64.exe` 与 `.blockmap`，无 Portable。最新 Setup SHA-256=`DDC0DF9E806B061DA949669CB1CD785822D3C7B70A449D4058F87F4480BC6C1E`。
+- [x] 本轮 `C:\tmp\opencodex-resource-stage33-20260802` 与 `C:\tmp\opencodex-installer-stage33-20260802` 已按精确路径清理为不存在；未重启、关闭或修改当前正在使用的真实 Codex。
+- [ ] 真实安装后的左下角停止/开启切换和顶部菜单隐藏，仍建议用户用最新 `desktop/out/OpenCodex-Setup-x64.exe` 覆盖安装后目视确认；本轮没有重启当前 Codex 会话。

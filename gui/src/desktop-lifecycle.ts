@@ -4,6 +4,7 @@ export type DesktopLifecycleApi = {
   readonly stopProxy: () => Promise<unknown>;
   readonly restartProxy: () => Promise<unknown>;
   readonly requestExit: () => Promise<unknown>;
+  readonly onStatusChange?: (listener: (status: unknown) => void) => () => void;
 };
 
 declare global {
@@ -17,4 +18,3 @@ export function getDesktopLifecycleApi(): DesktopLifecycleApi | null {
   if (typeof window === "undefined") return null;
   return window.openCodexDesktop ?? null;
 }
-

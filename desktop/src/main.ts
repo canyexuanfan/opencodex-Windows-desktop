@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { DesktopBackendSupervisor, type BackendStatus } from "./backend-supervisor.js";
@@ -53,6 +53,11 @@ if (!hasSingleInstanceLock) {
   function setTrayStatus(status: BackendStatus): void {
     tray?.setOwnership(status.ownership);
     tray?.setStatus(trayStatus(status));
+  }
+
+  function publishBackendStatus(status: BackendStatus): void {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send("desktop:status-changed", status);
   }
 
   async function loadDashboard(port: number): Promise<void> {
@@ -144,11 +149,8 @@ if (!hasSingleInstanceLock) {
       throw error;
     }
     setTrayStatus(status);
-    try {
-      await showOfflineState();
-    } catch {
-      mainWindow?.show();
-    }
+    publishBackendStatus(status);
+    mainWindow?.show();
     return status;
   }
 
@@ -160,6 +162,7 @@ if (!hasSingleInstanceLock) {
 
   backend.onStatusChange(status => {
     setTrayStatus(status);
+    publishBackendStatus(status);
     if ((status.state === "stopped" || status.state === "failed") && !manualStopRequested && !isQuitting) {
       scheduleRecovery();
     }
@@ -187,6 +190,7 @@ if (!hasSingleInstanceLock) {
       height: 820,
       minWidth: 960,
       minHeight: 640,
+      autoHideMenuBar: true,
       ...(icon ? { icon } : {}),
       webPreferences: {
         nodeIntegration: false,
@@ -195,6 +199,7 @@ if (!hasSingleInstanceLock) {
         preload: path.join(import.meta.dirname, "preload.cjs"),
       },
     });
+    mainWindow.setMenuBarVisibility(false);
 
     navigationPolicy = installNavigationPolicy(mainWindow.webContents);
     void mainWindow.loadURL("about:blank");
@@ -238,6 +243,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    Menu.setApplicationMenu(null);
     registerLifecycleIpc();
     const window = createMainWindow();
     tray = createTray(window, {
