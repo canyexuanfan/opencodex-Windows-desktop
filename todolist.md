@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 8：最终回归（本机完成，待 VM/信任链）`
+- 状态：`阶段 8：最终回归（本机最终包完成，待干净 VM/信任链）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-在 Windows 测试机信任公钥后复核 Authenticode Valid/signtool chain，并补做安装器/便携版双击、healthz/模型请求和卸载保留用户目录验证；当前机器已完成代码/资源/单实例/端口回归。
+在 Windows 测试机信任公钥后复核 Authenticode Valid/signtool chain，并补做安装器/便携版双击、中文/空格目录向导、healthz/模型请求和卸载保留用户目录验证；当前机器已完成源码修复、最终签名包、静态契约、单实例/端口和便携版 healthz/模型回归。
 
 ---
 
@@ -163,7 +163,7 @@
 - [x] 创建 `desktop/package.json`。
 - [x] 创建 `desktop/tsconfig.json`。
 - [x] 创建 `desktop/src/main.ts`。
-- [x] 创建 `desktop/src/preload.ts`。
+- [x] 创建 `desktop/src/preload.cts`（编译为 sandbox 可加载的 CommonJS preload）。
 - [x] 创建 `desktop/src/backend-supervisor.ts`。
 - [x] 创建 `desktop/src/navigation.ts`。
 - [x] 创建 `desktop/src/tray.ts`。
@@ -451,6 +451,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 - [x] 打包 `gui/dist`。
 - [x] 执行文件放到 unpacked resources，避免 asar 执行问题。
 - [x] 生产路径使用 `process.resourcesPath`。
+- [x] 生产依赖使用 Bun `--backend=copyfile`，并通过独立 extraResource 复制 `node_modules`，不依赖开发机缓存路径。
 - [x] 不包含 `.git`、`questions`、`reference`、`todolist.md`、测试缓存、日志和密钥。
 - [x] 生成最终资源清单。
 
@@ -481,7 +482,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 - [x] 便携版产物已生成并通过结构审计。
 - [x] 无控制台窗口（Electron/Bun spawn 均设置隐藏窗口；需 VM 再确认）。
 - [x] 不下载运行时（隔离 PATH smoke 使用 resources 内 Bun）。
-- [x] Dashboard、healthz、模型请求正常（`C:\\tmp` 授权隔离 sidecar：healthz 200、`/v1/models` 200；干净 VM 仍待复核）。
+- [x] Dashboard、healthz、模型请求正常（最终签名便携版隔离启动：healthz 200、`/v1/models` 200；干净 VM 仍待复核）。
 
 完成条件：
 
@@ -492,7 +493,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ```text
 命令：cd desktop && bun test tests；bun run package；unpacked Electron smoke（PATH 仅保留 C:\\Windows\\System32）；资源禁入路径扫描；SHA-256
-结果：桌面 10 tests、资源准备和 Electron-builder 通过；生成 desktop/out/OpenCodex-Setup-x64.exe 与 desktop/out/OpenCodex-Portable-x64.exe；固定 Bun 1.3.14 位于 resources/opencodex/runtime，src/gui/dist/生产依赖位于 resources/opencodex，Tray 图标位于 resources/tray；app.asar 不含 staging 或旧 unpacked 输出；最新安装版 hash=A4C930AA26F34177114B84E8C8F90010E43707CFE91B7A1F1394BD8589246D6A，便携版 hash=4AEA59EFA986AC63FF473F9388F357D907EFD7E2DEFD3FFE8AC7FB8684A9A1B0；NSIS/便携版及内置运行时已重新签名；隔离 PATH smoke 成功拉起打包 Electron 与 resources Bun sidecar。
+结果：桌面 12 tests、资源准备和 Electron-builder 通过；生成 desktop/out/OpenCodex-Setup-x64.exe 与 desktop/out/OpenCodex-Portable-x64.exe；固定 Bun 1.3.14 位于 resources/opencodex/runtime，src/gui/dist/生产依赖和 `node_modules/path-key` 位于 resources/opencodex，Tray 图标位于 resources/tray；app.asar 不含 staging 或旧 unpacked 输出；最终安装版 hash=B7F42C5654F9A453086ED56BA066D53605779E4E57CBA736F811FACAE0FB7A35，便携版 hash=B896C22546C59C1E1762F66589086F575F009A223A90F119FED3B5B4BAA762A1；NSIS/便携版及内置运行时已重新签名；最终便携版隔离 smoke 取得 runtime-port，healthz 和 `/v1/models` 均返回 200。
 限制：当前环境没有 Windows 10/11 干净 VM；真实便携版和安装版已在全新 `--user-data-dir` 隔离条件下保持运行，`C:\\tmp` 授权 sidecar 的 healthz/`/v1/models` 已通过，但仍未完成干净 VM 双击、卸载保留用户目录和真实 Provider 验证，因此阶段 6 完成条件保留未勾选。
 ```
 
@@ -538,9 +539,9 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 验证证据：
 
 ```text
-证书：CN=十七°；thumbprint=30A819833969FC56E134B0DE040E00968A92CC62；RSA 3072；sha256RSA；有效期 2026-08-01 至 2028-08-01；EKU=1.3.6.1.5.5.7.3.3；证书位于 CurrentUser\\My，PFX 位于项目外 `C:\\tmp` 临时目录。
+证书：CN=十七°；thumbprint=9395C8CBFDBDF47F4FCB413C559E0C1D33D115FE；RSA 3072；sha256RSA；有效期 2026-08-01 至 2028-08-01；EKU=1.3.6.1.5.5.7.3.3；证书位于 CurrentUser\\My，PFX 位于项目外 `C:\\tmp` 临时目录并已清理。
 签名目标：OpenCodex-Setup-x64.exe、OpenCodex-Portable-x64.exe、unpacked/OpenCodex.exe、unpacked/resources/opencodex/runtime/bun.exe。
-结果：Get-AuthenticodeSignature 可读取两个外层目标的 CN=十七° 签名，当前机因自签根未受信显示 UnknownError；未受信根时 signtool /pa 的链校验仍待测试机复核；安装器 SHA-256=A4C930AA26F34177114B84E8C8F90010E43707CFE91B7A1F1394BD8589246D6A，便携版 SHA-256=4AEA59EFA986AC63FF473F9388F357D907EFD7E2DEFD3FFE8AC7FB8684A9A1B0。
+结果：Get-AuthenticodeSignature 可读取两个外层目标的 CN=十七° 签名，当前机因自签根未受信显示 UnknownError；未受信根时 signtool /pa 的链校验仍待测试机复核；安装器 SHA-256=B7F42C5654F9A453086ED56BA066D53605779E4E57CBA736F811FACAE0FB7A35，便携版 SHA-256=B896C22546C59C1E1762F66589086F575F009A223A90F119FED3B5B4BAA762A1。
 ```
 
 ---
@@ -557,7 +558,9 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 - [x] `cd gui && bun run lint`。
 - [x] `cd gui && bun run lint:i18n`。
 - [x] `cd gui && bun run build`。
-- [x] 桌面工程自身测试（10 tests）。
+- [x] 桌面工程自身测试（12 tests）。
+- [x] Electron sandbox preload 改为 CommonJS `.cjs` 输出，`app.asar` 静态清单确认只引用 `dist/preload.cjs`；最终签名便携版真实 healthz 和 `/v1/models` 已通过。
+- [ ] `bun run prepush`（本轮约 87 秒后无输出退出 1；根完整测试/运行器限制已记录，未以局部通过替代全套结果）。
 
 ### 8.2 单实例和端口
 
@@ -611,9 +614,9 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 验证证据：
 
 ```text
-代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 10 tests 通过；授权 C:\\tmp 临时根下 `server-auth` 57/57 通过，`doctor/config/service/uninstall` 聚焦回归 92/93 通过（唯一失败为 CLI 子进程 5 秒超时）；原生 Codex 注入/恢复与 Grok/service 生命周期聚焦回归 53/53 通过；隔离打包 Electron renderer 崩溃恢复 smoke 通过；根完整 test 即使在授权临时根仍 420 秒未完成，已记录为完整套件/运行器限制；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
+代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 12 tests 通过；授权 C:\\tmp 临时根下 `server-auth` 57/57 通过，`doctor/config/service/uninstall` 聚焦回归 92/93 通过（唯一失败为 CLI 子进程 5 秒超时）；原生 Codex 注入/恢复与 Grok/service 生命周期聚焦回归 53/53 通过；隔离打包 Electron renderer 崩溃恢复 smoke 通过；根完整 test 即使在授权临时根仍 420 秒未完成，已记录为完整套件/运行器限制；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
 单实例/端口：Electron 10 次并发 smoke 仅 1 个主进程、1 个 sidecar；占用 127.0.0.1:10100 时实际动态端口为 1068；`C:\\tmp` 授权 sidecar 动态端口 57967，healthz 与 `/v1/models` 均成功；未发现残留 entry sidecar 或 10100 listener。
-产物：安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；NSIS 可变安装目录配置已通过桌面静态契约测试（10/10），资源禁入扫描通过；签名主体可读为 CN=十七°。
+产物：最终安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；NSIS 可变安装目录和独立 node_modules extraResource 已通过桌面静态契约测试（12/12），新 app.asar 静态包含 `dist/preload.cjs`，最终便携版 healthz/模型请求通过。
 未完成：Windows 10/11 干净 VM、默认用户数据目录在普通权限下的真实验证、中文/空格安装路径的稳定 NSIS 验收、受信根后的 signtool Valid 和真实 provider 保留回归；隔离环境下的卸载保留用户目录和 sidecar/renderer 崩溃恢复已通过。中文/空格路径尝试及 NSIS 参数排查已记录在 `questions/中文空格安装路径排查指南.md`。
 ```
 
@@ -621,7 +624,8 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ## 12. 发布门
 
-- [x] 本地产出安装版和便携版。
+- [x] 本地产出最终安装版和便携版（包含 preload CJS、copyfile 依赖和独立 node_modules extraResource）。
+- [x] preload 修复后的安装版和便携版已重新签名并更新 SHA-256。
 - [x] 产物签名和 SHA-256 已验证。
 - [x] 用户安装说明已写好（`docs/Windows桌面端安装与验证.md`）。
 - [x] 说明默认动态 loopback 端口，用户无需配置。
@@ -734,4 +738,4 @@ Electron 单实例宿主
 Codex / Claude Code / 其他现有客户端
 ```
 
-当前结论：本机桌面端改造、打包、签名、资源审计、单实例/动态端口回归和发布说明已完成；工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、受信证书链 `Valid`、真实 Provider 保留、healthz/模型请求和卸载保留用户目录。根完整测试在普通与最小授权环境均因临时目录权限/子进程超时未完成，GUI 完整测试仍有 7 个既有 Logs 兼容性失败；这些限制均已记录在 `questions/`，不以修改无关代码掩盖。
+当前结论：本机桌面端源码改造、preload CJS 修复、copyfile 生产依赖、独立 node_modules 资源、最终安装版/便携版签名和便携版 healthz/模型回归已完成；当前最终包哈希已写入阶段 6/7/发布门。工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、中文/空格安装目录真实向导、受信证书链 `Valid`、真实 Provider 保留和卸载保留用户目录。根完整测试在普通与最小授权环境均因临时目录权限/子进程超时未完成，GUI 完整测试仍有 7 个既有 Logs 兼容性失败；这些限制均已记录在 `questions/`，不以修改无关代码掩盖。

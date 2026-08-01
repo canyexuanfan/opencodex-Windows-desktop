@@ -55,7 +55,7 @@ if (!realBunBinary(bunBinary)) {
 copyRequired(bunBinary, join(bundleRoot, "runtime", "bun.exe"), "Bun runtime");
 
 const install = Bun.spawnSync(
-  [process.execPath, "install", "--production", "--frozen-lockfile", "--ignore-scripts"],
+  [process.execPath, "install", "--production", "--frozen-lockfile", "--ignore-scripts", "--backend=copyfile"],
   { cwd: bundleRoot, stdout: "inherit", stderr: "inherit" },
 );
 if (install.exitCode !== 0) fail(`production dependency install failed with exit code ${install.exitCode}`);
