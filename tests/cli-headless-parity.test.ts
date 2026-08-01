@@ -184,4 +184,34 @@ describe("headless GUI parity CLI", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("config set and import reject an invalid app-owned memory budget without persisting the normalized default", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-cli-memory-budget-"));
+    const previous = process.env.OPENCODEX_HOME;
+    process.env.OPENCODEX_HOME = home;
+    try {
+      const configPath = join(home, "config.json");
+      const importPath = join(home, "invalid-import.json");
+      const original = JSON.stringify({
+        port: 10100,
+        providers: { openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" } },
+        defaultProvider: "openai",
+        appOwnedMemoryBudgetMb: 128,
+      });
+      writeFileSync(configPath, original);
+      writeFileSync(importPath, JSON.stringify({
+        ...JSON.parse(original),
+        appOwnedMemoryBudgetMb: 4097,
+      }));
+
+      expect(await handleConfigCommand(["set", "appOwnedMemoryBudgetMb", "63", "--json"])).not.toBe(0);
+      expect(readFileSync(configPath, "utf8")).toBe(original);
+      expect(await handleConfigCommand(["import", importPath, "--yes", "--json"])).not.toBe(0);
+      expect(readFileSync(configPath, "utf8")).toBe(original);
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

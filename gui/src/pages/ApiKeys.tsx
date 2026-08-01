@@ -32,6 +32,7 @@ interface KeysResponse {
   // could not read.
   keys?: Array<Omit<ApiKeyEntry, "usage"> & { usage?: ApiKeyEntry["usage"] }>;
   attributionSince?: string;
+  historyTruncated?: boolean;
   authMatrix?: unknown;
   endpoint?: string;
   baseUrl?: string;
@@ -53,6 +54,7 @@ type CachedKeysShape = {
   /** Dataset-level: absent means nothing is attributable yet, which is a
    *  different statement from a key whose counters are zero. */
   attributionSince?: string;
+  historyTruncated?: boolean;
   authMatrix: ApiAuthMatrixRow[];
 };
 
@@ -131,6 +133,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
       },
       claudeCodeEnabled: data.claudeCodeEnabled !== false,
       ...(data.attributionSince ? { attributionSince: data.attributionSince } : {}),
+      ...(data.historyTruncated === true ? { historyTruncated: true } : {}),
       authMatrix: data.authMatrix,
     };
     // Prefixes only — never the secret key material.
@@ -182,6 +185,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const endpoints = keysData?.endpoints ?? seedEndpointsFromApiBase(apiBase);
   const claudeCodeEnabled = keysData?.claudeCodeEnabled ?? true;
   const attributionSince = keysData?.attributionSince;
+  const historyTruncated = keysData?.historyTruncated === true;
   // `?? []` only ever fires while there is no key data at all — both the network
   // and cache paths reject a payload without a valid matrix, so an empty table
   // can never be presented as the server's answer.
@@ -403,6 +407,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
           <ApiKeysWorkspace
         keys={keys}
         attributionSince={attributionSince}
+        historyTruncated={historyTruncated}
         authMatrix={authMatrix}
         keysLoading={false}
         keysLoadFailed={keysState.showError}

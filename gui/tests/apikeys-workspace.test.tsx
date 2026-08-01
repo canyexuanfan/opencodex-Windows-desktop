@@ -195,3 +195,18 @@ test("stale selected key falls back to overview when list refreshes without it",
 
   await act(async () => { root.unmount(); });
 });
+
+test("capped API-key history qualifies total requests and attribution date in the rendered detail", async () => {
+  const { root, container, rerender } = await mountWorkspace({ historyTruncated: true });
+  await act(async () => { keyButton(container, "alpha").click(); });
+
+  const labels = () => [...container.querySelectorAll("dt")].map(node => node.textContent);
+  expect(labels()).toContain("Requests in available history");
+  expect(labels()).toContain("Available attribution since");
+
+  await rerender({ historyTruncated: false });
+  expect(labels()).toContain("Total attributed requests");
+  expect(labels()).toContain("Attribution available since");
+
+  await act(async () => { root.unmount(); });
+});

@@ -26,6 +26,7 @@ export interface ApiKeysWorkspaceProps {
   /** Dataset-level. Absent means nothing is attributable yet — a different
    *  statement from a key whose counters read zero. */
   attributionSince?: string;
+  historyTruncated?: boolean;
   authMatrix: ApiAuthMatrixRow[];
   keysLoading: boolean;
   keysLoadFailed: boolean;
@@ -64,6 +65,7 @@ export interface ApiKeysWorkspaceProps {
 export default function ApiKeysWorkspace({
   keys,
   attributionSince,
+  historyTruncated,
   authMatrix,
   keysLoading,
   keysLoadFailed,
@@ -374,7 +376,7 @@ export default function ApiKeysWorkspace({
                         <dd>{selected.usage.requests7d.toLocaleString(localeTag)}</dd>
                       </div>
                       <div className="awi-kv-row">
-                        <dt>{t("api.attribution.totalRequests")}</dt>
+                        <dt>{historyTruncated ? t("api.attribution.totalRequestsAvailable") : t("api.attribution.totalRequests")}</dt>
                         <dd>{selected.usage.totalRequests.toLocaleString(localeTag)}</dd>
                       </div>
                       <div className="awi-kv-row">
@@ -384,7 +386,7 @@ export default function ApiKeysWorkspace({
                           : t("api.attribution.neverUsed")}</dd>
                       </div>
                       <div className="awi-kv-row">
-                        <dt>{t("api.attribution.since")}</dt>
+                        <dt>{historyTruncated ? t("api.attribution.sinceAvailable") : t("api.attribution.since")}</dt>
                         <dd>{formatCreatedDate(attributionSince, localeTag)}</dd>
                       </div>
                     </dl>

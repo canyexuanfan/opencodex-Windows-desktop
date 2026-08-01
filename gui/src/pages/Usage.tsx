@@ -83,6 +83,10 @@ interface UsageResponse {
   days: UsageDay[];
   models: UsageModel[];
   providers: UsageProvider[];
+  historyTruncated: boolean;
+  truncatedPrefixBytes: number;
+  entriesTruncated: boolean;
+  entriesDropped: number;
   error?: string;
 }
 
@@ -241,7 +245,7 @@ function UsageFilters({
       </div>
       <div className="usage-segmented" role="group" aria-label={t("usage.title")}>
         {(["all", "30d", "7d"] as Range[]).map(choice => {
-          const label = t(`usage.range.${choice}`);
+          const label = choice === "all" ? t("usage.range.available") : t(`usage.range.${choice}`);
           return (
             <button
               key={choice}
@@ -811,6 +815,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
       ) : (
         <>
           {state.showError && <Notice tone="err">{t("usage.loadError")}</Notice>}
+          {data?.historyTruncated && <Notice tone="ok">{t("usage.historyTruncated")}</Notice>}
           <UsageWorkspaceBody
             data={data}
             heatmap={heatmap}
