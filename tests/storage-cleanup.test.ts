@@ -729,6 +729,8 @@ describe("executeArchivedCleanup", () => {
     { timeout: STORE_BUDGET_MS },
   );
 
+  // Same Windows satellite-rollback budget as the injected-mutation cases above:
+  // failBeforeStateCommit + failSatelliteRestore measured ~10s on windows-latest.
   test("satellite restore failure keeps recovery trashDir and manifest", () => {
     home = buildHome({ withSatelliteStores: true });
     const result = runWithDigest(100, "permanent", home, {
@@ -742,7 +744,7 @@ describe("executeArchivedCleanup", () => {
     expect(existsSync(join(home, ".trash", "94", "satellite-backup.json"))).toBe(true);
     // Files are still restored; trash is kept for DB recovery metadata.
     expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("satellite-backup write failure leaves every database and rollout unchanged", () => {
     home = buildHome({ withSatelliteStores: true });
