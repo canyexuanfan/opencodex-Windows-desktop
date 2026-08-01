@@ -150,8 +150,8 @@ export default function ClaudeDesktop({
 }: {
   apiBase: string;
   active?: boolean;
-  /** Keeps the Claude page intro subtitle in sync once /api/claude-desktop resolves a port. */
-  onPortChange?: (port: number) => void;
+  /** Keeps the Claude page intro subtitle in sync once /api/claude-desktop settles (port or failure). */
+  onPortChange?: (port: number | null) => void;
 }) {
   const { t, locale } = useI18n();
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
@@ -225,8 +225,14 @@ export default function ClaudeDesktop({
   const destinations = Object.keys(draftDestinations).length > 0 ? draftDestinations : resourceDestinations;
 
   useEffect(() => {
-    if (typeof data?.port === "number") onPortChange?.(data.port);
-  }, [data?.port, onPortChange]);
+    if (!onPortChange) return;
+    if (typeof data?.port === "number") {
+      onPortChange(data.port);
+      return;
+    }
+    // Cold failure with no port: stop the parent subtitle from claiming "Loading…" forever.
+    if (loadState.kind === "failed-cold") onPortChange(null);
+  }, [data?.port, loadState.kind, onPortChange]);
 
   const dirty = useMemo(
     () => profile !== null && savedProfile !== null && JSON.stringify(profile) !== JSON.stringify(savedProfile),

@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useRef, useState, type KeyboardEvent } from "react";
 import ClaudeCode from "./ClaudeCode";
 import ClaudeDesktop from "./ClaudeDesktop";
 import { useT } from "../i18n/shared";
@@ -22,7 +22,14 @@ export default function Claude({ apiBase }: { apiBase: string }) {
   const seededDesktopPort = readCachedDesktopPort(apiBase);
   const [liveDesktopPort, setLiveDesktopPort] = useState<{ base: string; port: number | null } | null>(null);
   const desktopPort = liveDesktopPort?.base === apiBase ? liveDesktopPort.port : seededDesktopPort;
-  const setDesktopPort = (port: number | null) => setLiveDesktopPort({ base: apiBase, port });
+  const desktopSettled = liveDesktopPort?.base === apiBase;
+  // Skip no-op writes: an unstable callback + always-new object would loop with Desktop's effect.
+  const setDesktopPort = useCallback((port: number | null) => {
+    setLiveDesktopPort((prev) => {
+      if (prev?.base === apiBase && prev.port === port) return prev;
+      return { base: apiBase, port };
+    });
+  }, [apiBase]);
 
   const selectTab = (next: ClaudeTab) => {
     setTab(next);
@@ -59,7 +66,9 @@ export default function Claude({ apiBase }: { apiBase: string }) {
           <p className="page-sub">
             {desktopPort != null
               ? t("claudeDesktop.subtitle", { port: desktopPort })
-              : t("claudeDesktop.loading")}
+              : desktopSettled
+                ? t("claudeDesktop.loadFail")
+                : t("claudeDesktop.loading")}
           </p>
         )}
       </div>

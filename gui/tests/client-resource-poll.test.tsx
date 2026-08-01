@@ -591,3 +591,40 @@ test("pre-subscribe seed still quiet-revalidates on first subscribe", async () =
   });
   container.remove();
 });
+
+test("StrictMode remount still quiet-revalidates a pre-subscribe seed", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const { StrictMode } = await import("react");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `seed-strictmode-${Date.now()}`;
+  let fetches = 0;
+  setClientResourceData(KEY, "seeded");
+
+  function Page() {
+    const resource = useClientResource(KEY, async () => {
+      fetches += 1;
+      return "fresh";
+    });
+    return <span>{resource.data ?? ""}</span>;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <StrictMode>
+        <Page />
+      </StrictMode>,
+    );
+  });
+  // Dev StrictMode aborts the first subscribe's fetch; the remount must still revalidate.
+  await waitFor(() => container.textContent === "fresh");
+  expect(fetches).toBeGreaterThanOrEqual(1);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});

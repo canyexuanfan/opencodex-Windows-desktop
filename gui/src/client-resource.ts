@@ -230,6 +230,8 @@ async function runFetch<T>(
   try {
     const data = await fetcher(controller.signal);
     if (gen !== store.generation || controller.signal.aborted) return;
+    // Cleared on settle (not at subscribe) so StrictMode's aborted first mount still revalidates.
+    store.seedNeedsRevalidate = false;
     store.snapshot = {
       data,
       error: undefined,
@@ -240,6 +242,7 @@ async function runFetch<T>(
     };
   } catch (error) {
     if (gen !== store.generation || controller.signal.aborted) return;
+    store.seedNeedsRevalidate = false;
     store.snapshot = {
       ...store.snapshot,
       // Normalize so a loader that rejects with `undefined` still reads as a failure.
@@ -309,7 +312,6 @@ function subscribeResource<T>(
   // cached data across transient 0→1 resubscribe gaps when neither applies.
   if (store.subscriberCount === 1) {
     if (store.snapshot.data === undefined || store.seedNeedsRevalidate) {
-      store.seedNeedsRevalidate = false;
       void runFetch(store, fetcher, { replaceInflight: true, owner: onStoreChange });
     }
   }

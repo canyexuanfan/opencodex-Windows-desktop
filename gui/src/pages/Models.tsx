@@ -56,6 +56,12 @@ type CachedModelsPage = {
   contextCapValue: number;
 };
 
+/** Session JSON is untrusted — only seed rows that survive parseComboList (targets always arrays). */
+function readCachedCombos(value: unknown): ComboItem[] | null {
+  if (!Array.isArray(value)) return null;
+  return parseComboList({ combos: value });
+}
+
 export default function Models({ apiBase }: { apiBase: string }) {
   const t: TFn = useT();
   const cacheKey = `ocx.models.catalog.v1:${apiBase}`;
@@ -106,11 +112,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
   // null + combosError so an API error never masquerades as "no combos configured".
   const combosCacheKey = `ocx.models.combos.v1:${apiBase}`;
   const seededCombos = useMemo(() => {
-    const own = readSessionListCache<ComboItem[]>(combosCacheKey);
-    if (own) return own;
+    const own = readCachedCombos(readSessionListCache<unknown>(combosCacheKey));
+    if (own !== null) return own;
     // Reuse the Combos workspace session snapshot when Models opens first in the session.
-    const workspace = readSessionListCache<{ combos?: ComboItem[] }>(`ocx.combos.workspace.v1:${apiBase}`);
-    return Array.isArray(workspace?.combos) ? workspace.combos : null;
+    const workspace = readSessionListCache<{ combos?: unknown }>(`ocx.combos.workspace.v1:${apiBase}`);
+    return readCachedCombos(workspace?.combos);
   }, [apiBase, combosCacheKey]);
   const combosResource = useDataSurface<ComboItem[]>(
     `models-combos:${apiBase}`,
@@ -127,7 +133,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const combosState = combosResource.state;
   // Keep a previously painted card on a later failure so the catalog does not yank down.
   const combos = combosState.data ?? seededCombos;
-  const combosError = combosState.showError && combos === null;
+  // Announce failures even when stale/seeded rows remain (layout kept; freshness not faked).
+  const combosError = combosState.showError;
   const [combosOpen, setCombosOpen] = useState(readCombosOpen);
 
   // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
@@ -1053,23 +1060,35 @@ export default function Models({ apiBase }: { apiBase: string }) {
               <strong>{t("nav.combos")}</strong>
               <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
             </div>
-            <a className="btn btn-sm" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
+            <button type="button" className="btn btn-sm" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
+              {t("common.retry")}
+            </button>
           </div>
         </div>
       )}
-      {combos !== null && !combosError && combos.length === 0 && (
+      {combos !== null && combos.length === 0 && (
         <div className="card models-combos-card">
           <div className="row models-combos-empty-head">
             <div className="row models-field-row" style={{ minWidth: 0 }}>
               <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
               <strong>{t("nav.combos")}</strong>
-              <span className="muted text-label">{t("models.combosEmpty")}</span>
+              {combosError ? (
+                <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
+              ) : (
+                <span className="muted text-label">{t("models.combosEmpty")}</span>
+              )}
             </div>
-            <a className="btn btn-sm" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
+            {combosError ? (
+              <button type="button" className="btn btn-sm" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
+                {t("common.retry")}
+              </button>
+            ) : (
+              <a className="btn btn-sm" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
+            )}
           </div>
         </div>
       )}
-      {combos !== null && !combosError && combos.length > 0 && (
+      {combos !== null && combos.length > 0 && (
         <div className="card models-combos-card">
           <div className={`row group-head models-field-row${combosOpen ? " open" : ""}`}>
             <button
@@ -1083,8 +1102,17 @@ export default function Models({ apiBase }: { apiBase: string }) {
               <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
               <strong>{t("nav.combos")}</strong>
               <span className="muted mono text-label">{t("models.combosActive", { count: combos.length })}</span>
+              {combosError && (
+                <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
+              )}
             </button>
-            <a className="btn btn-sm btn-ghost" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
+            {combosError ? (
+              <button type="button" className="btn btn-sm btn-ghost" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
+                {t("common.retry")}
+              </button>
+            ) : (
+              <a className="btn btn-sm btn-ghost" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
+            )}
           </div>
           {combosOpen && (
             <div>
