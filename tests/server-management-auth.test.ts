@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -446,7 +447,7 @@ describe("management and data-plane credential separation", () => {
     } finally {
       await server.stop(true);
     }
-  });
+  }, SERVER_BUDGET_MS); // binds a real server + live fetches; windows runner measured ~5.04s against Bun's 5s default.
 
   test("an existing management token ACL hardening failure keeps management unavailable", async () => {
     delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
