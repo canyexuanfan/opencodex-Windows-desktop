@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,9 +11,12 @@ import { isProxyAdmissionSecret } from "../src/server/auth-cors";
 import {
   initializeManagementAuthState,
   issueGuiSession,
+  removeManagementTokenPathBestEffort,
   requireManagementAuth,
 } from "../src/server/management-auth";
 import {
+  hardenSecretPath,
+  hardenedSecretPathCountForTests,
   resetHardenedStateForTests,
   setIcaclsRunnerForTests,
   setPlatformForTests,
@@ -84,6 +88,34 @@ afterEach(() => {
 });
 
 describe("management and data-plane credential separation", () => {
+  test("management-token temp cleanup forgets successful ACL memos and retains failed removals", () => {
+    const temporary = join(testHome, ".admin-token.tmp");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    try {
+      writeFileSync(temporary, "secret", { mode: 0o600 });
+      hardenSecretPath(temporary, { required: true });
+      removeManagementTokenPathBestEffort(temporary);
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+
+      writeFileSync(temporary, "secret", { mode: 0o600 });
+      hardenSecretPath(temporary, { required: true });
+      removeManagementTokenPathBestEffort(temporary, () => {
+        throw Object.assign(new Error("injected unlink failure"), { code: "EPERM" });
+      });
+      expect(hardenedSecretPathCountForTests()).toBe(1);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+
   test("data and management environment tokens authorize only their own planes", async () => {
     saveConfig(remoteConfig());
     const server = startServer(0);
@@ -415,7 +447,7 @@ describe("management and data-plane credential separation", () => {
     } finally {
       await server.stop(true);
     }
-  });
+  }, SERVER_BUDGET_MS); // binds a real server + live fetches; windows runner measured ~5.04s against Bun's 5s default.
 
   test("an existing management token ACL hardening failure keeps management unavailable", async () => {
     delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
@@ -451,10 +483,10 @@ describe("management and data-plane credential separation", () => {
     setPlatformForTests("win32");
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
-      if (target.endsWith("admin-api-token")) {
-        return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+      if (target === testHome) {
+        return { success: false, exitCode: null, timedOut: true, stdout: "" };
       }
-      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
     });
     resetHardenedStateForTests();
     const state = initializeManagementAuthState(remoteConfig());
@@ -518,7 +550,13 @@ describe("management and data-plane credential separation", () => {
     saveConfig(remoteConfig());
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
-    setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    setIcaclsRunnerForTests(args => {
+      const target = args[0] ?? "";
+      if (target === testHome || target.endsWith("admin-api-token")) {
+        return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      }
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
     resetHardenedStateForTests();
 
     const state = initializeManagementAuthState(remoteConfig());

@@ -65,6 +65,7 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `accountPoolStickyLimit?` | `number` | `1` | Number of new/unbound task assignments retained on one round-robin selection before advancing. The counter advances when a task is bound, not after an upstream success. Range 1–100; only applies when `accountPoolStrategy` is `round-robin`. |
 | `upstreamFailoverThreshold?` | `number` | `3` | Consecutive transient upstream failures before future new sessions fail over to another eligible pool account. Set `0` to disable failure failover. |
 | `modelCacheTtlMs?` | `number` | `300000` | Freshness window for the per-provider `/models` cache (5 min). |
+| `appOwnedMemoryBudgetMb?` | `number` | `256` | Process-wide cap in MiB for evictable app-owned retained state (logs, caches, blobs, and continuation payloads), valid from 64 to 4096. This does not cap RSS or native runtime memory. |
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic prompt-cache policy: disabled, 5-minute ephemeral, or 1-hour extended. |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | Web-search sidecar options (see below). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | Vision sidecar options (see below). |

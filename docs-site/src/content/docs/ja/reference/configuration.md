@@ -59,6 +59,7 @@ namespaced selected id を bare id に変えます。
 | `accountPoolStickyLimit?` | `number` | `1` | 1 回の round-robin 選択で次へ進む前に保持する新規/未紐付けタスク割り当て数。カウンターは上流の成功後ではなくタスクの紐付け時に増えます。範囲 1–100。`accountPoolStrategy` が `round-robin` のときのみ。 |
 | `upstreamFailoverThreshold?` | `number` | `3` | 一時的な上流失敗が連続して起きたのち、以降の新しいセッションを別の適合 pool アカウントに failover する回数。`0` なら失敗ベースの failover をオフにします。 |
 | `modelCacheTtlMs?` | `number` | `300000` | プロバイダー別 `/models` キャッシュの有効期間（5 分）。 |
+| `appOwnedMemoryBudgetMb?` | `number` | `256` | 退避可能なアプリ所有の保持状態（ログ、キャッシュ、Blob、継続応答ペイロード）に対するプロセス全体の上限（MiB）です。有効範囲は 64〜4096 で、RSS やネイティブランタイムメモリの上限ではありません。 |
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic prompt cache ポリシー。オフ、5 分 ephemeral、1 時間 extended のいずれか。 |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | ウェブ検索サイドカーオプション（下記参照）。 |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | ビジョンサイドカーオプション（下記参照）。 |

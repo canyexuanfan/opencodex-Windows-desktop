@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
+import { endStorageMutation, getActiveStorageMutation, tryBeginStorageMutation } from "../src/storage/storage-mutation-coordinator";
 import {
   resetArchivedCleanupJobForTests,
   setArchivedCleanupJobTestHooks,
@@ -187,6 +188,15 @@ afterEach(async () => {
 });
 
 describe("storage mutation coordinator", () => {
+  test("cleanup restore and policy retain their exact mutation lease through worker join", () => {
+    const home = join(testDir, "exact-lease-home");
+    const owner = tryBeginStorageMutation("cleanup", home);
+    expect(owner.acquired).toBe(true);
+    endStorageMutation(join(testDir, "different-home"));
+    expect(getActiveStorageMutation(home)?.kind).toBe("cleanup");
+    if (owner.acquired) owner.lease.release();
+    expect(getActiveStorageMutation(home)).toBeNull();
+  });
   test("policy run is rejected while restore holds the shared mutation slot", async () => {
     const home = isolatedCodexHome!.path;
     setRestoreTrashJobTestHooks({ blockMs: 400, runInProcess: true });
