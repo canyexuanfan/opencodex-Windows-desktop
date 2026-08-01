@@ -79,6 +79,12 @@ the secret itself.
 `src/codex/inject.ts` writes one of two forms. The choice is not cosmetic: it decides whether Codex
 keeps its native provider id, which decides whether existing thread history still resolves.
 
+Every marker-owned injection is gated by an identity-checked live proxy. Sync resolves the actual
+listener from runtime state and `/healthz`, refreshes the catalog, then repeats the identity check
+immediately before writing Codex config. If the proxy stopped during that refresh, sync restores
+native routing and refuses the write; if a soft restart moved the listener, the final live port wins.
+The in-process management sync route applies the same final PID-matched `/healthz` gate.
+
 **Loopback (default).** A single marker-owned root override, no provider table:
 
 ```toml

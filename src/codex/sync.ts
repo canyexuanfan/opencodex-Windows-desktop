@@ -5,7 +5,7 @@ import { applyProxyEnv, loadConfig } from "../config";
 import type { OcxConfig } from "../types";
 import { collectOrcaCodexHomeDiagnostic } from "./home";
 import { summarizeComboCatalogOmissions, type ComboCatalogOmission } from "./catalog/aggregation";
-import { findLiveProxy } from "../server/proxy-liveness";
+import { findLiveProxy, proxyIdentityAt } from "../server/proxy-liveness";
 
 export interface CodexSyncResult {
   ok: boolean;
@@ -35,11 +35,13 @@ export interface CodexSyncDeps {
 
 export interface CodexSyncOptions {
   /**
-   * The management API is executing inside the already-serving proxy process. Its request URL
-   * therefore proves the listener is alive; passing that port avoids a second self-probe while
-   * retaining the liveness gate for every CLI/desktop caller.
+   * The management API is executing inside the serving proxy process. Passing its listener port
+   * skips the initial runtime-file lookup, but a PID-matched /healthz probe still runs immediately
+   * before injection so a stopped or replaced listener cannot receive marker-owned routing.
    */
   trustedServerPort?: number;
+  /** Test seam for the final trusted-port /healthz probe. */
+  proxyIdentityAt?: typeof proxyIdentityAt;
 }
 
 const defaultDeps: CodexSyncDeps = {
@@ -113,9 +115,9 @@ export async function syncModelsToCodex(
       message,
     };
   }
-  const p = live.port;
-  if (port !== undefined && port !== p) {
-    log?.error(`Codex sync corrected a stale port ${port} to the live OpenCodex port ${p}.`);
+  const initialPort = live.port;
+  if (port !== undefined && port !== initialPort) {
+    log?.error(`Codex sync corrected a stale port ${port} to the live OpenCodex port ${initialPort}.`);
   }
 
   applyProxyEnv(config); // `ocx ensure`/`ocx sync` fetch provider models outside the server process
@@ -153,6 +155,44 @@ export async function syncModelsToCodex(
   } catch (e) {
     warning = `catalog sync skipped: ${e instanceof Error ? e.message : String(e)}`;
     log?.error(warning);
+  }
+
+  // The first liveness check intentionally happens before the potentially slow catalog refresh,
+  // but that check is not a lease. The proxy can stop (and restore Codex) while the catalog is
+  // being fetched; injecting the original port here would recreate the dead-route bug. Recheck
+  // immediately before the file write and use the newly observed port when a soft start moved.
+  const finalLive = options.trustedServerPort !== undefined
+    ? await (options.proxyIdentityAt ?? proxyIdentityAt)(
+      options.trustedServerPort,
+      { hostname: config.hostname, expectedPid: process.pid },
+    ).then(identity => identity
+      ? { pid: identity.pid, port: options.trustedServerPort!, hostname: config.hostname, source: "runtime" as const }
+      : null)
+    : await locateLive({
+      configFn: () => ({ port: config.port, hostname: config.hostname }),
+    });
+  if (!finalLive) {
+    const restored = (deps.restoreNativeCodex ?? restoreNativeCodex)();
+    const message = restored.success
+      ? "Codex sync skipped: OpenCodex proxy stopped during catalog refresh; native Codex routing was restored."
+      : `Codex sync skipped: OpenCodex proxy stopped during catalog refresh, and native Codex routing could not be restored: ${restored.message}`;
+    log?.error(message);
+    reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
+    return {
+      ok: false,
+      added,
+      catalogPath,
+      catalogExists,
+      catalogWritten,
+      cacheSynced,
+      message,
+      ...(warning ? { warning } : {}),
+      ...(comboOmissions.length > 0 ? { comboOmissions } : {}),
+    };
+  }
+  const p = finalLive.port;
+  if (p !== initialPort) {
+    log?.error(`Codex sync refreshed the live OpenCodex port from ${initialPort} to ${p}.`);
   }
 
   const result = await deps.injectCodexConfig(p, config, { catalogPath: catalogPathForInjection });

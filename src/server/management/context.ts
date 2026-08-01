@@ -1,5 +1,6 @@
 import type { OcxConfig } from "../../types";
 import type { StartupInstallAction } from "../startup-action-control";
+import type { proxyIdentityAt } from "../proxy-liveness";
 
 export interface ManagementApiDeps {
   toggleCodexMultiAgentV2?: (enabled: boolean) => void;
@@ -18,6 +19,8 @@ export interface ManagementApiDeps {
     action: StartupInstallAction,
     options?: { repair?: boolean },
   ) => Promise<{ message: string }>;
+  /** Test seam for the final trusted-port /healthz gate used by POST /api/sync. */
+  proxyIdentityAt?: typeof proxyIdentityAt;
 }
 
 

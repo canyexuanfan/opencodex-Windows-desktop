@@ -131,6 +131,110 @@ describe("GUI/CLI Codex sync backend", () => {
     expect(errors).toContain("Codex sync corrected a stale port 1496 to the live OpenCodex port 37692.");
   });
 
+  test("rechecks liveness after catalog refresh and refuses a route whose proxy stopped", async () => {
+    let probeCount = 0;
+    let injected = false;
+    let restored = false;
+    const result = await syncModelsToCodex(1496, config, null, {
+      refreshCodexModelCatalog: async () => ({
+        added: 1,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: true,
+        cacheSynced: true,
+      }),
+      injectCodexConfig: async () => {
+        injected = true;
+        return { success: true, message: "unexpected injection" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => {
+        probeCount += 1;
+        return probeCount === 1 ? { pid: 42, port: 37692, source: "runtime" as const } : null;
+      },
+      restoreNativeCodex: () => {
+        restored = true;
+        return { success: true, message: "native restored" };
+      },
+    });
+
+    expect(probeCount).toBe(2);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("stopped during catalog refresh");
+    expect(injected).toBe(false);
+    expect(restored).toBe(true);
+  });
+
+  test("uses the refreshed live port when the proxy moves during catalog refresh", async () => {
+    let probeCount = 0;
+    let injectedPort = 0;
+    const errors: string[] = [];
+    const result = await syncModelsToCodex(1496, config, {
+      log: () => {},
+      error: line => errors.push(String(line)),
+    }, {
+      refreshCodexModelCatalog: async () => ({
+        added: 0,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: false,
+        cacheSynced: false,
+      }),
+      injectCodexConfig: async (port) => {
+        injectedPort = port;
+        return { success: true, message: "injected" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => {
+        probeCount += 1;
+        return {
+          pid: 42,
+          port: probeCount === 1 ? 37692 : 45678,
+          source: "runtime" as const,
+        };
+      },
+    });
+
+    expect(probeCount).toBe(2);
+    expect(result.ok).toBe(true);
+    expect(injectedPort).toBe(45678);
+    expect(errors).toContain("Codex sync refreshed the live OpenCodex port from 37692 to 45678.");
+  });
+
+  test("rechecks a trusted in-process port with /healthz before injection", async () => {
+    let probed = 0;
+    let injected = false;
+    let restored = false;
+    const result = await syncModelsToCodex(12345, config, null, {
+      refreshCodexModelCatalog: async () => ({
+        added: 0,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: false,
+        cacheSynced: false,
+      }),
+      injectCodexConfig: async () => {
+        injected = true;
+        return { success: true, message: "unexpected injection" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      restoreNativeCodex: () => {
+        restored = true;
+        return { success: true, message: "native restored" };
+      },
+    }, { trustedServerPort: 12345, proxyIdentityAt: async (port, options) => {
+      probed += 1;
+      expect(port).toBe(12345);
+      expect(options.expectedPid).toBe(process.pid);
+      return null;
+    } });
+
+    expect(probed).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(injected).toBe(false);
+    expect(restored).toBe(true);
+  });
+
   test("surfaces combo catalog omissions in sync result and CLI stderr (#484)", async () => {
     const logs: string[] = [];
     const errors: string[] = [];
@@ -256,6 +360,7 @@ describe("GUI/CLI Codex sync backend", () => {
         new Request("http://localhost/api/sync", { method: "POST", headers: { Host: "localhost" } }),
         new URL("http://localhost/api/sync"),
         config,
+        { proxyIdentityAt: async () => ({ pid: process.pid }) },
       );
       console.log(JSON.stringify({ status: response.status, body: await response.json() }));
     `], {
