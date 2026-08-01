@@ -31,11 +31,11 @@ describe("GitHub Actions hardening", () => {
   test("cross-platform CI keeps bounded jobs and immutable action references", async () => {
     const workflow = await readText(".github/workflows/ci.yml");
 
-    // The cross-platform `test` job sits at 20 minutes: a green Windows run measured
-    // 11.8 min against 4.6 on Linux, and the previous 12-minute ceiling left ~12s of
-    // margin, so runner variance rather than the code decided the verdict (#717).
-    // `npm-global-smoke` stays at 8; it finishes in 1-2 minutes.
-    expect(count(workflow, "timeout-minutes: 20")).toBe(1);
+    // The cross-platform `test` job sits at 30 minutes after the 2026-08-01
+    // state-store merge pushed Windows past the prior 20m kill on #827. The
+    // earlier 12→20 bump was for #717 variance; do not raise again without
+    // shrinking the suite. `npm-global-smoke` stays at 8; it finishes in 1-2 minutes.
+    expect(count(workflow, "timeout-minutes: 30")).toBe(1);
     expect(count(workflow, "timeout-minutes: 8")).toBe(1);
     // Both jobs must stay bounded — an unbounded job can hang a queue for hours.
     expect(count(workflow, "timeout-minutes:")).toBe(2);
