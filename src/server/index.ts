@@ -524,9 +524,37 @@ export function startServer(port?: number) {
         }
         // OpenAI list shape: native gpt bare + routed models namespaced "<provider>/<id>"
         // (pure availability list — disabled natives are omitted entirely).
+        // Grok Build discovers models through this endpoint too, and its model picker only
+        // enables /effort for entries that advertise the reasoning ladder in the Grok model
+        // catalog shape (supports_reasoning_effort + reasoning_efforts[]). The Codex catalog
+        // branch above already carries the same configured tiers, so mirror them here. Extra
+        // fields are ignored by plain OpenAI clients.
+        const grokEffortOption = (value: string, isDefault: boolean) => ({
+          value,
+          label: `${value[0].toUpperCase()}${value.slice(1)} Effort`,
+          ...(isDefault ? { default: true } : {}),
+        });
         const data = [
           ...visibleNativeSlugs(config).map(id => ({ id, object: "model", created: 0, owned_by: "openai" })),
-          ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => ({ id: m.alias ?? `${m.provider}/${m.id}`, object: "model", created: 0, owned_by: m.owned_by ?? m.provider })),
+          ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => {
+            const efforts = m.reasoningEfforts ?? [];
+            const defaultEffort = m.defaultReasoningEffort && efforts.includes(m.defaultReasoningEffort)
+              ? m.defaultReasoningEffort
+              : efforts[0];
+            return {
+              id: m.alias ?? `${m.provider}/${m.id}`,
+              object: "model",
+              created: 0,
+              owned_by: m.owned_by ?? m.provider,
+              ...(efforts.length > 0
+                ? {
+                  supports_reasoning_effort: true,
+                  reasoning_effort: defaultEffort,
+                  reasoning_efforts: efforts.map(effort => grokEffortOption(effort, effort === defaultEffort)),
+                }
+                : {}),
+            };
+          }),
         ];
         return jsonResponse({ object: "list", data }, 200, req, config);
       }
