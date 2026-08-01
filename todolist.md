@@ -776,3 +776,9 @@ Codex / Claude Code / 其他现有客户端
 - [x] 当前 Setup/Portable 可读取签名主体 `CN=十七°`，包哈希和签名目标已记录；本机未永久安装自签根。
 - [x] 临时验证流程会从包内提取签名证书、按精确 thumbprint 导入 `CurrentUser\Root`，结束后确认根证书与临时目录均已清理。
 - [ ] 当前机器执行 `signtool verify /pa /all /v` 及有界的 `/pa /q` 复核均在证书链初始化/工具阶段超时，未取得 `Valid`；必须在受信测试机完成，不把本机超时当作产品失败或成功。
+
+# CLI/headless 功能对齐增量（2026-08-01）
+- [x] 使用项目 bundled Bun 1.3.14 执行 `tests/cli-headless-parity.test.ts`，前 7 个对齐用例通过，覆盖 GUI 管理端点映射、Provider 编辑、模型上下文、组合目标、Agent effort/roster、API Key 创建和 Grok include。
+- [ ] 第 8 个配置原子写入用例的业务断言已执行，但测试 finally 清理临时 home 时收到 Windows 沙箱 `EPERM/EACCES`，因此整组结果记录为 7 pass/1 fail，不能替代完整 CLI 回归。
+- [x] 失败临时根已按精确路径清理；未修改 CLI 业务代码或通过放宽断言绕过失败。
+- [ ] 根完整测试、干净 Windows VM、真实 Provider/签名信任链和交互视觉验收仍待外部环境完成。
