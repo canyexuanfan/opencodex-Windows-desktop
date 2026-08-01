@@ -7,7 +7,7 @@ const packageJson = JSON.parse(readFileSync(path.resolve(import.meta.dir, "..", 
     files?: string[];
     extraResources?: Array<{ from?: string; to?: string; filter?: string[] }>;
     win?: { target?: Array<{ target?: string; arch?: string[] }>; requestedExecutionLevel?: string };
-    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; allowToChangeInstallationDirectory?: boolean; unicode?: boolean; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
+    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; unicode?: boolean; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
     portable?: { artifactName?: string };
   };
 };
@@ -19,6 +19,7 @@ const resourcePreparation = readFileSync(
   path.resolve(import.meta.dir, "..", "..", "scripts", "prepare-desktop-resources.ts"),
   "utf8",
 );
+const customInstaller = readFileSync(path.resolve(import.meta.dir, "..", "build", "installer.nsh"), "utf8");
 
 describe("desktop package contract", () => {
   test("ships source, GUI, production resources and tray assets outside asar", () => {
@@ -59,6 +60,9 @@ describe("desktop package contract", () => {
     expect(packageJson.build?.nsis?.unicode).toBe(true);
     expect(assistedInstaller).toContain("!ifdef allowToChangeInstallationDirectory");
     expect(assistedInstaller).toContain('StrCpy $INSTDIR "$INSTDIR\\${APP_FILENAME}"');
+    expect(packageJson.build?.nsis?.include).toBe("build/installer.nsh");
+    expect(customInstaller).toContain("${StdUtils.GetFileNamePart} $0 \"$INSTDIR\"");
+    expect(customInstaller).toContain('StrCpy $INSTDIR "$INSTDIR\\${APP_FILENAME}"');
   });
 
   test("copies production dependencies instead of preserving development cache hardlinks", () => {
