@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort, verifyPidIdentity } from "../config";
 import { isProcessAlive, killProxy } from "../lib/process-control";
 import { listListenPids, reclaimListenPort } from "../server/port-reclaim";
+import { dropWindowsTcpRowsForLocalPort } from "../server/windows-tcp-drop";
 import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
 import { isServiceInstalled, isServiceViable, stopWindows } from "../service";
 import {
@@ -100,6 +101,32 @@ const defaultCheckDeps: UpdateCheckDeps = {
 
 function nodeBin(): string {
   return process.platform === "win32" ? "node.exe" : "node";
+}
+
+/**
+ * Bind probe via a fresh Node process. The update worker's Bun runtime can return
+ * spurious listen errors while npm replaces its own binary; Node is not that binary.
+ */
+async function nodePortAvailable(port: number, hostname = "127.0.0.1"): Promise<boolean> {
+  const script = [
+    "const net=require('net');",
+    "const s=net.createServer();",
+    "s.once('error',e=>process.exit(e&&e.code==='EADDRINUSE'?2:0));",
+    `s.listen(${Math.trunc(port)},${JSON.stringify(hostname)},()=>s.close(()=>process.exit(0)));`,
+    "setTimeout(()=>process.exit(3),2500);",
+  ].join("");
+  return await new Promise(resolve => {
+    try {
+      const r = spawnSync(nodeBin(), ["-e", script], {
+        windowsHide: true,
+        timeout: 4000,
+        stdio: "ignore",
+      });
+      resolve(r.status === 0);
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 function packageLauncherPath(): string {
@@ -573,9 +600,18 @@ async function restartAfterUpdate(
       updateJob(job, {}, `Live holder(s) remain on port ${port}; not starting on another port. Retry 'ocx start --port ${port}'.`);
       return;
     }
-    // No live LISTEN owner — bind probes can still fail while npm replaces the
-    // worker's Bun binary. Attempt the pinned start anyway.
-    updateJob(job, {}, `No live holders on port ${port}; attempting pinned start despite reclaim timeout.`);
+    // No live LISTEN owner — Bun bind probes can still fail while npm replaces
+    // the worker binary. Wait for a fresh Node bind to succeed, then start.
+    updateJob(job, {}, `No live holders on port ${port}; waiting for Node bind probe before pinned start.`);
+    const sleep = io.sleepMs ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+    const probeDeadline = Date.now() + 15_000;
+    while (Date.now() < probeDeadline) {
+      if (process.platform === "win32") {
+        try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
+      }
+      if (await nodePortAvailable(port, hostname)) break;
+      await sleep(500);
+    }
   }
   (io.spawnStart ?? spawnDetachedStart)(job, job.installer, port);
 }

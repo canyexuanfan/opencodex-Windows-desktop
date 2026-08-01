@@ -282,7 +282,7 @@ describe("GUI update execution decisions", () => {
       },
     });
     expect(spawned).toEqual([{ port: 10100 }]);
-    expect(readUpdateJob(job.id)?.log.some(line => line.includes("attempting pinned start despite reclaim timeout"))).toBe(true);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("waiting for Node bind probe before pinned start"))).toBe(true);
   });
 
   test("service restart waits on the captured port and clears OCX_BAKE_PORT after install", async () => {
