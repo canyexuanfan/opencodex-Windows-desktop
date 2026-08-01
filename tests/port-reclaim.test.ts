@@ -462,4 +462,34 @@ describe("reclaimListenPort", () => {
     })).resolves.toBe(true);
     expect(killed).toEqual([9001]);
   });
+
+  test("allowlisted PID that fails ocx verify still gets killed and does not block TCP drop", async () => {
+    const killed: number[] = [];
+    const dropped: number[] = [];
+    let available = false;
+    await expect(reclaimListenPort(10100, "127.0.0.1", {
+      timeoutMs: 200,
+      intervalMs: 20,
+      scanIntervalMs: 20,
+      dropTcpRows: true,
+      killOcxHolders: true,
+      onlyKillPids: [14772],
+      isAvailableFn: async () => available,
+      // Windows often keeps a dead pre-update owner listed; cmdline probe already failed.
+      listListenPidsFn: () => (available ? [] : [14772]),
+      isAliveFn: () => !available,
+      verifyOcxFn: () => null,
+      killFn: pid => {
+        killed.push(pid);
+      },
+      dropTcpFn: port => {
+        dropped.push(port);
+        available = true;
+        return { dropped: 1, skippedIpv6: 0 };
+      },
+      sleepMs: async () => {},
+    })).resolves.toBe(true);
+    expect(killed).toEqual([14772]);
+    expect(dropped).toEqual([10100]);
+  });
 });

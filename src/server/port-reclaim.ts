@@ -220,19 +220,37 @@ export async function reclaimListenPort(
         if (pid === process.pid) continue;
         if (!isAliveFn(pid)) continue; // Windows may still list a dead owner briefly
         const isOcx = verifyOcxFn(pid) === pid;
+        const allowlisted = allowedKillPids.has(pid);
+        // Pre-update PIDs can lose their cmdline mid-teardown (verify → null) while
+        // Windows still lists them on the LISTEN row. Treating that as a foreign
+        // holder blocks SetTcpEntry and leaves bind() failing for the full window.
+        // Caller-allowlisted PIDs: best-effort kill, then fall through to TCP drop
+        // (do not set foreignLive).
         if (!isOcx) {
+          if (mayKill && allowlisted) {
+            if (!killed.has(pid)) {
+              try {
+                killFn(pid);
+                killed.add(pid);
+              } catch {
+                /* kill failed — still allow TCP drop for this trusted PID */
+              }
+            }
+            if (!isAliveFn(pid)) killed.delete(pid);
+            continue;
+          }
           foreignLive = true;
           continue;
         }
-        const allowlisted = allowedKillPids.has(pid) || killAllOcx;
-        if (!mayKill || !allowlisted) {
+        const mayKillThis = allowlisted || killAllOcx;
+        if (!mayKill || !mayKillThis) {
           // Healthy / intentional ocx proxy — never steal its port.
           protectedOcxListener = true;
           continue;
         }
         if (!killed.has(pid)) {
           // Revalidate immediately before termination.
-          if (isAliveFn(pid) && verifyOcxFn(pid) === pid && (allowedKillPids.has(pid) || killAllOcx)) {
+          if (isAliveFn(pid) && verifyOcxFn(pid) === pid && mayKillThis) {
             try {
               killFn(pid);
               killed.add(pid);
