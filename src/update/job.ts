@@ -528,6 +528,7 @@ async function restartAfterUpdate(
     // reinstall wrappers that bake `--port`.
     const preServiceAllow = reclaimKillAllowlist();
     const freed = await waitFn(port, hostname, reclaimOptsFor(preServiceAllow));
+    let skipServiceInstall = false;
     if (!freed) {
       updateJob(
         job,
@@ -535,39 +536,48 @@ async function restartAfterUpdate(
         `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; refusing to hop — reinstall may fail until the port is free.`
           + ` ${formatPortHolders(port, listPids, verifyOcx, preServiceAllow)}`,
       );
-    }
-    const prevBake = process.env.OCX_BAKE_PORT;
-    process.env.OCX_BAKE_PORT = String(Math.trunc(port));
-    let serviceOk = false;
-    try {
-      const run = io.runService ?? ((j, bin, args) => runLoggedCommand(j, bin, args, RESTART_TIMEOUT_MS));
-      const result = run(job, cmd.bin, cmd.args);
-      serviceOk = result.status === 0;
-      if (!serviceOk) {
-        // On Windows, `schtasks /create` requires an elevated token. The update worker
-        // inherits the (non-admin) proxy's privileges, so a service-managed install
-        // updated from the GUI or a normal terminal fails here with access denied.
-        // Falling back to a direct proxy start keeps the update from leaving the proxy
-        // stopped; the stale service manager can be refreshed later with an admin
-        // `ocx service install`.
-        updateJob(job, {}, `Service reinstall failed (exit ${result.status ?? "?"}); falling back to a direct proxy start. Run 'ocx service install' as administrator to refresh the background service manager.`);
+      const liveAfter = listPids(port).filter(pid => pid !== process.pid && aliveFn(pid));
+      if (liveAfter.length === 0) {
+        // Non-elevated `service install` will UAC-fail anyway; skip straight to
+        // the direct-start fallthrough instead of burning another minute on it.
+        updateJob(job, {}, "Skipping service reinstall after reclaim timeout with no live holders; falling back to a direct proxy start.");
+        skipServiceInstall = true;
       }
-    } finally {
-      if (prevBake === undefined) delete process.env.OCX_BAKE_PORT;
-      else process.env.OCX_BAKE_PORT = prevBake;
     }
-    if (serviceOk) {
-      // Exit 0 is not enough: a reinstall can leave stale/missing assets (or a
-      // disabled/conflicting manager) that never brings /healthz back. Fall through
-      // to a direct start so browser-dashboard updates do not require a viable
-      // Background Service for recovery.
-      const viable = (io.serviceViableFn ?? isServiceViable)();
-      if (viable) return;
-      updateJob(
-        job,
-        {},
-        "Service reinstall exited 0 but the background service is not viable (stale or missing assets, disabled, or conflicting); falling back to a direct proxy start.",
-      );
+    if (!skipServiceInstall) {
+      const prevBake = process.env.OCX_BAKE_PORT;
+      process.env.OCX_BAKE_PORT = String(Math.trunc(port));
+      let serviceOk = false;
+      try {
+        const run = io.runService ?? ((j, bin, args) => runLoggedCommand(j, bin, args, RESTART_TIMEOUT_MS));
+        const result = run(job, cmd.bin, cmd.args);
+        serviceOk = result.status === 0;
+        if (!serviceOk) {
+          // On Windows, `schtasks /create` requires an elevated token. The update worker
+          // inherits the (non-admin) proxy's privileges, so a service-managed install
+          // updated from the GUI or a normal terminal fails here with access denied.
+          // Falling back to a direct proxy start keeps the update from leaving the proxy
+          // stopped; the stale service manager can be refreshed later with an admin
+          // `ocx service install`.
+          updateJob(job, {}, `Service reinstall failed (exit ${result.status ?? "?"}); falling back to a direct proxy start. Run 'ocx service install' as administrator to refresh the background service manager.`);
+        }
+      } finally {
+        if (prevBake === undefined) delete process.env.OCX_BAKE_PORT;
+        else process.env.OCX_BAKE_PORT = prevBake;
+      }
+      if (serviceOk) {
+        // Exit 0 is not enough: a reinstall can leave stale/missing assets (or a
+        // disabled/conflicting manager) that never brings /healthz back. Fall through
+        // to a direct start so browser-dashboard updates do not require a viable
+        // Background Service for recovery.
+        const viable = (io.serviceViableFn ?? isServiceViable)();
+        if (viable) return;
+        updateJob(
+          job,
+          {},
+          "Service reinstall exited 0 but the background service is not viable (stale or missing assets, disabled, or conflicting); falling back to a direct proxy start.",
+        );
+      }
     }
     // Fall through to the direct proxy start below so the update never leaves the
     // proxy stopped when the service reinstall could not run or did not leave a
