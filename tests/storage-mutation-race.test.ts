@@ -164,13 +164,9 @@ function removeTree(path: string): void {
 
 beforeEach(async () => {
   previousHome = process.env.OPENCODEX_HOME;
-  isolatedCodexHome = installIsolatedCodexHome("ocx-storage-mutation-race-codex-");
-  testDir = mkdtempSync(join(tmpdir(), "ocx-storage-mutation-race-"));
-  process.env.OPENCODEX_HOME = testDir;
-  saveConfig(baseConfig());
-  // startServer arms the unref'd policy scheduler; bare server.stop does not
-  // clear it. A tick after enablePolicyAndRun can spawn a Worker behind the
-  // suite drain and trip Windows `bun test --isolate` reclaim.
+  // Join leftover Workers before allocating homes / mutating OPENCODEX_HOME —
+  // same order as installPolicyApiHarness (startServer also arms the unref'd
+  // policy scheduler; bare server.stop does not clear it).
   stopStorageCleanupScheduler();
   cancelQueuedStorageWorkerSpawns();
   await resetRestoreTrashJobForTestsAsync();
@@ -180,6 +176,11 @@ beforeEach(async () => {
   // as resetRestoreTrashJobForTestsAsync / policy-job's mutation-slot finally.
   resetArchivedCleanupJobForTests();
   resetStorageMutationCoordinatorForTests();
+  isolatedCodexHome = installIsolatedCodexHome("ocx-storage-mutation-race-codex-");
+  testDir = mkdtempSync(join(tmpdir(), "ocx-storage-mutation-race-"));
+  process.env.OPENCODEX_HOME = testDir;
+  saveConfig(baseConfig());
+  stopStorageCleanupScheduler();
 });
 
 afterEach(async () => {

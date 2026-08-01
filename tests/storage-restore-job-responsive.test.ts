@@ -54,13 +54,15 @@ beforeEach(async () => {
   previousHome = process.env.OPENCODEX_HOME;
   previousCleanupTestHooks = process.env.OPENCODEX_CLEANUP_TEST_HOOKS;
   process.env.OPENCODEX_CLEANUP_TEST_HOOKS = "1";
+  // Join leftover Workers before allocating homes / mutating OPENCODEX_HOME.
+  stopStorageCleanupScheduler();
+  await resetRestoreTrashJobForTestsAsync();
+  await drainStorageWorkers();
   isolatedCodexHome = installIsolatedCodexHome("ocx-restore-job-responsive-codex-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-restore-job-responsive-"));
   process.env.OPENCODEX_HOME = testDir;
   saveConfig(baseConfig());
   stopStorageCleanupScheduler();
-  await resetRestoreTrashJobForTestsAsync();
-  await drainStorageWorkers();
 });
 
 afterEach(async () => {

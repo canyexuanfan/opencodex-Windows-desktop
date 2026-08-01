@@ -56,13 +56,15 @@ function seedArchived(codexHome: string): void {
 
 beforeEach(async () => {
   previousHome = process.env.OPENCODEX_HOME;
+  // Join leftover Workers before allocating homes / mutating OPENCODEX_HOME.
+  stopStorageCleanupScheduler();
+  await resetStorageCleanupPolicyJobForTestsAsync();
+  await drainStorageWorkers();
   isolatedCodexHome = installIsolatedCodexHome("ocx-policy-job-responsive-codex-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-policy-job-responsive-"));
   process.env.OPENCODEX_HOME = testDir;
   saveConfig(baseConfig());
   stopStorageCleanupScheduler();
-  await resetStorageCleanupPolicyJobForTestsAsync();
-  await drainStorageWorkers();
 });
 
 afterEach(async () => {
