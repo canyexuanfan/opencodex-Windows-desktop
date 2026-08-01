@@ -35,19 +35,16 @@ describe("ocx restore back", () => {
     expect(syncCase).toContain("process.exitCode = 1");
   });
 
-  test("sync exits nonzero when managed-default cleanup is ambiguous", () => {
+  test("sync exits nonzero when no healthy proxy is available", () => {
+    const closed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const unavailablePort = closed.port;
+    closed.stop(true);
     const codexHome = mkdtempSync(join(tmpdir(), "ocx-cli-sync-codex-"));
     const ocxHome = mkdtempSync(join(tmpdir(), "ocx-cli-sync-home-"));
     try {
-      writeFileSync(join(codexHome, "config.toml"), [
-        "# Managed by opencodex: native subagent defaults table",
-        "[agents]",
-        "# Managed by opencodex: native subagent default",
-        "",
-        'default_subagent_model = "gpt-5.6-sol"',
-        "",
-      ].join("\n"), "utf8");
+      writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.6-sol"\n', "utf8");
       writeFileSync(join(ocxHome, "config.json"), JSON.stringify({
+        port: unavailablePort,
         providers: {},
         defaultProvider: "openai",
         checkForUpdates: false,
@@ -60,7 +57,7 @@ describe("ocx restore back", () => {
       });
 
       expect(result.status).toBe(1);
-      expect(`${result.stdout}\n${result.stderr}`).toContain("Codex config injection refused");
+      expect(`${result.stdout}\n${result.stderr}`).toContain("no healthy OpenCodex proxy found");
       expect(result.stderr).toContain("Codex sync did not complete");
     } finally {
       rmSync(codexHome, { recursive: true, force: true });
