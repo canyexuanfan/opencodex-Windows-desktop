@@ -1,8 +1,17 @@
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort, verifyPidIdentity } from "../config";
+import {
+  atomicWriteFile,
+  getConfigDir,
+  loadConfig,
+  readPid,
+  readRuntimePort,
+  removePid,
+  removeRuntimePort,
+  verifyPidIdentity,
+} from "../config";
 import { isProcessAlive, killProxy } from "../lib/process-control";
 import { listListenPids, reclaimListenPort } from "../server/port-reclaim";
 import { dropWindowsTcpRowsForLocalPort } from "../server/windows-tcp-drop";
@@ -450,18 +459,60 @@ function runLoggedCommand(job: UpdateJobState, bin: string, args: string[], time
   return { status: result.status, signal: result.signal };
 }
 
+/**
+ * Tear down anything that would make `ocx start` exit 1 with "already running"
+ * (service wrapper respawn, stale pidfile + live /healthz) before a pinned spawn.
+ */
+function preparePortForPinnedStart(
+  job: UpdateJobState,
+  port: number,
+  listPids: (port: number) => number[],
+  aliveFn: (pid: number) => boolean,
+): void {
+  if (process.platform === "win32") {
+    try { stopWindows(); } catch { /* already stopped */ }
+    killWindowsServiceWrapperProcesses();
+  }
+  const pid = readPid();
+  if (pid) {
+    updateJob(job, {}, `Clearing pre-start proxy PID ${pid} before pinned start.`);
+    try { killProxy(pid); } catch { /* best-effort */ }
+    removePid(pid);
+  } else {
+    removePid();
+  }
+  removeRuntimePort();
+  for (const holder of listPids(port)) {
+    if (holder === process.pid || !aliveFn(holder)) continue;
+    updateJob(job, {}, `Stopping live listen holder PID ${holder} on port ${port} before pinned start.`);
+    try { killProxy(holder); } catch { /* best-effort */ }
+  }
+  if (process.platform === "win32") {
+    try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
+  }
+}
+
 function spawnDetachedStart(
   job: UpdateJobState,
   installer: Installer,
   port?: number,
-): ReturnType<typeof spawn> {
+): ChildProcess {
   const cmd = restartCommand(false, installer, packageLauncherPath(), port);
   const env = { ...process.env };
   delete env.OCX_SERVICE;
   updateJob(job, {}, `$ ${cmd.display}`);
+  let stdio: "ignore" | [ "ignore", number, number ] = "ignore";
+  let logFd: number | undefined;
+  try {
+    const logPath = join(getConfigDir(), "update-pinned-start.log");
+    mkdirSync(getConfigDir(), { recursive: true });
+    logFd = openSync(logPath, "a");
+    writeSync(logFd, `\n--- ${new Date().toISOString()} ---\n$ ${cmd.display}\n`);
+    stdio = ["ignore", logFd, logFd];
+  } catch { /* fall back to ignored stdio */ }
   const child = spawn(cmd.bin, cmd.args, {
     detached: true,
-    stdio: "ignore",
+    stdio,
     windowsHide: true,
     env,
   });
@@ -698,10 +749,27 @@ async function restartAfterUpdate(
   const probe = io.probeProxy ?? (async (p: number, host?: string) => (
     !!(await proxyIdentityAt(p, { hostname: host }))
   ));
+  const probeIdentity = io.probeProxyIdentity ?? defaultProbeProxyIdentity;
+  const expectedVersion = typeof job.latestVersion === "string" && job.latestVersion.length > 0
+    ? job.latestVersion
+    : null;
+  // Service wrappers can respawn a listener during reclaim; if it already reports the
+  // update target version, do not spawn a second start that exits "already running".
+  {
+    const identity = await probeIdentity(port, hostname);
+    if (identity && expectedVersion && identity.version === expectedVersion) {
+      updateJob(
+        job,
+        {},
+        `Proxy already healthy on ${hostname}:${port} at ${expectedVersion}; skipping pinned start.`,
+      );
+      return;
+    }
+  }
   const attempts = 3;
   // Longer than published hard-pin reclaim (30s) so a slow start can still report healthy.
   const perAttemptHealthMs = 40_000;
-  let lastChild: ReturnType<typeof spawn> | null = null;
+  let lastChild: ChildProcess | null = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1) {
       updateJob(
@@ -714,12 +782,9 @@ async function restartAfterUpdate(
         try { killProxy(lastChild.pid); } catch { /* best-effort */ }
       }
       lastChild = null;
-      await waitForStrictRuntimeBind(port, hostname, 15_000, sleep);
-    } else if (freed) {
-      // Reclaim reported free via the worker's lenient probe; still require a strict
-      // Bun bind before spawning a published start that treats any listen error as busy.
-      await waitForStrictRuntimeBind(port, hostname, 10_000, sleep);
     }
+    preparePortForPinnedStart(job, port, listPids, aliveFn);
+    await waitForStrictRuntimeBind(port, hostname, attempt === 1 ? 10_000 : 15_000, sleep);
     lastChild = spawnDetachedStart(job, job.installer, port);
     const healthDeadline = Date.now() + perAttemptHealthMs;
     while (Date.now() < healthDeadline) {
