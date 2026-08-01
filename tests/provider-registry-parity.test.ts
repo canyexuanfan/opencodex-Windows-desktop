@@ -44,6 +44,26 @@ describe("provider registry parity", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  test("known stale dashboard URLs do not re-enter the provider catalogs", () => {
+    const dashboardUrls = [
+      ...PROVIDER_REGISTRY.map(entry => entry.dashboardUrl),
+      ...FREE_PROVIDER_DIRECTORY.map(entry => entry.dashboardUrl),
+    ].filter(Boolean);
+
+    expect(dashboardUrls).not.toContain("https://fireworks.ai/account/api-keys");
+    expect(dashboardUrls).not.toContain("https://xiaomimimo.com");
+    expect(dashboardUrls).toContain("https://app.fireworks.ai/settings/users/api-keys");
+    expect(dashboardUrls).toContain("https://platform.xiaomimimo.com");
+  });
+
+  test("seeded default models remain selectable", () => {
+    for (const entry of PROVIDER_REGISTRY) {
+      if (!entry.defaultModel || !entry.models?.length) continue;
+
+      expect(entry.models).toContain(entry.defaultModel);
+    }
+  });
+
   test("key-login export is derived from the registry", () => {
     expect(KEY_LOGIN_PROVIDERS).toEqual(deriveKeyLoginMap());
     expect(Object.keys(KEY_LOGIN_PROVIDERS)).toEqual(EXPECTED_KEY_PROVIDER_IDS);

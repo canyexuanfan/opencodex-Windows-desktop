@@ -17,6 +17,9 @@ test("preload exposes only fixed lifecycle channels", () => {
   const preload = readFileSync(resolve(sourceRoot, "preload.cts"), "utf8");
   expect(preload).toContain("contextBridge.exposeInMainWorld");
   expect(preload).toContain("desktop:get-status");
+  expect(preload).toContain("desktop:status-changed");
+  expect(preload).toContain("ipcRenderer.on(CHANNELS.statusChanged");
+  expect(preload).toContain("ipcRenderer.removeListener(CHANNELS.statusChanged");
   expect(preload).not.toContain("execute");
   expect(preload).not.toContain("readFile");
 });

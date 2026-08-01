@@ -28,6 +28,7 @@ import { getDesktopLifecycleApi } from "./desktop-lifecycle";
 installApiAuthFetch();
 
 type Theme = "light" | "dark" | "system";
+type DesktopProxyState = "ready" | "starting" | "stopped" | "failed";
 
 const PAGE_TKEY: Record<Page, TKey> = {
   dashboard: "nav.dashboard",
@@ -69,6 +70,18 @@ function readRuntimeVersion(data: unknown): string | null {
   if (!data || typeof data !== "object" || !("version" in data)) return null;
   const version = (data as { version?: unknown }).version;
   return typeof version === "string" && version.length > 0 ? version : null;
+}
+
+function readDesktopProxyState(status: unknown): DesktopProxyState | null {
+  if (!status || typeof status !== "object" || !("state" in status)) return null;
+  const state = (status as { state?: unknown }).state;
+  return state === "ready" || state === "starting" || state === "stopped" || state === "failed" ? state : null;
+}
+
+function readDesktopProxyOwnership(status: unknown): "desktop" | "external" | null {
+  if (!status || typeof status !== "object" || !("ownership" in status)) return null;
+  const ownership = (status as { ownership?: unknown }).ownership;
+  return ownership === "desktop" || ownership === "external" ? ownership : null;
 }
 
 function readStoredTheme(): Theme {
@@ -121,17 +134,26 @@ export default function App() {
   const displayedVersion: string = healthPoll.data ?? __APP_VERSION__;
 
   const [stopping, setStopping] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [desktopProxyState, setDesktopProxyState] = useState<DesktopProxyState | null>(null);
   const [externalDesktopProxy, setExternalDesktopProxy] = useState(false);
+  const applyDesktopStatus = useCallback((status: unknown) => {
+    const state = readDesktopProxyState(status);
+    if (state) setDesktopProxyState(state);
+    setExternalDesktopProxy(readDesktopProxyOwnership(status) === "external");
+  }, []);
   useEffect(() => {
     const desktop = getDesktopLifecycleApi();
     if (!desktop) return;
     let active = true;
     void desktop.getStatus().then(status => {
-      if (!active || !status || typeof status !== "object") return;
-      setExternalDesktopProxy((status as { ownership?: unknown }).ownership === "external");
+      if (active) applyDesktopStatus(status);
     }).catch(() => {});
-    return () => { active = false; };
-  }, []);
+    const unsubscribe = desktop.onStatusChange?.(status => {
+      if (active) applyDesktopStatus(status);
+    });
+    return () => { active = false; unsubscribe?.(); };
+  }, [applyDesktopStatus]);
   // Claude navigation row also owns the connection toggle.
   const fetchClaudeEnabled = useCallback(async (signal: AbortSignal) => {
     const res = await fetch(`${API_BASE}/api/claude-code`, { signal });
@@ -202,7 +224,10 @@ export default function App() {
     const desktop = getDesktopLifecycleApi();
     if (desktop) {
       try {
-        await desktop.stopProxy();
+        const status = await desktop.stopProxy();
+        applyDesktopStatus(status);
+        setDesktopProxyState("stopped");
+        setStopping(false);
       } catch {
         setStopping(false);
         alert(t("dash.stopFailed", { status: "desktop" }));
@@ -220,6 +245,31 @@ export default function App() {
       alert(outcome.message);
     }
   };
+  const handleStart = async () => {
+    const desktop = getDesktopLifecycleApi();
+    if (!desktop) return;
+    setStarting(true);
+    setDesktopProxyState("starting");
+    try {
+      const status = await desktop.startProxy();
+      applyDesktopStatus(status);
+    } catch {
+      setDesktopProxyState("failed");
+      alert(t("dash.startFailed"));
+    } finally {
+      setStarting(false);
+    }
+  };
+  const desktopProxyInactive = desktopProxyState === "stopped" || desktopProxyState === "failed";
+  const proxyToggleLabel = externalDesktopProxy
+    ? t("dash.externalManaged")
+    : starting || desktopProxyState === "starting"
+      ? t("dash.starting")
+      : desktopProxyInactive
+        ? t("dash.start")
+        : (stopping ? t("dash.stopping") : t("dash.stop"));
+  const proxyToggleDisabled = externalDesktopProxy || stopping || starting || desktopProxyState === "starting";
+  const handleProxyToggle = desktopProxyInactive ? handleStart : handleStop;
 
   const brand = (
     <div className="brand">
@@ -239,8 +289,8 @@ export default function App() {
           <IconMenu />
         </button>
         {brand}
-        <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping || externalDesktopProxy}
-          aria-label={externalDesktopProxy ? t("dash.externalManaged") : t("dash.stop")} title={externalDesktopProxy ? t("dash.externalManaged") : t("dash.stop")}>
+        <button type="button" className={`theme-toggle stop-toggle${desktopProxyInactive ? " proxy-toggle--start" : ""}`} onClick={handleProxyToggle} disabled={proxyToggleDisabled}
+          aria-label={proxyToggleLabel} title={proxyToggleLabel}>
           <IconPower />
         </button>
       </header>
@@ -299,9 +349,9 @@ export default function App() {
             aria-label={`${t("theme.label")}: ${t(THEME_TKEY[theme])}`} title={`${t("theme.label")}: ${t(THEME_TKEY[theme])}`}>
             <ThemeIcon /> <span className="mode">{t(THEME_TKEY[theme])}</span>
           </button>
-          <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping || externalDesktopProxy}
-            aria-label={externalDesktopProxy ? t("dash.externalManaged") : t("dash.stop")} title={externalDesktopProxy ? t("dash.externalManaged") : t("dash.stop")}>
-            <IconPower /> <span className="mode">{externalDesktopProxy ? t("dash.externalManaged") : stopping ? t("dash.stopping") : t("dash.stop")}</span>
+          <button type="button" className={`theme-toggle stop-toggle${desktopProxyInactive ? " proxy-toggle--start" : ""}`} onClick={handleProxyToggle} disabled={proxyToggleDisabled}
+            aria-label={proxyToggleLabel} title={proxyToggleLabel}>
+            <IconPower /> <span className="mode">{proxyToggleLabel}</span>
           </button>
           <SidebarGithubRow
             apiBase={API_BASE}

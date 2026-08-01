@@ -66,4 +66,15 @@ describe("App proxy stop", () => {
     expect(handler).toContain("setStopping(false)");
     expect(handler).toContain("alert(outcome.message)");
   });
+
+  test("desktop stop keeps App mounted and switches the sidebar control to start", async () => {
+    const app = await Bun.file(new URL("../src/App.tsx", import.meta.url)).text();
+
+    expect(app).toContain("const handleStart = async () =>");
+    expect(app).toContain("await desktop.startProxy()");
+    expect(app).toContain("setDesktopProxyState(\"stopped\")");
+    expect(app).toContain("desktopProxyInactive");
+    expect(app).toContain("dash.start");
+    expect(app).toContain("handleProxyToggle");
+  });
 });

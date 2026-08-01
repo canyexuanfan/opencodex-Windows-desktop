@@ -122,7 +122,7 @@ const CONNECTABLE: Record<string, ConnectableOverride> = {
   deepinfra: openAi("https://api.deepinfra.com/v1/openai", "https://deepinfra.com/dash/api_keys", { supportLevel: "supported", verification: "official", documentationUrl: "https://deepinfra.com/docs/openai_api" }),
   deepseek: openAi("https://api.deepseek.com", "https://platform.deepseek.com/api_keys", { supportLevel: "supported", verification: "official", documentationUrl: "https://api-docs.deepseek.com/api/list-models" }),
   doubao: openAi("https://ark.cn-beijing.volces.com/api/v3", "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey", { verification: "official" }),
-  fireworks: openAi("https://api.fireworks.ai/inference/v1", "https://fireworks.ai/account/api-keys", { supportLevel: "supported", verification: "official", documentationUrl: "https://docs.fireworks.ai/api-reference/list-models", modelsUrl: "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless=true" }),
+  fireworks: openAi("https://api.fireworks.ai/inference/v1", "https://app.fireworks.ai/settings/users/api-keys", { supportLevel: "supported", verification: "official", documentationUrl: "https://docs.fireworks.ai/api-reference/list-models", modelsUrl: "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless=true" }),
   "freemodel-dev": openAi("https://api.freemodel.dev/v1", "https://freemodel.dev", { modelsUrl: "https://api.freemodel.dev/v1/models" }),
   hyperbolic: openAi("https://api.hyperbolic.xyz/v1", "https://app.hyperbolic.xyz/settings", { verification: "official" }),
   longcat: openAi("https://api.longcat.chat/openai/v1", "https://longcat.chat", { verification: "official", discovery: "static", liveModels: false, models: ["LongCat-2.0"] }),
