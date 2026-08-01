@@ -28,7 +28,8 @@ existing multi-key failover runs. Default off → zero behavior change for exist
   dropped, never a config-rejecting error; the outer provider schema stays passthrough).
   Load-time degradation: one hand-edited invalid optional field (e.g. `attempts: 0`) is dropped
   with a warning instead of tripping the whole schema and hiding all providers behind a default
-  config; the management write boundary still rejects invalid policies.
+  config; misnamed keys (e.g. `attempt`) are warned about too; the management write boundary
+  still rejects invalid policies.
 - `src/providers/key-failover.ts`: `rateLimitRetryPolicyFor` (normalize/default) and
   `rateLimitRetryDelayMs` (Retry-After seconds/HTTP-date → capped, else `intervalMs`),
   reusing the existing `parseRetryAfterMs` cooldown parser; the fixed fallback is capped at
@@ -50,9 +51,10 @@ existing multi-key failover runs. Default off → zero behavior change for exist
   - image/video bridge and web-search sidecar loops (`src/images/loop.ts`,
     `src/web-search/loop.ts`) — before their `on429` key rotation;
   - Anthropic terminal-guard continuations — before key/account failover.
-  Every surface releases the unread 429 body BEFORE the backoff, records the
-  `rate-limit-429` recovery kind on replay sends, and (bridges) restarts the response-header
-  deadline after each deliberate wait.
+  Every surface releases (and awaits the cancellation of) the unread 429 body BEFORE the
+  backoff, records the `rate-limit-429` recovery kind on replay sends, and (bridges) clears the
+  old response-header deadline before the wait and starts a fresh one afterward, re-checking
+  client cancellation before telemetry and replay.
   Covers Responses, chat completions, and routed Claude messages (they all enter
   `handleResponses`).
 
@@ -84,7 +86,9 @@ existing multi-key failover runs. Default off → zero behavior change for exist
   `attempts + 1`.
 - Header deadlines: the image/video and web-search bridge loops restart their response-header
   deadline after each deliberate wait, so backoffs never consume the connect budget and a
-  rate-limit wait is never misattributed as a 504 header timeout.
+  rate-limit wait is never misattributed as a 504 header timeout. The old deadline is cleared
+  BEFORE the sleep and client cancellation is re-checked after it, so 499 always wins over a
+  stale-deadline edge.
 - Expired `Retry-After`: a valid HTTP-date already in the past retries immediately (same as
   numeric `Retry-After: 0`) instead of falling back to the fixed interval.
 - Recovery observability: every retry surface records the `rate-limit-429` recovery kind

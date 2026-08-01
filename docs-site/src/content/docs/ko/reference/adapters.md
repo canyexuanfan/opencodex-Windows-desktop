@@ -46,8 +46,9 @@ interface ProviderAdapter {
 **인증:** `forward`(호출자 헤더 중계) 또는 `key`.
 
 `key` 인증에서는 [`retryOn429`](/ko/reference/configuration/)도 여기에 적용됩니다: 사전 스트림
-429는 번역된 `openai-chat`/Anthropic 요청 경로와 동일하게 같은 키로 동일 요청을 대기 후
-재전송합니다. 커스텀 `runTurn` 전송은 HTTP 재시도 루프에 포함되지 않습니다.
+429는 번역된 `openai-chat`/Anthropic 요청 경로와 동일하게 다른 처리나 페일오버보다 먼저
+같은 키로 동일 요청을 대기 후 재전송합니다. 커스텀 `runTurn` 전송은 HTTP 재시도 루프에
+포함되지 않습니다.
 
 - `forward` URL → `{baseUrl}/responses`. `key` provider는 기본적으로 기존 `{baseUrl}/v1/responses` 구성을 사용합니다.
 - `key` provider는 검증된 상대 `responsesPath`를 설정할 수 있습니다. adapter는 `baseUrl` 끝의 `/` 하나를 제거하고 `{trimmedBaseUrl}{responsesPath}`로 전송합니다. Ark Agent Plan은 `baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3"`와 `responsesPath: "/responses"`를 사용합니다.

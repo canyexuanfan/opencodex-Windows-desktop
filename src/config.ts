@@ -1146,6 +1146,12 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
       if (isValid(value)) cleaned[key] = value;
       else console.warn(`⚠️  config.json providers.${name}.retryOn429.${key} ${JSON.stringify(value)} is invalid — ignoring the field`);
     }
+    const knownKeys = new Set(fields.map(([key]) => key));
+    for (const key of Object.keys(policy as Record<string, unknown>)) {
+      if (!knownKeys.has(key)) {
+        console.warn(`⚠️  config.json providers.${name}.retryOn429.${key} is not a recognized field — ignoring it`);
+      }
+    }
     p.retryOn429 = cleaned;
   }
 }

@@ -233,9 +233,11 @@ defense for those providers; the final 429 still carries `Retry-After` for clien
 it. Concurrent requests each honor their own policy — there is no process-wide shared cooldown
 (unlike the Kiro pattern), so a rate-limit storm multiplies upstream volume by at most
 `attempts + poolKeys` per request (same-key replays, then failover keys). Every surface
-releases the unread 429 body before the backoff, records the `rate-limit-429` recovery kind on
-replay sends, and the bridge loops restart their response-header deadline after each deliberate
-wait so backoffs never consume the connect budget or surface as a 504. The wait is abort-aware:
+releases (and awaits the cancellation of) the unread 429 body before the backoff, records the
+`rate-limit-429` recovery kind on replay sends, and the bridge loops clear the old
+response-header deadline before the wait and start a fresh one afterward — client cancellation
+is re-checked after the wait, so 499 always wins over a stale-deadline edge, and backoffs never
+consume the connect budget or surface as a 504. The wait is abort-aware:
 once the server observes the client disconnect (Bun propagates it asynchronously, observed
 1–10 s), the sleep is interrupted, the unread 429 body is released, and the request is
 cancelled with 499 before any replay; because the propagation is async, a replay may precede

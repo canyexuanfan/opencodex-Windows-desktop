@@ -42,7 +42,8 @@ labels local presets separately; those normally omit both `authMode` and `apiKey
 The [`retryOn429`](/reference/configuration/) same-key 429 replay applies only to API-key
 providers (`authMode: "key"`). OAuth, forward, and local presets are excluded — their
 credentials must never be replayed on the same token, and local runtimes have no remote key to
-preserve.
+preserve. It is opt-in: when the option is absent the feature is off; object presence enables
+it unless `enabled: false`.
 
 ## 1. ChatGPT login (forward / passthrough)
 

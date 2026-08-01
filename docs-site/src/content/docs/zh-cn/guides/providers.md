@@ -36,7 +36,7 @@ shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保�
 
 [`retryOn429`](/zh-cn/reference/configuration/)（同 key 的 429 重试）仅适用于 API-key 提供商
 （`authMode: "key"`）。OAuth、forward 与本地预设均被排除——同一 token 绝不可重放，本地运行时
-也没有需要保留的远程 key。
+也没有需要保留的远程 key。仅在配置后启用，默认关闭；配置了对象即启用，除非 `enabled: false`。
 
 ## 1. ChatGPT 登录（forward / 透传）
 

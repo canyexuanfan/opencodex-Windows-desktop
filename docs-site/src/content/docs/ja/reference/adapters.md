@@ -39,8 +39,9 @@ interface ProviderAdapter {
 **認証:** `forward`（呼び出し元ヘッダー中継）または `key`。
 
 `key` 認証では、[`retryOn429`](/ja/reference/configuration/) もここに適用されます: プリストリームの
-429 は、翻訳された `openai-chat` / Anthropic リクエスト経路と同様に、同じキーで同一リクエストを
-待機して再送します。カスタム `runTurn` トランスポートは HTTP リトライ ループの対象外です。
+429 は、翻訳された `openai-chat` / Anthropic リクエスト経路と同様に、他の処理やフェイルオーバーに
+先立って、同じキーで同一リクエストを待機して再送します。カスタム `runTurn` トランスポートは
+HTTP リトライ ループの対象外です。
 
 - `forward` URL → `{baseUrl}/responses`。`key` provider はデフォルトで従来の `{baseUrl}/v1/responses` 構築を使います。
 - `key` provider は検証済みの相対 `responsesPath` を設定できます。adapter は `baseUrl` 末尾の `/` を 1 つ除き、`{trimmedBaseUrl}{responsesPath}` に送信します。Ark Agent Plan では `baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3"` と `responsesPath: "/responses"` を使います。

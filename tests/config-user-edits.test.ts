@@ -117,13 +117,14 @@ test("an invalid retryOn429 field degrades at load instead of discarding the con
         baseUrl: "http://127.0.0.1:1/v1",
         apiKey: "k",
         allowPrivateNetwork: true,
-        retryOn429: { attempts: 0, intervalMs: 120, respectRetryAfter: false },
+        retryOn429: { attempts: 0, attempt: 5, intervalMs: 120, respectRetryAfter: false },
       },
     },
   });
   const live = loadConfig();
   expect(live.providers.test).toBeDefined();
-  // Invalid field dropped with a warning; valid fields kept; missing fields defaulted.
+  // Invalid field (attempts: 0) and the misnamed key (attempt) dropped with warnings;
+  // valid fields kept; missing fields defaulted.
   expect(live.providers.test.retryOn429).toEqual({ intervalMs: 120, respectRetryAfter: false });
 });
 

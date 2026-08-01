@@ -38,6 +38,7 @@ max input 922,000 で `*-pro` virtual ID は公開状態を維持し、wire で�
 [`retryOn429`](/ja/reference/configuration/)（同一キーでの 429 リトライ）は API キー プロバイダー
 （`authMode: "key"`）のみに適用されます。OAuth・forward・ローカル プリセットは除外されます —
 同じトークンを再送すべきではなく、ローカルランタイムには保存すべきリモートキーがありません。
+オプトインです: オプションが無ければ無効、オブジェクトがあれば `enabled: false` でない限り有効です。
 
 ## 1. ChatGPT ログイン(forward / パススルー)
 

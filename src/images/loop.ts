@@ -478,7 +478,11 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         rateLimitRetries += 1;
         // Release the unread 429 body before the backoff (only the header is needed for the wait).
         const retryAfterHeader = prepared.response.headers.get("retry-after");
-        try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // AWAIT the cancellation so the resource-release guarantee is real, not best-effort.
+        try { await prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // The old header deadline must not stay armed across the deliberate wait: clear it
+        // before sleeping so a stale expiry can never race the client-cancel path.
+        headerDeadline.clear();
         try {
           await sleepWithAbort(
             rateLimitRetryDelayMs(rateLimitRetryPolicy, retryAfterHeader, Date.now()),
@@ -487,10 +491,11 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         } catch {
           throw new LoopError(499, "client closed request during image-bridge");
         }
+        // Client cancellation wins over any stale-deadline edge: re-check before telemetry/replay.
+        if (signal.aborted) throw new LoopError(499, "client closed request during image-bridge");
         // The deliberate backoff must not consume the cumulative response-header deadline:
-        // restart it so the replay gets a fresh connect budget (504 stays reserved for real
+        // start a fresh one so the replay gets a new connect budget (504 stays reserved for real
         // upstream latency).
-        headerDeadline.clear();
         headerDeadline = clearableDeadline(connectTimeoutMs, signal);
         deps.onRateLimitRetrySend?.();
         // Stall-watchdog seam between bounded retry fetches.
