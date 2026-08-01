@@ -435,4 +435,31 @@ describe("reclaimListenPort", () => {
     })).resolves.toBe(true);
     expect(dropped).toEqual([10100]);
   });
+
+  test("killAllOcxOnPort kills ocx listeners absent from the allowlist snapshot", async () => {
+    const killed: number[] = [];
+    let holder = 9001;
+    let available = false;
+    await expect(reclaimListenPort(10100, "127.0.0.1", {
+      timeoutMs: 200,
+      intervalMs: 20,
+      scanIntervalMs: 20,
+      dropTcpRows: false,
+      killOcxHolders: true,
+      killAllOcxOnPort: true,
+      onlyKillPids: [100], // pre-update PID — respawned child is 9001
+      isAvailableFn: async () => available,
+      listListenPidsFn: () => (holder > 0 ? [holder] : []),
+      isAliveFn: pid => pid === holder,
+      verifyOcxFn: pid => pid,
+      killFn: pid => {
+        killed.push(pid);
+        if (pid === holder) holder = 0;
+      },
+      sleepMs: async () => {
+        if (holder === 0) available = true;
+      },
+    })).resolves.toBe(true);
+    expect(killed).toEqual([9001]);
+  });
 });

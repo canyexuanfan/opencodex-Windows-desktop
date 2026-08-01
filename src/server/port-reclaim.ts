@@ -19,13 +19,23 @@ export type ReclaimListenPortOptions = WaitForPortOptions & {
   /**
    * When true AND `onlyKillPids` is a non-empty allowlist, those PIDs may be
    * killed after revalidation. Default false — never kill without an allowlist.
+   * When {@link killAllOcxOnPort} is also true, any ocx listener on this port
+   * may be killed even if it is not in `onlyKillPids`.
    */
   killOcxHolders?: boolean;
   /**
    * Explicit PIDs the caller just stopped / hard-killed. An omitted or empty
-   * list means no process may be killed.
+   * list means no process may be killed — unless {@link killAllOcxOnPort} is set.
    */
   onlyKillPids?: number[];
+  /**
+   * When true with `killOcxHolders`, every live ocx listener on this port may be
+   * killed (re-checked each scan). Used by post-update restart so a Windows
+   * service wrapper that respawns a *new* bun PID mid-reclaim cannot stay
+   * protected just because it was absent from the pre-wait allowlist snapshot.
+   * Never kills foreign (non-ocx) processes.
+   */
+  killAllOcxOnPort?: boolean;
   /**
    * On Windows, force-delete IPv4 TCP rows for this local port via SetTcpEntry.
    * Default true on win32. Never kills foreign processes, never runs while a
@@ -157,9 +167,9 @@ export function listListenPids(port: number): number[] {
 
 /**
  * Wait until `port` can bind.
- * Never kills a process unless `killOcxHolders === true` and `onlyKillPids` is a
- * non-empty allowlist of PIDs the caller itself just stopped — then revalidates
- * immediately before each kill.
+ * Never kills a process unless `killOcxHolders === true` and either
+ * `onlyKillPids` is a non-empty allowlist or `killAllOcxOnPort` is set — then
+ * revalidates immediately before each kill.
  * Never kills foreign processes. Never drops TCP rows while a live foreign or
  * protected ocx listener owns the port, or when the listener scan failed.
  */
@@ -174,7 +184,8 @@ export async function reclaimListenPort(
   const allowedKillPids = new Set(
     (opts.onlyKillPids ?? []).filter(pid => Number.isSafeInteger(pid) && pid > 0),
   );
-  const mayKill = opts.killOcxHolders === true && allowedKillPids.size > 0;
+  const killAllOcx = opts.killAllOcxOnPort === true;
+  const mayKill = opts.killOcxHolders === true && (allowedKillPids.size > 0 || killAllOcx);
   const dropTcpRows = opts.dropTcpRows ?? process.platform === "win32";
   const listFn = opts.listListenPidsFn ?? scanListenPids;
   const isAliveFn = opts.isAliveFn ?? isProcessAlive;
@@ -213,14 +224,15 @@ export async function reclaimListenPort(
           foreignLive = true;
           continue;
         }
-        if (!mayKill || !allowedKillPids.has(pid)) {
+        const allowlisted = allowedKillPids.has(pid) || killAllOcx;
+        if (!mayKill || !allowlisted) {
           // Healthy / intentional ocx proxy — never steal its port.
           protectedOcxListener = true;
           continue;
         }
         if (!killed.has(pid)) {
           // Revalidate immediately before termination.
-          if (isAliveFn(pid) && verifyOcxFn(pid) === pid && allowedKillPids.has(pid)) {
+          if (isAliveFn(pid) && verifyOcxFn(pid) === pid && (allowedKillPids.has(pid) || killAllOcx)) {
             try {
               killFn(pid);
               killed.add(pid);
@@ -233,8 +245,14 @@ export async function reclaimListenPort(
             protectedOcxListener = true;
           }
         }
-        // Only reset TCP rows after confirmed process death.
-        if (isAliveFn(pid)) protectedOcxListener = true;
+        // Respawning supervisors (Windows service :loop) mint a new PID after each
+        // kill — clear the per-PID "already tried" bit once the process is gone so a
+        // later child with a reused slot is not skipped, and keep reclaiming while live.
+        if (!isAliveFn(pid)) {
+          killed.delete(pid);
+        } else {
+          protectedOcxListener = true;
+        }
       }
 
       if (foreignLive || protectedOcxListener) {

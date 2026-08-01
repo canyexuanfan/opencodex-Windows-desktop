@@ -6,7 +6,7 @@ import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort, ve
 import { isProcessAlive, killProxy } from "../lib/process-control";
 import { listListenPids, reclaimListenPort } from "../server/port-reclaim";
 import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
-import { isServiceInstalled, isServiceViable } from "../service";
+import { isServiceInstalled, isServiceViable, stopWindows } from "../service";
 import {
   type Channel,
   type Installer,
@@ -470,16 +470,32 @@ async function restartAfterUpdate(
     timeoutMs: RESTART_PORT_RECLAIM_MS,
     intervalMs: 100,
     scanIntervalMs: 500,
-    killOcxHolders: onlyKillPids.length > 0,
+    killOcxHolders: true,
+    // Windows scheduler wrappers can mint a *new* bun PID during the wait; keep
+    // killing every ocx listener on this port, not only the pre-wait snapshot.
+    killAllOcxOnPort: true,
     onlyKillPids,
   });
 
   if (serviceInstalled) {
+    // schtasks /end often leaves the hidden cmd/wscript wrapper alive; its :loop
+    // respawns `ocx start` a few seconds later and races port reclaim. End the
+    // task again and best-effort kill those wrappers before we touch the socket.
+    if (process.platform === "win32") {
+      try { stopWindows(); } catch { /* already stopped */ }
+      killWindowsServiceWrapperProcesses();
+    }
     // Stop-first update already unloaded the service; reclaim the socket, then
     // reinstall wrappers that bake `--port`.
-    const freed = await waitFn(port, hostname, reclaimOptsFor(reclaimKillAllowlist()));
+    const preServiceAllow = reclaimKillAllowlist();
+    const freed = await waitFn(port, hostname, reclaimOptsFor(preServiceAllow));
     if (!freed) {
-      updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; refusing to hop — reinstall may fail until the port is free.`);
+      updateJob(
+        job,
+        {},
+        `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; refusing to hop — reinstall may fail until the port is free.`
+          + ` ${formatPortHolders(port, listPids, verifyOcx, preServiceAllow)}`,
+      );
     }
     const prevBake = process.env.OCX_BAKE_PORT;
     process.env.OCX_BAKE_PORT = String(Math.trunc(port));
@@ -524,15 +540,69 @@ async function restartAfterUpdate(
     updateJob(job, {}, `Stopping current proxy PID ${pid}.`);
     killProxy(pid);
   }
+  if (process.platform === "win32" && serviceInstalled) {
+    try { stopWindows(); } catch { /* already stopped */ }
+    killWindowsServiceWrapperProcesses();
+  }
   // Reclaim the captured port before the pinned start. Spawning `--port` while the old
   // socket is still busy is how Windows updates used to fail health checks (or hop).
-  // Kill allowlist = pre-update PID + leftover ocx listeners on this port only.
-  const freed = await waitFn(port, hostname, reclaimOptsFor(reclaimKillAllowlist()));
+  // killAllOcxOnPort covers wrapper-respawned bun PIDs minted during the wait.
+  const directAllow = reclaimKillAllowlist();
+  const freed = await waitFn(port, hostname, reclaimOptsFor(directAllow));
   if (!freed) {
-    updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket); not starting on another port. Retry 'ocx start --port ${port}'.`);
+    updateJob(
+      job,
+      {},
+      `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket); not starting on another port. Retry 'ocx start --port ${port}'.`
+        + ` ${formatPortHolders(port, listPids, verifyOcx, directAllow)}`,
+    );
     return;
   }
   (io.spawnStart ?? spawnDetachedStart)(job, job.installer, port);
+}
+
+/** Compact listen-holder summary for update-job logs when reclaim fails. */
+function formatPortHolders(
+  port: number,
+  listPids: (port: number) => number[],
+  verifyOcx: (pid: number) => number | null,
+  allow: number[],
+): string {
+  const allowSet = new Set(allow);
+  const holders = listPids(port).map(pid => {
+    const tags = [
+      verifyOcx(pid) === pid ? "ocx" : "foreign",
+      allowSet.has(pid) ? "allow" : "deny",
+      isProcessAlive(pid) ? "live" : "dead",
+    ];
+    return `${pid}(${tags.join(",")})`;
+  });
+  return `holders=[${holders.join(", ") || "none"}] allow=[${allow.join(", ") || "none"}]`;
+}
+
+/**
+ * Best-effort termination of surviving Windows scheduler launcher/wrapper processes.
+ * `schtasks /end` ends the task instance but often leaves wscript/cmd running the
+ * `:loop` batch, which brings the proxy back during post-update reclaim.
+ */
+function killWindowsServiceWrapperProcesses(): void {
+  if (process.platform !== "win32") return;
+  try {
+    const ps = [
+      "$pats = @('opencodex-service.cmd','opencodex-service-launcher.vbs');",
+      "Get-CimInstance Win32_Process | Where-Object {",
+      "  $c = $_.CommandLine; if (-not $c) { return $false };",
+      "  foreach ($p in $pats) { if ($c -like ('*' + $p + '*')) { return $true } };",
+      "  $false",
+      "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+    ].join(" ");
+    spawnSync("powershell.exe", [
+      "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
+      "-Command", ps,
+    ], { stdio: "ignore", timeout: 5000, windowsHide: true });
+  } catch {
+    /* best-effort */
+  }
 }
 
 /** Exposed for tests: drives the non-service restart path with injected io. */

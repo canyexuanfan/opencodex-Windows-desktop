@@ -119,7 +119,7 @@ describe("GUI update execution decisions", () => {
   test("restart waits on the captured pre-update port unconditionally and pins the spawn to it", async () => {
     // The stop-first update flow clears pid/runtime state before restartAfterUpdate runs,
     // so the wait must fire even with no readable pid — driven here via the io seam.
-    const waited: Array<{ port: number; hostname: string; opts?: { killOcxHolders?: boolean; onlyKillPids?: number[] } }> = [];
+    const waited: Array<{ port: number; hostname: string; opts?: { killOcxHolders?: boolean; onlyKillPids?: number[]; killAllOcxOnPort?: boolean } }> = [];
     const spawned: Array<{ port?: number }> = [];
     const job: UpdateJobState = {
       id: "restart-io",
@@ -145,6 +145,7 @@ describe("GUI update execution decisions", () => {
           opts: {
             killOcxHolders: opts?.killOcxHolders,
             onlyKillPids: opts?.onlyKillPids,
+            killAllOcxOnPort: (opts as { killAllOcxOnPort?: boolean } | undefined)?.killAllOcxOnPort,
           },
         });
         return true;
@@ -156,13 +157,13 @@ describe("GUI update execution decisions", () => {
     expect(waited).toEqual([{
       port: 12345,
       hostname: "127.0.0.1",
-      opts: { killOcxHolders: false, onlyKillPids: [] },
+      opts: { killOcxHolders: true, onlyKillPids: [], killAllOcxOnPort: true },
     }]);
     expect(spawned).toEqual([{ port: 12345 }]);
   });
 
-  test("restart reclaim allowlists the trusted oldPid", async () => {
-    const optsSeen: Array<{ killOcxHolders?: boolean; onlyKillPids?: number[] }> = [];
+  test("restart reclaim allowlists the trusted oldPid and kills any ocx on the port", async () => {
+    const optsSeen: Array<{ killOcxHolders?: boolean; onlyKillPids?: number[]; killAllOcxOnPort?: boolean }> = [];
     const job: UpdateJobState = {
       id: "restart-oldpid",
       status: "restarting",
@@ -184,12 +185,13 @@ describe("GUI update execution decisions", () => {
         optsSeen.push({
           killOcxHolders: opts?.killOcxHolders,
           onlyKillPids: opts?.onlyKillPids,
+          killAllOcxOnPort: (opts as { killAllOcxOnPort?: boolean } | undefined)?.killAllOcxOnPort,
         });
         return true;
       },
       spawnStart: () => {},
     });
-    expect(optsSeen).toEqual([{ killOcxHolders: true, onlyKillPids: [4242] }]);
+    expect(optsSeen).toEqual([{ killOcxHolders: true, onlyKillPids: [4242], killAllOcxOnPort: true }]);
   });
 
   test("restart reclaim also allowlists leftover ocx listeners on the captured port", async () => {
