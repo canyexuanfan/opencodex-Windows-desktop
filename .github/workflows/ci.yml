@@ -59,8 +59,10 @@ jobs:
   #
   # What actually keeps untrusted code off a self-hosted runner lives OUTSIDE
   # this file, where a PR cannot reach it: the fork-PR approval policy
-  # (`all_external_contributors`), runner-group restrictions, and the judgement
-  # of whoever clicks approve. GitHub's own guidance is to avoid self-hosted
+  # (`all_external_contributors`) and the judgement of whoever clicks approve.
+  # Runner groups would be the other lever, but they are an organisation
+  # feature and this repository is user-owned, so the approval policy is the
+  # only one available here. GitHub's own guidance is to avoid self-hosted
   # runners on public repositories for this reason.
   #
   # So read the routing below as a COST control that keeps honest pull requests
