@@ -185,14 +185,23 @@ export function cursorBlobMetrics(): CursorBlobMetrics;
 export function cursorBlobRetainedStoreSnapshot(): {
   count: number; bytes: number; evictableBytes: number; pinnedBytes: number; oldestAt: number | null;
 };
-export function evictOldestCursorBlobForBudget(): number; // local only; bytes released
+export function evictOldestCursorBlobForBudget(): number; // oldest evictable row; bytes released
 ```
 
-Snapshot/metrics read cached fields only. For the 040 registration, `pinnedBytes` includes
-live remote-provenance rows and every request-pinned row (without double counting), while
-`evictableBytes` includes only currently unpinned local rows. Budget eviction removes the
-oldest unpinned local row and returns exact released bytes. Add test-only reset/cap
-overrides; production constants remain fixed.
+Snapshot/metrics read cached fields only. For the 040 registration the evictable
+class is exactly the set `evictOldestCursorBlobForBudget()` draws from (round-3
+audit): unpinned local rows AND expired unpinned remote rows (an expired remote
+row has lost its TTL protection — line "expired remote rows become removal
+candidates" — so it is evictable, not pinned). `pinnedBytes` covers live
+remote-provenance rows and every request-pinned row (without double counting);
+`evictableBytes` = total − pinned. `oldestAt` is the `storedAt` timestamp of the
+EXACT row budget eviction would remove next (oldest member of the evictable
+class), or null when the evictable class is empty — never a pinned row's
+timestamp, so 040's cross-store oldest-first comparison operates on genuinely
+reclaimable rows. Budget eviction removes that row and returns exact released
+bytes. Add test-only reset/cap overrides; production constants remain fixed.
+Regression: an expired unpinned remote row is reported evictable, becomes
+`oldestAt`, and is removed by budget eviction before any younger local row.
 
 ## Antigravity replay diff
 

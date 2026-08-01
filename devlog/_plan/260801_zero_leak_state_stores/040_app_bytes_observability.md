@@ -118,7 +118,7 @@ Register hooks delivered by 010/020/035 and existing owners:
 |---|---|---|
 | logs | `request_log`, `provider_debug`, `injection_debug`, `claude_debug`, `crash_ring` | Remove oldest complete diagnostic row; never truncate an attempt array during budget enforcement. |
 | caches | `image_normalize`, `vision_descriptions`, `antigravity_replay`, `model_cache`, `usage_summary` | Remove oldest LRU/session/provider value through owner accounting. Preserve “other” usage totals. |
-| blobs | `cursor_blobs` | Remove oldest local-regenerated blob only. Live remote blobs report as pinned. |
+| blobs | `cursor_blobs` | Remove the oldest EVICTABLE row (unpinned local, or expired unpinned remote — 020 round-4). Live remote and request-pinned blobs report as pinned. |
 | continuation | `responses_continuation` | Demote oldest resident row through 010 durable spill. Spill stubs/tombstones are not repeatedly demoted. |
 
 The request-log owner (`src/server/request-log.ts:150-154,218-246`) must add per-entry
