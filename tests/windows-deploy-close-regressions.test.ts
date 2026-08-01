@@ -51,7 +51,8 @@ describe("systemd detection tolerates a no-DBUS SSH session (F9)", () => {
 describe("server bind canonicalizes explicit localhost but preserves wildcards (F4 symmetry)", () => {
   const src = read("src/server/index.ts");
   test("literal localhost binds to 127.0.0.1; 0.0.0.0/:: exposure is untouched", () => {
-    expect(src).toContain("const configuredHost = config.hostname?.trim();");
+    // Desktop sidecars may pass an explicit host override; the persisted config remains the fallback.
+    expect(src).toContain("const configuredHost = options.hostname?.trim() ?? config.hostname?.trim();");
     expect(src).toContain('!configuredHost || /^localhost$/i.test(configuredHost) ? "127.0.0.1"');
     expect(src).toContain("hostname: bindHost,");
     // Must not blanket-rewrite the bind host (that would break intentional 0.0.0.0 exposure).
