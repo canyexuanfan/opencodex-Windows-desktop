@@ -458,6 +458,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 - [x] 生成 `OpenCodex-Setup-x64.exe`。
 - [x] per-user 安装，默认不请求管理员权限。
+- [x] 允许用户修改安装地址；NSIS 目录页选择父目录时自动保留 `OpenCodex` 程序名子文件夹（`allowToChangeInstallationDirectory=true`，`unicode=true`；中文/空格路径仍需 VM 实际点击验收）。
 - [x] 创建开始菜单入口。
 - [x] 不默认设置开机启动。
 - [x] 卸载只删除安装文件。
@@ -491,7 +492,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ```text
 命令：cd desktop && bun test tests；bun run package；unpacked Electron smoke（PATH 仅保留 C:\\Windows\\System32）；资源禁入路径扫描；SHA-256
-结果：桌面 9 tests、资源准备和 Electron-builder 通过；生成 desktop/out/OpenCodex-Setup-x64.exe 与 desktop/out/OpenCodex-Portable-x64.exe；固定 Bun 1.3.14 位于 resources/opencodex/runtime，src/gui/dist/生产依赖位于 resources/opencodex，Tray 图标位于 resources/tray；app.asar 不含 staging 或旧 unpacked 输出；最新安装版 hash=9E9BB84C61C820D27D7D0A3CC58A85D9FE5E410799762B4870E6CCCE9836707B，便携版 hash=0A33A6BEACDE98D1AEFF1C161FA4EE049AFAFF389B86BF50EC77E6E1DC919A15；隔离 PATH smoke 成功拉起打包 Electron 与 resources Bun sidecar。
+结果：桌面 10 tests、资源准备和 Electron-builder 通过；生成 desktop/out/OpenCodex-Setup-x64.exe 与 desktop/out/OpenCodex-Portable-x64.exe；固定 Bun 1.3.14 位于 resources/opencodex/runtime，src/gui/dist/生产依赖位于 resources/opencodex，Tray 图标位于 resources/tray；app.asar 不含 staging 或旧 unpacked 输出；最新安装版 hash=A4C930AA26F34177114B84E8C8F90010E43707CFE91B7A1F1394BD8589246D6A，便携版 hash=4AEA59EFA986AC63FF473F9388F357D907EFD7E2DEFD3FFE8AC7FB8684A9A1B0；NSIS/便携版及内置运行时已重新签名；隔离 PATH smoke 成功拉起打包 Electron 与 resources Bun sidecar。
 限制：当前环境没有 Windows 10/11 干净 VM；真实便携版和安装版已在全新 `--user-data-dir` 隔离条件下保持运行，`C:\\tmp` 授权 sidecar 的 healthz/`/v1/models` 已通过，但仍未完成干净 VM 双击、卸载保留用户目录和真实 Provider 验证，因此阶段 6 完成条件保留未勾选。
 ```
 
@@ -537,9 +538,9 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 验证证据：
 
 ```text
-证书：CN=十七°；thumbprint=4D0D7BD4C925CEBE985B25F97776337536D064CB；RSA 3072；sha256RSA；有效期 2026-08-01 至 2028-08-01；EKU=1.3.6.1.5.5.7.3.3；证书位于 CurrentUser\\My，PFX 位于被忽略的 .tmp/signing。
+证书：CN=十七°；thumbprint=30A819833969FC56E134B0DE040E00968A92CC62；RSA 3072；sha256RSA；有效期 2026-08-01 至 2028-08-01；EKU=1.3.6.1.5.5.7.3.3；证书位于 CurrentUser\\My，PFX 位于项目外 `C:\\tmp` 临时目录。
 签名目标：OpenCodex-Setup-x64.exe、OpenCodex-Portable-x64.exe、unpacked/OpenCodex.exe、unpacked/resources/opencodex/runtime/bun.exe。
-结果：Get-AuthenticodeSignature 可读取四个目标的 CN=十七° 签名；未受信根时 signtool /pa 报告 chain terminated in an untrusted root，临时信任复核在当前机超时且未留下 Root 证书；安装器 SHA-256=9E9BB84C61C820D27D7D0A3CC58A85D9FE5E410799762B4870E6CCCE9836707B，便携版 SHA-256=0A33A6BEACDE98D1AEFF1C161FA4EE049AFAFF389B86BF50EC77E6E1DC919A15。
+结果：Get-AuthenticodeSignature 可读取两个外层目标的 CN=十七° 签名，当前机因自签根未受信显示 UnknownError；未受信根时 signtool /pa 的链校验仍待测试机复核；安装器 SHA-256=A4C930AA26F34177114B84E8C8F90010E43707CFE91B7A1F1394BD8589246D6A，便携版 SHA-256=4AEA59EFA986AC63FF473F9388F357D907EFD7E2DEFD3FFE8AC7FB8684A9A1B0。
 ```
 
 ---
@@ -556,7 +557,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 - [x] `cd gui && bun run lint`。
 - [x] `cd gui && bun run lint:i18n`。
 - [x] `cd gui && bun run build`。
-- [x] 桌面工程自身测试（9 tests）。
+- [x] 桌面工程自身测试（10 tests）。
 
 ### 8.2 单实例和端口
 
@@ -610,9 +611,9 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 验证证据：
 
 ```text
-代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 9 tests 通过；授权 C:\\tmp 临时根下 `server-auth` 57/57 通过，`doctor/config/service/uninstall` 聚焦回归 92/93 通过（唯一失败为 CLI 子进程 5 秒超时）；原生 Codex 注入/恢复与 Grok/service 生命周期聚焦回归 53/53 通过；隔离打包 Electron renderer 崩溃恢复 smoke 通过；根完整 test 即使在授权临时根仍 420 秒未完成，已记录为完整套件/运行器限制；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
+代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 10 tests 通过；授权 C:\\tmp 临时根下 `server-auth` 57/57 通过，`doctor/config/service/uninstall` 聚焦回归 92/93 通过（唯一失败为 CLI 子进程 5 秒超时）；原生 Codex 注入/恢复与 Grok/service 生命周期聚焦回归 53/53 通过；隔离打包 Electron renderer 崩溃恢复 smoke 通过；根完整 test 即使在授权临时根仍 420 秒未完成，已记录为完整套件/运行器限制；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
 单实例/端口：Electron 10 次并发 smoke 仅 1 个主进程、1 个 sidecar；占用 127.0.0.1:10100 时实际动态端口为 1068；`C:\\tmp` 授权 sidecar 动态端口 57967，healthz 与 `/v1/models` 均成功；未发现残留 entry sidecar 或 10100 listener。
-产物：安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；资源禁入扫描通过；签名主体可读为 CN=十七°。
+产物：安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；NSIS 可变安装目录配置已通过桌面静态契约测试（10/10），资源禁入扫描通过；签名主体可读为 CN=十七°。
 未完成：Windows 10/11 干净 VM、默认用户数据目录在普通权限下的真实验证、中文/空格安装路径的稳定 NSIS 验收、受信根后的 signtool Valid 和真实 provider 保留回归；隔离环境下的卸载保留用户目录和 sidecar/renderer 崩溃恢复已通过。中文/空格路径尝试及 NSIS 参数排查已记录在 `questions/中文空格安装路径排查指南.md`。
 ```
 

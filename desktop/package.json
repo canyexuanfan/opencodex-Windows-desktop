@@ -59,6 +59,8 @@
       "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "unicode": true,
       "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
       "menuCategory": "OpenCodex",

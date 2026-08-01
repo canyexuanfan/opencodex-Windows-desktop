@@ -40,3 +40,4 @@ fatal: Unable to create 'F:/workbuddy/opencodex/.git/index.lock': Permission den
 
 - 2026-08-01：记录默认沙箱阻止 Git index 写入的失败现象，等待最小授权重试。
 - ✅ 2026-08-01：在确认没有 `.git/index.lock` 残留后，以最小范围授权暂存 `todolist.md` 与 `docs/Windows桌面端安装与验证.md` 成功；未纳入已有用户未跟踪文件。
+- ✅ 2026-08-01：本阶段默认权限再次无法创建 `.git/index.lock`；确认锁文件不存在后，使用最小授权并按 sparse-checkout 规则执行 `git add --sparse -- desktop/package.json desktop/tests/package-static.test.ts questions/中文空格安装路径排查指南.md questions/阶段0基线依赖缺失排查指南.md todolist.md` 成功暂存，用户已有的两个未跟踪文件仍未纳入。
