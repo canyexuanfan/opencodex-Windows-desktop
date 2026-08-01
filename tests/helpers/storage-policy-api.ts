@@ -113,30 +113,46 @@ export type PolicyApiHarness = {
 
 export async function installPolicyApiHarness(prefix: string): Promise<PolicyApiHarness> {
   const previousHome = process.env.OPENCODEX_HOME;
-  const isolatedCodexHome = installIsolatedCodexHome(`${prefix}-codex-`);
-  const testDir = mkdtempSync(join(tmpdir(), `${prefix}-`));
-  process.env.OPENCODEX_HOME = testDir;
-  saveConfig(baseConfig());
+  // Join leftover Workers before allocating homes / mutating OPENCODEX_HOME.
+  // Sync reset used to fire-and-forget terminate and race the next spawn under
+  // `bun test --isolate`; a rejected reset after env mutation would also leak.
   stopStorageCleanupScheduler();
-  // Join any leftover Workers before the case starts — sync reset used to
-  // fire-and-forget terminate and race the next spawn under `bun test --isolate`.
   await resetStorageCleanupPolicyJobForTestsAsync();
-  resetArchivedCleanupJobForTests();
   await drainStorageWorkers();
-  return { testDir, isolatedCodexHome, previousHome };
+  resetArchivedCleanupJobForTests();
+
+  let isolatedCodexHome: IsolatedCodexHome | undefined;
+  let testDir: string | undefined;
+  try {
+    isolatedCodexHome = installIsolatedCodexHome(`${prefix}-codex-`);
+    testDir = mkdtempSync(join(tmpdir(), `${prefix}-`));
+    process.env.OPENCODEX_HOME = testDir;
+    saveConfig(baseConfig());
+    stopStorageCleanupScheduler();
+    return { testDir, isolatedCodexHome, previousHome };
+  } catch (error) {
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    isolatedCodexHome?.restore();
+    if (testDir) rmSync(testDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export async function uninstallPolicyApiHarness(h: PolicyApiHarness): Promise<void> {
-  stopStorageCleanupScheduler();
-  await resetStorageCleanupPolicyJobForTestsAsync();
-  setStorageCleanupPolicyJobTestHooks(null);
-  resetArchivedCleanupJobForTests();
-  setArchivedCleanupJobTestHooks(null);
-  await drainStorageWorkers();
-  if (h.previousHome === undefined) delete process.env.OPENCODEX_HOME;
-  else process.env.OPENCODEX_HOME = h.previousHome;
-  h.isolatedCodexHome.restore();
-  if (h.testDir) rmSync(h.testDir, { recursive: true, force: true });
+  try {
+    stopStorageCleanupScheduler();
+    await resetStorageCleanupPolicyJobForTestsAsync();
+    setStorageCleanupPolicyJobTestHooks(null);
+    setArchivedCleanupJobTestHooks(null);
+    await drainStorageWorkers();
+    resetArchivedCleanupJobForTests();
+  } finally {
+    if (h.previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = h.previousHome;
+    h.isolatedCodexHome.restore();
+    if (h.testDir) rmSync(h.testDir, { recursive: true, force: true });
+  }
 }
 
 /** Prefer over Bun.serve.stop — joins Workers and clears the policy scheduler. */

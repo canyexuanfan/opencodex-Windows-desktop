@@ -174,9 +174,11 @@ beforeEach(async () => {
   stopStorageCleanupScheduler();
   cancelQueuedStorageWorkerSpawns();
   await resetRestoreTrashJobForTestsAsync();
-  resetArchivedCleanupJobForTests();
   await resetStorageCleanupPolicyJobForTestsAsync();
   await drainStorageWorkers();
+  // Clear shared coordination only after workers have joined — same ordering
+  // as resetRestoreTrashJobForTestsAsync / policy-job's mutation-slot finally.
+  resetArchivedCleanupJobForTests();
   resetStorageMutationCoordinatorForTests();
 });
 
@@ -184,9 +186,9 @@ afterEach(async () => {
   stopStorageCleanupScheduler();
   cancelQueuedStorageWorkerSpawns();
   await resetRestoreTrashJobForTestsAsync();
-  resetArchivedCleanupJobForTests();
   await resetStorageCleanupPolicyJobForTestsAsync();
   await drainStorageWorkers();
+  resetArchivedCleanupJobForTests();
   resetStorageMutationCoordinatorForTests();
   setRestoreTrashJobTestHooks(null);
   setArchivedCleanupJobTestHooks(null);
