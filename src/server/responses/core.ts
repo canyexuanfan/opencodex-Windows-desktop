@@ -105,6 +105,7 @@ import type { WsData } from "../ws-bridge";
 import { codexAccountSelectionForTurn, registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
 import { redactSecretString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
+import { classifyCodexPreStreamRejection } from "../../codex/quota-rejection";
 import type { AdmissionLease } from "../../lib/admission";
 import { supportedLadderFor } from "../effort-policy";
 import { isThreadSpawnRequest } from "../effort-policy";
@@ -256,8 +257,12 @@ async function shouldRetryCodexPoolAccountModel400(
 }
 
 /** Pre-stream quota/billing rejections that warrant one alternate-account attempt (#584). */
-function shouldRetryCodexPoolAccountQuota(response: Response): boolean {
-  return response.status === 429 || response.status === 402;
+async function shouldRetryCodexPoolAccountQuota(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const rejection = await classifyCodexPreStreamRejection(response, { signal });
+  return rejection.alternateRetryEligible;
 }
 
 interface CodexPoolAccountRetryArgs {
@@ -1755,7 +1760,7 @@ async function handleResponsesInner(
         options.abortSignal,
       )) {
         poolRetryOutcome = 400;
-      } else if (shouldRetryCodexPoolAccountQuota(upstreamResponse)) {
+      } else if (await shouldRetryCodexPoolAccountQuota(upstreamResponse, options.abortSignal)) {
         // Pre-stream only: once SSE has begun, mid-stream quota stays terminal.
         poolRetryOutcome = upstreamResponse.status;
       }
