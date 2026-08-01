@@ -282,7 +282,7 @@ describe("GUI update execution decisions", () => {
       },
     });
     expect(spawned).toEqual([{ port: 10100 }]);
-    expect(readUpdateJob(job.id)?.log.some(line => line.includes("waiting for Node+Bun bind probes before pinned start"))).toBe(true);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("waiting for ghost LISTEN rows to clear before pinned start"))).toBe(true);
   });
 
   test("service restart waits on the captured port and clears OCX_BAKE_PORT after install", async () => {
@@ -570,6 +570,9 @@ describe("GUI update execution decisions", () => {
       "npm",
       {
         serviceInstalledFn: () => true,
+        // Soft-probe path only runs when a live listen owner exists.
+        listListenPidsFn: () => [222],
+        isAliveFn: () => true,
         probeProxy: async () => now >= 15_250,
         probeProxyIdentity: async () => (
           now >= 15_250 ? { pid: 222, version: "2.7.43" } : null
@@ -615,6 +618,8 @@ describe("GUI update execution decisions", () => {
       "npm",
       {
         serviceInstalledFn: () => true,
+        listListenPidsFn: () => [222],
+        isAliveFn: () => true,
         probeProxy: async () => true,
         probeProxyIdentity: async () => ({ pid: 222, version: "2.7.41" }),
         now: () => now,
@@ -653,6 +658,8 @@ describe("GUI update execution decisions", () => {
       "npm",
       {
         serviceInstalledFn: () => true,
+        listListenPidsFn: () => [111],
+        isAliveFn: pid => pid === 111,
         // Soft probe stays healthy (old process). Explicit restart is a no-op.
         probeProxy: async () => true,
         probeProxyIdentity: async () => ({ pid: 111, version: "2.7.40" }),
@@ -702,6 +709,8 @@ describe("GUI update execution decisions", () => {
       "npm",
       {
         serviceInstalledFn: () => true,
+        listListenPidsFn: () => [livePid],
+        isAliveFn: () => true,
         probeProxy: async () => true,
         probeProxyIdentity: async () => ({ pid: livePid, version: liveVersion }),
         now: () => now,

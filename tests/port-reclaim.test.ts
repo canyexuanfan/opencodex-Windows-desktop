@@ -63,7 +63,7 @@ describe("parseTcpQuadsForLocalPort / IPv6", () => {
     // reports skippedIpv6 for parsed IPv6 quads when netstat is readable. Assert the
     // return shape never coerces IPv6 into a positive dropped count from IPv4 APIs alone.
     if (process.platform !== "win32") {
-      expect(dropWindowsTcpRowsForLocalPort(10100)).toEqual({ dropped: 0, skippedIpv6: 0 });
+      expect(dropWindowsTcpRowsForLocalPort(10100)).toEqual({ dropped: 0, skippedIpv6: 0, accessDenied: 0 });
     }
   });
 });
@@ -195,7 +195,7 @@ describe("reclaimListenPort", () => {
       },
       dropTcpFn: port => {
         dropped.push(port);
-        return { dropped: 1, skippedIpv6: 0 };
+        return { dropped: 1, skippedIpv6: 0, accessDenied: 0 };
       },
       sleepMs: async () => {},
     })).resolves.toBe(false);
@@ -222,7 +222,7 @@ describe("reclaimListenPort", () => {
       },
       dropTcpFn: port => {
         dropped.push(port);
-        return { dropped: 1, skippedIpv6: 0 };
+        return { dropped: 1, skippedIpv6: 0, accessDenied: 0 };
       },
       sleepMs: async () => {},
     })).resolves.toBe(false);
@@ -268,7 +268,7 @@ describe("reclaimListenPort", () => {
       dropTcpFn: port => {
         dropped.push(port);
         available = true;
-        return { dropped: 3, skippedIpv6: 1 };
+        return { dropped: 3, skippedIpv6: 1, accessDenied: 0 };
       },
       sleepMs: async () => {},
     })).resolves.toBe(true);
@@ -353,7 +353,7 @@ describe("reclaimListenPort", () => {
       dropTcpFn: port => {
         dropped.push(port);
         available = true;
-        return { dropped: 1, skippedIpv6: 0 };
+        return { dropped: 1, skippedIpv6: 0, accessDenied: 0 };
       },
       sleepMs: async () => {},
     })).resolves.toBe(true);
@@ -379,7 +379,7 @@ describe("reclaimListenPort", () => {
       },
       dropTcpFn: port => {
         dropped.push(port);
-        return { dropped: 1, skippedIpv6: 0 };
+        return { dropped: 1, skippedIpv6: 0, accessDenied: 0 };
       },
       sleepMs: async () => {},
     })).resolves.toBe(false);
@@ -405,7 +405,7 @@ describe("reclaimListenPort", () => {
       },
       dropTcpFn: port => {
         dropped.push(port);
-        return { dropped: 1, skippedIpv6: 0 };
+        return { dropped: 1, skippedIpv6: 0, accessDenied: 0 };
       },
       sleepMs: async () => {},
     })).resolves.toBe(false);
@@ -434,7 +434,7 @@ describe("reclaimListenPort", () => {
       dropTcpFn: port => {
         dropped.push(port);
         available = true;
-        return { dropped: 2, skippedIpv6: 0 };
+        return { dropped: 2, skippedIpv6: 0, accessDenied: 0 };
       },
       sleepMs: async () => {},
     })).resolves.toBe(true);
@@ -517,7 +517,7 @@ describe("reclaimListenPort", () => {
       dropTcpFn: port => {
         dropped.push(port);
         available = true;
-        return { dropped: 1, skippedIpv6: 0 };
+        return { dropped: 1, skippedIpv6: 0, accessDenied: 0 };
       },
       sleepMs: async () => {},
     })).resolves.toBe(true);

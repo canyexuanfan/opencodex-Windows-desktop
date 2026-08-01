@@ -186,6 +186,36 @@ async function waitForStrictRuntimeBind(
   return false;
 }
 
+/**
+ * Wait until netstat reports no LISTEN owners on `port` AND Node+Bun can bind.
+ * Dead PIDs still appear as holders while the ghost TCB lives; SetTcpEntry is a
+ * no-op without elevation (rc 317), so the only fix is to wait them out.
+ */
+async function waitForGhostListenClear(
+  port: number,
+  hostname: string,
+  listPids: (port: number) => number[],
+  timeoutMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<{ ok: boolean; accessDenied: boolean }> {
+  const deadline = Date.now() + timeoutMs;
+  let accessDenied = false;
+  while (Date.now() < deadline) {
+    if (process.platform === "win32") {
+      try {
+        const drop = dropWindowsTcpRowsForLocalPort(port);
+        if (drop.accessDenied > 0) accessDenied = true;
+      } catch { /* best-effort */ }
+    }
+    const holders = listPids(port).filter(pid => pid !== process.pid);
+    if (holders.length === 0 && await strictRuntimePortAvailable(port, hostname)) {
+      return { ok: true, accessDenied };
+    }
+    await sleep(500);
+  }
+  return { ok: false, accessDenied };
+}
+
 function packageLauncherPath(): string {
   // This module lives at src/update/job.ts — the launcher is <pkg-root>/bin/ocx.mjs.
   // After `npm install -g`, import.meta.url can still point at npm's renamed temp
@@ -557,6 +587,8 @@ export interface RestartIo {
   probeProxy?: (port: number, hostname?: string) => Promise<boolean>;
   /** Richer /healthz read for update-correlated restart evidence (pid + version). */
   probeProxyIdentity?: (port: number, hostname?: string) => Promise<RestartProxyIdentity | null>;
+  /** Override the /healthz appearance window (default {@link RESTART_HEALTH_TIMEOUT_MS}). */
+  healthTimeoutMs?: number;
   sleepMs?: (ms: number) => Promise<void>;
   now?: () => number;
   /** Service-mode install/reinstall command (defaults to spawnSync via runLoggedCommand). */
@@ -731,11 +763,31 @@ async function restartAfterUpdate(
       updateJob(job, {}, `Live holder(s) remain on port ${port}; not starting on another port. Retry 'ocx start --port ${port}'.`);
       return;
     }
-    // No live LISTEN owner — ghost TCBs still block Bun's published start probe.
-    // Drop rows until both Node and the live package Bun can bind.
-    updateJob(job, {}, `No live holders on port ${port}; waiting for Node+Bun bind probes before pinned start.`);
-    const sleep = io.sleepMs ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
-    await waitForStrictRuntimeBind(port, hostname, 20_000, sleep);
+    // Dead PIDs can still own LISTEN rows. SetTcpEntry needs elevation (rc 317 on a
+    // normal update worker), so poll until netstat is empty and Node+Bun can bind.
+    updateJob(
+      job,
+      {},
+      `No live holders on port ${port}; waiting for ghost LISTEN rows to clear before pinned start.`,
+    );
+    // Injected spawnStart is the unit-test seam — skip the long OS wait.
+    if (!io.spawnStart) {
+      const sleep = io.sleepMs ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+      const cleared = await waitForGhostListenClear(port, hostname, listPids, 90_000, sleep);
+      if (cleared.accessDenied) {
+        updateJob(job, {}, "SetTcpEntry is non-elevated (access denied); relying on OS ghost-LISTEN expiry.");
+      }
+      if (!cleared.ok) {
+        updateJob(
+          job,
+          {},
+          `Ghost LISTEN rows on port ${port} did not clear in time. `
+            + `${formatPortHolders(port, listPids, verifyOcx, directAllow)} `
+            + `Retry 'ocx start --port ${port}'.`,
+        );
+        return;
+      }
+    }
   }
   const spawnStart = io.spawnStart ?? spawnDetachedStart;
   // Production path only: injected spawnStart keeps unit tests deterministic (one call).
@@ -768,7 +820,7 @@ async function restartAfterUpdate(
   }
   const attempts = 3;
   // Longer than published hard-pin reclaim (30s) so a slow start can still report healthy.
-  const perAttemptHealthMs = 40_000;
+  const perAttemptHealthMs = 70_000;
   let lastChild: ChildProcess | null = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1) {
@@ -784,7 +836,22 @@ async function restartAfterUpdate(
       lastChild = null;
     }
     preparePortForPinnedStart(job, port, listPids, aliveFn);
-    await waitForStrictRuntimeBind(port, hostname, attempt === 1 ? 10_000 : 15_000, sleep);
+    const ready = await waitForGhostListenClear(
+      port,
+      hostname,
+      listPids,
+      attempt === 1 ? (freed ? 15_000 : 5_000) : 30_000,
+      sleep,
+    );
+    if (!ready.ok) {
+      updateJob(
+        job,
+        {},
+        `Port ${port} not bindable before pinned start attempt ${attempt}; `
+          + `${formatPortHolders(port, listPids, verifyOcx, directAllow)}`,
+      );
+      continue;
+    }
     lastChild = spawnDetachedStart(job, job.installer, port);
     const healthDeadline = Date.now() + perAttemptHealthMs;
     while (Date.now() < healthDeadline) {
@@ -876,7 +943,7 @@ async function awaitRestartedProxyHealthy(
   const now = io.now ?? (() => Date.now());
   const port = captured.port;
   const hostname = captured.hostname;
-  const startDeadline = now() + RESTART_HEALTH_TIMEOUT_MS;
+  const startDeadline = now() + (io.healthTimeoutMs ?? RESTART_HEALTH_TIMEOUT_MS);
 
   while (true) {
     // Always make one identity-aware probe at or after the boundary. A replacement
@@ -1038,28 +1105,39 @@ export async function finishGuiUpdateRestart(
   if (installer === "npm") {
     const serviceInstalled = (io.serviceInstalledFn ?? isServiceInstalled)();
     if (serviceInstalled) {
-      const already = await awaitRestartedProxyHealthy(job, captured, io);
-      if (already.ok) {
-        const identity = await (io.probeProxyIdentity ?? defaultProbeProxyIdentity)(
-          captured.port,
-          captured.hostname,
-        );
-        const evidence = npmSelfUpdateRestartEvidence(job, captured, identity);
-        if (evidence.ok) {
+      // Stop-first npm update leaves a dead PID's LISTEN row. Polling /healthz for the
+      // full 30s against that zombie keeps ESTABLISHED TCBs alive and blocks bind.
+      // If nothing live owns the port, skip straight to explicit restart.
+      const listPids = io.listListenPidsFn ?? listListenPids;
+      const aliveFn = io.isAliveFn ?? isProcessAlive;
+      const liveListeners = listPids(captured.port)
+        .filter(pid => pid !== process.pid && aliveFn(pid));
+      if (liveListeners.length === 0) {
+        updateJob(job, {}, "npm self-update did not leave a live listener; performing explicit restart...");
+      } else {
+        const already = await awaitRestartedProxyHealthy(job, captured, io);
+        if (already.ok) {
+          const identity = await (io.probeProxyIdentity ?? defaultProbeProxyIdentity)(
+            captured.port,
+            captured.hostname,
+          );
+          const evidence = npmSelfUpdateRestartEvidence(job, captured, identity);
+          if (evidence.ok) {
+            updateJob(
+              job,
+              {},
+              `Proxy already healthy on ${captured.hostname}:${captured.port} after npm self-update (${evidence.detail}); skipping redundant restart.`,
+            );
+            return true;
+          }
           updateJob(
             job,
             {},
-            `Proxy already healthy on ${captured.hostname}:${captured.port} after npm self-update (${evidence.detail}); skipping redundant restart.`,
+            `npm self-update left a healthy proxy but ${evidence.reason}; performing explicit restart...`,
           );
-          return true;
+        } else {
+          updateJob(job, {}, "npm self-update did not leave a healthy proxy; performing explicit restart...");
         }
-        updateJob(
-          job,
-          {},
-          `npm self-update left a healthy proxy but ${evidence.reason}; performing explicit restart...`,
-        );
-      } else {
-        updateJob(job, {}, "npm self-update did not leave a healthy proxy; performing explicit restart...");
       }
     }
   }
