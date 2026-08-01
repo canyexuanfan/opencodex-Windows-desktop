@@ -15,14 +15,28 @@
  * post-close settle covers the OS join gap Bun does not expose.
  */
 
+import { createAdmissionGate, type AdmissionMetrics, type AdmissionReservation } from "../lib/admission";
+
 type TrackedWorker = {
   worker: Worker;
   closed: Promise<void>;
   resolveClosed: () => void;
   terminatePromise?: Promise<void>;
+  reservation?: AdmissionReservation<Worker>;
 };
 
+export const MAX_RESERVED_STORAGE_WORKER_SPAWNS = 16;
+export class StorageWorkerAdmissionBusyError extends Error {
+  readonly code = "storage_mutation_busy";
+
+  constructor() {
+    super("storage worker spawn queue is busy");
+    this.name = "StorageWorkerAdmissionBusyError";
+  }
+}
+
 const liveWorkers = new Map<Worker, TrackedWorker>();
+const workerGate = createAdmissionGate("storage_worker_reservations", MAX_RESERVED_STORAGE_WORKER_SPAWNS);
 
 /** Serialize spawns so a new Worker never overlaps a still-exiting predecessor. */
 let spawnGate: Promise<void> = Promise.resolve();
@@ -72,6 +86,37 @@ export function registerStorageWorker(worker: Worker): void {
   }
 }
 
+export function tryReserveStorageWorker(): AdmissionReservation<Worker> | null {
+  const gateLease = workerGate.tryAcquire();
+  if (!gateLease) return null;
+  let active = true;
+  let bound: Worker | undefined;
+  const reservation: AdmissionReservation<Worker> = {
+    bind(worker) {
+      if (!active) return;
+      bound = worker;
+      registerStorageWorker(worker);
+      const tracked = liveWorkers.get(worker);
+      if (tracked) tracked.reservation = reservation;
+    },
+    release() {
+      if (!active) return;
+      active = false;
+      if (bound) {
+        const tracked = liveWorkers.get(bound);
+        if (tracked?.reservation === reservation) tracked.reservation = undefined;
+      }
+      bound = undefined;
+      gateLease.release();
+    },
+  };
+  return reservation;
+}
+
+export function storageWorkerAdmissionMetrics(): AdmissionMetrics {
+  return workerGate.metrics();
+}
+
 /**
  * Run `fn` only after every previously gated spawn has finished tearing down.
  * Used around `new Worker(...)` so tests cannot overlap Windows thread exit.
@@ -93,6 +138,10 @@ export function withStorageWorkerSpawnGate<T>(fn: () => Promise<T>): Promise<T> 
     () => undefined,
   );
   return run;
+}
+
+export function queuedStorageWorkerSpawnCount(): number {
+  return Math.max(0, workerGate.metrics().active - liveWorkers.size);
 }
 
 /**
@@ -139,6 +188,8 @@ export function terminateStorageWorker(worker: Worker, timeoutMs = 5_000): Promi
     } finally {
       clearTimeout(timer);
       liveWorkers.delete(worker);
+      tracked.reservation?.release();
+      tracked.reservation = undefined;
     }
   })();
 
