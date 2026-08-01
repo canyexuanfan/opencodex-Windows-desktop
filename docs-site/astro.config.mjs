@@ -91,6 +91,8 @@ export default defineConfig({
             { label: "opencode", translations: { ko: "opencode", "zh-CN": "opencode", ru: "opencode", ja: "opencode" }, slug: "guides/opencode" },
             { label: "Pi", translations: { ko: "Pi", "zh-CN": "Pi", ru: "Pi", ja: "Pi" }, slug: "guides/pi" },
             { label: "Sidecars: Web Search & Vision", translations: { ko: "사이드카: 웹 검색 & 비전", "zh-CN": "边车：网络搜索与视觉", ru: "Сайдкары: веб-поиск и зрение", ja: "サイドカー: ウェブ検索 & ビジョン" }, slug: "guides/sidecars" },
+            { label: "Image Bridge", translations: { ko: "이미지 브릿지", "zh-CN": "图像桥接", ru: "Image Bridge", ja: "画像ブリッジ" }, slug: "guides/image-bridge" },
+            { label: "Video Bridge", translations: { ko: "비디오 브릿지", "zh-CN": "视频桥接", ru: "Video Bridge", ja: "動画ブリッジ" }, slug: "guides/video-bridge" },
             { label: "Web Dashboard", translations: { ko: "웹 대시보드", "zh-CN": "网页控制台", ru: "Веб-дашборд", ja: "ウェブダッシュボード" }, slug: "guides/web-dashboard" },
             { label: "Sub-agent Surface", translations: { ko: "서브에이전트 서피스", "zh-CN": "子代理界面", ru: "Интерфейс подагентов", ja: "サブエージェントサーフェス" }, slug: "guides/sub-agent-surface" },
           ],
