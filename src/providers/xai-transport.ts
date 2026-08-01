@@ -53,7 +53,7 @@ function withoutUserOverridden(
 
 function withGeneratedRequestId(
   init: RequestInit | undefined,
-  configuredRequestId: string | undefined,
+  pinnedRequestId: string,
   stableHeaders: Readonly<Record<string, string>>,
 ): RequestInit {
   const headers = new Headers(init?.headers);
@@ -63,7 +63,7 @@ function withGeneratedRequestId(
   if (!headers.has(XAI_GROK_COMPATIBILITY.headers.requestId)) {
     headers.set(
       XAI_GROK_COMPATIBILITY.headers.requestId,
-      configuredRequestId ?? randomUUID(),
+      pinnedRequestId,
     );
   }
   return { ...init, headers };

@@ -182,7 +182,8 @@ test("invalid retryOn429 values never log the raw value", () => {
     loadConfig();
     const logged = warn.mock.calls.map(call => call.join(" ")).join("\n");
     expect(logged).not.toContain("sk-super-secret-abc123");
-    expect(logged).toContain("string");
+    // Anchor the type-only diagnostic to the exact field so unrelated warnings can't satisfy it.
+    expect(logged).toContain("providers.test.retryOn429 (string) is invalid");
   } finally {
     warn.mockRestore();
   }
@@ -198,7 +199,7 @@ test("unrecognized retryOn429 field names are redacted before logging", () => {
           baseUrl: "http://127.0.0.1:1/v1",
           apiKey: "k",
           allowPrivateNetwork: true,
-          retryOn429: { "sk-super-secret-keyname-987654": true, intervalMs: 120 },
+          retryOn429: { "sk-super-secret-9876": true, intervalMs: 120 },
         },
       },
     });
@@ -206,7 +207,7 @@ test("unrecognized retryOn429 field names are redacted before logging", () => {
     expect(live.providers.test.retryOn429).toEqual({ intervalMs: 120 });
     const logged = warn.mock.calls.map(call => call.join(" ")).join("\n");
     // The secret-shaped property NAME must never reach the log; the valid field survives.
-    expect(logged).not.toContain("sk-super-secret-keyname-987654");
+    expect(logged).not.toContain("sk-super-secret-9876");
     expect(logged).toContain("[REDACTED]");
   } finally {
     warn.mockRestore();
