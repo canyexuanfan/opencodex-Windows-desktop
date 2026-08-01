@@ -801,3 +801,10 @@ Codex / Claude Code / 其他现有客户端
 - [x] 导航策略只安装一次；端口变化通过 `setExpectedOrigin` 更新，窗口关闭时释放唯一 `will-navigate` 监听器，避免旧端口 origin 拦截新 dashboard。
 - [x] 新增 popup deny、外链处理和跨端口策略生命周期契约；desktop typecheck/build 通过，桌面测试 16/16、93 assertions 通过。
 - [ ] 真实 GUI 鼠标/键盘视觉验收和干净 Windows VM 仍需外部环境。
+
+# Codex 同步最终健康门增量（2026-08-01）
+- [x] `syncModelsToCodex` 在模型目录刷新后、写入 Codex 配置前再次执行身份校验的代理探活；代理中途退出时恢复 native Codex 并拒绝重新注入死路由。
+- [x] 最终探活读取实时监听端口；软重启导致端口变化时使用新端口写入，避免初始端口、配置端口与实际监听端口错位。
+- [x] Dashboard `/api/sync` 在最终写入前执行 PID 匹配的 `/healthz` 探活，不再仅依赖请求已经进入进程这一早期事实。
+- [x] bundled Bun 1.3.14 聚焦回归 `tests/codex-sync-api.test.ts`：12/12 用例、51 个断言通过，包含刷新期间代理退出和端口再次漂移两类回归。
+- [ ] 操作系统强制结束、电源中断后 Codex 先于 OpenCodex 启动的场景仍需干净 Windows VM 验收；该场景依赖已实现的启动保护/service 或 shim，不能由进程退出回调单独保证。
