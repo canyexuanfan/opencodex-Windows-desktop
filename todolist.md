@@ -588,7 +588,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 - [ ] Windows 11 x64。
 - [ ] 标准用户、非管理员。
 - [ ] 中文用户名。
-- [ ] 安装路径含空格和中文。
+- [x] 安装路径含空格和中文（阶段 20 最新 Setup 在中文/空格父目录实装，保留 `OpenCodex` 程序名子文件夹）。
 - [ ] 已有 CLI proxy。
 - [ ] 已有 Task Scheduler/WinSW。
 - [ ] 已有旧托盘。
@@ -814,3 +814,14 @@ Codex / Claude Code / 其他现有客户端
 - [x] bundled Bun 1.3.14、授权隔离临时根：`cli-restore-back` 4/4、19 个断言；`cli-help` 12/12、102 个断言；`cli-headless-parity` 8/8、18 个断言。
 - [x] Provider、模型上下文、组合路由、Agent effort/roster、API Key、Grok include、配置原子写入和完整 CLI 帮助入口继续可用；桌面端仍复用原 Dashboard 与同一管理 API。
 - [ ] 根完整测试仍受当前 Windows Bun 运行器总时长/子进程限制，不能用上述聚焦测试替代；干净 VM 与跨平台回归仍保留。
+
+# 最终包重建与真实桌面交互增量（2026-08-01）
+- [x] 阶段 18 健康门提交后重新生成 4259 个桌面资源文件；最终 `win-unpacked` 内源码确认包含目录刷新后的二次探活与端口刷新逻辑。
+- [x] 离线使用本地 Electron 重建并签名最终 NSIS/Portable：Setup SHA-256=`5A93F9F878A04A45E02EF3071349527F90D1B44AAA52BDD0313D0C72F7B02FFE`，Portable SHA-256=`9CC438F23ED654FE612BA1924172BB38FC4CE668A2E1E38DB4EAC718342A6D8D`；主体均为 `CN=十七°`，本机自签链仍为 `UnknownError`。
+- [x] 最新 Setup 在中文/空格父目录安装返回 0，自动保留 `OpenCodex/OpenCodex.exe` 子文件夹；安装版动态端口 38075、healthz/models 200，卸载返回 0、用户 marker 保留、隔离 Codex 配置恢复原值。
+- [x] 最新 Portable 动态端口 30435、healthz/models 200；包内 CLI 恢复配置后 wrapper、解包进程与临时目录均精确清理。
+- [x] 最新 `win-unpacked` 真实窗口：Dashboard 在线；第二实例退出且主进程/窗口各 1，sidecar PID/端口不变；关闭窗口隐藏到托盘且代理继续在线，再次启动恢复同一 1281×820 窗口。
+- [x] 真实 hover/focus 抽样：侧栏“模型”显示 hover 背景；UIA 枚举 48 个可聚焦元素，Tab 从“仪表盘”移动到“Codex 认证”并显示 focus-visible 外框。
+- [x] 临时 PFX、私钥证书、签名/构建/安装/便携/GUI 隔离目录及全部截图均已清理；无 OpenCodex/Bun 测试进程残留。
+- [x] 最终复核：桌面测试 16/16、93 个断言，根 `privacy:scan` 与 `git diff --check` 通过。
+- [ ] 其余页面全部控件的逐项视觉遍历、干净 Windows 10/11 VM、标准用户/中文用户名、睡眠/唤醒、注销/重启和受信签名链 `Valid` 仍需外部验收。
