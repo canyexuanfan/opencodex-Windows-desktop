@@ -13,7 +13,12 @@ import {
   MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET,
 } from "./codex/account-namespace-match";
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
-import { hardenSecretDir, hardenSecretPath, hardenSecretPathAsync } from "./lib/windows-secret-acl";
+import {
+  forgetHardenedSecretPath,
+  hardenSecretDir,
+  hardenSecretPath,
+  hardenSecretPathAsync,
+} from "./lib/windows-secret-acl";
 import { recordOwnedConfigPath } from "./lib/config-ownership";
 import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
 import { providerDestinationConfigError } from "./lib/destination-policy";
@@ -31,6 +36,11 @@ import {
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
 import { parseDesktopProfile } from "./claude/desktop-profile";
 import { isCodexReasoningEffort, modelRecordValue } from "./reasoning-effort";
+import {
+  DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES,
+  MAX_APP_OWNED_MEMORY_BUDGET_MB,
+  MIN_APP_OWNED_MEMORY_BUDGET_MB,
+} from "./lib/app-owned-memory";
 
 let _atomicSeq = 0;
 
@@ -111,6 +121,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
     io.harden(tmp);
     hardened = true;
     io.rename(tmp, path);
+    forgetHardenedSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -137,6 +148,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
     if (!removed && !hardened) {
       try { io.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
+    if (removed) forgetHardenedSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -195,6 +207,7 @@ export async function atomicWriteFileAsync(
     await effective.harden(tmp);
     hardened = true;
     await effective.rename(tmp, path);
+    forgetHardenedSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -221,6 +234,7 @@ export async function atomicWriteFileAsync(
     if (!removed && !hardened) {
       try { await effective.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
+    if (removed) forgetHardenedSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -337,7 +351,6 @@ export function backupConfigBeforeOpenAiTierMigration(
 
   const scrubUnpublishedTemp = (): void => {
     cleanupAttempted = true;
-    if (!io.exists(temp)) return;
     let scrubbed = false;
     try {
       io.truncate(temp);
@@ -353,14 +366,19 @@ export function backupConfigBeforeOpenAiTierMigration(
       io.unlink(temp);
       removed = true;
     } catch (error) {
-      if (isMissingPathError(error) || !io.exists(temp)) removed = true;
+      if (isMissingPathError(error)) {
+        removed = true;
+      }
       else {
         try { io.unlink(temp); removed = true; }
         catch (retryError) {
-          if (isMissingPathError(retryError) || !io.exists(temp)) removed = true;
+          if (isMissingPathError(retryError)) {
+            removed = true;
+          }
         }
       }
     }
+    if (removed) forgetHardenedSecretPath(temp);
     if (!removed && !scrubbed) throw new OpenAiTierBackupSecretResidualError(temp);
     if (!removed) throw new OpenAiTierBackupCleanupError();
   };
@@ -381,10 +399,18 @@ export function backupConfigBeforeOpenAiTierMigration(
     published = true;
     try {
       io.unlink(temp);
-    } catch {
-      try {
+      forgetHardenedSecretPath(temp);
+    } catch (firstError) {
+      if (isMissingPathError(firstError)) {
+        forgetHardenedSecretPath(temp);
+      } else try {
         io.unlink(temp);
-      } catch {
+        forgetHardenedSecretPath(temp);
+      } catch (secondError) {
+        if (isMissingPathError(secondError)) {
+          forgetHardenedSecretPath(temp);
+          return "created";
+        }
         // temp and backup are hard links to the same inode. Roll back the backup
         // link before any truncation so the downgrade snapshot is never zeroed.
         try { io.unlink(backup); } catch { throw new OpenAiTierBackupRollbackError(); }
@@ -436,10 +462,22 @@ function resolveRuntimePortPath(): string {
 }
 
 const warnedConfigFallbacks = new Set<string>();
+let lastWarningReconciledGeneration = 0;
+
+export function reconcileConfigWarningMemos(generation: number): number {
+  if (generation <= lastWarningReconciledGeneration) return 0;
+  const removed = warnedConfigFallbacks.size;
+  warnedConfigFallbacks.clear();
+  lastWarningReconciledGeneration = generation;
+  return removed;
+}
 
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
+  mcpMaxTools: z.number().int().positive().optional(),
+  mcpMaxSchemaBytes: z.number().int().positive().optional(),
+  mcpMaxResultBytes: z.number().int().positive().optional(),
   apiKeyTransport: z.enum(["x-api-key", "bearer"]).optional(),
   responsesPath: z.string().min(1).optional(),
   statelessResponses: z.boolean().optional(),
@@ -705,6 +743,12 @@ const apiKeyEntrySchema = z.object({
 
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
+  managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
+  appOwnedMemoryBudgetMb: z.number().int()
+    .min(MIN_APP_OWNED_MEMORY_BUDGET_MB)
+    .max(MAX_APP_OWNED_MEMORY_BUDGET_MB)
+    .default(DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024))
+    .catch(DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024)),
   // A blank hostname degrades to undefined rather than failing the parse. `getDefaultConfig()`
   // carries no `hostname` key, so the backup-and-defaults repair path below cannot merge one
   // away — a hand-edited `"hostname": ""` would fail twice and reset providers/apiKeys to
@@ -1401,9 +1445,20 @@ function claudeSubagentEffortError(value: unknown): string | null {
   return `schema_invalid: claudeCode.subagentEffort: must be one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`;
 }
 
+function appOwnedMemoryBudgetError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const budget = (value as Record<string, unknown>).appOwnedMemoryBudgetMb;
+  if (budget === undefined) return null;
+  if (typeof budget !== "number" || !Number.isInteger(budget)
+    || budget < MIN_APP_OWNED_MEMORY_BUDGET_MB || budget > MAX_APP_OWNED_MEMORY_BUDGET_MB) {
+    return `schema_invalid: appOwnedMemoryBudgetMb: must be an integer from ${MIN_APP_OWNED_MEMORY_BUDGET_MB} to ${MAX_APP_OWNED_MEMORY_BUDGET_MB}`;
+  }
+  return null;
+}
+
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
 export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
-  const boundaryError = blankHostnameError(value) ?? claudeSubagentEffortError(value);
+  const boundaryError = blankHostnameError(value) ?? claudeSubagentEffortError(value) ?? appOwnedMemoryBudgetError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
   if (result.success) return { ok: true, config: normalizeApiKeyIds(result.data as OcxConfig) };
@@ -1921,6 +1976,8 @@ export function getDefaultConfig(): OcxConfig {
   // Adding extra providers (e.g. opencode-go) and switching defaultProvider is a user/runtime choice.
   return {
     port: 10100,
+    managementUsageMaxReadBytes: 64 * 1024 * 1024,
+    appOwnedMemoryBudgetMb: DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024),
     // Fresh/re-initialized configs are already written in the current three-tier
     // OpenAI shape. Mark them as such so startup does not mistake them for a
     // legacy config and collide with an immutable backup from an earlier setup.
@@ -2117,6 +2174,48 @@ export function isOcxStartCommandLine(commandLine: string): boolean {
 
 /** Per-process memo: waitForProxy/findLiveProxy used to spawn powershell on every 150ms poll. */
 const ocxStartProcessCache = new Map<number, boolean>();
+let ocxStartProcessSweepCursor = 0;
+let ocxStartProcessProbe: (pid: number) => void = pid => { process.kill(pid, 0); };
+
+export function setOcxStartProcessProbeForTests(probe: ((pid: number) => void) | null): void {
+  ocxStartProcessProbe = probe ?? (pid => { process.kill(pid, 0); });
+}
+
+export function setOcxStartProcessCacheForTests(entries: Iterable<readonly [number, boolean]>): void {
+  ocxStartProcessCache.clear();
+  for (const [pid, value] of entries) ocxStartProcessCache.set(pid, value);
+  ocxStartProcessSweepCursor = 0;
+}
+
+export function sweepDeadOcxStartProcessCache(maxProbes = 64): number {
+  const pids: number[] = [];
+  let removed = 0;
+  for (const pid of ocxStartProcessCache.keys()) {
+    if (Number.isSafeInteger(pid) && pid > 0) pids.push(pid);
+    else if (ocxStartProcessCache.delete(pid)) removed += 1;
+  }
+  if (pids.length === 0 || maxProbes <= 0) {
+    ocxStartProcessSweepCursor = 0;
+    return removed;
+  }
+  const probeCount = Math.min(Math.floor(maxProbes), pids.length);
+  const start = ocxStartProcessSweepCursor % pids.length;
+  for (let offset = 0; offset < probeCount; offset += 1) {
+    const pid = pids[(start + offset) % pids.length]!;
+    try {
+      ocxStartProcessProbe(pid);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+      if (ocxStartProcessCache.delete(pid)) removed += 1;
+    }
+  }
+  ocxStartProcessSweepCursor = (start + probeCount) % pids.length;
+  return removed;
+}
+
+export function ocxStartProcessCacheSizeForTests(): number {
+  return ocxStartProcessCache.size;
+}
 
 function isLikelyOcxStartProcess(pid: number): boolean {
   const cached = ocxStartProcessCache.get(pid);

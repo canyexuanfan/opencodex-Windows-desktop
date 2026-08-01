@@ -19,8 +19,9 @@ import {
 import {
   cancelQueuedStorageWorkerSpawns,
   drainStorageWorkers,
-  registerStorageWorker,
+  StorageWorkerAdmissionBusyError,
   terminateStorageWorker,
+  tryReserveStorageWorker,
   withStorageWorkerSpawnGate,
 } from "./worker-lifecycle";
 
@@ -148,11 +149,20 @@ function runInWorker(opts: {
   blockMs?: number;
   restoreTest?: RestoreTestHooks;
 }): Promise<RestoreResult> {
+  const reservation = tryReserveStorageWorker();
+  if (!reservation) return Promise.reject(new StorageWorkerAdmissionBusyError());
   return withStorageWorkerSpawnGate(() => new Promise<RestoreResult>((resolve, reject) => {
     const requestId = crypto.randomUUID();
     let settled = false;
-    const worker = new Worker(new URL("./restore-worker.ts", import.meta.url).href);
-    registerStorageWorker(worker);
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("./restore-worker.ts", import.meta.url).href);
+      reservation.bind(worker);
+    } catch (error) {
+      reservation.release();
+      reject(error);
+      return;
+    }
     activeWorker = worker;
 
     const finish = (fn: () => void) => {
@@ -206,7 +216,10 @@ function runInWorker(opts: {
         ...(process.env.OPENCODEX_HOME ? { OPENCODEX_HOME: process.env.OPENCODEX_HOME } : {}),
       },
     });
-  }));
+  })).catch(error => {
+    reservation.release();
+    throw error;
+  });
 }
 
 async function executeRestore(opts: {
@@ -236,6 +249,7 @@ async function executeRestore(opts: {
       ...(restoreTest ? { restoreTest } : {}),
     });
   } catch (err) {
+    if (err instanceof StorageWorkerAdmissionBusyError) return busyRestoreResult();
     return restoreResultFromWorkerRejection(err, opts.trashId);
   }
 }
