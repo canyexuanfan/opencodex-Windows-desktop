@@ -14,6 +14,7 @@ const config = {
   },
 } as unknown as OcxConfig;
 
+/** Build an Anthropic SSE response from raw frames. */
 function anthropicSse(body: string): Response {
   return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 }

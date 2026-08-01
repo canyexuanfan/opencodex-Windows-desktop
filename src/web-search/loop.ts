@@ -302,6 +302,11 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   // Acquire one iteration's final response headers. The first call is drained eagerly so an initial
   // connect/header/HTTP failure stays a non-2xx JSON response. Its successful BODY is deliberately
   // left unread until the downstream Responses SSE bridge exists.
+  /**
+   * Fetch one web-search iteration's final response headers, applying the response-header
+   * deadline and the same-target 429 retry policy (with awaited body release and deadline
+   * restart) before the `on429` key rotation.
+   */
   const prepareIterationEvents = async function* (forceAnswer: boolean): AsyncGenerator<AdapterEvent, IterationResponse> {
     // On the forced-answer pass the synthetic web_search tool is gone, so the model MUST answer
     // from the results already in `messages`. A weak model can still produce a thin answer that

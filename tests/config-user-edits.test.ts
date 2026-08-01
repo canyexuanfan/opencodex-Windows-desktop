@@ -21,11 +21,13 @@ import type { OcxConfig } from "../src/types";
 let home: string;
 let previousHome: string | undefined;
 
+/** Merge a patch into the on-disk config.json, simulating a user hand-edit. */
 function writeDiskConfig(patch: Record<string, unknown>): void {
   const current = JSON.parse(readFileSync(getConfigPath(), "utf8")) as Record<string, unknown>;
   writeFileSync(getConfigPath(), JSON.stringify({ ...current, ...patch }, null, 2) + "\n");
 }
 
+/** Read the current on-disk config.json as a plain record. */
 function diskConfig(): Record<string, unknown> {
   return JSON.parse(readFileSync(getConfigPath(), "utf8")) as Record<string, unknown>;
 }

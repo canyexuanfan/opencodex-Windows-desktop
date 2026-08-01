@@ -11,6 +11,7 @@ import type { OcxMessage, OcxParsedRequest } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
 
+/** Run the web-search loop with a default test translator budget. */
 function runWithWebSearch(
   deps: Omit<WebSearchLoopDeps, "incomingMeta"> & { incomingMeta?: WebSearchLoopDeps["incomingMeta"] },
 ): Promise<Response> {

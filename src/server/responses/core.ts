@@ -560,6 +560,10 @@ export interface HandleResponsesOptions {
 
 
 
+/**
+ * Build the 499 JSON error the proxy returns when the client disconnects before the
+ * response completes (`client_cancelled`).
+ */
 export function clientCancelledResponse(): Response {
   return formatErrorResponse(499, "client_cancelled", "Client cancelled request");
 }
@@ -1154,6 +1158,10 @@ function finalizeOwnedTranslatorBudget(response: Response, budget: TranslatorBud
   return finalizedResponse;
 }
 
+/**
+ * Route one `/v1/responses` request through the adapter pipeline: recovery loop, passthrough
+ * wire, image/web-search bridges, and the terminal-guard continuation.
+ */
 export async function handleResponses(
   req: Request,
   config: OcxConfig,
@@ -1171,6 +1179,10 @@ export async function handleResponses(
   }
 }
 
+/**
+ * Inner implementation of `handleResponses`; owns the pre-stream recovery loop and the
+ * per-request same-target 429 retry budgets.
+ */
 async function handleResponsesInner(
   req: Request,
   config: OcxConfig,
@@ -2356,6 +2368,11 @@ async function handleResponsesInner(
     // comes back 429 cannot silently re-arm a fresh budget (bounded to `attempts` per request).
     const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
     let rateLimitRetries = 0;
+    /**
+     * Rebuild the request from the current parsed input (and any image-tier bias) and refetch
+     * it once, tagging the attempt with the given recovery kind. Rebuilds are deterministic
+     * for the same parsed request, so same-target replays stay byte-identical.
+     */
     const rebuildAndRefetch = async (
       recovery: AttemptRecoveryKind,
     ): Promise<Response | { failed: Response }> => {
@@ -2572,10 +2589,12 @@ async function handleResponsesInner(
 
   cancelBodyOnAbort(upstreamResponse.body, upstream.signal);
 
-  // Claude can return a clean end_turn after announcing an edit without emitting any tool call.
-  // Keep the normal request/recovery path above intact, and use this bounded callback only for the
-  // one internal continuation pass. A continuation failure becomes an in-stream adapter error so
-  // the client never sees a second hidden HTTP response or an unbounded retry loop.
+  /**
+   * One bounded internal re-ask for Anthropic end_turn-without-tool-call turns. Replays the
+   * continuation on a 429 with the same-key retry budget (hoisted per request), then falls
+   * back to key/account failover; a failure becomes an in-stream adapter error so the client
+   * never sees a second hidden HTTP response or an unbounded retry loop.
+   */
   const terminalGuardEnabled = activeAdapter.name === "anthropic" && !options.comboAttempt && !routedCompaction;
   const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
     let imageTierBias = 0;

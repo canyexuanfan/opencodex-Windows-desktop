@@ -95,6 +95,7 @@ const imageCallEvents: AdapterEvent[] = [
   { type: "done" },
 ];
 
+/** Run the image bridge with the given per-iteration event streams and return the client-facing SSE text. */
 async function runAndGetSSE(streams: AdapterEvent[][], fulfill?: ImageCallResult): Promise<string> {
   streamQueue = streams.map(s => [...s]);
   if (fulfill) fulfillResult = fulfill;

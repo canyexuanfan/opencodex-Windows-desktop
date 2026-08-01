@@ -102,6 +102,11 @@ function cloneNestedRecord(input: Record<string, Record<string, string>>): Recor
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { ...value }]));
 }
 
+/**
+ * Build the provider config a registry entry contributes when a preset is materialized.
+ * The registry auth kind is preserved verbatim (including `"local"`) so fail-closed gates
+ * keep distinguishing local runtimes from API-key providers after the seed round-trip.
+ */
 export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderConfig {
   return {
     adapter: entry.adapter,

@@ -36,6 +36,7 @@ const okChatCompletion = JSON.stringify({
   usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
 });
 
+/** POST a non-streaming `/v1/responses` request to the proxy under test. */
 async function postResponses(serverUrl: string, model: string): Promise<Response> {
   return fetch(new URL("/v1/responses", serverUrl), {
     method: "POST",

@@ -339,6 +339,11 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
   // Acquire one iteration's final response headers. The first call is drained eagerly so an initial
   // connect/header/HTTP failure stays a non-2xx JSON response — except for runTurn adapters, which
   // have no HTTP status surface and must not block SSE headers behind queue.collect().
+  /**
+   * Fetch one image-bridge iteration's final response headers, applying the response-header
+   * deadline and the same-target 429 retry policy (with awaited body release and deadline
+   * restart) before the `on429` key rotation.
+   */
   const prepareIterationEvents = async function* (forceFinal: boolean): AsyncGenerator<AdapterEvent, IterationResponse> {
     const iterParsed: OcxParsedRequest = {
       ...parsed,
