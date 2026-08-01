@@ -855,3 +855,11 @@ Codex / Claude Code / 其他现有客户端
 - [x] 最终资源树重新生成 4259 个文件并离线重包；打包 GUI 已确认包含阶段 22 hover/roving 状态。Setup SHA-256=`2280C253479900234D4332C2CABD95648D3055B8BA38235F6080247D6D854C1D`，Portable SHA-256=`A90F2479196F80978538C4C9999988CBDF33C893312DEF5FB8390328E8956620`；签名主体 `CN=十七°`，thumbprint `33165F93D6CC20A3FF74CABA4BC2B62D12969731`，本机自签链 `UnknownError`。
 - [x] 一次性 PFX、CurrentUser 私钥证书及 `C:\tmp\opencodex-stage22-final-build-20260801` 精确清理，均确认不存在。
 - [ ] 唯一外部门：干净 Windows 10 VM/标准用户与中文用户名、系统睡眠/注销/重启、真实旧服务/托盘共存、受信签名链 `Valid`、exact-HEAD macOS/Linux/Windows CI；这些是发行环境证明，不再作为本机代码收尾的重复测试。
+
+# 阶段 23：安装目录页可见子文件夹修复（2026-08-02）
+- [x] NSIS 目录页在显示/离开阶段读取可见路径输入框；选择父目录时立即补齐 `OpenCodex`，已选 `OpenCodex` 时不会重复追加。
+- [x] 兼容 NSIS 卸载器编译：目录页回调和函数仅在安装器构建中定义，不污染卸载页面。
+- [x] 桌面安装契约测试通过：`bun test tests/package-static.test.ts`，4/4 用例、20 个断言。
+- [x] 重新生成资源、桌面构建、NSIS/Portable 并签名；Setup SHA-256=`EA49DCCB15E1B298196C9C3CBF220849C9BFF6FBBE0CC859E92A6D93E89147C6`，Portable SHA-256=`23426AB955A58BD628BB436B01BA1BB8FA11F3EC8A18F1231C16F8A837F8B656`。
+- [x] 隔离静默安装回归：父目录含中文/空格时返回 0，实际生成 `父目录/OpenCodex/OpenCodex.exe`，父目录无散落 exe；测试目录已清理。
+- [ ] 外部验收仍仅保留干净 Windows VM、真实交互向导点击、受信签名链 `Valid` 等发行环境项目；本次未启动或修改当前对话正在使用的 Codex。
