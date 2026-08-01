@@ -63,35 +63,35 @@
 
 ### 必须实现
 
-- [ ] Windows 10/11 x64 安装版可直接运行。
-- [ ] Windows 10/11 x64 便携版可直接运行。
-- [ ] 不弹控制台窗口。
-- [ ] 不要求用户安装运行时或执行 `npm install`/`bun install`。
-- [ ] 任何时刻只有一个 Electron 主实例。
-- [ ] 任何时刻只有一个 OpenCodex 主窗口。
-- [ ] 第二次启动只恢复并聚焦已有窗口。
-- [ ] 设置、日志、Provider、账号、OAuth 全部在同一个窗口内完成。
-- [ ] 外部 OAuth/文档链接使用系统浏览器，不创建 Electron 第二窗口。
-- [ ] 桌面 UI 不启动 Vite 或额外 HTTP 服务。
-- [ ] 代理只监听一个 `127.0.0.1` 动态端口。
-- [ ] 固定端口被占用时自动选择动态端口，不终止第三方进程。
-- [ ] 实际端口确定后才写入 runtime 状态和客户端配置。
-- [ ] 停止、重启、崩溃恢复继续保护原有 Codex 配置。
+- [ ] Windows 10/11 x64 安装版可直接运行（待干净 VM 双击验收）。
+- [ ] Windows 10/11 x64 便携版可直接运行（待干净 VM 双击验收）。
+- [x] 不弹控制台窗口（Electron/Bun spawn 使用隐藏窗口；待 VM 最终确认）。
+- [x] 不要求用户安装运行时或执行 `npm install`/`bun install`（隔离 PATH smoke 已验证）。
+- [x] 任何时刻只有一个 Electron 主实例。
+- [x] 任何时刻只有一个 OpenCodex 主窗口。
+- [x] 第二次启动只恢复并聚焦已有窗口。
+- [x] 设置、日志、Provider、账号、OAuth 全部在同一个 Dashboard 窗口内完成。
+- [x] 外部 OAuth/文档链接使用系统浏览器，不创建 Electron 第二窗口。
+- [x] 桌面 UI 不启动 Vite 或额外 HTTP 服务。
+- [x] 代理只监听一个 `127.0.0.1` 动态端口。
+- [x] 固定端口被占用时自动选择动态端口，不终止第三方进程。
+- [x] 实际端口确定后才写入 runtime 状态和客户端配置。
+- [x] 停止、重启、崩溃恢复继续保护原有 Codex 配置（真实用户 Provider 保留仍待 VM）。
 - [ ] 保留原有 Provider、模型、OAuth、路由、日志和存储能力。
-- [ ] 最终安装包和便携包均使用 `CN=十七°` 签名。
+- [x] 最终安装包和便携包均使用 `CN=十七°` 签名。
 
 ### 明确不做
 
-- [ ] 不增加聊天、引导、模型推荐、云同步、遥测、崩溃上报。
-- [ ] 不增加自动更新服务。
-- [ ] 不增加用户账号系统或在线激活。
-- [ ] 不把 HTTP 数据面改成 Named Pipe、stdin/stdout 或 Electron IPC。
-- [ ] 不重写 Provider、Adapter、OAuth 或 React Dashboard。
-- [ ] 不默认安装 WinSW/Task Scheduler 服务。
-- [ ] 不自动删除已有服务、旧托盘、HKCU Run 项或用户配置。
-- [ ] 不做 macOS/Linux/Windows ARM64 桌面包。
-- [ ] 不引入商业证书或强制安装受信任根证书。
-- [ ] 不把 `questions/`、签名私钥、PFX、临时产物或本文件发布到 GitHub。
+- [x] 不增加聊天、引导、模型推荐、云同步、遥测、崩溃上报。
+- [x] 不增加自动更新服务。
+- [x] 不增加用户账号系统或在线激活。
+- [x] 不把 HTTP 数据面改成 Named Pipe、stdin/stdout 或 Electron IPC。
+- [x] 不重写 Provider、Adapter、OAuth 或 React Dashboard。
+- [x] 不默认安装 WinSW/Task Scheduler 服务。
+- [x] 不自动删除已有服务、旧托盘、HKCU Run 项或用户配置。
+- [x] 不做 macOS/Linux/Windows ARM64 桌面包。
+- [x] 不引入商业证书或强制安装受信任根证书。
+- [x] 不把 `questions/`、签名私钥、PFX、临时产物或本文件发布到 GitHub。
 
 ### 端口口径
 
@@ -120,10 +120,10 @@
 
 若基线失败：
 
-- [ ] 先阅读对应 `questions/` 文档。
-- [ ] 记录失败命令、原因和退出码。
-- [ ] 不为了“变绿”修改无关代码。
-- [ ] 修复成功后记录验证结果。
+- [x] 先阅读对应 `questions/` 文档。
+- [x] 记录失败命令、原因和退出码。
+- [x] 不为了“变绿”修改无关代码。
+- [x] 修复成功后记录验证结果。
 
 ### 0.3 代码边界确认
 
@@ -475,7 +475,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 - [ ] Windows 10/11 x64 VM 无 Node.js。
 - [ ] VM 无 Bun。
-- [ ] VM 无项目依赖。
+- [ ] VM 无项目依赖（待干净 VM 验收）。
 - [x] 安装版 unpacked smoke 可启动。
 - [x] 便携版产物已生成并通过结构审计。
 - [x] 无控制台窗口（Electron/Bun spawn 均设置隐藏窗口；需 VM 再确认）。
@@ -485,13 +485,13 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 完成条件：
 
 - [ ] 两种产物都能在干净 VM 运行。
-- [ ] 用户无需手工安装依赖。
+- [x] 用户无需手工安装依赖（打包资源内置 Bun、src、GUI 和生产依赖；隔离 PATH smoke 已通过）。
 
 验证证据：
 
 ```text
 命令：cd desktop && bun test tests；bun run package；unpacked Electron smoke（PATH 仅保留 C:\\Windows\\System32）；资源禁入路径扫描；SHA-256
-结果：桌面 9 tests、资源准备和 Electron-builder 通过；生成 desktop/out/OpenCodex-Setup-x64.exe 与 desktop/out/OpenCodex-Portable-x64.exe；固定 Bun 1.3.14 位于 resources/opencodex/runtime，src/gui/dist/生产依赖位于 resources/opencodex，Tray 图标位于 resources/tray；app.asar 不含 staging 或旧 unpacked 输出；安装版 hash=D1752410A2A8891F45E5568255E762B59B38601B916E649E416ED1B9C85512CE，便携版 hash=D6CB77A0CAA2465905F444B3E68C7E43E3C84BD38D1D46767ED709483F5B8243；隔离 PATH smoke 成功拉起打包 Electron 与 resources Bun sidecar。
+结果：桌面 9 tests、资源准备和 Electron-builder 通过；生成 desktop/out/OpenCodex-Setup-x64.exe 与 desktop/out/OpenCodex-Portable-x64.exe；固定 Bun 1.3.14 位于 resources/opencodex/runtime，src/gui/dist/生产依赖位于 resources/opencodex，Tray 图标位于 resources/tray；app.asar 不含 staging 或旧 unpacked 输出；最新安装版 hash=9E9BB84C61C820D27D7D0A3CC58A85D9FE5E410799762B4870E6CCCE9836707B，便携版 hash=0A33A6BEACDE98D1AEFF1C161FA4EE049AFAFF389B86BF50EC77E6E1DC919A15；隔离 PATH smoke 成功拉起打包 Electron 与 resources Bun sidecar。
 限制：当前环境没有 Windows 10/11 干净 VM，尚未完成安装器/便携版真实双击、healthz/模型请求和卸载保留用户目录验证；因此阶段 6 完成条件保留未勾选。
 ```
 
@@ -549,7 +549,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 ### 8.1 代码回归
 
 - [x] `bun run typecheck`。
-- [ ] `bun run test`（当前 Bun 运行器 180 秒无输出超时，已记录）。
+- [ ] `bun run test`（普通与最小授权环境均在 420 秒内未完成；临时目录权限/CLI 子进程超时已记录）。
 - [x] `bun run privacy:scan`。
 - [ ] `cd gui && bun test tests`（432 通过、7 个既有 Logs 测试失败）。
 - [x] `cd gui && bun run lint`。
@@ -602,14 +602,14 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 完成条件：
 
-- [ ] 没有未解释的失败。
+- [x] 没有未解释的失败（根完整测试、GUI Logs 兼容性、Windows VM/证书链限制均已记录）。
 - [ ] 只有已接受的自签名/SmartScreen 限制。
-- [ ] 没有新增用户未要求的功能。
+- [x] 没有新增用户未要求的功能。
 
 验证证据：
 
 ```text
-代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 9 tests 通过；根完整 test 在 180 秒无输出超时，GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
+代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 9 tests 通过；`desktop-ready` 与 loopback focused tests 的纯协议/端口断言通过，但 `server-auth` 在当前环境清理临时目录时收到 EPERM/EACCES；根完整 test 在普通与最小授权环境均 420 秒未完成，期间另有 CLI 子进程超时；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
 单实例/端口：Electron 10 次并发 smoke 仅 1 个主进程、1 个 sidecar；占用 127.0.0.1:10100 时实际动态端口为 1068；未发现残留 entry sidecar 或 10100 listener。
 产物：安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；资源禁入扫描通过；签名主体可读为 CN=十七°。
 未完成：Windows 10/11 干净 VM、真实安装器/便携版双击、healthz/模型请求、卸载保留用户目录、受信根后的 signtool Valid 和真实 provider 保留回归。
@@ -700,21 +700,21 @@ Git 边界：本次仅本地提交和 tag，不 push、不创建 Release、不�
 ## 16. 最终完成定义
 
 - [ ] 安装版和便携版在干净 Windows x64 VM 双击可用。
-- [ ] 用户无需安装任何依赖。
-- [ ] 无控制台窗口。
-- [ ] 永远只有一个主窗口。
-- [ ] 重复启动不产生第二实例、第二窗口或第二代理。
-- [ ] UI 不增加额外端口。
-- [ ] 代理只有一个动态 `127.0.0.1` 端口。
-- [ ] 10100 被占用时仍可运行。
+- [x] 用户无需安装任何依赖（隔离 PATH smoke）。
+- [x] 无控制台窗口（代码与本机 smoke；待 VM 复核）。
+- [x] 永远只有一个主窗口（单实例/并发 smoke）。
+- [x] 重复启动不产生第二实例、第二窗口或第二代理。
+- [x] UI 不增加额外端口。
+- [x] 代理只有一个动态 `127.0.0.1` 端口。
+- [x] 10100 被占用时仍可运行。
 - [ ] 现有核心功能无回归。
 - [ ] 退出和崩溃恢复不破坏 Codex 配置。
-- [ ] 最终产物由 `CN=十七°` 签名。
-- [ ] 私钥不在仓库和安装包。
-- [ ] SHA-256 已记录。
-- [ ] 自签名限制已说明。
-- [ ] 没有增加用户未要求的产品功能。
-- [ ] 远端发布等待用户明确授权。
+- [x] 最终产物由 `CN=十七°` 签名。
+- [x] 私钥不在仓库和安装包。
+- [x] SHA-256 已记录。
+- [x] 自签名限制已说明。
+- [x] 没有增加用户未要求的产品功能。
+- [x] 远端发布等待用户明确授权。
 
 ---
 
@@ -732,4 +732,4 @@ Electron 单实例宿主
 Codex / Claude Code / 其他现有客户端
 ```
 
-下一步只做阶段 0 基线验证；实现前仅完成一次架构参考检查；不执行前端设计流程、不添加新功能。
+当前结论：本机桌面端改造、打包、签名、资源审计、单实例/动态端口回归和发布说明已完成；工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、受信证书链 `Valid`、真实 Provider 保留、healthz/模型请求和卸载保留用户目录。根完整测试在普通与最小授权环境均因临时目录权限/子进程超时未完成，GUI 完整测试仍有 7 个既有 Logs 兼容性失败；这些限制均已记录在 `questions/`，不以修改无关代码掩盖。
