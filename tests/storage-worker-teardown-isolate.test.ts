@@ -8,11 +8,10 @@
  *
  * A second Bun 1.3.14 failure mode is a mid-file / post-suite segfault with a
  * *balanced* `workers_spawned === workers_terminated` count (exit 133 /
- * Trace/BPT on macOS Silicon). Churn caps and afterAll settle were not enough
- * under GHA load; running macOS CI *without* `--isolate` hung the suite past
- * the 20-minute job ceiling. Keep isolate everywhere, skip Worker-spawning
- * cases on darwin (platform-cap meta-test still runs), and keep OS-join settle
- * in `worker-lifecycle` plus drain+settle in `afterEach` for local isolate runs.
+ * Trace/BPT on macOS Silicon). Churn caps alone were not enough under GHA load;
+ * running macOS CI *without* `--isolate` hung past the 20-minute job ceiling.
+ * Keep isolate everywhere, skip Worker-spawning cases on darwin (platform-cap
+ * meta-test still runs), and keep OS-join settle in `worker-lifecycle`.
  *
  * These cases hammer the exact failure window: fire-and-forget terminate must
  * still be joinable by drain, and repeated spawn → reset cycles must leave the
@@ -78,9 +77,6 @@ afterEach(async () => {
   await resetStorageCleanupPolicyJobForTestsAsync();
   setStorageCleanupPolicyJobTestHooks(null);
   await drainStorageWorkers();
-  // macOS Silicon + Bun 1.3.14: balanced-count segfault can hit mid-file
-  // (before afterAll). Brief settle after every case — not a CI timeout bump.
-  if (process.platform === "darwin") await Bun.sleep(250);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   isolatedCodexHome?.restore();
@@ -91,7 +87,6 @@ afterEach(async () => {
 
 afterAll(async () => {
   await drainStorageWorkers();
-  if (process.platform === "darwin") await Bun.sleep(250);
 });
 
 async function waitForLiveWorker(timeoutMs = 10_000): Promise<void> {
