@@ -253,4 +253,5 @@ test("production adapter contract rejects omitted translator budgets at typechec
   expect(invalid.stdout.toString() + invalid.stderr.toString()).toContain("TS2554");
   const valid = Bun.spawnSync(["bun", ...base, "tests/fixtures/translator-budget-required.valid.ts"]);
   expect(valid.exitCode).toBe(0);
-});
+  // Two bun x tsc --noEmit spawns exceed Bun's 5s default under windows-latest contention.
+}, 60_000);
