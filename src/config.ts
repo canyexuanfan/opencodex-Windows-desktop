@@ -1162,8 +1162,9 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
       if (!knownKeys.has(key)) {
         // Redact the field NAME before logging: a malformed hand-edit can place a secret in a
         // property name (`retryOn429: { "sk-...": true }`). Ordinary typos (e.g. `attempt`)
-        // stay readable, secret-shaped names become [REDACTED].
-        console.warn(`⚠️  config.json providers.${name}.retryOn429.${redactSecretString(key)} is not a recognized field — ignoring it`);
+        // stay readable, secret-shaped names become [REDACTED]. JSON-escape afterwards so a
+        // control-character property name (newline/ANSI) can never forge a log line.
+        console.warn(`⚠️  config.json providers.${name}.retryOn429.${JSON.stringify(redactSecretString(key))} is not a recognized field — ignoring it`);
       }
     }
     p.retryOn429 = cleaned;

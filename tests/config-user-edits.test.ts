@@ -214,6 +214,32 @@ test("unrecognized retryOn429 field names are redacted before logging", () => {
   }
 });
 
+test("unrecognized retryOn429 field names are JSON-escaped before logging", () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    writeDiskConfig({
+      providers: {
+        test: {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:1/v1",
+          apiKey: "k",
+          allowPrivateNetwork: true,
+          retryOn429: { "evil\nattempt": true, intervalMs: 120 },
+        },
+      },
+    });
+    const live = loadConfig();
+    expect(live.providers.test.retryOn429).toEqual({ intervalMs: 120 });
+    const logged = warn.mock.calls.map(call => call.join(" ")).join("\n");
+    // The raw control character must never reach the log (no line forging); the escaped form
+    // still names the field for typo debugging.
+    expect(logged).not.toContain("evil\nattempt");
+    expect(logged).toContain('"evil\\nattempt"');
+  } finally {
+    warn.mockRestore();
+  }
+});
+
 // R4-1: the request path. A 429 mid-turn rotates a key and saves, with no user action.
 test("a 429 key rotation does not clobber the hand edit", async () => {
   const { rotateKeyOn429 } = await import("../src/providers/key-failover");
