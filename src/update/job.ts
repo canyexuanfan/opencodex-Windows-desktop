@@ -387,18 +387,66 @@ export function staleActiveUpdateJobReason(
   return null;
 }
 
-const defaultStartUpdateJobDeps: StartUpdateJobDeps = {
-  checkForUpdateFn: channel => checkForUpdate(channel),
-  spawnWorkerFn: (jobId, channel, restart) => spawn(
-    process.execPath,
-    [process.argv[1], "__gui-update-worker", jobId, channel, restart ? "restart" : "no-restart"],
-    {
+/**
+ * Spawn the GUI update worker without inheriting the proxy's LISTEN socket.
+ *
+ * On Windows, `spawn(..., { detached: true, stdio: "ignore" })` still inherits
+ * inheritable handles — including Bun.serve's LISTEN socket. After stop-first
+ * update kills the proxy PID, netstat keeps showing that dead PID as LISTENING
+ * until every inheriting child exits. The update worker was that child, so the
+ * port stayed busy for the whole job. Launch via PowerShell Start-Process so
+ * the worker is a fresh process tree with no inherited LISTEN handle.
+ */
+export function spawnGuiUpdateWorker(
+  jobId: string,
+  channel: Channel,
+  restart: boolean,
+): UpdateWorkerProcess {
+  const script = process.argv[1];
+  const args = [
+    script,
+    "__gui-update-worker",
+    jobId,
+    channel,
+    restart ? "restart" : "no-restart",
+  ];
+  if (process.platform !== "win32") {
+    return spawn(process.execPath, args, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
       env: { ...process.env, OCX_SERVICE: "1" },
-    },
-  ),
+    });
+  }
+
+  const psQuote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+  const argList = args.map(psQuote).join(", ");
+  const ps = [
+    `$env:OCX_SERVICE = '1'`,
+    `$p = Start-Process -FilePath ${psQuote(process.execPath)} -ArgumentList @(${argList}) -WindowStyle Hidden -PassThru`,
+    `if (-not $p) { exit 1 }`,
+    `Write-Output $p.Id`,
+  ].join("; ");
+  const launched = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps],
+    { encoding: "utf8", windowsHide: true, timeout: 15_000 },
+  );
+  const pid = Number(String(launched.stdout ?? "").trim().split(/\r?\n/).pop());
+  if (launched.status !== 0 || !Number.isSafeInteger(pid) || pid <= 0) {
+    const detail = String(launched.stderr ?? launched.stdout ?? "").trim() || `status ${launched.status}`;
+    throw new Error(`Windows update worker Start-Process failed: ${detail}`);
+  }
+  return {
+    pid,
+    unref() { /* Start-Process already detached */ },
+    once() { /* startup errors are not wired across Start-Process */ },
+  };
+}
+
+const defaultStartUpdateJobDeps: StartUpdateJobDeps = {
+  checkForUpdateFn: channel => checkForUpdate(channel),
+  spawnWorkerFn: spawnGuiUpdateWorker,
   isProcessAliveFn: isProcessAlive,
   nowMs: Date.now,
 };

@@ -33,6 +33,12 @@ describe("update-job restart avoids the shell-less .cmd EINVAL (Windows, bun/sou
     expect(read("src/cli/index.ts")).toContain("Not opening the GUI");
     expect(read("src/server/ports.ts")).toContain("allowEphemeralFallback");
   });
+  test("Windows GUI update worker is launched without inheriting the proxy LISTEN socket", () => {
+    // Direct spawn() inherits Bun.serve's LISTEN handle → ghost LISTEN with dead parent PID.
+    expect(src).toContain("function spawnGuiUpdateWorker");
+    expect(src).toContain("Start-Process");
+    expect(src).toContain("spawnWorkerFn: spawnGuiUpdateWorker");
+  });
 });
 
 describe("systemd detection tolerates a no-DBUS SSH session (F9)", () => {
