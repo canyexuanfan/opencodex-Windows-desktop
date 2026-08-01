@@ -863,3 +863,11 @@ Codex / Claude Code / 其他现有客户端
 - [x] 重新生成资源、桌面构建、NSIS/Portable 并签名；Setup SHA-256=`BD808DFE8F44D2CFFE137E3C245818EEA32D5AD8A5D4846BEFEC1AB7E0CFCA72`，Portable SHA-256=`2FC36F5775C85749D3F699FA19311E48A393170C9892EB64868D1E12191E80A1`。
 - [x] 隔离静默安装回归：父目录含中文/空格时返回 0，实际生成 `父目录/OpenCodex/OpenCodex.exe`，父目录无散落 exe；测试目录已清理。
 - [ ] 外部验收仍仅保留干净 Windows VM、真实交互向导点击、受信签名链 `Valid` 等发行环境项目；本次未启动或修改当前对话正在使用的 Codex。
+
+# 阶段 24：安装目录页自定义接管修复（2026-08-02）
+- [x] 撤销对 electron-builder 内置目录页的依赖：`allowToChangeInstallationDirectory=false`，改由 `customPageAfterChangeDir` 注入自定义 nsDialogs 目录页。
+- [x] 浏览按钮回填后立即规范化路径：用户选择 `E:\Program\` 时输入框写回 `E:\Program\OpenCodex`；已选择 `OpenCodex` 末级目录时不重复追加。
+- [x] 默认/静默路径仍保留程序名子文件夹：安装初始化和离开页面共用 `${GetFileName}` 末级目录判断，不再使用 StdUtils 插件。
+- [x] 验证通过：`bun test tests/package-static.test.ts` 4/4、23 断言；`bun run build` 通过；`electron-builder.exe --win nsis portable` 使用隔离缓存完成 NSIS/Portable 构建与签名。
+- [x] 最新产物：Setup SHA-256=`CCD74E3B8D5C323BBE53AF438AC925F76A425C8E089F1B5B2FD0DE1BF364AAC5`；Portable SHA-256=`6507AF4C776C9BB88A909DAAFA5E8ACED422E8CB85A7D75ACDDFD4C88929D62A`。
+- [ ] 当前会话未操作真实 Codex；真实可见目录页仍需用户用最新 `desktop/out/OpenCodex-Setup-x64.exe` 点选确认。

@@ -47,7 +47,7 @@ describe("desktop package contract", () => {
       oneClick: false,
       perMachine: false,
       allowElevation: false,
-      allowToChangeInstallationDirectory: true,
+      allowToChangeInstallationDirectory: false,
       unicode: true,
       createStartMenuShortcut: true,
       deleteAppDataOnUninstall: false,
@@ -56,20 +56,21 @@ describe("desktop package contract", () => {
   });
 
   test("keeps the application-name subfolder when the install directory is changed", () => {
-    expect(packageJson.build?.nsis?.allowToChangeInstallationDirectory).toBe(true);
+    expect(packageJson.build?.nsis?.allowToChangeInstallationDirectory).toBe(false);
     expect(packageJson.build?.nsis?.unicode).toBe(true);
     expect(assistedInstaller).toContain("!ifdef allowToChangeInstallationDirectory");
     expect(assistedInstaller).toContain('StrCpy $INSTDIR "$INSTDIR\\${APP_FILENAME}"');
     expect(packageJson.build?.nsis?.include).toBe("build/installer.nsh");
-    expect(customInstaller).toContain("${StdUtils.GetFileNamePart} $0 \"$INSTDIR\"");
+    expect(customInstaller).toContain("!macro customPageAfterChangeDir");
+    expect(customInstaller).toContain("Page custom ocxDirectoryPageCreate ocxDirectoryPageLeave");
+    expect(customInstaller).toContain("${NSD_CreateDirRequest}");
+    expect(customInstaller).toContain("${NSD_CreateBrowseButton}");
+    expect(customInstaller).toContain("nsDialogs::SelectFolderDialog");
+    expect(customInstaller).toContain("${NSD_SetText} $ocxInstallDirInput \"$INSTDIR\"");
+    expect(customInstaller).toContain("!include FileFunc.nsh");
+    expect(customInstaller).toContain('${GetFileName} "$INSTDIR" $0');
     expect(customInstaller).toContain('StrCpy $INSTDIR "$INSTDIR\\${APP_FILENAME}"');
-    expect(customInstaller).toContain("!define MUI_PAGE_CUSTOMFUNCTION_SHOW ocxDirectoryPageShow");
-    expect(customInstaller).toContain("!define MUI_PAGE_CUSTOMFUNCTION_LEAVE ocxDirectoryPageLeave");
-    expect(customInstaller).toContain("!define MUI_PAGE_CUSTOMFUNCTION_PRE ocxDirectoryPagePre");
-    expect(customInstaller).toContain("Function ocxDirectoryPagePre");
-    expect(customInstaller).toContain("GetDlgItem $1 $0 1019");
-    expect(customInstaller).toContain("${NSD_SetText} $1 $2");
-    expect(customInstaller).toContain('${GetFileName} "$2" $3');
+    expect(customInstaller).toContain("Call ocxEnsureInstallDir");
   });
 
   test("copies production dependencies instead of preserving development cache hardlinks", () => {

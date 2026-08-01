@@ -1,66 +1,76 @@
-; Keep the product-name directory in both silent installs and the assisted
-; directory page. The page normally leaves the parent path in its edit box and
-; only electron-builder's later pre-install guard appends APP_FILENAME. We
-; normalize the visible edit box as well, so the user can see the real target.
+; Keep the product-name directory visible and effective. electron-builder's
+; built-in MUI directory page only sanitizes on the next page, so selecting a
+; parent directory keeps showing the parent path. We replace that page with a
+; controlled nsDialogs page and normalize after the browse dialog returns.
 !include nsDialogs.nsh
 !include FileFunc.nsh
+
 !ifndef BUILD_UNINSTALLER
-!define MUI_PAGE_CUSTOMFUNCTION_PRE ocxDirectoryPagePre
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW ocxDirectoryPageShow
-!define MUI_PAGE_CUSTOMFUNCTION_LEAVE ocxDirectoryPageLeave
+Var ocxInstallDirInput
 
-Function ocxDirectoryPagePre
-  ; electron-builder initializes the page after .onInit, so normalize the
-  ; default before MUI renders the directory controls.
-  ${GetFileName} "$INSTDIR" $0
-  ${If} $0 != "${APP_FILENAME}"
-    StrCpy $1 $INSTDIR 1 -1
-    ${If} $1 == "\"
-      StrCpy $INSTDIR "$INSTDIR${APP_FILENAME}"
-    ${Else}
-      StrCpy $INSTDIR "$INSTDIR\${APP_FILENAME}"
+!macro customPageAfterChangeDir
+  Function ocxEnsureInstallDir
+    ${GetFileName} "$INSTDIR" $0
+    ${If} $INSTDIR == ""
+      Return
     ${EndIf}
-  ${EndIf}
-FunctionEnd
+    ${If} $0 != "${APP_FILENAME}"
+      StrCpy $1 $INSTDIR 1 -1
+      ${If} $1 == "\"
+        StrCpy $INSTDIR "$INSTDIR${APP_FILENAME}"
+      ${Else}
+        StrCpy $INSTDIR "$INSTDIR\${APP_FILENAME}"
+      ${EndIf}
+    ${EndIf}
+  FunctionEnd
 
-Function ocxDirectoryPageShow
-  FindWindow $0 "#32770" "" $HWNDPARENT
-  GetDlgItem $1 $0 1019
-  ${NSD_GetText} $1 $2
-  ${GetFileName} "$2" $3
-  ${If} $3 != "${APP_FILENAME}"
-    StrCpy $4 $2 1 -1
-    ${If} $4 == "\"
-      StrCpy $2 "$2${APP_FILENAME}"
-    ${Else}
-      StrCpy $2 "$2\${APP_FILENAME}"
+  Function ocxDirectoryPageCreate
+    Call ocxEnsureInstallDir
+    !insertmacro MUI_HEADER_TEXT "选择安装位置" "选择 OpenCodex 要安装到的文件夹。"
+    nsDialogs::Create 1018
+    Pop $0
+    ${If} $0 == error
+      Abort
     ${EndIf}
-    ${NSD_SetText} $1 $2
-  ${EndIf}
-FunctionEnd
 
-Function ocxDirectoryPageLeave
-  ; MUI runs this callback before it copies the edit-box value to $INSTDIR,
-  ; so read and normalize the visible control directly.
-  FindWindow $0 "#32770" "" $HWNDPARENT
-  GetDlgItem $1 $0 1019
-  ${NSD_GetText} $1 $2
-  ${GetFileName} "$2" $3
-  ${If} $3 != "${APP_FILENAME}"
-    StrCpy $4 $2 1 -1
-    ${If} $4 == "\"
-      StrCpy $2 "$2${APP_FILENAME}"
-    ${Else}
-      StrCpy $2 "$2\${APP_FILENAME}"
+    ${NSD_CreateLabel} 0u 0u 300u 24u "Setup 将把 OpenCodex 安装到下列文件夹。要安装到其他文件夹，请单击 [浏览...] 并选择。"
+    Pop $0
+    ${NSD_CreateGroupBox} 0u 34u 300u 50u "目标文件夹"
+    Pop $0
+    ${NSD_CreateDirRequest} 12u 54u 216u 14u "$INSTDIR"
+    Pop $ocxInstallDirInput
+    ${NSD_CreateBrowseButton} 236u 53u 64u 16u "浏览(&B)..."
+    Pop $0
+    ${NSD_OnClick} $0 ocxDirectoryBrowse
+
+    nsDialogs::Show
+  FunctionEnd
+
+  Function ocxDirectoryBrowse
+    Pop $0
+    ${NSD_GetText} $ocxInstallDirInput $INSTDIR
+    nsDialogs::SelectFolderDialog "选择安装 OpenCodex 的文件夹" "$INSTDIR"
+    Pop $0
+    ${If} $0 != error
+      StrCpy $INSTDIR "$0"
+      Call ocxEnsureInstallDir
+      ${NSD_SetText} $ocxInstallDirInput "$INSTDIR"
     ${EndIf}
-    ${NSD_SetText} $1 $2
-  ${EndIf}
-FunctionEnd
+  FunctionEnd
+
+  Function ocxDirectoryPageLeave
+    ${NSD_GetText} $ocxInstallDirInput $INSTDIR
+    Call ocxEnsureInstallDir
+    ${If} $INSTDIR == ""
+      MessageBox mb_IconStop|mb_TopMost|mb_SetForeground "请选择 OpenCodex 安装文件夹。"
+      Abort
+    ${EndIf}
+  FunctionEnd
+
+  Page custom ocxDirectoryPageCreate ocxDirectoryPageLeave
+!macroend
 !endif
 
 !macro customInit
-  ${StdUtils.GetFileNamePart} $0 "$INSTDIR"
-  ${If} $0 != "${APP_FILENAME}"
-    StrCpy $INSTDIR "$INSTDIR\${APP_FILENAME}"
-  ${EndIf}
+  Call ocxEnsureInstallDir
 !macroend
