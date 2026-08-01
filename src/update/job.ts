@@ -474,6 +474,9 @@ async function restartAfterUpdate(
     // Windows scheduler wrappers can mint a *new* bun PID during the wait; keep
     // killing every ocx listener on this port, not only the pre-wait snapshot.
     killAllOcxOnPort: true,
+    // npm's in-place rename leaves respawns under `@bitkyc08/.opencodex-*` that
+    // fail verifyPidIdentity — still our port for post-update recovery.
+    killAnyListenPidOnPort: true,
     onlyKillPids,
   });
 

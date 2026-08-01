@@ -33,9 +33,16 @@ export type ReclaimListenPortOptions = WaitForPortOptions & {
    * killed (re-checked each scan). Used by post-update restart so a Windows
    * service wrapper that respawns a *new* bun PID mid-reclaim cannot stay
    * protected just because it was absent from the pre-wait allowlist snapshot.
-   * Never kills foreign (non-ocx) processes.
+   * Never kills foreign (non-ocx) processes unless {@link killAnyListenPidOnPort}.
    */
   killAllOcxOnPort?: boolean;
+  /**
+   * When true with `killOcxHolders`, every live LISTEN pid on this port may be
+   * killed (except this process). Post-update restart owns the captured port —
+   * npm's package rename can leave a respawned bun whose cmdline no longer
+   * matches {@link verifyPidIdentity}, which would otherwise look "foreign".
+   */
+  killAnyListenPidOnPort?: boolean;
   /**
    * On Windows, force-delete IPv4 TCP rows for this local port via SetTcpEntry.
    * Default true on win32. Never kills foreign processes, never runs while a
@@ -185,7 +192,9 @@ export async function reclaimListenPort(
     (opts.onlyKillPids ?? []).filter(pid => Number.isSafeInteger(pid) && pid > 0),
   );
   const killAllOcx = opts.killAllOcxOnPort === true;
-  const mayKill = opts.killOcxHolders === true && (allowedKillPids.size > 0 || killAllOcx);
+  const killAnyListen = opts.killAnyListenPidOnPort === true;
+  const mayKill = opts.killOcxHolders === true
+    && (allowedKillPids.size > 0 || killAllOcx || killAnyListen);
   const dropTcpRows = opts.dropTcpRows ?? process.platform === "win32";
   const listFn = opts.listListenPidsFn ?? scanListenPids;
   const isAliveFn = opts.isAliveFn ?? isProcessAlive;
@@ -221,28 +230,27 @@ export async function reclaimListenPort(
         if (!isAliveFn(pid)) continue; // Windows may still list a dead owner briefly
         const isOcx = verifyOcxFn(pid) === pid;
         const allowlisted = allowedKillPids.has(pid);
-        // Pre-update PIDs can lose their cmdline mid-teardown (verify → null) while
-        // Windows still lists them on the LISTEN row. Treating that as a foreign
-        // holder blocks SetTcpEntry and leaves bind() failing for the full window.
-        // Caller-allowlisted PIDs: best-effort kill, then fall through to TCP drop
-        // (do not set foreignLive).
+        // Pre-update / mid-npm-rename PIDs can fail verify while still LISTENing.
+        // Allowlisted PIDs and killAnyListenPidOnPort: best-effort kill, then allow
+        // TCP drop (do not set foreignLive).
         if (!isOcx) {
-          if (mayKill && allowlisted) {
+          if (mayKill && (allowlisted || killAnyListen)) {
             if (!killed.has(pid)) {
               try {
                 killFn(pid);
                 killed.add(pid);
               } catch {
-                /* kill failed — still allow TCP drop for this trusted PID */
+                /* kill failed — still allow TCP drop for this trusted port/PID */
               }
             }
             if (!isAliveFn(pid)) killed.delete(pid);
+            else if (!killAnyListen && !allowlisted) foreignLive = true;
             continue;
           }
           foreignLive = true;
           continue;
         }
-        const mayKillThis = allowlisted || killAllOcx;
+        const mayKillThis = allowlisted || killAllOcx || killAnyListen;
         if (!mayKill || !mayKillThis) {
           // Healthy / intentional ocx proxy — never steal its port.
           protectedOcxListener = true;

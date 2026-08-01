@@ -468,6 +468,33 @@ describe("reclaimListenPort", () => {
     expect(killed).toEqual([9001]);
   });
 
+  test("killAnyListenPidOnPort kills non-ocx listeners on the captured port", async () => {
+    const killed: number[] = [];
+    let holder = 777;
+    let available = false;
+    await expect(reclaimListenPort(10100, "127.0.0.1", {
+      timeoutMs: 200,
+      intervalMs: 20,
+      scanIntervalMs: 20,
+      dropTcpRows: false,
+      killOcxHolders: true,
+      killAnyListenPidOnPort: true,
+      onlyKillPids: [],
+      isAvailableFn: async () => available,
+      listListenPidsFn: () => (holder > 0 ? [holder] : []),
+      isAliveFn: pid => pid === holder,
+      verifyOcxFn: () => null, // npm rename path failed identity
+      killFn: pid => {
+        killed.push(pid);
+        if (pid === holder) holder = 0;
+      },
+      sleepMs: async () => {
+        if (holder === 0) available = true;
+      },
+    })).resolves.toBe(true);
+    expect(killed).toEqual([777]);
+  });
+
   test("allowlisted PID that fails ocx verify still gets killed and does not block TCP drop", async () => {
     const killed: number[] = [];
     const dropped: number[] = [];
