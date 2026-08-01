@@ -1,5 +1,4 @@
 import { useCallback, useRef, useState } from "react";
-import { setClientResourceData } from "../client-resource";
 import { readJsonOrThrow } from "../fetch-json";
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
@@ -19,12 +18,6 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const t = useT();
   const cacheKey = `ocx.subagents.v1:${apiBase}`;
   const cached = seedSubagents(cacheKey);
-  // Seed before subscribe so a revisit does not flash "Loading…" under the page title.
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== cacheKey) {
-    if (cached) setClientResourceData(cacheKey, cached);
-    seededKeyRef.current = cacheKey;
-  }
   const [chosen, setChosen] = useState<string[]>(() => cached?.chosen ?? []);
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
@@ -54,7 +47,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
     cacheKey,
     [apiBase],
     loadSubagents,
-    { isEmpty: () => false },
+    { isEmpty: () => false, initialData: cached ?? undefined },
   );
   const { state } = resource;
   const load = resource.refresh;

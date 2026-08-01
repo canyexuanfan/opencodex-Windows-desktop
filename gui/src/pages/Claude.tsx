@@ -6,17 +6,23 @@ import { readSessionListCache } from "../session-list-cache";
 
 type ClaudeTab = "code" | "desktop";
 
+function readCachedDesktopPort(apiBase: string): number | null {
+  const cached = readSessionListCache<{ data?: { port?: number } }>(`ocx.claude-desktop.v1:${apiBase}`);
+  return typeof cached?.data?.port === "number" ? cached.data.port : null;
+}
+
 export default function Claude({ apiBase }: { apiBase: string }) {
   const [tab, setTab] = useState<ClaudeTab>("code");
   const t = useT();
   const codeTabRef = useRef<HTMLButtonElement>(null);
   const desktopTabRef = useRef<HTMLButtonElement>(null);
   // Seed Desktop's port subtitle from session cache so the intro above the Code/Desktop
-  // strip does not wait on the first status paint after a tab hop.
-  const [desktopPort, setDesktopPort] = useState<number | null>(() => {
-    const cached = readSessionListCache<{ data?: { port?: number } }>(`ocx.claude-desktop.v1:${apiBase}`);
-    return typeof cached?.data?.port === "number" ? cached.data.port : null;
-  });
+  // strip does not wait on the first status paint after a tab hop. Live updates from
+  // Desktop win while they match the current apiBase; a base change falls back to cache.
+  const seededDesktopPort = readCachedDesktopPort(apiBase);
+  const [liveDesktopPort, setLiveDesktopPort] = useState<{ base: string; port: number | null } | null>(null);
+  const desktopPort = liveDesktopPort?.base === apiBase ? liveDesktopPort.port : seededDesktopPort;
+  const setDesktopPort = (port: number | null) => setLiveDesktopPort({ base: apiBase, port });
 
   const selectTab = (next: ClaudeTab) => {
     setTab(next);

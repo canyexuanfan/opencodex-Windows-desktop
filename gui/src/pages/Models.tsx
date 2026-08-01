@@ -60,12 +60,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const t: TFn = useT();
   const cacheKey = `ocx.models.catalog.v1:${apiBase}`;
   const cached = useMemo(() => readSessionListCache<CachedModelsPage>(cacheKey), [cacheKey]);
-  // Seed before subscribe so a revisit does not flash "Loading…" under the page title.
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== cacheKey) {
-    if (cached) setClientResourceData(cacheKey, cached);
-    seededKeyRef.current = cacheKey;
-  }
   const [models, setModels] = useState<ModelRow[]>(() => cached?.models ?? []);
   const [providers, setProviders] = useState<ConfiguredProviderSummary[]>(() => cached?.providers ?? []);
   const [disabled, setDisabled] = useState<Set<string>>(() => new Set(cached?.disabled ?? []));
@@ -249,10 +243,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
       applyCatalog(next);
       return next;
     },
-    { isEmpty: () => false, pollMs: 10_000 },
+    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined },
   );
   const catalogState = catalogResource.state;
-  const catalogRefresh = catalogResource.refresh;
 
   const load = useCallback(async (force = false): Promise<boolean> => {
     if (loadPendingRef.current && !force) return false;
@@ -1059,6 +1052,18 @@ export default function Models({ apiBase }: { apiBase: string }) {
             <a className="btn btn-sm" href="#combos" style={{ flexShrink: 0, visibility: "hidden" }} tabIndex={-1} aria-hidden="true">
               {t("models.combosSetup")}
             </a>
+          </div>
+        </div>
+      )}
+      {combos === null && combosError && (
+        <div className="card models-combos-card">
+          <div className="row models-combos-empty-head">
+            <div className="row models-field-row" style={{ minWidth: 0 }}>
+              <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
+              <strong>{t("nav.combos")}</strong>
+              <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
+            </div>
+            <a className="btn btn-sm" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
           </div>
         </div>
       )}

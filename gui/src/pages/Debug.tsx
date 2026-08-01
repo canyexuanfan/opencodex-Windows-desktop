@@ -25,11 +25,6 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
   const settingsCacheKey = `ocx.debug.settings.v1:${apiBase}`;
   const cachedSettings = readSessionListCache<DebugSettings>(settingsCacheKey);
   const debugResourceKey = debugSettingsKey(apiBase);
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== debugResourceKey) {
-    if (cachedSettings) setClientResourceData(debugResourceKey, cachedSettings);
-    seededKeyRef.current = debugResourceKey;
-  }
   const [debugBusy, setDebugBusy] = useState(false);
   const [stream, setStream] = useState<LogStream>("provider");
   const [entries, setEntries] = useState<import("./debug-shared").DebugLogEntry[]>([]);
@@ -56,7 +51,7 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
       writeSessionListCache(settingsCacheKey, next);
       return next;
     },
-    { pollMs: 2000, enabled: active, isEmpty: () => false },
+    { pollMs: 2000, enabled: active, isEmpty: () => false, initialData: cachedSettings ?? undefined },
   );
   const debugState = debugPoll.state;
   const debug = debugPoll.data ?? cachedSettings ?? null;

@@ -3,9 +3,8 @@ import { LANE_PAGE, defaultCollapsedFamilies, laneView, rowStartsOpen } from "./
 import { makeCollapseStore, toggleInSet } from "./collapse-store";
 import { IconChevron } from "../icons";
 import { EmptyState, Notice } from "../ui";
-import { useT, type TFn, type TKey } from "../i18n/shared";
+import { LOCALES, useI18n, type TFn, type TKey } from "../i18n/shared";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
-import { setClientResourceData } from "../client-resource";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
 import { DataSurfaceSkeleton } from "../components/data-surface";
@@ -154,17 +153,12 @@ export default function ClaudeDesktop({
   /** Keeps the Claude page intro subtitle in sync once /api/claude-desktop resolves a port. */
   onPortChange?: (port: number) => void;
 }) {
-  const t = useT();
+  const { t, locale } = useI18n();
+  const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
   const cacheKey = `ocx.claude-desktop.v1:${apiBase}`;
   const resourceKey = `claude-desktop:${apiBase}`;
   const cached = useMemo(() => seedDesktop(cacheKey), [cacheKey]);
-  // Seed before subscribe so Code↔Desktop hops do not flash "Loading…" under the title.
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== resourceKey) {
-    const held = readDesktopCache(cacheKey);
-    if (held) setClientResourceData(resourceKey, held);
-    seededKeyRef.current = resourceKey;
-  }
+  const heldDesktop = useMemo(() => readDesktopCache(cacheKey), [cacheKey]);
   const [draftProfile, setProfile] = useState<DesktopProfile | null>(() => cached.profile);
   const [savedDraftProfile, setSavedProfile] = useState<DesktopProfile | null>(() => cached.savedProfile);
   const [draftDestinations, setDestinations] = useState<Record<string, Family>>(() => cached.destinations);
@@ -212,13 +206,13 @@ export default function ClaudeDesktop({
     }
     writeSessionListCache(cacheKey, next);
     return next;
-  }, [apiBase, cacheKey, t]);
+  }, [apiBase, cacheKey, t, setDestinations, setProfile, setSavedProfile]);
 
   const desktopResource = useDataSurface<CachedDesktop>(
     resourceKey,
     [apiBase],
     fetchDesktop,
-    { isEmpty: () => false, enabled: active },
+    { isEmpty: () => false, enabled: active, initialData: heldDesktop ?? undefined },
   );
   const loadState = desktopResource.state;
   const resourceData = loadState.data ?? (cached.data && cached.profile ? { data: cached.data, profile: cached.profile } : null);
@@ -261,13 +255,6 @@ export default function ClaudeDesktop({
   const statusCacheKey = `ocx.claude-desktop.status.v1:${apiBase}`;
   const statusResourceKey = `claude-desktop-status:${apiBase}`;
   const cachedStatus = readSessionListCache<DesktopStatus>(statusCacheKey);
-  // Seed before subscribe so the status bar does not mount ~one RTT after the profile and shove
-  // the assignment lanes down (CLS on every Desktop revisit while status is still "not applied").
-  const seededStatusRef = useRef<string | null>(null);
-  if (seededStatusRef.current !== statusResourceKey) {
-    if (cachedStatus) setClientResourceData(statusResourceKey, cachedStatus);
-    seededStatusRef.current = statusResourceKey;
-  }
   const statusResource = useDataSurface<DesktopStatus>(
     statusResourceKey,
     [apiBase],
@@ -278,9 +265,11 @@ export default function ClaudeDesktop({
       writeSessionListCache(statusCacheKey, next);
       return next;
     },
-    { isEmpty: () => false, pollMs: 5000, enabled: active },
+    { isEmpty: () => false, pollMs: 5000, enabled: active, initialData: cachedStatus ?? undefined },
   );
-  const status = statusResource.state.data ?? cachedStatus ?? null;
+  const statusState = statusResource.state;
+  const status = statusState.data ?? cachedStatus ?? null;
+  const statusFailed = statusState.showError;
 
   const moveModel = (route: string, family: Family) => {
     if (!profile || profile.assignments[route]?.family === family) return;
@@ -410,35 +399,40 @@ export default function ClaudeDesktop({
           response cannot insert a full row under the title and shove the lanes down. */}
       <div
         className={`claude-status-bar ${
-          !status
-            ? "pending"
-            : status.activeProfile === false
-              ? "not-applied"
-              : status.stale
-                ? "stale"
-                : status.applied
-                  ? "applied"
-                  : "not-applied"
+          statusFailed && !status
+            ? "not-applied"
+            : !status
+              ? "pending"
+              : status.activeProfile === false
+                ? "not-applied"
+                : status.stale
+                  ? "stale"
+                  : status.applied
+                    ? "applied"
+                    : "not-applied"
         }`}
-        aria-busy={!status || undefined}
+        aria-busy={(!status && !statusFailed) || undefined}
       >
         <span className="claude-status-dot" />
         {/* Desktop serving another profile outranks content drift: stale config that is
             read still works, a config that is never read does not. */}
         <span>
-          {!status
-            ? t("claudeDesktop.loading")
-            : status.activeProfile === false
-              ? t("claudeDesktop.status.notActiveProfile")
-              : status.stale
-                ? t("claudeDesktop.status.stale")
-                : status.applied
-                  ? t("claudeDesktop.status.applied")
-                  : t("claudeDesktop.status.notApplied")}
+          {statusFailed && !status
+            ? t("claudeDesktop.loadFail")
+            : !status
+              ? t("claudeDesktop.loading")
+              : status.activeProfile === false
+                ? t("claudeDesktop.status.notActiveProfile")
+                : status.stale
+                  ? t("claudeDesktop.status.stale")
+                  : status.applied
+                    ? t("claudeDesktop.status.applied")
+                    : t("claudeDesktop.status.notApplied")}
         </span>
         {status?.health.lastRequestAt && (
           <span className="claude-status-health">
-            {t("claudeDesktop.health.lastRequest")}: {new Date(status.health.lastRequestAt).toLocaleTimeString()}
+            {t("claudeDesktop.health.lastRequest")}:{" "}
+            {new Date(status.health.lastRequestAt).toLocaleTimeString(localeTag)}
           </span>
         )}
         {status && status.health.requestCount > 0 && (
@@ -451,6 +445,7 @@ export default function ClaudeDesktop({
       <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
       {loadState.showError && <Notice tone="err">{t("claudeDesktop.loadFail")}</Notice>}
+      {statusFailed && status && <Notice tone="err">{t("claudeDesktop.loadFail")}</Notice>}
 
       <div className="claude-profile-bar">
         <span className={`claude-dirty${dirty ? " active" : ""}`}>{dirty ? t("claudeDesktop.unsaved") : t("claudeDesktop.upToDate")}</span>

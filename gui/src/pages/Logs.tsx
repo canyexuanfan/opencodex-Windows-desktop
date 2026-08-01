@@ -6,7 +6,6 @@ import { hashLogConversationQuery, matchesLogConversationId } from "../log-conve
 import { statusCodeInfo } from "../status-codes";
 import { IconX } from "../icons";
 import { modelLabel } from "../model-display";
-import { setClientResourceData } from "../client-resource";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
 import { DataSurfaceSkeleton } from "../components/data-surface";
@@ -134,6 +133,25 @@ export interface LogEntry {
   firstOutputMs?: number;
   attempts?: LogAttempt[];
   displayMetrics?: LogDisplayMetrics;
+}
+
+/** Session-cache entries are arbitrary JSON — reject shapes that would crash the table. */
+function validCachedLogs(cached: LogEntry[] | null): LogEntry[] | null {
+  if (!Array.isArray(cached)) return null;
+  for (const entry of cached) {
+    if (
+      !entry
+      || typeof entry !== "object"
+      || typeof entry.timestamp !== "number"
+      || typeof entry.model !== "string"
+      || typeof entry.provider !== "string"
+      || typeof entry.status !== "number"
+      || typeof entry.durationMs !== "number"
+    ) {
+      return null;
+    }
+  }
+  return cached;
 }
 
 function isCursorUsageProvider(provider: string): boolean {
@@ -352,13 +370,7 @@ function summarizeFilteredLogs(entries: LogEntry[]): {
 export default function Logs({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const resourceKey = logsCacheKey(apiBase);
-  const cachedLogs = readSessionListCache<LogEntry[]>(resourceKey);
-  // Seed before subscribe so a revisit with session cache does not flash "Loading…" over rows.
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== resourceKey) {
-    if (cachedLogs) setClientResourceData(resourceKey, cachedLogs);
-    seededKeyRef.current = resourceKey;
-  }
+  const cachedLogs = validCachedLogs(readSessionListCache<LogEntry[]>(resourceKey));
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [detail, setDetail] = useState<LogEntry | null>(null);
   const [surfaceFilter, setSurfaceFilter] = useState<LogSurfaceFilter>("all");
@@ -432,6 +444,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
       isEmpty: rows => rows.length === 0,
       enabled: tab === "logs",
       pollMs: autoRefresh ? 2000 : undefined,
+      initialData: cachedLogs ?? undefined,
     },
   );
   const logsState = logsResource.state;

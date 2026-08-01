@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { EmptyState, Notice, Switch } from "../ui";
 import { IconChevron } from "../icons";
 import { useT, type TKey } from "../i18n/shared";
@@ -84,17 +84,11 @@ export default function Grok({ apiBase }: { apiBase: string }) {
   // Request ownership lives in the shared resource layer, so a route change during the first
   // load cannot drop the request the way the old deferred timer did.
   const resourceKey = `grok-status:${apiBase}`;
-  // Seed before subscribe so a revisit does not flash a loading status under the page title.
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== resourceKey) {
-    if (cached) setClientResourceData(resourceKey, cached);
-    seededKeyRef.current = resourceKey;
-  }
   const resource = useDataSurface<GrokStatus>(
     resourceKey,
     [apiBase],
     fetchStatus,
-    { isEmpty: () => false },
+    { isEmpty: () => false, initialData: cached ?? undefined },
   );
   const { state } = resource;
   const load = resource.refresh;

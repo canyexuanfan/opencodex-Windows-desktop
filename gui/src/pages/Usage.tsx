@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
 import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters";
-import { setClientResourceData } from "../client-resource";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
@@ -761,19 +760,13 @@ export default function Usage({ apiBase }: { apiBase: string }) {
 
   const resourceKey = usageCacheKey(apiBase, range, surface);
   const cached = readHeldUsage(apiBase, range, surface);
-  // Seed before subscribe so a revisit / filter switch does not flash "Loading…" under the title.
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== resourceKey) {
-    if (cached) setClientResourceData(resourceKey, cached);
-    seededKeyRef.current = resourceKey;
-  }
   // Range and surface identify different reports, so the key changes with both. That prevents
   // a force-loading dependency revalidation from ever showing a previous report as this one.
   const resource = useDataSurface<UsageResponse>(
     resourceKey,
     [apiBase, range, surface],
     loadUsage,
-    { isEmpty: () => false },
+    { isEmpty: () => false, initialData: cached ?? undefined },
   );
   const { state } = resource;
   const data = state.data ?? cached ?? null;

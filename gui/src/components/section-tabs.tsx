@@ -41,6 +41,26 @@ export function SectionTabs({
     }
   }, []);
 
+  /** Timeout path: drop the click lock and re-read the visible section. */
+  const expireScrollLock = useCallback(() => {
+    clearScrollLock();
+    // If the user interrupted smooth scroll, the target may never intersect — without a
+    // resync `active` would stay on the clicked tab while another section is on screen.
+    let bestId: string | null = null;
+    let bestTop = Number.NEGATIVE_INFINITY;
+    for (const item of items) {
+      const node = document.getElementById(sectionAnchorId(scope, item.id));
+      if (!node) continue;
+      const top = node.getBoundingClientRect().top;
+      // Match the observer bias: prefer a heading near the top of the viewport.
+      if (top <= 120 && top > bestTop) {
+        bestTop = top;
+        bestId = item.id;
+      }
+    }
+    if (bestId) setActive(bestId);
+  }, [clearScrollLock, items, scope]);
+
   useEffect(() => () => clearScrollLock(), [clearScrollLock]);
 
   // Follow the scroll position. `rootMargin` biases the observer toward the top of the
@@ -82,7 +102,7 @@ export function SectionTabs({
     if (!target) return;
     scrollLockRef.current = id;
     if (scrollLockTimerRef.current !== null) clearTimeout(scrollLockTimerRef.current);
-    scrollLockTimerRef.current = setTimeout(clearScrollLock, SECTION_TAB_SCROLL_LOCK_MS);
+    scrollLockTimerRef.current = setTimeout(expireScrollLock, SECTION_TAB_SCROLL_LOCK_MS);
     setActive(id);
     // `scroll-margin-top` on the target keeps the heading clear of the pinned strip.
     target.scrollIntoView({ behavior: "smooth", block: "start" });

@@ -8,7 +8,6 @@ import {
   type ExternalModelRow,
   type GatewayInboundProtocol,
 } from "../api-access-models";
-import { setClientResourceData } from "../client-resource";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { createBoundedFetch } from "../bounded-fetch";
 import { useDataSurface } from "../data-surface";
@@ -98,17 +97,6 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   // "no rules" table, or a row without `usage` throwing on first render.
   const cachedKeys = validCachedKeys(readSessionListCache<CachedKeysShape>(keysCacheKey));
   const cachedModels = readSessionListCache<ExternalModelRow[]>(modelsCacheKey);
-  // Seed before subscribe so a revisit does not flash loading status under the page title.
-  const seededKeysRef = useRef<string | null>(null);
-  if (seededKeysRef.current !== keysResourceKey) {
-    if (cachedKeys) setClientResourceData(keysResourceKey, cachedKeys);
-    seededKeysRef.current = keysResourceKey;
-  }
-  const seededModelsRef = useRef<string | null>(null);
-  if (seededModelsRef.current !== modelsResourceKey) {
-    if (cachedModels) setClientResourceData(modelsResourceKey, cachedModels);
-    seededModelsRef.current = modelsResourceKey;
-  }
   const [actionError, setActionError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [copiedModelId, setCopiedModelId] = useState<string | null>(null);
@@ -178,13 +166,13 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
     keysResourceKey,
     [apiBase],
     fetchKeys,
-    { isEmpty: data => data.keys.length === 0 },
+    { isEmpty: data => data.keys.length === 0, initialData: cachedKeys ?? undefined },
   );
   const modelsResource = useDataSurface<ExternalModelRow[]>(
     modelsResourceKey,
     [apiBase],
     fetchModels,
-    { isEmpty: models => models.length === 0 },
+    { isEmpty: models => models.length === 0, initialData: cachedModels ?? undefined },
   );
   const keysState = keysResource.state;
   const modelsState = modelsResource.state;
@@ -427,6 +415,8 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         copied={copied}
         filteredModels={filteredModels}
         modelsLoading={modelsState.showSkeleton && !modelsState.data && !cachedModels}
+        // Only announce progress on a retry after failure — quiet warm revisits stay silent.
+        modelsRefreshing={modelsState.refreshing && modelsState.showError && (modelsState.data !== undefined || cachedModels !== null)}
         modelsLoadFailed={modelsState.showError}
         modelCount={models.length}
         // `readSessionListCache` answers `null`, not `undefined`, when it has

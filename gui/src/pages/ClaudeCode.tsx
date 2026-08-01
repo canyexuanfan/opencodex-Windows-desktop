@@ -1,5 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import { setClientResourceData } from "../client-resource";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Notice } from "../ui";
 import { useI18n, useT, LOCALES } from "../i18n/shared";
 import { readJsonOrThrow } from "../fetch-json";
@@ -34,12 +33,6 @@ export default function ClaudeCode({ apiBase, active = true }: { apiBase: string
   const cacheKey = `ocx.claude-code.v1:${apiBase}`;
   const resourceKey = `claude-code:${apiBase}`;
   const cached = useMemo(() => seedClaudeCode(cacheKey), [cacheKey]);
-  // Seed before subscribe so Code↔Desktop hops do not flash "Loading…" under the title.
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== resourceKey) {
-    if (cached) setClientResourceData(resourceKey, cached);
-    seededKeyRef.current = resourceKey;
-  }
   const [draftState, setState] = useState<ClaudeCodeState | null>(() => cached?.state ?? null);
   const [draftRows, setRows] = useState<MapRow[]>(() => cached?.rows ?? []);
   const [hasDraftRows, setHasDraftRows] = useState(Boolean(cached));
@@ -83,7 +76,7 @@ export default function ClaudeCode({ apiBase, active = true }: { apiBase: string
     resourceKey,
     [apiBase],
     fetchCode,
-    { isEmpty: () => false, enabled: active },
+    { isEmpty: () => false, enabled: active, initialData: cached ?? undefined },
   );
   const loadState = codeResource.state;
   const data = loadState.data ?? cached;

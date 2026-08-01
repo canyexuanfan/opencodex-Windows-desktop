@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IconRefresh } from "../icons";
 import { type TFn, useI18n } from "../i18n/shared";
-import { setClientResourceData } from "../client-resource";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { Notice } from "../ui";
 import { useDataSurface } from "../data-surface";
@@ -75,11 +74,6 @@ export default function Startup({ apiBase }: { apiBase: string }) {
   const cacheKey = `${STARTUP_PAGE_CACHE_PREFIX}${apiBase}`;
   const cached = useMemo(() => readSessionListCache<StartupPageCache>(cacheKey), [cacheKey]);
   const startupResourceKey = `startup-page:${apiBase}`;
-  const seededKeyRef = useRef<string | null>(null);
-  if (seededKeyRef.current !== startupResourceKey) {
-    if (cached?.data) setClientResourceData(startupResourceKey, cached.data);
-    seededKeyRef.current = startupResourceKey;
-  }
 
   const [copied, setCopied] = useState<string | null>(null);
   const [tray, setTray] = useState<TrayStatusData | null>(() => cached?.tray ?? null);
@@ -189,12 +183,14 @@ export default function Startup({ apiBase }: { apiBase: string }) {
     startupResourceKey,
     [apiBase],
     fetchStartup,
-    { isEmpty: () => false },
+    { isEmpty: () => false, initialData: cached?.data ?? undefined },
   );
   const loadState = startupResource.state;
   const refresh = startupResource.refresh;
   const data = loadState.data ?? cached?.data ?? null;
-  const loading = loadState.refreshing && !data;
+  // Keep Refresh / install actions disabled for the whole in-flight window, including
+  // warm revisits where `data` is already seeded from session cache.
+  const loading = loadState.refreshing;
   const failed = Boolean(data?.diagnosticStale) || loadState.showError;
 
   useEffect(() => {
