@@ -1737,12 +1737,13 @@ describe("detectAreaLabels", () => {
         "### Area",
         "Multiple areas",
         "### Summary",
-        "OpenCodex dashboard shows no data when ACL/icacls hardening cannot be verified.",
+        "Management API fails closed when icacls hardening cannot be verified.",
       ].join("\n"),
       labels: ["bug"],
     });
-    assert.ok(labels.includes("gui"));
-    assert.ok(labels.includes("platform"));
+    assert.ok(labels.includes("gui"), `got ${labels.join(",")}`);
+    assert.ok(labels.includes("platform"), `got ${labels.join(",")}`);
+    assert.ok(labels.includes("proxy"), `got ${labels.join(",")}`);
     assert.equal(labels.includes("kiro"), false);
     assert.equal(labels.includes("gemini"), false);
     assert.equal(labels.includes("windows"), false);

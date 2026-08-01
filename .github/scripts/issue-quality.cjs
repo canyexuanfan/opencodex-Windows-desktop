@@ -322,50 +322,90 @@ const AREA_FIELD_TO_LABELS = {
   other: [],
 };
 
+/**
+ * Heuristic rules. `scope: "title"` avoids false hits from template Environment /
+ * OS fields in the body; `scope: "full"` is for distinctive technical tokens.
+ */
 const AREA_HEURISTICS = [
   {
     label: "account-pool",
-    re: /\b(oauth|reauth|needsreauth|quota|account pool|codex.?auth|auto[- ]?switch|failover|refresh token|plan_type|chatgpt[- ]account|reset credit)\b/i,
+    scope: "full",
+    re: /\b(oauth|reauth|needsreauth|account pool|codex.?auth|auto[- ]?switch|account failover|refresh token|plan_type|chatgpt[- ]account|reset credit)\b/i,
+  },
+  {
+    label: "account-pool",
+    scope: "title",
+    re: /\b(quota|failover|pool account|account switch)\b/i,
   },
   {
     label: "catalog",
-    re: /\b(catalog|model list|model visibility|virtual model|routed (catalog|entries|slug)|model slug)\b/i,
+    scope: "full",
+    re: /\b(model catalog|opencodex-catalog|model list|model visibility|virtual model|routed (catalog|entries|slug)|model slug)\b/i,
+  },
+  {
+    label: "catalog",
+    scope: "title",
+    re: /\bcatalog\b/i,
   },
   {
     label: "gui",
-    re: /\b(dashboard|\bgui\b|tray|sidebar|settings tab)\b/i,
+    scope: "title",
+    re: /\b(dashboard|\bgui\b|tray|sidebar|settings (page|tab|ui))\b/i,
   },
   {
     label: "cli",
+    scope: "title",
     re: /\b(ocx\b|config\.toml|config inject)\b/i,
   },
   {
     label: "proxy",
-    re: /\b(reverse[- ]proxy|management api|admin[- ]token|\/api\/\*|bind(s)? the (old )?port|proxy running)\b/i,
+    scope: "full",
+    re: /\b(reverse[- ]proxy|management api|admin[- ]token|\/api\/\*|bind(s)? the (old )?port)\b/i,
+  },
+  {
+    label: "proxy",
+    scope: "title",
+    re: /\b(reverse[- ]proxy|management api|admin[- ]token)\b/i,
   },
   {
     label: "platform",
-    re: /\b(windows|macos|mac os|win32|darwin|wsl|winsw|launchd|systemd|icacls|\bacl\b)\b/i,
+    scope: "full",
+    re: /\b(winsw|launchd|schtasks|icacls|windows-latest|tray host|scheduler backend)\b/i,
+  },
+  {
+    label: "platform",
+    scope: "title",
+    re: /\b(\[windows\]|\[macos\]|windows|macos|darwin|win32|wsl)\b/i,
   },
   {
     label: "streaming",
+    scope: "full",
     re: /\b(sse|websocket|\bws\b|stream(ing)?\b.{0,40}\b(truncat|terminal)|terminal (sse )?frame|without a terminal)\b/i,
   },
   {
     label: "tools",
+    scope: "full",
     re: /\b(tool_calls?|tool[- ]calls?|\bmcp\b|web[- ]search|tool[- ]recall)\b/i,
   },
   {
     label: "install",
+    scope: "full",
     re: /\b(npm (global )?install|packaging|release asset|npx ocx)\b/i,
   },
   {
     label: "service",
+    scope: "full",
     re: /\b(ocx service|winsw|scheduler backend|launchd service)\b/i,
   },
   {
     label: "provider",
-    re: /\b(provider adapter|openai[- ]compatible|provider[- ]compat|adapter quirk|upstream api|built[- ]in provider|provider preset)\b/i,
+    scope: "full",
+    re: /\b(provider adapter|openai[- ]compatible|provider[- ]compat|adapter quirk|built[- ]in provider|provider preset)\b/i,
+  },
+  {
+    label: "provider",
+    scope: "title",
+    re: /\b(\[provider\]|provider compat|openai[- ]compatible)\b/i,
   },
 ];
 
@@ -399,10 +439,15 @@ function mapAreaFieldToLabels(areaText) {
  * @returns {string[]}
  */
 function heuristicAreaLabels(title, body) {
-  const text = `${title || ""}\n${body || ""}`;
+  const titleText = title || "";
+  const fullText = `${titleText}\n${body || ""}`;
+  const seen = new Set();
   const out = [];
-  for (const { label, re } of AREA_HEURISTICS) {
-    if (re.test(text)) out.push(label);
+  for (const { label, re, scope } of AREA_HEURISTICS) {
+    const text = scope === "title" ? titleText : fullText;
+    if (!re.test(text) || seen.has(label)) continue;
+    seen.add(label);
+    out.push(label);
   }
   return out;
 }
