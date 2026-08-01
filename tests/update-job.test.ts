@@ -851,6 +851,7 @@ describe("GUI update execution decisions", () => {
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
     const ok = await finishGuiUpdateRestart(job, { port: 10100, hostname: "127.0.0.1" }, "npm", {
       serviceInstalledFn: () => true,
+      listListenPidsFn: () => [],
       // Soft probe times out (proxy down after npm update); confirm after explicit restart succeeds.
       probeProxy: async () => restartCalls > 0,
       probeProxyIdentity: async () => (
@@ -868,6 +869,39 @@ describe("GUI update execution decisions", () => {
     expect(readUpdateJob(job.id)?.log.some(line =>
       line.includes("performing explicit restart"),
     )).toBe(true);
+  });
+
+  test("npm finish probes /healthz when listener scan fails instead of assuming no listener", async () => {
+    let now = 0;
+    let restartCalls = 0;
+    const job: UpdateJobState = {
+      id: "npm-scan-fail-probe",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.40",
+      latestVersion: "2.7.41",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      releaseNotesUrl: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await finishGuiUpdateRestart(job, { port: 10100, hostname: "127.0.0.1", oldPid: 111 }, "npm", {
+      serviceInstalledFn: () => true,
+      scanListenPidsFn: () => ({ ok: false, error: "lsof/netstat unavailable" }),
+      probeProxy: async () => true,
+      probeProxyIdentity: async () => ({ pid: 222, version: "2.7.41" }),
+      now: () => now,
+      sleepMs: async (ms) => { now += ms; },
+      restartAfterUpdateFn: async () => { restartCalls += 1; },
+    });
+    expect(ok).toBe(true);
+    expect(restartCalls).toBe(0);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("Listener scan inconclusive"))).toBe(true);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("skipping redundant restart"))).toBe(true);
   });
 
   test("bun finish always runs explicit restart even if a proxy is already healthy", async () => {

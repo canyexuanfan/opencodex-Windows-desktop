@@ -43,6 +43,11 @@ describe("update-job restart avoids the shell-less .cmd EINVAL (Windows, bun/sou
     // Foreign listeners must stay fail-closed; npm rename is covered by ocx identity.
     expect(src).not.toContain("killAnyListenPidOnPort");
     expect(src).toContain('process.platform === "win32" && process.env.OCX_SERVICE === "1"');
+    // Native WinSW installs must stop via stopWinswService, not Task Scheduler /end only.
+    expect(src).toContain("readServiceBackend");
+    expect(src).toContain("stopWinswService");
+    expect(src).toContain("$_.ProcessId -eq $PID");
+    expect(src).toContain("lastChild?.pid && aliveFn(lastChild.pid)");
   });
 });
 

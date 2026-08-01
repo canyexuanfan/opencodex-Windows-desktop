@@ -17,10 +17,11 @@ import {
   buildWindowsElevatedArgumentList,
   resolveTrustedWindowsPowerShellExe,
 } from "../lib/windows-elevation";
-import { listListenPids, reclaimListenPort } from "../server/port-reclaim";
+import { stopWinswService } from "../lib/winsw";
+import { listListenPids, reclaimListenPort, scanListenPids, type ListenPidScan } from "../server/port-reclaim";
 import { dropWindowsTcpRowsForLocalPort } from "../server/windows-tcp-drop";
 import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
-import { isServiceInstalled, isServiceViable, stopWindows } from "../service";
+import { isServiceInstalled, isServiceViable, readServiceBackend, stopWindows } from "../service";
 import {
   type Channel,
   type Installer,
@@ -654,6 +655,11 @@ export interface RestartIo {
    * ocx child that would otherwise be treated as a protected listener).
    */
   listListenPidsFn?: (port: number) => number[];
+  /**
+   * Full listen-PID scan (ok/fail). When omitted, {@link scanListenPids} is used
+   * so a probe failure is not mistaken for "no listeners".
+   */
+  scanListenPidsFn?: (port: number) => ListenPidScan;
   /** Identity check for listeners discovered via {@link listListenPidsFn}. */
   verifyOcxFn?: (pid: number) => number | null;
   /** Liveness check when deciding whether a reclaim timeout still has live holders. */
@@ -907,6 +913,10 @@ async function restartAfterUpdate(
       await sleep(500);
     }
   }
+  // Exhausted retries: do not leave a hung pinned-start child owning the port.
+  if (lastChild?.pid && aliveFn(lastChild.pid)) {
+    try { killProxy(lastChild.pid); } catch { /* best-effort */ }
+  }
 }
 
 /** Compact listen-holder summary for update-job logs when reclaim fails. */
@@ -928,10 +938,16 @@ function formatPortHolders(
   return `holders=[${holders.join(", ") || "none"}] allow=[${allow.join(", ") || "none"}]`;
 }
 
-/** End the Windows scheduler task and best-effort kill surviving :loop wrappers. */
+/** Stop the installed Windows backend and best-effort kill surviving :loop wrappers. */
 function stopWindowsServiceWrappersBestEffort(): void {
   if (process.platform !== "win32") return;
-  try { stopWindows(); } catch { /* already stopped */ }
+  try {
+    if (readServiceBackend() === "native") {
+      stopWinswService();
+      return;
+    }
+    stopWindows();
+  } catch { /* already stopped */ }
   killWindowsServiceWrapperProcesses();
 }
 
@@ -946,12 +962,13 @@ function killWindowsServiceWrapperProcesses(): void {
     const ps = [
       "$pats = @('opencodex-service.cmd','opencodex-service-launcher.vbs');",
       "Get-CimInstance Win32_Process | Where-Object {",
+      "  if ($_.ProcessId -eq $PID) { return $false };",
       "  $c = $_.CommandLine; if (-not $c) { return $false };",
       "  foreach ($p in $pats) { if ($c -like ('*' + $p + '*')) { return $true } };",
       "  $false",
       "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
     ].join(" ");
-    spawnSync("powershell.exe", [
+    spawnSync(resolveTrustedWindowsPowerShellExe(), [
       "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
       "-Command", ps,
     ], { stdio: "ignore", timeout: 5000, windowsHide: true });
@@ -1172,14 +1189,28 @@ export async function finishGuiUpdateRestart(
     if (serviceInstalled) {
       // Stop-first npm update leaves a dead PID's LISTEN row. Polling /healthz for the
       // full 30s against that zombie keeps ESTABLISHED TCBs alive and blocks bind.
-      // If nothing live owns the port, skip straight to explicit restart.
-      const listPids = io.listListenPidsFn ?? listListenPids;
+      // If nothing live owns the port, skip straight to explicit restart. A failed
+      // listener scan must not look like "no listeners" — fall back to /healthz.
       const aliveFn = io.isAliveFn ?? isProcessAlive;
-      const liveListeners = listPids(captured.port)
-        .filter(pid => pid !== process.pid && aliveFn(pid));
-      if (liveListeners.length === 0) {
+      const scan: ListenPidScan = io.scanListenPidsFn
+        ? io.scanListenPidsFn(captured.port)
+        : io.listListenPidsFn
+          // Test seam: injected list is always a successful scan.
+          ? { ok: true, pids: io.listListenPidsFn(captured.port) }
+          : scanListenPids(captured.port);
+      const liveListeners = scan.ok
+        ? scan.pids.filter(pid => pid !== process.pid && aliveFn(pid))
+        : null;
+      if (liveListeners !== null && liveListeners.length === 0) {
         updateJob(job, {}, "npm self-update did not leave a live listener; performing explicit restart...");
       } else {
+        if (!scan.ok) {
+          updateJob(
+            job,
+            {},
+            "Listener scan inconclusive after npm self-update; probing /healthz before deciding on explicit restart...",
+          );
+        }
         const already = await awaitRestartedProxyHealthy(job, captured, io);
         if (already.ok) {
           const identity = await (io.probeProxyIdentity ?? defaultProbeProxyIdentity)(
