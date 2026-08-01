@@ -148,6 +148,26 @@ describe("routeModel registry effort defaults", () => {
       providerName: "openai-apikey",
       modelId: "codex-third-party-model",
     });
+    const withDeepSeekDefault: OcxConfig = {
+      ...base,
+      defaultProvider: "deepseek",
+      providers: {
+        ...base.providers,
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com/v1",
+          defaultModel: "deepseek-chat",
+        },
+      },
+    };
+    expect(routeModel(withDeepSeekDefault, "codex-auto-review")).toMatchObject({
+      providerName: "openai",
+      modelId: "codex-auto-review",
+    });
+    expect(routeModel(withDeepSeekDefault, "codex-third-party-model")).toMatchObject({
+      providerName: "deepseek",
+      modelId: "codex-third-party-model",
+    });
     expect(routeModel({ ...base, providers: { ...base.providers, openai: { ...forward, codexAccountMode: "direct" } } }, "gpt-5.5"))
       .toMatchObject({ providerName: "openai", codexAccountMode: "direct" });
     expect(() => routeModel({ ...base, providers: { ...base.providers, openai: { ...forward, disabled: true } } }, "gpt-5.5"))
