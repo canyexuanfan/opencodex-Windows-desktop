@@ -480,7 +480,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 - [x] 便携版产物已生成并通过结构审计。
 - [x] 无控制台窗口（Electron/Bun spawn 均设置隐藏窗口；需 VM 再确认）。
 - [x] 不下载运行时（隔离 PATH smoke 使用 resources 内 Bun）。
-- [ ] Dashboard、healthz、模型请求正常（需 VM/隔离配置完成后再确认）。
+- [x] Dashboard、healthz、模型请求正常（`C:\\tmp` 授权隔离 sidecar：healthz 200、`/v1/models` 200；干净 VM 仍待复核）。
 
 完成条件：
 
@@ -492,7 +492,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 ```text
 命令：cd desktop && bun test tests；bun run package；unpacked Electron smoke（PATH 仅保留 C:\\Windows\\System32）；资源禁入路径扫描；SHA-256
 结果：桌面 9 tests、资源准备和 Electron-builder 通过；生成 desktop/out/OpenCodex-Setup-x64.exe 与 desktop/out/OpenCodex-Portable-x64.exe；固定 Bun 1.3.14 位于 resources/opencodex/runtime，src/gui/dist/生产依赖位于 resources/opencodex，Tray 图标位于 resources/tray；app.asar 不含 staging 或旧 unpacked 输出；最新安装版 hash=9E9BB84C61C820D27D7D0A3CC58A85D9FE5E410799762B4870E6CCCE9836707B，便携版 hash=0A33A6BEACDE98D1AEFF1C161FA4EE049AFAFF389B86BF50EC77E6E1DC919A15；隔离 PATH smoke 成功拉起打包 Electron 与 resources Bun sidecar。
-限制：当前环境没有 Windows 10/11 干净 VM，尚未完成安装器/便携版真实双击、healthz/模型请求和卸载保留用户目录验证；因此阶段 6 完成条件保留未勾选。
+限制：当前环境没有 Windows 10/11 干净 VM；真实便携版和安装版已在全新 `--user-data-dir` 隔离条件下保持运行，`C:\\tmp` 授权 sidecar 的 healthz/`/v1/models` 已通过，但仍未完成干净 VM 双击、卸载保留用户目录和真实 Provider 验证，因此阶段 6 完成条件保留未勾选。
 ```
 
 ---
@@ -610,9 +610,9 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 
 ```text
 代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 9 tests 通过；`desktop-ready` 与 loopback focused tests 的纯协议/端口断言通过，但 `server-auth` 在当前环境清理临时目录时收到 EPERM/EACCES；根完整 test 在普通与最小授权环境均 420 秒未完成，期间另有 CLI 子进程超时；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
-单实例/端口：Electron 10 次并发 smoke 仅 1 个主进程、1 个 sidecar；占用 127.0.0.1:10100 时实际动态端口为 1068；未发现残留 entry sidecar 或 10100 listener。
+单实例/端口：Electron 10 次并发 smoke 仅 1 个主进程、1 个 sidecar；占用 127.0.0.1:10100 时实际动态端口为 1068；`C:\\tmp` 授权 sidecar 动态端口 57967，healthz 与 `/v1/models` 均成功；未发现残留 entry sidecar 或 10100 listener。
 产物：安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；资源禁入扫描通过；签名主体可读为 CN=十七°。
-未完成：Windows 10/11 干净 VM、真实安装器/便携版双击、healthz/模型请求、卸载保留用户目录、受信根后的 signtool Valid 和真实 provider 保留回归。
+未完成：Windows 10/11 干净 VM、默认用户数据目录在普通权限下的真实验证、卸载保留用户目录、受信根后的 signtool Valid 和真实 provider 保留回归。
 ```
 
 ---
