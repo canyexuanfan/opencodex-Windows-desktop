@@ -137,6 +137,7 @@ describe("GUI update execution decisions", () => {
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
     await restartAfterUpdateForTests(job, { port: 12345, hostname: "127.0.0.1" }, {
       serviceInstalledFn: () => false, // drive the proxy-mode branch regardless of host state
+      listListenPidsFn: () => [],
       waitForPort: async (port, hostname, opts) => {
         waited.push({
           port,
@@ -160,7 +161,7 @@ describe("GUI update execution decisions", () => {
     expect(spawned).toEqual([{ port: 12345 }]);
   });
 
-  test("restart reclaim allowlists only the trusted oldPid", async () => {
+  test("restart reclaim allowlists the trusted oldPid", async () => {
     const optsSeen: Array<{ killOcxHolders?: boolean; onlyKillPids?: number[] }> = [];
     const job: UpdateJobState = {
       id: "restart-oldpid",
@@ -178,6 +179,7 @@ describe("GUI update execution decisions", () => {
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
     await restartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1", oldPid: 4242 }, {
       serviceInstalledFn: () => false,
+      listListenPidsFn: () => [],
       waitForPort: async (_port, _hostname, opts) => {
         optsSeen.push({
           killOcxHolders: opts?.killOcxHolders,
@@ -188,6 +190,36 @@ describe("GUI update execution decisions", () => {
       spawnStart: () => {},
     });
     expect(optsSeen).toEqual([{ killOcxHolders: true, onlyKillPids: [4242] }]);
+  });
+
+  test("restart reclaim also allowlists leftover ocx listeners on the captured port", async () => {
+    const optsSeen: number[][] = [];
+    const job: UpdateJobState = {
+      id: "restart-leftover-ocx",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.39",
+      latestVersion: "2.7.40",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    await restartAfterUpdateForTests(job, { port: 19111, hostname: "127.0.0.1", oldPid: 100 }, {
+      serviceInstalledFn: () => false,
+      // Simulate a respawned bun child that is not the pre-update PID.
+      listListenPidsFn: () => [100, 200],
+      verifyOcxFn: (pid) => (pid === 100 || pid === 200 ? pid : null),
+      waitForPort: async (_port, _hostname, opts) => {
+        optsSeen.push([...(opts?.onlyKillPids ?? [])].sort((a, b) => a - b));
+        return true;
+      },
+      spawnStart: () => {},
+    });
+    expect(optsSeen).toEqual([[100, 200]]);
   });
 
   test("restart refuses to spawn when the captured port never becomes free", async () => {

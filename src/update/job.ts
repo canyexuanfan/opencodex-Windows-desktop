@@ -2,9 +2,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
+import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort, verifyPidIdentity } from "../config";
 import { isProcessAlive, killProxy } from "../lib/process-control";
-import { reclaimListenPort } from "../server/port-reclaim";
+import { listListenPids, reclaimListenPort } from "../server/port-reclaim";
 import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
 import { isServiceInstalled, isServiceViable } from "../service";
 import {
@@ -417,6 +417,14 @@ export interface RestartIo {
     captured?: { port: number; hostname: string; oldPid?: number },
     io?: RestartIo,
   ) => Promise<void>;
+  /**
+   * PIDs currently LISTENing on the captured port. Used to widen the post-update
+   * kill allowlist beyond the pre-update PID (Windows often leaves a respawned
+   * ocx child that would otherwise be treated as a protected listener).
+   */
+  listListenPidsFn?: (port: number) => number[];
+  /** Identity check for listeners discovered via {@link listListenPidsFn}. */
+  verifyOcxFn?: (pid: number) => number | null;
 }
 
 async function restartAfterUpdate(
@@ -443,18 +451,33 @@ async function restartAfterUpdate(
   }
   const cmd = restartCommand(serviceInstalled, job.installer, packageLauncherPath(), port, svcArgs);
   const waitFn = io.waitForPort ?? reclaimListenPort;
-  const reclaimOpts = {
+  const listPids = io.listListenPidsFn ?? listListenPids;
+  const verifyOcx = io.verifyOcxFn ?? verifyPidIdentity;
+  // Pre-update PID plus any ocx still LISTENing on the captured port. After a
+  // stop-first npm self-update Windows often leaves a respawned bun/node child
+  // that is not the captured PID; treating it as protected blocks reclaim and
+  // the direct-start fallback never binds.
+  const reclaimKillAllowlist = (): number[] => {
+    const allow = new Set<number>();
+    if (oldPid != null) allow.add(oldPid);
+    for (const pid of listPids(port)) {
+      if (pid === process.pid) continue;
+      if (verifyOcx(pid) === pid) allow.add(pid);
+    }
+    return [...allow];
+  };
+  const reclaimOptsFor = (onlyKillPids: number[]) => ({
     timeoutMs: RESTART_PORT_RECLAIM_MS,
     intervalMs: 100,
     scanIntervalMs: 500,
-    killOcxHolders: oldPid != null,
-    onlyKillPids: oldPid != null ? [oldPid] : [],
-  };
+    killOcxHolders: onlyKillPids.length > 0,
+    onlyKillPids,
+  });
 
   if (serviceInstalled) {
-    // Stop-first update already unloaded the service; reclaim the socket (only the
-    // captured old PID when trusted), then reinstall wrappers that bake `--port`.
-    const freed = await waitFn(port, hostname, reclaimOpts);
+    // Stop-first update already unloaded the service; reclaim the socket, then
+    // reinstall wrappers that bake `--port`.
+    const freed = await waitFn(port, hostname, reclaimOptsFor(reclaimKillAllowlist()));
     if (!freed) {
       updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; refusing to hop — reinstall may fail until the port is free.`);
     }
@@ -503,8 +526,8 @@ async function restartAfterUpdate(
   }
   // Reclaim the captured port before the pinned start. Spawning `--port` while the old
   // socket is still busy is how Windows updates used to fail health checks (or hop).
-  // Only the trusted pre-update PID may be killed; never an arbitrary ocx listener.
-  const freed = await waitFn(port, hostname, reclaimOpts);
+  // Kill allowlist = pre-update PID + leftover ocx listeners on this port only.
+  const freed = await waitFn(port, hostname, reclaimOptsFor(reclaimKillAllowlist()));
   if (!freed) {
     updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket); not starting on another port. Retry 'ocx start --port ${port}'.`);
     return;
