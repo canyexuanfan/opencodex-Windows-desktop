@@ -730,7 +730,13 @@ async function restartAfterUpdate(
     const preServiceAllow = reclaimKillAllowlist();
     const freed = await waitFn(port, hostname, reclaimOptsFor(preServiceAllow));
     let skipServiceInstall = false;
-    if (!freed) {
+    // The GUI update worker sets OCX_SERVICE=1 and is never elevated. `schtasks
+    // /create` will UAC-fail and can race the subsequent direct start — skip it.
+    if (process.env.OCX_SERVICE === "1") {
+      updateJob(job, {}, "Skipping service reinstall from the non-elevated update worker; falling back to a direct proxy start.");
+      skipServiceInstall = true;
+    }
+    if (!freed && !skipServiceInstall) {
       updateJob(
         job,
         {},
@@ -982,8 +988,10 @@ async function awaitRestartedProxyHealthy(
   captured: { port: number; hostname: string },
   io: RestartIo = {},
 ): Promise<AwaitHealthyResult> {
+  // Fresh post-update starts are busy with catalog sync / OAuth; a single 750ms
+  // /healthz miss must not fail the job. Use a longer probe and tolerate brief blips.
   const probe = io.probeProxy ?? (async (port: number, hostname?: string) => (
-    !!(await proxyIdentityAt(port, { hostname }))
+    !!(await proxyIdentityAt(port, { hostname }, { timeoutMs: 2_000, attempts: 3 }))
   ));
   const sleep = io.sleepMs ?? (async (ms: number) => {
     await new Promise(resolve => setTimeout(resolve, ms));
@@ -992,6 +1000,8 @@ async function awaitRestartedProxyHealthy(
   const port = captured.port;
   const hostname = captured.hostname;
   const startDeadline = now() + (io.healthTimeoutMs ?? RESTART_HEALTH_TIMEOUT_MS);
+  /** Consecutive failed probes before the stability window counts as a flap. */
+  const stabilityMissLimit = 3;
 
   while (true) {
     // Always make one identity-aware probe at or after the boundary. A replacement
@@ -1000,10 +1010,16 @@ async function awaitRestartedProxyHealthy(
     if (await probe(port, hostname)) {
       updateJob(job, {}, `Proxy reported healthy on ${hostname}:${port}; confirming it stays up...`);
       const stableUntil = now() + RESTART_STABILITY_WINDOW_MS;
+      let misses = 0;
       while (now() < stableUntil) {
-        if (!(await probe(port, hostname))) {
-          updateJob(job, {}, `Proxy became unhealthy on ${hostname}:${port} during the stability window.`);
-          return { ok: false, reason: "flapped" };
+        if (await probe(port, hostname)) {
+          misses = 0;
+        } else {
+          misses += 1;
+          if (misses >= stabilityMissLimit) {
+            updateJob(job, {}, `Proxy became unhealthy on ${hostname}:${port} during the stability window.`);
+            return { ok: false, reason: "flapped" };
+          }
         }
         await sleep(500);
       }
