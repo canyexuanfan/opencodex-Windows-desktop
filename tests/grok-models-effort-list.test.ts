@@ -123,4 +123,25 @@ describe("raw /v1/models list reasoning-effort advertisement (Grok Build discove
       await server.stop(true);
     }
   });
+
+  test("falls back to the first tier when neither medium nor high is available", async () => {
+    const config = effortConfig();
+    config.providers.kimi!.models = [...(config.providers.kimi!.models ?? []), "custom-test"];
+    config.providers.kimi!.modelReasoningEfforts = { "custom-test": ["low", "max"] };
+    config.providers.kimi!.modelDefaultReasoningEfforts = { "custom-test": "medium" };
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/v1/models", server.url));
+      const body = await res.json() as { data: Array<Record<string, unknown>> };
+      const model = body.data.find(m => m.id === "kimi/custom-test");
+      expect(model!.reasoning_effort).toBe("low");
+      expect(model!.reasoning_efforts).toEqual([
+        { value: "low", label: "Low Effort", default: true },
+        { value: "max", label: "Max Effort" },
+      ]);
+    } finally {
+      await server.stop(true);
+    }
+  });
 });
