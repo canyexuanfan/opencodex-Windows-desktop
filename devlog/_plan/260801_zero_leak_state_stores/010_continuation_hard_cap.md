@@ -292,15 +292,32 @@ and never routes through `setResidentEntry()` or an intermediary resident row:
 3. Build the new stub from the candidate's `createdAt`, provider metadata, measured stub
    bytes, and returned `ResponseSpillRef`. Verify `states.get(id) === expected`, then perform
    one accounting/map transition from the old stub directly to the new stub.
-4. Only after the new stub is installed, unlink `expected.spill` best-effort. A crash before
-   the swap leaves the old row/file authoritative and the new file orphan-recoverable; a
-   crash after the swap leaves the new row authoritative and the old file orphan-recoverable.
+4. Only after the new stub is installed, queue `expected.spill` on the bounded
+   `pendingSpillUnlinks` deferral (NOT an immediate unlink — see the deferred-deletion
+   contract below): the old generation must survive until the debounced snapshot that
+   references the new stub is durable, because a crash before that flush reloads the OLD
+   stub, which must still find its file. A crash before the swap leaves the old row/file
+   authoritative and the new file orphan-recoverable; a crash after the swap but before
+   the snapshot flush replays through the old snapshot stub against the still-present old
+   file; a crash after the flush leaves the new row authoritative and the queued old file
+   orphan-recoverable.
 5. Serialization or publication failure atomically replaces `expected` with the bounded
    tombstone, then unlinks the old file; it never exposes a resident candidate or naked delta.
 
 `deleteEntry()` subtracts the row's RAM `sizeBytes`; for a spill stub it also unlinks the
 dedicated file unless `deleteSpill:false` is used during a verified atomic swap. TTL/count
-eviction therefore removes spill files. No secondary ownership state exists.
+eviction therefore removes spill files. No secondary OWNERSHIP state exists — but one
+bounded piece of deferred-DELETION bookkeeping does (review C1-1/C2-1): a superseded
+generation cannot be unlinked at swap time, because the new stub only becomes durable
+when the debounced snapshot flushes; a crash before the flush reloads the OLD stub,
+which must still find its file. The swap therefore queues the old ref in
+`pendingSpillUnlinks` (hard cap 128 entries — small refs, not payloads; overflow
+unlinks oldest-first immediately, accepting the narrow crash-window regression only
+under pathological replacement churn), and `persistNow()` drains the queue strictly
+AFTER the snapshot write succeeds. The queue holds no payload bytes, never counts
+toward `storedResponseBytes`, and is not ownership: files it references are already
+unreferenced by the post-flush snapshot and would be reclaimed by orphan GC anyway —
+the queue only accelerates that reclamation.
 
 Replace the byte loop with:
 

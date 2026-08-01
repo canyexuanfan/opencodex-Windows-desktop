@@ -178,7 +178,11 @@ describe("GET /api/system/memory", () => {
 	      pid: number; bunVersion: string; platform: string; rss: number;
 	      heapUsed: number; external: number; arrayBuffers: number; observedBytes: number; observedMetric: string;
 	      jscHeap: { heapSize: number } | null;
-	      responseState: { count: number; totalBytes: number; largestBytes: number; oldestAgeMs: number };
+	      responseState: {
+	        count: number; residentCount: number; spillStubCount: number; tombstoneCount: number;
+	        totalBytes: number; spillPayloadBytes: number; largestBytes: number; oldestAgeMs: number;
+	        spillWrites: number; spillWriteFailures: number; spillReadFailures: number;
+	      };
 	      inspectionCounters: {
 	        frameBufferHighWaterBytes: number; completedItemsMaxCount: number; frameCapOverflows: number;
 	        itemCapEvictions: number; postCancelDrainStops: number;
@@ -198,10 +202,9 @@ describe("GET /api/system/memory", () => {
 	    expect(body.jscHeap?.heapSize).toBeGreaterThan(0);
     // responseState is a scalar-only continuation-store attribution block: every field is a
     // finite number (no paths, tokens, or account identifiers), so it is safe on this surface.
-    expect(typeof body.responseState.count).toBe("number");
-    expect(typeof body.responseState.totalBytes).toBe("number");
-    expect(typeof body.responseState.largestBytes).toBe("number");
-    expect(typeof body.responseState.oldestAgeMs).toBe("number");
+    const responseStateValues = Object.values(body.responseState);
+    expect(responseStateValues).toHaveLength(11);
+    expect(responseStateValues.every(value => typeof value === "number" && Number.isFinite(value))).toBe(true);
     expect(body.responseState.count).toBeGreaterThanOrEqual(0);
     expect(body.inspectionCounters).toEqual({
       frameBufferHighWaterBytes: expect.any(Number),

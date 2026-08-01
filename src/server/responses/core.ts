@@ -10,7 +10,12 @@ import {
 import { parseRequest } from "../../responses/parser";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
 import { FORWARD_HEADERS, sanitizeReasoningInputContent } from "../../adapters/openai-responses";
-import { expandPreviousResponseInput, previousResponseProviderState, rememberResponseState } from "../../responses/state";
+import {
+  expandPreviousResponseInput,
+  previousResponseProviderState,
+  previousResponseReplayFailure,
+  rememberResponseState,
+} from "../../responses/state";
 import { routeModel, type RouteResult } from "../../router";
 import {
   advanceComboAfterFailure,
@@ -1091,6 +1096,13 @@ export async function handleResponses(
   );
   const originalBody = body;
   body = expandPreviousResponseInput(body);
+  if (previousResponseReplayFailure(body)) {
+    return formatErrorResponse(
+      400,
+      "previous_response_not_found",
+      "Continuation state is unavailable or corrupt; resend the full conversation without previous_response_id.",
+    );
+  }
   const previousResponseInputExpanded = body !== originalBody;
 
   // Spawn-message compatibility (both directions): agent_message task payloads ride in

@@ -14,7 +14,9 @@
  * it is not a standalone leak discriminator. `responseState` attributes growth
  * further: it is the proxy's previous_response_id continuation store, so a
  * growing responseState.totalBytes under rising observed memory points at
- * conversation retention rather than the runtime allocator.
+ * conversation retention rather than the runtime allocator. Spill counts,
+ * payload-byte totals, tombstones, and failure counters remain finite scalars;
+ * response ids, filenames, digests, paths, and payload content never leave the owner.
  *
  * `activeTurnCount` / `isDraining` are scalar lifecycle counters for the
  * dashboard drain-and-restart confirm UX — never request bodies or IDs.
