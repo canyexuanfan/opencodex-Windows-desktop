@@ -588,7 +588,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 - [ ] 已有 Task Scheduler/WinSW。
 - [ ] 已有旧托盘。
 - [ ] renderer 崩溃。
-- [ ] sidecar 崩溃。
+- [x] sidecar 崩溃（隔离打包 Electron：Bun PID 524 停止后 5 秒内恢复为 11016）。
 - [ ] 睡眠/唤醒。
 - [ ] 注销/重启。
 
@@ -609,10 +609,10 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 验证证据：
 
 ```text
-代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 9 tests 通过；`desktop-ready` 与 loopback focused tests 的纯协议/端口断言通过，但 `server-auth` 在当前环境清理临时目录时收到 EPERM/EACCES；根完整 test 在普通与最小授权环境均 420 秒未完成，期间另有 CLI 子进程超时；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
+代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 9 tests 通过；授权 C:\\tmp 临时根下 `server-auth` 57/57 通过；根完整 test 即使在授权临时根仍 420 秒未完成，已记录为完整套件/运行器限制；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
 单实例/端口：Electron 10 次并发 smoke 仅 1 个主进程、1 个 sidecar；占用 127.0.0.1:10100 时实际动态端口为 1068；`C:\\tmp` 授权 sidecar 动态端口 57967，healthz 与 `/v1/models` 均成功；未发现残留 entry sidecar 或 10100 listener。
 产物：安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；资源禁入扫描通过；签名主体可读为 CN=十七°。
-未完成：Windows 10/11 干净 VM、默认用户数据目录在普通权限下的真实验证、卸载保留用户目录、受信根后的 signtool Valid 和真实 provider 保留回归。
+未完成：Windows 10/11 干净 VM、默认用户数据目录在普通权限下的真实验证、受信根后的 signtool Valid 和真实 provider 保留回归；隔离环境下的卸载保留用户目录和 sidecar 崩溃恢复已通过。
 ```
 
 ---
@@ -708,7 +708,7 @@ Git 边界：本次仅本地提交和 tag，不 push、不创建 Release、不�
 - [x] 代理只有一个动态 `127.0.0.1` 端口。
 - [x] 10100 被占用时仍可运行。
 - [ ] 现有核心功能无回归。
-- [ ] 退出和崩溃恢复不破坏 Codex 配置。
+- [x] 退出和崩溃恢复不破坏 Codex 配置（隔离 runtime/用户目录回归；真实用户 Provider 仍待 VM）。
 - [x] 最终产物由 `CN=十七°` 签名。
 - [x] 私钥不在仓库和安装包。
 - [x] SHA-256 已记录。
