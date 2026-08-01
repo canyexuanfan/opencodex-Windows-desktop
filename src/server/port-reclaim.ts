@@ -4,8 +4,9 @@
  *
  * Killing is never the default. A process may be killed only when the caller
  * sets `killOcxHolders` and either supplies a non-empty `onlyKillPids` allowlist
- * or enables `killAllOcxOnPort` for revalidated ocx listeners. Foreign (non-ocx)
- * processes are never killed.
+ * (trusted teardown PIDs, including allowlisted holders that fail ocx revalidate)
+ * or enables `killAllOcxOnPort` for revalidated ocx listeners. Unknown foreign
+ * (non-ocx, non-allowlisted) processes are never killed.
  */
 import { execFileSync } from "node:child_process";
 import { verifyPidIdentity } from "../config";
@@ -222,7 +223,12 @@ export async function reclaimListenPort(
 
       for (const pid of scan.pids) {
         if (pid === process.pid) continue;
-        if (!isAliveFn(pid)) continue; // Windows may still list a dead owner briefly
+        if (!isAliveFn(pid)) {
+          // Clear "already tried" so a later respawn that reuses this PID slot
+          // is not skipped (Windows service :loop / npm rename respawns).
+          killed.delete(pid);
+          continue; // Windows may still list a dead owner briefly
+        }
         const isOcx = verifyOcxFn(pid) === pid;
         const allowlisted = allowedKillPids.has(pid);
         // Pre-update PIDs can fail verify while still LISTENing (dead owner still

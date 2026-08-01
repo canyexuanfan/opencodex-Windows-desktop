@@ -35,6 +35,7 @@ import {
   updateCommandStr,
 } from "./index";
 import { isNewer } from "./notify";
+import { isRealBunBinary } from "../lib/bun-binary-validator.mjs";
 import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
 
 const RELEASE_NOTES_URL = "https://github.com/lidge-jun/opencodex/releases/latest";
@@ -147,14 +148,15 @@ function spawnBindProbe(bin: string, script: string): boolean {
 
 /**
  * Live global package Bun — not the npm rename tree the update worker may still
- * be executing from (`@bitkyc08/.opencodex-*`).
+ * be executing from (`@bitkyc08/.opencodex-*`). Reject the tiny postinstall
+ * stub so probes fall back to the worker runtime instead of failing forever.
  */
 function livePackageBunPath(): string | null {
   const launcher = packageLauncherPath();
   const root = join(dirname(launcher), "..");
   for (const name of ["bun.exe", "bun"]) {
     const candidate = join(root, "node_modules", "bun", "bin", name);
-    if (existsSync(candidate)) return candidate;
+    if (isRealBunBinary(candidate)) return candidate;
   }
   return null;
 }

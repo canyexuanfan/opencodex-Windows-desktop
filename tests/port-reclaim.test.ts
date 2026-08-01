@@ -556,4 +556,32 @@ describe("reclaimListenPort", () => {
     expect(killed).toEqual([14772]);
     expect(dropped).toEqual([10100]);
   });
+
+  test("dead ghost then same PID reused is killed again under killAllOcxOnPort", async () => {
+    const killed: number[] = [];
+    let phase: "first-live" | "ghost" | "reuse" = "first-live";
+    let available = false;
+    await expect(reclaimListenPort(10100, "127.0.0.1", {
+      timeoutMs: 200,
+      intervalMs: 20,
+      scanIntervalMs: 20,
+      dropTcpRows: false,
+      killOcxHolders: true,
+      killAllOcxOnPort: true,
+      onlyKillPids: [],
+      isAvailableFn: async () => available,
+      listListenPidsFn: () => [4242],
+      isAliveFn: () => phase !== "ghost",
+      verifyOcxFn: pid => pid,
+      killFn: pid => {
+        killed.push(pid);
+        if (phase === "first-live") phase = "ghost";
+        else if (phase === "reuse") available = true;
+      },
+      sleepMs: async () => {
+        if (phase === "ghost") phase = "reuse";
+      },
+    })).resolves.toBe(true);
+    expect(killed).toEqual([4242, 4242]);
+  });
 });
