@@ -34,6 +34,10 @@ shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保�
 | `forward` | 将**你传入的 Codex 认证请求头**原样转发给提供商——不存储任何密钥。这就是 ChatGPT 登录的透传方式。 | OpenAI（`openai-responses` adapter）。 |
 | `oauth` | 读取已存储的 OAuth 访问令牌（过期前自动刷新），并将其用作 bearer 密钥。 | xAI、Anthropic、Kimi、Kiro、Google Antigravity、Cursor。 |
 
+[`retryOn429`](/zh-cn/reference/configuration/)（同 key 的 429 重试）仅适用于 API-key 提供商
+（`authMode: "key"`）。OAuth、forward 与本地预设均被排除——同一 token 绝不可重放，本地运行时
+也没有需要保留的远程 key。
+
 ## 1. ChatGPT 登录（forward / 透传）
 
 默认提供商**不需要 API 密钥**。它将你现有 `codex login` 的凭据直接转发到 OpenAI Responses 后端：

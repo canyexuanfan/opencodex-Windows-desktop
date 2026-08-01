@@ -49,7 +49,9 @@ function parseRetryAfterMs(value: string | null | undefined, now = Date.now()): 
   const timestamp = Date.parse(text);
   if (!Number.isFinite(timestamp)) return undefined;
   const delay = timestamp - now;
-  return delay > 0 ? Math.min(delay, MAX_COOLDOWN_MS) : undefined;
+  // A valid HTTP-date whose retry time has already passed is an immediate retry, exactly like
+  // numeric `Retry-After: 0` — never a malformed-header fallback to the fixed interval.
+  return Math.min(Math.max(delay, 1), MAX_COOLDOWN_MS);
 }
 
 function isKeyInCooldown(providerName: string, keyId: string, now = Date.now()): boolean {
@@ -85,7 +87,11 @@ export function rateLimitRetryPolicyFor(
 ): Required<RateLimitRetryPolicy> | null {
   const policy = provider.retryOn429;
   if (!policy || policy.enabled === false) return null;
-  if (provider.authMode === "oauth" || provider.authMode === "forward" || provider.authMode === "local") return null;
+  // Fail closed: only explicit key auth or the documented omitted-default (undefined == key for
+  // custom API-key providers) may use same-key replays. OAuth/forward are never replayed on the
+  // same token, local runtimes have no remote key to preserve, and unknown/custom values are
+  // rejected rather than guessed at.
+  if (provider.authMode !== undefined && provider.authMode !== "key") return null;
   return {
     enabled: policy.enabled ?? DEFAULT_RATE_LIMIT_RETRY.enabled,
     attempts: policy.attempts ?? DEFAULT_RATE_LIMIT_RETRY.attempts,

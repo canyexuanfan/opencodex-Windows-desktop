@@ -1642,21 +1642,24 @@ async function handleResponsesInner(
       && rateLimitRetries < rateLimitPolicy.attempts
     ) {
       rateLimitRetries += 1;
+      // Release the unread 429 body before the backoff (only the header is needed for the wait).
+      const retryAfterHeader = upstreamResponse.headers.get("retry-after");
+      cancelResponseBodyBestEffort(upstreamResponse);
       try {
         await sleepWithAbort(
-          rateLimitRetryDelayMs(rateLimitPolicy, upstreamResponse.headers.get("retry-after"), Date.now()),
+          rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
           options.abortSignal,
         );
       } catch {
-        cancelResponseBodyBestEffort(upstreamResponse);
         upstream.abort();
         return clientCancelledResponse();
       }
-      cancelResponseBodyBestEffort(upstreamResponse);
       try {
         upstreamResponse = await fetchWithTransientRetry(
           recovery => {
-            noteAttemptSend(logCtx.activeAttempt, passthroughEstimate, recovery);
+            // The first send of every replay is itself a rate-limit retry; inner transient-5xx
+            // recoveries keep their own label (recovery is provided for those).
+            noteAttemptSend(logCtx.activeAttempt, passthroughEstimate, recovery ?? "rate-limit-429");
             return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
               method: request.method,
               headers: request.headers,
@@ -2091,6 +2094,7 @@ async function handleResponsesInner(
         );
       },
       retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
+      onRateLimitRetrySend: () => noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, "rate-limit-429"),
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
       ...(options.forceEmptyResponseId ? { forceEmptyResponseId: true } : {}),
       onCompletedResponse: (response, providerState) =>
@@ -2160,6 +2164,7 @@ async function handleResponsesInner(
         );
       },
       retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
+      onRateLimitRetrySend: () => noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, "rate-limit-429"),
     });
     // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
     // in-flight web-search turns instead of skipping them during graceful shutdown.
@@ -2436,18 +2441,21 @@ async function handleResponsesInner(
         && rateLimitRetries < rateLimitPolicy.attempts
       ) {
         rateLimitRetries += 1;
+        // Release the unread 429 body BEFORE the backoff: only the header matters for the
+        // wait, and under a 429 storm the sockets would otherwise accumulate for the whole
+        // configured interval (same pattern as the key-failover branch below).
+        const retryAfterHeader = upstreamResponse.headers.get("retry-after");
+        cancelResponseBodyBestEffort(upstreamResponse);
         try {
           await sleepWithAbort(
-            rateLimitRetryDelayMs(rateLimitPolicy, upstreamResponse.headers.get("retry-after"), Date.now()),
+            rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
             options.abortSignal,
           );
         } catch {
-          cancelResponseBodyBestEffort(upstreamResponse);
           cleanupUpstreamAbort();
           upstream.abort();
           return clientCancelledResponse();
         }
-        cancelResponseBodyBestEffort(upstreamResponse);
         const result = await rebuildAndRefetch("rate-limit-429");
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
@@ -2572,7 +2580,12 @@ async function handleResponsesInner(
   const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
     let imageTierBias = 0;
     let response: Response | undefined;
-    const fetchContinuation = async (): Promise<Response> => {
+    // Same-target 429 budget is per REQUEST, not per failover iteration: a key/account rotation
+    // or a 413 tier retry that comes back 429 must not re-arm a fresh budget (parity with the
+    // main recovery loop above).
+    const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+    let rateLimitRetries = 0;
+    const fetchContinuation = async (replay = false): Promise<Response> => {
       const continuationRequest = await activeAdapter.buildRequest(nextParsed, {
         headers: selectedForwardHeaders,
         translatorBudget,
@@ -2585,7 +2598,7 @@ async function handleResponsesInner(
       if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
       try {
         if (activeAdapter.fetchResponse) {
-          noteAttemptSend(logCtx.activeAttempt, continuationEstimate);
+          noteAttemptSend(logCtx.activeAttempt, continuationEstimate, replay ? "rate-limit-429" : undefined);
           return await activeAdapter.fetchResponse(continuationRequest, {
             abortSignal: upstream.signal,
             timeoutMs: connectMs,
@@ -2594,7 +2607,7 @@ async function handleResponsesInner(
         }
         return await fetchWithResetRetry(
           recovery => {
-            noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery);
+            noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery ?? (replay ? "rate-limit-429" : undefined));
             return fetchWithHeaderTimeout(
               continuationRequest.url,
               applyUpstreamRecoveryInit({
@@ -2629,31 +2642,33 @@ async function handleResponsesInner(
       // Same-target 429 wait-and-retry (opt-in `retryOn429`) before key/account failover:
       // a primary-key rate-limit blip replays on the SAME key, matching the main recovery
       // loop; only after the attempts are exhausted does the continuation fail over.
-      const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
-      let rateLimitRetries = 0;
       while (
         response.status === 429
         && rateLimitPolicy !== null
         && rateLimitRetries < rateLimitPolicy.attempts
       ) {
         rateLimitRetries += 1;
+        // Release the unread 429 body before the backoff (only the header is needed for the wait).
+        const retryAfterHeader = response.headers.get("retry-after");
+        try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
         try {
           await sleepWithAbort(
-            rateLimitRetryDelayMs(rateLimitPolicy, response.headers.get("retry-after"), Date.now()),
-            options.abortSignal,
+            rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
+            // Listen on the upstream signal: once the SSE body is being streamed, a client
+            // cancel aborts `upstream` through the bridge, and upstream is also linked from
+            // options.abortSignal — so this covers both cancellation paths.
+            upstream.signal,
           );
         } catch {
-          try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
-          if (options.abortSignal?.aborted) {
+          if (options.abortSignal?.aborted || upstream.signal.aborted) {
             yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
           } else {
             yield { type: "error", message: "Provider continuation failed: retry wait interrupted" };
           }
           return;
         }
-        try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
         try {
-          response = await fetchContinuation();
+          response = await fetchContinuation(true);
         } catch (error) {
           if (options.abortSignal?.aborted) {
             yield { type: "error", message: "client closed request during terminal continuation", status: 499 };

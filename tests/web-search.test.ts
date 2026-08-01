@@ -631,6 +631,7 @@ describe("web-search sidecar native web_search_call emission", () => {
 
     let sends = 0;
     let rotations = 0;
+    let retrySends = 0;
     const retryingAdapter: ProviderAdapter = {
       name: "mock-retry429",
       buildRequest: () => ({
@@ -666,6 +667,9 @@ describe("web-search sidecar native web_search_call emission", () => {
         rotations += 1;
         return null;
       },
+      onRateLimitRetrySend: () => {
+        retrySends += 1;
+      },
     });
     expect(response.status).toBe(200);
     const frames = await collectSse(response.body!);
@@ -674,6 +678,7 @@ describe("web-search sidecar native web_search_call emission", () => {
     expect(output.find(o => o.type === "message")?.content?.[0]?.text).toBe("answer after same-key retry");
     expect(sends).toBe(2);
     expect(rotations).toBe(0);
+    expect(retrySends).toBe(1);
   });
 
   test("loop 429 with exhausted pool (on429 null) surfaces the provider error", async () => {

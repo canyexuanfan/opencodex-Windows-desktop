@@ -35,6 +35,10 @@ max input 922,000 で `*-pro` virtual ID は公開状態を維持し、wire で�
 | `forward` | **受け取った Codex 認証ヘッダーを**プロバイダーにそのまま中継します — キーを保存しません。ChatGPT ログインのパススルーです。 | OpenAI(`openai-responses` アダプター)。 |
 | `oauth` | 保存された OAuth アクセストークンを読み込み bearer キーとして使い、期限切れ前に自動更新します。 | xAI、Anthropic、Kimi、Kiro、Google Antigravity、Cursor。 |
 
+[`retryOn429`](/ja/reference/configuration/)（同一キーでの 429 リトライ）は API キー プロバイダー
+（`authMode: "key"`）のみに適用されます。OAuth・forward・ローカル プリセットは除外されます —
+同じトークンを再送すべきではなく、ローカルランタイムには保存すべきリモートキーがありません。
+
 ## 1. ChatGPT ログイン(forward / パススルー)
 
 デフォルトプロバイダーは**API キー不要**です。既存の `codex login` の認証情報を OpenAI Responses バックエンドに

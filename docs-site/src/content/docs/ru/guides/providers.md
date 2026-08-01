@@ -41,6 +41,11 @@ description: Все способы, которыми opencodex аутентиф�
 | `forward` | Передаёт провайдеру **входящие заголовки аутентификации Codex** без изменений — ключ не хранится. Это сквозной режим (passthrough) входа через ChatGPT. | OpenAI (адаптер `openai-responses`). |
 | `oauth` | Берёт сохранённый OAuth-токен доступа (автоматически обновляется до истечения срока) и использует его как bearer-ключ. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor, GitHub Copilot. |
 
+Повтор при 429 на том же ключе ([`retryOn429`](/ru/reference/configuration/)) применим только к
+провайдерам с API-ключом (`authMode: "key"`). Пресеты OAuth, forward и local исключены — их
+учётные данные нельзя повторно отправлять по тому же токену, а у локальных сред выполнения нет
+удалённого ключа.
+
 ## 1. Вход через ChatGPT (forward / passthrough)
 
 Провайдеру `openai` **не нужен API-ключ**. Direct пересылает учётные данные вашего существующего

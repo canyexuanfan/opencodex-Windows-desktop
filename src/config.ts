@@ -1112,6 +1112,45 @@ function warnDegradedStreamMode(rawParsed: unknown, validated: OcxConfig): void 
 }
 
 /**
+ * Load-time degradation for `retryOn429` (loadConfig only): one hand-edited invalid optional
+ * field (e.g. `attempts: 0` or a string) must not trip the whole provider schema and hide every
+ * provider/key behind a default config. Invalid fields are dropped with a warning; the management
+ * write boundary still rejects invalid policies explicitly.
+ */
+function sanitizeRetryOn429ForLoad(parsed: unknown): void {
+  if (!parsed || typeof parsed !== "object") return;
+  const root = parsed as Record<string, unknown>;
+  const providers = root.providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return;
+  for (const [name, provider] of Object.entries(providers as Record<string, unknown>)) {
+    if (!provider || typeof provider !== "object" || Array.isArray(provider)) continue;
+    const p = provider as Record<string, unknown>;
+    const policy = p.retryOn429;
+    if (policy === undefined) continue;
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+      delete p.retryOn429;
+      console.warn(`⚠️  config.json providers.${name}.retryOn429 ${JSON.stringify(policy)} is invalid — ignoring the policy`);
+      continue;
+    }
+    const fields: Array<[string, (value: unknown) => boolean]> = [
+      ["enabled", value => typeof value === "boolean"],
+      ["attempts", value => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 20],
+      ["intervalMs", value => typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 600_000],
+      ["maxIntervalMs", value => typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 600_000],
+      ["respectRetryAfter", value => typeof value === "boolean"],
+    ];
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, isValid] of fields) {
+      const value = (policy as Record<string, unknown>)[key];
+      if (value === undefined) continue;
+      if (isValid(value)) cleaned[key] = value;
+      else console.warn(`⚠️  config.json providers.${name}.retryOn429.${key} ${JSON.stringify(value)} is invalid — ignoring the field`);
+    }
+    p.retryOn429 = cleaned;
+  }
+}
+
+/**
  * Companion to {@link warnDegradedStreamMode} for a blank persisted `hostname`. The bind
  * falls back to loopback, which is the safe direction but not what the file asked for —
  * say so once instead of silently ignoring the field.
@@ -1322,6 +1361,7 @@ export function loadConfig(): OcxConfig {
   try {
     const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw);
+    sanitizeRetryOn429ForLoad(parsed);
     const result = configSchema.safeParse(parsed);
     if (result.success) {
       const config = normalizeApiKeyIds(result.data as OcxConfig);

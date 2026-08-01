@@ -12,7 +12,7 @@ describe("rateLimitRetryPolicyFor", () => {
     expect(rateLimitRetryPolicyFor({ retryOn429: { enabled: false } } as OcxProviderConfig)).toBeNull();
   });
 
-  test("null for OAuth, forward, and local providers (no remote key to preserve)", () => {
+  test("null for OAuth, forward, local, and unknown auth modes (fail closed)", () => {
     expect(rateLimitRetryPolicyFor({
       authMode: "oauth",
       retryOn429: {},
@@ -23,6 +23,10 @@ describe("rateLimitRetryPolicyFor", () => {
     } as OcxProviderConfig)).toBeNull();
     expect(rateLimitRetryPolicyFor({
       authMode: "local",
+      retryOn429: {},
+    } as OcxProviderConfig)).toBeNull();
+    expect(rateLimitRetryPolicyFor({
+      authMode: "custom-unknown",
       retryOn429: {},
     } as OcxProviderConfig)).toBeNull();
     expect(rateLimitRetryPolicyFor({
@@ -70,6 +74,12 @@ describe("rateLimitRetryDelayMs", () => {
   test("honors an HTTP-date Retry-After", () => {
     const now = Date.parse("2026-10-21T07:27:30Z");
     expect(rateLimitRetryDelayMs(policy, "Wed, 21 Oct 2026 07:28:00 GMT", now)).toBe(30_000);
+  });
+
+  test("an already-expired HTTP-date Retry-After retries immediately", () => {
+    const now = Date.parse("2026-10-21T07:28:00Z");
+    expect(rateLimitRetryDelayMs(policy, "Wed, 21 Oct 2026 07:27:30 GMT", now)).toBe(1);
+    expect(rateLimitRetryDelayMs(policy, "Wed, 21 Oct 2026 07:28:00 GMT", now)).toBe(1);
   });
 
   test("Retry-After 0 retries immediately instead of falling back to the interval", () => {

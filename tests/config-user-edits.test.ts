@@ -109,6 +109,41 @@ test("an unrelated loadConfig does not refresh the armed baseline", () => {
   expect((diskConfig().claudeCode as Record<string, unknown>).authMode).toBe("proxy");
 });
 
+test("an invalid retryOn429 field degrades at load instead of discarding the config", () => {
+  writeDiskConfig({
+    providers: {
+      test: {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "k",
+        allowPrivateNetwork: true,
+        retryOn429: { attempts: 0, intervalMs: 120, respectRetryAfter: false },
+      },
+    },
+  });
+  const live = loadConfig();
+  expect(live.providers.test).toBeDefined();
+  // Invalid field dropped with a warning; valid fields kept; missing fields defaulted.
+  expect(live.providers.test.retryOn429).toEqual({ intervalMs: 120, respectRetryAfter: false });
+});
+
+test("a non-object retryOn429 degrades at load instead of discarding the config", () => {
+  writeDiskConfig({
+    providers: {
+      test: {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "k",
+        allowPrivateNetwork: true,
+        retryOn429: "enabled",
+      },
+    },
+  });
+  const live = loadConfig();
+  expect(live.providers.test).toBeDefined();
+  expect(live.providers.test.retryOn429).toBeUndefined();
+});
+
 // R4-1: the request path. A 429 mid-turn rotates a key and saves, with no user action.
 test("a 429 key rotation does not clobber the hand edit", async () => {
   const { rotateKeyOn429 } = await import("../src/providers/key-failover");

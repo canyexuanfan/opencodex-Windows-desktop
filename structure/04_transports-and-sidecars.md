@@ -232,11 +232,14 @@ failover). Codex never retries 429 client-side (openai/codex#30471), so this is 
 defense for those providers; the final 429 still carries `Retry-After` for clients that honor
 it. Concurrent requests each honor their own policy — there is no process-wide shared cooldown
 (unlike the Kiro pattern), so a rate-limit storm multiplies upstream volume by at most
-`attempts + 1` per request. The wait is abort-aware: once the server observes the client
-disconnect (Bun propagates it asynchronously, observed 1–10 s), the sleep is interrupted, the
-unread 429 body is released, and the request is cancelled with 499 before any replay; because
-the propagation is async, a replay may precede the cancel if the interval elapses first
-(bounded by the same `attempts` budget).
+`attempts + poolKeys` per request (same-key replays, then failover keys). Every surface
+releases the unread 429 body before the backoff, records the `rate-limit-429` recovery kind on
+replay sends, and the bridge loops restart their response-header deadline after each deliberate
+wait so backoffs never consume the connect budget or surface as a 504. The wait is abort-aware:
+once the server observes the client disconnect (Bun propagates it asynchronously, observed
+1–10 s), the sleep is interrupted, the unread 429 body is released, and the request is
+cancelled with 499 before any replay; because the propagation is async, a replay may precede
+the cancel if the interval elapses first (bounded by the same `attempts` budget).
 
 [Decision Log]
 - 목적과 의도: Prevent Kiro progress from becoming a false final answer, reject invalid empty completion retries, and stop concurrent transient 429s from consuming independent retry budgets.

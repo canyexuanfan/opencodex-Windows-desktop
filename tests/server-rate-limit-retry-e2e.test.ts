@@ -238,12 +238,14 @@ describe("server same-target 429 retry (end-to-end)", () => {
     const originalFetch = globalThis.fetch;
     let sends = 0;
     const seenAuth: string[] = [];
+    const seenBodies: string[] = [];
     globalThis.fetch = (async (input, init) => {
       const url = input instanceof Request ? input.url : String(input);
       if (url === "https://passthrough.test/v1/responses") {
         sends += 1;
         const auth = new Headers(init?.headers).get("authorization") ?? "";
         seenAuth.push(auth);
+        seenBodies.push(String(init?.body));
         if (sends === 1) {
           return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
             status: 429,
@@ -287,6 +289,56 @@ describe("server same-target 429 retry (end-to-end)", () => {
         "Bearer key-alpha-000111222333",
         "Bearer key-alpha-000111222333",
       ]);
+      expect(seenBodies).toHaveLength(2);
+      expect(seenBodies[0]).toBe(seenBodies[1]);
+    } finally {
+      server?.stop(true);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("retry budget stays per request across multi-key failover (never re-arms)", async () => {
+    const originalFetch = globalThis.fetch;
+    let sends = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://llmapi.blsc.cn/chat/completions") {
+        sends += 1;
+        return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    let server: ReturnType<typeof startServer> | null = null;
+    try {
+      const config = {
+        port: 0,
+        hostname: "127.0.0.1",
+        defaultProvider: "blsc",
+        providers: {
+          blsc: {
+            adapter: "openai-chat",
+            baseUrl: "https://llmapi.blsc.cn",
+            authMode: "key",
+            apiKey: "key-alpha-000111222333",
+            apiKeyPool: [
+              { id: "k1", key: "key-alpha-000111222333", addedAt: 1 },
+              { id: "k2", key: "key-beta-444555666777", addedAt: 2 },
+            ],
+            retryOn429: { attempts: 1, intervalMs: 120, respectRetryAfter: false },
+          },
+        },
+      } as OcxConfig;
+      saveConfig(config);
+      server = startServer(0);
+      const res = await postResponses(server.url, "blsc/DeepSeek-V4-Flash");
+      expect(res.status).toBe(429);
+      // attempts(1) on the first key + one failover key = 3 sends; a re-armed budget would
+      // have replayed on the second key too (4+ sends).
+      expect(sends).toBe(3);
     } finally {
       server?.stop(true);
       globalThis.fetch = originalFetch;

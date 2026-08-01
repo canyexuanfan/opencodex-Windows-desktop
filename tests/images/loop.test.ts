@@ -180,6 +180,7 @@ describe("runWithImageBridge", () => {
   test("retryOn429 replays on the same key before on429 rotation", async () => {
     let sends = 0;
     let rotations = 0;
+    let retrySends = 0;
     const retryingAdapter: ProviderAdapter = {
       ...mockAdapter,
       fetchResponse: async () => {
@@ -203,11 +204,15 @@ describe("runWithImageBridge", () => {
         rotations += 1;
         return null;
       },
+      onRateLimitRetrySend: () => {
+        retrySends += 1;
+      },
     });
     const sse = await response.text();
     expect(sse).toContain("recovered");
     expect(sends).toBe(2);
     expect(rotations).toBe(0);
+    expect(retrySends).toBe(1);
   });
 
   test("forced-final clears named image tool_choice", async () => {

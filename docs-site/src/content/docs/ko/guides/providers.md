@@ -35,6 +35,10 @@ shipped v1 config는 marker 2의 단일 옵션 행으로 자동 이관됩니다.
 | `forward` | **수신된 Codex 인증 헤더를** 프로바이더에 그대로 중계합니다 — 키를 저장하지 않습니다. ChatGPT 로그인 패스스루입니다. | OpenAI (`openai-responses` 어댑터). |
 | `oauth` | 저장된 OAuth 액세스 토큰을 불러와 bearer 키로 사용하며, 만료 전에 자동 갱신합니다. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor. |
 
+[`retryOn429`](/ko/reference/configuration/)（동일 키 429 재시도）는 API 키 프로바이더
+（`authMode: "key"`）에만 적용됩니다. OAuth·forward·로컬 프리셋은 제외됩니다 — 같은 토큰을
+재전송해서는 안 되며, 로컬 런타임에는 보존할 원격 키가 없습니다.
+
 ## 1. ChatGPT 로그인 (forward / 패스스루)
 
 기본 프로바이더는 **API 키가 필요 없습니다**. 기존 `codex login`의 자격 증명을 OpenAI Responses 백엔드로

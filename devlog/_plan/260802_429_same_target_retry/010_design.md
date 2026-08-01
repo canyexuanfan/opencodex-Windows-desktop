@@ -26,12 +26,17 @@ existing multi-key failover runs. Default off → zero behavior change for exist
 - `src/types.ts`: `RateLimitRetryPolicy` interface + `OcxProviderConfig.retryOn429`.
 - `src/config.ts`: zod schema entry (zod's default strip inside the object — an unknown key is
   dropped, never a config-rejecting error; the outer provider schema stays passthrough).
+  Load-time degradation: one hand-edited invalid optional field (e.g. `attempts: 0`) is dropped
+  with a warning instead of tripping the whole schema and hiding all providers behind a default
+  config; the management write boundary still rejects invalid policies.
 - `src/providers/key-failover.ts`: `rateLimitRetryPolicyFor` (normalize/default) and
   `rateLimitRetryDelayMs` (Retry-After seconds/HTTP-date → capped, else `intervalMs`),
   reusing the existing `parseRetryAfterMs` cooldown parser; the fixed fallback is capped at
-  `maxIntervalMs` too, so a single wait never exceeds the cap. API-key providers only
-  (`authMode: "key"`): OAuth/forward credentials are never replayed on the same token, and
-  local runtimes have no remote key to preserve.
+  `maxIntervalMs` too, so a single wait never exceeds the cap. Fail closed: only `authMode:
+  "key"` (or the documented omitted default for custom API-key providers) may use replays —
+  OAuth/forward are never replayed on the same token, local runtimes have no remote key to
+  preserve, and unknown values are rejected. `providerConfigSeed` preserves the registry auth
+  kind (including `"local"`) so the gate survives the seed round-trip.
 - `src/usage/log.ts`: new `AttemptRecoveryKind` member `"rate-limit-429"`.
 - `src/server/responses/core.ts`: in the pre-stream recovery loop, BEFORE the multi-key
   failover `while`, wait then `rebuildAndRefetch("rate-limit-429")`. Abort during the wait
@@ -45,6 +50,9 @@ existing multi-key failover runs. Default off → zero behavior change for exist
   - image/video bridge and web-search sidecar loops (`src/images/loop.ts`,
     `src/web-search/loop.ts`) — before their `on429` key rotation;
   - Anthropic terminal-guard continuations — before key/account failover.
+  Every surface releases the unread 429 body BEFORE the backoff, records the
+  `rate-limit-429` recovery kind on replay sends, and (bridges) restarts the response-header
+  deadline after each deliberate wait.
   Covers Responses, chat completions, and routed Claude messages (they all enter
   `handleResponses`).
 
@@ -54,17 +62,34 @@ existing multi-key failover runs. Default off → zero behavior change for exist
   request is lossless (same invariant as the transient-5xx layer in `lib/upstream-retry.ts`).
 - Ordering: same-key retries run before failover, so "primary-first" users keep their key on
   rate-limit blips; failover still works after retries exhaust.
-- Latency bound: worst case `attempts × maxIntervalMs` (default 3 × 60 s = 180 s) when
-  honoring upstream `Retry-After`; `attempts × intervalMs` (default 15 s) when
-  `respectRetryAfter=false` or no header is present.
+- Retry-wait bound: the SLEEP component is at most `attempts × maxIntervalMs` (default
+  3 × 60 s = 180 s) when honoring upstream `Retry-After`; `attempts × intervalMs`
+  (default 15 s) when `respectRetryAfter=false` or no header is present. Total request
+  latency is higher: every attempt also consumes its own connect/response time (bounded by
+  `connectTimeoutMs`), so the documented bound covers deliberate waits only.
+- Identical replay: rebuilds are deterministic for the same parsed request (same serialized
+  body and auth headers); the passthrough/continuation/e2e tests assert byte-identical bodies
+  and identical auth headers across replays, not just send counts.
 - Abort during the wait: the sleep is abort-aware — when the server observes the client
   disconnect (Bun propagates this asynchronously, observed 1–10 s), the wait is interrupted,
   the unread 429 body is released, and the request is cancelled with 499 before any replay.
   Because the propagation is async, a replay can still precede the cancel if the interval
-  elapses first; that is bounded by the same `attempts` budget.
+  elapses first; that is bounded by the same `attempts` budget. Terminal continuations sleep
+  on the upstream signal, so a body-cancel (SSE already streaming) aborts the wait too.
 - Concurrency: each request honors its own policy independently — no process-wide cooldown is
-  shared between concurrent requests (unlike the Kiro 429 pattern). Opt-in and bounded, so a
-  storm multiplies upstream volume by at most `attempts + 1` per request.
+  shared between concurrent requests (unlike the Kiro 429 pattern). Upstream volume per
+  request: same-key replays add at most `attempts` sends, then multi-key failover adds up to
+  `poolKeys − 1` more (or Anthropic account rotations), so the combined bound is
+  `attempts + poolKeys` sends — a storm multiplies by that factor per request, not by
+  `attempts + 1`.
+- Header deadlines: the image/video and web-search bridge loops restart their response-header
+  deadline after each deliberate wait, so backoffs never consume the connect budget and a
+  rate-limit wait is never misattributed as a 504 header timeout.
+- Expired `Retry-After`: a valid HTTP-date already in the past retries immediately (same as
+  numeric `Retry-After: 0`) instead of falling back to the fixed interval.
+- Recovery observability: every retry surface records the `rate-limit-429` recovery kind
+  (normal loop, passthrough wire, image/video bridge, web-search sidecar, terminal
+  continuations), so usage logs explain the extra sends.
 - Final 429 still carries `Retry-After` for clients that honor it (Claude Code).
 
 ## Tests

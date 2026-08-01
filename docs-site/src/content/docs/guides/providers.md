@@ -39,6 +39,11 @@ labels local presets separately; those normally omit both `authMode` and `apiKey
 | `forward` | Relays **your incoming Codex auth headers** verbatim to the provider — no key stored. This is the ChatGPT-login passthrough. | OpenAI (`openai-responses` adapter). |
 | `oauth` | Resolves a stored OAuth access token (auto-refreshed before expiry) and uses it as the bearer key. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor, GitHub Copilot. |
 
+The [`retryOn429`](/reference/configuration/) same-key 429 replay applies only to API-key
+providers (`authMode: "key"`). OAuth, forward, and local presets are excluded — their
+credentials must never be replayed on the same token, and local runtimes have no remote key to
+preserve.
+
 ## 1. ChatGPT login (forward / passthrough)
 
 The `openai` provider needs **no API key**. Direct forwards credentials from your existing

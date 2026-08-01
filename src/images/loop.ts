@@ -236,6 +236,8 @@ export interface ImageBridgeDeps {
   on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
   /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
   retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
+  /** Telemetry for a same-target 429 replay send (records the `rate-limit-429` recovery kind). */
+  onRateLimitRetrySend?: () => void;
   /** Called when the bridged Responses stream completes (parity with runTurn / routed paths). */
   onCompletedResponse?: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => void;
   /** WebSocket Responses path only — leave response id empty for protocol compatibility. */
@@ -425,7 +427,7 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
       return { response: new Response(new Uint8Array(0), { status: 200 }), responseAdapter: wrappedAdapter };
     }
 
-    const headerDeadline = clearableDeadline(connectTimeoutMs, signal);
+    let headerDeadline = clearableDeadline(connectTimeoutMs, signal);
     try {
       const fetchOnce = async (requestAdapter: ProviderAdapter): Promise<IterationResponse> => {
         const request = await requestAdapter.buildRequest(iterParsed, {
@@ -474,16 +476,23 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         && rateLimitRetries < rateLimitRetryPolicy.attempts
       ) {
         rateLimitRetries += 1;
+        // Release the unread 429 body before the backoff (only the header is needed for the wait).
+        const retryAfterHeader = prepared.response.headers.get("retry-after");
+        try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
         try {
           await sleepWithAbort(
-            rateLimitRetryDelayMs(rateLimitRetryPolicy, prepared.response.headers.get("retry-after"), Date.now()),
+            rateLimitRetryDelayMs(rateLimitRetryPolicy, retryAfterHeader, Date.now()),
             signal,
           );
         } catch {
-          try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
           throw new LoopError(499, "client closed request during image-bridge");
         }
-        try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // The deliberate backoff must not consume the cumulative response-header deadline:
+        // restart it so the replay gets a fresh connect budget (504 stays reserved for real
+        // upstream latency).
+        headerDeadline.clear();
+        headerDeadline = clearableDeadline(connectTimeoutMs, signal);
+        deps.onRateLimitRetrySend?.();
         // Stall-watchdog seam between bounded retry fetches.
         yield { type: "heartbeat" };
         prepared = await fetchOnce(adapter);

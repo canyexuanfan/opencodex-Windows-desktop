@@ -17,6 +17,7 @@ import {
   usageTotalTokens,
   usageReadCacheStatsForTests,
   usageLogRevisionKey,
+  type PersistedUsageEntry,
 } from "../src/usage/log";
 
 let testDir = "";
@@ -37,7 +38,7 @@ afterEach(() => {
 
 describe("usage log", () => {
   test("persists the rate-limit-429 recovery kind on attempts", () => {
-    appendUsageEntry({
+    const entry: PersistedUsageEntry = {
       requestId: "ocx-ratelimit-kind",
       timestamp: 1,
       provider: "blsc",
@@ -56,7 +57,8 @@ describe("usage log", () => {
         recoveryKinds: ["rate-limit-429", "rate-limit-429"],
         usageStatus: "reported",
       }],
-    } as never);
+    };
+    appendUsageEntry(entry);
     expect(readUsageEntries()[0]?.attempts?.[0]?.recoveryKinds).toEqual(["rate-limit-429"]);
   });
 
