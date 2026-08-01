@@ -12,7 +12,7 @@ import {
   reasoningSummaryDeliveryRecordConfigError,
 } from "../config";
 import { providerDestinationConfigError } from "../lib/destination-policy";
-import { getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport } from "../providers/registry";
+import { getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../providers/registry";
 import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { openRouterRoutingConfigError } from "../providers/openrouter-routing";
@@ -504,9 +504,13 @@ export function safeConfigDTO(config: OcxConfig): unknown {
     ] as const) {
       copyIfDefined(dto, provider, key);
     }
-    const registryNote = providerMatchesRegistryTransport(name, provider)
-      ? getProviderRegistryEntry(name)?.note
-      : undefined;
+    // Resolve the note by DESTINATION, not by name. A preset saved under a custom name is
+    // still pointed at the same vendor route, and a usage restriction the user needs to see
+    // must not disappear because the row was renamed. Prefer the same-name entry so an
+    // unrenamed provider keeps its exact registry note.
+    const registryNote = (providerMatchesRegistryTransport(name, provider)
+      ? getProviderRegistryEntry(name)
+      : registryEntryForProviderDestination(provider))?.note;
     if (typeof registryNote === "string" && registryNote.trim()) dto.note = registryNote;
     const codexAccountMode = providerCodexAccountMode(name, provider);
     if (codexAccountMode) dto.codexAccountMode = codexAccountMode;

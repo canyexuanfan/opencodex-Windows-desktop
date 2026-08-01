@@ -200,7 +200,7 @@ export interface ProviderRegistryEntry {
 
 export type ProviderConfigSeed = Pick<
   OcxProviderConfig,
-  "adapter" | "baseUrl" | "apiKeyTransport" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
+  "adapter" | "baseUrl" | "apiKeyTransport" | "responsesPath" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
@@ -364,6 +364,56 @@ const ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS = [
 // coding tools (not custom application backends or non-interactive batch automation).
 // Evidence: https://cloud.tencent.cn/document/product/1823/130092
 const TENCENT_CODING_PLAN_MODELS = ["tc-code-latest", "glm-5", "kimi-k2.5", "minimax-m2.5"];
+// Volcengine's authenticated /api/v3/models catalog mixes chat models with embedding,
+// image, video, and 3D generation resources. Keep the Codex-facing presets scoped to
+// models documented for text/agent or Coding Plan use.
+const VOLCENGINE_ARK_MODELS = [
+  "doubao-seed-2-1-pro-260628",
+  "doubao-seed-2-1-turbo-260628",
+  "doubao-seed-evolving",
+  "deepseek-v4-pro-260425",
+  "deepseek-v4-flash-260425",
+  "deepseek-v3-2-251201",
+  "glm-5-2-260617",
+  "glm-4-7-251222",
+];
+const VOLCENGINE_DOUBAO_THINKING_MODELS = [
+  "doubao-seed-2-1-pro-260628",
+  "doubao-seed-2-1-turbo-260628",
+  "doubao-seed-evolving",
+];
+const VOLCENGINE_CODING_PLAN_MODELS = [
+  "ark-code-latest",
+  "doubao-seed-2.0-code",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "glm-5.2",
+  "kimi-k2.6",
+  "minimax-m3",
+];
+const VOLCENGINE_AGENT_PLAN_MODELS = [
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "glm-5.2",
+  "kimi-k2.6",
+  "minimax-m3",
+  "doubao-seed-2.0-pro",
+];
+const VOLCENGINE_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
+  "kimi-k2.6": ["text", "image"],
+  "minimax-m3": ["text", "image"],
+};
+// Every other Plan model is text-only. Declaring this explicitly keeps the vision
+// sidecar from advertising image input for models that cannot accept it — the same
+// treatment tencent-coding-plan gives its (entirely text-only) plan catalog.
+const VOLCENGINE_PLAN_TEXT_ONLY_MODELS = [
+  "ark-code-latest",
+  "doubao-seed-2.0-code",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "glm-5.2",
+  "doubao-seed-2.0-pro",
+];
 const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "qwen3.8-max-preview": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
@@ -1060,6 +1110,77 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noVisionModels: TENCENT_CODING_PLAN_MODELS,
     note: "Coding tools only. Tencent forbids general API automation, custom backends, and non-interactive batch use.",
   },
+  {
+    id: "volcengine",
+    label: "Volcengine Ark",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+    adapter: "openai-chat",
+    authKind: "key",
+    preserveCustomDestination: true,
+    dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apikey",
+    defaultModel: "doubao-seed-2-1-pro-260628",
+    models: VOLCENGINE_ARK_MODELS,
+    liveModels: false,
+    modelReasoningEfforts: Object.fromEntries(
+      VOLCENGINE_DOUBAO_THINKING_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS]),
+    ),
+    modelReasoningEffortMap: Object.fromEntries(
+      VOLCENGINE_DOUBAO_THINKING_MODELS.map(id => [id, THINKING_TOGGLE_MAP]),
+    ),
+    thinkingToggleModels: VOLCENGINE_DOUBAO_THINKING_MODELS,
+    preserveReasoningContentModels: [
+      "deepseek-v4-pro-260425",
+      "deepseek-v4-flash-260425",
+      "glm-5-2-260617",
+      "glm-4-7-251222",
+    ],
+    noVisionModels: [
+      "deepseek-v4-pro-260425",
+      "deepseek-v4-flash-260425",
+      "deepseek-v3-2-251201",
+      "glm-5-2-260617",
+      "glm-4-7-251222",
+    ],
+    note: "Pay-as-you-go Ark API with a curated text/agent catalog. Calls on this endpoint do not consume Coding Plan or Agent Plan quota.",
+  },
+  {
+    id: "volcengine-coding-plan",
+    label: "Volcengine Ark Coding Plan",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
+    adapter: "openai-chat",
+    authKind: "key",
+    preserveCustomDestination: true,
+    dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
+    defaultModel: "ark-code-latest",
+    models: VOLCENGINE_CODING_PLAN_MODELS,
+    liveModels: false,
+    modelInputModalities: VOLCENGINE_PLAN_INPUT_MODALITIES,
+    noVisionModels: VOLCENGINE_PLAN_TEXT_ONLY_MODELS,
+    modelReasoningEfforts: Object.fromEntries(
+      DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_EFFORTS]),
+    ),
+    modelReasoningEffortMap: Object.fromEntries(
+      DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_REASONING_MAP]),
+    ),
+    preserveReasoningContentModels: DEEPSEEK_THINKING_MODELS,
+    note: "Coding tools only. Volcengine restricts Coding Plan quota to supported AI coding tools and warns that using this key for general API calls may suspend the subscription or ban the account. Use the plan key issued by the Ark console.",
+  },
+  {
+    id: "volcengine-agent-plan",
+    label: "Volcengine Ark Agent Plan",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3",
+    responsesPath: "/responses",
+    adapter: "openai-responses",
+    authKind: "key",
+    preserveCustomDestination: true,
+    dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
+    defaultModel: "deepseek-v4-pro",
+    models: VOLCENGINE_AGENT_PLAN_MODELS,
+    liveModels: false,
+    modelInputModalities: VOLCENGINE_PLAN_INPUT_MODALITIES,
+    noVisionModels: VOLCENGINE_PLAN_TEXT_ONLY_MODELS,
+    note: "Coding tools only. Agent Plan is a subscription endpoint over the native Responses API with a static fallback catalog; Ark plan quota is intended for supported AI coding and agent tools, so avoid using this key as a general-purpose API key.",
+  },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
   { id: "qianfan", label: "Qianfan (Baidu)", baseUrl: "https://qianfan.baidubce.com/v2", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.bce.baidu.com/iam/#/iam/apikey/list" },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
@@ -1327,6 +1448,32 @@ export function providerMatchesRegistryTransport(
   if (provider.adapter !== entry.adapter) return false;
   if (provider.authMode !== undefined && provider.authMode !== "key") return false;
   return normalizedProviderEndpoint(provider.baseUrl) === normalizedProviderEndpoint(entry.baseUrl);
+}
+
+/**
+ * Resolve the registry entry a configured provider actually points at, by TRANSPORT
+ * rather than by name.
+ *
+ * `providerMatchesRegistryTransport` answers "does the row named X still point at X's
+ * documented destination", which is the right question for routing but the wrong one
+ * for user-facing metadata: the GUI lets a preset be saved under any name, and a
+ * renamed row would silently lose a usage restriction it still needs to display.
+ *
+ * Only fixed key destinations are matched. Entries with an overridable or templated
+ * base URL are skipped, because their configured URL cannot identify one vendor route.
+ */
+export function registryEntryForProviderDestination(
+  provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
+): ProviderRegistryEntry | undefined {
+  if (typeof provider.baseUrl !== "string" || !provider.baseUrl) return undefined;
+  if (provider.authMode !== undefined && provider.authMode !== "key") return undefined;
+  const endpoint = normalizedProviderEndpoint(provider.baseUrl);
+  return PROVIDER_REGISTRY.find(entry =>
+    entry.authKind === "key"
+    && !entry.allowBaseUrlOverride
+    && !/\{[^}]*\}/.test(entry.baseUrl)
+    && entry.adapter === provider.adapter
+    && normalizedProviderEndpoint(entry.baseUrl) === endpoint);
 }
 
 /**
