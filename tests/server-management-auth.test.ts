@@ -480,12 +480,16 @@ describe("management and data-plane credential separation", () => {
     writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
+    // Timeout only directory hardens (grant ACE carries (OI)(CI)). File hardens
+    // must succeed so startServer → saveConfig can atomic-write on real win32;
+    // Linux CI skips that path via process.platform and hid the blanket-timeout
+    // failure mode under isolate.
     setIcaclsRunnerForTests(args => {
-      const target = args[0] ?? "";
-      if (target.endsWith("admin-api-token")) {
-        return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+      const grant = args.find(a => a.includes("(F)")) ?? "";
+      if (grant.includes("(OI)(CI)")) {
+        return { success: false, exitCode: null, timedOut: true, stdout: "" };
       }
-      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
     });
     resetHardenedStateForTests();
     const state = initializeManagementAuthState(remoteConfig());
@@ -549,7 +553,16 @@ describe("management and data-plane credential separation", () => {
     saveConfig(remoteConfig());
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
-    setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    // Env-token init never touches admin-api-token. Time out only that file so a
+    // broken file-backed ACL cannot be what made management available; allow
+    // other file hardens so startServer → saveConfig works on real win32.
+    setIcaclsRunnerForTests(args => {
+      const target = args[0] ?? "";
+      if (target.includes("admin-api-token") || target.includes(".admin-token.tmp")) {
+        return { success: false, exitCode: null, timedOut: true, stdout: "" };
+      }
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
     resetHardenedStateForTests();
 
     const state = initializeManagementAuthState(remoteConfig());
