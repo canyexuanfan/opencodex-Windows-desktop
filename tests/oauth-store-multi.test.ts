@@ -250,6 +250,9 @@ describe("multi-account auth store", () => {
     expect(getAccountSet("xai")!.accounts[0]?.needsReauth).toBeUndefined();
   });
 
+  // Filling the 128-slot admission queue then draining it exceeds the default
+  // 5s case budget on a loaded Windows isolate runner; an early timeout also
+  // leaves the gate closed and hangs the file realm until the job ceiling.
   test("OAuth mutation 129 rejects before enqueue while every accepted mutation executes once", async () => {
     let releaseFirst!: () => void;
     let firstStarted!: () => void;
@@ -261,18 +264,23 @@ describe("multi-account auth store", () => {
       firstStarted();
       await firstGate;
     }, ["provider", "account"] )];
-    await started;
-    for (let i = 1; i < 128; i++) {
-      accepted.push(mutateStore(() => { executions++; }, ["provider", `account-${i}`]));
+    try {
+      await started;
+      for (let i = 1; i < 128; i++) {
+        accepted.push(mutateStore(() => { executions++; }, ["provider", `account-${i}`]));
+      }
+      expect(oauthMutationTailSnapshot().active).toBe(128);
+      await expect(mutateStore(() => { executions++; }, ["rejected"])).rejects.toBeInstanceOf(OAuthMutationBusyError);
+      expect(oauthMutationTailSnapshot().active).toBe(128);
+      releaseFirst();
+      await Promise.all(accepted);
+      expect(executions).toBe(128);
+      expect(oauthMutationTailSnapshot().active).toBe(0);
+    } finally {
+      releaseFirst();
+      await Promise.allSettled(accepted);
     }
-    expect(oauthMutationTailSnapshot().active).toBe(128);
-    await expect(mutateStore(() => { executions++; }, ["rejected"])).rejects.toBeInstanceOf(OAuthMutationBusyError);
-    expect(oauthMutationTailSnapshot().active).toBe(128);
-    releaseFirst();
-    await Promise.all(accepted);
-    expect(executions).toBe(128);
-    expect(oauthMutationTailSnapshot().active).toBe(0);
-  });
+  }, { timeout: 30_000 });
 
   test("OAuth 30 second wait timeout releases an unstarted lease and never enters the chain", async () => {
     let releaseFirst!: () => void;
