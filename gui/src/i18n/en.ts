@@ -180,6 +180,7 @@ export const en = {
   "dash.cannotConnect": "Cannot connect to proxy. Is it running?",
   "dash.runStart": "Run {cmd} to start the proxy.",
   "dash.stop": "Stop Proxy",
+  "dash.externalManaged": "Managed by external CLI",
   "dash.stopConfirm": "Stop the proxy and restore native Codex?",
   "dash.stopFailed": "Failed to stop proxy (HTTP {status}).",
   "dash.stopping": "Stopping…",

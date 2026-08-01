@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 8：最终回归（本机最终包完成，待干净 VM/信任链）`
+- 状态：`阶段 21：生命周期完整对齐与最终包回归已完成（待干净 VM/信任链）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-在 Windows 测试机信任公钥后复核 Authenticode Valid/signtool chain，并补做安装器/便携版双击、中文/空格目录向导、healthz/模型请求和卸载保留用户目录验证；当前机器已完成源码修复、最终签名包、静态契约、单实例/端口和便携版 healthz/模型回归。
+只剩外部环境验收：Windows 10 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存，以及受信测试机上的 Authenticode `Valid`。当前 Windows 11 本机已完成源码修复、最终签名包、安装版/便携版、动态端口、13/13 页面、外部 CLI 复用、停止恢复与 fail-closed 回归；不要为这些外部项重启当前正在使用的 Codex。
 
 ---
 
@@ -585,11 +585,11 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 ### 8.4 Windows 场景
 
 - [ ] Windows 10 x64。
-- [ ] Windows 11 x64。
+- [x] Windows 11 x64（本机 build 22631 / 23H2 / AMD64 真实 Electron 验收）。
 - [ ] 标准用户、非管理员。
 - [ ] 中文用户名。
 - [x] 安装路径含空格和中文（阶段 20 最新 Setup 在中文/空格父目录实装，保留 `OpenCodex` 程序名子文件夹）。
-- [ ] 已有 CLI proxy。
+- [x] 已有 CLI proxy（隔离 CLI PID 3548/端口 36820；最终桌面包直接复用且 Bun helper=0，桌面关闭后 CLI 仍 healthz=200）。
 - [ ] 已有 Task Scheduler/WinSW。
 - [ ] 已有旧托盘。
 - [x] renderer 崩溃（隔离打包 Electron：在 healthz 就绪并等待桌面 ready 后终止 renderer PID=29964，40 个 500ms 轮询内恢复替代 renderer PID=41120；主进程保持运行）。
@@ -713,7 +713,7 @@ Git 边界：本次仅本地提交和 tag，不 push、不创建 Release、不�
 - [x] UI 不增加额外端口。
 - [x] 代理只有一个动态 `127.0.0.1` 端口。
 - [x] 10100 被占用时仍可运行。
-- [ ] 现有核心功能无回归。
+- [x] 现有核心功能无回归（13/13 Dashboard 页面可达；CLI/headless、生命周期、动态端口及失败关闭聚焦回归通过；根完整套件限制另行保留）。
 - [x] 退出和崩溃恢复不破坏 Codex 配置（隔离 runtime/用户目录回归；真实用户 Provider 仍待 VM）。
 - [x] 最终产物由 `CN=十七°` 签名。
 - [x] 私钥不在仓库和安装包。
@@ -825,3 +825,24 @@ Codex / Claude Code / 其他现有客户端
 - [x] 临时 PFX、私钥证书、签名/构建/安装/便携/GUI 隔离目录及全部截图均已清理；无 OpenCodex/Bun 测试进程残留。
 - [x] 最终复核：桌面测试 16/16、93 个断言，根 `privacy:scan` 与 `git diff --check` 通过。
 - [ ] 其余页面全部控件的逐项视觉遍历、干净 Windows 10/11 VM、标准用户/中文用户名、睡眠/唤醒、注销/重启和受信签名链 `Valid` 仍需外部验收。
+
+# 阶段 21：桌面生命周期完整对齐与最终包回归（2026-08-01）
+
+- [x] 桌面 sidecar 已对齐原 CLI 的 journal 恢复、crash guard、OAuth token guardian、历史迁移 guardian、系统环境、Desktop3P 注册、Grok 同步与退出清理；停止恢复失败时输出结构化 `stop-refused`，保持代理在线且不执行后续拆除。
+- [x] Electron 启动前直接读取实际 runtime/config 并探测 `/healthz`：健康外部 CLI 代理以原 PID/端口直接复用，不再额外生成 Bun lease helper；外部 owner 状态持续探活，Dashboard 显示“由外部 CLI 管理”并禁用错误的停止语义。
+- [x] 动态端口消费者统一使用当前请求/实际监听端口：API Access、Claude/Desktop3P 自动应用和 settings DTO 不再回退到陈旧 `config.port`。
+- [x] 离线页具备“启动代理/退出”入口；桌面拥有的代理可从 Dashboard 停止并恢复隔离 Codex，离线重启后写入新的动态端口，再次停止/退出后无 sidecar 或死路由残留。
+- [x] 外部 CLI 真实复用 smoke：Electron 直接采用外部 PID 3548/端口 36820，Bun 子进程数为 0；关闭桌面后外部代理仍健康，随后由隔离 CLI 正常停止并恢复配置。
+- [x] fail-closed 真实包 smoke：人为制造 marker 冲突后，桌面停止被拒绝且代理、sidecar、窗口仍存活；修复隔离冲突后第二次停止成功。即使部分 managed 字段已先被恢复，也不会让 Codex 指向已关闭代理。
+- [x] 13/13 Dashboard 页面均已从真实打包窗口到达：11 个侧栏页面，加 Dashboard 风险入口 `startup` 与模型页入口 `combos`；未把“页面可达”夸大为所有控件逐项视觉验收。
+- [x] 停止握手进一步收紧：sidecar 完成恢复、integration 清理、drain 与 runtime 清理后才输出结构化 `stopped`；Electron 仅在收到该确认且子进程 exit 0/无 signal 时报告安全停止，exit 1/无确认会标记 failed 并进入有界恢复，不能误退出留下死路由。
+- [x] 停止 TOCTOU 已封闭：进程级 Codex sync gate 先阻止新 `/api/sync`，等待已进入同步结束，再清理 Grok/system-env 并执行最终 Codex restore；超时、integration 冲突或 restore 失败都会解除闸门、拒绝停止并保持代理在线。drain/runtime cleanup 未完成也不会输出成功确认。
+- [x] 外部 ownership 边界补齐：托盘在 external owner 时禁用停止/重启并标注外部 CLI；外部复用只接受确实能从桌面固定 `127.0.0.1` 加载的 loopback/wildcard 配置，拒绝 LAN/纯 IPv6 地址被误报 ready。
+- [x] 外部接管只有一个权威入口：sidecar 已移除第二套 `findLiveProxy()` fallback，Electron supervisor 是唯一外部代理探活与 ownership 判定者；共享 system-env/Grok 仅在启动时捕获的 desktop ownership 成立时注入，并只清理本轮实际写入的内容，不会接管或污染 foreign service。
+- [x] 回归通过：较早的根 broader focused 52/52、213 个断言，以及 ownership 收口后的最终 targeted 35/35、136 个断言（含 sync shutdown gate、sync API、动态端口与 sidecar lifecycle）；desktop 21/21、116 个断言（含 stopped/crash/loopback fixture）；root/desktop typecheck；GUI lint、i18n lint、build；privacy scan 与 `git diff --check`。根完整套件仍保留既有 Windows Bun 运行器限制，不以 focused 结果替代。
+- [x] 当前最终签名包：Setup SHA-256=`3970AF2910F9E9CD795F10149D0484DA271CD5CCBAD8C8E91D91A22DDC491C2E`；Portable SHA-256=`D6177EC883D087C0240FF78530942749DF6DE2C3E970C94E7E84B8724DC0E392`；签名主体 `CN=十七°`，thumbprint `0708D0A583160A9A02E645D4D9D14118966D59FE`，一次性 PFX/私钥证书已清理，本机自签链状态仍为 `UnknownError`。
+- [x] 当前 Setup 在中文/空格父目录静默安装返回 0，实际路径严格为 `父目录/OpenCodex/OpenCodex.exe`，父目录没有丢失程序名子文件夹；动态端口 50150、healthz/models 200，正常停止/退出与卸载后程序目录删除、隔离用户 marker 保留、配置恢复。
+- [x] 当前 Portable 在唯一隔离根取得动态端口 19968、healthz/models 200；首次 UI 自动化未能证明停止调用送达，未误记为通过。确认端口仍存活后改用包内 CLI 恢复隔离 Codex，再精确结束本轮 wrapper/main/sidecar；测试根已清理。另一个当前 packaged smoke 已完整覆盖桌面 UI 正常停止、离线启动和退出。
+- [x] 全部测试均使用隔离 `OPENCODEX_HOME/CODEX_HOME/GROK_HOME/--user-data-dir`；未重启、关闭或修改本次对话正在使用的真实 Codex。
+- [x] 当前最终 `win-unpacked` 成品 smoke：主 PID 41484、sidecar PID 14044、动态端口 36666、healthz 200；真实点击“停止代理”后收到安全确认、runtime 删除、sidecar 退出、隔离 Codex 无 managed 路由，离线页点击“退出”后 Electron 主进程退出，隔离目录已清理。
+- [ ] 外部验收：Windows 10 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘、受信签名链 `Valid`、所有交互控件逐项视觉遍历和跨平台完整回归。

@@ -174,6 +174,7 @@ export const zh: Record<TKey, string> = {
   "dash.cannotConnect": "无法连接到代理。它在运行吗？",
   "dash.runStart": "运行 {cmd} 以启动代理。",
   "dash.stop": "停止代理",
+  "dash.externalManaged": "由外部 CLI 管理",
   "dash.stopConfirm": "停止代理并恢复原生 Codex 配置？",
   "dash.stopFailed": "无法停止代理 (HTTP {status})。",
   "dash.stopping": "正在停止…",

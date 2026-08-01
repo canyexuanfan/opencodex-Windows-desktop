@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import path from "node:path";
 import { DesktopBackendSupervisor, type BackendStatus } from "./backend-supervisor.js";
 import { installNavigationPolicy, type NavigationPolicy } from "./navigation.js";
@@ -39,6 +39,7 @@ if (!hasSingleInstanceLock) {
   }
 
   function setTrayStatus(status: BackendStatus): void {
+    tray?.setOwnership(status.ownership);
     tray?.setStatus(trayStatus(status));
   }
 
@@ -55,9 +56,25 @@ if (!hasSingleInstanceLock) {
 
   async function showOfflineState(): Promise<void> {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    await mainWindow.webContents.executeJavaScript(`document.body.innerHTML = ${JSON.stringify(
-      "<main style=\"font-family:system-ui;padding:48px;color:#243042\"><h1>OpenCodex</h1><p>Proxy is offline. Use the tray to retry or exit.</p></main>"
-    )}; document.title = "OpenCodex — Offline";`);
+    const offlineHtml = `<style>
+      :root{font-family:system-ui;color:#243042;background:#f6f8fb}body{margin:0}
+      main{max-width:560px;margin:12vh auto;padding:42px;border:1px solid #dbe2ea;border-radius:18px;background:#fff;box-shadow:0 18px 48px #25364a1a}
+      p{line-height:1.65;color:#566579}.actions{display:flex;gap:12px;margin-top:28px}
+      button{border:1px solid #bac7d5;border-radius:10px;background:#fff;color:#243042;padding:10px 18px;font:inherit;cursor:pointer;transition:.15s ease}
+      button:hover{border-color:#4676d7;background:#eef4ff}button:focus-visible{outline:3px solid #8cb4ff;outline-offset:2px}
+      #start{background:#315fbd;border-color:#315fbd;color:#fff}#start:hover{background:#254d9e}
+    </style><main><h1>OpenCodex</h1><p>代理当前已停止。你可以重新启动代理，或安全退出桌面端。</p><div class="actions"><button id="start" type="button">启动代理</button><button id="exit" type="button">退出</button></div></main>`;
+    await mainWindow.webContents.executeJavaScript(`
+      document.body.innerHTML = ${JSON.stringify(offlineHtml)};
+      document.title = "OpenCodex — Offline";
+      document.getElementById("start")?.addEventListener("click", async () => {
+        const button = document.getElementById("start");
+        if (button) { button.disabled = true; button.textContent = "正在启动…"; }
+        try { await window.openCodexDesktop.startProxy(); }
+        catch { if (button) { button.disabled = false; button.textContent = "重试启动"; } }
+      });
+      document.getElementById("exit")?.addEventListener("click", () => window.openCodexDesktop.requestExit());
+    `);
     mainWindow.show();
     mainWindow.focus();
   }
@@ -106,7 +123,14 @@ if (!hasSingleInstanceLock) {
       clearTimeout(recoveryTimer);
       recoveryTimer = undefined;
     }
-    const status = await backend.stop();
+    let status: BackendStatus;
+    try {
+      status = await backend.stop();
+    } catch (error) {
+      manualStopRequested = false;
+      scheduleRecovery();
+      throw error;
+    }
     setTrayStatus(status);
     try {
       await showOfflineState();
@@ -185,9 +209,18 @@ if (!hasSingleInstanceLock) {
     isQuitting = true;
     if (recoveryTimer) clearTimeout(recoveryTimer);
     recoveryTimer = undefined;
-    tray?.destroy();
-    tray = null;
-    void backend.stop().finally(() => app.quit());
+    void backend.stop().then(() => {
+      tray?.destroy();
+      tray = null;
+      app.quit();
+    }).catch(error => {
+      isQuitting = false;
+      scheduleRecovery();
+      const message = error instanceof Error ? error.message : String(error);
+      tray?.setStatus("error");
+      focusMainWindow();
+      dialog.showErrorBox("OpenCodex 无法安全退出", `${message}\n\n代理仍保持运行，Codex 路由未被留在离线端口。`);
+    });
   });
 
   app.whenReady().then(async () => {

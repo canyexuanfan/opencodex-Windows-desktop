@@ -72,6 +72,20 @@ export function resolveApiAccessBaseUrl(
   const port = config.port ?? 10100;
 
   if (!isWildcardBindHost(config.hostname)) {
+    // Keep the configured host (do not reflect an arbitrary Host header), but take the port
+    // from the actual listener request. Desktop mode intentionally uses an ephemeral runtime
+    // port without persisting it to config.json.
+    if (opts.requestUrl) {
+      try {
+        const url = typeof opts.requestUrl === "string" ? new URL(opts.requestUrl) : opts.requestUrl;
+        const requestPort = Number(url.port);
+        if (Number.isInteger(requestPort) && requestPort > 0 && requestPort <= 65535) {
+          return `http://${probeHostname(config.hostname)}:${requestPort}/v1`;
+        }
+      } catch {
+        /* ignore malformed request URL */
+      }
+    }
     return `http://${probeHostname(config.hostname)}:${port}/v1`;
   }
 

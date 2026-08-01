@@ -18,6 +18,13 @@ describe("buildApiAccessEndpoints", () => {
     });
   });
 
+  test("prefers the actual request port over a stale configured port", () => {
+    expect(buildApiAccessEndpoints(
+      { hostname: "127.0.0.1", port: 10100 },
+      { requestUrl: "http://127.0.0.1:37692/api/keys" },
+    ).baseUrl).toBe("http://127.0.0.1:37692/v1");
+  });
+
   test("falls back to the default bind when config fields are missing", () => {
     expect(buildApiAccessEndpoints({})).toEqual({
       baseUrl: "http://127.0.0.1:10100/v1",

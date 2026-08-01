@@ -83,8 +83,12 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       const { visibleNativeSlugs, filterCatalogVisibleModels } = await import("../../codex/catalog");
       const allModels = await fetchAllModels(config);
       const routed = filterCatalogVisibleModels(allModels, config).map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow }));
+      const requestPort = Number(url.port);
+      const livePort = Number.isInteger(requestPort) && requestPort > 0 && requestPort <= 65535
+        ? requestPort
+        : config.port ?? 10100;
       const result = writeDesktop3pConfig(
-        config.port ?? 10100,
+        livePort,
         [...visibleNativeSlugs(config)],
         routed,
         config.apiKeys?.[0]?.key,
@@ -759,7 +763,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       effectiveModelEnv: effectiveModelEnv(config.claudeCode, contextWindows),
       available,
       aliases,
-      port: config.port,
+      port: Number(url.port) || config.port,
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
@@ -945,7 +949,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     // (audit R1 blocker #1/#2, devlog 260720_claude_authmode_persist).
     if (body.systemEnv !== undefined || body.authMode !== undefined) {
       try {
-        await applySystemEnvToggle(config, config.port);
+        await applySystemEnvToggle(config, Number(url.port) || config.port);
       } catch (err) {
         warnings.push(`Failed to apply system environment setting: ${err instanceof Error ? err.message : String(err)}`);
       }

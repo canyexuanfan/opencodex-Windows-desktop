@@ -170,6 +170,7 @@ export const de: Record<TKey, string> = {
   "dash.cannotConnect": "Keine Verbindung zum Proxy. Läuft er?",
   "dash.runStart": "Führe {cmd} aus, um den Proxy zu starten.",
   "dash.stop": "Proxy stoppen",
+  "dash.externalManaged": "Von externer CLI verwaltet",
   "dash.stopConfirm": "Proxy stoppen und natives Codex wiederherstellen?",
   "dash.stopFailed": "Proxy konnte nicht gestoppt werden (HTTP {status}).",
   "dash.stopping": "Wird gestoppt…",

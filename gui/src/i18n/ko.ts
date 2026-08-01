@@ -174,6 +174,7 @@ export const ko: Record<TKey, string> = {
   "dash.cannotConnect": "프록시에 연결할 수 없습니다. 실행 중인가요?",
   "dash.runStart": "{cmd} 를 실행해 프록시를 시작하세요.",
   "dash.stop": "프록시 중지",
+  "dash.externalManaged": "외부 CLI에서 관리",
   "dash.stopConfirm": "프록시를 중지하고 Codex 원본 설정을 복원할까요?",
   "dash.stopFailed": "프록시를 중지하지 못했습니다 (HTTP {status}).",
   "dash.stopping": "중지 중…",

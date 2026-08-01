@@ -121,6 +121,17 @@ export default function App() {
   const displayedVersion: string = healthPoll.data ?? __APP_VERSION__;
 
   const [stopping, setStopping] = useState(false);
+  const [externalDesktopProxy, setExternalDesktopProxy] = useState(false);
+  useEffect(() => {
+    const desktop = getDesktopLifecycleApi();
+    if (!desktop) return;
+    let active = true;
+    void desktop.getStatus().then(status => {
+      if (!active || !status || typeof status !== "object") return;
+      setExternalDesktopProxy((status as { ownership?: unknown }).ownership === "external");
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
   // Claude navigation row also owns the connection toggle.
   const fetchClaudeEnabled = useCallback(async (signal: AbortSignal) => {
     const res = await fetch(`${API_BASE}/api/claude-code`, { signal });
@@ -228,8 +239,8 @@ export default function App() {
           <IconMenu />
         </button>
         {brand}
-        <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping}
-          aria-label={t("dash.stop")} title={t("dash.stop")}>
+        <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping || externalDesktopProxy}
+          aria-label={externalDesktopProxy ? t("dash.externalManaged") : t("dash.stop")} title={externalDesktopProxy ? t("dash.externalManaged") : t("dash.stop")}>
           <IconPower />
         </button>
       </header>
@@ -288,9 +299,9 @@ export default function App() {
             aria-label={`${t("theme.label")}: ${t(THEME_TKEY[theme])}`} title={`${t("theme.label")}: ${t(THEME_TKEY[theme])}`}>
             <ThemeIcon /> <span className="mode">{t(THEME_TKEY[theme])}</span>
           </button>
-          <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping}
-            aria-label={t("dash.stop")} title={t("dash.stop")}>
-            <IconPower /> <span className="mode">{stopping ? t("dash.stopping") : t("dash.stop")}</span>
+          <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping || externalDesktopProxy}
+            aria-label={externalDesktopProxy ? t("dash.externalManaged") : t("dash.stop")} title={externalDesktopProxy ? t("dash.externalManaged") : t("dash.stop")}>
+            <IconPower /> <span className="mode">{externalDesktopProxy ? t("dash.externalManaged") : stopping ? t("dash.stopping") : t("dash.stop")}</span>
           </button>
           <SidebarGithubRow
             apiBase={API_BASE}

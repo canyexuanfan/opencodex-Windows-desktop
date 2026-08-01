@@ -9,6 +9,7 @@
 - ❌ 2026-08-01：通过 `SetForegroundWindow` 后使用 `Graphics.CopyFromScreen` 按 OpenCodex 窗口矩形截图；输出被其他应用窗口覆盖，未捕获到可辨认的 OpenCodex Dashboard。Windows 前台切换策略或当前桌面焦点阻止了目标窗口置顶，该图片不计入验收。
 - ❌ 2026-08-01：`PrintWindow` 已能直接捕获 Dashboard，但仅调用 `SetCursorPos` 的首次 hover 探针在侧栏目标区域产生 0 个变化像素；OpenCodex 仍位于其他窗口后方，鼠标命中遮挡窗口而非目标 HWND。下一次仅临时将 OpenCodex 设为 topmost，捕获后立即撤销。
 - ❌ 2026-08-01：首次键盘 Tab 探针后通过 `Get-Process.MainWindowHandle` 取得的窗口矩形变为 `158×26`，`PrintWindow` 只得到标题栏片段；该句柄/窗口状态不能证明页面 focus。下一步枚举主进程全部顶层 HWND、可见性和矩形，选择真实 BrowserWindow 后再发送键盘事件。
+- ❌ 2026-08-01：审计“启动保护”隐藏页时按猜测路径读取 `gui/src/pages/StartupPage.tsx`，文件不存在；后续先用 `rg --files gui/src` 定位真实组件，再读取实现，不重复猜测页面文件名。
 
 ## 深层问题分析
 
@@ -41,3 +42,9 @@
 - ✅ 2026-08-01：以 `--force-renderer-accessibility` 重启隔离实例后，UI Automation 枚举 48 个可聚焦元素；从“仪表盘”设置焦点并发送 Tab，焦点移动到“Codex 认证”，`HasKeyboardFocus=true`，`PrintWindow` 图像可见清晰 focus-visible 外框。
 - ✅ 2026-08-01：同一真实窗口验证第二实例退出码 0、主进程/窗口各 1、sidecar PID 与端口不变；关闭主窗口后窗口隐藏但 healthz=200，再次启动恢复同一 1281×820 窗口。
 - ✅ 2026-08-01：所有 GUI 测试使用隔离 home；退出前由包内 CLI 恢复 native Codex，随后精确停止本轮进程。含其他应用内容的误捕获图及全部验收截图均已从 `.tmp` 删除，未进入 Git。
+- ✅ 2026-08-01：阶段 21 通过 UI Automation 逐项调用 11 个侧栏页面，每页均出现非空主内容和可聚焦控件；另从 Dashboard 的“重启后 Codex 可能无法访问模型”链接进入 `startup`，从模型页“组合 → 设置”进入 `combos`，确认 Page 联合类型的 13/13 页面均可达。该证据是页面可达/基本交互验收，不替代外部环境的全部控件逐项视觉检查。
+- ✅ 2026-08-01：最终包复用外部 CLI 时，真实窗口可访问性树显示“由外部 CLI 管理”按钮且 `Enabled=false`；避免把“停止/重启 helper”误表述成外部代理生命周期操作。
+- ❌ 2026-08-01：阶段 21 停止确认握手成品 smoke 首次以 `Start-Process -WindowStyle Hidden` 启动 `win-unpacked`；动态端口 62963、healthz 正常，但 20 秒内 UIAutomation 找不到隔离进程树的“停止代理”按钮。精确进程树显示主进程/renderer/sidecar 均正常，失败来自隐藏窗口不可访问，不是代理或握手断言。保持同一实例，下一步只把该测试窗口恢复可见后重试，不启动第二实例。
+- ❌ 2026-08-01：用同一 user-data-dir 的第二实例请求成功聚焦原窗口并枚举到“停止代理”，但随后用 PowerShell 构造 UIAutomation `AndCondition` 精确查找时返回空；窗口和按钮此前均已证实存在，失败是条件对象构造/重查方式不稳定。下一步沿用已验证的全树枚举后按 PID/Name 过滤，不重复复合条件构造。
+- ❌ 2026-08-01：第二实例聚焦命令结束后再独立执行全树枚举，原测试主进程的 `MainWindowHandle` 已回到 0，按钮不可见；代理/62963 仍健康。说明最初用 `-WindowStyle Hidden` 创建的宿主只在第二实例聚焦处理期间短暂暴露窗口。下一次把“同一 user-data-dir 二次聚焦 → 枚举 → 调用停止”放进同一个有界命令，不重启主实例或代理。
+- ✅ 2026-08-01：保持原 PID 12872/sidecar 24900/端口 62963 不变，把二次聚焦、UIAutomation 枚举和按钮调用放在同一命令内后成功触发停止确认；成品 sidecar 输出新 `stopped` 确认并 exit 0，`runtime-port.json=False`、sidecar 不存在，隔离 Codex 未保留 managed 路由。随后用相同单实例聚焦方式点击离线页“退出”，Electron 主 PID 12872 正常结束。证明最终 `win-unpacked` 的 ack+exit 0 握手和离线退出链实际可用。
