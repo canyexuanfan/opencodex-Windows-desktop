@@ -1,8 +1,15 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test as bunTest } from "bun:test";
 import { Window } from "happy-dom";
 import { act, useEffect, useState } from "react";
 import type { Root } from "react-dom/client";
 import { useClientResource, useKeyedClientResource } from "../src/client-resource";
+
+// Bun's default per-test budget is 5s. waitFor below is 15s (busy CI runners),
+// so every case in this file needs a higher ceiling or the suite fails as
+// "waitFor timed out" while the predicate never got its full window.
+function test(name: string, fn: () => void | Promise<void>): void {
+  bunTest(name, fn, { timeout: 30_000 });
+}
 
 const globals = ["document", "window", "navigator", "IS_REACT_ACT_ENVIRONMENT"] as const;
 let previousGlobals: Record<(typeof globals)[number], unknown>;
