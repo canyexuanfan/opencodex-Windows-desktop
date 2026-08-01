@@ -2585,6 +2585,11 @@ async function handleResponsesInner(
     // main recovery loop above).
     const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
     let rateLimitRetries = 0;
+    /**
+     * Build and fetch one terminal-guard continuation. `replay` marks a same-target 429
+     * replay so its send records the `rate-limit-429` recovery kind; the adapter rebuild is
+     * deterministic for the same parsed request (tests assert byte-identical replays).
+     */
     const fetchContinuation = async (replay = false): Promise<Response> => {
       const continuationRequest = await activeAdapter.buildRequest(nextParsed, {
         headers: selectedForwardHeaders,

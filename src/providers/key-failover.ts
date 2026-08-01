@@ -37,6 +37,11 @@ function cooldownKey(providerName: string, keyId: string): string {
   return `${providerName}\0${keyId}`;
 }
 
+/**
+ * Parse an upstream `Retry-After` header: numeric seconds (including `0`) or an HTTP-date.
+ * Returns a bounded delay in ms (1..MAX_COOLDOWN_MS), or undefined when the value is
+ * malformed. An HTTP-date already in the past yields an immediate (1 ms) retry.
+ */
 function parseRetryAfterMs(value: string | null | undefined, now = Date.now()): number | undefined {
   const text = value?.trim();
   if (!text) return undefined;
