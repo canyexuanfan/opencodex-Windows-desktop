@@ -256,7 +256,7 @@ refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 모든 하위 명령은 프록시가 실행 중이어야 하며 CLI가 기록된 런타임 포트를 자동으로 찾습니다. 성공은
@@ -309,9 +309,11 @@ API 오류는 종료 코드 1입니다. 자격 증명 필드는 management API�
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 기존 Codex 계정, OAuth 계정 또는 API key를 선택합니다. `openai`에서 `main`은 Codex App 로그인을
-선택합니다. Codex 선택은 **새 세션**부터 적용되며 기존 thread는 현재 계정을 유지합니다. auto-switch
-threshold가 켜져 있으면 나중에 수동 pin을 덮어쓸 수 있습니다. 알 수 없는 프로바이더나 id는 종료
-코드 1입니다. `--json`은 다음을 반환합니다.
+선택합니다. Codex 선택은 현재 pool affinity를 지우고 기존에 보이던 작업을 포함한 다음 요청부터
+적용되며, 진행 중인 요청은 이미 확보한 계정을 유지합니다. Pool 전략, 사용량 기반 선제 전환,
+cooldown/재인증 상태, 실패 복구는 나중에 다른 적격 계정을 선택할 수 있습니다. 계정이 바뀌어도
+OpenCodex는 대화 문맥을 재생하지만 프로바이더 측 prompt cache는 다시 예열해야 할 수 있습니다.
+알 수 없는 프로바이더나 id는 종료 코드 1입니다. `--json`은 다음을 반환합니다.
 
 ```text
 { ok: true, provider, type, activeId }

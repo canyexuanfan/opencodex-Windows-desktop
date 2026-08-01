@@ -210,7 +210,7 @@ refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 所有子命令都要求代理正在运行；CLI 会自动解析已记录的运行时端口。成功时退出码为 0。用法错误、
@@ -259,8 +259,10 @@ Kiro 账号时，输出会说明它只有一个登录 slot，再次登录会替�
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 选择已有的 Codex 账号、OAuth 账号或 API key。对 `openai` 而言，`main` 选择 Codex App 登录。
-Codex 选择只对**新 session**生效；已有 thread 保持其账号。启用的 auto-switch threshold 之后可能
-覆盖手动 pin。未知 provider 或 id 返回退出码 1。`--json` 返回：
+Codex 选择会清除当前 pool affinity，并从下一次请求开始生效，包括已有可见任务的请求；进行中的
+请求保留已捕获账号。Pool 策略、基于用量的主动切换、cooldown/重新认证状态和故障恢复之后仍可能
+选择其他合格账号。账号变化后 OpenCodex 会重放对话上下文，但 provider prompt cache 可能需要
+重新预热。未知 provider 或 id 返回退出码 1。`--json` 返回：
 
 ```text
 { ok: true, provider, type, activeId }

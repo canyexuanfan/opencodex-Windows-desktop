@@ -240,7 +240,7 @@ refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 Все подкоманды требуют работающего прокси; CLI автоматически определяет записанный runtime-порт.
@@ -298,9 +298,12 @@ plan/label по цепочке фолбэков использует план, �
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 Выбирает существующий аккаунт Codex, OAuth-аккаунт или API-ключ. Для `openai` значение `main`
-выбирает вход Codex App. Выбор для Codex применяется только к **новым сессиям**; существующие
-потоки сохраняют свой аккаунт, а включённый порог автопереключения может позже переопределить
-ручное закрепление. Неизвестные провайдеры или id завершаются с кодом 1. `--json` возвращает:
+выбирает вход Codex App. Выбор очищает текущую pool affinity и применяется к следующему запросу,
+включая запрос существующей видимой задачи; выполняющиеся запросы сохраняют захваченный аккаунт.
+Стратегия пула, проактивное переключение по использованию, cooldown/reauth и восстановление после
+сбоев могут позже выбрать другой подходящий аккаунт. После смены аккаунта OpenCodex воспроизводит
+контекст разговора, но prompt cache провайдера может потребовать прогрева. Неизвестные провайдеры
+или id завершаются с кодом 1. `--json` возвращает:
 
 ```text
 { ok: true, provider, type, activeId }

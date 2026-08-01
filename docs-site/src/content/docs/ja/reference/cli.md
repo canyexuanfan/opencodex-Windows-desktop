@@ -223,7 +223,7 @@ refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 すべてのサブコマンドはプロキシが実行中である必要があり、CLI が記録されたランタイムポートを自動的に探します。成功は
@@ -268,9 +268,11 @@ API エラーは終了コード 1 です。認証情報フィールドは manage
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 既存の Codex アカウント、OAuth アカウント、または API key を選びます。`openai` で `main` は Codex App ログインを
-選択します。Codex の選択は **新しいセッション** から適用され、既存の thread は現在のアカウントを維持します。auto-switch
-threshold がオンなら後で手動 pin を上書きできます。不明なプロバイダーや id は終了
-コード 1 です。`--json` は次を返します。
+選択します。Codex の選択は現在の pool affinity を消去し、既存の表示タスクを含む次のリクエストから適用されます。
+処理中のリクエストは取得済みアカウントを維持します。Pool 戦略、使用量ベースのプロアクティブ切り替え、
+cooldown/再認証状態、障害回復により、後で別の適格アカウントが選ばれる場合があります。アカウント変更後も
+OpenCodex は会話コンテキストを再生しますが、provider prompt cache は再ウォームアップが必要な場合があります。
+不明なプロバイダーや id は終了コード 1 です。`--json` は次を返します。
 
 ```text
 { ok: true, provider, type, activeId }

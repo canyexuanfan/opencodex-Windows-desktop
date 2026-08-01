@@ -19,6 +19,7 @@ import { redeemResetCredit } from "./codex-account-pool-handlers";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
 import { accountNeedsReauth } from "../oauth-health-display";
 import { useCopyFeedback } from "./use-copy-feedback";
+import { DEFAULT_ACCOUNT_POOL_STRATEGY } from "../account-pool-strategy";
 
 // Single definition lives with the controller that owns this data (WP3).
 export type { CodexAccountEntry } from "../hooks/useCodexAccountPool";
@@ -51,6 +52,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
     updateFailed: t("codexAuth.autoSwitchUpdateFailed"),
     invalid: t("codexAuth.autoSwitchThresholdInvalid"),
   });
+  const [poolStrategy, setPoolStrategy] = useState(DEFAULT_ACCOUNT_POOL_STRATEGY);
   const { beginServerRead, acceptServerRead, rejectServerRead, hydrateServerValue } = autoSwitch;
   // A hook cannot be called conditionally, so the fallback instance is always created
   // but stays inert (no load, no polling) whenever a shared controller was injected.
@@ -338,6 +340,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
       <CodexAutoSwitchSetting
         threshold={autoSwitch.threshold}
         draft={autoSwitch.draft}
+        strategy={poolStrategy}
         hydrated={autoSwitch.hydrated}
         saving={autoSwitch.saving}
         loadError={autoSwitch.loadError}
@@ -357,6 +360,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         apiBase={apiBase}
         subscribeLoadObserver={controller.subscribeLoadObserver}
         readLastActive={controller.readLastActive}
+        onStrategyResolved={setPoolStrategy}
       />
 
       {confirm && (

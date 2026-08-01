@@ -314,7 +314,7 @@ refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 All subcommands require the proxy to be running; the CLI auto-resolves its recorded runtime port.
@@ -367,8 +367,11 @@ returns:
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 Selects an existing Codex account, OAuth account, or API key. For `openai`, `main` selects the Codex
-App login. Codex selections apply only to **new sessions**; existing threads keep their account, and
-an enabled auto-switch threshold may later override the manual pin. Unknown providers or ids exit 1.
+App login. A Codex selection clears current pool affinity and applies to the next request, including
+one from an existing visible task; in-flight requests keep their captured account. Pool strategy,
+usage-based proactive switching, cooldown/reauthentication state, and failure recovery may later
+select another eligible account. OpenCodex replays the conversation after an account change, but
+the provider-side prompt cache may be cold. Unknown providers or ids exit 1.
 `--json` returns:
 
 ```text
