@@ -56,10 +56,11 @@ jobs:
     # A cancelled job renders as `fail` in `gh pr checks`, so that flakiness
     # reads as a broken PR. After the 2026-08-01 state-store admission merge,
     # Windows under `bun test --isolate` on #827 hit the 20-minute kill while
-    # still green mid-suite (~19m of tests). 30 minutes restores margin for
-    # that tip; shrink the suite / close the platform gap rather than raising
-    # this again for ordinary variance.
-    timeout-minutes: 30
+    # still green mid-suite (~19m of tests). A 30-minute ceiling still cancelled
+    # mid-Test at ~29m on tip 30bd1f2d before GUI steps. 45 minutes leaves room
+    # for Test + GUI on that tip; shrink the suite / close the platform gap
+    # rather than raising this again for ordinary variance.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
