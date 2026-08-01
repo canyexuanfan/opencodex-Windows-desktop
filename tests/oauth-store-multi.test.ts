@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { STORE_BUDGET_MS } from "./helpers/test-budget";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -280,7 +281,7 @@ describe("multi-account auth store", () => {
       releaseFirst();
       await Promise.allSettled(accepted);
     }
-  }, { timeout: 30_000 });
+  }, STORE_BUDGET_MS); // 128 serialized load-modify-persist store mutations; windows-latest measured ~7.3s against Bun's 5s default.
 
   test("OAuth 30 second wait timeout releases an unstarted lease and never enters the chain", async () => {
     let releaseFirst!: () => void;
