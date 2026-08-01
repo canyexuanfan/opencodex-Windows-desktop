@@ -1,6 +1,8 @@
 import {
   CodexCredentialGenerationConflictError,
   CodexCredentialRefreshLockTimeoutError,
+  CodexCredentialRefreshBusyError,
+  CodexCredentialRefreshStaleError,
   getValidCodexToken,
   isCodexAccountGenerationLive,
 } from "./account-store";
@@ -186,6 +188,8 @@ export class CodexThreadAffinityExpiredError extends Error {
 export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown): boolean {
   return !(cause instanceof CodexCredentialGenerationConflictError)
     && !(cause instanceof CodexCredentialRefreshLockTimeoutError)
+    && !(cause instanceof CodexCredentialRefreshBusyError)
+    && !(cause instanceof CodexCredentialRefreshStaleError)
     && !(cause instanceof ConfigMutationLockError);
 }
 

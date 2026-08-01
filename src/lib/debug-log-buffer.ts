@@ -8,15 +8,29 @@ export interface DebugLogEntry {
 }
 
 const MAX_LINES = 2_000;
+const MAX_DEBUG_SUBSCRIBERS = 64;
+const MAX_DEBUG_LINE_BYTES = 16 * 1024;
 const buffer: DebugLogEntry[] = [];
-const listeners = new Set<(entry: DebugLogEntry) => void>();
+const listeners = new Map<(entry: DebugLogEntry) => void, AdmissionLease>();
+const subscriberGate = createAdmissionGate("debug_subscribers", MAX_DEBUG_SUBSCRIBERS);
 let nextSeq = 1;
+let bufferBytes = 0;
+
+function removeOldestEntry(): number {
+  const entry = buffer.shift();
+  if (!entry) return 0;
+  const bytes = retainedUtf8Bytes(entry.line);
+  bufferBytes -= bytes;
+  return bytes;
+}
 
 export function appendDebugLogLine(line: string): void {
-  const entry: DebugLogEntry = { seq: nextSeq++, at: Date.now(), line };
+  const retainedLine = truncateRetainedUtf8(line, MAX_DEBUG_LINE_BYTES);
+  const entry: DebugLogEntry = { seq: nextSeq++, at: Date.now(), line: retainedLine };
   buffer.push(entry);
-  if (buffer.length > MAX_LINES) buffer.splice(0, buffer.length - MAX_LINES);
-  for (const listener of listeners) {
+  bufferBytes += retainedUtf8Bytes(retainedLine);
+  while (buffer.length > MAX_LINES) removeOldestEntry();
+  for (const listener of listeners.keys()) {
     try { listener(entry); } catch { /* listeners must not break logging */ }
   }
 }
@@ -30,13 +44,34 @@ export function getDebugLogEntries(options?: { after?: number; limit?: number })
 }
 
 export function subscribeDebugLogEntries(listener: (entry: DebugLogEntry) => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+  const existing = listeners.get(listener);
+  if (existing) return () => {
+    if (listeners.delete(listener)) existing.release();
+    else existing.release();
+  };
+  const lease = subscriberGate.tryAcquire();
+  if (!lease) throw new ResourceAdmissionError("debug_subscribers", MAX_DEBUG_SUBSCRIBERS);
+  listeners.set(listener, lease);
+  return () => {
+    if (listeners.delete(listener)) lease.release();
+    else lease.release();
+  };
+}
+
+export function debugBufferMetrics(): { entries: number; bytes: number; subscribers: AdmissionMetrics; oldestAt: number | null } {
+  return { entries: buffer.length, bytes: bufferBytes, subscribers: subscriberGate.metrics(), oldestAt: buffer[0]?.at ?? null };
+}
+
+export function evictOldestDebugEntryForBudget(): number {
+  return removeOldestEntry();
 }
 
 /** Test isolation. */
 export function resetDebugLogBufferForTests(): void {
   buffer.length = 0;
+  bufferBytes = 0;
+  for (const lease of listeners.values()) lease.release();
   listeners.clear();
   nextSeq = 1;
 }
+import { createAdmissionGate, ResourceAdmissionError, retainedUtf8Bytes, truncateRetainedUtf8, type AdmissionLease, type AdmissionMetrics } from "./admission";

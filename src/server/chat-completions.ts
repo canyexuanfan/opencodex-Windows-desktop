@@ -31,6 +31,7 @@ import {
 } from "./request-log";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
+import type { AdmissionLease } from "../lib/admission";
 
 type Rec = Record<string, unknown>;
 
@@ -49,7 +50,7 @@ export async function handleChatCompletions(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
-  logIds?: { requestId: string; start: number },
+  logIds?: { requestId: string; start: number; turnAdmissionLease?: AdmissionLease },
 ): Promise<Response> {
   let chatBody: unknown;
   let internalBody: Rec;
@@ -148,6 +149,7 @@ export async function handleChatCompletions(
     addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, meta);
   };
   const upstream = await handleResponses(internalReq, config, logCtx, {
+    ...(logIds?.turnAdmissionLease ? { turnAdmissionLease: logIds.turnAdmissionLease } : {}),
     abortSignal: req.signal,
     // Body is Responses-shaped by now, but the client spoke Chat Completions.
     inboundWire: "chat",

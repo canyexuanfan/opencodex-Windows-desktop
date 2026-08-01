@@ -14,11 +14,17 @@ import {
 } from "../src/adapters/cursor/gen/agent_pb";
 import { handleCursorNativeExec } from "../src/adapters/cursor/native-exec";
 import { resolveMcpServers } from "../src/adapters/cursor/mcp-config";
-import { CursorMcpManager } from "../src/adapters/cursor/mcp-manager";
+import { CursorMcpManager, CursorMcpPayloadTooLargeError, McpCatalogLimitError } from "../src/adapters/cursor/mcp-manager";
 import { buildMcpToolDefinitions, mcpDepsFromManager } from "../src/adapters/cursor/native-exec-mcp";
 import type { OcxProviderConfig } from "../src/types";
 
 const textEncoder = new TextEncoder();
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) => nested && typeof nested === "object" && !Array.isArray(nested)
+    ? Object.fromEntries(Object.entries(nested as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)))
+    : nested);
+}
 
 function buildFixtureServer(): { server: McpServer; clientTransport: InMemoryTransport } {
   const server = new McpServer({ name: "fixture", version: "1.0.0" });
@@ -60,6 +66,12 @@ function makeManager(clientTransport: InMemoryTransport): CursorMcpManager {
     [{ serverName: "fixture", command: "noop" }],
     { transportFactory: () => clientTransport },
   );
+}
+
+function managerForServer(server: McpServer): CursorMcpManager {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  void server.connect(serverTransport);
+  return makeManager(clientTransport);
 }
 
 function execMessage(message: Parameters<typeof create<typeof ExecServerMessageSchema>>[1]["message"]) {
@@ -139,9 +151,91 @@ describe("Cursor MCP manager", () => {
     const schema = toJson(ValueSchema, fromBinary(ValueSchema, echo!.inputSchema)) as { type?: string };
     expect(schema.type).toBe("object");
   });
+
+  test("MCP exact transactional catalog boundary admits and one byte over closes staging with empty committed catalog", async () => {
+    const name = "boundary";
+    const probeServer = new McpServer({ name: "probe", version: "1" });
+    probeServer.registerTool(name, { description: "", inputSchema: {} }, async () => ({ content: [] }));
+    const probeManager = managerForServer(probeServer);
+    const schemaBytes = textEncoder.encode(canonicalJson((await probeManager.listToolHandles())[0]!.inputSchema)).byteLength;
+    await probeManager.dispose();
+    const descriptionBytes = 4 * 1024 * 1024 - textEncoder.encode(name).byteLength - schemaBytes;
+    const exactServer = new McpServer({ name: "exact", version: "1" });
+    exactServer.registerTool(name, { description: "x".repeat(descriptionBytes), inputSchema: {} }, async () => ({ content: [] }));
+    const exactManager = managerForServer(exactServer);
+    try {
+      expect((await exactManager.listToolHandles()).map(tool => tool.advertisedName)).toEqual([name]);
+    } finally {
+      await exactManager.dispose();
+    }
+
+    const overflowServer = new McpServer({ name: "overflow", version: "1" });
+    overflowServer.registerTool(name, { description: "x".repeat(descriptionBytes + 1), inputSchema: {} }, async () => ({ content: [] }));
+    const overflowManager = managerForServer(overflowServer);
+    await expect(overflowManager.listToolHandles()).rejects.toBeInstanceOf(McpCatalogLimitError);
+    await overflowManager.dispose();
+  });
+
+  test("MCP aggregate tool overflow closes every connected transport", async () => {
+    const transports: InMemoryTransport[] = [];
+    const closeCounts = [0, 0];
+    for (let index = 0; index < 2; index += 1) {
+      const server = new McpServer({ name: `aggregate-${index}`, version: "1" });
+      server.registerTool(`tool-${index}`, { inputSchema: {} }, async () => ({ content: [] }));
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const close = clientTransport.close.bind(clientTransport);
+      clientTransport.close = async () => {
+        closeCounts[index] += 1;
+        await close();
+      };
+      void server.connect(serverTransport);
+      transports.push(clientTransport);
+    }
+    const aggregateManager = new CursorMcpManager(
+      [
+        { serverName: "aggregate-0", command: "noop" },
+        { serverName: "aggregate-1", command: "noop" },
+      ],
+      { transportFactory: server => transports[Number(server.serverName.at(-1))], maxTools: 1 },
+    );
+
+    await expect(aggregateManager.listToolHandles()).rejects.toBeInstanceOf(McpCatalogLimitError);
+    expect(closeCounts.every(count => count > 0)).toBe(true);
+    await aggregateManager.dispose();
+  });
+
+  test("MCP list tool call resource and read bounds are proven after SDK receipt with no retained partial", async () => {
+    const oversized = "x".repeat(8 * 1024 * 1024);
+    const server = new McpServer({ name: "oversized", version: "1" });
+    server.registerTool("huge", { inputSchema: {} }, async () => ({ content: [{ type: "text", text: oversized }] }));
+    server.registerResource("huge-resource", "memory://huge", {}, async uri => ({
+      contents: [{ uri: uri.href, mimeType: "text/plain", text: oversized }],
+    }));
+    const oversizedManager = managerForServer(server);
+    try {
+      await expect(oversizedManager.callTool("huge", {})).rejects.toBeInstanceOf(CursorMcpPayloadTooLargeError);
+      await expect(oversizedManager.readResource("fixture", "memory://huge")).rejects.toBeInstanceOf(CursorMcpPayloadTooLargeError);
+    } finally {
+      await oversizedManager.dispose();
+    }
+  });
 });
 
 describe("Cursor MCP deps via native-exec dispatcher", () => {
+  test("MCP oversized base64 image rejects before its second decode allocation", async () => {
+    const { clientTransport } = buildFixtureServer();
+    const manager = new CursorMcpManager(
+      [{ serverName: "fixture", command: "noop" }],
+      { transportFactory: () => clientTransport, maxResultBytes: 220 },
+    );
+    try {
+      const deps = mcpDepsFromManager(manager);
+      const result = await deps.mcp!(create(McpArgsSchema, { name: "shot", toolName: "shot", providerIdentifier: "opencodex" }));
+      expect(result.result.case).toBe("error");
+    } finally {
+      await manager.dispose();
+    }
+  });
   test("mcpArgs executes against live server through the dispatcher", async () => {
     const { clientTransport } = buildFixtureServer();
     const manager = makeManager(clientTransport);

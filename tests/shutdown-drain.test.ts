@@ -8,14 +8,19 @@ import {
   isRecyclingForExit,
   markRecyclingForExit,
 } from "../src/server";
+import { tryAdmitTurn } from "../src/server/lifecycle";
 
 describe("active turn tracking", () => {
-  test("register/unregister tracks active turns", () => {
+  test("admit/bind/unregister tracks active turns through the boundary lease", () => {
     const ac1 = new AbortController();
     const ac2 = new AbortController();
     const before = getActiveTurnCount();
-    registerTurn(ac1);
-    registerTurn(ac2);
+    const lease1 = tryAdmitTurn();
+    const lease2 = tryAdmitTurn();
+    expect(lease1).not.toBeNull();
+    expect(lease2).not.toBeNull();
+    registerTurn(ac1, lease1!);
+    registerTurn(ac2, lease2!);
     expect(getActiveTurnCount()).toBe(before + 2);
     unregisterTurn(ac1);
     expect(getActiveTurnCount()).toBe(before + 1);
@@ -41,7 +46,9 @@ describe("trackStreamLifetime", () => {
     });
     const ac = new AbortController();
     const before = getActiveTurnCount();
-    const tracked = trackStreamLifetime(source, ac);
+    const lease = tryAdmitTurn();
+    expect(lease).not.toBeNull();
+    const tracked = trackStreamLifetime(source, ac, undefined, lease!);
     expect(getActiveTurnCount()).toBe(before + 1);
 
     const reader = tracked.getReader();
@@ -64,7 +71,9 @@ describe("trackStreamLifetime", () => {
     });
     const ac = new AbortController();
     const before = getActiveTurnCount();
-    const tracked = trackStreamLifetime(source, ac);
+    const lease = tryAdmitTurn();
+    expect(lease).not.toBeNull();
+    const tracked = trackStreamLifetime(source, ac, undefined, lease!);
     expect(getActiveTurnCount()).toBe(before + 1);
 
     await tracked.cancel("test cancel");

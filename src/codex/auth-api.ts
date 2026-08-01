@@ -9,6 +9,8 @@ import {
   saveCodexAccountCredential,
   CodexCredentialGenerationConflictError,
   CodexCredentialRefreshLockTimeoutError,
+  CodexCredentialRefreshBusyError,
+  CodexCredentialRefreshStaleError,
   TokenRefreshError,
 } from "./account-store";
 import { deleteCodexAccount, reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
@@ -80,6 +82,7 @@ import {
   isValidCodexAccountId,
 } from "./account-id";
 import { codexAccountIdNamespaceCollisionError } from "./account-namespace-match";
+import { ResourceAdmissionError } from "../lib/admission";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -90,7 +93,30 @@ function jsonResponse(data: unknown, status = 200): Response {
 
 const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
 
-const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string; doneAt?: number }>();
+const MAX_CODEX_LOGIN_STATE_ROWS = 32;
+const CODEX_LOGIN_TERMINAL_TTL_MS = 300_000;
+interface CodexLoginStateRow { status: string; startedAt: number; accountId?: string; email?: string; error?: string; doneAt?: number }
+const codexAuthLoginState = new Map<string, CodexLoginStateRow>();
+export class CodexLoginStateBusyError extends ResourceAdmissionError {
+  constructor() { super("codex_login_state_rows", MAX_CODEX_LOGIN_STATE_ROWS); this.name = "CodexLoginStateBusyError"; }
+}
+
+function setCodexLoginState(flowId: string, patch: Partial<CodexLoginStateRow>): void {
+  const row = codexAuthLoginState.get(flowId);
+  if (row) Object.assign(row, patch);
+}
+
+function pruneCodexLoginState(now = Date.now()): void {
+  for (const [id, row] of codexAuthLoginState) {
+    if (row.doneAt !== undefined && now - row.doneAt >= CODEX_LOGIN_TERMINAL_TTL_MS) codexAuthLoginState.delete(id);
+  }
+  while (codexAuthLoginState.size >= MAX_CODEX_LOGIN_STATE_ROWS) {
+    const terminal = [...codexAuthLoginState].filter(([, row]) => row.doneAt !== undefined)
+      .sort((a, b) => (a[1].doneAt ?? 0) - (b[1].doneAt ?? 0))[0];
+    if (!terminal) break;
+    codexAuthLoginState.delete(terminal[0]);
+  }
+}
 
 function configuredPoolAccount(config: OcxConfig, accountId: string): CodexAccount | null {
   if (!isValidCodexAccountId(accountId)) return null;
@@ -154,6 +180,7 @@ function poolAccountDto(
     quota: quota ? { ...quota } : null,
     needsReauth,
     hasCredential,
+    ...(quotaResult.quotaProbeSkipped ? { quotaProbeSkipped: true as const } : {}),
     ...oauthAccountHealthFields("codex", account.id, health),
   };
 }
@@ -247,8 +274,15 @@ function expireCodexAuthFlow(flowId: string | null, error = "Login cancelled"): 
     ? [flowId]
     : [...codexAuthLoginState].filter(([, state]) => state.status === "pending").map(([id]) => id);
   for (const id of ids) {
-    codexAuthLoginState.set(id, { status: "error", error, doneAt: Date.now() });
-    setTimeout(() => codexAuthLoginState.delete(id), 30_000);
+    let owner = codexAuthLoginState.get(id);
+    if (!owner) {
+      pruneCodexLoginState();
+      if (codexAuthLoginState.size >= MAX_CODEX_LOGIN_STATE_ROWS) continue;
+      owner = { status: "error", startedAt: Date.now() };
+      codexAuthLoginState.set(id, owner);
+    }
+    Object.assign(owner, { status: "error", error, doneAt: Date.now() });
+    setTimeout(() => { if (codexAuthLoginState.get(id) === owner) codexAuthLoginState.delete(id); }, 30_000);
   }
 }
 
@@ -427,6 +461,7 @@ interface PoolQuotaResult {
   freshCredentialGeneration?: number;
   /** Present only when this call's WHAM response included `rate_limit_reset_credits.available_count`. */
   freshResetCredits?: number;
+  quotaProbeSkipped?: true;
 }
 
 interface PoolQuotaRefreshFlight {
@@ -438,6 +473,38 @@ interface PoolQuotaRefreshFlight {
 }
 
 const poolQuotaRefreshInFlight = new Map<string, Set<PoolQuotaRefreshFlight>>();
+const MAX_POOL_QUOTA_FLIGHTS = 16;
+
+export class PoolQuotaProbeBusyError extends ResourceAdmissionError {
+  constructor() {
+    super("pool_quota_flights", MAX_POOL_QUOTA_FLIGHTS);
+    this.name = "PoolQuotaProbeBusyError";
+  }
+}
+
+function poolQuotaFlightCount(): number {
+  let count = 0;
+  for (const flights of poolQuotaRefreshInFlight.values()) count += flights.size;
+  return count;
+}
+
+/** Focused admission tests only; returns cleanup for the synthetic owners it inserts. */
+export function seedCodexAuthAdmissionForTests(options: { loginFlows?: number; quotaFlights?: number }): () => void {
+  const prefix = `admission-test-${crypto.randomUUID()}`;
+  for (let index = 0; index < (options.loginFlows ?? 0); index++) {
+    codexAuthLoginState.set(`${prefix}-login-${index}`, { status: "starting", startedAt: Date.now() });
+  }
+  for (let index = 0; index < (options.quotaFlights ?? 0); index++) {
+    poolQuotaRefreshInFlight.set(`${prefix}-quota-${index}`, new Set([{
+      state: {},
+      promise: new Promise<PoolQuotaResult>(() => {}),
+    }]));
+  }
+  return () => {
+    for (const key of [...codexAuthLoginState.keys()]) if (key.startsWith(prefix)) codexAuthLoginState.delete(key);
+    for (const key of [...poolQuotaRefreshInFlight.keys()]) if (key.startsWith(prefix)) poolQuotaRefreshInFlight.delete(key);
+  };
+}
 
 export interface CodexAuthAccountDto {
   id: string;
@@ -454,6 +521,7 @@ export interface CodexAuthAccountDto {
   healthLabel: OAuthHealthLabel;
   healthSummary: string;
   healthAction?: string;
+  quotaProbeSkipped?: true;
 }
 
 interface FreshPoolPlanUpdate {
@@ -557,8 +625,16 @@ async function fetchFreshPoolAccountQuota(
       ...(freshResetCredits !== undefined ? { freshResetCredits } : {}),
     };
   } catch (e) {
-    if (e instanceof CodexCredentialGenerationConflictError || e instanceof CodexCredentialRefreshLockTimeoutError) {
-      return { quota: null, needsReauth: false, credentialGeneration: requestCredentialGeneration };
+    if (e instanceof CodexCredentialGenerationConflictError || e instanceof CodexCredentialRefreshLockTimeoutError
+      || e instanceof CodexCredentialRefreshBusyError || e instanceof CodexCredentialRefreshStaleError) {
+      return {
+        quota: existing ?? null,
+        needsReauth: false,
+        credentialGeneration: requestCredentialGeneration,
+        ...(e instanceof CodexCredentialRefreshBusyError || e instanceof CodexCredentialRefreshStaleError
+          ? { quotaProbeSkipped: true as const }
+          : {}),
+      };
     }
     if (e instanceof TokenRefreshError) {
       return { quota: existing ?? null, needsReauth: true, credentialGeneration: requestCredentialGeneration };
@@ -587,6 +663,7 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, co
     return generation !== undefined && isCodexAccountGenerationLive(accountId, generation);
   });
   if (current) return current.promise;
+  if (poolQuotaFlightCount() >= MAX_POOL_QUOTA_FLIGHTS) throw new PoolQuotaProbeBusyError();
 
   const state: PoolQuotaRefreshFlight["state"] = {
     startCredentialGeneration: record?.generation,
@@ -679,9 +756,22 @@ export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = fa
   const mainInfo = await fetchMainAccountInfo(forceRefresh);
   const refreshedPool = await mapWithConcurrency(poolAccounts, POOL_QUOTA_REFRESH_CONCURRENCY, async account => {
     const cred = getCodexAccountCredential(account.id);
-    const quotaResult = cred
-      ? await fetchPoolAccountQuota(account.id, forceRefresh, account.plan)
-      : { quota: null, needsReauth: true };
+    let quotaResult: PoolQuotaResult;
+    if (!cred) {
+      quotaResult = { quota: null, needsReauth: true };
+    } else {
+      try {
+        quotaResult = await fetchPoolAccountQuota(account.id, forceRefresh, account.plan);
+      } catch (error) {
+        if (!(error instanceof PoolQuotaProbeBusyError)) throw error;
+        quotaResult = {
+          quota: getAccountQuota(account.id),
+          needsReauth: false,
+          credentialGeneration: readCodexAccountRecord(account.id)?.generation,
+          quotaProbeSkipped: true,
+        };
+      }
+    }
     return { accountId: account.id, quotaResult };
   });
 
@@ -1149,6 +1239,11 @@ export async function handleCodexAuthAPI(
       }
       return jsonResponse(result);
     } catch (e) {
+      if (e instanceof PoolQuotaProbeBusyError) {
+        const response = jsonResponse({ error: "server_busy", code: "server_busy" }, 503);
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       return jsonResponse({ error: e instanceof Error ? e.message : "Reset credit consume failed" }, 500);
     }
   }
@@ -1172,7 +1267,16 @@ export async function handleCodexAuthAPI(
         return jsonResponse({ error: "Unknown pool account for reauth" }, 404);
       }
     }
+    pruneCodexLoginState();
+    if (codexAuthLoginState.size >= MAX_CODEX_LOGIN_STATE_ROWS) {
+      const busy = new CodexLoginStateBusyError();
+      const response = jsonResponse({ error: busy.message, code: busy.code }, 503);
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
     const flowId = `flow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const loginOwner: CodexLoginStateRow = { status: "starting", startedAt: Date.now() };
+    codexAuthLoginState.set(flowId, loginOwner);
     try {
       const { startLoginFlow, getLoginStatus } = await import("../oauth");
       const result = await startLoginFlow("chatgpt", { forceLogin: true });
@@ -1196,7 +1300,7 @@ export async function handleCodexAuthAPI(
               if (cred) {
                 const oauthAccountId = cred.accountId;
                 if (!oauthAccountId) {
-                  codexAuthLoginState.set(flowId, {
+                  setCodexLoginState(flowId, {
                     status: "error",
                     error: "Could not determine account identity from OAuth tokens. Please retry OAuth login.",
                     doneAt: Date.now(),
@@ -1231,7 +1335,7 @@ export async function handleCodexAuthAPI(
                   const gotEmail = email.trim().toLowerCase();
                   if (expectedChatgptId) {
                     if (expectedChatgptId !== oauthAccountId) {
-                      codexAuthLoginState.set(flowId, {
+                      setCodexLoginState(flowId, {
                         status: "error",
                         error: "Signed-in ChatGPT account does not match this pool account. Sign in with the same account, or remove it and add a new one.",
                         doneAt: Date.now(),
@@ -1241,7 +1345,7 @@ export async function handleCodexAuthAPI(
                     }
                   } else if (expectedEmail) {
                     if (!gotEmail || gotEmail !== expectedEmail) {
-                      codexAuthLoginState.set(flowId, {
+                      setCodexLoginState(flowId, {
                         status: "error",
                         error: "Signed-in ChatGPT account does not match this pool account. Sign in with the same account, or remove it and add a new one.",
                         doneAt: Date.now(),
@@ -1252,7 +1356,7 @@ export async function handleCodexAuthAPI(
                   } else {
                     // No chatgptAccountId and no pool email — refuse silent identity replacement
                     // (including empty credential slots that still have a pool row).
-                    codexAuthLoginState.set(flowId, {
+                    setCodexLoginState(flowId, {
                       status: "error",
                       error: "Cannot verify account identity for reauth. Remove this account and add it again.",
                       doneAt: Date.now(),
@@ -1265,7 +1369,7 @@ export async function handleCodexAuthAPI(
                 // 1.2: Duplicate check is scoped by personal vs workspace plan bucket.
                 const collision = checkAccountIdCollision(oauthAccountId, email, plan, reauth ? accountId : undefined);
                 if (collision.collision) {
-                  codexAuthLoginState.set(flowId, {
+                  setCodexLoginState(flowId, {
                     status: "error", error: collision.reason, doneAt: Date.now(),
                   });
                   completed = true;
@@ -1275,7 +1379,7 @@ export async function handleCodexAuthAPI(
                 const warmup = await verifyCodexAccountWarmup(accountId, cred.access, oauthAccountId);
                 if (!warmup.ok) {
                   const body = await warmup.response.json().catch(() => ({})) as { error?: string; reason?: string };
-                  codexAuthLoginState.set(flowId, {
+                  setCodexLoginState(flowId, {
                     status: "error",
                     error: body.reason ? `${body.error ?? "Codex account warmup failed"} (${body.reason})` : body.error ?? "Codex account warmup failed",
                     doneAt: Date.now(),
@@ -1293,7 +1397,7 @@ export async function handleCodexAuthAPI(
                   reauth ? "reauth" : "create",
                 );
                 if (commitConflict) {
-                  codexAuthLoginState.set(flowId, {
+                  setCodexLoginState(flowId, {
                     status: "error",
                     error: commitConflict,
                     doneAt: Date.now(),
@@ -1333,19 +1437,19 @@ export async function handleCodexAuthAPI(
                   saveRuntimeConfig(config, latestConfig);
                 }
                 reconcileLiveStateStores();
-                codexAuthLoginState.set(flowId, { status: "done", accountId, email, doneAt: Date.now() });
+                setCodexLoginState(flowId, { status: "done", accountId, email, doneAt: Date.now() });
                 completed = true;
               }
               break;
             }
             if (st.done && st.error) {
-              codexAuthLoginState.set(flowId, { status: "error", error: st.error, doneAt: Date.now() });
+              setCodexLoginState(flowId, { status: "error", error: st.error, doneAt: Date.now() });
               completed = true;
               break;
             }
           }
           if (!completed) {
-            codexAuthLoginState.set(flowId, {
+            setCodexLoginState(flowId, {
               status: "error",
               error: "Login timed out before OAuth completed.",
               doneAt: Date.now(),
@@ -1355,24 +1459,32 @@ export async function handleCodexAuthAPI(
           const message = error instanceof ConfigMutationLockError
             || error instanceof CodexCredentialRefreshLockTimeoutError
             ? "Configuration is busy; retry login shortly."
+            : error instanceof CodexCredentialRefreshBusyError || error instanceof CodexCredentialRefreshStaleError
+              ? "Credential refresh is busy; retry login shortly."
             : error instanceof Error ? error.message : String(error);
-          codexAuthLoginState.set(flowId, {
+          setCodexLoginState(flowId, {
             status: "error",
             error: message,
             doneAt: Date.now(),
           });
         } finally {
           // TTL: keep completed flow state available for clients that miss a short polling window.
-          setTimeout(() => codexAuthLoginState.delete(flowId), 300_000);
+          setTimeout(() => { if (codexAuthLoginState.get(flowId) === loginOwner) codexAuthLoginState.delete(flowId); }, CODEX_LOGIN_TERMINAL_TTL_MS);
         }
       })();
 
-      codexAuthLoginState.set(flowId, { status: "pending" });
+      setCodexLoginState(flowId, { status: "pending" });
       return jsonResponse({ ok: true, flowId, url: result.url, instructions: result.instructions });
     } catch (e) {
+      if (codexAuthLoginState.get(flowId) === loginOwner) codexAuthLoginState.delete(flowId);
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("already in progress")) {
         return jsonResponse({ error: msg, status: "pending" }, 409);
+      }
+      if (e instanceof CodexCredentialRefreshBusyError || e instanceof CodexCredentialRefreshStaleError) {
+        const response = jsonResponse({ error: "server_busy", code: "server_busy" }, 503);
+        response.headers.set("Retry-After", "1");
+        return response;
       }
       return jsonResponse({ error: msg }, 500);
     }

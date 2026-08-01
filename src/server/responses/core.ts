@@ -102,6 +102,7 @@ import type { WsData } from "../ws-bridge";
 import { registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
 import { redactSecretString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
+import type { AdmissionLease } from "../../lib/admission";
 import { supportedLadderFor } from "../effort-policy";
 import { isThreadSpawnRequest } from "../effort-policy";
 import {
@@ -499,6 +500,7 @@ export interface ConsumedComboFailure {
 
 
 export interface HandleResponsesOptions {
+  turnAdmissionLease?: AdmissionLease;
   forceEmptyResponseId?: boolean;
   abortSignal?: AbortSignal;
   /** One-shot TTFT callback: first non-empty model output observed (WP4). */
@@ -1670,7 +1672,7 @@ export async function handleResponses(
       if (eagerPath?.useEagerRelay) {
         const turnAc = new AbortController();
         linkAbortSignal(upstream, turnAc.signal);
-        registerTurn(turnAc);
+        registerTurn(turnAc, options.turnAdmissionLease);
         const reportNativeTerminal = recordTerminalOutcomes
           ? (status: ResponsesTerminalStatus, httpStatusOverride?: number) => {
             terminalRecorder?.(status, httpStatusOverride);
@@ -1732,7 +1734,7 @@ export async function handleResponses(
       const turnAc = new AbortController();
       const clientGone = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
-      registerTurn(turnAc);
+      registerTurn(turnAc, options.turnAdmissionLease);
       const inspectionConsumerOptions = {
         clientGoneSignal: clientGone.signal,
         drainBounds: { ms: 15_000, bytes: 32 * 1024 * 1024 },
@@ -1823,7 +1825,7 @@ export async function handleResponses(
     }
     const body = relayWithAbort(upstreamResponse.body, upstream);
     const turnAc = new AbortController();
-    const tracked = body ? trackStreamLifetime(body, turnAc) : null;
+    const tracked = body ? trackStreamLifetime(body, turnAc, undefined, options.turnAdmissionLease) : null;
     return new Response(tracked, {
       status: upstreamResponse.status,
       headers,
@@ -1951,7 +1953,7 @@ export async function handleResponses(
     });
     if (imgResponse.body) {
       const imgTurnAc = new AbortController();
-      return new Response(trackStreamLifetime(imgResponse.body, imgTurnAc), {
+      return new Response(trackStreamLifetime(imgResponse.body, imgTurnAc, undefined, options.turnAdmissionLease), {
         status: imgResponse.status,
         headers: imgResponse.headers,
       });
@@ -2011,7 +2013,7 @@ export async function handleResponses(
     // in-flight web-search turns instead of skipping them during graceful shutdown.
     if (wsResponse.body) {
       const wsTurnAc = new AbortController();
-      return new Response(trackStreamLifetime(wsResponse.body, wsTurnAc), {
+      return new Response(trackStreamLifetime(wsResponse.body, wsTurnAc, undefined, options.turnAdmissionLease), {
         status: wsResponse.status,
         headers: wsResponse.headers,
       });
@@ -2095,7 +2097,7 @@ export async function handleResponses(
         },
       );
       const bridgeTurnAc = new AbortController();
-      const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc);
+      const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc, undefined, options.turnAdmissionLease);
       return new Response(trackedSse, {
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },
       });
@@ -2564,7 +2566,7 @@ export async function handleResponses(
       },
     );
     const bridgeTurnAc = new AbortController();
-    const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc, cleanupUpstreamAbort);
+    const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc, cleanupUpstreamAbort, options.turnAdmissionLease);
     return new Response(trackedSse, {
       headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },
     });

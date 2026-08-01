@@ -82,7 +82,7 @@ const USAGE_DAY_MS = 86_400_000;
 const usageSummaryCache = new Map<string, {
   revisionKey: string;
   expiresAt: number;
-  summary: UsageSummary;
+  summary: UsageSummary & { historyTruncated: boolean; truncatedPrefixBytes: number; entriesTruncated: boolean; entriesDropped: number };
 }>();
 
 function usageEntryMatchesSurface(entry: PersistedUsageEntry, surface: UsageSurface): boolean {
@@ -115,7 +115,7 @@ function usageSummaryExpiresAt(
   return expiresAt;
 }
 
-function refreshedUsageSummary(summary: UsageSummary, range: UsageRange, now: number): UsageSummary {
+function refreshedUsageSummary<T extends UsageSummary & { historyTruncated: boolean }>(summary: T, range: UsageRange, now: number): T {
   const since = range === "7d" ? now - 7 * USAGE_DAY_MS : range === "30d" ? now - 30 * USAGE_DAY_MS : null;
   return { ...summary, since, generatedAt: now };
 }
@@ -190,15 +190,22 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     const now = Date.now();
     try {
       const cacheKey = `${range}:${surface}`;
-      const observedRevisionKey = usageLogRevisionKey(currentUsageLogRevision());
+      const effectiveReadLimit = config.managementUsageMaxReadBytes ?? 64 * 1024 * 1024;
+      const observedRevisionKey = `${usageLogRevisionKey(currentUsageLogRevision())}\0${effectiveReadLimit}`;
       const cached = usageSummaryCache.get(cacheKey);
       if (cached && cached.revisionKey === observedRevisionKey && now < cached.expiresAt) {
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }
-      const snapshot = await readUsageSnapshotForManagement();
-      const summary = summarizeUsage(snapshot.entries, range, now, surface);
+      const snapshot = await readUsageSnapshotForManagement(effectiveReadLimit);
+      const summary = {
+        ...summarizeUsage(snapshot.entries, range, now, surface),
+        historyTruncated: snapshot.truncatedPrefixBytes > 0 || snapshot.entriesTruncated,
+        truncatedPrefixBytes: snapshot.truncatedPrefixBytes,
+        entriesTruncated: snapshot.entriesTruncated,
+        entriesDropped: snapshot.entriesDropped,
+      };
       usageSummaryCache.set(cacheKey, {
-        revisionKey: usageLogRevisionKey(snapshot.revision),
+        revisionKey: `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`,
         expiresAt: usageSummaryExpiresAt(snapshot.entries, range, surface, now),
         summary,
       });
@@ -233,6 +240,10 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         days: [],
         models: [],
         providers: [],
+        historyTruncated: false,
+        truncatedPrefixBytes: 0,
+        entriesTruncated: false,
+        entriesDropped: 0,
         error: "read_failed",
       });
     }

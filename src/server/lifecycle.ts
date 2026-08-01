@@ -11,22 +11,95 @@ import {
   cancelQueuedStorageWorkerSpawns,
   drainStorageWorkers,
 } from "../storage/worker-lifecycle";
+import { createAdmissionGate, type AdmissionLease, type AdmissionMetrics } from "../lib/admission";
+import { codexWebSocketAdmissionMetrics } from "../codex/websocket-registry";
+import { storageMutationAdmissionMetrics } from "../storage/storage-mutation-coordinator";
+import { storageWorkerAdmissionMetrics } from "../storage/worker-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Active turn tracking + graceful shutdown drain
 // ---------------------------------------------------------------------------
 
-const activeTurns = new Set<AbortController>();
+export const MAX_ACTIVE_TURNS = 256;
+const turnGate = createAdmissionGate("active_turns", MAX_ACTIVE_TURNS);
+export interface ActiveTurnLease extends AdmissionLease {
+  bindAbortController(ac: AbortController): void;
+  isTransferred(): boolean;
+}
+const activeTurns = new Map<AbortController, ActiveTurnLease>();
+const admittedTurns = new Set<ActiveTurnLease>();
+const knownTurnControllers = new WeakSet<AbortController>();
+let turnReleaseMisses = 0;
 let draining = false;
 let recyclingForExit = false;
 let _serverRef: ReturnType<typeof Bun.serve> | undefined;
 
 export function setServerRef(server: ReturnType<typeof Bun.serve> | undefined): void { _serverRef = server; }
 export function setDraining(value: boolean): void { draining = value; }
-export function registerTurn(ac: AbortController): void { activeTurns.add(ac); }
-export function unregisterTurn(ac: AbortController): void { activeTurns.delete(ac); }
+export function tryAdmitTurn(): ActiveTurnLease | null {
+  const gateLease = turnGate.tryAcquire();
+  if (!gateLease) return null;
+  const controllers = new Set<AbortController>();
+  let active = true;
+  let transferred = false;
+  const lease: ActiveTurnLease = {
+    bindAbortController(ac) {
+      knownTurnControllers.add(ac);
+      if (!active) {
+        ac.abort(new Error("turn already settled"));
+        return;
+      }
+      transferred = true;
+      controllers.add(ac);
+      activeTurns.set(ac, lease);
+    },
+    isTransferred() { return transferred; },
+    release() {
+      if (!active) return;
+      active = false;
+      admittedTurns.delete(lease);
+      for (const controller of controllers) {
+        if (activeTurns.get(controller) === lease) activeTurns.delete(controller);
+      }
+      controllers.clear();
+      gateLease.release();
+    },
+  };
+  admittedTurns.add(lease);
+  return lease;
+}
+export function registerTurn(ac: AbortController, lease?: AdmissionLease): void {
+  if (lease && "bindAbortController" in lease) (lease as ActiveTurnLease).bindAbortController(ac);
+}
+export function unregisterTurn(ac: AbortController): void {
+  const lease = activeTurns.get(ac);
+  if (!lease) {
+    if (knownTurnControllers.has(ac)) return;
+    turnReleaseMisses += 1;
+    return;
+  }
+  lease.release();
+}
 export function isDraining(): boolean { return draining; }
-export function getActiveTurnCount(): number { return activeTurns.size; }
+export function getActiveTurnCount(): number { return turnGate.metrics().active; }
+export function activeRegistryMetrics(): Record<string, AdmissionMetrics> {
+  const turns = turnGate.metrics();
+  return {
+    activeTurns: { ...turns, releaseMisses: turns.releaseMisses + turnReleaseMisses },
+    codexWebSockets: codexWebSocketAdmissionMetrics(),
+    storageHomeSlots: storageMutationAdmissionMetrics(),
+    storageWorkerReservations: storageWorkerAdmissionMetrics(),
+  };
+}
+
+export function abortAndReleaseAllTurns(reason: unknown = new Error("server shutdown")): void {
+  const owners = [...admittedTurns];
+  for (const owner of owners) {
+    const controllers = [...activeTurns].filter(([, lease]) => lease === owner).map(([controller]) => controller);
+    for (const controller of controllers) controller.abort(reason);
+    owner.release();
+  }
+}
 /** Live listen port of the Bun server, when started. */
 export function getServerListenPort(): number | undefined {
   const port = _serverRef?.port;
@@ -44,8 +117,9 @@ export function trackStreamLifetime(
   body: ReadableStream<Uint8Array>,
   ac: AbortController,
   onDone?: () => void,
+  lease?: AdmissionLease,
 ): ReadableStream<Uint8Array> {
-  registerTurn(ac);
+  registerTurn(ac, lease);
   const reader = body.getReader();
   let closed = false;
   const finish = () => {
@@ -85,10 +159,7 @@ export async function drainAndShutdown(
   }
   if (activeTurns.size > 0) {
     console.warn(`⚠️  Aborting ${activeTurns.size} in-flight turn(s) after ${timeoutMs}ms deadline`);
-    for (const ac of activeTurns) {
-      ac.abort(new Error("server shutdown"));
-    }
-    activeTurns.clear();
+    abortAndReleaseAllTurns(new Error("server shutdown"));
   }
   // Debounced replay-state snapshot may still be pending; flush so the last completed turn's
   // previous_response_id chain survives the restart this shutdown is usually part of.

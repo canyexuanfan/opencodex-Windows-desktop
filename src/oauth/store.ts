@@ -58,7 +58,7 @@ export function getAuthRefreshIntentLockPath(provider: string, accountId: string
 export function getAuthRefreshIntentPath(provider: string, accountId: string): string {
   return `${getAuthRefreshIntentLockPath(provider, accountId)}.json`;
 }
-export interface OAuthRefreshIntent { version: 1; provider: string; accountId: string; generation: string; createdAt: number; uncertain?: true }
+export interface OAuthRefreshIntent { version: 1; provider: string; accountId: string; generation: string; createdAt: number; flightId?: string; uncertain?: true }
 function parseOAuthRefreshIntent(
   provider: string,
   accountId: string,
@@ -71,6 +71,7 @@ function parseOAuthRefreshIntent(
     || value.accountId !== accountId
     || typeof value.generation !== "string"
     || typeof value.createdAt !== "number"
+    || (value.flightId !== undefined && typeof value.flightId !== "string")
   ) {
     return { version: 1, provider, accountId, generation: "", createdAt: 0, uncertain: true };
   }
@@ -99,11 +100,11 @@ export function peekOAuthRefreshIntent(provider: string, accountId: string): OAu
     return { version: 1, provider, accountId, generation: "", createdAt: 0, uncertain: true };
   }
 }
-export function writeOAuthRefreshIntent(provider: string, accountId: string, generation: string, createdAt = Date.now()): void {
+export function writeOAuthRefreshIntent(provider: string, accountId: string, generation: string, createdAt = Date.now(), flightId?: string): void {
   const dir = getConfigDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   hardenConfigDir();
-  const intent: OAuthRefreshIntent = { version: 1, provider, accountId, generation, createdAt };
+  const intent: OAuthRefreshIntent = { version: 1, provider, accountId, generation, createdAt, ...(flightId ? { flightId } : {}) };
   atomicWriteFile(getAuthRefreshIntentPath(provider, accountId), `${JSON.stringify(intent)}\n`);
 }
 export function clearOAuthRefreshIntent(provider: string, accountId: string, generation: string): boolean {

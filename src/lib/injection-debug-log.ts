@@ -6,16 +6,29 @@
  * `isInjectionDebugEnabled()` guard; this module only stores what it is given. */
 
 import type { DebugLogEntry } from "./debug-log-buffer";
+import { retainedUtf8Bytes, truncateRetainedUtf8 } from "./admission";
 
 const MAX_LINES = 2_000;
+const MAX_DEBUG_LINE_BYTES = 16 * 1024;
 const buffer: DebugLogEntry[] = [];
 let nextSeq = 1;
+let bufferBytes = 0;
+
+function removeOldestEntry(): number {
+  const entry = buffer.shift();
+  if (!entry) return 0;
+  const bytes = retainedUtf8Bytes(entry.line);
+  bufferBytes -= bytes;
+  return bytes;
+}
 
 /** Append a line to the injection buffer and echo it to the server console. */
 export function injectionDebugLog(line: string): void {
-  const entry: DebugLogEntry = { seq: nextSeq++, at: Date.now(), line };
+  const retainedLine = truncateRetainedUtf8(line, MAX_DEBUG_LINE_BYTES);
+  const entry: DebugLogEntry = { seq: nextSeq++, at: Date.now(), line: retainedLine };
   buffer.push(entry);
-  if (buffer.length > MAX_LINES) buffer.splice(0, buffer.length - MAX_LINES);
+  bufferBytes += retainedUtf8Bytes(retainedLine);
+  while (buffer.length > MAX_LINES) removeOldestEntry();
   console.log(line);
 }
 
@@ -27,8 +40,17 @@ export function getInjectionDebugLogEntries(options?: { after?: number; limit?: 
   return filtered.slice(-limit);
 }
 
+export function injectionBufferMetrics(): { entries: number; bytes: number; oldestAt: number | null } {
+  return { entries: buffer.length, bytes: bufferBytes, oldestAt: buffer[0]?.at ?? null };
+}
+
+export function evictOldestInjectionEntryForBudget(): number {
+  return removeOldestEntry();
+}
+
 /** Test isolation. */
 export function resetInjectionDebugLogBufferForTests(): void {
   buffer.length = 0;
+  bufferBytes = 0;
   nextSeq = 1;
 }

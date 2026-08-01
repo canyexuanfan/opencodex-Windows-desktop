@@ -137,6 +137,25 @@ describe("Cursor live-model discovery hardening", () => {
     expect(result).toEqual({ ok: false, error: "empty" });
   });
 
+  test("Cursor model discovery rejects announced and streamed 4 MiB overflow before decode", async () => {
+    const announced = await withDiscoveryServer(stream => {
+      stream.respond({
+        ":status": 200,
+        "content-type": "application/proto",
+        "content-length": String(4 * 1024 * 1024 + 1),
+      });
+      stream.end();
+    }, baseUrl => fetchCursorUsableModels({ apiKey: "test-token", baseUrl }));
+    expect(announced).toMatchObject({ ok: false, error: "too_large" });
+
+    const streamed = await withDiscoveryServer(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/proto" });
+      stream.write(Buffer.alloc(4 * 1024 * 1024));
+      stream.end(Buffer.alloc(1));
+    }, baseUrl => fetchCursorUsableModels({ apiKey: "test-token", baseUrl }));
+    expect(streamed).toMatchObject({ ok: false, error: "too_large" });
+  });
+
   test("catalog warns with the failure class before preserving its degradation order", async () => {
     const providerName = "cursor-hardening-warning";
     clearModelCache(providerName);

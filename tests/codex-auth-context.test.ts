@@ -21,6 +21,8 @@ import {
 import {
   CodexCredentialGenerationConflictError,
   CodexCredentialRefreshLockTimeoutError,
+  CodexCredentialRefreshBusyError,
+  CodexCredentialRefreshStaleError,
   getCodexAccountCredential,
   removeCodexAccountCredential,
   saveCodexAccountCredential,
@@ -517,11 +519,19 @@ describe("Codex auth context", () => {
     }
   });
 
-  test("reauth marking is reserved for real token failures", () => {
+  test("Codex refresh busy and stale stay retryable in auth context guardian quota and login consumers", async () => {
     expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new CodexCredentialGenerationConflictError())).toBe(false);
     expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new CodexCredentialRefreshLockTimeoutError())).toBe(false);
+    expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new CodexCredentialRefreshBusyError())).toBe(false);
+    expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new CodexCredentialRefreshStaleError())).toBe(false);
     expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new ConfigMutationLockError("busy"))).toBe(false);
     expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new Error("bad token"))).toBe(true);
+    const guardian = await Bun.file(new URL("../src/oauth/token-guardian.ts", import.meta.url)).text();
+    const authApi = await Bun.file(new URL("../src/codex/auth-api.ts", import.meta.url)).text();
+    for (const name of ["CodexCredentialRefreshBusyError", "CodexCredentialRefreshStaleError"]) {
+      expect(guardian).toContain(name);
+      expect(authApi).toContain(name);
+    }
   });
 
   test("runtime provider metadata is applied only to forward provider copies", () => {

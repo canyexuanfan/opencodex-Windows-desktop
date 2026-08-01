@@ -29,12 +29,14 @@ import {
 } from "../codex/pool-rotation";
 import type { OcxAccountPoolRotationStrategy, OcxConfig } from "../types";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
+import { retainedUtf8Bytes } from "../lib/admission";
 
 const PROVIDER = "anthropic";
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 15 * 60_000;
 const AFFINITY_IDLE_TTL_MS = 24 * 60 * 60_000;
 const MAX_AFFINITY_ENTRIES = 2_000;
+const MAX_AFFINITY_COMPONENT_BYTES = 512;
 const UNKNOWN_USAGE_SCORE = 100;
 const DEFAULT_AUTO_SWITCH_THRESHOLD = 80;
 /** Cap same-request 429 rotations so short Retry-After cannot infinite-loop. */
@@ -62,6 +64,11 @@ interface AffinityEntry {
 
 const upstreamHealth = new Map<string, AccountHealth>();
 const sessionAffinity = new Map<string, AffinityEntry>();
+
+function normalizeAffinityComponent(value: string | null | undefined): string {
+  const normalized = value?.trim() ?? "";
+  return normalized && retainedUtf8Bytes(normalized) <= MAX_AFFINITY_COMPONENT_BYTES ? normalized : "";
+}
 
 export function anthropicAccountPoolConfig(config: OcxConfig): AnthropicAccountPoolConfig {
   const raw = config.anthropicAccountPool;
@@ -125,6 +132,10 @@ export function sweepExpiredAnthropicRoutingHealth(now = Date.now()): number {
 export function clearAnthropicAccountPoolState(): void {
   upstreamHealth.clear();
   sessionAffinity.clear();
+}
+
+export function anthropicSessionAffinitySizeForTests(): number {
+  return sessionAffinity.size;
 }
 
 function isCooled(accountId: string, now: number): boolean {
@@ -355,7 +366,7 @@ export function resolveAnthropicAccountForSession(
     return { accountId: set.activeAccountId, reason: "pool-disabled" };
   }
 
-  const key = sessionKey?.trim() || "";
+  const key = normalizeAffinityComponent(sessionKey);
   if (key) {
     const affined = sessionAffinity.get(key);
     if (affined && now - affined.lastUsedAt <= AFFINITY_IDLE_TTL_MS) {
@@ -385,7 +396,7 @@ export function resolveAnthropicAccountForSession(
   if (strategyPick) {
     // Do not promote active here — token validation may still fail. Callers
     // (responses/core) promote after getAnthropicPoolAccessToken succeeds.
-    if (key) {
+    if (key && normalizeAffinityComponent(strategyPick.accountId)) {
       sessionAffinity.set(key, { accountId: strategyPick.accountId, lastUsedAt: now });
       pruneExpiredAffinity(now);
     }
@@ -431,7 +442,7 @@ export function resolveAnthropicAccountForSession(
     return { accountId: null, reason: anyCooled ? "all-cooled" : "none" };
   }
 
-  if (key) {
+  if (key && normalizeAffinityComponent(accountId)) {
     sessionAffinity.set(key, { accountId, lastUsedAt: now });
     pruneExpiredAffinity(now);
   }
@@ -443,8 +454,8 @@ export function bindAnthropicSessionAffinity(
   accountId: string,
   now = Date.now(),
 ): void {
-  const key = sessionKey?.trim();
-  if (!key) return;
+  const key = normalizeAffinityComponent(sessionKey);
+  if (!key || !normalizeAffinityComponent(accountId)) return;
   sessionAffinity.set(key, { accountId, lastUsedAt: now });
   pruneExpiredAffinity(now);
 }
@@ -485,8 +496,9 @@ export function rotateAnthropicAccountOn429(
     return null;
   }
 
-  if (sessionKey?.trim()) {
-    sessionAffinity.set(sessionKey.trim(), { accountId: next, lastUsedAt: now });
+  const affinityKey = normalizeAffinityComponent(sessionKey);
+  if (affinityKey && normalizeAffinityComponent(next)) {
+    sessionAffinity.set(affinityKey, { accountId: next, lastUsedAt: now });
     pruneExpiredAffinity(now);
   }
   console.warn(

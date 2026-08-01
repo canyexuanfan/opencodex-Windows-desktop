@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { appendDebugLogLine, getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
+import { appendDebugLogLine, debugBufferMetrics, getDebugLogEntries, resetDebugLogBufferForTests, subscribeDebugLogEntries } from "../src/lib/debug-log-buffer";
+import { ResourceAdmissionError, RETAINED_TRUNCATION_MARKER, retainedUtf8Bytes } from "../src/lib/admission";
+import { getInjectionDebugLogEntries, injectionDebugLog, resetInjectionDebugLogBufferForTests } from "../src/lib/injection-debug-log";
+import { markActivity, activityBreadcrumb } from "../src/lib/sidecar-tracker";
 import { debugDroppedFrame, debugProviderDiagnostic } from "../src/lib/debug";
 import { resetDebugSettingsForTests, setDebugSettings } from "../src/lib/debug-settings";
 
@@ -9,6 +12,7 @@ describe("debug frame logging", () => {
   afterEach(() => {
     resetDebugSettingsForTests();
     resetDebugLogBufferForTests();
+    resetInjectionDebugLogBufferForTests();
     if (previous === undefined) delete process.env.OCX_DEBUG;
     else process.env.OCX_DEBUG = previous;
   });
@@ -140,6 +144,45 @@ describe("debug frame logging", () => {
       expect(tail[0]!.line).toContain("b");
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  test("debug subscriber 65 is rejected while the first 64 still receive entries", () => {
+    const seen = Array.from({ length: 64 }, () => 0);
+    const unsubscribe = seen.map((_value, index) => subscribeDebugLogEntries(() => { seen[index] += 1; }));
+    expect(() => subscribeDebugLogEntries(() => {})).toThrow(ResourceAdmissionError);
+    appendDebugLogLine("entry");
+    expect(seen.every(count => count === 1)).toBe(true);
+    for (const stop of unsubscribe) stop();
+  });
+
+  test("subscriber unsubscribe is idempotent and only a foreign owner records release miss", () => {
+    const stop = subscribeDebugLogEntries(() => {});
+    const before = debugBufferMetrics().subscribers.releaseMisses;
+    stop();
+    stop();
+    expect(debugBufferMetrics().subscribers.releaseMisses).toBe(before);
+    expect(debugBufferMetrics().subscribers.active).toBe(0);
+  });
+
+  test("debug injection crash and fixed-slot strings truncate on UTF-8 boundary with marker", () => {
+    const oversized = "한".repeat(8_000);
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      appendDebugLogLine(oversized);
+      injectionDebugLog(oversized);
+      markActivity(oversized);
+      for (const retained of [
+        getDebugLogEntries()[0]!.line,
+        getInjectionDebugLogEntries()[0]!.line,
+        activityBreadcrumb().note,
+      ]) {
+        expect(retained.endsWith(RETAINED_TRUNCATION_MARKER)).toBe(true);
+        expect(retainedUtf8Bytes(retained)).toBeLessThanOrEqual(16 * 1024);
+        expect(retained).not.toContain("�");
+      }
+    } finally {
+      log.mockRestore();
     }
   });
 });

@@ -21,6 +21,7 @@ import { isSelectableCodexPoolAccount } from "./account-id";
 import type { OcxConfig } from "../types";
 import { captureConfigGeneration, type GenerationContext } from "../lib/state-store-sweeper";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { retainedUtf8Bytes } from "../lib/admission";
 
 type ThreadAffinityEntry = {
   accountId: string;
@@ -106,6 +107,7 @@ const CODEX_TRANSIENT_SOFT_AVOID_ESCALATION_MS = [
 ] as const;
 export const CODEX_THREAD_AFFINITY_IDLE_TTL_MS = 24 * 60 * 60_000;
 export const CODEX_THREAD_AFFINITY_MAX_ENTRIES = 2048;
+const MAX_AFFINITY_COMPONENT_BYTES = 512;
 // Min interval between quota threshold re-evaluations for a single bound thread.
 // Well under the 5h/weekly quota windows, but enough to stop per-request flapping.
 export const CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS = 60_000;
@@ -633,11 +635,17 @@ function threadAffinityScope(quotaScope?: CodexQuotaScope): ThreadAffinityScope 
   return quotaScope ?? LEGACY_THREAD_AFFINITY_SCOPE;
 }
 
+function admissibleAffinityComponent(value: string): boolean {
+  return retainedUtf8Bytes(value) <= MAX_AFFINITY_COMPONENT_BYTES;
+}
+
 function getThreadAffinity(threadId: string, quotaScope?: CodexQuotaScope): ThreadAffinityEntry | undefined {
+  if (!admissibleAffinityComponent(threadId)) return undefined;
   return threadAccountMap.get(threadId)?.get(threadAffinityScope(quotaScope));
 }
 
 function deleteThreadAffinity(threadId: string, quotaScope?: CodexQuotaScope): void {
+  if (!admissibleAffinityComponent(threadId)) return;
   const affinities = threadAccountMap.get(threadId);
   if (!affinities) return;
   affinities.delete(threadAffinityScope(quotaScope));
@@ -646,6 +654,7 @@ function deleteThreadAffinity(threadId: string, quotaScope?: CodexQuotaScope): v
 
 /** Remove only the matching failed account's affinities for one thread. */
 function deleteThreadAffinitiesForAccount(threadId: string, accountId: string): void {
+  if (!admissibleAffinityComponent(threadId) || !admissibleAffinityComponent(accountId)) return;
   const affinities = threadAccountMap.get(threadId);
   if (!affinities) return;
   for (const [scope, entry] of affinities) {
@@ -704,6 +713,7 @@ function bindThreadAffinity(
   now: number,
   quotaScope?: CodexQuotaScope,
 ): void {
+  if (!admissibleAffinityComponent(threadId) || !admissibleAffinityComponent(accountId)) return;
   const record = accountId === MAIN_CODEX_ACCOUNT_ID ? undefined : readCodexAccountRecord(accountId);
   if (accountId !== MAIN_CODEX_ACCOUNT_ID && (!record?.credential || record.deletedAt != null)) return;
   pruneExpiredThreadAffinities(now);

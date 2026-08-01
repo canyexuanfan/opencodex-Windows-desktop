@@ -470,6 +470,9 @@ export function reconcileConfigWarningMemos(generation: number): number {
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
+  mcpMaxTools: z.number().int().positive().optional(),
+  mcpMaxSchemaBytes: z.number().int().positive().optional(),
+  mcpMaxResultBytes: z.number().int().positive().optional(),
   apiKeyTransport: z.enum(["x-api-key", "bearer"]).optional(),
   responsesPath: z.string().min(1).optional(),
   statelessResponses: z.boolean().optional(),
@@ -735,6 +738,7 @@ const apiKeyEntrySchema = z.object({
 
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
+  managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
   // A blank hostname degrades to undefined rather than failing the parse. `getDefaultConfig()`
   // carries no `hostname` key, so the backup-and-defaults repair path below cannot merge one
   // away — a hand-edited `"hostname": ""` would fail twice and reset providers/apiKeys to
@@ -1951,6 +1955,7 @@ export function getDefaultConfig(): OcxConfig {
   // Adding extra providers (e.g. opencode-go) and switching defaultProvider is a user/runtime choice.
   return {
     port: 10100,
+    managementUsageMaxReadBytes: 64 * 1024 * 1024,
     // Fresh/re-initialized configs are already written in the current three-tier
     // OpenAI shape. Mark them as such so startup does not mistake them for a
     // legacy config and collide with an immutable backup from an earlier setup.

@@ -61,5 +61,17 @@ test("usage workspace i18n keys exist in every locale", async () => {
     const dict = await Bun.file(new URL(`../src/i18n/${locale}.ts`, import.meta.url)).text();
     expect(dict).toContain('"usage.workspace.sections":');
     expect(dict).toContain('"usage.workspace.report":');
+    expect(dict).toContain('"usage.range.available":');
+    expect(dict).toContain('"usage.historyTruncated":');
+    expect(dict).toContain('"api.attribution.totalRequestsAvailable":');
   }
+});
+
+test("Usage All becomes Available history and API-key lifetime totals are qualified when capped", async () => {
+  const usage = await Bun.file(new URL("../src/pages/Usage.tsx", import.meta.url)).text();
+  const keys = await Bun.file(new URL("../src/components/apikeys-workspace/ApiKeysWorkspace.tsx", import.meta.url)).text();
+  expect(usage).toContain('t("usage.range.available")');
+  expect(usage).toContain('data?.historyTruncated');
+  expect(keys).toContain('api.attribution.totalRequestsAvailable');
+  expect(keys).toContain('api.attribution.sinceAvailable');
 });

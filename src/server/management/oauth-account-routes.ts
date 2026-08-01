@@ -487,7 +487,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       requestOrigin: req.headers.get("origin"),
     });
     const { readApiKeyUsageRollup } = await import("./api-key-usage");
-    const { rollup, attributionSince } = await readApiKeyUsageRollup(keys.map(k => k.id));
+    const { rollup, attributionSince, historyTruncated } = await readApiKeyUsageRollup(keys.map(k => k.id), config.managementUsageMaxReadBytes);
     return jsonResponse({
       // 8 random hex past the fixed `ocx_data_` literal: enough to tell two keys
       // apart in a list, with 128 bits of the tail still unrevealed. Masking only
@@ -501,6 +501,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       })),
       // Dataset-level and singular: it describes the usage log, not any one key.
       ...(attributionSince ? { attributionSince } : {}),
+      ...(historyTruncated ? { historyTruncated: true } : {}),
       authMatrix: AUTH_MATRIX,
       ...endpoints,
     }, 200, req, config);

@@ -22,6 +22,8 @@ import {
   markCodexAccountValidationFailed,
   readCodexAccountRecord,
   TokenRefreshError,
+  CodexCredentialRefreshBusyError,
+  CodexCredentialRefreshStaleError,
 } from "../codex/account-store";
 import { codexWarmupFailureReason, warmCodexAccount } from "../codex/warmup";
 import { getMainAccountToken, MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
@@ -222,6 +224,11 @@ export async function guardianSweep(nowMs: number = Date.now()): Promise<Guardia
           }
           backoff.delete(key);
         } catch (err) {
+          if (err instanceof CodexCredentialRefreshBusyError || err instanceof CodexCredentialRefreshStaleError) {
+            recordFailure(key, nowMs, opts.backoffBaseSeconds, opts.backoffMaxSeconds, false, writerGeneration);
+            result.skippedBackoff.push(key);
+            return;
+          }
           const permanent = err instanceof TokenRefreshError && (err.reason === "revoked" || err.reason === "expired");
           if (needsWarmup && !(err instanceof TokenRefreshError)) {
             markCodexAccountValidationFailed(id, codexWarmupFailureReason(err));

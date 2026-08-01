@@ -427,6 +427,9 @@ class LiveCursorTransport implements CursorTransport {
     if (servers.length > 0) {
       this.mcpManager = new CursorMcpManager(servers, {
         log: message => console.warn(message),
+        maxTools: input.provider.mcpMaxTools,
+        maxSchemaBytes: input.provider.mcpMaxSchemaBytes,
+        maxResultBytes: input.provider.mcpMaxResultBytes,
       });
     }
   }

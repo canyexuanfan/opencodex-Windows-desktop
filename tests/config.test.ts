@@ -87,6 +87,20 @@ function writeAccountNamespaceConfig(
 }
 
 describe("opencodex config defaults", () => {
+  test("usage and MCP config overrides change the effective bound while defaults remain compatible", () => {
+    const defaults = getDefaultConfig();
+    expect(defaults.managementUsageMaxReadBytes).toBe(64 * 1024 * 1024);
+    const valid = validateConfigCandidate({
+      ...defaults,
+      managementUsageMaxReadBytes: 1024,
+      providers: { ...defaults.providers, openai: { ...defaults.providers.openai!, mcpMaxTools: 1, mcpMaxSchemaBytes: 2, mcpMaxResultBytes: 3 } },
+    });
+    expect(valid).toMatchObject({ ok: true, config: { managementUsageMaxReadBytes: 1024, providers: { openai: { mcpMaxTools: 1, mcpMaxSchemaBytes: 2, mcpMaxResultBytes: 3 } } } });
+    for (const value of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
+      expect(validateConfigCandidate({ ...defaults, managementUsageMaxReadBytes: value }).ok).toBe(false);
+      expect(validateConfigCandidate({ ...defaults, providers: { ...defaults.providers, openai: { ...defaults.providers.openai!, mcpMaxTools: value } } }).ok).toBe(false);
+    }
+  });
   test("atomic rename retries transient Windows sharing violations", () => {
     const sleeps: number[] = [];
     let attempts = 0;

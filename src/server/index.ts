@@ -44,7 +44,8 @@ export {
   resolveCodexAccountForThread,
 } from "../codex/routing";
 import { formatCodexProviderForLog } from "../codex/routing";
-import { registerCodexWebSocket, unregisterCodexWebSocket, updateCodexWebSocketAuthContext } from "../codex/websocket-registry";
+import { CatalogGatherBusyError } from "../codex/catalog/provider-fetch";
+import { registerCodexWebSocket, tryReserveCodexWebSocket, unregisterCodexWebSocket, updateCodexWebSocketAuthContext } from "../codex/websocket-registry";
 import { resolveGuiFilePath, rootFallbackPayload, serveGuiFile } from "./gui-static";
 export { resolveGuiFilePath, rootFallbackPayload } from "./gui-static";
 export { resolveAdapter } from "./adapter-resolve";
@@ -56,7 +57,9 @@ import {
   registerTurn,
   setServerRef,
   trackStreamLifetime,
+  tryAdmitTurn,
   unregisterTurn,
+  type ActiveTurnLease,
 } from "./lifecycle";
 export {
   drainAndShutdown,
@@ -345,6 +348,31 @@ export function startServer(port?: number) {
     return new Response(response.body, { status: 503, headers });
   }
 
+  function serverBusyResponse(req: Request, resource: string): Response {
+    return withCors(new Response(JSON.stringify({
+      error: { type: "server_error", code: "server_busy", message: `${resource} capacity reached` },
+    }), {
+      status: 503,
+      headers: { "Content-Type": "application/json", "Retry-After": "1" },
+    }), req, config);
+  }
+
+  async function runAdmittedHttpTurn(req: Request, work: (lease: ActiveTurnLease) => Promise<Response>): Promise<Response> {
+    const lease = tryAdmitTurn();
+    if (!lease) return serverBusyResponse(req, "active turns");
+    let response: Response;
+    try {
+      response = await work(lease);
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
+    if (!lease.isTransferred()) {
+      lease.release();
+    }
+    return response;
+  }
+
   const server: Server<WsData> = Bun.serve<WsData>({
     port: listenPort,
     hostname: bindHost,
@@ -388,9 +416,12 @@ export function startServer(port?: number) {
         if (!websocketsEnabled(config)) {
           return withCors(formatErrorResponse(426, "upgrade_required", "Responses WebSocket transport is disabled; use HTTP"), req, config);
         }
+        const websocketLease = tryReserveCodexWebSocket();
+        if (!websocketLease) return serverBusyResponse(req, "Codex WebSockets");
         if (server.upgrade(req, {
-          data: buildResponsesWsData(selectForwardHeaders(req.headers), admission),
+          data: buildResponsesWsData(selectForwardHeaders(req.headers), admission, websocketLease),
         })) return undefined as unknown as Response;
+        websocketLease.release();
         return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, config);
       }
 
@@ -416,7 +447,18 @@ export function startServer(port?: number) {
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
-        const goModels = await fetchAllModels(config);
+        let goModels;
+        try {
+          goModels = await fetchAllModels(config);
+        } catch (error) {
+          if (error instanceof CatalogGatherBusyError) {
+            return withCors(new Response(JSON.stringify({ error: { type: "server_error", code: "catalog_busy", message: error.message } }), {
+              status: 503,
+              headers: { "content-type": "application/json", "Retry-After": "1" },
+            }), req, config);
+          }
+          throw error;
+        }
         const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents, filterCatalogVisibleModels, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
         const nativeSlugs = nativeOpenAiSlugs();
         const goEnabled = filterCatalogVisibleModels(goModels, config);
@@ -494,20 +536,17 @@ export function startServer(port?: number) {
           ...admissionFields(admission),
           inboundProtocol: "responses",
         };
-        let response: Response;
-        try {
-          response = await handleResponsesCompact(req, config, logCtx);
-        } catch {
-          response = formatErrorResponse(500, "server_error", "Unexpected compact request failure");
-        }
-        addFinalRequestLog(
-          requestId,
-          start,
-          logCtx,
-          response.status,
-          response.status === 499 ? { closeReason: "client_cancel" } : undefined,
-        );
-        return withCors(response, req, config);
+        return runAdmittedHttpTurn(req, async () => {
+          let response: Response;
+          try {
+            response = await handleResponsesCompact(req, config, logCtx);
+          } catch {
+            response = formatErrorResponse(500, "server_error", "Unexpected compact request failure");
+          }
+          addFinalRequestLog(requestId, start, logCtx, response.status,
+            response.status === 499 ? { closeReason: "client_cancel" } : undefined);
+          return withCors(response, req, config);
+        });
       }
 
       if (
@@ -531,9 +570,11 @@ export function startServer(port?: number) {
           ...admissionFields(admission),
         };
         const endpoint = url.pathname.endsWith("/edits") ? "edits" as const : "generations" as const;
-        const response = await handleImages(req, config, endpoint, logCtx);
-        addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
-        return withCors(response, req, config);
+        return runAdmittedHttpTurn(req, async () => {
+          const response = await handleImages(req, config, endpoint, logCtx);
+          addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
+          return withCors(response, req, config);
+        });
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/v1/opencodex/artifacts/")) {
@@ -583,15 +624,12 @@ export function startServer(port?: number) {
           provider: "unknown",
           ...admissionFields(admission),
         };
-        const response = await handleSearch(req, config, logCtx);
-        addFinalRequestLog(
-          requestId,
-          start,
-          logCtx,
-          response.status,
-          response.status === 499 ? { closeReason: "client_cancel" } : undefined,
-        );
-        return withCors(response, req, config);
+        return runAdmittedHttpTurn(req, async () => {
+          const response = await handleSearch(req, config, logCtx);
+          addFinalRequestLog(requestId, start, logCtx, response.status,
+            response.status === 499 ? { closeReason: "client_cancel" } : undefined);
+          return withCors(response, req, config);
+        });
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {
@@ -621,20 +659,23 @@ export function startServer(port?: number) {
           logged = true;
           addFinalRequestLog(requestId, start, logCtx, status, meta);
         };
-        const response = await handleResponses(req, config, logCtx, {
-          abortSignal: req.signal,
-          onFirstOutput: () => recordFirstOutput(logCtx, start),
-          onNativePassthroughTerminal: status => {
-            finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
-              terminalStatus: status,
-              closeReason: "terminal",
-            });
-          },
-          onNativePassthroughCancel: () => {
-            finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
-          },
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+          const response = await handleResponses(req, config, logCtx, {
+            turnAdmissionLease,
+            abortSignal: req.signal,
+            onFirstOutput: () => recordFirstOutput(logCtx, start),
+            onNativePassthroughTerminal: status => {
+              finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
+                terminalStatus: status,
+                closeReason: "terminal",
+              });
+            },
+            onNativePassthroughCancel: () => {
+              finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
+            },
+          });
+          return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
         });
-        return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
       }
 
       // Anthropic Messages inbound (Claude Code). count_tokens FIRST (longer path).
@@ -650,8 +691,7 @@ export function startServer(port?: number) {
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(anthropicErrorResponse(403, "cross-origin data-plane request blocked", "permission_error"), req, config);
         }
-        const response = await handleClaudeCountTokens(req, config);
-        return withCors(response, req, config);
+        return runAdmittedHttpTurn(req, async () => withCors(await handleClaudeCountTokens(req, config), req, config));
       }
 
       if (url.pathname === "/v1/messages" && req.method === "POST") {
@@ -677,8 +717,11 @@ export function startServer(port?: number) {
         // Logging is finalized inside handleClaudeMessages (Responses-vocab tap on the
         // pre-translation stream + native passthrough callbacks) — do not re-wrap the
         // translated Anthropic stream here.
-        const response = await handleClaudeMessages(req, config, logCtx, { requestId, start });
-        return withCors(response, req, config);
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => withCors(
+          await handleClaudeMessages(req, config, logCtx, { requestId, start, turnAdmissionLease }),
+          req,
+          config,
+        ));
       }
 
 
@@ -701,8 +744,11 @@ export function startServer(port?: number) {
           ...admissionFields(admission),
           inboundProtocol: "chat",
         };
-        const response = await handleChatCompletions(req, config, logCtx, { requestId, start });
-        return withCors(response, req, config);
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => withCors(
+          await handleChatCompletions(req, config, logCtx, { requestId, start, turnAdmissionLease }),
+          req,
+          config,
+        ));
       }
 
       // ChatGPT / Codex App voice (GPT‑Live / Frameless Bidi) + OpenAI Realtime call-create.
@@ -728,15 +774,17 @@ export function startServer(port?: number) {
           provider: "unknown",
           ...admissionFields(admission),
         };
-        const response = await handleLive(req, config, logCtx);
-        addFinalRequestLog(
-          requestId,
-          start,
-          logCtx,
-          response.status,
-          response.status === 499 ? { closeReason: "client_cancel" } : undefined,
-        );
-        return withCors(response, req, config);
+        return runAdmittedHttpTurn(req, async () => {
+          const response = await handleLive(req, config, logCtx);
+          addFinalRequestLog(
+            requestId,
+            start,
+            logCtx,
+            response.status,
+            response.status === 499 ? { closeReason: "client_cancel" } : undefined,
+          );
+          return withCors(response, req, config);
+        });
       }
 
       // Voice / Realtime sideband WebSocket: Frameless joins /v1/live/{callId}; Realtime v1 joins
@@ -808,6 +856,11 @@ export function startServer(port?: number) {
           attachLiveSidebandUpstream(ws);
           return;
         }
+        if (!ws.data.admissionLease) {
+          ws.close(1013, "server busy");
+          return;
+        }
+        ws.data.admissionLease.bind(ws);
         registerCodexWebSocket(ws);
       },
       message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
@@ -876,9 +929,21 @@ export function startServer(port?: number) {
           return;
         }
 
+        const turnAdmissionLease = tryAdmitTurn();
+        if (!turnAdmissionLease) {
+          sendJsonFrame(ws, buildWsErrorFrame(503, {
+            type: "server_error",
+            code: "server_busy",
+            message: "active turns capacity reached",
+            retryable: true,
+          }, new Headers({ "Retry-After": "1" })));
+          if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
+          return;
+        }
+
         const payload: Record<string, unknown> = { ...frame };
         delete payload.type;
-        registerTurn(turnAbort);
+        turnAdmissionLease.bindAbortController(turnAbort);
         void (async () => {
           const start = Date.now();
           const requestId = nextRequestLogId(start);
@@ -915,6 +980,7 @@ export function startServer(port?: number) {
             const response = await handleResponses(req, config, logCtx, {
               forceEmptyResponseId: true,
               abortSignal: turnAbort.signal,
+              turnAdmissionLease,
               onFirstOutput: () => recordFirstOutput(logCtx, start),
               onCodexAuthContextResolved: context => updateCodexWebSocketAuthContext(ws, context),
               recordTerminalOutcomes: false,
@@ -955,7 +1021,7 @@ export function startServer(port?: number) {
               /* socket already gone or send dropped */
             }
           } finally {
-            unregisterTurn(turnAbort);
+            turnAdmissionLease.release();
             if (!logged && turnAbort.signal.aborted) finalizeLog(499);
             if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
           }
@@ -968,6 +1034,8 @@ export function startServer(port?: number) {
           return;
         }
         unregisterCodexWebSocket(ws);
+        ws.data.admissionLease?.release();
+        ws.data.admissionLease = undefined;
         ws.data.cancel?.(); // RC2: abort the upstream when the client disconnects
       },
     },

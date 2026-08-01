@@ -33,6 +33,7 @@ import { addFinalRequestLog, httpStatusForTerminalStatus, recordFirstOutput, typ
 import { conversationIdFromClaudeMetadata } from "./request-log-conversation";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
+import type { AdmissionLease } from "../lib/admission";
 
 type Rec = Record<string, unknown>;
 
@@ -511,7 +512,7 @@ export async function handleClaudeMessages(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
-  logIds?: { requestId: string; start: number },
+  logIds?: { requestId: string; start: number; turnAdmissionLease?: AdmissionLease },
 ): Promise<Response> {
   logCtx.surface = "claude";
   const disabled = claudeInboundDisabled(config);
@@ -683,6 +684,7 @@ export async function handleClaudeMessages(
     addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, meta);
   };
   const upstream = await handleResponses(internalReq, buildClaudeReplayConfig(config), logCtx, {
+    ...(logIds?.turnAdmissionLease ? { turnAdmissionLease: logIds.turnAdmissionLease } : {}),
     abortSignal: req.signal,
     promptCacheKeyIsSharedCohort: cacheKeySource === "system",
     // The body is Responses-shaped by now, but the client spoke Anthropic Messages.

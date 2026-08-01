@@ -24,7 +24,7 @@ import {
   resetStorageCleanupPolicyJobForTestsAsync,
   setStorageCleanupPolicyJobTestHooks,
 } from "../src/storage/policy-job";
-import { liveStorageWorkerCount } from "../src/storage/worker-lifecycle";
+import { liveStorageWorkerCount, tryReserveStorageWorker, withStorageWorkerSpawnGate } from "../src/storage/worker-lifecycle";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
 let isolatedCodexHome: IsolatedCodexHome | null = null;
@@ -82,7 +82,8 @@ test("a settled policy worker leaves nothing alive behind it", async () => {
   const started = requestStorageCleanupPolicyRun({
     reason: "manual",
     codexHome: isolatedCodexHome!.path,
-  });
+});
+
   expect(started.accepted).toBe(true);
 
   await waitForLiveWorker();
@@ -91,6 +92,22 @@ test("a settled policy worker leaves nothing alive behind it", async () => {
   // reclaimed — not merely sent a terminate() that has yet to land.
   expect(liveStorageWorkerCount()).toBe(0);
 }, { timeout: 30_000 });
+
+test("storage worker reservation 17 rejects before enqueue while the first 16 spawn serially and drain", async () => {
+  const reservations = Array.from({ length: 16 }, () => tryReserveStorageWorker());
+  expect(reservations.every(Boolean)).toBe(true);
+  expect(tryReserveStorageWorker()).toBeNull();
+  let active = 0;
+  let peak = 0;
+  await Promise.all(reservations.map((reservation, index) => withStorageWorkerSpawnGate(async () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await Bun.sleep(index === 0 ? 2 : 0);
+    active -= 1;
+    reservation?.release();
+  })));
+  expect(peak).toBe(1);
+});
 
 test("reset drains a worker that is still blocked mid-run", async () => {
   // A worker held inside its run is exactly the state that outlived the file
