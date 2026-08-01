@@ -3,6 +3,10 @@ import { INTERNAL_DEADLINE_MS, STORE_BUDGET_MS } from "./helpers/test-budget";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  resetHardenedStateForTests,
+  setIcaclsRunnerForTests,
+} from "../src/lib/windows-secret-acl";
+import {
   getAccountCredential,
   getAccountSet,
   getCredential,
@@ -39,9 +43,18 @@ describe("multi-account auth store", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
+    resetHardenedStateForTests();
+    setIcaclsRunnerForTests(() => ({
+      success: true,
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+    }));
   });
 
   afterEach(() => {
+    setIcaclsRunnerForTests(null);
+    resetHardenedStateForTests();
     if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousOpencodexHome;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -297,9 +310,8 @@ describe("multi-account auth store", () => {
       await started;
       let entered = false;
       timedOut = mutateStore(() => { entered = true; }, ["provider", "waiting-account"], { waitMs: 10 });
-      // serializeMutation wait timers are unref'd. Under `bun test --isolate` on a
-      // loaded Windows runner the timer can starve, so awaiting reject alone can
-      // hang the file until the 20-minute job ceiling (seen after the 129-slot case).
+      // Belt-and-suspenders with the ref'd wait timer in store.ts: if reject still
+      // never fires under isolate load, fail the case instead of hanging the job.
       await Promise.race([
         timedOut.then(
           () => {
