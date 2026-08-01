@@ -3,13 +3,16 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const packageJson = JSON.parse(readFileSync(path.resolve(import.meta.dir, "..", "package.json"), "utf8")) as {
+  version?: string;
   build?: {
     files?: string[];
     extraResources?: Array<{ from?: string; to?: string; filter?: string[] }>;
     win?: { icon?: string; target?: Array<{ target?: string; arch?: string[] }>; requestedExecutionLevel?: string };
-    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; selectPerMachineByDefault?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; installerIcon?: string; uninstallerIcon?: string; unicode?: boolean; createDesktopShortcut?: boolean | "always"; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
-    portable?: { artifactName?: string };
+    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; selectPerMachineByDefault?: boolean; allowToChangeInstallationDirectory?: boolean; include?: string; installerIcon?: string; uninstallerIcon?: string; unicode?: boolean; createDesktopShortcut?: boolean | "always"; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean; artifactName?: string };
   };
+};
+const rootPackageJson = JSON.parse(readFileSync(path.resolve(import.meta.dir, "..", "..", "package.json"), "utf8")) as {
+  version?: string;
 };
 const assistedInstaller = readFileSync(
   path.resolve(import.meta.dir, "..", "node_modules", "app-builder-lib", "templates", "nsis", "assistedInstaller.nsh"),
@@ -22,6 +25,10 @@ const resourcePreparation = readFileSync(
 const customInstaller = readFileSync(path.resolve(import.meta.dir, "..", "build", "installer.nsh"), "utf8");
 
 describe("desktop package contract", () => {
+  test("keeps the desktop host version aligned with the bundled opencodex runtime", () => {
+    expect(packageJson.version).toBe(rootPackageJson.version);
+  });
+
   test("ships source, GUI, production resources and tray assets outside asar", () => {
     expect(packageJson.build?.extraResources).toEqual(expect.arrayContaining([
       { from: "resources/staging/opencodex", to: "opencodex" },
@@ -37,11 +44,10 @@ describe("desktop package contract", () => {
     expect(packageJson.build?.files).toContain("!resources/**/*");
   });
 
-  test("builds x64 NSIS and portable artifacts with a normal Windows default", () => {
-    expect(packageJson.build?.win?.target).toEqual(expect.arrayContaining([
+  test("builds only the x64 NSIS installer with a normal Windows default", () => {
+    expect(packageJson.build?.win?.target).toEqual([
       { target: "nsis", arch: ["x64"] },
-      { target: "portable", arch: ["x64"] },
-    ]));
+    ]);
     expect(packageJson.build?.win?.requestedExecutionLevel).toBe("asInvoker");
     expect(packageJson.build?.win?.icon).toBe("build/icon.ico");
     expect(packageJson.build?.nsis).toMatchObject({
@@ -56,8 +62,8 @@ describe("desktop package contract", () => {
       createDesktopShortcut: "always",
       createStartMenuShortcut: true,
       deleteAppDataOnUninstall: false,
+      artifactName: "OpenCodex-Setup-x64.${ext}",
     });
-    expect(packageJson.build?.portable?.artifactName).toBe("OpenCodex-Portable-x64.${ext}");
     expect(existsSync(path.resolve(import.meta.dir, "..", "build", "icon.ico"))).toBe(true);
   });
 

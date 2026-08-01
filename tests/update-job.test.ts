@@ -97,11 +97,11 @@ describe("GUI update check", () => {
         return "9.9.9";
       },
       isDesktopRuntime: () => true,
-      desktopCurrentVersion: () => "0.1.0",
+      desktopCurrentVersion: () => "2.8.0",
       fetchDesktopInstallerRelease: async channel => ({
-        latestVersion: channel === "latest" ? "0.1.1" : "0.1.0-preview.1",
-        releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v0.1.1",
-        downloadUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/download/v0.1.1/OpenCodex-Setup-x64.exe",
+        latestVersion: channel === "latest" ? "2.8.1" : "2.8.1-preview.1",
+        releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.8.1",
+        downloadUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/download/v2.8.1/OpenCodex-Setup-x64.exe",
         assetName: "OpenCodex-Setup-x64.exe",
       }),
     });
@@ -109,8 +109,8 @@ describe("GUI update check", () => {
     expect(registryCalls).toBe(0);
     expect(result.installer).toBe("desktop");
     expect(result.installKind).toBe("desktop-installer");
-    expect(result.currentVersion).toBe("0.1.0");
-    expect(result.latestVersion).toBe("0.1.1");
+    expect(result.currentVersion).toBe("2.8.0");
+    expect(result.latestVersion).toBe("2.8.1");
     expect(result.updateAvailable).toBe(true);
     expect(result.canUpdate).toBe(false);
     expect(result.reason).toBe("desktop_installer_manual");
@@ -124,10 +124,10 @@ describe("GUI update check", () => {
       detectInstall: () => "npm",
       latestVersion: () => "9.9.9",
       isDesktopRuntime: () => true,
-      desktopCurrentVersion: () => "0.1.0",
+      desktopCurrentVersion: () => "2.8.0",
       fetchDesktopInstallerRelease: async () => ({
-        latestVersion: "0.1.1",
-        releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v0.1.1",
+        latestVersion: "2.8.1",
+        releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.8.1",
         downloadUrl: null,
         assetName: null,
       }),

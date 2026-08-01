@@ -43,24 +43,31 @@ describe("Zhipu BigModel provider", () => {
       baseUrl: BASE_URL,
       adapter: "openai-chat",
       authKind: "key",
-      dashboardUrl: "https://bigmodel.cn/console/usercenter/apikeys",
-      defaultModel: "glm-4.6",
+      dashboardUrl: "https://bigmodel.cn/apikey/platform",
+      defaultModel: "glm-5.2",
       jawcodeBundle: "zai",
     });
 
     // Without this the catalog falls back to a generic 128k window and Codex compacts
     // ~76,800 tokens early on the default model.
-    expect(entry?.modelContextWindows?.["glm-4.6"]).toBe(204_800);
+    expect(entry?.modelContextWindows?.["glm-5.2"]).toBe(1_000_000);
+    expect(entry?.modelContextWindows?.["glm-5-turbo"]).toBe(200_000);
+    expect(entry?.modelContextWindows?.["glm-5v-turbo"]).toBe(200_000);
 
     // Modalities are declared per model. `noVisionModels` is deliberately unused here: in this
     // repository it ADDS image input to route attachments through the proxy's vision sidecar
     // (src/codex/catalog/provider-fetch.ts), a coverage claim nobody verified for this host.
-    expect(entry?.modelInputModalities?.["glm-4.6"]).toEqual(["text"]);
+    expect(entry?.modelInputModalities?.["glm-5.2"]).toEqual(["text"]);
+    expect(entry?.modelInputModalities?.["glm-5v-turbo"]).toEqual(["text", "image"]);
     expect(entry?.modelInputModalities?.["glm-4.6v"]).toEqual(["text", "image"]);
     expect(entry?.noVisionModels).toBeUndefined();
 
     // A live-discovery claim we have not seen answer would produce an empty picker at runtime.
     expect(entry?.liveModels).toBeUndefined();
+    expect(entry?.models).toContain("glm-5.2");
+    expect(entry?.models).toContain("glm-5-turbo");
+    expect(entry?.models).toContain("glm-5v-turbo");
+    expect(entry?.models).toContain("glm-4.7-flashx");
     expect(entry?.models).toContain("glm-4.6v");
   });
 
@@ -75,6 +82,10 @@ describe("Zhipu BigModel provider", () => {
     expect(directoryIds.has("glm")).toBe(true);
     expect(directoryIds.has("glm-cn")).toBe(true);
     expect(directoryIds.has("zhipu-bigmodel")).toBe(false);
+    expect(FREE_PROVIDER_DIRECTORY.find(row => row.id === "glm-cn")).toMatchObject({
+      dashboardUrl: "https://bigmodel.cn/apikey/platform",
+      models: ["glm-4.7-flash"],
+    });
 
     // A saved `glm` provider keeps its own destination, unaffected by this registry entry.
     const config: OcxConfig = {
@@ -93,12 +104,12 @@ describe("Zhipu BigModel provider", () => {
 
   test("maps reasoning effort onto the GLM thinking toggle instead of reasoning_effort", async () => {
     // GLM exposes a binary thinking knob; these models reject reasoning_effort outright.
-    const high = await buildBody("zhipu-bigmodel/glm-4.6", "high");
+    const high = await buildBody("zhipu-bigmodel/glm-5.2", "high");
     expect(high.thinking).toEqual({ type: "enabled" });
     expect(high.reasoning_effort).toBeUndefined();
 
     // The disabled half matters: a one-sided assertion still passes when the map is stuck.
-    const low = await buildBody("zhipu-bigmodel/glm-4.6", "low");
+    const low = await buildBody("zhipu-bigmodel/glm-5.2", "low");
     expect(low.thinking).toEqual({ type: "disabled" });
     expect(low.reasoning_effort).toBeUndefined();
   });
@@ -108,12 +119,14 @@ describe("Zhipu BigModel provider", () => {
       label: "Zhipu AI — BigModel",
       adapter: "openai-chat",
       baseUrl: BASE_URL,
-      defaultModel: "glm-4.6",
+      dashboardUrl: "https://bigmodel.cn/apikey/platform",
+      defaultModel: "glm-5.2",
     });
     expect(KEY_LOGIN_PROVIDERS["zhipu-bigmodel"]).not.toHaveProperty("liveModels");
     expect(deriveProviderPresets().find(preset => preset.id === "zhipu-bigmodel")).toMatchObject({
       auth: "key",
-      defaultModel: "glm-4.6",
+      dashboardUrl: "https://bigmodel.cn/apikey/platform",
+      defaultModel: "glm-5.2",
     });
     expect(deriveJawcodeAliases()["zhipu-bigmodel"]).toBe("zai");
   });

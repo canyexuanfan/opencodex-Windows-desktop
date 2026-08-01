@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 22：交互状态收尾与最终重包已完成（仅待统一外部发布验收）`
+- 状态：`阶段 32：Provider 获取地址与 BigModel 模型刷新已完成（仅待真实安装/全量外网死链监控验收）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-代码与本机可安全验证范围已收尾。只剩一个统一外部发布验收门：Windows 10 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存、受信测试机 Authenticode `Valid` 与 exact-HEAD 跨平台 CI。不要为这些外部项重启当前正在使用的 Codex，也不再把历史重复项拆成多轮本机测试。
+代码与本机可安全验证范围已收尾。普通发布链只发布安装版 `OpenCodex-Setup-x64.exe`，不发布 portable；剩余验收是用户/测试机真实双击安装、桌面快捷方式和开始菜单图标目视确认，以及 Windows 10/11 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存、受信测试机 Authenticode `Valid` 与 exact-HEAD 跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
 
 ---
 
@@ -64,7 +64,7 @@
 ### 必须实现
 
 - [ ] Windows 10/11 x64 安装版可直接运行（待干净 VM 双击验收）。
-- [ ] Windows 10/11 x64 便携版可直接运行（待干净 VM 双击验收）。
+- [x] 普通发布链不再发布 Windows 便携版；如后续确有需求，再单独做 `advanced/portable` 构建与验证。
 - [x] 不弹控制台窗口（Electron/Bun spawn 使用隐藏窗口；待 VM 最终确认）。
 - [x] 不要求用户安装运行时或执行 `npm install`/`bun install`（隔离 PATH smoke 已验证）。
 - [x] 任何时刻只有一个 Electron 主实例。
@@ -78,7 +78,7 @@
 - [x] 实际端口确定后才写入 runtime 状态和客户端配置。
 - [x] 停止、重启、崩溃恢复继续保护原有 Codex 配置（真实用户 Provider 保留仍待 VM）。
 - [x] 保留原有 Provider、模型、OAuth、路由、日志和存储能力（复用完整 Dashboard；GUI 全套、桌面页面契约与 CLI/headless 对齐回归通过）。
-- [x] 最终安装包和便携包均使用 `CN=十七°` 签名。
+- [x] 最终安装版使用 `CN=十七°` 签名；便携版不进入普通发布链。
 
 ### 明确不做
 
@@ -926,3 +926,26 @@ Codex / Claude Code / 其他现有客户端
 - [x] 已清理本轮可控构建临时目录：`F:\workbuddy\opencodex\.tmp\desktop-resource-stage30-20260802`、`F:\workbuddy\opencodex\.tmp\electron-builder-cache-stage30-20260802`、`F:\workbuddy\opencodex\.tmp\electron-builder-cache-stage30-final-20260802`、`C:\tmp\opencodex-resource-stage30-20260802`、`C:\tmp\opencodex-resource-stage30-final-20260802`。
 - [x] 用户授权后，已精确删除本轮默认沙箱失败留在 `%TEMP%` 下的 19 个 `ocx-update-job-30000-*` 测试目录；复核结果为 `NO_REMAINING_OCX_UPDATE_JOB_30000_DIRS`。
 - [ ] 真实安装后的桌面快捷方式/开始菜单图标仍需用户用最新 `desktop/out/OpenCodex-Setup-x64.exe` 安装目视确认；Windows 图标缓存仍可能短暂显示旧图标。
+
+# 阶段 31：版本对齐与仅发布安装版策略收口（2026-08-02）
+
+- [x] 桌面壳版本从 `0.1.0` 对齐根包/代理版本 `2.8.0`；最终 `desktop/out/win-unpacked/resources/app.asar` 内 `package.json` 已确认版本为 `2.8.0`。
+- [x] electron-builder 普通 Windows 发布目标只保留 x64 NSIS 安装版；已删除/关闭 portable target，`desktop/out` 最终只生成 `OpenCodex-Setup-x64.exe` 与对应 `.blockmap`，没有 Portable 产物。
+- [x] 安装版发布资产名固定为 `OpenCodex-Setup-x64.exe`；版本信息跟随应用版本与 GitHub Release tag，不再让下载资产名漂移。
+- [x] 桌面端更新检查只接受固定安装版资产 `OpenCodex-Setup-x64.exe`；测试中显式加入 `OpenCodex-Portable-x64.exe` 和版本化 Setup 干扰项，均不会被选中。
+- [x] README 与 Release notes 生成脚本只引导用户下载安装版；便携版需求保留为未来 `advanced/portable` 单独构建，不混入普通发布链。
+- [x] 验证通过：`cd desktop && bun test tests\package-static.test.ts` 6/6、32 个断言；`bun test tests\desktop-release-update.test.ts tests\release-notes.test.ts` 26/26、49 个断言；非沙箱 `bun test tests\desktop-release-update.test.ts tests\release-notes.test.ts tests\update-job.test.ts` 62/62、171 个断言；`bun run typecheck`；`cd desktop && bun run build`。
+- [x] 已重新生成桌面资源树并只重打 NSIS 安装版；最终 Setup SHA-256=`2C0423D557BFFC9F4627C8ED8E8C0E6C0F198E54AEEE5F5407D0F4CA93E5DBF0`。
+- [x] 已精确清理本轮默认沙箱失败留下的 19 个 `%TEMP%\ocx-update-job-13248-*` 测试目录；复核结果为 `NO_REMAINING_OCX_UPDATE_JOB_13248_DIRS`。
+- [ ] 真实双击安装后的桌面快捷方式/开始菜单图标、安装目录页显示和受信签名链仍需用户或干净 VM 目视确认；本轮未重启、关闭或覆盖当前正在使用的 Codex。
+
+# 阶段 32：Provider 获取地址与 BigModel 模型刷新（2026-08-02）
+
+- [x] 核对添加 Provider 模态框的数据来源：桌面端复用 `src/providers/registry.ts` / `src/providers/free-directory.ts` 派生出的 Provider preset，不存在独立桌面副本。
+- [x] 修复截图中的智谱 BigModel 死链：`zhipu-bigmodel` 的 `dashboardUrl` 从旧 `https://bigmodel.cn/console/usercenter/apikeys` 改为当前可进入的 `https://bigmodel.cn/apikey/platform`；`glm-cn` 免费目录入口也统一到同一 API Key 页面。
+- [x] 更新 BigModel 默认模型：`glm-4.6` → `glm-5.2`。官方文档当前将 GLM-5.2 标为 HOT，并在 OpenAI-compatible 调用示例中使用 `model: "glm-5.2"`。
+- [x] 补齐 BigModel 静态候选模型：`glm-5.2`、`glm-5.1`、`glm-5`、`glm-5-turbo`、`glm-4.7`、`glm-4.7-flashx`、`glm-4.7-flash`、`glm-4.6`、`glm-5v-turbo`、`glm-4.6v`；`glm-5.2` 上下文显式 1M，`glm-5v-turbo` 标记文本+图像输入。
+- [x] 旧值扫描通过：源码/测试/GUI/docs/README 中不再出现旧 BigModel API Key 死链；`defaultModel: "glm-4.6"` 不再存在。
+- [x] 验证通过：`bun test tests\zhipu-bigmodel-provider.test.ts tests\provider-registry-parity.test.ts` 35/35、565 个断言；`bun run typecheck`；`cd desktop && bun run build`。
+- [x] 已重新生成桌面资源树并只重打 NSIS 安装版；`desktop/out` 仅有 `OpenCodex-Setup-x64.exe` 与 `.blockmap`，无 Portable。最终 Setup SHA-256=`D49E64B1265966B15DB0FABB5A8CB2CC08E24E8D02802612BC93A05F0CFFE446`。
+- [ ] 其余 Provider 控制台链接已提取 50 个唯一 `dashboardUrl`，但本机 Node/PowerShell 网络探活对大量登录控制台返回超时或 `fetch failed`，不能把网络异常等同于死链；后续若要做到“持续全量死链监控”，应接入 CI/人工可联网环境，以 404/410/DNS 为失败标准。
