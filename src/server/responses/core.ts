@@ -87,6 +87,7 @@ import {
 } from "../../codex/routing";
 import { fetchWithResetRetry, fetchWithTransientRetry, applyUpstreamRecoveryInit } from "../../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
+import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { slugsEquivalent } from "../../providers/slug-codec";
@@ -134,6 +135,8 @@ import {
   consumeForInspection,
   consumeForResponseLogMetadata,
   createSseInspector,
+  isEagerRelaySseResponse,
+  isNativePassthroughSseResponse,
   markEagerRelaySseResponse,
   markNativePassthroughSseResponse,
   relaySseWithFailedTail,
@@ -261,6 +264,7 @@ interface CodexPoolAccountRetryArgs {
     // needs the inbound scope or the retry could land on a different wire than the
     // first attempt.
     inboundWire?: InboundWire;
+    translatorBudget: TranslatorBudget;
   };
   firstAuthCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   firstResponse: Response;
@@ -374,7 +378,10 @@ async function retryCodexPoolOnAlternateAccount(
     resolveWireProtocolOverride(route.providerName, route.modelId, retryProvider, inboundWire),
     config.cacheRetention,
   );
-  const request = await retryAdapter.buildRequest(parsed, { headers: retryHeaders });
+  const request = await retryAdapter.buildRequest(parsed, {
+    headers: retryHeaders,
+    translatorBudget: options.translatorBudget,
+  });
   recordAdapterReasoning(logCtx, request);
 
   await firstResponse.body?.cancel().catch(() => undefined);
@@ -410,6 +417,8 @@ async function retryCodexPoolOnAlternateAccount(
   } catch (error) {
     // Attribute the transport failure to the alternate account (already selected).
     return { kind: "transport", error, authCtx: retryAuthCtx };
+  } finally {
+    request.releaseBodyObservation?.();
   }
 }
 
@@ -463,6 +472,11 @@ export function codexForwardTerminalOutcomeRecorder(
 
 
 export function decodeRequestErrorResponse(err: unknown, label: string): Response {
+  if (isTranslatorBudgetExceededError(err)) {
+    return formatErrorResponse(413, "request_too_large", "request translation buffer exceeded the safe limit", {
+      code: "translation_buffer_limit",
+    });
+  }
   if (err instanceof UnsupportedContentEncodingError) {
     return formatErrorResponse(415, "invalid_request_error", err.message);
   }
@@ -529,6 +543,8 @@ export interface HandleResponsesOptions {
   deferCodexResetDerivedCooldown?: boolean;
   /** 030-owned handoff when a child consumed the original failure under bounds. */
   onConsumedComboFailure?: (failure: ConsumedComboFailure) => void;
+  /** Caller-owned for Chat/Claude replay; omitted only at genuine Responses ingress. */
+  translatorBudget?: TranslatorBudget;
 }
 
 
@@ -1082,18 +1098,81 @@ export async function handleComboResponses(
 
 
 
+function finalizeOwnedTranslatorBudget(response: Response, budget: TranslatorBudget): Response {
+  if (!response.body) {
+    budget.dispose();
+    return response;
+  }
+  const reader = response.body.getReader();
+  let finalized = false;
+  const finalize = () => {
+    if (finalized) return;
+    finalized = true;
+    budget.dispose();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) {
+          finalize();
+          controller.close();
+        } else {
+          controller.enqueue(result.value);
+        }
+      } catch (error) {
+        finalize();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason); } finally { finalize(); }
+    },
+  });
+  const finalizedResponse = new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  if (isNativePassthroughSseResponse(response)) {
+    markNativePassthroughSseResponse(finalizedResponse);
+  }
+  if (isEagerRelaySseResponse(response)) {
+    markEagerRelaySseResponse(finalizedResponse);
+  }
+  return finalizedResponse;
+}
+
 export async function handleResponses(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
   options: HandleResponsesOptions = {},
 ): Promise<Response> {
+  const ownsBudget = options.translatorBudget === undefined;
+  const translatorBudget = options.translatorBudget ?? createTranslatorBudget();
+  try {
+    const response = await handleResponsesInner(req, config, logCtx, { ...options, translatorBudget });
+    return ownsBudget ? finalizeOwnedTranslatorBudget(response, translatorBudget) : response;
+  } catch (error) {
+    if (ownsBudget) translatorBudget.dispose();
+    throw error;
+  }
+}
+
+async function handleResponsesInner(
+  req: Request,
+  config: OcxConfig,
+  logCtx: RequestLogContext,
+  options: HandleResponsesOptions & { translatorBudget: TranslatorBudget },
+): Promise<Response> {
   // The Chat and Anthropic surfaces replay through here with a Responses-shaped body,
   // so an omitted value means a genuine Responses inbound.
   const inboundWire = options.inboundWire ?? "responses";
+  const translatorBudget = options.translatorBudget;
   let body: unknown;
   try {
-    body = await readJsonRequestBody(req);
+    body = await readJsonRequestBody(req, translatorBudget);
   } catch (err) {
     return decodeRequestErrorResponse(err, "responses");
   }
@@ -1131,14 +1210,21 @@ export async function handleResponses(
   }
 
   let parsed;
+  let toolBridgeMaps: ReturnType<typeof buildToolBridgeMaps>;
   try {
     parsed = parseRequest(body);
+    toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
     if (previousResponseInputExpanded) parsed._previousResponseInputExpanded = true;
     parsed._providerContinuation = previousResponseProviderState(parsed.previousResponseId);
     parsed._cursorConversationId = parsed._providerContinuation?.cursor?.conversationId;
     const clientThreadId = req.headers.get("x-codex-parent-thread-id")?.trim();
     if (clientThreadId) parsed._clientThreadId = clientThreadId;
   } catch (err) {
+    if (isTranslatorBudgetExceededError(err)) {
+      return formatErrorResponse(413, "request_too_large", "request translation buffer exceeded the safe limit", {
+        code: "translation_buffer_limit",
+      });
+    }
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
   // Prefer a pre-populated id (routed Claude) over Responses headers that may be
@@ -1394,11 +1480,18 @@ export async function handleResponses(
   const visionPlan = planVisionSidecar(config, route.provider, route.modelId, parsed, openAiSidecar);
   const recordSidecarOutcome = openAiSidecar?.recordOutcome;
   if (visionPlan) {
-    await describeImagesInPlace(parsed, visionPlan, openAiSidecar?.headers ?? selectedForwardHeaders, options.abortSignal, recordSidecarOutcome);
+    await describeImagesInPlace(
+      parsed,
+      visionPlan,
+      openAiSidecar?.headers ?? selectedForwardHeaders,
+      options.abortSignal,
+      recordSidecarOutcome,
+      translatorBudget,
+    );
   } else if (modelInList(route.provider.noVisionModels, route.modelId)) {
     // Sidecar-covered model but NO plan (no forward provider / missing forwarded auth / sidecar
     // disabled): fail closed — never forward raw images to a text-only upstream.
-    stripImagesInPlace(parsed);
+    stripImagesInPlace(parsed, translatorBudget);
   }
 
   const recordTerminalOutcomes = options.recordTerminalOutcomes !== false;
@@ -1448,7 +1541,7 @@ export async function handleResponses(
   if ("passthrough" in adapter && adapter.passthrough && !routedCompaction) {
     const imageGenCallAliases = route.provider.authMode === "forward"
       ? new Map<string, { namespace: string; name: string }>()
-      : imageGenToolCallAliases(buildToolBridgeMaps(parsed).toolNsMap, parsed._rawBody);
+      : imageGenToolCallAliases(toolBridgeMaps.toolNsMap, parsed._rawBody, translatorBudget);
     // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
     // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
     // REST backend rejects the parameter — the adapter strips it in forward mode, so the ONLY
@@ -1470,7 +1563,7 @@ export async function handleResponses(
         + `(model ${parsed.modelId}); forwarding without it — earlier turns may be missing from this request`,
       );
     }
-    let request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+    let request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
     recordAdapterReasoning(logCtx, request);
     const passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
       ? request.usageLog.inputTokens
@@ -1520,6 +1613,8 @@ export async function handleResponses(
       );
     } catch (err) {
       return transportFailureResponse(err);
+    } finally {
+      request.releaseBodyObservation?.();
     }
 
     if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
@@ -1795,11 +1890,11 @@ export async function handleResponses(
       const payloadRewrites = [
         createImageGenCallRestoreRewrite(imageGenCallAliases),
         hasResponsesItemIdRepair(repairConfig)
-          ? createResponsesItemIdPayloadRewrite(repairConfig!)
+          ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       const rewrittenBody = payloadRewrites.length > 0
-        ? relaySseWithPayloadRewrite(nativeBody, composeSsePayloadRewrites(...payloadRewrites))
+        ? relaySseWithPayloadRewrite(nativeBody, composeSsePayloadRewrites(...payloadRewrites), translatorBudget)
         : nativeBody;
       const clientBody = process.platform === "win32" && !needsClientRewrite
         ? nativeBody
@@ -1899,6 +1994,7 @@ export async function handleResponses(
     }
     const imgResponse = await runWithImageBridge({
       parsed, adapter,
+      incomingMeta: { headers: selectedForwardHeaders, abortSignal: options.abortSignal, translatorBudget },
       ...(imgPlan ? { plan: imgPlan } : {}),
       ...(vidPlan ? { videoPlan: vidPlan } : {}),
       forwardHeaders: selectedForwardHeaders,
@@ -1972,6 +2068,7 @@ export async function handleResponses(
     noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
     const wsResponse = await runWithWebSearch({
       parsed, adapter,
+      incomingMeta: { headers: selectedForwardHeaders, abortSignal: options.abortSignal, translatorBudget },
       backend: wsPlan.backend,
       forwardProvider: wsPlan.forwardSidecar?.provider,
       anthropicSidecar: wsPlan.anthropicSidecar,
@@ -2032,7 +2129,7 @@ export async function handleResponses(
         noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
         await adapter.runTurn?.(
           parsed,
-          { headers: selectedForwardHeaders, abortSignal: runTurnAbort.signal },
+          { headers: selectedForwardHeaders, abortSignal: runTurnAbort.signal, translatorBudget },
           queue.push,
         );
       } catch (err) {
@@ -2050,7 +2147,7 @@ export async function handleResponses(
       }
     };
 
-    const { toolNsMap, freeformToolNames, toolSearchToolNames } = buildToolBridgeMaps(parsed);
+    const { toolNsMap, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
     if (parsed.stream) {
       void runTurn();
       let eventSource: AsyncIterable<AdapterEvent> = queue.stream();
@@ -2071,6 +2168,7 @@ export async function handleResponses(
           queue.close();
         }, 2_000,
         {
+          translatorBudget,
           ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
           stallTimeoutSec: config.stallTimeoutSec,
           hideThinkingSummary: parsed.options.hideThinkingSummary,
@@ -2116,6 +2214,7 @@ export async function handleResponses(
     }
     let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed.modelId, {
+      translatorBudget,
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       freeformToolNames,
@@ -2146,7 +2245,7 @@ export async function handleResponses(
   const connectMs = config.connectTimeoutMs ?? 200_000;
   let activeAdapter = adapter;
 
-  const request = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+  const request = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
   recordAdapterReasoning(logCtx, request);
   const inputTokenEstimate = typeof request.usageLog?.inputTokens === "number"
     ? request.usageLog.inputTokens
@@ -2180,6 +2279,8 @@ export async function handleResponses(
     if (options.abortSignal?.aborted) return clientCancelledResponse();
     const msg = describeUpstreamConnectFailure(err, connectMs);
     return formatErrorResponse(502, "upstream_error", msg);
+  } finally {
+    request.releaseBodyObservation?.();
   }
 
   if (!upstreamResponse.ok) {
@@ -2196,6 +2297,7 @@ export async function handleResponses(
     ): Promise<Response | { failed: Response }> => {
       const retryRequest = await activeAdapter.buildRequest(parsed, {
         headers: selectedForwardHeaders,
+        translatorBudget,
         ...(imageTierBias > 0 ? { imageTierBias } : {}),
       });
       recordAdapterReasoning(logCtx, retryRequest);
@@ -2207,11 +2309,15 @@ export async function handleResponses(
       sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
       noteAttemptSend(logCtx.activeAttempt, retryEstimate, recovery);
       try {
-        return activeAdapter.fetchResponse
-          ? await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
-          : await fetchWithHeaderTimeout(retryRequest.url, {
+        try {
+          return activeAdapter.fetchResponse
+            ? await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
+            : await fetchWithHeaderTimeout(retryRequest.url, {
               method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
             }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+        } finally {
+          retryRequest.releaseBodyObservation?.();
+        }
       } catch (err) {
         cleanupUpstreamAbort();
         upstream.abort();
@@ -2382,6 +2488,7 @@ export async function handleResponses(
       try {
         const continuationRequest = await activeAdapter.buildRequest(nextParsed, {
           headers: selectedForwardHeaders,
+          translatorBudget,
           ...(imageTierBias > 0 ? { imageTierBias } : {}),
         });
         recordAdapterReasoning(logCtx, continuationRequest);
@@ -2389,15 +2496,16 @@ export async function handleResponses(
           ? continuationRequest.usageLog.inputTokens
           : undefined;
         if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
-        if (activeAdapter.fetchResponse) {
-          noteAttemptSend(logCtx.activeAttempt, continuationEstimate);
-          response = await activeAdapter.fetchResponse(continuationRequest, {
+        try {
+          if (activeAdapter.fetchResponse) {
+            noteAttemptSend(logCtx.activeAttempt, continuationEstimate);
+            response = await activeAdapter.fetchResponse(continuationRequest, {
               abortSignal: upstream.signal,
               timeoutMs: connectMs,
               stream: nextParsed.stream,
             });
-        } else {
-          response = await fetchWithResetRetry(
+          } else {
+            response = await fetchWithResetRetry(
               recovery => {
                 noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery);
                 return fetchWithHeaderTimeout(
@@ -2414,7 +2522,10 @@ export async function handleResponses(
                 );
               },
               { abortSignal: upstream.signal, label: safeHostLabel(continuationRequest.url) },
-            );
+              );
+          }
+        } finally {
+          continuationRequest.releaseBodyObservation?.();
         }
       } catch (error) {
         if (options.abortSignal?.aborted) {
@@ -2504,9 +2615,9 @@ export async function handleResponses(
       const detachContinuationBodyGuard = cancelBodyOnAbort(response.body, upstream.signal);
       try {
         if (nextParsed.stream) {
-          yield* activeAdapter.parseStream(response);
+          yield* activeAdapter.parseStream(response, translatorBudget);
         } else if (activeAdapter.parseResponse) {
-          yield* await activeAdapter.parseResponse(response);
+          yield* await activeAdapter.parseResponse(response, translatorBudget);
         } else {
           yield { type: "error", message: "Provider continuation does not support response parsing" };
         }
@@ -2523,7 +2634,7 @@ export async function handleResponses(
   };
 
   if (parsed.stream) {
-    const initialEventStream = activeAdapter.parseStream(upstreamResponse);
+    const initialEventStream = activeAdapter.parseStream(upstreamResponse, translatorBudget);
     const eventStream = terminalGuardEnabled
       ? guardTerminalEventStream({
           parsed,
@@ -2533,11 +2644,12 @@ export async function handleResponses(
           continuation: fetchTerminalGuardContinuation,
         })
       : initialEventStream;
-    const { toolNsMap, freeformToolNames, toolSearchToolNames } = buildToolBridgeMaps(parsed);
+    const { toolNsMap, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
     const sseStream = bridgeToResponsesSSE(
       eventStream, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
       () => upstream.abort(), 2_000,
       {
+        translatorBudget,
         ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
         stallTimeoutSec: config.stallTimeoutSec,
         hideThinkingSummary: parsed.options.hideThinkingSummary,
@@ -2575,7 +2687,7 @@ export async function handleResponses(
   if (activeAdapter.parseResponse) {
     let events: AdapterEvent[];
     try {
-      const initialEvents = await activeAdapter.parseResponse(upstreamResponse);
+      const initialEvents = await activeAdapter.parseResponse(upstreamResponse, translatorBudget);
       if (terminalGuardEnabled) {
         events = [];
         for await (const event of guardTerminalEventStream({
@@ -2591,9 +2703,10 @@ export async function handleResponses(
     } finally {
       cleanupUpstreamAbort();
     }
-    const { toolNsMap, freeformToolNames, toolSearchToolNames } = buildToolBridgeMaps(parsed);
+    const { toolNsMap, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
     let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed.modelId, {
+      translatorBudget,
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       freeformToolNames,

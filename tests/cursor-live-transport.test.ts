@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createLiveCursorTransport, CursorMissingCredentialError, parseConnectEndStreamError, resolveCursorToken } from "../src/adapters/cursor/live-transport";
+import { createTestTranslatorBudget } from "./helpers/translator-budget";
 import { prepareCursorRunRequest } from "../src/adapters/cursor/protobuf-request";
 import {
   CursorBlobAdmissionError,
@@ -15,6 +16,7 @@ describe("Cursor live transport", () => {
     try {
       expect(() => createLiveCursorTransport({
         provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh" },
+        translatorBudget: createTestTranslatorBudget(),
         headers: new Headers(),
       })).toThrow(CursorMissingCredentialError);
     } finally {
@@ -26,6 +28,7 @@ describe("Cursor live transport", () => {
   test("accepts provider apiKey without exposing it", () => {
     const transport = createLiveCursorTransport({
       provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "secret-cursor-token" },
+      translatorBudget: createTestTranslatorBudget(),
       headers: new Headers(),
     });
 
@@ -37,6 +40,7 @@ describe("Cursor live transport", () => {
   test("fails the turn when MCP preparation rejects", async () => {
     const transport = createLiveCursorTransport({
       provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      translatorBudget: createTestTranslatorBudget(),
       headers: new Headers(),
     });
     const internals = transport as unknown as {
@@ -67,6 +71,7 @@ describe("Cursor live transport", () => {
     setCursorBlobLimitsForTests({ maxEntryBytes: serialized.byteLength - 1, maxTotalBytes: 256 });
     const transport = createLiveCursorTransport({
       provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      translatorBudget: createTestTranslatorBudget(),
       headers: new Headers(),
     });
     let opened = false;
@@ -97,6 +102,7 @@ describe("Cursor live transport", () => {
       resetCursorBlobStateForTests();
       const transport = createLiveCursorTransport({
         provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+        translatorBudget: createTestTranslatorBudget(),
         headers: new Headers(),
       });
       let onOpened!: () => void;
@@ -198,6 +204,7 @@ describe("Cursor live transport context estimate wiring (#373)", () => {
   function makeTransport() {
     return createLiveCursorTransport({
       provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      translatorBudget: createTestTranslatorBudget(),
       headers: new Headers(),
     });
   }

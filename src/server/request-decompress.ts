@@ -1,4 +1,5 @@
 import { gunzipSync, inflateRawSync, inflateSync, zstdDecompressSync } from "node:zlib";
+import type { TranslatorBudget } from "../lib/translator-budget";
 
 /**
  * Request-body decompression for the /v1/responses data plane.
@@ -78,8 +79,28 @@ export function decodeRequestBody(
 }
 
 /** Parse a JSON request body, transparently decoding compressed payloads. */
-export async function readJsonRequestBody(req: Request): Promise<unknown> {
+export async function readJsonRequestBody(req: Request, budget?: TranslatorBudget): Promise<unknown> {
   const encoding = req.headers.get("content-encoding");
-  const decoded = decodeRequestBody(new Uint8Array(await req.arrayBuffer()), encoding);
-  return JSON.parse(new TextDecoder().decode(decoded));
+  const declaredLength = Number(req.headers.get("content-length"));
+  const releaseReservation = budget && Number.isFinite(declaredLength) && declaredLength > 0
+    ? budget.observeAcceptedRequestCopy(declaredLength)
+    : undefined;
+  const raw = new Uint8Array(await req.arrayBuffer());
+  releaseReservation?.();
+  const releaseRaw = budget?.observeAcceptedRequestCopy(raw.byteLength);
+  let releaseDecoded: (() => void) | undefined;
+  let releaseText: (() => void) | undefined;
+  try {
+    const decoded = decodeRequestBody(raw, encoding);
+    releaseDecoded = decoded === raw ? undefined : budget?.observeAcceptedRequestCopy(decoded.byteLength);
+    const text = new TextDecoder().decode(decoded);
+    releaseText = budget?.observeAcceptedRequestCopy(new TextEncoder().encode(text).byteLength);
+    const parsed = JSON.parse(text);
+    budget?.observeAcceptedRequestCopy(new TextEncoder().encode(JSON.stringify(parsed)).byteLength);
+    return parsed;
+  } finally {
+    releaseText?.();
+    releaseDecoded?.();
+    releaseRaw?.();
+  }
 }

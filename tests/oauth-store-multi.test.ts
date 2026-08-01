@@ -10,6 +10,8 @@ import {
   markAccountNeedsReauth,
   markAccountNeedsReauthIfGeneration,
   mutateStore,
+  OAuthMutationBusyError,
+  oauthMutationTailSnapshot,
   reconcileOAuthReauthState,
   removeAccount,
   removeCredential,
@@ -246,5 +248,49 @@ describe("multi-account auth store", () => {
 
     expect(await pending).toBe(false);
     expect(getAccountSet("xai")!.accounts[0]?.needsReauth).toBeUndefined();
+  });
+
+  test("OAuth mutation 129 rejects before enqueue while every accepted mutation executes once", async () => {
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const started = new Promise<void>(resolve => { firstStarted = resolve; });
+    let executions = 0;
+    const accepted = [mutateStore(async () => {
+      executions++;
+      firstStarted();
+      await firstGate;
+    }, ["provider", "account"] )];
+    await started;
+    for (let i = 1; i < 128; i++) {
+      accepted.push(mutateStore(() => { executions++; }, ["provider", `account-${i}`]));
+    }
+    expect(oauthMutationTailSnapshot().active).toBe(128);
+    await expect(mutateStore(() => { executions++; }, ["rejected"])).rejects.toBeInstanceOf(OAuthMutationBusyError);
+    expect(oauthMutationTailSnapshot().active).toBe(128);
+    releaseFirst();
+    await Promise.all(accepted);
+    expect(executions).toBe(128);
+    expect(oauthMutationTailSnapshot().active).toBe(0);
+  });
+
+  test("OAuth 30 second wait timeout releases an unstarted lease and never enters the chain", async () => {
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const started = new Promise<void>(resolve => { firstStarted = resolve; });
+    const blocker = mutateStore(async () => {
+      firstStarted();
+      await firstGate;
+    }, ["provider", "running-account"]);
+    await started;
+    let entered = false;
+    const timedOut = mutateStore(() => { entered = true; }, ["provider", "waiting-account"], { waitMs: 10 });
+    await expect(timedOut).rejects.toBeInstanceOf(OAuthMutationBusyError);
+    expect(entered).toBe(false);
+    expect(oauthMutationTailSnapshot().active).toBe(1);
+    releaseFirst();
+    await blocker;
+    expect(oauthMutationTailSnapshot().active).toBe(0);
   });
 });

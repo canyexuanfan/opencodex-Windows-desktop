@@ -21,7 +21,7 @@ import {
   submitManualLoginCode,
   upsertOAuthProvider,
 } from "../oauth";
-import { removeCredential } from "../oauth/store";
+import { OAuthMutationBusyError, removeCredential } from "../oauth/store";
 import { providerDestinationResolvedError } from "../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../oauth/key-providers";
 import { deriveProviderPresets } from "../providers/derive";
@@ -136,6 +136,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     ??     (await handleSystemRoutes(ctx))
       ?? (await handleSidebarRoutes(ctx));
   } catch (error) {
+    if (error instanceof OAuthMutationBusyError) {
+      return new Response(JSON.stringify({ error: { type: "server_error", code: "oauth_mutation_busy", message: error.message } }), {
+        status: 503,
+        headers: { "content-type": "application/json", "Retry-After": "1" },
+      });
+    }
     if (!(error instanceof CatalogGatherBusyError)) throw error;
     return new Response(JSON.stringify({ error: { type: "server_error", code: "catalog_busy", message: error.message } }), {
       status: 503,

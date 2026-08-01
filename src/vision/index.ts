@@ -8,6 +8,7 @@ import { getAccountSet } from "../oauth/store";
 import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import type { SidecarOutcomeRecorder } from "../web-search/executor";
 import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
+import type { TranslatorBudget } from "../lib/translator-budget";
 
 export { describeImage } from "./describe";
 export { describeImageAnthropic, parseAnthropicVisionSSE } from "./anthropic-describe";
@@ -344,6 +345,7 @@ export async function describeImagesInPlace(
   selectedForwardHeaders: Headers,
   abortSignal?: AbortSignal,
   recordSidecarOutcome?: SidecarOutcomeRecorder,
+  translatorBudget?: TranslatorBudget,
 ): Promise<void> {
   // 1. Gather every image part across messages, each with its own message's text as context.
   const jobs: ImageJob[] = [];
@@ -420,7 +422,19 @@ export async function describeImagesInPlace(
   let oi = 0;
   for (const { msg, parts } of targets) {
     const newParts: OcxContentPart[] = [];
-    for (const p of parts) newParts.push(p.type === "image" ? renderDescription(outcomes[oi++]) : p);
+    for (const p of parts) {
+      if (p.type !== "image") {
+        newParts.push(p);
+        continue;
+      }
+      const replacement = renderDescription(outcomes[oi++]);
+      const reservation = translatorBudget?.reserveTransient(
+        descriptionEncoder.encode(replacement.text).byteLength,
+        { kind: "request_copies" },
+      );
+      newParts.push(replacement);
+      reservation?.commitRetained();
+    }
     msg.content = newParts;
   }
 }
@@ -431,15 +445,22 @@ export async function describeImagesInPlace(
  * raw images would 400 or silently confuse it. Replace each image with an explicit marker so the
  * model (and the user, via its reply) knows the image was dropped rather than ignored.
  */
-export function stripImagesInPlace(parsed: OcxParsedRequest): boolean {
+export function stripImagesInPlace(parsed: OcxParsedRequest, translatorBudget?: TranslatorBudget): boolean {
   let stripped = false;
   for (const msg of parsed.context.messages) {
     if (!carriesImages(msg.role) || !Array.isArray(msg.content)) continue;
     const parts = msg.content as OcxContentPart[];
     if (!parts.some(p => p.type === "image")) continue;
-    msg.content = parts.map(p => p.type === "image"
-      ? { type: "text", text: "[image omitted: this model is text-only and the vision sidecar is unavailable (no ChatGPT login)]" } as OcxContentPart
-      : p);
+    msg.content = parts.map(p => {
+      if (p.type !== "image") return p;
+      const replacement = { type: "text", text: "[image omitted: this model is text-only and the vision sidecar is unavailable (no ChatGPT login)]" } as OcxContentPart;
+      const reservation = translatorBudget?.reserveTransient(
+        descriptionEncoder.encode((replacement as OcxTextContent).text).byteLength,
+        { kind: "request_copies" },
+      );
+      reservation?.commitRetained();
+      return replacement;
+    });
     stripped = true;
   }
   return stripped;

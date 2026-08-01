@@ -1,6 +1,7 @@
 import {
   enforceAppOwnedMemoryBudget,
   registerRetainedStore,
+  registerObservedBuffer,
   type RetainedStoreRegistration,
   type RetainedStoreSnapshot,
 } from "./app-owned-memory";
@@ -41,6 +42,10 @@ import {
   evictOldestResponseContinuationForBudget,
   responseContinuationRetainedStoreSnapshot,
 } from "../responses/state";
+import { translatorObservedBufferSnapshot } from "./translator-budget";
+import { imageFulfillmentTailSnapshot } from "../images/fulfill";
+import { oauthMutationTailSnapshot } from "../oauth/store";
+import { grokApplyFlightSnapshot } from "../server/management/agent-settings-routes";
 
 function ringSnapshot(metrics: { entries: number; bytes: number; oldestAt: number | null }): RetainedStoreSnapshot {
   return {
@@ -147,6 +152,17 @@ export function registerDefaultAppOwnedMemoryStores(): void {
   for (const registration of APP_OWNED_RETAINED_STORE_REGISTRATIONS) {
     registerRetainedStore(registration);
   }
+}
+
+export const APP_OWNED_OBSERVED_BUFFER_REGISTRATIONS = [
+  { id: "translator_buffers", category: "translator", snapshot: translatorObservedBufferSnapshot },
+  { id: "image_fulfillment_tail", category: "serialized_tails", snapshot: imageFulfillmentTailSnapshot },
+  { id: "oauth_mutation_tail", category: "serialized_tails", snapshot: oauthMutationTailSnapshot },
+  { id: "grok_apply_flight", category: "serialized_tails", snapshot: grokApplyFlightSnapshot },
+] as const;
+
+export function registerDefaultAppOwnedObservedBuffers(): void {
+  for (const registration of APP_OWNED_OBSERVED_BUFFER_REGISTRATIONS) registerObservedBuffer(registration);
 }
 
 export function registerAppOwnedMemorySweepFallback(): void {

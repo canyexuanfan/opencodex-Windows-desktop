@@ -23,6 +23,7 @@ import {
   setCached,
 } from "../src/codex/model-cache";
 import type { PersistedUsageEntry } from "../src/usage/log";
+import { registerDefaultAppOwnedObservedBuffers } from "../src/lib/app-owned-memory-stores";
 
 interface Row { bytes: number; at: number; pinned?: boolean }
 
@@ -346,6 +347,20 @@ describe("app-owned retained memory", () => {
       translator: { currentBytes: 100, highWaterBytes: 200, active: 1 },
       tails: { currentBytes: 300, highWaterBytes: 400, active: 2 },
     });
+  });
+
+  test("all four 050 observed ids appear in observedInFlight with the 040 scalar shape", () => {
+    registerDefaultAppOwnedObservedBuffers();
+    const observed = appOwnedBytesSnapshot().observedInFlight;
+    expect(Object.keys(observed).sort()).toEqual([
+      "grok_apply_flight",
+      "image_fulfillment_tail",
+      "oauth_mutation_tail",
+      "translator_buffers",
+    ]);
+    for (const snapshot of Object.values(observed)) {
+      expect(Object.keys(snapshot).sort()).toEqual(["active", "currentBytes", "highWaterBytes"]);
+    }
   });
 
   test("budget decrease enforces synchronously in the documented order", () => {

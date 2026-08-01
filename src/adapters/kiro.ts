@@ -17,6 +17,10 @@ import { KiroThinkingParser } from "./kiro-thinking";
 import { isCompleteKiroToolInput, kiroTruncationErrorMessage } from "./kiro-truncation";
 import { createKiroToolNameRegistry, fallbackToolUseId, fingerprint, invocationId, isValidKiroConversationId, mapModelId, normalizeToolId, osTag, stableConversationId } from "./kiro-wire";
 import { namespacedToolName } from "../types";
+import {
+  isTranslatorBudgetExceededError,
+  type TranslatorBudget,
+} from "../lib/translator-budget";
 import type {
   AdapterEvent,
   OcxAssistantMessage,
@@ -712,6 +716,7 @@ const KIRO_END_TURN_STOP_REASON = "END_TURN";
 
 async function* parseKiroAttempt(
   response: Response,
+  budget: TranslatorBudget,
   mode: KiroCompletionMode,
   modelId: string | undefined,
   inputTokens: number,
@@ -727,6 +732,7 @@ async function* parseKiroAttempt(
   const deferred: AdapterEvent[] = [];
   const attempt = parseKiroAttemptEvents(
     response,
+    budget,
     mode,
     modelId,
     inputTokens,
@@ -748,6 +754,7 @@ async function* parseKiroAttempt(
 
 async function* parseKiroAttemptEvents(
   response: Response,
+  budget: TranslatorBudget,
   mode: KiroCompletionMode,
   modelId: string | undefined,
   inputTokens: number,
@@ -768,6 +775,7 @@ async function* parseKiroAttemptEvents(
 
   let open: { id: string; name: string; chunks: string[]; completion: boolean } | null = null;
   let outputChars = "";
+  const budgetEncoder = new TextEncoder();
   let contextUsagePercentage: number | undefined;
   let returnedConversationId = conversationId;
   let assistantText = "";
@@ -779,7 +787,7 @@ async function* parseKiroAttemptEvents(
   let authoritativeUsage: OcxUsage | undefined;
   let stopReason: string | undefined;
   const fallbackEvents: AdapterEvent[] = [];
-  const thinking = new KiroThinkingParser();
+  const thinking = new KiroThinkingParser(budget);
 
   const providerState = (): { kiro: { conversationId: string } } | undefined =>
     returnedConversationId ? { kiro: { conversationId: returnedConversationId } } : undefined;
@@ -893,19 +901,31 @@ async function* parseKiroAttemptEvents(
     if (sawRealTool) return [...deferred.splice(0), event];
     if (event.type !== "text_delta" && deferred.length === 0) return [event];
     deferred.push(event);
+    budget.chargeRetained(budgetEncoder.encode(JSON.stringify(event)).byteLength, { kind: "retained_collectors" });
     return [{ type: "heartbeat" }];
   };
 
   const stage = (event: AdapterEvent): AdapterEvent[] => {
     if (event.type === "text_delta") {
-      assistantText += event.text;
+      const nextAssistantText = assistantText + event.text;
+      const assistantPreviousBytes = budgetEncoder.encode(assistantText).byteLength;
+      const assistantReservation = budget.reserveTransient(budgetEncoder.encode(nextAssistantText).byteLength, { kind: "retained_collectors" });
+      assistantText = nextAssistantText;
+      assistantReservation.commitRetained();
+      budget.releaseRetained(assistantPreviousBytes, { kind: "retained_collectors" });
       if (event.text.trim()) sawText = true;
-      outputChars += event.text;
+      const nextOutputChars = outputChars + event.text;
+      const outputPreviousBytes = budgetEncoder.encode(outputChars).byteLength;
+      const outputReservation = budget.reserveTransient(budgetEncoder.encode(nextOutputChars).byteLength, { kind: "retained_collectors" });
+      outputChars = nextOutputChars;
+      outputReservation.commitRetained();
+      budget.releaseRetained(outputPreviousBytes, { kind: "retained_collectors" });
       const phased = mode === "disabled"
         ? event
         : { ...event, phase: "commentary" as const };
       if (mode === "text_fallback") {
         fallbackEvents.push(phased);
+        budget.chargeRetained(budgetEncoder.encode(JSON.stringify(phased)).byteLength, { kind: "retained_collectors" });
         return [];
       }
       return mode === "required" ? defer(phased) : [phased];
@@ -913,10 +933,16 @@ async function* parseKiroAttemptEvents(
     if (event.type === "reasoning_raw_delta" || event.type === "thinking_delta") {
       const text = event.type === "reasoning_raw_delta" ? event.text : event.thinking;
       if (text.trim()) sawReasoning = true;
-      outputChars += text;
+      const nextOutputChars = outputChars + text;
+      const reasoningPreviousBytes = budgetEncoder.encode(outputChars).byteLength;
+      const reasoningReservation = budget.reserveTransient(budgetEncoder.encode(nextOutputChars).byteLength, { kind: "retained_collectors" });
+      outputChars = nextOutputChars;
+      reasoningReservation.commitRetained();
+      budget.releaseRetained(reasoningPreviousBytes, { kind: "retained_collectors" });
     }
     if (mode === "text_fallback" && event.type !== "heartbeat") {
       fallbackEvents.push(event);
+      budget.chargeRetained(budgetEncoder.encode(JSON.stringify(event)).byteLength, { kind: "retained_collectors" });
       return [];
     }
     return mode === "required" ? defer(event) : [event];
@@ -944,6 +970,7 @@ async function* parseKiroAttemptEvents(
     if (!open) return { events: [] };
     const tool = open;
     open = null;
+    budget.closeCall(tool.id);
     const input = tool.chunks.join("");
     if (!isCompleteKiroToolInput(input)) {
       return { events: [], terminal: protocolTerminal(kiroTruncationErrorMessage("incomplete tool input JSON"), tool.completion) };
@@ -1048,10 +1075,12 @@ async function* parseKiroAttemptEvents(
             const started = beginTool(ev.toolUseId, ev.name);
             if (started.terminal) return { assistantText, sawReasoning, terminal: started.terminal };
             open = started.tool!;
+            budget.openCall(open.id);
           } else if (
             (ev.toolUseId && ev.toolUseId !== open.id)
             || (ev.name && open.name !== "unknown" && ev.name !== open.name)
           ) {
+            budget.closeCall(open.id);
             open = null;
             return { assistantText, sawReasoning, terminal: protocolTerminal(kiroTruncationErrorMessage("tool input changed identity before stop")) };
           }
@@ -1064,8 +1093,18 @@ async function* parseKiroAttemptEvents(
             }
           }
           if (open && ev.input !== undefined) {
+            const previousCallBytes = budgetEncoder.encode(open.chunks.join("")).byteLength;
+            const nextCallBytes = previousCallBytes + budgetEncoder.encode(ev.input).byteLength;
+            const callReservation = budget.reserveTransient(nextCallBytes, { kind: "tool_args", callId: open.id });
             open.chunks.push(ev.input);
-            outputChars += ev.input;
+            callReservation.commitRetained();
+            budget.releaseRetained(previousCallBytes, { kind: "tool_args", callId: open.id });
+            const nextOutputChars = outputChars + ev.input;
+            const toolOutputPreviousBytes = budgetEncoder.encode(outputChars).byteLength;
+            const toolOutputReservation = budget.reserveTransient(budgetEncoder.encode(nextOutputChars).byteLength, { kind: "retained_collectors" });
+            outputChars = nextOutputChars;
+            toolOutputReservation.commitRetained();
+            budget.releaseRetained(toolOutputPreviousBytes, { kind: "retained_collectors" });
           }
           if (ev.stop === true) {
             const flushed = flushOpen();
@@ -1299,6 +1338,20 @@ async function* parseKiroAttemptEvents(
       },
     };
   } catch (err) {
+    if (isTranslatorBudgetExceededError(err)) {
+      if (open) budget.closeCall(open.id);
+      return {
+        assistantText,
+        sawReasoning,
+        terminal: {
+          type: "error",
+          status: 502,
+          errorType: "upstream_error",
+          code: "translation_buffer_limit",
+          message: "upstream translation buffer exceeded the safe limit",
+        },
+      };
+    }
     // Mid-stream socket closes after response.created / heartbeats only must stay retryable:
     // nothing was relayed to the client, so a string-body replay is safe (see #519 / cursor's
     // emittedOutput gate). Once any assistant text, reasoning, tool, or deferred content exists
@@ -1333,6 +1386,7 @@ async function* parseKiroAttemptEvents(
 
 export async function* parseKiroStream(
   response: Response,
+  budget: TranslatorBudget,
   modelId?: string,
   inputTokens = 0,
   contextWindow?: number,
@@ -1345,6 +1399,7 @@ export async function* parseKiroStream(
   const contextWindowState: KiroContextWindowState = { value: contextWindow };
   const first = parseKiroAttempt(
     response,
+    budget,
     completionMode,
     modelId,
     inputTokens,
@@ -1352,6 +1407,7 @@ export async function* parseKiroStream(
     nameMap,
     conversationId,
     contextInputEstimate,
+    false,
   );
   let firstNext = await first.next();
   while (!firstNext.done) {
@@ -1413,6 +1469,7 @@ export async function* parseKiroStream(
 
   const second = parseKiroAttempt(
     fallback.response,
+    budget,
     "text_fallback",
     modelId,
     fallback.inputTokens,
@@ -1609,9 +1666,10 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       return built.request;
     },
 
-    parseStream(response: Response): AsyncGenerator<AdapterEvent> {
+    parseStream(response: Response, budget: TranslatorBudget): AsyncGenerator<AdapterEvent> {
       return parseKiroStream(
         response,
+        budget,
         modelId,
         inputTokens,
         contextWindow,
@@ -1639,10 +1697,11 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     // non-streamed so it can inspect tool calls). CW only ever event-streams, so we drain the
     // same decoder into an array. Without this, any Codex request that includes the web_search
     // tool failed with "web-search sidecar requires a non-streaming adapter" (kiro-only).
-    async parseResponse(response: Response): Promise<AdapterEvent[]> {
+    async parseResponse(response: Response, budget: TranslatorBudget): Promise<AdapterEvent[]> {
       const events: AdapterEvent[] = [];
       for await (const e of parseKiroStream(
         response,
+        budget,
         modelId,
         inputTokens,
         contextWindow,

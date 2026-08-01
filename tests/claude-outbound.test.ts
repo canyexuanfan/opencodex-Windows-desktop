@@ -3,11 +3,37 @@ import {
   anthropicErrorBody,
   anthropicErrorType,
   anthropicUsage,
-  collectAnthropicMessage,
+  collectAnthropicMessage as collectAnthropicMessageProduction,
   responsesJsonToAnthropicMessage,
-  responsesSseToAnthropicSse,
+  responsesSseToAnthropicSse as responsesSseToAnthropicSseProduction,
   sanitizeWebSearchInput,
 } from "../src/claude/outbound";
+import { createTestTranslatorBudget } from "./helpers/translator-budget";
+import type { TranslatorBudget } from "../src/lib/translator-budget";
+
+const streamBudgets = new WeakMap<ReadableStream<Uint8Array>, TranslatorBudget>();
+
+function responsesSseToAnthropicSse(
+  upstream: ReadableStream<Uint8Array>,
+  model: string,
+  opts: { pingIntervalMs?: number; translatorBudget?: TranslatorBudget } = {},
+): ReadableStream<Uint8Array> {
+  const translatorBudget = opts.translatorBudget ?? createTestTranslatorBudget();
+  const stream = responsesSseToAnthropicSseProduction(upstream, model, {
+    ...opts,
+    translatorBudget,
+  });
+  streamBudgets.set(stream, translatorBudget);
+  return stream;
+}
+
+function collectAnthropicMessage(
+  stream: ReadableStream<Uint8Array>,
+  model: string,
+  translatorBudget = streamBudgets.get(stream) ?? createTestTranslatorBudget(),
+) {
+  return collectAnthropicMessageProduction(stream, model, translatorBudget);
+}
 
 function sse(name: string, data: Record<string, unknown>): string {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -47,6 +73,43 @@ async function collectEvents(stream: ReadableStream<Uint8Array>): Promise<{ name
 }
 
 describe("claude outbound SSE", () => {
+  test("translator overflow emits one typed error and cancels the upstream reader", async () => {
+    const frame = sse("response.failed", {
+      type: "response.failed",
+      response: {
+        status: "failed",
+        error: {
+          message: "upstream translation buffer exceeded the safe limit",
+          type: "upstream_error",
+          code: "translation_buffer_limit",
+        },
+      },
+    });
+    let cancelled = false;
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(frame));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const events = await collectEvents(responsesSseToAnthropicSse(upstream, "m"));
+    expect(events).toEqual([{
+      name: "error",
+      data: {
+        type: "error",
+        error: {
+          type: "request_too_large",
+          message: "upstream translation buffer exceeded the safe limit",
+          code: "translation_buffer_limit",
+        },
+      },
+    }]);
+    expect(cancelled).toBe(true);
+  });
+
   test("text + thinking + tool call + completed w/ usage -> exact Anthropic sequence", async () => {
     const upstream = [
       sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),

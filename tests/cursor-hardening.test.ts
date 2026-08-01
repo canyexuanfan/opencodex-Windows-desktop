@@ -7,6 +7,7 @@ import {
 } from "../src/adapters/cursor/gen/agent_pb";
 import { fetchCursorUsableModels } from "../src/adapters/cursor/live-models";
 import { armTimeoutDestroyFallback, createLiveCursorTransport, createTerminalSettler } from "../src/adapters/cursor/live-transport";
+import { createTestTranslatorBudget } from "./helpers/translator-budget";
 import { gatherRoutedModels } from "../src/codex/catalog";
 import { clearModelCache, getProviderDiscoveryStatus } from "../src/codex/model-cache";
 import { handleManagementAPI } from "../src/server/management-api";
@@ -339,6 +340,7 @@ describe("Cursor live transport unexpected EOF", () => {
     }, async baseUrl => {
       const transport = createLiveCursorTransport({
         provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        translatorBudget: createTestTranslatorBudget(),
         firstFrameTimeoutMs: 2_000,
       });
       let failure: Error | undefined;

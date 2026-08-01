@@ -5,7 +5,7 @@ import { getConfigDir } from "../config";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
 import type { OcxProviderConfig, OcxParsedRequest } from "../types";
 import { createOpenAIChatAdapter } from "./openai-chat";
-import type { ProviderAdapter, AdapterRequest } from "./base";
+import type { ProviderAdapter, AdapterRequest, IncomingMeta } from "./base";
 
 const BOOTSTRAP_URL = "https://api.xiaomimimo.com/api/free-ai/bootstrap";
 export const MIMO_CHAT_URL = "https://api.xiaomimimo.com/api/free-ai/openai/chat";
@@ -202,12 +202,12 @@ export function createMimoFreeAdapter(provider: OcxProviderConfig): ProviderAdap
     ...base,
     name: "mimo-free",
 
-    async buildRequest(parsed: OcxParsedRequest): Promise<AdapterRequest> {
+    async buildRequest(parsed: OcxParsedRequest, incoming: IncomingMeta): Promise<AdapterRequest> {
       const jwt = await getMimoJwt();
 
       // Let the base adapter build the wire body (handles reasoning, tools, etc.)
       // but override the URL and headers after.
-      const baseReq = base.buildRequest(parsed) as AdapterRequest;
+      const baseReq = base.buildRequest(parsed, incoming) as AdapterRequest;
       const baseBody = JSON.parse(baseReq.body as string) as unknown;
       const markedBody = injectMimoSystemMarker(baseBody);
 

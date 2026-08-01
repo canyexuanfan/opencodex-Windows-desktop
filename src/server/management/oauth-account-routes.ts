@@ -22,7 +22,7 @@ import {
   startLoginFlow,
   submitManualLoginCode,
 } from "../../oauth";
-import { removeCredential } from "../../oauth/store";
+import { OAuthMutationBusyError, removeCredential } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { reconcileLiveStateStores } from "../../lib/state-store-registrations";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
@@ -164,6 +164,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       }
       return jsonResponse({ url: authUrl, instructions, deviceCode });
     } catch (err) {
+      if (err instanceof OAuthMutationBusyError) throw err;
       return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 409);
     }
   }

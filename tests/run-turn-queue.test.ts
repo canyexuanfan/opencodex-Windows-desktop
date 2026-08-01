@@ -59,7 +59,7 @@ describe("run-turn adapter event queue", () => {
     expect(await queue.collect()).toEqual([]);
   });
 
-  test("aborts and closes with a terminal error when the default backlog cap is exceeded", async () => {
+  test("Cursor byte backpressure preserves the existing 1024-event queue abort cap", async () => {
     let backlogExceeded = 0;
     const queue = createAdapterEventQueue({
       onBacklogExceeded: () => { backlogExceeded += 1; },

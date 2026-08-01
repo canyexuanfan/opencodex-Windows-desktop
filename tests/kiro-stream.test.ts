@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createKiroAdapter, isRetryableKiroStreamCatchError } from "../src/adapters/kiro";
+import { createKiroAdapter as createKiroAdapterProduction, isRetryableKiroStreamCatchError } from "../src/adapters/kiro";
 import {
   KIRO_COMPLETION_RETRY_MESSAGE,
   KIRO_COMPLETION_TOOL_NAME,
@@ -13,6 +13,11 @@ import { resetKiroThrottleStateForTests } from "../src/adapters/kiro-retry";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { estimateTokens } from "../src/lib/token-estimate";
 import type { OcxParsedRequest, OcxProviderConfig, OcxUsage } from "../src/types";
+import { withTestTranslatorBudget } from "./helpers/translator-budget";
+
+function createKiroAdapter(...args: Parameters<typeof createKiroAdapterProduction>) {
+  return withTestTranslatorBudget(createKiroAdapterProduction(...args));
+}
 
 const enc = new TextEncoder();
 const origHome = process.env.HOME;

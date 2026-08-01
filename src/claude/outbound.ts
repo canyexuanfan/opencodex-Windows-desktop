@@ -10,6 +10,12 @@
  *  - errors: {type:"error", error:{type,message}}; may arrive mid-stream after HTTP 200.
  */
 import { isTransientUpstreamStatus } from "../lib/upstream-retry";
+import {
+  isTranslatorBudgetExceededError,
+  TRANSLATOR_MAX_TURN_BYTES,
+  TranslatorBudgetExceededError,
+  type TranslatorBudget,
+} from "../lib/translator-budget";
 
 type Rec = Record<string, unknown>;
 
@@ -38,12 +44,12 @@ export function anthropicErrorType(status: number): string {
   }
 }
 
-export function anthropicErrorBody(status: number, message: string, type?: string): Rec {
-  return { type: "error", error: { type: type ?? anthropicErrorType(status), message } };
+export function anthropicErrorBody(status: number, message: string, type?: string, code?: string): Rec {
+  return { type: "error", error: { type: type ?? anthropicErrorType(status), message, ...(code ? { code } : {}) } };
 }
 
-export function anthropicErrorResponse(status: number, message: string, type?: string): Response {
-  return new Response(JSON.stringify(anthropicErrorBody(status, message, type)), {
+export function anthropicErrorResponse(status: number, message: string, type?: string, code?: string): Response {
+  return new Response(JSON.stringify(anthropicErrorBody(status, message, type, code)), {
     status,
     headers: { "Content-Type": "application/json" },
   });
@@ -168,14 +174,16 @@ interface OpenBlock {
   bufferWebSearchArgs?: boolean;
   argsBuf?: string;
   webSearchArgsEmitted?: boolean;
+  callId?: string;
 }
 
 /** Streaming: Responses SSE bytes -> Anthropic Messages SSE bytes. */
 export function responsesSseToAnthropicSse(
   upstream: ReadableStream<Uint8Array>,
   model: string,
-  opts?: { pingIntervalMs?: number },
+  opts: { pingIntervalMs?: number; translatorBudget: TranslatorBudget },
 ): ReadableStream<Uint8Array> {
+  const translatorBudget = opts.translatorBudget;
   const pingIntervalMs = opts?.pingIntervalMs ?? 20_000;
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -189,10 +197,21 @@ export function responsesSseToAnthropicSse(
   let webSearchRequests = 0;
   let pingTimer: ReturnType<typeof setInterval> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const queuedLiveFrameBytes: number[] = [];
+  const releaseDeliveredFrame = () => {
+    const bytes = queuedLiveFrameBytes.shift();
+    if (bytes !== undefined) translatorBudget.releaseRetained(bytes, { kind: "live_transient" });
+  };
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      const emit = (name: string, data: Rec) => controller.enqueue(encoder.encode(sseFrame(name, data)));
+      const emit = (name: string, data: Rec) => {
+        const frame = encoder.encode(sseFrame(name, data));
+        const reservation = translatorBudget.reserveTransient(frame.byteLength, { kind: "live_transient" });
+        controller.enqueue(frame);
+        reservation.commitRetained();
+        queuedLiveFrameBytes.push(frame.byteLength);
+      };
       const ensureStarted = () => {
         if (started) return;
         started = true;
@@ -234,6 +253,7 @@ export function responsesSseToAnthropicSse(
           });
         }
         emit("content_block_stop", { type: "content_block_stop", index: open.index });
+        if (open.callId) translatorBudget.closeCall(open.callId);
         open = null;
       };
       const ensureBlock = (kind: "text" | "thinking") => {
@@ -265,13 +285,26 @@ export function responsesSseToAnthropicSse(
       // (devlog/_plan/260716_claudecode_hardening/020). On win32 mid-stream socket
       // resets reach the reader catch (no failed-tail relay) and stay api_error —
       // same as today, deliberate residual.
-      const fail = (status: number, message: string, upstreamDerived = false) => {
+      const fail = (status: number, message: string, upstreamDerived = false, code?: string) => {
         if (terminated) return;
         terminated = true;
+        if (code === "translation_buffer_limit") {
+          if (open?.callId) translatorBudget.closeCall(open.callId);
+          open = null;
+          // No normal close frames are valid after overflow. Emit exactly one bounded
+          // typed terminal without consulting the exhausted budget.
+          controller.enqueue(encoder.encode(sseFrame("error", anthropicErrorBody(
+            413,
+            message,
+            "request_too_large",
+            "translation_buffer_limit",
+          ))));
+          return;
+        }
         ensureStarted();
         closeOpenBlock();
         const type = upstreamDerived && isTransientUpstreamStatus(status) ? "overloaded_error" : undefined;
-        emit("error", anthropicErrorBody(status, message, type));
+        emit("error", anthropicErrorBody(status, message, type, code));
       };
 
       const handleFrame = (eventName: string, data: Rec) => {
@@ -311,18 +344,21 @@ export function responsesSseToAnthropicSse(
             const index = blockIndex++;
             const name = typeof item.name === "string" ? item.name : "";
             const bufferWebSearchArgs = isClaudeWebSearchToolName(name);
+            const callId = typeof item.call_id === "string" ? item.call_id : `toolu_${uuid()}`;
             emit("content_block_start", {
               type: "content_block_start", index,
               content_block: {
                 type: "tool_use",
-                id: typeof item.call_id === "string" ? item.call_id : `toolu_${uuid()}`,
+                id: callId,
                 name,
                 input: {},
               },
             });
+            translatorBudget.openCall(callId);
             open = {
               kind: "tool_use",
               index,
+              callId,
               itemId: typeof item.id === "string" ? item.id : undefined,
               bufferWebSearchArgs,
               argsBuf: "",
@@ -334,7 +370,18 @@ export function responsesSseToAnthropicSse(
             if (typeof data.delta !== "string" || data.delta.length === 0) break;
             if (!open || open.kind !== "tool_use") break;
             if (open.bufferWebSearchArgs) {
-              open.argsBuf = `${open.argsBuf ?? ""}${data.delta}`;
+              const previous = open.argsBuf ?? "";
+              const next = previous + data.delta;
+              const reservation = translatorBudget.reserveTransient(Buffer.byteLength(next), {
+                kind: "tool_args",
+                ...(open.callId ? { callId: open.callId } : {}),
+              });
+              open.argsBuf = next;
+              reservation.commitRetained();
+              translatorBudget.releaseRetained(Buffer.byteLength(previous), {
+                kind: "tool_args",
+                ...(open.callId ? { callId: open.callId } : {}),
+              });
               break;
             }
             emit("content_block_delta", {
@@ -424,11 +471,21 @@ export function responsesSseToAnthropicSse(
             const response = isRec(data.response) ? data.response : {};
             const error = isRec(response.error) ? response.error : {};
             const message = typeof error.message === "string" ? error.message : "upstream request failed";
-            const status = typeof error.status === "number" ? error.status : 500;
+            const code = typeof error.code === "string" ? error.code : undefined;
+            if (code === "translation_buffer_limit") {
+              throw new TranslatorBudgetExceededError("live_transient", TRANSLATOR_MAX_TURN_BYTES);
+            }
+            const status = code === "translation_buffer_limit"
+              ? 413
+              : typeof error.status === "number" ? error.status : 500;
             // status-absent response.failed (relaySseWithFailedTail synthetic tail) defaults
             // to 500, which is in the transient set — the mid-stream reset shape maps to
             // overloaded_error by design.
-            fail(status, message, true);
+            fail(
+              status,
+              message,
+              true,
+            );
             break;
           }
           default:
@@ -442,11 +499,28 @@ export function responsesSseToAnthropicSse(
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            buffer += decoder.decode(value, { stream: true });
+            const nextBuffer = buffer + decoder.decode(value, { stream: true });
+            const previousBufferBytes = encoder.encode(buffer).byteLength;
+            const appendReservation = translatorBudget.reserveTransient(
+              encoder.encode(nextBuffer).byteLength,
+              { kind: "live_transient" },
+            );
+            buffer = nextBuffer;
+            appendReservation.commitRetained();
+            translatorBudget.releaseRetained(previousBufferBytes, { kind: "live_transient" });
             let sep: number;
             while ((sep = buffer.indexOf("\n\n")) !== -1) {
               const rawFrame = buffer.slice(0, sep);
               buffer = buffer.slice(sep + 2);
+              const residualReservation = translatorBudget.reserveTransient(
+                encoder.encode(buffer).byteLength,
+                { kind: "live_transient" },
+              );
+              residualReservation.commitRetained();
+              translatorBudget.releaseRetained(
+                encoder.encode(rawFrame).byteLength + encoder.encode(buffer).byteLength + 2,
+                { kind: "live_transient" },
+              );
               let eventName = "";
               let dataLine = "";
               for (const line of rawFrame.split("\n")) {
@@ -470,16 +544,25 @@ export function responsesSseToAnthropicSse(
           // with a mid-stream Anthropic error event so the client can retry.
           if (!cancelled) fail(502, "upstream stream ended before a terminal frame (truncated response)", true);
         } catch (err) {
-          fail(500, err instanceof Error ? err.message : String(err));
+          if (isTranslatorBudgetExceededError(err)) {
+            try { await reader.cancel(err); } catch { /* already closed */ }
+            fail(413, "upstream translation buffer exceeded the safe limit", false, "translation_buffer_limit");
+          } else fail(500, err instanceof Error ? err.message : String(err));
         } finally {
+          translatorBudget.releaseRetained(encoder.encode(buffer).byteLength, { kind: "live_transient" });
           if (pingTimer !== undefined) clearInterval(pingTimer);
           reader.releaseLock();
           if (!cancelled) controller.close();
         }
       })();
     },
+    pull() {
+      releaseDeliveredFrame();
+    },
     cancel(reason) {
       cancelled = true;
+      while (queuedLiveFrameBytes.length > 0) releaseDeliveredFrame();
+      if (open?.callId) translatorBudget.closeCall(open.callId);
       if (pingTimer !== undefined) clearInterval(pingTimer);
       return reader?.cancel(reason);
     },
@@ -587,7 +670,11 @@ export function responsesJsonToAnthropicMessage(json: unknown, model: string): R
  * (routed adapters do not support non-stream turns), so the translated stream is
  * aggregated here instead of translating a JSON body.
  */
-export async function collectAnthropicMessage(stream: ReadableStream<Uint8Array>, model: string): Promise<Rec> {
+export async function collectAnthropicMessage(
+  stream: ReadableStream<Uint8Array>,
+  model: string,
+  translatorBudget: TranslatorBudget,
+): Promise<Rec> {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
   let buffer = "";
@@ -597,6 +684,12 @@ export async function collectAnthropicMessage(stream: ReadableStream<Uint8Array>
   let stopReason: string | null = "end_turn";
   let usage: Rec = anthropicUsage(undefined);
   let error: Rec | null = null;
+  const replaceRetained = (previous: string, next: string, kind: "live_transient" | "retained_collectors") => {
+    const reservation = translatorBudget.reserveTransient(Buffer.byteLength(next), { kind });
+    reservation.commitRetained();
+    translatorBudget.releaseRetained(Buffer.byteLength(previous), { kind });
+    return next;
+  };
 
   const closeBlock = () => {
     if (!openBlock) return;
@@ -604,6 +697,7 @@ export async function collectAnthropicMessage(stream: ReadableStream<Uint8Array>
     if (openBlock.type === "tool_use" || openBlock.type === "server_tool_use") {
       try { openBlock.input = toolJson.length > 0 ? JSON.parse(toolJson) : {}; } catch { openBlock.input = {}; }
     }
+    translatorBudget.chargeRetained(Buffer.byteLength(JSON.stringify(openBlock)), { kind: "retained_collectors" });
     content.push(openBlock);
     openBlock = null;
     toolJson = "";
@@ -619,13 +713,15 @@ export async function collectAnthropicMessage(stream: ReadableStream<Uint8Array>
         const delta = isRec(data.delta) ? data.delta : {};
         if (!openBlock) break;
         if (delta.type === "text_delta" && typeof delta.text === "string") {
-          openBlock.text = `${openBlock.text ?? ""}${delta.text}`;
+          const previous = typeof openBlock.text === "string" ? openBlock.text : "";
+          openBlock.text = replaceRetained(previous, previous + delta.text, "retained_collectors");
         } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
-          openBlock.thinking = `${openBlock.thinking ?? ""}${delta.thinking}`;
+          const previous = typeof openBlock.thinking === "string" ? openBlock.thinking : "";
+          openBlock.thinking = replaceRetained(previous, previous + delta.thinking, "retained_collectors");
         } else if (delta.type === "signature_delta" && typeof delta.signature === "string") {
           openBlock.signature = delta.signature;
         } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
-          toolJson += delta.partial_json;
+          toolJson = replaceRetained(toolJson, toolJson + delta.partial_json, "retained_collectors");
         }
         break;
       }
@@ -650,11 +746,11 @@ export async function collectAnthropicMessage(stream: ReadableStream<Uint8Array>
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      buffer = replaceRetained(buffer, buffer + decoder.decode(value, { stream: true }), "live_transient");
       let sep: number;
       while ((sep = buffer.indexOf("\n\n")) !== -1) {
         const rawFrame = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
+        buffer = replaceRetained(buffer, buffer.slice(sep + 2), "live_transient");
         let eventName = "";
         let dataLine = "";
         for (const line of rawFrame.split("\n")) {

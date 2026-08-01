@@ -34,6 +34,7 @@ import {
 import {
   registerAppOwnedMemorySweepFallback,
   registerDefaultAppOwnedMemoryStores,
+  registerDefaultAppOwnedObservedBuffers,
 } from "../lib/app-owned-memory-stores";
 import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
 import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
@@ -324,6 +325,7 @@ export function startServer(port?: number) {
   // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
   startMemoryWatchdog();
   registerDefaultAppOwnedMemoryStores();
+  registerDefaultAppOwnedObservedBuffers();
   registerAppOwnedMemorySweepFallback();
   configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(config.appOwnedMemoryBudgetMb));
   enforceAppOwnedMemoryBudget();

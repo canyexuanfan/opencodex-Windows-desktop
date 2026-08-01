@@ -11,6 +11,11 @@ import {
   isConnectFrameEndStream,
   tryDecodeConnectFrame,
 } from "../src/adapters/cursor/framing";
+import {
+  CURSOR_MAX_CONNECT_FRAME_BYTES,
+  CURSOR_MAX_PENDING_FRAMES,
+  createTranslatorBudget,
+} from "../src/lib/translator-budget";
 
 const bytes = (...values: number[]) => new Uint8Array(values);
 
@@ -113,5 +118,74 @@ describe("Cursor Connect envelope framing", () => {
   test("throws invalid_offset for out-of-range offsets", () => {
     expectFrameError(() => decodeConnectFrame(bytes(0x00), 2), "invalid_offset");
     expectFrameError(() => tryDecodeConnectFrame(bytes(0x00), -1), "invalid_offset");
+  });
+
+  test("Cursor announced frame over 32 MiB rejects after header before payload allocation", () => {
+    const header = new Uint8Array(5);
+    new DataView(header.buffer).setUint32(1, CURSOR_MAX_CONNECT_FRAME_BYTES + 1, false);
+    let copies = 0;
+    expectFrameError(
+      () => tryDecodeConnectFrame(header, 0, CURSOR_MAX_CONNECT_FRAME_BYTES, () => {
+        copies++;
+        return undefined;
+      }),
+      "payload_too_large",
+    );
+    expect(copies).toBe(0);
+  });
+
+  test("Cursor frame admission admits exactly 32 MiB and rejects 32 MiB plus one before payload allocation", () => {
+    const exact = encodeConnectFrame(new Uint8Array(CURSOR_MAX_CONNECT_FRAME_BYTES));
+    expect(tryDecodeConnectFrame(exact, 0, CURSOR_MAX_CONNECT_FRAME_BYTES)?.frame.payload.byteLength)
+      .toBe(CURSOR_MAX_CONNECT_FRAME_BYTES);
+    const overHeader = new Uint8Array(5);
+    new DataView(overHeader.buffer).setUint32(1, CURSOR_MAX_CONNECT_FRAME_BYTES + 1, false);
+    let copies = 0;
+    expectFrameError(
+      () => tryDecodeConnectFrame(overHeader, 0, CURSOR_MAX_CONNECT_FRAME_BYTES, () => {
+        copies++;
+        return undefined;
+      }),
+      "payload_too_large",
+    );
+    expect(copies).toBe(0);
+  });
+
+  test("Cursor pending-to-frame lease transfer admits an exact 32 MiB payload", () => {
+    const budget = createTranslatorBudget();
+    const encoded = encodeConnectFrame(new Uint8Array(CURSOR_MAX_CONNECT_FRAME_BYTES));
+    budget.chargeRetained(CURSOR_MAX_CONNECT_FRAME_BYTES, { kind: "cursor_transport" });
+    budget.releaseRetained(CURSOR_MAX_CONNECT_FRAME_BYTES, { kind: "cursor_transport" });
+    const decoded = decodeAvailableConnectFrames(
+      encoded,
+      CURSOR_MAX_CONNECT_FRAME_BYTES,
+      1,
+      copied => budget.reserveTransient(copied, { kind: "cursor_transport" }),
+    );
+    expect(decoded.frames).toHaveLength(1);
+    expect(budget.snapshot()).toMatchObject({
+      currentBytes: CURSOR_MAX_CONNECT_FRAME_BYTES,
+      highWaterBytes: CURSOR_MAX_CONNECT_FRAME_BYTES,
+    });
+    budget.dispose();
+  });
+
+  test("Cursor tiny-frame flood pauses before materializing the 1025th frame", () => {
+    const frame = encodeConnectFrame(bytes(1));
+    const oversizedHeader = new Uint8Array(5);
+    new DataView(oversizedHeader.buffer).setUint32(1, CURSOR_MAX_CONNECT_FRAME_BYTES + 1, false);
+    const input = new Uint8Array(frame.byteLength * CURSOR_MAX_PENDING_FRAMES + oversizedHeader.byteLength);
+    for (let i = 0; i < CURSOR_MAX_PENDING_FRAMES; i++) input.set(frame, i * frame.byteLength);
+    input.set(oversizedHeader, frame.byteLength * CURSOR_MAX_PENDING_FRAMES);
+
+    // Slot admission happens before the next header is decoded. If the 1025th frame were
+    // touched early, its deliberately oversized announcement would throw here.
+    const decoded = decodeAvailableConnectFrames(input, CURSOR_MAX_CONNECT_FRAME_BYTES, CURSOR_MAX_PENDING_FRAMES);
+    expect(decoded.frames).toHaveLength(CURSOR_MAX_PENDING_FRAMES);
+    expect(decoded.remainder).toEqual(oversizedHeader);
+    expectFrameError(
+      () => decodeAvailableConnectFrames(decoded.remainder, CURSOR_MAX_CONNECT_FRAME_BYTES, 1),
+      "payload_too_large",
+    );
   });
 });
