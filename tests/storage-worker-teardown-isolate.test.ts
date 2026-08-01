@@ -6,12 +6,13 @@
  * `panic: Internal assertion failure` with `workers_spawned(N)
  * workers_terminated(N-1)` on Windows and kills the whole run.
  *
- * A second Bun 1.3.14 failure mode is a post-suite segfault with a *balanced*
- * `workers_spawned === workers_terminated` count (exit 133 / Trace/BPT on
- * macOS Silicon CI). Caps/settles here were not enough under GHA load, so
- * cross-platform CI runs macOS without `--isolate` (see `.github/workflows/ci.yml`).
- * Keep the heavy churn on win32; darwin stays at a single-cycle proof for local
- * isolate runs.
+ * A second Bun 1.3.14 failure mode is a mid-file / post-suite segfault with a
+ * *balanced* `workers_spawned === workers_terminated` count (exit 133 /
+ * Trace/BPT on macOS Silicon). Caps alone were not enough under GHA load, so
+ * CI runs macOS without `--isolate` (see `.github/workflows/ci.yml`). For local
+ * isolate runs: keep heavy churn on win32, one cycle on darwin, drain+settle in
+ * `afterEach` (crash can land before `afterAll`), and OS-join settle in
+ * `worker-lifecycle` on darwin.
  *
  * These cases hammer the exact failure window: fire-and-forget terminate must
  * still be joinable by drain, and repeated spawn → reset cycles must leave the
@@ -69,6 +70,10 @@ beforeEach(() => {
 afterEach(async () => {
   await resetStorageCleanupPolicyJobForTestsAsync();
   setStorageCleanupPolicyJobTestHooks(null);
+  await drainStorageWorkers();
+  // macOS Silicon + Bun 1.3.14: balanced-count segfault can hit mid-file
+  // (before afterAll). Brief settle after every case — not a CI timeout bump.
+  if (process.platform === "darwin") await Bun.sleep(250);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   isolatedCodexHome?.restore();
@@ -79,9 +84,6 @@ afterEach(async () => {
 
 afterAll(async () => {
   await drainStorageWorkers();
-  // macOS Silicon + Bun 1.3.14: even with balanced worker counts the isolate
-  // realm reclaim can segfault if the OS join has not finished. Brief settle
-  // only — not a CI timeout bump.
   if (process.platform === "darwin") await Bun.sleep(250);
 });
 
