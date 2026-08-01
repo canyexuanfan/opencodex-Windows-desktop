@@ -335,17 +335,17 @@ function waitForBackgroundShellClose(entry: BackgroundShellEntry): Promise<boole
   if (backgroundShells.get(entry.shellId) !== entry) return Promise.resolve(true);
   return new Promise(resolveWait => {
     let settled = false;
-    const timer = backgroundShellRuntime.setTimer(() => {
-      if (settled) return;
-      settled = true;
-      resolveWait(false);
-    }, CURSOR_BACKGROUND_SHELL_TERM_GRACE_MS);
     // Deliberately REF'D: this is the bounded kill-grace wait that shutdown
     // drain awaits. Bun on Windows can starve unref'd timers when a pending
     // promise is the only other work, which would leave drainAndShutdown
     // waiting on this resolution forever. The timer self-clears within the
     // 2-second grace window (or earlier on close), so a ref cannot keep the
     // process alive beyond that bound.
+    const timer = backgroundShellRuntime.setTimer(() => {
+      if (settled) return;
+      settled = true;
+      resolveWait(false);
+    }, CURSOR_BACKGROUND_SHELL_TERM_GRACE_MS);
     void entry.closePromise.then(() => {
       if (settled) return;
       settled = true;
