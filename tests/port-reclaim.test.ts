@@ -299,46 +299,50 @@ describe("reclaimListenPort", () => {
     expect(killed).toEqual([4242]);
   });
 
-  test("skips kill when allowlisted pid fails revalidation", async () => {
+  test("allowlisted pid with failing ocx revalidation is still killed (trusted teardown PID)", async () => {
     const killed: number[] = [];
+    let available = false;
     let checks = 0;
     await expect(reclaimListenPort(10100, "127.0.0.1", {
-      timeoutMs: 80,
+      timeoutMs: 200,
       intervalMs: 20,
       scanIntervalMs: 20,
       dropTcpRows: false,
       killOcxHolders: true,
       onlyKillPids: [100],
-      isAvailableFn: async () => false,
-      listListenPidsFn: () => [100],
-      isAliveFn: () => true,
+      isAvailableFn: async () => available,
+      listListenPidsFn: () => (available ? [] : [100]),
+      isAliveFn: () => !available,
       verifyOcxFn: pid => {
         checks += 1;
         // First pass (scan identity) succeeds; revalidation immediately before kill fails.
+        // Subsequent scans see verify=null — still kill because the PID is allowlisted.
         return checks === 1 ? pid : null;
       },
       killFn: pid => {
         killed.push(pid);
+        available = true;
       },
       sleepMs: async () => {},
-    })).resolves.toBe(false);
-    expect(killed).toEqual([]);
+    })).resolves.toBe(true);
+    expect(killed).toEqual([100]);
   });
 
-  test("does not drop TCP rows when allowlisted revalidation fails", async () => {
+  test("allowlisted revalidation failure still permits TCP drop after kill", async () => {
     const killed: number[] = [];
     const dropped: number[] = [];
+    let available = false;
     let checks = 0;
     await expect(reclaimListenPort(10100, "127.0.0.1", {
-      timeoutMs: 80,
+      timeoutMs: 200,
       intervalMs: 20,
       scanIntervalMs: 20,
       dropTcpRows: true,
       killOcxHolders: true,
       onlyKillPids: [100],
-      isAvailableFn: async () => false,
-      listListenPidsFn: () => [100],
-      isAliveFn: () => true,
+      isAvailableFn: async () => available,
+      listListenPidsFn: () => (available ? [] : [100]),
+      isAliveFn: () => !available,
       verifyOcxFn: pid => {
         checks += 1;
         return checks === 1 ? pid : null;
@@ -348,12 +352,13 @@ describe("reclaimListenPort", () => {
       },
       dropTcpFn: port => {
         dropped.push(port);
+        available = true;
         return { dropped: 1, skippedIpv6: 0 };
       },
       sleepMs: async () => {},
-    })).resolves.toBe(false);
-    expect(killed).toEqual([]);
-    expect(dropped).toEqual([]);
+    })).resolves.toBe(true);
+    expect(killed).toEqual([100]);
+    expect(dropped).toEqual([10100]);
   });
 
   test("does not drop TCP rows when allowlisted kill throws", async () => {
