@@ -17,9 +17,15 @@ export const TRANSLATOR_MAX_TURN_BYTES = 32 * 1024 * 1024;
 export const TRANSLATOR_MAX_SSE_EVENT_BYTES = 32 * 1024 * 1024;
 // Payload only. The five-byte Connect header is neither part of this limit nor charged.
 export const CURSOR_MAX_CONNECT_FRAME_BYTES = 32 * 1024 * 1024;
+// Contiguous receive/decode makes at most two full payload copies overlap; live transport
+// therefore admits at most 16 MiB when the rest of its byte pool is empty.
+export const CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES = 16 * 1024 * 1024;
 // Payload bytes only across receive, pending work, and message queues.
 export const CURSOR_TRANSPORT_MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
 export const CURSOR_TRANSPORT_RESUME_BYTES = 16 * 1024 * 1024;
+// Headers/frame objects/promise bookkeeping are count-bounded even for zero-byte payloads.
+export const CURSOR_MAX_PENDING_FRAMES = 1024;
+export const CURSOR_PENDING_FRAMES_RESUME = 512;
 export const MAX_PENDING_IMAGE_FULFILLMENTS = 64;
 export const MAX_PENDING_OAUTH_MUTATIONS = 128;
 ```
@@ -141,14 +147,28 @@ export interface TranslatorBudgetSnapshot {
   overflows: number;
 }
 
+export interface TranslatorTransientReservation {
+  /** Convert the charged new allocation into its retained lease; no counter change. */
+  commitRetained(): void;
+  /** Roll back a failed/not-performed allocation. Idempotent; invalid after commit. */
+  release(): void;
+}
+
 export interface TranslatorBudget {
   openCall(id: string): void;
-  appendCallBytes(id: string, bytes: number): void;
-  replaceCallBytes(id: string, previousBytes: number, nextBytes: number): void;
   closeCall(id: string): void;
-  charge(kind: TranslatorBufferKind, bytes: number): void;
-  replace(kind: TranslatorBufferKind, previousBytes: number, nextBytes: number): void;
-  release(kind: TranslatorBufferKind, bytes: number): void;
+  reserveTransient(
+    bytes: number,
+    scope: { kind: TranslatorBufferKind; callId?: string },
+  ): TranslatorTransientReservation;
+  chargeRetained(
+    delta: number,
+    scope: { kind: TranslatorBufferKind; callId?: string },
+  ): void;
+  releaseRetained(
+    bytes: number,
+    scope: { kind: TranslatorBufferKind; callId?: string },
+  ): void;
   observeAcceptedRequestCopy(bytes: number): () => void;
   // Observation-only lease: contributes to currentBytes/highWaterBytes only —
   // NEVER to the 2 MiB per-call or 32 MiB per-turn hard caps, and never to
@@ -182,11 +202,32 @@ created from them starts a hard charge — with one named exemption: the genuine
 passthrough upstream serialization stays on the `passthrough_serialization` observation lease,
 per the compatibility-scope section above.
 
-`charge`, `replace`, and `appendCallBytes` validate before mutation; a failed charge changes
-neither the owner buffer nor counters. `replace` charges `max(nextBytes - previousBytes, 0)`
-before replacing, then releases `max(previousBytes - nextBytes, 0)`. `dispose()` is idempotent,
-releases all remaining categories/calls, and unregisters the live budget from the process
-aggregator. Request-local call ids never appear in metrics.
+There are exactly two hard-admission operations, and every implementation site names one:
+
+1. `reserveTransient(nextBytes, scope)` is mandatory whenever a new allocation is created while
+   its predecessor/source allocation is still live. It charges the FULL new allocation against
+   the aggregate turn limit before allocation. After a
+   successful allocate/build and owner swap, call `commitRetained()` (no counter change), then
+   `releaseRetained(previousBytes, scope)`. On allocation/swap failure, call `release()` and keep
+   the old owner. String `+=`, `slice`, `join`, `concatBytes`, object/tree replacement, and
+   cumulative argument snapshots are replacements under this rule; growth-only `next-old`
+   accounting is forbidden even when the final logical value grows by only a fragment.
+   The 2 MiB per-call limit is checked against the LOGICAL assembled argument size (`nextBytes`
+   of the new value alone, when `callId` is present), never against the old+new physical
+   overlap: appending one byte to a retained 1 MiB argument checks 1 MiB + 1 byte against the
+   per-call cap while reserving the full overlap against the 32 MiB aggregate. A per-call
+   rejection is therefore reachable only when the assembled argument itself would exceed
+   2 MiB, independent of how many fragments built it.
+2. `chargeRetained(delta, scope)` is only for a genuine retained-set increase with no second
+   replacement allocation: for example, pushing a newly created fragment/event/map entry into an
+   existing collection or retaining a new independent chunk. Charge the exact new physical
+   object's bytes before insertion; it does not excuse a later concatenation/replacement from
+   using `reserveTransient`.
+
+Both admissions and `releaseRetained` validate before mutation; a failed admission changes
+neither the owner buffer nor counters. `dispose()` is idempotent, releases all remaining
+categories/calls, and unregisters the live budget from the process aggregator. Request-local call
+ids never appear in metrics.
 
 The module-level translator aggregator sums live budgets' `currentBytes`, records the
 concurrent aggregate high-water, and maps `sum(activeCalls)` to 040's `active`. It retains an
@@ -197,7 +238,10 @@ through 040's three-scalar observed snapshot.
 global current and high-water observation but does not apply the 32 MiB hard cap to an original
 body already admitted by `MAX_DECOMPRESSED_BODY_BYTES`. Its returned idempotent release closes
 that exact physical copy. The direct parse tree and its in-place mutations remain on this
-compatibility lease. Translated/cloned/serialized structures use hard `charge`/`replace` instead.
+compatibility lease. A translated/cloned/serialized structure uses `chargeRetained` when it is a
+new independent retained object, or `reserveTransient` when it replaces/derives from a still-live
+hard-charged predecessor. The named externally capped passthrough/MCP observation leases remain
+outside both hard-admission operations.
 
 ### Mandatory production signatures
 
@@ -262,12 +306,13 @@ The client ingress that creates a budget owns it through the outermost client-fa
 1. Chat creates the budget immediately on entry at
    `src/server/chat-completions.ts:49-59`, beside the incoming 035
    `turnAdmissionLease`, before `readChatBody()` and `chatCompletionsToResponsesBody()`.
-   Charge the translated body and `JSON.stringify(internalBody)` before the internal request at
+   Use `chargeRetained` for the independent translated body and serialized internal request at
    `:139-143`; pass the same object in `HandleResponsesOptions` at `:151-159` and into both
    Responses→Chat streaming and non-stream folds.
 2. Claude does the same at `src/server/claude-messages.ts:511-529`, before native/routed
-   discrimination and `anthropicToResponsesTranslation()` at `:570-579`; charge serialization
-   at `:670-674`, then pass the same object at `:686-697` and through both outbound modes.
+   discrimination and `anthropicToResponsesTranslation()` at `:570-579`; use `chargeRetained`
+   for each independent translated/serialized body at `:670-674`, then pass the same object at
+   `:686-697` and through both outbound modes.
 3. Genuine Responses creates its own budget before `readJsonRequestBody()` at
    `src/server/responses/core.ts:1085-1099`. Recursive combo attempts at `:916-988` reuse this
    object; a combo child never creates or disposes a second budget.
@@ -353,19 +398,25 @@ rewrite integration covered in `tests/sse-payload-rewrite.test.ts`.
 
 | Owner and verified current anchor | Exact admission/release rule |
 |---|---|
-| OpenAI Chat `src/adapters/openai-chat.ts:696-708,792-812,853-861` | `openCall` on first index/id. Charge each UTF-8 `function.arguments` fragment before `call.args +=`; close/release only after atomic start/delta/end emission or terminal failure. Preserve index/id rescue and 20+ interleaving. |
-| OpenAI Chat raw line `src/adapters/openai-chat.ts:685-687,824-844` | Charge decoded bytes before extending `buffer`; release consumed complete lines and the EOF residual after handling. A line above `TRANSLATOR_MAX_SSE_EVENT_BYTES` becomes the coherent adapter error. |
-| Generic bridge `src/bridge.ts:251-324,334-435,630-707,772-774` | Charge before every retained append/map/array insertion. Release a mutable current buffer only after its immutable `finishedItems` replacement has been charged; finished items remain under `retained_collectors` until persistence ownership/finalization. |
-| Cursor protobuf `src/adapters/cursor/protobuf-events.ts:152-188,355-410,441-482` | `argsTextDelta` is cumulative, not append-only. `replaceCallBytes(callId, oldBytes, newBytes)` charges `max(new-old,0)` before replacing the longest value and releases shrinkage. Charge normalization copies created by `resolveCompletedArgs()`/`JSON.stringify`; release open args after atomic completion and charge the emitted collector until consumed. |
-| Anthropic `src/adapters/anthropic.ts:792-795,832-890` | Charge `partial_json` before `currentToolCallJson +=`; release only after validated `content_block_stop` or failure. Overflow cancels and never emits `tool_call_end`. |
-| Shared SSE decoder `src/lib/sse-decoder.ts:25-33,44-52,75-95` | Add required budget/options plumbing from adapter parse calls. Bound one event's combined raw `buffer` plus `dataLines` to `TRANSLATOR_MAX_SSE_EVENT_BYTES`; charge before buffer/data-line retention, transfer accounting across slice/join without double-charge, and release immediately after dispatch/yield ownership moves to the consumer. |
-| Kiro `src/adapters/kiro.ts:727-782,892-975,1015-1111` | Charge `deferred`, `assistantText`, `outputChars`, thinking carry, `fallbackEvents`, and each `ev.input` before retention. Assign each physical string copy one canonical kind; aliases are not double-counted, but actual concatenation/join copies are. Private completion and ordinary tools share the 2 MiB call limit. |
-| OpenAI Responses compaction `src/adapters/openai-responses.ts:1041-1078` | Hard-charge `deltas`, `doneText`, and `snapshot` as three independently retained physical strings; their simultaneous bytes aggregate under the same 32 MiB turn budget even though only one is selected at the end. For every `+=` or snapshot replacement, admit the new full string before releasing the old allocation. At selection, release the two losers and transfer the selected string's charge to the yielded event; release it only when consumer ownership ends. Overflow cancels the source and emits the typed adapter error. |
-| Google streaming SSE `src/adapters/google.ts:411-542` | Charge decoded input before extending `buffer`. Because `split("\n")`, `lines`, residual `buffer`, payload slicing, and `JSON.parse` create real simultaneous copies, admit each newly materialized copy using the serialized-source rule before releasing its predecessor; release each line/tree after its generated events have transferred ownership. One unterminated frame and all parsed frame copies share the aggregate 32 MiB budget, in addition to the existing per-frame guard. |
-| Google non-stream response `src/adapters/google.ts:595-637` | Charge every retained chunk in `chunks`, then the concatenated `Uint8Array`, decoded `rawText`, and parsed `raw` tree as concurrent physical copies while they overlap. Admission occurs before each allocation/copy; release chunks after concatenation, bytes after decode, text after parse, and the parse tree after event conversion/handoff. Existing `MAX_RESPONSE_BYTES` remains an upstream-body guard, not a substitute for aggregate translator accounting. |
+| OpenAI Chat `src/adapters/openai-chat.ts:696-708,792-812,853-861` | `openCall` on first index/id. Every `call.args += fragment` uses `reserveTransient(fullNextArgsBytes, { kind: "tool_args", callId })`; allocate/swap, commit the full new string, then release the full previous string. Fragment-only `chargeRetained(fragmentBytes)` is forbidden because JS concatenation allocates a second string. Close/release only after atomic start/delta/end emission or terminal failure. Preserve index/id rescue and 20+ interleaving. |
+| OpenAI Chat raw line `src/adapters/openai-chat.ts:685-687,824-844` | Every decoded `buffer += chunk`, residual `slice`, or joined line replacement uses `reserveTransient(fullNewBufferBytes, { kind: "live_transient" })`, commits after swap, then releases the predecessor. `chargeRetained` is used only for an independently retained parsed line/event entry. A line above `TRANSLATOR_MAX_SSE_EVENT_BYTES` becomes the coherent adapter error. |
+| Generic bridge `src/bridge.ts:251-324,334-435,630-707,772-774` | Every current text/reasoning/argument string append or replacement uses `reserveTransient(fullNewBytes, scope)` before swap and releases the full old allocation after commit. A newly inserted map entry, source entry, or array item with no replaced allocation uses `chargeRetained(entryBytes, scope)`. Building a distinct immutable `finishedItems` item while its mutable source remains live uses `reserveTransient(fullItemBytes, { kind: "retained_collectors" })`; aliases transfer ownership without a second charge. |
+| Cursor protobuf `src/adapters/cursor/protobuf-events.ts:152-188,355-410,441-482` | `argsTextDelta` is cumulative. Every longest-value/current-args swap uses `reserveTransient(fullNewArgsBytes, { kind: "tool_args", callId })`, commits after swap, then releases the full old args; `new-old` accounting is forbidden. Independent normalization copies from `resolveCompletedArgs()`/`JSON.stringify` use `chargeRetained(copyBytes, scope)` before creation; later replacement of either copy again uses `reserveTransient`. Release open args after atomic completion and release emitted collectors when consumed. |
+| Anthropic `src/adapters/anthropic.ts:792-795,832-890` | Every `currentToolCallJson += partial_json` uses `reserveTransient(fullNextJsonBytes, { kind: "tool_args", callId })`, commits after swap, then releases the full old JSON. `chargeRetained` applies only to a separately retained block/event object. Release only after validated `content_block_stop` or failure; overflow cancels and never emits `tool_call_end`. |
+| Shared SSE decoder `src/lib/sse-decoder.ts:25-33,44-52,75-95` | Add required budget/options plumbing from adapter parse calls. Raw-buffer append, residual `slice`, and `dataLines.join` use `reserveTransient(fullNewBytes, { kind: "live_transient" })` with full old release after swap. Each independently pushed `dataLines` entry uses `chargeRetained(lineBytes, scope)`. Bound one event's combined physical copies to `TRANSLATOR_MAX_SSE_EVENT_BYTES`, and release after dispatch/yield ownership moves to the consumer. |
+| Kiro `src/adapters/kiro.ts:727-782,892-975,1015-1111` | Every `deferred`, `assistantText`, `outputChars`, thinking-carry, or tool-input string concatenation/replacement uses `reserveTransient(fullNewBytes, scope)` and releases the full predecessor after commit. Each independent `fallbackEvents`/event/fragment insertion uses `chargeRetained(entryBytes, scope)`. Assign each physical copy one canonical kind; aliases are not double-counted. Private completion and ordinary tools share the 2 MiB call limit. |
+| OpenAI Responses compaction `src/adapters/openai-responses.ts:1041-1078` | `deltas`, `doneText`, and `snapshot` are three independent retained strings. Every `+=` and snapshot assignment—including the first replacement of an empty string—uses `reserveTransient(fullNewBytes, scope)`, commits after swap, then releases the full old allocation. `chargeRetained` is used only for separately inserted usage/event objects, never these string replacements. At selection, release the two losers and transfer the selected retained lease to the yielded event. Overflow cancels the source and emits the typed adapter error. |
+| Google streaming SSE `src/adapters/google.ts:411-542` | Decoded `buffer += chunk`, residual slicing, payload slicing, and any string replacement use `reserveTransient(fullNewBytes, { kind: "live_transient" })` while their source remains live. Each independent `lines` entry or parsed JSON tree uses `chargeRetained(copyBytes, scope)` before materialization; replacing such a tree uses `reserveTransient`. Release each predecessor/source only after all derived copies are admitted. One unterminated frame and all parsed frame copies share the aggregate 32 MiB budget in addition to the per-frame guard. |
+| Google non-stream response `src/adapters/google.ts:595-637` | Each independent incoming chunk pushed into `chunks` uses `chargeRetained(chunkBytes, scope)`. Before concatenating, decoding, or parsing while source chunks/bytes/text remain live, use `reserveTransient(fullNewBytes, scope)` for the concatenated `Uint8Array`, `rawText`, and parsed `raw` tree; commit each result, then release its full predecessor set only after ownership swaps. Existing `MAX_RESPONSE_BYTES` remains an upstream-body guard, not a substitute for aggregate translator accounting. |
 
-One 2 MiB call passes exactly; one byte over fails. Twenty-four 1 MiB calls pass the call
-limit and remain below 32 MiB; aggregate byte 32 MiB passes exactly and byte 32 MiB + 1 fails.
+One one-shot/empty-predecessor 2 MiB call allocation passes exactly; one byte over fails.
+A fragmented argument assembled across many appends admits exactly 2 MiB of logical size and
+rejects one byte over — identical to the one-shot outcome, because the per-call check reads
+the logical assembled size, never the transient old+new overlap.
+Twenty-four independently retained 1 MiB calls pass the call limit and remain below 32 MiB;
+standalone aggregate byte 32 MiB passes exactly and byte 32 MiB + 1 fails. A replacement may
+correctly fail below the final logical AGGREGATE size when its full old+new physical overlap
+crosses the 32 MiB turn cap; the 2 MiB per-call boundary is never overlap-dependent.
 Kiro passes the same `TranslatorBudget` from `parseKiroStream()` through both
 `parseKiroAttempt()` invocations at `src/adapters/kiro.ts:1334-1426`; creating a fresh budget
 for the bounded fallback retry is forbidden.
@@ -378,6 +429,11 @@ frame construction under `live_transient` until enqueue, plus retained tool iden
 argument maps at `:153-158,303-365`. Release map entries after the authoritative tool call is
 emitted. The full collectors at `:475-527,545-643` hard-charge text, reasoning, tool arrays,
 and the raw SSE `buffer` at `:550-574` until final JSON handoff.
+
+For those outbound accumulators, every text/reasoning/argument/raw-buffer string replacement uses
+`reserveTransient(fullNewBytes, scope)`; each independent map/array/frame insertion uses
+`chargeRetained(entryBytes, scope)`. The same operation split applies to the Claude accumulators
+below.
 
 Responses→Claude has the same split. Text/thinking deltas at
 `src/claude/outbound.ts:286-303` are emitted directly and only live-transient charged. Retain
@@ -414,22 +470,27 @@ SSE error for streaming, and structured 413 rather than generic server error for
 
 ### Item ids, tool maps, Cursor KV, and MCP observation
 
-- `src/server/responses-item-id-repair.ts:51-84,115-166`: charge placeholder sets, scope,
-  both output-id maps, and rewritten snapshot copies. Aggregate cap only; charge-before-insert
-  plus failed-tail semantics prevents identity changes or raw stream errors.
+- `src/server/responses-item-id-repair.ts:51-84,115-166`: use `chargeRetained` before inserting
+  each placeholder/set/map entry. A rewritten snapshot that replaces an existing physical snapshot
+  uses `reserveTransient(fullNewSnapshotBytes, { kind: "item_ids" })`, commits after swap, then
+  releases the full predecessor. Aggregate cap plus admission-before-mutation prevents identity
+  changes or raw stream errors.
 - `buildToolBridgeMaps()` currently runs after runTurn setup at
   `src/server/responses/core.ts:2024-2055` and after upstream response acquisition at
   `:2525-2538`. Move one budgeted preflight immediately after successful `parseRequest()` at
   `:1133-1143`, before route resolution/adapter construction at `:1181-1189,1354-1358` and
-  before any upstream build/fetch. Charge namespace/name strings and set/map entries while
-  walking accepted tools; overflow returns 413. Reuse this admitted map object in passthrough,
+  before any upstream build/fetch. Use `chargeRetained` for namespace/name strings and set/map
+  entries while walking accepted tools; overflow returns 413. Reuse this admitted map object in
+  passthrough,
   sidecar, runTurn, stream, and non-stream branches; do not rebuild it later.
-- Bridge web sources at `src/bridge.ts:321-331,739-777` charge URL/title copies before insert;
-  release only after annotations are charged onto the next assistant item or terminal cleanup.
+- Bridge web sources at `src/bridge.ts:321-331,739-777` use `chargeRetained` for independent
+  URL/title entries before insert; release only after annotations are charged onto the next
+  assistant item or terminal cleanup.
 - `src/adapters/cursor/kv-store.ts:10-24`: make the seed, replacement set, and clone-on-get
-  copies use the request's translator budget. Charge a seed/set clone before allocation,
-  subtract the replaced value after commit, and return a budgeted clone lease on get so the
-  caller releases it after encoding. No seed/default path is exempt.
+  copies use the request's translator budget. A new seed and clone-on-get use `chargeRetained`;
+  a set that replaces an existing value uses `reserveTransient(fullNewValueBytes, cursorKvScope)`,
+  commits after swap, then releases the full old value. Return a budgeted clone lease on get so
+  the caller releases it after encoding. No seed/default path is exempt.
 - MCP catalogs/results remain under delivered 035 caps at
   `src/adapters/cursor/mcp-manager.ts:9-14,111-134,239-285`. While they are live inside a
   turn, account them through `observeExternallyCapped("mcp_payload", bytes)` — observation
@@ -448,53 +509,79 @@ text, and the direct parse tree as separate compatibility-scope physical copies,
 at its last use. Preserve `MAX_DECOMPRESSED_BODY_BYTES` at `:15-21` and zlib's in-decompress cap
 at `:52-77`.
 
-Hard-charge the newly created Chat/Claude Responses body and serialized internal request at
-the ingress anchors above. In genuine Responses, the `body`/`originalBody` object at
+Use `chargeRetained` for each newly created independent Chat/Claude Responses body and serialized
+internal request at the ingress anchors above. In genuine Responses, the `body`/`originalBody`
+object at
 `src/server/responses/core.ts:1094-1133` is the direct parse tree: sanitization and any other
 in-place mutation of that same object remain compatibility-scope, not a hard charge. A distinct
 tree returned by `expandPreviousResponseInput()` at `:1107-1116`, or any later clone,
-translation, collector, or serialization, is newly materialized and hard-charged before
-retention — except the passthrough upstream `JSON.stringify` of the compatibility tree
-itself, which stays on the `passthrough_serialization` observation lease. This explicit identity rule is why an unchanged 32–256 MiB Responses request passes
-through uncharged under the translator cap. Image alias maps and image/vision translations are
-translator-owned: charge alias entries before insertion and charge newly allocated text/image
-replacements created by `planVisionSidecar()` / `describeImagesInPlace()` /
+translation, collector, or serialization, is newly materialized: use `reserveTransient` when it
+replaces a still-live hard-charged allocation and `chargeRetained` for an independent insertion
+before retention—except the passthrough upstream `JSON.stringify` of the compatibility tree
+itself, which stays on the `passthrough_serialization` observation lease. This explicit identity
+rule is why an unchanged 32–256 MiB Responses request passes through uncharged under the
+translator cap. Image alias maps and image/vision translations are
+translator-owned: use `chargeRetained` for independent alias-map entries and
+`reserveTransient(fullReplacementBytes, scope)` for newly allocated text/image replacements
+created by `planVisionSidecar()` / `describeImagesInPlace()` /
 `stripImagesInPlace()` at `src/server/responses/core.ts:1394-1401`. Existing image normalization
 limits stay authoritative; release replaced translator copies when no downstream serializer can
 reference them, while in-place changes to the direct parse tree stay on its compatibility lease.
 
 ### Cursor transport byte admission and existing 1,024-event cap
 
-Do not add or substitute a 4,096-message cap. The production structures are byte-bounded as
-one request-local transport pool:
+Do not add or substitute a 4,096-message cap. The single normative wp6 design is the existing
+contiguous receive/decode model with every physical copy charged. A segmented/zero-copy decoder
+is explicitly out of scope for 050. The request-local transport pool follows these rules:
 
-1. Change `tryDecodeConnectFrame(input, offset, maxPayloadBytes =
-   MAX_CONNECT_FRAME_PAYLOAD_BYTES)` at `src/adapters/cursor/framing.ts:68-80`. After the
-   five-byte header is available, reject announced payload length above the supplied maximum
-   before waiting for or slicing payload bytes. `CURSOR_MAX_CONNECT_FRAME_BYTES` bounds the
-   payload only; `CONNECT_FRAME_HEADER_BYTES` is excluded. Live transport passes the 32 MiB
-   payload cap while the 4 GiB protocol constant remains wire-compatible only.
-2. At `src/adapters/cursor/live-transport.ts:753-787`, reserve incoming partial-frame payload
-   bytes before `concatBytes` and serialize the frame-work chain that replaces the unbounded
-   fire-and-forget handlers at `:781-783`. The transport pool charges payload bytes only; all
-   five-byte frame headers are uncharged. When a complete frame is decoded, atomically transfer
-   its existing payload-byte lease from the receive buffer to pending frame work—do not release
-   and recharge, and do not hold two leases for the same bytes. Therefore an exactly 32 MiB
-   payload is admitted when the rest of the pool is empty without a transient double-charge;
-   32 MiB + 1 is rejected from the announced header before payload allocation.
-3. At `:467-503,561-575`, charge each queued `CursorServerMessage` by its deterministic UTF-8
-   encoded payload before `queue.push`, and release after `queue.shift` transfers it to the
-   consumer. Partial-frame bytes + queued frame-work payload bytes + queued message bytes must
-   stay at or below `CURSOR_TRANSPORT_MAX_BUFFERED_BYTES`.
-4. Pause the HTTP/2 stream when an admitted transfer brings the combined payload pool exactly to
-   `CURSOR_TRANSPORT_MAX_BUFFERED_BYTES`; never admit a transfer that would exceed it. Resume only
-   when release/ownership transfer lowers the pool to or below `CURSOR_TRANSPORT_RESUME_BYTES`
-   (16 MiB). A peer/chunk that cannot be admitted closes/cancels the transport and emits the
-   coherent adapter error. The serialized work chain and message queue preserve FIFO terminal/tool
-   order with zero frame loss across pause/resume.
-5. Keep `createAdapterEventQueue()`'s existing default 1,024-event abort at
-   `src/adapters/run-turn-queue.ts:52-75` unchanged. Byte admission is additional and earlier;
-   it must not increase, disable, or replace the stricter event-count interaction.
+1. Keep `CURSOR_MAX_CONNECT_FRAME_BYTES = 32 MiB` as the payload-only wire/protocol ceiling;
+   five-byte headers remain excluded from that byte ceiling. Change
+   `tryDecodeConnectFrame(input, offset, maxPayloadBytes = MAX_CONNECT_FRAME_PAYLOAD_BYTES)` at
+   `src/adapters/cursor/framing.ts:68-80` to reject an announced payload above its supplied maximum
+   after the header and before payload allocation. Generic framing may use the 32 MiB ceiling, but
+   live transport passes `CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES = 16 MiB`. Thus 16 MiB is the
+   maximum live payload with an otherwise empty transport pool; 16 MiB + 1 is rejected from the
+   announced header. The lower effective limit is the deliberate cost of copy-accounted one-phase
+   implementation, not a second protocol constant masquerading as the wire cap.
+2. Rewrite `concatBytes()` at `src/adapters/cursor/live-transport.ts:1007-1011` and its call at
+   `:753-765` to use the shared budget operations. Retaining an incoming payload region with no
+   replacement uses `chargeRetained(incomingPayloadBytes, cursorScope)`. Before `concatBytes`
+   allocates the full combined buffer, call `reserveTransient(combinedPayloadBytes, cursorScope)`
+   while old pending + incoming remain charged; after swap, commit the combined lease and release
+   both full predecessor leases. Header bytes in these buffers are excluded from each byte count.
+3. `tryDecodeConnectFrame()` currently copies payload with `slice` at
+   `src/adapters/cursor/framing.ts:78-80`; `decodeAvailableConnectFrames()` copies the residual at
+   `:111-123`. Each copy uses `reserveTransient(fullCopiedPayloadBytes, cursorScope)` while the
+   combined input remains charged. Commit payload/residual leases, then release the full combined
+   predecessor only after all outputs are admitted. Consequently the worst physical overlap is
+   `2 * 16 MiB = 32 MiB`; there is no atomic lease transfer and no uncharged duplicate. Any other
+   live transport/turn state reduces the admissible payload below 16 MiB through the same aggregate
+   check.
+4. Add a count admission independent of payload bytes:
+   `CURSOR_MAX_PENDING_FRAMES = 1024` and `CURSOR_PENDING_FRAMES_RESUME = 512`.
+   Rewrite `decodeAvailableConnectFrames()` at `src/adapters/cursor/framing.ts:111-123` to accept
+   available frame slots. Its loop checks that a complete frame is present and reserves one slot
+   BEFORE invoking `tryDecodeConnectFrame()` or materializing the next `ConnectFrame`; when no slot
+   remains it leaves all remaining encoded bytes in the charged residual. In
+   `LiveCursorTransport.open()` at `src/adapters/cursor/live-transport.ts:670-843`, maintain
+   `pendingFrameCount` across decoded frames, serialized handler promises, and queued frame work;
+   release a slot only after that frame is fully handled—synchronous terminal/error paths in a
+   `finally`, and async handlers in `promise.finally`. Add a local `drainPendingFrames()` owner so
+   released slots decode already-buffered residual bytes even if no new network chunk arrives.
+5. Pause the HTTP/2 stream when either the physical-copy byte pool reaches
+   `CURSOR_TRANSPORT_MAX_BUFFERED_BYTES` or `pendingFrameCount` reaches
+   `CURSOR_MAX_PENDING_FRAMES`. Resume only when BOTH bytes are at or below
+   `CURSOR_TRANSPORT_RESUME_BYTES` (16 MiB) and frame count is at or below
+   `CURSOR_PENDING_FRAMES_RESUME` (512). A transfer exceeding byte admission closes/cancels with
+   the coherent typed adapter error; frame-count saturation pauses and retains encoded residual
+   bytes without materializing another frame object. Serialized work and `drainPendingFrames()`
+   preserve FIFO with zero loss.
+6. At `src/adapters/cursor/live-transport.ts:467-503,561-575`, each independent queued
+   `CursorServerMessage` insertion uses `chargeRetained(encodedPayloadBytes, cursorScope)` before
+   `queue.push`; release after `queue.shift` transfers it to the consumer. Keep
+   `createAdapterEventQueue()`'s separate default 1,024-event abort at
+   `src/adapters/run-turn-queue.ts:52-75` unchanged; transport frame-count and byte admission are
+   earlier bounds and do not increase, disable, or replace it.
 
 ## 040 observed-owner registrations
 
@@ -558,8 +645,11 @@ Add/extend the nearest existing suites with these exact cases:
 - `client abort cancels the upstream reader and returns translator currentBytes and active to zero`
 - `translator observed snapshot maps activeCalls to active and omits internal overflows`
 - `24 interleaved OpenAI Chat tool calls complete without reordering`
-- `one tool call admits exactly 2 MiB and rejects one byte over`
-- `aggregate translator bytes admit exactly 32 MiB and fail one byte over`
+- `one one-shot tool call admits exactly 2 MiB and rejects one byte over`
+- `a fragmented tool call assembled by appends admits exactly 2 MiB logical size and rejects one byte over`
+- `standalone aggregate translator bytes admit exactly 32 MiB and fail one byte over`
+- `reserveTransient charges full old plus full new overlap before every replacement swap`
+- `chargeRetained is used only for insertion growth with no replaced allocation`
 - `overflow emits no arguments.done output_item.done or finished item carrying truncated JSON`
 - `overflow cancels upstream once and bridge emits response.failed`
 - `failed-tail rewrite overflow preserves translation_buffer_limit while ordinary failure stays upstream_reset`
@@ -572,7 +662,7 @@ Add/extend the nearest existing suites with these exact cases:
 - `Chat and Claude non-stream overflow returns structured HTTP 413 instead of generic server error`
 - `Claude streaming signature remains synthetic and raw SSE buffers release per event`
 - `Kiro first attempt and bounded fallback retry share one turn budget`
-- `Cursor cumulative args replacement charges growth only and releases completion copies`
+- `Cursor cumulative args replacement reserves the full new allocation before releasing the old`
 - `item id repair overflow uses failed-tail response.failed and preserves emitted ids`
 - `buildToolBridgeMaps overflow returns 413 before adapter construction or upstream work`
 - `request-local Cursor KV seed set replacement and clone-on-get account exact bytes`
@@ -583,8 +673,10 @@ Add/extend the nearest existing suites with these exact cases:
 - `request decompression observes raw decoded text and direct parse tree without lowering 256 MiB cap`
 - `vision translation and image aliases charge the ingress translator budget`
 - `Cursor announced frame over 32 MiB rejects after header before payload allocation`
-- `Cursor exactly 32 MiB payload transfers receive charge atomically with uncharged header bytes`
+- `Cursor contiguous-copy transport admits exactly 16 MiB and rejects 16 MiB plus one before payload allocation`
+- `Cursor concat payload and residual copies report a 32 MiB overlap high-water at the 16 MiB effective maximum`
 - `Cursor transport pauses at 32 MiB resumes at 16 MiB preserves FIFO and loses zero frames`
+- `Cursor tiny-frame flood pauses at 1024 pending frames resumes at 512 and materializes no 1025th frame early`
 - `Cursor byte backpressure preserves the existing 1024-event queue abort cap`
 - `image fulfillment 65 returns busy before provider or artifact work and reports path bytes`
 - `OAuth mutation 129 rejects before enqueue while every accepted mutation executes once`
