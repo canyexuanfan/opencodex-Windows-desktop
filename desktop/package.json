@@ -65,6 +65,7 @@
       "perMachine": false,
       "allowElevation": false,
       "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
       "unicode": true,
       "createDesktopShortcut": false,
       "createStartMenuShortcut": true,

@@ -33,3 +33,5 @@ PowerShell 自动变量 `$HOME` 在 Windows 环境中也以大小写不敏感方
 
 - 2026-08-01：记录便携版 smoke 中 `$home` 变量冲突，准备使用任务专用变量重试。
 - ✅ 2026-08-01：改用 `$smokeHomePath` 等任务变量，并给 Electron 传入全新 `--user-data-dir` 后，签名 portable 和安装版入口均能保持运行；清理时按明确 PID 停止本次 smoke 子进程。
+- ❌ 2026-08-01：从中文/空格安装路径启动冒烟时再次使用 `$home`、`$codex` 变量，PowerShell 报 `$HOME` 只读变量冲突；虽然误用默认用户目录的进程取得了 healthz/models 结果，但该次不能作为隔离环境证据。后续必须使用 `$smokeHomePath`、`$smokeCodexPath` 等不冲突变量，并清理误用目录。
+- ✅ 2026-08-01：按已有经验改用 `$smokeHomePath`、`$smokeCodexPath`、`$smokeElectronDataPath`，重跑安装版 Unicode 路径冒烟成功（动态端口 2430、healthz/models 均 200）；精确停止 5 个本次子进程，卸载并清理隔离根，确认 `C:\Users\wzm33\runtime-port.json` 与 `ocx.pid` 均不存在。

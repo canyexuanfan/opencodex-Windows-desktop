@@ -758,3 +758,10 @@ Codex / Claude Code / 其他现有客户端
 - [x] 本次源码修复后的最终安装版/便携版已重新构建并签名：Setup `99294DDA0792B2C534AAD6CFCE93FB5CA999DE8884442AD6A1D575BFEBA5C622`，Portable `6338C18E448DC0B6C573AA53CC7662EB1A11026A05EB7005F80C44F3BE527558`；主体 `CN=十七°`，PFX/私钥已清理，本机自签链仍待受信测试机复核。
 - [x] 本机隔离冒烟补证：Setup 静默安装返回 0，指定安装目录保留 `OpenCodex` 程序名子文件夹且包含 `OpenCodex.exe` 与内置 `resources/opencodex/runtime/bun.exe`；Portable 在隔离 `--user-data-dir` 下启动并取得动态端口，`/healthz=200/service=opencodex`、`/v1/models=200`；结束后按精确父子 PID 停止测试进程并确认临时目录清理完成。
 - [ ] 外部验收仍保留：干净 Windows 10/11 VM 双击、中文/空格安装路径真实向导、受信证书链 `Valid`、真实 Provider 配置保留与完整根测试。
+
+# 安装路径程序名子目录修复增量（2026-08-01）
+- [x] 修复 NSIS 安装目录保护：新增 `desktop/build/installer.nsh`，在初始化阶段按最后一级目录名精确判断 `OpenCodex`，避免父目录名称包含产品名时误判并丢失子文件夹。
+- [x] `desktop/package.json` 显式引用 `nsis.include=build/installer.nsh`，桌面静态契约测试扩展为 14/14 通过。
+- [x] 重建并签名 NSIS/Portable：Setup `426BA34D4A240E45F0AA4517659CF3433A5FFD765B8483A12602AC55D35E70B4`；Portable `037D3D8E8DD7FDF691CA480475DA7AD18B0AF5E3F67113B9B3B140B0643E0C85`；签名主体 `CN=十七°`，本机自签链状态仍为 `UnknownError`。
+- [x] 中文/空格父目录真实安装：`/S /D=<父目录>` 返回 0，生成 `父目录/OpenCodex/OpenCodex.exe` 与内置 Bun，父目录无散落程序文件；从该路径启动取得动态端口 2430，`/healthz=200`、`/v1/models=200`，卸载器返回 0 且隔离目录清理完成。
+- [ ] 干净 Windows 10/11 VM、受信证书链 `Valid`、真实 Provider 配置保留仍待外部验收。
