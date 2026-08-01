@@ -92,6 +92,10 @@ routing。未绑定请求没有 live 账号绑定，也可能是代理重启或 
 暂停还会清除该账号的 thread affinity map：进行中的请求保留已捕获的 credential，但后续 turn 会重新路由，无法再使用已暂停账号。
 暂停状态会跨重启保留；如果所有账号均已暂停，Pool 路由会明确失败，而不会暗中选择某个账号。
 **暂停已达上限账号** 会先刷新有 credential 的合格账号，只暂停相关 quota window 本次明确返回 100% 的账号；无 credential、未知额度或刷新失败的账号保持不变。
+遇到 **401/403** 时，App 登录会清除该账户的进程内 affinity 并要求重新认证。
+遇到 **429** 时，它会遵循 `Retry-After`、启动账户 cooldown、清除 affinity，
+并可将请求切换到另一个符合条件的 Pool 账户。即使 `autoSwitchThreshold: 0`，
+这些故障恢复流程仍然有效；`0` 只会禁用基于用量的主动切换。
 
 **分配与主动切换策略：** `quota`（默认）在没有活跃账号时选择 usage 最低的合格账号；活跃账号合格且低于 `autoSwitchThreshold` 时继续使用；达到阈值后，可把未绑定请求或已绑定任务的下一次请求切换到 usage 更低的合格账号。`round-robin` 均匀分配未绑定请求，用量
 阈值不会改变正常轮换。`accountPoolStickyLimit`（默认 `1`，1–100）统计分配/绑定，而不是成功响应。

@@ -376,6 +376,10 @@ recovery may later select another eligible Pool account. Those recovery paths re
 usage-based switching is off. OpenCodex replays the conversation after an account change, but the
 provider-side prompt cache may be cold. Unknown providers or ids exit 1.
 `--json` returns:
+On a **401/403**, App login clears that account's process-local affinity and requires reauthentication.
+On a **429**, it honors `Retry-After`, starts the account cooldown, clears affinity, and may rotate
+the request to another eligible Pool account. These failure transitions remain active with
+`autoSwitchThreshold: 0`; that setting disables only usage-based proactive switching.
 
 ```text
 { ok: true, provider, type, activeId }

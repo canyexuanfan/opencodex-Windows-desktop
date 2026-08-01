@@ -158,6 +158,10 @@ restarts; if every account is paused, Pool routing fails instead of silently sel
 only those whose relevant quota window is freshly confirmed at 100%; accounts without credentials
 and unknown or failed quota refreshes are left unchanged.
 :::
+On a **401/403**, App login clears that account's process-local affinity and requires reauthentication.
+On a **429**, it honors `Retry-After`, starts the account cooldown, clears affinity, and may rotate
+the request to another eligible Pool account. These failure transitions remain active with
+`autoSwitchThreshold: 0`; that setting disables only usage-based proactive switching.
 
 **Assignment and proactive-switching strategies:**
 
