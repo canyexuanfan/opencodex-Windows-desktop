@@ -325,6 +325,10 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     // the returned response body through AbortSignal.any().
     let headerDeadline = clearableDeadline(connectTimeoutMs, signal);
     try {
+      /**
+       * Build and fetch one web-search iteration on the given adapter, under the iteration
+       * header deadline. The caller owns same-target 429 replays and key rotation around it.
+       */
       const fetchOnce = async (requestAdapter: ProviderAdapter): Promise<IterationResponse> => {
         const request = await requestAdapter.buildRequest(iterParsed, {
           headers: selectedForwardHeaders,

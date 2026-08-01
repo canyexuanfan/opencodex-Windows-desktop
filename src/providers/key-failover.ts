@@ -59,6 +59,10 @@ function parseRetryAfterMs(value: string | null | undefined, now = Date.now()): 
   return Math.min(Math.max(delay, 1), MAX_COOLDOWN_MS);
 }
 
+/**
+ * True while the given key is inside its 429 cooldown window (lazily evicting the entry once the
+ * window expires). Used to skip keys that the upstream just rate-limited during failover.
+ */
 function isKeyInCooldown(providerName: string, keyId: string, now = Date.now()): boolean {
   const entry = keyCooldowns.get(cooldownKey(providerName, keyId));
   if (!entry) return false;

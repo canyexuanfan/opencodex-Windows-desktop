@@ -2589,13 +2589,15 @@ async function handleResponsesInner(
 
   cancelBodyOnAbort(upstreamResponse.body, upstream.signal);
 
+  // Anthropic-only: one bounded internal continuation re-ask for clean end_turn turns that
+  // announced an edit without emitting a tool call.
+  const terminalGuardEnabled = activeAdapter.name === "anthropic" && !options.comboAttempt && !routedCompaction;
   /**
    * One bounded internal re-ask for Anthropic end_turn-without-tool-call turns. Replays the
    * continuation on a 429 with the same-key retry budget (hoisted per request), then falls
    * back to key/account failover; a failure becomes an in-stream adapter error so the client
    * never sees a second hidden HTTP response or an unbounded retry loop.
    */
-  const terminalGuardEnabled = activeAdapter.name === "anthropic" && !options.comboAttempt && !routedCompaction;
   const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
     let imageTierBias = 0;
     let response: Response | undefined;

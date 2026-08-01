@@ -924,6 +924,10 @@ export interface RateLimitRetryPolicy {
   respectRetryAfter?: boolean;
 }
 
+/**
+ * One configured provider entry. `authMode` (default `"key"`) decides whether same-target 429
+ * retries are allowed; OAuth/forward credentials and local runtimes are never replayed.
+ */
 export interface OcxProviderConfig {
   adapter: string;
   /** Cursor MCP compatibility bounds; positive integers when configured. */

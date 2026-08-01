@@ -434,6 +434,10 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
 
     let headerDeadline = clearableDeadline(connectTimeoutMs, signal);
     try {
+      /**
+       * Build and fetch one image-bridge iteration on the given adapter, under the iteration
+       * header deadline. The caller owns same-target 429 replays and key rotation around it.
+       */
       const fetchOnce = async (requestAdapter: ProviderAdapter): Promise<IterationResponse> => {
         const request = await requestAdapter.buildRequest(iterParsed, {
           headers: deps.forwardHeaders ? new Headers(deps.forwardHeaders) : new Headers(),
