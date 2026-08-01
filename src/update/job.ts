@@ -623,7 +623,22 @@ async function restartAfterUpdate(
       await sleep(500);
     }
   }
-  (io.spawnStart ?? spawnDetachedStart)(job, job.installer, port);
+  const spawnStart = io.spawnStart ?? spawnDetachedStart;
+  spawnStart(job, job.installer, port);
+  // First detached start after npm self-update often loses the race with draining
+  // TCBs on Windows (stdio is ignored, so the failure is silent). If Node can still
+  // bind a few seconds later, retry once.
+  if (!io.spawnStart) {
+    const sleep = io.sleepMs ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+    await sleep(2500);
+    if (await nodePortAvailable(port, hostname)) {
+      updateJob(job, {}, `Pinned start did not bind port ${port}; retrying once.`);
+      if (process.platform === "win32") {
+        try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
+      }
+      spawnStart(job, job.installer, port);
+    }
+  }
 }
 
 /** Compact listen-holder summary for update-job logs when reclaim fails. */
