@@ -73,3 +73,13 @@ amended accordingly (failure ladder + admission ladder).
 | AV-2 | Same-key cross-provenance replacement could downgrade a live remote pin to evictable local | ACCEPT | Admission step 1 now merges provenance to the STRONGER class (remote wins; TTL clock kept on remote→local refresh, upgrade on local→remote); remote→local and local→remote regression tests named. |
 | AV-3 | Oversized-vision-entry test unreachable (2000-char clamp < 1 MiB cap) | ACCEPT | setVisionDescriptionCacheLimitsForTests() override (production limits restored on undefined) + small-limit fixtures replace the unreachable case. |
 | AV-4 | Vision clamp snippet left the first-use outcome unclamped, contradicting the byte-identical contract | ACCEPT | Snippet extended: successful outcome is replaced with the clamped text BEFORE resolveOutcome; regression asserts cache value and first-use outcome identical, error outcomes untouched. |
+
+## wp4 A-gate (freshness auditor, FAIL 3) — adjudication
+
+| # | Blocker | Decision | Action |
+|---|---|---|---|
+| WP4-A1 | `GenerationContext.comboIds` cannot reconcile deleted target weights inside a still-live combo; main-Codex and OAuth account-key inclusion/encoding are also undefined | ACCEPT | Added canonical `comboTargets` (`comboId::provider/model`), raw Codex ids with `__main__`, OAuth `provider\0accountId`, partial-target pruning, and regression coverage. |
+| WP4-A2 | Post-commit reconciliation has no stale-writer fence, so accepted old-generation flights/requests can resurrect provider-quota, GCP, guardian, routing, combo, or reauth rows | ACCEPT | Added captured writer generation versus per-owner last-reconciled generation at every cited write site; stale deleted-key writes drop, live-key writes remain accepted, and late-completion regressions are required. |
+| WP4-A3 | PID memo eviction requires process identity/liveness proof, but 030 names neither an owner export/call site nor its regressions | ACCEPT | Reclassified PID memos to `sweepDeadOcxStartProcessCache(64)`: timer-only round-robin probing, delete only on `process.kill(pid, 0)` `ESRCH`, with live/EPERM/unknown preservation and bounded-cost regressions. |
+
+All three accepted and incorporated into 030. Re-audit verdict: **PASS**.
