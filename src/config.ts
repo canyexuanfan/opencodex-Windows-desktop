@@ -23,6 +23,7 @@ import {
 import { recordOwnedConfigPath } from "./lib/config-ownership";
 import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
 import { providerDestinationConfigError } from "./lib/destination-policy";
+import { redactSecretString } from "./lib/redact";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
 import {
   isWirePinnedModel,
@@ -1159,7 +1160,10 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
     const knownKeys = new Set(fields.map(([key]) => key));
     for (const key of Object.keys(policyRecord)) {
       if (!knownKeys.has(key)) {
-        console.warn(`⚠️  config.json providers.${name}.retryOn429.${key} is not a recognized field — ignoring it`);
+        // Redact the field NAME before logging: a malformed hand-edit can place a secret in a
+        // property name (`retryOn429: { "sk-...": true }`). Ordinary typos (e.g. `attempt`)
+        // stay readable, secret-shaped names become [REDACTED].
+        console.warn(`⚠️  config.json providers.${name}.retryOn429.${redactSecretString(key)} is not a recognized field — ignoring it`);
       }
     }
     p.retryOn429 = cleaned;

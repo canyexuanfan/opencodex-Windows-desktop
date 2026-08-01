@@ -188,6 +188,31 @@ test("invalid retryOn429 values never log the raw value", () => {
   }
 });
 
+test("unrecognized retryOn429 field names are redacted before logging", () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    writeDiskConfig({
+      providers: {
+        test: {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:1/v1",
+          apiKey: "k",
+          allowPrivateNetwork: true,
+          retryOn429: { "sk-super-secret-keyname-987654": true, intervalMs: 120 },
+        },
+      },
+    });
+    const live = loadConfig();
+    expect(live.providers.test.retryOn429).toEqual({ intervalMs: 120 });
+    const logged = warn.mock.calls.map(call => call.join(" ")).join("\n");
+    // The secret-shaped property NAME must never reach the log; the valid field survives.
+    expect(logged).not.toContain("sk-super-secret-keyname-987654");
+    expect(logged).toContain("[REDACTED]");
+  } finally {
+    warn.mockRestore();
+  }
+});
+
 // R4-1: the request path. A 429 mid-turn rotates a key and saves, with no user action.
 test("a 429 key rotation does not clobber the hand edit", async () => {
   const { rotateKeyOn429 } = await import("../src/providers/key-failover");
