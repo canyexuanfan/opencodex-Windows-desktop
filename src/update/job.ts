@@ -169,23 +169,6 @@ async function strictRuntimePortAvailable(port: number, hostname = "127.0.0.1"):
   return true;
 }
 
-async function waitForStrictRuntimeBind(
-  port: number,
-  hostname: string,
-  timeoutMs: number,
-  sleep: (ms: number) => Promise<void>,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (process.platform === "win32") {
-      try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
-    }
-    if (await strictRuntimePortAvailable(port, hostname)) return true;
-    await sleep(500);
-  }
-  return false;
-}
-
 /**
  * Wait until netstat reports no LISTEN owners on `port` AND Node+Bun can bind.
  * Dead PIDs still appear as holders while the ghost TCB lives; SetTcpEntry is a
@@ -843,12 +826,10 @@ async function restartAfterUpdate(
       }
     }
   }
-  const spawnStart = io.spawnStart ?? spawnDetachedStart;
-  // Production path only: injected spawnStart keeps unit tests deterministic (one call).
-  // Published `ocx start --port` may spend up to ~30s reclaiming ghost rows; retry on
-  // missing /healthz, kill the previous detached attempt, and re-wait for a Bun bind.
+  // Injected spawnStart keeps unit tests deterministic (one call). Production path
+  // retries on missing /healthz after prepare + ghost-LISTEN clear.
   if (io.spawnStart) {
-    spawnStart(job, job.installer, port);
+    io.spawnStart(job, job.installer, port);
     return;
   }
   const sleep = io.sleepMs ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
