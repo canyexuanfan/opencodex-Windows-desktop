@@ -2,7 +2,7 @@ import { create, fromBinary, toJson } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { z } from "zod";
 import {
   ExecServerMessageSchema,
@@ -19,6 +19,8 @@ import { buildMcpToolDefinitions, mcpDepsFromManager } from "../src/adapters/cur
 import type { OcxProviderConfig } from "../src/types";
 
 const textEncoder = new TextEncoder();
+// 1x1 transparent PNG, base64 — exercises real image-content fidelity (not a placeholder).
+const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 function canonicalJson(value: unknown): string {
   return JSON.stringify(value, (_key, nested) => nested && typeof nested === "object" && !Array.isArray(nested)
@@ -41,8 +43,6 @@ function buildFixtureServer(): { server: McpServer; clientTransport: InMemoryTra
     async () => ({ isError: true, content: [{ type: "text", text: "tool failed" }] }),
   );
 
-  // 1x1 transparent PNG, base64 — exercises real image-content fidelity (not a placeholder).
-  const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
   server.registerTool(
     "shot",
     { description: "Returns an image", inputSchema: {} },
@@ -222,17 +222,41 @@ describe("Cursor MCP manager", () => {
 });
 
 describe("Cursor MCP deps via native-exec dispatcher", () => {
-  test("MCP oversized base64 image rejects before its second decode allocation", async () => {
+  test("MCP oversized base64 image rejects before decode allocation", async () => {
     const { clientTransport } = buildFixtureServer();
     const manager = new CursorMcpManager(
       [{ serverName: "fixture", command: "noop" }],
       { transportFactory: () => clientTransport, maxResultBytes: 220 },
     );
+    const originalBufferFrom = Buffer.from;
+    let decodeAttempts = 0;
+    let limitError: unknown;
+    const decodeSpy = spyOn(Buffer, "from").mockImplementation(((...args: unknown[]) => {
+      if (args[0] === PNG_1PX && args[1] === "base64") {
+        decodeAttempts += 1;
+        throw new Error("base64 decode boundary reached before result budget rejection");
+      }
+      return Reflect.apply(originalBufferFrom, Buffer, args);
+    }) as typeof Buffer.from);
+    const assertBudget = manager.assertDecodedResultBudget.bind(manager);
+    const budgetSpy = spyOn(manager, "assertDecodedResultBudget").mockImplementation((value, decodedBytes) => {
+      try {
+        assertBudget(value, decodedBytes);
+      } catch (error) {
+        limitError = error;
+        throw error;
+      }
+    });
     try {
       const deps = mcpDepsFromManager(manager);
       const result = await deps.mcp!(create(McpArgsSchema, { name: "shot", toolName: "shot", providerIdentifier: "opencodex" }));
       expect(result.result.case).toBe("error");
+      expect(limitError).toBeInstanceOf(CursorMcpPayloadTooLargeError);
+      expect((limitError as CursorMcpPayloadTooLargeError).kind).toBe("result");
+      expect(decodeAttempts).toBe(0);
     } finally {
+      budgetSpy.mockRestore();
+      decodeSpy.mockRestore();
       await manager.dispose();
     }
   });

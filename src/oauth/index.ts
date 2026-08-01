@@ -4,7 +4,7 @@ import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
 import { loadConfig, resolveEnvValue, saveConfig } from "../config";
 import { maskEmail } from "../lib/privacy";
 import { KiroTokenRefreshError, environmentKiroRoutingMetadata, loginKiro, refreshKiroToken, settleKiroLoginTransaction } from "./kiro";
-import { getAccountCredential, getAccountSet, removeAccount, saveAccountCredential, saveCredential, setActiveAccount, getCredential, credentialGeneration, createOAuthRefreshIntentLock, mergeAccountCredential, markAccountNeedsReauthIfGeneration, readOAuthRefreshIntent, writeOAuthRefreshIntent, clearOAuthRefreshIntent } from "./store";
+import { getAccountCredential, getAccountSet, removeAccount, saveAccountCredential, saveCredential, setActiveAccount, getCredential, credentialGeneration, createOAuthRefreshIntentLock, mergeAccountCredential, markAccountNeedsReauthIfGeneration, readOAuthRefreshIntent, writeOAuthRefreshIntent, markOAuthRefreshIntentStaleOwner, clearOAuthRefreshIntent } from "./store";
 import { loginXai, refreshXaiToken, XAI_LOCAL_CLI_DETACH_WARNING, XaiTokenRequestError } from "./xai";
 import { ANTHROPIC_OAUTH_BETA, AnthropicTokenError, loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
@@ -428,15 +428,16 @@ export async function refreshAnthropicAccountWithLock(
       if (pendingIntent) clearOAuthRefreshIntent(provider, accountId, pendingIntent.generation);
       return disk.access;
     }
-    if (
-      deps.replacedStaleFlight
-      && deps.replacedStaleFlight.dispatched === false
-      && !pendingIntent?.uncertain
-      && pendingIntent?.generation === generation
-      && pendingIntent.flightId === deps.replacedStaleFlight.flightId
-    ) {
-      clearOAuthRefreshIntent(provider, accountId, generation);
-      pendingIntent = undefined;
+    if (!pendingIntent?.uncertain && pendingIntent?.generation === generation) {
+      if (pendingIntent.staleOwner) throw new OAuthTokenRefreshStaleError();
+      if (deps.replacedStaleFlight && pendingIntent.flightId === deps.replacedStaleFlight.flightId) {
+        if (deps.replacedStaleFlight.dispatched) {
+          markOAuthRefreshIntentStaleOwner(provider, accountId, generation, deps.replacedStaleFlight.flightId);
+          throw new OAuthTokenRefreshStaleError();
+        }
+        clearOAuthRefreshIntent(provider, accountId, generation);
+        pendingIntent = undefined;
+      }
     }
     if (pendingIntent?.uncertain || pendingIntent?.generation === generation) {
       await markAccountNeedsReauthIfGeneration(provider, accountId, generation, writerGeneration);

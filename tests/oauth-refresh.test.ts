@@ -495,7 +495,7 @@ describe("oauth refresh hardening", () => {
     expect(getAccountSet("anthropic")!.accounts[0]!.needsReauth).toBe(true);
   });
 
-  test("Anthropic post-dispatch stale flight replacement preserves its aborted owner's durable intent", async () => {
+  test("Anthropic post-dispatch stale flight replacement stays retryable without replay or reauth", async () => {
     await saveCredential("anthropic", { access: "old", refresh: "rt-old", expires: 1, accountId: "acct" });
     const id = getAccountSet("anthropic")!.activeAccountId;
     const originalRefresh = OAUTH_PROVIDERS.anthropic!.refresh;
@@ -524,10 +524,16 @@ describe("oauth refresh hardening", () => {
       expect(staleResult.status).toBe("rejected");
       expect(staleResult.status === "rejected" && staleResult.reason).toBeInstanceOf(OAuthTokenRefreshStaleError);
       expect(replacementResult.status).toBe("rejected");
-      expect(replacementResult.status === "rejected" && replacementResult.reason).toBeInstanceOf(OAuthLoginRequiredError);
+      expect(replacementResult.status === "rejected" && replacementResult.reason).toBeInstanceOf(OAuthTokenRefreshStaleError);
       expect(calls).toBe(1);
-      expect(getAccountSet("anthropic")!.accounts[0]!.needsReauth).toBe(true);
-      expect(readOAuthRefreshIntent("anthropic", id)).toEqual(intent);
+      expect(getAccountSet("anthropic")!.accounts[0]!.needsReauth).toBeUndefined();
+      expect(readOAuthRefreshIntent("anthropic", id)).toMatchObject({
+        ...intent,
+        staleOwner: true,
+      });
+      await expect(getValidAccessTokenForAccount("anthropic", id)).rejects.toBeInstanceOf(OAuthTokenRefreshStaleError);
+      expect(getAccountSet("anthropic")!.accounts[0]!.needsReauth).toBeUndefined();
+      expect(calls).toBe(1);
     } finally {
       clock.mockRestore();
       OAUTH_PROVIDERS.anthropic!.refresh = originalRefresh;

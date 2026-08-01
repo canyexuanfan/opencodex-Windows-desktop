@@ -11,7 +11,8 @@ const MAX_LINES = 2_000;
 const MAX_DEBUG_SUBSCRIBERS = 64;
 const MAX_DEBUG_LINE_BYTES = 16 * 1024;
 const buffer: DebugLogEntry[] = [];
-const listeners = new Map<(entry: DebugLogEntry) => void, AdmissionLease>();
+interface DebugSubscriberRegistration { lease: AdmissionLease }
+const listeners = new Map<(entry: DebugLogEntry) => void, DebugSubscriberRegistration>();
 const subscriberGate = createAdmissionGate("debug_subscribers", MAX_DEBUG_SUBSCRIBERS);
 let nextSeq = 1;
 let bufferBytes = 0;
@@ -44,17 +45,20 @@ export function getDebugLogEntries(options?: { after?: number; limit?: number })
 }
 
 export function subscribeDebugLogEntries(listener: (entry: DebugLogEntry) => void): () => void {
-  const existing = listeners.get(listener);
-  if (existing) return () => {
-    if (listeners.delete(listener)) existing.release();
-    else existing.release();
-  };
-  const lease = subscriberGate.tryAcquire();
-  if (!lease) throw new ResourceAdmissionError("debug_subscribers", MAX_DEBUG_SUBSCRIBERS);
-  listeners.set(listener, lease);
+  let registration = listeners.get(listener);
+  if (!registration) {
+    const lease = subscriberGate.tryAcquire();
+    if (!lease) throw new ResourceAdmissionError("debug_subscribers", MAX_DEBUG_SUBSCRIBERS);
+    registration = { lease };
+    listeners.set(listener, registration);
+  }
+  let disposed = false;
   return () => {
-    if (listeners.delete(listener)) lease.release();
-    else lease.release();
+    if (disposed) return;
+    disposed = true;
+    if (listeners.get(listener) !== registration) return;
+    listeners.delete(listener);
+    registration.lease.release();
   };
 }
 
@@ -70,7 +74,7 @@ export function evictOldestDebugEntryForBudget(): number {
 export function resetDebugLogBufferForTests(): void {
   buffer.length = 0;
   bufferBytes = 0;
-  for (const lease of listeners.values()) lease.release();
+  for (const registration of listeners.values()) registration.lease.release();
   listeners.clear();
   nextSeq = 1;
 }

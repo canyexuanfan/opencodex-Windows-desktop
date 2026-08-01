@@ -154,11 +154,11 @@ export async function drainAndShutdown(
   const s = server ?? _serverRef;
   draining = true;
   const deadline = Date.now() + timeoutMs;
-  while (activeTurns.size > 0 && Date.now() < deadline) {
+  while (admittedTurns.size > 0 && Date.now() < deadline) {
     await Bun.sleep(100);
   }
-  if (activeTurns.size > 0) {
-    console.warn(`⚠️  Aborting ${activeTurns.size} in-flight turn(s) after ${timeoutMs}ms deadline`);
+  if (admittedTurns.size > 0) {
+    console.warn(`⚠️  Aborting ${admittedTurns.size} in-flight turn(s) after ${timeoutMs}ms deadline`);
     abortAndReleaseAllTurns(new Error("server shutdown"));
   }
   // Debounced replay-state snapshot may still be pending; flush so the last completed turn's

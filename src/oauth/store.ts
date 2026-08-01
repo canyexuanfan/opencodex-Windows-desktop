@@ -58,7 +58,7 @@ export function getAuthRefreshIntentLockPath(provider: string, accountId: string
 export function getAuthRefreshIntentPath(provider: string, accountId: string): string {
   return `${getAuthRefreshIntentLockPath(provider, accountId)}.json`;
 }
-export interface OAuthRefreshIntent { version: 1; provider: string; accountId: string; generation: string; createdAt: number; flightId?: string; uncertain?: true }
+export interface OAuthRefreshIntent { version: 1; provider: string; accountId: string; generation: string; createdAt: number; flightId?: string; staleOwner?: true; uncertain?: true }
 function parseOAuthRefreshIntent(
   provider: string,
   accountId: string,
@@ -72,6 +72,7 @@ function parseOAuthRefreshIntent(
     || typeof value.generation !== "string"
     || typeof value.createdAt !== "number"
     || (value.flightId !== undefined && typeof value.flightId !== "string")
+    || (value.staleOwner !== undefined && value.staleOwner !== true)
   ) {
     return { version: 1, provider, accountId, generation: "", createdAt: 0, uncertain: true };
   }
@@ -106,6 +107,12 @@ export function writeOAuthRefreshIntent(provider: string, accountId: string, gen
   hardenConfigDir();
   const intent: OAuthRefreshIntent = { version: 1, provider, accountId, generation, createdAt, ...(flightId ? { flightId } : {}) };
   atomicWriteFile(getAuthRefreshIntentPath(provider, accountId), `${JSON.stringify(intent)}\n`);
+}
+export function markOAuthRefreshIntentStaleOwner(provider: string, accountId: string, generation: string, flightId: string): boolean {
+  const current = readOAuthRefreshIntent(provider, accountId);
+  if (current?.uncertain || current?.generation !== generation || current.flightId !== flightId) return false;
+  atomicWriteFile(getAuthRefreshIntentPath(provider, accountId), `${JSON.stringify({ ...current, staleOwner: true })}\n`);
+  return true;
 }
 export function clearOAuthRefreshIntent(provider: string, accountId: string, generation: string): boolean {
   const current = readOAuthRefreshIntent(provider, accountId);

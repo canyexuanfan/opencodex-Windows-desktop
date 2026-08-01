@@ -165,6 +165,25 @@ describe("debug frame logging", () => {
     expect(debugBufferMetrics().subscribers.active).toBe(0);
   });
 
+  test("stale subscriber disposer cannot remove a replacement registration", () => {
+    let seen = 0;
+    const listener = () => { seen += 1; };
+    const staleStop = subscribeDebugLogEntries(listener);
+    staleStop();
+    const replacementStop = subscribeDebugLogEntries(listener);
+    const before = debugBufferMetrics().subscribers;
+
+    staleStop();
+    appendDebugLogLine("replacement remains active");
+
+    expect(seen).toBe(1);
+    expect(debugBufferMetrics().subscribers).toMatchObject({
+      active: before.active,
+      releaseMisses: before.releaseMisses,
+    });
+    replacementStop();
+  });
+
   test("debug injection crash and fixed-slot strings truncate on UTF-8 boundary with marker", () => {
     const oversized = "한".repeat(8_000);
     const log = spyOn(console, "log").mockImplementation(() => {});

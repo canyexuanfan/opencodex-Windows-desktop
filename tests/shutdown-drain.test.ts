@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  drainAndShutdown,
   registerTurn,
   unregisterTurn,
   isDraining,
@@ -8,7 +9,7 @@ import {
   isRecyclingForExit,
   markRecyclingForExit,
 } from "../src/server";
-import { tryAdmitTurn } from "../src/server/lifecycle";
+import { activeRegistryMetrics, tryAdmitTurn } from "../src/server/lifecycle";
 
 describe("active turn tracking", () => {
   test("admit/bind/unregister tracks active turns through the boundary lease", () => {
@@ -30,6 +31,25 @@ describe("active turn tracking", () => {
 
   test("isDraining() is false by default", () => {
     expect(isDraining()).toBe(false);
+  });
+
+  test("forced shutdown releases an admitted turn before controller binding", async () => {
+    const before = getActiveTurnCount();
+    const releaseMissesBefore = activeRegistryMetrics().activeTurns.releaseMisses;
+    const lease = tryAdmitTurn();
+    expect(lease).not.toBeNull();
+    expect(getActiveTurnCount()).toBe(before + 1);
+
+    await drainAndShutdown(undefined, 0);
+
+    expect(getActiveTurnCount()).toBe(before);
+    const lateController = new AbortController();
+    registerTurn(lateController, lease!);
+    expect(lateController.signal.aborted).toBe(true);
+    unregisterTurn(lateController);
+    lease?.release();
+    expect(getActiveTurnCount()).toBe(before);
+    expect(activeRegistryMetrics().activeTurns.releaseMisses).toBe(releaseMissesBefore);
   });
 });
 
