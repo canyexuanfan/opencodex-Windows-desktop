@@ -265,9 +265,12 @@ function runNpmSelfUpdate() {
               const proxyUp = parsed?.proxy?.running === true || parsed?.proxy?.health?.ok === true;
               const viable = parsed?.startup?.serviceViable === true;
               if (!proxyUp && !viable) needDirectStart = true;
+            } else {
+              // status failed or empty — fail closed to direct start (match CLI).
+              needDirectStart = true;
             }
           } catch {
-            /* keep serviceOk path when status cannot be parsed */
+            needDirectStart = true;
           }
         }
         if (needDirectStart) {

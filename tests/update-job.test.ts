@@ -119,7 +119,7 @@ describe("GUI update execution decisions", () => {
   test("restart waits on the captured pre-update port unconditionally and pins the spawn to it", async () => {
     // The stop-first update flow clears pid/runtime state before restartAfterUpdate runs,
     // so the wait must fire even with no readable pid — driven here via the io seam.
-    const waited: Array<{ port: number; hostname: string; opts?: { killOcxHolders?: boolean; onlyKillPids?: number[]; killAllOcxOnPort?: boolean; killAnyListenPidOnPort?: boolean } }> = [];
+    const waited: Array<{ port: number; hostname: string; opts?: { killOcxHolders?: boolean; onlyKillPids?: number[]; killAllOcxOnPort?: boolean } }> = [];
     const spawned: Array<{ port?: number }> = [];
     const job: UpdateJobState = {
       id: "restart-io",
@@ -146,7 +146,6 @@ describe("GUI update execution decisions", () => {
             killOcxHolders: opts?.killOcxHolders,
             onlyKillPids: opts?.onlyKillPids,
             killAllOcxOnPort: (opts as { killAllOcxOnPort?: boolean } | undefined)?.killAllOcxOnPort,
-            killAnyListenPidOnPort: (opts as { killAnyListenPidOnPort?: boolean } | undefined)?.killAnyListenPidOnPort,
           },
         });
         return true;
@@ -158,13 +157,13 @@ describe("GUI update execution decisions", () => {
     expect(waited).toEqual([{
       port: 12345,
       hostname: "127.0.0.1",
-      opts: { killOcxHolders: true, onlyKillPids: [], killAllOcxOnPort: true, killAnyListenPidOnPort: true },
+      opts: { killOcxHolders: true, onlyKillPids: [], killAllOcxOnPort: true },
     }]);
     expect(spawned).toEqual([{ port: 12345 }]);
   });
 
   test("restart reclaim allowlists the trusted oldPid and kills any ocx on the port", async () => {
-    const optsSeen: Array<{ killOcxHolders?: boolean; onlyKillPids?: number[]; killAllOcxOnPort?: boolean; killAnyListenPidOnPort?: boolean }> = [];
+    const optsSeen: Array<{ killOcxHolders?: boolean; onlyKillPids?: number[]; killAllOcxOnPort?: boolean }> = [];
     const job: UpdateJobState = {
       id: "restart-oldpid",
       status: "restarting",
@@ -187,13 +186,12 @@ describe("GUI update execution decisions", () => {
           killOcxHolders: opts?.killOcxHolders,
           onlyKillPids: opts?.onlyKillPids,
           killAllOcxOnPort: (opts as { killAllOcxOnPort?: boolean } | undefined)?.killAllOcxOnPort,
-          killAnyListenPidOnPort: (opts as { killAnyListenPidOnPort?: boolean } | undefined)?.killAnyListenPidOnPort,
         });
         return true;
       },
       spawnStart: () => {},
     });
-    expect(optsSeen).toEqual([{ killOcxHolders: true, onlyKillPids: [4242], killAllOcxOnPort: true, killAnyListenPidOnPort: true }]);
+    expect(optsSeen).toEqual([{ killOcxHolders: true, onlyKillPids: [4242], killAllOcxOnPort: true }]);
   });
 
   test("restart reclaim also allowlists leftover ocx listeners on the captured port", async () => {
@@ -343,17 +341,24 @@ describe("GUI update execution decisions", () => {
       log: [],
     };
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
-    await restartAfterUpdateForTests(job, { port: 19999, hostname: "127.0.0.1" }, {
-      serviceInstalledFn: () => true,
-      serviceViableFn: () => false,
-      waitForPort: async () => true,
-      runService: () => ({ status: 1 }),
-      spawnStart: (_job, _installer, port) => {
-        spawned.push({ port: port ?? 0 });
-      },
-    });
-    // The fallback must fire: direct proxy start instead of throwing.
-    expect(spawned).toEqual([{ port: 19999 }]);
+    const prevService = process.env.OCX_SERVICE;
+    delete process.env.OCX_SERVICE;
+    try {
+      await restartAfterUpdateForTests(job, { port: 19999, hostname: "127.0.0.1" }, {
+        serviceInstalledFn: () => true,
+        serviceViableFn: () => false,
+        waitForPort: async () => true,
+        runService: () => ({ status: 1 }),
+        spawnStart: (_job, _installer, port) => {
+          spawned.push({ port: port ?? 0 });
+        },
+      });
+      // The fallback must fire: direct proxy start instead of throwing.
+      expect(spawned).toEqual([{ port: 19999 }]);
+    } finally {
+      if (prevService === undefined) delete process.env.OCX_SERVICE;
+      else process.env.OCX_SERVICE = prevService;
+    }
   });
 
   test("service reinstall exit 0 with non-viable assets falls back to direct start", async () => {
@@ -372,20 +377,27 @@ describe("GUI update execution decisions", () => {
       log: [],
     };
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
-    await restartAfterUpdateForTests(job, { port: 19100, hostname: "127.0.0.1" }, {
-      serviceInstalledFn: () => true,
-      // Installed but stale/missing assets — the status line users see after a dead update.
-      serviceViableFn: () => false,
-      waitForPort: async () => true,
-      runService: () => ({ status: 0 }),
-      spawnStart: (_job, _installer, port) => {
-        spawned.push({ port: port ?? 0 });
-      },
-    });
-    expect(spawned).toEqual([{ port: 19100 }]);
-    expect(readUpdateJob(job.id)?.log.some(line =>
-      line.includes("not viable") && line.includes("direct proxy start"),
-    )).toBe(true);
+    const prevService = process.env.OCX_SERVICE;
+    delete process.env.OCX_SERVICE;
+    try {
+      await restartAfterUpdateForTests(job, { port: 19100, hostname: "127.0.0.1" }, {
+        serviceInstalledFn: () => true,
+        // Installed but stale/missing assets — the status line users see after a dead update.
+        serviceViableFn: () => false,
+        waitForPort: async () => true,
+        runService: () => ({ status: 0 }),
+        spawnStart: (_job, _installer, port) => {
+          spawned.push({ port: port ?? 0 });
+        },
+      });
+      expect(spawned).toEqual([{ port: 19100 }]);
+      expect(readUpdateJob(job.id)?.log.some(line =>
+        line.includes("not viable") && line.includes("direct proxy start"),
+      )).toBe(true);
+    } finally {
+      if (prevService === undefined) delete process.env.OCX_SERVICE;
+      else process.env.OCX_SERVICE = prevService;
+    }
   });
 
   test("dashboard update recovery does not require a Background Service", async () => {

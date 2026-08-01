@@ -315,8 +315,8 @@ describe("reclaimListenPort", () => {
       isAliveFn: () => !available,
       verifyOcxFn: pid => {
         checks += 1;
-        // First pass (scan identity) succeeds; revalidation immediately before kill fails.
-        // Subsequent scans see verify=null — still kill because the PID is allowlisted.
+        // First pass (scan identity) succeeds; later scans reclassify as non-ocx.
+        // Allowlisted teardown PIDs still take the best-effort kill path.
         return checks === 1 ? pid : null;
       },
       killFn: pid => {
@@ -331,6 +331,7 @@ describe("reclaimListenPort", () => {
   test("allowlisted revalidation failure still permits TCP drop after kill", async () => {
     const killed: number[] = [];
     const dropped: number[] = [];
+    let alive = true;
     let available = false;
     let checks = 0;
     await expect(reclaimListenPort(10100, "127.0.0.1", {
@@ -341,14 +342,15 @@ describe("reclaimListenPort", () => {
       killOcxHolders: true,
       onlyKillPids: [100],
       isAvailableFn: async () => available,
-      listListenPidsFn: () => (available ? [] : [100]),
-      isAliveFn: () => !available,
+      listListenPidsFn: () => (alive ? [100] : []),
+      isAliveFn: () => alive,
       verifyOcxFn: pid => {
         checks += 1;
         return checks === 1 ? pid : null;
       },
       killFn: pid => {
         killed.push(pid);
+        alive = false;
       },
       dropTcpFn: port => {
         dropped.push(port);
@@ -359,6 +361,33 @@ describe("reclaimListenPort", () => {
     })).resolves.toBe(true);
     expect(killed).toEqual([100]);
     expect(dropped).toEqual([10100]);
+  });
+
+  test("does not drop TCP rows while allowlisted non-ocx survives kill", async () => {
+    const killed: number[] = [];
+    const dropped: number[] = [];
+    await expect(reclaimListenPort(10100, "127.0.0.1", {
+      timeoutMs: 80,
+      intervalMs: 20,
+      scanIntervalMs: 20,
+      dropTcpRows: true,
+      killOcxHolders: true,
+      onlyKillPids: [100],
+      isAvailableFn: async () => false,
+      listListenPidsFn: () => [100],
+      isAliveFn: () => true,
+      verifyOcxFn: () => null,
+      killFn: pid => {
+        killed.push(pid);
+      },
+      dropTcpFn: port => {
+        dropped.push(port);
+        return { dropped: 1, skippedIpv6: 0, accessDenied: 0 };
+      },
+      sleepMs: async () => {},
+    })).resolves.toBe(false);
+    expect(killed).toEqual([100]);
+    expect(dropped).toEqual([]);
   });
 
   test("does not drop TCP rows when allowlisted kill throws", async () => {
@@ -468,36 +497,38 @@ describe("reclaimListenPort", () => {
     expect(killed).toEqual([9001]);
   });
 
-  test("killAnyListenPidOnPort kills non-ocx listeners on the captured port", async () => {
+  test("foreign non-ocx claimant survives reclaim without allowlist or ocx identity", async () => {
     const killed: number[] = [];
-    let holder = 777;
-    let available = false;
+    const dropped: number[] = [];
     await expect(reclaimListenPort(10100, "127.0.0.1", {
-      timeoutMs: 200,
+      timeoutMs: 80,
       intervalMs: 20,
       scanIntervalMs: 20,
-      dropTcpRows: false,
+      dropTcpRows: true,
       killOcxHolders: true,
-      killAnyListenPidOnPort: true,
-      onlyKillPids: [],
-      isAvailableFn: async () => available,
-      listListenPidsFn: () => (holder > 0 ? [holder] : []),
-      isAliveFn: pid => pid === holder,
-      verifyOcxFn: () => null, // npm rename path failed identity
+      killAllOcxOnPort: true,
+      onlyKillPids: [4242], // trusted old PID — different from the foreign holder
+      isAvailableFn: async () => false,
+      listListenPidsFn: () => [777],
+      isAliveFn: () => true,
+      verifyOcxFn: () => null,
       killFn: pid => {
         killed.push(pid);
-        if (pid === holder) holder = 0;
       },
-      sleepMs: async () => {
-        if (holder === 0) available = true;
+      dropTcpFn: port => {
+        dropped.push(port);
+        return { dropped: 1, skippedIpv6: 0, accessDenied: 0 };
       },
-    })).resolves.toBe(true);
-    expect(killed).toEqual([777]);
+      sleepMs: async () => {},
+    })).resolves.toBe(false);
+    expect(killed).toEqual([]);
+    expect(dropped).toEqual([]);
   });
 
   test("allowlisted PID that fails ocx verify still gets killed and does not block TCP drop", async () => {
     const killed: number[] = [];
     const dropped: number[] = [];
+    let alive = true;
     let available = false;
     await expect(reclaimListenPort(10100, "127.0.0.1", {
       timeoutMs: 200,
@@ -508,11 +539,12 @@ describe("reclaimListenPort", () => {
       onlyKillPids: [14772],
       isAvailableFn: async () => available,
       // Windows often keeps a dead pre-update owner listed; cmdline probe already failed.
-      listListenPidsFn: () => (available ? [] : [14772]),
-      isAliveFn: () => !available,
+      listListenPidsFn: () => (alive ? [14772] : []),
+      isAliveFn: () => alive,
       verifyOcxFn: () => null,
       killFn: pid => {
         killed.push(pid);
+        alive = false;
       },
       dropTcpFn: port => {
         dropped.push(port);

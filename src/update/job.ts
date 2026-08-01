@@ -13,6 +13,10 @@ import {
   verifyPidIdentity,
 } from "../config";
 import { isProcessAlive, killProxy } from "../lib/process-control";
+import {
+  buildWindowsElevatedArgumentList,
+  resolveTrustedWindowsPowerShellExe,
+} from "../lib/windows-elevation";
 import { listListenPids, reclaimListenPort } from "../server/port-reclaim";
 import { dropWindowsTcpRowsForLocalPort } from "../server/windows-tcp-drop";
 import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
@@ -155,24 +159,21 @@ function livePackageBunPath(): string | null {
 }
 
 /**
- * Port is free for post-update `ocx start` only when both Node and the live
- * package Bun can actually bind. Node alone is not enough: published starts run
- * under Bun and fail on ghost LISTEN rows that Node sometimes tolerates.
+ * Port is free for post-update `ocx start` only when the runtime that will
+ * actually execute the start can bind. Prefer live package Bun; fall back to the
+ * worker runtime. Do not require a separate `node` binary (Bun-only installs).
  */
 async function strictRuntimePortAvailable(port: number, hostname = "127.0.0.1"): Promise<boolean> {
   const script = strictBindProbeScript(port, hostname);
-  if (!spawnBindProbe(nodeBin(), script)) return false;
   const bun = livePackageBunPath();
-  if (bun && !spawnBindProbe(bun, script)) return false;
-  // Fallback: worker runtime (Bun) when the live package binary is missing.
-  if (!bun && !spawnBindProbe(process.execPath, script)) return false;
-  return true;
+  if (bun) return spawnBindProbe(bun, script);
+  return spawnBindProbe(process.execPath, script);
 }
 
 /**
- * Wait until netstat reports no LISTEN owners on `port` AND Node+Bun can bind.
- * Dead PIDs still appear as holders while the ghost TCB lives; SetTcpEntry is a
- * no-op without elevation (rc 317), so the only fix is to wait them out.
+ * Wait until netstat reports no LISTEN owners on `port` AND the start runtime
+ * can bind. Dead PIDs still appear as holders while the ghost TCB lives;
+ * SetTcpEntry is a no-op without elevation (rc 317), so wait them out.
  */
 async function waitForGhostListenClear(
   port: number,
@@ -180,17 +181,20 @@ async function waitForGhostListenClear(
   listPids: (port: number) => number[],
   timeoutMs: number,
   sleep: (ms: number) => Promise<void>,
+  aliveFn: (pid: number) => boolean = isProcessAlive,
 ): Promise<{ ok: boolean; accessDenied: boolean }> {
   const deadline = Date.now() + timeoutMs;
   let accessDenied = false;
   while (Date.now() < deadline) {
-    if (process.platform === "win32") {
+    const holders = listPids(port).filter(pid => pid !== process.pid);
+    const liveHolders = holders.filter(pid => aliveFn(pid));
+    // Never SetTcpEntry while a live process still owns the port (foreign or ocx).
+    if (process.platform === "win32" && liveHolders.length === 0) {
       try {
         const drop = dropWindowsTcpRowsForLocalPort(port);
         if (drop.accessDenied > 0) accessDenied = true;
       } catch { /* best-effort */ }
     }
-    const holders = listPids(port).filter(pid => pid !== process.pid);
     if (holders.length === 0 && await strictRuntimePortAvailable(port, hostname)) {
       return { ok: true, accessDenied };
     }
@@ -402,16 +406,18 @@ export function spawnGuiUpdateWorker(
     });
   }
 
+  // Single -ArgumentList string with CommandLineToArgvW quoting so paths with
+  // spaces survive Start-Process's space-join (array elements lose outer quotes).
   const psQuote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
-  const argList = args.map(psQuote).join(", ");
+  const argumentList = buildWindowsElevatedArgumentList(args);
   const ps = [
     `$env:OCX_SERVICE = '1'`,
-    `$p = Start-Process -FilePath ${psQuote(process.execPath)} -ArgumentList @(${argList}) -WindowStyle Hidden -PassThru`,
+    `$p = Start-Process -FilePath ${psQuote(process.execPath)} -ArgumentList ${psQuote(argumentList)} -WindowStyle Hidden -PassThru`,
     `if (-not $p) { exit 1 }`,
     `Write-Output $p.Id`,
   ].join("; ");
   const launched = spawnSync(
-    "powershell.exe",
+    resolveTrustedWindowsPowerShellExe(),
     ["-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps],
     { encoding: "utf8", windowsHide: true, timeout: 15_000 },
   );
@@ -529,6 +535,7 @@ function preparePortForPinnedStart(
   port: number,
   listPids: (port: number) => number[],
   aliveFn: (pid: number) => boolean,
+  verifyOcx: (pid: number) => number | null = verifyPidIdentity,
 ): void {
   if (process.platform === "win32") {
     try { stopWindows(); } catch { /* already stopped */ }
@@ -545,10 +552,20 @@ function preparePortForPinnedStart(
   removeRuntimePort();
   for (const holder of listPids(port)) {
     if (holder === process.pid || !aliveFn(holder)) continue;
-    updateJob(job, {}, `Stopping live listen holder PID ${holder} on port ${port} before pinned start.`);
+    if (verifyOcx(holder) !== holder) {
+      updateJob(
+        job,
+        {},
+        `Leaving foreign listen holder PID ${holder} on port ${port}; refusing collateral kill.`,
+      );
+      continue;
+    }
+    updateJob(job, {}, `Stopping live ocx listen holder PID ${holder} on port ${port} before pinned start.`);
     try { killProxy(holder); } catch { /* best-effort */ }
   }
-  if (process.platform === "win32") {
+  // Match reclaimListenPort: never SetTcpEntry while a live holder remains.
+  const liveRemain = listPids(port).filter(pid => pid !== process.pid && aliveFn(pid));
+  if (process.platform === "win32" && liveRemain.length === 0) {
     try { dropWindowsTcpRowsForLocalPort(port); } catch { /* best-effort */ }
   }
 }
@@ -693,10 +710,9 @@ async function restartAfterUpdate(
     killOcxHolders: true,
     // Windows scheduler wrappers can mint a *new* bun PID during the wait; keep
     // killing every ocx listener on this port, not only the pre-wait snapshot.
+    // npm rename trees under `@bitkyc08/.opencodex-*` are classified as ocx by
+    // isOcxStartCommandLine — never kill unknown foreign claimants on this port.
     killAllOcxOnPort: true,
-    // npm's in-place rename leaves respawns under `@bitkyc08/.opencodex-*` that
-    // fail verifyPidIdentity — still our port for post-update recovery.
-    killAnyListenPidOnPort: true,
     onlyKillPids,
   });
 
@@ -713,9 +729,10 @@ async function restartAfterUpdate(
     const preServiceAllow = reclaimKillAllowlist();
     const freed = await waitFn(port, hostname, reclaimOptsFor(preServiceAllow));
     let skipServiceInstall = false;
-    // The GUI update worker sets OCX_SERVICE=1 and is never elevated. `schtasks
-    // /create` will UAC-fail and can race the subsequent direct start — skip it.
-    if (process.env.OCX_SERVICE === "1") {
+    // Windows GUI update worker sets OCX_SERVICE=1 and is never elevated.
+    // `schtasks /create` will UAC-fail and can race the subsequent direct start.
+    // Keep systemd/launchd reinstall on non-Windows supervisors.
+    if (process.platform === "win32" && process.env.OCX_SERVICE === "1") {
       updateJob(job, {}, "Skipping service reinstall from the non-elevated update worker; falling back to a direct proxy start.");
       skipServiceInstall = true;
     }
@@ -777,7 +794,12 @@ async function restartAfterUpdate(
   const pid = readPid();
   if (pid) {
     updateJob(job, {}, `Stopping current proxy PID ${pid}.`);
-    killProxy(pid);
+    try {
+      killProxy(pid);
+    } catch {
+      // A PID that resists taskkill must not abort recovery: reclaim + pinned start
+      // below are the path that repairs stuck Windows listeners.
+    }
   }
   if (process.platform === "win32" && serviceInstalled) {
     try { stopWindows(); } catch { /* already stopped */ }
@@ -801,7 +823,7 @@ async function restartAfterUpdate(
       return;
     }
     // Dead PIDs can still own LISTEN rows. SetTcpEntry needs elevation (rc 317 on a
-    // normal update worker), so poll until netstat is empty and Node+Bun can bind.
+    // normal update worker), so poll until netstat is empty and the start runtime can bind.
     updateJob(
       job,
       {},
@@ -870,7 +892,7 @@ async function restartAfterUpdate(
       }
       lastChild = null;
     }
-    preparePortForPinnedStart(job, port, listPids, aliveFn);
+    preparePortForPinnedStart(job, port, listPids, aliveFn, verifyOcx);
     const ready = await waitForGhostListenClear(
       port,
       hostname,
