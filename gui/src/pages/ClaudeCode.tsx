@@ -22,17 +22,13 @@ export { AutoConnectSetting, SmallFastModelSetting } from "./claude-code-setting
 
 type CachedClaudeCode = { state: ClaudeCodeState; rows: MapRow[] };
 
-function seedClaudeCode(cacheKey: string): CachedClaudeCode | null {
-  return readSessionListCache<CachedClaudeCode>(cacheKey);
-}
-
 export default function ClaudeCode({ apiBase, active = true }: { apiBase: string; active?: boolean }) {
   const t = useT();
   const { locale } = useI18n();
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang ?? "en";
   const cacheKey = `ocx.claude-code.v1:${apiBase}`;
   const resourceKey = `claude-code:${apiBase}`;
-  const cached = useMemo(() => seedClaudeCode(cacheKey), [cacheKey]);
+  const cached = useMemo(() => readSessionListCache<CachedClaudeCode>(cacheKey), [cacheKey]);
   const [draftState, setState] = useState<ClaudeCodeState | null>(() => cached?.state ?? null);
   const [draftRows, setRows] = useState<MapRow[]>(() => cached?.rows ?? []);
   const [hasDraftRows, setHasDraftRows] = useState(Boolean(cached));

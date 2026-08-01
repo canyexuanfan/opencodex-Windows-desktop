@@ -179,7 +179,7 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
         const next = await res.json() as DebugSettings;
         if (generation !== mutationGenerationRef.current) return;
         writeSessionListCache(settingsCacheKey, next);
-        setClientResourceData(debugSettingsKey(apiBase), next);
+        setClientResourceData(debugResourceKey, next);
       } catch { /* ignore */ }
     };
     const previous = mutationQueueRef.current ?? Promise.resolve();

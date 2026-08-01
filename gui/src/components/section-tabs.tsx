@@ -28,7 +28,6 @@ export function SectionTabs({
   ariaLabel: string;
 }) {
   const [active, setActive] = useState(items[0]?.id ?? "");
-  const stripRef = useRef<HTMLDivElement | null>(null);
   /** While set, scroll-spy ignores intermediate sections during smooth scroll-to-click. */
   const scrollLockRef = useRef<string | null>(null);
   const scrollLockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -110,7 +109,6 @@ export function SectionTabs({
 
   return (
     <div
-      ref={stripRef}
       className="page-tabs section-tabs"
       role="tablist"
       aria-label={ariaLabel}

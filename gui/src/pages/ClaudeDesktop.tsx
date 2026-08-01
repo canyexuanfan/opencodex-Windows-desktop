@@ -131,6 +131,7 @@ function readDesktopCache(cacheKey: string): CachedDesktop | null {
 function seedDesktop(cacheKey: string) {
   const cached = readDesktopCache(cacheKey);
   return {
+    held: cached,
     data: cached?.data ?? null,
     profile: cached?.profile ?? null,
     savedProfile: cached?.profile ? cloneProfile(cached.profile) : null,
@@ -139,7 +140,6 @@ function seedDesktop(cacheKey: string) {
         cached.data.models.map(model => [model.route, cached.profile.assignments[model.route]?.family ?? "opus"]),
       )
       : {} as Record<string, Family>,
-    hasCache: Boolean(cached?.data),
   };
 }
 
@@ -158,7 +158,6 @@ export default function ClaudeDesktop({
   const cacheKey = `ocx.claude-desktop.v1:${apiBase}`;
   const resourceKey = `claude-desktop:${apiBase}`;
   const cached = useMemo(() => seedDesktop(cacheKey), [cacheKey]);
-  const heldDesktop = useMemo(() => readDesktopCache(cacheKey), [cacheKey]);
   const [draftProfile, setProfile] = useState<DesktopProfile | null>(() => cached.profile);
   const [savedDraftProfile, setSavedProfile] = useState<DesktopProfile | null>(() => cached.savedProfile);
   const [draftDestinations, setDestinations] = useState<Record<string, Family>>(() => cached.destinations);
@@ -212,7 +211,7 @@ export default function ClaudeDesktop({
     resourceKey,
     [apiBase],
     fetchDesktop,
-    { isEmpty: () => false, enabled: active, initialData: heldDesktop ?? undefined },
+    { isEmpty: () => false, enabled: active, initialData: cached.held ?? undefined },
   );
   const loadState = desktopResource.state;
   const resourceData = loadState.data ?? (cached.data && cached.profile ? { data: cached.data, profile: cached.profile } : null);
