@@ -30,13 +30,16 @@ function count(text: string, fragment: string): number {
 describe("GitHub Actions hardening", () => {
   test("cross-platform CI keeps bounded jobs and immutable action references", async () => {
     const workflow = await readText(".github/workflows/ci.yml");
+    const ci = Bun.YAML.parse(workflow) as {
+      jobs?: Record<string, { "timeout-minutes"?: number } | undefined>;
+    };
 
-    // The cross-platform `test` job sits at 30 minutes after the 2026-08-01
-    // state-store merge pushed Windows past the prior 20m kill on #827. Do not
-    // raise again — hung tests (e.g. unref'd oauth waitMs) must be fixed, not
-    // absorbed. `npm-global-smoke` stays at 8.
-    expect(count(workflow, "timeout-minutes: 30")).toBe(1);
-    expect(count(workflow, "timeout-minutes: 8")).toBe(1);
+    // Job-scoped: a global count of "30" and "8" still passes if the values are
+    // swapped between `test` and `npm-global-smoke`. Pin ownership explicitly.
+    // Do not raise `test` again — hung tests (e.g. unref'd oauth waitMs) must
+    // be fixed, not absorbed by a larger ceiling.
+    expect(ci.jobs?.test?.["timeout-minutes"]).toBe(30);
+    expect(ci.jobs?.["npm-global-smoke"]?.["timeout-minutes"]).toBe(8);
     // Both jobs must stay bounded — an unbounded job can hang a queue for hours.
     expect(count(workflow, "timeout-minutes:")).toBe(2);
     expect(workflow).toContain("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
