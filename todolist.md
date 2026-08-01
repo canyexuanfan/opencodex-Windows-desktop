@@ -782,3 +782,9 @@ Codex / Claude Code / 其他现有客户端
 - [x] 普通沙箱首次得到 7 pass/1 fail 后，已按失败经验改用全新已授权临时根复核为 8/8；确认失败来自临时 home 清理 ACL，不是业务断言。
 - [x] 两次测试临时根均按精确路径清理；未修改 CLI 业务代码或通过放宽断言绕过失败。
 - [ ] 根完整测试、干净 Windows VM、真实 Provider/签名信任链和交互视觉验收仍待外部环境完成。
+
+# 桌面/Windows 聚焦回归增量（2026-08-01）
+- [x] 修正 `tests/windows-deploy-close-regressions.test.ts` 的 F4 源码契约，使其覆盖桌面 `options.hostname` 覆盖与配置 fallback；不改变运行时绑定逻辑。
+- [x] 使用项目 bundled Bun 1.3.14、授权隔离临时根执行 9 个桌面/Windows 聚焦测试文件，88/88 用例、352 个断言通过：desktop 3P、profile、ready/动态端口、startup health、tray proxy、部署关闭、localhost/wildcard 绑定和 Windows tray 安全。
+- [x] 聚焦回归临时根已按精确路径清理；未发现新的 sidecar、listener 或桌面进程残留。
+- [ ] 干净 Windows 10/11 VM 双击、睡眠/唤醒、注销/重启、真实 Provider 和签名信任链仍需外部验收。
