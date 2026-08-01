@@ -28,6 +28,8 @@
   border-bottom-color: var(--accent);
 }
 
+.provider-catalog-tab:hover { color: var(--text); background: var(--hover); }
+
 .provider-catalog-accounts-hint {
   padding: 2px 2px 0;
 }

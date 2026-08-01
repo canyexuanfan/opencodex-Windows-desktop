@@ -405,6 +405,8 @@
   cursor: pointer;
 }
 
+.cwi-copy-chip:hover { background: var(--raised-hover); border-color: var(--faint); }
+
 .cwi-form-grid {
   display: flex;
   flex-direction: column;

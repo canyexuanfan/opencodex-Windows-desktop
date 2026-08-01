@@ -328,7 +328,7 @@ function ArchivedCleanupPanel({
               </button>
               <button
                 type="button"
-                className={permanent ? "btn btn-danger" : "btn"}
+                className={permanent ? "btn btn-danger" : "btn btn-ghost"}
                 disabled={busy || preview.count === 0}
                 onClick={() => void runCleanup()}
               >
