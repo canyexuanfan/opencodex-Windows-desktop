@@ -109,6 +109,10 @@ describe("hardenSecretPath – required mode (required: true)", () => {
 
 describe("ephemeral harden success memo lifecycle", () => {
   test("forgetHardenedSecretPath releases only the actual temp and a second temp hardens again", () => {
+    // Earlier cases in this file harden real paths under the win32 override and
+    // legitimately leave success memos behind; this test asserts exact memo
+    // counts, so it must start from a clean slate rather than inherit them.
+    resetHardenedStateForTests();
     const tempA = join(testDir, "config.json.ocx.1.1.tmp");
     const tempB = join(testDir, "config.json.ocx.1.2.tmp");
     writeFileSync(tempA, "first", "utf8");

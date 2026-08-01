@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { BULK_DURABLE_IO_BUDGET_MS } from "./helpers/test-budget";
 import {
   existsSync,
   linkSync,
@@ -986,7 +987,7 @@ describe("Responses previous_response_id state", () => {
     expect(files.length).toBeLessThanOrEqual(129);
     expect(files.length).toBeGreaterThan(1); // deferral is real, not immediate unlink
     void dir;
-  });
+  }, BULK_DURABLE_IO_BUDGET_MS); // 140 fsync'd durable writes ARE the assertion; Windows CI measured ~18s.
 
   test("write fsync or publication failure cleans its temp and preserves no unmeasured resident payload", () => {
     const failures = [
@@ -1048,7 +1049,7 @@ describe("Responses previous_response_id state", () => {
     expect(result.scanned).toBeLessThanOrEqual(4_096);
     expect(result.failed).toBe(1);
     expect(existsSync(join(dir, symlinkName))).toBe(true);
-  });
+  }, BULK_DURABLE_IO_BUDGET_MS); // 521 fsync'd spill writes build the workload; Windows CI measured ~34s.
 
   test("orphan scan cap stops enumeration at the limit with an injected directory", () => {
     // Prove RESPONSE_SPILL_SCAN_MAX itself binds: enumerate more entries than
