@@ -23,6 +23,10 @@ OpenCodex uses three mutually exclusive admission credential classes:
 The service token file remains a delivery mechanism for the data-plane environment token; it is not
 a fourth credential class. A management credential that equals any configured data-plane credential
 does not enable management access. The data plane may continue to start, but `/api/*` remains closed.
+CLI health collection follows the same boundary: `ocx status` and `ocx doctor` use the configured
+management credential for `/api/codex-auth/accounts`, never the service/data-plane token. Their
+output distinguishes a missing proxy, rejected management authentication, and an unexpected
+management response so a reachable `401` cannot be reported as "proxy not running."
 
 Management authentication never has a loopback bypass. If no management credential is available, or
 management token creation, validation, or permission hardening fails, every `/api/*` request returns
