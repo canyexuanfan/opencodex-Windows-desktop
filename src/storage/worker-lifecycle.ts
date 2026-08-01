@@ -56,9 +56,7 @@ let spawnCancelEpoch = 0;
 const WORKER_OS_JOIN_MS = 250;
 
 function needsWorkerOsJoinSettle(): boolean {
-  // Linux GHA also hit Bun 1.3.14 balanced-count segfaults under `--isolate`
-  // after storage-worker teardown (ubuntu-latest exit 132).
-  return process.platform === "win32" || process.platform === "darwin" || process.platform === "linux";
+  return process.platform === "win32" || process.platform === "darwin";
 }
 
 /** Invalidate spawn callbacks still waiting on the gate (reset / server drain). */

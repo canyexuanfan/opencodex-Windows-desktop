@@ -8,11 +8,10 @@
  *
  * A second Bun 1.3.14 failure mode is a mid-file / post-suite segfault with a
  * *balanced* `workers_spawned === workers_terminated` count (exit 133 /
- * Trace/BPT on macOS Silicon). Churn caps and afterAll settle were not enough
- * under GHA load; running macOS CI *without* `--isolate` hung the suite past
- * the 20-minute job ceiling. Keep isolate everywhere, skip Worker-spawning
- * cases on darwin (platform-cap meta-test still runs), and keep OS-join settle
- * in `worker-lifecycle` plus drain+settle in `afterEach` for local isolate runs.
+ * Trace/BPT on macOS Silicon). Churn caps alone were not enough under GHA load;
+ * running macOS CI *without* `--isolate` hung past the 20-minute job ceiling.
+ * Keep isolate everywhere, skip Worker-spawning cases on darwin (platform-cap
+ * meta-test still runs), and keep OS-join settle in `worker-lifecycle`.
  *
  * These cases hammer the exact failure window: fire-and-forget terminate must
  * still be joinable by drain, and repeated spawn → reset cycles must leave the
@@ -41,20 +40,21 @@ let testDir = "";
 let previousHome: string | undefined;
 
 /**
- * Bun 1.3.14: Worker spawn in this file still segfaults the isolate process
- * after green assertions (balanced counts) on macOS Silicon and ubuntu-latest
- * (exit 133 / 132). Skip the hammer cases there; win32 keeps full coverage.
+ * Bun 1.3.14 macOS Silicon: Worker spawn in this file still segfaults the
+ * isolate process after green assertions (balanced counts). Skip the hammer
+ * cases on darwin; win32/linux keep full coverage.
  */
-const skipIsolateWorkerSpawn =
-  process.platform === "darwin" || process.platform === "linux";
+const skipDarwinWorkerSpawn = process.platform === "darwin";
 
 /** Spawn/reset iterations for the heavy churn case — platform-stressed carefully. */
 function workerChurnCyclesForIsolate(): number {
   if (process.platform === "win32") return 8;
-  // Two cycles still segfaulted Bun 1.3.14 on macOS Silicon and ubuntu-latest
-  // under `--isolate` after a green suite (balanced worker counts). One cycle
-  // keeps a real spawn/reset proof without the churn that trips the runtime.
-  return 1;
+  // Two cycles still segfaulted Bun 1.3.14 on macOS Silicon under `--isolate`
+  // after a green suite (balanced worker counts, exit 133). One cycle keeps a
+  // real spawn/reset proof without the churn that trips the runtime.
+  if (process.platform === "darwin") return 1;
+  // Linux: short loop — eight cycles segfaulted with balanced counts on ubuntu CI.
+  return 2;
 }
 
 function seedArchived(codexHome: string): void {
@@ -77,9 +77,6 @@ afterEach(async () => {
   await resetStorageCleanupPolicyJobForTestsAsync();
   setStorageCleanupPolicyJobTestHooks(null);
   await drainStorageWorkers();
-  // Bun 1.3.14: balanced-count segfault can hit mid-file (before afterAll) on
-  // macOS Silicon and ubuntu-latest. Brief settle — not a CI timeout bump.
-  if (process.platform !== "win32") await Bun.sleep(250);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   isolatedCodexHome?.restore();
@@ -90,7 +87,6 @@ afterEach(async () => {
 
 afterAll(async () => {
   await drainStorageWorkers();
-  if (process.platform !== "win32") await Bun.sleep(250);
 });
 
 async function waitForLiveWorker(timeoutMs = 10_000): Promise<void> {
@@ -102,7 +98,7 @@ async function waitForLiveWorker(timeoutMs = 10_000): Promise<void> {
   throw new Error("no storage worker was ever spawned; this test would prove nothing");
 }
 
-test.skipIf(skipIsolateWorkerSpawn)("drain joins a fire-and-forget terminate before the isolate boundary", async () => {
+test.skipIf(skipDarwinWorkerSpawn)("drain joins a fire-and-forget terminate before the isolate boundary", async () => {
   // Reproduces the old race: sync reset void-terminates (and used to deregister
   // immediately), then drain returned on an empty set while the thread exited.
   setStorageCleanupPolicyJobTestHooks({ blockMs: 800 });
@@ -120,7 +116,7 @@ test.skipIf(skipIsolateWorkerSpawn)("drain joins a fire-and-forget terminate bef
   expect(liveStorageWorkerCount()).toBe(0);
 }, { timeout: 30_000 });
 
-test.skipIf(skipIsolateWorkerSpawn)("repeated Windows-style spawn/reset cycles leave no live workers", async () => {
+test.skipIf(skipDarwinWorkerSpawn)("repeated Windows-style spawn/reset cycles leave no live workers", async () => {
   const cycles = workerChurnCyclesForIsolate();
   for (let i = 0; i < cycles; i++) {
     // Fresh CODEX_HOME each cycle so a prior worker's SQLite handle cannot
@@ -144,10 +140,11 @@ test.skipIf(skipIsolateWorkerSpawn)("repeated Windows-style spawn/reset cycles l
 test("isolate worker churn stays platform-capped", () => {
   const cycles = workerChurnCyclesForIsolate();
   if (process.platform === "win32") expect(cycles).toBe(8);
-  else expect(cycles).toBe(1);
+  else if (process.platform === "darwin") expect(cycles).toBe(1);
+  else expect(cycles).toBe(2);
 });
 
-test.skipIf(skipIsolateWorkerSpawn)("terminateStorageWorker is joinable and idempotent across callers", async () => {
+test.skipIf(skipDarwinWorkerSpawn)("terminateStorageWorker is joinable and idempotent across callers", async () => {
   setStorageCleanupPolicyJobTestHooks({ blockMs: 500 });
   seedArchived(isolatedCodexHome!.path);
   const started = requestStorageCleanupPolicyRun({
