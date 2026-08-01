@@ -889,9 +889,9 @@ Codex / Claude Code / 其他现有客户端
 
 # 阶段 27：桌面快捷方式补齐（2026-08-02）
 - [x] 定位安装后没有桌面快捷方式的根因：`desktop/package.json` 中 NSIS 配置显式设置了 `createDesktopShortcut=false`。
-- [x] 将 NSIS 配置改为 `createDesktopShortcut=true`，开始菜单快捷方式继续保持 `createStartMenuShortcut=true`。
+- [x] 将 NSIS 配置改为 `createDesktopShortcut="always"`，开始菜单快捷方式继续保持 `createStartMenuShortcut=true`；`true` 已确认只代表全新安装策略，不足以覆盖重装/升级补齐。
 - [x] 扩展 `desktop/tests/package-static.test.ts`，将桌面快捷方式作为安装器静态契约，防止后续回归。
 - [x] 验证通过：`bun test tests/package-static.test.ts` 4/4、23 断言；`bun run build` 通过。
-- [x] 重新生成资源树、安装包和便携包；Setup SHA-256=`CCB2532B8C07FE2006A0157AE03CEBA5B0B1CFACAA534F8D01389E21379E05FD`，Portable SHA-256=`5619F1FD8CB78FB9093CFA5D2ECEB105C266A691B5D9899B1346DFB1E6958A9C`。
+- [x] 重新生成资源树、安装包和便携包；直接调用 electron-builder 内部 `getEffectiveOptions()` 确认 `"always"` 转换为 `DesktopShortcutCreationPolicy.ALWAYS(1)`；Setup SHA-256=`87F3E316C8C1FBD910EE8C79D700E2E6BBD46DD01E2A81F53DC9012EDFEEE5AF`，Portable SHA-256=`43409EC00AE439546E780C3B35659C7E6424A371C97426969A2338F4E3EA702C`。
 - [x] 本轮构建临时目录已按精确路径清理，未重启、关闭或修改当前正在使用的真实 Codex。
 - [ ] 真实双击安装后的桌面快捷方式落点、图标显示和卸载清理仍需用户用最新安装包在当前桌面或干净 VM 中确认。
