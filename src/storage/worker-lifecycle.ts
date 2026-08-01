@@ -52,8 +52,10 @@ let spawnCancelEpoch = 0;
 /**
  * OS-join gap after the `close` event on platforms where Bun's Worker reclaim
  * races the isolate/file boundary (not a CI job-timeout bump).
+ * Windows GHA at 250ms still left `workers_spawned(N) workers_terminated(N-1)`
+ * panics under isolate; 750ms covers deferred reclaim. Darwin uses 250ms.
  */
-const WORKER_OS_JOIN_MS = 250;
+const WORKER_OS_JOIN_MS = process.platform === "win32" ? 750 : 250;
 
 function needsWorkerOsJoinSettle(): boolean {
   return process.platform === "win32" || process.platform === "darwin";

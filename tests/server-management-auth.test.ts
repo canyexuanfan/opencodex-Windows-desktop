@@ -481,6 +481,9 @@ describe("management and data-plane credential separation", () => {
     writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
+    // Timeout only the management-token directory. File hardens must succeed so
+    // startServer → saveConfig can atomic-write on real win32; Linux CI skips
+    // that path via process.platform and hid the blanket-timeout failure mode.
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
       if (target === testHome) {
@@ -538,8 +541,10 @@ describe("management and data-plane credential separation", () => {
     saveConfig(remoteConfig());
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
-    // Env auth bypasses the token file; directory ACL on the home may time out.
-    // Config-mutation harden soft-fails that timeout, so startServer still boots.
+    // Env-token init never needs file ACL. Time out management-token paths so a
+    // broken file-backed ACL cannot be what made management available; allow
+    // other file hardens so startServer → saveConfig works on real win32
+    // (config-mutation directory harden soft-fails home timeouts).
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
       if (target === testHome || target.endsWith("admin-api-token")) {
