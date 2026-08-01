@@ -65,6 +65,8 @@ describe("desktop package contract", () => {
     expect(customInstaller).toContain('StrCpy $INSTDIR "$INSTDIR\\${APP_FILENAME}"');
     expect(customInstaller).toContain("!define MUI_PAGE_CUSTOMFUNCTION_SHOW ocxDirectoryPageShow");
     expect(customInstaller).toContain("!define MUI_PAGE_CUSTOMFUNCTION_LEAVE ocxDirectoryPageLeave");
+    expect(customInstaller).toContain("!define MUI_PAGE_CUSTOMFUNCTION_PRE ocxDirectoryPagePre");
+    expect(customInstaller).toContain("Function ocxDirectoryPagePre");
     expect(customInstaller).toContain("GetDlgItem $1 $0 1019");
     expect(customInstaller).toContain("${NSD_SetText} $1 $2");
     expect(customInstaller).toContain('${GetFileName} "$2" $3');

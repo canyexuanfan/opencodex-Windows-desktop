@@ -5,8 +5,23 @@
 !include nsDialogs.nsh
 !include FileFunc.nsh
 !ifndef BUILD_UNINSTALLER
+!define MUI_PAGE_CUSTOMFUNCTION_PRE ocxDirectoryPagePre
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW ocxDirectoryPageShow
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE ocxDirectoryPageLeave
+
+Function ocxDirectoryPagePre
+  ; electron-builder initializes the page after .onInit, so normalize the
+  ; default before MUI renders the directory controls.
+  ${GetFileName} "$INSTDIR" $0
+  ${If} $0 != "${APP_FILENAME}"
+    StrCpy $1 $INSTDIR 1 -1
+    ${If} $1 == "\"
+      StrCpy $INSTDIR "$INSTDIR${APP_FILENAME}"
+    ${Else}
+      StrCpy $INSTDIR "$INSTDIR\${APP_FILENAME}"
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
 
 Function ocxDirectoryPageShow
   FindWindow $0 "#32770" "" $HWNDPARENT
