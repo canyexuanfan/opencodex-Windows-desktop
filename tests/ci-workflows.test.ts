@@ -43,10 +43,17 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
     expect(workflow).toContain("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e");
     // macOS skips `--isolate` (Bun 1.3.14 Silicon exit-133); Linux/Windows keep it.
-    expect(workflow).toContain("bun test --isolate tests");
-    expect(workflow).toMatch(/if:\s*runner\.os\s*==\s*'macOS'/);
-    expect(workflow).toMatch(/if:\s*runner\.os\s*!=\s*'macOS'/);
-    expect(workflow).toMatch(/run:\s*bun test tests/);
+    // Bind if+run inside each step so a split/malformed workflow cannot pass.
+    expect(workflow).toContain(
+      `      - name: Test (macOS)
+        if: runner.os == 'macOS'
+        run: bun test tests`,
+    );
+    expect(workflow).toContain(
+      `      - name: Test (Linux/Windows, isolated)
+        if: runner.os != 'macOS'
+        run: bun test --isolate tests`,
+    );
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
   });
 
