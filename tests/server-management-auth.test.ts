@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -446,7 +447,7 @@ describe("management and data-plane credential separation", () => {
     } finally {
       await server.stop(true);
     }
-  });
+  }, SERVER_BUDGET_MS); // binds a real server + live fetches; windows runner measured ~5.04s against Bun's 5s default.
 
   test("an existing management token ACL hardening failure keeps management unavailable", async () => {
     delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
@@ -480,13 +481,12 @@ describe("management and data-plane credential separation", () => {
     writeFileSync(join(testHome, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
-    // Timeout only directory hardens (grant ACE carries (OI)(CI)). File hardens
-    // must succeed so startServer → saveConfig can atomic-write on real win32;
-    // Linux CI skips that path via process.platform and hid the blanket-timeout
-    // failure mode under isolate.
+    // Timeout only the management-token directory. File hardens must succeed so
+    // startServer → saveConfig can atomic-write on real win32; Linux CI skips
+    // that path via process.platform and hid the blanket-timeout failure mode.
     setIcaclsRunnerForTests(args => {
-      const grant = args.find(a => a.includes("(F)")) ?? "";
-      if (grant.includes("(OI)(CI)")) {
+      const target = args[0] ?? "";
+      if (target === testHome) {
         return { success: false, exitCode: null, timedOut: true, stdout: "" };
       }
       return { success: true, exitCode: 0, timedOut: false, stdout: "" };
@@ -553,12 +553,12 @@ describe("management and data-plane credential separation", () => {
     saveConfig(remoteConfig());
     process.env.USERNAME ??= "tester";
     setPlatformForTests("win32");
-    // Env-token init never touches admin-api-token. Time out only that file so a
+    // Env-token init never needs file ACL. Time out management-token paths so a
     // broken file-backed ACL cannot be what made management available; allow
     // other file hardens so startServer → saveConfig works on real win32.
     setIcaclsRunnerForTests(args => {
       const target = args[0] ?? "";
-      if (target.includes("admin-api-token") || target.includes(".admin-token.tmp")) {
+      if (target === testHome || target.endsWith("admin-api-token")) {
         return { success: false, exitCode: null, timedOut: true, stdout: "" };
       }
       return { success: true, exitCode: 0, timedOut: false, stdout: "" };

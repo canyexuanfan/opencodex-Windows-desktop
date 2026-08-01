@@ -18,7 +18,7 @@
  * still be joinable by drain, and repeated spawn → reset cycles must leave the
  * registry empty before the next isolate boundary.
  */
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,7 +51,11 @@ const skipNonWindowsWorkerSpawn = process.platform !== "win32";
 function workerChurnCyclesForIsolate(): number {
   if (process.platform === "win32") return 8;
   // Non-Windows hammers are skipped; keep caps documented for the meta-test.
+  // Two cycles still segfaulted Bun 1.3.14 on macOS Silicon under `--isolate`
+  // after a green suite (balanced worker counts, exit 133). One cycle keeps a
+  // real spawn/reset proof without the churn that trips the runtime.
   if (process.platform === "darwin") return 1;
+  // Linux: short loop — eight cycles segfaulted with balanced counts on ubuntu CI.
   return 2;
 }
 
@@ -81,6 +85,10 @@ afterEach(async () => {
   isolatedCodexHome = null;
   if (testDir) rmSync(testDir, { recursive: true, force: true });
   testDir = "";
+});
+
+afterAll(async () => {
+  await drainStorageWorkers();
 });
 
 async function waitForLiveWorker(timeoutMs = 10_000): Promise<void> {
@@ -184,5 +192,3 @@ test.skipIf(skipNonWindowsWorkerSpawn)("terminateStorageWorker is joinable and i
   // A second terminate on an already-reclaimed worker must not throw.
   await terminateStorageWorker({ terminate() {}, addEventListener() {} } as unknown as Worker);
 }, { timeout: 30_000 });
-
-

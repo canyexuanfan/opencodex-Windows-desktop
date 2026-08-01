@@ -11,8 +11,10 @@
  * time (so we cannot miss `self.close()` / early exit), stays in `liveWorkers`
  * until that close settles, and `drainStorageWorkers()` joins every in-flight
  * terminate. Spawns are serialized through `withStorageWorkerSpawnGate` so the
- * next Worker cannot be created until prior threads have exited. On Windows, a
- * post-close settle covers the OS join gap Bun does not expose.
+ * next Worker cannot be created until prior threads have exited. On Windows and
+ * macOS, a post-close settle covers the OS join gap Bun does not expose
+ * (Windows unbalanced join panic; macOS Silicon balanced-count segfault under
+ * `bun test --isolate`).
  */
 
 import { createAdmissionGate, type AdmissionMetrics, type AdmissionReservation } from "../lib/admission";
@@ -48,17 +50,16 @@ let spawnGate: Promise<void> = Promise.resolve();
 let spawnCancelEpoch = 0;
 
 /**
- * OS-join gap after the `close` event (not a CI job-timeout bump).
+ * OS-join gap after the `close` event on platforms where Bun's Worker reclaim
+ * races the isolate/file boundary (not a CI job-timeout bump).
  * Windows GHA at 250ms still left `workers_spawned(N) workers_terminated(N-1)`
- * panics; 750ms covers deferred reclaim. Darwin under `bun test --isolate`
- * also segfaults when the next spawn follows too closely after terminate even
- * with balanced spawned/terminated counts (Bun 1.3.14), so apply a shorter
- * settle there too. Linux keeps the close-event join only.
+ * panics under isolate; 750ms covers deferred reclaim. Darwin uses 250ms.
  */
-const WORKER_JOIN_SETTLE_MS =
-  process.platform === "win32" ? 750
-  : process.platform === "darwin" ? 100
-  : 0;
+const WORKER_OS_JOIN_MS = process.platform === "win32" ? 750 : 250;
+
+function needsWorkerOsJoinSettle(): boolean {
+  return process.platform === "win32" || process.platform === "darwin";
+}
 
 /** Invalidate spawn callbacks still waiting on the gate (reset / server drain). */
 export function cancelQueuedStorageWorkerSpawns(): void {
@@ -174,13 +175,13 @@ export function terminateStorageWorker(worker: Worker, timeoutMs = 5_000): Promi
       // Disarm before the OS-join settle: a late timer firing during the sleep
       // would set timedOut after close already won and throw a false timeout.
       clearTimeout(timer);
-      // Always run the platform settle before throwing on timeout: the timer
+      // Always run the OS-join settle before throwing on timeout: the timer
       // only forces `closed`, it does not prove the OS thread has exited.
       // Callers that catch and continue (e.g. drainAndShutdown) still need
       // that gap before the next isolate reclaim or server.stop.
-      if (WORKER_JOIN_SETTLE_MS > 0) {
+      if (needsWorkerOsJoinSettle()) {
         await Bun.sleep(0);
-        await Bun.sleep(WORKER_JOIN_SETTLE_MS);
+        await Bun.sleep(WORKER_OS_JOIN_MS);
       }
       if (timedOut) {
         throw new Error(`storage worker did not exit within ${timeoutMs}ms`);
