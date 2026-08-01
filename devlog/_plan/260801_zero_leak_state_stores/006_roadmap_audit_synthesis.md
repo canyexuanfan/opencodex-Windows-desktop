@@ -132,3 +132,12 @@ the Claude inbound ring bounded and given wp5 hooks; risky caps made configurabl
 Round 2 closed G1-G7 and narrowed G8 to three coverage gaps (guardian/auth-api
 consumers, decode-boundary proof, later-binding case); round 3 verified all three
 closed test-only. Final verdict: **PASS**.
+
+## wp5 A-gate (Dalton, 4 rounds) — adjudication
+
+| Round | Blockers | Decision | Action |
+|---|---|---|---|
+| 1 (FAIL 6) | Translator observability had no executable hook provenance; enforcement triggers missed pin-release/TTL transitions and allowed reentrancy; continuation snapshot contract underspecified (stub/tombstone accounting, net released bytes); validateConfigCandidate lacked a raw range check; cross-store eviction ordering nondeterministic; snapshot failures silently zeroed | ACCEPT | 040 rewritten: observedInFlight is empty-but-wired with 050 registering via a named contract; full trigger set (writes, startup, config, pin release, TTL expiry, sweeper afterTick fallback) with single-flight enforcement; exact continuation exports with all-row accounting and net-release semantics; raw-candidate range check + CLI rejection; total order with registration-index tie-break and invariant counter; per-owner snapshotFailures scalar. |
+| 2 (FAIL 2) | Doc not re-anchored to the delivered implementation; sweeper fallback mechanism ambiguous and untested | ACCEPT | Doc re-anchored to delivered code with only 050 work left open; sweeper exposes a generic afterTick registry (no app-owned-memory dependency), app-owned-memory registers its fallback at startup, TTL-expiry-without-writes regression added. |
+| 3 (FAIL 1) | usage_summary oldestAt used generatedAt (captured before the async read), so an older-started slow read completing last could be evicted first | ACCEPT | Cache entries carry `revisionReadAt` captured immediately after the read returns; oldest tracking keys on read completion order; completion-order regression added. |
+| 4 | — | — | **PASS**. |
