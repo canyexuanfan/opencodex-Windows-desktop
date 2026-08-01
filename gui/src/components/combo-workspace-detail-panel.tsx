@@ -10,11 +10,13 @@ import {
 import { IconChevron, IconTrash } from "../icons";
 import { useT } from "../i18n/shared";
 import { Notice } from "../ui";
+import { handleRovingTabKey } from "../roving-tabs";
 import type { ModelOption, ProviderOption } from "./combo-workspace-types";
 import { EffortSelect, StrategySeg, TargetEditor } from "./combo-workspace-controls";
 import { clampedNumberInput } from "./combo-workspace-utils";
 
 type DetailTab = "config" | "about";
+const DETAIL_TABS = ["config", "about"] as const;
 
 export function DetailPanel({
   baseline,
@@ -163,10 +165,10 @@ export function DetailPanel({
       {msg && <Notice tone={msg.ok ? "ok" : "err"}>{msg.text}</Notice>}
 
       <div className="combos-workspace-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === "config"} className={`combos-workspace-tab${tab === "config" ? " combos-workspace-tab--active" : ""}`} onClick={() => setTab("config")}>
+        <button type="button" role="tab" aria-selected={tab === "config"} tabIndex={tab === "config" ? 0 : -1} className={`combos-workspace-tab${tab === "config" ? " combos-workspace-tab--active" : ""}`} onClick={() => setTab("config")} onKeyDown={event => handleRovingTabKey(event, 0, DETAIL_TABS.length, next => setTab(DETAIL_TABS[next]!))}>
           {t("cws.tab.config")}
         </button>
-        <button type="button" role="tab" aria-selected={tab === "about"} className={`combos-workspace-tab${tab === "about" ? " combos-workspace-tab--active" : ""}`} onClick={() => setTab("about")}>
+        <button type="button" role="tab" aria-selected={tab === "about"} tabIndex={tab === "about" ? 0 : -1} className={`combos-workspace-tab${tab === "about" ? " combos-workspace-tab--active" : ""}`} onClick={() => setTab("about")} onKeyDown={event => handleRovingTabKey(event, 1, DETAIL_TABS.length, next => setTab(DETAIL_TABS[next]!))}>
           {t("cws.tab.about")}
         </button>
       </div>

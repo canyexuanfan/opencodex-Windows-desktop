@@ -11,6 +11,9 @@ test("main process owns tray lifecycle and bounded recovery", () => {
   expect(main).toContain("OpenCodex 无法安全退出");
   expect(main).toContain("代理仍保持运行");
   expect(main).toContain('document.getElementById("start")');
+  expect(main).toContain("button:hover:not(:disabled)");
+  expect(main).toContain("button:disabled{opacity:");
+  expect(main).toContain("#start:hover:not(:disabled)");
   expect(main).toContain("recoveryAttempts >= 2");
   expect(main).toContain("render-process-gone");
   expect(main).toContain("restart: () => void restartProxy().catch(() => {})");

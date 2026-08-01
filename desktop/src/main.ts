@@ -61,8 +61,8 @@ if (!hasSingleInstanceLock) {
       main{max-width:560px;margin:12vh auto;padding:42px;border:1px solid #dbe2ea;border-radius:18px;background:#fff;box-shadow:0 18px 48px #25364a1a}
       p{line-height:1.65;color:#566579}.actions{display:flex;gap:12px;margin-top:28px}
       button{border:1px solid #bac7d5;border-radius:10px;background:#fff;color:#243042;padding:10px 18px;font:inherit;cursor:pointer;transition:.15s ease}
-      button:hover{border-color:#4676d7;background:#eef4ff}button:focus-visible{outline:3px solid #8cb4ff;outline-offset:2px}
-      #start{background:#315fbd;border-color:#315fbd;color:#fff}#start:hover{background:#254d9e}
+      button:hover:not(:disabled){border-color:#4676d7;background:#eef4ff}button:focus-visible{outline:3px solid #8cb4ff;outline-offset:2px}
+      button:disabled{opacity:.58;cursor:wait}#start{background:#315fbd;border-color:#315fbd;color:#fff}#start:hover:not(:disabled){background:#254d9e}
     </style><main><h1>OpenCodex</h1><p>代理当前已停止。你可以重新启动代理，或安全退出桌面端。</p><div class="actions"><button id="start" type="button">启动代理</button><button id="exit" type="button">退出</button></div></main>`;
     await mainWindow.webContents.executeJavaScript(`
       document.body.innerHTML = ${JSON.stringify(offlineHtml)};

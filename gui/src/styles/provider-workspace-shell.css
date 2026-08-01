@@ -78,6 +78,8 @@
   border-color: var(--text);
 }
 
+.pws-filter-btn:hover { color: var(--text); background: var(--hover); border-color: var(--faint); }
+
 .pws-filter-dot {
   position: absolute;
   top: 3px;
@@ -156,6 +158,8 @@
   color: var(--text);
   border-color: var(--text);
 }
+
+.pws-sort-btn:hover { color: var(--text); background: var(--hover); border-color: var(--faint); }
 
 .pws-filter-footer {
   margin-top: 8px;
@@ -915,6 +919,8 @@
   cursor: pointer;
   text-align: left;
 }
+
+.pws-model-expand:hover { color: var(--accent); text-decoration: underline; }
 
 .pws-model-chip {
   display: inline-flex;

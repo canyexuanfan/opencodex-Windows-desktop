@@ -229,6 +229,7 @@ p.muted.text-control {
 
 /* native controls (checkbox/radio) follow the accent instead of browser blue */
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+input[type="checkbox"]:hover:not(:disabled), input[type="radio"]:hover:not(:disabled), input[type="range"]:hover:not(:disabled) { cursor: pointer; filter: brightness(0.9); }
 
 /* scrollbars */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -931,7 +932,9 @@ a.btn, a.btn:hover { text-decoration: none; }
   font: inherit; font-size: var(--text-control); line-height: var(--leading-ui); transition: border-color var(--motion-fast);
 }
 .input::placeholder { color: var(--faint); }
+.input:hover:not(:disabled) { border-color: var(--faint); }
 .input:focus { border-color: var(--faint); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+.input:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
 textarea.input { resize: vertical; font-family: var(--font-code); line-height: var(--leading-relaxed); }
 .field-label { font-size: var(--text-label); color: var(--muted); font-weight: var(--weight-medium); margin-bottom: 5px; display: block; }
 select.input { appearance: none; }
@@ -1029,6 +1032,7 @@ select.input { appearance: none; }
   -webkit-appearance: none;
 }
 .switch.on { background: var(--toggle-on-bg); border-color: var(--toggle-on-bg); }
+.switch:hover:not(:disabled) { border-color: var(--accent-ring); box-shadow: 0 0 0 3px var(--accent-soft); }
 .switch:disabled { opacity: 0.6; cursor: default; }
 .switch .knob {
   width: 14px;
@@ -1320,6 +1324,7 @@ dialog.modal-overlay::backdrop {
 }
 .toggle { width: var(--toggle-w); height: var(--toggle-h); border-radius: var(--radius-pill); background: var(--toggle-off-bg); border: 1px solid var(--border); cursor: pointer; position: relative; transition: background var(--motion-normal), border-color var(--motion-normal); flex-shrink: 0; }
 .toggle.on { background: var(--toggle-on-bg); border-color: var(--toggle-on-bg); }
+.toggle:hover:not(:disabled) { border-color: var(--accent-ring); box-shadow: 0 0 0 3px var(--accent-soft); }
 .toggle-knob { width: 16px; height: 16px; background: light-dark(#ffffff, #ececec); border-radius: var(--radius-round); position: absolute; top: 50%; left: 1px; transform: translateY(-50%); transition: left var(--motion-normal), background var(--motion-normal); }
 .toggle.on .toggle-knob { left: 17px; background: var(--toggle-dot-color); }
 .toggle:disabled { cursor: not-allowed; opacity: 0.55; }
@@ -1659,6 +1664,7 @@ table.logs-table { min-width: 960px; }
   color: var(--accent-hover); font: inherit; font-size: var(--text-caption); text-decoration: underline;
   white-space: nowrap;
 }
+.log-detail-btn:hover { color: var(--text); text-decoration-thickness: 2px; }
 
 /* Logs page layout rhythm — keep spacing in CSS so virtualized rows don't flood inline px. */
 .logs-auto-refresh {
@@ -1813,6 +1819,7 @@ table.logs-table { min-width: 960px; }
 .openai-mode-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 .openai-mode-control .usage-segmented-btn { min-width: 76px; }
 .link-btn { background: none; border: none; color: var(--accent-hover); font: inherit; font-size: var(--text-control); cursor: pointer; padding: 6px 2px; text-decoration: underline; }
+.link-btn:hover:not(:disabled) { color: var(--text); text-decoration-thickness: 2px; }
 .link-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
 
 /* provider card accounts dropdown (multiauth) */
@@ -1946,6 +1953,7 @@ button.prov-account-row.active { cursor: default; }
 .usage-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .usage-segmented { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 2px; gap: 2px; background: var(--surface); }
 .usage-segmented-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: none; background: transparent; color: var(--muted); padding: 4px 12px; border-radius: var(--radius-pill); cursor: pointer; font: inherit; white-space: nowrap; }
+.usage-segmented-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .usage-segmented-btn.active { background: var(--raised); color: var(--text); font-weight: var(--weight-semibold); }
 .usage-source-mark { width: var(--icon-sm); height: var(--icon-sm); flex: 0 0 auto; object-fit: contain; }
 :root[data-theme="dark"] .usage-source-mark { filter: invert(1); }
@@ -2036,6 +2044,8 @@ button.prov-account-row.active { cursor: default; }
 .toggle { position: relative; display: inline-block; width: var(--toggle-w); height: var(--toggle-h); flex-shrink: 0; }
 .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
 .toggle .slider { position: absolute; inset: 0; background: var(--toggle-off-bg); border-radius: var(--radius-pill); cursor: pointer; transition: background var(--motion-normal) ease; }
+.toggle:hover .slider { box-shadow: 0 0 0 3px var(--accent-soft); }
+.toggle:has(input:disabled):hover .slider { box-shadow: none; }
 .toggle .slider::after { content: ""; position: absolute; top: 50%; left: 3px; width: var(--toggle-dot); height: var(--toggle-dot); background: var(--toggle-dot-color); border-radius: var(--radius-round); transform: translateY(-50%); transition: transform var(--motion-normal) ease; }
 .toggle input:checked + .slider { background: var(--toggle-on-bg); }
 .toggle input:checked + .slider::after { transform: translate(calc(var(--toggle-w) - var(--toggle-dot) - 6px), -50%); }
@@ -2174,6 +2184,8 @@ button.prov-account-row.active { cursor: default; }
   display: flex; width: 100%; align-items: baseline; gap: 10px; min-width: 0; padding: 0;
   border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left;
 }
+.ocx-group-toggle:hover { color: var(--text); }
+.ocx-group-head:has(.ocx-group-toggle:hover) { background: var(--raised-hover); }
 .ocx-group-name { font-size: 14px; font-weight: 600; }
 .ocx-group-count { flex-shrink: 0; color: var(--muted); font-size: 11.5px; }
 .ocx-chevron { flex-shrink: 0; align-self: center; color: var(--muted); transition: transform var(--motion-fast); }

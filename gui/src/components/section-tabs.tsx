@@ -10,6 +10,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { sectionAnchorId, sectionAnchorPrefix } from "../section-anchors";
+import { handleRovingTabKey } from "../roving-tabs";
 
 export interface SectionTabItem {
   id: string;
@@ -69,7 +70,7 @@ export function SectionTabs({
       role="tablist"
       aria-label={ariaLabel}
     >
-      {items.map(item => (
+      {items.map((item, index) => (
         <button
           key={item.id}
           type="button"
@@ -79,6 +80,7 @@ export function SectionTabs({
           tabIndex={active === item.id ? 0 : -1}
           className={`page-tab${active === item.id ? " page-tab--active" : ""}`}
           onClick={() => go(item.id)}
+          onKeyDown={event => handleRovingTabKey(event, index, items.length, next => go(items[next]!.id))}
         >
           {item.label}
           {item.meta ? <span className="section-tab-meta">{item.meta}</span> : null}

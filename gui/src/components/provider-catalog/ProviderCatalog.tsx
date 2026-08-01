@@ -6,6 +6,7 @@
  */
 import { useMemo, useState } from "react";
 import { useT } from "../../i18n/shared";
+import { handleRovingTabKey } from "../../roving-tabs";
 import {
   bucketPresets,
   filterPresets,
@@ -23,6 +24,7 @@ export type AccountLoginRow = {
 };
 
 export type CatalogTier = "accounts" | "free" | "paid";
+const CATALOG_TIERS = ["accounts", "free", "paid"] as const;
 
 const EMPTY_USAGE_RANK: Record<string, number> = {};
 const EMPTY_ACCOUNT_ROWS: AccountLoginRow[] = [];
@@ -99,13 +101,18 @@ export default function ProviderCatalog({
   return (
     <div className="provider-catalog">
       <div className="provider-catalog-tabs" role="tablist">
-        {(["accounts", "free", "paid"] as const).map(candidate => (
+        {CATALOG_TIERS.map((candidate, index) => (
           <button type="button"
             key={candidate}
             role="tab"
             aria-selected={tier === candidate}
+            tabIndex={tier === candidate ? 0 : -1}
             className={`provider-catalog-tab${tier === candidate ? " active" : ""}`}
             onClick={() => { setTier(candidate); setQuery(""); }}
+            onKeyDown={event => handleRovingTabKey(event, index, CATALOG_TIERS.length, next => {
+              setTier(CATALOG_TIERS[next]!);
+              setQuery("");
+            })}
           >
             {t(candidate === "accounts" ? "modal.tab.accounts" : candidate === "free" ? "modal.tab.free" : "modal.tab.paid")}
           </button>

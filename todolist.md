@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 21：生命周期完整对齐与最终包回归已完成（待干净 VM/信任链）`
+- 状态：`阶段 22：交互状态收尾与最终重包已完成（仅待统一外部发布验收）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-只剩外部环境验收：Windows 10 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存，以及受信测试机上的 Authenticode `Valid`。当前 Windows 11 本机已完成源码修复、最终签名包、安装版/便携版、动态端口、13/13 页面、外部 CLI 复用、停止恢复与 fail-closed 回归；不要为这些外部项重启当前正在使用的 Codex。
+代码与本机可安全验证范围已收尾。只剩一个统一外部发布验收门：Windows 10 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存、受信测试机 Authenticode `Valid` 与 exact-HEAD 跨平台 CI。不要为这些外部项重启当前正在使用的 Codex，也不再把历史重复项拆成多轮本机测试。
 
 ---
 
@@ -660,7 +660,7 @@ Git 边界：本次仅本地提交和 tag，不 push、不创建 Release、不�
 - [x] Electron 逻辑不渗入 Provider/Adapter 核心。
 - [x] 生成的 `gui/dist` 不手改。
 - [x] 所有新 GUI 文本进入 i18n。
-- [ ] 所有交互控件有键盘、hover、focus-visible 状态。
+- [x] 所有交互控件有键盘、hover、focus-visible 状态（全局 focus-visible + 共享 hover 契约；三个 tab 组已补 ArrowLeft/ArrowRight/Home/End roving focus，阶段 22 定向回归通过）。
 - [x] 依赖、打包、签名变更有验证记录。
 
 ---
@@ -840,9 +840,18 @@ Codex / Claude Code / 其他现有客户端
 - [x] 外部 ownership 边界补齐：托盘在 external owner 时禁用停止/重启并标注外部 CLI；外部复用只接受确实能从桌面固定 `127.0.0.1` 加载的 loopback/wildcard 配置，拒绝 LAN/纯 IPv6 地址被误报 ready。
 - [x] 外部接管只有一个权威入口：sidecar 已移除第二套 `findLiveProxy()` fallback，Electron supervisor 是唯一外部代理探活与 ownership 判定者；共享 system-env/Grok 仅在启动时捕获的 desktop ownership 成立时注入，并只清理本轮实际写入的内容，不会接管或污染 foreign service。
 - [x] 回归通过：较早的根 broader focused 52/52、213 个断言，以及 ownership 收口后的最终 targeted 35/35、136 个断言（含 sync shutdown gate、sync API、动态端口与 sidecar lifecycle）；desktop 21/21、116 个断言（含 stopped/crash/loopback fixture）；root/desktop typecheck；GUI lint、i18n lint、build；privacy scan 与 `git diff --check`。根完整套件仍保留既有 Windows Bun 运行器限制，不以 focused 结果替代。
-- [x] 当前最终签名包：Setup SHA-256=`3970AF2910F9E9CD795F10149D0484DA271CD5CCBAD8C8E91D91A22DDC491C2E`；Portable SHA-256=`D6177EC883D087C0240FF78530942749DF6DE2C3E970C94E7E84B8724DC0E392`；签名主体 `CN=十七°`，thumbprint `0708D0A583160A9A02E645D4D9D14118966D59FE`，一次性 PFX/私钥证书已清理，本机自签链状态仍为 `UnknownError`。
+- [x] 阶段 21 生命周期基线签名包：Setup SHA-256=`3970AF2910F9E9CD795F10149D0484DA271CD5CCBAD8C8E91D91A22DDC491C2E`；Portable SHA-256=`D6177EC883D087C0240FF78530942749DF6DE2C3E970C94E7E84B8724DC0E392`；该基线已由阶段 22 交互修复重包取代。
 - [x] 当前 Setup 在中文/空格父目录静默安装返回 0，实际路径严格为 `父目录/OpenCodex/OpenCodex.exe`，父目录没有丢失程序名子文件夹；动态端口 50150、healthz/models 200，正常停止/退出与卸载后程序目录删除、隔离用户 marker 保留、配置恢复。
 - [x] 当前 Portable 在唯一隔离根取得动态端口 19968、healthz/models 200；首次 UI 自动化未能证明停止调用送达，未误记为通过。确认端口仍存活后改用包内 CLI 恢复隔离 Codex，再精确结束本轮 wrapper/main/sidecar；测试根已清理。另一个当前 packaged smoke 已完整覆盖桌面 UI 正常停止、离线启动和退出。
 - [x] 全部测试均使用隔离 `OPENCODEX_HOME/CODEX_HOME/GROK_HOME/--user-data-dir`；未重启、关闭或修改本次对话正在使用的真实 Codex。
 - [x] 当前最终 `win-unpacked` 成品 smoke：主 PID 41484、sidecar PID 14044、动态端口 36666、healthz 200；真实点击“停止代理”后收到安全确认、runtime 删除、sidecar 退出、隔离 Codex 无 managed 路由，离线页点击“退出”后 Electron 主进程退出，隔离目录已清理。
 - [ ] 外部验收：Windows 10 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘、受信签名链 `Valid`、所有交互控件逐项视觉遍历和跨平台完整回归。
+
+# 阶段 22：交互状态收尾与最终重包（2026-08-01）
+
+- [x] 一次性全量交互契约审计定位并修复实际缺口：input/checkbox/radio/range、switch/toggle、link/copy、catalog/usage/filter/sort、折叠标题等控件补齐 hover/focus-visible；Storage 普通操作采用 `btn-ghost`；离线页 disabled 按钮不再触发 hover。
+- [x] 新增共享 roving tab helper，`SectionTabs`、Provider Catalog 与 Combo detail tabs 均支持 `ArrowLeft`/`ArrowRight` 循环、`Home`/`End` 跳转、选中和焦点同步。
+- [x] 集中验证一次通过：GUI 定向 29/29、193 个断言，GUI lint、i18n lint、build；desktop typecheck 与 21/21、119 个断言；`git diff --check`。未启动或修改真实 Codex。
+- [x] 最终资源树重新生成 4259 个文件并离线重包；打包 GUI 已确认包含阶段 22 hover/roving 状态。Setup SHA-256=`2280C253479900234D4332C2CABD95648D3055B8BA38235F6080247D6D854C1D`，Portable SHA-256=`A90F2479196F80978538C4C9999988CBDF33C893312DEF5FB8390328E8956620`；签名主体 `CN=十七°`，thumbprint `33165F93D6CC20A3FF74CABA4BC2B62D12969731`，本机自签链 `UnknownError`。
+- [x] 一次性 PFX、CurrentUser 私钥证书及 `C:\tmp\opencodex-stage22-final-build-20260801` 精确清理，均确认不存在。
+- [ ] 唯一外部门：干净 Windows 10 VM/标准用户与中文用户名、系统睡眠/注销/重启、真实旧服务/托盘共存、受信签名链 `Valid`、exact-HEAD macOS/Linux/Windows CI；这些是发行环境证明，不再作为本机代码收尾的重复测试。
