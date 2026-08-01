@@ -367,11 +367,14 @@ returns:
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 Selects an existing Codex account, OAuth account, or API key. For `openai`, `main` selects the Codex
-App login. A Codex selection clears current pool affinity and applies to the next request, including
-one from an existing visible task; in-flight requests keep their captured account. Pool strategy,
-usage-based proactive switching, cooldown/reauthentication state, and failure recovery may later
-select another eligible account. OpenCodex replays the conversation after an account change, but
-the provider-side prompt cache may be cold. Unknown providers or ids exit 1.
+App login. A Codex Pool selection clears process-local affinity and applies to the next request,
+including one from an existing visible task; proxy restart or affinity eviction can also leave a task
+unbound, while in-flight requests keep their captured account. This controls Pool routing only;
+Direct mode keeps using the caller-owned/native main credential. Usage-based proactive switching,
+401/403 reauthentication, 429/retry-after cooldowns, exclusion, and pre-output 429/402 failure
+recovery may later select another eligible Pool account. Those recovery paths remain active when
+usage-based switching is off. OpenCodex replays the conversation after an account change, but the
+provider-side prompt cache may be cold. Unknown providers or ids exit 1.
 `--json` returns:
 
 ```text

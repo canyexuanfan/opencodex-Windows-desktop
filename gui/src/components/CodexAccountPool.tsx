@@ -52,7 +52,9 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
     updateFailed: t("codexAuth.autoSwitchUpdateFailed"),
     invalid: t("codexAuth.autoSwitchThresholdInvalid"),
   });
-  const [poolStrategy, setPoolStrategy] = useState(DEFAULT_ACCOUNT_POOL_STRATEGY);
+  const [poolStrategy, setPoolStrategy] = useState<
+    typeof DEFAULT_ACCOUNT_POOL_STRATEGY | "round-robin" | "fill-first" | null
+  >(null);
   const { beginServerRead, acceptServerRead, rejectServerRead, hydrateServerValue } = autoSwitch;
   // A hook cannot be called conditionally, so the fallback instance is always created
   // but stays inert (no load, no polling) whenever a shared controller was injected.
@@ -337,24 +339,26 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         </>
       )}
 
-      <CodexAutoSwitchSetting
-        threshold={autoSwitch.threshold}
-        draft={autoSwitch.draft}
-        strategy={poolStrategy}
-        hydrated={autoSwitch.hydrated}
-        saving={autoSwitch.saving}
-        loadError={autoSwitch.loadError}
-        feedback={autoSwitch.feedback}
-        onDraftChange={autoSwitch.setDraft}
-        onEditingChange={autoSwitch.setEditing}
-        onCommit={autoSwitch.commit}
-        onCancel={autoSwitch.cancel}
-        onToggle={autoSwitch.toggle}
-        onRetry={() => {
-          autoSwitch.retry();
-          void load();
-        }}
-      />
+      {poolStrategy !== null && (
+        <CodexAutoSwitchSetting
+          threshold={autoSwitch.threshold}
+          draft={autoSwitch.draft}
+          strategy={poolStrategy}
+          hydrated={autoSwitch.hydrated}
+          saving={autoSwitch.saving}
+          loadError={autoSwitch.loadError}
+          feedback={autoSwitch.feedback}
+          onDraftChange={autoSwitch.setDraft}
+          onEditingChange={autoSwitch.setEditing}
+          onCommit={autoSwitch.commit}
+          onCancel={autoSwitch.cancel}
+          onToggle={autoSwitch.toggle}
+          onRetry={() => {
+            autoSwitch.retry();
+            void load();
+          }}
+        />
+      )}
 
       <CodexPoolStrategySetting
         apiBase={apiBase}

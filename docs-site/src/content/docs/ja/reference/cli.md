@@ -268,10 +268,7 @@ API エラーは終了コード 1 です。認証情報フィールドは manage
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 既存の Codex アカウント、OAuth アカウント、または API key を選びます。`openai` で `main` は Codex App ログインを
-選択します。Codex の選択は現在の pool affinity を消去し、既存の表示タスクを含む次のリクエストから適用されます。
-処理中のリクエストは取得済みアカウントを維持します。Pool 戦略、使用量ベースのプロアクティブ切り替え、
-cooldown/再認証状態、障害回復により、後で別の適格アカウントが選ばれる場合があります。アカウント変更後も
-OpenCodex は会話コンテキストを再生しますが、provider prompt cache は再ウォームアップが必要な場合があります。
+選択します。Codex Pool の選択は process-local affinity を消去し、既存の表示タスクを含む次のリクエストから適用されます。プロキシ再起動や affinity eviction 後もタスクは未紐付けになり得ますが、処理中のリクエストは取得済みアカウントを維持します。この選択は Pool routing のみを制御し、Direct mode は caller-owned/native main credential を使い続けます。使用量ベースのプロアクティブ切り替え、401/403 再認証、429/retry-after cooldown、除外、出力前 429/402 の障害回復により、後で別の適格 Pool アカウントが選ばれる場合があります。これらの回復経路は使用量ベース切り替えが off でも有効です。アカウント変更後も OpenCodex は会話コンテキストを再生しますが、provider prompt cache は再ウォームアップが必要な場合があります。
 不明なプロバイダーや id は終了コード 1 です。`--json` は次を返します。
 
 ```text

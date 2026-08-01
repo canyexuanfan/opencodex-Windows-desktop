@@ -309,10 +309,7 @@ API 오류는 종료 코드 1입니다. 자격 증명 필드는 management API�
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 기존 Codex 계정, OAuth 계정 또는 API key를 선택합니다. `openai`에서 `main`은 Codex App 로그인을
-선택합니다. Codex 선택은 현재 pool affinity를 지우고 기존에 보이던 작업을 포함한 다음 요청부터
-적용되며, 진행 중인 요청은 이미 확보한 계정을 유지합니다. Pool 전략, 사용량 기반 선제 전환,
-cooldown/재인증 상태, 실패 복구는 나중에 다른 적격 계정을 선택할 수 있습니다. 계정이 바뀌어도
-OpenCodex는 대화 문맥을 재생하지만 프로바이더 측 prompt cache는 다시 예열해야 할 수 있습니다.
+선택합니다. Codex Pool 선택은 프로세스 로컬 affinity를 지우고 기존에 보이던 작업을 포함한 다음 요청부터 적용됩니다. 프록시 재시작이나 affinity eviction 뒤에도 작업이 바인딩 없는 상태가 될 수 있지만, 진행 중인 요청은 이미 확보한 계정을 유지합니다. 이 선택은 Pool 라우팅만 제어하며 Direct mode는 호출자 소유/native main credential을 계속 사용합니다. 사용량 기반 선제 전환, 401/403 재인증, 429/retry-after cooldown, 제외, 출력 전 429/402 실패 복구는 나중에 다른 적격 Pool 계정을 선택할 수 있습니다. 이러한 복구 경로는 사용량 기반 전환이 꺼져 있어도 동작합니다. 계정이 바뀌어도 OpenCodex는 대화 문맥을 재생하지만 프로바이더 측 prompt cache는 다시 예열해야 할 수 있습니다.
 알 수 없는 프로바이더나 id는 종료 코드 1입니다. `--json`은 다음을 반환합니다.
 
 ```text
