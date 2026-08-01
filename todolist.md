@@ -788,3 +788,10 @@ Codex / Claude Code / 其他现有客户端
 - [x] 使用项目 bundled Bun 1.3.14、授权隔离临时根执行 9 个桌面/Windows 聚焦测试文件，88/88 用例、352 个断言通过：desktop 3P、profile、ready/动态端口、startup health、tray proxy、部署关闭、localhost/wildcard 绑定和 Windows tray 安全。
 - [x] 聚焦回归临时根已按精确路径清理；未发现新的 sidecar、listener 或桌面进程残留。
 - [ ] 干净 Windows 10/11 VM 双击、睡眠/唤醒、注销/重启、真实 Provider 和签名信任链仍需外部验收。
+
+# 安装卸载保留回归增量（2026-08-01）
+- [x] 使用实际 `OpenCodex-Setup-x64.exe` 在中文/空格父目录执行静默安装，安装目标保留 `OpenCodex/OpenCodex.exe` 程序名子文件夹。
+- [x] 从安装路径启动隔离实例取得动态端口 `10637`，`GET /healthz` 返回 200；未依赖外部 Node/Bun。
+- [x] 静默卸载返回 0，安装目录删除但隔离用户目录 marker 保留；真实 `C:\Users\wzm33\.codex\config.toml` SHA-256 前后一致。
+- [x] 首轮脚本的 `$home` 变量冲突已记录并清理，最终复核使用安全变量名且临时根已删除。
+- [ ] 干净 Windows 10/11 VM 的人工双击、普通用户权限、睡眠/唤醒和注销/重启仍需外部验收。
