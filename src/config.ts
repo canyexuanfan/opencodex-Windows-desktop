@@ -103,7 +103,7 @@ function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
-/** True when required NTFS harden failed closed on a transient icacls timeout. */
+/** True when required NTFS harden failed closed on a transient icacls timeout (Windows). */
 function isWindowsAclTimeoutError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /timed out|previous attempt timed out/i.test(message);
