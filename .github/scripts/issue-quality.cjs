@@ -399,7 +399,7 @@ const AREA_HEURISTICS = [
   {
     label: "streaming",
     scope: "full",
-    re: /\b(sse|websocket|\bws\b|stream(ing)?\b.{0,40}\b(truncat|terminal)|terminal (sse )?frame|without a terminal)\b/i,
+    re: /\b(sse|websocket|\bws\b|stream(ing)?\b.{0,40}\btruncat\w*|stream(ing)?\b.{0,40}\bterminal\b|terminal (sse )?frame|without a terminal)\b/i,
   },
   {
     label: "tools",

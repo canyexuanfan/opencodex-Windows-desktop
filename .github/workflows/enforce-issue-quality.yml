@@ -917,26 +917,28 @@ jobs:
             async function ensureLabel(name) {
               try {
                 await github.rest.issues.getLabel({ owner, repo, name });
-                return;
+                return true;
               } catch (err) {
                 if (err.status !== 404) {
                   core.warning(`Failed to look up label "${name}": ${err.message || err}`);
-                  return;
+                  return false;
                 }
               }
               const meta = AREA_LABELS[name];
-              if (!meta) return;
+              if (!meta) return false;
               try {
                 await github.rest.issues.createLabel({
                   owner, repo, name, color: meta.color, description: meta.description,
                 });
                 core.info(`Created label "${name}".`);
+                return true;
               } catch (err) {
                 if (err.status === 422) {
                   core.info(`Label "${name}" appeared concurrently; continuing.`);
-                  return;
+                  return true;
                 }
                 core.warning(`Failed to create label "${name}": ${err.message || err}`);
+                return false;
               }
             }
 
@@ -946,9 +948,9 @@ jobs:
               heuristicBody: areaHeuristicBody,
               labels,
             });
-            const areaLabelsToAdd = areaLabels.filter((name) => !labels.includes(name));
-            for (const name of areaLabelsToAdd) {
-              await ensureLabel(name);
+            const areaLabelsToAdd = [];
+            for (const name of areaLabels.filter((candidate) => !labels.includes(candidate))) {
+              if (await ensureLabel(name)) areaLabelsToAdd.push(name);
             }
             if (areaLabelsToAdd.length > 0) {
               try {
@@ -1132,7 +1134,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.backfill_open_areas == true
     runs-on: ubuntu-latest
     permissions:
+      # Read-only checkout of trusted scripts from the default branch.
       contents: read
+      # Required to list open issues, create missing area labels, and apply them.
       issues: write
     steps:
       - name: Checkout trusted workflow code
@@ -1182,23 +1186,25 @@ jobs:
             async function ensureLabel(name) {
               try {
                 await github.rest.issues.getLabel({ owner, repo, name });
-                return;
+                return true;
               } catch (err) {
                 if (err.status !== 404) {
                   core.warning(`Failed to look up label "${name}": ${err.message || err}`);
-                  return;
+                  return false;
                 }
               }
               const meta = AREA_LABELS[name];
-              if (!meta) return;
+              if (!meta) return false;
               try {
                 await github.rest.issues.createLabel({
                   owner, repo, name, color: meta.color, description: meta.description,
                 });
                 core.info(`Created label "${name}".`);
+                return true;
               } catch (err) {
-                if (err.status === 422) return;
+                if (err.status === 422) return true;
                 core.warning(`Failed to create label "${name}": ${err.message || err}`);
+                return false;
               }
             }
 
@@ -1229,11 +1235,11 @@ jobs:
                 heuristicBody: areaHeuristicBody,
                 labels,
               });
-              const toAdd = areaLabels.filter((name) => !labels.includes(name));
-              if (toAdd.length === 0) continue;
-              for (const name of toAdd) {
-                await ensureLabel(name);
+              const toAdd = [];
+              for (const name of areaLabels.filter((candidate) => !labels.includes(candidate))) {
+                if (await ensureLabel(name)) toAdd.push(name);
               }
+              if (toAdd.length === 0) continue;
               try {
                 await github.rest.issues.addLabels({
                   owner,

@@ -1792,4 +1792,13 @@ describe("detectAreaLabels", () => {
     });
     assert.ok(labels.includes("account-pool"), `got ${labels.join(",")}`);
   });
+
+  it("matches truncated streaming wording via truncat stem", () => {
+    const labels = detectAreaLabels({
+      title: "Upstream streaming response truncated mid-turn",
+      body: ["### Area", "Other", "### Summary", "The streaming response was truncated."].join("\n"),
+      labels: ["bug"],
+    });
+    assert.ok(labels.includes("streaming"), `got ${labels.join(",")}`);
+  });
 });
