@@ -795,3 +795,9 @@ Codex / Claude Code / 其他现有客户端
 - [x] 静默卸载返回 0，安装目录删除但隔离用户目录 marker 保留；真实 `C:\Users\wzm33\.codex\config.toml` SHA-256 前后一致。
 - [x] 首轮脚本的 `$home` 变量冲突已记录并清理，最终复核使用安全变量名且临时根已删除。
 - [ ] 干净 Windows 10/11 VM 的人工双击、普通用户权限、睡眠/唤醒和注销/重启仍需外部验收。
+
+# 桌面导航与单窗口策略增量（2026-08-01）
+- [x] 修复同源 `window.open` 被 Electron 允许创建第二窗口的问题：所有 popup 统一 `deny`，http/https 外链继续交给系统浏览器。
+- [x] 导航策略只安装一次；端口变化通过 `setExpectedOrigin` 更新，窗口关闭时释放唯一 `will-navigate` 监听器，避免旧端口 origin 拦截新 dashboard。
+- [x] 新增 popup deny、外链处理和跨端口策略生命周期契约；desktop typecheck/build 通过，桌面测试 16/16、93 assertions 通过。
+- [ ] 真实 GUI 鼠标/键盘视觉验收和干净 Windows VM 仍需外部环境。
