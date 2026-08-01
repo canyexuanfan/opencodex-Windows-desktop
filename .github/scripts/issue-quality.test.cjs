@@ -1672,7 +1672,7 @@ describe("mapAreaFieldToLabels", () => {
     assert.deepEqual(mapAreaFieldToLabels("Installation or packaging"), ["install"]);
     assert.deepEqual(mapAreaFieldToLabels("Service lifecycle"), ["service"]);
     assert.deepEqual(mapAreaFieldToLabels("Platform (Windows / macOS / Linux)"), ["platform"]);
-    assert.deepEqual(mapAreaFieldToLabels("Documentation"), ["documentation"]);
+    assert.deepEqual(mapAreaFieldToLabels("Documentation"), []);
   });
 
   it("maps legacy Service lifecycle wording and ignores Other / Multiple areas", () => {
@@ -1749,13 +1749,47 @@ describe("detectAreaLabels", () => {
     assert.equal(labels.includes("windows"), false);
   });
 
-  it("maps Documentation Area to documentation and does not invent docs", () => {
+  it("does not map Documentation Area onto the documentation kind label", () => {
     const labels = detectAreaLabels({
       title: "Codex Auth UI/docs conflate usage-based switching",
       body: ["### Area", "Documentation", "### Summary", "Docs misdefine new session."].join("\n"),
-      labels: [],
+      labels: ["enhancement"],
     });
-    assert.ok(labels.includes("documentation"));
+    assert.equal(labels.includes("documentation"), false);
     assert.equal(labels.includes("docs"), false);
+  });
+
+  it("ignores Operating system metadata for platform heuristics", () => {
+    const labels = detectAreaLabels({
+      title: "Dashboard shows empty providers tab",
+      body: [
+        "### Area",
+        "Dashboard",
+        "### Summary",
+        "Providers tab is blank after login.",
+        "### Operating system",
+        "Windows 11",
+        "### Reproduction",
+        "1. Open the dashboard",
+      ].join("\n"),
+      labels: ["bug"],
+    });
+    assert.ok(labels.includes("gui"));
+    assert.equal(labels.includes("platform"), false);
+  });
+
+  it("uses heuristicBody translation text when Area is Other", () => {
+    const labels = detectAreaLabels({
+      title: "问题报告",
+      body: ["### Area", "Other", "### Summary", "原始描述"].join("\n"),
+      heuristicBody: [
+        "### Area",
+        "Other",
+        "### Summary",
+        "Account pool failover fails when refresh token is already used.",
+      ].join("\n"),
+      labels: ["bug"],
+    });
+    assert.ok(labels.includes("account-pool"), `got ${labels.join(",")}`);
   });
 });

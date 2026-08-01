@@ -734,7 +734,7 @@ jobs:
               rejectsWorkflowDispatchPullRequest,
               rejectsWorkflowDispatchNonDefaultBranch,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-quality.cjs"));
-            const { stripTranslationBlock } = require(
+            const { stripTranslationBlock, splitTranslationBlock } = require(
               path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"),
             );
 
@@ -755,6 +755,17 @@ jobs:
               issue_number = parsedIssueNumber;
             } else {
               issue_number = context.payload.issue.number;
+            }
+
+            function translationPlainText(block) {
+              if (!block) return "";
+              return String(block)
+                .replace(/<!--[\s\S]*?-->/g, " ")
+                .replace(/<\/?details[^>]*>/gi, "\n")
+                .replace(/<\/?summary[^>]*>/gi, "\n")
+                .replace(/<[^>]+>/g, " ")
+                .replace(/[ \t]+\n/g, "\n")
+                .trim();
             }
             const actor = context.actor;
             const eventType = context.eventName === "issues"
@@ -791,7 +802,12 @@ jobs:
               return;
             }
 
-            const issueBody = stripTranslationBlock(issue.body || "");
+            const translationSplit = splitTranslationBlock(issue.body || "");
+            const issueBody = translationSplit.sourceBody;
+            const areaHeuristicBody = [
+              issueBody,
+              translationPlainText(translationSplit.block),
+            ].filter(Boolean).join("\n\n");
 
             // -----------------------------------------------------------------
             // Trusted-user exemption
@@ -909,14 +925,10 @@ jobs:
                 }
               }
               const meta = AREA_LABELS[name];
-              const color = meta?.color || (name === "documentation" ? "0075ca" : "EDEDED");
-              const description = meta?.description
-                || (name === "documentation"
-                  ? "Improvements or additions to documentation"
-                  : name);
+              if (!meta) return;
               try {
                 await github.rest.issues.createLabel({
-                  owner, repo, name, color, description,
+                  owner, repo, name, color: meta.color, description: meta.description,
                 });
                 core.info(`Created label "${name}".`);
               } catch (err) {
@@ -931,6 +943,7 @@ jobs:
             const areaLabels = detectAreaLabels({
               title: issue.title,
               body: issueBody,
+              heuristicBody: areaHeuristicBody,
               labels,
             });
             const areaLabelsToAdd = areaLabels.filter((name) => !labels.includes(name));
@@ -1139,7 +1152,7 @@ jobs:
               AREA_LABELS,
               rejectsWorkflowDispatchNonDefaultBranch,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-quality.cjs"));
-            const { stripTranslationBlock } = require(
+            const { splitTranslationBlock } = require(
               path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"),
             );
 
@@ -1155,6 +1168,17 @@ jobs:
 
             const { owner, repo } = context.repo;
 
+            function translationPlainText(block) {
+              if (!block) return "";
+              return String(block)
+                .replace(/<!--[\s\S]*?-->/g, " ")
+                .replace(/<\/?details[^>]*>/gi, "\n")
+                .replace(/<\/?summary[^>]*>/gi, "\n")
+                .replace(/<[^>]+>/g, " ")
+                .replace(/[ \t]+\n/g, "\n")
+                .trim();
+            }
+
             async function ensureLabel(name) {
               try {
                 await github.rest.issues.getLabel({ owner, repo, name });
@@ -1166,14 +1190,10 @@ jobs:
                 }
               }
               const meta = AREA_LABELS[name];
-              const color = meta?.color || (name === "documentation" ? "0075ca" : "EDEDED");
-              const description = meta?.description
-                || (name === "documentation"
-                  ? "Improvements or additions to documentation"
-                  : name);
+              if (!meta) return;
               try {
                 await github.rest.issues.createLabel({
-                  owner, repo, name, color, description,
+                  owner, repo, name, color: meta.color, description: meta.description,
                 });
                 core.info(`Created label "${name}".`);
               } catch (err) {
@@ -1197,10 +1217,16 @@ jobs:
               const labels = (issue.labels || []).map((l) =>
                 typeof l === "string" ? l : l.name,
               );
-              const issueBody = stripTranslationBlock(issue.body || "");
+              const translationSplit = splitTranslationBlock(issue.body || "");
+              const issueBody = translationSplit.sourceBody;
+              const areaHeuristicBody = [
+                issueBody,
+                translationPlainText(translationSplit.block),
+              ].filter(Boolean).join("\n\n");
               const areaLabels = detectAreaLabels({
                 title: issue.title,
                 body: issueBody,
+                heuristicBody: areaHeuristicBody,
                 labels,
               });
               const toAdd = areaLabels.filter((name) => !labels.includes(name));

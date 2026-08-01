@@ -316,11 +316,30 @@ const AREA_FIELD_TO_LABELS = {
   "service lifecycle": ["service"],
   "service lifecycle (config injection)": ["service"],
   "platform (windows / macos / linux)": ["platform"],
-  documentation: ["documentation"],
+  // Do not map to kind label `documentation` — that collides with labelBasedKind
+  // when a feature/bug form picks Area: Documentation. Docs form already seeds
+  // the kind label; Area selection alone does not add an area tag.
+  documentation: [],
   // No dedicated label; heuristics still run in detectAreaLabels.
   "multiple areas": [],
   other: [],
 };
+
+/** Body headings used for area heuristics (excludes Environment / OS metadata). */
+const AREA_HEURISTIC_BODY_HEADINGS = [
+  "Summary",
+  "Reproduction",
+  "What are you trying to accomplish?",
+  "What prevents this today?",
+  "What should OpenCodex do?",
+  "Example usage or interface",
+  "Current behaviour",
+  "Expected behaviour",
+  "Minimal redacted request or reproduction",
+  "What is wrong or missing?",
+  "Documentation problem type",
+  "Documentation location",
+];
 
 /**
  * Heuristic rules. `scope: "title"` avoids false hits from template Environment /
@@ -432,10 +451,27 @@ function mapAreaFieldToLabels(areaText) {
 }
 
 /**
+ * Build heuristic text from title-relevant semantic sections only — never from
+ * Operating system / Version / Checks metadata that every template includes.
+ *
+ * @param {string} body
+ * @returns {string}
+ */
+function bodyForAreaHeuristics(body) {
+  if (typeof body !== "string" || !body.trim()) return "";
+  const parts = [];
+  for (const heading of AREA_HEURISTIC_BODY_HEADINGS) {
+    const section = extractSection(body, heading);
+    if (section) parts.push(section);
+  }
+  return parts.join("\n\n");
+}
+
+/**
  * Conservative title/body heuristics for orthogonal area labels.
  *
  * @param {string} title
- * @param {string} body
+ * @param {string} body semantic body text (already filtered)
  * @returns {string[]}
  */
 function heuristicAreaLabels(title, body) {
@@ -456,17 +492,25 @@ function heuristicAreaLabels(title, body) {
  * Detect additive product-area labels from Area field, form defaults, and
  * title/body heuristics. Never invents per-provider labels.
  *
- * @param {{ title?: string, body?: string, labels?: string[] }} issue
+ * @param {{
+ *   title?: string,
+ *   body?: string,
+ *   labels?: string[],
+ *   heuristicBody?: string,
+ * }} issue
+ *   `body` is the source form (for Area / provider headings).
+ *   `heuristicBody` may include English translation text for heuristics only.
  * @returns {string[]}
  */
 function detectAreaLabels(issue) {
   const title = typeof issue?.title === "string" ? issue.title : "";
   const body = typeof issue?.body === "string" ? issue.body : "";
   const labels = Array.isArray(issue?.labels) ? issue.labels : [];
+  const heuristicSource = typeof issue?.heuristicBody === "string" ? issue.heuristicBody : body;
 
   const areaSection = extractSection(body, "Area");
   const fromArea = mapAreaFieldToLabels(areaSection);
-  const fromHeur = heuristicAreaLabels(title, body);
+  const fromHeur = heuristicAreaLabels(title, bodyForAreaHeuristics(heuristicSource));
   const fromForm = [];
   if (labels.includes("provider-compatibility")) fromForm.push("provider");
   // Provider-compat form uses this heading instead of Area.
@@ -478,8 +522,7 @@ function detectAreaLabels(issue) {
   const out = [];
   for (const label of [...fromArea, ...fromForm, ...fromHeur]) {
     if (!label || seen.has(label)) continue;
-    // `documentation` is a kind label and also an Area mapping target.
-    if (label !== "documentation" && !AREA_LABELS[label]) continue;
+    if (!AREA_LABELS[label]) continue;
     seen.add(label);
     out.push(label);
   }
@@ -1183,6 +1226,7 @@ module.exports = {
   AREA_LABELS,
   AREA_FIELD_TO_LABELS,
   mapAreaFieldToLabels,
+  bodyForAreaHeuristics,
   heuristicAreaLabels,
   detectAreaLabels,
   hasSubstantialStructuredContent,

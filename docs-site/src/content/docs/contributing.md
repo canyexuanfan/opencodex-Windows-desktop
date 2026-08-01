@@ -78,10 +78,11 @@ GitHub Actions intentionally stay small:
 - **Issue quality** (`.github/workflows/enforce-issue-quality.yml`) validates template structure on
   new and edited issues, applies kind labels (`bug`, `enhancement`, `provider-compatibility`,
   `documentation`), and adds orthogonal **area** labels from the form Area field plus light
-  title/body heuristics: `provider`, `account-pool`, `catalog`, `gui`, `cli`, `proxy`, `platform`,
-  `streaming`, `tools`, `install`, and `service`. Kind/process labels stay separate so you can
-  filter `bug` + `account-pool` without collapsing those axes. Prefer the Area dropdown over
-  inventing per-provider labels. Maintainers can re-apply area labels to all open issues with
+  title/Summary heuristics: `provider`, `account-pool`, `catalog`, `gui`, `cli`, `proxy`,
+  `platform`, `streaming`, `tools`, `install`, and `service`. Kind/process labels stay separate so
+  you can filter `bug` + `account-pool` without collapsing those axes. Prefer the Area dropdown
+  over inventing per-provider labels. Area: Documentation does not add a second area tag (the docs
+  form already seeds `documentation`). Maintainers can re-apply area labels to all open issues with
   workflow_dispatch `backfill_open_areas` after the workflow is on the default branch.
 
 Use the helper for releases:
