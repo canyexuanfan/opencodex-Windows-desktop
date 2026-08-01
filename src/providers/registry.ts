@@ -367,6 +367,17 @@ const TENCENT_CODING_PLAN_MODELS = ["tc-code-latest", "glm-5", "kimi-k2.5", "min
 // Volcengine's authenticated /api/v3/models catalog mixes chat models with embedding,
 // image, video, and 3D generation resources. Keep the Codex-facing presets scoped to
 // models documented for text/agent or Coding Plan use.
+//
+// Maintenance owner: @lidge-jun. Verified 2026-08-01 against the vendor's own docs —
+// endpoints https://docs.volcengine.com/docs/82379/1528783 (Coding Plan) and
+// https://docs.volcengine.com/docs/82379/2165245 (Agent Plan); Codex CLI integration
+// https://www.volcengine.com/docs/82379/2556056; supported clients
+// https://www.volcengine.com/docs/82379/2188957; terms https://www.volcengine.com/docs/6256/64903
+// (北京火山引擎科技有限公司). Plan quota is restricted to supported AI coding tools and misuse
+// is documented as grounds for suspension — see the `note` on both Plan entries.
+// Report a break by opening an issue tagging the owner; the three things that rot first are the
+// static catalogs (liveModels:false cannot self-heal), the base URLs, and those Plan terms.
+// Full evidence ledger: devlog/_plan/260801_pr611_volcengine_evidence/000_evidence_ledger.md
 const VOLCENGINE_ARK_MODELS = [
   "doubao-seed-2-1-pro-260628",
   "doubao-seed-2-1-turbo-260628",
