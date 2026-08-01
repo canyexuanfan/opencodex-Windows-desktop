@@ -2066,7 +2066,8 @@ async function handleResponsesInner(
       ...(imgPlan ? { plan: imgPlan } : {}),
       ...(vidPlan ? { videoPlan: vidPlan } : {}),
       forwardHeaders: selectedForwardHeaders,
-      onAttemptSend: () => noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens),
+      onAttemptSend: (recovery?: AttemptRecoveryKind) =>
+        noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, recovery),
       abortSignal: options.abortSignal,
       maxRounds: imgPlan && vidPlan
         ? clampImageMaxRounds(Math.min(config.images?.maxRounds ?? 3, config.images?.videoMaxRounds ?? 2))
@@ -2106,7 +2107,6 @@ async function handleResponsesInner(
         );
       },
       retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
-      onRateLimitRetrySend: () => noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, "rate-limit-429"),
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
       ...(options.forceEmptyResponseId ? { forceEmptyResponseId: true } : {}),
       onCompletedResponse: (response, providerState) =>
@@ -2135,7 +2135,6 @@ async function handleResponsesInner(
   // through web-search instead of being swallowed. runTurn adapters never enter this branch.
   if (canRunWebSearch && wsPlan) {
     parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
-    noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
     const wsResponse = await runWithWebSearch({
       parsed, adapter,
       incomingMeta: { headers: selectedForwardHeaders, abortSignal: options.abortSignal, translatorBudget },
@@ -2150,6 +2149,8 @@ async function handleResponsesInner(
       abortSignal: options.abortSignal,
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
       onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
+      onAttemptSend: (recovery?: AttemptRecoveryKind) =>
+        noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, recovery),
       onUsage: usage => {
         logCtx.usageFromBridge = true;
         if (usage) {
@@ -2176,7 +2177,6 @@ async function handleResponsesInner(
         );
       },
       retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
-      onRateLimitRetrySend: () => noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, "rate-limit-429"),
     });
     // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
     // in-flight web-search turns instead of skipping them during graceful shutdown.

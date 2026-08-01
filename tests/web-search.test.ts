@@ -668,8 +668,8 @@ describe("web-search sidecar native web_search_call emission", () => {
         rotations += 1;
         return null;
       },
-      onRateLimitRetrySend: () => {
-        retrySends += 1;
+      onAttemptSend: recovery => {
+        if (recovery === "rate-limit-429") retrySends += 1;
       },
     });
     expect(response.status).toBe(200);
@@ -680,6 +680,69 @@ describe("web-search sidecar native web_search_call emission", () => {
     expect(sends).toBe(2);
     expect(rotations).toBe(0);
     expect(retrySends).toBe(1);
+  });
+
+  test("retryOn429 budget is shared across iterations (per request, not per round)", async () => {
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      // sidecar /responses: return a minimal completed SSE so the search round advances.
+      return Promise.resolve(new Response(
+        'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    let sends = 0;
+    let retrySends = 0;
+    let rotations = 0;
+    const retryingAdapter: ProviderAdapter = {
+      name: "mock-retry429",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1 || sends === 3) {
+          return new Response("rate limited", { status: 429, headers: { "retry-after": "30" } });
+        }
+        return new Response("{}", { status: 200 });
+      },
+      async *parseStream() {
+        if (sends === 2) {
+          // Round 0 success carries a web_search call so the loop advances to a forced-answer round.
+          yield { type: "tool_call_start", id: "call_1", name: "web_search" };
+          yield { type: "tool_call_delta", arguments: JSON.stringify({ query: "current docs" }) };
+          yield { type: "tool_call_end" };
+        } else {
+          yield { type: "text_delta", text: "unused" };
+        }
+        yield { type: "done" };
+      },
+      async parseResponse() { throw new Error("parseResponse must be unreachable"); },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: retryingAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      retryOn429Policy: { enabled: true, attempts: 1, intervalMs: 50, maxIntervalMs: 60_000, respectRetryAfter: false },
+      on429: () => {
+        rotations += 1;
+        return null;
+      },
+      onAttemptSend: recovery => {
+        if (recovery === "rate-limit-429") retrySends += 1;
+      },
+    });
+    const frames = await collectSse(response.body!);
+    expect(sends).toBe(3);
+    expect(retrySends).toBe(1);
+    expect(rotations).toBe(1);
+    const failed = frames.find(f => f.event === "response.failed")?.data.response as { error?: { message?: string } } | undefined;
+    expect(failed?.error?.message ?? "").toContain("429");
   });
 
   test("loop 429 with exhausted pool (on429 null) surfaces the provider error", async () => {

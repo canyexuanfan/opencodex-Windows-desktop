@@ -205,8 +205,8 @@ describe("runWithImageBridge", () => {
         rotations += 1;
         return null;
       },
-      onRateLimitRetrySend: () => {
-        retrySends += 1;
+      onAttemptSend: recovery => {
+        if (recovery === "rate-limit-429") retrySends += 1;
       },
     });
     const sse = await response.text();
@@ -214,6 +214,51 @@ describe("runWithImageBridge", () => {
     expect(sends).toBe(2);
     expect(rotations).toBe(0);
     expect(retrySends).toBe(1);
+  });
+
+  test("retryOn429 budget is shared across iterations (per request, not per round)", async () => {
+    let sends = 0;
+    let retrySends = 0;
+    let rotations = 0;
+    const retryingAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1 || sends === 3) {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      },
+    };
+    // Round 0: 429 -> one same-key replay (attempts=1) -> 200 carrying an image call.
+    // Round 1 (forced final): 429 with the request budget already spent -> no replay -> rotation.
+    streamQueue = [
+      [...imageCallEvents],
+      [{ type: "text_delta" as const, text: "unused" }, { type: "done" as const }],
+    ];
+    const response = await runWithImageBridge({
+      parsed: makeParsed(),
+      adapter: retryingAdapter,
+      plan,
+      maxRounds: 1,
+      retryOn429Policy: { enabled: true, attempts: 1, intervalMs: 50, maxIntervalMs: 60_000, respectRetryAfter: false },
+      on429: () => {
+        rotations += 1;
+        return null;
+      },
+      onAttemptSend: recovery => {
+        if (recovery === "rate-limit-429") retrySends += 1;
+      },
+    });
+    const sse = await response.text();
+    expect(sends).toBe(3);
+    expect(retrySends).toBe(1);
+    expect(rotations).toBe(1);
+    // The exhausted final 429 surfaces as the provider error, not a silent success.
+    expect(sse).toContain("Provider error 429");
   });
 
   test("forced-final clears named image tool_choice", async () => {

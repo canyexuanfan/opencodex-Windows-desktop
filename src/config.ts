@@ -1129,7 +1129,16 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
     if (policy === undefined) continue;
     if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
       delete p.retryOn429;
-      console.warn(`⚠️  config.json providers.${name}.retryOn429 ${JSON.stringify(policy)} is invalid — ignoring the policy`);
+      // Never serialize the value: an accidental `retryOn429: "sk-..."` would leak the secret.
+      console.warn(`⚠️  config.json providers.${name}.retryOn429 (${typeof policy}) is invalid — ignoring the policy`);
+      continue;
+    }
+    const policyRecord = policy as Record<string, unknown>;
+    // An explicitly present but invalid master switch must not silently default to ENABLED:
+    // drop the whole policy so a hand-edit that tried to disable retries stays disabled.
+    if ("enabled" in policyRecord && typeof policyRecord.enabled !== "boolean") {
+      delete p.retryOn429;
+      console.warn(`⚠️  config.json providers.${name}.retryOn429.enabled (${typeof policyRecord.enabled}) is invalid — ignoring the whole policy`);
       continue;
     }
     const fields: Array<[string, (value: unknown) => boolean]> = [
@@ -1141,13 +1150,14 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
     ];
     const cleaned: Record<string, unknown> = {};
     for (const [key, isValid] of fields) {
-      const value = (policy as Record<string, unknown>)[key];
+      const value = policyRecord[key];
       if (value === undefined) continue;
       if (isValid(value)) cleaned[key] = value;
-      else console.warn(`⚠️  config.json providers.${name}.retryOn429.${key} ${JSON.stringify(value)} is invalid — ignoring the field`);
+      // Log only the received type, never the value (provider config can hold secrets).
+      else console.warn(`⚠️  config.json providers.${name}.retryOn429.${key} (${typeof value}) is invalid — ignoring the field`);
     }
     const knownKeys = new Set(fields.map(([key]) => key));
-    for (const key of Object.keys(policy as Record<string, unknown>)) {
+    for (const key of Object.keys(policyRecord)) {
       if (!knownKeys.has(key)) {
         console.warn(`⚠️  config.json providers.${name}.retryOn429.${key} is not a recognized field — ignoring it`);
       }

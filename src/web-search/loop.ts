@@ -1,6 +1,7 @@
 import type { AdapterRequest, IncomingMeta, ProviderAdapter } from "../adapters/base";
 import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxThinkingContent, OcxUsage, RateLimitRetryPolicy } from "../types";
 import { namespacedToolName } from "../types";
+import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
 import { runAnthropicWebSearch } from "./anthropic-executor";
@@ -240,6 +241,8 @@ export interface WebSearchLoopDeps {
   onUsage?: (usage: OcxUsage | undefined) => void;
   /** Observe the exact adapter request selected for each routed-model iteration. */
   onRequestBuilt?: (request: AdapterRequest) => void;
+  /** Called before each routed-model dispatch in the loop, for attempt telemetry. Same-target 429 replays pass the `rate-limit-429` recovery kind. */
+  onAttemptSend?: (recovery?: AttemptRecoveryKind) => void;
   /**
    * 429 key-failover hook: rotate the provider's active pool key and return a rebuilt adapter,
    * or null when the pool is exhausted (same semantics as the normal routed path).
@@ -247,8 +250,6 @@ export interface WebSearchLoopDeps {
   on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
   /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
   retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
-  /** Telemetry for a same-target 429 replay send (records the `rate-limit-429` recovery kind). */
-  onRateLimitRetrySend?: () => void;
 }
 
 /**
@@ -299,6 +300,12 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   }
   type IterationSplit = ReturnType<typeof scanEventsForWebSearch>;
 
+  // Same-target 429 budget is per REQUEST, not per model iteration: later search rounds inherit
+  // what earlier rounds left of `attempts`, so a bounded multi-round turn can never exceed the
+  // configured replay count in total (a per-round reset would multiply it by maxSearches).
+  const rateLimitRetryPolicy = deps.retryOn429Policy ?? null;
+  let rateLimitRetries = 0;
+
   // Acquire one iteration's final response headers. The first call is drained eagerly so an initial
   // connect/header/HTTP failure stays a non-2xx JSON response. Its successful BODY is deliberately
   // left unread until the downstream Responses SSE bridge exists.
@@ -329,7 +336,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
        * Build and fetch one web-search iteration on the given adapter, under the iteration
        * header deadline. The caller owns same-target 429 replays and key rotation around it.
        */
-      const fetchOnce = async (requestAdapter: ProviderAdapter): Promise<IterationResponse> => {
+      const fetchOnce = async (requestAdapter: ProviderAdapter, recovery?: AttemptRecoveryKind): Promise<IterationResponse> => {
         const request = await requestAdapter.buildRequest(iterParsed, {
           headers: selectedForwardHeaders,
           abortSignal: headerDeadline.signal,
@@ -340,6 +347,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         } catch {
           // Diagnostics are best-effort and must never abort a web-search iteration.
         }
+        deps.onAttemptSend?.(recovery);
         let response: Response;
         try {
           response = requestAdapter.fetchResponse
@@ -371,8 +379,6 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       let prepared = await fetchOnce(adapter);
       // Same-target 429 wait-and-retry (opt-in `retryOn429`) BEFORE key rotation: a primary-key
       // rate-limit blip replays on the SAME key; rotation only runs after attempts exhaust.
-      const rateLimitRetryPolicy = deps.retryOn429Policy ?? null;
-      let rateLimitRetries = 0;
       while (
         prepared.response.status === 429
         && rateLimitRetryPolicy !== null
@@ -400,10 +406,9 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         // start a fresh one so the replay gets a new connect budget (504 stays reserved for real
         // upstream latency).
         headerDeadline = clearableDeadline(connectTimeoutMs, signal);
-        deps.onRateLimitRetrySend?.();
         // Stall-watchdog seam between bounded retry fetches.
         yield { type: "heartbeat" };
-        prepared = await fetchOnce(adapter);
+        prepared = await fetchOnce(adapter, "rate-limit-429");
       }
       // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
       // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).

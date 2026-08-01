@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -145,6 +145,47 @@ test("a non-object retryOn429 degrades at load instead of discarding the config"
   const live = loadConfig();
   expect(live.providers.test).toBeDefined();
   expect(live.providers.test.retryOn429).toBeUndefined();
+});
+
+test("an invalid retryOn429 master switch discards the policy instead of enabling it", () => {
+  writeDiskConfig({
+    providers: {
+      test: {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "k",
+        allowPrivateNetwork: true,
+        retryOn429: { enabled: "false", intervalMs: 120 },
+      },
+    },
+  });
+  const live = loadConfig();
+  expect(live.providers.test).toBeDefined();
+  // A hand-edit that tried to disable retries must not become default-ENABLED.
+  expect(live.providers.test.retryOn429).toBeUndefined();
+});
+
+test("invalid retryOn429 values never log the raw value", () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    writeDiskConfig({
+      providers: {
+        test: {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:1/v1",
+          apiKey: "k",
+          allowPrivateNetwork: true,
+          retryOn429: "sk-super-secret-abc123",
+        },
+      },
+    });
+    loadConfig();
+    const logged = warn.mock.calls.map(call => call.join(" ")).join("\n");
+    expect(logged).not.toContain("sk-super-secret-abc123");
+    expect(logged).toContain("string");
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 // R4-1: the request path. A 429 mid-turn rotates a key and saves, with no user action.
