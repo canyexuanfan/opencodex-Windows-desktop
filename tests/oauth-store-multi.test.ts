@@ -293,5 +293,5 @@ describe("multi-account auth store", () => {
     releaseFirst();
     await blocker;
     expect(oauthMutationTailSnapshot().active).toBe(0);
-  });
+  }, 5_000); // waitMs is 10; keep a hard ceiling so an unref regression cannot hang CI.
 });
