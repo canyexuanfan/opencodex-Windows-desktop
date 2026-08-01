@@ -149,8 +149,10 @@ each batch read-only with `gh` access. Results appended below per batch.
 
 ### Batch: PRs 653/644/616/581/569/557 (oldest)
 
-- 653 — merge-candidate. Mergeable, security-approved, tested; still absent
-  from dev.
+- 653 — conditional merge-candidate. Mergeable, security-approved (Ingwannu
+  APPROVED on current head), tested; still absent from dev. Audit correction:
+  GitHub reviewDecision is still CHANGES_REQUESTED (stale lidge-jun review),
+  so it awaits owner re-review/dismissal — not merge-ready as-is.
 - 644 — close-or-defer: invalid repro, no regression coverage, unrelated
   scheduler hunk regresses dev.
 - 616 — close-or-defer: implementation accepted but moved into #837.
@@ -218,9 +220,11 @@ each batch read-only with `gh` access. Results appended below per batch.
 - 746 — needs-author-work: correct Responses-only Copilot routing; P2
   catalog/selector findings, rebase, credential-replay security approval,
   CI rerun.
-- 744 — merge-candidate (closest). Security APPROVED; requested UI fixed;
-  stale CHANGES_REQUESTED needs dismiss/re-review; post-approval head
-  confirmation.
+- 744 — needs-author-work (audit correction, was "closest merge-candidate").
+  Live state UNSTABLE: Ubuntu/Windows checks fail; reviewDecision remains
+  CHANGES_REQUESTED; current head 746edc7 is newer than Ingwannu's approval
+  on fa6b3ef. Fix current failures, obtain review on current head,
+  resolve/dismiss the stale change request.
 - 715 — needs-author-work: LAND-AFTER #671; rebase over GUI conflicts; add
   exact-selector bypass regression; resolve P2s; security review.
 - 707 — close-or-defer: #697 landed first tranche; 8k-line follow-up
