@@ -105,18 +105,30 @@ export default function Models({ apiBase }: { apiBase: string }) {
   // Combo summary section. null = cold load with no seed (pending strut). Failed reads stay
   // null + combosError so an API error never masquerades as "no combos configured".
   const combosCacheKey = `ocx.models.combos.v1:${apiBase}`;
-  const [combos, setCombos] = useState<ComboItem[] | null>(() => {
+  const seededCombos = useMemo(() => {
     const own = readSessionListCache<ComboItem[]>(combosCacheKey);
     if (own) return own;
     // Reuse the Combos workspace session snapshot when Models opens first in the session.
     const workspace = readSessionListCache<{ combos?: ComboItem[] }>(`ocx.combos.workspace.v1:${apiBase}`);
     return Array.isArray(workspace?.combos) ? workspace.combos : null;
-  });
-  const [combosError, setCombosError] = useState(false);
+  }, [apiBase, combosCacheKey]);
+  const combosResource = useDataSurface<ComboItem[]>(
+    `models-combos:${apiBase}`,
+    [apiBase],
+    async (signal) => {
+      const r = await fetch(`${apiBase}/api/combos`, { signal });
+      const j = await readJsonOrThrow<unknown>(r);
+      const next = parseComboList(j);
+      writeSessionListCache(combosCacheKey, next);
+      return next;
+    },
+    { isEmpty: () => false, initialData: seededCombos ?? undefined },
+  );
+  const combosState = combosResource.state;
+  // Keep a previously painted card on a later failure so the catalog does not yank down.
+  const combos = combosState.data ?? seededCombos;
+  const combosError = combosState.showError && combos === null;
   const [combosOpen, setCombosOpen] = useState(readCombosOpen);
-  // True once we have painted a combos card (seed or fetch) so a later fetch failure cannot
-  // unmount it and yank the catalog down.
-  const combosHeldRef = useRef(combos !== null);
 
   // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -125,28 +137,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
     writeCombosOpen(next);
     setCombosOpen(next);
   };
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const r = await fetch(`${apiBase}/api/combos`);
-        const j = await readJsonOrThrow<unknown>(r);
-        if (!cancelled) {
-          const next = parseComboList(j);
-          writeSessionListCache(combosCacheKey, next);
-          combosHeldRef.current = true;
-          setCombos(next);
-          setCombosError(false);
-        }
-      } catch {
-        if (!cancelled && !combosHeldRef.current) {
-          setCombosError(true);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [apiBase, combosCacheKey]);
 
   useEffect(() => () => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
