@@ -58,7 +58,8 @@ proxy-configured routed ladder — it does not claim native upstream reasoning s
 and adapters may emulate reasoning or map levels onto provider-specific fields. Routed
 models with a configured ladder show the effort control in Grok Build just like they do
 in Codex. Models with an empty tier list keep no effort control, matching Codex
-behavior.
+behavior. Native GPT-5.6 entries are separate: they preserve and expose their pinned
+upstream reasoning ladders rather than provider-configured routed metadata.
 
 ## Authentication note
 
