@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { DesktopBackendSupervisor, type BackendStatus } from "./backend-supervisor.js";
-import { installNavigationPolicy } from "./navigation.js";
+import { installNavigationPolicy, type NavigationPolicy } from "./navigation.js";
 import { createTray, type TrayController, type TrayStatus } from "./tray.js";
 
 // This must run before app.whenReady so a second process cannot create a window or sidecar.
@@ -16,6 +16,7 @@ if (!hasSingleInstanceLock) {
   let manualStopRequested = false;
   let recoveryAttempts = 0;
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let navigationPolicy: NavigationPolicy | null = null;
   const packagedRoot = app.isPackaged ? path.join(process.resourcesPath, "opencodex") : process.cwd();
   const backend = new DesktopBackendSupervisor({
     cwd: packagedRoot,
@@ -44,7 +45,7 @@ if (!hasSingleInstanceLock) {
   async function loadDashboard(port: number): Promise<void> {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const url = `http://127.0.0.1:${port}/`;
-    installNavigationPolicy(mainWindow.webContents, new URL(url).origin);
+    navigationPolicy?.setExpectedOrigin(new URL(url).origin);
     await mainWindow.loadURL(url);
     if (!mainWindow.isDestroyed()) {
       mainWindow.show();
@@ -157,7 +158,7 @@ if (!hasSingleInstanceLock) {
       },
     });
 
-    installNavigationPolicy(mainWindow.webContents);
+    navigationPolicy = installNavigationPolicy(mainWindow.webContents);
     void mainWindow.loadURL("about:blank");
     mainWindow.webContents.on("render-process-gone", () => {
       const port = backend.getStatus().port;
@@ -171,6 +172,8 @@ if (!hasSingleInstanceLock) {
       }
     });
     mainWindow.on("closed", () => {
+      navigationPolicy?.dispose();
+      navigationPolicy = null;
       mainWindow = null;
     });
     return mainWindow;

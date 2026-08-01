@@ -4,12 +4,15 @@ import { isAllowedLoopbackUrl } from "./url-policy.js";
 export { isAllowedLoopbackUrl } from "./url-policy.js";
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
 
-export function installNavigationPolicy(contents: WebContents, expectedOrigin?: string): void {
-  contents.setWindowOpenHandler(({ url }): WindowOpenHandlerResponse => {
-    if (isAllowedLoopbackUrl(url, expectedOrigin)) {
-      return { action: "allow" };
-    }
+export type NavigationPolicy = {
+  setExpectedOrigin: (origin: string | undefined) => void;
+  dispose: () => void;
+};
 
+export function installNavigationPolicy(contents: WebContents, expectedOrigin?: string): NavigationPolicy {
+  let activeOrigin = expectedOrigin;
+
+  contents.setWindowOpenHandler(({ url }): WindowOpenHandlerResponse => {
     try {
       const parsed = new URL(url);
       if (EXTERNAL_PROTOCOLS.has(parsed.protocol)) {
@@ -21,10 +24,20 @@ export function installNavigationPolicy(contents: WebContents, expectedOrigin?: 
     return { action: "deny" };
   });
 
-  contents.on("will-navigate", (event, url) => {
+  const onWillNavigate = (event: Electron.Event, url: string): void => {
     if (url === "about:blank") return;
-    if (!isAllowedLoopbackUrl(url, expectedOrigin)) {
+    if (!isAllowedLoopbackUrl(url, activeOrigin)) {
       event.preventDefault();
     }
-  });
+  };
+  contents.on("will-navigate", onWillNavigate);
+
+  return {
+    setExpectedOrigin: origin => {
+      activeOrigin = origin;
+    },
+    dispose: () => {
+      contents.removeListener("will-navigate", onWillNavigate);
+    },
+  };
 }
