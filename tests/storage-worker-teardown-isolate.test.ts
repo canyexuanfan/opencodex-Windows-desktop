@@ -105,6 +105,33 @@ test("repeated Windows-style spawn/reset cycles leave no live workers", async ()
     expect(started.accepted).toBe(true);
     await waitForLiveWorker();
     await resetStorageCleanupPolicyJobForTestsAsync();
+    await drainStorageWorkers();
+    expect(liveStorageWorkerCount()).toBe(0);
+  }
+}, { timeout: 60_000 });
+
+test("async beforeEach-style join between cycles leaves no live workers", async () => {
+  // Mirrors storage-mutation-race: each case must await join before the next
+  // spawn. A sync beforeEach reset used to fire-and-forget terminate and leave
+  // workers_spawned(N) workers_terminated(N-1) for the next isolate reclaim.
+  const cycles = process.platform === "win32" ? 6 : 2;
+  for (let i = 0; i < cycles; i++) {
+    await resetStorageCleanupPolicyJobForTestsAsync();
+    await drainStorageWorkers();
+    expect(liveStorageWorkerCount()).toBe(0);
+
+    isolatedCodexHome?.restore();
+    isolatedCodexHome = installIsolatedCodexHome(`ocx-worker-teardown-beforeeach-${i}-`);
+    setStorageCleanupPolicyJobTestHooks({ blockMs: 250 });
+    seedArchived(isolatedCodexHome.path);
+    const started = requestStorageCleanupPolicyRun({
+      reason: "manual",
+      codexHome: isolatedCodexHome.path,
+    });
+    expect(started.accepted).toBe(true);
+    await waitForLiveWorker();
+    await resetStorageCleanupPolicyJobForTestsAsync();
+    await drainStorageWorkers();
     expect(liveStorageWorkerCount()).toBe(0);
   }
 }, { timeout: 60_000 });

@@ -13,10 +13,10 @@ import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import {
-  resetRestoreTrashJobForTests,
   resetRestoreTrashJobForTestsAsync,
   setRestoreTrashJobTestHooks,
 } from "../src/storage/restore-job";
+import { drainStorageWorkers } from "../src/storage/worker-lifecycle";
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -48,7 +48,7 @@ function seedArchived(codexHome: string): void {
   db.close();
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   previousHome = process.env.OPENCODEX_HOME;
   previousCleanupTestHooks = process.env.OPENCODEX_CLEANUP_TEST_HOOKS;
   process.env.OPENCODEX_CLEANUP_TEST_HOOKS = "1";
@@ -56,11 +56,13 @@ beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), "ocx-restore-job-responsive-"));
   process.env.OPENCODEX_HOME = testDir;
   saveConfig(baseConfig());
-  resetRestoreTrashJobForTests();
+  await resetRestoreTrashJobForTestsAsync();
+  await drainStorageWorkers();
 });
 
 afterEach(async () => {
   await resetRestoreTrashJobForTestsAsync();
+  await drainStorageWorkers();
   setRestoreTrashJobTestHooks(null);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;

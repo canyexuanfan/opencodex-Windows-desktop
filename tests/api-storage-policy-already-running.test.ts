@@ -18,8 +18,8 @@ import {
 
 let harness: PolicyApiHarness;
 
-beforeEach(() => {
-  harness = installPolicyApiHarness("ocx-api-storage-policy-busy");
+beforeEach(async () => {
+  harness = await installPolicyApiHarness("ocx-api-storage-policy-busy");
 });
 
 afterEach(async () => {

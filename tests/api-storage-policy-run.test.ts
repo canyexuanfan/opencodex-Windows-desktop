@@ -17,8 +17,8 @@ import {
 
 let harness: PolicyApiHarness;
 
-beforeEach(() => {
-  harness = installPolicyApiHarness("ocx-api-storage-policy-run");
+beforeEach(async () => {
+  harness = await installPolicyApiHarness("ocx-api-storage-policy-run");
 });
 
 afterEach(async () => {

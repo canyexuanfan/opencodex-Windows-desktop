@@ -131,6 +131,11 @@ function disownActiveRun(): void {
   cancel?.();
 }
 
+/**
+ * Fire-and-forget reset. Prefer {@link resetStorageCleanupPolicyJobForTestsAsync}
+ * from test beforeEach/afterEach — sync terminate races Windows
+ * `bun test --isolate` reclaim when the next case spawns immediately.
+ */
 export function resetStorageCleanupPolicyJobForTests(): void {
   disownActiveRun();
   if (activeWorker) {

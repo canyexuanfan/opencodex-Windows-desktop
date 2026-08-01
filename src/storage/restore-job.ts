@@ -74,6 +74,10 @@ export function setRestoreTrashJobTestHooks(hooks: RestoreJobTestHooks | null): 
   setStorageMutationCoordinatorTestHooks(hooks);
 }
 
+/**
+ * Fire-and-forget reset. Prefer {@link resetRestoreTrashJobForTestsAsync} from
+ * test beforeEach/afterEach under `bun test --isolate` on Windows.
+ */
 export function resetRestoreTrashJobForTests(): void {
   if (activeWorker) {
     void terminateStorageWorker(activeWorker);

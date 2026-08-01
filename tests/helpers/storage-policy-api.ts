@@ -17,11 +17,11 @@ import {
   setArchivedCleanupJobTestHooks,
 } from "../../src/storage/cleanup-job";
 import {
-  resetStorageCleanupPolicyJobForTests,
   resetStorageCleanupPolicyJobForTestsAsync,
   setStorageCleanupPolicyJobTestHooks,
 } from "../../src/storage/policy-job";
 import { stopStorageCleanupScheduler } from "../../src/storage/policy-scheduler";
+import { drainStorageWorkers } from "../../src/storage/worker-lifecycle";
 
 export function baseConfig(): OcxConfig {
   return {
@@ -110,15 +110,18 @@ export type PolicyApiHarness = {
   previousHome: string | undefined;
 };
 
-export function installPolicyApiHarness(prefix: string): PolicyApiHarness {
+export async function installPolicyApiHarness(prefix: string): Promise<PolicyApiHarness> {
   const previousHome = process.env.OPENCODEX_HOME;
   const isolatedCodexHome = installIsolatedCodexHome(`${prefix}-codex-`);
   const testDir = mkdtempSync(join(tmpdir(), `${prefix}-`));
   process.env.OPENCODEX_HOME = testDir;
   saveConfig(baseConfig());
   stopStorageCleanupScheduler();
-  resetStorageCleanupPolicyJobForTests();
+  // Join any leftover Workers before the case starts — sync reset used to
+  // fire-and-forget terminate and race the next spawn under `bun test --isolate`.
+  await resetStorageCleanupPolicyJobForTestsAsync();
   resetArchivedCleanupJobForTests();
+  await drainStorageWorkers();
   return { testDir, isolatedCodexHome, previousHome };
 }
 
@@ -128,6 +131,7 @@ export async function uninstallPolicyApiHarness(h: PolicyApiHarness): Promise<vo
   setStorageCleanupPolicyJobTestHooks(null);
   resetArchivedCleanupJobForTests();
   setArchivedCleanupJobTestHooks(null);
+  await drainStorageWorkers();
   if (h.previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = h.previousHome;
   h.isolatedCodexHome.restore();

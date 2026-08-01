@@ -24,12 +24,10 @@ import {
   setArchivedCleanupJobTestHooks,
 } from "../src/storage/cleanup-job";
 import {
-  resetStorageCleanupPolicyJobForTests,
   resetStorageCleanupPolicyJobForTestsAsync,
   setStorageCleanupPolicyJobTestHooks,
 } from "../src/storage/policy-job";
 import {
-  resetRestoreTrashJobForTests,
   resetRestoreTrashJobForTestsAsync,
   runRestoreTrashEntryJob,
   setRestoreTrashJobTestHooks,
@@ -37,6 +35,7 @@ import {
 import {
   resetStorageMutationCoordinatorForTests,
 } from "../src/storage/storage-mutation-coordinator";
+import { drainStorageWorkers } from "../src/storage/worker-lifecycle";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
 let testDir = "";
@@ -158,15 +157,16 @@ function removeTree(path: string): void {
   throw lastError;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   previousHome = process.env.OPENCODEX_HOME;
   isolatedCodexHome = installIsolatedCodexHome("ocx-storage-mutation-race-codex-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-storage-mutation-race-"));
   process.env.OPENCODEX_HOME = testDir;
   saveConfig(baseConfig());
-  resetRestoreTrashJobForTests();
+  await resetRestoreTrashJobForTestsAsync();
   resetArchivedCleanupJobForTests();
-  resetStorageCleanupPolicyJobForTests();
+  await resetStorageCleanupPolicyJobForTestsAsync();
+  await drainStorageWorkers();
   resetStorageMutationCoordinatorForTests();
 });
 
@@ -174,6 +174,7 @@ afterEach(async () => {
   await resetRestoreTrashJobForTestsAsync();
   resetArchivedCleanupJobForTests();
   await resetStorageCleanupPolicyJobForTestsAsync();
+  await drainStorageWorkers();
   resetStorageMutationCoordinatorForTests();
   setRestoreTrashJobTestHooks(null);
   setArchivedCleanupJobTestHooks(null);
