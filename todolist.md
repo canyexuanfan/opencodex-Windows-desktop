@@ -554,7 +554,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 - [ ] `bun run test`（普通与最小授权环境均在 420 秒内未完成；临时目录权限/CLI 子进程超时已记录）。
 - [x] `bun run privacy:scan`。
 - [x] 聚焦不变量回归：`doctor/config/service/uninstall` 92/93 通过；`CODEX_HOME` 解析优先级、服务清理顺序和卸载归属测试均通过，CLI sync 子进程场景仍超时，未将整组标记为全绿。
-- [ ] `cd gui && bun test tests`（432 通过、7 个既有 Logs 测试失败）。
+- [x] `cd gui && ..\\node_modules\\bun\\bin\\bun.exe test tests`（项目 bundled Bun 1.3.14：439/439 通过；默认 Bun 1.2.20 的兼容差异已记录）。
 - [x] `cd gui && bun run lint`。
 - [x] `cd gui && bun run lint:i18n`。
 - [x] `cd gui && bun run build`。
@@ -614,7 +614,7 @@ sidecar 数：第一次 wrapper/worker 共 2；第二次启动后仍 2；结束�
 验证证据：
 
 ```text
-代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 12 tests 通过；授权 C:\\tmp 临时根下 `server-auth` 57/57 通过，`doctor/config/service/uninstall` 聚焦回归 92/93 通过（唯一失败为 CLI 子进程 5 秒超时）；原生 Codex 注入/恢复与 Grok/service 生命周期聚焦回归 53/53 通过；隔离打包 Electron renderer 崩溃恢复 smoke 通过；根完整 test 即使在授权临时根仍 420 秒未完成，已记录为完整套件/运行器限制；GUI 完整套件 432 通过/7 个既有 Logs 测试失败，均已写入 questions。
+代码：根 typecheck、privacy scan、GUI lint/i18n lint/build、桌面 14 tests 通过；授权 C:\\tmp 临时根下 `server-auth` 57/57 通过，`doctor/config/service/uninstall` 聚焦回归 92/93 通过（唯一失败为 CLI 子进程 5 秒超时）；原生 Codex 注入/恢复与 Grok/service 生命周期聚焦回归 53/53 通过；项目 bundled Bun 1.3.14 下 GUI 完整套件 439/439 通过；根完整 test 即使在授权临时根仍 420 秒未完成，已记录为完整套件/运行器限制。
 单实例/端口：Electron 10 次并发 smoke 仅 1 个主进程、1 个 sidecar；占用 127.0.0.1:10100 时实际动态端口为 1068；`C:\\tmp` 授权 sidecar 动态端口 57967，healthz 与 `/v1/models` 均成功；未发现残留 entry sidecar 或 10100 listener。
 产物：最终安装版/便携版签名与 SHA-256 已在阶段 7/6 记录；NSIS 可变安装目录和独立 node_modules extraResource 已通过桌面静态契约测试（12/12），新 app.asar 静态包含 `dist/preload.cjs`，最终便携版 healthz/模型请求通过。
 未完成：Windows 10/11 干净 VM、默认用户数据目录在普通权限下的真实验证、中文/空格安装路径的稳定 NSIS 验收、受信根后的 signtool Valid 和真实 provider 保留回归；隔离环境下的卸载保留用户目录和 sidecar/renderer 崩溃恢复已通过。中文/空格路径尝试及 NSIS 参数排查已记录在 `questions/中文空格安装路径排查指南.md`。
@@ -738,12 +738,13 @@ Electron 单实例宿主
 Codex / Claude Code / 其他现有客户端
 ```
 
-当前结论：本机桌面端源码改造、preload CJS 修复、copyfile 生产依赖、独立 node_modules 资源、最终安装版/便携版签名和便携版 healthz/模型回归已完成；当前最终包哈希已写入阶段 6/7/发布门。工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、中文/空格安装目录真实向导、受信证书链 `Valid`、真实 Provider 保留和卸载保留用户目录。根完整测试在普通与最小授权环境均因临时目录权限/子进程超时未完成，GUI 完整测试仍有 7 个既有 Logs 兼容性失败；这些限制均已记录在 `questions/`，不以修改无关代码掩盖。
+当前结论：本机桌面端源码改造、preload CJS 修复、copyfile 生产依赖、独立 node_modules 资源、当前 HEAD 安装版/便携版重建和便携版 healthz/模型回归已完成；当前产物哈希已写入本节。工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、中文/空格安装目录真实向导、受信证书链 `Valid`、真实 Provider 保留和卸载保留用户目录。根完整测试在授权临时根仍因 420 秒超时未完成；项目 bundled Bun 下 GUI 439/439 已通过。
 # 桌面端功能对齐增量（2026-08-01）
 
 - [x] 桌面 sidecar 停止前调用 `restoreNativeCodex()`，下次启动清理上次崩溃残留的 marker-owned 路由；健康外部 proxy 不受影响。
 - [x] 桌面托盘补齐原有重启代理入口；Dashboard 继续复用原 GUI 的 Provider、模型/组合、Codex OAuth、Claude/Grok、日志、用量、存储和 API Key 能力。
 - [x] 能力对齐静态守护测试覆盖原 Dashboard 页面渲染分支与桌面 host 加载路径；桌面测试 14/14、根 `codex-inject` 27/27、desktop/root typecheck 和 privacy scan 通过。
 - [x] 依据当前 HEAD 重新生成资源与安装包：`bun run package:resources`（4259 文件）、desktop build、NSIS/Portable 构建通过；当前产物 SHA-256：Setup `F15AF1930DE546542B3383A6BF932CBD64A045D6A15AA5E77B38C396D5620019`，Portable `4492455CE28C51EDFB7B832783F8744F8508A6FAA1D057E31102A1A1D315CC0B`；签名主体为 `CN=十七°`，本机自签链仍是 `UnknownError`。
-- [ ] GUI 全套回归最新结果为 431 通过/8 失败：7 个 Logs 测试是 Bun/Jest fake-timer 兼容限制，另 1 个 API Key 删除保留测试为确认按钮时序失败；未将局部桌面测试替代 GUI 全套结果。
+- [x] GUI 全套回归：使用项目 bundled Bun 1.3.14 在 `gui` 工作目录执行 `test tests`，439/439 通过；默认 Bun 1.2.20 的 431/8 失败已确认是运行器兼容差异。
+- [ ] 根完整测试使用 bundled Bun 1.3.14、授权临时目录和隔离 HOME，420 秒仍未完成；未将局部测试替代根全套结果。
 - [ ] 仍需在干净 Windows VM 完成安装器、真实 Provider 保留和签名信任链验收。
