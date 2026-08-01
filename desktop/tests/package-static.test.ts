@@ -7,10 +7,14 @@ const packageJson = JSON.parse(readFileSync(path.resolve(import.meta.dir, "..", 
     files?: string[];
     extraResources?: Array<{ from?: string; to?: string }>;
     win?: { target?: Array<{ target?: string; arch?: string[] }>; requestedExecutionLevel?: string };
-    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
+    nsis?: { oneClick?: boolean; perMachine?: boolean; allowElevation?: boolean; allowToChangeInstallationDirectory?: boolean; unicode?: boolean; createStartMenuShortcut?: boolean; deleteAppDataOnUninstall?: boolean };
     portable?: { artifactName?: string };
   };
 };
+const assistedInstaller = readFileSync(
+  path.resolve(import.meta.dir, "..", "node_modules", "app-builder-lib", "templates", "nsis", "assistedInstaller.nsh"),
+  "utf8",
+);
 
 describe("desktop package contract", () => {
   test("ships source, GUI, production resources and tray assets outside asar", () => {
@@ -31,9 +35,18 @@ describe("desktop package contract", () => {
       oneClick: false,
       perMachine: false,
       allowElevation: false,
+      allowToChangeInstallationDirectory: true,
+      unicode: true,
       createStartMenuShortcut: true,
       deleteAppDataOnUninstall: false,
     });
     expect(packageJson.build?.portable?.artifactName).toBe("OpenCodex-Portable-x64.${ext}");
+  });
+
+  test("keeps the application-name subfolder when the install directory is changed", () => {
+    expect(packageJson.build?.nsis?.allowToChangeInstallationDirectory).toBe(true);
+    expect(packageJson.build?.nsis?.unicode).toBe(true);
+    expect(assistedInstaller).toContain("!ifdef allowToChangeInstallationDirectory");
+    expect(assistedInstaller).toContain('StrCpy $INSTDIR "$INSTDIR\\${APP_FILENAME}"');
   });
 });
