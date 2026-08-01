@@ -739,3 +739,9 @@ Codex / Claude Code / 其他现有客户端
 ```
 
 当前结论：本机桌面端源码改造、preload CJS 修复、copyfile 生产依赖、独立 node_modules 资源、最终安装版/便携版签名和便携版 healthz/模型回归已完成；当前最终包哈希已写入阶段 6/7/发布门。工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、中文/空格安装目录真实向导、受信证书链 `Valid`、真实 Provider 保留和卸载保留用户目录。根完整测试在普通与最小授权环境均因临时目录权限/子进程超时未完成，GUI 完整测试仍有 7 个既有 Logs 兼容性失败；这些限制均已记录在 `questions/`，不以修改无关代码掩盖。
+# 桌面端功能对齐增量（2026-08-01）
+
+- [x] 桌面 sidecar 停止前调用 `restoreNativeCodex()`，下次启动清理上次崩溃残留的 marker-owned 路由；健康外部 proxy 不受影响。
+- [x] 桌面托盘补齐原有重启代理入口；Dashboard 继续复用原 GUI 的 Provider、模型/组合、Codex OAuth、Claude/Grok、日志、用量、存储和 API Key 能力。
+- [x] 能力对齐静态守护测试覆盖原 Dashboard 页面渲染分支与桌面 host 加载路径；桌面测试 14/14、根 `codex-inject` 27/27、desktop/root typecheck 和 privacy scan 通过。
+- [ ] 仍需在干净 Windows VM 完成安装器、真实 Provider 保留和签名信任链验收。

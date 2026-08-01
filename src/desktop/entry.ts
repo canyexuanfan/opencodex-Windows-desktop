@@ -2,6 +2,7 @@ import { drainAndShutdown, startServer } from "../server";
 import { findLiveProxy } from "../server/proxy-liveness";
 import { isAddrInUse } from "../server/ports";
 import { removePid, removeRuntimePort, writePid, writeRuntimePort } from "../config";
+import { isCodexRoutingInjected, restoreNativeCodex } from "../codex/inject";
 import { syncModelsToCodex } from "../codex/sync";
 import { VERSION } from "../server/management-api";
 import {
@@ -14,6 +15,7 @@ let server: ReturnType<typeof startServer> | undefined;
 let shuttingDown = false;
 let cleanupDone = false;
 let ownsServer = false;
+let codexRoutingOwned = false;
 let holdTimer: ReturnType<typeof setInterval> | undefined;
 
 function cleanupRuntimeFiles(): void {
@@ -28,6 +30,15 @@ async function shutdown(exitCode = 0): Promise<void> {
   shuttingDown = true;
   if (holdTimer) clearInterval(holdTimer);
   try {
+    // Restore before stopping the sidecar so Codex never spends a shutdown window pointed at
+    // a process that is already gone. Only this sidecar may restore a route it injected; a
+    // healthy external proxy discovered above remains untouched.
+    if (ownsServer && codexRoutingOwned) {
+      const restored = restoreNativeCodex();
+      if (!restored.success) {
+        console.error(`desktop sidecar could not restore native Codex before shutdown: ${restored.message}`);
+      }
+    }
     if (server) await drainAndShutdown(server, 5_000);
   } finally {
     cleanupRuntimeFiles();
@@ -53,6 +64,18 @@ async function main(): Promise<void> {
       return;
     }
 
+    // A forced termination cannot run the shutdown hook. If the previous desktop sidecar left
+    // its marker-owned loopback route behind, recover native Codex before creating a new route.
+    // This is intentionally after the external-proxy liveness check so another owner is never
+    // disrupted by the desktop helper.
+    if (isCodexRoutingInjected()) {
+      const recovered = restoreNativeCodex();
+      if (!recovered.success) {
+        throw new Error(`stale Codex routing could not be restored: ${recovered.message}`);
+      }
+      console.log(`desktop sidecar recovered stale Codex routing: ${recovered.message}`);
+    }
+
     for (let attempt = 0; ; attempt += 1) {
       try {
         server = startServer(0, { hostname: DESKTOP_HOSTNAME });
@@ -71,6 +94,7 @@ async function main(): Promise<void> {
 
     // Keep the existing Codex/catalog synchronization path. A provider/network failure must
     // not corrupt the ready contract; the dashboard can retry synchronization after startup.
+    codexRoutingOwned = true;
     await syncModelsToCodex(port).catch(() => {});
 
     const ready: DesktopReadyMessage = {

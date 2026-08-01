@@ -10,13 +10,36 @@ test("main process owns tray lifecycle and bounded recovery", () => {
   expect(main).toContain("backend.stop()");
   expect(main).toContain("recoveryAttempts >= 2");
   expect(main).toContain("render-process-gone");
+  expect(main).toContain("restart: () => void restartProxy().catch(() => {})");
 });
 
-test("tray exposes status and the four lifecycle actions", () => {
+test("tray exposes status and the five lifecycle actions", () => {
   const tray = readFileSync(resolve(src, "tray.ts"), "utf8");
-  expect(tray).toContain("状态：在线");
-  expect(tray).toContain("启动代理");
-  expect(tray).toContain("停止代理");
-  expect(tray).not.toContain("重启代理");
-  expect(tray).toContain("退出 OpenCodex");
+  expect(tray).toContain("TrayStatus");
+  expect(tray).toContain("actions.start");
+  expect(tray).toContain("actions.stop");
+  expect(tray).toContain("actions.restart");
+  expect(tray).toContain("app.quit()");
+});
+
+test("desktop sidecar restores Codex routing on stop and recovers stale routing on startup", () => {
+  const entry = readFileSync(resolve(src, "..", "..", "src", "desktop", "entry.ts"), "utf8");
+  expect(entry).toContain('import { isCodexRoutingInjected, restoreNativeCodex } from "../codex/inject";');
+  expect(entry).toContain("if (ownsServer && codexRoutingOwned)");
+  expect(entry).toContain("const restored = restoreNativeCodex();");
+  expect(entry).toContain("if (isCodexRoutingInjected())");
+  expect(entry).toContain("const recovered = restoreNativeCodex();");
+  expect(entry.indexOf("const restored = restoreNativeCodex();")).toBeLessThan(entry.indexOf("if (server) await drainAndShutdown"));
+  expect(entry.indexOf("if (isCodexRoutingInjected())")).toBeLessThan(entry.indexOf("server = startServer"));
+  expect(entry).toContain("codexRoutingOwned = true;");
+});
+
+test("desktop host keeps the original dashboard capability surface", () => {
+  const app = readFileSync(resolve(src, "..", "..", "gui", "src", "App.tsx"), "utf8");
+  for (const page of ["dashboard", "codex-auth", "providers", "models", "combos", "subagents", "logs", "usage", "storage", "api", "claude", "grok"]) {
+    expect(app).toContain(`page === "${page}"`);
+  }
+  const main = readFileSync(resolve(src, "main.ts"), "utf8");
+  expect(main).toContain("loadDashboard(status.port)");
+  expect(main).toContain("path.join(process.resourcesPath, \"opencodex\")");
 });

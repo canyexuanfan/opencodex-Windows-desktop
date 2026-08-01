@@ -193,6 +193,7 @@ if (!hasSingleInstanceLock) {
     tray = createTray(window, {
       start: () => void startProxy(true).catch(() => {}),
       stop: () => void stopProxy(true),
+      restart: () => void restartProxy().catch(() => {}),
     });
     try {
       await startProxy(false);
