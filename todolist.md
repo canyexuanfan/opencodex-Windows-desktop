@@ -771,3 +771,8 @@ Codex / Claude Code / 其他现有客户端
 - [x] 桌面静态回归不再只依赖手写页面清单：`desktop/tests/lifecycle-static.test.ts` 自动解析 `gui/src/app-routing.ts` 的 `Page` 联合类型，并逐项断言 `gui/src/App.tsx` 存在对应渲染分支；当前桌面测试 14/14、84 个断言通过。
 - [x] GUI 交互源代码审计确认全局 `:focus-visible`、导航/按钮/标签 hover 状态，以及 Provider、模型、组合、Subagent、Storage、API 等工作区的行级 hover/focus 规则仍存在；桌面端继续复用同一 `gui/dist`，未创建缩水版页面。
 - [ ] 全量交互控件的真实鼠标/键盘视觉验收仍需 Windows 桌面人工或自动化 UI 测试环境，不以静态 CSS 命中替代最终验收。
+
+# 签名信任链复核增量（2026-08-01）
+- [x] 当前 Setup/Portable 可读取签名主体 `CN=十七°`，包哈希和签名目标已记录；本机未永久安装自签根。
+- [x] 临时验证流程会从包内提取签名证书、按精确 thumbprint 导入 `CurrentUser\Root`，结束后确认根证书与临时目录均已清理。
+- [ ] 当前机器执行 `signtool verify /pa /all /v` 及有界的 `/pa /q` 复核均在证书链初始化/工具阶段超时，未取得 `Valid`；必须在受信测试机完成，不把本机超时当作产品失败或成功。
