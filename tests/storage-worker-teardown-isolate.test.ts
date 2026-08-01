@@ -41,11 +41,12 @@ let testDir = "";
 let previousHome: string | undefined;
 
 /**
- * Bun 1.3.14 macOS Silicon: Worker spawn in this file still segfaults the
- * isolate process after green assertions (balanced counts). Skip the hammer
- * cases on darwin; win32/linux keep full coverage.
+ * Bun 1.3.14: Worker spawn in this file still segfaults the isolate process
+ * after green assertions (balanced counts) on macOS Silicon and ubuntu-latest
+ * (exit 133 / 132). Skip the hammer cases there; win32 keeps full coverage.
  */
-const skipDarwinWorkerSpawn = process.platform === "darwin";
+const skipIsolateWorkerSpawn =
+  process.platform === "darwin" || process.platform === "linux";
 
 /** Spawn/reset iterations for the heavy churn case — platform-stressed carefully. */
 function workerChurnCyclesForIsolate(): number {
@@ -101,7 +102,7 @@ async function waitForLiveWorker(timeoutMs = 10_000): Promise<void> {
   throw new Error("no storage worker was ever spawned; this test would prove nothing");
 }
 
-test.skipIf(skipDarwinWorkerSpawn)("drain joins a fire-and-forget terminate before the isolate boundary", async () => {
+test.skipIf(skipIsolateWorkerSpawn)("drain joins a fire-and-forget terminate before the isolate boundary", async () => {
   // Reproduces the old race: sync reset void-terminates (and used to deregister
   // immediately), then drain returned on an empty set while the thread exited.
   setStorageCleanupPolicyJobTestHooks({ blockMs: 800 });
@@ -119,7 +120,7 @@ test.skipIf(skipDarwinWorkerSpawn)("drain joins a fire-and-forget terminate befo
   expect(liveStorageWorkerCount()).toBe(0);
 }, { timeout: 30_000 });
 
-test.skipIf(skipDarwinWorkerSpawn)("repeated Windows-style spawn/reset cycles leave no live workers", async () => {
+test.skipIf(skipIsolateWorkerSpawn)("repeated Windows-style spawn/reset cycles leave no live workers", async () => {
   const cycles = workerChurnCyclesForIsolate();
   for (let i = 0; i < cycles; i++) {
     // Fresh CODEX_HOME each cycle so a prior worker's SQLite handle cannot
@@ -146,7 +147,7 @@ test("isolate worker churn stays platform-capped", () => {
   else expect(cycles).toBe(1);
 });
 
-test.skipIf(skipDarwinWorkerSpawn)("terminateStorageWorker is joinable and idempotent across callers", async () => {
+test.skipIf(skipIsolateWorkerSpawn)("terminateStorageWorker is joinable and idempotent across callers", async () => {
   setStorageCleanupPolicyJobTestHooks({ blockMs: 500 });
   seedArchived(isolatedCodexHome!.path);
   const started = requestStorageCleanupPolicyRun({
