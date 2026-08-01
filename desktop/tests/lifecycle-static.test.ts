@@ -36,7 +36,7 @@ test("desktop sidecar restores Codex routing on stop and recovers stale routing 
 
 test("desktop host keeps the original dashboard capability surface", () => {
   const app = readFileSync(resolve(src, "..", "..", "gui", "src", "App.tsx"), "utf8");
-  for (const page of ["dashboard", "codex-auth", "providers", "models", "combos", "subagents", "logs", "usage", "storage", "api", "claude", "grok"]) {
+  for (const page of ["dashboard", "startup", "codex-auth", "providers", "models", "combos", "subagents", "logs", "usage", "storage", "api", "claude", "grok"]) {
     expect(app).toContain(`page === "${page}"`);
   }
   const main = readFileSync(resolve(src, "main.ts"), "utf8");

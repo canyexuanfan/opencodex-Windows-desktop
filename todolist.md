@@ -744,4 +744,6 @@ Codex / Claude Code / 其他现有客户端
 - [x] 桌面 sidecar 停止前调用 `restoreNativeCodex()`，下次启动清理上次崩溃残留的 marker-owned 路由；健康外部 proxy 不受影响。
 - [x] 桌面托盘补齐原有重启代理入口；Dashboard 继续复用原 GUI 的 Provider、模型/组合、Codex OAuth、Claude/Grok、日志、用量、存储和 API Key 能力。
 - [x] 能力对齐静态守护测试覆盖原 Dashboard 页面渲染分支与桌面 host 加载路径；桌面测试 14/14、根 `codex-inject` 27/27、desktop/root typecheck 和 privacy scan 通过。
+- [x] 依据当前 HEAD 重新生成资源与安装包：`bun run package:resources`（4259 文件）、desktop build、NSIS/Portable 构建通过；当前产物 SHA-256：Setup `F15AF1930DE546542B3383A6BF932CBD64A045D6A15AA5E77B38C396D5620019`，Portable `4492455CE28C51EDFB7B832783F8744F8508A6FAA1D057E31102A1A1D315CC0B`；签名主体为 `CN=十七°`，本机自签链仍是 `UnknownError`。
+- [ ] GUI 全套回归最新结果为 431 通过/8 失败：7 个 Logs 测试是 Bun/Jest fake-timer 兼容限制，另 1 个 API Key 删除保留测试为确认按钮时序失败；未将局部桌面测试替代 GUI 全套结果。
 - [ ] 仍需在干净 Windows VM 完成安装器、真实 Provider 保留和签名信任链验收。
