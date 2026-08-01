@@ -312,19 +312,28 @@ describe("multi-account auth store", () => {
       timedOut = mutateStore(() => { entered = true; }, ["provider", "waiting-account"], { waitMs: 10 });
       // Belt-and-suspenders with the ref'd wait timer in store.ts: if reject still
       // never fires under isolate load, fail the case instead of hanging the job.
-      await Promise.race([
-        timedOut.then(
-          () => {
-            throw new Error("expected OAuthMutationBusyError from waitMs timeout");
-          },
-          (error: unknown) => {
-            expect(error).toBeInstanceOf(OAuthMutationBusyError);
-          },
-        ),
-        Bun.sleep(INTERNAL_DEADLINE_MS).then(() => {
-          throw new Error(`OAuth mutation waitMs reject did not fire within ${INTERNAL_DEADLINE_MS}ms`);
-        }),
-      ]);
+      // Use a clearable setTimeout (not Bun.sleep) so a settled race cannot keep
+      // the isolate alive for the remainder of INTERNAL_DEADLINE_MS.
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          timedOut.then(
+            () => {
+              throw new Error("expected OAuthMutationBusyError from waitMs timeout");
+            },
+            (error: unknown) => {
+              expect(error).toBeInstanceOf(OAuthMutationBusyError);
+            },
+          ),
+          new Promise<never>((_, reject) => {
+            deadlineTimer = setTimeout(() => {
+              reject(new Error(`OAuth mutation waitMs reject did not fire within ${INTERNAL_DEADLINE_MS}ms`));
+            }, INTERNAL_DEADLINE_MS);
+          }),
+        ]);
+      } finally {
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      }
       expect(entered).toBe(false);
       expect(oauthMutationTailSnapshot().active).toBe(1);
       releaseFirst();
