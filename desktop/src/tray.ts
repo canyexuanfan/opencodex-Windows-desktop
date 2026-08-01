@@ -7,6 +7,7 @@ export type TrayStatus = "online" | "offline" | "error" | "starting";
 export type TrayActions = {
   readonly start: () => void;
   readonly stop: () => void;
+  readonly restart: () => void;
 };
 
 export type TrayController = {
@@ -33,26 +34,27 @@ export function createTray(mainWindow: BrowserWindow, actions: TrayActions): Tra
 
   const rebuildMenu = (): void => {
     const statusLabel = status === "online"
-      ? "状态：在线"
-      : status === "starting" ? "状态：启动中" : status === "error" ? "状态：错误" : "状态：离线";
+      ? "\u72b6\u6001\uff1a\u5728\u7ebf"
+      : status === "starting" ? "\u72b6\u6001\uff1a\u542f\u52a8\u4e2d" : status === "error" ? "\u72b6\u6001\uff1a\u9519\u8bef" : "\u72b6\u6001\uff1a\u79bb\u7ebf";
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: statusLabel, enabled: false },
       { type: "separator" },
       {
-        label: "显示 OpenCodex",
+        label: "\u663e\u793a OpenCodex",
         click: () => {
           mainWindow.show();
           mainWindow.focus();
         },
       },
-      { label: "隐藏 OpenCodex", click: () => mainWindow.hide() },
-      { label: "启动代理", click: actions.start },
-      { label: "停止代理", click: actions.stop },
+      { label: "\u9690\u85cf OpenCodex", click: () => mainWindow.hide() },
+      { label: "\u542f\u52a8\u4ee3\u7406", click: actions.start },
+      { label: "\u505c\u6b62\u4ee3\u7406", click: actions.stop },
+      { label: "\u91cd\u542f\u4ee3\u7406", click: actions.restart },
       { type: "separator" },
-      { label: "退出 OpenCodex", click: () => app.quit() },
+      { label: "\u9000\u51fa OpenCodex", click: () => app.quit() },
     ]));
     tray.setImage(iconForStatus(status));
-    tray.setToolTip(`OpenCodex · ${statusLabel.slice(3)}`);
+    tray.setToolTip(`OpenCodex \u00b7 ${statusLabel.slice(3)}`);
   };
 
   rebuildMenu();
