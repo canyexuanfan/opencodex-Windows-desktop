@@ -18,14 +18,15 @@ and pointing at the path forward. English.
 
 ## PR 616 — fix: preserve hosted image tool preferences
 - Rationale: implementation accepted in principle, but maintainers moved the
-  work into integration PR #837; this PR stays only until #837 lands.
-  Keeping it open longer just accumulates conflicts.
-- Comment draft:
-  > Closing as superseded. The behavior this PR protects was accepted, and
-  > the implementation has been carried into #837, which integrates it with
-  > the current tool-preference handling on `dev`. When #837 lands, this
-  > change ships with it. Thank you — the contributor credit is preserved in
-  > the integration branch history.
+  work into integration PR #837. Per the triage matrix this PR is retained
+  until #837 lands — so wp4 posts an intent comment now and DEFERS the
+  actual close until #837 merges (audit correction 2026-08-02).
+- Comment draft (comment only, no close):
+  > Status from maintainer triage: the behavior this PR protects was
+  > accepted, and the implementation has been carried into #837, which
+  > integrates it with the current tool-preference handling on `dev`. This
+  > PR stays open until #837 lands and will be closed as superseded at that
+  > point — no further work is needed on this branch. Thank you.
 
 ## PR 707 — security: harden post-merge service and management boundaries
 - Rationale: first hardening tranche already landed via #697. The remaining
@@ -39,4 +40,5 @@ and pointing at the path forward. English.
   > individually valuable, but an 8k-line multi-threat-model branch can no
   > longer be reviewed as one unit and now conflicts with `dev`. Please open
   > one focused PR per boundary, each with its own threat model and tests;
-  > they will get fast security review. Thank you for pushing this forward.
+  > each can then receive focused security review. Thank you for pushing
+  > this forward.

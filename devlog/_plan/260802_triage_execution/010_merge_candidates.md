@@ -3,9 +3,11 @@
 Each candidate gets one independent reviewer subagent reading the full diff
 and CI rollup before any merge. Gates per MAINTAINERS.md: targets `dev`,
 required CI green on current head, at least one maintainer approval (owner
-review here counts), security review where the surface touches a security
-boundary. A candidate that fails a gate is skipped, documented here, and
-gets a needs-author-work comment instead (folded into wp6).
+review here counts, provided the reviewer is not the PR author — none of
+these six is authored by lidge-jun), security review where the surface
+touches a security boundary. A candidate that fails a gate is skipped,
+documented here, and gets a needs-author-work comment instead (folded into
+wp6).
 
 ## Per-PR checklist
 
@@ -42,8 +44,11 @@ gets a needs-author-work comment instead (folded into wp6).
 - Triage: Ingwannu security APPROVED on current head; CI green; stale
   lidge-jun CHANGES_REQUESTED outstanding. Provider preset = credential-
   destination change: reviewer must verify the contributing-guide evidence
-  (documented endpoints, ToS/legal entity, resale/routing authorization,
-  named maintenance owner, verification date) is present in the PR thread.
+  is present in the PR thread — documented OpenAI-compatible endpoints
+  (including authenticated `GET /v1/models` when the entry declares
+  `liveModels`), terms of service and operating legal entity, resale or
+  routing authorization when the preset is an aggregator, a named
+  maintenance owner, and a citable verification date.
 - Owner (lidge-jun) is executing this triage; if the independent review
   passes, the stale CR is superseded by this owner re-review and the PR
   merges. If evidence is incomplete, skip + request it.
