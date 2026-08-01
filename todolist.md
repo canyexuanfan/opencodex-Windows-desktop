@@ -764,4 +764,5 @@ Codex / Claude Code / 其他现有客户端
 - [x] `desktop/package.json` 显式引用 `nsis.include=build/installer.nsh`，桌面静态契约测试扩展为 14/14 通过。
 - [x] 重建并签名 NSIS/Portable：Setup `426BA34D4A240E45F0AA4517659CF3433A5FFD765B8483A12602AC55D35E70B4`；Portable `037D3D8E8DD7FDF691CA480475DA7AD18B0AF5E3F67113B9B3B140B0643E0C85`；签名主体 `CN=十七°`，本机自签链状态仍为 `UnknownError`。
 - [x] 中文/空格父目录真实安装：`/S /D=<父目录>` 返回 0，生成 `父目录/OpenCodex/OpenCodex.exe` 与内置 Bun，父目录无散落程序文件；从该路径启动取得动态端口 2430，`/healthz=200`、`/v1/models=200`，卸载器返回 0 且隔离目录清理完成。
+- [x] Provider 保留补证：隔离 `OPENCODEX_HOME/CODEX_HOME/--user-data-dir` 写入 `my-custom` Provider 后启动便携包，动态端口 51263、`/healthz=200`、`/v1/models=200`；Provider 的 adapter/baseUrl/apiKey/defaultModel/defaultProvider 均保持原值，仅按既有配置迁移补充默认字段；测试进程与隔离目录已清理。
 - [ ] 干净 Windows 10/11 VM、受信证书链 `Valid`、真实 Provider 配置保留仍待外部验收。
