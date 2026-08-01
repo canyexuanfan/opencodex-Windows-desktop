@@ -74,3 +74,28 @@ Var ocxInstallDirInput
 !macro customInit
   Call ocxEnsureInstallDir
 !macroend
+
+!macro customInstall
+  StrCpy $0 "$INSTDIR\resources\tray\opencodex-tray-online.ico"
+  ${IfNot} ${FileExists} "$0"
+    StrCpy $0 "$appExe"
+  ${EndIf}
+
+  !ifndef DO_NOT_CREATE_START_MENU_SHORTCUT
+    Delete "$newStartMenuLink"
+    CreateShortCut "$newStartMenuLink" "$appExe" "" "$0" 0 "" "" "${APP_DESCRIPTION}"
+    ClearErrors
+    WinShell::SetLnkAUMI "$newStartMenuLink" "${APP_ID}"
+  !endif
+
+  !ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT
+    ${ifNot} ${isNoDesktopShortcut}
+      Delete "$newDesktopLink"
+      CreateShortCut "$newDesktopLink" "$appExe" "" "$0" 0 "" "" "${APP_DESCRIPTION}"
+      ClearErrors
+      WinShell::SetLnkAUMI "$newDesktopLink" "${APP_ID}"
+    ${endIf}
+  !endif
+
+  System::Call 'Shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
+!macroend
