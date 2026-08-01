@@ -103,3 +103,32 @@ Repair delta (13 files) verified: focused 387 pass, typecheck 0, privacy pass. A
 |---|---|---|---|
 | R2-B5 | `!io.exists(temp)` branches in `src/config.ts` (365–408) still treated a false existence check as proof of removal: unlink EPERM + `exists()` false returned "created", left the temp file on disk, and dropped the ACL memo count to zero | ACCEPT | Memo release now requires a completed rename/unlink or an unlink throwing ENOENT; existence predicates removed from every memo-release decision. Regression: simulated EPERM-with-exists-false asserts memo retention and non-success status. |
 | R2-B6 | `comboTopologyGeneration` in `src/combos/resolve.ts` rejected an old completion whenever ANY combo member changed, dropping completions whose exact `${comboId}::${targetKey}` was still live — violating the live-key acceptance rule; `tests/combos.test.ts:642` codified the prohibited drop | ACCEPT | Fencing narrowed to owner generation plus exact live target key: completions for surviving targets accepted, removed targets rejected. Test updated to assert both directions. |
+
+## wp4b A-gate (Fermat, FAIL 14) — adjudication
+
+All fourteen findings accepted; 035 was rewritten around them before B started
+(`6d45c2eea`). The essence: single ingress turn lease instead of per-stream
+registration; reservation APIs acquired before upgrade/spawn for WebSockets and
+workers; the vacuous OAuth flow cap replaced with the real unbounded owners
+(`codexAuthLoginState`, `poolQuotaRefreshInFlight`, `tokenRefreshes` stale policy);
+typed busy/stale errors enumerated as retryable at every consumer; MCP caps moved to
+the layer where they are actually enforceable with transactional catalog staging;
+usage truncation given independent byte/entry flags surfaced through API and GUI;
+the Claude inbound ring bounded and given wp5 hooks; risky caps made configurable.
+
+## wp4b C-review round 1 (Goodall, FAIL 8) — adjudication
+
+| # | Blocker | Decision | Action |
+|---|---|---|---|
+| G1 | shutdown-drain suite red against the new lease contract | ACCEPT | Tests updated to acquire real admission leases (amend `22e41ce63`). |
+| G2 | Stale debug unsubscribe removed a replacement listener while its lease stayed active | ACCEPT | Unsubscribe verifies registration identity; stale disposers are no-ops. |
+| G3 | Aggregate MCP catalog overflow leaked the limit-crossing transport | ACCEPT | The triggering connection is staged before aggregate validation; every opened transport closes on staging failure. |
+| G4 | Aborted Anthropic refresh owner's durable intent escalated a retryable stale condition to needsReauth | ACCEPT | Aborted owners persist stale evidence; replacements return retryable `OAuthTokenRefreshStaleError`; foreign/corrupt evidence still escalates. |
+| G5 | Non-SSE streamed bodies released the turn lease at ingress | ACCEPT | Lease ownership transfers to body-lifetime tracking; release happens at stream settle. |
+| G6 | Forced shutdown missed admitted-but-unbound leases | ACCEPT | Shutdown snapshots and force-releases every admitted lease exactly once; late binding stays idempotent. |
+| G7 | Byte cap on an exact JSONL row boundary dropped a complete row | ACCEPT | Reader checks the byte before the window start before discarding the first line. |
+| G8 | Four regressions were source-string checks | ACCEPT | Replaced with behavioral tests: guardian/quota/login retryability, zero-decode MCP rejection, mounted GUI qualification, real upgrade-boundary WebSocket admission, late-binding shutdown case. |
+
+Round 2 closed G1-G7 and narrowed G8 to three coverage gaps (guardian/auth-api
+consumers, decode-boundary proof, later-binding case); round 3 verified all three
+closed test-only. Final verdict: **PASS**.
