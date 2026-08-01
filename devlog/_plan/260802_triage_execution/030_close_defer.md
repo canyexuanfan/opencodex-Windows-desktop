@@ -1,6 +1,7 @@
 # 030 — Close-or-Defer: Rationale + Comment Drafts (wp4)
 
-Three PRs close with an explanatory comment. Tone: appreciative, specific,
+Two PRs (644, 707) close with an explanatory comment; #616 gets a status
+comment now and stays open until #837 lands. Tone: appreciative, specific,
 and pointing at the path forward. English.
 
 ## PR 644 — fix(windows): follow active Codex home for tray listener
