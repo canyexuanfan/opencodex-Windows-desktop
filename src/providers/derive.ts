@@ -137,6 +137,8 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.promptCacheKey !== undefined ? { promptCacheKey: entry.promptCacheKey } : {}),
     ...(entry.responsesPath !== undefined ? { responsesPath: entry.responsesPath } : {}),
     ...(entry.statelessResponses !== undefined ? { statelessResponses: entry.statelessResponses } : {}),
+    ...(entry.supportsServiceTier !== undefined ? { supportsServiceTier: entry.supportsServiceTier } : {}),
+    ...(entry.preserveResponsesReasoningContent !== undefined ? { preserveResponsesReasoningContent: entry.preserveResponsesReasoningContent } : {}),
     ...(entry.autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels: [...entry.autoToolChoiceOnlyModels] } : {}),
     ...(entry.preserveReasoningContentModels ? { preserveReasoningContentModels: [...entry.preserveReasoningContentModels] } : {}),
     ...(entry.reasoningSplitModels ? { reasoningSplitModels: [...entry.reasoningSplitModels] } : {}),
@@ -259,6 +261,8 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   // learned this route still gets backfilled.
   if (prov.responsesPath === undefined && seed.responsesPath !== undefined) prov.responsesPath = seed.responsesPath;
   if (prov.statelessResponses === undefined && seed.statelessResponses !== undefined) prov.statelessResponses = seed.statelessResponses;
+  if (prov.supportsServiceTier === undefined && seed.supportsServiceTier !== undefined) prov.supportsServiceTier = seed.supportsServiceTier;
+  if (prov.preserveResponsesReasoningContent === undefined && seed.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = seed.preserveResponsesReasoningContent;
   if (!prov.autoToolChoiceOnlyModels && seed.autoToolChoiceOnlyModels) prov.autoToolChoiceOnlyModels = [...seed.autoToolChoiceOnlyModels];
   if (!prov.preserveReasoningContentModels && seed.preserveReasoningContentModels) prov.preserveReasoningContentModels = [...seed.preserveReasoningContentModels];
   if (!prov.reasoningSplitModels && seed.reasoningSplitModels) prov.reasoningSplitModels = [...seed.reasoningSplitModels];

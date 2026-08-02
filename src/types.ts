@@ -939,6 +939,23 @@ export interface OcxProviderConfig {
    */
   statelessResponses?: boolean;
   /**
+   * Whether this provider's Responses route honours the OpenAI `service_tier`
+   * parameter. Tri-state: `true` lets fast mode inject/remove the field (an unset
+   * fast mode preserves a caller-supplied value); `false` or absent strips the
+   * field and never injects — fail closed, because an upstream that does not
+   * document the parameter must not receive a knob it never asked for. An explicit
+   * config value always wins over the registry default.
+   */
+  supportsServiceTier?: boolean;
+  /**
+   * Responses upstream whose native contract accepts plaintext reasoning replay
+   * (DeepSeek documents reasoning items with plaintext content). When set, the
+   * passthrough serializer keeps `reasoning_text` content on replayed reasoning
+   * items instead of blanking it the way the ChatGPT backend requires; proxy-minted
+   * `ocxr1` envelopes are still stripped because no upstream can decrypt them.
+   */
+  preserveResponsesReasoningContent?: boolean;
+  /**
    * Explicit opt-in for non-registry private-network destinations such as localhost, RFC1918,
    * link-local, or unique-local upstreams. Metadata endpoints remain blocked.
    */

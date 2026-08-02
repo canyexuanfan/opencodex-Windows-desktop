@@ -161,6 +161,14 @@ export interface ProviderRegistryEntry {
    * replay miss are repaired rather than forwarded.
    */
   statelessResponses?: boolean;
+  /**
+   * Registry default for the provider's Responses `service_tier` support; see
+   * `OcxProviderConfig.supportsServiceTier`. Backfilled (never overriding) into
+   * saved configs, so an explicit user value always wins.
+   */
+  supportsServiceTier?: boolean;
+  /** Registry default for plaintext reasoning replay; see `OcxProviderConfig.preserveResponsesReasoningContent`. */
+  preserveResponsesReasoningContent?: boolean;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -575,6 +583,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://chatgpt.com/backend-api/codex",
     authKind: "forward",
     codexAccountMode: "pool",
+    supportsServiceTier: true,
     featured: true,
     note: "Codex login account pool (default) or Direct main-account mode via codexAccountMode",
   },
@@ -745,6 +754,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-responses",
     baseUrl: "https://api.openai.com/v1",
     authKind: "key",
+    supportsServiceTier: true,
     featured: true,
     dashboardUrl: "https://platform.openai.com/api-keys",
     defaultModel: "gpt-5.5",
@@ -965,6 +975,16 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // construction and the wire above can never route.
     // Evidence: https://api-docs.deepseek.com/api/create-response/
     responsesPath: "/responses",
+    // DeepSeek's Responses reference does not list `service_tier`; unsupported
+    // parameters are documented as silently ignored, but the fail-closed policy
+    // strips the field rather than forwarding a knob the upstream never asked for.
+    supportsServiceTier: false,
+    // DeepSeek's Responses compatibility guide accepts plaintext reasoning items and
+    // merges them into the adjacent assistant message, so replayed reasoning must
+    // not be blanked the way the ChatGPT backend requires. (Whether the Responses
+    // route REQUIRES replay on tool-call continuations is an inference from the
+    // Chat Thinking-Mode docs, not a confirmed Responses contract.)
+    preserveResponsesReasoningContent: true,
     // "The API is stateless: responses and conversations are not stored on the
     // server." https://api-docs.deepseek.com/api/create-response/
     statelessResponses: true,
@@ -1245,6 +1265,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     responsesPath: "/responses",
     adapter: "openai-responses",
     authKind: "key",
+    // Ark's plan route does not document `service_tier`; fail closed like DeepSeek.
+    supportsServiceTier: false,
     preserveCustomDestination: true,
     dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
     defaultModel: "deepseek-v4-pro",
