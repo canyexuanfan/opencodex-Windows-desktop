@@ -76,6 +76,15 @@ function ocxAuthoredEntry(slug: string, priority: number): Record<string, unknow
   };
 }
 
+/** Legacy generated shape (June–July 2026): provider name, not the full slug. */
+function ocxLegacyAuthoredEntry(slug: string, priority: number): Record<string, unknown> {
+  const provider = slug.slice(0, slug.indexOf("/"));
+  return {
+    ...routedEntry(slug, priority),
+    description: `Routed via opencodex → ${provider} (test-owner).`,
+  };
+}
+
 describe("Codex catalog sync hardening", () => {
   let codexHome: string;
   let opencodexHome: string;
@@ -308,17 +317,76 @@ describe("Codex catalog sync hardening", () => {
       ],
     }, null, 2) + "\n");
 
-    // No providers configured at all: the fetch gathers nothing, so sync takes
-    // the preserve-existing branch. The deleted provider's authored row must
-    // still go; the still-configured provider's row and the foreign row stay.
+    // A configured provider that gathers zero rows: sync takes the
+    // preserve-existing branch. The deleted provider's authored row must
+    // still go; the configured provider's authored row and the foreign row
+    // stay (transient protection).
     const r = runScript(codexHome, opencodexHome, `
       const { syncCatalogModels } = require("./src/codex/catalog");
-      syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: []
+          }
+        }
+      }).then(res => console.log(JSON.stringify(res)));
     `);
     expect(r.status).toBe(0);
 
     const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
     expect(slugs).not.toContain("future-grok/old-model");
+    expect(slugs).toContain("openai/keep-model");
+    expect(slugs).toContain("cursor/composer-2.5");
+  });
+
+  test("drops legacy-signature ghost rows in both gather branches", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        ocxLegacyAuthoredEntry("future-grok/legacy-model", 5),
+        routedEntry("cursor/composer-2.5", 6),
+      ],
+    }, null, 2) + "\n");
+
+    // Partial-gather branch: another provider is configured and gathers rows.
+    const partial = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: ["fresh-model"]
+          }
+        }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(partial.status).toBe(0);
+    let slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).not.toContain("future-grok/legacy-model");
+    expect(slugs).toContain("cursor/composer-2.5");
+
+    // Empty-gather branch: re-seed the legacy ghost and gather nothing.
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        ocxLegacyAuthoredEntry("future-grok/legacy-model", 5),
+        routedEntry("cursor/composer-2.5", 6),
+      ],
+    }, null, 2) + "\n");
+    const empty = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(empty.status).toBe(0);
+    slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).not.toContain("future-grok/legacy-model");
     expect(slugs).toContain("cursor/composer-2.5");
   });
 

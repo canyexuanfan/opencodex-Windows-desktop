@@ -395,7 +395,12 @@ export function orderForSubagents(goModels: CatalogModel[], featured?: string[])
 function isOcxAuthoredRoutedEntry(entry: RawEntry): boolean {
   const desc = typeof entry.description === "string" ? entry.description : "";
   const slug = typeof entry.slug === "string" ? entry.slug : "";
-  return slug.includes("/") && desc.startsWith(`Routed via opencodex → ${slug} (`);
+  if (!slug.includes("/")) return false;
+  if (desc.startsWith(`Routed via opencodex → ${slug} (`)) return true;
+  // Legacy rows (June–July 2026, before 4cd6e646) carried the provider name
+  // instead of the full slug; without this form their ghosts survive (#855).
+  const provider = slug.slice(0, slug.indexOf("/"));
+  return desc.startsWith(`Routed via opencodex → ${provider} (`);
 }
 
 export function mergeCatalogEntriesForSync(
