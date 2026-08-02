@@ -1059,4 +1059,5 @@ Codex / Claude Code / 其他现有客户端
 - [x] README 后半公开入口已复核：文档说明改为指向上游公开文档站点，开发 clone 示例改为用户 fork，避免公开仓库首页前后矛盾。
 - [x] Release notes 生成逻辑已同步说明安装版资产、Windows 桌面维护边界、原项目归属和仅发布安装版策略。
 - [x] 验证通过：`bun test tests\release-notes.test.ts tests\desktop-release-update.test.ts` 28/28；`git diff --check` 通过。
-- [ ] 远端 fork 更新前需要公开内容审计：不得推送 `questions/`、`todolist.md`、内部过程文档、AGENTS 指令、本机路径、临时脚本、私钥/证书或内部 git-v0.x 存档历史；如需替换远端 `main` 为干净公开根提交，必须先得到用户明确确认。
+- [x] 远端 fork 更新前公开内容审计已完成：公开树已排除 `questions/`、`todolist.md`、`docs/`、`reference/`、`.github/`、`.coderabbit.yaml`、AGENTS 指令、本机路径、临时脚本、私钥/证书和内部 git-v0.x 存档历史。
+- [x] 已在 `C:\tmp\opencodex-public-20260802-v1` 创建单一公开根提交 `2655f1b`，并在用户授权的 `--force-with-lease` 下更新 `https://github.com/canyexuanfan/opencodex-Windows-desktop.git` 的 `main`；远端复核 `refs/heads/main=2655f1b280cbf3eff1634183868da476bcae438e`，且未推送 `git-v0.61/git-v0.62/git-v0.63` 内部 tag。
