@@ -201,7 +201,9 @@ function deleteBlob(k: string, recompute = true): number {
   blobKeyBytes -= k.length;
   for (const scope of entry.requestPins) blobRequestScopes.get(scope)?.keys.delete(k);
   if (recompute) recomputeBlobClassAccounting();
-  return entry.sizeBytes;
+  // Full logical release (payload + key): the retained-store snapshot counts
+  // both, so budget enforcement must see both leave.
+  return entry.sizeBytes + k.length;
 }
 
 function releaseHydratedBlob(k: string, requestScope?: CursorBlobRequestScopeToken): void {
@@ -338,12 +340,14 @@ function getBlob(k: string): Uint8Array | undefined {
  * SHA-256 hex of the raw bytes — the derivation is symmetric across
  * setBlobArgs/getBlobArgs, so the round-trip still works, but a hostile or
  * malformed multi-MiB ID can never become an unbounded hex Map key.
+ * The `h:`/`d:` prefix domain-separates the two namespaces: a digested ID's
+ * key can never collide with a raw 32-byte ID that happens to BE that digest.
  */
 const MAX_BLOB_ID_PASSTHROUGH_BYTES = 64;
 
 function key(bytes: Uint8Array): string {
-  if (bytes.byteLength <= MAX_BLOB_ID_PASSTHROUGH_BYTES) return Buffer.from(bytes).toString("hex");
-  return createHash("sha256").update(bytes).digest("hex");
+  if (bytes.byteLength <= MAX_BLOB_ID_PASSTHROUGH_BYTES) return `h:${Buffer.from(bytes).toString("hex")}`;
+  return `d:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 /**
@@ -426,7 +430,9 @@ export function cursorBlobRetainedStoreSnapshot(): {
 } {
   return {
     count: blobs.size,
-    bytes: blobBytes,
+    // Payload + retained key strings: the framework must see everything the
+    // store retains. The 64 MiB admission cap stays payload-only by design.
+    bytes: blobBytes + blobKeyBytes,
     evictableBytes: blobEvictableBytes,
     pinnedBytes: blobPinnedBytes,
     oldestAt: blobOldestEvictableAt,
