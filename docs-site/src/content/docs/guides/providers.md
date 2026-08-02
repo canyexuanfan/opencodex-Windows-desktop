@@ -332,10 +332,11 @@ docs-backed Chat Completions allowlist. Unknown, Responses-only, embedding, and 
 ids fail closed. Discovery is capped at 256 KiB and 256 raw rows; agent-specific and dedicated
 hosts are out of scope. Create a key in the [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys).
 
-**Scaleway discovery.** The preset intersects the authenticated model list with Scaleway's current
-Serverless chat-model allowlist, excluding embeddings and audio transcription, and caps discovery
-at 128 KiB and 128 raw rows. It uses the default Project's shared endpoint; project-qualified URLs
-and dedicated deployments require a custom provider. Create an API key in the
+**Scaleway discovery.** The preset intersects the authenticated model list with Scaleway's
+documented Serverless Chat Completions allowlist. Unknown, Responses-only, embedding,
+transcription, and other media-model ids fail closed; discovery is capped at 128 KiB and 128 raw
+rows. It uses the default Project's shared endpoint; project-qualified URLs and dedicated
+deployments require a custom provider. Create an API key in the
 [Scaleway console](https://console.scaleway.com/generative-api).
 
 > **Baseten scope:** The preset covers Baseten's shared [Model APIs](https://docs.baseten.co/inference/model-apis/overview)

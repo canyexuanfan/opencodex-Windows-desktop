@@ -20,6 +20,12 @@
       "owned_by": "openai"
     },
     {
+      "id": "pixtral-12b-2409",
+      "object": "model",
+      "created": 1727136000,
+      "owned_by": "mistral"
+    },
+    {
       "id": "gpt-oss-20b",
       "object": "model",
       "created": 1754265600,

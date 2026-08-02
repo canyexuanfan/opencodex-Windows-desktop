@@ -250,10 +250,11 @@ dedicated deployment 호스트는 범위에서 제외합니다. 키는
 discovery를 256 KiB와 raw 행 256개로 제한합니다. agent 전용 및 dedicated 호스트는 범위에서 제외합니다.
 키는 [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys)에서 생성합니다.
 
-**Scaleway 검색:** 인증된 모델 목록과 현재 Serverless chat-model allowlist의 교집합만 노출하여 embedding과
-audio transcription을 제외하고, discovery를 128 KiB와 raw 행 128개로 제한합니다. 기본 Project의 공유
-endpoint를 사용합니다. Project ID가 포함된 URL과 dedicated deployment는 custom provider로 설정하세요.
-API 키는 [Scaleway console](https://console.scaleway.com/generative-api)에서 생성합니다.
+**Scaleway 검색:** 인증된 모델 목록과 공식 문서로 확인한 Serverless Chat Completions allowlist의 교집합만
+노출합니다. 알 수 없는 ID, Responses 전용, embedding, transcription 및 기타 media-model ID는 fail closed로
+제외하고 discovery를 128 KiB와 raw 행 128개로 제한합니다. 기본 Project의 공유 endpoint를 사용합니다.
+Project ID가 포함된 URL과 dedicated deployment는 custom provider로 설정하세요. API 키는
+[Scaleway console](https://console.scaleway.com/generative-api)에서 생성합니다.
 
 > **Baseten 범위:** 이 프리셋은 Baseten의 공유 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)만
 > 지원합니다. 로컬 사용에는 개인 [API 키](https://docs.baseten.co/organization/api-keys)를, 공유/프로덕션

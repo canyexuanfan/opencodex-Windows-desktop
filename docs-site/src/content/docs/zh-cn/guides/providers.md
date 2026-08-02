@@ -232,9 +232,10 @@ Responses-only、embedding 和 media-generation 模型 id 会按 fail closed 原
 和 256 条原始记录；agent 专属及 dedicated 主机不在范围内。密钥可在
 [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys) 创建。
 
-**Scaleway 发现：**该预设只公开已鉴权模型列表与当前 Serverless chat-model allowlist 的交集，排除
-embedding 与 audio transcription，并将发现限制为 128 KiB 和 128 条原始记录。它使用默认 Project 的
-共享 endpoint；带 Project ID 的 URL 和 dedicated deployment 需要配置为 custom provider。API 密钥可在
+**Scaleway 发现：**该预设只公开已鉴权模型列表与官方文档确认的 Serverless Chat Completions allowlist
+的交集。未知、Responses-only、embedding、transcription 及其他 media-model id 会按 fail closed 原则排除；
+发现上限为 128 KiB 和 128 条原始记录。它使用默认 Project 的共享 endpoint；带 Project ID 的 URL 和
+dedicated deployment 需要配置为 custom provider。API 密钥可在
 [Scaleway 控制台](https://console.scaleway.com/generative-api) 创建。
 
 > **Baseten 范围：**该预设仅覆盖 Baseten 的共享 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)。

@@ -268,10 +268,11 @@ embedding- и media-generation id исключаются по принципу f
 создаются в [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys).
 
 **Discovery для Scaleway.** Пресет публикует пересечение аутентифицированного списка моделей с
-текущим allowlist serverless chat-моделей Scaleway, исключая embedding и audio transcription, и
-ограничивает discovery размером 128 KiB и 128 исходными строками. Используется общий endpoint
-Project по умолчанию; URL с Project ID и dedicated deployment настраиваются как custom provider.
-API-ключ создаётся в [консоли Scaleway](https://console.scaleway.com/generative-api).
+подтверждённым документацией allowlist Serverless Chat Completions. Неизвестные, Responses-only,
+embedding-, transcription- и прочие media-model id исключаются по принципу fail closed; discovery
+ограничен 128 KiB и 128 исходными строками. Используется общий endpoint Project по умолчанию; URL с
+Project ID и dedicated deployment настраиваются как custom provider. API-ключ создаётся в
+[консоли Scaleway](https://console.scaleway.com/generative-api).
 
 > **Область Baseten:** пресет поддерживает только общие [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > Baseten. Для локальной работы используйте личный [API-ключ](https://docs.baseten.co/organization/api-keys),

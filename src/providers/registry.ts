@@ -760,7 +760,8 @@ const DIGITALOCEAN_CHAT_COMPLETION_MODELS = [
 ] as const;
 const SCALEWAY_SERVERLESS_CHAT_MODELS = [
   "glm-5.2",
-  "gpt-oss-120b",
+  // gpt-oss-120b is intentionally omitted: Scaleway requires Responses API for tool calling,
+  // while this preset routes Codex agent tools through Chat Completions.
   "qwen3.6-35b-a3b",
   "qwen3.5-397b-a17b",
   "qwen3-235b-a22b-instruct-2507",
@@ -771,6 +772,9 @@ const SCALEWAY_SERVERLESS_CHAT_MODELS = [
   "mistral-small-3.2-24b-instruct-2506",
   "pixtral-12b-2409",
 ] as const;
+const SCALEWAY_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
+  "pixtral-12b-2409": ["text", "image"],
+};
 const UMANS_MODELS = [
   "umans-coder",
   "umans-kimi-k2.7",
@@ -1490,6 +1494,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     preserveCustomDestination: true,
     // The Chat Completions contract documents function calls but not universal parallel support.
     parallelToolCalls: false,
+    // Unknown catalog rows must not inherit Codex's full fallback reasoning ladder.
+    reasoningEfforts: [],
     modelDiscovery: {
       path: "models",
       maxResponseBytes: 256 * 1024,
@@ -1512,6 +1518,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     preserveCustomDestination: true,
     // Parallel support varies by model; avoid advertising it as a provider-wide capability.
     parallelToolCalls: false,
+    // The generic `/models` rows carry no trustworthy reasoning metadata.
+    reasoningEfforts: [],
+    modelInputModalities: SCALEWAY_MODEL_INPUT_MODALITIES,
     modelDiscovery: {
       path: "models",
       maxResponseBytes: 128 * 1024,

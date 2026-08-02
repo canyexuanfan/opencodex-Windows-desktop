@@ -98,6 +98,7 @@ describe("DigitalOcean and Scaleway providers", () => {
       liveModels: true,
       preserveCustomDestination: true,
       parallelToolCalls: false,
+      reasoningEfforts: [],
       modelDiscovery: {
         path: "models",
         maxResponseBytes: 262_144,
@@ -123,6 +124,10 @@ describe("DigitalOcean and Scaleway providers", () => {
       freeTier: true,
       preserveCustomDestination: true,
       parallelToolCalls: false,
+      reasoningEfforts: [],
+      modelInputModalities: {
+        "pixtral-12b-2409": ["text", "image"],
+      },
       modelDiscovery: {
         path: "models",
         maxResponseBytes: 131_072,
@@ -130,8 +135,10 @@ describe("DigitalOcean and Scaleway providers", () => {
       },
     });
     const scalewayModels = discoveryAllowlist(registryEntry("scaleway"));
-    expect(scalewayModels).toHaveLength(11);
+    expect(scalewayModels).toHaveLength(10);
     expect(scalewayModels).toContain("qwen3.6-35b-a3b");
+    expect(scalewayModels).toContain("pixtral-12b-2409");
+    expect(scalewayModels).not.toContain("gpt-oss-120b");
     expect(scalewayModels).not.toContain("qwen3-embedding-8b");
     expect(scalewayModels).not.toContain("whisper-large-v3");
     expect(registryEntry("scaleway").note).toContain("project-qualified");
@@ -166,9 +173,16 @@ describe("DigitalOcean and Scaleway providers", () => {
         authMode: "key",
         liveModels: true,
         parallelToolCalls: false,
+        reasoningEfforts: [],
       });
-      if (id === "scaleway") expect(seed.freeTier).toBe(true);
-      else expect(seed.freeTier).toBeUndefined();
+      if (id === "scaleway") {
+        expect(seed.freeTier).toBe(true);
+        expect(seed.modelInputModalities).toEqual({
+          "pixtral-12b-2409": ["text", "image"],
+        });
+      } else {
+        expect(seed.freeTier).toBeUndefined();
+      }
       expect(seed).not.toHaveProperty("modelDiscovery");
       expect(seed).not.toHaveProperty("preserveCustomDestination");
       expect(KEY_LOGIN_PROVIDERS[id]).not.toHaveProperty("modelDiscovery");
@@ -243,13 +257,21 @@ describe("DigitalOcean and Scaleway providers", () => {
       "meta-llama/Meta-Llama-3.1-8B-Instruct",
       "openai-gpt-5.6-sol",
     ]);
-    expect(digitaloceanModels[1]).toMatchObject({ owned_by: "digitalocean" });
+    expect(digitaloceanModels[1]).toMatchObject({
+      owned_by: "digitalocean",
+      reasoningEfforts: [],
+    });
     expect(scalewayModels.map(row => row.id)).toEqual([
       "glm-5.2",
-      "gpt-oss-120b",
+      "pixtral-12b-2409",
       "qwen3.6-35b-a3b",
     ]);
     expect(scalewayModels[2]).toMatchObject({ owned_by: "qwen" });
+    expect(scalewayModels[1]).toMatchObject({
+      owned_by: "mistral",
+      inputModalities: ["text", "image"],
+      reasoningEfforts: [],
+    });
 
     const slashModel = "meta-llama/Meta-Llama-3.1-8B-Instruct";
     expect(routeModel(config, `digitalocean/${slashModel}`).modelId).toBe(slashModel);
@@ -276,7 +298,7 @@ describe("DigitalOcean and Scaleway providers", () => {
           }],
         },
         stream: true,
-        options: {},
+        options: { reasoning: "high" },
       });
       const body = JSON.parse(String(request.body)) as Record<string, unknown>;
 
@@ -284,6 +306,7 @@ describe("DigitalOcean and Scaleway providers", () => {
       expect(request.headers.Authorization).toBe(`Bearer ${PROVIDERS[providerId].key}`);
       expect(body.model).toBe(modelId);
       expect(body.parallel_tool_calls).toBe(false);
+      expect(body).not.toHaveProperty("reasoning_effort");
     }
   });
 

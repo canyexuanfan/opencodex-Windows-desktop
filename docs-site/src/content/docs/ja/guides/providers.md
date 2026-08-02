@@ -252,10 +252,11 @@ CLI の login flow は公開レスポンスをキーの有効性の証拠にせ�
 discovery を 256 KiB と raw 256 行に制限します。agent 固有 host と dedicated host は対象外です。キーは
 [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys) で作成します。
 
-**Scaleway の discovery:** 認証済みモデル一覧と現在の Serverless chat-model allowlist の積集合だけを
-公開し、embedding と audio transcription を除外して、discovery を 128 KiB と raw 128 行に制限します。
-default Project の共有 endpoint を使用します。Project id 付き URL と dedicated deployment は custom
-provider で設定してください。API キーは [Scaleway console](https://console.scaleway.com/generative-api) で作成します。
+**Scaleway の discovery:** 認証済みモデル一覧と公式ドキュメントで確認した Serverless Chat Completions
+allowlist の積集合だけを公開します。未知、Responses 専用、embedding、transcription、その他の media-model
+id は fail closed で除外し、discovery を 128 KiB と raw 128 行に制限します。default Project の共有
+endpoint を使用します。Project id 付き URL と dedicated deployment は custom provider で設定してください。
+API キーは [Scaleway console](https://console.scaleway.com/generative-api) で作成します。
 
 > **Baseten の対象範囲:** このプリセットは Baseten の共有 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > のみを対象とします。ローカル利用では個人の [API キー](https://docs.baseten.co/organization/api-keys)を、
