@@ -142,7 +142,8 @@ describe("startup star prompt", () => {
     // shim), so assert the arguments and the resolver rather than the literal.
     expect(prompt).toContain('ghInvocation(["auth", "status"])');
     expect(prompt).toContain('commandInvocation("gh"');
-    expect(prompt).toContain("if (!ghAvailable()) return;");
+    // The gh check gates the prompt via the (test-seamable) ghOk result.
+    expect(prompt).toContain("if (!ghOk) return;");
   });
 
   test("declining the star prompt does not steer the agent afterwards", async () => {

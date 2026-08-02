@@ -33,8 +33,10 @@ export function isDeferralCurrent(record: string | null, version: string, now: n
   if (!m) return false;
   const at = Date.parse(m[1]);
   if (Number.isNaN(at)) return false;
-  if (version !== "?" && m[2] === version) return true;
   const age = now - at;
+  // Version match suppresses for that whole version, but a future-dated
+  // record (clock rollback) fails toward re-asking on every path.
+  if (version !== "?" && m[2] === version) return age >= 0;
   return age >= 0 && age < DEFERRAL_MAX_AGE_MS;
 }
 
@@ -81,6 +83,15 @@ function ghAvailable(): boolean {
   const auth = spawnSync(a.file, a.args,
     { stdio: "ignore", timeout: 5000, windowsHide: true, windowsVerbatimArguments: a.verbatim });
   return !auth.error && auth.status === 0;
+}
+
+/** Test seam: replace gh/interactiveConfirm so the full prompt flow is
+ * drivable without a real gh login or a TTY conversation. */
+let depsForTests: { ghAvailable?: () => boolean; interactiveConfirm?: typeof interactiveConfirm } | null = null;
+export function setStarPromptDepsForTests(
+  deps: { ghAvailable?: () => boolean; interactiveConfirm?: typeof interactiveConfirm } | null,
+): void {
+  depsForTests = deps;
 }
 
 function starRepo(): { ok: boolean; error?: string } {
@@ -158,7 +169,8 @@ export async function maybeShowStarPrompt(): Promise<void> {
     const dir = getConfigDir();
     const marker = join(dir, MARKER);
     if (existsSync(marker)) return;
-    if (!ghAvailable()) return; // can't star without an authenticated gh — stay silent and re-check on a later start
+    const ghOk = depsForTests?.ghAvailable ? depsForTests.ghAvailable() : ghAvailable();
+    if (!ghOk) return; // can't star without an authenticated gh — stay silent and re-check on a later start
 
     // An agent would answer this on the user's behalf, using the user's GitHub
     // identity. Hand the question to the agent to relay, and leave the marker
@@ -185,7 +197,8 @@ export async function maybeShowStarPrompt(): Promise<void> {
       writeFileSync(marker, new Date().toISOString());
     } catch { /* best-effort */ }
 
-    const yes = await interactiveConfirm({
+    const ask = depsForTests?.interactiveConfirm ?? interactiveConfirm;
+    const yes = await ask({
       question: "\n  \x1b[38;5;141m⭐ Enjoying opencodex? Star it on GitHub (via gh)?\x1b[0m",
       defaultYes: true,
     });
