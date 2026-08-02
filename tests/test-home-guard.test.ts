@@ -10,7 +10,7 @@
  * Incident: devlog/_plan/260730_codex_rs_upstream_v2_live_handoff/070.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,9 +140,10 @@ describe("real-home write guard", () => {
     const dir = mkdtempSync(join(tmpdir(), "ocx-parent-escape-"));
     const linkDir = join(dir, "home-link");
     symlinkSync(opencodexHome, linkDir);
+    const modeBefore = statSync(opencodexHome).mode;
 
     const probe = runProbe(`
-      import { atomicWriteFile } from "${REPO_ROOT_URL}src/config";
+      import { atomicWriteFile, writePid } from "${REPO_ROOT_URL}src/config";
       const REFUSAL = "refusing to write the real OpenCodex home";
       try {
         atomicWriteFile("${linkDir}/never-created.json", "x");
@@ -150,12 +151,23 @@ describe("real-home write guard", () => {
       } catch (err) {
         console.log(String(err).includes(REFUSAL) ? "REFUSED" : "OTHER:" + String(err));
       }
+      try {
+        writePid(424242);
+        console.log("PID_SUCCEEDED");
+      } catch (err) {
+        console.log(String(err).includes(REFUSAL) ? "PID_REFUSED" : "PID_OTHER:" + String(err));
+      }
     `, { OCX_TEST_HOME_GUARD: "1", OCX_REAL_HOME: realHome, OPENCODEX_HOME: linkDir });
 
     expect(probe.stdout).toContain("REFUSED");
     expect(probe.stdout).not.toContain("WRITE_SUCCEEDED");
+    expect(probe.stdout).toContain("PID_REFUSED");
+    expect(probe.stdout).not.toContain("PID_SUCCEEDED");
     // Nothing landed in the protected home, not even via the resolved parent.
     expect(() => readFileSync(join(opencodexHome, "never-created.json"))).toThrow();
+    expect(() => readFileSync(join(opencodexHome, "ocx.pid"))).toThrow();
+    // The protected directory's mode is untouched by the refused write.
+    expect(statSync(opencodexHome).mode).toBe(modeBefore);
   });
 
   test("disarmed: the protected home is allowed (production stays inert)", () => {

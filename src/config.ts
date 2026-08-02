@@ -1145,6 +1145,9 @@ export function getRuntimePortPath(): string {
 
 export function hardenConfigDir(): void {
   const dir = getConfigDir();
+  // The guard runs BEFORE any mutation: refusing the write after chmod/ACL
+  // would already have changed the protected directory (review round 2).
+  assertNotRealHomeUnderTest(dir);
   if (existsSync(dir)) {
     try { chmodSync(dir, 0o700); } catch { /* best-effort */ }
     if (process.platform === "win32") {
@@ -2131,6 +2134,8 @@ export function applyProxyEnv(config: OcxConfig): void {
 
 export function writePid(pid: number): void {
   const dir = getConfigDir();
+  // Guard before ANY directory mutation (mkdir or chmod), not just the write.
+  assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
@@ -2159,6 +2164,8 @@ function isValidRuntimePortState(value: unknown): value is RuntimePortState {
 
 export function writeRuntimePort(state: RuntimePortState): void {
   const dir = getConfigDir();
+  // Guard before ANY directory mutation (mkdir or chmod), not just the write.
+  assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
