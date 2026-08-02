@@ -77,7 +77,7 @@ remove <provider> <id> --yes  Remove a stored account or key after an existence 
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
 login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.
 reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 所有子命令都要求代理正在运行；CLI 会自动解析其记录的运行时端口。成功操作的
@@ -128,10 +128,12 @@ OAuth 账号会显示为 `Account N`，而 plan/label 列会在 plan、屏蔽后
 
 ### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
-选择一个现有的 Codex 账号、OAuth 账号或 API 密钥。对于 `openai`，`main` 会选择
-Codex App 登录。Codex 的选择只对**新会话**生效；已有线程会继续使用自己的账号，
-而启用的自动切换阈值之后可能会覆盖手动固定。未知的提供方或 id 会以 1 退出。
-`--json` 返回：
+选择已有的 Codex 账号、OAuth 账号或 API key。对 `openai` 而言，`main` 选择 Codex App 登录。
+Codex Pool 选择会清除进程本地 affinity，并从下一次请求开始生效，包括已有可见任务的请求；代理重启或 affinity eviction 后，任务也可能变为未绑定，但进行中的请求保留已捕获账号。此选择只控制 Pool routing；Direct mode 继续使用 caller-owned/native main credential。基于用量的主动切换、401/403 重新认证、429/retry-after cooldown、排除，以及输出前 429/402 故障恢复之后仍可能选择其他合格 Pool 账号。这些恢复路径在关闭基于用量的切换时仍然有效。账号变化后 OpenCodex 会重放对话上下文，但 provider prompt cache 可能需要重新预热。未知 provider 或 id 返回退出码 1。`--json` 返回：
+遇到 **401/403** 时，App 登录会清除该账户的进程内 affinity 并要求重新认证。
+遇到 **429** 时，它会遵循 `Retry-After`、启动账户 cooldown、清除 affinity，
+并可将请求切换到另一个符合条件的 Pool 账户。即使 `autoSwitchThreshold: 0`，
+这些故障恢复流程仍然有效；`0` 只会禁用基于用量的主动切换。
 
 ```text
 { ok: true, provider, type, activeId }

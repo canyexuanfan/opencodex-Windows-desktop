@@ -173,16 +173,10 @@ Codex 显示的模型来自一个磁盘上的 catalog（默认是 `$CODEX_HOME/o
 4. **过滤** `config.disabledModels` 和每个 provider 的非空 `selectedModels` allowlist。
 5. **重新排序**，让 featured models 排在最前（见下文），然后把合并后的 catalog 写回去。
 
-被克隆出来的 catalog 里的 `base_instructions` 身份行，会作为静态 catalog metadata 被改写为真实的上游模型名称。
-运行时请求身份会单独处理：路由适配器会把 Codex 实时的 GPT-5 身份行替换成一个与模型无关的 coding-agent
-介绍词。
+路由目录条目还会把 GPT-5 身份文案改为真实的上游模型名称。reasoning 选项会依据提供商和模型元数据，
+使用 Codex 的 `low | medium | high | xhigh | max | ultra` 档位；上游不支持的值会在发送请求前完成
+映射或下调。
 
-在名称唯一时，它们的默认 picker 标签是原生模型 id 的最后一段，因此 provider namespace 不会在窄 picker 中遮住
-模型名。basename 冲突时会保留足够的原生路由上下文来区分各行；如果同一个 native id 来自多个 provider，
-也会把 provider 一并显示。完整的 catalog slug 仍保留在描述里。当路由本身在视觉上很重要时，请配置一个自定义
-显示名（例如 `Claude Opus 5 (TeamClaude)`）；自定义名称仍然优先。
-reasoning 控件来自 provider/model metadata，并沿用 Codex 的 `low | medium | high | xhigh |
-max | ultra` 阶梯；不支持的值会在发送上游请求前被映射或钳制。
 
 ### 自定义模型显示名
 

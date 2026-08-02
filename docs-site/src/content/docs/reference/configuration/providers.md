@@ -19,9 +19,9 @@ authenticated.
 | `pausedCodexAccountIds?` | `string[]` | `[]` | Accounts excluded from Pool selection until resumed, including the main `__main__` account when paused. |
 | `codexAccountNamespaces?` | `Record<string, string>` | — | Public model-selector namespace to stored Codex account target. This validates and persists mappings but does not itself add picker rows or change routing. |
 | `activeCodexAccountId?` | `string` | — | Manually selected Pool account for the next request. Selection clears thread affinity; in-flight requests keep captured credentials. |
-| `autoSwitchThreshold?` | `number` | `80` | Usage percentage for new-session Pool switching. Set `0` to disable quota switching. |
-| `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | New-session account rotation strategy; existing thread ids retain affinity. |
-| `accountPoolStickyLimit?` | `number` | `1` | Successful new-session binds kept on one round-robin selection. Range 1–100. |
+| `autoSwitchThreshold?` | `number` | `80` | Usage threshold for proactive switching. `quota` can re-evaluate both bound and unbound tasks on their next request; `fill-first` uses it only as the drain point for unbound assignment; normal `round-robin` selection does not use it. The score uses the hottest known 5h, weekly, or 30d quota window. `0` disables usage-based proactive switching only, not unbound assignment or failure recovery. |
+| `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | Assignment strategy for new/unbound Codex requests. A request is unbound when it has no live (parent thread id, quota scope) affinity; a visible existing task can become unbound after proxy restart or affinity reset. `quota` picks the lowest-usage eligible account when no active account exists, keeps an eligible active account below `autoSwitchThreshold`, and after the threshold may move an unbound request or proactively rebind a bound task to a lower-usage eligible account. `round-robin` distributes unbound requests evenly; `fill-first` keeps assigning unbound requests to the active account until cooldown, unavailability, or the configured drain threshold. |
+| `accountPoolStickyLimit?` | `number` | `1` | New/unbound task assignments retained on one round-robin selection before advancing; the counter advances when a task is bound, not after an upstream success. Range 1–100. |
 | `upstreamFailoverThreshold?` | `number` | `3` | Consecutive transient failures before future new sessions fail over. Set `0` to disable. |
 | `modelCacheTtlMs?` | `number` | `300000` | Freshness window for the per-provider `/models` cache. |
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic prompt-cache policy: disabled, 5-minute ephemeral, or 1-hour extended. |
@@ -125,9 +125,20 @@ review remains separate from this diagnostic guard.
 ## Codex account pool
 
 Use **Codex Auth** in the dashboard to add pool accounts and refresh quotas. `config.json` stores
-non-secret metadata; access and refresh tokens use the hardened credential store. Existing thread ids
-retain account affinity. New sessions route by `accountPoolStrategy`, quota, cooldown, and health. A
-pre-stream 429 or 402 retries once on an eligible alternate account in the same request.
+non-secret metadata; access and refresh tokens use the hardened credential store. Pool routing
+separates new/unbound assignment, usage-based proactive switching, and failure recovery. A bound task
+normally keeps affinity, but `quota` may rebind it on its next request after the usage threshold is
+crossed, while pause, cooldown, reauthentication, and failure handling can clear or move routing
+independently. An unbound request has no live account binding; this can include an existing visible
+task after proxy restart or affinity reset. A pre-stream 429 or 402 retries once on an eligible
+alternate account in the same request, even when usage-based proactive switching is off. Account
+changes preserve and replay the conversation context, but provider-side prompt-cache reuse across
+accounts is not guaranteed and the cache may need to warm again.
+
+On a **401/403**, App login clears that account's process-local affinity and requires reauthentication.
+On a **429**, opencodex honors `Retry-After`, starts the account cooldown, clears affinity, and may
+rotate the request to another eligible Pool account. These failure transitions remain active with
+`autoSwitchThreshold: 0`; that setting disables only usage-based proactive switching.
 
 Pausing an account preserves its quota metadata but excludes it from switching, failover, recovery
 probes, and manual activation. It also clears that account's thread affinities. In-flight requests keep
@@ -137,9 +148,9 @@ and pauses only accounts freshly confirmed at 100%; unknown or failed refreshes 
 
 | Strategy | Behaviour |
 | --- | --- |
-| `quota` (default) | When active usage crosses `autoSwitchThreshold`, choose the lowest-usage eligible account across 5-hour, weekly, and 30-day windows. `0` disables quota picking. |
-| `round-robin` | Smooth even spread. `accountPoolStickyLimit` keeps 1–100 successful new-session binds on one selection. |
-| `fill-first` | Keep the active account until cooldown, reauthentication, or the configured threshold, then advance in stable order. Unknown usage does not force a switch. |
+| `quota` (default) | If no active account exists, choose the lowest-usage eligible account across 5-hour, weekly, and 30-day windows. Otherwise retain an eligible active account below `autoSwitchThreshold`; after it crosses the threshold, an unbound request or a bound task's next request can move to a lower-usage eligible account. `0` disables this usage-driven re-evaluation, not failure recovery. |
+| `round-robin` | Evenly assign unbound requests across eligible accounts. `autoSwitchThreshold` does not change normal round-robin selection. `accountPoolStickyLimit` (1–100) counts assignments on one pick, not successful upstream responses. |
+| `fill-first` | Assign unbound requests to the active account until cooldown, reauthentication, or the configured drain threshold; unknown usage does not force a switch. Healthy bound tasks keep affinity. |
 
 Rotation does not protect against provider enforcement; multi-account use may violate provider terms.
 

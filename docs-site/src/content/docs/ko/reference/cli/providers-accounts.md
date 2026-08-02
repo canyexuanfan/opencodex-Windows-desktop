@@ -70,7 +70,7 @@ remove <provider> <id> --yes  Remove a stored account or key after an existence 
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
 login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.
 reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 모든 하위 명령은 프록시가 실행 중이어야 합니다. CLI는 기록된 런타임 포트를 자동으로 찾습니다. 성공한 작업은 종료 코드 0으로 끝납니다. 잘못된 사용, 알 수 없는 제공자 또는 계정/키 id, 도달할 수 없는 프록시, API 실패는 종료 코드 1로 끝납니다. 자격 증명 필드는 관리 API가 반환한 그대로 표시됩니다(마스킹도 그대로 포함됩니다). 원시 API 키와 OAuth 토큰은 절대 반환하지 않습니다. 표시 편의 기능은 대시보드와 마찬가지로 클라이언트 쪽에서 합성합니다. `main`은 `openai` 계정 풀의 Codex App 로그인에 대한 CLI 별칭이고, 이메일이 없는 OAuth 계정은 `Account N`으로 표시되며, plan/label 열은 plan, 마스킹된 이메일, label, 마스킹된 키 순으로 대체합니다.
@@ -110,7 +110,13 @@ Codex pool switches apply to new sessions; running threads keep their account.
 
 ### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
-기존 Codex 계정, OAuth 계정, 또는 API 키를 선택합니다. `openai`에서는 `main`이 Codex App 로그인을 선택합니다. Codex 선택은 **새 세션**에만 적용되며, 기존 스레드는 현재 계정을 유지합니다. 또한 자동 전환 임계값이 활성화되어 있으면 나중에 수동 고정을 덮어쓸 수 있습니다. 알 수 없는 제공자나 id는 종료 코드 1로 끝납니다. `--json`은 다음을 반환합니다:
+기존 Codex 계정, OAuth 계정 또는 API key를 선택합니다. `openai`에서 `main`은 Codex App 로그인을
+선택합니다. Codex Pool 선택은 프로세스 로컬 affinity를 지우고 기존에 보이던 작업을 포함한 다음 요청부터 적용됩니다. 프록시 재시작이나 affinity eviction 뒤에도 작업이 바인딩 없는 상태가 될 수 있지만, 진행 중인 요청은 이미 확보한 계정을 유지합니다. 이 선택은 Pool 라우팅만 제어하며 Direct mode는 호출자 소유/native main credential을 계속 사용합니다. 사용량 기반 선제 전환, 401/403 재인증, 429/retry-after cooldown, 제외, 출력 전 429/402 실패 복구는 나중에 다른 적격 Pool 계정을 선택할 수 있습니다. 이러한 복구 경로는 사용량 기반 전환이 꺼져 있어도 동작합니다. 계정이 바뀌어도 OpenCodex는 대화 문맥을 재생하지만 프로바이더 측 prompt cache는 다시 예열해야 할 수 있습니다.
+알 수 없는 프로바이더나 id는 종료 코드 1입니다. `--json`은 다음을 반환합니다.
+**401/403**이 발생하면 해당 계정의 프로세스 로컬 affinity를 해제하고 재인증을 요구합니다.
+**429**에서는 `Retry-After`를 준수해 계정 cooldown을 시작하고 affinity를 해제한 뒤,
+다른 적격 Pool 계정으로 요청을 전환할 수 있습니다. 이러한 실패 복구는
+`autoSwitchThreshold: 0`에서도 계속 작동하며, `0`은 사용량 기반 선제 전환만 비활성화합니다.
 
 ```text
 { ok: true, provider, type, activeId }

@@ -18,9 +18,9 @@ description: 提供者条目、身份验证、端点、模型目录、配额、�
 | `pausedCodexAccountIds?` | `string[]` | `[]` | 在恢复之前从 Pool 选择中排除的账户，包括被暂停时的主 `__main__` 账户。 |
 | `codexAccountNamespaces?` | `Record<string, string>` | — | 公共模型选择器命名空间到已存储 Codex 账户目标的映射。此项会校验并持久化映射，但不会自行添加选择器行或改变路由。 |
 | `activeCodexAccountId?` | `string` | — | 为下一次请求手动选定的 Pool 账户。选择会清除线程亲和性；进行中的请求会保留捕获到的凭据。 |
-| `autoSwitchThreshold?` | `number` | `80` | 新会话 Pool 切换的使用率百分比。设为 `0` 可禁用配额切换。 |
-| `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | 新会话账户轮换策略；已有线程 id 会保留亲和性。 |
-| `accountPoolStickyLimit?` | `number` | `1` | 在一次轮询选择中保留的成功新会话绑定次数。范围 1–100。 |
+| `autoSwitchThreshold?` | `number` | `80` | 基于用量的主动切换阈值。`quota` 可在下一次请求中重新评估已绑定和未绑定任务；`fill-first` 仅把它用作未绑定分配的耗尽点；正常 `round-robin` 不使用它。分数取已知 5 小时、周或 30 天 quota window 的最高值。`0` 只关闭基于用量的主动切换，不关闭未绑定任务分配或故障恢复。 |
+| `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | 新建/未绑定 Codex 请求的分配策略。没有 live `(parent thread id, quota scope)` affinity 的请求属于未绑定；代理重启或 affinity 重置后，已有可见任务也可能未绑定。`quota` 在没有活跃账号时选择已知 usage 最低的合格账号；活跃账号合格且低于 `autoSwitchThreshold` 时继续使用；达到阈值后，可把未绑定请求或已绑定任务的下一次请求切换到 usage 更低的合格账号。`round-robin` 均匀分配未绑定请求；`fill-first` 在 cooldown、不可用或耗尽阈值前持续分配给活跃账号。 |
+| `accountPoolStickyLimit?` | `number` | `1` | 一次 round-robin 选择在推进前保留的新建/未绑定任务分配数。计数在任务绑定时增加，而不是在上游成功后增加。范围 1–100；仅当 `accountPoolStrategy` 为 `round-robin` 时生效。 |
 | `upstreamFailoverThreshold?` | `number` | `3` | 连续发生多少次瞬态故障后，后续新会话会切换到备用上游。设为 `0` 可禁用。 |
 | `modelCacheTtlMs?` | `number` | `300000` | 每个提供者 `/models` 缓存的新鲜度窗口。 |
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic 提示缓存策略：禁用、5 分钟临时缓存，或 1 小时扩展缓存。 |
@@ -100,17 +100,26 @@ API key 提供者可以持有字面量 key，或环境引用。OAuth 提供者�
 
 ## Codex 账户池
 
-使用仪表板中的 **Codex Auth** 来添加池账户并刷新配额。`config.json` 只存储非敏感元数据；访问令牌和刷新令牌使用加固的凭据存储。已有线程 id 会保留账户亲和性。新会话会根据 `accountPoolStrategy`、配额、冷却时间和健康状态进行路由。流前 429 或 402 会在同一请求内，使用一个合格的备用账户重试一次。
+请在仪表盘 **Codex Auth** 页面添加 pool account 并刷新 quota。配置只保存非 secret account
+metadata；access/refresh token 存放在加固的 Codex account credential store 中。Pool routing
+分为新建/未绑定任务分配、基于用量的主动切换和故障恢复。已绑定任务通常保持 affinity，但 `quota`
+可在超过阈值后的下一次请求中重新绑定；暂停、cooldown、重新认证和故障处理也能独立清除或改变
+routing。未绑定请求没有 live 账号绑定，也可能是代理重启或 affinity 重置后的已有任务。输出前的
+**429/402** 即使在关闭基于用量的主动切换时，也可在同一请求中对合格替代账号重试一次。
+账号变化后会保留并重放对话上下文，但账号间的 provider prompt cache 不保证复用，可能需要重新预热。
+暂停后仍会显示账号及其 quota metadata，但不会参与自动切换、重试/failover 选择、cooldown 恢复探测或手动激活。
+暂停还会清除该账号的 thread affinity map：进行中的请求保留已捕获的 credential，但后续 turn 会重新路由，无法再使用已暂停账号。
+暂停状态会跨重启保留；如果所有账号均已暂停，Pool 路由会明确失败，而不会暗中选择某个账号。
+**暂停已达上限账号** 会先刷新有 credential 的合格账号，只暂停相关 quota window 本次明确返回 100% 的账号；无 credential、未知额度或刷新失败的账号保持不变。
+遇到 **401/403** 时，App 登录会清除该账户的进程内 affinity 并要求重新认证。
+遇到 **429** 时，它会遵循 `Retry-After`、启动账户 cooldown、清除 affinity，
+并可将请求切换到另一个符合条件的 Pool 账户。即使 `autoSwitchThreshold: 0`，
+这些故障恢复流程仍然有效；`0` 只会禁用基于用量的主动切换。
 
-暂停账户会保留其配额元数据，但会将其排除在切换、故障转移、恢复探测和手动激活之外。它还会清除该账户的线程亲和性。进行中的请求会保留捕获到的凭据；后续轮次会被重新路由。如果所有账户都被暂停，Pool 路由会失败，而不是静默选中一个。**Pause exhausted** 会使用可用凭据刷新合格账户，并且只暂停那些被 تازه 确认为 100% 的账户；未知或失败的刷新状态保持不变。
-
-| 策略 | 行为 |
-| --- | --- |
-| `quota`（默认） | 当当前使用率超过 `autoSwitchThreshold` 时，在 5 小时、周和 30 天窗口中，选择使用率最低的合格账户。`0` 会禁用配额选择。 |
-| `round-robin` | 平滑、均匀地分配。`accountPoolStickyLimit` 会让 1–100 次成功的新会话绑定停留在同一次选择上。 |
-| `fill-first` | 保持当前激活账户，直到冷却、重新认证或达到配置阈值，然后按稳定顺序前进。未知使用情况不会强制切换。 |
-
-轮换不能防止提供者的执行约束；多账户使用可能违反提供者条款。
+**分配与主动切换策略：** `quota`（默认）在没有活跃账号时选择 usage 最低的合格账号；活跃账号合格且低于 `autoSwitchThreshold` 时继续使用；达到阈值后，可把未绑定请求或已绑定任务的下一次请求切换到 usage 更低的合格账号。`round-robin` 均匀分配未绑定请求，用量
+阈值不会改变正常轮换。`accountPoolStickyLimit`（默认 `1`，1–100）统计分配/绑定，而不是成功响应。
+`fill-first` 在 cooldown、重新认证或耗尽阈值前把未绑定请求分配给活跃账号；健康的已绑定任务保持
+affinity。这些策略不能规避 provider enforcement。
 
 ### `anthropicAccountPool`（实验性）
 

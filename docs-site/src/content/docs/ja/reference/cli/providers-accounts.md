@@ -70,7 +70,7 @@ remove <provider> <id> --yes  Remove a stored account or key after an existence 
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
 login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.
 reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 すべてのサブコマンドではプロキシが実行されている必要があります。 CLI は、記録されたランタイム ポートを自動解決します。操作が成功した場合は 0 で終了します。無効な使用法、不明なプロバイダーまたはアカウント/キー ID、到達不能なプロキシ、または API エラーが発生した場合は 1 で終了します。資格情報フィールドは、管理 API が返したとおりに表示されます (マスキングを含む)。生の API キーと OAuth トークンは決して返されません。表示の利便性は、ダッシュボードと同様にクライアント側で合成されます。`main` は、`openai` アカウント プール内の Codex アプリ ログインの CLI エイリアスであり、電子メールのない OAuth アカウントは `Account N` として表示され、プラン/ラベル列はプラン、マスクされた電子メール、ラベル、およびマスクされたキーにわたってフォールバックされます。
@@ -110,7 +110,13 @@ Codex pool switches apply to new sessions; running threads keep their account.
 
 ### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
-既存の Codex アカウント、OAuth アカウント、または API キーを選択します。 `openai` の場合、`main` は Codex App ログインを選択します。Codexの選択は **新しいセッション** にのみ適用されます。既存のスレッドはアカウントを保持し、有効な自動切り替えしきい値が後で手動ピンをオーバーライドする可能性があります。不明なプロバイダーまたは ID は 1 を終了します。`--json` は次を返します。
+既存の Codex アカウント、OAuth アカウント、または API key を選びます。`openai` で `main` は Codex App ログインを
+選択します。Codex Pool の選択は process-local affinity を消去し、既存の表示タスクを含む次のリクエストから適用されます。プロキシ再起動や affinity eviction 後もタスクは未紐付けになり得ますが、処理中のリクエストは取得済みアカウントを維持します。この選択は Pool routing のみを制御し、Direct mode は caller-owned/native main credential を使い続けます。使用量ベースのプロアクティブ切り替え、401/403 再認証、429/retry-after cooldown、除外、出力前 429/402 の障害回復により、後で別の適格 Pool アカウントが選ばれる場合があります。これらの回復経路は使用量ベース切り替えが off でも有効です。アカウント変更後も OpenCodex は会話コンテキストを再生しますが、provider prompt cache は再ウォームアップが必要な場合があります。
+不明なプロバイダーや id は終了コード 1 です。`--json` は次を返します。
+**401/403** では、そのアカウントへのプロセスローカルな affinity を解除し、再認証を要求します。
+**429** では `Retry-After` を尊重してアカウントの cooldown を開始し、affinity を解除したうえで、
+別の適格な Pool アカウントへリクエストを切り替えることがあります。これらの障害回復は
+`autoSwitchThreshold: 0` でも有効であり、`0` が無効にするのは使用量に基づく予防的な切り替えだけです。
 
 ```text
 { ok: true, provider, type, activeId }

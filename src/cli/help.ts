@@ -122,7 +122,7 @@ const helpEntries: Record<string, HelpEntry> = {
       "add-key <provider> [--label <label>]  Add a key read only from piped stdin.",
       "login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.",
       "reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.",
-      "Codex pool switches apply to new sessions; running threads keep their account.",
+      "Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.",
     ],
   },
   models: {

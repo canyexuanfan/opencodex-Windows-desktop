@@ -115,7 +115,9 @@ Codex는 디스크의 카탈로그(`$CODEX_HOME/opencodex-catalog.json`이 기�
 4. `config.disabledModels`와 각 provider의 비어 있지 않은 `selectedModels` allowlist를 **필터링**합니다.
 5. featured 모델이 먼저 정렬되도록 **다시 순서화**한 뒤(아래 참고), 병합된 catalog를 다시 씁니다.
 
-복제된 catalog의 `base_instructions` identity line은 정적 catalog metadata에서 실제 upstream model 이름으로 다시 작성됩니다. 런타임 request identity는 별도로 처리하며, 라우팅 adapter가 Codex의 live GPT-5 identity line을 model-agnostic coding-agent 소개 문구로 바꿉니다. 고유할 때 기본 picker label은 native model id의 마지막 segment가 되므로, 좁은 picker에서도 provider namespace가 model 이름을 가리지 않습니다. basename 충돌이 나도 행을 구분하는 데 필요한 native route context는 유지하고, 같은 native id가 여러 provider에 있으면 provider도 함께 표시합니다. 전체 catalog slug는 description에 그대로 남습니다. route 자체를 시각적으로 드러내고 싶다면(예: `Claude Opus 5 (TeamClaude)`) custom display name을 설정하세요. custom name은 계속 우선합니다. reasoning control은 provider와 model metadata 전반에서 Codex의 `low | medium | high | xhigh | max | ultra` 단계에 맞춰 오며, upstream이 지원하지 않는 값은 요청 전에 매핑하거나 상한을 맞춥니다.
+라우팅된 카탈로그 항목의 GPT-5 정체성 문구도 실제 업스트림 모델 이름에 맞게 바꿉니다. reasoning 선택지는
+프로바이더와 모델 메타데이터에 따라 Codex의 `low | medium | high | xhigh | max | ultra` 단계를 사용하며,
+업스트림이 지원하지 않는 값은 요청을 보내기 전에 매핑하거나 지원 범위로 낮춥니다.
 
 ### 사용자 지정 모델 표시 이름
 
