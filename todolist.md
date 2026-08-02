@@ -1053,3 +1053,9 @@ Codex / Claude Code / 其他现有客户端
 - [x] 桌面快捷方式存在于真实桌面重定向目录：`C:\Users\wzm33\OneDrive\Desktop\OpenCodex.lnk`，目标为 `E:\Program\OpenCodex\OpenCodex.exe`，图标为 `E:\Program\OpenCodex\resources\tray\opencodex-tray-online.ico,0`；传统路径 `C:\Users\wzm33\Desktop` 不存在，故此前只查传统路径会误判。
 - [x] 已安装 `OpenCodex.exe` 与内置 `bun.exe` 均可读取签名主体 `CN=十七°`，thumbprint=`1CDFF6DE61972259B655071130A66C756330DEB0`；本机自签链状态为 `UnknownError`，属于未导入受信测试根时的预期状态，不再是 `NotSigned`。
 - [x] 本次只读复核没有安装、停止代理或重启 Codex。
+# 开源准备记录：Fork 仓库公开文案与发布边界（2026-08-02）
+- [x] 按用户要求使用 Claude CLI 起草公开文案方向；首次全仓读取超时已记录到 `questions/Claude CLI文案生成超时排查指南.md`，随后改用 README 顶部小输入并成功取得文案方向。
+- [x] README 顶部已改为突出 `OpenCodex Windows Desktop`，保留原作者/上游 opencodex 署名，并明确本 fork 维护 Windows 桌面安装版。
+- [x] Release notes 生成逻辑已同步说明安装版资产、Windows 桌面维护边界、原项目归属和仅发布安装版策略。
+- [x] 验证通过：`bun test tests\release-notes.test.ts tests\desktop-release-update.test.ts` 28/28；`git diff --check` 通过。
+- [ ] 远端 fork 更新前需要公开内容审计：不得推送 `questions/`、`todolist.md`、内部过程文档、AGENTS 指令、本机路径、临时脚本、私钥/证书或内部 git-v0.x 存档历史；如需替换远端 `main` 为干净公开根提交，必须先得到用户明确确认。
