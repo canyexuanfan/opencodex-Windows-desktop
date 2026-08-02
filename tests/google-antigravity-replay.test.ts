@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
+  antigravityFunctionCallKeyForTests,
   antigravityReplayMetrics,
+  antigravityReplayKeyForTests,
   antigravityReplayRetainedStoreSnapshot,
   antigravityUsesReplayCache,
   applyAntigravityReplay,
@@ -134,12 +136,14 @@ describe("antigravity reasoning-replay cache", () => {
   });
 
   test("evicts oldest inner calls to satisfy aggregate session bytes", () => {
-    setAntigravityReplayLimitsForTests({ maxBytesPerSession: 100 });
+    // Fixed-key arithmetic: 64-byte session key + (64-byte call key + 40-byte
+    // signature) per call — two calls fit 300, three do not.
+    setAntigravityReplayLimitsForTests({ maxBytesPerSession: 300 });
     for (const name of ["one", "two", "three"]) {
       observeAntigravityReplay(MODEL, SESSION, [fcPart(name, {}, `sig-${name}-${"x".repeat(32)}`)]);
     }
     const metrics = antigravityReplayMetrics();
-    expect(metrics.totalBytes).toBeLessThanOrEqual(100);
+    expect(metrics.totalBytes).toBeLessThanOrEqual(300);
     expect(metrics.calls).toBe(2);
     const contents = ["one", "two", "three"].map(name => ({ role: "model", parts: [fcPart(name, {})] }));
     applyAntigravityReplay(MODEL, SESSION, contents);
@@ -244,5 +248,56 @@ describe("claude-on-antigravity inline signature sanitization", () => {
     const part = contents[0].parts[0] as { thoughtSignature?: string; thought_signature?: string };
     expect(part.thoughtSignature).toBeUndefined();
     expect(part.thought_signature).toBeUndefined();
+  });
+});
+
+describe("antigravity replay fixed-size key identities", () => {
+  const fcPart = (name: string, args: unknown, sig?: string) => {
+    const part: Record<string, unknown> = { functionCall: { name, args } };
+    if (sig) part.thoughtSignature = sig;
+    return part;
+  };
+  const MODEL = "gemini-3-pro";
+  const SESSION = "-12345";
+
+  test("enormous model/session identities derive a fixed 64-hex key and stay uncounted-safe", () => {
+    const hugeModel = "m".repeat(1024 * 1024);
+    const hugeSession = "s".repeat(1024 * 1024);
+    const derived = antigravityReplayKeyForTests(hugeModel, hugeSession);
+    expect(derived).toMatch(/^[0-9a-f]{64}$/);
+    // Retained bytes for such a session = fixed key + fixed call key + payload
+    // only — the 2 MiB of raw identity strings never enter the store.
+    observeAntigravityReplay(hugeModel, hugeSession, [fcPart("f", {}, "sig-1234567890abcdef")]);
+    const metrics = antigravityReplayMetrics();
+    expect(metrics.sessions).toBe(1);
+    expect(metrics.totalBytes).toBe(64 + 64 + "sig-1234567890abcdef".length);
+  });
+
+  test("length-prefixed components are unambiguous across separator content", () => {
+    expect(antigravityReplayKeyForTests("a\0b", "c")).not.toBe(antigravityReplayKeyForTests("a", "b\0c"));
+    expect(antigravityReplayKeyForTests("ab", "c")).not.toBe(antigravityReplayKeyForTests("a", "bc"));
+    expect(antigravityReplayKeyForTests(MODEL, SESSION)).toBe(antigravityReplayKeyForTests(MODEL, SESSION));
+  });
+
+  test("canonicalization overflow skips the call without an unbounded intermediate", () => {
+    // Args whose canonical form exceeds 64 KiB: rejected DURING the walk.
+    const bigArgs = { blob: "x".repeat(256 * 1024) };
+    expect(antigravityFunctionCallKeyForTests("f", bigArgs)).toBeUndefined();
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("f", bigArgs, "sig-1234567890abcdef")]);
+    const metrics = antigravityReplayMetrics();
+    expect(metrics.calls).toBe(0);
+    expect(metrics.sessions).toBe(0);
+    expect(metrics.totalBytes).toBe(0);
+    // A conforming call right after still caches normally.
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("g", { a: 1 }, "sig-1234567890abcdef")]);
+    expect(antigravityReplayMetrics().calls).toBe(1);
+  });
+
+  test("canonical equality is preserved for nested structures", () => {
+    const a = antigravityFunctionCallKeyForTests("f", { x: [1, { b: 2, a: 3 }], y: "z" });
+    const b = antigravityFunctionCallKeyForTests("f", { y: "z", x: [1, { a: 3, b: 2 }] });
+    expect(a).toBe(b);
+    const different = antigravityFunctionCallKeyForTests("f", { x: [1, { a: 3, b: 9 }], y: "z" });
+    expect(different).not.toBe(a);
   });
 });

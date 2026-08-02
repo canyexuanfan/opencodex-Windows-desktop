@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
 
 /**
@@ -34,6 +35,8 @@ const REPLAY_MAX_CALLS_PER_SESSION = 256;
 export const ANTIGRAVITY_REPLAY_MAX_BYTES_PER_SESSION = 2 * 1024 * 1024;
 export const ANTIGRAVITY_REPLAY_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const REPLAY_MAX_SIGNATURE_BYTES = 64 * 1024;
+/** Fixed 64-hex outer key length, counted once per session entry. */
+const REPLAY_SESSION_KEY_BYTES = 64;
 
 interface ReplayLimits {
   maxCallsPerSession: number;
@@ -54,29 +57,110 @@ let replayBytes = 0;
 let replayOldestSessionKey: string | undefined;
 let replayOldestAt: number | null = null;
 
+/**
+ * Fixed-size identity for a (model, sessionId) pair: SHA-256 over
+ * length-prefixed UTF-8 components fed incrementally (no separator ambiguity
+ * — `("a\0b","c")` and `("a","b\0c")` derive different keys — and no raw
+ * model/session strings retained as Map keys, which the byte caps never
+ * counted).
+ */
 function replayKey(model: string, sessionId: string): string {
-  return `${model}::session:${sessionId}`;
+  const hash = createHash("sha256");
+  const m = utf8.encode(model);
+  const s = utf8.encode(sessionId);
+  hash.update(String(m.byteLength));
+  hash.update("\0");
+  hash.update(m);
+  hash.update(String(s.byteLength));
+  hash.update("\0");
+  hash.update(s);
+  return hash.digest("hex");
 }
 
-/** Recursively canonicalize a JSON value: object keys sorted, arrays preserved. */
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const entries = Object.keys(value as Record<string, unknown>).sort()
-    .map(k => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`);
-  return `{${entries.join(",")}}`;
+/** Canonical output exceeding this budget is rejected DURING the walk — the
+ * pre-fix path materialized an unbounded canonical string before admission. */
+const REPLAY_MAX_CANONICAL_ARGS_BYTES = 64 * 1024;
+const CANONICAL_OVERFLOW = Symbol("canonical-overflow");
+
+/** Byte-identical output to the old recursive canonicalJson, written incrementally. */
+function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void {
+  if (value === null || typeof value !== "object") {
+    sink(JSON.stringify(value) ?? "null");
+    return;
+  }
+  if (Array.isArray(value)) {
+    sink("[");
+    for (let index = 0; index < value.length; index += 1) {
+      if (index > 0) sink(",");
+      writeCanonicalJson(value[index], sink);
+    }
+    sink("]");
+    return;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  sink("{");
+  keys.forEach((k, index) => {
+    if (index > 0) sink(",");
+    sink(JSON.stringify(k));
+    sink(":");
+    writeCanonicalJson((value as Record<string, unknown>)[k], sink);
+  });
+  sink("}");
 }
 
-/** Stable identity for a functionCall part: name + recursively canonicalized args. */
+/** Bounded canonicalization: null on overflow (skip replay for that call). */
+function canonicalJsonBounded(value: unknown, maxBytes: number): string | null {
+  let written = 0;
+  const parts: string[] = [];
+  const sink = (chunk: string) => {
+    written += utf8.encode(chunk).byteLength;
+    if (written > maxBytes) throw CANONICAL_OVERFLOW;
+    parts.push(chunk);
+  };
+  try {
+    writeCanonicalJson(value, sink);
+  } catch (error) {
+    if (error === CANONICAL_OVERFLOW) return null;
+    throw error;
+  }
+  return parts.join("");
+}
+
+/**
+ * Stable identity for a functionCall part: fixed-size SHA-256 over
+ * length-prefixed name + canonical args. Overflow during canonicalization
+ * skips replay for that call (never materializes an unbounded string); other
+ * canonicalization failures keep the old name-only fallback semantics.
+ */
 function functionCallKey(name: unknown, args: unknown): string | undefined {
   if (typeof name !== "string" || name.length === 0) return undefined;
-  let argsKey = "";
+  let canonical: string | null;
   try {
-    argsKey = canonicalJson(args ?? {});
+    canonical = canonicalJsonBounded(args ?? {}, REPLAY_MAX_CANONICAL_ARGS_BYTES);
   } catch {
-    argsKey = "";
+    canonical = "";
   }
-  return `${name}::${argsKey}`;
+  if (canonical === null) return undefined;
+  const hash = createHash("sha256");
+  const n = utf8.encode(name);
+  const a = utf8.encode(canonical);
+  hash.update(String(n.byteLength));
+  hash.update("\0");
+  hash.update(n);
+  hash.update(String(a.byteLength));
+  hash.update("\0");
+  hash.update(a);
+  return hash.digest("hex");
+}
+
+/** Test-only key-derivation seam: the fixed-key regression cannot go red
+ * through snapshot.bytes (that metric never counted raw outer keys). */
+export function antigravityReplayKeyForTests(model: string, sessionId: string): string {
+  return replayKey(model, sessionId);
+}
+
+export function antigravityFunctionCallKeyForTests(name: unknown, args: unknown): string | undefined {
+  return functionCallKey(name, args);
 }
 
 function extractSignature(part: Record<string, unknown>): string | undefined {
@@ -180,9 +264,10 @@ export function observeAntigravityReplay(model: string, sessionId: string, parts
   const now = Date.now();
   deleteExpiredReplaySessions(now);
   const key = replayKey(model, sessionId);
-  const entry = replayCache.get(key) ?? {
+  const existing = replayCache.get(key);
+  const entry = existing ?? {
     byCall: new Map<string, ReplayCall>(),
-    bytes: 0,
+    bytes: REPLAY_SESSION_KEY_BYTES,
     expiresAtMs: 0,
     oldestAtMs: null,
   };
@@ -205,6 +290,8 @@ export function observeAntigravityReplay(model: string, sessionId: string, parts
     inserted = true;
   }
   if (!inserted) return;
+  // Charge the fixed outer key only when the session is actually stored.
+  if (!existing) replayBytes += REPLAY_SESSION_KEY_BYTES;
   evictInnerCalls(entry);
   entry.expiresAtMs = now + REPLAY_TTL_MS;
   replayCache.set(key, entry);
