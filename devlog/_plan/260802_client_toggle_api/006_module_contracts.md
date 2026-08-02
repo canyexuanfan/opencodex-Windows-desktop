@@ -385,7 +385,7 @@ Named gaps and where they are now closed:
 | OpenCode/Pi `summarize` + `buildContribution` | `011` addendum A |
 | `model-rows.ts` canonical loader body | `011` addendum B |
 | Journal + ownership bodies, `readIntegrationState` | `021_wp2_journal_impl.md` |
-| Writer bodies + the shared `writer-io.ts` seam | `031_wp3_writer_impl.md` |
+| Writer bodies (apply/disable/restore, merge/remove) | `031_wp3_writer_impl.md` |
 | Journal route handler + row derivation | `040` §journal (rewritten in place) |
 | WP6 principal components | `061_wp6_components.md` |
 | docs-site + test filenames | `070` scope list (already concrete) |

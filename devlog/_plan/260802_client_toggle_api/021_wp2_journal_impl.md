@@ -252,7 +252,7 @@ surface uses:
 import { EXPORT_CLIENTS, type ExportModel } from "../clients/config-export";
 import type { OcxConfig } from "../types";
 import { parseConfig } from "./merge";
-import { defaultIntegrationIO, loadTarget, type IntegrationIO } from "./writer-io";
+import { defaultIntegrationIO, loadTarget, type IntegrationIO } from "./config-io";
 
 export interface IntegrationStateInput {
   clientId: IntegrationClientId;
