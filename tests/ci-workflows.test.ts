@@ -44,6 +44,7 @@ describe("GitHub Actions hardening", () => {
     expect(ci.jobs?.gates?.["timeout-minutes"]).toBe(15);
     expect(ci.jobs?.["platform-macos"]?.["timeout-minutes"]).toBe(30);
     expect(ci.jobs?.["platform-windows"]?.["timeout-minutes"]).toBe(30);
+    expect(ci.jobs?.["keyring-smoke"]?.["timeout-minutes"]).toBe(8);
     expect(ci.jobs?.["npm-global-smoke"]?.["timeout-minutes"]).toBe(8);
     expect(ci.jobs?.ci?.["timeout-minutes"]).toBe(5);
     // Every job must stay bounded — an unbounded job can hang a queue for hours.
