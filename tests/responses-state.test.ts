@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   utimesSync,
@@ -1819,12 +1820,37 @@ describe("Responses state admission boundary (oversized direct-spill)", () => {
     expect((expandChained("resp_big") as { input: unknown[] }).input.length).toBeGreaterThan(1);
   });
 
-  test("candidate under the cap stays resident (no direct spill)", () => {
-    setResponseStateByteCapForTests(64 * 1024);
+  test("candidate fitting the cap stays resident at the boundary", () => {
+    setResponseStateByteCapForTests(8 * 1024);
     const directBefore = responseAdmissionCountersForTests().directSpills;
-    rememberResponseState({ model: "m", input: "mid" }, completedResponse("resp_mid", "y".repeat(8 * 1024)));
+    rememberResponseState({ model: "m", input: "mid" }, completedResponse("resp_fit", "y".repeat(7 * 1024)));
     expect(responseAdmissionCountersForTests().directSpills).toBe(directBefore);
-    expect((expandChained("resp_mid") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+    // Resident, not a stub: resident bytes are the evictable class.
+    expect(responseContinuationRetainedStoreSnapshot().evictableBytes).toBeGreaterThan(0);
+    expect((expandChained("resp_fit") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+  });
+
+  test("admission enforces the real spill envelope at the exact boundary", () => {
+    setResponseStateByteCapForTests(1024);
+    // Learn the true envelope (resident encoding + {version, responseId, ...} wrapper).
+    rememberResponseState({ model: "m", input: "env" }, completedResponse("resp_env", "e".repeat(4096)));
+    const dir = responseSpillDirectory();
+    const files = readdirSync(dir);
+    expect(files.length).toBe(1);
+    const envelope = statSync(join(dir, files[0])).size;
+    clearResponseStateMemoryForTests();
+    // Cap = envelope: admitted (envelope is not ABOVE the cap).
+    setResponseSpillPayloadCapForTests(envelope);
+    const directBefore = responseAdmissionCountersForTests().directSpills;
+    rememberResponseState({ model: "m", input: "env" }, completedResponse("resp_env", "e".repeat(4096)));
+    expect(responseAdmissionCountersForTests().directSpills).toBe(directBefore + 1);
+    clearResponseStateMemoryForTests();
+    // Cap = envelope - 1: the resident encoding still fits, but the real spill
+    // envelope does not — post-write enforcement must tombstone it.
+    setResponseSpillPayloadCapForTests(envelope - 1);
+    const dropsBefore = responseAdmissionCountersForTests().oversizedDrops;
+    rememberResponseState({ model: "m", input: "env" }, completedResponse("resp_env", "e".repeat(4096)));
+    expect(responseAdmissionCountersForTests().oversizedDrops).toBe(dropsBefore + 1);
   });
 
   test("candidate above the spill payload ceiling is tombstoned, not retained", () => {
@@ -1859,7 +1885,52 @@ describe("Responses state admission boundary (oversized direct-spill)", () => {
     });
     setResponseSpillPayloadCapForTests(512);
     expect(readResponseSpill("resp_ceiling", ref)).toEqual({ ok: false, reason: "too_large" });
+    // No-read proof: with the file GONE, a read-first implementation would say
+    // "missing"; the ceiling check fires first.
     deleteResponseSpill(ref);
+    expect(readResponseSpill("resp_ceiling", ref)).toEqual({ ok: false, reason: "too_large" });
+  });
+
+  test("over-ceiling same-ID tombstone defers the old generation until durable", async () => {
+    setResponseStateByteCapForTests(1024);
+    rememberResponseState({ model: "m", input: "v1" }, completedResponse("resp_tc", "a".repeat(4096)));
+    const dir = responseSpillDirectory();
+    expect(readdirSync(dir).length).toBe(1);
+    // Over the tightened ceiling: tombstone — but the old generation must NOT be
+    // deleted immediately (a crash would strand the durable old snapshot).
+    setResponseSpillPayloadCapForTests(2048);
+    rememberResponseState({ model: "m", input: "v2" }, completedResponse("resp_tc", "b".repeat(4096)));
+    expect(readdirSync(dir).length).toBe(1);
+    await flushResponseState();
+    // After the tombstone is durable, the deferred unlink drains.
+    expect(readdirSync(dir).length).toBe(0);
+  });
+
+  test("same-ID oversized replacement of a spilled entry keeps crash ordering", async () => {
+    setResponseStateByteCapForTests(4096);
+    rememberResponseState({ model: "m", input: "v1" }, completedResponse("resp_ss", "a".repeat(6 * 1024)));
+    const dir = responseSpillDirectory();
+    const gen1 = readdirSync(dir);
+    expect(gen1.length).toBe(1);
+    rememberResponseState({ model: "m", input: "v2" }, completedResponse("resp_ss", "b".repeat(6 * 1024)));
+    // New generation written; old one deferred, not deleted at swap time.
+    expect(readdirSync(dir).length).toBe(2);
+    await flushResponseState();
+    const gen3 = readdirSync(dir);
+    expect(gen3.length).toBe(1);
+    expect(gen3[0]).not.toBe(gen1[0]);
+    // The replacement replays the NEW content.
+    const expanded = expandChained("resp_ss") as { input: unknown[] };
+    expect(JSON.stringify(expanded.input)).toContain("b".repeat(64));
+  });
+
+  test("oversized symlinked snapshot is refused before parse", () => {
+    const target = join(home, "big-snapshot-target.json");
+    writeFileSync(target, `{"version":2,"states":[${" ".repeat(33 * 1024 * 1024)}]}`);
+    symlinkSync(target, join(home, "responses-state.json"));
+    const refusalsBefore = responseAdmissionCountersForTests().snapshotOversizedRefusals;
+    rememberResponseState({ model: "m", input: "x" }, completedResponse("resp_sl", "ok"));
+    expect(responseAdmissionCountersForTests().snapshotOversizedRefusals).toBe(refusalsBefore + 1);
   });
 
   test("materializing an over-ceiling spill reports spill_too_large", () => {
@@ -1902,8 +1973,9 @@ describe("Responses state admission boundary (oversized direct-spill)", () => {
     const bytesBefore = getStoredResponseBytesForTests();
     rememberResponseState({ model: "m", input: "new" }, completedResponse("resp_swap", "n".repeat(16 * 1024)));
     const bytesAfter = getStoredResponseBytesForTests();
-    // Only the bounded stub replaced the resident: well under the old resident + candidate sum.
-    expect(bytesAfter).toBeLessThan(bytesBefore + 1024);
+    // Only the bounded stub replaced the resident: the delta is the stub/resident
+    // metadata difference, nowhere near the 16 KiB candidate.
+    expect(bytesAfter).toBeLessThan(bytesBefore + 512);
     // The replacement still replays the NEW (spilled) content.
     const expanded = expandChained("resp_swap") as { input: unknown[] };
     expect(expanded.input.length).toBeGreaterThan(1);
