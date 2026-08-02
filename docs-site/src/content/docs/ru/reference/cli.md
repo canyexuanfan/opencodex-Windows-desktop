@@ -240,7 +240,7 @@ refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 Все подкоманды требуют работающего прокси; CLI автоматически определяет записанный runtime-порт.
@@ -298,9 +298,12 @@ plan/label по цепочке фолбэков использует план, �
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 Выбирает существующий аккаунт Codex, OAuth-аккаунт или API-ключ. Для `openai` значение `main`
-выбирает вход Codex App. Выбор для Codex применяется только к **новым сессиям**; существующие
-потоки сохраняют свой аккаунт, а включённый порог автопереключения может позже переопределить
-ручное закрепление. Неизвестные провайдеры или id завершаются с кодом 1. `--json` возвращает:
+выбирает вход Codex App. Выбор Codex Pool очищает process-local affinity и применяется к следующему запросу, включая запрос существующей видимой задачи; после перезапуска прокси или affinity eviction задача также может стать непривязанной, а выполняющиеся запросы сохраняют захваченный аккаунт. Это управляет только Pool routing; Direct mode продолжает использовать caller-owned/native main credential. Проактивное переключение по использованию, повторная аутентификация 401/403, cooldown 429/retry-after, исключение и восстановление после отказа 429/402 до вывода могут позже выбрать другой подходящий Pool-аккаунт. Эти пути восстановления остаются активными, когда переключение по использованию выключено. После смены аккаунта OpenCodex воспроизводит контекст разговора, но prompt cache провайдера может потребовать прогрева. Неизвестные провайдеры
+или id завершаются с кодом 1. `--json` возвращает:
+При **401/403** локальная для процесса привязка к аккаунту сбрасывается и требуется повторная аутентификация.
+При **429** учитывается `Retry-After`, для аккаунта запускается cooldown, привязка сбрасывается,
+после чего запрос может перейти на другой подходящий аккаунт Pool. Эти переходы восстановления
+остаются активными при `autoSwitchThreshold: 0`; значение `0` отключает только проактивное переключение по использованию.
 
 ```text
 { ok: true, provider, type, activeId }
