@@ -73,9 +73,18 @@ order written into `developer_instructions`, and it is reorderable.
 
 ## Dialogs
 
-Built-in rows open **read-only**: the layer's purpose, the exact config key that
-gates it, its default, its current effective value, and — where opencodex can
-read it — the rendered text. Copy button, no editor. Ask item 8.
+Built-in rows open **read-only**: the layer's purpose, its class, the exact
+config key where one exists, its default, and this file's value. Copy button, no
+editor. Ask item 8.
+
+Two things the dialog does **not** show, because nothing produces them:
+
+- **The rendered prompt text.** Codex exposes no API for it, and reconstructing
+  it would mean reimplementing `world_state.rs` against a moving target
+  (`001` §6). `040` says the same.
+- **The effective value.** opencodex reads one of the eight config layers in
+  `003` §1, so it reports `defaultedUserValue` — this file's value — and claims
+  nothing about what the running Codex resolved.
 
 Custom rows open an **editor**: title, body textarea, live compatibility
 warnings (`002` §6), Save, Cancel. Escape cancels and returns focus, matching

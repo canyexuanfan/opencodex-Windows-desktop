@@ -73,10 +73,20 @@ export interface AdoptPreview {
 }
 export interface SalvagePreview {
   body: string;
-  backupPath: string;
+  /** the DIRECTORY backups are written to. No path is reserved by a preview. */
+  backupDir: string;
   /** enumerated so the UI can state them; see §Missing store */
   unrecoverable: readonly string[];
 }
+```
+
+`previewSalvage` returns a directory, not a filename. Naming an exact backup
+path during a read-only preview would either reserve it — making the preview a
+write — or promise a name that exclusive creation may refuse at commit time.
+The actual path is created during the confirmed mutation and returned in its
+`WriteResult`.
+
+```ts
 
 export type WriteResult =
   | { ok: true; changed: boolean; snapshot: PromptLayerSnapshot }
@@ -735,6 +745,13 @@ might read differently.
 24. key without marker → refuse, `drift`/adopt offered, file untouched
 25. adopt on a single-line basic string imports it and takes ownership
 26. adopt on a multi-line or literal string is refused with path and line
+26a. adopt normalizes tabs to four spaces and CRLF to LF
+26b. adopt rejects a forbidden control with its code-point position
+26c. adopt refuses a body that exceeds 64 KiB **after** normalization
+26d. adopt refuses when the composed total would exceed 128 KiB
+26e. **the previewed body is byte-identical to the committed body**
+26f. `owned-malformed` re-adoption runs the same five steps
+26g. `previewSalvage` returns a directory and creates no file
 27. our marker survives an unrelated boolean write
 
 **Store, transaction, recovery**
