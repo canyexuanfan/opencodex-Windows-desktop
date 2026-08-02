@@ -180,7 +180,7 @@ const helpEntries: Record<string, HelpEntry> = {
     ],
   },
   grok: { usage: "ocx grok <status|exclude|include|set|clear|apply> ...", summary: "Manage and apply the Grok Build model fence." },
-  integration: { usage: "ocx integration <claude|grok> ...", summary: "Manage supported client integrations." },
+  integration: { usage: "ocx integration <claude|grok|client> ...", summary: "Manage supported client integrations." },
   system: {
     usage: "ocx system <status|settings|startup|diagnostics|sync|update> ...",
     summary: "Manage headless runtime settings, startup, sync, diagnostics, and updates.",
