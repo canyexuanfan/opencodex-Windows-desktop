@@ -255,6 +255,24 @@ export interface IntegrationIO {
 
 ### Bookkeeping order and compensation (blocker 6)
 
+**HTTP mapping is routed by `reason`, never by `state` (A-gate round 5).**
+A refusal's `state` describes the file; its `reason` describes what went
+wrong. Mapping on state first meant a `write_failed` that happened to occur in
+a `conflict` state was reported as `integration_conflict`, silently dropping
+`message`/`snapshotPath`/`residual` — the recovery information the flag exists
+to deliver. The rule:
+
+| `reason` | HTTP envelope |
+|---|---|
+| `conflict` | `integration_conflict` |
+| `unsafe` | `integration_unsafe` (carries recovery fields) |
+| `drift_requires_confirm` | `integration_drift_confirmation_required` |
+| `snapshot_expired` | `integration_snapshot_expired` |
+| `not_installed` / `non_loopback` | `integration_mutation_failed` |
+| **`write_failed`** | **`integration_mutation_failed`, always, carrying `message`, `snapshotPath`, and `residual`** |
+
+No branch may inspect `state` before `reason`.
+
 Fixed order: **client file → ownership record → journal row.** The record
 precedes the row because a record without a row is just a thin history, while
 a row without a record advertises an operation the classifier cannot
@@ -275,6 +293,27 @@ row; pruning old snapshots afterwards is post-commit best-effort and its
 failure is logged, never surfaced as an append failure. Otherwise a GC error
 would trigger compensation for an operation that already succeeded — the
 phantom row this ordering exists to prevent (blocker 5).
+
+**But best-effort must not mean invisible (A-gate round 5, blocker 4).**
+Snapshots can hold the user's own credentials, so "keep at most 10 per client"
+is a retention promise, not housekeeping. A swallowed prune failure would let
+credential-bearing files accumulate indefinitely while every operation
+reported success. Therefore:
+
+- `pruneSnapshots` returns a structured result
+  (`{ ok: true } | { ok: false; error: string }`) instead of throwing or
+  swallowing.
+- A failure is recorded as a `maintenance` marker under the integrations dir
+  and logged once, never as an operation failure.
+- Every subsequent `appendOperation`, and the reader's first call after
+  startup, retries pruning for that client and clears the marker on success.
+- The status envelope exposes `retentionDegraded: boolean` per client so the
+  GUI can say so rather than the user discovering it in a file listing.
+
+Test: make `rmSync` throw, assert the row is still committed and the operation
+still succeeds, assert the marker exists and `retentionDegraded` is true, then
+let the next operation prune successfully and assert the bound is restored and
+the marker is gone.
 
 Claiming a rollback that did not happen is the one failure mode worse than the
 original error, so the refusal type carries the residual flag:

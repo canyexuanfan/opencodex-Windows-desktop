@@ -1,5 +1,13 @@
 # 011 — WP1: paste-ready serializer and client builders
 
+> **Status: REFERENCE DRAFT, not a paste source (see `007_execution_method.md`).**
+> The bodies below were written against the canonical contracts in `006` and
+> encode the intended shape, but they were never compiled. The implementing
+> phase writes the real files against `tsc`; use this as the design of record
+> and let the compiler settle every signature, import, and type. Known
+> transcription gaps are listed in `007` §6 and are resolved at the keyboard.
+
+
 **A-gate round-3 addendum (read first).** Two items the audit found missing
 from WP1's executable surface, specified here so the phase needs no invention.
 

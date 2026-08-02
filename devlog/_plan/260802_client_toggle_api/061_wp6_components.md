@@ -1,5 +1,13 @@
 # 061 — WP6 paste-ready integration component bodies
 
+> **Status: REFERENCE DRAFT, not a paste source (see `007_execution_method.md`).**
+> The bodies below were written against the canonical contracts in `006` and
+> encode the intended shape, but they were never compiled. The implementing
+> phase writes the real files against `tsc`; use this as the design of record
+> and let the compiler settle every signature, import, and type. Known
+> transcription gaps are listed in `007` §6 and are resolved at the keyboard.
+
+
 Implementation-only overflow for `060_wp6_gui_surfaces.md`. This document is
 part of the same merged GUI work-phase. `006_module_contracts.md` remains the
 shared-type authority and `040_wp4_management_api.md` remains the HTTP authority.
