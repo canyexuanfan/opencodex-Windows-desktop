@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { aggregateCodexPoolCapacity, type CodexCapacityAccount } from "../src/providers/codex-capacity";
+import { aggregateCodexPoolCapacity, CODEX_CAPACITY_MAX_QUOTA_AGE_MS, type CodexCapacityAccount } from "../src/providers/codex-capacity";
 
 const NOW = 1_800_000_000_000;
 const account = (
@@ -97,5 +97,44 @@ describe("configured-weight Codex pool capacity", () => {
     ], NOW);
     expect(fallback.aggregation).toBeNull();
     expect(fallback.currentAccount?.quota?.weeklyPercent).toBe(70);
+  });
+
+  test("mixed-age rows exclude stale capacity and use the oldest included reading", () => {
+    const oldestIncluded = account("plus", 40);
+    oldestIncluded.quota = { ...oldestIncluded.quota!, updatedAt: NOW - 20_000 };
+    const newerIncluded = account("business", 20);
+    newerIncluded.quota = { ...newerIncluded.quota!, updatedAt: NOW - 5_000 };
+    const staleHighWeight = account("pro", 100);
+    staleHighWeight.quota = {
+      ...staleHighWeight.quota!,
+      updatedAt: NOW - CODEX_CAPACITY_MAX_QUOTA_AGE_MS - 1,
+    };
+
+    const result = aggregateCodexPoolCapacity([oldestIncluded, newerIncluded, staleHighWeight], NOW);
+    expect(result.quota?.weeklyPercent).toBeCloseTo(30, 8);
+    expect(result.quota?.updatedAt).toBe(NOW - 20_000);
+    expect(result.aggregation?.weekly?.updatedAt).toBe(NOW - 20_000);
+    expect(result.aggregation).toMatchObject({
+      includedAccounts: 2,
+      excludedAccounts: 1,
+      staleQuotaAccounts: 1,
+      incomplete: true,
+    });
+  });
+
+  test("all-stale rows expose incomplete coverage without an aggregate window", () => {
+    const rows = [account("pro", 80, { active: true, isMain: true }), account("prolite", 20)];
+    for (const row of rows) {
+      row.quota = { ...row.quota!, updatedAt: NOW - CODEX_CAPACITY_MAX_QUOTA_AGE_MS - 1 };
+    }
+    const result = aggregateCodexPoolCapacity(rows, NOW);
+    expect(result.quota).toBeNull();
+    expect(result.aggregation).toMatchObject({
+      includedAccounts: 0,
+      excludedAccounts: 2,
+      staleQuotaAccounts: 2,
+      incomplete: true,
+    });
+    expect(result.aggregation?.weekly).toBeUndefined();
   });
 });

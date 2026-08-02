@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { effectiveCodexAuthAccountId, fetchMainAccountInfo, listCodexAuthAccounts } from "../codex/auth-api";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
 import { resolveEnvValue } from "../config";
@@ -14,6 +15,7 @@ import {
 } from "../lib/state-store-sweeper";
 import {
   aggregateCodexPoolCapacity,
+  CODEX_CAPACITY_MAX_QUOTA_AGE_MS,
   type CodexCapacityAggregation,
   type CodexCapacityQuota,
 } from "./codex-capacity";
@@ -26,7 +28,7 @@ const REQUEST_TIMEOUT_MS = 8_000;
 const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
 const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
 /** Keep a failed probe's previous row at most this long before dropping it. */
-const LAST_GOOD_MAX_AGE_MS = 30 * 60_000;
+const LAST_GOOD_MAX_AGE_MS = CODEX_CAPACITY_MAX_QUOTA_AGE_MS;
 
 export interface ProviderQuotaWindow {
   label: string;
@@ -76,7 +78,73 @@ function cacheKey(config: OcxConfig): string {
     .map(([name, provider]) => `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${providerCodexAccountMode(name, provider) ?? "none"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)
     .sort()
     .join("|");
-  return `${config.defaultProvider}|${config.activeCodexAccountId ?? ""}|${effectiveCodexAuthAccountId(config)}|${providers}`;
+  return `${config.defaultProvider}|${providers}`;
+}
+
+function quotaSignatureValue(quota: CodexCapacityQuota | null): unknown {
+  if (!quota) return null;
+  return {
+    fiveHourPercent: quota.fiveHourPercent,
+    fiveHourResetAt: quota.fiveHourResetAt,
+    weeklyPercent: quota.weeklyPercent,
+    weeklyResetAt: quota.weeklyResetAt,
+    monthlyPercent: quota.monthlyPercent,
+    monthlyResetAt: quota.monthlyResetAt,
+    updatedAt: quota.updatedAt,
+    customWindows: [...(quota.customWindows ?? [])]
+      .map(window => ({ label: window.label, percent: window.percent, resetAt: window.resetAt }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+  };
+}
+
+/** Hash only presentation-relevant state; account ids and email addresses never enter the key. */
+function cacheKeyWithAggregationState(config: OcxConfig): string | Promise<string> {
+  const base = cacheKey(config);
+  const poolEnabled = Object.entries(config.providers).some(([name, provider]) => (
+    provider.disabled !== true
+    && isBuiltInChatGptForwardProvider(name, provider)
+    && providerCodexAccountMode(name, provider) !== "direct"
+  ));
+  if (!poolEnabled) return base;
+  return (async () => {
+    try {
+      const activeId = effectiveCodexAuthAccountId(config);
+      const rows = (await listCodexAuthAccounts(config, false)).map(account => ({
+        isMain: account.isMain,
+        active: account.id === activeId,
+        plan: account.plan?.trim().toLowerCase() ?? null,
+        paused: account.paused,
+        needsReauth: account.needsReauth === true,
+        quota: quotaSignatureValue(account.quota as CodexCapacityQuota | null),
+      }));
+      const canonicalRows = rows.map(row => JSON.stringify(row)).sort();
+      const digest = createHash("sha256").update(JSON.stringify(canonicalRows)).digest("hex").slice(0, 24);
+      return `${base}|codex-pool:${digest}`;
+    } catch {
+      return `${base}|codex-pool:unavailable`;
+    }
+  })();
+}
+
+function publicCapacityWindow(window: import("./codex-capacity").CodexCapacityWindowAggregation) {
+  const { totalWeight: _totalWeight, consumedWeight: _consumedWeight, remainingWeight: _remainingWeight, ...safe } = window;
+  return safe;
+}
+
+/** Management API metadata intentionally omits configured/weighted unit counts. */
+function publicCapacityAggregation(aggregation: CodexCapacityAggregation): CodexCapacityAggregation {
+  return {
+    ...aggregation,
+    ...(aggregation.fiveHour ? { fiveHour: publicCapacityWindow(aggregation.fiveHour) } : {}),
+    ...(aggregation.weekly ? { weekly: publicCapacityWindow(aggregation.weekly) } : {}),
+    ...(aggregation.monthly ? { monthly: publicCapacityWindow(aggregation.monthly) } : {}),
+    ...(aggregation.customWindows ? {
+      customWindows: aggregation.customWindows.map(window => ({
+        label: window.label,
+        ...publicCapacityWindow(window),
+      })),
+    } : {}),
+  };
 }
 
 function hasQuotaRows(quota: ProviderQuota | null | undefined): quota is ProviderQuota {
@@ -165,12 +233,17 @@ async function fetchChatGptForwardQuota(
     ?? accounts[0];
   const capacity = aggregateCodexPoolCapacity(capacityAccounts, Date.now());
   if (capacity.aggregation && capacity.quota) {
-    return report(provider, "chatgpt:wham", capacity.quota as ProviderQuota, capacity.aggregation);
+    return report(provider, "chatgpt:wham", capacity.quota as ProviderQuota, publicCapacityAggregation(capacity.aggregation));
   }
   const quota = active?.quota
     ? { ...active.quota, updatedAt: active.quota.updatedAt ?? Date.now() } as CodexCapacityQuota
     : null;
-  return quota ? report(provider, "chatgpt:wham", quota as ProviderQuota) : null;
+  return quota ? report(
+    provider,
+    "chatgpt:wham",
+    quota as ProviderQuota,
+    capacity.aggregation ? publicCapacityAggregation(capacity.aggregation) : undefined,
+  ) : null;
 }
 
 function centsValue(value: unknown): number | undefined {
@@ -936,7 +1009,8 @@ async function maybeFetchProviderQuota(
 }
 
 export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh = false): Promise<ProviderQuotaResponse> {
-  const key = cacheKey(config);
+  const keyCandidate = cacheKeyWithAggregationState(config);
+  const key = typeof keyCandidate === "string" ? keyCandidate : await keyCandidate;
   const writerGeneration = captureConfigGeneration();
   const now = Date.now();
   // The cache fast path must not extend a preserved last-good row past its 30-minute bound:
@@ -972,7 +1046,9 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
     // Commit only when this probe still holds authority (no clear/force superseded it).
     if (epoch === invalidationEpoch) {
       const reports = response.reports.filter(item => mayCommitProviderQuotaKey(item.provider, writerGeneration));
-      cache = { key, ts: Date.now(), response: { ...response, reports } };
+      const commitKeyCandidate = cacheKeyWithAggregationState(config);
+      const commitKey = typeof commitKeyCandidate === "string" ? commitKeyCandidate : await commitKeyCandidate;
+      cache = { key: commitKey, ts: Date.now(), response: { ...response, reports } };
     }
     return response;
   })();

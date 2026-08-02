@@ -218,7 +218,7 @@ export default function ProviderWorkspaceShell({
       // be bypassed. The old derived-key effect always read the cached view, which is why a
       // switch could leave the bars showing the previous account's quota.
       void fetch(`${apiBase}/api/provider-quotas${quotaForceRefresh ? "?refresh=1" : ""}`)
-        .then(r => readJsonIfOk<{ reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown }> }>(r))
+        .then(r => readJsonIfOk<{ reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown; aggregation?: unknown }> }>(r))
         .then((data) => {
           if (cancelled || !data) return;
           // Merge so a partial/failed probe cannot wipe a previously good provider row.
@@ -231,6 +231,7 @@ export default function ProviderWorkspaceShell({
                 source: report.source,
                 updatedAt: typeof report.updatedAt === "number" ? report.updatedAt : Date.now(),
                 quota: report.quota,
+                ...(report.aggregation !== undefined ? { aggregation: report.aggregation } : {}),
               };
             }
             writeSessionListCache(quotasCacheKey, next);
