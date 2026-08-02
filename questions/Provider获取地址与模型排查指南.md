@@ -58,3 +58,8 @@ Dashboard 添加 Provider 时展示的“获取 API 密钥”链接可能过期�
 - ✅ 2026-08-02：对 50 个唯一 `dashboardUrl` 改用 Node `fetch` 复核，确认 Fireworks 旧入口 `https://fireworks.ai/account/api-keys` 跳转后 404；修复 registry 与 free-directory 的 Fireworks/Fire Pass 入口为 `https://app.fireworks.ai/settings/users/api-keys`。
 - ✅ 2026-08-02：将 Xiaomi MiMo 与 MiMo Free 的控制台入口从主页 `https://xiaomimimo.com` 改为可达控制台 `https://platform.xiaomimimo.com`；旧 Fireworks 与旧 Xiaomi URL 固定字符串扫描均无命中。
 - ✅ 2026-08-02：补充 provider 回归：已知旧 dashboard URL 禁止回归；手写 `models` 且设置 `defaultModel` 的 registry 条目必须保证默认模型在候选列表中。
+
+## 2026-08-02 本轮补充记录
+
+- ❌ Provider 回归初跑失败：`bun test tests\provider-registry-parity.test.ts tests\zhipu-bigmodel-provider.test.ts` 中 3 个断言仍按旧模型合同检查。DeepSeek 仍期待已退役 `deepseek-chat` / `deepseek-reasoner`；Kimi coding 仍期待旧 K3 列表；`glm-cn` free-directory 仍期待单一 `glm-4.7-flash`。实际 registry/free-directory 已刷新为 DeepSeek V4、Kimi K3 `k3-256k`/`k3`/`k3[1m]` 兼容族、GLM 5.2/5.1/5。
+- ✅ 已将测试合同对齐当前模型刷新：DeepSeek 只保留 `deepseek-v4-pro` / `deepseek-v4-flash`；Kimi coding 检查 `k3-256k` 默认值、`k3`/`k3[1m]` 1M 上下文和 `kimi-for-coding-highspeed`；BigModel CN free-directory 检查 `glm-5.2`、`glm-5.1`、`glm-5`、`glm-4.7-flash`。复跑 `bun test tests\provider-registry-parity.test.ts tests\zhipu-bigmodel-provider.test.ts`：37/37、624 个断言通过。

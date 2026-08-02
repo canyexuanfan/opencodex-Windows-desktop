@@ -84,7 +84,7 @@ describe("Zhipu BigModel provider", () => {
     expect(directoryIds.has("zhipu-bigmodel")).toBe(false);
     expect(FREE_PROVIDER_DIRECTORY.find(row => row.id === "glm-cn")).toMatchObject({
       dashboardUrl: "https://bigmodel.cn/apikey/platform",
-      models: ["glm-4.7-flash"],
+      models: ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7-flash"],
     });
 
     // A saved `glm` provider keeps its own destination, unaffected by this registry entry.

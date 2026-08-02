@@ -101,8 +101,8 @@ describe("GUI update check", () => {
       fetchDesktopInstallerRelease: async channel => ({
         latestVersion: channel === "latest" ? "2.8.1" : "2.8.1-preview.1",
         releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.8.1",
-        downloadUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/download/v2.8.1/OpenCodex-Setup-x64.exe",
-        assetName: "OpenCodex-Setup-x64.exe",
+        downloadUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/download/v2.8.1/OpenCodex-Setup-2.8.1-x64.exe",
+        assetName: "OpenCodex-Setup-2.8.1-x64.exe",
       }),
     });
 
@@ -114,7 +114,7 @@ describe("GUI update check", () => {
     expect(result.updateAvailable).toBe(true);
     expect(result.canUpdate).toBe(false);
     expect(result.reason).toBe("desktop_installer_manual");
-    expect(result.downloadUrl).toContain("OpenCodex-Setup-x64.exe");
+    expect(result.downloadUrl).toContain("OpenCodex-Setup-2.8.1-x64.exe");
     expect(result.releaseNotesUrl).toContain("canyexuanfan/opencodex-Windows-desktop");
   });
 

@@ -128,10 +128,14 @@ test("the delete control is a sibling of the option, never a descendant", async 
 
   for (const option of options) {
     const wrapper = option.parentElement!;
+    const actions = wrapper.querySelector(".pws-rail-row-actions");
     const trash = wrapper.querySelector(".pws-rail-row-remove");
+    expect(actions).not.toBeNull();
     expect(trash).not.toBeNull();
     // Sibling, not child: nesting would be invalid HTML inside role="option".
-    expect(trash!.parentElement).toBe(wrapper);
+    expect(actions!.parentElement).toBe(wrapper);
+    expect(trash!.parentElement).toBe(actions);
+    expect(option.contains(actions)).toBe(false);
     expect(option.contains(trash)).toBe(false);
   }
 });
@@ -141,12 +145,18 @@ test("the listbox still sees only the rows", async () => {
 
   const list = host.querySelector('[role="listbox"]')!;
   const options = Array.from(list.querySelectorAll('[role="option"]'));
+  const actions = Array.from(list.querySelectorAll(".pws-rail-row-actions"));
   const trashes = Array.from(list.querySelectorAll(".pws-rail-row-remove"));
 
   // The keyboard handler does options.findIndex(el => el === active || el.contains(active)).
   // A trash button must never satisfy either branch.
   expect(options.length).toBe(2);
+  expect(actions.length).toBe(2);
   expect(trashes.length).toBe(2);
+  for (const actionGroup of actions) {
+    expect(options.some((o) => o === actionGroup || o.contains(actionGroup))).toBe(false);
+    expect(actionGroup.getAttribute("aria-hidden")).toBe("true");
+  }
   for (const trash of trashes) {
     expect(options.some((o) => o === trash || o.contains(trash))).toBe(false);
   }
@@ -179,7 +189,24 @@ test("clicking trash issues no DELETE before confirmation", async () => {
 test("the trash control stays out of the tab order", async () => {
   await mountShell();
 
+  const actions = host.querySelector(".pws-rail-row-actions") as HTMLElement;
   const trash = host.querySelector(".pws-rail-row-remove") as HTMLButtonElement;
+  expect(actions.getAttribute("aria-hidden")).toBe("true");
   expect(trash.tabIndex).toBe(-1);
-  expect(trash.getAttribute("aria-hidden")).toBe("true");
+});
+
+test("the default marker is in the hover group before trash and not in the option", async () => {
+  await mountShell();
+
+  const firstOption = host.querySelector('[role="option"]')!;
+  const firstWrapper = firstOption.parentElement!;
+  const actions = firstWrapper.querySelector(".pws-rail-row-actions")!;
+  const star = actions.querySelector(".pwi-default-star")!;
+  const trash = actions.querySelector(".pws-rail-row-remove")!;
+
+  expect(actions.classList.contains("pws-rail-row-actions--default")).toBe(true);
+  expect(star).not.toBeNull();
+  expect(trash).not.toBeNull();
+  expect(firstOption.contains(star)).toBe(false);
+  expect(Array.from(actions.children).indexOf(star)).toBeLessThan(Array.from(actions.children).indexOf(trash));
 });

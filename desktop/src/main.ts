@@ -60,9 +60,26 @@ if (!hasSingleInstanceLock) {
     mainWindow.webContents.send("desktop:status-changed", status);
   }
 
-  async function loadDashboard(port: number): Promise<void> {
+  function currentDashboardHash(): string {
+    if (!mainWindow || mainWindow.isDestroyed()) return "";
+    try {
+      const currentUrl = new URL(mainWindow.webContents.getURL());
+      if (currentUrl.protocol !== "http:" || currentUrl.hostname !== "127.0.0.1") return "";
+      return currentUrl.hash;
+    } catch {
+      return "";
+    }
+  }
+
+  function dashboardUrl(port: number, hash = ""): string {
+    const url = new URL(`http://127.0.0.1:${port}/`);
+    if (hash) url.hash = hash.startsWith("#") ? hash.slice(1) : hash;
+    return url.toString();
+  }
+
+  async function loadDashboard(port: number, hash = currentDashboardHash()): Promise<void> {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    const url = `http://127.0.0.1:${port}/`;
+    const url = dashboardUrl(port, hash);
     navigationPolicy?.setExpectedOrigin(new URL(url).origin);
     await mainWindow.loadURL(url);
     if (!mainWindow.isDestroyed()) {

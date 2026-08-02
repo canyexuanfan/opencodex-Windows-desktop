@@ -33,6 +33,11 @@ function parseReleaseTag(tag: string): ParsedReleaseTag | null {
   };
 }
 
+export function desktopVersionFromReleaseBoundary(value: string): string | null {
+  const match = value.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/);
+  return match ? match[0] : null;
+}
+
 /** SemVer identifier compare: numeric parts by number; numeric < non-numeric. */
 function comparePrereleaseIds(a: string, b: string): number {
   const aParts = a.split(".");
@@ -297,11 +302,13 @@ export function assembleReleaseNotes(input: {
   repository?: string;
 }): string {
   const parts: string[] = [];
+  const version = desktopVersionFromReleaseBoundary(input.compareTo ?? input.npmMetadata);
+  const installerName = version ? `OpenCodex-Setup-${version}-x64.exe` : "OpenCodex-Setup-<version>-x64.exe";
   parts.push(input.npmMetadata.trim());
   parts.push([
     "## Windows desktop installer",
     "",
-    "Download `OpenCodex-Setup-x64.exe` from this release for the Windows desktop app.",
+    `Download \`${installerName}\` from this release for the Windows desktop app.`,
     "Only the installer build is published. Portable builds are intentionally reserved for a future advanced/portable track if users ask for it.",
   ].join("\n"));
 

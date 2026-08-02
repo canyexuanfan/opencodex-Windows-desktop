@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useT } from "../../i18n/shared";
-import { IconFilter, IconSearch, IconBoxes, IconGlobe, IconLock, IconKey, IconTrash } from "../../icons";
+import { IconFilter, IconSearch, IconBoxes, IconGlobe, IconLock, IconKey, IconStar, IconTrash } from "../../icons";
 import {
   applyActiveAccountReauth,
   buildProviderWorkspace,
@@ -489,27 +489,33 @@ export default function ProviderWorkspaceShell({
                       onClick={() => onSelect(item.name)}
                       onFocus={() => setRailFocusName(item.name)}
                     />
-                    {onRemoveProvider && (
-                      <button
-                        type="button"
-                        className="pws-rail-row-remove"
-                        // Mouse accelerator only. Keyboard and screen-reader users already
-                        // have the labelled delete control in the provider detail header,
-                        // and adding this to the tab order would disturb option roving.
-                        tabIndex={-1}
-                        aria-hidden="true"
-                        onClick={event => {
-                          // Defensive only: as a sibling this never reaches the row's
-                          // handler, but it keeps the intent explicit if the wrapper ever
-                          // gains a click handler of its own.
-                          event.stopPropagation();
-                          onRemoveProvider(item.name);
-                        }}
-                        title={t("pws.removeConfirmTitle")}
-                      >
-                        <IconTrash width={14} height={14} />
-                      </button>
-                    )}
+                    <span className={`pws-rail-row-actions${defaultProvider === item.name ? " pws-rail-row-actions--default" : ""}`} aria-hidden="true">
+                      {defaultProvider === item.name && (
+                        <span className="pwi-default-star" title={t("prov.defaultBadge")}>
+                          <IconStar width={14} height={14} />
+                        </span>
+                      )}
+                      {onRemoveProvider && (
+                        <button
+                          type="button"
+                          className="pws-rail-row-remove"
+                          // Mouse accelerator only. Keyboard and screen-reader users already
+                          // have the labelled delete control in the provider detail header,
+                          // and adding this to the tab order would disturb option roving.
+                          tabIndex={-1}
+                          onClick={event => {
+                            // Defensive only: as a sibling this never reaches the row's
+                            // handler, but it keeps the intent explicit if the wrapper ever
+                            // gains a click handler of its own.
+                            event.stopPropagation();
+                            onRemoveProvider(item.name);
+                          }}
+                          title={t("pws.removeConfirmTitle")}
+                        >
+                          <IconTrash width={14} height={14} />
+                        </button>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>

@@ -62,8 +62,9 @@ describe("desktop package contract", () => {
       createDesktopShortcut: "always",
       createStartMenuShortcut: true,
       deleteAppDataOnUninstall: false,
-      artifactName: "OpenCodex-Setup-x64.${ext}",
+      artifactName: "OpenCodex-Setup-${version}-x64.${ext}",
     });
+    expect(packageJson.build?.nsis?.artifactName).toContain("${version}");
     expect(existsSync(path.resolve(import.meta.dir, "..", "build", "icon.ico"))).toBe(true);
   });
 

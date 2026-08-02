@@ -345,18 +345,19 @@ const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "MiniMax-M2.5": ["text"],
 };
 
-// 260717 Kimi K3: the subscription endpoint uses one upstream id (`k3`) for both
-// entitlement tiers. Bare `k3` advertises the Moderato 256K ceiling; the local `[1m]`
-// alias advertises Allegretto's 1M ceiling and is stripped before the upstream request.
-// The separately billed Moonshot API uses `kimi-k3`.
+// 260802 Kimi K3 refresh: current Kimi Code docs expose `k3` for the 1M context
+// model and `k3-256k` for the 256K daily coding model. Keep `k3[1m]` as a local
+// compatibility alias for older saved configs/selectors; bracket stripping rewrites it
+// to the upstream `k3` id. The separately billed Moonshot API uses `kimi-k3`.
 // Evidence: https://www.kimi.com/code/docs/en/kimi-code/models.html
 //           https://www.kimi.com/code/docs/en/kimi-code/error-reference.html
 const KIMI_K3_STANDARD_CONTEXT_WINDOW = 262_144;
 const KIMI_K3_1M_CONTEXT_WINDOW = 1_048_576;
-const KIMI_CODING_K3_MODELS = ["k3", "k3[1m]"];
+const KIMI_CODING_K3_MODELS = ["k3-256k", "k3", "k3[1m]"];
 const KIMI_LEGACY_API_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
 const KIMI_API_MODELS = ["kimi-k3", ...KIMI_LEGACY_API_MODELS];
-const KIMI_CODING_MODELS = [...KIMI_CODING_K3_MODELS, ...KIMI_LEGACY_API_MODELS, "kimi-for-coding"];
+const KIMI_CODING_COMPAT_MODELS = [...KIMI_LEGACY_API_MODELS, "kimi-for-coding", "kimi-for-coding-highspeed"];
+const KIMI_CODING_MODELS = [...KIMI_CODING_K3_MODELS, ...KIMI_CODING_COMPAT_MODELS];
 const KIMI_THINKING_MODELS = KIMI_CODING_MODELS;
 const KIMI_CODING_NO_REASONING_MODELS = KIMI_CODING_MODELS.filter(id => !KIMI_CODING_K3_MODELS.includes(id));
 const KIMI_API_NO_REASONING_MODELS = KIMI_API_MODELS.filter(id => id !== "kimi-k3");
@@ -399,7 +400,7 @@ const NVIDIA_NIM_KIMI_MODELS = [
   "moonshotai/kimi-k2-instruct", "moonshotai/kimi-k2-instruct-0905",
 ];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
-  KIMI_CODING_MODELS.map(id => [id, id === "k3[1m]" ? KIMI_K3_1M_CONTEXT_WINDOW : KIMI_K3_STANDARD_CONTEXT_WINDOW]),
+  KIMI_CODING_MODELS.map(id => [id, id === "k3" || id === "k3[1m]" ? KIMI_K3_1M_CONTEXT_WINDOW : KIMI_K3_STANDARD_CONTEXT_WINDOW]),
 );
 const KIMI_CODING_MODEL_INPUT_MODALITIES = Object.fromEntries(
   KIMI_CODING_K3_MODELS.map(id => [id, ["text", "image"]]),
@@ -572,7 +573,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     jawcodeBundle: "moonshot",
     note: "Log in with your Kimi account",
     models: KIMI_CODING_MODELS,
-    defaultModel: "kimi-k2.7-code",
+    defaultModel: "k3-256k",
     modelContextWindows: KIMI_CODING_MODEL_CONTEXT_WINDOWS,
     modelInputModalities: KIMI_CODING_MODEL_INPUT_MODALITIES,
     // K3 accepts low/high/max; Codex aliases are normalized by the model-scoped wire map.
@@ -651,7 +652,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   {
     id: "opencode-go", label: "opencode go", adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1",
-    authKind: "key", featured: true, dashboardUrl: "https://opencode.ai/auth", defaultModel: "kimi-k2.7-code",
+    authKind: "key", featured: true, dashboardUrl: "https://opencode.ai/auth", defaultModel: "glm-5.2",
     jawcodeBundle: "opencode-go", note: "GLM, DeepSeek, Kimi, Qwen, MiMo…",
     modelContextWindows: { "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW },
     modelInputModalities: { "kimi-k3": ["text", "image"] },
@@ -811,7 +812,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     dashboardUrl: "https://platform.deepseek.com/api_keys",
     // deepseek-chat/deepseek-reasoner are upstream-deprecated at 2026-07-24 15:59 UTC;
     // kept until then. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
-    models: ["deepseek-chat", "deepseek-reasoner", ...DEEPSEEK_THINKING_MODELS],
+    models: [...DEEPSEEK_THINKING_MODELS],
     defaultModel: "deepseek-v4-flash",
     modelContextWindows: { "deepseek-v4-flash": 1_000_000, "deepseek-v4-pro": 1_000_000 },
     /* [Decision Log]
@@ -825,7 +826,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Issue #88: every DeepSeek API model is text-only input (no image support upstream) — the
     // vision sidecar describes attached images for them, and the catalog advertises image input
     // on their behalf (same treatment as opencode-go's DeepSeek V4 entries above).
-    noVisionModels: ["deepseek-chat", "deepseek-reasoner", ...DEEPSEEK_THINKING_MODELS],
+    noVisionModels: [...DEEPSEEK_THINKING_MODELS],
   },
   // llama-3.3-70b was deprecated by Cerebras on 2026-02-16. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://cloud.cerebras.ai/platform/apikeys", defaultModel: "gpt-oss-120b" },
@@ -839,7 +840,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   {
     id: "moonshot", label: "Moonshot (Kimi API)", baseUrl: "https://api.moonshot.ai/v1", adapter: "openai-chat", authKind: "key",
-    dashboardUrl: "https://platform.moonshot.ai/console/api-keys", defaultModel: "kimi-k2.7-code", jawcodeBundle: "moonshot",
+    dashboardUrl: "https://platform.moonshot.ai/console/api-keys", defaultModel: "kimi-k3", jawcodeBundle: "moonshot",
     models: KIMI_API_MODELS,
     modelContextWindows: KIMI_API_MODEL_CONTEXT_WINDOWS,
     modelInputModalities: KIMI_API_MODEL_INPUT_MODALITIES,
@@ -1114,7 +1115,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   {
     id: "kimi-code", label: "Kimi (coding)", baseUrl: "https://api.kimi.com/coding/v1", adapter: "openai-chat", authKind: "key",
-    dashboardUrl: "https://platform.moonshot.cn/console/api-keys", defaultModel: "kimi-k2.7-code",
+    dashboardUrl: "https://platform.moonshot.cn/console/api-keys", defaultModel: "k3-256k",
     modelSuffixBracketStrip: true,
     // API-key form of the same Kimi Code Plan transport; keep cache affinity identical to OAuth.
     promptCacheKey: true,

@@ -248,11 +248,29 @@
   position: relative;
 }
 
-.pws-rail-row-remove {
+.pws-rail-row-actions {
   position: absolute;
   right: var(--space-2);
   top: 50%;
   transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: var(--radius-xs);
+  /* Opaque so the status dot underneath does not show through. */
+  background: var(--surface);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-fast), background var(--motion-fast);
+}
+
+.pws-rail-row-actions--default {
+  background: transparent;
+  opacity: 1;
+}
+
+.pws-rail-row-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -262,23 +280,38 @@
   appearance: none;
   border: none;
   border-radius: var(--radius-xs);
-  /* Opaque so the status dot underneath does not show through. */
-  background: var(--surface);
+  background: transparent;
   color: var(--red);
   cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
   transition: opacity var(--motion-fast), background var(--motion-fast);
 }
 
-.pws-rail-row-wrap:hover .pws-rail-row-remove,
-.pws-rail-row-wrap:focus-within .pws-rail-row-remove {
+.pws-rail-row-actions--default .pws-rail-row-remove {
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.pws-rail-row-wrap:hover .pws-rail-row-actions,
+.pws-rail-row-wrap:focus-within .pws-rail-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pws-rail-row-wrap:hover .pws-rail-row-actions--default,
+.pws-rail-row-wrap:focus-within .pws-rail-row-actions--default {
+  background: var(--surface);
+}
+
+.pws-rail-row-wrap:hover .pws-rail-row-actions .pws-rail-row-remove,
+.pws-rail-row-wrap:focus-within .pws-rail-row-actions .pws-rail-row-remove {
+  width: 24px;
   opacity: 1;
   pointer-events: auto;
 }
 
 /* Keep it legible above the selected row's tinted background. */
-.pws-rail-row-wrap:hover .providers-workspace-rail-row--selected ~ .pws-rail-row-remove {
+.pws-rail-row-wrap:hover .providers-workspace-rail-row--selected ~ .pws-rail-row-actions {
   background: var(--raised);
 }
 
@@ -289,7 +322,7 @@
 @media (hover: none) {
   /* Touch devices have no hover state, so this accelerator would either never appear
      or appear permanently. Those users take the detail-header delete control. */
-  .pws-rail-row-remove {
+  .pws-rail-row-actions {
     display: none;
   }
 }
@@ -383,6 +416,11 @@
 .pwi-default-star {
   color: var(--amber);
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 24px;
+  border-radius: var(--radius-xs);
 }
 
 .providers-workspace-rail-status {

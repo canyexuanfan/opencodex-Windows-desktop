@@ -962,3 +962,13 @@ Codex / Claude Code / 其他现有客户端
 - [x] 已重新生成桌面资源树并只重打 NSIS 安装版；`desktop/out` 仅有 `OpenCodex-Setup-x64.exe` 与 `.blockmap`，无 Portable。最新 Setup SHA-256=`DDC0DF9E806B061DA949669CB1CD785822D3C7B70A449D4058F87F4480BC6C1E`。
 - [x] 本轮 `C:\tmp\opencodex-resource-stage33-20260802` 与 `C:\tmp\opencodex-installer-stage33-20260802` 已按精确路径清理为不存在；未重启、关闭或修改当前正在使用的真实 Codex。
 - [ ] 真实安装后的左下角停止/开启切换和顶部菜单隐藏，仍建议用户用最新 `desktop/out/OpenCodex-Setup-x64.exe` 覆盖安装后目视确认；本轮没有重启当前 Codex 会话。
+# 阶段 34：Provider/桌面交互与带版本安装包收尾（2026-08-02）
+- [x] Provider 默认标记交互修复：默认 Provider 星标默认可见；鼠标悬停/聚焦该行时删除按钮从右侧展开，星标自动左移到删除按钮左侧，避免被覆盖，同时保持删除按钮不进入 roving option 的 tab 顺序。
+- [x] 桌面端开启/重启代理保留当前页面：从 Provider、模型、日志等页面点击开启代理时保留当前 hash route，不再强制跳回仪表盘。
+- [x] Provider 地址与模型继续收口：智谱 BigModel 后续补齐外，Kimi K3、DeepSeek V4、GLM free-directory 等过时模型/默认项已同步刷新；Provider 回归测试覆盖默认模型、过期 URL 和静态候选列表。
+- [x] 版本号与更新检测修正：桌面壳版本继续跟随根包 `2.8.0`；安装包文件名改为带版本号 `OpenCodex-Setup-2.8.0-x64.exe`；桌面更新检测从 fork GitHub Release tag/name 解析版本，并只接受对应版本的 `OpenCodex-Setup-<version>-x64.exe` 安装版资产，不接受 portable、无版本名 Setup 或错误命名模式。
+- [x] README 与 Release notes 文案改为引导版本化安装包；便携版继续关闭，未来如有需求再做 advanced/portable 单独构建。
+- [x] 最终安装版已重建：`desktop/out/OpenCodex-Setup-2.8.0-x64.exe`，SHA-256=`368F70370A7BC95B6C1C560EC938629DC91BB8582200EF2FBD893B32B053022D`；`desktop/out` 中无 `OpenCodex-Setup-x64.exe`、无 `OpenCodex-Portable-x64.exe`。
+- [x] 本轮临时目录已清理：`C:\tmp`、`%TEMP%\ocx-update-job-30732-*` 与仓库 `.tmp` 的 stage34 精确临时目录复核输出 `STAGE34_TEMP_CLEAN`。
+- [x] 验证通过：GUI 锁定 Bun 全套 446/446；GUI lint/i18n/build；desktop tests 25/25；desktop build；root typecheck；Provider/Router 聚焦 58/58；Release/update/version 聚焦 64/64；git diff --check。
+- [ ] 未重启或关闭当前正在使用的 Codex；真实覆盖安装后的桌面快捷方式/开始菜单图标、安装向导视觉、受信签名链和系统重启/睡眠唤醒仍建议由用户用最新安装包目视验收。

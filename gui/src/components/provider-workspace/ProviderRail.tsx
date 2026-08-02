@@ -5,7 +5,7 @@
  */
 /* eslint-disable react-refresh/only-export-components -- label helpers co-locate with the rail row */
 import { useT, type TFn } from "../../i18n/shared";
-import { IconServer, IconStar } from "../../icons";
+import { IconServer } from "../../icons";
 import {
   binProviderStatus,
   isFreeProvider,
@@ -115,15 +115,6 @@ export function RailRow({ item, selected, tabbable, modelCount, isDefault, showC
         </span>
       </span>
       <span className="providers-workspace-rail-trail">
-        {isDefault && (
-          <span
-            className="pwi-default-star"
-            title={t("prov.defaultBadge")}
-            aria-label={t("prov.defaultBadge")}
-          >
-            <IconStar width={17} height={17} aria-hidden="true" />
-          </span>
-        )}
         <span className={railStatusCls(item)} title={status} aria-hidden="true" />
       </span>
     </button>
