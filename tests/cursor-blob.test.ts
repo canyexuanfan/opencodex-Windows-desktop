@@ -797,7 +797,7 @@ describe("Cursor bounded blob store", () => {
     storeCursorBlob(bytes("a"), scope);
     storeCursorBlob(bytes("b"), scope);
     sealCursorBlobRequestScope(scope);
-    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(2);
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(2 + 2 * 66);
     releaseCursorBlobRequestScope(scope);
     releaseCursorBlobRequestScope(scope);
     expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(0);
@@ -875,7 +875,7 @@ describe("Cursor bounded blob store", () => {
     setBlobReply(remoteId, bytes("rem"));
     storeCursorBlob(bytes("loc"));
     expectBlobMiss(remoteId);
-    expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({ count: 1, bytes: 3 + 66, evictableBytes: 3 });
+    expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({ count: 1, bytes: 3 + 66, evictableBytes: 3 + 66 });
     expect(cursorBlobStoreDebugSnapshotForTests()[0]?.provenance).toBe("local-regenerated");
   });
 
@@ -894,7 +894,7 @@ describe("Cursor bounded blob store", () => {
       now = 112;
       releaseCursorBlobRequestScope(scope);
       const snapshot = cursorBlobRetainedStoreSnapshot();
-      expect(snapshot).toMatchObject({ bytes: 6 + 2 * 66, evictableBytes: 6, pinnedBytes: 0, oldestAt: 100 });
+      expect(snapshot).toMatchObject({ bytes: 6 + 2 * 66, evictableBytes: 6 + 2 * 66, pinnedBytes: 0, oldestAt: 100 });
       expect(evictOldestCursorBlobForBudget()).toBe(3 + 66);
       expectBlobMiss(remoteId);
       expectBlobHit(localId, bytes("loc"));
@@ -916,7 +916,7 @@ describe("Cursor bounded blob store", () => {
     const hydratedScope = createCursorBlobRequestScope();
     const hydrated = storeCursorBlob(bytes("hydrate"), hydratedScope);
     sealCursorBlobRequestScope(hydratedScope);
-    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(7);
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(7 + 66);
     hydrateBlob(hydrated, hydratedScope);
     expect(cursorBlobRetainedStoreSnapshot().count).toBe(0);
 
@@ -936,7 +936,7 @@ describe("Cursor bounded blob store", () => {
     try {
       setCursorBlobLimitsForTests({ ttlMs: 10 });
       setBlobReply(sha256(bytes("remote")), bytes("remote"));
-      expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({ count: 1, pinnedBytes: 6 });
+      expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({ count: 1, pinnedBytes: 6 + 66 });
       Date.now = () => 111;
       timers.at(-1)!();
       expect(cursorBlobRetainedStoreSnapshot().count).toBe(0);
@@ -961,7 +961,7 @@ describe("Cursor bounded blob store", () => {
     if (reply.message.value.message.case !== "setBlobResult") throw new Error("expected setBlobResult");
     expect(reply.message.value.message.value.error?.message).toContain("capacity");
     expectBlobMiss(rejectedId, 78);
-    expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({ count: 1, bytes: 3 + 66, pinnedBytes: 3 });
+    expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({ count: 1, bytes: 3 + 66, pinnedBytes: 3 + 66 });
   });
 
   test("getBlob hit preserves the request id includes blobData and releases that key's request pin", () => {
@@ -1289,5 +1289,16 @@ describe("Cursor blob ID key channel bounds", () => {
     expect(metrics.count).toBe(4096);
     // Fixed digest keys at full capacity: 4096 x 66 = 270,336 — never GiBs of hex.
     expect(metrics.keyBytes).toBe(4096 * 66);
+  });
+
+  test("a zero-payload blob stays evictable through its key bytes", () => {
+    storeCursorBlob(new Uint8Array());
+    const snapshot = cursorBlobRetainedStoreSnapshot();
+    expect(snapshot.bytes).toBe(66);
+    // The budget can SELECT the reclaimable entry: its key classifies with it.
+    expect(snapshot.evictableBytes).toBe(66);
+    expect(snapshot.pinnedBytes).toBe(0);
+    expect(evictOldestCursorBlobForBudget()).toBe(66);
+    expect(cursorBlobRetainedStoreSnapshot().bytes).toBe(0);
   });
 });

@@ -154,13 +154,16 @@ function recomputeBlobClassAccounting(): void {
   let pinnedBytes = 0;
   let evictableBytes = 0;
   let oldestAt: number | null = null;
-  for (const entry of blobs.values()) {
+  for (const [k, entry] of blobs) {
     const requestPinned = entry.requestPins.size > 0;
     const provenancePinned = entry.provenance === "remote-setBlobArgs" && !isExpired(entry, now);
     if (entry.provenance === "local-regenerated") localBytes += entry.sizeBytes;
-    if (requestPinned || provenancePinned) pinnedBytes += entry.sizeBytes;
+    // Key strings classify WITH their entry: a zero-payload blob must stay
+    // evictable/pinned exactly as its payload would be, or the budget cannot
+    // select it even though the total snapshot counts its key.
+    if (requestPinned || provenancePinned) pinnedBytes += entry.sizeBytes + k.length;
     if (!requestPinned && (entry.provenance === "local-regenerated" || isExpired(entry, now))) {
-      evictableBytes += entry.sizeBytes;
+      evictableBytes += entry.sizeBytes + k.length;
       oldestAt = oldestAt === null ? entry.storedAt : Math.min(oldestAt, entry.storedAt);
     }
   }
