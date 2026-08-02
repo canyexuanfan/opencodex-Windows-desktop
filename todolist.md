@@ -987,5 +987,6 @@ Codex / Claude Code / 其他现有客户端
 - [x] 复核桌面更新检测链路：`src/update/desktop-release.ts` 从 fork GitHub Release tag/name 解析版本，并只接受 `OpenCodex-Setup-<version>-x64.exe`；`tests/desktop-release-update.test.ts` 明确把 `OpenCodex-Setup-x64.exe` 和 `OpenCodex-Portable-x64.exe` 作为负向干扰项拒绝。
 - [x] 复核公开文案链路：README 和 Release notes 只引导下载带版本号安装包；portable 继续不进入普通发布链。
 - [x] 验证通过：`bun test tests\desktop-release-update.test.ts tests\release-notes.test.ts` 28/28、54 个断言；`cd desktop && bun test tests\package-static.test.ts` 6/6、33 个断言；`git diff --check`。
+- [x] Git 存档链路复核：阶段 36 主提交 `933ea89` 已完成；默认权限首次 `git tag -a git-v0.54` 因 Git 元数据写权限失败，已记录到 `questions/Git索引权限排查指南.md`，随后用最小范围授权成功补打 `git-v0.54`；成功经验继续补写入排查指南并单独存档。
 - [x] 本轮未改代码、未重启或关闭当前正在使用的 Codex；仅校正 `todolist.md` 顶部口径并记录复核证据。
 - [ ] 外部验收项保持不变：真实覆盖安装、桌面快捷方式/开始菜单图标、安装向导视觉、受信签名链 `Valid`、系统重启/睡眠唤醒、干净 Windows VM 与跨平台 exact-HEAD CI 仍需用户或测试机完成。
