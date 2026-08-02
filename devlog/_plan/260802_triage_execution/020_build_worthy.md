@@ -46,3 +46,21 @@ posts a maintainer direction comment with the outcome.
     payloads (AGENTS.md privacy boundary).
 - Direction comment: security-review checklist the PR must satisfy before
   merge consideration; maintainer takeover intent.
+
+## Results (2026-08-02, wp3 executed)
+
+Two deep-review subagents (Erdos on 865, Dewey on 863) verified the actual
+heads; direction comments posted:
+
+- 865 (comment 5154135572): 4/6 historical Criticals verified FIXED
+  (header-deadline, request-wide budget, auth gating, telemetry fallback).
+  Blocking: bridge stall watchdog kills >300s backoffs (core.ts:2682-2715
+  vs bridge.ts:1153-1173); same-target replay still rebuilds outside the
+  passthrough path; header-deadline regression tests missing; full CI never
+  ran. Offered maintainer takeover.
+- 863 (comment 5154142332): encryption core sound (keyring master key,
+  AES-256-GCM + AAD, fail-closed, clean logs/payloads; @napi-rs/keyring
+  publication properties verified). Blocking: plaintext staging residue on
+  failed enrollment; lock-reclamation race; no startup journal gating;
+  crash-boundary and concurrency test matrix missing; release audit/smoke
+  evidence; route security tests; rebase. Offered maintainer takeover.
