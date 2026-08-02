@@ -116,6 +116,10 @@ For each of Hermes Agent, OpenClaw, Kimi Code CLI, Gajae Code:
 - `002_client_toggle_matrix.md` — Q2 findings, one section per client.
 - `003_api_design_options.md` — Q3 design space + risk register + open
   questions. Options, not a commitment.
+- `004_ux_design.md` — (cycle 2) GUI design for the unified integrations
+  surface: tab rename, hero with install detection + switches, per-client
+  sub-pages, and the rollback UX that makes the toggle trustworthy. Design
+  spec only; component diffs belong to a later implementation cycle.
 
 ## Dispatch plan
 
