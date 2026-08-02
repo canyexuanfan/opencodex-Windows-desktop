@@ -41,3 +41,13 @@ Ownership signature: generated rows carry
 - Verification: codex-catalog + sync-hardening suites 127 pass 0 fail;
   typecheck green. Full tests/ run was attempted but exceeded ~57 CPU-min
   locally and was stopped; full-suite proof defers to CI after push.
+- Reviewer repair rounds (Plato):
+  - R1 FAIL: legacy June–July rows used provider-name signature → bc7feadb
+    recognizes it + empty-gather transient-protection assertion.
+  - R2 FAIL: legacy combo aliases ("→ combo (combo)." under vendor/* slug)
+    missed → 8dffecca switches to the stable prefix alone as the ownership
+    signal.
+  - R3 FAIL: combo-alias regression was false-green (generic combo cleanup
+    removed the row) → 6d5f5c99 configures a physical combo provider so the
+    test depends on the matcher; red/green proven by reverting.
+  - Final: PASS. Suites 129 pass 0 fail, typecheck green.
