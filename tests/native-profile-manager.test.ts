@@ -70,35 +70,154 @@ async function enrolledFixture() {
   return { ...f, manager, sourceProfile: sourceProfile.profile, targetProfile: targetProfile.profile, stage };
 }
 
-describe("native main profile transactions", () => {
-  test("does not reclaim a fresh lock before its owner metadata is stable", async () => {
-    const f = fixture();
-    const now = Date.now();
-    const manager = new NativeProfileManager({
-      ...f.options,
-      now: () => now,
-      sleep: async () => { throw new Error("lock remains owned"); },
-    });
-    mkdirSync(manager.context.rootDir, { recursive: true });
-    writeFileSync(manager.context.lockPath, "");
+async function waitForPath(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(path) && Date.now() < deadline) await Bun.sleep(10);
+  if (!existsSync(path)) throw new Error(`Timed out waiting for child marker ${path}`);
+}
 
-    let caught: unknown;
-    try { await manager.recover(false); } catch (error) { caught = error; }
-
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toBe("lock remains owned");
-    expect(existsSync(manager.context.lockPath)).toBe(true);
+function spawnLockHolder(
+  f: ReturnType<typeof fixture>,
+  readyPath: string,
+  releasePath: string,
+  crash = false,
+): ReturnType<typeof Bun.spawn> {
+  return Bun.spawn([process.execPath, join(import.meta.dir, "helpers", "native-profile-lock-child.ts")], {
+    cwd: join(import.meta.dir, ".."),
+    env: {
+      ...process.env,
+      NATIVE_PROFILE_TEST_CODEX_HOME: f.codexHome,
+      NATIVE_PROFILE_TEST_CONFIG_DIR: f.configDir,
+      NATIVE_PROFILE_TEST_READY: readyPath,
+      NATIVE_PROFILE_TEST_RELEASE: releasePath,
+      NATIVE_PROFILE_TEST_CRASH: crash ? "1" : "0",
+    },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
   });
+}
 
-  test("does not unlink a lock published by a different owner", () => {
+describe("native main profile transactions", () => {
+  test("an abruptly exited child releases the OS-backed profile transaction", async () => {
+    const f = fixture();
+    const readyPath = join(f.root, "crash-ready");
+    const child = spawnLockHolder(f, readyPath, join(f.root, "unused-release"), true);
+    await waitForPath(readyPath);
+    expect(await child.exited).toBe(0);
+
+    const successor = new NativeProfileManager({ ...f.options, lockWaitMs: 250 });
+    expect((await successor.recover(false)).recovered).toBe(false);
+  }, 15_000);
+
+  test("two processes exclude each other and predecessor release cannot delete a successor lock", async () => {
+    const f = fixture();
+    const firstReady = join(f.root, "first-ready");
+    const firstRelease = join(f.root, "first-release");
+    const secondReady = join(f.root, "second-ready");
+    const secondRelease = join(f.root, "second-release");
+    const first = spawnLockHolder(f, firstReady, firstRelease);
+    let second: ReturnType<typeof Bun.spawn> | undefined;
+    try {
+      await waitForPath(firstReady);
+      second = spawnLockHolder(f, secondReady, secondRelease);
+      await Bun.sleep(150);
+      expect(existsSync(secondReady)).toBe(false);
+
+      writeFileSync(firstRelease, "release");
+      expect(await first.exited).toBe(0);
+      await waitForPath(secondReady);
+
+      const contender = new NativeProfileManager({ ...f.options, lockWaitMs: 100 });
+      let caught: unknown;
+      try { await contender.recover(false); } catch (error) { caught = error; }
+      expect(caught).toBeInstanceOf(NativeProfileError);
+      expect((caught as NativeProfileError).code).toBe("NATIVE_PROFILE_BUSY");
+      expect((caught as NativeProfileError).retryable).toBe(true);
+
+      writeFileSync(secondRelease, "release");
+      expect(await second.exited).toBe(0);
+      expect((await contender.recover(false)).recovered).toBe(false);
+    } finally {
+      try { writeFileSync(firstRelease, "release"); } catch { /* fixture cleanup */ }
+      try { writeFileSync(secondRelease, "release"); } catch { /* fixture cleanup */ }
+      if (first.exitCode === null) first.kill();
+      if (second?.exitCode === null) second.kill();
+      await first.exited;
+      if (second) await second.exited;
+    }
+  }, 15_000);
+
+  test("finish removes staging after auth validation failure", async () => {
     const f = fixture();
     const manager = new NativeProfileManager(f.options);
-    mkdirSync(manager.context.rootDir, { recursive: true });
-    writeFileSync(manager.context.lockPath, JSON.stringify({ ownerToken: "new-owner" }));
+    await manager.register("personal");
+    const stage = await manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), "{}\n");
 
-    (manager as unknown as { releaseLock: (ownerToken: string) => void }).releaseLock("old-owner");
+    let caught: unknown;
+    try { await manager.finishStage(stage.stageId, "invalid"); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect(existsSync(stage.stagingCodexHome)).toBe(false);
+  });
 
-    expect(existsSync(manager.context.lockPath)).toBe(true);
+  test("finish removes staging after vault persistence failure", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    await manager.register("personal");
+    const stage = await manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
+    const failing = new NativeProfileManager({
+      ...f.options,
+      atomicWrite: async (path, content) => {
+        if (path === manager.context.vaultPath) throw new Error("injected vault failure");
+        return atomic(path, content);
+      },
+    });
+
+    let caught: unknown;
+    try { await failing.finishStage(stage.stageId, "work"); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(Error);
+    expect(existsSync(stage.stagingCodexHome)).toBe(false);
+  });
+
+  test("expired stages can be cancelled and are swept before preparing another stage", async () => {
+    const f = fixture();
+    let now = Date.now();
+    const manager = new NativeProfileManager({ ...f.options, now: () => now });
+    await manager.register("personal");
+    const cancelled = await manager.prepareStage();
+    writeFileSync(join(cancelled.stagingCodexHome, "auth.json"), f.target);
+    now += 31 * 60_000;
+    await manager.cancelStage(cancelled.stageId);
+    expect(existsSync(cancelled.stagingCodexHome)).toBe(false);
+
+    const stale = await manager.prepareStage();
+    writeFileSync(join(stale.stagingCodexHome, "auth.json"), f.target);
+    now += 31 * 60_000;
+    const fresh = await manager.prepareStage();
+    expect(existsSync(stale.stagingCodexHome)).toBe(false);
+    expect(existsSync(fresh.stagingCodexHome)).toBe(true);
+    await manager.cancelStage(fresh.stageId);
+  });
+
+  test("finish reports cleanup failure instead of claiming success", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    await manager.register("personal");
+    const stage = await manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
+    const failing = new NativeProfileManager({
+      ...f.options,
+      removeStageTree: () => { throw new Error("injected cleanup failure"); },
+    });
+
+    let caught: unknown;
+    try { await failing.finishStage(stage.stageId, "work"); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("STAGING_CLEANUP_REQUIRED");
+    expect(existsSync(stage.stagingCodexHome)).toBe(true);
+    await manager.cancelStage(stage.stageId);
   });
 
   test("preserves exact auth bytes, encrypts inactive profiles, and leaves task/history files untouched", async () => {

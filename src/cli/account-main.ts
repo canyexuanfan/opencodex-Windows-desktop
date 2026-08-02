@@ -89,24 +89,27 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     if (stage.status !== 200) return apiError(stage.json, "failed to prepare native login staging");
     const stageId = typeof stage.json.stageId === "string" ? stage.json.stageId : "";
     const stagingHome = typeof stage.json.stagingCodexHome === "string" ? stage.json.stagingCodexHome : "";
-    if (!stageId || !isAbsolute(stagingHome)) {
-      console.error("Error: the proxy returned an invalid staging session.");
-      return 1;
-    }
     let exitCode = 1;
+    let finished = false;
     try {
+      if (!stageId || !isAbsolute(stagingHome)) throw new Error("The proxy returned an invalid staging session.");
       console.error(`Starting official Codex login in restricted staging home: ${stagingHome}`);
       exitCode = await (deps.runCodexLoginImpl ?? runOfficialCodexLogin)(stagingHome);
       if (exitCode !== 0) throw new Error("Official Codex login did not complete successfully.");
       const finish = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage/finish", { stageId, label });
       if (finish.status === 0) return proxyUnreachable();
       if (finish.status !== 200) return apiError(finish.json, "failed to encrypt the staged native login");
+      finished = true;
       console.log(`Added encrypted native profile '${label}'.`);
       return 0;
     } catch (error) {
-      await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage/cancel", { stageId });
       console.error(`Error: ${error instanceof Error ? error.message : "Official Codex login failed."}`);
       return exitCode === 0 ? 1 : exitCode;
+    } finally {
+      if (stageId && !finished) {
+        const cleanup = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage/cancel", { stageId });
+        if (cleanup.status !== 200) console.error("Error: the proxy could not confirm native-login staging cleanup; run account main doctor.");
+      }
     }
   }
 

@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { Database } from "bun:sqlite";
 import {
   chmodSync,
-  closeSync,
   existsSync,
-  linkSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -52,8 +51,6 @@ import {
 } from "./native-profile-types";
 
 const LOCK_WAIT_MS = 5_000;
-const LOCK_METADATA_GRACE_MS = 1_000;
-const LOCK_STALE_MS = 10 * 60_000;
 const STAGE_MAX_AGE_MS = 30 * 60_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -71,6 +68,9 @@ export interface NativeProfileManagerOptions {
   now?: () => number;
   randomUUID?: () => string;
   sleep?: (ms: number) => Promise<void>;
+  lockWaitMs?: number;
+  onLockAcquired?: () => void | Promise<void>;
+  removeStageTree?: (path: string) => void;
 }
 
 export interface NativeProfileListResult {
@@ -91,10 +91,6 @@ function errorCode(error: unknown): string | undefined {
   return error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : undefined;
 }
 
-function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
 export class NativeProfileManager {
   readonly context: NativeProfileContext;
   private readonly keyProvider: NativeProfileKeyProvider;
@@ -105,6 +101,9 @@ export class NativeProfileManager {
   private readonly now: () => number;
   private readonly uuid: () => string;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly lockWaitMs: number;
+  private readonly onLockAcquired: () => void | Promise<void>;
+  private readonly removeStageTree: (path: string) => void;
 
   constructor(options: NativeProfileManagerOptions = {}) {
     this.context = resolveNativeProfileContext(options);
@@ -116,6 +115,9 @@ export class NativeProfileManager {
     this.now = options.now ?? Date.now;
     this.uuid = options.randomUUID ?? randomUUID;
     this.sleep = options.sleep ?? (ms => Bun.sleep(ms));
+    this.lockWaitMs = options.lockWaitMs ?? LOCK_WAIT_MS;
+    this.onLockAcquired = options.onLockAcquired ?? (() => {});
+    this.removeStageTree = options.removeStageTree ?? (path => rmSync(path, { recursive: true, force: false }));
   }
 
   private async ensureRoot(): Promise<void> {
@@ -123,79 +125,57 @@ export class NativeProfileManager {
     await this.hardenPath(this.context.rootDir);
   }
 
-  private isLockStale(): boolean {
-    const observedAt = this.now();
-    let pathAgeMs: number;
+  private async ensureLockDatabase(): Promise<void> {
+    let database: Database | undefined;
     try {
-      pathAgeMs = Math.max(0, observedAt - lstatSync(this.context.lockPath).mtimeMs);
-    } catch (error) {
-      return errorCode(error) === "ENOENT";
+      database = new Database(this.context.lockPath, { create: true });
+    } catch {
+      throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock is unavailable.", 503, true);
+    } finally {
+      try { database?.close(); } catch { /* acquisition already failed */ }
     }
     try {
-      const lock = JSON.parse(readFileSync(this.context.lockPath, "utf8")) as { pid?: unknown; acquiredAt?: unknown };
-      if (typeof lock.pid === "number" && processAlive(lock.pid)) return false;
-      return typeof lock.acquiredAt === "number"
-        ? observedAt - lock.acquiredAt > LOCK_STALE_MS
-        : pathAgeMs > LOCK_METADATA_GRACE_MS;
+      try { chmodSync(this.context.lockPath, 0o600); } catch { /* Windows ACL below is authoritative there. */ }
+      await this.hardenPath(this.context.lockPath);
     } catch {
-      return pathAgeMs > LOCK_METADATA_GRACE_MS;
+      throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock could not be permission-hardened.", 503, true);
     }
   }
 
-  private releaseLock(ownerToken: string): void {
-    try {
-      const lock = JSON.parse(readFileSync(this.context.lockPath, "utf8")) as { ownerToken?: unknown };
-      if (lock.ownerToken !== ownerToken) return;
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return;
-      return;
-    }
-    try { unlinkSync(this.context.lockPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
+  private isLockBusy(error: unknown): boolean {
+    const code = errorCode(error);
+    const message = error instanceof Error ? error.message : String(error);
+    return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED" || /database (?:is|table is) locked/i.test(message);
   }
 
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
     await this.ensureRoot();
-    const deadline = this.now() + LOCK_WAIT_MS;
-    let ownerToken: string | null = null;
-    while (ownerToken === null) {
-      const candidateToken = this.uuid();
-      const candidatePath = `${this.context.lockPath}.${candidateToken}.candidate`;
-      let candidateFd: number | null = null;
+    await this.ensureLockDatabase();
+    const deadline = this.now() + this.lockWaitMs;
+    let database: Database | undefined;
+    while (!database) {
+      let candidate: Database | undefined;
       try {
-        candidateFd = openSync(candidatePath, "wx", 0o600);
-        writeFileSync(candidateFd, serializeNativeProfileMetadata({
-          pid: process.pid,
-          acquiredAt: this.now(),
-          homeId: this.context.homeId,
-          ownerToken: candidateToken,
-        }));
-        closeSync(candidateFd);
-        candidateFd = null;
-        await this.hardenPath(candidatePath);
-        linkSync(candidatePath, this.context.lockPath);
-        unlinkSync(candidatePath);
-        ownerToken = candidateToken;
+        candidate = new Database(this.context.lockPath, { create: true });
+        candidate.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+        database = candidate;
       } catch (error) {
-        if (candidateFd !== null) try { closeSync(candidateFd); } catch { /* reported below */ }
-        try { unlinkSync(candidatePath); } catch (cleanupError) { if (errorCode(cleanupError) !== "ENOENT") { /* reported below */ } }
-        if (errorCode(error) !== "EEXIST") {
-          try { this.releaseLock(candidateToken); } catch { /* reported below */ }
+        try { candidate?.close(); } catch { /* acquisition already failed */ }
+        if (!this.isLockBusy(error)) {
           throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock is unavailable.", 503, true);
         }
-        if (this.isLockStale()) {
-          try { unlinkSync(this.context.lockPath); } catch (unlinkError) { if (errorCode(unlinkError) !== "ENOENT") throw unlinkError; }
-          continue;
-        }
         if (this.now() >= deadline) {
-          throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "Another native-profile operation is still running.", 503, true);
+          throw new NativeProfileError("NATIVE_PROFILE_BUSY", "Another native-profile operation is still running.", 503, true);
         }
         await this.sleep(50);
       }
     }
     try {
+      await this.onLockAcquired();
       return await operation();
     } finally {
-      this.releaseLock(ownerToken);
+      try { database.exec("ROLLBACK"); } catch { /* close still releases the OS-backed lock */ }
+      try { database.close(); } catch { /* transaction is already ending */ }
     }
   }
 
@@ -308,6 +288,8 @@ export class NativeProfileManager {
   }
 
   async doctor(): Promise<Record<string, unknown>> {
+    return this.withLock(async () => {
+    this.sweepStaleStages();
     const mode = (() => {
       try { return resolveNativeCredentialStoreMode(this.context); } catch { return "unknown"; }
     })();
@@ -338,6 +320,7 @@ export class NativeProfileManager {
       recoveryPending: existsSync(this.context.journalPath),
       stagingCount,
     };
+    });
   }
 
   private stagePath(stageId: string): string {
@@ -345,7 +328,7 @@ export class NativeProfileManager {
     return join(this.context.stagingRoot, stageId);
   }
 
-  private verifiedStagePath(stageId: string): string {
+  private verifiedStagePath(stageId: string, requireFresh = true): string {
     const expected = resolve(this.stagePath(stageId));
     try {
       if (lstatSync(expected).isSymbolicLink() || !lstatSync(expected).isDirectory()) throw new Error("stage type");
@@ -355,7 +338,8 @@ export class NativeProfileManager {
       if (!rel || rel.startsWith("..") || rel.includes(sep)) throw new Error("stage root");
       const metadata = JSON.parse(readFileSync(join(canonicalExpected, "stage.json"), "utf8")) as Record<string, unknown>;
       if (metadata.version !== 1 || metadata.stageId !== stageId || metadata.homeId !== this.context.homeId) throw new Error("stage metadata");
-      if (typeof metadata.createdAt !== "number" || this.now() - metadata.createdAt > STAGE_MAX_AGE_MS) throw new Error("stage age");
+      if (typeof metadata.createdAt !== "number") throw new Error("stage age");
+      if (requireFresh && this.now() - metadata.createdAt > STAGE_MAX_AGE_MS) throw new Error("stage age");
       return canonicalExpected;
     } catch {
       throw new NativeProfileError("STAGING_NOT_FOUND", "The native-login staging session is missing, expired, or invalid.", 404);
@@ -364,12 +348,66 @@ export class NativeProfileManager {
 
   private deleteStage(path: string): void {
     const authPath = join(path, "auth.json");
-    if (existsSync(authPath)) truncateSync(authPath, 0);
-    rmSync(path, { recursive: true, force: false });
+    try {
+      const authStat = lstatSync(authPath);
+      if (authStat.isFile() && !authStat.isSymbolicLink()) truncateSync(authPath, 0);
+    } catch { /* removal below is authoritative */ }
+    this.removeStageTree(path);
+  }
+
+  private deleteStageById(stageId: string): void {
+    const expected = resolve(this.stagePath(stageId));
+    let stageStat: ReturnType<typeof lstatSync>;
+    try { stageStat = lstatSync(expected); } catch (error) { if (errorCode(error) === "ENOENT") return; throw error; }
+    if (stageStat.isSymbolicLink() || !stageStat.isDirectory()) {
+      unlinkSync(expected);
+      return;
+    }
+    const canonicalRoot = resolve(realpathSync.native(this.context.stagingRoot));
+    const canonicalExpected = resolve(realpathSync.native(expected));
+    const rel = relative(canonicalRoot, canonicalExpected);
+    if (!rel || rel.startsWith("..") || rel.includes(sep)) {
+      throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "The staging path could not be safely removed.", 500);
+    }
+    this.deleteStage(canonicalExpected);
+  }
+
+  private sweepStaleStages(): number {
+    if (!existsSync(this.context.stagingRoot)) return 0;
+    let removed = 0;
+    for (const name of readdirSync(this.context.stagingRoot)) {
+      if (!UUID_RE.test(name)) continue;
+      const path = this.stagePath(name);
+      let createdAt: number;
+      try {
+        const stageStat = lstatSync(path);
+        createdAt = stageStat.mtimeMs;
+        if (stageStat.isDirectory() && !stageStat.isSymbolicLink()) {
+          try {
+            const metadata = JSON.parse(readFileSync(join(path, "stage.json"), "utf8")) as Record<string, unknown>;
+            if (metadata.version === 1 && metadata.stageId === name && metadata.homeId === this.context.homeId && typeof metadata.createdAt === "number") {
+              createdAt = metadata.createdAt;
+            }
+          } catch { /* mtime bounds malformed crash residue */ }
+        }
+      } catch (error) {
+        if (errorCode(error) === "ENOENT") continue;
+        throw error;
+      }
+      if (this.now() - createdAt <= STAGE_MAX_AGE_MS) continue;
+      try {
+        this.deleteStageById(name);
+        removed += 1;
+      } catch {
+        throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "An expired native-login staging session could not be securely removed.", 500);
+      }
+    }
+    return removed;
   }
 
   async prepareStage(): Promise<{ stageId: string; stagingCodexHome: string; effectiveCodexHome: string }> {
     return this.withLock(async () => {
+      this.sweepStaleStages();
       requireFileCredentialStore(this.context);
       const vault = this.requireVault();
       const key = await this.keyForVault(vault);
@@ -397,14 +435,18 @@ export class NativeProfileManager {
 
   async finishStage(stageId: string, labelInput: string): Promise<{ effectiveCodexHome: string; profile: NativeProfilePublic }> {
     return this.withLock(async () => {
-      requireFileCredentialStore(this.context);
-      const label = validateNativeProfileLabel(labelInput);
-      const stagePath = this.verifiedStagePath(stageId);
-      const target = readNativeEnvelope(join(stagePath, "auth.json"));
-      const current = readNativeEnvelope(this.context.authPath);
-      const vault = this.requireVault();
-      const key = await this.keyForVault(vault);
+      this.stagePath(stageId);
+      let target: NativeEnvelopeSnapshot | null = null;
+      let current: NativeEnvelopeSnapshot | null = null;
+      let key: NativeProfileKey | null = null;
       try {
+        const stagePath = this.verifiedStagePath(stageId);
+        requireFileCredentialStore(this.context);
+        const label = validateNativeProfileLabel(labelInput);
+        target = readNativeEnvelope(join(stagePath, "auth.json"));
+        current = readNativeEnvelope(this.context.authPath);
+        const vault = this.requireVault();
+        key = await this.keyForVault(vault);
         this.assertCurrentIdentity(vault, current, key);
         assertUniqueNativeProfileLabel(vault, label);
         const identityHash = nativeIdentityHash(key.key, target.accountId);
@@ -426,26 +468,31 @@ export class NativeProfileManager {
         vault.profiles.push(profile);
         vault.revision += 1;
         await this.writeVault(vault);
+        return { effectiveCodexHome: this.context.codexHome, profile: publicNativeProfile(profile) };
+      } finally {
+        target?.raw.fill(0);
+        current?.raw.fill(0);
+        key?.key.fill(0);
         try {
-          this.deleteStage(stagePath);
+          this.deleteStageById(stageId);
         } catch {
           throw new NativeProfileError(
             "STAGING_CLEANUP_REQUIRED",
-            "The profile was encrypted, but the restricted staging credential could not be removed; run recover after fixing filesystem permissions.",
+            "The native-login staging session could not be securely removed; fix filesystem permissions and cancel it explicitly.",
             500,
           );
         }
-        return { effectiveCodexHome: this.context.codexHome, profile: publicNativeProfile(profile) };
-      } finally {
-        target.raw.fill(0);
-        current.raw.fill(0);
-        key.key.fill(0);
       }
     });
   }
 
   async cancelStage(stageId: string): Promise<void> {
-    await this.withLock(async () => { this.deleteStage(this.verifiedStagePath(stageId)); });
+    await this.withLock(async () => {
+      try { this.deleteStageById(stageId); } catch (error) {
+        if (error instanceof NativeProfileError) throw error;
+        throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "The native-login staging session could not be securely removed.", 500);
+      }
+    });
   }
 
   private resolveTarget(vault: NativeMainProfileVaultV1, target: string): NativeMainProfileRecordV1 {
@@ -469,6 +516,7 @@ export class NativeProfileManager {
 
   async switch(targetSelector: string, confirmedStopped = false): Promise<Record<string, unknown>> {
     return this.withLock(async () => {
+      this.sweepStaleStages();
       requireFileCredentialStore(this.context);
       await this.assertNativeCodexStopped(confirmedStopped);
       if (readNativeProfileJournal(this.context)) await this.recoverLocked(false);

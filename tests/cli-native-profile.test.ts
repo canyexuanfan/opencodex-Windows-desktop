@@ -65,4 +65,52 @@ describe("ocx account main", () => {
     expect(await cmdAccount(["main", "recover", "--rollback", "--yes"], deps)).toBe(0);
     expect(requests.at(-1)?.body).toEqual({ rollback: true, confirmedStopped: true });
   });
+
+  test("add cancels server staging after a non-200 finish response", async () => {
+    const stagingHome = join(tmpdir(), "ocx-native-profile-stage-non-200");
+    const requests: string[] = [];
+    const fetchImpl: typeof fetch = async input => {
+      const path = new URL(String(input)).pathname;
+      requests.push(path);
+      if (path.endsWith("/stage") && !path.endsWith("/finish")) {
+        return Response.json({ stageId: "22222222-2222-4222-8222-222222222222", stagingCodexHome: stagingHome });
+      }
+      if (path.endsWith("/stage/finish")) return Response.json({ error: "validation failed" }, { status: 409 });
+      return Response.json({ ok: true });
+    };
+
+    expect(await cmdAccount(["main", "add", "work"], {
+      baseUrl: "http://127.0.0.1:10100",
+      fetchImpl,
+      runCodexLoginImpl: async () => 0,
+    })).toBe(1);
+    expect(requests).toEqual([
+      "/api/native-main-profiles/stage",
+      "/api/native-main-profiles/stage/finish",
+      "/api/native-main-profiles/stage/cancel",
+    ]);
+  });
+
+  test("add cancels server staging when official login aborts", async () => {
+    const stagingHome = join(tmpdir(), "ocx-native-profile-stage-abort");
+    const requests: string[] = [];
+    const fetchImpl: typeof fetch = async input => {
+      const path = new URL(String(input)).pathname;
+      requests.push(path);
+      if (path.endsWith("/stage") && !path.endsWith("/finish")) {
+        return Response.json({ stageId: "33333333-3333-4333-8333-333333333333", stagingCodexHome: stagingHome });
+      }
+      return Response.json({ ok: true });
+    };
+
+    expect(await cmdAccount(["main", "add", "work"], {
+      baseUrl: "http://127.0.0.1:10100",
+      fetchImpl,
+      runCodexLoginImpl: async () => { throw new Error("login aborted"); },
+    })).toBe(1);
+    expect(requests).toEqual([
+      "/api/native-main-profiles/stage",
+      "/api/native-main-profiles/stage/cancel",
+    ]);
+  });
 });
