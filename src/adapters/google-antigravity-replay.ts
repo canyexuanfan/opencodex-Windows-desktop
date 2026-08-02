@@ -84,6 +84,10 @@ const CANONICAL_OVERFLOW = Symbol("canonical-overflow");
 
 /** Byte-identical output to the old recursive canonicalJson, written incrementally. */
 function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void {
+  if (typeof value === "string") {
+    writeJsonStringEscaped(value, sink);
+    return;
+  }
   if (value === null || typeof value !== "object") {
     sink(JSON.stringify(value) ?? "null");
     return;
@@ -92,7 +96,9 @@ function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void
     sink("[");
     for (let index = 0; index < value.length; index += 1) {
       if (index > 0) sink(",");
-      writeCanonicalJson(value[index], sink);
+      // Array.prototype.map parity: holes produce NOTHING between the commas
+      // (old output `[1,,3]`), while an explicit undefined element is "null".
+      if (index in value) writeCanonicalJson(value[index], sink);
     }
     sink("]");
     return;
@@ -101,11 +107,44 @@ function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void
   sink("{");
   keys.forEach((k, index) => {
     if (index > 0) sink(",");
-    sink(JSON.stringify(k));
+    writeJsonStringEscaped(k, sink);
     sink(":");
     writeCanonicalJson((value as Record<string, unknown>)[k], sink);
   });
   sink("}");
+}
+
+/**
+ * JSON.stringify string escaping, streamed in small chunks so the budget can
+ * reject mid-string — calling JSON.stringify on a multi-MiB primitive would
+ * materialize its full escaped form before the sink could refuse it.
+ * Semantics mirror JSON.stringify for strings exactly: quotes/backslash and
+ * control characters are escaped, everything else (including lone
+ * surrogates) passes through raw.
+ */
+function writeJsonStringEscaped(value: string, sink: (chunk: string) => void): void {
+  sink('"');
+  let buffer = "";
+  for (const cp of value) {
+    const code = cp.codePointAt(0)!;
+    let escaped: string;
+    if (cp === '"') escaped = '\\"';
+    else if (cp === "\\") escaped = "\\\\";
+    else if (cp === "\b") escaped = "\\b";
+    else if (cp === "\f") escaped = "\\f";
+    else if (cp === "\n") escaped = "\\n";
+    else if (cp === "\r") escaped = "\\r";
+    else if (cp === "\t") escaped = "\\t";
+    else if (code < 0x20) escaped = `\\u${code.toString(16).padStart(4, "0")}`;
+    else escaped = cp;
+    buffer += escaped;
+    if (buffer.length >= 4096) {
+      sink(buffer);
+      buffer = "";
+    }
+  }
+  if (buffer.length > 0) sink(buffer);
+  sink('"');
 }
 
 /** Bounded canonicalization: null on overflow (skip replay for that call). */
@@ -161,6 +200,12 @@ export function antigravityReplayKeyForTests(model: string, sessionId: string): 
 
 export function antigravityFunctionCallKeyForTests(name: unknown, args: unknown): string | undefined {
   return functionCallKey(name, args);
+}
+
+/** Test-only: the ACTUAL internal session keys, so tests can prove raw
+ * model/session strings are never retained as Map keys. */
+export function antigravityReplaySessionKeysForTests(): string[] {
+  return [...replayCache.keys()];
 }
 
 function extractSignature(part: Record<string, unknown>): string | undefined {
@@ -293,6 +338,14 @@ export function observeAntigravityReplay(model: string, sessionId: string, parts
   // Charge the fixed outer key only when the session is actually stored.
   if (!existing) replayBytes += REPLAY_SESSION_KEY_BYTES;
   evictInnerCalls(entry);
+  if (entry.byCall.size === 0) {
+    // The fixed session overhead can exceed the per-session cap on its own
+    // (test-sized limits): an entry holding zero calls is unusable — drop it
+    // instead of retaining an unevictable shell.
+    if (existing) deleteReplaySession(key);
+    else replayBytes -= REPLAY_SESSION_KEY_BYTES;
+    return;
+  }
   entry.expiresAtMs = now + REPLAY_TTL_MS;
   replayCache.set(key, entry);
   refreshReplaySessionCandidate(key, entry);

@@ -4,6 +4,7 @@ import {
   antigravityReplayMetrics,
   antigravityReplayKeyForTests,
   antigravityReplayRetainedStoreSnapshot,
+  antigravityReplaySessionKeysForTests,
   antigravityUsesReplayCache,
   applyAntigravityReplay,
   clearAntigravityReplay,
@@ -271,6 +272,46 @@ describe("antigravity replay fixed-size key identities", () => {
     const metrics = antigravityReplayMetrics();
     expect(metrics.sessions).toBe(1);
     expect(metrics.totalBytes).toBe(64 + 64 + "sig-1234567890abcdef".length);
+    // The INTERNAL map keys are the derived identities, never the raw strings.
+    expect(antigravityReplaySessionKeysForTests()).toEqual([derived]);
+  });
+
+  test("sparse arrays and undefined elements canonicalize differently", () => {
+    // eslint-disable-next-line no-sparse-arrays
+    const sparse = [1, , 3];
+    const explicit = [1, undefined, 3];
+    expect(antigravityFunctionCallKeyForTests("f", { a: sparse }))
+      .not.toBe(antigravityFunctionCallKeyForTests("f", { a: explicit }));
+  });
+
+  test("string escaping stays byte-identical across nasty content", () => {
+    const nasty = "quo\"te\\back\bslash\fform\nnew\rline\ttabcontrol unicode é한🎆\ud800";
+    const a = antigravityFunctionCallKeyForTests(nasty, { k: nasty });
+    expect(antigravityFunctionCallKeyForTests(nasty, { k: nasty })).toBe(a);
+    expect(antigravityFunctionCallKeyForTests(nasty, { k: `${nasty}x` })).not.toBe(a);
+  });
+
+  test("a session whose overhead exceeds its byte cap retains no zero-call shell", () => {
+    setAntigravityReplayLimitsForTests({ maxBytesPerSession: 100 });
+    // 64 key + (64 key + sig) call > 100: admitted then evicted by the overhead.
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("f", {}, `sig-${"x".repeat(40)}`)]);
+    const metrics = antigravityReplayMetrics();
+    expect(metrics.sessions).toBe(0);
+    expect(metrics.calls).toBe(0);
+    expect(metrics.totalBytes).toBe(0);
+  });
+
+  test("worst-case key storage stays fixed at full session capacity", () => {
+    const SIG = "sig-1234567890abcdef";
+    for (let index = 0; index < 10_240; index += 1) {
+      observeAntigravityReplay(MODEL, `session-${index}`, [fcPart("f", { i: index }, SIG)]);
+    }
+    const metrics = antigravityReplayMetrics();
+    expect(metrics.sessions).toBe(10_240);
+    // 10,240 sessions x (64 session key + 64 call key + 19-byte signature) —
+    // keys never scale with input length, all within the 64 MiB global cap.
+    expect(metrics.totalBytes).toBeLessThan(64 * 1024 * 1024);
+    expect(metrics.totalBytes).toBe(10_240 * (64 + 64 + SIG.length));
   });
 
   test("length-prefixed components are unambiguous across separator content", () => {
