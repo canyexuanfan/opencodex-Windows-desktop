@@ -6,10 +6,9 @@
 Shared types come from `006_module_contracts.md` and resolve the open
 questions this document raised:
 
-- The journal row is `IntegrationJournalRow` (006 §6). The field is
-  **`undoable`**, not `undoEligible`, and snapshot availability is the tag
-  `snapshot === "expired"` — not a boolean. Every reference here is read
-  against those names.
+- The journal row is `IntegrationJournalRow` (006 §6). Action eligibility is
+  **`undoable`**, and snapshot availability is the tag
+  `snapshot === "expired"`. Every reference here uses those canonical fields.
 - `snapshotPath` IS emitted by WP4 on `integration_unsafe` and
   `integration_mutation_failed` envelopes (006 §4, 040 amendment), so the
   manual-recovery Notice is reachable and must be implemented rather than
@@ -56,28 +55,10 @@ Implementation plan. Depends on WP1–WP5, especially the exact HTTP contract in
   mutation, or snapshot-byte response.
 - No new color token, icon package, query library, or state store.
 
-## 2. Contract blockers and explicit open questions
+## 2. Contract boundaries and remaining open questions
 
 These are contract gaps, not GUI details. Do not infer the missing facts from
 paths or stale client state.
-
-**OPEN QUESTION — journal action eligibility.** WP4 returns raw
-`JournalEntry` rows (`snapshot` is a relative path recorded at operation time)
-but does not return whether GC has since removed that snapshot. It also does
-not return whether the newest operation's `resultFingerprint` still matches
-the current file. Therefore the GUI cannot truthfully choose among `되돌리기`,
-`이 시점으로 복원…`, and disabled `백업 만료됨` before attempting a restore.
-Before WP6 implementation, WP4 must either add non-sensitive derived fields
-`snapshotAvailable: boolean` and `undoEligible: boolean` (plus a stable
-ineligibility reason), or add a metadata-only preflight route. Snapshot bytes
-must remain private. Until resolved, render only a neutral `복원…` action and
-degrade 410 after the request; do not label an unverified action `되돌리기`.
-
-**OPEN QUESTION — manual restore path.** `030` can return `snapshotPath` on a
-restore refusal, but WP4's exact 409/500 envelopes drop it. `004` §6.2 requires
-the Notice to name that path. Either preserve `snapshotPath` in the WP4 error
-envelope or revise the UX contract; the GUI must not synthesize it from the
-journal's relative `snapshot` field.
 
 **OPEN QUESTION — advanced/settings data.** WP4 toggle accepts only
 `{ enabled: boolean }`; state does not expose model selection, default-model
@@ -90,10 +71,11 @@ later contract. Keep an explicit unavailable note; do not create inert inputs.
 Cards say installed/not installed and omit version. Add version only after a
 server-owned field exists.
 
-These questions do not block the shell, badges, state list, toggles, generic
-restore flow, native exception cards, loading/empty/error/onboarding states, or
-the responsive layout. They do block claiming the full expired-row/manual-path
-acceptance criteria.
+These questions do not block any specified WP6 branch; unavailable settings
+and version UI remains omitted rather than rendered as inert controls.
+
+Deleted branch: the disabled “No file to restore” row was unreachable because
+`snapshot: "none"` is a valid restore-to-absence operation under 006 §3/§6.
 
 ## 3. Component and data tree
 
@@ -151,13 +133,13 @@ export const FILE_INTEGRATION_CLIENTS = [
 ] as const;
 
 export type FileIntegrationClientId = (typeof FILE_INTEGRATION_CLIENTS)[number];
+export type IntegrationClientId = FileIntegrationClientId;
 export type IntegrationState = "absent" | "current" | "stale" | "conflict" | "unsafe";
 export type IntegrationReason =
   | "unparseable"
   | "not-regular-file"
   | "foreign-edit"
   | "unowned-key";
-export type OperationKind = "apply" | "disable" | "refresh" | "restore";
 
 export interface IntegrationStatus {
   clientId: FileIntegrationClientId;
@@ -173,22 +155,18 @@ export interface IntegrationStateListEnvelope {
   clients: IntegrationStatus[];
 }
 
-export interface IntegrationOperation {
+export interface IntegrationJournalRow {
   opId: string;
-  clientId: FileIntegrationClientId;
-  kind: OperationKind;
+  clientId: IntegrationClientId;
+  kind: "apply" | "disable" | "refresh" | "restore";
   at: string;
   configPath: string;
-  snapshot: string | null;
-  resultFingerprint: string;
-  // Add only if WP4 resolves §2. Never infer either from `snapshot` or order.
-  snapshotAvailable?: boolean;
-  undoEligible?: boolean;
-  undoIneligibleReason?: string;
+  snapshot: "none" | "stored" | "expired";
+  undoable: boolean;
 }
 
 export interface IntegrationJournalEnvelope {
-  operations: IntegrationOperation[];
+  operations: IntegrationJournalRow[];
 }
 
 export interface IntegrationMutationEnvelope {
@@ -282,8 +260,8 @@ export async function restoreIntegration(
 }
 ```
 
-The optional eligibility/path fields are guarded by §2. Delete them if WP4 is
-not expanded; no component may treat absence as `false`.
+`snapshot` and `undoable` are derived by WP4 for every request. The GUI never
+infers either value from row order, paths, or a failed restore.
 
 ## 5. `IntegrationStateBadge.tsx` — paste-ready
 
@@ -358,7 +336,7 @@ type NativeStatus = {
   desktopStale: boolean | null;
   grokPresent: boolean | null;
 };
-type RestoreSelection = { operation: IntegrationOperation; mode: "undo" | "restore" };
+type RestoreSelection = { operation: IntegrationJournalRow; mode: "undo" | "restore" };
 ```
 
 ### 6.1 Resource loading
@@ -475,12 +453,11 @@ deep link; it never borrows a five-state badge.
 - Empty: `<EmptyState title={t("integrations.rollback.empty")}>` plus the
   backup promise sentence.
 - Row: `<li>` with localized kind, client, formatted `at`, and one action.
-- With the §2 WP4 expansion: newest eligible row -> `되돌리기`; retained older
-  row -> `이 시점으로 복원…`; unavailable snapshot -> disabled
-  `백업 만료됨`.
-- Without expansion: every row with `snapshot !== null` uses neutral
-  `복원…`; `snapshot === null` has disabled `복원할 파일 없음`. A 410 updates
-  local row knowledge and disables it for the current session.
+- `undoable === true` -> `되돌리기`; opens undo-mode `RestoreDialog`.
+- `undoable === false && snapshot !== "expired"` -> `이 시점으로 복원…`;
+  this includes `snapshot === "none"`, whose restore target is file absence.
+- `snapshot === "expired"` -> disabled `백업 만료됨`; it takes precedence
+  over `undoable` and never opens a dialog or sends a request.
 - Restore opens `RestoreDialog`; no direct write on row click.
 
 ## 7. `FileIntegrationPage.tsx` — structural implementation spec
@@ -531,7 +508,7 @@ const CLIENT_META: Record<FileIntegrationClientId, {
 2. Cold error: `Notice tone="err"` + retry; no switch and no empty state.
 3. Header `<header className="integration-client-head">`:
    mark/name, badge (stable id), switch, stale-only refresh button, and restore
-   button when eligibility is contract-backed.
+   button when at least one non-expired journal row exists.
 4. Status `<dl className="integration-status-line">`: applied time, latest
    operation time, config path. Unknown facts render translated `—` labels,
    not fabricated dates.
@@ -549,17 +526,17 @@ const CLIENT_META: Record<FileIntegrationClientId, {
 
 ### 7.3 Header action branches
 
-- not installed: switch disabled, no restore unless snapshot availability is
-  positively known, install guidance visible.
+- not installed: switch disabled; restore remains available from any
+  non-expired history row, including `snapshot === "none"`; install guidance
+  visible.
 - absent: switch off/enabled; click applies.
 - current: switch on/enabled; click disables.
 - stale: switch on/enabled; click disables; separate Update button reapplies.
 - conflict: switch on only if backend semantics explicitly say managed block
   exists; current contract does not, so render `on={false}` but locked and let
-  the badge carry truth. Restore remains reachable when a retained snapshot is
-  positively known.
-- unsafe: switch off + locked; restore remains reachable on the same condition;
-  config-path action visible.
+  the badge carry truth. Restore remains reachable from non-expired history.
+- unsafe: switch off + locked; restore remains reachable from non-expired
+  history; config-path action visible.
 - pending: all mutation controls disabled; current badge remains visible;
   `aria-busy="true"` on page section.
 
@@ -572,7 +549,7 @@ contain a working block.
 ```tsx
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../../i18n/shared";
-import { IntegrationApiError, restoreIntegration, type IntegrationOperation } from "./integration-api";
+import { IntegrationApiError, restoreIntegration, type IntegrationJournalRow } from "./integration-api";
 
 export default function RestoreDialog({
   apiBase,
@@ -581,7 +558,7 @@ export default function RestoreDialog({
   onRestored,
 }: {
   apiBase: string;
-  operation: IntegrationOperation;
+  operation: IntegrationJournalRow;
   onClose: () => void;
   onRestored: () => void;
 }) {
@@ -660,7 +637,10 @@ export default function RestoreDialog({
 
 The initial submit is the plain confirm. Drift mode activates only after the
 exact WP4 409 code; its second submit sends `confirmDrift: true`. The dialog
-does not guess drift from timestamps.
+does not guess drift from timestamps. When either `integration_unsafe` or
+`integration_mutation_failed` carries `snapshotPath`, the error branch renders
+`integrations.restore.manual` with the exact path and refusal reason, keeps the
+dialog open, and leaves retry/cancel available.
 
 ## 9. Reuse the existing export surface
 
@@ -732,8 +712,8 @@ cannot be toggled.
 | absent | `badge badge-muted` | same | enabled/off; apply |
 | current | `badge badge-green` | `--green-soft`, `--green` | enabled/on; disable + restore |
 | stale | `badge badge-amber` | `--amber-soft`, `--amber` | enabled/on; refresh + disable + restore |
-| conflict | `integration-badge--danger` | `--red-soft`, `--red` | locked; restore if known + inspect |
-| unsafe | `integration-badge--danger-outline` | transparent, `--red`, `--border` | locked; restore if known + path |
+| conflict | `integration-badge--danger` | `--red-soft`, `--red` | locked; restore from non-expired history + inspect |
+| unsafe | `integration-badge--danger-outline` | transparent, `--red`, `--border` | locked; restore from non-expired history + path |
 
 Create `gui/src/styles-integrations.css` with these required rules (responsive
 values may be tuned during browser QA, but no token substitutions):
@@ -787,9 +767,10 @@ already exists.
 | onboarding | journal settled empty and local key absent | `<p className="integrations-onboarding">` explains one owned block, backup first, surgical removal, restore | disappears only after successful apply/refresh and stays dismissed on reload |
 | mutation busy | WP4 409 `integration_mutation_busy` | error `Notice`; controls re-enable after request settles | no optimistic state change; message says retry after current mutation |
 | conflict error | WP4 409 `integration_conflict` | error `Notice`; card refreshes into conflict badge; switch locks | foreign-edited bytes remain server-owned proof; UI offers no second toggle bypass |
-| unsafe error | WP4 409 `integration_unsafe` | error `Notice` with reason and config path; restore remains only if eligibility is known | locked switch is described by unsafe badge/path |
-| expired journal row | positive `snapshotAvailable === false`, or observed 410 for that op id | disabled `<button>` labelled `백업 만료됨` | row remains in history; no dialog opens |
+| unsafe error | WP4 409 `integration_unsafe` without `snapshotPath` | error `Notice` with reason and config path | locked switch is described by unsafe badge/path |
+| expired journal row | `snapshot === "expired"` | disabled `<button>` labelled `백업 만료됨` | row remains in history; no dialog opens or request is sent |
 | drift confirm | first restore returns exact drift-confirmation code | same dialog changes title/body and confirm label; second POST sends `confirmDrift: true` | no overwrite on first response; explicit second activation required |
+| manual recovery | restore returns `integration_unsafe` or `integration_mutation_failed` with `snapshotPath` | dialog error Notice names the exact path and reason and remains open | `role="alert"` exposes both values; no path is synthesized from the journal row |
 | generic error Notice | any unmapped non-2xx/network failure | `Notice tone="err"` with localized generic copy; technical code may be appended in `<code>` | state/draft remains; retry path visible |
 
 ## 13. i18n source values
@@ -822,7 +803,6 @@ must be naturally translated in the same diff.
 | `integrations.action.undo` | Undo | 되돌리기 |
 | `integrations.action.restorePoint` | Restore this point… | 이 시점으로 복원… |
 | `integrations.action.snapshotExpired` | Backup expired | 백업 만료됨 |
-| `integrations.action.noSnapshot` | No file to restore | 복원할 파일 없음 |
 | `integrations.rollback.title` | Rollback center | 복원 센터 |
 | `integrations.rollback.empty` | No apply history yet | 아직 적용 기록이 없습니다 |
 | `integrations.rollback.emptyBody` | Every successful write keeps a pre-write snapshot first. | 모든 쓰기는 먼저 변경 전 스냅샷을 보관합니다. |
@@ -901,12 +881,11 @@ Every implementation branch must have the named fixture and proof below.
 | stale refresh | installed stale + click Update | PUT body exactly `{enabled:true}`; then status/journal refresh |
 | current disable | installed current + switch click | PUT exactly `{enabled:false}`; no optimistic visual flip |
 | absent apply | installed absent + switch click | PUT exactly `{enabled:true}`; successful response dismisses onboarding |
-| expired journal row | `snapshotAvailable:false` or prior 410 | disabled “Backup expired”; row remains; no dialog/request |
-| no-snapshot row | `snapshot:null` | disabled “No file to restore”; row remains |
-| undo row | newest + `undoEligible:true` + snapshot available | “Undo”; opens plain restore dialog for exact op id |
-| older restore row | retained older operation | “Restore this point…”; opens dialog; no immediate POST |
+| expired journal row | `snapshot:"expired"` | disabled “Backup expired”; row remains; no dialog/request |
+| undo row | `undoable:true` with `snapshot:"stored"` or `"none"` | “Undo”; opens plain restore dialog for exact op id |
+| restore row | `undoable:false` with `snapshot:"stored"` or `"none"` | “Restore this point…”; opens dialog; `"none"` remains actionable as restore-to-absence |
 | drift confirm dialog | first POST returns exact drift code | dialog changes copy; second POST includes `confirmDrift:true` |
-| restore refusal/manual Notice | error carries `snapshotPath` | role alert includes exact path + reason; dialog stays open |
+| restore refusal/manual Notice | `integration_unsafe` or `integration_mutation_failed` carries `snapshotPath` | role alert includes exact path + reason; dialog stays open |
 | generic error Notice | network/unmapped code | localized error visible; prior state and drafts retained |
 | failed-cold state | state request rejects, no cache | Notice + retry only; no empty/grid/actions |
 | stale-data error | held data + refresh rejects | cards remain + stale Notice |
@@ -931,7 +910,7 @@ React imports, `act`, and fetch stubs matching
 6. `dismisses onboarding only after a successful apply`
 7. `bulk disable lists and mutates only current and stale clients`
 8. `bulk disable reports deterministic partial failures and refreshes`
-9. `rollback rows distinguish undo restore expired and missing snapshots`
+9. `rollback rows distinguish undo restore restore-to-absence and expired snapshots`
 10. `restore requires a second explicit submit after drift is reported`
 11. `restore refusal keeps the dialog open and names the manual snapshot path`
 12. `native exception cards never receive file-toggle badges or rollback rows`
@@ -941,9 +920,8 @@ Fixture requirements:
 
 - Stub exact WP4 bodies and error codes; do not branch on `error` prose.
 - Assert every conditional from §15 is activated at least once.
-- For the unresolved §2 fields, mark eligibility/manual-path tests blocked
-  until WP4 resolves the contract; do not fake server fields in a supposedly
-  final green suite.
+- Use exact canonical journal fixtures: `snapshot` is `"none"`, `"stored"`,
+  or `"expired"`, and every row carries `undoable`.
 - Add static assertion that `styles-integrations.css` contains only existing
   token names for colors (`--green`, `--amber`, `--red`, `--accent`, neutral
   surface/border tokens) and no hex/rgb color literal.
@@ -971,6 +949,6 @@ Browser QA after the automated gate:
 5. Korean: no clipped tab/card/action labels and no orphaned sentence fragment
    in onboarding, bulk, or restore copy.
 
-Acceptance is partial/blocked if either §2 eligibility or manual snapshot-path
-contract remains unresolved. Do not call `004` §§4.3/6 fully implemented while
-those observable branches cannot be grounded.
+Acceptance requires all §15 branches, including expired history,
+restore-to-absence, and both manual-recovery envelope codes, to be activated by
+the final contract fixtures and pass with observable proof.

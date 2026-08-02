@@ -51,13 +51,43 @@ export interface ManagedFragment {
  * fingerprinted as a unit.
  */
 export interface ManagedContribution {
-  clientId: IntegrationClientId;
+  /**
+   * WP1's own id type. `IntegrationClientId` is a WP2 alias OF this type, not
+   * a separate one — WP1 must typecheck before WP2 exists, so the dependency
+   * only ever points backwards (A-gate round 2, blocker 3).
+   */
+  clientId: ExportClientId;
   fragments: readonly ManagedFragment[];
 }
 
 /** WP1 gains this per client; it replaces the "ownership.path" idea in 020. */
 export type BuildContribution = (ctx: ExportContext) => ManagedContribution;
 ```
+
+**Module ownership of shared types (blocker 3).** These live in
+`src/clients/config-export.ts` (WP1), because WP1 is the earliest phase that
+needs them: `ConfigFormat`, `ManagedFragment`, `ManagedContribution`,
+`BuildContribution`. WP2's `src/integrations/registry.ts` re-exports
+`export type IntegrationClientId = ExportClientId;` as a readability alias.
+No WP1 file imports from `src/integrations/`.
+
+**Canonical model loader (blocker 4).** Both the existing
+`/api/client-config` route and the new integration routes need the same
+"visible, non-disabled catalog rows as `ExportModel[]`" list. Today
+`listManagementModelRows` and `toExportModel` are private to
+`src/server/management/model-routes.ts`. WP1 extracts them:
+
+```ts
+// src/server/management/model-rows.ts  (NEW, WP1 scope)
+export async function listManagementModelRows(config: OcxConfig): Promise<ManagementModelRow[]>;
+export function toExportModel(row: ManagementModelRow): ExportModel;
+/** Visible (non-disabled) rows as export models — the one loader both routes use. */
+export async function loadExportModels(config: OcxConfig): Promise<ExportModel[]>;
+```
+
+`model-routes.ts` imports from it instead of declaring them; WP4's file scope
+gains this import change. No behavior change to `/api/client-config` — the
+extraction is mechanical and its existing test pins the envelope.
 
 Per-client fragments:
 
@@ -190,8 +220,23 @@ export interface IntegrationIO {
 export function readIntegrationState(input: Omit<IntegrationWriteInput, "io"> & { io?: IntegrationIO }): IntegrationStatus;
 export function applyIntegration(input: IntegrationWriteInput): WriteOutcome;
 export function disableIntegration(input: IntegrationWriteInput): WriteOutcome;
-export function restoreIntegration(input: { opId: string; confirmDrift?: boolean; io?: IntegrationIO; env?: NodeJS.ProcessEnv; home?: string }): WriteOutcome;
+/**
+ * Restore takes the SAME input as apply/disable plus the operation to undo.
+ * It needs `models`/`config`/`port` because after writing the snapshot back it
+ * must rebuild the fresh contribution to classify the result as current vs
+ * stale — a restore that cannot say which state it produced is a rollback the
+ * UI has to guess about (A-gate round 2, blocker 4).
+ */
+export interface IntegrationRestoreInput extends IntegrationWriteInput {
+  opId: string;
+  confirmDrift?: boolean;
+}
+export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome;
 ```
+
+`clientId` on a restore input must equal the journal row's `clientId`; a
+mismatch is a programming error and throws rather than writing the wrong
+client's file.
 
 `IntegrationIO` is the seam blocker 7 requires: compare-before-commit is
 tested by a `readText` that returns different bytes on the second call, and
@@ -238,15 +283,24 @@ raw operations), and 060 consumes `snapshot === "expired"` for the
 
 ## 8. Diff-level completeness (blocker 1)
 
-Each decade doc must, before its phase starts (LOOP-CONTINUITY-01 re-verify
-at that phase's P), carry: every file with NEW/MODIFY, real signatures (no
+Every decade doc carries: each file with NEW/MODIFY, real signatures (no
 `ctx: {...}`), complete bodies for new modules, before/after context for
-modifications, and exact test filenames. The four Hermes/OpenClaw/Kimi/Gajae
-builder bodies, the journal implementation, and the two principal WP6
-components are the named gaps to close.
+modifications, and exact test filenames. **No gap is deferred to a later P.**
+The round-1 wording that scheduled the remaining bodies as per-phase work is
+retired — DIFFLEVEL-ROADMAP-01 requires the roadmap to be executable *before*
+A, and "fill it in per cycle" is exactly what that rule forbids.
 
-This is deliberately scheduled as **per-phase P work** rather than one giant
-pre-write: DIFFLEVEL-ROADMAP-01 asks the roadmap to be executable, and §1-§7
-above remove every cross-phase ambiguity that made the decade docs
-*interpretable*. What remains is mechanical expansion inside a single phase's
-own scope, which its P re-verifies against the tree anyway.
+Named gaps and where they are now closed:
+
+| Gap | Closed in |
+|---|---|
+| Hermes/OpenClaw/Kimi/Gajae builder + contribution bodies | `011_wp1_builders.md` |
+| Journal + ownership implementation bodies | `021_wp2_journal_impl.md` |
+| Writer bodies (apply/disable/restore, merge/remove) | `031_wp3_writer_impl.md` |
+| Journal route handler + row derivation | `040` §journal (rewritten in place) |
+| WP6 principal components | `061_wp6_components.md` |
+| docs-site + test filenames | `070` scope list (already concrete) |
+
+Sub-decade docs (`011`, `021`, `031`, `061`) are the standard overflow form
+(LEXICO-SPLIT-01): they carry the long paste-ready bodies so the decade doc
+stays the readable design, and they are part of the same phase.

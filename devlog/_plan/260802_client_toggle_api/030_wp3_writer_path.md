@@ -49,16 +49,16 @@ OUT
 ```ts
 export type WriteOutcome =
   | { ok: true; changed: boolean; state: IntegrationState; opId?: string; message: string }
-  | { ok: false; refused: RefusalReason; state: IntegrationState; message: string; snapshotPath?: string };
+  | { ok: false; reason: RefusalReason; state: IntegrationState; message: string; snapshotPath?: string };
 
 export type RefusalReason =
-  | "not-installed"        // detectDir missing
+  | "not_installed"        // detectDir missing
   | "conflict"             // foreign edit or unowned key — never auto-delete
   | "unsafe"               // unparseable / not a regular file
-  | "non-loopback"         // loopbackOnly client on a remote bind (kimi)
-  | "drift-needs-confirm"  // restore would replace post-snapshot edits
-  | "snapshot-expired"     // restore target was GC'd
-  | "write-failed";        // the atomic write itself threw
+  | "non_loopback"         // loopbackOnly client on a remote bind (kimi)
+  | "drift_requires_confirm"  // restore would replace post-snapshot edits
+  | "snapshot_expired"     // restore target was GC'd
+  | "write_failed";        // the atomic write itself threw
 ```
 
 A refusal is a *result*, not an exception — the Grok precedent
@@ -113,10 +113,10 @@ export function applyIntegration(clientId: IntegrationClientId, ctx: {
 
 Sequence:
 
-1. **Detect.** `detectDir` missing → refuse `not-installed` (no write, no
+1. **Detect.** `detectDir` missing → refuse `not_installed` (no write, no
    journal row). Installing a client for the user is not our business.
 2. **Loopback gate.** `spec.loopbackOnly && !isLoopbackHostname(config.hostname)`
-   → refuse `non-loopback`. This is the Grok reasoning applied to Kimi: the
+   → refuse `non_loopback`. This is the Grok reasoning applied to Kimi: the
    only way to make it work remotely is to serialize the user's real key, and
    AGENTS.md calls that a release blocker.
 3. **Classify** (WP2). `unsafe` → refuse `unsafe`. `conflict` → refuse
@@ -130,7 +130,7 @@ Sequence:
    delete the just-captured snapshot (nothing happened, so leave no debris).
    This is the lost-update guard 003 §3 caveat 1 demands; the residual race
    inside the re-read/rename window is accepted and documented, not claimed away.
-7. **Write** via `atomicWriteFile`. Throw → refuse `write-failed` with
+7. **Write** via `atomicWriteFile`. Throw → refuse `write_failed` with
    `snapshotPath` set.
 8. **Record + journal.** Write the `OwnershipRecord` (both fingerprints) and
    append the journal entry with `resultFingerprint`.
@@ -161,7 +161,7 @@ Same preflight, then `removeOurBlock`. Hard rules:
 export function restoreIntegration(opId: string, opts: { confirmDrift?: boolean }): WriteOutcome;
 ```
 
-1. **Resolve snapshot.** Missing/GC'd → refuse `snapshot-expired`.
+1. **Resolve snapshot.** Missing/GC'd → refuse `snapshot_expired`.
 2. **Target sanity.** Not a regular writable file → refuse `unsafe` with the
    snapshot path named, so the user can copy it back by hand.
 3. **Snapshot the current file first.** Restore is itself journaled as an
@@ -169,7 +169,7 @@ export function restoreIntegration(opId: string, opts: { confirmDrift?: boolean 
    cannot be rolled back is a trap.
 4. **Drift check.** If the current file's fingerprint differs from the
    `resultFingerprint` of the operation being undone, someone edited it after
-   us. Without `confirmDrift` → refuse `drift-needs-confirm`. With it →
+   us. Without `confirmDrift` → refuse `drift_requires_confirm`. With it →
    proceed, having already preserved those edits in step 3's snapshot.
 5. **Write** the snapshot text via `atomicWriteFile`, then journal
    (`kind: "restore"`) and recompute the ownership record from the restored
@@ -180,17 +180,17 @@ export function restoreIntegration(opId: string, opts: { confirmDrift?: boolean 
 
 | Branch | Trigger | Observable proof |
 |---|---|---|
-| `not-installed` | apply with no `detectDir` | `refused === "not-installed"`, no journal row |
-| `non-loopback` | apply kimi with `hostname: "0.0.0.0"` | `refused === "non-loopback"`, file unchanged |
+| `not_installed` | apply with no `detectDir` | `reason === "not_installed"`, no journal row |
+| `non_loopback` | apply kimi with `hostname: "0.0.0.0"` | `reason === "non_loopback"`, file unchanged |
 | `conflict` (apply) | apply, append a comment, apply again | refused; file still has the user's comment |
 | idempotent apply | apply twice unchanged | second returns `changed: false`, mtime unchanged |
 | compare-before-commit | stub the re-read to return different bytes | refused `conflict`; snapshot dir has no orphan |
-| `write-failed` | inject a throwing writer (desktop-3p test precedent) | `refused === "write-failed"`, `snapshotPath` set |
+| `write_failed` | inject a throwing writer (desktop-3p test precedent) | `reason === "write_failed"`, `snapshotPath` set |
 | disable from `conflict` | apply, hand-edit, disable | refused; our block still present (no auto-delete) |
 | disable `absent` | disable on a clean config | `ok: true, changed: false` |
-| `snapshot-expired` | 11 ops then restore the oldest | `refused === "snapshot-expired"` |
-| `drift-needs-confirm` | apply, hand-edit, restore without confirm | refused; then with `confirmDrift` it succeeds AND the hand edit is recoverable from the newest snapshot |
-| restore onto a directory | point config path at a dir | `refused === "unsafe"`, message names the snapshot path |
+| `snapshot_expired` | 11 ops then restore the oldest | `reason === "snapshot_expired"` |
+| `drift_requires_confirm` | apply, hand-edit, restore without confirm | refused; then with `confirmDrift` it succeeds AND the hand edit is recoverable from the newest snapshot |
+| restore onto a directory | point config path at a dir | `reason === "unsafe"`, message names the snapshot path |
 
 ## 6. Tests — `tests/integrations-writer.test.ts`
 

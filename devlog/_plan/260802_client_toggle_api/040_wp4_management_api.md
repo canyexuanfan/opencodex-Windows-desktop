@@ -1,8 +1,7 @@
 # 040 — WP4 management API routes
 
 **A-gate amendments (round 1) — read before implementing.** Shared types live
-in `006_module_contracts.md` and are authoritative where this document
-disagrees:
+in `006_module_contracts.md`; this document uses those contracts directly:
 
 - The writer union is 006 §4: refusals carry `reason` (snake_case literals)
   and may carry `snapshotPath`, which this module **forwards** on the
@@ -12,10 +11,9 @@ disagrees:
   plus the catalog rows this router already fetches for `/api/client-config`.
   `ManagementContext` is never passed to the writer — it carries neither
   `models` nor `port`.
-- The journal handler must **build `IntegrationJournalRow`** (006 §6:
-  `snapshot: "none" | "stored" | "expired"`, `undoable`), not return raw
-  operations. The pasted handler below predates that decision and must be
-  updated in the same change.
+- The journal handler **builds `IntegrationJournalRow`** (006 §6:
+  `snapshot: "none" | "stored" | "expired"`, `undoable`) rather than returning
+  raw operations.
 - Restore of an operation whose snapshot tag is `none` is
   **restore-to-absence** (delete the file we created, fingerprint-guarded),
   not a 410. Only the `expired` tag produces
@@ -38,9 +36,14 @@ WP4 changes exactly these files:
 
 1. `src/server/management/integration-routes.ts` — new route module, pasted
    from §4.
-2. `src/server/management-api.ts` — one import and one dispatch-chain slot,
+2. `src/server/management/model-routes.ts` — modify: import the mechanically
+   extracted canonical model-row helpers; `/api/client-config` behavior and
+   envelope stay unchanged.
+3. `src/server/management/model-rows.ts` — new: extracted
+   `listManagementModelRows`, `toExportModel`, and `loadExportModels` helpers.
+4. `src/server/management-api.ts` — one import and one dispatch-chain slot,
    exactly as shown in §5.
-3. `tests/management-integration-routes.test.ts` — new route-contract suite,
+5. `tests/management-integration-routes.test.ts` — new route-contract suite,
    specified in §7.
 
 ### 1.2 OUT
@@ -54,9 +57,10 @@ WP4 changes exactly these files:
 - No `requireManagementAuth` call inside `integration-routes.ts`. The server
   authenticates `/api/*` and enforces GUI-session CSRF before
   `handleManagementAPI` dispatch (`src/server/index.ts:448-454`).
-- No direct file reads or writes from the route module. In particular, the
-  journal snapshot returned by `readSnapshot` is checked for existence only
-  and is never serialized into an HTTP response.
+- The route never reads snapshot bytes into an HTTP response and performs no
+  config writes. Its only direct config-file read fingerprints current bytes
+  while deriving per-request journal `undoable`; missing means the canonical
+  absence fingerprint `""`, and other read failures make the row non-undoable.
 - No takeover endpoint. `conflict` remains a refusal for apply/disable; full
   snapshot restore is the only drift-confirmed overwrite in WP4.
 - No bulk apply/disable route. The GUI can sequence single-client toggles in a
@@ -88,7 +92,6 @@ from the landed WP1-WP3 discriminants:
 
 ```ts
 type IntegrationStateRecord = Awaited<ReturnType<typeof readIntegrationState>>;
-type IntegrationOperation = Awaited<ReturnType<typeof listOperations>>[number];
 type ApplyResult = Awaited<ReturnType<typeof applyIntegration>>;
 type DisableResult = Awaited<ReturnType<typeof disableIntegration>>;
 type RestoreResult = Awaited<ReturnType<typeof restoreIntegration>>;
@@ -113,23 +116,15 @@ export interface IntegrationJournalEnvelope {
   operations: IntegrationJournalRow[];
 }
 
-/**
- * A journal row as the GUI needs it. WP2 stores durable facts; these two
- * fields are DERIVED per request because storing them would go stale the
- * moment anything else wrote the file (020 §4 "Undo binding").
- *
- * - `snapshotAvailable`: false once WP2's 10-per-client GC collected the
- *   snapshot. The row survives as history; the action does not. The GUI
- *   renders `integrations.journal.expired` (004 §6.1, 070 §1).
- * - `undoable`: true only when this is the newest operation for its client
- *   AND the target file's current fingerprint still equals the row's
- *   `resultFingerprint`. Older rows and post-hoc foreign edits both degrade
- *   to a restore offer, never a silent multi-step rewind.
- */
-export type IntegrationJournalRow = IntegrationOperation & {
-  snapshotAvailable: boolean;
+export interface IntegrationJournalRow {
+  opId: string;
+  clientId: IntegrationClientId;
+  kind: "apply" | "disable" | "refresh" | "restore";
+  at: string;
+  configPath: string;
+  snapshot: "none" | "stored" | "expired";
   undoable: boolean;
-};
+}
 
 export interface IntegrationToggleBody {
   enabled: boolean;
@@ -149,45 +144,29 @@ export type IntegrationRouteError =
   | { error: "integration operation not found"; code: "integration_operation_not_found"; opId: string }
   | { error: "integration snapshot expired"; code: "integration_snapshot_expired"; opId: string }
   | { error: "integration mutation busy"; code: "integration_mutation_busy"; clientId: IntegrationClientId }
-  | { error: "integration config is unsafe"; code: "integration_unsafe"; clientId: IntegrationClientId; state: "unsafe"; reason: string }
+  | { error: "integration config is unsafe"; code: "integration_unsafe"; clientId: IntegrationClientId; state: "unsafe"; reason: string; snapshotPath?: string }
   | { error: "integration config conflicts with ownership record"; code: "integration_conflict"; clientId: IntegrationClientId; state: "conflict"; reason: string }
   | { error: "restore requires drift confirmation"; code: "integration_drift_confirmation_required"; clientId: IntegrationClientId; state: string; reason: string }
-  | { error: "integration mutation failed"; code: "integration_mutation_failed"; clientId: IntegrationClientId; state: string; reason: string }
+  | { error: "integration mutation failed"; code: "integration_mutation_failed"; clientId: IntegrationClientId; state: string; reason: string; snapshotPath?: string }
   | { error: string; code: "integration_internal_error" };
 ```
 
 `IntegrationStateRecord` is the WP2 object containing `state`, fingerprints,
 and `configPath`. A list item adds only `clientId`; the route does not rename
-or recompute any state fields. `IntegrationOperation` is returned as WP3
-stores it, excluding snapshot bytes by contract; the route decorates it with
-the two derived booleans above and nothing else.
+or recompute any state fields. Journal rows copy only the six durable metadata
+fields in 006 §6. Snapshot bytes and `resultFingerprint` remain internal.
 
-**Derivation (route-side, per request).** `snapshotAvailable` is
-`readSnapshot(opId) !== null` — an existence check only, never a content
-read, so a journal response can never leak a client's file bytes.
-`undoable` compares the row against `listOperations(clientId)[0]` and the
-live file fingerprint from `readIntegrationState(clientId)`. Both are cheap
-reads already performed elsewhere in this module.
+**Derivation (route-side, per request).** `snapshot` is the stored
+`SnapshotRef.kind`. `undoable` is true only when the row is the newest row for
+its client and the live config-file fingerprint equals its
+`resultFingerprint`. The response never serializes either fingerprint or any
+snapshot bytes.
 
-**Activation scenarios.** `snapshotAvailable: false` — produce 11 operations
-for one client and assert the oldest row is still present with the flag false
-while `POST restore` on it returns the 410 envelope (the two must agree, and
-a test asserts exactly that pairing). `undoable: false` on a foreign edit —
-apply, append a byte to the target file, then assert the newest row flips to
-`undoable: false` while remaining `snapshotAvailable: true`, i.e. the GUI
-offers restore instead of undo.
-
-OPEN QUESTION — WP3 must make `readSnapshot(opId)` return `null` when an
-operation row exists but its retained snapshot has been garbage-collected.
-The paste-ready code and the required 410 branch use that sentinel. If WP3
-landed a different explicit sentinel, change only the equality check in §4;
-do not collapse “unknown operation” and “expired snapshot” into one status.
-
-OPEN QUESTION — the supplied WP3 summary names a `reason` discriminant but
-does not give its literal for an unconfirmed drift restore. §3-§4 reserve
-`"drift_requires_confirm"`; WP3 must confirm or adopt that literal before the
-paste. Do not infer drift from a generic `conflict` state, because that would
-conflate ownership conflict with the restore-specific confirmation path.
+**Activation scenarios.** Produce 11 operations for one client and assert the
+oldest row remains present with `snapshot: "expired"`, while an operation
+created from an absent file remains `snapshot: "none"` and can restore to
+absence. For a foreign edit, append a byte to the target file and assert the
+newest row flips to `undoable: false` while its snapshot tag stays unchanged.
 
 ## 3. Exact route table
 
@@ -197,8 +176,8 @@ conflate ownership conflict with the restore-specific confirmation path.
 |---|---|---|---|
 | `GET` | `/api/client-integrations` | no body | `IntegrationStateListEnvelope`; exactly one item for each `INTEGRATION_CLIENTS` entry, in registry order |
 | `GET` | `/api/client-integrations/:clientId` | no body | `IntegrationStateEnvelope` |
-| `PUT` | `/api/client-integrations/:clientId` | `IntegrationToggleBody`; `true` calls `applyIntegration(clientId, ctx)`, `false` calls `disableIntegration(clientId)` | `IntegrationToggleEnvelope`; preserves `ok`, `changed`, `state`, `opId`, and `reason` from WP3 |
-| `POST` | `/api/client-integrations/restore` | `IntegrationRestoreBody`; omitted `confirmDrift` is `false` | `IntegrationRestoreEnvelope`; calls `restoreIntegration(opId, { confirmDrift })` only after operation and snapshot preflight |
+| `PUT` | `/api/client-integrations/:clientId` | `IntegrationToggleBody`; builds `IntegrationWriteInput`, then calls `applyIntegration(input)` or `disableIntegration(input)` | `IntegrationToggleEnvelope`; preserves `ok`, `changed`, `state`, `opId`, `reason`, and `snapshotPath` from WP3 |
+| `POST` | `/api/client-integrations/restore` | `IntegrationRestoreBody`; omitted `confirmDrift` is `false`; builds `IntegrationRestoreInput` with models/config/port plus `opId` and `confirmDrift` | `IntegrationRestoreEnvelope`; calls `restoreIntegration(input)` after operation and snapshot-tag preflight |
 | `GET` | `/api/client-integrations/journal` | no body; optional `?client=IntegrationClientId` | `IntegrationJournalEnvelope`; newest-first ordering remains WP3-owned |
 
 `GET` state may return `state: "unsafe"` with HTTP 200 because unsafe is an
@@ -216,12 +195,12 @@ attempted and the writer refuses it.
 | 400 | present non-boolean `confirmDrift` | `{"error":"confirmDrift must be a boolean","code":"invalid_confirm_drift"}` |
 | 404 | `opId` has no journal row | `{"error":"integration operation not found","code":"integration_operation_not_found","opId":"<request opId>"}` |
 | 409 | another non-stale mutation flight owns that client | `{"error":"integration mutation busy","code":"integration_mutation_busy","clientId":"<clientId>"}` |
-| 409 | apply/disable/restore writer result has `state: "unsafe"` | `{"error":"integration config is unsafe","code":"integration_unsafe","clientId":"<clientId>","state":"unsafe","reason":"<writer reason>"}` |
+| 409 | apply/disable/restore writer result has `state: "unsafe"` | `{"error":"integration config is unsafe","code":"integration_unsafe","clientId":"<clientId>","state":"unsafe","reason":"<writer reason>","snapshotPath":"<writer snapshotPath when present>"}` |
 | 409 | apply/disable, or confirmed restore, returns `state: "conflict"` | `{"error":"integration config conflicts with ownership record","code":"integration_conflict","clientId":"<clientId>","state":"conflict","reason":"<writer reason>"}` |
 | 409 | restore returns `reason: "drift_requires_confirm"` | `{"error":"restore requires drift confirmation","code":"integration_drift_confirmation_required","clientId":"<clientId>","state":"<writer state>","reason":"drift_requires_confirm"}` |
-| 410 | journal row exists but `readSnapshot(opId) === null` | `{"error":"integration snapshot expired","code":"integration_snapshot_expired","opId":"<request opId>"}` |
+| 410 | journal row exists and `readSnapshot(opId).kind === "expired"` | `{"error":"integration snapshot expired","code":"integration_snapshot_expired","opId":"<request opId>"}` |
 | 413 | declared body exceeds outer 2 MiB cap, or decompressed body exceeds `readManagementJsonBody` 4 MiB cap | `{"error":"request body too large"}` |
-| 500 | writer returns another `ok: false` result | `{"error":"integration mutation failed","code":"integration_mutation_failed","clientId":"<clientId>","state":"<writer state>","reason":"<writer reason>"}` |
+| 500 | writer returns another `ok: false` result | `{"error":"integration mutation failed","code":"integration_mutation_failed","clientId":"<clientId>","state":"<writer state>","reason":"<writer reason>","snapshotPath":"<writer snapshotPath when present>"}` |
 | 500 | unexpected thrown error | `{"error":"<Error.message or String(error)>","code":"integration_internal_error"}` |
 
 Management admission errors happen outside the new module and remain exact:
@@ -240,27 +219,32 @@ server retains ownership of its existing unknown-endpoint 404 envelope.
 Create the file with this complete content:
 
 ```ts
+import { readFileSync } from "node:fs";
 import {
   INTEGRATION_CLIENTS,
   type IntegrationClientId,
 } from "../../integrations/registry";
 import { listOperations, readSnapshot } from "../../integrations/journal";
+import { fingerprint } from "../../integrations/ownership";
 import { readIntegrationState } from "../../integrations/state";
 import {
   applyIntegration,
   disableIntegration,
   restoreIntegration,
+  type IntegrationIO,
+  type IntegrationRestoreInput,
+  type IntegrationWriteInput,
 } from "../../integrations/writer";
 import { jsonResponse } from "../auth-cors";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import type { ManagementContext } from "./context";
+import { loadExportModels } from "./model-rows";
 
 const INTEGRATION_ROUTE_PREFIX = "/api/client-integrations/";
 const INTEGRATION_MUTATION_JOIN_MS = 120_000;
 export const INTEGRATION_MUTATION_TERMINAL_MS = 10 * 60_000;
 
 type IntegrationStateRecord = Awaited<ReturnType<typeof readIntegrationState>>;
-type IntegrationOperation = Awaited<ReturnType<typeof listOperations>>[number];
 type ApplyResult = Awaited<ReturnType<typeof applyIntegration>>;
 type DisableResult = Awaited<ReturnType<typeof disableIntegration>>;
 type RestoreResult = Awaited<ReturnType<typeof restoreIntegration>>;
@@ -282,7 +266,17 @@ export type IntegrationRestoreEnvelope = {
 } & RestoreResult;
 
 export interface IntegrationJournalEnvelope {
-  operations: IntegrationOperation[];
+  operations: IntegrationJournalRow[];
+}
+
+export interface IntegrationJournalRow {
+  opId: string;
+  clientId: IntegrationClientId;
+  kind: "apply" | "disable" | "refresh" | "restore";
+  at: string;
+  configPath: string;
+  snapshot: "none" | "stored" | "expired";
+  undoable: boolean;
 }
 
 export interface IntegrationToggleBody {
@@ -308,7 +302,7 @@ class IntegrationMutationBusyError extends Error {
 
 const integrationMutationFlights = new Map<IntegrationClientId, IntegrationMutationFlight>();
 let integrationMutationTestHooks: {
-  now?: () => number;
+  io?: IntegrationIO;
   run?: (operation: () => Promise<unknown>) => Promise<unknown>;
 } | null = null;
 
@@ -334,12 +328,13 @@ function decodeClientPath(pathname: string): string | null {
 function runIntegrationMutationFlight<T>(
   clientId: IntegrationClientId,
   key: string,
+  now: () => number,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const now = integrationMutationTestHooks?.now?.() ?? Date.now();
+  const startedAt = now();
   const current = integrationMutationFlights.get(clientId);
   if (current) {
-    const age = now - current.startedAt;
+    const age = startedAt - current.startedAt;
     if (current.key === key && age < INTEGRATION_MUTATION_JOIN_MS) {
       return current.promise as Promise<T>;
     }
@@ -353,7 +348,7 @@ function runIntegrationMutationFlight<T>(
 
   const flight: IntegrationMutationFlight = {
     key,
-    startedAt: now,
+    startedAt,
     promise: Promise.resolve(),
   };
   const run = async (): Promise<unknown> => operation();
@@ -371,12 +366,34 @@ function runIntegrationMutationFlight<T>(
 
 export function setIntegrationMutationFlightTestHooks(
   hooks: {
-    now?: () => number;
+    io?: IntegrationIO;
     run?: (operation: () => Promise<unknown>) => Promise<unknown>;
   } | null,
 ): void {
   integrationMutationTestHooks = hooks;
   integrationMutationFlights.clear();
+}
+
+async function buildIntegrationWriteInput(
+  clientId: IntegrationClientId,
+  ctx: ManagementContext,
+): Promise<IntegrationWriteInput> {
+  return {
+    clientId,
+    models: await loadExportModels(ctx.config),
+    config: ctx.config,
+    port: Number(ctx.url.port) || ctx.config.port,
+    io: integrationMutationTestHooks?.io,
+  };
+}
+
+function liveResultFingerprint(configPath: string): string | null {
+  try {
+    return fingerprint(readFileSync(configPath, "utf8"));
+  } catch (error) {
+    if (isPlainRecord(error) && error.code === "ENOENT") return "";
+    return null;
+  }
 }
 
 function invalidClientResponse(ctx: ManagementContext): Response {
@@ -408,17 +425,17 @@ async function readJsonBody(ctx: ManagementContext): Promise<unknown | Response>
 
 function writerFailureResponse(
   clientId: IntegrationClientId,
-  result: { state: string; reason?: string },
+  result: { state: string; reason: string; snapshotPath?: string },
   ctx: ManagementContext,
 ): Response {
-  const reason = result.reason ?? "unknown";
   if (result.state === "unsafe") {
     return jsonResponse({
       error: "integration config is unsafe",
       code: "integration_unsafe",
       clientId,
       state: "unsafe",
-      reason,
+      reason: result.reason,
+      snapshotPath: result.snapshotPath,
     }, 409, ctx.req, ctx.config);
   }
   if (result.state === "conflict") {
@@ -427,7 +444,7 @@ function writerFailureResponse(
       code: "integration_conflict",
       clientId,
       state: "conflict",
-      reason,
+      reason: result.reason,
     }, 409, ctx.req, ctx.config);
   }
   return jsonResponse({
@@ -435,7 +452,8 @@ function writerFailureResponse(
     code: "integration_mutation_failed",
     clientId,
     state: result.state,
-    reason,
+    reason: result.reason,
+    snapshotPath: result.snapshotPath,
   }, 500, ctx.req, ctx.config);
 }
 
@@ -444,9 +462,11 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
 
   if (url.pathname === "/api/client-integrations" && req.method === "GET") {
     try {
+      const models = await loadExportModels(ctx.config);
+      const port = Number(url.port) || ctx.config.port;
       const clients = await Promise.all(INTEGRATION_CLIENTS.map(async clientId => ({
         clientId,
-        ...await readIntegrationState(clientId, ctx),
+        ...await readIntegrationState({ clientId, models, config: ctx.config, port }),
       })));
       return jsonResponse({ clients } satisfies IntegrationStateListEnvelope, 200, req, ctx.config);
     } catch (error) {
@@ -461,7 +481,23 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
       return invalidClientResponse(ctx);
     }
     try {
-      const operations = await listOperations(requestedClient ?? undefined);
+      const storedOperations = await listOperations(requestedClient ?? undefined);
+      const newestByClient = new Map<IntegrationClientId, string>();
+      for (const operation of storedOperations) {
+        if (!newestByClient.has(operation.clientId)) {
+          newestByClient.set(operation.clientId, operation.opId);
+        }
+      }
+      const operations: IntegrationJournalRow[] = storedOperations.map(operation => ({
+        opId: operation.opId,
+        clientId: operation.clientId,
+        kind: operation.kind,
+        at: operation.at,
+        configPath: operation.configPath,
+        snapshot: operation.snapshot.kind,
+        undoable: newestByClient.get(operation.clientId) === operation.opId
+          && liveResultFingerprint(operation.configPath) === operation.resultFingerprint,
+      }));
       return jsonResponse({ operations } satisfies IntegrationJournalEnvelope, 200, req, ctx.config);
     } catch (error) {
       return internalErrorResponse(error, ctx);
@@ -497,7 +533,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
         }, 404, req, ctx.config);
       }
       const snapshot = await readSnapshot(opId);
-      if (snapshot === null) {
+      if (snapshot.kind === "expired") {
         return jsonResponse({
           error: "integration snapshot expired",
           code: "integration_snapshot_expired",
@@ -505,10 +541,17 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
         }, 410, req, ctx.config);
       }
 
+      const writeInput = await buildIntegrationWriteInput(operation.clientId, ctx);
+      const restoreInput: IntegrationRestoreInput = {
+        ...writeInput,
+        opId,
+        confirmDrift,
+      };
       const result = await runIntegrationMutationFlight(
         operation.clientId,
         `restore:${opId}:${confirmDrift}`,
-        () => Promise.resolve(restoreIntegration(opId, { confirmDrift })),
+        writeInput.io?.now ?? Date.now,
+        () => Promise.resolve(restoreIntegration(restoreInput)),
       );
       if (!result.ok) {
         if (result.reason === "drift_requires_confirm") {
@@ -542,7 +585,8 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
 
   if (req.method === "GET") {
     try {
-      const state = await readIntegrationState(requestedClient, ctx);
+      const input = await buildIntegrationWriteInput(requestedClient, ctx);
+      const state = await readIntegrationState(input);
       return jsonResponse({ clientId: requestedClient, ...state } satisfies IntegrationStateEnvelope, 200, req, ctx.config);
     } catch (error) {
       return internalErrorResponse(error, ctx);
@@ -559,12 +603,14 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
   }
 
   try {
+    const input = await buildIntegrationWriteInput(requestedClient, ctx);
     const result = await runIntegrationMutationFlight(
       requestedClient,
       parsed.enabled ? "apply" : "disable",
+      input.io?.now ?? Date.now,
       () => Promise.resolve(parsed.enabled
-        ? applyIntegration(requestedClient, ctx)
-        : disableIntegration(requestedClient)),
+        ? applyIntegration(input)
+        : disableIntegration(input)),
     );
     if (!result.ok) return writerFailureResponse(requestedClient, result, ctx);
     return jsonResponse({ clientId: requestedClient, ...result } satisfies IntegrationToggleEnvelope, 200, req, ctx.config);
@@ -626,12 +672,14 @@ result if the branch did not run.
 
 | Branch | Test activation | Observable proof |
 |---|---|---|
-| busy 409 | Install a `setIntegrationMutationFlightTestHooks` runner whose first `pi` apply promise remains pending. Advance the injected clock past 120 seconds but not 10 minutes, then issue the same apply again. | Second response is exactly 409 `integration_mutation_busy`; writer call count remains one; resolving the first promise produces its original response and clears the flight. |
+| busy 409 | Install a `setIntegrationMutationFlightTestHooks` runner whose first `pi` apply promise remains pending. Advance `IntegrationIO.now` past 120 seconds but not 10 minutes, then issue the same apply again. | Second response is exactly 409 `integration_mutation_busy`; writer call count remains one; resolving the first promise produces its original response and clears the flight. |
+| stale flight replacement | Keep the first `pi` apply pending, advance the same injected `IntegrationIO.now` seam beyond `INTEGRATION_MUTATION_TERMINAL_MS`, then issue a second apply. | The second request invokes the writer and returns its own response instead of 409; resolving the first flight later does not clear or alter the replacement flight, proven by a third same-key request joining the replacement with no additional writer call. |
 | invalid client 400 | Request both `GET /api/client-integrations/zed` and `GET /api/client-integrations/journal?client=zed`. | Both bodies equal the exact `invalid_integration_client` envelope and enumerate all six registry ids in registry order; no state/journal mutation occurs. |
 | drift-requires-confirm 409 | Create an operation snapshot, modify the target after that operation, and restore with omitted/false `confirmDrift`. | Response is exactly 409 `integration_drift_confirmation_required`; target bytes remain the drifted bytes; journal count does not gain a restore operation. A second request with `confirmDrift: true` succeeds, preserves the drifted current file as the restore operation's new pre-write snapshot, and changes target bytes to the chosen snapshot. |
-| unsafe refusal | Point a client config path at a directory (or the WP2 unsafe fixture), confirm GET reports `state: "unsafe"`, then PUT either toggle direction. | Mutation response is exactly 409 `integration_unsafe`; directory/file bytes and journal length are unchanged. |
-| conflict refusal | Apply a managed config, edit its on-disk bytes so the persisted fingerprint no longer matches, then PUT `{ "enabled": false }`. | Response is exactly 409 `integration_conflict`; the edited provider block remains byte-for-byte present; no disable operation is appended. |
-| journal-expired 410 | Produce 11 operations for one client so WP3's 10-snapshot GC collects the first snapshot while retaining its immutable history row; restore the first `opId`. | Journal GET still contains the first row; restore returns exactly 410 `integration_snapshot_expired`; target bytes and journal length are unchanged. |
+| unsafe rejection | Point a client config path at a directory (or the WP2 unsafe fixture), confirm GET reports `state: "unsafe"`, then PUT either toggle direction. | Mutation response is exactly 409 `integration_unsafe`; directory/file bytes and journal length are unchanged. |
+| conflict rejection | Apply a managed config, edit its on-disk bytes so the persisted fingerprint no longer matches, then PUT `{ "enabled": false }`. | Response is exactly 409 `integration_conflict`; the edited provider block remains byte-for-byte present; no disable operation is appended. |
+| restore-to-absence | Apply when the client config file is missing, producing a journal row with `snapshot.kind === "none"`, then restore that `opId` while its result fingerprint still matches. | Restore returns 200, deletes the file created by apply, appends a restore row, and GET reports `state: "absent"`; no 410 envelope is emitted. |
+| journal-expired 410 | Produce 11 operations for one client so WP3's 10-snapshot GC changes the first snapshot tag to `expired` while retaining its immutable history row; restore the first `opId`. | Journal GET still contains the first row with `snapshot: "expired"`; restore returns exactly 410 `integration_snapshot_expired`; target bytes and journal length are unchanged. |
 
 ## 7. New test file — `tests/management-integration-routes.test.ts`
 
@@ -646,7 +694,7 @@ The file contains these exact test names:
 
 1. `GET /api/client-integrations lists all registry clients in registry order`
    - status 200; ids exactly equal `INTEGRATION_CLIENTS`; each item equals
-     `{ clientId, ...readIntegrationState(clientId, ctx) }`; fingerprints and
+     `readIntegrationState({ clientId, models, config, port })`; fingerprints and
      `configPath` are present; no snapshot bytes appear in serialized JSON.
 2. `GET /api/client-integrations/:clientId returns one five-state record`
    - create a current fixture; status 200; exact `clientId`, `state`,
@@ -659,31 +707,40 @@ The file contains these exact test names:
      preserves `ok`, `changed`, `state`, `opId`, and `reason`; state read-back
      changes as expected; two immutable journal rows exist.
 5. `duplicate apply joins for 120 seconds and an older flight returns busy 409`
-   - uses the test hook and clock; proves one underlying run for joined calls,
+   - injects `IntegrationIO.now`; proves one underlying run for joined calls,
      then the exact busy envelope after the join window; resolves the pending
      promise in `finally` so the suite cannot leak a flight.
-6. `conflict refuses disable without changing foreign-edited bytes`
-   - required conflict-refuses-disable case from §6; exact 409 envelope,
+6. `a flight older than ten minutes is replaced without stale cleanup winning`
+   - advances injected `IntegrationIO.now` beyond the terminal window, proves
+     the replacement invokes the writer instead of returning 409, then proves
+     the old flight's `finally` cannot clear the replacement.
+7. `conflict rejects disable without changing foreign-edited bytes`
+   - required conflict-rejection case from §6; exact 409 envelope,
      byte equality before/after, and unchanged journal count.
-7. `unsafe state is readable but toggle mutation is refused`
+8. `unsafe state is readable but toggle mutation is rejected`
    - GET is 200 with `unsafe`; PUT is exact 409 `integration_unsafe`; no bytes
      or journal row change.
-8. `restore requires explicit drift confirmation and preserves current bytes before overwrite`
+9. `restore requires explicit drift confirmation and preserves current bytes before overwrite`
    - false/omitted confirm returns exact 409 and no write; true confirm returns
      200, restores selected bytes, and creates a new snapshot containing the
      drifted pre-restore bytes.
-9. `restore distinguishes an unknown operation from an expired snapshot`
-   - unknown id is exact 404; GC-retained history with missing snapshot is
+10. `restore of a none snapshot deletes the file created by apply`
+    - apply from a missing config, assert the journal row reports
+      `snapshot: "none"`, then restore it; status is 200, the file is absent,
+      and a restore operation is appended.
+11. `restore distinguishes an unknown operation from an expired snapshot`
+   - unknown id is exact 404; GC-retained history with an `expired` tag is
      exact 410; neither path mutates target or journal.
-10. `GET /api/client-integrations/journal returns newest-first metadata and filters by client`
-    - unfiltered order equals `listOperations()`; filtered order equals
-      `listOperations(clientId)`; response text contains no snapshot content
-      or serialized secret fixture.
-11. `mutation bodies reject malformed JSON invalid fields and decompressed overflow`
+12. `GET /api/client-integrations/journal derives snapshot tags and undoable per request`
+    - unfiltered and filtered rows preserve newest-first order; each row maps
+      the stored `SnapshotRef.kind`; only the newest row whose live fingerprint
+      equals `resultFingerprint` is `undoable`; response text contains no
+      fingerprint, snapshot content, or serialized secret fixture.
+13. `mutation bodies reject malformed JSON invalid fields and decompressed overflow`
     - exact 400 envelopes for malformed JSON, non-boolean `enabled`, blank
       `opId`, and non-boolean `confirmDrift`; a compressed body over the bounded
       reader limit bubbles to the outer exact 413 body.
-12. `GUI-session mutation without CSRF is rejected before integration dispatch`
+14. `GUI-session mutation without CSRF is rejected before integration dispatch`
     - create `initializeManagementAuthState`, mint a same-origin GUI session,
       and pass a same-origin PUT carrying the session token and GUI-origin but
       no `X-OpenCodex-CSRF-Token` through the same
@@ -692,7 +749,7 @@ The file contains these exact test names:
       empty. Add the CSRF header in the control request and assert admission
       succeeds and the route returns 200. Do not add an auth call to the route
       module to make this test pass.
-13. `authenticated cross-origin state read keeps the management 403 envelope`
+15. `authenticated cross-origin state read keeps the management 403 envelope`
     - admin-authenticated request with a mismatched `Origin` reaches
       `handleManagementAPI` and is rejected with exact 403
       `cross-origin request blocked` before state reading.
@@ -716,7 +773,11 @@ status-only fake cannot make a non-activated branch look covered.
 ## 8. Mechanical acceptance criteria
 
 - [ ] `src/server/management/integration-routes.ts` exists with the §4 content
-  and imports only the agreed WP1-WP3 modules plus existing management helpers.
+  and imports the agreed WP1-WP3 modules, canonical `model-rows` loader, and
+  existing management helpers.
+- [ ] `src/server/management/model-routes.ts` imports its extracted row helpers
+  from the new `src/server/management/model-rows.ts`; `/api/client-config`
+  keeps its existing behavior and both routes use `loadExportModels(config)`.
 - [ ] `src/server/management-api.ts` has exactly one new import and one new
   `??` chain entry in the §5 positions.
 - [ ] No new route module calls `requireManagementAuth`; the CSRF test proves
@@ -729,10 +790,13 @@ status-only fake cannot make a non-activated branch look covered.
   append an operation.
 - [ ] Restore distinguishes unknown operation (404), drift confirmation (409),
   and collected snapshot (410).
+- [ ] A `none` snapshot restores to file absence under the writer's fingerprint
+  guard; only an `expired` snapshot produces 410.
 - [ ] Confirmed drift restore snapshots current bytes before replacement and is
   itself undoable.
-- [ ] Journal responses contain operation metadata only and never snapshot
-  bytes or secret fixture text.
+- [ ] Journal responses contain the exact 006 §6 row shape, derive snapshot
+  tags and `undoable` from live state, and never contain fingerprints,
+  snapshot bytes, or secret fixture text.
 - [ ] Same-client mutation flights join only identical requests inside 120
   seconds, return busy through 10 minutes, and replace stale flights safely.
 - [ ] Unsupported methods/deeper paths return `null` from the module.
@@ -744,5 +808,5 @@ status-only fake cannot make a non-activated branch look covered.
 - [ ] `bun run privacy:scan` exits 0; route/journal responses contain no API
   key, account identifier, or snapshot content.
 - [ ] `git diff --check` exits 0.
-- [ ] `git diff --name-only` for WP4 lists only the three IN-scope files from
+- [ ] `git diff --name-only` for WP4 lists only the five IN-scope files from
   §1.1.
