@@ -8,6 +8,7 @@ import {
 } from "../server/management/body";
 import { NativeProfileManager } from "./native-profile-manager";
 import { NativeProfileError } from "./native-profile-types";
+import { completeNativeMainRecovery } from "./native-profile-startup";
 
 export interface NativeProfileApiDeps {
   manager?: NativeProfileManager;
@@ -89,12 +90,12 @@ export async function handleNativeProfileAPI(
     }
     if (url.pathname === "/api/native-main-profiles/recover" && req.method === "POST") {
       const input = await body(req);
-      return jsonResponse(
-        await withMainRequestDrain(deps, () => manager.recover(input.rollback === true, input.confirmedStopped === true)),
-        200,
-        req,
-        config,
+      const recovered = await withMainRequestDrain(
+        deps,
+        () => manager.recover(input.rollback === true, input.confirmedStopped === true),
       );
+      if (manager.context?.homeId) completeNativeMainRecovery(manager.context.homeId);
+      return jsonResponse(recovered, 200, req, config);
     }
     return jsonResponse({ error: "Unknown native-profile operation", code: "INVALID_REQUEST" }, 404, req, config);
   } catch (error) {

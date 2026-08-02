@@ -11,6 +11,7 @@ import { markAccountNeedsReauth } from "./account-runtime-state";
 import { isCodexAccountUsable } from "./account-usability";
 import { reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
 import { MAIN_CODEX_ACCOUNT_ID, getMainAccountToken } from "./main-account";
+import { isNativeMainTrafficBlocked } from "./native-profile-startup";
 import {
   codexQuotaScopeForModel,
   getCodexQuotaHealthSnapshot,
@@ -209,6 +210,12 @@ export async function resolveCodexAuthContext(
   if (mode === "direct") {
     if (!hasCallerCodexBearer(headers)) throw new CodexDirectAuthenticationError();
     return { kind: "main", accountId: null };
+  }
+  // Preserve the explicit main selection while startup recovery is pending. Letting
+  // normal strategy resolution run would demote/mutate it before recovery can reopen
+  // the same physical account. Pool-active configurations never enter this branch.
+  if (isNativeMainTrafficBlocked() && config.activeCodexAccountId === MAIN_CODEX_ACCOUNT_ID) {
+    throw new CodexPoolAuthenticationError();
   }
   reconcileMainCodexAccountRuntimeState();
   const threadId = headers.get("x-codex-parent-thread-id");

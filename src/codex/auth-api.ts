@@ -14,6 +14,7 @@ import {
   TokenRefreshError,
 } from "./account-store";
 import { deleteCodexAccount, reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
+import { isNativeMainTrafficBlocked } from "./native-profile-startup";
 import { isCodexAccountPaused, setCodexAccountPaused } from "./account-pause";
 import {
   clearCodexAccountCooldown,
@@ -383,6 +384,9 @@ async function retryMainAccountInfoIfIdentityChanged(
 }
 
 async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaining: number): Promise<MainAccountInfoFetchResult> {
+  // Startup journal recovery is the credential ownership boundary. Do not let a
+  // best-effort quota probe read or quarantine __main__ while that boundary is closed.
+  if (isNativeMainTrafficBlocked()) return { info: EMPTY_MAIN_ACCOUNT_INFO };
   const writerGeneration = captureConfigGeneration();
   reconcileMainCodexAccountRuntimeState();
   const tokenRead = readCodexTokensResult();

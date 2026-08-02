@@ -153,6 +153,7 @@ import { handleChatCompletions } from "./chat-completions";
 import { anthropicErrorResponse } from "../claude/outbound";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
+import { initializeNativeMainStartupGate, type NativeMainStartupGateDeps } from "../codex/native-profile-startup";
 import { handleImages } from "./images";
 import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
 import { handleSearch } from "./search";
@@ -282,6 +283,8 @@ export interface StartServerDeps {
   managementAuthState?: ManagementAuthState;
   /** Test-only route dependencies, forwarded only after management admission succeeds. */
   managementApi?: ManagementApiDeps;
+  /** Test-only native-main recovery dependencies; production constructs the normal manager. */
+  nativeMainStartup?: NativeMainStartupGateDeps;
 }
 
 export function startServer(port?: number, deps: StartServerDeps = {}) {
@@ -290,6 +293,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
   applyProxyEnv(config);
   assertServerAuthConfig(config);
   const managementAuth = deps.managementAuthState ?? initializeManagementAuthState(config);
+  // Arm synchronously before listen. A pending journal therefore makes __main__ unusable
+  // before any request can resolve its physical credential, while health/management/Pool stay live.
+  void initializeNativeMainStartupGate(deps.nativeMainStartup);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
