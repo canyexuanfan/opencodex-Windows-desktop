@@ -285,11 +285,15 @@ describe("ClinePass provider", () => {
   test("rejects contradictory or malformed failure envelopes", async () => {
     const contradictory = await parseNonStream({
       success: false,
-      data: { choices: [{ finish_reason: "stop", message: { content: "must not pass" } }] },
+      data: {
+        choices: [{ finish_reason: "stop", message: { content: "must not pass" } }],
+        usage: { prompt_tokens: 7, completion_tokens: 2 },
+      },
     });
     expect(contradictory).toEqual([{
       type: "error",
       message: "upstream reported failure without an error payload",
+      usage: { inputTokens: 7, outputTokens: 2 },
     }]);
 
     const nestedError = await parseNonStream({

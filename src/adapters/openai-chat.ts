@@ -1051,10 +1051,14 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       budget.chargeRetained(responseBytes, { kind: "retained_collectors" });
       try {
       const payload = unwrapChatCompletionPayload(json);
-      if (json.success === false && payload.error === undefined) {
-        return [{ type: "error", message: "upstream reported failure without an error payload" }];
-      }
       const usage = usageFromOpenAIChat(payload.usage as Record<string, unknown> | undefined);
+      if (json.success === false && payload.error === undefined) {
+        return [{
+          type: "error",
+          message: "upstream reported failure without an error payload",
+          ...(usage ? { usage } : {}),
+        }];
+      }
       if (payload.error) {
         return [upstreamErrorEvent(payload.error as OpenAIChatError, usage)];
       }
