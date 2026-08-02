@@ -288,6 +288,17 @@ export interface ExportClientSpec {
    * rather than being re-derived by the writer.
    */
   buildContribution: BuildContribution;
+  /**
+   * True when this client can only reach a loopback bind.
+   *
+   * `/v1/chat/completions` rejects bearer credentials and requires the
+   * dedicated `x-opencodex-api-key` header (AUTH_MATRIX in
+   * src/server/auth-cors.ts). A client whose schema has no place to put that
+   * header therefore cannot authenticate against a remote bind at all — so we
+   * say so rather than exporting a config that 401s. Same reasoning as the
+   * Grok managed block's non-loopback refusal.
+   */
+  loopbackOnly: boolean;
 }
 
 /**
@@ -754,6 +765,8 @@ export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
     format: "json",
     summarize: summarizeOpencode,
     buildContribution: buildOpencodeContribution,
+    // carries the dedicated header in provider options
+    loopbackOnly: false,
   },
   pi: {
     id: "pi",
@@ -765,6 +778,10 @@ export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
     format: "json",
     summarize: summarizePi,
     buildContribution: buildPiContribution,
+    // No header field in Pi's provider block (and the schema is unverified
+    // against a real install), so there is nowhere to put the dedicated
+    // admission header a remote bind requires.
+    loopbackOnly: true,
   },
   hermes: {
     id: "hermes",
@@ -776,6 +793,8 @@ export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
     format: "yaml",
     summarize: summarizeHermes,
     buildContribution: buildHermesContribution,
+    // extra_headers carries the dedicated header
+    loopbackOnly: false,
   },
   openclaw: {
     id: "openclaw",
@@ -787,6 +806,8 @@ export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
     format: "json5",
     summarize: summarizeOpenclaw,
     buildContribution: buildOpenclawContribution,
+    // headers carries the dedicated header
+    loopbackOnly: false,
   },
   kimi: {
     id: "kimi",
@@ -801,6 +822,8 @@ export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
     format: "toml",
     summarize: summarizeKimi,
     buildContribution: buildKimiContribution,
+    // no header field, and credentials come only from this file
+    loopbackOnly: true,
   },
   gajae: {
     id: "gajae",
@@ -812,6 +835,8 @@ export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
     format: "yaml",
     summarize: summarizeGajae,
     buildContribution: buildGajaeContribution,
+    // strict schema with no header field, so the dedicated header has nowhere to go
+    loopbackOnly: true,
   },
 };
 

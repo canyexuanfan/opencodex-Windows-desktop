@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
   GAJAE_API_KEY_ENV,
   HERMES_API_KEY_ENV_REF,
@@ -53,6 +54,23 @@ function ctx(config: OcxConfig = LOOPBACK): ExportContext {
 }
 
 describe("no secret reaches a client config", () => {
+  test("a client is loopback-only exactly when it has nowhere to put the admission header", () => {
+    // /v1/chat/completions rejects bearer credentials and requires the
+    // dedicated x-opencodex-api-key header (AUTH_MATRIX in auth-cors.ts), so a
+    // client whose schema has no header field cannot authenticate remotely at
+    // all. Saying so beats exporting a config that 401s.
+    const loopbackOnly = EXPORT_CLIENT_IDS.filter(id => EXPORT_CLIENTS[id].loopbackOnly);
+    expect(loopbackOnly).toEqual(["pi", "kimi", "gajae"]);
+  });
+
+  test("every client that is not loopback-only carries the header on a remote bind", () => {
+    for (const id of EXPORT_CLIENT_IDS) {
+      if (EXPORT_CLIENTS[id].loopbackOnly) continue;
+      const { text } = buildClientConfigText(id, ctx(REMOTE));
+      expect(text).toContain("x-opencodex-api-key");
+    }
+  });
+
   test("every client's bytes carry a reference or placeholder, never the key", () => {
     for (const id of EXPORT_CLIENT_IDS) {
       const { text } = buildClientConfigText(id, ctx());
