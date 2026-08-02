@@ -909,6 +909,8 @@ type FinalizeHooks = {
   /** Defense-in-depth: late reconciliation must still own this attempt. */
   stillOwnsAttempt?: (attemptId: string) => boolean;
   requestTimeoutMs?: number;
+  /** Test-only seam for the post-create settle backoff; real installs use a timer. */
+  settleDelay?: (ms: number) => Promise<void>;
 };
 
 let finalizeHooks: FinalizeHooks | null = null;
@@ -973,6 +975,65 @@ function attemptStillOwned(options: ApplyElevatedOptions): boolean {
   return !check || check(options.attemptId);
 }
 
+/**
+ * Bounded post-create backoff, 1.1s total. Task Scheduler's non-elevated view can
+ * lag an elevated `/create` by a few hundred milliseconds, so a single verification
+ * would roll back a task that is merely not visible yet.
+ */
+const SCHEDULER_SETTLE_DELAYS_MS = [50, 150, 300, 600] as const;
+
+/**
+ * Whether a failed verification is still worth re-checking after a short delay.
+ *
+ * Retrying is confined to states that a lagging scheduler view actually produces:
+ * the task is not visible yet, or it is visible but its registration has not been
+ * published in full. Everything else keeps its existing fail-closed meaning and is
+ * rejected here so no delay can turn it into a pass:
+ *
+ * - a proven conflict (both backends present) is a real dual-backend install;
+ * - missing assets are missing on disk, which no amount of waiting creates;
+ * - a WinSW service that is proven present (`started`/`stopped`) is never absent
+ *   later. This is checked independently of `conflict`, which only becomes true
+ *   once the task itself is visible — while the task is still invisible the pair
+ *   is `conflict: false` with `nativeServiceAbsent: false`, and that must not retry;
+ * - unknown SCM status is unproven rather than transient, and has its own
+ *   task-preserving branch below.
+ */
+function schedulerVerificationMaySettle(v: WindowsSchedulerInstallVerification): boolean {
+  if (v.ok) return false;
+  if (v.conflict) return false;
+  if (!v.assetsHealthy) return false;
+  if (!v.nativeServiceAbsent) return false;
+  return !v.taskInstalled || !v.registrationHealthy;
+}
+
+function settleDelay(ms: number): Promise<void> {
+  const hook = finalizeHooks?.settleDelay;
+  if (hook) return hook(ms);
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Verify the elevated install, re-checking only while the failure looks like a
+ * scheduler view that has not caught up yet. Returns `null` when this attempt lost
+ * ownership mid-settle: a newer attempt owns the task, so this one must neither
+ * write install state nor roll anything back.
+ */
+async function verifyWindowsSchedulerInstallAfterSettle(
+  options: ApplyElevatedOptions,
+): Promise<WindowsSchedulerInstallVerification | null> {
+  const verify = finalizeHooks?.verify ?? verifyWindowsSchedulerInstall;
+  let verification = verify();
+  for (const delayMs of SCHEDULER_SETTLE_DELAYS_MS) {
+    if (!schedulerVerificationMaySettle(verification)) break;
+    if (!attemptStillOwned(options)) return null;
+    await settleDelay(delayMs);
+    if (!attemptStillOwned(options)) return null;
+    verification = verify();
+  }
+  return verification;
+}
+
 async function applyElevatedSchedulerResult(
   result: ElevatedSchtasksCreateAndRunResult,
   options: ApplyElevatedOptions,
@@ -1002,7 +1063,9 @@ async function applyElevatedSchedulerResult(
     await reconcileUnknownElevatedOutcome(result.exitCode);
   }
 
-  const verification = (finalizeHooks?.verify ?? verifyWindowsSchedulerInstall)();
+  const verification = await verifyWindowsSchedulerInstallAfterSettle(options);
+  // Ownership moved to a newer attempt while settling; that attempt owns the outcome.
+  if (!verification) return;
   if (!verification.ok) {
     // Preserve a healthy elevated task when WinSW absence cannot be proven (unknown SCM status).
     // Unknown is not a confirmed dual-backend conflict; install state is still withheld.
@@ -1019,6 +1082,9 @@ async function applyElevatedSchedulerResult(
         "Installation state was not written.",
       ]);
     }
+    // Rollback deletes a real task, so it needs the same ownership fence as the
+    // state write below: a stale attempt must never delete a newer attempt's task.
+    if (!attemptStillOwned(options)) return;
     const rollbackError = await rollbackElevatedSchedulerTask();
     const parts = [
       "Elevated Task Scheduler registration did not produce a conflict-free install.",
