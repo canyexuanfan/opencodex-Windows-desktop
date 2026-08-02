@@ -529,5 +529,78 @@ describe("Cursor live transport incomplete-frame EOF", () => {
     expect((result.failure as { code?: unknown } | undefined)?.code).toBe("frame_incomplete");
     expect(budget.snapshot().currentBytes).toBe(0);
   });
+
+  test("a rejected over-cap chunk never debits the pre-existing lease", async () => {
+    const budget = createTestTranslatorBudget();
+    // Transport A parks an incomplete frame (16 MiB + 4 charged) with its
+    // stream open; transport B's own incomplete frame overflows the SHARED
+    // turn budget and must be rejected without debiting A's ownership.
+    // (Filler must be an incomplete frame — zero bytes would decode as free
+    // zero-length frames and never accumulate.)
+    const declared = new Uint8Array(5);
+    new DataView(declared.buffer).setUint32(1, 16 * 1024 * 1024, false);
+    await withDiscoveryServer(streamA => {
+      streamA.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      streamA.write(Buffer.from(declared));
+      streamA.write(Buffer.alloc(16 * 1024 * 1024 - 1));
+      // Stream A stays open: the frame never completes and the lease stays live.
+    }, async baseUrlA => {
+      await withDiscoveryServer(streamB => {
+        streamB.respond({ ":status": 200, "content-type": "application/connect+proto" });
+        streamB.write(Buffer.from(declared));
+        // Body 8 bytes short of the declaration: stays in the backlog, and
+        // (16 MiB + 4) + (5 + 16 MiB - 8) = 32 MiB + 1 overflows the budget.
+        streamB.end(Buffer.alloc(16 * 1024 * 1024 - 8));
+      }, async baseUrlB => {
+        const transportA = createLiveCursorTransport({
+          provider: { adapter: "cursor", baseUrl: baseUrlA, apiKey: "test-token" },
+          translatorBudget: budget,
+          firstFrameTimeoutMs: 30_000,
+        });
+        const transportB = createLiveCursorTransport({
+          provider: { adapter: "cursor", baseUrl: baseUrlB, apiKey: "test-token" },
+          translatorBudget: budget,
+          firstFrameTimeoutMs: 30_000,
+        });
+        const runA = (async () => {
+          try {
+            for await (const _message of transportA.run({
+              modelId: "composer-2",
+              conversationId: "cursor_overflow_lease_a",
+              system: [],
+              messages: [{ role: "user", content: "hello" }],
+            })) {
+              // drain
+            }
+          } catch {
+            // A ends via close() below; the failure shape is not under test here.
+          }
+        })();
+        // Give A a beat to park its incomplete frame before B overflows.
+        await new Promise(resolve => setTimeout(resolve, 500));
+        expect(budget.snapshot().currentBytes).toBe(16 * 1024 * 1024 + 4);
+        let failureB: Error | undefined;
+        try {
+          for await (const _message of transportB.run({
+            modelId: "composer-2",
+            conversationId: "cursor_overflow_lease_b",
+            system: [],
+            messages: [{ role: "user", content: "hello" }],
+          })) {
+            // drain
+          }
+        } catch (err) {
+          failureB = err instanceof Error ? err : new Error(String(err));
+        }
+        expect(failureB).toBeDefined();
+        // A's lease is untouched by B's rejected reservation and cleanup.
+        expect(budget.snapshot().currentBytes).toBe(16 * 1024 * 1024 + 4);
+        await transportA.close?.();
+        await runA;
+        await transportB.close?.();
+        expect(budget.snapshot().currentBytes).toBe(0);
+      });
+    });
+  }, 20_000);
 });
 import { ManagementRequest as Request } from "./helpers/management-auth";

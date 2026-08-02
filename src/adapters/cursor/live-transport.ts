@@ -928,21 +928,22 @@ class LiveCursorTransport implements CursorTransport {
         debugProviderDiagnostic("cursor", "first-frame", { latencyMs: this.firstFrameAt - this.turnStartedAt });
       }
       const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      let charged = false;
       let appended = false;
       try {
         // RAW chunk bytes (headers included) join the backlog charge; consumed
         // bytes leave it at drain. No whole-backlog replacement copy anymore.
         this.reserveTransportBytes(bytes.byteLength);
+        charged = true;
         appendBacklog(bytes);
         appended = true;
         drainPendingFrames();
       } catch (err) {
-        // Release the chunk charge only when the bytes never joined the
-        // backlog; once appended, the terminal backlog cleanup owns them —
-        // releasing here would understate the retained backlog.
-        if (!appended) {
-          try { this.releaseTransportBytes(bytes.byteLength); } catch { /* already released */ }
-        }
+        // Release ONLY when the reservation succeeded but the append never
+        // happened. A failed reservation charged nothing — releasing here
+        // would debit unrelated existing ownership; an appended chunk is owned
+        // by the terminal backlog cleanup.
+        if (charged && !appended) this.releaseTransportBytes(bytes.byteLength);
         failAndClear(err instanceof Error ? err : new Error(String(err)));
       }
     });
