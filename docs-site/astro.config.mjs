@@ -116,8 +116,27 @@ export default defineConfig({
           label: "Reference",
           translations: { ko: "레퍼런스", "zh-CN": "参考", ru: "Справочник", ja: "リファレンス" },
           items: [
-            { label: "CLI", translations: { ko: "CLI", "zh-CN": "命令行", ru: "CLI", ja: "CLI" }, slug: "reference/cli" },
-            { label: "Configuration", translations: { ko: "설정", "zh-CN": "配置", ru: "Конфигурация", ja: "設定" }, slug: "reference/configuration" },
+            {
+              label: "CLI",
+              translations: { ko: "CLI", "zh-CN": "命令行", ru: "CLI", ja: "CLI" },
+              items: [
+                { label: "Overview", translations: { ko: "개요", "zh-CN": "概览", ru: "Обзор", ja: "概要" }, slug: "reference/cli" },
+                { label: "Lifecycle & Service", translations: { ko: "라이프사이클 & 서비스", "zh-CN": "生命周期与服务", ru: "Жизненный цикл и служба", ja: "ライフサイクル & サービス" }, slug: "reference/cli/lifecycle" },
+                { label: "Providers, Accounts & Models", translations: { ko: "프로바이더, 계정 & 모델", "zh-CN": "提供商、账户与模型", ru: "Провайдеры, аккаунты и модели", ja: "プロバイダー・アカウント・モデル" }, slug: "reference/cli/providers-accounts" },
+                { label: "Agents, Routing & Integrations", translations: { ko: "에이전트, 라우팅 & 통합", "zh-CN": "代理、路由与集成", ru: "Агенты, маршрутизация и интеграции", ja: "エージェント・ルーティング・連携" }, slug: "reference/cli/agents" },
+              ],
+            },
+            {
+              label: "Configuration",
+              translations: { ko: "설정", "zh-CN": "配置", ru: "Конфигурация", ja: "設定" },
+              items: [
+                { label: "Overview", translations: { ko: "개요", "zh-CN": "概览", ru: "Обзор", ja: "概要" }, slug: "reference/configuration" },
+                { label: "Providers", translations: { ko: "프로바이더", "zh-CN": "提供商", ru: "Провайдеры", ja: "プロバイダー" }, slug: "reference/configuration/providers" },
+                { label: "Routing", translations: { ko: "라우팅", "zh-CN": "路由", ru: "Маршрутизация", ja: "ルーティング" }, slug: "reference/configuration/routing" },
+                { label: "Agents", translations: { ko: "에이전트", "zh-CN": "代理", ru: "Агенты", ja: "エージェント" }, slug: "reference/configuration/agents" },
+                { label: "Server & Runtime", translations: { ko: "서버 & 런타임", "zh-CN": "服务器与运行时", ru: "Сервер и рантайм", ja: "サーバー & ランタイム" }, slug: "reference/configuration/server" },
+              ],
+            },
             { label: "Adapters", translations: { ko: "어댑터", "zh-CN": "适配器", ru: "Адаптеры", ja: "アダプター" }, slug: "reference/adapters" },
             { label: "Architecture", translations: { ko: "아키텍처", "zh-CN": "架构", ru: "Архитектура", ja: "アーキテクチャ" }, slug: "reference/architecture" },
             { label: "Proxy API Formats", translations: { ko: "프록시 API 형식", "zh-CN": "代理 API 格式", ru: "Форматы API прокси", ja: "プロキシAPI形式" }, slug: "reference/proxy-formats" },
