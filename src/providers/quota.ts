@@ -1,4 +1,4 @@
-import { fetchMainAccountInfo, listCodexAuthAccounts } from "../codex/auth-api";
+import { effectiveCodexAuthAccountId, fetchMainAccountInfo, listCodexAuthAccounts } from "../codex/auth-api";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
 import { resolveEnvValue } from "../config";
 import { getValidAccessToken, getValidAccessTokenForAccount } from "../oauth";
@@ -12,6 +12,11 @@ import {
   sweepExpiredOnWrite,
   type GenerationContext,
 } from "../lib/state-store-sweeper";
+import {
+  aggregateCodexPoolCapacity,
+  type CodexCapacityAggregation,
+  type CodexCapacityQuota,
+} from "./codex-capacity";
 
 /** Match oauth/index REFRESH_SKEW_MS — use stored access without refresh when still fresh. */
 const ACCOUNT_TOKEN_SKEW_MS = 60_000;
@@ -47,6 +52,7 @@ export interface ProviderQuotaReport {
   quota: ProviderQuota;
   updatedAt: number;
   reverseEngineered?: boolean;
+  aggregation?: CodexCapacityAggregation;
 }
 
 export interface ProviderQuotaResponse {
@@ -70,7 +76,7 @@ function cacheKey(config: OcxConfig): string {
     .map(([name, provider]) => `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${providerCodexAccountMode(name, provider) ?? "none"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)
     .sort()
     .join("|");
-  return `${config.defaultProvider}|${config.activeCodexAccountId ?? ""}|${providers}`;
+  return `${config.defaultProvider}|${config.activeCodexAccountId ?? ""}|${effectiveCodexAuthAccountId(config)}|${providers}`;
 }
 
 function hasQuotaRows(quota: ProviderQuota | null | undefined): quota is ProviderQuota {
@@ -123,7 +129,12 @@ function isBuiltInChatGptForwardProvider(name: string, provider: OcxProviderConf
   return name === OPENAI_CODEX_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider);
 }
 
-function report(provider: string, source: string, quota: ProviderQuota): ProviderQuotaReport | null {
+function report(
+  provider: string,
+  source: string,
+  quota: ProviderQuota,
+  aggregation?: CodexCapacityAggregation,
+): ProviderQuotaReport | null {
   if (!hasQuotaRows(quota)) return null;
   return {
     provider,
@@ -131,6 +142,7 @@ function report(provider: string, source: string, quota: ProviderQuota): Provide
     source,
     quota,
     updatedAt: quota.updatedAt,
+    ...(aggregation ? { aggregation } : {}),
   };
 }
 
@@ -146,12 +158,19 @@ async function fetchChatGptForwardQuota(
     return quota ? report(provider, "chatgpt:wham", quota) : null;
   }
   const accounts = await listCodexAuthAccounts(config, forceRefresh);
-  const activeId = config.activeCodexAccountId || MAIN_CODEX_ACCOUNT_ID;
-  const active = accounts.find(account => account.id === activeId)
+  const activeId = effectiveCodexAuthAccountId(config);
+  const capacityAccounts = accounts.map(account => ({ ...account, active: account.id === activeId }));
+  const active = capacityAccounts.find(account => account.active)
     ?? accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)
     ?? accounts[0];
-  const quota = active?.quota ? { ...active.quota, updatedAt: active.quota.updatedAt ?? Date.now() } as ProviderQuota : null;
-  return quota ? report(provider, "chatgpt:wham", quota) : null;
+  const capacity = aggregateCodexPoolCapacity(capacityAccounts, Date.now());
+  if (capacity.aggregation && capacity.quota) {
+    return report(provider, "chatgpt:wham", capacity.quota as ProviderQuota, capacity.aggregation);
+  }
+  const quota = active?.quota
+    ? { ...active.quota, updatedAt: active.quota.updatedAt ?? Date.now() } as CodexCapacityQuota
+    : null;
+  return quota ? report(provider, "chatgpt:wham", quota as ProviderQuota) : null;
 }
 
 function centsValue(value: unknown): number | undefined {

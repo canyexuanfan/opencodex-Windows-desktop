@@ -190,6 +190,45 @@
   min-height: 64px;
 }
 
+.pws-capacity-label,
+.pws-capacity-recovery,
+.pws-capacity-incomplete {
+  font-size: 0.7rem;
+}
+
+.pws-capacity-label {
+  color: var(--fg-muted, #888);
+  margin-bottom: 3px;
+}
+
+.pws-capacity-details {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.pws-capacity-recovery {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--fg-muted, #888);
+}
+
+.pws-capacity-recovery strong {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pws-capacity-current {
+  padding-top: 2px;
+}
+
+.pws-capacity-incomplete {
+  color: var(--warning, #b7791f);
+}
+
 .pws-dashboard-section--rate-limits,
 .pws-dashboard-section--recent {
   min-height: 180px;

@@ -7,7 +7,12 @@ import { useMemo } from "react";
 import { useT, useI18n } from "../../i18n/shared";
 import { IconAlert, IconChevron } from "../../icons";
 import type { WorkspaceSections, WorkspaceItem } from "../../provider-workspace/catalog";
-import { accountQuotaFromReport, type ProviderQuotaReportView } from "../../provider-workspace/report";
+import {
+  accountQuotaFromReport,
+  capacityAggregationFromReport,
+  type CapacityWindowView,
+  type ProviderQuotaReportView,
+} from "../../provider-workspace/report";
 import {
   attentionReasonKey,
   buildAttentionItems,
@@ -162,13 +167,7 @@ export default function ProviderOverviewDashboard({
                   </div>
                   <IconChevron className="pws-dashboard-row-chevron" aria-hidden="true" />
                   <div className="pws-dashboard-row-bars">
-                    <QuotaBars
-                      quota={accountQuotaFromReport(report)}
-                      threshold={80}
-                      t={t}
-                      layout="stacked"
-                      pending={quotasLoading && !report.quota}
-                    />
+                    <ProviderCapacityQuota report={report} pending={quotasLoading && !report.quota} />
                   </div>
                 </button>
               ))}
@@ -233,6 +232,59 @@ export default function ProviderOverviewDashboard({
         </section>
       </div>
     </div>
+  );
+}
+
+function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaReportView; pending: boolean }) {
+  const t = useT();
+  const { locale } = useI18n();
+  const aggregation = capacityAggregationFromReport(report);
+  const recoveryRows: Array<{ label: string; window: CapacityWindowView }> = aggregation ? [
+    ...(aggregation.fiveHour ? [{ label: t("codexAuth.fiveHour"), window: aggregation.fiveHour }] : []),
+    ...(aggregation.weekly ? [{ label: t("codexAuth.weekly"), window: aggregation.weekly }] : []),
+    ...(aggregation.monthly ? [{ label: t("codexAuth.monthly"), window: aggregation.monthly }] : []),
+    ...(aggregation.customWindows ?? []).map(window => ({ label: window.label, window })),
+  ] : [];
+  const formatPercent = (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
+  const formatRecoveryAt = (value: number) => new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value > 10_000_000_000 ? value : value * 1000));
+
+  return (
+    <>
+      {aggregation && <div className="pws-capacity-label">{t("pws.capacity.estimate")}</div>}
+      <QuotaBars quota={accountQuotaFromReport(report)} threshold={80} t={t} layout="stacked" pending={pending} />
+      {aggregation && (
+        <div className="pws-capacity-details">
+          {recoveryRows.flatMap(({ label, window }) => (
+            window.nextRecoveryAt !== undefined && window.nextRecoveryPercent !== undefined
+              ? [<div className="pws-capacity-recovery" key={label}>
+                  <span>{t("pws.capacity.nextRecovery")} · {label} · {formatRecoveryAt(window.nextRecoveryAt)}</span>
+                  <strong>{t("pws.capacity.recoveryShare", { percent: formatPercent(window.nextRecoveryPercent) })}</strong>
+                </div>]
+              : []
+          ))}
+          {aggregation.currentAccount?.quota && (
+            <div className="pws-capacity-current">
+              <span className="pws-capacity-label">
+                {t("pws.capacity.currentAccount")}
+                {aggregation.currentAccount.plan ? ` · ${aggregation.currentAccount.plan}` : ""}
+              </span>
+              <QuotaBars quota={aggregation.currentAccount.quota} threshold={80} t={t} layout="stacked" />
+            </div>
+          )}
+          {aggregation.incomplete && (
+            <div className="pws-capacity-incomplete">
+              {t("pws.capacity.incomplete", {
+                excluded: aggregation.excludedAccounts,
+                unknown: aggregation.unknownPlanAccounts,
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 

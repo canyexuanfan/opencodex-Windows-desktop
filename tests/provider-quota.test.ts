@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearAccountQuota } from "../src/codex/quota";
+import { clearCodexUpstreamHealth } from "../src/codex/routing";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { saveCredential } from "../src/oauth/store";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../src/providers/quota";
@@ -70,6 +71,7 @@ beforeEach(() => {
     tokens: { access_token: "chatgpt-main-access", account_id: "chatgpt-main-account" },
   }));
   clearAccountQuota();
+  clearCodexUpstreamHealth();
   clearProviderQuotaCache();
 });
 
@@ -480,7 +482,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(expired.reports).toEqual([]);
   });
 
-  test("pool mode reports the active added account", async () => {
+  test("pool mode reports a weighted estimate while preserving the effective account raw quota", async () => {
     saveCodexAccountCredential("added", {
       accessToken: "added-access",
       refreshToken: "added-refresh",
@@ -488,18 +490,26 @@ describe("fetchProviderQuotaReports", () => {
       chatgptAccountId: "added-chatgpt-id",
     });
     const config = testConfig();
-    config.codexAccounts = [{ id: "added", email: "a@example.test", isMain: false }];
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
     config.activeCodexAccountId = "added";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = init?.headers as Record<string, string> | undefined;
       const percent = headers?.["ChatGPT-Account-Id"] === "added-chatgpt-id" ? 77 : 11;
       return new Response(JSON.stringify({
+        plan_type: headers?.["ChatGPT-Account-Id"] === "added-chatgpt-id" ? "prolite" : "plus",
         rate_limit: { secondary_window: { used_percent: percent, reset_at: 1_789_000_000 } },
       }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(config, true);
-    expect(result.reports.find(row => row.provider === "openai")?.quota.weeklyPercent).toBe(77);
+    const openai = result.reports.find(row => row.provider === "openai");
+    expect(openai?.quota.weeklyPercent).toBe(66);
+    expect(openai?.aggregation).toMatchObject({
+      includedAccounts: 2,
+      excludedAccounts: 0,
+      incomplete: false,
+      currentAccount: { plan: "prolite", quota: { weeklyPercent: 77 } },
+    });
   });
 
   test("direct mode reports main without reading or repairing the added-account store", async () => {

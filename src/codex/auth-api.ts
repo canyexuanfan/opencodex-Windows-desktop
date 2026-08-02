@@ -750,6 +750,10 @@ export function clearCodexQuotaPrimeState(): void {
   primeInFlight = null;
 }
 
+export function effectiveCodexAuthAccountId(config: OcxConfig): string {
+  return getEffectiveActiveCodexAccountId(config) ?? MAIN_CODEX_ACCOUNT_ID;
+}
+
 export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = false): Promise<CodexAuthAccountDto[]> {
   const runtimeConfig = getRuntimeConfig(config);
   const poolAccounts = (runtimeConfig.codexAccounts ?? []).filter(isSelectableCodexPoolAccount);
