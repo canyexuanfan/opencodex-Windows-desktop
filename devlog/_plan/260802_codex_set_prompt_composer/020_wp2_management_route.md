@@ -78,8 +78,8 @@ request must not be able to do what the UI forbids.
 composition order.
 
 Refused with `409 developer_instructions_not_owned` when the key exists without
-our marker (`010` §Ownership). The GUI surfaces this as "이 키는 외부에서
-관리됩니다" with the manual step, rather than silently overwriting.
+our marker (`010` §Ownership). The GUI offers **Adopt** — preview, copy,
+confirm — rather than telling the user to edit the file by hand.
 
 Validation before any file access:
 

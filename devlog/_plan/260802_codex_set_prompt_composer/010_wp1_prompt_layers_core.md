@@ -54,11 +54,28 @@ export interface PromptLayerSnapshot {
   readable: boolean;
   /** false when developer_instructions exists without our marker */
   developerInstructionsOwned: boolean;
+  /** non-null blocks mutations until resolved; see §Drift */
+  drift: Drift;
   toggles: ToggleState[];
   custom: CustomLayer[];
   modelInstructionsFile: string | null;   // read-only warning (002 §3)
-  /** SHA-256 over store bytes + developer_instructions + the five booleans */
+  /** SHA-256 over the COMPLETE bytes of both files plus existence flags */
   revision: string;
+}
+
+/** Preview DTOs — returned without writing anything. */
+export interface AdoptPreview {
+  rawLine: string;
+  decodedBody: string | null;      // null when the form is unsupported
+  reason: "ok" | "unsupported_form" | "invalid_characters";
+  path: string;
+  line: number;
+}
+export interface SalvagePreview {
+  body: string;
+  backupPath: string;
+  /** enumerated so the UI can state them; see §Missing store */
+  unrecoverable: readonly string[];
 }
 
 export type WriteResult =
@@ -74,10 +91,34 @@ export type Drift =
   | "journal-present" | "projection-stale" | "store-missing"
   | "owned-malformed" | null;
 
+/** Pure. Never writes, never locks, never recovers. */
 export function readPromptLayers(opts?: Paths): PromptLayerSnapshot;
+
 export function setToggle(id: ToggleId, enabled: boolean, revision: string, opts?: Paths): WriteResult;
 export function writeCustomLayers(layers: CustomLayer[], revision: string, opts?: Paths): WriteResult;
+
+/** Preview is read-only; commit requires an explicit confirmation + revision. */
+export function previewAdopt(opts?: Paths): AdoptPreview;
+export function adoptDeveloperInstructions(revision: string, opts?: Paths): WriteResult;
+
+/** `owned-malformed`: re-adopt through the narrow decoder, or replace outright. */
+export function repairOwnedMalformed(
+  mode: "adopt" | "replace", revision: string, opts?: Paths,
+): WriteResult;
+
+/** `store-missing`: salvage the projection as ONE layer. Preview is read-only. */
+export function previewSalvage(opts?: Paths): SalvagePreview;
+export function salvageProjection(revision: string, opts?: Paths): WriteResult;
+
+/** `journal-present`: run at service start and at every lock acquisition. */
+export function recoverIfNeeded(opts?: Paths): 
+  { ok: true; recovered: boolean } | { ok: false; error: "recovery_required" };
 ```
+
+Every filesystem mutation lives in WP1. `020` is a transport that validates,
+forwards, and serializes — it never opens a file. An earlier draft left adopt,
+repair, salvage, and recovery undeclared, so `020` could not have been built
+from WP1's stated contract at all.
 
 ### `defaultedUserValue`, not `effective`
 
@@ -94,7 +135,7 @@ overclaim in a different place.
 ## Key allowlist — fixed, never computed
 
 ```ts
-const LAYER_KEYS: Record<LayerId, { table: string | null; key: string }> = {
+const TOGGLE_KEYS: Record<ToggleId, { table: string | null; key: string }> = {
   permissions:   { table: null,     key: "include_permissions_instructions" },
   collaboration: { table: null,     key: "include_collaboration_mode_instructions" },
   environment:   { table: null,     key: "include_environment_context" },
@@ -105,7 +146,7 @@ const LAYER_KEYS: Record<LayerId, { table: string | null; key: string }> = {
 
 `003` §5: an unknown key is silently ignored in normal mode and a hard startup
 error under `--strict-config`. A fixed table means the GUI can never emit a key
-it did not intend. `setLayerEnabled` rejects any id outside this map before
+it did not intend. `setToggle` rejects any id outside this map before
 touching the file.
 
 ## Read
@@ -139,6 +180,26 @@ When `config.toml` is absent, the first mutation creates it:
 
 A missing file is a first run, not an error state. `040` therefore renders live
 switches, not disabled ones.
+
+## File modes — every content-bearing file, not just config.toml
+
+Custom layer bodies are user prose that may contain anything the user considers
+private. They land in four places besides `config.toml`, and an earlier draft
+specified a mode for none of them:
+
+| File | Mode | Why |
+|---|---|---|
+| `opencodex-prompt.json` | `0600` | holds every layer body |
+| `opencodex-prompt.journal` | `0600` | holds pre- and post-images of both files |
+| `opencodex-prompt.salvage-*.txt` | `0600` | a copy of the projected prompt |
+| `opencodex-prompt.lock*` | `0600` | pid and token metadata |
+
+Temporary files inherit the same mode **at creation**, not by a later `chmod` —
+a window where a body is world-readable is still a disclosure. Quarantined lock
+files keep their mode through the rename.
+
+Windows has no POSIX modes; the repository's existing ACL hardening path is used
+instead, and the mode assertions are POSIX-only in tests.
 
 ## Write
 
@@ -412,42 +473,81 @@ Both are fixed by a journal, and by never letting a read write.
 
 **Write, under an advisory lock (below):**
 
-1. acquire the lock
+1. acquire the lock; run recovery first if a journal exists
 2. re-read both files; compare `revision` → `stale_revision` on mismatch
-3. write the journal: intended JSON bytes, intended config.toml bytes, and the
-   pre-image of both. `fsync`, then rename into place — the journal's existence
-   is the commit point
-4. write `config.toml` atomically
-5. write `opencodex-prompt.json` atomically
-6. delete the journal
+3. write the journal envelope (below) and durably rename it into place.
+   **The journal is prepared intent. It is not a commit.**
+4. re-verify `config.toml` bytes against the edit base, then write it atomically
+5. re-verify `opencodex-prompt.json` bytes against the edit base, then write it
+   atomically
+6. **verify both targets now hash to the post-image**; only then delete the
+   journal — that deletion is the commit
 7. release
 
-**config.toml is written first now, not second.** With a journal the ordering
-question changes: whichever file is written first, the journal already records
-both intended states, so recovery is deterministic either way. Writing the
-projection first means that if step 5 fails, the recorded pre-image restores
-config.toml and the source of truth was never touched — a failed request leaves
-*nothing* changed, which is the semantics blocker 2 demanded.
+Steps 4 and 5 each re-verify **their own** target immediately before its rename.
+An earlier draft guarded only `config.toml`, which left the store writable by a
+third party between step 2 and step 5 — the audit was right that we would then
+overwrite it. A mismatch at either point aborts and rolls back.
+
+Step 6 compares **complete bytes**, not just the presence of our two lines.
+Another writer could change an unrelated key while leaving our lines intact, and
+a narrow check would report success over their edit. Any target that matches
+neither image is `write_superseded`, and the journal is **not** deleted.
+
+**Rollback** applies the same pre/post/neither classification per target: a
+target matching the post-image is restored to its pre-image, a target matching
+the pre-image is already correct, and a target matching neither stops everything
+with `recovery_required`. Rollback never writes over a file it does not
+recognise.
 
 **Recovery — at service start and at lock acquisition, never in a GET.**
+
+Because the journal is prepared intent and commit is its deletion, **a journal
+found on disk means the transaction never committed.** Recovery therefore rolls
+*back*, never forward. An earlier draft rolled forward from the post-image while
+simultaneously claiming a failed request changes nothing; the audit found the
+two rules cannot both hold, and this is the one that survives.
 
 An earlier draft said "if either target differs from the post-image, rewrite
 both from the post-image". An audit found that destroys legitimate work: crash
 after writing config.toml, user or Codex then edits config.toml, recovery sees a
 mismatch and overwrites their edit with a stale post-image.
 
-Recovery therefore classifies **each target independently** against both
-recorded hashes, and never writes a file it does not recognise:
+Recovery classifies **each target independently** against both recorded hashes:
 
 | Target matches | Meaning | Action |
 |---|---|---|
-| post-image | already applied | leave it |
-| pre-image | not yet applied | roll forward from post-image |
+| **all targets** post-image | writes finished, step 6 never ran | delete journal — commit it |
+| post-image (mixed) | partially applied | **restore to pre-image** |
+| pre-image | never applied | leave it |
 | **neither** | **externally modified** | **stop; `recovery_required`** |
 
-A single unrecognised target aborts the whole recovery. We do not roll forward
-one file while another carries a stranger's edit — that would produce a state
-neither the user nor the journal ever intended.
+A single unrecognised target aborts the whole recovery before anything is
+written. We never repair one file while another carries a stranger's edit.
+
+The all-post case is the one exception to rolling back, and it is not a
+roll-forward: both files already hold exactly the intended result, so the only
+missing step was deleting the journal.
+
+### Journal envelope
+
+"Restore from the pre-image if it is intact" is not implementable when the
+pre-image lives inside the same damaged document — the audit was right. The
+journal is therefore a **checksummed envelope**:
+
+```
+line 1: ocx-journal-v1 <sha256 of line 2..n>
+line 2: {"preConfig":"...","postConfig":"...","preStore":"...","postStore":"...",
+         "preConfigExists":true,...}
+```
+
+On recovery the checksum is verified first. **Any journal that fails its
+checksum, or is truncated, is `recovery_required` — nothing is read from it and
+nothing is written.** Partial recovery from a damaged transaction record is
+exactly the operation that should never be attempted on a user's config.
+
+Atomic temp-write plus `fsync` and rename makes a torn journal exceptional; when
+it happens anyway, failing closed is the whole point of having the record.
 
 `recovery_required` names both paths and the journal, and blocks mutations until
 the user resolves it. An honest stop beats best-effort repair on a file the user
@@ -523,9 +623,13 @@ user typed. All of that is gone with the store.
 
 So salvage takes the whole projected text and offers it as **one new layer**,
 with the exact body previewed and the losses listed explicitly before the user
-confirms. The pre-salvage bytes of config.toml are copied to
-`opencodex-prompt.salvage-<timestamp>.txt` first, so even a mistaken
-confirmation is recoverable.
+confirms.
+
+The backup is written first, and "first" has to mean durable: a timestamp alone
+can collide, and an unflushed backup is not a backup. It is created with
+exclusive `wx` and a random suffix, mode `0600`, then `fsync`ed together with its
+parent directory. **If the backup cannot be created or made durable, salvage
+aborts** — a destructive operation whose safety net failed should not proceed.
 
 ### Cross-process locking
 
@@ -626,15 +730,26 @@ might read differently.
 30. all layers disabled → both generated lines removed
 31. store absent + no owned projection → normal first run
 32. **store absent + owned non-empty projection → `drift: "store-missing"`,
-    writes refused, repair reconstructs one layer from the projected text**
+    writes refused, salvage offers the projected text as one layer**
 33. store malformed → `store_unreadable`, config.toml untouched
 34. stale revision → refused, nothing written
 35. revision changes when only the marker is removed (value identical)
 36. revision changes when the config is deleted
-37. journal present + targets match post-image → cleaned up
-38. journal present + targets differ → both rewritten from post-image
-39. journal truncated + pre-image intact → both restored
-40. journal truncated + pre-image damaged → `recovery_required`, nothing touched
+37. journal present + **all** targets match post-image → journal deleted, state
+    kept (the writes finished; only the commit step was missing)
+38. journal present + one target post, one pre → **both rolled back to
+    pre-image**, because a journal on disk means commit never happened
+39. journal present + a target matches **neither** → `recovery_required`,
+    nothing written, the other target untouched
+40. journal fails its checksum → `recovery_required`, nothing read from it
+41. journal truncated → `recovery_required`, nothing written
+41a. store externally modified between compare and its rename → abort, roll back
+41b. store deleted between compare and its rename → abort, roll back
+41c. config externally modified during rollback → `recovery_required`
+41d. post-write byte comparison catches an unrelated key changed by another
+     writer → `write_superseded`, journal retained
+41e. backup creation fails → salvage aborts, nothing destroyed
+41f. every content-bearing file is created `0600` (POSIX only)
 41. config write succeeds, store write fails → config restored, request errors,
     **source of truth unchanged**
 42. rollback itself fails → `recovery_required` naming both paths

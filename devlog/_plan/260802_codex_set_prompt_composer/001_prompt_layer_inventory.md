@@ -10,22 +10,32 @@ Initial-context rendering preserves that order with two exceptions: model-switch
 moves to the front and multi-agent mode to the back of the developer-message
 sequence (`session/mod.rs:3528-3538`).
 
+Classes are the five defined in §4. This table uses that vocabulary and no
+other. An earlier draft used an ad-hoc ALWAYS-ON/TOGGLE/FEATURE split that
+contradicted §4; two audit rounds flagged it, and the second was still correct
+because the fix had not actually landed on this block.
+
 | # | Layer | Tag | Role | Gate | Default | Class |
 |---:|---|---|---|---|---|---|
-| 1 | Model instructions | `<model_switch>` | dev | none | — | **ALWAYS-ON** |
-| 2 | Personality | `<personality_spec>` | dev | `[features] personality` | on | FEATURE |
-| 3 | Context-window guidance | `<context_window_guidance>` | dev | `[features] token_budget` | off | FEATURE |
-| 4 | Realtime | `<realtime_conversation>` | dev | none | — | **ALWAYS-ON** |
-| 5 | AGENTS.md | `<INSTRUCTIONS>` | user | none | — | **ALWAYS-ON** |
-| 6 | Permissions | `<permissions instructions>` | dev | `include_permissions_instructions` | on | **TOGGLE** |
-| 7 | Collaboration mode | `<collaboration_mode>` | dev | `include_collaboration_mode_instructions` | on | **TOGGLE** |
-| 8 | Environment context | `<environment_context>` | user | `include_environment_context` | on | **TOGGLE** |
-| 9 | Environments instructions | `<environments_instructions>` | dev | `include_environment_context` AND `[features] deferred_executor` | off | FEATURE |
-| 10 | Apps | `<apps_instructions>` | dev | `include_apps_instructions` + connector present | on | **TOGGLE** |
-| 11 | Plugins | `<plugins_instructions>` | dev | plugin availability | — | FEATURE |
-| 12 | Tools | `<tools>` | dev | `[features] deferred_tool_world_state` | off | FEATURE |
-| 13 | Skills (extension) | `<skills_instructions>` | dev | `[skills] include_instructions` | on | **TOGGLE** |
-| 14 | Multi-agent mode | `<multi_agent_mode>` | dev | `[features.multi_agent_v2] enabled` | off | FEATURE |
+| 1 | Model **switch** | `<model_switch>` | dev | model changed + instructions non-empty | — | `runtime-conditional` |
+| 2 | Personality | `<personality_spec>` | dev | `[features] personality` | on | `feature-gated` |
+| 3 | Context-window guidance | `<context_window_guidance>` | dev | `[features] token_budget` | off | `feature-gated` |
+| 4 | Realtime | `<realtime_conversation>` | dev | realtime activation state | — | `runtime-conditional` |
+| 5 | AGENTS.md | `<INSTRUCTIONS>` | user | discovered content exists | — | `runtime-conditional` |
+| 6 | Permissions | `<permissions instructions>` | dev | `include_permissions_instructions` | on | `config-toggle` |
+| 7 | Collaboration mode | `<collaboration_mode>` | dev | `include_collaboration_mode_instructions` | on | `config-toggle` |
+| 8 | Environment context | `<environment_context>` | user | `include_environment_context` | on | `config-toggle` |
+| 9 | Environments instructions | `<environments_instructions>` | dev | `include_environment_context` AND `[features] deferred_executor` | off | `feature-gated` |
+| 10 | Apps | `<apps_instructions>` | dev | `include_apps_instructions` + connector present | on | `config-toggle` |
+| 11 | Plugins | `<plugins_instructions>` | dev | `[features] plugins` + availability | on | `feature-gated` |
+| 12 | Tools | `<tools>` | dev | `[features] deferred_tool_world_state` | off | `feature-gated` |
+| 13 | Skills (extension) | `<skills_instructions>` | dev | `[skills] include_instructions` | on | `config-toggle` |
+| 14 | Multi-agent mode | `<multi_agent_mode>` | dev | `[features.multi_agent_v2] enabled` | off | `feature-gated` |
+
+**Base/model instructions are not in this table.** They are class `base` and
+travel in the request's `instructions` field, not as a world-state section
+(`client.rs:861-887`). Row 1 is the model-*switch* transition — a different
+thing that an earlier draft conflated with it.
 
 Line references, in registration order: `world_state.rs:61`, `:66`, `:88`,
 `:99`, `:113`, `:114`, `:139`, `:149`, `:168`, `:175`, `:187`, `:190`, `:208`,
@@ -70,7 +80,7 @@ An earlier draft of this section carried a single "cannot be turned off" list.
 An independent audit found it self-contradictory: it listed Plugins as
 feature-gated in §3 and simultaneously as non-disableable here, and it conflated
 "has no `include_*` key" with "cannot be suppressed at all". Both errors would
-have propagated straight into the API's `locked` array.
+have propagated straight into the API's response.
 
 Every layer belongs to exactly **one** of these classes. This taxonomy is the
 single source for `020`'s response and `040`'s row kinds; a contract test
@@ -137,15 +147,21 @@ Skills is the one extension with a known config gate and therefore sits in class
 B. Every other extension layer is class E: enumerable only at runtime, if at
 all.
 
-### What "locked" means on the wire
+### What this means on the wire
 
-`020`'s `locked` array is **classes A and D only** — the rows where a switch
-cannot exist. Class C rows are `features`. Class E is reported as a count, not a
-list, because we cannot enumerate it.
+`020` serializes **one** array — `inventory`, which is `LAYER_INVENTORY` from
+WP1, each entry carrying its `class`. There is no separate `locked` or
+`features` array; an earlier draft invented both, and they would have drifted
+from this taxonomy within a release.
+
+A row gets a switch **iff** `class === "config-toggle"`. Classes A and D are the
+rows where a switch cannot exist; class C is configurable elsewhere; class E is
+reported as `extensionLayersEnumerable: false` rather than as a list, because we
+cannot enumerate it.
 
 Ask item 9 — "절대 끌 수 없는 프롬프트는 절대 끌 수 없게" — is satisfied by
 classes A and D. That is the set the tests in `020` case 5 and `040` case 2
-defend.
+defend, both driven from `inventory` rather than a hand-maintained list.
 
 ## 5. Content-override keys
 
