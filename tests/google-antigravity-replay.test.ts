@@ -14,6 +14,7 @@ import {
   evictOldestAntigravityReplayForBudget,
   observeAntigravityReplay,
   setAntigravityReplayLimitsForTests,
+  sweepExpiredAntigravityReplay,
 } from "../src/adapters/google-antigravity-replay";
 import { sanitizeAntigravityClaudeSignatures } from "../src/adapters/google-antigravity-wire";
 
@@ -340,6 +341,24 @@ describe("antigravity replay fixed-size key identities", () => {
     // keys never scale with input length, all within the 64 MiB global cap.
     expect(metrics.totalBytes).toBeLessThan(64 * 1024 * 1024);
     expect(metrics.totalBytes).toBe(10_240 * (64 + 64 + SIG.length));
+  }, 30_000);
+
+  test("lazy expiry scan is throttled; the sweeper remains authoritative", () => {
+    observeAntigravityReplay(MODEL, "s-1", [fcPart("f", {}, "sig-1234567890abcdef")]);
+    const originalNow = Date.now;
+    try {
+      // An expired session is NOT re-scanned within the 30s lazy interval.
+      Date.now = () => originalNow() + 1000;
+      observeAntigravityReplay(MODEL, "s-2", [fcPart("f", {}, "sig-1234567890abcdef")]);
+      expect(antigravityReplayMetrics().sessions).toBe(2);
+      // The periodic sweeper still removes expired sessions on its own pass.
+      Date.now = () => originalNow() + 60 * 60 * 1000 + 1000;
+      const removed = sweepExpiredAntigravityReplay(Date.now());
+      expect(removed).toBe(2);
+      expect(antigravityReplayMetrics().sessions).toBe(0);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   test("length-prefixed components are unambiguous across separator content", () => {

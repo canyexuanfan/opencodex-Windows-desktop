@@ -294,6 +294,22 @@ function deleteExpiredReplaySessions(now: number): void {
   for (const [key, entry] of replayCache) if (entry.expiresAtMs <= now) deleteReplaySession(key);
 }
 
+/**
+ * The lazy per-call expiry scan is O(sessions); at the 10,240-session cap
+ * every observe/apply would rescan the whole map — O(n²) under load. The 60s
+ * state-store sweeper is already the periodic expiry authority, so lazy scans
+ * are throttled to at most one per interval (expired entries may linger a few
+ * extra seconds; TTL is fuzzy at that scale by design).
+ */
+const LAZY_SWEEP_INTERVAL_MS = 30_000;
+let lastLazySweepAt = Number.NEGATIVE_INFINITY;
+
+function deleteExpiredReplaySessionsThrottled(now: number): void {
+  if (now - lastLazySweepAt < LAZY_SWEEP_INTERVAL_MS) return;
+  lastLazySweepAt = now;
+  deleteExpiredReplaySessions(now);
+}
+
 export function sweepExpiredAntigravityReplay(now = Date.now()): number {
   const before = replayCache.size;
   deleteExpiredReplaySessions(now);
@@ -349,7 +365,7 @@ export function antigravityUsesReplayCache(model: string): boolean {
 export function observeAntigravityReplay(model: string, sessionId: string, parts: unknown[]): void {
   if (!antigravityUsesReplayCache(model) || !Array.isArray(parts) || parts.length === 0) return;
   const now = Date.now();
-  deleteExpiredReplaySessions(now);
+  deleteExpiredReplaySessionsThrottled(now);
   const key = replayKey(model, sessionId);
   const existing = replayCache.get(key);
   const entry = existing ?? {
@@ -403,7 +419,7 @@ export function observeAntigravityReplay(model: string, sessionId: string, parts
 export function applyAntigravityReplay(model: string, sessionId: string, contents: unknown[]): unknown[] {
   if (!antigravityUsesReplayCache(model) || !Array.isArray(contents)) return contents;
   const now = Date.now();
-  deleteExpiredReplaySessions(now);
+  deleteExpiredReplaySessionsThrottled(now);
   const entry = replayCache.get(replayKey(model, sessionId));
   if (!entry) {
     return contents;
@@ -478,6 +494,7 @@ export function setAntigravityReplayLimitsForTests(limits?: Partial<ReplayLimits
 
 /** Test seam. */
 export function __resetAntigravityReplayCache(): void {
+  lastLazySweepAt = Number.NEGATIVE_INFINITY;
   replayCache.clear();
   replayBytes = 0;
   replayOldestSessionKey = undefined;
