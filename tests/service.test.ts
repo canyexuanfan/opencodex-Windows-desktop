@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, serviceLogPath, serviceStartableFromTray, serviceStatusSummary, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusSummary, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -904,5 +904,166 @@ describe("service repair", () => {
       repairSystemd: () => { calls.push("systemd"); },
     });
     expect(calls).toEqual(["native", "native-state"]);
+  });
+});
+
+/**
+ * `launchctl load` reports failure on stderr and exits 0 for an already-bootstrapped
+ * job, so `sh()` (execSync — throws only on a non-zero exit) treated a load that did
+ * nothing as success. launchd then kept running the PREVIOUS plist while a freshly
+ * written one sat unused, which is the 2026-08-02 report: `ocx service` prints a
+ * checkmark, `launchctl list` shows the job, and the port answers nothing.
+ *
+ * Measured on macOS 27.0:
+ *   $ launchctl load -w ~/Library/LaunchAgents/com.opencodex.proxy.plist
+ *   Load failed: 5: Input/output error
+ *   $ echo $?
+ *   0
+ */
+describe("launchctl load verification", () => {
+  describe("launchctlLoadFailed", () => {
+    test("detects the legacy load failure that exits 0", () => {
+      expect(launchctlLoadFailed(
+        "Load failed: 5: Input/output error\nTry running `launchctl bootstrap` as root for richer errors.",
+      )).toBe(true);
+    });
+
+    test("detects a bootstrap failure", () => {
+      expect(launchctlLoadFailed("Bootstrap failed: 37: Operation already in progress")).toBe(true);
+    });
+
+    test("stays false for clean output", () => {
+      expect(launchctlLoadFailed("")).toBe(false);
+    });
+  });
+
+  describe("runLaunchctl", () => {
+    test("reports ok with trimmed stdout on a clean run", () => {
+      const out = runLaunchctl(["print", "gui/501/x"], {
+        run: (() => ({ status: 0, stdout: "  ok  ", stderr: "" })) as never,
+      });
+      expect(out).toEqual({ ok: true, stdout: "ok", stderr: "" });
+    });
+
+    /**
+     * The regression guard. `execFileSync` discards stderr when the child exits 0,
+     * so a runner built on it returns stderr:"" here and the whole fix silently
+     * no-ops on a real machine while its unit tests stay green.
+     */
+    test("surfaces stderr even when the child exits 0", () => {
+      const out = runLaunchctl(["load", "-w", "/x.plist"], {
+        run: (() => ({
+          status: 0,
+          stdout: "",
+          stderr: "Load failed: 5: Input/output error\nTry running `launchctl bootstrap` as root...",
+        })) as never,
+      });
+      expect(out.ok).toBe(true);
+      expect(launchctlLoadFailed(out.stderr)).toBe(true);
+    });
+
+    test("reports not-ok on a real non-zero exit (bootstrap)", () => {
+      const out = runLaunchctl(["bootstrap", "gui/501", "/x.plist"], {
+        run: (() => ({ status: 5, stdout: "", stderr: "Bootstrap failed: 5: Input/output error" })) as never,
+      });
+      expect(out.ok).toBe(false);
+      expect(launchctlLoadFailed(out.stderr)).toBe(true);
+    });
+
+    test("treats a spawn failure as not-ok rather than success", () => {
+      const out = runLaunchctl(["load", "-w", "/x.plist"], {
+        run: (() => ({ error: new Error("spawn /bin/launchctl ENOENT"), status: null, stdout: null, stderr: null })) as never,
+      });
+      expect(out.ok).toBe(false);
+      expect(out.stderr).toContain("ENOENT");
+    });
+  });
+
+  describe("launchdJobMatchesPlist", () => {
+    // Shape captured from a real `launchctl print gui/$(id -u)/com.opencodex.proxy`
+    // run on macOS 27.0: the arguments block is tab-indented one level, entries two.
+    const cmd = "exec '/pkg/bun' '/pkg/src/cli/index.ts' start --port 10100";
+    const printed = (command: string) => [
+      "\targuments = {",
+      "\t\t/bin/sh",
+      "\t\t-lc",
+      `\t\tif [ -f '/h/.opencodex/service-api-token' ]; then OPENCODEX_API_AUTH_TOKEN="$(cat '/h/.opencodex/service-api-token')"; export OPENCODEX_API_AUTH_TOKEN; fi; ${command}`,
+      "\t}",
+    ].join("\n");
+
+    test("reports matching when print shows the current arguments", () => {
+      expect(launchdJobMatchesPlist(cmd, {
+        run: () => ({ ok: true, stdout: printed(cmd), stderr: "" }),
+      })).toEqual({ loaded: true, matchesPlist: true });
+    });
+
+    test("reports loaded-but-stale when print shows different arguments", () => {
+      const old = "exec '/old/pkg/bun' '/old/pkg/src/cli/index.ts' start --port 10100";
+      expect(launchdJobMatchesPlist(cmd, {
+        run: () => ({ ok: true, stdout: printed(old), stderr: "" }),
+      })).toEqual({ loaded: true, matchesPlist: false });
+    });
+
+    test("reports not loaded when print fails", () => {
+      expect(launchdJobMatchesPlist(cmd, {
+        run: () => ({ ok: false, stdout: "", stderr: "Could not find service" }),
+      })).toEqual({ loaded: false, matchesPlist: false });
+    });
+  });
+
+  describe("startLaunchd", () => {
+    // A runLaunchctl RESULT, not a spawnSync result.
+    const failedLoad = () => ({ ok: true, stdout: "", stderr: "Load failed: 5: Input/output error" });
+    const cleanLoad = () => ({ ok: true, stdout: "", stderr: "" });
+
+    test("returns without consulting launchd when the load is clean", () => {
+      expect(() => startLaunchd({
+        launchctl: cleanLoad,
+        matches: () => { throw new Error("must not be consulted on a clean load"); },
+      })).not.toThrow();
+    });
+
+    /**
+     * launchctl emits `Load failed` for EVERY already-bootstrapped job, including a
+     * correct one, so `ocx service start` on a healthy service hits it every time.
+     * An unconditional throw would break the most common benign invocation.
+     */
+    test("treats an already-loaded matching job as a no-op", () => {
+      const log = spyOn(console, "log").mockImplementation(() => {});
+      try {
+        expect(() => startLaunchd({
+          launchctl: failedLoad,
+          matches: () => ({ loaded: true, matchesPlist: true }),
+        })).not.toThrow();
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    // not.toThrow() alone would still pass if the guard regressed; assert the branch.
+    test("says so when the job was already loaded from the current plist", () => {
+      const lines: string[] = [];
+      const log = spyOn(console, "log").mockImplementation(m => { lines.push(String(m)); });
+      try {
+        startLaunchd({ launchctl: failedLoad, matches: () => ({ loaded: true, matchesPlist: true }) });
+      } finally {
+        log.mockRestore();
+      }
+      expect(lines.join("\n")).toContain("already loaded");
+    });
+
+    test("throws with the bootout hint when the loaded job is stale", () => {
+      expect(() => startLaunchd({
+        launchctl: failedLoad,
+        matches: () => ({ loaded: true, matchesPlist: false }),
+      })).toThrow(/bootout/);
+    });
+
+    test("throws with the install hint when no job is loaded", () => {
+      expect(() => startLaunchd({
+        launchctl: failedLoad,
+        matches: () => ({ loaded: false, matchesPlist: false }),
+      })).toThrow(/service install/);
+    });
   });
 });

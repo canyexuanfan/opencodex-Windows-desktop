@@ -5,7 +5,7 @@
  * Codex on a service-managed restart (the restarted instance re-injects); explicit stop/uninstall
  * restore it via the command.
  */
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { findLiveProxy, SERVICE_STOP_LIVENESS } from "./server/proxy-liveness";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -354,6 +354,72 @@ function systemdOutputTarget(value: string): string {
 
 function sh(cmd: string): string {
   return execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+}
+
+/**
+ * Run `launchctl` and report BOTH streams regardless of exit status.
+ *
+ * `launchctl load` writes "Load failed: <n>: <reason>" to stderr and exits 0 for
+ * every already-bootstrapped job. `sh()` above is execSync, which throws only on a
+ * non-zero exit, so install and start both reported success for a load that did
+ * nothing — leaving launchd running the PREVIOUS plist while a freshly written one
+ * sat unused on disk. That is the 2026-08-02 report: `ocx service` prints a
+ * checkmark, `launchctl list` shows the job, and the port answers nothing.
+ *
+ * spawnSync, NOT execFileSync: execFileSync discards stderr when the child exits 0,
+ * which is precisely this case — a runner built on it returns an empty stderr and
+ * the guard below can never fire. Measured on macOS 27.0.
+ */
+export function runLaunchctl(
+  args: string[],
+  deps: { run?: typeof spawnSync } = {},
+): { ok: boolean; stdout: string; stderr: string } {
+  const run = deps.run ?? spawnSync;
+  const result = run("/bin/launchctl", args, { encoding: "utf8", windowsHide: true });
+  // `error` is set when the spawn itself failed (ENOENT off macOS) and `status` is
+  // null for a signalled child; neither may be reported as success.
+  if (result.error) return { ok: false, stdout: "", stderr: String(result.error.message ?? "") };
+  return {
+    ok: result.status === 0,
+    stdout: String(result.stdout ?? "").trim(),
+    stderr: String(result.stderr ?? "").trim(),
+  };
+}
+
+/**
+ * Whether launchctl output indicates the operation did not take. Needed because
+ * `ok` alone is insufficient for the legacy `load`/`unload` subcommands, which
+ * report failure on stderr while exiting 0. `bootstrap` exits 5, so for that path
+ * this is belt-and-braces rather than the only signal.
+ */
+export function launchctlLoadFailed(stderr: string): boolean {
+  return /\b(?:Load|Bootstrap) failed\b/i.test(stderr);
+}
+
+/** launchd domain target for the current user's GUI session. */
+function launchdGuiDomain(): string {
+  return `gui/${process.getuid?.() ?? 0}`;
+}
+
+/**
+ * Whether launchd is running the job from the CURRENT plist. `launchctl list` only
+ * proves domain membership — a job bootstrapped from an older plist stays listed
+ * forever. `launchctl print` exposes the live `arguments`, which is the only way to
+ * catch a load that silently no-op'd.
+ */
+export function launchdJobMatchesPlist(
+  expectedCommand: string,
+  deps: { run?: typeof runLaunchctl } = {},
+): { loaded: boolean; matchesPlist: boolean } {
+  const run = deps.run ?? runLaunchctl;
+  const printed = run(["print", `${launchdGuiDomain()}/${LABEL}`]);
+  if (!printed.ok) return { loaded: false, matchesPlist: false };
+  // `print` writes the arguments block to stdout for a live job. Search both streams
+  // anyway so a future launchctl that moves diagnostics between them cannot turn this
+  // into a false negative — a false "stale" verdict would send users to `bootout` for
+  // nothing.
+  const printedText = `${printed.stdout}\n${printed.stderr}`;
+  return { loaded: true, matchesPlist: printedText.includes(expectedCommand) };
 }
 
 /**
@@ -1287,11 +1353,58 @@ function installLaunchd(): void {
   writeServiceApiTokenFile();
   const p = plistPath();
   writeFileSync(p, buildPlist(), "utf8");
-  try { sh(`launchctl unload "${p}" 2>/dev/null`); } catch { /* not loaded */ }
-  sh(`launchctl load -w "${p}"`);
+  // Best-effort: an absent job is fine here, and a failed unload is caught by the
+  // load verification below with a better message than a raw unload error.
+  runLaunchctl(["unload", p]);
+  const loaded = runLaunchctl(["load", "-w", p]);
+  if (!loaded.ok || launchctlLoadFailed(loaded.stderr)) {
+    // Do NOT write install state for a load that did not take: state describing an
+    // unused plist is what made this failure invisible.
+    throw new Error(
+      `launchctl could not load ${p}: ${loaded.stderr || "load reported failure"}\n`
+      + "A previous job may still be bootstrapped. Try:\n"
+      + `  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n`
+      + "then re-run 'ocx service install'.",
+    );
+  }
   writeServiceInstallState();
 }
-function startLaunchd(): void { sh(`launchctl load -w "${plistPath()}"`); }
+/**
+ * Deps are named for the layer they replace, not for the process API: `launchctl`
+ * returns a {@link runLaunchctl} result and `matches` a {@link launchdJobMatchesPlist}
+ * result. Only `runLaunchctl` itself takes a spawnSync mock.
+ *
+ * Exported for the branch tests. Every parameter is optional, so this stays
+ * assignable to `ServiceOps.start` (`() => void`) and `platformOps` wires the same
+ * function the tests exercise.
+ */
+export function startLaunchd(deps: {
+  launchctl?: typeof runLaunchctl;
+  matches?: typeof launchdJobMatchesPlist;
+} = {}): void {
+  const run = deps.launchctl ?? runLaunchctl;
+  const p = plistPath();
+  const loaded = run(["load", "-w", p]);
+  if (loaded.ok && !launchctlLoadFailed(loaded.stderr)) return;
+  // `Load failed` on start is AMBIGUOUS in a way it is not on install: the job may
+  // already be bootstrapped from THIS plist, which is a no-op rather than an error.
+  // `install` can assume a stale job (it just rewrote the plist); `start` cannot, and
+  // throwing here would break `ocx service start` on every healthy service.
+  const entry = cliEntry();
+  const live = (deps.matches ?? launchdJobMatchesPlist)(
+    buildServiceShellCommand(entry.bun, entry.cli),
+  );
+  if (live.loaded && live.matchesPlist) {
+    console.log("ℹ️  service was already loaded from the current plist; nothing to do.");
+    return;
+  }
+  throw new Error(
+    `launchctl could not load ${p}: ${loaded.stderr || "load reported failure"}\n`
+    + (live.loaded
+      ? `launchd is running an OLDER plist. Fix:\n  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n  ocx service install`
+      : "The job is not loaded. Run 'ocx service install' to re-register it."),
+  );
+}
 function stopLaunchd(): void { try { sh(`launchctl unload "${plistPath()}"`); } catch { /* not loaded */ } }
 function statusLaunchd(): string { try { return sh(`launchctl list | grep ${LABEL} || true`); } catch { return ""; } }
 function uninstallLaunchd(): void {
@@ -2172,4 +2285,3 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       process.exit(1);
   }
 }
-

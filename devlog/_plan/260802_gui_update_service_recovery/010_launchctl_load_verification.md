@@ -311,6 +311,17 @@ optional is assignable to it, so `platformOps` needs no change. Confirm that whe
 implementing — if `ServiceOps` ever tightens to an exact-arity signature, wrap it
 as `start: () => startLaunchd()` rather than reintroducing a test-only export.
 
+Verified against the tree: `ServiceOps` (`src/service.ts:1666-1669`) declares
+`start: () => void`, and `platformOps` (`:1673`) wires `start: startLaunchd`.
+TypeScript assigns a `(deps?: T) => void` to a `() => void` parameter position, so
+no wrapper is needed today.
+
+**Test import note:** `tests/service.test.ts:1` currently imports
+`{ afterEach, describe, expect, test }` from `bun:test`. The `console.log`
+assertion above needs `spyOn` added to that list — it is a standard `bun:test`
+export already used elsewhere in the suite (for example
+`tests/app-owned-memory.test.ts:1,237`).
+
 Do **not** add a separate `startLaunchdForTests` export; the `ServiceOps` wiring
 would then exercise a different function than the tests do.
 
@@ -517,3 +528,48 @@ Plus a live check on this machine: `ocx service install`, then
 - A `load` that prints `Load failed` and exits 0 raises instead of being ignored.
 - `installLaunchd` does not write install state for a load that did not take.
 - The nine new tests pass and the full suite stays green.
+
+## Does this generalize to Windows and Linux? (WP5/WP6 foundation)
+
+The goal now covers all three platforms, so the question at this gate is whether
+WP1's shape is the right foundation or a macOS-specific dead end.
+
+**The `runLaunchctl` half is macOS-specific and should stay that way.** It exists
+because `launchctl load` has a broken exit convention. The other two managers do
+not share it:
+
+| Platform | Management command | Failure signal |
+|---|---|---|
+| macOS | `launchctl load -w` | **stderr only; exit 0** — the defect |
+| Linux | `systemctl --user enable/restart` | non-zero exit; `sh()` throws correctly |
+| Windows | `schtasks /create`, `/run` | non-zero exit; `schtasks()` throws correctly |
+
+So WP5/WP6 must not port `launchctlLoadFailed`. Their defect, if any, is the
+second half of this unit's thesis, not the first.
+
+**The serving-confirmation half is exactly what generalizes.** Read against the
+tree:
+
+- **Linux** (`src/service.ts:1636-1656`, diagnostic at `:1993-2005`) is the
+  strongest of the three: `diagnoseService` consults `systemctl --user is-active`,
+  which is a real process-liveness check rather than launchd's mere membership
+  test. But `is-active` returns `active` for a process that is running and has
+  bound nothing — and under `Restart=on-failure` (`buildUnit`) a crash-loop
+  spends most of its time `activating`/`active`. So `viable` can still be true
+  with a dead port.
+- **Windows** (`installWindows` at `:1354-1357`, `startWindows` at `:1496`) runs
+  `schtasks /run` and returns. `/run` reports that the task was *launched*, not
+  that its child survived; `deriveWindowsServiceDiagnostic` then computes
+  `running` from scheduler registration/enablement. A wrapper whose child exits
+  immediately satisfies it.
+
+Both reduce to the same sentence as macOS: **the manager's success signal answers
+registration, not service.** WP2's `confirmServiceServing` — probing the baked
+port with `proxyIdentityAt` — is platform-neutral by construction and is the piece
+WP5/WP6 should adopt, ideally by lifting it into the shared `serviceCommand`
+layer rather than re-implementing per platform.
+
+**Conclusion:** WP1 is the right foundation. Its runner is deliberately local to
+the platform with the broken exit convention; its verification principle is what
+the other two phases inherit. Recorded here so WP5/WP6's P starts from this rather
+than re-deriving it.
