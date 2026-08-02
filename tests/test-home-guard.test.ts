@@ -132,6 +132,32 @@ describe("real-home write guard", () => {
     expect(JSON.parse(readFileSync(join(dir, "config.json"), "utf8")).port).toBe(10100);
   });
 
+  test("armed + a first write beneath a symlinked PARENT escaping into the protected home: refused", () => {
+    // The file does not exist yet, so resolveWriteTarget returns the literal
+    // path and target === path; the guard must resolve the parent directory
+    // instead of skipping (review: symlinked config dir + absent destination).
+    const { realHome, opencodexHome } = sentinelHome();
+    const dir = mkdtempSync(join(tmpdir(), "ocx-parent-escape-"));
+    const linkDir = join(dir, "home-link");
+    symlinkSync(opencodexHome, linkDir);
+
+    const probe = runProbe(`
+      import { atomicWriteFile } from "${REPO_ROOT_URL}src/config";
+      const REFUSAL = "refusing to write the real OpenCodex home";
+      try {
+        atomicWriteFile("${linkDir}/never-created.json", "x");
+        console.log("WRITE_SUCCEEDED");
+      } catch (err) {
+        console.log(String(err).includes(REFUSAL) ? "REFUSED" : "OTHER:" + String(err));
+      }
+    `, { OCX_TEST_HOME_GUARD: "1", OCX_REAL_HOME: realHome, OPENCODEX_HOME: linkDir });
+
+    expect(probe.stdout).toContain("REFUSED");
+    expect(probe.stdout).not.toContain("WRITE_SUCCEEDED");
+    // Nothing landed in the protected home, not even via the resolved parent.
+    expect(() => readFileSync(join(opencodexHome, "never-created.json"))).toThrow();
+  });
+
   test("disarmed: the protected home is allowed (production stays inert)", () => {
     const { realHome, opencodexHome } = sentinelHome();
     const probe = runProbe(`

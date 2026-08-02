@@ -151,7 +151,19 @@ export function resolveWriteTarget(path: string): string {
  * where the guard is disarmed.
  */
 function assertResolvedTargetAllowed(path: string, target: string): void {
-  if (target === path) return;
+  // The file itself may resolve literally while its PARENT is a symlink out
+  // of the fixture (a first write beneath a symlinked config dir). Guard the
+  // directory the write actually lands in either way.
+  if (target === path) {
+    let realParent: string;
+    try {
+      realParent = realpathSync(dirname(target));
+    } catch {
+      return; // unresolvable parent: resolveWriteTarget already owns that refusal
+    }
+    if (realParent !== dirname(target)) assertNotRealHomeUnderTest(realParent);
+    return;
+  }
   assertNotRealHomeUnderTest(dirname(target));
 }
 
