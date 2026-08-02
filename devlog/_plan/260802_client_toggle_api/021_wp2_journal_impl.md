@@ -27,8 +27,16 @@ export interface IntegrationClientSpec {
   configPath: (env?: NodeJS.ProcessEnv) => string;
   /** Directory whose existence is the "is it installed?" signal. */
   detectDir: (env?: NodeJS.ProcessEnv, home?: string) => string;
-  /** Kimi cannot carry an env reference, so a remote bind would force a real secret. */
-  loopbackOnly: boolean;
+}
+
+/**
+ * True when the client has nowhere to put the dedicated admission header a
+ * non-loopback bind requires. Read from the export registry rather than
+ * restated per client here — see the 020 amendment: the set is pi, kimi,
+ * gajae, and two lists of the same security fact drift.
+ */
+export function isLoopbackOnly(clientId: IntegrationClientId): boolean {
+  return EXPORT_CLIENTS[clientId].loopbackOnly;
 }
 
 function xdgConfigHome(env: NodeJS.ProcessEnv, home: string): string {
@@ -41,25 +49,21 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
     id: "opencode",
     configPath: (env = process.env) => EXPORT_CLIENTS.opencode.destination(env),
     detectDir: (env = process.env, home = homedir()) => join(xdgConfigHome(env, home), "opencode"),
-    loopbackOnly: false,
   },
   pi: {
     id: "pi",
     configPath: (env = process.env) => EXPORT_CLIENTS.pi.destination(env),
     detectDir: (_env = process.env, home = homedir()) => join(home, ".pi"),
-    loopbackOnly: false,
   },
   hermes: {
     id: "hermes",
     configPath: (env = process.env) => EXPORT_CLIENTS.hermes.destination(env),
     detectDir: (env = process.env, home = homedir()) => hermesHome(env, home),
-    loopbackOnly: false,
   },
   openclaw: {
     id: "openclaw",
     configPath: (env = process.env) => EXPORT_CLIENTS.openclaw.destination(env),
     detectDir: (_env = process.env, home = homedir()) => join(home, ".openclaw"),
-    loopbackOnly: false,
   },
   kimi: {
     id: "kimi",
@@ -68,13 +72,11 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
       env.KIMI_CODE_HOME && env.KIMI_CODE_HOME.trim().length > 0
         ? env.KIMI_CODE_HOME.trim()
         : join(home, ".kimi-code"),
-    loopbackOnly: true,
   },
   gajae: {
     id: "gajae",
     configPath: (env = process.env) => EXPORT_CLIENTS.gajae.destination(env),
     detectDir: (_env = process.env, home = homedir()) => join(home, ".gjc"),
-    loopbackOnly: false,
   },
 };
 

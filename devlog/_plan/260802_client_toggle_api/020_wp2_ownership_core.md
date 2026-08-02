@@ -65,8 +65,6 @@ export interface IntegrationClientSpec {
    * exists so a future fenced/text client cannot be bolted on by accident.
    */
   ownership: { kind: "provider-key"; path: readonly string[] };
-  /** Loopback-only clients refuse to be applied on a non-loopback bind (WP3). */
-  loopbackOnly: boolean;
 }
 ```
 
@@ -81,9 +79,48 @@ export interface IntegrationClientSpec {
 | kimi | `["providers"]` | `opencodex` (plus `models` entries prefixed `opencodex/`) |
 | gajae | `["providers"]` | `opencodex` |
 
-`loopbackOnly` is **true for kimi only** — it is the one client that cannot
-carry an env reference (002 §Kimi), so a non-loopback bind would force a real
-secret onto disk. WP3 refuses instead.
+**Amended (WP2 A-gate, round 2).** The spec above no longer carries a
+`loopbackOnly` field, and the "kimi only" value it used to state was wrong.
+
+The real question is not "can this client carry an env reference" but "does
+its schema have anywhere to put the dedicated admission header". `/v1/chat/
+completions` rejects bearer credentials and requires `x-opencodex-api-key`
+(AUTH_MATRIX in `src/server/auth-cors.ts`), so a client with no header field
+cannot authenticate against a non-loopback bind at all — we would be writing a
+config that 401s. By that test the set is **pi, kimi, gajae**:
+
+| Client | loopback-only | why |
+|---|---|---|
+| opencode | no | its provider block carries arbitrary headers |
+| pi | yes | no header field in the provider block, and the schema is unverified against a real install |
+| hermes | no | headers are expressible |
+| openclaw | no | headers are expressible |
+| kimi | yes | no header field; it also cannot carry an env reference (002 §Kimi) |
+| gajae | yes | strict schema with no header field |
+
+The value lives on the **export** registry (`src/clients/config-export.ts`,
+`ExportClientSpec.loopbackOnly`, pinned by
+`tests/client-config-export-new-clients.test.ts`), because that is where a new
+client is declared and where the header shape is already known. WP2's registry
+exposes it as a function rather than restating it:
+
+```ts
+/**
+ * True when the client has nowhere to put the dedicated admission header a
+ * non-loopback bind requires, so a generated config would simply be rejected.
+ *
+ * Read from the export registry rather than restated here: two lists of the
+ * same fact drift, and this one decides whether we write a file that 401s.
+ */
+export function isLoopbackOnly(clientId: IntegrationClientId): boolean {
+  return EXPORT_CLIENTS[clientId].loopbackOnly;
+}
+```
+
+A second copy on `IntegrationClientSpec` is what this amendment removes: two
+lists of the same security fact drift, and the half that drifts decides whether
+a user's key lands on disk or a config silently 401s. WP3 calls
+`isLoopbackOnly(clientId)` where `031` still writes `spec.loopbackOnly`.
 
 ## 2. `src/integrations/ownership.ts` (NEW)
 

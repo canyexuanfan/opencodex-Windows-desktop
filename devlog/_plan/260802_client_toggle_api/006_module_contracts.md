@@ -532,7 +532,7 @@ Named gaps and where they are now closed:
 |---|---|---|
 | `src/integrations/serialize.ts` | WP1 | `renderYaml`, `renderToml`, `serializeDocument` |
 | `src/server/management/model-rows.ts` | WP1 | canonical `ExportModel[]` loader |
-| `src/integrations/registry.ts` | WP2 | client paths, detection, `loopbackOnly` |
+| `src/integrations/registry.ts` | WP2 | client paths, detection, `isLoopbackOnly()` (delegates to the export registry — 020 amendment) |
 | `src/integrations/ownership.ts` | WP2 | fingerprints, records |
 | `src/integrations/state.ts` | WP2 | classifier + `readIntegrationState` |
 | `src/integrations/config-io.ts` | **WP2** | `parseConfig`, `loadTarget`, `defaultIntegrationIO` |

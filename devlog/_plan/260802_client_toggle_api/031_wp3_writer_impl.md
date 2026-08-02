@@ -198,7 +198,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   if (io.statKind(spec.detectDir(input.env, input.home)) !== "dir") {
     return refuse(clientId, "not_installed", "absent", `${clientId} is not installed`);
   }
-  if (spec.loopbackOnly && !isLoopbackHostname(input.config.hostname)) {
+  if (isLoopbackOnly(clientId) && !isLoopbackHostname(input.config.hostname)) {
     return refuse(clientId, "non_loopback", "absent",
       `${clientId} reads credentials only from its config file, so a non-loopback bind would write your key to disk. Configure it manually instead.`);
   }

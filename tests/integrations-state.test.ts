@@ -10,6 +10,7 @@ import {
   writeRecord,
   type OwnershipRecord,
 } from "../src/integrations/ownership";
+import { INTEGRATION_CLIENT_IDS, isLoopbackOnly } from "../src/integrations/registry";
 import { classifyIntegration, readIntegrationState } from "../src/integrations/state";
 import { createIntegrationStateStore } from "../src/integrations/store";
 import type { OcxConfig } from "../src/types";
@@ -341,5 +342,23 @@ describe("installation detection is independent of config state", () => {
     const status = readIntegrationState(input());
     expect(status.installed).toBe(true);
     expect(status.state).toBe("absent");
+  });
+});
+
+/**
+ * The loopback set decides whether we write a config that 401s, so it is pinned
+ * at the seam WP3 actually calls — not only on the export registry it reads
+ * from. Rationale and the per-client table: 020 §1 amendment.
+ */
+describe("the loopback-only set is one fact, read through one seam", () => {
+  test("pi, kimi and gajae are loopback-only and nobody else is", () => {
+    const loopbackOnly = INTEGRATION_CLIENT_IDS.filter(id => isLoopbackOnly(id));
+    expect(loopbackOnly).toEqual(["pi", "kimi", "gajae"]);
+  });
+
+  test("the registry restates nothing — it reads the export spec", () => {
+    for (const id of INTEGRATION_CLIENT_IDS) {
+      expect(isLoopbackOnly(id)).toBe(EXPORT_CLIENTS[id].loopbackOnly);
+    }
   });
 });

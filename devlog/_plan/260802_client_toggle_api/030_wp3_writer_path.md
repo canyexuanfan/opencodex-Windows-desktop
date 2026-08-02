@@ -55,7 +55,7 @@ export type RefusalReason =
   | "not_installed"        // detectDir missing
   | "conflict"             // foreign edit or unowned key — never auto-delete
   | "unsafe"               // unparseable / not a regular file
-  | "non_loopback"         // loopbackOnly client on a remote bind (kimi)
+  | "non_loopback"         // loopback-only client on a remote bind (pi/kimi/gajae)
   | "drift_requires_confirm"  // restore would replace post-snapshot edits
   | "snapshot_expired"     // restore target was GC'd
   | "write_failed";        // the atomic write itself threw
@@ -115,10 +115,11 @@ Sequence:
 
 1. **Detect.** `detectDir` missing → refuse `not_installed` (no write, no
    journal row). Installing a client for the user is not our business.
-2. **Loopback gate.** `spec.loopbackOnly && !isLoopbackHostname(config.hostname)`
-   → refuse `non_loopback`. This is the Grok reasoning applied to Kimi: the
-   only way to make it work remotely is to serialize the user's real key, and
-   AGENTS.md calls that a release blocker.
+2. **Loopback gate.** `isLoopbackOnly(clientId) && !isLoopbackHostname(config.hostname)`
+   → refuse `non_loopback`. This is the Grok reasoning applied to every client
+   whose schema has nowhere to put the dedicated admission header — **pi, kimi,
+   gajae** (020 amendment). Making them work remotely would mean serializing the
+   user's real key, and AGENTS.md calls that a release blocker.
 3. **Classify** (WP2). `unsafe` → refuse `unsafe`. `conflict` → refuse
    `conflict` (the switch is locked in the UI; the API must agree).
    `current` → `{ ok: true, changed: false }` — apply is idempotent.
