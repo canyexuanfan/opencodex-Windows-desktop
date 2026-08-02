@@ -37,3 +37,5 @@ PowerShell 5 对命令行字符串、中文标点和复杂正则的解析比较�
 - ❌ 2026-08-02：阶段 37 的 `Select-String` 复合匹配因中文弯引号/位置参数解析失败，已改为固定字符串逐条匹配。
 - ✅ 2026-08-02：改用多条 `Select-String -SimpleMatch` 固定字符串复核 `阶段 37`、`OpenCodex-Setup-2.8.0-x64.exe`、`signtool verify /pa /v` 和 `Provider 默认星标`，均取得有效命中；不再把中文弯引号放入复合正则。
 - ❌ 2026-08-02：阶段 38 首次 `git commit -m` 使用 PowerShell 双引号包裹长中文正文，正文中包含成对引号和 Windows 路径，导致命令被拆成 pathspec，Git 报 `pathspec ... did not match any file(s)`；暂存区未丢失，提交未完成。下一步改用 PowerShell 单引号包裹每个 `-m` 参数，或使用提交说明文件。
+- ❌ 2026-08-02：验收回填签名复核时写成 `foreach (...) { ... } | Format-List`，Windows PowerShell 5 将循环体后的管道解析为空管道元素，报 `不允许使用空管道元素`。下一步用 `$results = foreach (...) { ... }; $results | Format-List` 两段式输出。
+- ✅ 2026-08-02：改用 `$results = foreach (...) { ... }; $results | Format-List` 后，成功复核版本化安装包、unpacked `OpenCodex.exe` 与内置 `bun.exe` 均可读取 `CN=十七°` 签名主体；本机自签链状态均为 `UnknownError`。

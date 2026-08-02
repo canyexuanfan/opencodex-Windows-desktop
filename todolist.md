@@ -1016,4 +1016,5 @@ Codex / Claude Code / 其他现有客户端
 - [x] 当前最终 unpacked 签名验收：`desktop/out/win-unpacked/OpenCodex.exe` 与 `desktop/out/win-unpacked/resources/opencodex/runtime/bun.exe` 均可读取签名主体 `CN=十七°`，本机自签链状态为 `UnknownError`。
 - [x] 签名临时物清理：临时 PFX 已删除，CurrentUser 私钥证书已删除，`C:\tmp\opencodex-stage38-sign-20260802` 与 `C:\tmp\opencodex-stage38-electron-cache-20260802` 已清理为不存在。
 - [x] 排查流程闭环：PowerShell 复合匹配失败、`$home` 变量冲突、版本化包漏签名、随机数 API 兼容、electron-builder CLI 路径错误均已写入对应 `questions/` 排查指南，并记录成功方法。
+- [x] 验收回填复核：在不重启/不覆盖安装 Codex 的前提下再次确认 `GET http://127.0.0.1:36723/healthz` 正常，`/v1/models` 返回 17 个模型且包含 10 个 `zhipu-bigmodel/*` 模型；开始菜单快捷方式存在、桌面快捷方式仍不存在、当前已安装 exe 仍为旧 `NotSigned` 文件；版本化安装包、unpacked `OpenCodex.exe` 和内置 `bun.exe` 均可读取 `CN=十七°` 签名主体。
 - [ ] 当前已安装运行中的 `E:\Program\OpenCodex\OpenCodex.exe` 仍是旧未签名文件；这是本轮不覆盖安装、不重启 Codex 的刻意边界。用户允许覆盖安装最新版后，需复核已安装 exe 签名、桌面快捷方式、注册表、安装向导视觉和卸载保留。
