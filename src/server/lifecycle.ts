@@ -35,14 +35,71 @@ const activeTurns = new Map<AbortController, ActiveTurnLease>();
 const admittedTurns = new Set<ActiveTurnLease>();
 const knownTurnControllers = new WeakSet<AbortController>();
 let turnReleaseMisses = 0;
-let draining = false;
+let shutdownDraining = false;
+const temporaryDrainOwners = new Set<symbol>();
+const temporaryDrainWaiters = new Set<() => void>();
+let legacyDrainLease: AdmissionLease | null = null;
 let recyclingForExit = false;
 let _serverRef: ReturnType<typeof Bun.serve> | undefined;
 
 export function setServerRef(server: ReturnType<typeof Bun.serve> | undefined): void { _serverRef = server; }
-export function setDraining(value: boolean): void { draining = value; }
+/**
+ * Legacy/test-only drain control. Production scoped operations must use a lease,
+ * while process shutdown uses the irreversible shutdown latch.
+ */
+export function setDraining(value: boolean): void {
+  if (value) {
+    legacyDrainLease ??= acquireTemporaryDrain("legacy");
+  } else {
+    legacyDrainLease?.release();
+    legacyDrainLease = null;
+  }
+}
+
+/** Acquire the single owner-scoped temporary data-plane fence. */
+export function acquireTemporaryDrain(owner: string): AdmissionLease | null {
+  if (shutdownDraining || temporaryDrainOwners.size > 0) return null;
+  const token = Symbol(owner);
+  temporaryDrainOwners.add(token);
+  let active = true;
+  return {
+    release() {
+      if (!active) return;
+      active = false;
+      temporaryDrainOwners.delete(token);
+      if (temporaryDrainOwners.size === 0) {
+        for (const resolve of temporaryDrainWaiters) resolve();
+        temporaryDrainWaiters.clear();
+      }
+    },
+  };
+}
+
+/** Permanently fence this process for shutdown; scoped lease release cannot clear it. */
+export function beginShutdownDrain(): boolean {
+  if (shutdownDraining) return false;
+  shutdownDraining = true;
+  return true;
+}
+
+export function isShutdownDraining(): boolean { return shutdownDraining; }
+
+export function waitForTemporaryDrains(): Promise<void> {
+  if (temporaryDrainOwners.size === 0) return Promise.resolve();
+  return new Promise(resolve => temporaryDrainWaiters.add(resolve));
+}
+
+/** Test-only process-lifetime reset. Never call from production recovery paths. */
+export function resetLifecycleDrainStateForTests(): void {
+  legacyDrainLease?.release();
+  legacyDrainLease = null;
+  temporaryDrainOwners.clear();
+  for (const resolve of temporaryDrainWaiters) resolve();
+  temporaryDrainWaiters.clear();
+  shutdownDraining = false;
+}
 export function tryAdmitTurn(): ActiveTurnLease | null {
-  if (draining) return null;
+  if (isDraining()) return null;
   const gateLease = turnGate.tryAcquire();
   if (!gateLease) return null;
   const controllers = new Set<AbortController>();
@@ -86,7 +143,7 @@ export function unregisterTurn(ac: AbortController): void {
   }
   lease.release();
 }
-export function isDraining(): boolean { return draining; }
+export function isDraining(): boolean { return shutdownDraining || temporaryDrainOwners.size > 0; }
 export function getActiveTurnCount(): number { return turnGate.metrics().active; }
 export function activeRegistryMetrics(): Record<string, AdmissionMetrics> {
   const turns = turnGate.metrics();
@@ -159,7 +216,8 @@ export async function drainAndShutdown(
   timeoutMs: number,
 ): Promise<void> {
   const s = server ?? _serverRef;
-  draining = true;
+  beginShutdownDrain();
+  await waitForTemporaryDrains();
   beginBackgroundShellShutdown();
   try {
     const deadline = Date.now() + timeoutMs;
@@ -222,7 +280,8 @@ export async function drainAndShutdown(
       // isolate reclaim / follow-on listen the same way unterminated Workers did.
       if (s) await s.stop(true);
     } finally {
-      draining = false;
+      // shutdownDraining is a process-lifetime latch. A stopped server must
+      // never resume admission merely because shutdown cleanup returned.
     }
   }
 }

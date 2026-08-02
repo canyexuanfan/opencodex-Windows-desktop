@@ -23,12 +23,14 @@
  */
 import { spawn } from "node:child_process";
 import {
+  beginShutdownDrain,
   drainAndShutdown,
   getActiveTurnCount,
   getServerListenPort,
   isDraining,
+  isShutdownDraining,
   markRecyclingForExit,
-  setDraining,
+  waitForTemporaryDrains,
 } from "../lifecycle";
 import { isServiceViable } from "../../service";
 import { readRuntimePort } from "../../config";
@@ -48,6 +50,9 @@ export interface SystemRestartIo {
   exitProcess?: (code: number) => void;
   schedule?: (fn: () => void | Promise<void>, ms: number) => void;
   isDraining?: () => boolean;
+  isShutdownDraining?: () => boolean;
+  beginShutdownDrain?: () => boolean;
+  waitForTemporaryDrains?: () => Promise<void>;
   setDraining?: (value: boolean) => void;
   getActiveTurnCount?: () => number;
   listenPort?: () => number | undefined;
@@ -134,15 +139,21 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
   activeTurnCount: number;
   drainTimeoutMs: number;
 } {
-  const alreadyDraining = restartAccepted || (io.isDraining ?? isDraining)();
+  const shutdownActive = io.isShutdownDraining
+    ?? io.isDraining
+    ?? isShutdownDraining;
+  const alreadyDraining = restartAccepted || shutdownActive();
   const activeTurnCount = (io.getActiveTurnCount ?? getActiveTurnCount)();
   const schedule = io.schedule ?? ((fn, ms) => { setTimeout(() => { void fn(); }, ms); });
 
   if (!alreadyDraining) {
     restartAccepted = true;
     // Reject new data-plane traffic immediately (503), before the 200ms response-flush delay.
-    (io.setDraining ?? setDraining)(true);
+    if (io.beginShutdownDrain) io.beginShutdownDrain();
+    else if (io.setDraining) io.setDraining(true);
+    else beginShutdownDrain();
     schedule(async () => {
+      await (io.waitForTemporaryDrains ?? waitForTemporaryDrains)();
       const drain = io.drainAndShutdown ?? drainAndShutdown;
       await drain(undefined, MEMORY_DRAIN_RESTART_MS);
       const supervised = (io.isSupervisedServiceChild ?? (() => isSupervisedServiceChild(io)))();

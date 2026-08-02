@@ -26,6 +26,11 @@ import type {
   NativeProfileSwitchJournalV1,
 } from "../src/codex/native-profile-types";
 import type { OcxConfig } from "../src/types";
+import {
+  initializeNativeMainStartupGate,
+  inspectNativeMainRecoveryJournal,
+  nativeMainStartupGateSnapshot,
+} from "../src/codex/native-profile-startup";
 
 const roots: string[] = [];
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -247,6 +252,30 @@ const recoverable: Array<{ phase: Phase; observation: Observation; active: "sour
 ];
 
 describe("native-main startup journal gate", () => {
+  test("sync journal inspection treats only ENOENT as absent and propagates other failures", () => {
+    expect(inspectNativeMainRecoveryJournal("missing", () => {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    })).toBe("absent");
+    expect(() => inspectNativeMainRecoveryJournal("denied", () => {
+      throw Object.assign(new Error("private path"), { code: "EACCES" });
+    })).toThrow();
+  });
+
+  test("startup inspection failure closes the main gate without attempting recovery", async () => {
+    let recoverCalls = 0;
+    const homeId = "home-inspection-failure";
+    const gate = await initializeNativeMainStartupGate({
+      manager: {
+        context: { homeId, journalPath: "denied" },
+        recover: async () => { recoverCalls += 1; return {}; },
+      } as unknown as NativeProfileManager,
+      inspectJournal: () => { throw Object.assign(new Error("private path"), { code: "EACCES" }); },
+    });
+    expect(gate).toEqual({ status: "blocked", homeId, reason: "manual-recovery" });
+    expect(nativeMainStartupGateSnapshot()).toEqual(gate);
+    expect(recoverCalls).toBe(0);
+  });
+
   test("fresh processes gate first admission and converge every recoverable phase/observation", async () => {
     for (const scenario of recoverable) {
       const f = await fixture(scenario.phase, scenario.observation);

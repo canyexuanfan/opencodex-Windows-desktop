@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 
 import { NativeProfileManager } from "./native-profile-manager";
 import { clearAccountNeedsReauth } from "./account-runtime-state";
@@ -12,6 +12,7 @@ export interface NativeMainStartupGateDeps {
   manager?: NativeProfileManager;
   /** Test-only barrier used to prove admission stays closed while startup recovery is pending. */
   beforeRecovery?: () => void | Promise<void>;
+  inspectJournal?: typeof inspectNativeMainRecoveryJournal;
 }
 
 let epoch = 0;
@@ -20,6 +21,19 @@ let settled: Promise<NativeMainStartupGateSnapshot> = Promise.resolve(snapshot);
 
 function ready(homeId: string | null): NativeMainStartupGateSnapshot {
   return { status: "ready", homeId };
+}
+
+export function inspectNativeMainRecoveryJournal(
+  path: string,
+  stat: (path: string) => unknown = statSync,
+): "present" | "absent" {
+  try {
+    stat(path);
+    return "present";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return "absent";
+    throw error;
+  }
 }
 
 /**
@@ -42,7 +56,15 @@ export function initializeNativeMainStartupGate(
   }
 
   const homeId = manager.context.homeId;
-  if (!existsSync(manager.context.journalPath)) {
+  let journal: "present" | "absent";
+  try {
+    journal = (deps.inspectJournal ?? inspectNativeMainRecoveryJournal)(manager.context.journalPath);
+  } catch {
+    snapshot = { status: "blocked", homeId, reason: "manual-recovery" };
+    settled = Promise.resolve(snapshot);
+    return settled;
+  }
+  if (journal === "absent") {
     snapshot = ready(homeId);
     settled = Promise.resolve(snapshot);
     return settled;

@@ -3,7 +3,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { handleManagementAPI } from "../src/server/management-api";
-import { setDraining } from "../src/server/lifecycle";
+import { resetLifecycleDrainStateForTests, setDraining } from "../src/server/lifecycle";
 import {
   MEMORY_DRAIN_RESTART_MS,
   acceptSystemRestart,
@@ -28,7 +28,7 @@ function config(): OcxConfig {
 
 afterEach(() => {
   setSystemRestartIoForTests();
-  setDraining(false);
+  resetLifecycleDrainStateForTests();
 });
 
 describe("acceptSystemRestart", () => {
@@ -259,6 +259,33 @@ describe("acceptSystemRestart", () => {
     expect(first.alreadyDraining).toBe(false);
     expect(second.alreadyDraining).toBe(true);
     expect(scheduled).toBe(1);
+  });
+
+  test("profile drain first queues one restart and waits for its owner lease", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+    let releaseProfile!: () => void;
+    const profileReleased = new Promise<void>(resolve => { releaseProfile = resolve; });
+    const io = {
+      isShutdownDraining: () => false,
+      getActiveTurnCount: () => 0,
+      beginShutdownDrain: () => { calls.push("shutdown-latched"); return true; },
+      waitForTemporaryDrains: async () => { calls.push("wait-profile"); await profileReleased; },
+      schedule: (fn: () => void | Promise<void>) => { scheduled = fn; },
+      drainAndShutdown: async () => { calls.push("shutdown"); },
+      isSupervisedServiceChild: () => true,
+      exitProcess: (code: number) => { calls.push(`exit:${code}`); },
+    };
+    const first = acceptSystemRestart(io);
+    const second = acceptSystemRestart(io);
+    expect(first.alreadyDraining).toBe(false);
+    expect(second.alreadyDraining).toBe(true);
+    const running = scheduled!();
+    await Promise.resolve();
+    expect(calls).toEqual(["shutdown-latched", "wait-profile"]);
+    releaseProfile();
+    await running;
+    expect(calls).toEqual(["shutdown-latched", "wait-profile", "shutdown", "exit:1"]);
   });
 });
 

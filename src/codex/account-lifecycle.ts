@@ -19,6 +19,12 @@ export function purgeCodexAccountRuntimeState(accountId: string): void {
   if (accountId === MAIN_CODEX_ACCOUNT_ID) clearMainAccountInfoCache();
 }
 
+function purgeMainCodexAccountRuntimeState(): void {
+  purgeCodexAccountRuntimeState(MAIN_CODEX_ACCOUNT_ID);
+  setMainAccountPlan(null);
+  invalidateCodexWebSocketsForAccount(MAIN_CODEX_ACCOUNT_ID);
+}
+
 /**
  * The main Codex login is stored under the stable `__main__` alias, while
  * `~/.codex/auth.json` can be replaced with credentials for another physical
@@ -34,9 +40,7 @@ export function reconcileMainCodexAccountRuntimeState(): boolean {
   observedMainChatgptAccountId = currentAccountId;
   if (previousAccountId === undefined || previousAccountId === currentAccountId) return false;
 
-  purgeCodexAccountRuntimeState(MAIN_CODEX_ACCOUNT_ID);
-  setMainAccountPlan(null);
-  invalidateCodexWebSocketsForAccount(MAIN_CODEX_ACCOUNT_ID);
+  purgeMainCodexAccountRuntimeState();
   return true;
 }
 
@@ -53,9 +57,7 @@ export function applyConfirmedMainCodexAccountTransition(
     return false;
   }
   observedMainChatgptAccountId = toAccountId;
-  purgeCodexAccountRuntimeState(MAIN_CODEX_ACCOUNT_ID);
-  setMainAccountPlan(null);
-  invalidateCodexWebSocketsForAccount(MAIN_CODEX_ACCOUNT_ID);
+  purgeMainCodexAccountRuntimeState();
   return true;
 }
 

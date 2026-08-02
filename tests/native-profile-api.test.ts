@@ -5,12 +5,17 @@ import type { OcxConfig } from "../src/types";
 import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
 import type { NativeProfileManager } from "../src/codex/native-profile-manager";
 import { NativeProfileError } from "../src/codex/native-profile-types";
-import { setDraining, tryAdmitTurn } from "../src/server/lifecycle";
+import { resetLifecycleDrainStateForTests, setDraining, tryAdmitTurn } from "../src/server/lifecycle";
+import {
+  completeNativeMainRecovery,
+  initializeNativeMainStartupGate,
+  nativeMainStartupGateSnapshot,
+} from "../src/codex/native-profile-startup";
 
 const originalCodexHome = process.env.CODEX_HOME;
 
 afterEach(() => {
-  setDraining(false);
+  resetLifecycleDrainStateForTests();
   if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = originalCodexHome;
 });
@@ -133,5 +138,69 @@ describe("native main profile management API", () => {
 
     expect(response?.status).toBe(409);
     expect(await response?.json()).toMatchObject({ code: "RECOVERY_REQUIRED", error: message });
+  });
+
+  test("successful switch auto-recovery completes the matching startup gate before releasing its drain lease", async () => {
+    const homeId = "home-switch-gate";
+    await initializeNativeMainStartupGate({
+      manager: {
+        context: { homeId, journalPath: "pending" },
+        recover: async () => { throw new NativeProfileError("RECOVERY_REQUIRED", "manual", 409); },
+      } as unknown as NativeProfileManager,
+      inspectJournal: () => "present",
+    });
+    expect(nativeMainStartupGateSnapshot()).toMatchObject({ status: "blocked", homeId });
+    let completedWhileDraining = false;
+    const manager = {
+      context: { homeId, journalPath: "pending" },
+      switch: async () => ({ ok: true }),
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager,
+      inspectRecoveryJournal: () => "present",
+      completeRecovery: id => {
+        completedWhileDraining = tryAdmitTurn() === null;
+        return completeNativeMainRecovery(id);
+      },
+    });
+    expect(response?.status).toBe(200);
+    expect(completedWhileDraining).toBe(true);
+    expect(nativeMainStartupGateSnapshot()).toMatchObject({ status: "ready", homeId });
+  });
+
+  test("switch without auto-recovery does not complete a blocked startup gate", async () => {
+    let completions = 0;
+    const manager = {
+      context: { homeId: "home-no-journal", journalPath: "missing" },
+      switch: async () => ({ ok: true }),
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager,
+      inspectRecoveryJournal: () => "absent",
+      completeRecovery: () => { completions += 1; return true; },
+    });
+    expect(response?.status).toBe(200);
+    expect(completions).toBe(0);
+  });
+
+  test("unknown failures use a fixed redacted internal code while typed recovery remains distinct", async () => {
+    const secret = "C:\\Users\\Private\\.codex\\auth.json bearer-secret";
+    const manager = {
+      list: async () => { throw new Error(secret); },
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles");
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, { manager });
+    expect(response?.status).toBe(500);
+    const payload = await response?.json() as { code: string; error: string };
+    expect(payload).toEqual({ code: "INTERNAL_ERROR", error: "Native-profile operation failed." });
+    expect(JSON.stringify(payload)).not.toContain(secret);
   });
 });

@@ -13,7 +13,13 @@ import {
   isRecyclingForExit,
   markRecyclingForExit,
 } from "../src/server";
-import { activeRegistryMetrics, tryAdmitTurn } from "../src/server/lifecycle";
+import {
+  acquireTemporaryDrain,
+  activeRegistryMetrics,
+  beginShutdownDrain,
+  resetLifecycleDrainStateForTests,
+  tryAdmitTurn,
+} from "../src/server/lifecycle";
 import {
   backgroundShellAdmissionMetrics,
   backgroundShellSpawnExec,
@@ -31,6 +37,7 @@ class ShutdownFakeChild extends EventEmitter {
 
 afterEach(async () => {
   await resetBackgroundShellStateForTests();
+  resetLifecycleDrainStateForTests();
 });
 
 function installShutdownShell() {
@@ -78,6 +85,12 @@ describe("active turn tracking", () => {
 
   test("isDraining() is false by default", () => {
     expect(isDraining()).toBe(false);
+  });
+
+  test("shutdown first rejects profile leases and remains latched after scoped release attempts", () => {
+    expect(beginShutdownDrain()).toBe(true);
+    expect(acquireTemporaryDrain("native-profile")).toBeNull();
+    expect(isDraining()).toBe(true);
   });
 
   test("forced shutdown releases an admitted turn before controller binding", async () => {

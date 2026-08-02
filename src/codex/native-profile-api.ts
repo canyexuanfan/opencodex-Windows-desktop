@@ -1,6 +1,6 @@
 import type { OcxConfig } from "../types";
 import { jsonResponse } from "../server/auth-cors";
-import { getActiveTurnCount, isDraining, setDraining } from "../server/lifecycle";
+import { acquireTemporaryDrain, getActiveTurnCount } from "../server/lifecycle";
 import {
   managementBodyTooLargeResponse,
   readManagementJsonBody,
@@ -8,12 +8,14 @@ import {
 } from "../server/management/body";
 import { NativeProfileManager } from "./native-profile-manager";
 import { NativeProfileError } from "./native-profile-types";
-import { completeNativeMainRecovery } from "./native-profile-startup";
+import { completeNativeMainRecovery, inspectNativeMainRecoveryJournal } from "./native-profile-startup";
 
 export interface NativeProfileApiDeps {
   manager?: NativeProfileManager;
   drainTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  inspectRecoveryJournal?: typeof inspectNativeMainRecoveryJournal;
+  completeRecovery?: typeof completeNativeMainRecovery;
 }
 
 async function body(req: Request): Promise<Record<string, unknown>> {
@@ -28,8 +30,8 @@ async function body(req: Request): Promise<Record<string, unknown>> {
 }
 
 async function withMainRequestDrain<T>(deps: NativeProfileApiDeps, operation: () => Promise<T>): Promise<T> {
-  if (isDraining()) throw new NativeProfileError("MAIN_REQUESTS_ACTIVE", "The proxy is already draining requests.", 503, true);
-  setDraining(true);
+  const drainLease = acquireTemporaryDrain("native-main-profile");
+  if (!drainLease) throw new NativeProfileError("MAIN_REQUESTS_ACTIVE", "The proxy is already draining requests.", 503, true);
   try {
     const deadline = Date.now() + (deps.drainTimeoutMs ?? 10_000);
     while (getActiveTurnCount() > 0 && Date.now() < deadline) await (deps.sleep ?? Bun.sleep)(50);
@@ -38,7 +40,7 @@ async function withMainRequestDrain<T>(deps: NativeProfileApiDeps, operation: ()
     }
     return await operation();
   } finally {
-    setDraining(false);
+    drainLease.release();
   }
 }
 
@@ -81,8 +83,19 @@ export async function handleNativeProfileAPI(
     if (url.pathname === "/api/native-main-profiles/switch" && req.method === "POST") {
       const input = await body(req);
       if (typeof input.target !== "string") throw new NativeProfileError("INVALID_REQUEST", "A target profile is required.", 400);
+      const switched = await withMainRequestDrain(deps, async () => {
+        const context = manager.context;
+        const hadPendingRecovery = context
+          ? (deps.inspectRecoveryJournal ?? inspectNativeMainRecoveryJournal)(context.journalPath) === "present"
+          : false;
+        const result = await manager.switch(input.target as string, input.confirmedStopped === true);
+        if (hadPendingRecovery && context?.homeId) {
+          (deps.completeRecovery ?? completeNativeMainRecovery)(context.homeId);
+        }
+        return result;
+      });
       return jsonResponse(
-        await withMainRequestDrain(deps, () => manager.switch(input.target as string, input.confirmedStopped === true)),
+        switched,
         200,
         req,
         config,
@@ -104,6 +117,6 @@ export async function handleNativeProfileAPI(
     if (error instanceof NativeProfileError) {
       return jsonResponse({ error: error.message, code: error.code, retryable: error.retryable }, error.status, req, config);
     }
-    return jsonResponse({ error: "Native-profile operation failed without changing or exposing credential data", code: "RECOVERY_REQUIRED" }, 500, req, config);
+    return jsonResponse({ error: "Native-profile operation failed.", code: "INTERNAL_ERROR" }, 500, req, config);
   }
 }
