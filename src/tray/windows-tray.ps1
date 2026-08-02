@@ -3,6 +3,9 @@ param(
   [Parameter(Mandatory = $true)][string]$CliPath,
   [Parameter(Mandatory = $true)][string]$CodexHome,
   [Parameter(Mandatory = $true)][string]$OpenCodexHome,
+  # Provenance of $BunPath, chosen when the tray entry was built. Optional so an
+  # already-installed launcher command from an older version still starts.
+  [ValidateSet("", "override", "bundled", "process")][string]$BunRuntimeSource = "",
   [ValidateSet("Run", "Stop")][string]$Mode = "Run",
   [int]$HostPid = 0
 )
@@ -92,6 +95,7 @@ function Start-OcxCommand([string[]]$CommandArgs) {
     $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
     $psi.EnvironmentVariables["CODEX_HOME"] = $CodexHome
     $psi.EnvironmentVariables["OPENCODEX_HOME"] = $OpenCodexHome
+    if ($BunRuntimeSource) { $psi.EnvironmentVariables["OCX_BUN_RUNTIME_SOURCE"] = $BunRuntimeSource }
     $process = [System.Diagnostics.Process]::Start($psi)
     if ($null -ne $process) { $process.Dispose() }
     Write-ActionLog "dispatched $($CommandArgs -join ' ')"

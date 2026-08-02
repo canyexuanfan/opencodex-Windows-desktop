@@ -4,7 +4,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandUserPath, getConfigDir } from "../config";
-import { durableBunPath } from "../lib/bun-runtime";
+import { durableBunRuntime } from "../lib/bun-runtime";
+import type { BunRuntimeSource } from "../lib/bun-runtime";
 import { forgetEphemeralSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
 
@@ -20,6 +21,8 @@ const TRAY_ICON_FILES = [
 
 export interface WindowsTrayEntry {
   bun: string;
+  /** Provenance of `bun`, resolved together with it. */
+  bunRuntimeSource: BunRuntimeSource;
   cli: string;
   script: string;
   codexHome: string;
@@ -81,8 +84,10 @@ function currentCodexHome(): string {
 }
 
 function currentEntry(): WindowsTrayEntry {
+  const runtime = durableBunRuntime();
   return {
-    bun: durableBunPath(),
+    bun: runtime.path,
+    bunRuntimeSource: runtime.source,
     cli: join(import.meta.dir, "..", "cli", "index.ts"),
     script: installedTrayScriptPath(),
     codexHome: currentCodexHome(),
@@ -136,6 +141,7 @@ export function windowsTrayProcessArgs(entry: WindowsTrayEntry, mode: "Run" | "S
     "-WindowStyle", "Hidden",
     "-File", safePath(entry.script),
     "-BunPath", safePath(entry.bun),
+    "-BunRuntimeSource", entry.bunRuntimeSource,
     "-CliPath", safePath(entry.cli),
     "-CodexHome", safePath(entry.codexHome),
     "-OpenCodexHome", safePath(entry.opencodexHome),
@@ -170,6 +176,7 @@ export function buildWindowsTrayPowerShellCommand(entry: WindowsTrayEntry, power
     "-WindowStyle", "Hidden",
     "-File", quoteRunValue(entry.script),
     "-BunPath", quoteRunValue(entry.bun),
+    "-BunRuntimeSource", entry.bunRuntimeSource,
     "-CliPath", quoteRunValue(entry.cli),
     "-CodexHome", quoteRunValue(entry.codexHome),
     "-OpenCodexHome", quoteRunValue(entry.opencodexHome),

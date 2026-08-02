@@ -20,11 +20,43 @@ const require = createRequire(import.meta.url);
 
 const BUN_OVERRIDE_ENV = "OPENCODEX_BUN_PATH";
 
+/**
+ * Env marker stamped by whichever launcher selected the Bun binary, then read back
+ * inside the launched process.
+ *
+ * Provenance has to travel with the launch because it cannot be recovered afterwards:
+ * resolving it at report time answers "what would this shell pick now", not "what was
+ * this service started with", and those differ exactly when the answer matters.
+ */
+export const BUN_RUNTIME_SOURCE_ENV = "OCX_BUN_RUNTIME_SOURCE";
+
+export type BunRuntimeSource = "override" | "bundled" | "process";
+
+/** The only provenance values any surface may accept off the wire or out of the env. */
+export const BUN_RUNTIME_SOURCES: readonly BunRuntimeSource[] = ["override", "bundled", "process"];
+
 export type DurableBunRuntime = {
   path: string;
-  source: "override" | "bundled" | "process";
+  source: BunRuntimeSource;
   overrideEnv: typeof BUN_OVERRIDE_ENV;
 };
+
+/**
+ * The provenance this process was launched with, or `undefined` when nothing
+ * trustworthy is recorded.
+ *
+ * Deliberately never falls back to `durableBunRuntime()`. A service installed before
+ * the marker existed has no provenance, and guessing one from the current environment
+ * would report a confident wrong answer — "unknown" is the honest result and callers
+ * are expected to say so. Values outside the allowlist are treated as absent rather
+ * than passed through.
+ */
+export function reportedBunRuntimeSource(
+  env: NodeJS.ProcessEnv = process.env,
+): BunRuntimeSource | undefined {
+  const raw = env[BUN_RUNTIME_SOURCE_ENV]?.trim();
+  return BUN_RUNTIME_SOURCES.find(source => source === raw);
+}
 
 /**
  * Absolute path to the bundled Bun binary, or null if the `bun` dependency is

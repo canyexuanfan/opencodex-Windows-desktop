@@ -261,6 +261,33 @@ describe("GET /api/system/memory", () => {
     expect(body.watchdog).toBeNull();
   });
 
+  test("serializes only an allowlisted Bun runtime provenance, omitting it otherwise (#848)", async () => {
+    const inherited = process.env.OCX_BUN_RUNTIME_SOURCE;
+    const read = async (): Promise<{ bunRuntimeSource?: unknown; bunRevision?: unknown }> => {
+      const req = new Request("http://127.0.0.1:10100/api/system/memory");
+      const res = await handleManagementAPI(req, new URL(req.url), config());
+      return await res!.json() as { bunRuntimeSource?: unknown; bunRevision?: unknown };
+    };
+    try {
+      for (const source of ["override", "bundled", "process"]) {
+        process.env.OCX_BUN_RUNTIME_SOURCE = source;
+        expect((await read()).bunRuntimeSource).toBe(source);
+      }
+      // An unset or unrecognized marker must leave the field absent rather than
+      // shipping a value doctor would then have to distrust.
+      delete process.env.OCX_BUN_RUNTIME_SOURCE;
+      const unset = await read();
+      expect(unset.bunRuntimeSource).toBeUndefined();
+      expect(typeof unset.bunRevision).toBe("string");
+
+      process.env.OCX_BUN_RUNTIME_SOURCE = "system";
+      expect((await read()).bunRuntimeSource).toBeUndefined();
+    } finally {
+      if (inherited === undefined) delete process.env.OCX_BUN_RUNTIME_SOURCE;
+      else process.env.OCX_BUN_RUNTIME_SOURCE = inherited;
+    }
+  });
+
   test("GET system memory includes privacy-safe appOwnedBytes scalars", async () => {
     registerDefaultAppOwnedMemoryStores();
     const req = new Request("http://127.0.0.1:10100/api/system/memory");

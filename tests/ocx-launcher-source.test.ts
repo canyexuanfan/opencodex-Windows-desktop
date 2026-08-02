@@ -43,7 +43,7 @@ describe("ocx.mjs npm launcher (source invariants)", () => {
   test("valid Bun overrides are selected before the bundled runtime", () => {
     expect(source).toContain('const BUN_OVERRIDE_ENV = "OPENCODEX_BUN_PATH";');
     expect(source).toContain("const overridePath = resolve(override);");
-    expect(source).toContain("if (isRealBunBinary(overridePath)) return overridePath;");
+    expect(source).toContain('if (isRealBunBinary(overridePath)) return { path: overridePath, source: "override" };');
 
     const resolveStart = source.indexOf("function resolveBun() {");
     const overrideCheck = source.indexOf("process.env[BUN_OVERRIDE_ENV]?.trim()", resolveStart);

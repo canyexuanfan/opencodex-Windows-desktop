@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, overrideBunPath } from "../src/lib/bun-runtime";
+import { BUN_RUNTIME_SOURCE_ENV, isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, overrideBunPath, reportedBunRuntimeSource } from "../src/lib/bun-runtime";
 
 // realpath the temp root: on macOS /var is a symlink to /private/var, so a path built
 // from mkdtemp compares unequal to the same path resolved through process.cwd().
@@ -108,6 +108,43 @@ describe("bundledBunPath / durableBunPath", () => {
     } finally {
       if (inheritedOverride === undefined) delete process.env.OPENCODEX_BUN_PATH;
       else process.env.OPENCODEX_BUN_PATH = inheritedOverride;
+    }
+  });
+});
+
+describe("reportedBunRuntimeSource (#848 launch-time provenance)", () => {
+  it("reads back each allowlisted marker", () => {
+    for (const source of ["override", "bundled", "process"] as const) {
+      expect(reportedBunRuntimeSource({ [BUN_RUNTIME_SOURCE_ENV]: source })).toBe(source);
+    }
+  });
+
+  it("treats an absent marker as unknown rather than guessing from this process", () => {
+    // A service installed before provenance existed has no marker. Reporting a
+    // confident wrong origin is exactly the #848 failure, so the answer is undefined.
+    expect(reportedBunRuntimeSource({})).toBeUndefined();
+    expect(reportedBunRuntimeSource({ [BUN_RUNTIME_SOURCE_ENV]: "" })).toBeUndefined();
+  });
+
+  it("rejects values outside the allowlist instead of passing them through", () => {
+    expect(reportedBunRuntimeSource({ [BUN_RUNTIME_SOURCE_ENV]: "system" })).toBeUndefined();
+    expect(reportedBunRuntimeSource({ [BUN_RUNTIME_SOURCE_ENV]: "OVERRIDE" })).toBeUndefined();
+    expect(reportedBunRuntimeSource({ [BUN_RUNTIME_SOURCE_ENV]: "override; rm -rf /" })).toBeUndefined();
+  });
+
+  it("does not fall back to the current environment when the marker is missing", () => {
+    const inherited = process.env.OPENCODEX_BUN_PATH;
+    const real = join(tmp, "provenance-bun.exe");
+    mkdirSync(join(tmp), { recursive: true });
+    writeFileSync(real, "x".repeat(2 * 1024 * 1024));
+    process.env.OPENCODEX_BUN_PATH = real;
+    try {
+      // durableBunRuntime would say "override" here; the reporter must still say unknown.
+      expect(durableBunRuntime().source).toBe("override");
+      expect(reportedBunRuntimeSource({})).toBeUndefined();
+    } finally {
+      if (inherited === undefined) delete process.env.OPENCODEX_BUN_PATH;
+      else process.env.OPENCODEX_BUN_PATH = inherited;
     }
   });
 });

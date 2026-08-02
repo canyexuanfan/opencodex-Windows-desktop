@@ -78,7 +78,7 @@ this document owns is which module holds which area and what invariant that area
 | V2 / Multi-agent mode | `GET/PUT /api/v2` — reports/sets the codex `multi_agent_v2` feature flag, the 3-state `multiAgentMode` override (`v1`/`default`/`v2`), and the logical maximum thread count. Selecting `v2` enables the native flag and migrates `[agents] max_threads` to the v2 key; selecting `v1` disables it and migrates the same value back. `default` leaves the native flag unchanged. PUT accepts `enabled`, `multiAgentMode`, and/or the compatibility-named `maxConcurrentThreadsPerSession`; contradictory mode/flag pairs are rejected before writes. Every transition is rollback-safe and resyncs the catalog. |
 | Logs & Debug | One sidebar entry (`/#logs`) with two tabs. Logs tab: request/runtime logs for local diagnosis. Debug tab (`/#logs/debug`; legacy `/#debug` deep links redirect there): provider + usage toggles, refresh/follow log viewer. `GET/PUT /api/debug`; `GET /api/debug/logs` and `GET /api/debug/usage-logs` (monotonic `after` cursor, legacy `since` accepted). CLI: `ocx debug provider|usage …` (both streams via running proxy API). |
 | Usage | `GET /api/usage` aggregate read-only summary derived from `~/.opencodex/usage.jsonl`; measured / reported / unreported / unsupported / estimated counts, daily zero-filled grid, model and provider breakdowns. Never exposes prompts. |
-| System | `POST /api/system/restart` restarts the proxy in place. `GET /api/system/memory` — service-process runtime/memory identity (pid, Bun version/revision, platform, RSS/heap/external/ArrayBuffers scalars, observed memory = max(RSS, external, ArrayBuffers), `bun:jsc` heap context, streamMode + eager-relay gate decision, watchdog snapshot sliced to the last 60 samples) plus privacy-safe `appOwnedBytes` retained-store totals/counters under static store ids. Scalar-only payload; rides the standard management auth gate and must never move to unauthenticated `/healthz`. Consumed by `ocx doctor`'s Memory/runtime section and the dashboard Memory observability card. |
+| System | `POST /api/system/restart` restarts the proxy in place. `GET /api/system/memory` — service-process runtime/memory identity (pid, Bun version/revision, optional `bunRuntimeSource` provenance, platform, RSS/heap/external/ArrayBuffers scalars, observed memory = max(RSS, external, ArrayBuffers), `bun:jsc` heap context, streamMode + eager-relay gate decision, watchdog snapshot sliced to the last 60 samples) plus privacy-safe `appOwnedBytes` retained-store totals/counters under static store ids. Scalar-only payload; rides the standard management auth gate and must never move to unauthenticated `/healthz`. Consumed by `ocx doctor`'s Memory/runtime section and the dashboard Memory observability card. |
 | Stop | `POST /api/stop` — restore native Codex, stop any installed service, and exit the proxy. |
 | Diagnostics/sync | `src/server/management/config-routes.ts` — `GET /api/diagnostics/project-config` reports project-level Codex config that bypasses managed routing; `POST /api/sync` re-runs catalog/config sync. The diagnostic reports the bypass; it does not rewrite the project file. |
 | Sidecar/shadow-call settings | `src/server/management/config-routes.ts` — `GET/PUT /api/sidecar-settings` and `GET/PUT /api/shadow-call-settings`. PUT accepts model and backend plus optional `webSearch.reasoning` and `vision.maxDescriptionsPerTurn`; the read and PUT-response payload reports model, backend, and the vision per-turn limit. Credentials live in the provider and OAuth stores instead. Both shadow-call responses also report the resolved `sourceModels` — the prefixes the runtime actually intercepts (`src/lib/shadow-call.ts`, default `gpt-5.4-mini` + `gpt-5.6-luna`), so no client hard-codes a helper slug that a Codex release can invalidate. |
@@ -107,6 +107,34 @@ identity, active selection, and routing never consult these fields. The matching
 `ocx account alias <provider> <id> <display-name|->` (`rename` is accepted as a synonym).
 
 ## Sidebar stop button
+
+## Bun runtime provenance
+
+`GET /api/system/memory` may report `bunRuntimeSource` — one of `override`, `bundled`, or
+`process` — describing how the **running service** obtained its Bun binary.
+
+The value is stamped into the launched process's environment (`OCX_BUN_RUNTIME_SOURCE`) by
+whichever launcher selected the binary: the npm Node launcher, the Windows Task Scheduler
+wrapper, the native WinSW service, launchd, systemd, the Codex autostart shim, and the Windows
+tray host. Provenance and path come from a single `durableBunRuntime()` resolution at each of
+those sites, so the marker can never describe a different binary than the one actually baked.
+
+**Trust rule: a reporting surface must never resolve provenance for itself.** Calling
+`durableBunRuntime()` at report time answers "what would this process pick right now", which is
+a different question from "what was the service started with" — and the two diverge exactly when
+the answer matters, such as a `doctor` run in a shell whose `OPENCODEX_BUN_PATH` differs from the
+installed service's. Read-back goes through `reportedBunRuntimeSource()`, which allowlists the
+three values and returns `undefined` for anything else.
+
+**Backward compatibility: absent is a real answer.** A service installed before this marker
+existed reports no provenance, the endpoint omits the field, and consumers must say the origin is
+unknown rather than infer one. `ocx doctor` relies on this to avoid its previous behavior of
+telling a user to set `OPENCODEX_BUN_PATH` when the override was already active (#848). An
+unrecognized wire value is treated as absent rather than passed through.
+
+`bunRevision` remains informational and carries no capability meaning. Provenance does not feed
+the eager-relay decision: the conservative `auto-known-bad` result for canary and otherwise
+unvalidated Bun builds is unchanged (`src/lib/bun-stream-caps.ts`).
 
 The dashboard sidebar includes a stop button that calls `POST /api/stop`. The button shows a
 confirmation prompt, then fires the request and accepts the connection drop (the proxy exits). The

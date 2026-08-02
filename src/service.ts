@@ -15,7 +15,8 @@ import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex/inject";
 import { stripGrokConfig } from "./grok/inject";
 import { isWslRuntime } from "./codex/home";
-import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
+import { BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "./lib/bun-runtime";
+import type { BunRuntimeSource } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
 import { randomUUID } from "node:crypto";
@@ -43,11 +44,15 @@ const TASK = "opencodex-proxy";
 
 export type ServiceBackend = "scheduler" | "native";
 
-function cliEntry(): { bun: string; cli: string } {
+function cliEntry(): { bun: string; bunRuntimeSource: BunRuntimeSource; cli: string } {
   // Bake the bundled Bun (npm global prefix, survives `ocx update`) rather than
   // a transient system Bun, so launchd/systemd/schtasks keep resolving even if a
   // standalone Bun is later removed. The CLI entry lives at src/cli/index.ts.
-  return { bun: durableBunPath(), cli: join(import.meta.dir, "cli", "index.ts") };
+  //
+  // Path and provenance come from ONE resolution so the marker can never describe a
+  // different binary than the one actually baked.
+  const runtime = durableBunRuntime();
+  return { bun: runtime.path, bunRuntimeSource: runtime.source, cli: join(import.meta.dir, "cli", "index.ts") };
 }
 
 function plistPath(): string {
@@ -268,13 +273,14 @@ function writeServiceApiTokenFile(): string | null {
 }
 
 export function buildPlist(): string {
-  const { bun, cli } = cliEntry();
+  const { bun, bunRuntimeSource, cli } = cliEntry();
   const log = logPath();
   const path = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
   const codexHome = process.env.CODEX_HOME?.trim();
   const opencodexHome = process.env.OPENCODEX_HOME?.trim();
   const envLines = [
     `    <key>OCX_SERVICE</key><string>1</string>`,
+    `    <key>${BUN_RUNTIME_SOURCE_ENV}</key><string>${bunRuntimeSource}</string>`,
     `    <key>PATH</key><string>${plistString(path)}</string>`,
     codexHome ? `    <key>CODEX_HOME</key><string>${plistString(codexHome)}</string>` : null,
     opencodexHome ? `    <key>OPENCODEX_HOME</key><string>${plistString(opencodexHome)}</string>` : null,
@@ -1325,8 +1331,9 @@ function taskXmlRunLevelAcceptable(principal: string): boolean {
 }
 
 export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServiceListenPort()): string {
-  const { bun, cli } = entry;
-  const bunRuntime = durableBunRuntime();
+  // Provenance rides along with the entry: a second durableBunRuntime() call here could
+  // resolve differently from the binary the caller actually baked.
+  const { bun, bunRuntimeSource, cli } = entry;
   const path = process.env.PATH ?? "";
   const lines = [
     "@echo off",
@@ -1335,6 +1342,7 @@ export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServ
     // it to UTF-8 is safe (no leak into user shells) and lets cmd parse UTF-8 remnants.
     "chcp 65001 >nul",
     windowsBatchSet("OCX_SERVICE", "1"),
+    windowsBatchSet(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource),
     windowsBatchSet("PATH", path, "pathList"),
     windowsBatchSet("CODEX_HOME", process.env.CODEX_HOME?.trim(), "path"),
     windowsBatchSet("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim(), "path"),
@@ -1348,7 +1356,7 @@ export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServ
     ":loop",
     '>>"%OCX_SERVICE_LOG%" echo [%DATE% %TIME%] opencodex service wrapper start',
     '>>"%OCX_SERVICE_LOG%" echo bun="%OCX_BUN%"',
-    `>>"%OCX_SERVICE_LOG%" echo bun_source="${bunRuntime.source}"`,
+    `>>"%OCX_SERVICE_LOG%" echo bun_source="${bunRuntimeSource}"`,
     '>>"%OCX_SERVICE_LOG%" echo cli="%OCX_CLI%"',
     '>>"%OCX_SERVICE_LOG%" echo opencodex_home="%OPENCODEX_HOME%"',
     '>>"%OCX_SERVICE_LOG%" echo codex_home="%CODEX_HOME%"',
@@ -1920,13 +1928,14 @@ function unitPath(): string {
 }
 
 export function buildUnit(): string {
-  const { bun, cli } = cliEntry();
+  const { bun, bunRuntimeSource, cli } = cliEntry();
   const log = logPath();
   const path = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
   const codexHome = systemdEnvironmentAssignment("CODEX_HOME", process.env.CODEX_HOME?.trim());
   const opencodexHome = systemdEnvironmentAssignment("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim());
   const envLines = [
     systemdEnvironmentAssignment("OCX_SERVICE", "1"),
+    systemdEnvironmentAssignment(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource),
     systemdEnvironmentAssignment("PATH", path),
     codexHome,
     opencodexHome,

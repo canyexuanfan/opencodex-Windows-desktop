@@ -19,7 +19,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { getConfigDir } from "../config";
-import { durableBunPath } from "../lib/bun-runtime";
+import { BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "../lib/bun-runtime";
+import type { BunRuntimeSource } from "../lib/bun-runtime";
 import { isProcessAlive } from "../lib/process-control";
 import { serviceApiTokenFilePath } from "../lib/service-secrets";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
@@ -120,11 +121,13 @@ export type CodexShimAutoRestoreResult =
   | { status: "ineligible" | "deferred"; message?: string }
   | { status: "restored"; message: string };
 
-function cliEntry(): { bun: string; cli: string } {
+function cliEntry(): { bun: string; bunRuntimeSource: BunRuntimeSource; cli: string } {
   // Bundled Bun path (survives `ocx update`); all three shim builders
   // (Unix / Windows cmd / Windows PowerShell) receive it via this entry.
   // This module lives in src/codex/, the CLI entry in src/cli/index.ts.
-  return { bun: durableBunPath(), cli: join(import.meta.dir, "..", "cli", "index.ts") };
+  // Path and provenance resolve together so the marker always describes this binary.
+  const runtime = durableBunRuntime();
+  return { bun: runtime.path, bunRuntimeSource: runtime.source, cli: join(import.meta.dir, "..", "cli", "index.ts") };
 }
 
 function commandNames(name: string): string[] {
@@ -366,11 +369,13 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-export function buildUnixCodexShim(realCodexPath: string, bunPath: string, cliPath: string, tokenFile = serviceApiTokenFilePath()): string {
+export function buildUnixCodexShim(realCodexPath: string, bunPath: string, cliPath: string, tokenFile = serviceApiTokenFilePath(), bunRuntimeSource: BunRuntimeSource = "bundled"): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.join("|");
   const valueOptions = CODEX_GLOBAL_OPTIONS_WITH_VALUE.join("|");
   return `#!/usr/bin/env sh
 # ${SHIM_MARKER}
+${BUN_RUNTIME_SOURCE_ENV}=${shQuote(bunRuntimeSource)}
+export ${BUN_RUNTIME_SOURCE_ENV}
 if [ -z "$OPENCODEX_API_AUTH_TOKEN" ] && [ -f ${shQuote(tokenFile)} ]; then
   OPENCODEX_API_AUTH_TOKEN="$(cat ${shQuote(tokenFile)})"
   export OPENCODEX_API_AUTH_TOKEN
@@ -431,13 +436,14 @@ function windowsBatchSet(name: string, value: string): string {
   return `set "${name}=${windowsEnvIndirectBatchValue(value, windowsBatchValue)}"`;
 }
 
-export function buildWindowsCodexShim(realCodexPath: string, bunPath: string, cliPath: string): string {
+export function buildWindowsCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource = "bundled"): string {
   const internalCommandChecks = CODEX_INTERNAL_COMMANDS.map(command => `if /I "%~1"=="${command}" goto run_codex`).join("\r\n");
   const valueOptionChecks = CODEX_GLOBAL_OPTIONS_WITH_VALUE.map(option => `if /I "%~1"=="${option}" goto skip_option_value`).join("\r\n");
   return `@echo off\r
 rem ${SHIM_MARKER}\r
 ${windowsBatchSet("OCX_REAL_CODEX", realCodexPath)}\r
 ${windowsBatchSet("OCX_BUN", bunPath)}\r
+${windowsBatchSet(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource)}\r
 ${windowsBatchSet("OCX_CLI", cliPath)}\r
 ${windowsBatchSet("OCX_API_TOKEN_FILE", serviceApiTokenFilePath())}\r
 if "%OPENCODEX_API_AUTH_TOKEN%"=="" if exist "%OCX_API_TOKEN_FILE%" set /p OPENCODEX_API_AUTH_TOKEN=<"%OCX_API_TOKEN_FILE%"\r
@@ -472,12 +478,13 @@ function psString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-export function buildWindowsPowerShellCodexShim(realCodexPath: string, bunPath: string, cliPath: string): string {
+export function buildWindowsPowerShellCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource = "bundled"): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.map(command => psString(command)).join(", ");
   const valueOptions = CODEX_GLOBAL_OPTIONS_WITH_VALUE.map(option => psString(option)).join(", ");
   const tokenFile = serviceApiTokenFilePath();
   return `#!/usr/bin/env pwsh
 # ${SHIM_MARKER}
+$env:${BUN_RUNTIME_SOURCE_ENV} = ${psString(bunRuntimeSource)}
 if (-not $env:OPENCODEX_API_AUTH_TOKEN -and (Test-Path -LiteralPath ${psString(tokenFile)})) {
   $env:OPENCODEX_API_AUTH_TOKEN = (Get-Content -Raw -LiteralPath ${psString(tokenFile)}).Trim()
 }
@@ -601,25 +608,25 @@ function gitBashPath(path: string): string {
 }
 
 function writeShim(wrapperPath: string, realCodexPath: string): void {
-  const { bun, cli } = cliEntry();
+  const { bun, bunRuntimeSource, cli } = cliEntry();
   if (process.platform === "win32") {
     const lower = wrapperPath.toLowerCase();
     if (lower.endsWith(".ps1")) {
       // UTF-8 BOM: Windows PowerShell 5.1 decodes BOM-less .ps1 files in the ANSI
       // codepage, which mangles non-ASCII paths embedded in the shim.
-      writeFileSync(wrapperPath, `\uFEFF${buildWindowsPowerShellCodexShim(realCodexPath, bun, cli)}`, "utf8");
+      writeFileSync(wrapperPath, `\uFEFF${buildWindowsPowerShellCodexShim(realCodexPath, bun, cli, bunRuntimeSource)}`, "utf8");
     } else if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
-      writeFileSync(wrapperPath, buildWindowsCodexShim(realCodexPath, bun, cli), "utf8");
+      writeFileSync(wrapperPath, buildWindowsCodexShim(realCodexPath, bun, cli, bunRuntimeSource), "utf8");
     } else {
       // Extensionless Git-Bash sh launcher: sh shim with forward-slash paths.
       writeFileSync(
         wrapperPath,
-        buildUnixCodexShim(gitBashPath(realCodexPath), gitBashPath(bun), gitBashPath(cli), gitBashPath(serviceApiTokenFilePath())),
+        buildUnixCodexShim(gitBashPath(realCodexPath), gitBashPath(bun), gitBashPath(cli), gitBashPath(serviceApiTokenFilePath()), bunRuntimeSource),
         "utf8",
       );
     }
   } else {
-    writeFileSync(wrapperPath, buildUnixCodexShim(realCodexPath, bun, cli), "utf8");
+    writeFileSync(wrapperPath, buildUnixCodexShim(realCodexPath, bun, cli, serviceApiTokenFilePath(), bunRuntimeSource), "utf8");
     chmodSync(wrapperPath, 0o755);
   }
 }
