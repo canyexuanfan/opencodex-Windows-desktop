@@ -823,7 +823,10 @@ describe("Cursor bounded blob store", () => {
     const selected = message.message.value.conversationState?.rootPromptMessagesJson ?? [];
     expect(selected.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
     expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBeGreaterThan(0);
-    const selectedBytes = cursorBlobRetainedStoreSnapshot().bytes;
+    // Payload-only counter: the snapshot's bytes include retained key strings,
+    // but maxTotalBytes is a payload cap — using snapshot bytes here would hand
+    // the repeated request unintended headroom.
+    const selectedBytes = cursorBlobMetrics().totalBytes;
     releaseCursorBlobRequestScope(prepared.blobRequestScope);
     setCursorBlobLimitsForTests({ maxTotalBytes: selectedBytes, maxEntryBytes: 1024 * 1024 });
     expect(() => prepareCursorRunRequest({
@@ -1289,6 +1292,15 @@ describe("Cursor blob ID key channel bounds", () => {
     expect(metrics.count).toBe(4096);
     // Fixed digest keys at full capacity: 4096 x 66 = 270,336 — never GiBs of hex.
     expect(metrics.keyBytes).toBe(4096 * 66);
+    // Entry 4097 must be rejected typed, leaving count and keys unchanged.
+    const extraId = new Uint8Array(65).fill(0xaa);
+    const reply = setBlobReply(extraId, new TextEncoder().encode("overflow"));
+    const kv = reply.message.value;
+    expect(kv.message.case).toBe("setBlobResult");
+    const result = kv.message.value as { error?: { message?: string } };
+    expect(result.error?.message).toBeDefined();
+    expect(cursorBlobMetrics().count).toBe(4096);
+    expect(cursorBlobMetrics().keyBytes).toBe(4096 * 66);
   });
 
   test("a zero-payload blob stays evictable through its key bytes", () => {
