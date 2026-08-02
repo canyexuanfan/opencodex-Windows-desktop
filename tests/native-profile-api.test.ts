@@ -179,6 +179,24 @@ describe("native main profile management API", () => {
     expect("cleanupRequired" in payload).toBe(false);
   });
 
+  test("finish returns a typed non-200 after server-owned stage cleanup without a cleanup warning", async () => {
+    const message = "A native-profile recovery journal is pending. Run `ocx account main recover` before adding profiles.";
+    const manager = {
+      finishStage: async () => { throw new NativeProfileError("RECOVERY_REQUIRED", message, 409); },
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/stage/finish", {
+      method: "POST",
+      body: JSON.stringify({ stageId: "11111111-1111-4111-8111-111111111111", label: "work" }),
+    });
+
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, { manager });
+
+    expect(response?.status).toBe(409);
+    const payload = await response?.json() as Record<string, unknown>;
+    expect(payload).toMatchObject({ code: "RECOVERY_REQUIRED", error: message });
+    expect("cleanupRequired" in payload).toBe(false);
+  });
+
   test("cleanup-required failures preserve the primary error and expose a true-only signal", async () => {
     const message = "The staged native login is invalid.";
     const manager = {

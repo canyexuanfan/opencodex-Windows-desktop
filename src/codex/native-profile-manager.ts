@@ -585,8 +585,12 @@ export class NativeProfileManager {
 
   async finishStage(stageId: string, labelInput: string): Promise<{ effectiveCodexHome: string; profile: NativeProfilePublic }> {
     return this.withLock(async () => {
-      this.assertNoPendingRecovery();
       this.stagePath(stageId);
+      // Establish that this stage belongs to the locked native home before
+      // claiming cleanup ownership. Freshness and every later failure are then
+      // server-authoritatively cleaned, while lock/ownership failures leave a
+      // stage that another valid operation may own untouched.
+      const ownedStagePath = this.verifiedStagePath(stageId, false);
       let target: NativeEnvelopeSnapshot | null = null;
       let current: NativeEnvelopeSnapshot | null = null;
       let key: NativeProfileKey | null = null;
@@ -595,10 +599,11 @@ export class NativeProfileManager {
       let importCommitted = false;
       let result: { effectiveCodexHome: string; profile: NativeProfilePublic } | undefined;
       try {
-        const stagePath = this.verifiedStagePath(stageId);
+        this.verifiedStagePath(stageId);
+        this.assertNoPendingRecovery();
         requireFileCredentialStore(this.context);
         const label = validateNativeProfileLabel(labelInput);
-        target = readNativeEnvelope(join(stagePath, "auth.json"));
+        target = readNativeEnvelope(join(ownedStagePath, "auth.json"));
         current = readNativeEnvelope(this.context.authPath);
         const vault = this.requireVault();
         if (vault.profiles.length >= MAX_NATIVE_PROFILES) {
@@ -662,7 +667,7 @@ export class NativeProfileManager {
       }
       let cleanupFailed = false;
       try {
-        this.deleteStageById(stageId);
+        this.deleteStage(ownedStagePath);
       } catch {
         cleanupFailed = true;
       }

@@ -102,7 +102,7 @@ describe("ocx account main", () => {
     expect(requests.at(-1)?.body).toEqual({ rollback: true, confirmedStopped: true });
   });
 
-  test("add cancels server staging after a non-200 finish response", async () => {
+  test("add sends an idempotent cancel fallback after a non-200 finish response", async () => {
     const stagingHome = join(tmpdir(), "ocx-native-profile-stage-non-200");
     const requests: string[] = [];
     const errors: string[] = [];
@@ -114,7 +114,7 @@ describe("ocx account main", () => {
         return Response.json({ stageId: "22222222-2222-4222-8222-222222222222", stagingCodexHome: stagingHome });
       }
       if (path.endsWith("/stage/finish")) {
-        return Response.json({ error: "validation failed", code: "AUTH_INVALID", cleanupRequired: true }, { status: 409 });
+        return Response.json({ error: "validation failed", code: "AUTH_INVALID" }, { status: 409 });
       }
       return Response.json({ ok: true });
     };
@@ -130,7 +130,32 @@ describe("ocx account main", () => {
       "/api/native-main-profiles/stage/cancel",
     ]);
     expect(errors).toContain("Error: validation failed");
-    expect(errors).toContain("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
+    expect(errors).not.toContain("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
+  });
+
+  test("add sends an idempotent cancel fallback when the finish response disconnects", async () => {
+    const stagingHome = join(tmpdir(), "ocx-native-profile-stage-disconnect");
+    const requests: string[] = [];
+    const fetchImpl: typeof fetch = async input => {
+      const path = new URL(String(input)).pathname;
+      requests.push(path);
+      if (path.endsWith("/stage") && !path.endsWith("/finish")) {
+        return Response.json({ stageId: "44444444-4444-4444-8444-444444444444", stagingCodexHome: stagingHome });
+      }
+      if (path.endsWith("/stage/finish")) throw new TypeError("connection closed before response");
+      return Response.json({ ok: true });
+    };
+
+    expect(await cmdAccount(["main", "add", "work"], {
+      baseUrl: "http://127.0.0.1:10100",
+      fetchImpl,
+      runCodexLoginImpl: async () => 0,
+    })).toBe(1);
+    expect(requests).toEqual([
+      "/api/native-main-profiles/stage",
+      "/api/native-main-profiles/stage/finish",
+      "/api/native-main-profiles/stage/cancel",
+    ]);
   });
 
   test("add cancels server staging when official login aborts", async () => {
