@@ -268,7 +268,7 @@ describe("native main profile transactions", () => {
     expect((await failing.list()).activeProfileId).toBe(f.sourceProfile.id);
   });
 
-  test("a failed exact restore retains the encrypted recovery journal and never claims success", async () => {
+  test("rollback verification failure retains the encrypted recovery journal and never claims success", async () => {
     const f = await enrolledFixture();
     const authPath = f.manager.context.authPath;
     let authWrites = 0;
@@ -277,8 +277,7 @@ describe("native main profile transactions", () => {
       atomicWrite: async (path, content) => {
         if (path === authPath) {
           authWrites += 1;
-          if (authWrites === 1) return atomic(path, "{}\n");
-          throw new Error("injected restore failure");
+          if (authWrites <= 2) return atomic(path, "{}\n");
         }
         return atomic(path, content);
       },
@@ -291,6 +290,40 @@ describe("native main profile transactions", () => {
     const journal = readFileSync(failing.context.journalPath, "utf8");
     expect(journal).not.toContain("opaque-refresh-source");
     expect(journal).not.toContain("opaque-refresh-target");
+  });
+
+  test("normal switch rejects a busy native Codex process before any durable write", async () => {
+    const f = await enrolledFixture();
+    const blocked = new NativeProfileManager({
+      ...f.options,
+      processProbe: async () => ({ status: "busy" as const, count: 2 }),
+    });
+    let caught: unknown;
+    try { await blocked.switch("work", true); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("CODEX_BUSY");
+    expect(readFileSync(blocked.context.authPath, "utf8")).toBe(f.source);
+    expect(existsSync(blocked.context.journalPath)).toBe(false);
+    expect((await blocked.list()).activeProfileId).toBe(f.sourceProfile.id);
+  });
+
+  test("vault-write failure after auth replacement restores exact source and removes the journal", async () => {
+    const f = await enrolledFixture();
+    let vaultWrites = 0;
+    const failing = new NativeProfileManager({
+      ...f.options,
+      atomicWrite: async (path, content) => {
+        if (path === f.manager.context.vaultPath && vaultWrites++ === 0) throw new Error("injected switch vault failure");
+        return atomic(path, content);
+      },
+    });
+    let caught: unknown;
+    try { await failing.switch("work", true); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("SWITCH_ROLLED_BACK");
+    expect(readFileSync(failing.context.authPath, "utf8")).toBe(f.source);
+    expect(existsSync(failing.context.journalPath)).toBe(false);
+    expect((await failing.list()).activeProfileId).toBe(f.sourceProfile.id);
   });
 
   test("explicit rollback recovery applies the native Codex process guard", async () => {

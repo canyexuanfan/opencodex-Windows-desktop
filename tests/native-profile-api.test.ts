@@ -25,6 +25,58 @@ describe("native main profile management API", () => {
     lease?.release();
   });
 
+  test("real drain timeout leaves an admitted HTTP response live and never enters switch", async () => {
+    const lease = tryAdmitTurn();
+    expect(lease).not.toBeNull();
+    let switched = 0;
+    const manager = { switch: async () => { switched += 1; return { ok: true }; } } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+    try {
+      const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+        manager,
+        drainTimeoutMs: 0,
+      });
+      expect(response?.status).toBe(409);
+      expect(await response?.json()).toMatchObject({ code: "MAIN_REQUESTS_ACTIVE", retryable: true });
+      expect(switched).toBe(0);
+    } finally {
+      lease?.release();
+    }
+  });
+
+  test("stale HTTP/Responses-WebSocket work settles before switch and new turns stay fenced", async () => {
+    const oldTurn = tryAdmitTurn();
+    expect(oldTurn).not.toBeNull();
+    const order: string[] = [];
+    let slept = false;
+    const manager = {
+      switch: async () => { order.push("switch"); return { ok: true }; },
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager,
+      drainTimeoutMs: 1_000,
+      sleep: async () => {
+        if (slept) return Bun.sleep(1);
+        slept = true;
+        expect(tryAdmitTurn()).toBeNull();
+        order.push("old-http-or-ws-response-finished");
+        oldTurn?.release();
+      },
+    });
+    expect(response?.status).toBe(200);
+    expect(order).toEqual(["old-http-or-ws-response-finished", "switch"]);
+    const after = tryAdmitTurn();
+    expect(after).not.toBeNull();
+    after?.release();
+  });
+
   test("length-unknown native-profile bodies use the bounded management reader", async () => {
     let registered = false;
     const manager = {

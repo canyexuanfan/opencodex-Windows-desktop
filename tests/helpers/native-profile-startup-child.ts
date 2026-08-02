@@ -20,6 +20,7 @@ const required = (name: string): string => {
 const codexHome = required("NATIVE_STARTUP_CODEX_HOME");
 const configDir = required("NATIVE_STARTUP_CONFIG_DIR");
 const keyBytes = Buffer.from(required("NATIVE_STARTUP_KEY"), "base64");
+const keyRef = process.env.NATIVE_STARTUP_KEY_REF ?? "memory:startup-test";
 const portPath = required("NATIVE_STARTUP_PORT");
 const recoveryReleasePath = required("NATIVE_STARTUP_RECOVERY_RELEASE");
 const settledPath = required("NATIVE_STARTUP_SETTLED");
@@ -27,8 +28,8 @@ const upstreamPath = required("NATIVE_STARTUP_UPSTREAM");
 const stopPath = required("NATIVE_STARTUP_STOP");
 
 class EnvKeyProvider implements NativeProfileKeyProvider {
-  async get(): Promise<NativeProfileKey> { return { keyRef: "memory:startup-test", key: Buffer.from(keyBytes) }; }
-  async create(): Promise<NativeProfileKey> { return { keyRef: "memory:startup-test", key: Buffer.from(keyBytes) }; }
+  async get(): Promise<NativeProfileKey> { return { keyRef, key: Buffer.from(keyBytes) }; }
+  async create(): Promise<NativeProfileKey> { return { keyRef, key: Buffer.from(keyBytes) }; }
 }
 
 const manager = new NativeProfileManager({

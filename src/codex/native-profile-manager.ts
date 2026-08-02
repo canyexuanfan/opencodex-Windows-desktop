@@ -56,6 +56,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 type AtomicWriter = (path: string, content: string) => Promise<void>;
 type TransitionApplier = (fromAccountId: string, toAccountId: string) => void;
+export type NativeProfileSwitchBoundary =
+  | "journal-prepared"
+  | "auth-replaced"
+  | "vault-committed"
+  | "runtime-transition-published"
+  | "journal-deleted";
 
 export interface NativeProfileManagerOptions {
   codexHome?: string;
@@ -71,6 +77,8 @@ export interface NativeProfileManagerOptions {
   lockWaitMs?: number;
   onLockAcquired?: () => void | Promise<void>;
   removeStageTree?: (path: string) => void;
+  /** Test-only crash seam; production never supplies this callback. */
+  onSwitchBoundary?: (boundary: NativeProfileSwitchBoundary) => void | Promise<void>;
 }
 
 export interface NativeProfileListResult {
@@ -104,6 +112,7 @@ export class NativeProfileManager {
   private readonly lockWaitMs: number;
   private readonly onLockAcquired: () => void | Promise<void>;
   private readonly removeStageTree: (path: string) => void;
+  private readonly onSwitchBoundary: (boundary: NativeProfileSwitchBoundary) => void | Promise<void>;
 
   constructor(options: NativeProfileManagerOptions = {}) {
     this.context = resolveNativeProfileContext(options);
@@ -118,6 +127,7 @@ export class NativeProfileManager {
     this.lockWaitMs = options.lockWaitMs ?? LOCK_WAIT_MS;
     this.onLockAcquired = options.onLockAcquired ?? (() => {});
     this.removeStageTree = options.removeStageTree ?? (path => rmSync(path, { recursive: true, force: false }));
+    this.onSwitchBoundary = options.onSwitchBoundary ?? (() => {});
   }
 
   private async ensureRoot(): Promise<void> {
@@ -563,17 +573,22 @@ export class NativeProfileManager {
         };
         await this.writeJournal(journal);
         journalPrepared = true;
+        await this.onSwitchBoundary("journal-prepared");
         await this.atomicWrite(this.context.authPath, target.text);
         const observedTarget = this.verifyWrittenEnvelope(target.digest, targetProfile.identityHash, key);
         observedTarget.raw.fill(0);
+        await this.onSwitchBoundary("auth-replaced");
         journal.phase = "auth-replaced";
         await this.writeJournal(journal);
         await this.writeVault(afterVault);
         committed = true;
+        await this.onSwitchBoundary("vault-committed");
         journal.phase = "vault-committed";
         await this.writeJournal(journal);
         this.applyTransition(source.accountId, target.accountId);
+        await this.onSwitchBoundary("runtime-transition-published");
         this.removeJournal();
+        await this.onSwitchBoundary("journal-deleted");
         return {
           ok: true,
           effectiveCodexHome: this.context.codexHome,
