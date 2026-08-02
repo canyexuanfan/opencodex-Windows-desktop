@@ -63,16 +63,49 @@ export function reportedBunRuntimeSource(
  * process is already using.
  *
  * These launchers re-exec the current runtime rather than resolving a binary, so the
- * provenance they should report is whatever launched THIS process. An inherited marker
- * is therefore still accurate and is preserved; only when there is none does the
- * executable's own origin (`process`) get recorded. Without this the marker would be
- * silently dropped on `ocx ensure`, GUI start, restart, and update-relaunch, and the
+ * provenance to report is whatever launched THIS process. Without this the marker would
+ * be silently dropped on `ocx ensure`, GUI start, restart, and update-relaunch, and the
  * service would report an unknown origin it actually knows.
+ *
+ * An inherited marker is only carried forward when it still DESCRIBES the executable
+ * about to be re-executed. Inheritance travels down a process tree, so a marker can
+ * outlive the binary it was minted for — something started under a marked process but
+ * running a different Bun would otherwise relaunch the daemon with a provenance
+ * contradicting the binary actually serving it. When the claim does not match
+ * `process.execPath`, the honest answer is this executable's own origin.
  */
 export function withProcessRuntimeProvenance(
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  return { ...env, [BUN_RUNTIME_SOURCE_ENV]: reportedBunRuntimeSource(env) ?? "process" };
+  return { ...env, [BUN_RUNTIME_SOURCE_ENV]: currentRuntimeProvenance(env) };
+}
+
+/**
+ * Provenance for `process.execPath`: the inherited claim when it is corroborated by
+ * re-resolving that source, otherwise what this executable actually is.
+ */
+function currentRuntimeProvenance(env: NodeJS.ProcessEnv): BunRuntimeSource {
+  const claimed = reportedBunRuntimeSource(env);
+  if (claimed && samePath(resolvedPathForSource(claimed, env), process.execPath)) return claimed;
+  // No trustworthy claim: report what is running, re-deriving it rather than guessing.
+  return durableBunRuntime().path === process.execPath ? durableBunRuntime().source : "process";
+}
+
+function resolvedPathForSource(source: BunRuntimeSource, env: NodeJS.ProcessEnv): string | null {
+  if (source === "process") return process.execPath;
+  if (source === "override") {
+    const value = env[BUN_OVERRIDE_ENV]?.trim();
+    return value ? resolve(value) : null;
+  }
+  return bundledBunPath();
+}
+
+/** Windows paths are case-insensitive; everything else compares exactly. */
+function samePath(left: string | null, right: string): boolean {
+  if (!left) return false;
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 }
 
 /**

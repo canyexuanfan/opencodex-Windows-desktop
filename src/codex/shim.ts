@@ -372,13 +372,17 @@ function shQuote(value: string): string {
 // Provenance is required rather than defaulted: a default would let a caller pass an
 // override binary and silently label it something else, which is precisely the
 // path/marker disagreement this feature exists to prevent.
+//
+// The marker is scoped to the `ensure` invocation in every flavor below and is never
+// exported into the shim's own environment. A shim wraps the real `codex`, so an
+// exported marker would be inherited by Codex and everything it spawns — a shell that
+// then ran a *different* Bun directly would carry a provenance describing a binary it
+// is not executing.
 export function buildUnixCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource, tokenFile = serviceApiTokenFilePath()): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.join("|");
   const valueOptions = CODEX_GLOBAL_OPTIONS_WITH_VALUE.join("|");
   return `#!/usr/bin/env sh
 # ${SHIM_MARKER}
-${BUN_RUNTIME_SOURCE_ENV}=${shQuote(bunRuntimeSource)}
-export ${BUN_RUNTIME_SOURCE_ENV}
 if [ -z "$OPENCODEX_API_AUTH_TOKEN" ] && [ -f ${shQuote(tokenFile)} ]; then
   OPENCODEX_API_AUTH_TOKEN="$(cat ${shQuote(tokenFile)})"
   export OPENCODEX_API_AUTH_TOKEN
@@ -414,7 +418,7 @@ case "$ocx_subcommand" in
     ;;
   *)
     if [ -z "$OCX_SHIM_BYPASS" ]; then
-      ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
+      ${BUN_RUNTIME_SOURCE_ENV}=${shQuote(bunRuntimeSource)} ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
     fi
     ;;
 esac
@@ -446,7 +450,6 @@ export function buildWindowsCodexShim(realCodexPath: string, bunPath: string, cl
 rem ${SHIM_MARKER}\r
 ${windowsBatchSet("OCX_REAL_CODEX", realCodexPath)}\r
 ${windowsBatchSet("OCX_BUN", bunPath)}\r
-${windowsBatchSet(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource)}\r
 ${windowsBatchSet("OCX_CLI", cliPath)}\r
 ${windowsBatchSet("OCX_API_TOKEN_FILE", serviceApiTokenFilePath())}\r
 if "%OPENCODEX_API_AUTH_TOKEN%"=="" if exist "%OCX_API_TOKEN_FILE%" set /p OPENCODEX_API_AUTH_TOKEN=<"%OCX_API_TOKEN_FILE%"\r
@@ -471,7 +474,10 @@ if "%~1"=="" goto ensure_ocx\r
 shift\r
 goto scan_codex_args\r
 :ensure_ocx\r
+setlocal\r
+${windowsBatchSet(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource)}\r
 "%OCX_BUN%" "%OCX_CLI%" ensure >nul 2>nul\r
+endlocal\r
 :run_codex\r
 "%OCX_REAL_CODEX%" %*\r
 `;
@@ -487,7 +493,6 @@ export function buildWindowsPowerShellCodexShim(realCodexPath: string, bunPath: 
   const tokenFile = serviceApiTokenFilePath();
   return `#!/usr/bin/env pwsh
 # ${SHIM_MARKER}
-$env:${BUN_RUNTIME_SOURCE_ENV} = ${psString(bunRuntimeSource)}
 if (-not $env:OPENCODEX_API_AUTH_TOKEN -and (Test-Path -LiteralPath ${psString(tokenFile)})) {
   $env:OPENCODEX_API_AUTH_TOKEN = (Get-Content -Raw -LiteralPath ${psString(tokenFile)}).Trim()
 }
@@ -507,7 +512,13 @@ foreach ($argValue in $args) {
 }
 $skipEnsure = $env:OCX_SHIM_BYPASS -or $internalCommands -contains $subcommand -or @("--help", "-h", "--version", "-V") -contains $subcommand
 if (-not $skipEnsure) {
-  & ${psString(bunPath)} ${psString(cliPath)} ensure *> $null
+  $priorRuntimeSource = $env:${BUN_RUNTIME_SOURCE_ENV}
+  $env:${BUN_RUNTIME_SOURCE_ENV} = ${psString(bunRuntimeSource)}
+  try { & ${psString(bunPath)} ${psString(cliPath)} ensure *> $null }
+  finally {
+    if ($null -eq $priorRuntimeSource) { Remove-Item Env:\\${BUN_RUNTIME_SOURCE_ENV} -ErrorAction SilentlyContinue }
+    else { $env:${BUN_RUNTIME_SOURCE_ENV} = $priorRuntimeSource }
+  }
 }
 & ${psString(realCodexPath)} @args
 exit $LASTEXITCODE

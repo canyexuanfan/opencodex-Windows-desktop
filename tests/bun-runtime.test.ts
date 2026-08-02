@@ -159,9 +159,29 @@ describe("withProcessRuntimeProvenance (execPath relaunch paths)", () => {
 
   it("preserves an inherited marker instead of relabeling the same runtime", () => {
     // Re-execing the current runtime does not change how that runtime was obtained,
-    // so an override started by the npm launcher stays `override` across a restart.
-    for (const source of ["override", "bundled", "process"] as const) {
-      expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: source })[BUN_RUNTIME_SOURCE_ENV]).toBe(source);
+    // but the claim is only carried forward when it still describes process.execPath.
+    const overrideEnv = {
+      [BUN_RUNTIME_SOURCE_ENV]: "override",
+      OPENCODEX_BUN_PATH: process.execPath,
+    };
+    expect(withProcessRuntimeProvenance(overrideEnv)[BUN_RUNTIME_SOURCE_ENV]).toBe("override");
+    expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: "process" })[BUN_RUNTIME_SOURCE_ENV]).toBe("process");
+  });
+
+  it("drops an inherited marker that no longer describes the running binary", () => {
+    // Inheritance travels down a process tree, so a marker can outlive the binary it
+    // was minted for: something launched under a marked process but running a
+    // different Bun must not relaunch the daemon claiming that other binary's origin.
+    const staleOverride = {
+      [BUN_RUNTIME_SOURCE_ENV]: "override",
+      OPENCODEX_BUN_PATH: join(tmp, "some-other-bun.exe"),
+    };
+    expect(withProcessRuntimeProvenance(staleOverride)[BUN_RUNTIME_SOURCE_ENV]).not.toBe("override");
+
+    // Same for a `bundled` claim while the bundled path is not what is executing.
+    const bundled = bundledBunPath();
+    if (bundled && bundled !== process.execPath) {
+      expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: "bundled" })[BUN_RUNTIME_SOURCE_ENV]).not.toBe("bundled");
     }
   });
 

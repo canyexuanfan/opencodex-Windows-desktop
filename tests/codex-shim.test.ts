@@ -64,14 +64,40 @@ describe("Codex autostart shim", () => {
     // The shim reaches the daemon through `ocx ensure`, which inherits this env;
     // without it a Codex-autostarted service reports no provenance at all.
     const unix = buildUnixCodexShim("/usr/local/bin/codex-real", "/usr/local/bin/bun", "/opt/opencodex/src/cli.ts", "override", "/tmp/token");
-    expect(unix).toContain("OCX_BUN_RUNTIME_SOURCE='override'");
-    expect(unix).toContain("export OCX_BUN_RUNTIME_SOURCE");
+    expect(unix).toContain("OCX_BUN_RUNTIME_SOURCE='override' '/usr/local/bin/bun' '/opt/opencodex/src/cli.ts' ensure");
 
     expect(buildWindowsCodexShim("C:\\Tools\\codex-real.exe", "C:\\Bun\\bun.exe", "C:\\ocx\\cli.ts", "override"))
       .toContain('set "OCX_BUN_RUNTIME_SOURCE=override"');
 
     expect(buildWindowsPowerShellCodexShim("C:\\Tools\\codex-real.exe", "C:\\Bun\\bun.exe", "C:\\ocx\\cli.ts", "process"))
       .toContain("$env:OCX_BUN_RUNTIME_SOURCE = 'process'");
+  });
+
+  test("the provenance marker never leaks into the real Codex process (#848 scoping)", () => {
+    // A shim wraps `codex` itself, so an exported marker would be inherited by Codex
+    // and everything it spawns. A shell beneath it running a DIFFERENT Bun directly
+    // would then carry provenance describing a binary it is not executing, and the
+    // execPath relaunch paths would preserve that contradiction into the daemon.
+    const unix = buildUnixCodexShim("/usr/local/bin/codex-real", "/usr/local/bin/bun", "/cli.ts", "override");
+    expect(unix).not.toContain("export OCX_BUN_RUNTIME_SOURCE");
+    // The only occurrence is the one-shot assignment prefixed onto `ensure`.
+    expect((unix.match(/OCX_BUN_RUNTIME_SOURCE/g) ?? []).length).toBe(1);
+    expect(unix.indexOf("OCX_BUN_RUNTIME_SOURCE")).toBeGreaterThan(unix.indexOf("ocx_subcommand"));
+
+    // cmd.exe: set inside a setlocal/endlocal pair around `ensure` only.
+    const cmd = buildWindowsCodexShim("C:\\codex-real.exe", "C:\\bun.exe", "C:\\cli.ts", "override");
+    const ensureBlock = cmd.slice(cmd.indexOf(":ensure_ocx"), cmd.indexOf(":run_codex"));
+    expect(ensureBlock).toContain("setlocal");
+    expect(ensureBlock).toContain('set "OCX_BUN_RUNTIME_SOURCE=override"');
+    expect(ensureBlock).toContain("endlocal");
+    expect((cmd.match(/OCX_BUN_RUNTIME_SOURCE/g) ?? []).length).toBe(1);
+
+    // PowerShell: assigned around the ensure call and restored/removed afterwards.
+    const ps = buildWindowsPowerShellCodexShim("C:\\codex-real.ps1", "C:\\bun.exe", "C:\\cli.ts", "override");
+    expect(ps).toContain("$priorRuntimeSource = $env:OCX_BUN_RUNTIME_SOURCE");
+    expect(ps).toContain("Remove-Item Env:\\OCX_BUN_RUNTIME_SOURCE");
+    expect(ps).toContain("$env:OCX_BUN_RUNTIME_SOURCE = $priorRuntimeSource");
+    expect(ps.indexOf("OCX_BUN_RUNTIME_SOURCE")).toBeGreaterThan(ps.indexOf("$skipEnsure"));
   });
 
   test("builds a Windows shim that starts ocx before running Codex", () => {
