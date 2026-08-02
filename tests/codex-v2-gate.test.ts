@@ -962,6 +962,12 @@ describe("cli surface", () => {
       existsSync: () => false,
       execFileSync,
     })).toEqual({ file: "codex", args: ["features", "enable", "multi_agent_v2"], options: {} });
+    expect(codexFeaturesInvocation("enable", "default_mode_request_user_input", "darwin", {
+      env: { PATH: "" },
+      configDir: mkdtempSync(join(tmpdir(), "ocx-v2-inv-posix-")),
+      existsSync: () => false,
+      execFileSync,
+    })).toEqual({ file: "codex", args: ["features", "enable", "default_mode_request_user_input"], options: {} });
     // Explicit CODEX_CLI_PATH pointing at a .cmd (npm-only Windows Codex install).
     const inv = codexFeaturesInvocation("disable", "multi_agent_v2", "win32", {
       env: { CODEX_CLI_PATH: "C:\\npm\\codex.cmd", ComSpec: "C:\\WINDOWS\\system32\\cmd.exe", PATH: "" },

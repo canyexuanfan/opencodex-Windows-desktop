@@ -22,6 +22,9 @@ export default function DefaultModeRequestUserInputSetting({ apiBase }: { apiBas
   const enabledRef = useRef(false);
 
   const load = useCallback(async () => {
+    // A poll landing between the optimistic flip and the PUT response must not
+    // revert the UI to the server's pre-save value.
+    if (savingRef.current) return;
     try {
       const res = await fetch(`${apiBase}${FEATURE_ENDPOINT}`);
       if (!res.ok) throw new Error("load");

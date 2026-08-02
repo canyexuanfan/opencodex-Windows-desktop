@@ -54,6 +54,21 @@ export function codexFeaturesInvocation(
   return commandInvocation(command, ["features", action, feature], platform, deps);
 }
 
+/**
+ * Run `codex features <action> <feature>` synchronously - the management API
+ * fallback when no deps toggle is injected. Shares the invocation builder and
+ * the bounded timeout/stdio options so every production toggle path behaves
+ * identically.
+ */
+export function runCodexFeaturesCommand(
+  action: "enable" | "disable",
+  feature: string = "multi_agent_v2",
+): void {
+  const inv = codexFeaturesInvocation(action, feature);
+  execFileSync(inv.file, inv.args,
+    { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true, ...inv.options });
+}
+
 function runCodexFeatures(action: "enable" | "disable", deps: V2CliDeps): void {
   const exec = deps.execFile ?? ((file: string, args: string[], options?: SpawnInvocation["options"]) => {
     execFileSync(file, args, { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true, ...options });

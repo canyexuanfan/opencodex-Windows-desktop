@@ -229,16 +229,11 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     const warnings: string[] = [];
     const requestedFlag = wantsFlag ? body.enabled as boolean : modeFlag;
     if (requestedFlag !== undefined || wantsThreads) {
-      const targetFlag = requestedFlag ?? isMultiAgentV2Enabled();
-      let toggle = deps.toggleCodexMultiAgentV2;
-      if (!toggle) {
-        const { execFileSync } = await import("node:child_process");
-        const { codexFeaturesInvocation } = await import("../../cli/v2");
-        toggle = (enabled: boolean) => {
-          const inv = codexFeaturesInvocation(enabled ? "enable" : "disable");
-          execFileSync(inv.file, inv.args,
-            { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true, ...inv.options });
-        };
+    const targetFlag = requestedFlag ?? isMultiAgentV2Enabled();
+    let toggle = deps.toggleCodexMultiAgentV2;
+    if (!toggle) {
+      const { runCodexFeaturesCommand } = await import("../../cli/v2");
+      toggle = (enabled: boolean) => runCodexFeaturesCommand(enabled ? "enable" : "disable");
       }
       const result = transitionMultiAgentV2(targetFlag, toggle, {
         ...(wantsThreads ? { threadLimit: body.maxConcurrentThreadsPerSession as number } : {}),
@@ -317,13 +312,8 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     const before = isDefaultModeRequestUserInputEnabled();
     let toggle = deps.toggleDefaultModeRequestUserInput;
     if (!toggle) {
-      const { execFileSync } = await import("node:child_process");
-      const { codexFeaturesInvocation } = await import("../../cli/v2");
-      toggle = (enabled: boolean) => {
-        const inv = codexFeaturesInvocation(enabled ? "enable" : "disable", DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY);
-        execFileSync(inv.file, inv.args,
-          { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true, ...inv.options });
-      };
+      const { runCodexFeaturesCommand } = await import("../../cli/v2");
+      toggle = (enabled: boolean) => runCodexFeaturesCommand(enabled ? "enable" : "disable", DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY);
     }
     let toggleError: string | null = null;
     try {
