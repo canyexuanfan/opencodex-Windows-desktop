@@ -190,15 +190,17 @@ export function consumeConnectFrames(
     planned.push(inspected);
     offset += inspected.readBytes;
   }
-  // Zero-copy handoff: payloads are VIEWS into the caller's backlog buffer, not
-  // slices. Safe because the backlog contract is append-only at its end and
-  // compaction/growth replace the buffer outright — a consumed region is never
-  // mutated in place. The caller transfers the already-charged payload bytes
-  // to the frame lifecycle instead of reserving a second copy (which is what
-  // rejected an exact 16 MiB payload against the 32 MiB transport cap).
+  // Zero-copy handoff for large payloads: VIEWS into the caller's backlog
+  // buffer (safe: append-only at its end, compaction/growth replace the
+  // buffer, a consumed region is never mutated in place). Small payloads are
+  // COPIED instead — a small view would pin the whole backlog buffer (up to
+  // 32 MiB) alive while the frame waits in the work queue.
+  const COPY_PIN_THRESHOLD_BYTES = 64 * 1024;
   const frames = planned.map(({ flags, length, payloadStart }) => ({
     flags,
-    payload: input.subarray(payloadStart, payloadStart + length),
+    payload: length <= COPY_PIN_THRESHOLD_BYTES
+      ? input.slice(payloadStart, payloadStart + length)
+      : input.subarray(payloadStart, payloadStart + length),
     compressed: isConnectFrameCompressed(flags),
     endStream: isConnectFrameEndStream(flags),
   }));

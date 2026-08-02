@@ -118,8 +118,13 @@ export function resetCanonicalScanUnitsForTests(): void {
   canonicalScanUnitsForTests = 0;
 }
 
-function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void {
+const MAX_CANONICAL_DEPTH = 128;
+
+function writeCanonicalJson(value: unknown, sink: (chunk: string) => void, depth = 0): void {
   canonicalScanUnitsForTests += 1;
+  // Depth overflow is the same class as byte overflow: skip replay for this
+  // call instead of exhausting the stack on a pathological argument shape.
+  if (depth > MAX_CANONICAL_DEPTH) throw CANONICAL_OVERFLOW;
   if (typeof value === "string") {
     writeJsonStringEscaped(value, sink);
     return;
@@ -134,7 +139,7 @@ function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void
       if (index > 0) sink(",");
       // Array.prototype.map parity: holes produce NOTHING between the commas
       // (old output `[1,,3]`), while an explicit undefined element is "null".
-      if (index in value) writeCanonicalJson(value[index], sink);
+      if (index in value) writeCanonicalJson(value[index], sink, depth + 1);
     }
     sink("]");
     return;
@@ -147,7 +152,7 @@ function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void
     if (index > 0) sink(",");
     writeJsonStringEscaped(k, sink);
     sink(":");
-    writeCanonicalJson((value as Record<string, unknown>)[k], sink);
+    writeCanonicalJson((value as Record<string, unknown>)[k], sink, depth + 1);
   });
   sink("}");
 }

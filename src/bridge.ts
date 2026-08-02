@@ -16,6 +16,13 @@ function uuid(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
+/** Test-only: bound the abandoned-owned-budget watchdog delay (null restores). */
+let ownedBudgetAbandonedMs = 10 * 60 * 1000;
+const OWNED_BUDGET_ABANDONED_DEFAULT_MS = ownedBudgetAbandonedMs;
+export function setOwnedBudgetAbandonedMsForTests(ms: number | null): void {
+  ownedBudgetAbandonedMs = ms ?? OWNED_BUDGET_ABANDONED_DEFAULT_MS;
+}
+
 function sseEvent(name: string, data: Record<string, unknown>): string {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 }
@@ -217,6 +224,17 @@ export function bridgeToResponsesSSE(
   // Idempotent: safe to call at every stream-death path; disposal must come
   // AFTER the final charges (emitDone), never inside reportTerminal.
   const disposeOwnedBudget = () => { if (ownsBudget) budget.dispose(); };
+  // A dropped stream (never read, never cancelled) reaches no terminal path,
+  // so the owned budget would sit in liveBudgets for the process lifetime.
+  // One unref'd watchdog per owned budget bounds that to a timeout and clears
+  // itself on any settle (the delay is test-overridable).
+  const ownedWatchdog = ownsBudget
+    ? setTimeout(() => disposeOwnedBudget(), ownedBudgetAbandonedMs)
+    : undefined;
+  ownedWatchdog?.unref?.();
+  const clearOwnedWatchdog = () => {
+    if (ownedWatchdog !== undefined) clearTimeout(ownedWatchdog);
+  };
   const bytesOf = (value: string): number => Buffer.byteLength(value);
   const appendString = (
     previous: string,
@@ -264,6 +282,7 @@ export function bridgeToResponsesSSE(
     if (terminalReported || clientCancelled || closed) return;
     terminalReported = true;
     try { options?.onTerminal?.(status); } catch { /* terminal metrics must not break the stream */ }
+    clearOwnedWatchdog();
   };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
   // eventsource_stream; ANY received event re-arms it, while an unknown type is ignored
@@ -1226,6 +1245,7 @@ export function bridgeToResponsesSSE(
       // cancelled turn does not leak the upstream stream or keep draining tokens (RC2).
         clientCancelled = true;
         closed = true;
+        clearOwnedWatchdog();
         if (beat !== undefined) clearBeatInterval(beat);
         cancelUpstreamOnce();
         disposeOwnedBudget();

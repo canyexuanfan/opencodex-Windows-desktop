@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
+import { bridgeToResponsesSSE, buildResponseJSON, setOwnedBudgetAbandonedMsForTests } from "../src/bridge";
 import {
   resetTranslatorAggregateForTests,
   translatorAggregateCurrentBytesForTests,
@@ -1094,5 +1094,18 @@ describe("bridgeToResponsesSSE owned default budget lifecycle", () => {
     reader.releaseLock();
     expect(translatorLiveBudgetCountForTests()).toBe(0);
     expect(translatorAggregateCurrentBytesForTests()).toBe(0);
+  });
+
+  test("an abandoned stream's owned budget is disposed by the watchdog", async () => {
+    resetTranslatorAggregateForTests();
+    setOwnedBudgetAbandonedMsForTests(10);
+    try {
+      const before = translatorLiveBudgetCountForTests();
+      bridgeToResponsesSSE(replay([{ type: "text_delta", text: "never read" }]), "mock/test-model");
+      await new Promise(resolve => setTimeout(resolve, 40));
+      expect(translatorLiveBudgetCountForTests()).toBe(before);
+    } finally {
+      setOwnedBudgetAbandonedMsForTests(null);
+    }
   });
 });
