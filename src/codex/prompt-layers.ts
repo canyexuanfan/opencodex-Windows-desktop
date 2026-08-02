@@ -32,6 +32,16 @@ import { createHash } from "node:crypto";
 import { expandUserPath } from "../config";
 import { CODEX_CONFIG_PATH } from "./paths";
 import { OCX_SECTION_MARKER } from "./injected-marker";
+import {
+  durableWrite,
+  durableDelete,
+  encodeJournal,
+  ensureDir,
+  hashBytes,
+  recoverIfNeeded as recoverJournal,
+  type JournalRecord,
+} from "./prompt-journal";
+import { release, stillHeld, tryAcquire } from "./prompt-lock";
 
 // ---------------------------------------------------------------------------
 // Inventory — ONE definition, consumed by the route and the GUI alike.
@@ -137,6 +147,14 @@ export function activeConfigPath(opts?: Paths): string {
 
 export function activeStorePath(opts?: Paths): string {
   return opts?.storePath ?? join(activeCodexHome(), "opencodex-prompt.json");
+}
+
+function journalPathFor(storePath: string): string {
+  return `${storePath.replace(/\.json$/, "")}.journal`;
+}
+
+function lockPathFor(storePath: string): string {
+  return `${storePath.replace(/\.json$/, "")}.lock`;
 }
 
 // ---------------------------------------------------------------------------
@@ -479,4 +497,284 @@ export function readPromptLayers(opts?: Paths): PromptLayerSnapshot {
     modelInstructionsFile: readModelInstructionsFile(configBytes),
     revision: computeRevision(configBytes, storeBytes),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+export type WriteError =
+  | "config_unreadable"
+  | "stale_revision"
+  | "developer_instructions_not_owned"
+  | "unknown_layer"
+  | "store_unreadable"
+  | "invalid_characters"
+  | "write_superseded"
+  | "recovery_required"
+  | "locked";
+
+export type WriteResult =
+  | { ok: true; changed: boolean; snapshot: PromptLayerSnapshot }
+  | { ok: false; error: WriteError; detail?: string };
+
+/** Line editing, not re-serialization: the user's comments and layout survive. */
+function dominantEol(content: string): "\r\n" | "\n" {
+  const crlf = (content.match(/\r\n/g) ?? []).length;
+  if (crlf === 0) return "\n";
+  const bareLf = (content.match(/\n/g) ?? []).length - crlf;
+  return crlf >= bareLf ? "\r\n" : "\n";
+}
+
+function splitLines(content: string): string[] {
+  return content.replace(/\r\n/g, "\n").split("\n");
+}
+
+function joinLines(lines: string[], eol: "\r\n" | "\n"): string {
+  const text = lines.join("\n");
+  return eol === "\n" ? text : text.replace(/\n/g, "\r\n");
+}
+
+function firstTableIndex(lines: string[]): number {
+  const idx = lines.findIndex(l => TABLE_HEADER.test(l));
+  return idx === -1 ? lines.length : idx;
+}
+
+/** Set a root-scope boolean, inserting above the first table when absent. */
+function setRootBool(content: string, key: string, value: boolean): string {
+  const eol = dominantEol(content);
+  const lines = splitLines(content);
+  const limit = firstTableIndex(lines);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^(\\s*${escaped}\\s*=\\s*)(?:true|false)(\\s*(?:#.*)?)$`);
+  for (let i = 0; i < limit; i += 1) {
+    const m = pattern.exec(lines[i]!);
+    if (m) {
+      lines[i] = `${m[1]}${value}${m[2]}`;
+      return joinLines(lines, eol);
+    }
+  }
+  lines.splice(limit, 0, `${key} = ${value}`);
+  return joinLines(lines, eol);
+}
+
+/** Set a boolean inside `[table]`, appending the table when absent. */
+function setTableBool(content: string, table: string, key: string, value: boolean): string {
+  const eol = dominantEol(content);
+  const lines = splitLines(content);
+  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const start = lines.findIndex(l => new RegExp(`^\\s*\\[${escaped}\\]\\s*(?:#.*)?$`).test(l));
+  if (start === -1) {
+    const tail = lines.length > 0 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+    lines.splice(tail, 0, `[${table}]`, `${key} = ${value}`);
+    return joinLines(lines, eol);
+  }
+  const keyEscaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^(\\s*${keyEscaped}\\s*=\\s*)(?:true|false)(\\s*(?:#.*)?)$`);
+  let end = start + 1;
+  while (end < lines.length && !TABLE_HEADER.test(lines[end]!)) end += 1;
+  for (let i = start + 1; i < end; i += 1) {
+    const m = pattern.exec(lines[i]!);
+    if (m) {
+      lines[i] = `${m[1]}${value}${m[2]}`;
+      return joinLines(lines, eol);
+    }
+  }
+  lines.splice(end, 0, `${key} = ${value}`);
+  return joinLines(lines, eol);
+}
+
+/**
+ * Replace, insert, or remove the generated two-line block. Canonical form is
+ * marker + assignment at the top of the document; replacement is "find the
+ * marker, replace the next line" rather than a span search.
+ */
+function setProjection(content: string | null, projection: string | null): string {
+  const base = content ?? "";
+  const eol = dominantEol(base);
+  const lines = splitLines(base);
+  const limit = firstTableIndex(lines);
+
+  let markerAt = -1;
+  for (let i = 0; i < limit; i += 1) {
+    if (i > 0 && lines[i - 1]!.includes(OCX_SECTION_MARKER) && ANY_DEV_INSTRUCTIONS.test(lines[i]!)) {
+      markerAt = i - 1;
+      break;
+    }
+  }
+
+  if (markerAt !== -1) {
+    if (projection === null) lines.splice(markerAt, 2);
+    else lines[markerAt + 1] = `${DEV_INSTRUCTIONS_KEY} = ${encodeBasicString(projection)}`;
+    return joinLines(lines, eol);
+  }
+
+  if (projection === null) return joinLines(lines, eol);
+  lines.splice(0, 0, OCX_SECTION_MARKER, `${DEV_INSTRUCTIONS_KEY} = ${encodeBasicString(projection)}`);
+  return joinLines(lines, eol);
+}
+
+function serializeStore(layers: readonly CustomLayer[]): string {
+  return `${JSON.stringify({ layers }, null, 2)}\n`;
+}
+
+interface Mutation {
+  nextConfig: string | null;
+  nextStore: string | null;
+}
+
+/**
+ * The seven-step transaction. Every filesystem mutation in this module goes
+ * through here so the journal, the lock, and the per-target byte checks cannot
+ * be bypassed by a future caller.
+ */
+function commit(
+  opts: Paths | undefined,
+  revision: string,
+  build: (snapshot: PromptLayerSnapshot, configBytes: string | null, storeBytes: string | null)
+    => Mutation | { error: WriteError; detail?: string },
+): WriteResult {
+  const configPath = activeConfigPath(opts);
+  const storePath = activeStorePath(opts);
+  const journalPath = journalPathFor(storePath);
+  const lockPath = lockPathFor(storePath);
+
+  ensureDir(configPath);
+  ensureDir(storePath);
+
+  const acquired = tryAcquire(lockPath);
+  if (!acquired.ok) return { ok: false, error: "locked" };
+  const handle = acquired.handle;
+
+  try {
+    // 1. recovery first: a journal on disk means an earlier attempt never
+    //    committed, and we must not stack a second transaction on top of it.
+    const recovered = recoverJournal(journalPath);
+    if (!recovered.ok) return { ok: false, error: "recovery_required", detail: recovered.detail };
+
+    // 2. re-read and compare against the caller's edit base.
+    const configBytes = readFileOrNull(configPath);
+    const storeBytes = readFileOrNull(storePath);
+    if (existsSync(configPath) && configBytes === null) {
+      return { ok: false, error: "config_unreadable" };
+    }
+    if (computeRevision(configBytes, storeBytes) !== revision) {
+      return { ok: false, error: "stale_revision" };
+    }
+
+    const snapshot = readPromptLayers({ configPath, storePath });
+    const built = build(snapshot, configBytes, storeBytes);
+    if ("error" in built) return { ok: false, error: built.error, detail: built.detail };
+
+    const { nextConfig, nextStore } = built;
+    const configChanged = nextConfig !== configBytes;
+    const storeChanged = nextStore !== storeBytes;
+    if (!configChanged && !storeChanged) {
+      return { ok: true, changed: false, snapshot };
+    }
+
+    // 3. journal the intent. Its existence is NOT a commit.
+    const record: JournalRecord = {
+      configPath,
+      storePath,
+      preConfig: hashBytes(configBytes),
+      postConfig: hashBytes(nextConfig),
+      preStore: hashBytes(storeBytes),
+      postStore: hashBytes(nextStore),
+      preConfigBytes: configBytes,
+      postConfigBytes: nextConfig,
+      preStoreBytes: storeBytes,
+      postStoreBytes: nextStore,
+    };
+    durableWrite(journalPath, encodeJournal(record));
+
+    // 4/5. each target re-verifies ITS OWN bytes immediately before its rename,
+    //      so a third party writing between step 2 and here is not overwritten.
+    if (configChanged) {
+      if (hashBytes(readFileOrNull(configPath)) !== record.preConfig) {
+        return rollback(record, journalPath, "stale_revision");
+      }
+      if (nextConfig === null) durableDelete(configPath);
+      else durableWrite(configPath, nextConfig);
+    }
+    if (storeChanged) {
+      if (hashBytes(readFileOrNull(storePath)) !== record.preStore) {
+        return rollback(record, journalPath, "stale_revision");
+      }
+      if (nextStore === null) durableDelete(storePath);
+      else durableWrite(storePath, nextStore);
+    }
+
+    // 6. verify COMPLETE bytes, not just our two lines: another writer could
+    //    change an unrelated key and a narrow check would report success.
+    const finalConfig = hashBytes(readFileOrNull(configPath));
+    const finalStore = hashBytes(readFileOrNull(storePath));
+    if (finalConfig !== record.postConfig || finalStore !== record.postStore) {
+      return { ok: false, error: "write_superseded" };
+    }
+    if (!stillHeld(handle)) return { ok: false, error: "write_superseded" };
+
+    durableDelete(journalPath);   // this deletion is the commit
+    return { ok: true, changed: true, snapshot: readPromptLayers({ configPath, storePath }) };
+  } finally {
+    release(handle);
+  }
+}
+
+/** Undo whatever landed, then drop the journal. Never touches an unknown file. */
+function rollback(record: JournalRecord, journalPath: string, error: WriteError): WriteResult {
+  const configNow = hashBytes(readFileOrNull(record.configPath));
+  const storeNow = hashBytes(readFileOrNull(record.storePath));
+  if (configNow !== record.preConfig && configNow !== record.postConfig) {
+    return { ok: false, error: "recovery_required", detail: record.configPath };
+  }
+  if (storeNow !== record.preStore && storeNow !== record.postStore) {
+    return { ok: false, error: "recovery_required", detail: record.storePath };
+  }
+  if (configNow === record.postConfig) {
+    if (record.preConfigBytes === null) durableDelete(record.configPath);
+    else durableWrite(record.configPath, record.preConfigBytes);
+  }
+  if (storeNow === record.postStore) {
+    if (record.preStoreBytes === null) durableDelete(record.storePath);
+    else durableWrite(record.storePath, record.preStoreBytes);
+  }
+  durableDelete(journalPath);
+  return { ok: false, error };
+}
+
+/** Flip one of the five prompt toggles. */
+export function setToggle(id: string, enabled: boolean, revision: string, opts?: Paths): WriteResult {
+  if (!isToggleId(id)) return { ok: false, error: "unknown_layer" };
+  const spec = TOGGLE_KEYS[id];
+  return commit(opts, revision, (_snapshot, configBytes, storeBytes) => ({
+    nextConfig: spec.table
+      ? setTableBool(configBytes ?? "", spec.table, spec.key, enabled)
+      : setRootBool(configBytes ?? "", spec.key, enabled),
+    nextStore: storeBytes,
+  }));
+}
+
+/** Replace the whole custom-layer list; order is composition order. */
+export function writeCustomLayers(layers: readonly CustomLayer[], revision: string, opts?: Paths): WriteResult {
+  for (const layer of layers) {
+    const normalized = normalizeBody(layer.body);
+    const invalid = findInvalidCharacter(normalized);
+    if (invalid !== null) {
+      return { ok: false, error: "invalid_characters", detail: `layer ${layer.id} at code point ${invalid.position}` };
+    }
+  }
+  const normalizedLayers = layers.map(l => ({ ...l, body: normalizeBody(l.body) }));
+  return commit(opts, revision, (snapshot, configBytes, _storeBytes) => {
+    // Only a marker-owned key may be rewritten. Absent is fine — we create it.
+    const ownership = inspectOwnership(configBytes);
+    if (ownership.state === "external" || ownership.state === "owned-malformed") {
+      return { error: "developer_instructions_not_owned" };
+    }
+    const projection = composeProjection(normalizedLayers);
+    return {
+      nextConfig: setProjection(configBytes, projection.length > 0 ? projection : null),
+      nextStore: serializeStore(normalizedLayers),
+    };
+  });
 }
