@@ -1165,6 +1165,7 @@ export const en = {
   "integrations.error.conflict": "The config changed after opencodex wrote it. Nothing was removed.",
   "integrations.error.unsafe": "The config cannot be changed safely.",
   "integrations.error.generic": "The integration change failed. Your previous state was kept.",
+  "integrations.error.nonLoopback": "{client} can only reach a proxy on localhost, so opencodex will not write a config that would be rejected. Configure it by hand for a remote bind.",
   "integrations.status.installed": "Installed",
   "integrations.status.notInstalled": "Not installed",
   "integrations.status.appliedAt": "Applied",

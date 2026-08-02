@@ -747,6 +747,7 @@ export const ko: Record<TKey, string> = {
   "integrations.error.conflict": "opencodex가 쓴 뒤 설정이 변경되었습니다. 아무 내용도 제거하지 않았습니다.",
   "integrations.error.unsafe": "설정을 안전하게 변경할 수 없습니다.",
   "integrations.error.generic": "연동 변경에 실패했습니다. 이전 상태는 유지되었습니다.",
+  "integrations.error.nonLoopback": "{client}은(는) localhost 프록시에만 연결할 수 있어, 거부될 설정을 opencodex가 대신 쓰지 않습니다. 원격 바인드는 직접 설정하세요.",
   "integrations.status.installed": "설치 감지됨",
   "integrations.status.notInstalled": "설치되지 않음",
   "integrations.status.appliedAt": "적용",

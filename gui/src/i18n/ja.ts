@@ -1115,6 +1115,7 @@ export const ja: Record<TKey, string> = {
   "integrations.error.conflict": "opencodex の書き込み後に設定が変更されました。何も削除していません。",
   "integrations.error.unsafe": "設定を安全に変更できません。",
   "integrations.error.generic": "連携の変更に失敗しました。以前の状態は保持されています。",
+  "integrations.error.nonLoopback": "{client} は localhost のプロキシにしか接続できないため、opencodex は拒否される設定を書き込みません。リモートバインドは手動で設定してください。",
   "integrations.status.installed": "インストール済み",
   "integrations.status.notInstalled": "未インストール",
   "integrations.status.appliedAt": "適用",

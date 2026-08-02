@@ -15,7 +15,7 @@ import { isLoopbackHostname } from "../codex/inject";
 import type { OcxConfig } from "../types";
 import { PARSE_FAILED, defaultIntegrationIO, loadTarget, parseConfig, type IntegrationIO } from "./config-io";
 import { fingerprint, canonicalContribution, fragmentPathsOf, type OwnershipRecord } from "./ownership";
-import { mergeContribution, removeFragments } from "./merge";
+import { createdContainerPaths, mergeContribution, removeFragments } from "./merge";
 import { INTEGRATION_CLIENTS, isLoopbackOnly, type IntegrationClientId } from "./registry";
 import { classifyIntegration, exportContextOf } from "./state";
 import type { IntegrationState } from "./state";
@@ -237,6 +237,9 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   const base = classified.state === "stale" && record
     ? removeFragments(parsed, record.fragmentPaths).doc
     : parsed;
+  // Computed against the document as it stands BEFORE the merge: afterwards
+  // every container exists and "did we create this?" is unanswerable.
+  const created = createdContainerPaths(base, contribution);
   const text = serializeDocument(mergeContribution(base, contribution), exportSpec.format);
 
   // Compare-before-commit: someone may have written between classify and now.
@@ -259,7 +262,8 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
     record: {
       clientId, configPath, fileFingerprint: fingerprint(text),
       blockFingerprint: fingerprint(canonicalContribution(contribution)),
-      fragmentPaths: fragmentPathsOf(contribution), appliedAt: at, opId,
+      fragmentPaths: fragmentPathsOf(contribution), createdContainers: created,
+      appliedAt: at, opId,
     },
     entry,
     snapshotPath: snapshotAbsPath(store, entry),
@@ -283,7 +287,11 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
 
   // current | stale only: the file fingerprint still matches our record, so the
   // recorded paths are exactly what we put there.
-  const { doc, removed } = removeFragments(parsed, record!.fragmentPaths);
+  const { doc, removed } = removeFragments(
+    parsed,
+    record!.fragmentPaths,
+    new Set(record!.createdContainers ?? []),
+  );
   if (!removed) {
     return { ok: true, changed: false, state: "absent", clientId, message: "nothing to remove" };
   }

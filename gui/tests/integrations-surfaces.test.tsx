@@ -508,3 +508,53 @@ test("a card cannot toggle a client whose config is in conflict", async () => {
   const sw = buttons().find(button => button.className.includes("switch"));
   expect(sw?.disabled).toBe(true);
 });
+
+test("a loopback-only refusal is localized, not the server's English message", async () => {
+  /*
+   * Pi, Kimi and Gajae have nowhere to put the admission header a remote bind
+   * needs, so applying one against a non-loopback bind refuses. The writer's
+   * `message` is English prose written for a server log, and every other
+   * refusal deliberately passes it through — it names the user's own file.
+   * This one carries no per-file detail, so a Korean or Japanese user was
+   * reading English for a fixed policy explanation.
+   */
+  const { describeRefusal } = await import("../src/pages/integrations/refusal-copy");
+  const { IntegrationApiError } = await import("../src/pages/integrations/integration-api");
+  const { DICTS } = await import("../src/i18n/shared");
+
+  const serverEnglish = "kimi has nowhere to put the admission header a non-loopback bind requires";
+  const refusal = new IntegrationApiError(500, {
+    error: "integration mutation failed",
+    code: "integration_mutation_failed",
+    clientId: "kimi",
+    state: "absent",
+    reason: "non_loopback",
+    message: serverEnglish,
+  });
+
+  for (const locale of ["ko", "ja", "de", "zh", "ru"] as const) {
+    const dict = DICTS[locale];
+    const t = ((key: string, vars?: Record<string, string>) => {
+      let text = (dict as Record<string, string>)[key] ?? key;
+      for (const [name, value] of Object.entries(vars ?? {})) {
+        text = text.replaceAll(`{${name}}`, value);
+      }
+      return text;
+    }) as Parameters<typeof describeRefusal>[0];
+
+    const shown = describeRefusal(t, refusal);
+    // The localized sentence replaces the English one rather than sitting
+    // beside it — the formatter's `message ||` short-circuit meant a mapped
+    // key alone would never have evaluated.
+    expect(shown).not.toContain(serverEnglish);
+    expect(shown).toBe((dict as Record<string, string>)["integrations.error.nonLoopback"]!.replaceAll("{client}", "kimi"));
+  }
+
+  // English still reads naturally, and still names the client.
+  const english = describeRefusal(((key: string, vars?: Record<string, string>) => {
+    let text = (DICTS.en as Record<string, string>)[key] ?? key;
+    for (const [name, value] of Object.entries(vars ?? {})) text = text.replaceAll(`{${name}}`, value);
+    return text;
+  }) as Parameters<typeof describeRefusal>[0], refusal);
+  expect(english).toContain("kimi");
+});
