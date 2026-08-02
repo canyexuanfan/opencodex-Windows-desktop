@@ -39,21 +39,6 @@ them; `merge.ts` does NOT redeclare `parseConfig`. The bodies below are
 reproduced here only as the reference WP3 codes against.
 
 ```ts
-/** Read + classify the target, collapsing the three failure shapes correctly. */
-function loadTarget(io: IntegrationIO, configPath: string):
-  | { ok: true; before: string | null }
-  | { ok: false; why: "not-regular-file" | "read-failed" } {
-  const kind = io.statKind(configPath);
-  if (kind === "missing") return { ok: true, before: null };
-  if (kind !== "file") return { ok: false, why: "not-regular-file" };
-  const read = io.readText(configPath);
-  if (read.kind === "text") return { ok: true, before: read.text };
-  // stat said "file" but the read failed: a real file we cannot see. Never
-  // treat this as absence — that is how an unreadable config gets clobbered.
-  if (read.kind === "failed") return { ok: false, why: "read-failed" };
-  return { ok: true, before: null };   // raced deletion between stat and read
-}
-
 /**
  * Commit the client file, then the record, then the journal row — restoring
  * the file and dropping the record if either bookkeeping step fails.
@@ -202,6 +187,7 @@ export { serializeDocument, renderToml, renderYaml };
 
 ```ts
 export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
+  retryPendingPrunes();   // before any write; logged no-op on failure
   const io = input.io ?? defaultIntegrationIO();
   const clientId = input.clientId;
   const spec = INTEGRATION_CLIENTS[clientId];
@@ -286,6 +272,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
 
 ```ts
 export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
+  retryPendingPrunes();
   const io = input.io ?? defaultIntegrationIO();
   const clientId = input.clientId;
   const spec = INTEGRATION_CLIENTS[clientId];
@@ -351,6 +338,7 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
 
 ```ts
 export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome {
+  retryPendingPrunes();
   const io = input.io ?? defaultIntegrationIO();
   const entry = findOperation(input.opId);
   if (!entry) throw new Error(`unknown operation ${input.opId}`);   // route maps to 404

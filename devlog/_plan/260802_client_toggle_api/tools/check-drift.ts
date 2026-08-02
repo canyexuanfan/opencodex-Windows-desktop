@@ -199,17 +199,27 @@ function main(): void {
     }
   }
 
-  // 2. Module ownership: one declaration site, and imports point at the owner.
+  /*
+   * 2. Module ownership. The earlier version only rejected EXPORTED
+   * declarations outside a `021_wp2*` doc, so a non-exported copy passed and a
+   * missing owner was indistinguishable from a satisfied one (A-gate round 9,
+   * blocker 1). It now counts declarations of any visibility and requires
+   * exactly one, inside the block that declares the owning module.
+   */
+  const declarationSites = new Map<string, { file: string; line: number }[]>();
   for (const file of files) {
     const text = readFileSync(join(unitDir, file), "utf8");
     const lines = text.split("\n");
     for (const [i, line] of lines.entries()) {
       for (const [symbol, owner] of Object.entries(OWNERSHIP)) {
-        const declares = new RegExp(`^\\s*export\\s+(?:async\\s+)?function\\s+${symbol}\\b`).test(line);
-        const ownerDoc = /021_wp2/.test(file);
-        if (declares && !ownerDoc) {
-          findings.push({ file, line: i + 1, rule: "ownership",
-            detail: `${symbol} is declared here but is owned by ${owner} (WP2)` });
+        // Any visibility, and `const x = (` forms too.
+        const declares =
+          new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbol}\\b`).test(line)
+          || new RegExp(`^\\s*(?:export\\s+)?const\\s+${symbol}\\s*[:=]`).test(line);
+        if (declares) {
+          const sites = declarationSites.get(symbol) ?? [];
+          sites.push({ file, line: i + 1 });
+          declarationSites.set(symbol, sites);
         }
         const importMatch = new RegExp(`import\\s*\\{[^}]*\\b${symbol}\\b[^}]*\\}\\s*from\\s*"([^"]+)"`).exec(line);
         if (importMatch && !importMatch[1]!.endsWith("config-io")) {
@@ -217,6 +227,28 @@ function main(): void {
             detail: `${symbol} imported from ${importMatch[1]} but is owned by ${owner}` });
         }
       }
+    }
+  }
+  for (const [symbol, owner] of Object.entries(OWNERSHIP)) {
+    const sites = declarationSites.get(symbol) ?? [];
+    if (sites.length === 0) {
+      findings.push({ file: owner, line: 1, rule: "ownership",
+        detail: `${symbol} is owned by ${owner} but is declared nowhere — WP2 cannot implement it` });
+      continue;
+    }
+    if (sites.length > 1) {
+      for (const site of sites.slice(1)) {
+        findings.push({ file: site.file, line: site.line, rule: "ownership",
+          detail: `${symbol} is declared ${sites.length} times; ${owner} must be the only one (first at ${sites[0]!.file}:${sites[0]!.line})` });
+      }
+    }
+    const home = sites[0]!;
+    const inOwnerModule = new RegExp(`\`src/integrations/${owner.replace(".", "\\.")}\``).test(
+      readFileSync(join(unitDir, home.file), "utf8").split("\n").slice(0, home.line).join("\n"),
+    );
+    if (!inOwnerModule) {
+      findings.push({ file: home.file, line: home.line, rule: "ownership",
+        detail: `${symbol} is declared here, but this location is not introduced as ${owner}` });
     }
   }
 

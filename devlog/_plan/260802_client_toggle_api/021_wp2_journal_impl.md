@@ -279,6 +279,7 @@ export interface IntegrationStateInput {
 }
 
 export function readIntegrationState(input: IntegrationStateInput): IntegrationStatus {
+  retryPendingPrunesOnce();   // once per process; never throws
   const io = input.io ?? defaultIntegrationIO();
   const spec = INTEGRATION_CLIENTS[input.clientId];
   const exportSpec = EXPORT_CLIENTS[input.clientId];
@@ -316,8 +317,16 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
  * can fail (006 §5).
  */
 function retentionOf(clientId: IntegrationClientId): { snapshotCount: number; retentionDegraded: boolean } {
-  const snapshotCount = countSnapshots(clientId);
-  return { snapshotCount, retentionDegraded: snapshotCount > SNAPSHOT_RETENTION };
+  const counted = countSnapshots(clientId);
+  if (counted === null) {
+    // Cannot inspect: report degraded with a count of -1 rather than a
+    // reassuring zero. "Unknown" and "healthy" must never look alike here.
+    return { snapshotCount: -1, retentionDegraded: true };
+  }
+  // A marked failure keeps the flag set even when the count is momentarily
+  // within bound, so a retry that has not run yet is still visible.
+  const marked = readMaintenance().pruneFailures[clientId] !== undefined;
+  return { snapshotCount: counted, retentionDegraded: marked || counted > SNAPSHOT_RETENTION };
 }
 ```
 
@@ -396,9 +405,16 @@ export function appendOperation(entry: JournalEntry): void {
   appendFileSync(journalPath(), JSON.stringify(entry) + "\n", { encoding: "utf8", mode: 0o600 });
   // Post-commit. A prune failure never fails the append — but it is marked so
   // a later operation retries it, and `retentionDegraded` reports it meanwhile.
-  const pruned = pruneSnapshots(entry.clientId);
-  if (pruned.ok) clearPruneFailure(entry.clientId);
-  else markPruneFailure(entry.clientId, pruned.error);
+  // Everything after the append is best-effort AND non-throwing: the row is
+  // already committed, so an exception here would be read by the writer as an
+  // append failure and trigger compensation for work that succeeded.
+  try {
+    const pruned = pruneSnapshots(entry.clientId);
+    if (pruned.ok) clearPruneFailure(entry.clientId);
+    else markPruneFailure(entry.clientId, pruned.error);
+  } catch (error) {
+    console.error(`[integrations] post-commit maintenance failed: ${String(error)}`);
+  }
 }
 
 /** Newest first. A torn final line (crash mid-append) is skipped, not thrown. */
@@ -431,9 +447,19 @@ export function readSnapshot(entry: JournalEntry):
 }
 
 /** Keep the newest N snapshot files per client; rows always survive. */
-/** Snapshot files retained right now. The witness for `retentionDegraded`. */
-export function countSnapshots(clientId: IntegrationClientId): number {
-  try { return readdirSync(snapshotDir(clientId)).length; } catch { return 0; }
+/**
+ * Snapshot files retained right now — the witness for `retentionDegraded`.
+ *
+ * `null` means "cannot inspect", which is NOT the same as zero. Reporting an
+ * unreadable snapshot directory as a healthy empty one would hide exactly the
+ * unbounded, credential-bearing pile this field exists to disclose
+ * (A-gate round 9, blocker 3).
+ */
+export function countSnapshots(clientId: IntegrationClientId): number | null {
+  try { return readdirSync(snapshotDir(clientId)).length; }
+  catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? 0 : null;
+  }
 }
 
 /**
@@ -478,7 +504,22 @@ export function readMaintenance(): MaintenanceState {
   try {
     const parsed: unknown = JSON.parse(readFileSync(maintenancePath(), "utf8"));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as MaintenanceState;
+      // Validate rather than cast: `{}` parses fine and would leave
+      // `pruneFailures` undefined, so the next mark/clear would throw AFTER
+      // the journal row was committed — producing the phantom row the write
+      // ordering exists to prevent (A-gate round 9, blocker 2).
+      const raw = (parsed as { pruneFailures?: unknown }).pruneFailures;
+      const failures: MaintenanceState["pruneFailures"] = {};
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+          if (!isIntegrationClientId(key)) continue;
+          if (!value || typeof value !== "object") continue;
+          const { at, error } = value as { at?: unknown; error?: unknown };
+          if (typeof at !== "string" || typeof error !== "string") continue;
+          failures[key] = { at, error };
+        }
+      }
+      return { pruneFailures: failures };
     }
   } catch { /* absent or corrupt: no pending retries known */ }
   return { pruneFailures: {} };
@@ -514,9 +555,119 @@ export function retryPendingPrunes(): void {
     if (pruneSnapshots(clientId).ok) clearPruneFailure(clientId);
   }
 }
+
+/**
+ * Call sites, so the retry is reachable rather than merely defined
+ * (A-gate round 9, blocker 3):
+ *
+ * 1. `readIntegrationState` — once per process, guarded by the flag below, so
+ *    simply opening the Integrations tab schedules a retry without making
+ *    every status read do filesystem cleanup.
+ * 2. `applyIntegration` / `disableIntegration` / `restoreIntegration` — at the
+ *    top of each, BEFORE any write, so an operation never begins on top of a
+ *    known-degraded snapshot directory.
+ *
+ * Both call it through `retryPendingPrunesOnce`/`retryPendingPrunes` inside a
+ * try/catch; a retry failure is a logged no-op, never an operation failure.
+ */
+let retriedThisProcess = false;
+
+export function retryPendingPrunesOnce(): void {
+  if (retriedThisProcess) return;
+  retriedThisProcess = true;
+  try { retryPendingPrunes(); }
+  catch (error) { console.error(`[integrations] prune retry failed: ${String(error)}`); }
+}
 ```
 
-## 5. Activation table
+## 5. `src/integrations/config-io.ts` (NEW)
+
+The seam both the reader and the writer use. It lives in WP2 because
+`readIntegrationState` needs it, and WP2 must typecheck with no WP3 file
+present (006 §8). WP3 imports these three symbols and declares none of them.
+
+```ts
+import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { atomicWriteFile } from "../config";
+import type { ConfigFormat } from "../clients/config-export";
+
+export const PARSE_FAILED = Symbol("parse-failed");
+
+/** Parse a client config, tolerating absence. PARSE_FAILED on garbage. */
+export function parseConfig(text: string | null, format: ConfigFormat): unknown | typeof PARSE_FAILED {
+  if (text === null || text.trim().length === 0) return {};
+  try {
+    switch (format) {
+      case "json": return JSON.parse(text);
+      case "json5": return Bun.JSON5.parse(text);
+      case "yaml": return Bun.YAML.parse(text);
+      case "toml": return Bun.TOML.parse(text);
+    }
+  } catch {
+    return PARSE_FAILED;
+  }
+}
+
+export interface IntegrationIO {
+  readText: (path: string) =>
+    | { kind: "text"; text: string }
+    | { kind: "missing" }
+    | { kind: "failed"; code?: string };
+  statKind: (path: string) => "file" | "dir" | "other" | "missing";
+  writeText: (path: string, text: string) => void;
+  removeFile: (path: string) => void;
+  mkdirp: (path: string) => void;
+  now: () => number;
+  appendJournal: (entry: JournalEntry) => void;
+  putRecord: (record: OwnershipRecord) => void;
+  dropRecord: (clientId: IntegrationClientId) => void;
+}
+
+/** Read + classify the target, collapsing the three failure shapes correctly. */
+function loadTarget(io: IntegrationIO, configPath: string):
+  | { ok: true; before: string | null }
+  | { ok: false; why: "not-regular-file" | "read-failed" } {
+  const kind = io.statKind(configPath);
+  if (kind === "missing") return { ok: true, before: null };
+  if (kind !== "file") return { ok: false, why: "not-regular-file" };
+  const read = io.readText(configPath);
+  if (read.kind === "text") return { ok: true, before: read.text };
+  // stat said "file" but the read failed: a real file we cannot see. Never
+  // treat this as absence — that is how an unreadable config gets clobbered.
+  if (read.kind === "failed") return { ok: false, why: "read-failed" };
+  return { ok: true, before: null };   // raced deletion between stat and read
+}
+
+export function defaultIntegrationIO(): IntegrationIO {
+  return {
+    readText: p => {
+      try { return { kind: "text", text: readFileSync(p, "utf8") }; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        // ONLY ENOENT is absence. EACCES/EPERM/EISDIR mean a file we cannot
+        // see, which must never be overwritten as if it were missing.
+        return code === "ENOENT" ? { kind: "missing" } : { kind: "failed", ...(code ? { code } : {}) };
+      }
+    },
+    statKind: p => {
+      try { const s = statSync(p); return s.isFile() ? "file" : s.isDirectory() ? "dir" : "other"; }
+      catch { return "missing"; }
+    },
+    writeText: (p, t) => atomicWriteFile(p, t),
+    removeFile: p => rmSync(p, { force: true }),
+    mkdirp: p => mkdirSync(p, { recursive: true, mode: 0o700 }),
+    now: () => Date.now(),
+    appendJournal: entry => appendOperation(entry),
+    putRecord: record => writeRecord(record),
+    dropRecord: clientId => deleteRecord(clientId),
+  };
+}
+```
+
+Every test substitutes the seam wholesale — no `node:fs` monkey-patching — and
+the `now` member is what makes WP4's stale-flight branch reachable.
+
+## 6. Activation table
 
 | Branch | Trigger | Observable proof |
 |---|---|---|
@@ -526,8 +677,11 @@ export function retryPendingPrunes(): void {
 | snapshot `none` | capture with `text === null` | entry's `snapshot.kind === "none"`; `readSnapshot` returns `none`, not `expired` |
 | fragment sort stability | build the same contribution with fragments emitted in reverse order | identical `blockFingerprint` |
 | path read miss | classify a doc whose `providers` is an array | `hasOurFragments` false → `absent`, no throw |
+| prune failure marks and retries | make `rmSync` throw for one client, append an op, then let a later op succeed | first: row committed, operation `ok`, marker present, `retentionDegraded` true; second: marker cleared, `retentionDegraded` false, count back within bound |
+| malformed marker cannot fake an append failure | write `{}` to `maintenance.json`, then append an op | the row is committed and `appendOperation` returns normally — no throw, so the writer performs no compensation and no phantom row exists |
+| unreadable snapshot dir is not healthy | make `readdirSync` throw `EACCES` | `snapshotCount === -1` and `retentionDegraded === true` — never a reassuring `0` |
 
-## 6. Tests
+## 7. Tests
 
 `tests/integrations-journal.test.ts` covers §5 rows 2-4 plus append/list
 ordering. `tests/integrations-state.test.ts` covers the 020 §3 table (fixtures
