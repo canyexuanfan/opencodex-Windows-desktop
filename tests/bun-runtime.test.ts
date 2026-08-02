@@ -115,8 +115,21 @@ describe("bundledBunPath / durableBunPath", () => {
 describe("reportedBunRuntimeSource (#848 launch-time provenance)", () => {
   it("reads back each allowlisted marker", () => {
     for (const source of ["override", "bundled", "process"] as const) {
-      expect(reportedBunRuntimeSource({ [BUN_RUNTIME_SOURCE_ENV]: source })).toBe(source);
+      // The pair contract: source alone reports unknown; source + this
+      // executable's path reports the allowlisted origin.
+      expect(reportedBunRuntimeSource({ [BUN_RUNTIME_SOURCE_ENV]: source })).toBeUndefined();
+      expect(reportedBunRuntimeSource({
+        [BUN_RUNTIME_SOURCE_ENV]: source,
+        [BUN_RUNTIME_PATH_ENV]: process.execPath,
+      })).toBe(source);
     }
+  });
+
+  it("reports unknown when the recorded path names another executable", () => {
+    expect(reportedBunRuntimeSource({
+      [BUN_RUNTIME_SOURCE_ENV]: "override",
+      [BUN_RUNTIME_PATH_ENV]: "/usr/local/bin/definitely-not-this-bun",
+    })).toBeUndefined();
   });
 
   it("treats an absent marker as unknown rather than guessing from this process", () => {

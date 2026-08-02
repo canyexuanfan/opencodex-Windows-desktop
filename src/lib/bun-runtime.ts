@@ -63,7 +63,15 @@ export function reportedBunRuntimeSource(
   env: NodeJS.ProcessEnv = process.env,
 ): BunRuntimeSource | undefined {
   const raw = env[BUN_RUNTIME_SOURCE_ENV]?.trim();
-  return BUN_RUNTIME_SOURCES.find(source => source === raw);
+  const source = BUN_RUNTIME_SOURCES.find(candidate => candidate === raw);
+  if (!source) return undefined;
+  // Source and binary are a PAIR: without a recorded path that names THIS
+  // executable, the marker describes some other launch and must not be
+  // reported (a bare OCX_BUN_RUNTIME_SOURCE inherited from an unrelated
+  // parent would otherwise claim a confident wrong origin).
+  const recordedPath = env[BUN_RUNTIME_PATH_ENV]?.trim();
+  if (!recordedPath || !samePath(recordedPath, process.execPath)) return undefined;
+  return source;
 }
 
 /** Env pair a launcher stamps for the binary it just selected. */

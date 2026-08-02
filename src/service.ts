@@ -795,6 +795,10 @@ export function windowsSchedulerTaskInstalled(taskName = TASK): boolean {
 export interface WindowsSchedulerInstallVerification {
   taskInstalled: boolean;
   registrationHealthy: boolean;
+  /** Well-formed XML that is PUBLISHED but policy-violating — permanent, never
+   * worth a settle retry (vs an empty/unreadable view, which is publication
+   * lag and transient). */
+  registrationInvalid: boolean;
   assetsHealthy: boolean;
   nativeServiceAbsent: boolean;
   /** True when SCM probe failed; not a proven WinSW presence. */
@@ -815,6 +819,10 @@ export function evaluateWindowsSchedulerInstallVerification(inputs: {
 }): WindowsSchedulerInstallVerification {
   const registrationHealthy = inputs.xml.length > 0
     && windowsTaskRegistrationHealthy(inputs.xml, inputs.wscript, inputs.launcher);
+  // Permanent invalidity: the XML IS published but violates the registration
+  // contract — no amount of settling changes it. Empty/unreadable XML stays
+  // transient (publication lag).
+  const registrationInvalid = inputs.taskInstalled && inputs.xml.length > 0 && !registrationHealthy;
   const assetsHealthy = inputs.assetsExist;
   const nativeServiceAbsent = inputs.nativeStatus === "nonexistent";
   const nativeStatusUnknown = inputs.nativeStatus === "unknown";
@@ -838,6 +846,7 @@ export function evaluateWindowsSchedulerInstallVerification(inputs: {
   return {
     taskInstalled: inputs.taskInstalled,
     registrationHealthy,
+    registrationInvalid,
     assetsHealthy,
     nativeServiceAbsent,
     nativeStatusUnknown,
@@ -1006,11 +1015,14 @@ const SCHEDULER_SETTLE_DELAYS_MS = [50, 150, 300, 600] as const;
  * - unknown SCM status is unproven rather than transient, and has its own
  *   task-preserving branch below.
  */
-function schedulerVerificationMaySettle(v: WindowsSchedulerInstallVerification): boolean {
+/** Exported for tests: the transient-vs-permanent settle decision. */
+export function schedulerVerificationMaySettle(v: WindowsSchedulerInstallVerification): boolean {
   if (v.ok) return false;
   if (v.conflict) return false;
   if (!v.assetsHealthy) return false;
   if (!v.nativeServiceAbsent) return false;
+  // A published-but-invalid registration is permanent: no delay repairs it.
+  if (v.registrationInvalid) return false;
   return !v.taskInstalled || !v.registrationHealthy;
 }
 
