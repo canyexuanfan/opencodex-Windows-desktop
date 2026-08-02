@@ -111,7 +111,7 @@ Kiro 登录需要 Kiro CLI：Unix 使用 `curl -fsSL https://cli.kiro.dev/instal
 
 ## 3. API 密钥目录
 
-opencodex 内置 67 个预设：56 个密钥预设、7 个 OAuth 预设、3 个本地预设，以及默认的
+opencodex 内置 68 个预设：57 个密钥预设、7 个 OAuth 预设、3 个本地预设，以及默认的
 ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提供商的控制台，验证并保存密钥。
 主要条目包括：
 
@@ -123,11 +123,17 @@ ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提
 每月限额共同管理。当前 opencodex 仅公开经过实测的 `low` reasoning 档位；在网关公布或验证更宽
 档位之前，更高请求会被限制为 `low`。
 
+**Cline** 使用相同的 API 密钥和端点，按用量计费，可访问 100 多个模型
+(OpenRouter 风格 ID，如 `anthropic/claude-sonnet-4-6`)。Cline 的促销免费模型仅在
+Cline IDE/CLI 中提供，不能通过 API 使用；`minimax/minimax-m2.5` 是文档中通过 API
+免费试用的模型。
+
 | 提供商 | 基础 URL |
 | --- | --- |
 | **OpenAI (API key)** | `https://api.openai.com/v1` |
 | **Anthropic (API key)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
+| **Cline** | `https://api.cline.bot/api/v1` |
 | **ClinePass** | `https://api.cline.bot/api/v1` |
 | **Ollama Cloud** | `https://ollama.com/v1` |
 | Google Gemini · Google Vertex AI | `https://generativelanguage.googleapis.com` · `https://aiplatform.googleapis.com` |

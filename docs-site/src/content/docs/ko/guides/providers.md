@@ -119,7 +119,7 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL http
 
 ## 3. API 키 카탈로그
 
-opencodex에는 빌트인 프리셋이 67개 들어 있습니다. 키 방식 56개, OAuth 7개, 로컬 3개,
+opencodex에는 빌트인 프리셋이 68개 들어 있습니다. 키 방식 57개, OAuth 7개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
 입력한 키를 검증한 뒤 저장합니다. 주요 항목은 다음과 같습니다:
 
@@ -132,11 +132,17 @@ opencodex에는 빌트인 프리셋이 67개 들어 있습니다. 키 방식 56�
 현재 opencodex는 실측된 `low` reasoning 단계만 광고하며, 더 높은 요청은 공식 지원 범위가
 게시되거나 검증될 때까지 `low`로 제한합니다.
 
+**Cline**은 동일한 API 키·엔드포인트를 종량제로 사용하며 100개 이상의 모델에 접근합니다
+(OpenRouter 형식 ID, 예: `anthropic/claude-sonnet-4-6`). Cline의 프로모션 무료 모델은
+Cline IDE/CLI에서만 제공되며 API로는 사용할 수 없습니다. `minimax/minimax-m2.5`는 API에서
+사용할 수 있는 무료 체험 모델로 문서화되어 있습니다.
+
 | 프로바이더 | 베이스 URL |
 | --- | --- |
 | **OpenAI (API key)** | `https://api.openai.com/v1` |
 | **Anthropic (API key)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
+| **Cline** | `https://api.cline.bot/api/v1` |
 | **ClinePass** | `https://api.cline.bot/api/v1` |
 | **Ollama Cloud** | `https://ollama.com/v1` |
 | Google Gemini · Google Vertex AI | `https://generativelanguage.googleapis.com` · `https://aiplatform.googleapis.com` |

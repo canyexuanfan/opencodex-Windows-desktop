@@ -119,7 +119,7 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 67 個含まれています。キー方式 56、OAuth 7、ローカル 3、
+opencodex には組み込みプリセットが 68 個含まれています。キー方式 57、OAuth 7、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します。主な項目は以下のとおりです:
 
@@ -131,11 +131,17 @@ opencodex には組み込みプリセットが 67 個含まれています。キ
 現在 opencodex が公開する reasoning tier は実機検証済みの `low` のみで、より高い要求は公式範囲が
 公開または検証されるまで `low` にクランプされます。
 
+**Cline** は同じ API キー・エンドポイントを従量課金で使い、100 以上のモデルにアクセスできます
+(OpenRouter 形式の ID、例: `anthropic/claude-sonnet-4-6`)。Cline の期間限定無料モデルは
+Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` は API で利用できる
+無料試用モデルとして文書化されています。
+
 | プロバイダー | ベース URL |
  --- | --- |
 | **OpenAI (API キー)** | `https://api.openai.com/v1` |
 | **Anthropic (API キー)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
+| **Cline** | `https://api.cline.bot/api/v1` |
 | **ClinePass** | `https://api.cline.bot/api/v1` |
 | **Ollama Cloud** | `https://ollama.com/v1` |
 | Google Gemini · Google Vertex AI | `https://generativelanguage.googleapis.com` · `https://aiplatform.googleapis.com` |

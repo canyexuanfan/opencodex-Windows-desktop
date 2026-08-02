@@ -956,6 +956,28 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     preserveCustomDestination: true,
     note: "ClinePass subscription API. Uses a Cline API key and the full cline-pass/<model> upstream slug; quota is shared across the account's rolling 5-hour, weekly, and monthly limits.",
   },
+  // Cline API (usage-billing): OpenAI-compatible Chat Completions. Model IDs follow the
+  // OpenRouter-style `provider/model` convention. Live /models discovery is key-gated (401
+  // without auth), so the static seed is the cold-start fallback. Evidence: docs.cline.bot/api/*.
+  {
+    id: "cline",
+    label: "Cline",
+    adapter: "openai-chat",
+    baseUrl: "https://api.cline.bot/api/v1",
+    authKind: "key",
+    dashboardUrl: "https://app.cline.bot",
+    liveModels: true,
+    defaultModel: "anthropic/claude-sonnet-4-6",
+    models: [
+      "anthropic/claude-sonnet-4-6",
+      "openai/gpt-4o",
+      "google/gemini-2.5-pro",
+      "deepseek/deepseek-chat",
+      "minimax/minimax-m2.5",
+    ],
+    preserveCustomDestination: true,
+    note: "Cline usage-billing API: one key, 100+ models, OpenRouter-style ids. Promotional free models are IDE/CLI-only per Cline docs; minimax/minimax-m2.5 is the documented API free experimentation model.",
+  },
   {
     // OrcaRouter: OpenAI-compatible adaptive router (api.orcarouter.ai). Model ids are
     // vendor-namespaced (`<vendor>/<model>`) and pass through to the upstream as-is.

@@ -126,7 +126,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 67 встроенными пресетами: 56 на основе ключей, семь OAuth, три локальных и
+opencodex поставляется с 68 встроенными пресетами: 57 на основе ключей, семь OAuth, три локальных и
 пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его. Наиболее заметные записи:
 
@@ -138,11 +138,17 @@ opencodex поставляется с 67 встроенными пресетам
 недельном и месячном лимитах. Сейчас opencodex публикует только проверенный на живом API reasoning tier
 `low`; более высокие запросы ограничиваются до `low`, пока шлюз не опубликует или не подтвердит более широкий диапазон.
 
+**Cline** использует тот же ключ и эндпоинт с оплатой по мере использования и доступом к 100+ моделям
+(ID в формате OpenRouter, например `anthropic/claude-sonnet-4-6`). Промо-бесплатные модели Cline
+доступны только в IDE/CLI Cline, а не через API; `minimax/minimax-m2.5` документирован как
+бесплатная модель для экспериментов через API.
+
 | Провайдер | Базовый URL |
 | --- | --- |
 | **OpenAI (API key)** | `https://api.openai.com/v1` |
 | **Anthropic (API key)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
+| **Cline** | `https://api.cline.bot/api/v1` |
 | **ClinePass** | `https://api.cline.bot/api/v1` |
 | **Ollama Cloud** | `https://ollama.com/v1` |
 | Google Gemini · Google Vertex AI | `https://generativelanguage.googleapis.com` · `https://aiplatform.googleapis.com` |
