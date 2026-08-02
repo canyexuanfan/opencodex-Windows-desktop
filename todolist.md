@@ -1035,3 +1035,11 @@ Codex / Claude Code / 其他现有客户端
 - [x] 新产物为 `desktop/out/OpenCodex-Setup-2.8.0-x64.exe`，SHA-256=`197519DCD6C0649D524E95766A504420FA65A70BF6760A173A491A0BBD39C302`；`desktop/out` 中没有 portable 产物。
 - [x] 产物资源验收确认 staging 内包含 `selectRestartPortAfterReclaim`、`selectPostUpdatePort` 与 `shouldPersistSelectedPort`，即端口固定/迁移/持久化机制已经进入本次重新生成的安装包。
 - [x] 本次剩余动作交还用户：如需让当前真实安装目录也带上该机制，需要稍后手动运行新版安装包并重启 OpenCodex/Codex；当前对话中不继续自动覆盖安装或重启。
+# 验收记录：用户覆盖安装后普通启动端口与安装体验修复（2026-08-02）
+- [x] 用户手动更新并重启 Codex 后，只读复核确认当前路由 `http://127.0.0.1:43337/v1` 可用，`/healthz` 返回 200，已安装目录包含更新路径端口迁移函数；但 `~/.opencodex/config.json` 默认 `port` 仍为 `10100`，说明遗漏点不是更新重启路径，而是桌面普通启动入口仍硬编码动态端口。
+- [x] 修复 `src/desktop/entry.ts`：桌面 sidecar 普通启动先读取磁盘配置端口并优先绑定该固定端口；只有端口不可用才 fallback；fallback 成功后只把新 `port` 写回磁盘配置，不把桌面强制的 `127.0.0.1` hostname 写回用户配置。
+- [x] 修复 `desktop/build/installer.nsh`：自定义安装脚本不再受 `${isNoDesktopShortcut}` 影响，安装时始终创建桌面快捷方式，并继续使用 `resources\tray\opencodex-tray-online.ico` 作为快捷方式图标。
+- [x] 验证通过：`bun test tests\windows-deploy-close-regressions.test.ts` 7/7、27 个断言；`cd desktop && bun test tests\package-static.test.ts` 6/6、34 个断言；`cd desktop && bun run typecheck`；根 `bun run typecheck`；`git diff --check`。
+- [x] 已重新生成并签名安装包：`desktop/out/OpenCodex-Setup-2.8.0-x64.exe`，SHA-256=`1812F1F2F6849868C5E212F5D579ACD500134B7B58725F404CC251F7999FEC27`；安装包、unpacked `OpenCodex.exe` 与内置 `bun.exe` 均可读取 `CN=十七°` 签名主体，本机自签链状态为 `UnknownError`。
+- [x] 本次只生成新版安装包，没有运行安装包、没有覆盖 `E:\Program\OpenCodex`、没有停止代理、没有重启当前 Codex；临时 PFX、临时证书和本次 `C:\tmp` 构建/签名目录均已清理。
+- [ ] 剩余动作交还用户：稍后手动运行新版安装包并重启后，再只读复核 `config.port`、`runtime-port.json`、Codex `base_url` 是否一致，以及桌面快捷方式是否出现。

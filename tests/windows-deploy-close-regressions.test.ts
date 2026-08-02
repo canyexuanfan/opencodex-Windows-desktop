@@ -61,3 +61,15 @@ describe("server bind canonicalizes explicit localhost but preserves wildcards (
     expect(src).not.toContain('hostname: "127.0.0.1",');
   });
 });
+
+describe("desktop sidecar startup uses the configured fixed port before fallback", () => {
+  const src = read("src/desktop/entry.ts");
+  test("desktop entry does not hard-code an ephemeral listener on normal startup", () => {
+    expect(src).not.toContain("startServer(0");
+    expect(src).toContain("const diskConfig = loadConfig();");
+    expect(src).toContain("const preferredPort = diskConfig.port ?? 10100;");
+    expect(src).toContain("findAvailablePort(preferredPort, DESKTOP_HOSTNAME");
+    expect(src).toContain("shouldPersistSelectedPort(diskConfig.port, port, preferredPort)");
+    expect(src).toContain("saveConfig(diskConfig)");
+  });
+});
