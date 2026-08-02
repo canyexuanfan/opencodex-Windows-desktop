@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction, sanitizeReasoningInputContent } from "../src/adapters/openai-responses";
-import { providerConfigSeed } from "../src/providers/derive";
+import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
 import { getProviderRegistryEntry } from "../src/providers/registry";
 import { OCX_REASONING_PREFIX } from "../src/responses/reasoning-envelope";
 import type { OcxProviderConfig } from "../src/types";
@@ -67,7 +67,10 @@ describe("DeepSeek Responses replay keeps reasoning on the wire", () => {
   }
 
   test("a DeepSeek continuation keeps reasoning_text", () => {
+    // Mirror the runtime flow: saved configs carry no registry-only flags; the
+    // enrich backfill supplies them before the adapter serializes.
     const provider = { ...providerConfigSeed(getProviderRegistryEntry("deepseek")!), apiKey: "sk-test" };
+    enrichProviderFromRegistry("deepseek", provider);
     const body = buildBody(provider);
     const item = (body.input as Record<string, unknown>[])[0]!;
     expect(item.content).toEqual([{ type: "reasoning_text", text: "think step by step" }]);

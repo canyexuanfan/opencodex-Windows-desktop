@@ -12,12 +12,16 @@ import { applyServiceTierGate, handleResponses } from "../src/server/responses/c
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 describe("registry capability reaches saved configs without overriding them", () => {
-  test("providerConfigSeed carries the registry values", () => {
-    const deepseek = providerConfigSeed(getProviderRegistryEntry("deepseek")!);
-    expect(deepseek.supportsServiceTier).toBe(false);
-    expect(deepseek.preserveResponsesReasoningContent).toBe(true);
-    expect(providerConfigSeed(getProviderRegistryEntry("openai-apikey")!).supportsServiceTier).toBe(true);
-    expect(providerConfigSeed(getProviderRegistryEntry("volcengine-agent-plan")!).supportsServiceTier).toBe(false);
+  test("the registry holds the defaults; the seed stays free of them so explicit config stays distinguishable", () => {
+    const entry = getProviderRegistryEntry("deepseek")!;
+    expect(entry.supportsServiceTier).toBe(false);
+    expect(entry.preserveResponsesReasoningContent).toBe(true);
+    expect(getProviderRegistryEntry("openai-apikey")!.supportsServiceTier).toBe(true);
+    expect(getProviderRegistryEntry("volcengine-agent-plan")!.supportsServiceTier).toBe(false);
+    // Registry-only metadata (same philosophy as modelWireDefaults): NOT seeded.
+    const seed = providerConfigSeed(entry);
+    expect(seed.supportsServiceTier).toBeUndefined();
+    expect(seed.preserveResponsesReasoningContent).toBeUndefined();
   });
 
   test("enrichProviderFromRegistry backfills a missing field (not a hardcoded config)", () => {
