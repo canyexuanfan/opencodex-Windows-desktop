@@ -85,8 +85,9 @@ export async function* sleepWithHeartbeats(
 ): AsyncGenerator<{ type: "heartbeat" }> {
   if (ms <= 0) return;
   // Guard against a non-positive interval: a zero/negative step would spin the loop forever
-  // while sleepWithAbort early-returns without ever observing the abort signal.
-  const stepMs = Math.max(1, heartbeatIntervalMs);
+  // while sleepWithAbort early-returns without ever observing the abort signal. NaN must be
+  // normalized too: Math.max(1, NaN) is NaN, which would abort the wait after one beat.
+  const stepMs = Number.isNaN(heartbeatIntervalMs) ? 1 : Math.max(1, heartbeatIntervalMs);
   let remaining = ms;
   while (remaining > 0) {
     const chunk = Math.min(remaining, stepMs);

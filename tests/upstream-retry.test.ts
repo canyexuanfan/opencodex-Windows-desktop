@@ -71,6 +71,18 @@ describe("sleepWithHeartbeats", () => {
     expect(events).toHaveLength(3);
   });
 
+  test("a NaN heartbeat interval waits the full duration instead of aborting after one beat", async () => {
+    const started = Date.now();
+    const events: string[] = [];
+    for await (const event of sleepWithHeartbeats(120, undefined, Number.NaN)) {
+      events.push(event.type);
+    }
+    // NaN falls back to the 1ms step: the full 120ms wait happens (120 beats), instead of the
+    // buggy NaN-chunk path that exited after one beat.
+    expect(events).toHaveLength(120);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(110);
+  });
+
   test("zero wait yields nothing", async () => {
     const events: string[] = [];
     for await (const event of sleepWithHeartbeats(0, undefined)) {
