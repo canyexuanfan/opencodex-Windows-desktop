@@ -21,9 +21,14 @@ export const CLIENT_LABEL_KEYS = {
  * falls back to a monogram tile rather than borrowing another product's logo.
  * Separate from `provider-icons.ts` on purpose: export-client ids and provider
  * ids are unrelated namespaces that happen to share the string "opencode".
+ *
+ * `pi.svg` is the Pi project's own favicon (`https://pi.dev/favicon.svg`);
+ * provenance is recorded in `gui/public/provider-icons/README.md`. Both marks
+ * carry their own dark background, so they read the same in either theme.
  */
 export const CLIENT_MARKS: Partial<Record<ExportClientId, string>> = {
   opencode: "/provider-icons/opencode.svg",
+  pi: "/provider-icons/pi.svg",
 };
 
 /** The `/api/client-config` 200 envelope, read off the route rather than a design doc. */

@@ -478,6 +478,20 @@
   overflow: hidden;
 }
 
+/* Brand SVGs bring their own rounded plate (Pi's is a dark #09090b square), so
+   the slot's border and fill would double it. Let a real mark fill the slot and
+   keep the chrome for the monogram fallback only. */
+.awi-clientconfig-mark:has(img) {
+  border-color: transparent;
+  background: none;
+}
+
+.awi-clientconfig-mark img {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-sm);
+}
+
 /* Fallback for a client with no brand asset. Honest about being a placeholder,
    and the slot a real mark drops into later. */
 .awi-clientconfig-monogram {

@@ -222,6 +222,27 @@ test("dialog closes on Escape and returns focus to its trigger", async () => {
   await act(async () => { root.unmount(); });
 });
 
+test("each client row shows its own brand mark, never a borrowed one", async () => {
+  // Both export clients ship a real asset now: OpenCode from the existing
+  // provider-icon baseline, Pi from the project's own favicon. The monogram is
+  // the fallback for a client with no asset, so seeing one here means a mark
+  // went missing rather than that the fallback is working.
+  stubRoute(client => Response.json(client === "pi" ? PI_ENVELOPE : OPENCODE_ENVELOPE));
+  const { root, container } = await mountPanel();
+
+  expect(row(container, "OpenCode").querySelector("img")?.getAttribute("src"))
+    .toBe("/provider-icons/opencode.svg");
+  expect(row(container, "Pi").querySelector("img")?.getAttribute("src"))
+    .toBe("/provider-icons/pi.svg");
+  expect(container.querySelector(".awi-clientconfig-monogram")).toBeNull();
+  // Marks are decoration: the row already names its client in text.
+  for (const img of container.querySelectorAll("img")) {
+    expect(img.getAttribute("alt")).toBe("");
+  }
+
+  await act(async () => { root.unmount(); });
+});
+
 test("the backdrop dismisses the dialog and also returns focus", async () => {
   // Escape and Close were covered; the backdrop is the third way out and had no
   // assertion, so a regression there would have shipped silently.
