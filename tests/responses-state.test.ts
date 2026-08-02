@@ -59,6 +59,7 @@ import {
   resetHardenedStateForTests,
   setIcaclsRunnerForTests,
   setPlatformForTests,
+  timedOutSecretPathCountForTests,
 } from "../src/lib/windows-secret-acl";
 
 function feedInspector(
@@ -1227,6 +1228,33 @@ describe("Responses previous_response_id state", () => {
     const result = recoverOrphanedResponseSpills(new Set(), dir);
     expect(result.scanned).toBe(4_096);
     expect(served).toBe(4_096);
+  });
+
+  test("orphan recovery releases temp-keyed ACL memos for owned spill temps", () => {
+    const dir = responseSpillDirectory(home);
+    mkdirSync(dir, { recursive: true });
+    const tempName = ".response-spill.1.abcdef0123456789.tmp";
+    const tempPath = join(dir, tempName);
+    writeFileSync(tempPath, "x");
+    const old = new Date(Date.now() - 20 * 60_000);
+    utimesSync(tempPath, old, old);
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    try {
+      // A temp-keyed timeout memo exists while the temp is on disk.
+      expect(() => hardenSecretPath(tempPath, { required: true })).toThrow();
+      expect(timedOutSecretPathCountForTests()).toBe(1);
+      const result = recoverOrphanedResponseSpills(new Set(), dir);
+      expect(result.removed).toBe(1);
+      // The orphaned temp's memo is released with it (ephemeral release).
+      expect(timedOutSecretPathCountForTests()).toBe(0);
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
   });
 
   test("response-state management metrics keep every added field finite scalar and privacy-safe", () => {

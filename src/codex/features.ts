@@ -30,7 +30,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
-import { atomicWriteFile, expandUserPath } from "../config";
+import { AtomicWriteResidualTempError, atomicWriteFile, expandUserPath } from "../config";
 import { forgetEphemeralSecretPath } from "../lib/windows-secret-acl";
 import { CODEX_CONFIG_PATH } from "./paths";
 
@@ -838,6 +838,9 @@ function applyConfigEditsAtomically(path: string, edit: (tempPath: string) => Co
   const content = readConfigText(path);
   if (content === null) return { ok: false, error: `config.toml not readable at ${path}` };
   const tempPath = `${path}.ocx-migration.${process.pid}.${++migrationEditSeq}`;
+  // An inner residual temp (AtomicWriteResidualTempError) keeps its
+  // destination-keyed memo: fail-closed while the residual exists.
+  let innerResidual = false;
   try {
     atomicWriteFile(tempPath, content);
     const result = edit(tempPath);
@@ -847,14 +850,17 @@ function applyConfigEditsAtomically(path: string, edit: (tempPath: string) => Co
     if (edited === content) return { ok: true, changed: false };
     atomicWriteFile(path, edited);
     return { ok: true, changed: true };
+  } catch (error) {
+    if (error instanceof AtomicWriteResidualTempError) innerResidual = true;
+    throw error;
   } finally {
     try {
       unlinkSync(tempPath);
-      forgetEphemeralSecretPath(tempPath);
+      if (!innerResidual) forgetEphemeralSecretPath(tempPath);
     } catch (error) {
       // Already absent is also proven-absent; other failures keep the memo.
       if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
-        forgetEphemeralSecretPath(tempPath);
+        if (!innerResidual) forgetEphemeralSecretPath(tempPath);
       }
     }
   }

@@ -410,7 +410,10 @@ export function recoverOrphanedResponseSpills(
       try { stat = lstatSync(path); } catch { continue; }
       if (!stat.isFile() || stat.isSymbolicLink() || Date.now() - stat.mtimeMs < graceMs) continue;
       try {
-        unlink(path);
+        // Orphaned publish temps get the full ephemeral release; stable
+        // orphaned spills keep destination-keyed timeout memos.
+        if (isOwnedTemp) unlinkEphemeral(path);
+        else unlink(path);
         result.removed += 1;
         result.bytesRemoved += stat.size;
       } catch {

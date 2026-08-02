@@ -158,7 +158,9 @@ describe("management and data-plane credential separation", () => {
     let calls = 0;
     setIcaclsRunnerForTests(() => {
       calls += 1;
-      return calls <= 3
+      // Production runs 3 icacls per harden: directory (1-3), temp (4-6),
+      // final token path (7-9) — the timeout must land on the FINAL path.
+      return calls <= 6
         ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
         : { success: false, exitCode: null, timedOut: true, stdout: "" };
     });

@@ -83,12 +83,21 @@ export function durableWrite(path: string, content: string): void {
     fsyncDir(path);
   } catch (error) {
     try { if (fd !== undefined) closeSync(fd); } catch { /* ignore */ }
-    try {
-      if (existsSync(tmp)) {
+    if (!existsSync(tmp)) {
+      // Explicit non-existence is proven absence — release even when the
+      // failure happened before/while the temp disappeared.
+      forgetEphemeralSecretPath(tmp);
+    } else {
+      try {
         unlinkSync(tmp);
         forgetEphemeralSecretPath(tmp);
+      } catch (cleanupError) {
+        if ((cleanupError as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+          forgetEphemeralSecretPath(tmp);
+        }
+        /* residual temp: memos stay (fail-closed) */
       }
-    } catch { /* residual temp: memos stay (fail-closed) */ }
+    }
     throw error;
   }
 }
