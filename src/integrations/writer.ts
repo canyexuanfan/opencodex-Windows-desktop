@@ -20,7 +20,7 @@ import { INTEGRATION_CLIENTS, isLoopbackOnly, type IntegrationClientId } from ".
 import { classifyIntegration, exportContextOf } from "./state";
 import type { IntegrationState } from "./state";
 import { serializeDocument, UnserializableValueError } from "./serialize";
-import { newOpId, type JournalEntry } from "./journal";
+import { matchesOperationResult, newOpId, type JournalEntry } from "./journal";
 import { createIntegrationStateStore, type IntegrationStateStore } from "./store";
 
 export type RefusalReason =
@@ -403,8 +403,16 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   }
   const current = target.before;
 
-  // Drift: the file changed after the operation we are undoing.
-  if (fingerprint(current ?? "") !== entry.resultFingerprint && !input.confirmDrift) {
+  /*
+   * Drift: the file changed after the operation we are undoing.
+   *
+   * Through the shared matcher, because `fingerprint(current ?? "")` treated a
+   * MISSING file as an empty one — so restoring an operation whose result was
+   * absence, with the file still absent, read as drift and demanded a
+   * confirmation for edits nobody had made. The journal meanwhile offered the
+   * same row as Undo.
+   */
+  if (!matchesOperationResult(entry, current) && !input.confirmDrift) {
     return refuse(clientId, "drift_requires_confirm", "conflict",
       "this file changed after that operation; confirm to replace it (the current version is backed up first)");
   }

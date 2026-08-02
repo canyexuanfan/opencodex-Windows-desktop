@@ -442,6 +442,60 @@ describe("a real user document is not rejected for being richer than ours", () =
 
 });
 
+describe("an absence is not a drift", () => {
+  test("undoing an apply that created the file needs no drift confirmation", () => {
+    /*
+     * Apply to a missing file journals `resultAbsent: true` with an empty
+     * fingerprint, and restoring it means deleting the file again. The route
+     * represented "missing" as `""` and offered the row as Undo; the writer
+     * hashed `""` into a real digest and called the unchanged absence a drift.
+     * So the button appeared and then demanded confirmation for edits nobody
+     * had made.
+     */
+    const configPath = installClient("hermes");
+    expect(existsSync(configPath)).toBe(false);
+    const write = {
+      clientId: "hermes" as const, models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+    const applyOp = store.listOperations("hermes")[0]!;
+    expect(applyOp.resultAbsent).toBe(false);
+
+    // Restore back to absence: the file we created is removed again.
+    expect(restoreIntegration({ ...write, opId: applyOp.opId }).ok).toBe(true);
+    expect(existsSync(configPath)).toBe(false);
+    const restoreOp = store.listOperations("hermes")[0]!;
+    expect(restoreOp.resultAbsent).toBe(true);
+
+    // Undo THAT restore with no confirmDrift. The file is still absent, which
+    // is exactly the result recorded, so nothing drifted.
+    const undo = restoreIntegration({ ...write, opId: restoreOp.opId });
+    expect(undo.ok).toBe(true);
+    expect(existsSync(configPath)).toBe(true);
+  });
+
+  test("a file that appeared where absence was recorded IS a drift", () => {
+    // The other side of the same rule: absence-vs-present must still be caught.
+    const configPath = installClient("hermes");
+    const write = {
+      clientId: "hermes" as const, models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+    const applyOp = store.listOperations("hermes")[0]!;
+    expect(restoreIntegration({ ...write, opId: applyOp.opId }).ok).toBe(true);
+    const restoreOp = store.listOperations("hermes")[0]!;
+
+    // Someone writes the file back before we undo the restore-to-absence.
+    writeFileSync(configPath, "providers:\n  mine:\n    api: http://new\n");
+    const undo = restoreIntegration({ ...write, opId: restoreOp.opId });
+    expect(undo.ok).toBe(false);
+    if (!undo.ok) expect(undo.reason).toBe("drift_requires_confirm");
+    expect(readFileSync(configPath, "utf8")).toContain("http://new");
+  });
+});
+
 describe("the base URL is composed, never interpolated", () => {
   test("IPv6 and wildcard binds produce a URL a client can actually dial", () => {
     /*
