@@ -299,7 +299,11 @@ function utf8BytesExceed(input: string, max: number): boolean {
     const code = input.charCodeAt(i);
     if (code < 0x80) bytes += 1;
     else if (code < 0x800) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < input.length) {
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < input.length
+      && input.charCodeAt(i + 1) >= 0xdc00 && input.charCodeAt(i + 1) <= 0xdfff) {
+      // A complete surrogate pair is one 4-byte scalar. Anything else — a high surrogate
+      // followed by another high surrogate or a non-surrogate — encodes as two separate
+      // U+FFFD replacements, so the next unit must NOT be skipped.
       bytes += 4;
       i++;
     } else bytes += 3; // lone surrogates encode as U+FFFD (3 bytes)

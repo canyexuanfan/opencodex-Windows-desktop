@@ -190,4 +190,16 @@ describe("AgentRouter Anthropic EOF tolerance (#658)", () => {
     const events = await createAnthropicAdapter(tolerant).parseResponse(new Response(payload));
     expect(events).toContainEqual({ type: "tool_call_delta", arguments: "{}" });
   });
+
+  test("malformed surrogate pairs count as separate U+FFFD replacements against the cap", async () => {
+    // 200k high-surrogate pairs: 400k code units, but every lone surrogate encodes as its
+    // own 3-byte U+FFFD — 1.2 MB over the wire, which a pair-skipping count would admit.
+    const oversized = `${"\ud800\ud800".repeat(200_000)}{"ok":true}`;
+    const payload = JSON.stringify({
+      content: [{ type: "tool_use", id: "toolu_1", name: "get_weather", input: oversized }],
+    });
+
+    const events = await createAnthropicAdapter(tolerant).parseResponse(new Response(payload));
+    expect(events).toContainEqual({ type: "tool_call_delta", arguments: "{}" });
+  });
 });
