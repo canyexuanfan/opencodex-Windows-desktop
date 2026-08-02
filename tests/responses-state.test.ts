@@ -1457,7 +1457,22 @@ describe("Responses previous_response_id state", () => {
     writeFileSync(realSnapshot, JSON.stringify({ version: 2, states: [] }));
     symlinkSync(realSnapshot, join(home, "responses-state.json"));
 
-    const deadPid = process.pid === 4242 ? 4243 : 4242;
+    // This test drives the REAL load path, whose sweep probes live pids with kill(pid, 0).
+    // A hardcoded "dead" pid can collide with a live process on a shared CI runner, so
+    // probe for a genuinely dead one instead (ESRCH). EPERM means alive-but-not-ours.
+    let deadPid = -1;
+    for (let candidate = 4242; candidate < 5242; candidate++) {
+      if (candidate === process.pid) continue;
+      try {
+        process.kill(candidate, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+          deadPid = candidate;
+          break;
+        }
+      }
+    }
+    expect(deadPid).toBeGreaterThan(0);
     const stranded = join(realDir, `responses-state.json.ocx.${deadPid}.1.tmp`);
     writeFileSync(stranded, "private state");
     const old = new Date(Date.now() - 60 * 60 * 1_000);
