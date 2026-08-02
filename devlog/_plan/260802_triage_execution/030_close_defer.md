@@ -43,3 +43,10 @@ and pointing at the path forward. English.
   > one focused PR per boundary, each with its own threat model and tests;
   > each can then receive focused security review. Thank you for pushing
   > this forward.
+
+## Results (2026-08-02, wp4 executed)
+
+- 644: comment 5154145862 posted, PR CLOSED.
+- 707: comment 5154145865 posted, PR CLOSED.
+- 616: status comment 5154145864 posted; close deferred until #837 lands
+  (per audit correction).
