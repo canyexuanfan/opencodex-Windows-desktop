@@ -1348,9 +1348,13 @@ async function handleResponsesInner(
   const previewSelectionAdmission = threadSpawn
     ? codexAccountSelectionForTurn(options.turnAdmissionLease)?.()
     : undefined;
-  const nativeMainReadsForbidden = isNativeMainTrafficBlocked()
+  const nativeMainRecoveryBlocked = isNativeMainTrafficBlocked();
+  const nativeMainReadsForbidden = nativeMainRecoveryBlocked
     || previewSelectionAdmission?.mainProfileDraining === true;
-  const previewSelectionOptions = { nativeMainSelectionOnly: nativeMainReadsForbidden };
+  const previewSelectionOptions = {
+    nativeMainSelectionOnly: !nativeMainRecoveryBlocked
+      && previewSelectionAdmission?.mainProfileDraining === true,
+  };
   let authCtx: CodexAuthContext = { kind: "main", accountId: null };
   let selectedForwardHeaders = req.headers;
   let subagentFallbackAccountId = config.activeCodexAccountId ?? null;

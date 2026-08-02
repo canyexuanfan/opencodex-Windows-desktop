@@ -83,7 +83,8 @@ import {
   isValidCodexAccountId,
 } from "./account-id";
 import { codexAccountIdNamespaceCollisionError } from "./account-namespace-match";
-import { ResourceAdmissionError } from "../lib/admission";
+import { ResourceAdmissionError, type AdmissionLease } from "../lib/admission";
+import { tryAdmitTurn } from "../server/lifecycle";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -694,6 +695,35 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, co
 
 let primeInFlight: Promise<void> | null = null;
 
+export interface PrimeCodexPoolQuotasOptions {
+  /** Test seams for proving fenced/recovery priming performs no native-main work. */
+  reconcileMainAccount?: typeof reconcileMainCodexAccountRuntimeState;
+  readMainTokens?: typeof readCodexTokens;
+  fetchMainInfo?: typeof fetchMainAccountInfo;
+}
+
+function tryAcquireNativeMainPrimeLease(): AdmissionLease | null {
+  if (isNativeMainTrafficBlocked()) return null;
+  const turn = tryAdmitTurn();
+  if (!turn) return null;
+  const selection = turn.beginCodexAccountSelection();
+  let claimed = false;
+  try {
+    if (selection.mainProfileDraining || !selection.claimMainProfile()) return null;
+    // Recovery may be discovered after generic admission. Recheck after main
+    // ownership is established and before reconciliation or credential reads.
+    if (isNativeMainTrafficBlocked()) return null;
+    claimed = true;
+    selection.release();
+    return turn;
+  } finally {
+    if (!claimed) {
+      selection.release();
+      turn.release();
+    }
+  }
+}
+
 /**
  * Best-effort prime of pool-account (and main) quota so the rotation engine has
  * real usage scores instead of leaving every account at the unknown sentinel.
@@ -709,7 +739,11 @@ let primeInFlight: Promise<void> | null = null;
  * cost, so the worst case is one WHAM call per account per TTL window. Failures
  * are swallowed: a blocked WSL network must never crash startup or a request.
  */
-export async function primeCodexPoolQuotas(config: OcxConfig, reason: string): Promise<void> {
+export async function primeCodexPoolQuotas(
+  config: OcxConfig,
+  reason: string,
+  options: PrimeCodexPoolQuotasOptions = {},
+): Promise<void> {
   const openai = config.providers[OPENAI_CODEX_PROVIDER_ID];
   if (
     !openai
@@ -718,10 +752,6 @@ export async function primeCodexPoolQuotas(config: OcxConfig, reason: string): P
     || providerCodexAccountMode(OPENAI_CODEX_PROVIDER_ID, openai) !== "pool"
   ) return;
   if (primeInFlight) return primeInFlight;
-  // Seed the observed physical main identity before startup/lazy priming can populate quota or
-  // plan state. Otherwise the first post-startup account switch sees no previous identity and
-  // skips the purge that protects the stable __main__ alias.
-  reconcileMainCodexAccountRuntimeState();
   primeInFlight = (async () => {
     const runtimeConfig = getRuntimeConfig(config);
     const pool = (runtimeConfig.codexAccounts ?? []).filter(isSelectableCodexPoolAccount);
@@ -729,10 +759,24 @@ export async function primeCodexPoolQuotas(config: OcxConfig, reason: string): P
       const q = getAccountQuota(a.id);
       return !q || Date.now() - q.updatedAt >= POOL_CACHE_TTL;
     });
-    const primeMain = !!readCodexTokens() && !getAccountQuota(MAIN_CODEX_ACCOUNT_ID);
+    const primeMain = async () => {
+      const mainLease = tryAcquireNativeMainPrimeLease();
+      if (!mainLease) return;
+      try {
+        // Keep one main owner from physical identity reconciliation through WHAM
+        // identity retry and all cache/quota/plan publication before fetch returns.
+        if (isNativeMainTrafficBlocked()) return;
+        (options.reconcileMainAccount ?? reconcileMainCodexAccountRuntimeState)();
+        if (getAccountQuota(MAIN_CODEX_ACCOUNT_ID)) return;
+        if (!(options.readMainTokens ?? readCodexTokens)()) return;
+        await (options.fetchMainInfo ?? fetchMainAccountInfo)(false);
+      } finally {
+        mainLease.release();
+      }
+    };
     try {
       await Promise.allSettled([
-        primeMain ? fetchMainAccountInfo(false) : Promise.resolve(),
+        primeMain(),
         mapWithConcurrency(stale, POOL_QUOTA_REFRESH_CONCURRENCY, async a => {
           if (!getCodexAccountCredential(a.id)) return;
           await fetchPoolAccountQuota(a.id, false, a.plan);

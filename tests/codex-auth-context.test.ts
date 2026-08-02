@@ -212,7 +212,7 @@ describe("Codex auth context", () => {
     }
   });
 
-  test("recovery-blocked main affinity and alternate reject after routing while pool continues without reads", async () => {
+  test("recovery excludes main from affinity, rotation, and retry while healthy pool continues", async () => {
     writeFileSync(
       join(testDir, "auth.json"),
       JSON.stringify({ tokens: { access_token: "main_token", account_id: "main-account" } }),
@@ -225,10 +225,14 @@ describe("Codex auth context", () => {
     });
     const cfg = config();
     cfg.activeCodexAccountId = MAIN_CODEX_ACCOUNT_ID;
-    const affinityHeaders = new Headers({ "x-codex-parent-thread-id": "main-affinity" });
-    await expect(resolveCodexAuthContext(affinityHeaders, cfg, "pool", {
-      primeCodexPoolQuotas: async () => {},
-    })).resolves.toMatchObject({ kind: "main-pool", accountId: MAIN_CODEX_ACCOUNT_ID });
+    const affinityHeaders = ["round-robin", "fill-first"].map(strategy => new Headers({
+      "x-codex-parent-thread-id": `main-affinity-${strategy}`,
+    }));
+    for (const headers of affinityHeaders) {
+      await expect(resolveCodexAuthContext(headers, cfg, "pool", {
+        primeCodexPoolQuotas: async () => {},
+      })).resolves.toMatchObject({ kind: "main-pool", accountId: MAIN_CODEX_ACCOUNT_ID });
+    }
     cfg.activeCodexAccountId = "pool-a";
 
     const homeId = "auth-context-recovery-gate";
@@ -247,14 +251,28 @@ describe("Codex auth context", () => {
       primeCodexPoolQuotas: async () => { primes += 1; },
     };
     try {
-      await expect(resolveCodexAuthContext(affinityHeaders, cfg, "pool", readOptions))
-        .rejects.toBeInstanceOf(CodexPoolAuthenticationError);
-      await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", readOptions))
-        .resolves.toMatchObject({ kind: "pool", accountId: "pool-a" });
-      await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", {
-        ...readOptions,
-        excludeAccountId: "pool-a",
-      })).rejects.toBeInstanceOf(CodexPoolAuthenticationError);
+      for (const [index, strategy] of ["round-robin", "fill-first"].entries()) {
+        cfg.accountPoolStrategy = strategy as "round-robin" | "fill-first";
+        cfg.activeCodexAccountId = MAIN_CODEX_ACCOUNT_ID;
+        await expect(resolveCodexAuthContext(affinityHeaders[index]!, cfg, "pool", readOptions))
+          .resolves.toMatchObject({ kind: "pool", accountId: "pool-a" });
+        cfg.activeCodexAccountId = "pool-a";
+        await expect(resolveCodexAuthContext(
+          new Headers({ "x-codex-parent-thread-id": `new-${strategy}` }),
+          cfg,
+          "pool",
+          readOptions,
+        )).resolves.toMatchObject({ kind: "pool", accountId: "pool-a" });
+        await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", {
+          ...readOptions,
+          excludeAccountId: MAIN_CODEX_ACCOUNT_ID,
+        })).resolves.toMatchObject({ kind: "pool", accountId: "pool-a" });
+        await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", {
+          ...readOptions,
+          excludeAccountId: "pool-a",
+        })).rejects.toBeInstanceOf(CodexPoolAuthenticationError);
+        expect(cfg.activeCodexAccountId).toBe("pool-a");
+      }
       expect(nativeReads).toBe(0);
       expect(primes).toBe(0);
     } finally {

@@ -237,17 +237,16 @@ export async function resolveCodexAuthContext(
     if (!hasCallerCodexBearer(headers)) throw new CodexDirectAuthenticationError();
     return { kind: "main", accountId: null };
   }
-  // Preserve the explicit main selection while startup recovery is pending. Letting
-  // normal strategy resolution run would demote/mutate it before recovery can reopen
-  // the same physical account. Pool-active configurations never enter this branch.
+  // Retained startup recovery makes the physical main identity ineligible. Routing
+  // can still preserve service by selecting a healthy configured pool account.
   const nativeMainTrafficBlocked = isNativeMainTrafficBlocked();
-  if (nativeMainTrafficBlocked && config.activeCodexAccountId === MAIN_CODEX_ACCOUNT_ID) {
-    throw new CodexPoolAuthenticationError();
-  }
   const selectionAdmission = options.beginCodexAccountSelection?.();
   const nativeMainReadsForbidden = nativeMainTrafficBlocked || selectionAdmission?.mainProfileDraining === true;
   const selectionOptions = {
-    nativeMainSelectionOnly: nativeMainReadsForbidden,
+    // Temporary switch drain keeps the candidate until the atomic claim rejects
+    // it. Retained recovery makes main wholly ineligible so pool routing continues.
+    nativeMainSelectionOnly: !nativeMainTrafficBlocked
+      && selectionAdmission?.mainProfileDraining === true,
     isMainAccountTokenLive: options.isMainAccountTokenLive,
   };
   let accountId: string;
