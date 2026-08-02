@@ -1738,7 +1738,9 @@ describe("config.ts – sync writer timeout keying (#840 refinement)", () => {
       if (previousUsername === undefined) delete process.env.USERNAME;
       else process.env.USERNAME = previousUsername;
     }
-||||||| parent of d8261a286 (fix(config): preserve symlinked destinations in atomic writes)
+  });
+});
+
 describe("config.ts – atomic writes preserve symlinked destinations", () => {
   test("a symlinked destination survives the write and the real file receives it", () => {
     // Dotfiles shape: ~/.codex/config.toml -> ~/dotfiles/.codex/config.toml
