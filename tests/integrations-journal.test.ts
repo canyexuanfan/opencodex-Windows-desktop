@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigDir } from "../src/config";
 import { SNAPSHOT_RETENTION, type JournalEntry } from "../src/integrations/journal";
+import type { OwnershipRecord } from "../src/integrations/ownership";
 import { createIntegrationStateStore, type IntegrationStateStore } from "../src/integrations/store";
 
 /** Activation coverage for devlog/_plan/260802_client_toggle_api/021 §6. */
@@ -32,6 +33,16 @@ function entry(overrides: Partial<JournalEntry> = {}): JournalEntry {
     priorRecord: null,
     ...overrides,
   };
+}
+
+/** True when the OS still lets us list `dir` despite the permission bit. */
+function canStillList(dir: string): boolean {
+  try {
+    readdirSync(dir);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 describe("append and read back", () => {
@@ -91,9 +102,25 @@ describe("snapshots", () => {
   });
 
   test("counting distinguishes a genuine zero from an uninspectable directory", () => {
+    // An absent directory is a real zero.
     expect(store.countSnapshots("pi")).toBe(0);
     store.captureSnapshot("pi", "op-1", "bytes\n");
     expect(store.countSnapshots("pi")).toBe(1);
+
+    // An unreadable one is NOT zero. Reporting it as a healthy empty directory
+    // would hide exactly the credential-bearing pile the count exists to
+    // disclose, so make it genuinely uninspectable rather than stubbing readdir.
+    const parent = join(root, "snapshots");
+    chmodSync(parent, 0o000);
+    try {
+      // Running as root defeats the permission bit; only assert where the OS
+      // actually enforces it.
+      if (!canStillList(join(parent, "pi"))) {
+        expect(store.countSnapshots("pi")).toBeNull();
+      }
+    } finally {
+      chmodSync(parent, 0o700);
+    }
   });
 });
 
@@ -196,14 +223,23 @@ describe("store isolation", () => {
     const rowsBefore = store.listOperations(clientId).length;
     chmodSync(dir, 0o000);
     try {
+      // Go through the REAL post-commit path: appendOperation prunes and marks
+      // by itself. Calling markPruneFailure by hand would prove nothing about
+      // whether a pruning failure can take the committed row down with it.
       const failed = store.pruneSnapshots(clientId);
       // Running as root would defeat the permission bit; only assert the
       // contract when the failure actually occurred.
       if (!failed.ok) {
-        store.markPruneFailure(clientId, failed.error);
+        expect(() => store.appendJournal({
+          opId: "after-prune-broke", clientId, kind: "apply", at: new Date().toISOString(),
+          configPath: "/tmp/whatever", snapshot: { kind: "none" },
+          resultFingerprint: "later", resultAbsent: false, priorRecord: null,
+        })).not.toThrow();
+        // The row committed even though the maintenance that follows it failed.
+        expect(store.findOperation("after-prune-broke")).not.toBeNull();
+        expect(store.listOperations(clientId).length).toBe(rowsBefore + 1);
+        // …and the failure was recorded for a later retry.
         expect(store.readMaintenance().pruneFailures[clientId]).toBeDefined();
-        // The journal is untouched by a pruning failure.
-        expect(store.listOperations(clientId).length).toBe(rowsBefore);
       }
     } finally {
       chmodSync(dir, 0o700);
@@ -226,5 +262,62 @@ describe("store isolation", () => {
     const after = existsSync(manifest) ? readFileSync(manifest, "utf8") : null;
     expect(after).toBe(before);
     expect(existsSync(join(root, "snapshots", "kimi", "manifest-probe"))).toBe(true);
+  });
+
+  /**
+   * The writer never touches `writeRecord` directly — it goes through
+   * `store.io()`. If that seam resolved the default root, a test (or a second
+   * store) would silently rewrite the developer's own records file, so bind the
+   * check to the seam the writer actually uses.
+   */
+  test("records written through the io() seam land in the bound store", () => {
+    const record: OwnershipRecord = {
+      clientId: "pi",
+      configPath: "/home/dev/.pi/agent/models.json",
+      fileFingerprint: "f".repeat(16),
+      blockFingerprint: "b".repeat(16),
+      fragmentPaths: [["providers", "opencodex"]],
+      appliedAt: "2026-08-02T00:00:00.000Z",
+      opId: "io-seam",
+    };
+    const io = store.io();
+    io.putRecord(record);
+    expect(store.readRecords().pi?.opId).toBe("io-seam");
+    expect(existsSync(join(root, "records.json"))).toBe(true);
+
+    // A second store rooted elsewhere sees nothing of it, and dropping through
+    // the seam removes it from the same place it was written.
+    const other = join(mkdtempSync(join(tmpdir(), "ocx-io-seam-")), "integrations");
+    try {
+      expect(createIntegrationStateStore(other).readRecords().pi).toBeUndefined();
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+    io.dropRecord("pi");
+    expect(store.readRecords().pi).toBeUndefined();
+
+    // And the journal seam writes to the same root rather than the default one.
+    io.appendJournal(entry({ opId: "io-seam-row" }));
+    expect(store.findOperation("io-seam-row")).not.toBeNull();
+    expect(readFileSync(join(root, "journal.jsonl"), "utf8")).toContain("io-seam-row");
+  });
+
+  /**
+   * Restore puts provenance back alongside the bytes, so `priorRecord` has to
+   * survive JSON exactly. A dropped `fragmentPaths` would leave a restored file
+   * whose owned paths are unknown — and disable would then remove nothing.
+   */
+  test("priorRecord round-trips through the journal unchanged", () => {
+    const priorRecord: OwnershipRecord = {
+      clientId: "kimi",
+      configPath: "/home/dev/.kimi/config.toml",
+      fileFingerprint: "0123456789abcdef",
+      blockFingerprint: "fedcba9876543210",
+      fragmentPaths: [["providers", "opencodex"], ["models", "opencodex/x"]],
+      appliedAt: "2026-08-01T09:00:00.000Z",
+      opId: "previous-op",
+    };
+    store.appendJournal(entry({ opId: "with-prior", clientId: "kimi", priorRecord }));
+    expect(store.findOperation("with-prior")?.priorRecord).toEqual(priorRecord);
   });
 });

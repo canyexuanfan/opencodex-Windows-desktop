@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EXPORT_CLIENTS, type ExportModel } from "../src/clients/config-export";
@@ -187,6 +187,106 @@ describe("ordering guards", () => {
       dropRecord: () => {},
     };
     expect(loadTarget(io, "/nowhere").ok).toBe(false);
+  });
+
+  /**
+   * The DEFAULT io is what ships. Substituting a fake statKind proves the
+   * classifier's ordering but would pass even if fileIO collapsed EACCES into
+   * "missing" — so exercise the real implementation against a real
+   * unreadable path.
+   */
+  test("the default IO reports a real unreadable file as failed, not missing", () => {
+    const io = fileIO();
+    const secret = join(home, "locked", "models.json");
+    mkdirSync(join(home, "locked"), { recursive: true });
+    writeFileSync(secret, "{}\n");
+    chmodSync(join(home, "locked"), 0o000);
+    try {
+      const kind = io.statKind(secret);
+      // Some CI users (root, or a filesystem without POSIX modes) can still
+      // stat it; only assert the distinction where the OS actually enforces it.
+      if (kind !== "file") {
+        expect(kind).toBe("failed");
+        expect(loadTarget(io, secret)).toEqual({ ok: false, why: "read-failed" });
+      }
+      // A genuinely absent path is the other side of the distinction.
+      expect(io.statKind(join(home, "definitely-not-there"))).toBe("missing");
+    } finally {
+      chmodSync(join(home, "locked"), 0o700);
+    }
+  });
+
+  /**
+   * A record proves ownership of ONE file. This is the case that would let a
+   * disable delete fragments from a file we never wrote.
+   */
+  test("a record from another config path never grants ownership here", () => {
+    const text = seedOurConfig();
+    const record = seedRecord(text);
+    // Same client, same bytes, same fingerprints — different file. That happens
+    // whenever HOME or a client's own *_HOME variable moves.
+    writeRecord({ ...record, configPath: join(home, "elsewhere", "models.json") }, stateRoot);
+    const status = readIntegrationState(input());
+    expect(status.state).toBe("conflict");
+    expect(status.reason).toBe("unowned-key");
+  });
+
+  /**
+   * The records file is keyed by client, so a mismatched `clientId` inside the
+   * entry only arises from a hand-edited or half-migrated store. It still must
+   * not grant ownership: the writer would then remove fragments on behalf of a
+   * client that never applied anything here.
+   */
+  test("a record whose clientId disagrees with its key never grants ownership", () => {
+    const text = seedOurConfig();
+    const record = seedRecord(text);
+    writeFileSync(
+      join(stateRoot, "records.json"),
+      `${JSON.stringify({ pi: { ...record, clientId: "kimi" } }, null, 2)}\n`,
+    );
+    const status = readIntegrationState(input());
+    expect(status.state).toBe("conflict");
+    expect(status.reason).toBe("unowned-key");
+  });
+
+  /**
+   * An unreadable memory is never permission to delete. A corrupt records file
+   * means "we remember nothing", and our block on disk then reads as someone
+   * else's — not as ours to overwrite or remove.
+   */
+  test("a corrupt records file fails closed to conflict, never to current", () => {
+    const text = seedOurConfig();
+    seedRecord(text);
+    writeFileSync(join(stateRoot, "records.json"), "{ this is not json\n");
+    const status = readIntegrationState(input());
+    expect(status.state).toBe("conflict");
+    expect(status.reason).toBe("unowned-key");
+    // No stale provenance leaks out of a memory we could not read.
+    expect(status.appliedAt).toBeUndefined();
+    expect(status.lastOpId).toBeUndefined();
+  });
+
+  /**
+   * Retention is derived from what is ON DISK. When the snapshot directory
+   * cannot be inspected the status must say so (-1, degraded) instead of
+   * reporting a reassuring zero.
+   */
+  test("an uninspectable snapshot directory reports degraded retention", () => {
+    const bound = store();
+    bound.captureSnapshot("pi", "op-1", "bytes\n");
+    const snapshots = join(stateRoot, "snapshots");
+    chmodSync(snapshots, 0o000);
+    try {
+      // Running as root defeats the permission bit; assert only where the OS
+      // enforces it.
+      if (bound.countSnapshots("pi") === null) {
+        const status = readIntegrationState(input({ store: bound }));
+        expect(status.snapshotCount).toBe(-1);
+        expect(status.retentionDegraded).toBe(true);
+      }
+    } finally {
+      chmodSync(snapshots, 0o700);
+    }
   });
 });
 
