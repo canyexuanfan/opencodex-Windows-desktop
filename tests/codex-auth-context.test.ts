@@ -8,6 +8,7 @@ import {
   CodexAccountCooldownError,
   CodexAuthContextError,
   CodexDirectAuthenticationError,
+  CodexMainProfileDrainingError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
   cooldownErrorMessage,
@@ -47,6 +48,16 @@ import {
 } from "../src/codex/routing";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 import { setIcaclsRunnerForTests } from "../src/lib/windows-secret-acl";
+import {
+  completeNativeMainRecovery,
+  initializeNativeMainStartupGate,
+} from "../src/codex/native-profile-startup";
+import type { NativeProfileManager } from "../src/codex/native-profile-manager";
+import {
+  acquireNativeMainProfileDrain,
+  codexAccountSelectionForTurn,
+  tryAdmitTurn,
+} from "../src/server/lifecycle";
 
 let testDir: string;
 let previousOpencodexHome: string | undefined;
@@ -170,6 +181,114 @@ const forwardProvider: OcxProviderConfig = {
 };
 
 describe("Codex auth context", () => {
+  test("main-profile drain routes a non-main pool account without native reads or quota priming", async () => {
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool_token",
+      refreshToken: "pool_refresh",
+      expiresAt: Date.now() + 3_600_000,
+      chatgptAccountId: "pool_acc",
+    });
+    let nativeReads = 0;
+    let primes = 0;
+    const drain = acquireNativeMainProfileDrain("auth-context-test");
+    const turn = tryAdmitTurn();
+    expect(drain).not.toBeNull();
+    expect(turn).not.toBeNull();
+    try {
+      await expect(resolveCodexAuthContext(new Headers(), config(), "pool", {
+        beginCodexAccountSelection: codexAccountSelectionForTurn(turn!),
+        isMainAccountTokenLive: () => { nativeReads += 1; return true; },
+        getMainAccountToken: () => {
+          nativeReads += 1;
+          return { accessToken: "main", chatgptAccountId: "main-account" };
+        },
+        primeCodexPoolQuotas: async () => { primes += 1; },
+      })).resolves.toMatchObject({ kind: "pool", accountId: "pool-a" });
+      expect(nativeReads).toBe(0);
+      expect(primes).toBe(0);
+    } finally {
+      turn?.release();
+      drain?.release();
+    }
+  });
+
+  test("recovery-blocked main affinity and alternate reject after routing while pool continues without reads", async () => {
+    writeFileSync(
+      join(testDir, "auth.json"),
+      JSON.stringify({ tokens: { access_token: "main_token", account_id: "main-account" } }),
+    );
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool_token",
+      refreshToken: "pool_refresh",
+      expiresAt: Date.now() + 3_600_000,
+      chatgptAccountId: "pool_acc",
+    });
+    const cfg = config();
+    cfg.activeCodexAccountId = MAIN_CODEX_ACCOUNT_ID;
+    const affinityHeaders = new Headers({ "x-codex-parent-thread-id": "main-affinity" });
+    await expect(resolveCodexAuthContext(affinityHeaders, cfg, "pool", {
+      primeCodexPoolQuotas: async () => {},
+    })).resolves.toMatchObject({ kind: "main-pool", accountId: MAIN_CODEX_ACCOUNT_ID });
+    cfg.activeCodexAccountId = "pool-a";
+
+    const homeId = "auth-context-recovery-gate";
+    await initializeNativeMainStartupGate({
+      manager: { context: { homeId }, recover: async () => ({}) } as unknown as NativeProfileManager,
+      probeRecoveryState: () => "manual",
+    });
+    let nativeReads = 0;
+    let primes = 0;
+    const readOptions = {
+      isMainAccountTokenLive: () => { nativeReads += 1; return true; },
+      getMainAccountToken: () => {
+        nativeReads += 1;
+        return { accessToken: "main", chatgptAccountId: "main-account" };
+      },
+      primeCodexPoolQuotas: async () => { primes += 1; },
+    };
+    try {
+      await expect(resolveCodexAuthContext(affinityHeaders, cfg, "pool", readOptions))
+        .rejects.toBeInstanceOf(CodexPoolAuthenticationError);
+      await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", readOptions))
+        .resolves.toMatchObject({ kind: "pool", accountId: "pool-a" });
+      await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", {
+        ...readOptions,
+        excludeAccountId: "pool-a",
+      })).rejects.toBeInstanceOf(CodexPoolAuthenticationError);
+      expect(nativeReads).toBe(0);
+      expect(primes).toBe(0);
+    } finally {
+      completeNativeMainRecovery(homeId);
+    }
+  });
+
+  test("post-fence main selection rejects before injected token materialization", async () => {
+    writeFileSync(
+      join(testDir, "auth.json"),
+      JSON.stringify({ tokens: { access_token: "main_token", account_id: "main-account" } }),
+    );
+    const cfg = config();
+    cfg.activeCodexAccountId = MAIN_CODEX_ACCOUNT_ID;
+    let nativeReads = 0;
+    const drain = acquireNativeMainProfileDrain("auth-context-main-test");
+    const turn = tryAdmitTurn();
+    try {
+      await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", {
+        beginCodexAccountSelection: codexAccountSelectionForTurn(turn!),
+        isMainAccountTokenLive: () => { nativeReads += 1; return true; },
+        getMainAccountToken: () => {
+          nativeReads += 1;
+          return { accessToken: "main", chatgptAccountId: "main-account" };
+        },
+        primeCodexPoolQuotas: async () => { throw new Error("must not prime"); },
+      })).rejects.toBeInstanceOf(CodexMainProfileDrainingError);
+      expect(nativeReads).toBe(0);
+    } finally {
+      turn?.release();
+      drain?.release();
+    }
+  });
+
   test("direct mode returns caller-owned main context without touching pool selection", async () => {
     const cfg = { ...config(), activeCodexAccountId: "missing-pool-account" };
     await expect(resolveCodexAuthContext(new Headers({ authorization: "Bearer caller" }), cfg, "direct"))

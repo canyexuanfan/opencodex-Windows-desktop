@@ -214,6 +214,10 @@ export interface ResolveCodexAuthContextOptions {
   modelId?: string;
   /** Short reservation converted to turn ownership before native `__main__` token materialization. */
   beginCodexAccountSelection?: () => CodexAccountSelectionAdmission | undefined;
+  /** Test-only native credential read seams. */
+  isMainAccountTokenLive?: () => boolean;
+  getMainAccountToken?: typeof getMainAccountToken;
+  primeCodexPoolQuotas?: (config: OcxConfig, reason: string) => Promise<void>;
 }
 
 export interface CodexAccountSelectionAdmission {
@@ -236,30 +240,45 @@ export async function resolveCodexAuthContext(
   // Preserve the explicit main selection while startup recovery is pending. Letting
   // normal strategy resolution run would demote/mutate it before recovery can reopen
   // the same physical account. Pool-active configurations never enter this branch.
-  if (isNativeMainTrafficBlocked() && config.activeCodexAccountId === MAIN_CODEX_ACCOUNT_ID) {
+  const nativeMainTrafficBlocked = isNativeMainTrafficBlocked();
+  if (nativeMainTrafficBlocked && config.activeCodexAccountId === MAIN_CODEX_ACCOUNT_ID) {
     throw new CodexPoolAuthenticationError();
   }
   const selectionAdmission = options.beginCodexAccountSelection?.();
+  const nativeMainReadsForbidden = nativeMainTrafficBlocked || selectionAdmission?.mainProfileDraining === true;
+  const selectionOptions = {
+    nativeMainSelectionOnly: nativeMainReadsForbidden,
+    isMainAccountTokenLive: options.isMainAccountTokenLive,
+  };
   let accountId: string;
   const quotaScope = codexQuotaScopeForModel(options.modelId);
   try {
     // A pre-drain selector reserves the native identity while reconciliation and
     // routing inspect it. Selectors arriving after the fence skip reconciliation
     // and may still route to non-main pool accounts without touching switch state.
-    if (!selectionAdmission?.mainProfileDraining) reconcileMainCodexAccountRuntimeState();
+    if (!nativeMainReadsForbidden) reconcileMainCodexAccountRuntimeState();
     const threadId = headers.get("x-codex-parent-thread-id");
     const resolution = options.excludeAccountId
       ? (() => {
-          const selected = pickAlternateCodexAccount(config, options.excludeAccountId!, Date.now(), quotaScope);
+          const selected = pickAlternateCodexAccount(
+            config,
+            options.excludeAccountId!,
+            Date.now(),
+            quotaScope,
+            selectionOptions,
+          );
           return selected
             ? { status: "selected" as const, accountId: selected }
             : { status: "none" as const };
         })()
-      : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope);
+      : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope, selectionOptions);
     if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
     const selected = resolution.status === "selected" ? resolution.accountId : null;
     if (!selected) throw new CodexPoolAuthenticationError();
     accountId = selected;
+    if (accountId === MAIN_CODEX_ACCOUNT_ID && nativeMainTrafficBlocked) {
+      throw new CodexPoolAuthenticationError();
+    }
     if (
       accountId === MAIN_CODEX_ACCOUNT_ID
       && selectionAdmission
@@ -275,10 +294,14 @@ export async function resolveCodexAuthContext(
   // best-effort prime so the NEXT routing decision has real scores. This never
   // blocks the current request, and the helper's single-flight guard collapses
   // repeated triggers into one pass.
-  if (!getAccountQuota(accountId)) {
-    import("./auth-api")
-      .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "pre-route"))
-      .catch(() => {});
+  if (!nativeMainReadsForbidden && !getAccountQuota(accountId)) {
+    if (options.primeCodexPoolQuotas) {
+      void options.primeCodexPoolQuotas(config, "pre-route").catch(() => {});
+    } else {
+      import("./auth-api")
+        .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "pre-route"))
+        .catch(() => {});
+    }
   }
   // Snapshot (not just the deadline) so a refused request can report WHY it is cooled:
   // a literal Retry-After reads very differently to a user than a reset-derived guess.
@@ -301,7 +324,7 @@ export async function resolveCodexAuthContext(
 
   if (accountId === MAIN_CODEX_ACCOUNT_ID) {
     // Main account in rotation: inject the read-only auth.json token and fail closed if it vanished.
-    const token = getMainAccountToken();
+    const token = (options.getMainAccountToken ?? getMainAccountToken)();
     if (!token) {
       // Nothing will reach upstream, so give the probe back instead of burning it.
       if (probeLeaseId && probeQuotaScope) releaseCodexQuotaScopeProbeLease(accountId, probeQuotaScope, probeLeaseId);

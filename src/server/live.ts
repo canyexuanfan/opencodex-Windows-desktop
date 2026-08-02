@@ -597,8 +597,9 @@ export async function resolveLiveSidebandUpgrade(
   config: OcxConfig,
   logCtx: RequestLogContext,
   target: LiveSidebandTarget,
+  turnAdmissionLease?: AdmissionLease,
 ): Promise<{ headers: Record<string, string>; upstreamWsUrl: string; recordOutcome?: LiveRelayTarget["recordOutcome"] } | Response> {
-  const relay = await resolveLiveRelay(req, config, logCtx);
+  const relay = await resolveLiveRelay(req, config, logCtx, turnAdmissionLease);
   if (relay instanceof Response) return relay;
   return {
     headers: relay.headers,

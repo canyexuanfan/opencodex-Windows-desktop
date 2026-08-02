@@ -113,6 +113,7 @@ import {
   maybePrimeSubagentQuota,
   recordSubagentQuotaFailureForThreadSpawn,
 } from "../../codex/subagent-model-fallback";
+import { isNativeMainTrafficBlocked } from "../../codex/native-profile-startup";
 import {
   beginRequestAttempt,
   catalogModelSupportsServiceTier,
@@ -1343,25 +1344,39 @@ async function handleResponsesInner(
     && parsed._previousResponseInputExpanded !== true;
   // A canonical replay miss must not poll quota upstream before the final fail-closed decision.
   // Cached fallback state can still select a provider with native continuation support below.
-  if (
-    isThreadSpawnRequest(req.headers)
-    && !(hasUnexpandedPreviousResponse && isCanonicalOpenAiForwardProvider(route.provider))
-  ) {
-    await maybePrimeSubagentQuota(config);
-  }
-
+  const threadSpawn = isThreadSpawnRequest(req.headers);
+  const previewSelectionAdmission = threadSpawn
+    ? codexAccountSelectionForTurn(options.turnAdmissionLease)?.()
+    : undefined;
+  const nativeMainReadsForbidden = isNativeMainTrafficBlocked()
+    || previewSelectionAdmission?.mainProfileDraining === true;
+  const previewSelectionOptions = { nativeMainSelectionOnly: nativeMainReadsForbidden };
   let authCtx: CodexAuthContext = { kind: "main", accountId: null };
   let selectedForwardHeaders = req.headers;
   let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
   let subagentQuotaFailureModel = parsed.modelId;
 
+  try {
+    if (
+      threadSpawn
+      && !(hasUnexpandedPreviousResponse && isCanonicalOpenAiForwardProvider(route.provider))
+    ) {
+      await maybePrimeSubagentQuota(config, Date.now(), { nativeMainReadsForbidden });
+    }
+
   // Subagent fallback must settle the final model/provider BEFORE route-dependent
   // normalization (virtual models, effort caps, service tier, wire protocol).
   // Preview the preferred Codex account without acquiring a probe lease or refreshing
   // tokens — auth is resolved only after the final route is selected.
-  if (isThreadSpawnRequest(req.headers) && !options.comboAttempt) {
+  if (threadSpawn && !options.comboAttempt) {
     const threadId = req.headers.get("x-codex-parent-thread-id");
-    const previewAccountId = previewCodexAccountForRequest(threadId, config);
+    const previewAccountId = previewCodexAccountForRequest(
+      threadId,
+      config,
+      Date.now(),
+      undefined,
+      previewSelectionOptions,
+    );
     subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
     const fallback = applySubagentModelFallback(
       parsed,
@@ -1370,6 +1385,7 @@ async function handleResponsesInner(
       previewAccountId,
       Date.now(),
       unreadableEncryptedAgentTask,
+      previewSelectionOptions,
     );
     if (fallback) {
       (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
@@ -1390,6 +1406,9 @@ async function handleResponsesInner(
         return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
       }
     }
+  }
+  } finally {
+    previewSelectionAdmission?.release();
   }
 
   // Encrypted child tasks may only reach the canonical native backend. This check

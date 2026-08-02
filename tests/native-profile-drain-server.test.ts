@@ -2,18 +2,24 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { request as httpRequest } from "node:http";
+import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { resetMainCodexAccountIdentityTrackingForTests } from "../src/codex/account-lifecycle";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/account-id";
 import { clearMainAccountInfoCache } from "../src/codex/main-account-cache";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
 import { clearThreadAccountMap } from "../src/codex/routing";
 import { saveConfig } from "../src/config";
+import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
+import type { NativeProfileManager } from "../src/codex/native-profile-manager";
 import { startServer } from "../src/server";
 import {
   acquireNativeMainProfileDrain,
+  getNativeMainProfileRequestCount,
   resetLifecycleDrainStateForTests,
 } from "../src/server/lifecycle";
 import type { OcxConfig } from "../src/types";
+import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 
 const originalFetch = globalThis.fetch;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -149,6 +155,178 @@ describe("native main profile scoped server admission", () => {
     } finally {
       drain?.release();
       await server?.stop(true);
+    }
+  });
+
+  test("Live/Realtime sideband retains main ownership while Direct and non-main Pool continue", async () => {
+    let upstreamConnections = 0;
+    const upstream = Bun.serve({
+      port: 0,
+      fetch(req, server) {
+        if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+          if (server.upgrade(req, { data: {} })) return undefined as unknown as Response;
+          return new Response("upgrade failed", { status: 500 });
+        }
+        return new Response("not found", { status: 404 });
+      },
+      websocket: {
+        open() { upstreamConnections += 1; },
+        message(ws, message) { ws.send(`echo:${String(message)}`); },
+      },
+    });
+    const liveProvider = (codexAccountMode: "direct" | "pool") => ({
+      adapter: "openai-responses" as const,
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward" as const,
+      codexAccountMode,
+    });
+    const saveMode = (codexAccountMode: "direct" | "pool", activeCodexAccountId: string) => saveConfig({
+      port: 0,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: { openai: liveProvider(codexAccountMode) },
+      activeCodexAccountId,
+      autoSwitchThreshold: 0,
+      codexAccounts: activeCodexAccountId === "pool-a"
+        ? [
+            { id: "main", email: "main@example.test", isMain: true },
+            { id: "pool-a", email: "pool@example.test", isMain: false, chatgptAccountId: "pool-account" },
+          ]
+        : [],
+      experimentalRealtimeWsBaseUrl: upstream.url.toString(),
+    } as OcxConfig);
+    const connectEcho = async (
+      server: ReturnType<typeof startServer>,
+      path: string,
+      headers: Record<string, string> = {},
+    ): Promise<WebSocket> => {
+      const url = new URL(path, server.url);
+      url.protocol = "ws:";
+      const ws = new WebSocket(url, { headers } as unknown as string[]);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("sideband echo timeout")), 5_000);
+        ws.addEventListener("open", () => ws.send("ping"), { once: true });
+        ws.addEventListener("message", event => {
+          if (String(event.data) !== "echo:ping") return;
+          clearTimeout(timer);
+          resolve();
+        });
+        ws.addEventListener("error", () => {
+          clearTimeout(timer);
+          reject(new Error("sideband websocket error"));
+        }, { once: true });
+      });
+      return ws;
+    };
+    const closeSocket = async (ws: WebSocket): Promise<void> => {
+      if (ws.readyState === WebSocket.CLOSED) return;
+      const closed = new Promise<void>(resolve => ws.addEventListener("close", () => resolve(), { once: true }));
+      ws.close();
+      await closed;
+      const deadline = Date.now() + 2_000;
+      while (getNativeMainProfileRequestCount() > 0 && Date.now() < deadline) await Bun.sleep(10);
+    };
+    const handshakeStatus = (server: ReturnType<typeof startServer>, path: string) => new Promise<number>((resolve, reject) => {
+      const url = new URL(path, server.url);
+      const request = httpRequest({
+        hostname: url.hostname,
+        port: url.port,
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        headers: {
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "sec-websocket-version": "13",
+        },
+      }, response => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      });
+      request.on("upgrade", (_response, socket) => {
+        socket.destroy();
+        resolve(101);
+      });
+      request.on("error", reject);
+      request.end();
+    });
+    const switchRequest = () => new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+    let switches = 0;
+    const manager = { switch: async () => { switches += 1; return { ok: true }; } } as unknown as NativeProfileManager;
+    let server: ReturnType<typeof startServer> | undefined;
+    let client: WebSocket | undefined;
+    try {
+      saveMode("pool", MAIN_CODEX_ACCOUNT_ID);
+      updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 1, 1);
+      server = startServer(0);
+      client = await connectEcho(server, "/v1/live/main-pre-fence");
+      expect(getNativeMainProfileRequestCount()).toBe(1);
+      const blocked = await handleNativeProfileAPI(
+        switchRequest(),
+        new URL("http://localhost/api/native-main-profiles/switch"),
+        {} as OcxConfig,
+        { manager, drainTimeoutMs: 0 },
+      );
+      expect(blocked?.status).toBe(409);
+      expect(switches).toBe(0);
+      await closeSocket(client);
+      client = undefined;
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+      const afterClose = await handleNativeProfileAPI(
+        switchRequest(),
+        new URL("http://localhost/api/native-main-profiles/switch"),
+        {} as OcxConfig,
+        { manager, drainTimeoutMs: 0 },
+      );
+      expect(afterClose?.status).toBe(200);
+      expect(switches).toBe(1);
+
+      const mainDrain = acquireNativeMainProfileDrain("new-main-sideband");
+      expect(mainDrain).not.toBeNull();
+      expect(await handshakeStatus(server, "/v1/realtime?call_id=main-post-fence")).toBe(503);
+      expect(upstreamConnections).toBe(1);
+      mainDrain?.release();
+      await server.stop(true);
+      server = undefined;
+
+      saveMode("direct", MAIN_CODEX_ACCOUNT_ID);
+      server = startServer(0);
+      const directDrain = acquireNativeMainProfileDrain("direct-sideband");
+      const directToken = fakeChatGptJwt({ chatgpt_account_id: "direct-account" });
+      client = await connectEcho(server, "/v1/live/direct", {
+        authorization: `Bearer ${directToken}`,
+        "chatgpt-account-id": "direct-account",
+      });
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+      directDrain?.release();
+      await closeSocket(client);
+      client = undefined;
+      await server.stop(true);
+      server = undefined;
+
+      saveCodexAccountCredential("pool-a", {
+        accessToken: "pool-access",
+        refreshToken: "pool-refresh",
+        expiresAt: Date.now() + 3_600_000,
+        chatgptAccountId: "pool-account",
+      });
+      updateAccountQuota("pool-a", 1, 1);
+      saveMode("pool", "pool-a");
+      server = startServer(0);
+      const poolDrain = acquireNativeMainProfileDrain("pool-sideband");
+      client = await connectEcho(server, "/v1/realtime/calls/pool");
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+      poolDrain?.release();
+      await closeSocket(client);
+      client = undefined;
+      expect(upstreamConnections).toBe(3);
+    } finally {
+      if (client) await closeSocket(client).catch(() => {});
+      await server?.stop(true);
+      await upstream.stop(true);
     }
   });
 });

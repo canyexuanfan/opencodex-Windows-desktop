@@ -403,7 +403,16 @@ describe("native main profile management API", () => {
     let completions = 0;
     const retainedManager = {
       context: { homeId, journalPath: "missing", recoveryBlockPath: "block" },
-      recover: async () => ({ ok: true, recovered: false }),
+      recover: async () => {
+        const turn = tryAdmitTurn();
+        expect(turn).not.toBeNull();
+        const selection = codexAccountSelectionForTurn(turn!)!();
+        expect(selection?.mainProfileDraining).toBe(true);
+        expect(selection?.claimMainProfile()).toBe(false);
+        selection?.release();
+        turn?.release();
+        return { ok: true, recovered: false };
+      },
     } as unknown as NativeProfileManager;
     const retainedRequest = new Request("http://localhost/api/native-main-profiles/recover", {
       method: "POST",

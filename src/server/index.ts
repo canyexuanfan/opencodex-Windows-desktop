@@ -170,7 +170,13 @@ const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 const LIVE_SIDEBAND_PENDING_MAX = 32;
 
+function releaseLiveSidebandAdmission(ws: ServerWebSocket<WsData>): void {
+  ws.data.liveTurnAdmissionLease?.release();
+  ws.data.liveTurnAdmissionLease = undefined;
+}
+
 function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""): void {
+  releaseLiveSidebandAdmission(ws);
   try {
     ws.data.liveUpstream?.close(code, reason);
   } catch {
@@ -236,6 +242,7 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
     }
   });
   upstream.addEventListener("close", (event) => {
+    releaseLiveSidebandAdmission(ws);
     try {
       ws.close(event.code || 1000, event.reason || "");
     } catch {
@@ -882,8 +889,17 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           provider: "unknown",
           ...admissionFields(admission),
         };
-        const resolved = await resolveLiveSidebandUpgrade(req, config, logCtx, liveSidebandTarget);
+        const turnAdmissionLease = tryAdmitTurn();
+        if (!turnAdmissionLease) return serverBusyResponse(req, "active turns");
+        let resolved;
+        try {
+          resolved = await resolveLiveSidebandUpgrade(req, config, logCtx, liveSidebandTarget, turnAdmissionLease);
+        } catch (error) {
+          turnAdmissionLease.release();
+          throw error;
+        }
         if (resolved instanceof Response) {
+          turnAdmissionLease.release();
           addFinalRequestLog(requestId, start, logCtx, resolved.status);
           return withCors(resolved, req, config);
         }
@@ -895,8 +911,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
             liveUpstreamHeaders: resolved.headers,
             livePending: [],
             liveOpened: false,
+            liveTurnAdmissionLease: turnAdmissionLease,
           } satisfies WsData,
         })) return undefined as unknown as Response;
+        turnAdmissionLease.release();
         return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, config);
       }
 
@@ -927,6 +945,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
       // Live sideband sockets (kind=live-sideband) are a transparent bidirectional relay instead.
       open(ws: ServerWebSocket<WsData>) {
         if (ws.data.kind === "live-sideband") {
+          if (!ws.data.liveTurnAdmissionLease) {
+            closeLiveSideband(ws, 1013, "server busy");
+            return;
+          }
           attachLiveSidebandUpstream(ws);
           return;
         }
@@ -1106,6 +1128,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
         if (ws.data.kind === "live-sideband") {
           ws.data.cancel?.();
           ws.data.liveUpstream = undefined;
+          releaseLiveSidebandAdmission(ws);
           return;
         }
         unregisterCodexWebSocket(ws);
