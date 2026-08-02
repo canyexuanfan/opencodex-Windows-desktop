@@ -164,6 +164,21 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 
 アカウントの Codex リセット クレジットを検査します。クレジットの消費は破壊的であり、`--consume` と `--yes` の両方が必要です。
 
+### `ocx account main <subcommand>`
+
+OpenCodex のアカウントプールルーティングを変更せずに、名前付きのネイティブ Codex メインログインプロファイルを管理します。
+
+```text
+ocx account main doctor [--json]
+ocx account main list [--json]
+ocx account main register <label> [--json]
+ocx account main add <label>
+ocx account main switch <profile-id-or-label> --yes [--json]
+ocx account main recover [--rollback --yes] [--json]
+```
+
+バージョン 1 はファイルベースの Codex 認証をサポートし、保存したプロファイルを AES-256-GCM で暗号化し、暗号鍵を OS の資格情報ストアに保持します。`add` は、生成された資格情報を取り込む前に公式 Codex ログインをステージングします。プロファイルを切り替える前に Codex を終了してください。切り替えに成功するとローカルのタスクと履歴は保持されますが、続行する前に Codex の再起動が必要です。`doctor` でプロファイル状態を確認し、`recover` で中断した切り替えを完了またはロールバックできます。`switch` にはプロファイル ID またはラベルを指定できます。
+
 ## モデル
 
 ### `ocx models [subcommand]`・`ocx model <subcommand>`

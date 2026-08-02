@@ -215,13 +215,12 @@ Inspect Codex reset credits for an account. Consuming a credit is destructive an
 Manage named native Codex main-login profiles without changing OpenCodex account-pool routing:
 
 ```text
-ocx account main doctor
-ocx account main list
-ocx account main register <name>
-ocx account main add <name>
-ocx account main switch <name> --yes
-ocx account main recover
-ocx account main recover --rollback --yes
+ocx account main doctor [--json]
+ocx account main list [--json]
+ocx account main register <label> [--json]
+ocx account main add <label>
+ocx account main switch <profile-id-or-label> --yes [--json]
+ocx account main recover [--rollback --yes] [--json]
 ```
 
 Version 1 supports file-based Codex authentication, encrypts stored profiles with AES-256-GCM, and
@@ -229,6 +228,7 @@ keeps the encryption key in the operating-system credential store. `add` stages 
 login flow before importing the resulting credential. Close Codex before switching profiles; a
 successful switch preserves local tasks and history, then requires Codex to be restarted. Use
 `doctor` to inspect profile state and `recover` to finish or roll back an interrupted transition.
+`switch` accepts either the profile ID or its label.
 
 ## Models
 

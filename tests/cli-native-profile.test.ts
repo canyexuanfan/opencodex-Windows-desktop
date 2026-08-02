@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cmdAccount } from "../src/cli/account";
+import { nativeMainCodexLoginInvocation } from "../src/cli/account-main";
 
 const originalLog = console.log;
 const originalError = console.error;
@@ -12,6 +13,25 @@ afterEach(() => {
 });
 
 describe("ocx account main", () => {
+  test("official login resolves a Windows npm shim through ComSpec", () => {
+    const npmBin = "C:\\Users\\tester\\AppData\\Roaming\\npm";
+    const codexShim = `${npmBin}\\codex.cmd`;
+    const invocation = nativeMainCodexLoginInvocation("win32", {
+      env: {
+        PATH: npmBin,
+        PATHEXT: ".CMD",
+        ComSpec: "C:\\Windows\\System32\\cmd.exe",
+      },
+      exists: path => path.toLowerCase() === codexShim.toLowerCase(),
+    });
+
+    expect(invocation.file).toBe("C:\\Windows\\System32\\cmd.exe");
+    expect(invocation.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+    expect(invocation.args[3]).toContain("codex.cmd");
+    expect(invocation.args[3]).toContain('^"login^"');
+    expect(invocation.options).toEqual({ windowsVerbatimArguments: true });
+  });
+
   test("add keeps the auth envelope off HTTP and switch requires explicit stopped confirmation", async () => {
     const stagingHome = join(tmpdir(), "ocx-native-profile-stage");
     const requests: Array<{ path: string; body?: Record<string, unknown> }> = [];

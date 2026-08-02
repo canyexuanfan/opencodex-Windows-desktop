@@ -1,4 +1,6 @@
 import { isAbsolute } from "node:path";
+import { codexExecInvocation } from "../codex/exec-invocation";
+import type { ResolveDeps, SpawnInvocation } from "../lib/win-exec";
 import { apiError, apiJson, proxyUnreachable, resolveBaseUrl, type AccountDeps } from "./account-api";
 
 const USAGE = `Usage:
@@ -41,12 +43,21 @@ function printProfiles(profiles: PublicProfile[]): void {
   console.log([line(header), ...rows.map(line)].join("\n"));
 }
 
+export function nativeMainCodexLoginInvocation(
+  platform: NodeJS.Platform = process.platform,
+  deps: ResolveDeps = {},
+): SpawnInvocation {
+  return codexExecInvocation("codex", ["login"], platform, deps);
+}
+
 async function runOfficialCodexLogin(codexHome: string): Promise<number> {
-  const child = Bun.spawn(["codex", "login"], {
+  const invocation = nativeMainCodexLoginInvocation();
+  const child = Bun.spawn([invocation.file, ...invocation.args], {
     env: { ...process.env, CODEX_HOME: codexHome },
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
+    ...(invocation.options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
   return child.exited;
 }

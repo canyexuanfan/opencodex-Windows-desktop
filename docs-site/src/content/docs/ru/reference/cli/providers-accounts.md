@@ -215,6 +215,21 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 Проверить reset-credit'ы Codex для аккаунта. Расходование кредита разрушительно и требует сразу
 оба флага: и `--consume`, и `--yes`.
 
+### `ocx account main <subcommand>`
+
+Управлять именованными профилями нативного основного логина Codex, не изменяя маршрутизацию пула аккаунтов OpenCodex.
+
+```text
+ocx account main doctor [--json]
+ocx account main list [--json]
+ocx account main register <label> [--json]
+ocx account main add <label>
+ocx account main switch <profile-id-or-label> --yes [--json]
+ocx account main recover [--rollback --yes] [--json]
+```
+
+Версия 1 поддерживает файловую аутентификацию Codex, шифрует сохранённые профили с помощью AES-256-GCM и хранит ключ шифрования в хранилище учётных данных операционной системы. `add` запускает официальный вход Codex в промежуточной среде перед импортом полученных учётных данных. Перед переключением профиля закройте Codex. Успешное переключение сохраняет локальные задачи и историю, после чего Codex необходимо перезапустить. Используйте `doctor` для проверки состояния профилей, а `recover` для завершения или отката прерванного перехода. `switch` принимает ID профиля или его label.
+
 ## Модели
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`
