@@ -8,7 +8,7 @@ import {
 } from "../server/management/body";
 import { NativeProfileManager } from "./native-profile-manager";
 import { NativeProfileError } from "./native-profile-types";
-import { completeNativeMainRecovery } from "./native-profile-startup";
+import { blockNativeMainRecovery, completeNativeMainRecovery } from "./native-profile-startup";
 import { probeNativeProfileRecoveryState } from "./native-profile-store";
 
 export interface NativeProfileApiDeps {
@@ -16,6 +16,7 @@ export interface NativeProfileApiDeps {
   drainTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
   probeRecoveryState?: typeof probeNativeProfileRecoveryState;
+  blockRecovery?: typeof blockNativeMainRecovery;
   completeRecovery?: typeof completeNativeMainRecovery;
 }
 
@@ -54,7 +55,14 @@ async function withRecoveryGateTransition<T>(
   const context = manager.context;
   if (!context) return operation();
   const probe = deps.probeRecoveryState ?? probeNativeProfileRecoveryState;
-  const before = probe(context);
+  const block = deps.blockRecovery ?? blockNativeMainRecovery;
+  let before: ReturnType<typeof probeNativeProfileRecoveryState>;
+  try {
+    before = probe(context);
+  } catch (error) {
+    try { block(context.homeId); } catch { /* preserve the probe failure */ }
+    throw error;
+  }
   let operationFailed = false;
   try {
     return await operation();
@@ -62,9 +70,26 @@ async function withRecoveryGateTransition<T>(
     operationFailed = true;
     throw error;
   } finally {
-    if (before !== "none" || (completeIfAlreadyClearAfterSuccess && !operationFailed)) {
+    let after: ReturnType<typeof probeNativeProfileRecoveryState> = "none";
+    let afterProbed = false;
+    let transitionError: unknown;
+    try {
+      after = probe(context);
+      afterProbed = true;
+    } catch (error) {
+      transitionError = error;
+      try { block(context.homeId); } catch { /* preserve the operation/probe failure */ }
+    }
+    if (!afterProbed) {
+      if (!operationFailed) throw transitionError;
+    } else if (after !== "none") {
       try {
-        const after = probe(context);
+        block(context.homeId, after);
+      } catch (error) {
+        if (!operationFailed) throw error;
+      }
+    } else if (before !== "none" || (completeIfAlreadyClearAfterSuccess && !operationFailed)) {
+      try {
         if (after === "none") {
           (deps.completeRecovery ?? completeNativeMainRecovery)(context.homeId);
         }

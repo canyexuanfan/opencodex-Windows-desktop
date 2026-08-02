@@ -302,6 +302,46 @@ describe("native-main startup journal gate", () => {
     });
   });
 
+  test("a clean live switch that retains its journal closes the matching gate", async () => {
+    const f = await fixture("prepared", "source-exact");
+    await expect(f.manager.recover(false)).resolves.toMatchObject({ recovered: true });
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("none");
+
+    const faultingManager = new NativeProfileManager({
+      codexHome: f.codexHome,
+      configDir: f.configDir,
+      keyProvider: new MemoryKeyProvider(f.key),
+      hardenPath: async () => {},
+      processProbe: async () => ({ status: "clear", count: 0 }),
+      onSwitchBoundary: async boundary => {
+        if (boundary === "vault-committed") throw new Error("inject retained journal");
+      },
+    });
+    await initializeNativeMainStartupGate({ manager: faultingManager });
+    expect(nativeMainStartupGateSnapshot()).toEqual({
+      status: "ready",
+      homeId: f.manager.context.homeId,
+    });
+
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: f.targetProfileId, confirmedStopped: true }),
+    });
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager: faultingManager,
+    });
+
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toMatchObject({ code: "RECOVERY_REQUIRED" });
+    expect(probeNativeProfileRecoveryState(faultingManager.context)).toBe("journal");
+    expect(nativeMainStartupGateSnapshot()).toEqual({
+      status: "blocked",
+      homeId: f.manager.context.homeId,
+      reason: "recovery-pending",
+    });
+    expect(isNativeMainTrafficBlocked()).toBe(true);
+  });
+
   test("a switch error after real journal convergence preserves the selector error and reopens main", async () => {
     const f = await fixture("prepared", "source-exact");
     await initializeNativeMainStartupGate({

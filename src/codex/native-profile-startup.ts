@@ -89,6 +89,26 @@ export function isNativeMainTrafficBlocked(): boolean {
   return snapshot.status === "blocked";
 }
 
+/**
+ * Close the process-wide native-main admission gate after a live transaction
+ * leaves recovery state behind. A known different home owns a different
+ * native credential file, so it must not be fenced by this transition.
+ */
+export function blockNativeMainRecovery(
+  homeId: string,
+  recoveryState?: Exclude<NativeProfileRecoveryState, "none">,
+): boolean {
+  if (snapshot.homeId !== null && snapshot.homeId !== homeId) return false;
+  epoch += 1;
+  snapshot = {
+    status: "blocked",
+    homeId,
+    reason: recoveryState === "journal" ? "recovery-pending" : "manual-recovery",
+  };
+  settled = Promise.resolve(snapshot);
+  return true;
+}
+
 export function completeNativeMainRecovery(homeId: string): boolean {
   if (snapshot.status !== "blocked" || snapshot.homeId !== homeId) return false;
   epoch += 1;
