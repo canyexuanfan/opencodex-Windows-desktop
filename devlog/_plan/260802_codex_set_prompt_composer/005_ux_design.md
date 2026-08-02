@@ -1,0 +1,137 @@
+# 005 — Prompt section: the design
+
+Depends on `001` (what is toggleable), `002` (what may be written), `003`
+(when it applies), `004` (what to build on).
+
+## The page
+
+```
+Codex Set                                    #codex-set
+┌──────────────┬──────────┐
+│  Multi-auth  │  Prompt  │   ← exclusive tabpanels, Logs-shaped
+└──────────────┴──────────┘
+```
+
+`#codex-set` → Multi-auth (today's account pool, moved whole).
+`#codex-set/prompt` → Prompt. Prompt lazy-mounts on first visit and stays
+mounted, exactly as Debug does (`Logs.tsx:551`).
+
+Why exclusive panels rather than a scrolling page: Multi-auth polls
+`/api/codex-auth/*` every 30s and owns modal login flows. Those should not run
+underneath a prompt editor, and a user scrolling from account cards into prompt
+rows is a worse read than a deliberate switch.
+
+## The Prompt panel
+
+```
+Prompt                                     [ + Add layer ]
+새 세션부터 적용됩니다. 실행 중인 세션은 현재 설정을 유지합니다.
+
+BUILT-IN
+  🔒  Model instructions           always on    [view]
+  🔒  AGENTS.md                    always on    [view]
+      Permissions              [ ●─ ] on        [view]
+      Collaboration mode       [ ●─ ] on        [view]
+      Environment context      [ ●─ ] on        [view]
+      Apps                     [ ●─ ] on        [view]
+      Skills                   [ ●─ ] on        [view]
+  🔒  Plugins                      availability [view]
+  ⚙   Personality                  feature      [view]
+  ⚙   Multi-agent mode             feature      [view]
+
+CUSTOM
+      My house rules           [ ●─ ] on        [edit] [×]
+      Claude Code style        [ ─○ ] off       [edit] [×]
+```
+
+Three row kinds, three affordance sets:
+
+| Kind | Switch | Dialog | Delete |
+|---|---|---|---|
+| 🔒 locked built-in | **absent** | read-only | never |
+| toggleable built-in | present | read-only | never |
+| ⚙ feature-gated | **absent**, links to its real setting | read-only | never |
+| custom | present | **editable** | yes |
+
+The lock icon is not a disabled switch. `001` §4 proves these layers have no
+off-switch anywhere in Codex; rendering a greyed-out toggle would imply the
+capability exists and is merely unavailable. A switch that cannot exist should
+not be drawn. This is ask item 9, and WP4 asserts it in a test.
+
+Feature-gated rows (`001` §3) also get no switch, but for a different reason:
+flipping `multi_agent_v2` from a prompt page would silently reconfigure subagent
+concurrency. The row states the governing key and links to where it is owned.
+
+## Ordering
+
+Rows follow the assembly order in `001` §1, so the list reads as the prompt is
+built. Skills carries a quiet note that its exact position among extensions is
+registration-dependent (`001` ordering caveat) — the UI must not overpromise.
+
+Custom layers form a second group below. Within it, order is the composition
+order written into `developer_instructions`, and it is reorderable.
+
+## Dialogs
+
+Built-in rows open **read-only**: the layer's purpose, the exact config key that
+gates it, its default, its current effective value, and — where opencodex can
+read it — the rendered text. Copy button, no editor. Ask item 8.
+
+Custom rows open an **editor**: title, body textarea, live compatibility
+warnings (`002` §6), Save, Cancel. Escape cancels and returns focus, matching
+`client-config-panel.test.tsx:204-222`.
+
+## The `+` flow
+
+`+ Add layer` offers:
+
+- **Blank** — empty editor.
+- **From preset** — a picker of the WP6 presets, each with a provenance line.
+
+Either way the result is a custom row: editable, toggleable, deletable.
+
+## What custom rows actually write
+
+All enabled custom layers concatenate, in row order, into the root
+`developer_instructions` string. Each is fenced by a marker comment carrying its
+id and enabled state, so opencodex can round-trip its own block without
+touching anything a user wrote by hand:
+
+```toml
+developer_instructions = """
+# >>> ocx-layer:a1b2c3 My house rules
+<body>
+# <<< ocx-layer:a1b2c3
+"""
+```
+
+A disabled layer keeps its stored body but is omitted from the composed string.
+If a user had authored `developer_instructions` before opencodex ever ran, that
+text is preserved as an unowned prefix and is never edited or deleted — the
+adjacency-ownership discipline from `injected-marker.ts:53-60`.
+
+`model_instructions_file` is never written here. `002` §3 explains why. When
+something else has set it, the Prompt panel shows a warning row: the base prompt
+has been replaced, by a file opencodex does not manage.
+
+## Honest status, not optimistic status
+
+Three places where the UI must resist claiming more than it knows:
+
+1. **Timing.** "새 세션부터 적용됩니다" (`003` §3). Never "즉시 적용", never
+   "재시작 필요" — neither is proven.
+2. **Override.** A managed layer can beat our write (`003` §6). When configured
+   and effective disagree, say so instead of showing a toggle that looks applied.
+3. **Completeness.** Third-party extensions can add layers we cannot enumerate
+   (`001` needs-verification). The list is labelled as the layers opencodex
+   knows about, not as every layer that exists.
+
+## Empty and error states
+
+- No `~/.codex/config.toml`: built-ins render at their documented defaults, all
+  rows read-only, with a note that the file will be created on first change.
+- Unreadable or malformed config: the panel refuses to write and says so.
+  `003` §4 — Codex itself cannot parse malformed TOML either, so an attempted
+  write would be the second failure, not a recovery.
+- No custom layers: the CUSTOM group shows a one-line invitation, not an empty
+  box.
