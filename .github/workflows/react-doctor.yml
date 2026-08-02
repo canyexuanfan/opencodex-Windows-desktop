@@ -1,0 +1,58 @@
+# React Doctor — finds security, performance, correctness, accessibility,
+# bundle-size, and architecture issues in React codebases.
+#
+# Gating and least-privilege: findings fail the job (`blocking: warning`).
+# Write-scoped outputs (sticky PR comments, inline review comments, commit
+# statuses) stay disabled so the workflow needs no write permissions. Do not
+# re-add write scopes without revisiting tests/ci-workflows.test.ts, which
+# pins this contract.
+#
+# Docs: https://www.react.doctor/docs/ci-and-prs/github-actions-setup
+# Source: https://github.com/millionco/react-doctor
+
+name: React Doctor
+
+on:
+  # Scans the PR's changed files relative to the merge base of the target branch.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Scans `main` on every push to track the health-score trend.
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  # Needed so the action can list PR files for --changed-files-from.
+  # Without this, listFiles fails, the changed-files file is never written,
+  # and the CLI exits 1 on ENOENT even for fork PRs.
+  pull-requests: read
+
+# Cancels any in-flight scan for the same PR (or branch, on push) the moment a
+# new commit arrives, so only the latest run remains.
+concurrency:
+  group: react-doctor-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  react-doctor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # fetch-depth: 0 gives React Doctor the full git history it needs to find
+      # the merge base with the target branch; a shallow checkout would make PR
+      # runs report every pre-existing issue instead of only new ones.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - uses: millionco/react-doctor@938008119a288f2fb47c66a69cd9279a21f31784 # v2.2.7
+        with:
+          directory: gui
+          # Pin the npm engine — the action wrapper would otherwise fetch
+          # react-doctor@latest, silently skewing CI from the local pinned runs.
+          version: "0.9.2"
+          # Fail the job on any finding (errors or warnings).
+          blocking: warning
+          comment: false
+          review-comments: false
+          commit-status: false

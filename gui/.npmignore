@@ -1,0 +1,7 @@
+# Present so npm uses THIS (not gui/.gitignore, which excludes dist/) for the gui/ subtree —
+# otherwise the built gui/dist would never ship and `ocx gui` would 404 for installed users.
+# The root package.json "files" allowlist already narrows the package to gui/dist only.
+node_modules
+src
+public
+README.md

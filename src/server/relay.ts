@@ -1,0 +1,1049 @@
+import type { ResponsesTerminalStatus } from "../bridge";
+import { isTranslatorBudgetExceededError } from "../lib/translator-budget";
+import { isUsageDebugEnabled } from "../usage/debug";
+import {
+  addRequestLog,
+  addFinalRequestLog,
+  httpStatusForRequestLogTerminal,
+  inspectResponseLogJson,
+  inspectResponseLogSsePayload,
+  inspectResponseLogSsePayloadParsed,
+  recordFirstOutput,
+  type RequestLogContext,
+  type RequestLogEntry,
+} from "./request-log";
+
+const nativePassthroughSseResponses = new WeakSet<Response>();
+const eagerRelaySseResponses = new WeakSet<Response>();
+
+export const MAX_INSPECTION_SSE_FRAME_BYTES = 4 * 1024 * 1024;
+export const MAX_COMPLETED_OUTPUT_ITEMS = 256;
+export const MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES = 8 * 1024 * 1024;
+export const MAX_TAIL_ERROR_MESSAGE_CHARS = 512;
+
+export type InspectionCounters = {
+  frameBufferHighWaterBytes: number;
+  completedItemsMaxCount: number;
+  frameCapOverflows: number;
+  itemCapEvictions: number;
+  postCancelDrainStops: number;
+};
+
+const inspectionCounters: InspectionCounters = {
+  frameBufferHighWaterBytes: 0,
+  completedItemsMaxCount: 0,
+  frameCapOverflows: 0,
+  itemCapEvictions: 0,
+  postCancelDrainStops: 0,
+};
+
+export function getInspectionCounters(): InspectionCounters {
+  return { ...inspectionCounters };
+}
+
+export function resetInspectionCountersForTest(): void {
+  inspectionCounters.frameBufferHighWaterBytes = 0;
+  inspectionCounters.completedItemsMaxCount = 0;
+  inspectionCounters.frameCapOverflows = 0;
+  inspectionCounters.itemCapEvictions = 0;
+  inspectionCounters.postCancelDrainStops = 0;
+}
+
+export function relayWithAbort(
+  body: ReadableStream<Uint8Array> | null,
+  upstream: AbortController,
+  onClientGone?: (reason?: unknown) => void,
+): ReadableStream<Uint8Array> | null {
+  if (!body) return null;
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        try { controller.error(err); } catch { /* already torn down */ }
+      }
+    },
+    cancel(reason) {
+      // A tee caller may transfer abort ownership to its bounded inspection pump.
+      if (onClientGone) onClientGone(reason);
+      else upstream.abort(reason);
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+export function buildFailedTailPayload(err: unknown): string {
+  const translatorOverflow = isTranslatorBudgetExceededError(err);
+  const message = (translatorOverflow
+    ? "upstream translation buffer exceeded the safe limit"
+    : `Upstream stream terminated unexpectedly: ${err instanceof Error ? err.message : String(err)}`)
+    .slice(0, MAX_TAIL_ERROR_MESSAGE_CHARS);
+  const failure = {
+    type: "upstream_error",
+    code: translatorOverflow ? "translation_buffer_limit" : "upstream_reset",
+    message,
+  };
+  return JSON.stringify({
+    type: "response.failed",
+    response: { status: "failed", error: failure, last_error: failure },
+  });
+}
+
+/**
+ * Relay a passthrough SSE body like relayWithAbort, but convert a MID-STREAM failure (upstream
+ * reset after headers) into a clean terminal: any partial block is closed off, then a synthetic
+ * `response.failed` event and `data: [DONE]` are emitted and the stream closes. Without this the
+ * client sees a raw socket teardown with no terminal SSE event. Deliberately NOT a resend: the
+ * upstream already committed the request (duplicate-completion risk — same policy as cursor's
+ * committed=non-replayable transport retry).
+ */
+export function relaySseWithFailedTail(
+  body: ReadableStream<Uint8Array>,
+  upstream: AbortController,
+  onClientGone?: (reason?: unknown) => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        const payload = buildFailedTailPayload(err);
+        try {
+          // Leading blank line terminates a partial SSE block so the failed frame parses cleanly.
+          controller.enqueue(encoder.encode(`\n\nevent: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`));
+          controller.close();
+        } catch { /* client already torn down */ }
+        upstream.abort();
+      }
+    },
+    cancel(reason) {
+      if (onClientGone) onClientGone(reason);
+      else upstream.abort(reason);
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+export function nextSseBlock(buffer: string): { block: string; rest: string } | null {
+  const match = buffer.match(/\r?\n\r?\n/);
+  if (!match || match.index === undefined) return null;
+  return {
+    block: buffer.slice(0, match.index),
+    rest: buffer.slice(match.index + match[0].length),
+  };
+}
+
+export function sseDataPayload(block: string): string | null {
+  const data: string[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const value = line.slice(5);
+    data.push(value.startsWith(" ") ? value.slice(1) : value);
+  }
+  return data.length > 0 ? data.join("\n") : null;
+}
+
+export function terminalStatusFromSsePayload(payload: string): ResponsesTerminalStatus | null {
+  if (payload === "[DONE]") return null;
+  try {
+    return terminalStatusFromParsed(JSON.parse(payload));
+  } catch {
+    return null;
+  }
+}
+
+/** True when a native Responses SSE payload carries the FIRST kind of non-empty model output. */
+export function isFirstOutputSsePayload(payload: string | null): boolean {
+  if (!payload || payload === "[DONE]") return false;
+  try {
+    return firstOutputFromParsed(JSON.parse(payload));
+  } catch {
+    return false;
+  }
+}
+
+export function firstOutputFromParsed(parsed: unknown): boolean {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const event = parsed as { type?: unknown; delta?: unknown };
+  return (event.type === "response.output_text.delta"
+    || event.type === "response.reasoning_summary_text.delta"
+    || event.type === "response.reasoning_text.delta")
+    && typeof event.delta === "string"
+    && event.delta.length > 0;
+}
+
+function createFirstOutputReporter(onFirstOutput?: () => void): {
+  payload: (payload: string | null) => void;
+  parsed: (parsed: unknown) => void;
+} {
+  let reported = false;
+  const report = (isFirst: boolean) => {
+    if (reported || !isFirst) return;
+    reported = true;
+    try { onFirstOutput?.(); } catch { /* metrics must not break the stream */ }
+  };
+  return {
+    payload: payload => report(isFirstOutputSsePayload(payload)),
+    parsed: parsed => report(firstOutputFromParsed(parsed)),
+  };
+}
+
+export function terminalStatusFromParsed(parsed: unknown): ResponsesTerminalStatus | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  switch ((parsed as { type?: unknown }).type) {
+    case "response.completed":
+      return "completed";
+    case "response.failed":
+      return "failed";
+    case "response.incomplete":
+      return "incomplete";
+    default:
+      return null;
+  }
+}
+
+/** Extract the response object from a `response.completed` SSE payload, or null. */
+export function completedResponseFromSsePayload(payload: string): { id?: unknown; output?: unknown; status?: unknown } | null {
+  if (payload === "[DONE]") return null;
+  try {
+    const json = JSON.parse(payload) as { type?: unknown; response?: unknown };
+    return completedResponseFromParsedEvent(json);
+  } catch {
+    return null;
+  }
+}
+
+/** Extract the response object from an already-parsed `response.completed` event, or null. */
+export function completedResponseFromParsedEvent(
+  json: unknown,
+): { id?: unknown; output?: unknown; status?: unknown } | null {
+  if (!json || typeof json !== "object" || Array.isArray(json)
+    || (json as { type?: unknown }).type !== "response.completed") return null;
+  const response = (json as { response?: unknown }).response;
+  if (!response || typeof response !== "object" || Array.isArray(response)) return null;
+  return response as { id?: unknown; output?: unknown; status?: unknown };
+}
+
+export function trackSseForRequestLog(
+  body: ReadableStream<Uint8Array>,
+  onTerminal: (status: ResponsesTerminalStatus) => void,
+  onCancel: () => void,
+  logCtx?: RequestLogContext,
+  onFirstOutput?: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminalReported = false;
+  const reportFirstOutput = createFirstOutputReporter(onFirstOutput);
+
+  const reportTerminal = (status: ResponsesTerminalStatus) => {
+    if (terminalReported) return;
+    terminalReported = true;
+    onTerminal(status);
+  };
+
+  const inspectPayload = (payload: string | null) => {
+    if (!payload) return;
+    if (logCtx) inspectResponseLogSsePayload(logCtx, payload);
+    reportFirstOutput.payload(payload);
+    const status = terminalStatusFromSsePayload(payload);
+    if (status) reportTerminal(status);
+  };
+
+  const inspectChunk = (value: Uint8Array) => {
+    buffer += decoder.decode(value, { stream: true });
+    let next: { block: string; rest: string } | null;
+    while ((next = nextSseBlock(buffer))) {
+      buffer = next.rest;
+      inspectPayload(sseDataPayload(next.block));
+    }
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) inspectPayload(sseDataPayload(buffer));
+          if (!terminalReported) reportTerminal("incomplete");
+          controller.close();
+          return;
+        }
+        inspectChunk(value);
+        controller.enqueue(value);
+      } catch (err) {
+        if (!terminalReported) reportTerminal("incomplete");
+        try { controller.error(err); } catch { /* already torn down */ }
+      }
+    },
+    cancel(reason) {
+      onCancel();
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+export function responseWithDeferredRequestLog(
+  response: Response,
+  requestId: string,
+  start: number,
+  logCtx: RequestLogContext,
+  addLog: (entry: RequestLogEntry) => void = addRequestLog,
+): Response {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (isUsageDebugEnabled() && !logCtx.usageDebugContentType && contentType) {
+    logCtx.usageDebugContentType = contentType;
+  }
+  if (isNativePassthroughSseResponse(response)) {
+    return response;
+  }
+  if (!response.body || !contentType.includes("text/event-stream")) {
+    if (response.body && (contentType.includes("application/json") || response.status >= 400)) {
+      const finalizeJsonLog = async () => {
+        const text = await response.text();
+        // Non-JSON error bodies: inspect/log only a bounded prefix (the stored
+        // upstreamError is 500 chars anyway); the FULL text is still forwarded to the
+        // client below, unchanged. JSON bodies keep full inspection (usage parsing).
+        const isJson = contentType.includes("application/json");
+        inspectResponseLogJson(logCtx, isJson ? text : text.slice(0, 8192));
+        addFinalRequestLog(requestId, start, logCtx, response.status, { closeReason: "non_stream" }, addLog);
+        return text;
+      };
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          try {
+            controller.enqueue(new TextEncoder().encode(await finalizeJsonLog()));
+            controller.close();
+          } catch (err) {
+            addFinalRequestLog(requestId, start, logCtx, 502, { closeReason: "non_stream" }, addLog);
+            try { controller.error(err); } catch { /* already torn down */ }
+          }
+        },
+      });
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+    if (isUsageDebugEnabled() && logCtx.usageDebugBodyKind === undefined) {
+      logCtx.usageDebugBodyKind = response.body ? "other" : "none";
+    }
+    addFinalRequestLog(requestId, start, logCtx, response.status, { closeReason: "non_stream" }, addLog);
+    return response;
+  }
+
+  let logged = false;
+  const body = trackSseForRequestLog(
+    response.body,
+    status => {
+      if (logged) return;
+      logged = true;
+      addFinalRequestLog(requestId, start, logCtx, httpStatusForRequestLogTerminal(status, logCtx), {
+        terminalStatus: status,
+        closeReason: "terminal",
+      }, addLog);
+    },
+    () => {
+      if (logged) return;
+      logged = true;
+      addFinalRequestLog(requestId, start, logCtx, 499, { closeReason: "client_cancel" }, addLog);
+    },
+    logCtx,
+    () => recordFirstOutput(logCtx, start),
+  );
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+export function markNativePassthroughSseResponse(response: Response): Response {
+  nativePassthroughSseResponses.add(response);
+  return response;
+}
+
+export function isNativePassthroughSseResponse(response: Response): boolean {
+  return nativePassthroughSseResponses.has(response);
+}
+
+export function markEagerRelaySseResponse(response: Response): Response {
+  eagerRelaySseResponses.add(response);
+  return response;
+}
+
+/** Test-only path identity seam; runtime behavior must not branch on this marker. */
+export function isEagerRelaySseResponse(response: Response): boolean {
+  return eagerRelaySseResponses.has(response);
+}
+
+export function relaySseWithHeartbeat(
+  body: ReadableStream<Uint8Array> | null,
+  upstream: AbortController,
+  heartbeatMs = 15_000,
+  onTerminal?: (status: ResponsesTerminalStatus) => void,
+  options?: { onStart?: () => void; onDone?: () => void },
+): ReadableStream<Uint8Array> | null {
+  if (!body) return null;
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const heartbeat = new TextEncoder().encode(": opencodex keepalive\n\n");
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
+  let clientCancelled = false;
+  let terminalReported = false;
+  let buffer = "";
+
+  const reportTerminal = (status: ResponsesTerminalStatus) => {
+    if (terminalReported || clientCancelled || closed) return;
+    terminalReported = true;
+    onTerminal?.(status);
+  };
+
+  const inspectPayload = (payload: string | null) => {
+    if (!payload) return;
+    const status = terminalStatusFromSsePayload(payload);
+    if (status) reportTerminal(status);
+  };
+
+  const inspectChunk = (value: Uint8Array) => {
+    buffer += decoder.decode(value, { stream: true });
+    let next: { block: string; rest: string } | null;
+    while ((next = nextSseBlock(buffer))) {
+      buffer = next.rest;
+      inspectPayload(sseDataPayload(next.block));
+    }
+  };
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (timer) clearInterval(timer);
+    timer = undefined;
+    options?.onDone?.();
+  };
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      options?.onStart?.();
+      timer = setInterval(() => {
+        if (closed) return;
+        try {
+          controller.enqueue(heartbeat);
+        } catch {
+          cleanup();
+        }
+      }, heartbeatMs);
+    },
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) inspectPayload(sseDataPayload(buffer));
+          if (!terminalReported && !clientCancelled) reportTerminal("incomplete");
+          cleanup();
+          controller.close();
+          return;
+        }
+        inspectChunk(value);
+        controller.enqueue(value);
+      } catch (err) {
+        if (!clientCancelled) reportTerminal("incomplete");
+        cleanup();
+        try { controller.error(err); } catch { /* already torn down */ }
+      }
+    },
+    cancel(reason) {
+      clientCancelled = true;
+      cleanup();
+      upstream.abort(reason);
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+/**
+ * Background-consume an SSE stream purely for terminal-outcome inspection (quota tracking).
+ * Does not produce output; safe to ignore errors (the client-facing stream is separate).
+ */
+export type SseInspector = {
+  /** Feed one upstream chunk through the SSE scanning state machine. */
+  feed(chunk: Uint8Array): void;
+  /** Flush the decoder + trailing unterminated buffer (upstream cleanly done). */
+  finish(): void;
+  /** Drop every retained frame/item reference without parsing. Idempotent. */
+  dispose(): void;
+  /** True once a protocol terminal was detected and reported. */
+  reported(): boolean;
+  /** True once any protocol terminal was parsed, including metadata-only inspectors. */
+  terminalSeen(): boolean;
+};
+
+export type SseInspectorHandlers = {
+  onTerminal?: (status: ResponsesTerminalStatus, httpStatusOverride?: number) => void;
+  logCtx?: RequestLogContext;
+  onCompletedResponse?: (response: { id?: unknown; output?: unknown; status?: unknown }) => void;
+  onFirstOutput?: () => void;
+};
+
+type CompletedOutputItem = { item: unknown; sourceBytes: number };
+
+function delimiterLengthAt(
+  index: number,
+  length: number,
+  byteAt: (index: number) => number,
+): number | 0 | undefined {
+  const first = byteAt(index);
+  if (first === 10) {
+    if (index + 1 >= length) return undefined;
+    const second = byteAt(index + 1);
+    if (second === 10) return 2;
+    if (second !== 13) return 0;
+    if (index + 2 >= length) return undefined;
+    return byteAt(index + 2) === 10 ? 3 : 0;
+  }
+  if (first !== 13) return 0;
+  if (index + 1 >= length) return undefined;
+  if (byteAt(index + 1) !== 10) return 0;
+  if (index + 2 >= length) return undefined;
+  const third = byteAt(index + 2);
+  if (third === 10) return 3;
+  if (third !== 13) return 0;
+  if (index + 3 >= length) return undefined;
+  return byteAt(index + 3) === 10 ? 4 : 0;
+}
+
+function joinedBytes(slices: readonly Uint8Array[], byteLength: number): Uint8Array {
+  if (slices.length === 1 && slices[0]!.byteLength === byteLength) return slices[0]!;
+  const joined = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const slice of slices) {
+    joined.set(slice, offset);
+    offset += slice.byteLength;
+  }
+  return joined;
+}
+
+/**
+ * Per-chunk SSE inspection state machine shared by consumeForInspection,
+ * consumeForResponseLogMetadata, and the eager bounded relay (relay-eager.ts).
+ *
+ * Extraction-fidelity invariants (devlog/_plan/260723_win_mem_safestream/020):
+ * - logCtx SSE inspection is gated on !reported; in the metadata configuration
+ *   (no onTerminal) `reported` stays permanently false, which reproduces the
+ *   metadata consumer's unconditional inspection through the same gate.
+ * - finish() skips the trailing-buffer scan once reported, while per-block
+ *   onCompletedResponse continues firing after reported — an intentional
+ *   asymmetry inherited from consumeForInspection.
+ * - logCtx.transportPhase/terminalSource are mutated BEFORE onTerminal fires.
+ * - Synthetic terminals (incomplete / failed-502) are the CALLER's decision:
+ *   the caller owns `cancelled` state and reads `reported()` to decide.
+ */
+export function createSseInspector(handlers: SseInspectorHandlers): SseInspector {
+  let decoder: TextDecoder | null = new TextDecoder();
+  let reported = false;
+  let sawTerminal = false;
+  let disposed = false;
+  let delimiterTail = new Uint8Array(0);
+  let candidateSlices: Uint8Array[] = [];
+  let candidateBytes = 0;
+  let discardingOversizedFrame = false;
+  const reportFirstOutput = createFirstOutputReporter(handlers.onFirstOutput);
+  // Allocate reconstruction state only for persistence-capable inspectors.
+  const completedItemsByOutputIndex = handlers.onCompletedResponse
+    ? new Map<number, CompletedOutputItem>()
+    : null;
+  let aggregateItemBytes = 0;
+  let reconstructionTainted = false;
+
+  const clearFrameState = (): void => {
+    delimiterTail = new Uint8Array(0);
+    candidateSlices = [];
+    candidateBytes = 0;
+    discardingOversizedFrame = false;
+  };
+
+  const clearCompletedItems = (): void => {
+    completedItemsByOutputIndex?.clear();
+    aggregateItemBytes = 0;
+    reconstructionTainted = false;
+  };
+
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    decoder = null;
+    clearFrameState();
+    clearCompletedItems();
+  };
+
+  const retainCandidateSlice = (slice: Uint8Array): void => {
+    if (slice.byteLength === 0 || discardingOversizedFrame) return;
+    const nextBytes = candidateBytes + slice.byteLength;
+    inspectionCounters.frameBufferHighWaterBytes = Math.max(
+      inspectionCounters.frameBufferHighWaterBytes,
+      Math.min(nextBytes, MAX_INSPECTION_SSE_FRAME_BYTES),
+    );
+    if (nextBytes > MAX_INSPECTION_SSE_FRAME_BYTES) {
+      candidateSlices = [];
+      candidateBytes = 0;
+      discardingOversizedFrame = true;
+      inspectionCounters.frameCapOverflows += 1;
+      // The rejected frame may have carried an output item we will never see;
+      // any later empty-output terminal must not synthesize a partial replay
+      // from the surviving map entries (same taint rule as item eviction).
+      reconstructionTainted = true;
+      return;
+    }
+    // `subarray()` aliases the upstream chunk's backing buffer. Copy only the
+    // live candidate bytes so a tiny trailing frame cannot pin a multi-MiB
+    // chunk whose preceding frames have already been consumed.
+    candidateSlices.push(slice.slice());
+    candidateBytes = nextBytes;
+  };
+
+  const retainCompletedItem = (index: number, item: unknown, sourceBytes: number): void => {
+    const previous = completedItemsByOutputIndex!.get(index);
+    if (previous) {
+      aggregateItemBytes -= previous.sourceBytes;
+      completedItemsByOutputIndex!.delete(index);
+    }
+    if (sourceBytes > MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES) {
+      reconstructionTainted = true;
+      inspectionCounters.itemCapEvictions += 1;
+      return;
+    }
+    completedItemsByOutputIndex!.set(index, { item, sourceBytes });
+    aggregateItemBytes += sourceBytes;
+    while (completedItemsByOutputIndex!.size > MAX_COMPLETED_OUTPUT_ITEMS
+      || aggregateItemBytes > MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES) {
+      let highestIndex = -1;
+      for (const retainedIndex of completedItemsByOutputIndex!.keys()) {
+        if (retainedIndex > highestIndex) highestIndex = retainedIndex;
+      }
+      const evicted = completedItemsByOutputIndex!.get(highestIndex);
+      if (!evicted) break;
+      completedItemsByOutputIndex!.delete(highestIndex);
+      aggregateItemBytes -= evicted.sourceBytes;
+      reconstructionTainted = true;
+      inspectionCounters.itemCapEvictions += 1;
+    }
+    inspectionCounters.completedItemsMaxCount = Math.max(
+      inspectionCounters.completedItemsMaxCount,
+      completedItemsByOutputIndex!.size,
+    );
+  };
+
+  const scanPayload = (payload: string | null, sourceBytes: number): void => {
+    if (!payload) return;
+    let parsed: unknown | undefined;
+    if (payload !== "[DONE]") {
+      try {
+        parsed = JSON.parse(payload);
+      } catch {
+        /* malformed SSE payloads remain best-effort/no-throw */
+      }
+    }
+    if (!reported && handlers.logCtx) {
+      inspectResponseLogSsePayloadParsed(handlers.logCtx, payload, parsed);
+    }
+    reportFirstOutput.parsed(parsed);
+    const status = terminalStatusFromParsed(parsed);
+    if (status) sawTerminal = true;
+    if (!reported && handlers.onTerminal && status) {
+      try {
+        reported = true;
+        if (handlers.logCtx) {
+          handlers.logCtx.transportPhase = "terminal_sse";
+          handlers.logCtx.terminalSource = "upstream";
+        }
+        handlers.onTerminal(status);
+      } finally {
+        if (status === "failed" || status === "incomplete") clearCompletedItems();
+      }
+    } else if (status === "failed" || status === "incomplete") {
+      clearCompletedItems();
+    }
+    if (handlers.onCompletedResponse) {
+      type ParsedSseEvent = { type?: unknown; output_index?: unknown; item?: unknown; response?: unknown };
+      const parsedEvent = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as ParsedSseEvent
+        : null;
+      const doneItem = parsedEvent?.type === "response.output_item.done" ? parsedEvent.item : undefined;
+      if (parsedEvent
+        && doneItem !== undefined
+        && Number.isInteger(parsedEvent.output_index)
+        && (parsedEvent.output_index as number) >= 0
+        && typeof doneItem === "object"
+        && doneItem !== null
+        && !Array.isArray(doneItem)
+        && typeof (doneItem as { type?: unknown }).type === "string") {
+        retainCompletedItem(parsedEvent.output_index as number, doneItem, sourceBytes);
+      }
+
+      let response = completedResponseFromParsedEvent(parsedEvent);
+      if (response) {
+        // Authoritative output is a NON-EMPTY ARRAY only. Anything else
+        // (missing, null, scalar, object) keeps the historical backfill
+        // behavior so a malformed terminal cannot reach rememberResponseState
+        // and destroy continuation state (review C1-2).
+        const hasAuthoritativeOutput = Array.isArray(response.output)
+          && response.output.length > 0;
+        if (!hasAuthoritativeOutput && reconstructionTainted) {
+          clearCompletedItems();
+          return;
+        }
+        if (!hasAuthoritativeOutput && completedItemsByOutputIndex!.size > 0) {
+          response = {
+            ...response,
+            output: [...completedItemsByOutputIndex!.entries()]
+              .sort(([left], [right]) => left - right)
+              .map(([, retained]) => retained.item),
+          };
+        }
+        try {
+          handlers.onCompletedResponse(response);
+        } finally {
+          clearCompletedItems();
+        }
+      } else if (parsedEvent?.type === "response.completed") {
+        clearCompletedItems();
+      }
+    }
+  };
+
+  const completeCandidate = (): void => {
+    if (discardingOversizedFrame) {
+      discardingOversizedFrame = false;
+      return;
+    }
+    const sourceBytes = candidateBytes;
+    const frame = joinedBytes(candidateSlices, sourceBytes);
+    candidateSlices = [];
+    candidateBytes = 0;
+    if (reported && !handlers.onCompletedResponse) return;
+    const decoded = decoder!.decode(frame);
+    scanPayload(sseDataPayload(decoded), sourceBytes);
+  };
+
+  const scanChunk = (chunk: Uint8Array): void => {
+    const previousTail = delimiterTail;
+    delimiterTail = new Uint8Array(0);
+    const tailLength = previousTail.byteLength;
+    const totalLength = tailLength + chunk.byteLength;
+    const byteAt = (index: number): number => index < tailLength
+      ? previousTail[index]!
+      : chunk[index - tailLength]!;
+    const retainRange = (start: number, end: number): void => {
+      if (end <= start || discardingOversizedFrame) return;
+      if (start < tailLength) {
+        retainCandidateSlice(previousTail.subarray(start, Math.min(end, tailLength)));
+      }
+      if (end > tailLength) {
+        retainCandidateSlice(chunk.subarray(Math.max(0, start - tailLength), end - tailLength));
+      }
+    };
+    let index = 0;
+    let retainedThrough = 0;
+    while (index < totalLength) {
+      const delimiterLength = delimiterLengthAt(index, totalLength, byteAt);
+      if (delimiterLength === undefined) break;
+      if (delimiterLength > 0) {
+        retainRange(retainedThrough, index);
+        completeCandidate();
+        index += delimiterLength;
+        retainedThrough = index;
+        continue;
+      }
+      index += 1;
+    }
+    retainRange(retainedThrough, index);
+    if (index < totalLength) {
+      delimiterTail = new Uint8Array(totalLength - index);
+      for (let offset = 0; offset < delimiterTail.byteLength; offset += 1) {
+        delimiterTail[offset] = byteAt(index + offset);
+      }
+    }
+  };
+
+  return {
+    feed(chunk) {
+      if (!disposed) scanChunk(chunk);
+    },
+    finish() {
+      if (disposed) return;
+      try {
+        retainCandidateSlice(delimiterTail);
+        delimiterTail = new Uint8Array(0);
+        if (!discardingOversizedFrame && candidateBytes > 0 && !reported) {
+          const sourceBytes = candidateBytes;
+          const decoded = decoder!.decode(joinedBytes(candidateSlices, sourceBytes));
+          scanPayload(decoded.trim() ? sseDataPayload(decoded) : null, sourceBytes);
+        }
+      } finally {
+        clearFrameState();
+        clearCompletedItems();
+      }
+    },
+    dispose,
+    reported: () => reported,
+    terminalSeen: () => sawTerminal,
+  };
+}
+
+export type InspectionDrainBounds = { ms: number; bytes: number };
+
+export type InspectionConsumerOptions = {
+  clientGoneSignal?: AbortSignal;
+  drainBounds?: Partial<InspectionDrainBounds>;
+  upstream?: AbortController;
+  now?: () => number;
+  /** Test seam for proving both public consumers dispose their owned inspector. */
+  inspectorFactory?: (handlers: SseInspectorHandlers) => SseInspector;
+};
+
+const DEFAULT_INSPECTION_DRAIN_MS = 15_000;
+const DEFAULT_INSPECTION_DRAIN_BYTES = 32 * 1024 * 1024;
+type InspectionPumpOptions = InspectionConsumerOptions & {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  inspector: SseInspector;
+  signal?: AbortSignal;
+  onDone?: () => void;
+  onCancel?: () => void;
+  onCleanEof?: () => void;
+  onReadError?: () => void;
+};
+
+function startBoundedInspectionPump(options: InspectionPumpOptions): void {
+  const { reader, inspector, signal, clientGoneSignal } = options;
+  let cancelled = false;
+  let clientGone = false;
+  let clientGoneReason: unknown;
+  let drainedBytes = 0;
+  let drainDeadline = Number.POSITIVE_INFINITY;
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  let drainStopped = false;
+  const drainMs = options.drainBounds?.ms ?? DEFAULT_INSPECTION_DRAIN_MS;
+  const drainBytes = options.drainBounds?.bytes ?? DEFAULT_INSPECTION_DRAIN_BYTES;
+  const now = options.now ?? Date.now;
+  let cancelFired = false;
+  const fireCancel = () => {
+    if (cancelFired) return;
+    cancelFired = true;
+    options.onCancel?.();
+  };
+  const markClientGone = () => {
+    if (clientGone || cancelled) return;
+    clientGone = true;
+    clientGoneReason = clientGoneSignal?.reason;
+    drainDeadline = now() + drainMs;
+    if (inspector.terminalSeen() || drainMs <= 0 || drainBytes <= 0) {
+      stopDrain();
+      return;
+    }
+    // Do not unref: on Bun/Windows a pending `reader.read()` can be the only
+    // wake source; an unref'd timer may never run, so a silent post-cancel
+    // drain (time bound, no bytes) hangs the suite until the job timeout.
+    drainTimer = setTimeout(stopDrain, drainMs);
+  };
+  // Ends the bounded drain by cancelling the reader: the pending read settles
+  // and the pump loop observes `drainStopped`. Deliberately NOT a shared
+  // Promise.race companion — racing every read against one pending promise
+  // retains O(chunk-count) reactions on long streams (review C1-1), the exact
+  // retention class this phase removes.
+  const stopDrain = () => {
+    if (drainStopped || cancelled) return;
+    drainStopped = true;
+    reader.cancel(clientGoneReason).catch(() => {});
+  };
+  const abortImmediately = () => {
+    if (cancelled) return;
+    cancelled = true;
+    reader.cancel(signal?.reason).catch(() => {});
+    fireCancel();
+  };
+
+  if (signal?.aborted) {
+    cancelled = true;
+    reader.cancel(signal.reason).catch(() => {});
+    inspector.dispose();
+    fireCancel();
+    options.onDone?.();
+    return;
+  }
+  signal?.addEventListener("abort", abortImmediately, { once: true });
+  clientGoneSignal?.addEventListener("abort", markClientGone, { once: true });
+  if (clientGoneSignal?.aborted) markClientGone();
+
+  const pump = async () => {
+    let clientGoneWithoutTerminal = false;
+    let boundEndedDrain = false;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (drainStopped) {
+          // stopDrain() cancelled the reader; the settled read is the wake-up.
+          clientGoneWithoutTerminal = !inspector.terminalSeen();
+          boundEndedDrain = clientGoneWithoutTerminal;
+          break;
+        }
+        if (done) {
+          inspector.finish();
+          if (clientGone) clientGoneWithoutTerminal = !inspector.terminalSeen();
+          else if (!cancelled) options.onCleanEof?.();
+          break;
+        }
+        if (!clientGone) {
+          inspector.feed(value);
+          continue;
+        }
+        if (now() >= drainDeadline) {
+          clientGoneWithoutTerminal = true;
+          boundEndedDrain = true;
+          break;
+        }
+        const remainingBytes = Math.max(0, drainBytes - drainedBytes);
+        const inspectedValue = value.byteLength > remainingBytes
+          ? value.subarray(0, remainingBytes)
+          : value;
+        if (inspectedValue.byteLength > 0) inspector.feed(inspectedValue);
+        drainedBytes += inspectedValue.byteLength;
+        if (inspector.terminalSeen()) break;
+        if (value.byteLength > remainingBytes
+          || drainedBytes >= drainBytes
+          || now() >= drainDeadline) {
+          clientGoneWithoutTerminal = true;
+          boundEndedDrain = true;
+          break;
+        }
+      }
+    } catch {
+      if (clientGone) clientGoneWithoutTerminal = !inspector.terminalSeen();
+      else if (!cancelled) options.onReadError?.();
+    } finally {
+      if (drainTimer) clearTimeout(drainTimer);
+      signal?.removeEventListener("abort", abortImmediately);
+      clientGoneSignal?.removeEventListener("abort", markClientGone);
+      if (clientGone) {
+        if (boundEndedDrain) inspectionCounters.postCancelDrainStops += 1;
+        if (clientGoneWithoutTerminal) fireCancel();
+        options.upstream?.abort(clientGoneReason);
+        reader.cancel(clientGoneReason).catch(() => {});
+      }
+      inspector.dispose();
+      options.onDone?.();
+    }
+  };
+  void pump();
+}
+
+export function consumeForInspection(
+  body: ReadableStream<Uint8Array>,
+  onTerminal: (status: ResponsesTerminalStatus, httpStatusOverride?: number) => void,
+  signal?: AbortSignal,
+  onDone?: () => void,
+  logCtx?: RequestLogContext,
+  onCancel?: () => void,
+  onCompletedResponse?: (response: { id?: unknown; output?: unknown; status?: unknown }) => void,
+  onFirstOutput?: () => void,
+  options?: InspectionConsumerOptions,
+): void {
+  const reader = body.getReader();
+  const inspector = (options?.inspectorFactory ?? createSseInspector)({
+    onTerminal,
+    logCtx,
+    onCompletedResponse,
+    onFirstOutput,
+  });
+  startBoundedInspectionPump({
+    ...options,
+    reader,
+    inspector,
+    signal,
+    onDone,
+    onCancel,
+    onCleanEof: () => {
+      if (!inspector.reported()) {
+        if (logCtx) logCtx.terminalSource = "synthetic";
+        onTerminal("incomplete");
+      }
+    },
+    onReadError: () => {
+      // Upstream read failure after HTTP 200 (mid-stream socket reset) is not a
+      // protocol `response.incomplete` terminal. Report a synthetic 502 so account
+      // health treats it as transient; abort-driven client cancellation still wins.
+      if (!inspector.reported()) {
+        if (logCtx) {
+          logCtx.transportPhase = "mid_stream";
+          logCtx.terminalSource = "synthetic";
+        }
+        onTerminal("failed", 502);
+      }
+    },
+  });
+}
+
+export function consumeForResponseLogMetadata(
+  body: ReadableStream<Uint8Array>,
+  logCtx: RequestLogContext,
+  signal?: AbortSignal,
+  onDone?: () => void,
+  onCompletedResponse?: (response: { id?: unknown; output?: unknown; status?: unknown }) => void,
+  onFirstOutput?: () => void,
+  options?: InspectionConsumerOptions,
+): void {
+  const reader = body.getReader();
+  // No onTerminal → the inspector's `reported` gate stays permanently false,
+  // reproducing this consumer's unconditional logCtx inspection.
+  const inspector = (options?.inspectorFactory ?? createSseInspector)({
+    logCtx,
+    onCompletedResponse,
+    onFirstOutput,
+  });
+  startBoundedInspectionPump({ ...options, reader, inspector, signal, onDone });
+}
+
+/**
+ * Bun's fetch auto-decompresses the response body but leaves the upstream `content-encoding`
+ * (and a now-stale `content-length`) on `response.headers`. Relaying those with the already-decoded
+ * body makes the caller (Codex) double-decode / truncate → "stream error" on every gpt passthrough.
+ * Drop encoding + hop-by-hop headers; relay everything else (content-type, etc.) verbatim.
+ */
+export function sanitizePassthroughHeaders(upstream: Headers): Headers {
+  const DROP = new Set([
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "set-cookie",
+    "set-cookie2",
+    "te",
+    "trailer",
+    "upgrade",
+  ]);
+  const out = new Headers();
+  upstream.forEach((value, key) => {
+    if (!DROP.has(key.toLowerCase())) out.set(key, value);
+  });
+  return out;
+}

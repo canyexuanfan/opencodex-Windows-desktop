@@ -1,0 +1,109 @@
+---
+title: How It Works
+description: The full opencodex request lifecycle — parse, route, adapt, bridge, and stream.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+Codex speaks the OpenAI **Responses API**. opencodex accepts `POST /v1/responses` over HTTP with
+Server-Sent Events, plus an opt-in WebSocket upgrade on the same path. It translates the request to
+your provider's wire format and the answer back into Responses events — so Codex never knows it
+isn't talking to OpenAI.
+
+```
+            ┌──────────────────────────── opencodex ────────────────────────────┐
+            │                                                                     │
+ Codex ──▶  │  parser ──▶ router ──▶ [vision] ──▶ adapter ──▶ provider           │  ──▶ Codex
+ (/v1/      │     │          │          │            │           │                │   (SSE / WS)
+  responses)│   OcxParsed  provider   describe    buildRequest  parseStream       │
+            │   Request    +adapter   images       + fetch      AdapterEvent[]    │
+            │                                          │           │              │
+            │                                  [web-search loop]  bridge ─▶ SSE   │
+            └─────────────────────────────────────────────────────────────────────┘
+```
+
+![Codex multi-account routing: existing threads keep the same ChatGPT account, while new sessions can refresh quota and select a lower-usage healthy account.](../../../assets/multi-auth-routing.svg)
+
+## Codex auth account selection
+
+When the selected provider is the ChatGPT/Codex passthrough, opencodex can choose a stored pool
+account before the request is forwarded upstream. The rule is intentionally split:
+
+- **Existing thread ids keep affinity.** A thread is bound to the account generation that started it,
+  so a long SSH, tmux, or mobile-attached Codex session keeps using one account instead of being
+  rebalanced mid-conversation.
+- **New sessions can rebalance.** For a new thread, opencodex picks among eligible accounts using
+  `accountPoolStrategy` (`quota` by default, or `round-robin` / `fill-first`). The `quota` strategy
+  compares known usage across 5h, weekly, and 30d windows and can switch to a lower-usage account
+  when the active account crosses `autoSwitchThreshold`. Accounts in cooldown or needing
+  reauthentication are skipped regardless of strategy.
+- **Quota and failure signals feed routing.** The dashboard can force a quota refresh with
+  `GET /api/codex-auth/accounts?refresh=1`; successful upstream responses capture quota headers,
+  429 puts an account in cooldown, and 401/403 marks it for reauthentication.
+
+## Sub-agent model selection
+
+On a fresh install, `subagentModels` features `gpt-5.5`, the GPT-5.6 Sol/Terra/Luna trio, and
+`gpt-5.4-mini` in Codex's sub-agent picker. The dashboard can reorder or replace up to five entries
+with native or routed models. For v1 collaboration requests, optional `injectionModel` and
+`injectionEffort` settings add developer guidance that tells `spawn_agent` which model and reasoning
+effort to use; v2 requests keep Codex's native multi-agent guidance.
+
+## The lifecycle
+
+<Steps>
+
+1. **Parse** — `responses/parser.ts` validates the request with a Zod schema (`responses/schema.ts`)
+   and lowers it into an internal `OcxParsedRequest`: system prompt, a normalized message list
+   (text, images, tool calls, tool results), the tool definitions, generation options, and feature
+   flags such as `_webSearch` (hosted web search requested) and `_structuredOutput` (a JSON schema /
+   JSON-object `text.format` was set). Images are preserved as real content parts — never inlined as
+   base64 text.
+
+2. **Route** — `router.ts` maps the requested model id to a configured provider using a fixed
+   precedence: explicit `provider/model` → a provider's `defaultModel` → built-in prefix patterns
+   (`claude-`, `gpt-`, `o1-`/`o3-`/`o4-`, `llama-`/`mixtral-`/`gemma-`) → a provider's `models[]` →
+   the `defaultProvider` fallback. See [Model Routing](/guides/model-routing/).
+
+3. **Authenticate** — for an `oauth` provider, opencodex swaps in a fresh, auto-refreshed access
+   token as the bearer key, so the existing adapters authenticate unchanged. For ChatGPT/Codex pool
+   accounts, `codex/auth-context.ts` resolves the account first and the passthrough adapter refuses
+   to continue if the required pool credential is unavailable.
+
+4. **Vision sidecar (optional)** — if the routed model is listed in `provider.noVisionModels` and the
+   request carries an image, opencodex describes each image with the configured ChatGPT vision
+   sidecar and replaces it with text, so a text-only model can still reason about it.
+   See [Sidecars](/guides/sidecars/).
+
+5. **Passthrough fast path** — if the adapter is a Responses passthrough (`openai-responses` or
+   `azure-openai`), opencodex keeps the Responses body, applies targeted routing and compatibility
+   rewrites, then relays the provider's response without converting it through `AdapterEvent`s.
+
+6. **Web-search sidecar (optional)** — if Codex enabled hosted `web_search` but the routed model is
+   non-OpenAI, opencodex exposes a synthetic `web_search` function tool and runs the model in a small
+   agentic loop, executing real searches through `gpt-5.6-luna` by default over your ChatGPT login
+   and injecting the results back as tool results.
+
+7. **Compact (when requested)** — Codex v1 calls `POST /v1/responses/compact`; v2 adds a
+   `compaction_trigger` to a Responses turn. Native passthrough routes compaction upstream, while a
+   routed model runs as a tool-free summarizer and returns the replacement history shape Codex expects.
+
+8. **Adapt** — otherwise the chosen adapter's `buildRequest()` produces the upstream HTTP request
+   (URL, headers, body) in the provider's native format, and opencodex `fetch`es it.
+
+9. **Bridge** — the adapter's `parseStream()` (or `parseResponse()`) yields internal `AdapterEvent`s
+   (text, reasoning, tool-call start/delta/end, done, error). `bridge.ts` converts that stream back
+   into Responses SSE events — `response.output_text.delta`, `response.reasoning_summary_text.delta`,
+   `response.function_call_arguments.delta`, `response.completed`, and so on. The optional WebSocket
+   transport sends the same event payloads as text frames.
+
+</Steps>
+
+## Why a proxy and not a Codex fork?
+
+Codex hard-codes the Responses API. By translating at the protocol boundary, opencodex works with the
+Codex **CLI, App, and SDK** unchanged, survives Codex updates, and lets you switch providers per
+request without touching Codex itself. The translation is bidirectional and streaming-faithful:
+reasoning summaries, MCP tool namespaces, freeform (`apply_patch`) tools, and `tool_search` discovery
+all round-trip correctly. See the [Architecture reference](/reference/architecture/) for the
+event-by-event mapping.

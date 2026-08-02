@@ -1,0 +1,456 @@
+name: Release
+
+# Publish opencodex to npm — jawcode-style: triggered from the Actions tab with an explicit
+# version, dist-tag, and a dry-run-first default. Bump package.json on main BEFORE dispatching
+# (or use `bun run release <version>`, which does the bump+commit+push+dispatch for you); the
+# workflow verifies the version matches before publishing.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish — must equal package.json (e.g. 0.1.0)"
+        required: true
+        type: string
+      tag:
+        description: "npm dist-tag"
+        required: true
+        type: choice
+        options:
+          - latest
+          - preview
+        default: latest
+      dry-run:
+        description: "Dry run (build + pack, no actual publish)"
+        required: false
+        type: boolean
+        default: true
+      expected-sha:
+        description: "Immutable release commit this dispatch must publish (fail if the branch moved)"
+        required: false
+        type: string
+
+permissions:
+  contents: write # create the matching GitHub Release + version tag after npm publish
+  actions: read # verify the release commit already passed Cross-platform CI
+  pull-requests: read # credit-takeovers looks up landing/source PR authors via gh api
+  id-token: write # OIDC auth for Trusted Publishing + automatic provenance attestation
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify dispatched SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+        run: |
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "::warning::no expected-sha supplied; publishing whatever the branch currently points at"
+          elif [ "$GITHUB_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::branch moved after the release audit (expected ${EXPECTED_SHA}, got ${GITHUB_SHA}) — refusing to publish an unaudited commit"
+            exit 1
+          fi
+
+      # opencodex is bun-native (the prepublishOnly GUI build + typecheck run under bun).
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      # node + npm perform the actual publish. registry-url points npm at the public registry.
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted Publishing (OIDC) needs npm >= 11.5.1. Node 24 runners already
+      # provide a compatible npm; avoid replacing the bundled npm because global
+      # npm self-updates can lose publish-time dependencies such as sigstore.
+      - name: Verify npm version
+        run: |
+          npm_version="$(npm --version)"
+          echo "npm=${npm_version}"
+          # shellcheck disable=SC2016 # the node script deliberately avoids shell expansion
+          node -e '
+            const [major, minor] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && minor < 5)) {
+              console.error(`npm ${process.argv[1]} is too old for trusted publishing; need >= 11.5.1`);
+              process.exit(1);
+            }
+          ' "$npm_version"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify version matches package.json
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          echo "package.json=$PKG  input=${RELEASE_VERSION}"
+          test "$PKG" = "$RELEASE_VERSION" || {
+            echo "::error::package.json ($PKG) != requested (${RELEASE_VERSION}) — bump package.json on main first";
+            exit 1;
+          }
+
+      - name: Require successful Cross-platform CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_REF" in
+            refs/heads/main)
+              expected_tag="latest"
+              if [[ "$RELEASE_VERSION" == *-* ]]; then
+                echo "::error::main releases must use a stable semver version; got ${RELEASE_VERSION}"
+                exit 1
+              fi
+              ;;
+            refs/heads/preview)
+              expected_tag="preview"
+              if [[ "$RELEASE_VERSION" != *-preview.* ]]; then
+                echo "::error::preview releases must use a preview prerelease version; got ${RELEASE_VERSION}"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Release must run from main or preview; got ${GITHUB_REF}"
+              exit 1
+              ;;
+          esac
+
+          if [ "$NPM_DIST_TAG" != "$expected_tag" ]; then
+            echo "::error::${GITHUB_REF#refs/heads/} releases must publish with npm dist-tag '${expected_tag}', got '${NPM_DIST_TAG}'"
+            exit 1
+          fi
+
+          ci_url="$(
+            gh run list \
+              --workflow ci.yml \
+              --commit "$GITHUB_SHA" \
+              --status success \
+              --limit 10 \
+              --json conclusion,headSha,url,workflowName \
+              --jq '.[0].url // ""'
+          )"
+
+          if [ -z "$ci_url" ]; then
+            echo "::error::No successful Cross-platform CI run found for ${GITHUB_SHA}. Wait for CI to pass before releasing."
+            gh run list --workflow ci.yml --commit "$GITHUB_SHA" --limit 10 || true
+            exit 1
+          fi
+
+          echo "Cross-platform CI passed for ${GITHUB_SHA}: ${ci_url}"
+
+          # Notes / service baseline:
+          # - Preview: newest prior release of either channel (stable or preview). A
+          #   preview→preview-only baseline skips a shipped stable and restates it.
+          # - Stable: newest prior stable only (matching preview carry adjusts the
+          #   generate-notes range separately below).
+          previous_tag="$(
+            git tag --merged HEAD --list 'v[0-9]*' |
+              bun scripts/release-notes.ts previous-release-tag "$RELEASE_VERSION"
+          )"
+          if [ -n "$previous_tag" ]; then
+            changed_files="$(git diff --name-only "${previous_tag}..HEAD")"
+          else
+            changed_files="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")"
+          fi
+
+          # Keep in sync with the service-lifecycle.yml trigger paths. src/cli.ts is
+          # the pre-restructure compat stub that durable launchers still execute.
+          if printf '%s\n' "$changed_files" | grep -Eq '^(src/service\.ts|src/cli\.ts|src/cli/index\.ts|src/lib/bun-runtime\.ts|package\.json|bun\.lock|\.github/workflows/service-lifecycle\.yml)$'; then
+            service_url="$(
+              gh run list \
+                --workflow service-lifecycle.yml \
+                --commit "$GITHUB_SHA" \
+                --status success \
+                --limit 10 \
+                --json conclusion,headSha,url,workflowName \
+                --jq '.[0].url // ""'
+            )"
+            if [ -z "$service_url" ]; then
+              echo "::error::Service-related files changed since ${previous_tag:-initial commit}, but no successful Service lifecycle run was found for ${GITHUB_SHA}."
+              gh run list --workflow service-lifecycle.yml --commit "$GITHUB_SHA" --limit 10 || true
+              exit 1
+            fi
+            echo "Service lifecycle passed for ${GITHUB_SHA}: ${service_url}"
+          fi
+
+      # Tokenless publish via Trusted Publishing (OIDC) — NO NPM_TOKEN secret. npm auto-detects the
+      # OIDC environment (`id-token: write` above) and generates provenance automatically, so neither a
+      # token nor `--provenance` is needed. `npm publish` runs prepublishOnly first (typecheck + build
+      # the GUI into gui/dist), so even a dry-run fully verifies the build.
+      # PREREQUISITE: configure the Trusted Publisher for this repo + workflow on npmjs.com — possible
+      # only AFTER the package's first version exists (do the first publish locally, see the runbook).
+      - name: Preflight release metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+
+          pkg_name="$(node -p "require('./package.json').name")"
+          release_tag="v${RELEASE_VERSION}"
+          dry_run="$DRY_RUN"
+
+          git fetch --force --tags origin
+
+          existing_tag_sha="$(git rev-parse -q --verify "refs/tags/${release_tag}^{commit}" || true)"
+          if [ -n "$existing_tag_sha" ] && [ "$existing_tag_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::${release_tag} already points at ${existing_tag_sha}, not ${GITHUB_SHA}"
+            exit 1
+          fi
+
+          if [ -n "$existing_tag_sha" ]; then
+            if [ "$dry_run" = "true" ]; then
+              echo "::notice::${release_tag} already exists at this commit; dry-run only"
+            else
+              echo "::error::${release_tag} already exists. Refusing to publish a version with pre-existing Git metadata."
+              exit 1
+            fi
+          fi
+
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            if [ "$dry_run" = "true" ]; then
+              echo "::notice::GitHub Release ${release_tag} already exists; dry-run only"
+            else
+              echo "::error::GitHub Release ${release_tag} already exists. Choose the next unused patch version."
+              exit 1
+            fi
+          fi
+
+          if npm view "${pkg_name}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+            if [ "$dry_run" = "true" ]; then
+              echo "::notice::${pkg_name}@${RELEASE_VERSION} already exists on npm; dry-run only"
+            else
+              echo "::error::${pkg_name}@${RELEASE_VERSION} already exists on npm. Choose the next unused patch version."
+              exit 1
+            fi
+          fi
+
+      - name: Publish (or dry-run)
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice::DRY RUN — building + packing, not publishing"
+            npm run prepublishOnly
+            npm pack --dry-run
+          else
+            npm publish --tag "$NPM_DIST_TAG" --access public
+          fi
+
+      # Confirm the registry actually has the new version (real publishes only).
+      - name: Post-publish registry smoke
+        if: ${{ inputs.dry-run != true }}
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          for attempt in $(seq 1 30); do
+            if VERSION=$(npm view "@bitkyc08/opencodex@${RELEASE_VERSION}" version 2>/dev/null); then
+              echo "registry version=$VERSION"
+              test "$VERSION" = "$RELEASE_VERSION"
+              npm dist-tag ls @bitkyc08/opencodex
+              exit 0
+            fi
+            echo "::notice::@bitkyc08/opencodex@${RELEASE_VERSION} not visible in npm registry yet (attempt $attempt/30)"
+            sleep 10
+          done
+          echo "::error::npm registry smoke failed after 30 attempts"
+          npm view @bitkyc08/opencodex versions dist-tags --json || true
+          exit 1
+
+      - name: Create GitHub release
+        if: ${{ inputs.dry-run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          release_tag="v${RELEASE_VERSION}"
+
+          git fetch --force --tags origin
+
+          existing_tag_sha="$(git rev-parse -q --verify "refs/tags/${release_tag}^{commit}" || true)"
+          if [ -n "$existing_tag_sha" ] && [ "$existing_tag_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::${release_tag} already points at ${existing_tag_sha}, not ${GITHUB_SHA}"
+            exit 1
+          fi
+
+          # Channel previous tag for Full Changelog + default notes baseline.
+          # Preview baselines any prior release; stable baselines prior stable only.
+          previous_tag="$(
+            git tag --merged HEAD --list 'v[0-9]*' |
+              bun scripts/release-notes.ts previous-release-tag "$RELEASE_VERSION"
+          )"
+          npm_metadata="Published to npm as \`@bitkyc08/opencodex@${RELEASE_VERSION}\` with dist-tag \`${NPM_DIST_TAG}\`."
+
+          # Preview builds must be marked prerelease so GitHub "latest" keeps pointing at the
+          # stable channel (matching npm dist-tags); see issue #64.
+          prerelease_flag=""
+          if [[ "$RELEASE_VERSION" == *-preview.* ]]; then
+            prerelease_flag="--prerelease"
+          fi
+
+          # Build notes before tagging: if generate-notes fails after a tag push, preflight
+          # blocks retries because the tag already exists. API uses target_commitish, so the
+          # tag need not exist yet. Preflight already rejects an existing GitHub Release for
+          # non-dry runs, so this step only creates.
+          notes_file="$(mktemp)"
+          carried_file="$(mktemp)"
+          delta_file="$(mktemp)"
+          commits_file="$(mktemp)"
+          : > "$carried_file"
+          : > "$delta_file"
+          : > "$commits_file"
+
+          # Stable releases after matching previews: aggregate every matching preview
+          # changelog (oldest→newest; each preview body is incremental), then only
+          # generate-notes / commits for the post-preview delta when the newest
+          # *successfully carried* preview tag is an ancestor of this commit. Never
+          # advance the baseline to a later preview that is missing/empty — that would
+          # drop the gap between the last carried preview and that later tag.
+          notes_range_start="$previous_tag"
+          if [[ "$RELEASE_VERSION" != *-preview.* ]]; then
+            preview_carry_tags="$(
+              git tag --list "v${RELEASE_VERSION}-preview.*" |
+                bun scripts/release-notes.ts matching-preview-tags "$RELEASE_VERSION"
+            )"
+            newest_carried_preview_tag=""
+            carried_part_files=()
+            # Probe repo readability once so a token/permission 404 cannot be
+            # mistaken for "this preview tag has no release".
+            gh api "repos/${GITHUB_REPOSITORY}" --jq '.full_name' > /dev/null
+            view_err="$(mktemp)"
+            while IFS= read -r preview_carry_tag; do
+              [ -n "$preview_carry_tag" ] || continue
+              : > "$view_err"
+              set +e
+              # Prefer HTTP status over stderr prose: auth failures also say "Not Found".
+              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${preview_carry_tag}" \
+                --jq '.body' > "${carried_file}.raw" 2>"$view_err"
+              view_status=$?
+              set -e
+              if [ "$view_status" -eq 0 ]; then
+                bun scripts/release-notes.ts strip-carried "${carried_file}.raw" > "${carried_file}.one"
+                if bun scripts/release-notes.ts has-meaningful "${carried_file}.one"; then
+                  part_file="${carried_file}.part.${#carried_part_files[@]}"
+                  cp "${carried_file}.one" "$part_file"
+                  carried_part_files+=("$part_file")
+                  newest_carried_preview_tag="$preview_carry_tag"
+                  echo "::notice::Carrying preview release notes from ${preview_carry_tag} into ${release_tag}"
+                else
+                  echo "::notice::Preview release ${preview_carry_tag} has no usable changelog after strip; leaving carried baseline unchanged for this tag"
+                fi
+              elif grep -qE 'HTTP 404' "$view_err"; then
+                echo "::notice::Matching preview tag ${preview_carry_tag} has no GitHub Release; skipping"
+              else
+                echo "::error::Failed to look up GitHub Release for ${preview_carry_tag} (operational error, not a missing release)"
+                cat "$view_err" >&2 || true
+                exit 1
+              fi
+            done <<< "$preview_carry_tags"
+
+            if [ "${#carried_part_files[@]}" -gt 0 ]; then
+              bun scripts/release-notes.ts join-carried --out "$carried_file" "${carried_part_files[@]}"
+            fi
+
+            if [ -n "$newest_carried_preview_tag" ]; then
+              if git merge-base --is-ancestor "$newest_carried_preview_tag" "$GITHUB_SHA"; then
+                notes_range_start="$newest_carried_preview_tag"
+                echo "::notice::Using preview tag ${newest_carried_preview_tag} as notes/commits baseline (ancestor of ${GITHUB_SHA})"
+              else
+                echo "::notice::Preview tag ${newest_carried_preview_tag} is not an ancestor of ${GITHUB_SHA}; keeping channel baseline ${previous_tag:-none} for generate-notes/commits"
+              fi
+            fi
+          fi
+
+          if [ -n "$notes_range_start" ]; then
+            generate_notes_api=(
+              "repos/${GITHUB_REPOSITORY}/releases/generate-notes"
+              -f "tag_name=${release_tag}"
+              -f "target_commitish=${GITHUB_SHA}"
+              -f "previous_tag_name=${notes_range_start}"
+            )
+            # Fail closed: missing PR categories is a broken release note, not a soft skip.
+            pr_notes="$(gh api "${generate_notes_api[@]}" --jq '.body')"
+            # Drop generate-notes' trailing compare link; we re-append it after the commit list.
+            printf '%s\n' "$pr_notes" | sed '/^\*\*Full Changelog\*\*:/d' > "$delta_file"
+          else
+            # First release on this channel: never call generate-notes without previous_tag_name.
+            # GitHub would baseline the newest repo tag, which may belong to the other channel.
+            echo "::notice::No previous channel tag; skipping generate-notes (commits-only notes)"
+          fi
+
+          # Rewrite takeover credits on both carried preview notes and the since-preview
+          # delta. Carried bodies may predate this helper and would otherwise keep
+          # landing-author-only attribution on stable releases.
+          if [ -s "$carried_file" ]; then
+            bun scripts/release-notes.ts credit-takeovers \
+              --repo "$GITHUB_REPOSITORY" \
+              --in "$carried_file" \
+              --out "$carried_file"
+          fi
+          if [ -s "$delta_file" ]; then
+            bun scripts/release-notes.ts credit-takeovers \
+              --repo "$GITHUB_REPOSITORY" \
+              --in "$delta_file" \
+              --out "$delta_file"
+          fi
+
+          if [ -n "$notes_range_start" ]; then
+            commit_range="${notes_range_start}..${GITHUB_SHA}"
+            git log --pretty=format:'- %s (%h)' "$commit_range" > "$commits_file"
+          else
+            # First release on a channel has no previous tag; cap history so the notes
+            # body stays within GitHub release size limits.
+            git log --pretty=format:'- %s (%h)' --max-count=100 "$GITHUB_SHA" > "$commits_file"
+          fi
+          # `--pretty=format:` omits the trailing newline; normalize for downstream readers.
+          if [ -s "$commits_file" ]; then
+            printf '\n' >> "$commits_file"
+          fi
+
+          assemble_args=(
+            bun scripts/release-notes.ts assemble
+            --npm-metadata "$npm_metadata"
+            --carried "$carried_file"
+            --delta "$delta_file"
+            --commits "$commits_file"
+            --out "$notes_file"
+            --compare-to "$release_tag"
+            --repository "$GITHUB_REPOSITORY"
+          )
+          # Prefer the stable-channel previous tag for the compare link when present.
+          if [ -n "$previous_tag" ]; then
+            assemble_args+=(--compare-from "$previous_tag")
+          elif [ -n "$notes_range_start" ]; then
+            assemble_args+=(--compare-from "$notes_range_start")
+          fi
+          "${assemble_args[@]}"
+
+          if [ -z "$existing_tag_sha" ]; then
+            git tag "$release_tag" "$GITHUB_SHA"
+            git push origin "refs/tags/${release_tag}"
+          fi
+
+          gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" \
+            --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}

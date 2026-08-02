@@ -1,0 +1,24 @@
+# This file's PRESENCE stops npm from falling back to .gitignore (which ignores gui/dist).
+# The package.json "files" allowlist is the source of truth for what ships; the entries below
+# are explicit guards so dev-only content never leaks into the published tarball.
+devlog/
+docs-site/
+.github/
+.codex/
+
+# GUI: ship only the built gui/dist (via "files"); never the source/deps/config.
+gui/src/
+gui/public/
+gui/node_modules/
+gui/index.html
+gui/README.md
+gui/package.json
+gui/tsconfig*.json
+gui/vite.config.*
+gui/eslint.config.*
+gui/bun.lock
+
+# misc
+*.test.ts
+*.map
+.DS_Store

@@ -1,0 +1,124 @@
+name: Bug report
+description: Report a defect in the proxy, CLI, dashboard, provider adapter, or packaging.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Include a minimal reproduction and exact environment details so we can confirm and fix the problem quickly.
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client or integration
+      description: Which client or surface did you observe the problem in?
+      options:
+        - Codex CLI
+        - Codex App
+        - Codex SDK
+        - Claude Code
+        - Direct HTTP/API client
+        - OpenCodex dashboard
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of OpenCodex is affected?
+      options:
+        - CLI
+        - Proxy and routing
+        - Dashboard
+        - Provider adapter
+        - Authentication and account pool
+        - Catalog / models
+        - Streaming
+        - Tools / MCP / web search
+        - Installation or packaging
+        - Service lifecycle
+        - Platform (Windows / macOS / Linux)
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+      placeholder: The proxy returns 502 when ...; I expected ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: |
+        Exact commands, steps, configuration shape, and inputs. If the problem is intermittent or not yet consistently reproducible, explain what you have observed and under which conditions.
+      placeholder: |
+        1. ocx start --port 10100
+        2. Send a request to /v1/responses with ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Installed `@bitkyc08/opencodex` version or commit SHA.
+      placeholder: "2.7.31"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: OS name and version.
+      placeholder: Windows 11 24H2, macOS 15.5, Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: input
+    id: provider-model
+    attributes:
+      label: Provider and model
+      description: Required only when the problem is provider-specific.
+      placeholder: "anthropic / claude-sonnet-4-20250514"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste relevant logs, stack traces, or request IDs.
+      render: shell
+
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Screenshots and supporting files
+      description: Drag screenshots, videos, logs, or minimal reproduction archives here.
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Redacted configuration
+      description: Share a redacted config snippet if the bug depends on provider or routing setup.
+      render: json
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and documentation.
+          required: true
+        - label: I removed secrets, tokens, account details, request credentials, and personal data.
+          required: true
