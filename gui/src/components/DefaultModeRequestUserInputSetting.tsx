@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../i18n/shared";
+import { readJsonOrThrow } from "../fetch-json";
 
 const FEATURE_ENDPOINT = "/api/codex-auth/features/default-mode-request-user-input";
 
@@ -58,8 +59,8 @@ export default function DefaultModeRequestUserInputSetting({ apiBase }: { apiBas
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ enabled: next }),
       });
-      const payload = await res.json() as { ok?: boolean; enabled?: unknown; error?: string };
-      if (!res.ok || payload.ok !== true) throw new Error(payload.error ?? String(res.status));
+      const payload = (await readJsonOrThrow<{ ok?: boolean; enabled?: unknown }>(res)) ?? {};
+      if (payload.ok !== true) throw new Error(String(res.status));
       enabledRef.current = payload.enabled === true;
       setEnabled(enabledRef.current);
       setHydrated(true);
