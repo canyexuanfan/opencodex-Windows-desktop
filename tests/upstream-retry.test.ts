@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
   fetchWithResetRetry,
   isConnectionResetError,
+  releaseResponseBodyBestEffort,
   retryBackoffDelayMs,
   sleepWithHeartbeats,
 } from "../src/lib/upstream-retry";
@@ -89,6 +90,55 @@ describe("sleepWithHeartbeats", () => {
       events.push(event.type);
     }
     expect(events).toEqual([]);
+  });
+});
+
+describe("releaseResponseBodyBestEffort", () => {
+  test("a never-settling cancel() does not block past the bounded timeout", async () => {
+    const signal = new AbortController().signal;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        // Never settles — the release must still be bounded.
+        return new Promise<void>(() => {});
+      },
+    });
+    const started = Date.now();
+    await releaseResponseBodyBestEffort(body, signal, 120);
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(100);
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  test("a never-settling cancel() resolves immediately when the signal aborts", async () => {
+    const controller = new AbortController();
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        return new Promise<void>(() => {});
+      },
+    });
+    const pending = releaseResponseBodyBestEffort(body, controller.signal, 60_000);
+    controller.abort(new DOMException("client disconnected", "AbortError"));
+    const started = Date.now();
+    await pending;
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  test("an already-aborted signal initiates cancellation without awaiting it", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let cancelInitiated = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelInitiated = true;
+        return new Promise<void>(() => {});
+      },
+    });
+    await releaseResponseBodyBestEffort(body, controller.signal, 60_000);
+    expect(cancelInitiated).toBe(true);
+  });
+
+  test("null body is a no-op", async () => {
+    await expect(releaseResponseBodyBestEffort(null, new AbortController().signal, 10)).resolves.toBeUndefined();
   });
 });
 

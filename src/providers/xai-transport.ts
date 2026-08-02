@@ -83,7 +83,9 @@ export function deriveXaiConvId(promptCacheKey: string): string {
 
 /**
  * Resolve xAI's runtime transport without mutating persisted config. Conversation/session
- * affinity is stable for this resolved transport; request identity is generated per fetch.
+ * affinity is stable for this resolved transport; request identity is pinned per resolved
+ * transport (= per logical request until key rotation), so same-target replays and transient
+ * retries carry the same id while a rotated key gets a fresh one.
  * Agent, deployment, model-override, turn, mode, and user identity headers are intentionally
  * omitted because opencodex has no truthful values for the official fields.
  */

@@ -82,8 +82,8 @@ existing multi-key failover runs. Default off → zero behavior change for exist
   shared between concurrent requests (unlike the Kiro 429 pattern). Upstream volume per
   request: same-key replays add at most `attempts` sends, then multi-key failover adds up to
   `poolKeys − 1` more (or Anthropic account rotations), so the combined bound is
-  `attempts + poolKeys` sends — a storm multiplies by that factor per request, not by
-  `attempts + 1`.
+  `attempts + poolKeys` sends (pool size = configured `apiKeyPool` length, fixed per request) —
+  a storm multiplies by that factor per request, not by `attempts + 1`.
 - Header deadlines: the image/video and web-search bridge loops restart their response-header
   deadline after each deliberate wait, so backoffs never consume the connect budget and a
   rate-limit wait is never misattributed as a 504 header timeout. The old deadline is cleared

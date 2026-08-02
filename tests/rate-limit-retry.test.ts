@@ -171,4 +171,59 @@ describe("retry loop client-abort handling", () => {
     const body = await response.json() as { error?: { code?: string } };
     expect(body.error?.code).toBe("client_cancelled");
   });
+
+  test("a never-settling 429 body cancel() cannot block the abort-aware backoff", async () => {
+    let sends = 0;
+    let cancelInitiated = false;
+    globalThis.fetch = (async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://llmapi.blsc.cn/chat/completions") {
+        sends += 1;
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(JSON.stringify({ error: { message: "rate limited" } })));
+            controller.close();
+          },
+          cancel() {
+            cancelInitiated = true;
+            // Never settles: the release must be bounded or the retry loop hangs here.
+            return new Promise<void>(() => {});
+          },
+        }), { status: 429, headers: { "content-type": "application/json" } });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const config = {
+      port: 0,
+      defaultProvider: "blsc",
+      providers: {
+        blsc: {
+          adapter: "openai-chat",
+          baseUrl: "https://llmapi.blsc.cn",
+          authMode: "key",
+          apiKey: "key-alpha-000111222333",
+          retryOn429: { attempts: 3, intervalMs: 30_000, respectRetryAfter: false },
+        },
+      },
+    } as OcxConfig;
+
+    const abort = new AbortController();
+    const pending = handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "blsc/DeepSeek-V4-Flash", input: "hello", stream: false }),
+    }), config, { model: "blsc/DeepSeek-V4-Flash", provider: "blsc" }, { abortSignal: abort.signal });
+
+    for (let i = 0; i < 100 && sends === 0; i += 1) await Bun.sleep(10);
+    expect(sends).toBe(1);
+
+    abort.abort(new DOMException("client disconnected", "AbortError"));
+    const started = Date.now();
+    const response = await pending;
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(response.status).toBe(499);
+    expect(sends).toBe(1);
+    expect(cancelInitiated).toBe(true);
+  });
 });

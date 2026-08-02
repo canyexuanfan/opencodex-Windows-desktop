@@ -89,6 +89,7 @@ import {
   applyUpstreamRecoveryInit,
   fetchWithResetRetry,
   fetchWithTransientRetry,
+  releaseResponseBodyBestEffort,
   sleepWithHeartbeats,
   sleepWithAbort,
 } from "../../lib/upstream-retry";
@@ -1657,8 +1658,9 @@ async function handleResponsesInner(
       rateLimitRetries += 1;
       // Release the unread 429 body before the backoff (only the header is needed for the wait).
       const retryAfterHeader = upstreamResponse.headers.get("retry-after");
-      // AWAIT the cancellation so the resource-release guarantee is real, not best-effort.
-      try { await upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+      // Release the body without letting a never-settling cancel() block the abort-aware
+      // backoff (bounded by the abort signal and a short timeout).
+      await releaseResponseBodyBestEffort(upstreamResponse.body, options.abortSignal);
       try {
         await sleepWithAbort(
           rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
@@ -2343,12 +2345,27 @@ async function handleResponsesInner(
   // builder runs again only after a key/account/adapter rotation, an oauth refresh, or an
   // image-tier bias change (transportToken bump). `body` is always a serialized string, so
   // reuse is safe, and releaseBodyObservation is idempotent per build.
-  const initialRequest = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
-  recordAdapterReasoning(logCtx, initialRequest);
-  const inputTokenEstimate = typeof initialRequest.usageLog?.inputTokens === "number"
-    ? initialRequest.usageLog.inputTokens
-    : undefined;
-  if (inputTokenEstimate !== undefined) logCtx.usageLogInputTokens = inputTokenEstimate;
+  let initialRequest: AdapterRequest | undefined;
+  let inputTokenEstimate: number | undefined;
+  try {
+    initialRequest = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
+    recordAdapterReasoning(logCtx, initialRequest);
+    inputTokenEstimate = typeof initialRequest.usageLog?.inputTokens === "number"
+      ? initialRequest.usageLog.inputTokens
+      : undefined;
+    if (inputTokenEstimate !== undefined) logCtx.usageLogInputTokens = inputTokenEstimate;
+  } catch (err) {
+    // A throwing buildRequest never returned a request; if a post-build step threw, release
+    // the serialized-body observation (idempotent) so the translator budget is not leaked.
+    // The build runs after linkAbortSignal, so a failure must also tear the link down and
+    // abort the upstream controller instead of escaping handleResponses unmapped.
+    initialRequest?.releaseBodyObservation?.();
+    cleanupUpstreamAbort();
+    upstream.abort();
+    if (options.abortSignal?.aborted) return clientCancelledResponse();
+    const msg = err instanceof Error ? err.message : String(err);
+    return formatErrorResponse(400, "invalid_request_error", redactSecretString(msg));
+  }
   let sameTargetRequest: AdapterRequest | undefined = initialRequest;
   let sameTargetParsed: OcxParsedRequest | undefined = parsed;
   let sameTargetToken = 0;
@@ -2413,12 +2430,23 @@ async function handleResponsesInner(
         // Same target (key/adapter/parsed/tier unchanged): replay the exact cached request.
         retryRequest = sameTargetRequest;
       } else {
-        retryRequest = await activeAdapter.buildRequest(parsed, {
-          headers: selectedForwardHeaders,
-          translatorBudget,
-          ...(imageTierBias > 0 ? { imageTierBias } : {}),
-        });
-        recordAdapterReasoning(logCtx, retryRequest);
+        try {
+          retryRequest = await activeAdapter.buildRequest(parsed, {
+            headers: selectedForwardHeaders,
+            translatorBudget,
+            ...(imageTierBias > 0 ? { imageTierBias } : {}),
+          });
+          recordAdapterReasoning(logCtx, retryRequest);
+        } catch (err) {
+          // A rotated/rebuilt adapter build failure is a request-shaping error, not an
+          // upstream connect failure: tear the abort link down and map it as 400 (no 413
+          // translator-budget mapping here — that stays with parseRequest/buildToolBridgeMaps).
+          cleanupUpstreamAbort();
+          upstream.abort();
+          if (options.abortSignal?.aborted) return { failed: clientCancelledResponse() };
+          const msg = err instanceof Error ? err.message : String(err);
+          return { failed: formatErrorResponse(400, "invalid_request_error", redactSecretString(msg)) };
+        }
         sameTargetRequest = retryRequest;
         sameTargetParsed = parsed;
         sameTargetToken = transportToken;
@@ -2504,8 +2532,9 @@ async function handleResponsesInner(
         // wait, and under a 429 storm the sockets would otherwise accumulate for the whole
         // configured interval (same pattern as the key-failover branch below).
         const retryAfterHeader = upstreamResponse.headers.get("retry-after");
-        // AWAIT the cancellation so the resource-release guarantee is real, not best-effort.
-        try { await upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // Release the body without letting a never-settling cancel() block the abort-aware
+        // backoff (bounded by the abort signal and a short timeout).
+        await releaseResponseBodyBestEffort(upstreamResponse.body, options.abortSignal);
         try {
           await sleepWithAbort(
             rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
@@ -2660,17 +2689,25 @@ async function handleResponsesInner(
      * deterministic for the same parsed request (tests assert byte-identical replays).
      */
     const fetchContinuation = async (replay = false): Promise<Response> => {
-      let continuationRequest: AdapterRequest;
+      let continuationRequest: AdapterRequest | undefined;
       if (sameTargetRequest !== undefined && sameTargetParsed === nextParsed && sameTargetToken === transportToken) {
         // Same target (key/adapter/parsed/tier unchanged): replay the exact cached request.
         continuationRequest = sameTargetRequest;
       } else {
-        continuationRequest = await activeAdapter.buildRequest(nextParsed, {
-          headers: selectedForwardHeaders,
-          translatorBudget,
-          ...(imageTierBias > 0 ? { imageTierBias } : {}),
-        });
-        recordAdapterReasoning(logCtx, continuationRequest);
+        try {
+          continuationRequest = await activeAdapter.buildRequest(nextParsed, {
+            headers: selectedForwardHeaders,
+            translatorBudget,
+            ...(imageTierBias > 0 ? { imageTierBias } : {}),
+          });
+          recordAdapterReasoning(logCtx, continuationRequest);
+        } catch (err) {
+          // The main body is already streaming, so there is no HTTP error surface: release
+          // any partial body observation and surface the failure as an in-stream error via
+          // the outer catch (no upstream.abort() — that would kill the live body stream).
+          continuationRequest?.releaseBodyObservation?.();
+          throw err;
+        }
         sameTargetRequest = continuationRequest;
         sameTargetParsed = nextParsed;
         sameTargetToken = transportToken;
@@ -2714,7 +2751,7 @@ async function handleResponsesInner(
       try {
         response = await fetchContinuation();
       } catch (error) {
-        if (options.abortSignal?.aborted) {
+        if (options.abortSignal?.aborted || upstream.signal.aborted) {
           yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
         } else {
           yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };
@@ -2733,8 +2770,9 @@ async function handleResponsesInner(
         rateLimitRetries += 1;
         // Release the unread 429 body before the backoff (only the header is needed for the wait).
         const retryAfterHeader = response.headers.get("retry-after");
-        // AWAIT the cancellation so the resource-release guarantee is real, not best-effort.
-        try { await response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // Release the body without letting a never-settling cancel() block the abort-aware
+        // backoff (bounded by the upstream signal and a short timeout).
+        await releaseResponseBodyBestEffort(response.body, upstream.signal);
         try {
           yield* sleepWithHeartbeats(
             rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
@@ -2761,7 +2799,7 @@ async function handleResponsesInner(
         try {
           response = await fetchContinuation(true);
         } catch (error) {
-          if (options.abortSignal?.aborted) {
+          if (options.abortSignal?.aborted || upstream.signal.aborted) {
             yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
           } else {
             yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };

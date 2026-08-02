@@ -72,6 +72,50 @@ export async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<
 }
 
 /**
+ * Best-effort, bounded cancellation of a response body before a retry backoff.
+ *
+ * The 429 paths release the unread body before waiting so sockets do not accumulate under a
+ * rate-limit storm, but a never-settling `cancel()` promise must not be able to block the
+ * abort-aware backoff (client cancel, `maxIntervalMs`, or the cumulative header deadline).
+ * Cancellation is started and its rejection observed; the await is bounded by `timeoutMs`
+ * and the abort signal. This mirrors the rotation-path guarantee (release is initiated, not
+ * awaited forever) while preserving the resource-release intent of the same-target paths.
+ */
+export async function releaseResponseBodyBestEffort(
+  body: ReadableStream<Uint8Array> | null,
+  signal: AbortSignal | undefined,
+  timeoutMs = 1_000,
+): Promise<void> {
+  if (!body) return;
+  if (signal?.aborted) {
+    void body.cancel().catch(() => {});
+    return;
+  }
+  const cancel = body.cancel().catch(() => {});
+  if (!signal) {
+    await Promise.race([cancel, new Promise<void>(resolve => setTimeout(resolve, timeoutMs))]);
+    return;
+  }
+  await new Promise<void>(resolve => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, timeoutMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void cancel.then(() => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    });
+  });
+}
+
+/**
  * Abort-aware sleep that yields an adapter `heartbeat` at least every `heartbeatIntervalMs`.
  * The Responses bridge treats a returned iterator event as upstream liveness and aborts turns
  * that stay silent past the stall budget (default 300s), while a retryOn429 wait may legally

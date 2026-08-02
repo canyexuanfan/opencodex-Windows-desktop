@@ -232,7 +232,8 @@ failover). Codex never retries 429 client-side (openai/codex#30471), so this is 
 defense for those providers; the final 429 still carries `Retry-After` for clients that honor
 it. Concurrent requests each honor their own policy — there is no process-wide shared cooldown
 (unlike the Kiro pattern), so a rate-limit storm multiplies upstream volume by at most
-`attempts + poolKeys` per request (same-key replays, then failover keys). Every surface
+`attempts + poolKeys` per request (same-key replays, then failover keys; the pool size is the
+operator-configured `apiKeyPool` length, fixed for the duration of the request). Every surface
 releases (and awaits the cancellation of) the unread 429 body before the backoff, records the
 `rate-limit-429` recovery kind on replay sends, and the bridge loops clear the old
 response-header deadline before the wait and start a fresh one afterward — client cancellation

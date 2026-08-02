@@ -20,7 +20,7 @@ import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { fetchWithResetRetry, sleepWithHeartbeats } from "../lib/upstream-retry";
+import { fetchWithResetRetry, releaseResponseBodyBestEffort, sleepWithHeartbeats } from "../lib/upstream-retry";
 import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   isTranslatorBudgetExceededError,
@@ -501,8 +501,9 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         rateLimitRetries += 1;
         // Release the unread 429 body before the backoff (only the header is needed for the wait).
         const retryAfterHeader = prepared.response.headers.get("retry-after");
-        // AWAIT the cancellation so the resource-release guarantee is real, not best-effort.
-        try { await prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        // Release the body without letting a never-settling cancel() block the abort-aware
+        // backoff (bounded by the signal and a short timeout).
+        await releaseResponseBodyBestEffort(prepared.response.body, signal);
         // The old header deadline must not stay armed across the deliberate wait: clear it
         // before sleeping so a stale expiry can never race the client-cancel path.
         headerDeadline.clear();
