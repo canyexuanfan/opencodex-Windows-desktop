@@ -587,6 +587,14 @@ export class NativeProfileManager {
         }
         const timestamp = new Date(this.now()).toISOString();
         const id = this.uuid();
+        const currentProfile = this.currentProfile(vault);
+        const currentSourcePayload = encryptNativeEnvelope(
+          this.context,
+          currentProfile.id,
+          currentProfile.identityHash,
+          current,
+          key,
+        );
         const profile: NativeMainProfileRecordV1 = {
           id,
           label,
@@ -597,9 +605,25 @@ export class NativeProfileManager {
           createdAt: timestamp,
           updatedAt: timestamp,
         };
-        vault.profiles.push(profile);
-        vault.revision += 1;
-        await this.writeVault(vault);
+        const prospectiveVault = structuredClone(vault);
+        prospectiveVault.profiles.push(profile);
+        prospectiveVault.revision += 1;
+        const currentActivePreflight = structuredClone(prospectiveVault);
+        currentActivePreflight.revision = Number.MAX_SAFE_INTEGER;
+        serializeNativeProfileMetadata(currentActivePreflight);
+        for (const inactiveProfile of prospectiveVault.profiles.filter(item => item.state === "inactive")) {
+          const activePlacement = structuredClone(prospectiveVault);
+          activePlacement.revision = Number.MAX_SAFE_INTEGER;
+          const nextCurrent = activePlacement.profiles.find(item => item.id === currentProfile.id)!;
+          const nextActive = activePlacement.profiles.find(item => item.id === inactiveProfile.id)!;
+          nextCurrent.state = "inactive";
+          nextCurrent.payload = currentSourcePayload;
+          nextActive.state = "active";
+          nextActive.payload = null;
+          activePlacement.activeProfileId = nextActive.id;
+          serializeNativeProfileMetadata(activePlacement);
+        }
+        await this.writeVault(prospectiveVault);
         importCommitted = true;
         result = { effectiveCodexHome: this.context.codexHome, profile: publicNativeProfile(profile) };
       } catch (error) {

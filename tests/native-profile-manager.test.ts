@@ -241,6 +241,85 @@ describe("native main profile transactions", () => {
     expect(existsSync(stage.stagingCodexHome)).toBe(false);
   });
 
+  test("finish rejects a near-cap current source before importing an unusable target", async () => {
+    const f = fixture();
+    const largeSource = JSON.parse(f.source) as Record<string, unknown>;
+    largeSource.padding = "x".repeat(Math.floor(MAX_NATIVE_PROFILE_METADATA_BYTES * 0.85));
+    const sourceText = JSON.stringify(largeSource, null, 2) + "\n";
+    writeFileSync(join(f.codexHome, "auth.json"), sourceText);
+    let authWrites = 0;
+    let vaultWrites = 0;
+    let vaultPath: string | undefined;
+    const manager = new NativeProfileManager({
+      ...f.options,
+      atomicWrite: async (path, content) => {
+        if (path === join(f.codexHome, "auth.json")) authWrites += 1;
+        if (path === vaultPath) vaultWrites += 1;
+        return atomic(path, content);
+      },
+    });
+    vaultPath = manager.context.vaultPath;
+    const registered = await manager.register("personal");
+    const vaultBefore = readFileSync(manager.context.vaultPath, "utf8");
+    const parsedVaultBefore = readNativeProfileVault(manager.context)!;
+    authWrites = 0;
+    vaultWrites = 0;
+    const stage = await manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
+
+    let caught: unknown;
+    try { await manager.finishStage(stage.stageId, "work"); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("PROFILE_METADATA_TOO_LARGE");
+    expect(authWrites).toBe(0);
+    expect(vaultWrites).toBe(0);
+    expect(readFileSync(manager.context.authPath, "utf8")).toBe(sourceText);
+    expect(readFileSync(manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    const parsedVaultAfter = readNativeProfileVault(manager.context)!;
+    expect(parsedVaultAfter.revision).toBe(parsedVaultBefore.revision);
+    expect(parsedVaultAfter.activeProfileId).toBe(parsedVaultBefore.activeProfileId);
+    expect(parsedVaultAfter.profiles.map(profile => profile.id)).toEqual(parsedVaultBefore.profiles.map(profile => profile.id));
+    expect((await manager.list())).toMatchObject({
+      activeProfileId: registered.profile.id,
+      profiles: [{ id: registered.profile.id, label: "personal" }],
+    });
+    expect(f.transitions).toEqual([]);
+    expect(existsSync(stage.stagingCodexHome)).toBe(false);
+  }, 30_000);
+
+  test("accepted small profiles remain mutually switchable across active placements", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    const personal = await manager.register("personal");
+    const workStage = await manager.prepareStage();
+    writeFileSync(join(workStage.stagingCodexHome, "auth.json"), f.target);
+    const work = await manager.finishStage(workStage.stageId, "work");
+    const thirdStage = await manager.prepareStage();
+    const thirdAuth = envelope("account-third", "third");
+    writeFileSync(join(thirdStage.stagingCodexHome, "auth.json"), thirdAuth);
+    const third = await manager.finishStage(thirdStage.stageId, "third");
+    const expected = new Map([
+      ["personal", { id: personal.profile.id, auth: f.source }],
+      ["work", { id: work.profile.id, auth: f.target }],
+      ["third", { id: third.profile.id, auth: thirdAuth }],
+    ]);
+
+    for (const label of ["work", "third", "personal", "third", "work", "personal"]) {
+      const selected = expected.get(label)!;
+      await manager.switch(label, true);
+      expect(readFileSync(manager.context.authPath, "utf8")).toBe(selected.auth);
+      const vault = readNativeProfileVault(manager.context)!;
+      const active = vault.profiles.filter(profile => profile.state === "active");
+      const inactive = vault.profiles.filter(profile => profile.state === "inactive");
+      expect(vault.activeProfileId).toBe(selected.id);
+      expect(active).toEqual([expect.objectContaining({ id: selected.id, payload: null })]);
+      expect(inactive).toHaveLength(2);
+      expect(inactive.every(profile => profile.payload !== null)).toBe(true);
+      expect(existsSync(manager.context.journalPath)).toBe(false);
+    }
+  });
+
   test("expired stages can be cancelled and are swept before preparing another stage", async () => {
     const f = fixture();
     let now = Date.now();
