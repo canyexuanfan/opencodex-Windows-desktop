@@ -216,6 +216,7 @@ describe("native main profile transactions", () => {
     let caught: unknown;
     try { await manager.finishStage(stage.stageId, "invalid"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).cleanupRequired).toBeUndefined();
     expect(existsSync(stage.stagingCodexHome)).toBe(false);
   });
 
@@ -276,6 +277,7 @@ describe("native main profile transactions", () => {
     expect((caught as NativeProfileError).code).toBe("STAGING_CLEANUP_REQUIRED");
     expect((caught as NativeProfileError).message).toContain("was imported");
     expect((caught as NativeProfileError).message).toContain("Do not retry");
+    expect((caught as NativeProfileError).cleanupRequired).toBeUndefined();
     expect((await manager.list()).profiles.some(profile => profile.label === "work")).toBe(true);
     expect(existsSync(stage.stagingCodexHome)).toBe(true);
     await manager.cancelStage(stage.stageId);
@@ -295,6 +297,9 @@ describe("native main profile transactions", () => {
     try { await failing.finishStage(stage.stageId, "invalid"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).code).toBe("AUTH_INVALID");
+    expect((caught as NativeProfileError).status).toBe(409);
+    expect((caught as NativeProfileError).retryable).toBe(false);
+    expect((caught as NativeProfileError).cleanupRequired).toBe(true);
     expect(existsSync(stage.stagingCodexHome)).toBe(true);
     await manager.cancelStage(stage.stageId);
   });
@@ -376,26 +381,36 @@ describe("native main profile transactions", () => {
     expect(existsSync(overflow.stagingCodexHome)).toBe(false);
   }, 30_000);
 
-  test("rejects an oversized prospective journal before the first durable switch write", async () => {
+  test("switches with a journal larger than the metadata cap", async () => {
     const f = fixture();
     const manager = new NativeProfileManager(f.options);
-    const sourceProfile = await manager.register("personal");
+    await manager.register("personal");
     const stage = await manager.prepareStage();
     const large = JSON.parse(f.target) as Record<string, unknown>;
     large.padding = "x".repeat(Math.floor(MAX_NATIVE_PROFILE_METADATA_BYTES * 0.42));
     writeFileSync(join(stage.stagingCodexHome, "auth.json"), JSON.stringify(large, null, 2) + "\n");
-    await manager.finishStage(stage.stageId, "work");
-    const authBefore = readFileSync(manager.context.authPath, "utf8");
-    const vaultBefore = readFileSync(manager.context.vaultPath, "utf8");
-    let caught: unknown;
-    try { await manager.switch("work", true); } catch (error) { caught = error; }
-    expect(caught).toBeInstanceOf(NativeProfileError);
-    expect((caught as NativeProfileError).code).toBe("PROFILE_METADATA_TOO_LARGE");
-    expect(readFileSync(manager.context.authPath, "utf8")).toBe(authBefore);
-    expect(readFileSync(manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    const work = await manager.finishStage(stage.stageId, "work");
+    const switched = await manager.switch("work", true);
+    expect(readFileSync(manager.context.authPath, "utf8")).toBe(JSON.stringify(large, null, 2) + "\n");
+    expect((switched.activeProfile as { id: string }).id).toBe(work.profile.id);
+    expect((await manager.list()).activeProfileId).toBe(work.profile.id);
     expect(existsSync(manager.context.journalPath)).toBe(false);
-    expect((await manager.list()).activeProfileId).toBe(sourceProfile.profile.id);
-    expect(f.transitions).toEqual([]);
+    expect(f.transitions).toEqual(["account-source->account-target"]);
+  }, 30_000);
+
+  test("fails closed for an oversized on-disk journal without mutating auth or vault", async () => {
+    const f = await enrolledFixture();
+    const authBefore = readFileSync(f.manager.context.authPath, "utf8");
+    const vaultBefore = readFileSync(f.manager.context.vaultPath, "utf8");
+    writeFileSync(f.manager.context.journalPath, "x".repeat(17 * 1024 * 1024 + 1));
+
+    let caught: unknown;
+    try { await f.manager.switch("work", true); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
+    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(authBefore);
+    expect(readFileSync(f.manager.context.vaultPath, "utf8")).toBe(vaultBefore);
   }, 30_000);
 
   test("quarantines malformed journals byte-for-byte and keeps ownership fail closed", async () => {

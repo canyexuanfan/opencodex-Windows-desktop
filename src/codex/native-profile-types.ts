@@ -31,6 +31,7 @@ export class NativeProfileError extends Error {
     message: string,
     readonly status = 409,
     readonly retryable = false,
+    readonly cleanupRequired?: true,
   ) {
     super(message);
     this.name = "NativeProfileError";

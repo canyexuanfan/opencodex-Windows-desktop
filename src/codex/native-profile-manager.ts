@@ -38,6 +38,7 @@ import {
   requireFileCredentialStore,
   resolveNativeCredentialStoreMode,
   resolveNativeProfileContext,
+  serializeNativeProfileJournal,
   serializeNativeProfileMetadata,
   validateNativeProfileLabel,
   type NativeEnvelopeSnapshot,
@@ -216,7 +217,7 @@ export class NativeProfileManager {
   }
 
   private async writeJournal(journal: NativeProfileSwitchJournalV1): Promise<void> {
-    await this.atomicWrite(this.context.journalPath, serializeNativeProfileMetadata(journal));
+    await this.atomicWrite(this.context.journalPath, serializeNativeProfileJournal(journal));
   }
 
   private removeJournal(): void {
@@ -564,6 +565,7 @@ export class NativeProfileManager {
       let current: NativeEnvelopeSnapshot | null = null;
       let key: NativeProfileKey | null = null;
       let operationFailed = false;
+      let operationError: unknown;
       let importCommitted = false;
       let result: { effectiveCodexHome: string; profile: NativeProfilePublic } | undefined;
       try {
@@ -602,24 +604,47 @@ export class NativeProfileManager {
         result = { effectiveCodexHome: this.context.codexHome, profile: publicNativeProfile(profile) };
       } catch (error) {
         operationFailed = true;
-        throw error;
+        operationError = error;
       } finally {
         target?.raw.fill(0);
         current?.raw.fill(0);
         key?.key.fill(0);
-        try {
-          this.deleteStageById(stageId);
-        } catch {
-          if (!operationFailed) {
+      }
+      let cleanupFailed = false;
+      try {
+        this.deleteStageById(stageId);
+      } catch {
+        cleanupFailed = true;
+      }
+      if (operationFailed) {
+        if (cleanupFailed) {
+          if (operationError instanceof NativeProfileError) {
             throw new NativeProfileError(
-              "STAGING_CLEANUP_REQUIRED",
-              importCommitted
-                ? "The native profile was imported, but its staging session could not be securely removed. Do not retry the import; fix filesystem permissions and cancel it explicitly."
-                : "The native-login staging session could not be securely removed; fix filesystem permissions and cancel it explicitly.",
-              500,
+              operationError.code,
+              operationError.message,
+              operationError.status,
+              operationError.retryable,
+              true,
             );
           }
+          throw new NativeProfileError(
+            "INTERNAL_ERROR",
+            "The native profile import failed and its staging session could not be securely removed.",
+            500,
+            false,
+            true,
+          );
         }
+        throw operationError;
+      }
+      if (cleanupFailed) {
+        throw new NativeProfileError(
+          "STAGING_CLEANUP_REQUIRED",
+          importCommitted
+            ? "The native profile was imported, but its staging session could not be securely removed. Do not retry the import; fix filesystem permissions and cancel it explicitly."
+            : "The native-login staging session could not be securely removed; fix filesystem permissions and cancel it explicitly.",
+          500,
+        );
       }
       return result!;
     });
@@ -701,9 +726,9 @@ export class NativeProfileManager {
           createdAt: timestamp,
         };
         serializeNativeProfileMetadata(afterVault);
-        serializeNativeProfileMetadata({ ...journal, phase: "prepared" });
-        serializeNativeProfileMetadata({ ...journal, phase: "auth-replaced" });
-        serializeNativeProfileMetadata({ ...journal, phase: "vault-committed" });
+        serializeNativeProfileJournal({ ...journal, phase: "prepared" });
+        serializeNativeProfileJournal({ ...journal, phase: "auth-replaced" });
+        serializeNativeProfileJournal({ ...journal, phase: "vault-committed" });
         await this.writeJournal(journal);
         journalPrepared = true;
         await this.onSwitchBoundary("journal-prepared");

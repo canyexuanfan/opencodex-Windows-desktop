@@ -28,6 +28,7 @@ const DOMAIN_IDENTITY = "opencodex-native-profile-identity-v1\0";
 const KEYRING_SERVICE = "opencodex.native-main-profile.v1";
 const MAX_AUTH_BYTES = 4 * 1024 * 1024;
 export const MAX_NATIVE_PROFILE_METADATA_BYTES = 4 * 1024 * 1024;
+export const MAX_NATIVE_PROFILE_JOURNAL_BYTES = 17 * 1024 * 1024;
 export const MAX_NATIVE_PROFILES = 32;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -395,7 +396,7 @@ export function inspectNativeProfileJournal(context: NativeProfileContext): Nati
   if (state === "unreadable") return { status: "invalid" };
   try {
     const journal = JSON.parse(
-      readBounded(context.journalPath, MAX_NATIVE_PROFILE_METADATA_BYTES).toString("utf8"),
+      readBounded(context.journalPath, MAX_NATIVE_PROFILE_JOURNAL_BYTES).toString("utf8"),
     ) as NativeProfileSwitchJournalV1;
     if (
       journal.version !== 1 || journal.homeId !== context.homeId || !UUID_RE.test(journal.transactionId)
@@ -429,6 +430,18 @@ export function serializeNativeProfileMetadata(value: unknown): string {
     throw new NativeProfileError(
       "PROFILE_METADATA_TOO_LARGE",
       "Native-profile metadata exceeds the 4 MiB recovery limit; no credential write was made.",
+      409,
+    );
+  }
+  return serialized;
+}
+
+export function serializeNativeProfileJournal(journal: NativeProfileSwitchJournalV1): string {
+  const serialized = JSON.stringify(journal) + "\n";
+  if (Buffer.byteLength(serialized, "utf8") > MAX_NATIVE_PROFILE_JOURNAL_BYTES) {
+    throw new NativeProfileError(
+      "PROFILE_METADATA_TOO_LARGE",
+      "The native-profile recovery journal exceeds the 17 MiB limit; no credential write was made.",
       409,
     );
   }

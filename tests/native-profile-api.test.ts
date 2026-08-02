@@ -137,7 +137,32 @@ describe("native main profile management API", () => {
     const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, { manager });
 
     expect(response?.status).toBe(409);
-    expect(await response?.json()).toMatchObject({ code: "RECOVERY_REQUIRED", error: message });
+    const payload = await response?.json() as Record<string, unknown>;
+    expect(payload).toMatchObject({ code: "RECOVERY_REQUIRED", error: message });
+    expect("cleanupRequired" in payload).toBe(false);
+  });
+
+  test("cleanup-required failures preserve the primary error and expose a true-only signal", async () => {
+    const message = "The staged native login is invalid.";
+    const manager = {
+      finishStage: async () => {
+        throw new NativeProfileError("AUTH_INVALID", message, 422, true, true);
+      },
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/stage/finish", {
+      method: "POST",
+      body: JSON.stringify({ stageId: "11111111-1111-4111-8111-111111111111", label: "work" }),
+    });
+
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, { manager });
+
+    expect(response?.status).toBe(422);
+    expect(await response?.json()).toEqual({
+      error: message,
+      code: "AUTH_INVALID",
+      retryable: true,
+      cleanupRequired: true,
+    });
   });
 
   test("successful switch auto-recovery completes the matching startup gate before releasing its drain lease", async () => {

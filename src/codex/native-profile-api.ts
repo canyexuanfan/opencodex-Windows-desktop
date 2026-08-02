@@ -141,7 +141,12 @@ export async function handleNativeProfileAPI(
     const tooLarge = managementBodyTooLargeResponse(error, req, config);
     if (tooLarge) return tooLarge;
     if (error instanceof NativeProfileError) {
-      return jsonResponse({ error: error.message, code: error.code, retryable: error.retryable }, error.status, req, config);
+      return jsonResponse({
+        error: error.message,
+        code: error.code,
+        retryable: error.retryable,
+        ...(error.cleanupRequired === true ? { cleanupRequired: true } : {}),
+      }, error.status, req, config);
     }
     return jsonResponse({ error: "Native-profile operation failed.", code: "INTERNAL_ERROR" }, 500, req, config);
   }

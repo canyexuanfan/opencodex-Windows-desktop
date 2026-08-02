@@ -100,6 +100,9 @@ export function proxyUnreachable(): number {
 export function apiError(json: Record<string, unknown>, fallback: string): number {
   const message = typeof json.error === "string" ? json.error : fallback;
   console.error(`Error: ${message}`);
+  if (json.cleanupRequired === true) {
+    console.error("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
+  }
   return 1;
 }
 

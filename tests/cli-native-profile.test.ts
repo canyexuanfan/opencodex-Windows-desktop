@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cmdAccount } from "../src/cli/account";
+import { apiError } from "../src/cli/account-api";
 import { nativeMainCodexLoginInvocation } from "../src/cli/account-main";
 
 const originalLog = console.log;
@@ -13,6 +14,21 @@ afterEach(() => {
 });
 
 describe("ocx account main", () => {
+  test("cleanup guidance requires a literal true signal", () => {
+    const errors: string[] = [];
+    console.error = (...values: unknown[]) => errors.push(values.join(" "));
+
+    expect(apiError({ error: "validation failed" }, "fallback")).toBe(1);
+    expect(apiError({ error: "validation failed", cleanupRequired: "true" }, "fallback")).toBe(1);
+    expect(errors).toEqual([
+      "Error: validation failed",
+      "Error: validation failed",
+    ]);
+
+    expect(apiError({ error: "validation failed", cleanupRequired: true }, "fallback")).toBe(1);
+    expect(errors.at(-1)).toBe("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
+  });
+
   test("official login resolves a Windows npm shim through ComSpec", () => {
     const npmBin = "C:\\Users\\tester\\AppData\\Roaming\\npm";
     const codexShim = `${npmBin}\\codex.cmd`;
@@ -89,13 +105,17 @@ describe("ocx account main", () => {
   test("add cancels server staging after a non-200 finish response", async () => {
     const stagingHome = join(tmpdir(), "ocx-native-profile-stage-non-200");
     const requests: string[] = [];
+    const errors: string[] = [];
+    console.error = (...values: unknown[]) => errors.push(values.join(" "));
     const fetchImpl: typeof fetch = async input => {
       const path = new URL(String(input)).pathname;
       requests.push(path);
       if (path.endsWith("/stage") && !path.endsWith("/finish")) {
         return Response.json({ stageId: "22222222-2222-4222-8222-222222222222", stagingCodexHome: stagingHome });
       }
-      if (path.endsWith("/stage/finish")) return Response.json({ error: "validation failed" }, { status: 409 });
+      if (path.endsWith("/stage/finish")) {
+        return Response.json({ error: "validation failed", code: "AUTH_INVALID", cleanupRequired: true }, { status: 409 });
+      }
       return Response.json({ ok: true });
     };
 
@@ -109,6 +129,8 @@ describe("ocx account main", () => {
       "/api/native-main-profiles/stage/finish",
       "/api/native-main-profiles/stage/cancel",
     ]);
+    expect(errors).toContain("Error: validation failed");
+    expect(errors).toContain("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
   });
 
   test("add cancels server staging when official login aborts", async () => {
