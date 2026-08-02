@@ -33,6 +33,7 @@ import {
   previousResponseReplayPrefixLength,
   recoverStaleResponseStateTemps,
   rememberResponseState,
+  responseAdmissionCountersForTests,
   responseStateMetrics,
   responseStatePersistPendingForTests,
   responseContinuationRetainedStoreSnapshot,
@@ -46,6 +47,7 @@ import {
   deleteResponseSpill,
   recoverOrphanedResponseSpills,
   responseSpillDirectory,
+  setResponseSpillPayloadCapForTests,
   setSpillIoForTest,
   writeResponseSpillDurably,
 } from "../src/responses/spill-store";
@@ -1754,5 +1756,166 @@ describe("Responses previous_response_id state", () => {
       expect(metrics.count).toBe(1);
       expect(metrics.totalBytes).toBeGreaterThan(0);
     });
+  });
+});
+
+describe("Responses state admission boundary (oversized direct-spill)", () => {
+  let home: string;
+  const priorHome = process.env["OPENCODEX_HOME"];
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "ocx-state-admission-"));
+    process.env["OPENCODEX_HOME"] = home;
+    clearResponseStateMemoryForTests();
+  });
+
+  afterEach(() => {
+    setSpillIoForTest(null);
+    setResponseStateByteCapForTests(null);
+    setResponseSpillPayloadCapForTests(null);
+    clearResponseStateForTests();
+    rmSync(home, { recursive: true, force: true });
+    if (priorHome === undefined) delete process.env["OPENCODEX_HOME"];
+    else process.env["OPENCODEX_HOME"] = priorHome;
+  });
+
+  function completedResponse(id: string, text: string) {
+    return {
+      id,
+      status: "completed",
+      output: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text }],
+      }],
+    };
+  }
+
+  function expandChained(id: string): unknown {
+    return expandPreviousResponseInput({
+      model: "cursor/auto",
+      previous_response_id: id,
+      input: [{ type: "function_call_output", call_id: "call_next", output: "ok" }],
+    });
+  }
+
+  test("oversized candidate direct-spills without demoting unrelated residents", () => {
+    setResponseStateByteCapForTests(4 * 1024);
+    rememberResponseState({ model: "m", input: "a" }, completedResponse("resp_small_1", "s1"));
+    rememberResponseState({ model: "m", input: "b" }, completedResponse("resp_small_2", "s2"));
+    const directBefore = responseAdmissionCountersForTests().directSpills;
+
+    rememberResponseState({ model: "m", input: "big" }, completedResponse("resp_big", "x".repeat(8 * 1024)));
+
+    expect(responseAdmissionCountersForTests().directSpills).toBe(directBefore + 1);
+    const snapshot = responseContinuationRetainedStoreSnapshot();
+    // Both small entries stay RESIDENT (evictable); the big entry is a stub (pinned).
+    expect(snapshot.evictableBytes).toBeGreaterThan(0);
+    expect(snapshot.pinnedBytes).toBeGreaterThan(0);
+    expect(snapshot.bytes).toBeLessThan(4 * 1024);
+    // All three chains still replay — availability is preserved through the spill.
+    expect((expandChained("resp_small_1") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+    expect((expandChained("resp_small_2") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+    expect((expandChained("resp_big") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+  });
+
+  test("candidate under the cap stays resident (no direct spill)", () => {
+    setResponseStateByteCapForTests(64 * 1024);
+    const directBefore = responseAdmissionCountersForTests().directSpills;
+    rememberResponseState({ model: "m", input: "mid" }, completedResponse("resp_mid", "y".repeat(8 * 1024)));
+    expect(responseAdmissionCountersForTests().directSpills).toBe(directBefore);
+    expect((expandChained("resp_mid") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+  });
+
+  test("candidate above the spill payload ceiling is tombstoned, not retained", () => {
+    setResponseStateByteCapForTests(1024);
+    setResponseSpillPayloadCapForTests(2 * 1024);
+    const dropsBefore = responseAdmissionCountersForTests().oversizedDrops;
+    rememberResponseState({ model: "m", input: "huge" }, completedResponse("resp_huge", "z".repeat(8 * 1024)));
+    expect(responseAdmissionCountersForTests().oversizedDrops).toBe(dropsBefore + 1);
+    const body = {
+      model: "m",
+      previous_response_id: "resp_huge",
+      input: [{ type: "function_call_output", call_id: "c", output: "ok" }],
+    };
+    expandPreviousResponseInput(body);
+    expect(previousResponseReplayFailure(body)?.reason).toBe("spill_failed");
+  });
+
+  test("externally oversized snapshot file is refused before parse", () => {
+    const refusalsBefore = responseAdmissionCountersForTests().snapshotOversizedRefusals;
+    writeFileSync(join(home, "responses-state.json"), `{"version":2,"states":[${" ".repeat(33 * 1024 * 1024)}]}`);
+    // First store access triggers the lazy load.
+    rememberResponseState({ model: "m", input: "x" }, completedResponse("resp_after", "ok"));
+    expect(responseAdmissionCountersForTests().snapshotOversizedRefusals).toBe(refusalsBefore + 1);
+    // The store still works: the new entry is present and replays.
+    expect((expandChained("resp_after") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+  });
+
+  test("spill replay above the payload ceiling fails typed before read", () => {
+    const ref = writeResponseSpillDurably("resp_ceiling", {
+      createdAt: Date.now(),
+      items: [{ role: "user", content: "q".repeat(4096) }],
+    });
+    setResponseSpillPayloadCapForTests(512);
+    expect(readResponseSpill("resp_ceiling", ref)).toEqual({ ok: false, reason: "too_large" });
+    deleteResponseSpill(ref);
+  });
+
+  test("materializing an over-ceiling spill reports spill_too_large", () => {
+    setResponseStateByteCapForTests(1024);
+    rememberResponseState({ model: "m", input: "big" }, completedResponse("resp_mat", "w".repeat(4 * 1024)));
+    // The entry is now a spill stub; tightening the ceiling makes its replay refuse.
+    setResponseSpillPayloadCapForTests(512);
+    const body = {
+      model: "m",
+      previous_response_id: "resp_mat",
+      input: [{ type: "function_call_output", call_id: "c", output: "ok" }],
+    };
+    expandPreviousResponseInput(body);
+    expect(previousResponseReplayFailure(body)?.reason).toBe("spill_too_large");
+  });
+
+  test("direct-spill write failure installs a tombstone and keeps unrelated residents", () => {
+    setResponseStateByteCapForTests(4 * 1024);
+    rememberResponseState({ model: "m", input: "a" }, completedResponse("resp_keep", "keep"));
+    setSpillIoForTest({
+      write: () => {
+        throw new Error("injected write failure");
+      },
+    });
+    rememberResponseState({ model: "m", input: "big" }, completedResponse("resp_fail", "v".repeat(8 * 1024)));
+    setSpillIoForTest(null);
+    const body = {
+      model: "m",
+      previous_response_id: "resp_fail",
+      input: [{ type: "function_call_output", call_id: "c", output: "ok" }],
+    };
+    expandPreviousResponseInput(body);
+    expect(previousResponseReplayFailure(body)?.reason).toBe("spill_failed");
+    expect((expandChained("resp_keep") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+  });
+
+  test("same-ID oversized replacement releases the old resident exactly once", () => {
+    setResponseStateByteCapForTests(8 * 1024);
+    rememberResponseState({ model: "m", input: "old" }, completedResponse("resp_swap", "small"));
+    const bytesBefore = getStoredResponseBytesForTests();
+    rememberResponseState({ model: "m", input: "new" }, completedResponse("resp_swap", "n".repeat(16 * 1024)));
+    const bytesAfter = getStoredResponseBytesForTests();
+    // Only the bounded stub replaced the resident: well under the old resident + candidate sum.
+    expect(bytesAfter).toBeLessThan(bytesBefore + 1024);
+    // The replacement still replays the NEW (spilled) content.
+    const expanded = expandChained("resp_swap") as { input: unknown[] };
+    expect(expanded.input.length).toBeGreaterThan(1);
+    expect(JSON.stringify(expanded.input)).toContain("n".repeat(64));
+  });
+
+  test("snapshot selection uses UTF-8 bytes, not UTF-16 length", async () => {
+    // 600k 💡 = 1.2M UTF-16 code units (< 2 MiB length cap) but 2.4M UTF-8 bytes (> 2 MiB byte cap).
+    const bulbs = "💡".repeat(600_000);
+    rememberResponseState({ model: "m", input: "multi" }, completedResponse("resp_multibyte", bulbs));
+    await flushResponseState();
+    const raw = readFileSync(join(home, "responses-state.json"), "utf-8");
+    expect(raw).not.toContain("resp_multibyte");
   });
 });

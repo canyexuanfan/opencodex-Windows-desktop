@@ -45,9 +45,29 @@ export interface ResponseSpillRef {
   payloadBytes: number;
 }
 
+/**
+ * Hard ceiling for one spill payload, enforced BOTH at direct-spill admission
+ * (state.ts refuses to durably retain a larger candidate) and at replay read
+ * (below). 256 MiB keeps the replay transient under the process-wide
+ * APP_OWNED_WORST_CASE_PINNED_BYTES ceiling (512 MiB); without an admission
+ * ceiling the read ceiling would strand write-only spills on disk.
+ */
+export const MAX_RESPONSE_SPILL_PAYLOAD_BYTES = 256 * 1024 * 1024;
+
+let spillPayloadCapOverride: number | null = null;
+
+/** Test-only: lower/restore the single-spill payload ceiling (null restores). */
+export function setResponseSpillPayloadCapForTests(bytes: number | null): void {
+  spillPayloadCapOverride = bytes;
+}
+
+export function responseSpillPayloadCap(): number {
+  return spillPayloadCapOverride ?? MAX_RESPONSE_SPILL_PAYLOAD_BYTES;
+}
+
 export type ResponseSpillReadResult =
   | { ok: true; payload: ResponseSpillPayload }
-  | { ok: false; reason: "missing" | "corrupt" };
+  | { ok: false; reason: "missing" | "corrupt" | "too_large" };
 
 export interface ResponseSpillCleanupResult {
   scanned: number;
@@ -306,6 +326,9 @@ export function writeResponseSpillDurably(
 
 export function readResponseSpill(responseId: string, ref: ResponseSpillRef): ResponseSpillReadResult {
   if (!validSpillRef(ref)) return { ok: false, reason: "corrupt" };
+  // Refuse before any read/parse: an oversized declared payload would otherwise
+  // materialize an unbounded transient (readFileSync + utf8 + JSON.parse).
+  if (ref.payloadBytes > responseSpillPayloadCap()) return { ok: false, reason: "too_large" };
   const match = OWNED_SPILL_NAME.exec(ref.fileName);
   if (!match
     || match[2] !== sha256(responseId).slice(0, 12)

@@ -2,6 +2,15 @@
 
 Depends on: 001 root-cause delta. NOT a redo of wave-1 (`d1408b92f` hard cap + spill already landed).
 
+## P re-verification note (2026-08-02, wp2 cycle — supersedes details below where they conflict)
+
+- `byteCap()` (64 MiB default, `MAX_STORED_RESPONSE_BYTES`) is the TOTAL resident-map cap, not per-entry. "Oversized candidate" = `candidate.sizeBytes > byteCap()` — it can never fit as resident even alone.
+- `expected?.kind === "spill"` already direct-spills atomically via `replaceSpillEntryAtomically` (`state.ts:212`) with deferred old-generation unlink — the new branch REUSES it for oversized candidates; scenario 8b's machinery exists.
+- Single constant decision: `MAX_RESPONSE_SPILL_PAYLOAD_BYTES = 256 MiB` in `spill-store.ts`, used BOTH as direct-spill admission ceiling and replay read ceiling (candidates above it are tombstoned at admission with `admissionCounters.oversizedDrops` — retaining an unreadable spill would be write-only waste). 256 MiB bounds the replay transient under the 512 MiB `APP_OWNED_WORST_CASE_PINNED_BYTES` ceiling. This replaces the earlier "recommend the same 64 MiB" line, which contradicted direct-spill preservation.
+- `readResponseSpill` already verifies `stat.size === ref.payloadBytes`; the new `too_large` reason is checked on `ref.payloadBytes` BEFORE any read. Wire-safe: `core.ts:1188` maps every replay failure to the same 400 `previous_response_not_found`; the internal reason union gains `spill_too_large`.
+- Snapshot file ceiling: `SNAPSHOT_FILE_MAX_BYTES = 32 MiB` (> 24 MiB write bound), checked via `statSync` before parse; refusal recorded in a test-visible counter.
+- Test hooks available: `setResponseStateByteCapForTests`, `setSpillIoForTest` (write-failure injection), `noteStubSwapForTest`. A payload-ceiling override for tests is added alongside the new constant.
+
 ## File map
 
 - MODIFY `src/responses/state.ts`
