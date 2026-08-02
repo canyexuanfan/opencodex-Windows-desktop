@@ -787,6 +787,7 @@ class LiveCursorTransport implements CursorTransport {
       clearTimer: () => this.clearFirstFrameTimer(),
     });
     const failAndClear = (error: Error) => {
+      releaseBacklogLease();
       if (this.expectedClose) {
         // We already emitted a terminal `done` and cancelled the run (client-tool suspension). The
         // RST_STREAM CANCEL surfaces here as a stream error/abort; it is expected, not a failure.
@@ -822,6 +823,7 @@ class LiveCursorTransport implements CursorTransport {
       // close() waits for in-flight frames; a dead socket can ignore it — force-destroy shortly
       // after so a stalled TLS session cannot linger past the timeout.
       armTimeoutDestroyFallback(stream, session, this.input.timeoutDestroyGraceMs ?? CURSOR_TIMEOUT_DESTROY_GRACE_MS);
+      releaseBacklogLease();
       settler.settleFail(new Error("Cursor transport timed out before first response"));
     }, this.input.firstFrameTimeoutMs ?? CURSOR_FIRST_FRAME_TIMEOUT_MS);
 
@@ -855,21 +857,17 @@ class LiveCursorTransport implements CursorTransport {
       backlogEnd = end + chunk.byteLength;
     };
     let frameWork: Promise<void> = Promise.resolve();
-    const reservePayloadCopy = (bytes: number) => {
-      if (this.transportBufferedBytes + bytes > CURSOR_TRANSPORT_MAX_BUFFERED_BYTES) {
-        throw new TranslatorBudgetExceededError("cursor_transport", CURSOR_TRANSPORT_MAX_BUFFERED_BYTES);
-      }
-      const reservation = this.translatorBudget.reserveTransient(bytes, { kind: "cursor_transport" });
-      this.transportBufferedBytes += bytes;
-      this.updateTransportFlowControl();
-      return {
-        commitRetained: () => reservation.commitRetained(),
-        release: () => {
-          reservation.release();
-          this.transportBufferedBytes = Math.max(0, this.transportBufferedBytes - bytes);
-          this.updateTransportFlowControl();
-        },
-      };
+    // Idempotent terminal owner for the backlog lease: every settle/close path
+    // must leave the raw charge at zero instead of relying on budget disposal.
+    let backlogLeaseReleased = false;
+    const releaseBacklogLease = () => {
+      if (backlogLeaseReleased) return;
+      backlogLeaseReleased = true;
+      const leftover = backlogEnd - backlogStart;
+      if (leftover > 0) this.releaseTransportBytes(leftover);
+      backlog = new Uint8Array();
+      backlogStart = 0;
+      backlogEnd = 0;
     };
     const handleFrame = async (frame: ReturnType<typeof consumeConnectFrames>["frames"][number]) => {
       this.framesReceived++;
@@ -894,18 +892,19 @@ class LiveCursorTransport implements CursorTransport {
         this.updateTransportFlowControl();
         return;
       }
-      // Cursor decode: no remainder copy. Consumed RAW bytes (headers included)
-      // leave the backlog; frame payloads keep their per-frame copy reservations,
-      // and a failed admission leaves the backlog owner intact for deterministic cleanup.
+      // Cursor decode, zero-copy: frame payloads are views into the backlog, so
+      // the charge TRANSFERS — only consumed header bytes leave the counter
+      // (payload bytes stay charged and are released when each frame's work
+      // finishes). An exact 16 MiB payload therefore peaks at 16 MiB + 5, not
+      // at double its size.
       const decoded = consumeConnectFrames(
         backlog.subarray(backlogStart, backlogEnd),
         CURSOR_MAX_EFFECTIVE_CONNECT_PAYLOAD_BYTES,
         availableSlots,
-        reservePayloadCopy,
       );
-      if (decoded.consumedBytes > 0) {
-        this.releaseTransportBytes(decoded.consumedBytes);
+      if (decoded.frames.length > 0) {
         backlogStart += decoded.consumedBytes;
+        this.releaseTransportBytes(decoded.consumedBytes - decoded.frames.reduce((n, frame) => n + frame.payload.byteLength, 0));
       }
       for (const frame of decoded.frames) {
         this.pendingTransportFrames += 1;
@@ -929,16 +928,21 @@ class LiveCursorTransport implements CursorTransport {
         debugProviderDiagnostic("cursor", "first-frame", { latencyMs: this.firstFrameAt - this.turnStartedAt });
       }
       const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-      let incomingCharged = false;
+      let appended = false;
       try {
         // RAW chunk bytes (headers included) join the backlog charge; consumed
         // bytes leave it at drain. No whole-backlog replacement copy anymore.
         this.reserveTransportBytes(bytes.byteLength);
-        incomingCharged = true;
         appendBacklog(bytes);
+        appended = true;
         drainPendingFrames();
       } catch (err) {
-        if (incomingCharged) this.releaseTransportBytes(bytes.byteLength);
+        // Release the chunk charge only when the bytes never joined the
+        // backlog; once appended, the terminal backlog cleanup owns them —
+        // releasing here would understate the retained backlog.
+        if (!appended) {
+          try { this.releaseTransportBytes(bytes.byteLength); } catch { /* already released */ }
+        }
         failAndClear(err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -989,6 +993,7 @@ class LiveCursorTransport implements CursorTransport {
         if (settler.settled()) return;
         const leftover = backlogEnd - backlogStart;
         if (leftover > 0 && !this.expectedClose) {
+          releaseBacklogLease();
           settler.settleFail(new ConnectFrameError(
             "frame_incomplete",
             `Cursor Connect stream ended with ${leftover} unconsumed bytes (incomplete frame)`,
@@ -996,9 +1001,11 @@ class LiveCursorTransport implements CursorTransport {
           return;
         }
         if (this.framesReceived === 0 && !this.expectedClose) {
+          releaseBacklogLease();
           settler.settleFail(new Error("Cursor stream ended before any response frame (unexpected EOF)"));
           return;
         }
+        releaseBacklogLease();
         settler.settleFinish();
       }, (err) => {
         failAndClear(err instanceof Error ? err : new Error(String(err)));

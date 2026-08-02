@@ -375,6 +375,20 @@ describe("Cursor live transport incomplete-frame EOF", () => {
     return encodeConnectFrame(toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, {})));
   }
 
+  // A valid protobuf message whose size comes from an unknown field the decoder
+  // skips — lets tests drive exact payload boundaries with parseable frames.
+  function paddedPayload(totalBytes: number): Uint8Array {
+    const content = totalBytes - 5; // 1-byte tag + 4-byte varint length
+    if (content < 0) throw new Error("payload too small to pad");
+    const out = new Uint8Array(totalBytes);
+    out[0] = (15 << 3) | 2; // unknown field 15, length-delimited
+    out[1] = (content & 0x7f) | 0x80;
+    out[2] = ((content >> 7) & 0x7f) | 0x80;
+    out[3] = ((content >> 14) & 0x7f) | 0x80;
+    out[4] = (content >> 21) & 0x7f;
+    return out;
+  }
+
   async function runTurn(
     script: (stream: import("node:http2").ServerHttp2Stream) => void,
   ): Promise<{ failure: Error | undefined }> {
@@ -435,6 +449,85 @@ describe("Cursor live transport incomplete-frame EOF", () => {
       stream.end();
     });
     expect(failure).toBeUndefined();
+  });
+
+  test("chunked delivery sweep across chunk sizes decodes identically", async () => {
+    for (const chunkSize of [1, 3, 7, 64 * 1024]) {
+      const { failure } = await runTurn(stream => {
+        stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+        const frame = encodeConnectFrame(paddedPayload(100 * 1024));
+        for (let index = 0; index < frame.byteLength; index += chunkSize) {
+          stream.write(Buffer.from(frame.subarray(index, Math.min(index + chunkSize, frame.byteLength))));
+        }
+        stream.end();
+      });
+      expect(failure).toBeUndefined();
+    }
+  });
+
+  test("an exact 16 MiB effective payload completes at the boundary", async () => {
+    const budget = createTestTranslatorBudget();
+    const result = await withDiscoveryServer(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.end(Buffer.from(encodeConnectFrame(paddedPayload(16 * 1024 * 1024))));
+    }, async baseUrl => {
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        translatorBudget: budget,
+        firstFrameTimeoutMs: 10_000,
+      });
+      let failure: Error | undefined;
+      try {
+        for await (const _message of transport.run({
+          modelId: "composer-2",
+          conversationId: "cursor_boundary_test",
+          system: [],
+          messages: [{ role: "user", content: "hello" }],
+        })) {
+          // drain
+        }
+      } catch (err) {
+        failure = err instanceof Error ? err : new Error(String(err));
+      } finally {
+        await transport.close?.();
+      }
+      return { failure };
+    });
+    expect(result.failure).toBeUndefined();
+    expect(budget.snapshot().currentBytes).toBe(0);
+  });
+
+  test("frame_incomplete EOF releases the backlog lease to zero", async () => {
+    const budget = createTestTranslatorBudget();
+    const result = await withDiscoveryServer(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.write(Buffer.from(validEmptyFrame()));
+      stream.end(Buffer.from([0, 0, 0]));
+    }, async baseUrl => {
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        translatorBudget: budget,
+        firstFrameTimeoutMs: 2_000,
+      });
+      let failure: Error | undefined;
+      try {
+        for await (const _message of transport.run({
+          modelId: "composer-2",
+          conversationId: "cursor_lease_test",
+          system: [],
+          messages: [{ role: "user", content: "hello" }],
+        })) {
+          // drain
+        }
+      } catch (err) {
+        failure = err instanceof Error ? err : new Error(String(err));
+      } finally {
+        await transport.close?.();
+      }
+      return { failure };
+    });
+    expect((result.failure as { code?: unknown } | undefined)?.code).toBe("frame_incomplete");
+    expect(budget.snapshot().currentBytes).toBe(0);
   });
 });
 import { ManagementRequest as Request } from "./helpers/management-auth";

@@ -172,41 +172,37 @@ export function decodeAvailableConnectFrames(
  * Cursor-based sibling of decodeAvailableConnectFrames for callers that keep
  * their own raw backlog: consumes complete frames from the FRONT of `input`
  * and reports how many bytes were consumed (headers included) instead of
- * materializing a remainder copy. Frame payloads remain per-frame copies with
- * the same reservation lifecycle; the caller advances its own cursor by
+ * materializing a remainder copy, and hands payload VIEWS (not copies) back so
+ * the caller can transfer the already-charged bytes to the frame lifecycle
+ * instead of reserving a second copy. The caller advances its own cursor by
  * `consumedBytes` and never pays an O(backlog) copy per drain.
  */
 export function consumeConnectFrames(
   input: Uint8Array,
   maxPayloadBytes = MAX_CONNECT_FRAME_PAYLOAD_BYTES,
   availableFrameSlots = Number.POSITIVE_INFINITY,
-  reservePayloadCopy?: (bytes: number) => CopyReservation | undefined,
 ): { frames: ConnectFrame[]; consumedBytes: number } {
-  const planned: Array<InspectedConnectFrame & { reservation?: CopyReservation }> = [];
+  const planned: InspectedConnectFrame[] = [];
   let offset = 0;
-  try {
-    while (offset < input.length && planned.length < availableFrameSlots) {
-      const inspected = inspectConnectFrame(input, offset, maxPayloadBytes);
-      if (!inspected) break;
-      const reservation = reservePayloadCopy?.(inspected.length);
-      planned.push({ ...inspected, reservation });
-      offset += inspected.readBytes;
-    }
-    const frames = planned.map(({ flags, length, payloadStart }) => {
-      const payload = input.slice(payloadStart, payloadStart + length);
-      return {
-        flags,
-        payload,
-        compressed: isConnectFrameCompressed(flags),
-        endStream: isConnectFrameEndStream(flags),
-      };
-    });
-    for (const entry of planned) entry.reservation?.commitRetained();
-    return { frames, consumedBytes: offset };
-  } catch (error) {
-    for (const entry of planned) entry.reservation?.release();
-    throw error;
+  while (offset < input.length && planned.length < availableFrameSlots) {
+    const inspected = inspectConnectFrame(input, offset, maxPayloadBytes);
+    if (!inspected) break;
+    planned.push(inspected);
+    offset += inspected.readBytes;
   }
+  // Zero-copy handoff: payloads are VIEWS into the caller's backlog buffer, not
+  // slices. Safe because the backlog contract is append-only at its end and
+  // compaction/growth replace the buffer outright — a consumed region is never
+  // mutated in place. The caller transfers the already-charged payload bytes
+  // to the frame lifecycle instead of reserving a second copy (which is what
+  // rejected an exact 16 MiB payload against the 32 MiB transport cap).
+  const frames = planned.map(({ flags, length, payloadStart }) => ({
+    flags,
+    payload: input.subarray(payloadStart, payloadStart + length),
+    compressed: isConnectFrameCompressed(flags),
+    endStream: isConnectFrameEndStream(flags),
+  }));
+  return { frames, consumedBytes: offset };
 }
 
 function inspectConnectFrame(
