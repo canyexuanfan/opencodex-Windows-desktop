@@ -13,11 +13,6 @@ import {
   setIntegrationMutationFlightTestHooks,
   setIntegrationPathTestHooks,
 } from "../src/server/management/integration-routes";
-import {
-  initializeManagementAuthState,
-  issueGuiSession,
-  requireManagementAuth,
-} from "../src/server/management-auth";
 import type { OcxConfig } from "../src/types";
 
 /**
@@ -176,6 +171,11 @@ function snapshotTree(root: string): Record<string, string> {
   return out;
 }
 
+/** Same, but an absent root is a fact to preserve rather than an error. */
+function snapshotTreeIfPresent(root: string): Record<string, string> | null {
+  return existsSync(root) ? snapshotTree(root) : null;
+}
+
 describe("GET /api/client-integrations", () => {
   test("lists all registry clients in registry order", async () => {
     installHermes();
@@ -330,16 +330,16 @@ describe("single-flight", () => {
   test("a flight older than ten minutes is replaced without stale cleanup winning", async () => {
     installHermes();
     let runs = 0;
-    let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
+    const releases: (() => void)[] = [];
+    /** One gate per run, so both flights can be in the air at once. */
+    const gateFor = (): Promise<void> => new Promise<void>(resolve => releases.push(resolve));
     let clock = 2_000_000;
-    let gateFirstOnly = true;
     setIntegrationMutationFlightTestHooks({
       store,
       io: { ...fileIO(), now: () => clock, ...bookkeeping() },
       run: async operation => {
         runs += 1;
-        if (gateFirstOnly) { gateFirstOnly = false; await gate; }
+        await gateFor();
         return operation();
       },
     });
@@ -350,20 +350,33 @@ describe("single-flight", () => {
       expect(runs).toBe(1);
 
       clock += 11 * 60_000;
-      const replacement = await put("hermes", true);
-      expect(replacement.status).toBe(200);
+      const replacement = put("hermes", true);
+      await settle();
       expect(runs).toBe(2);
 
-      // The old flight's `finally` is identity-checked, so resolving it later
-      // must not clear the replacement — proven by a third same-key request
-      // joining rather than starting a run.
-      release();
+      /*
+       * The replacement is STILL IN THE AIR when the stale flight finishes.
+       * That is the whole point: its `finally` runs against a map entry that
+       * is no longer its own, and an unguarded `delete` would evict the live
+       * replacement. Awaiting the replacement first, as an earlier draft did,
+       * removed the very race the identity check exists for.
+       */
+      releases[0]!();
       expect((await stale).status).toBe(200);
-      const third = await put("hermes", true);
-      expect(third.status).toBe(200);
-      expect(runs).toBe(3);
+      await settle();
+
+      // The replacement still owns the client, so an identical request joins
+      // it rather than starting a third run.
+      const joined = put("hermes", true);
+      await settle();
+      expect(runs).toBe(2);
+
+      releases[1]!();
+      expect((await replacement).status).toBe(200);
+      expect((await joined).status).toBe(200);
+      expect(runs).toBe(2);
     } finally {
-      release();
+      for (const release of releases) release();
     }
   });
 });
@@ -387,15 +400,90 @@ describe("refusals", () => {
 
     const response = await put("hermes", false);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
       error: "integration config conflicts with ownership record",
       code: "integration_conflict",
       clientId: "hermes",
       state: "conflict",
       reason: "conflict",
     });
+    // The writer's message names the file and what happened to it. Without
+    // asserting it, a refusal could arrive stripped of the one field that
+    // tells the user which config to look at.
+    expect(body.message).toBe(
+      `${configPath} changed after opencodex wrote it; disabling would discard that edit`,
+    );
     expect(readFileSync(configPath, "utf8")).toBe(edited);
     expect(store.listOperations()).toHaveLength(journalBefore);
+  });
+
+  test("a write failure in a non-failure state keeps its own envelope", async () => {
+    /*
+     * The defect this activates: routing on `state` instead of `reason`.
+     *
+     * The journal append fails AFTER the file was written, so the writer
+     * compensates and returns `write_failed` while the file's own state is
+     * `current`. A state-first mapping would answer `integration_conflict`
+     * or a 200-shaped success and drop the message, snapshot path and
+     * residual flag — the only things that tell the user what to recover.
+     */
+    installHermes();
+    setIntegrationMutationFlightTestHooks({
+      store,
+      io: {
+        ...fileIO(),
+        ...bookkeeping(),
+        appendJournal: () => { throw new Error("journal volume is full"); },
+      },
+    });
+
+    const response = await put("hermes", true);
+    expect(response.status).toBe(500);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.code).toBe("integration_mutation_failed");
+    expect(body.reason).toBe("write_failed");
+    // The state is NOT a failure state — that is the point.
+    expect(body.state).toBe("current");
+    expect(typeof body.message).toBe("string");
+    expect(body.message as string).toContain("journal");
+    // Compensation succeeded, so the file is back and nothing is residual.
+    expect(existsSync(hermesConfigPath())).toBe(false);
+    expect(body.residual).toBeUndefined();
+  });
+
+  test("a failed compensation is disclosed as residual with its snapshot path", async () => {
+    const configPath = installHermes();
+    writeFileSync(configPath, "providers:\n  other:\n    api: http://elsewhere\n");
+    let configWrites = 0;
+    setIntegrationMutationFlightTestHooks({
+      store,
+      io: {
+        ...fileIO(),
+        ...bookkeeping(),
+        appendJournal: () => { throw new Error("journal volume is full"); },
+        // Rolling the file back fails too: the file is left intermediate and
+        // the response has to say so rather than claim a clean rollback. The
+        // rollback is the SECOND write to this path, so count rather than
+        // inspect the bytes.
+        writeText: (path, text) => {
+          if (path === configPath) {
+            configWrites += 1;
+            if (configWrites > 1) throw new Error("read-only volume");
+          }
+          writeFileSync(path, text);
+        },
+      },
+    });
+
+    const response = await put("hermes", true);
+    expect(response.status).toBe(500);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.code).toBe("integration_mutation_failed");
+    expect(body.reason).toBe("write_failed");
+    expect(body.residual).toBe(true);
+    expect(typeof body.snapshotPath).toBe("string");
+    expect((body.snapshotPath as string).startsWith(storeRoot)).toBe(true);
   });
 
   test("unsafe state is readable but toggle mutation is rejected", async () => {
@@ -409,13 +497,15 @@ describe("refusals", () => {
 
     const response = await put("hermes", true);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
       error: "integration config is unsafe",
       code: "integration_unsafe",
       clientId: "hermes",
       state: "unsafe",
       reason: "unsafe",
     });
+    expect(body.message).toBe(`${configPath} is not a regular file`);
     expect(existsSync(configPath)).toBe(true);
     expect(store.listOperations()).toHaveLength(0);
   });
@@ -435,12 +525,23 @@ describe("POST /api/client-integrations/restore", () => {
 
     const refused = await restore({ opId });
     expect(refused.status).toBe(409);
-    expect(await refused.json()).toMatchObject({
+    const refusedBody = await refused.json() as Record<string, unknown>;
+    expect(refusedBody).toMatchObject({
       error: "restore requires drift confirmation",
       code: "integration_drift_confirmation_required",
       clientId: "hermes",
       reason: "drift_requires_confirm",
     });
+    /*
+     * The writer's own `message` is asserted, not just the envelope around it.
+     * Drift was special-cased once and the hand-written branch dropped it —
+     * and `message` is the only field that says WHICH file drifted and where
+     * its backup went. A partial match on error/code/clientId/reason stays
+     * green through exactly that regression.
+     */
+    expect(refusedBody.message).toBe(
+      "this file changed after that operation; confirm to replace it (the current version is backed up first)",
+    );
     expect(readFileSync(configPath, "utf8")).toBe(drifted);
     expect(store.listOperations()).toHaveLength(journalBefore);
 
@@ -541,10 +642,58 @@ describe("GET /api/client-integrations/journal", () => {
     expect(afterEdit[0]!.undoable).toBe(false);
     expect(afterEdit[0]!.snapshot).toBe("stored");
 
+    /*
+     * The row shape is asserted EXACTLY, not by absence of three strings. A
+     * checklist of forbidden names cannot catch a field nobody thought to
+     * forbid; an exact key set catches every one of them.
+     */
     const text = await (await api("/api/client-integrations/journal")).text();
+    for (const row of JSON.parse(text).operations as Record<string, unknown>[]) {
+      expect(Object.keys(row).sort()).toEqual([
+        "at", "clientId", "configPath", "kind", "opId", "snapshot", "undoable",
+      ]);
+    }
+    // The snapshots on disk really do hold the serializable secret, so "no key
+    // in the response" is a claim about the serializer rather than about an
+    // empty fixture.
+    const stored = store.readSnapshot(store.listOperations("hermes")[0]!);
+    expect(stored.kind).toBe("stored");
     expect(text).not.toContain(REAL_LOOKING_KEY);
-    expect(text).not.toContain("resultFingerprint");
-    expect(text).not.toContain("priorRecord");
+  });
+
+  /**
+   * The two fields must agree. Retention deletes snapshot BYTES and leaves the
+   * row's persisted tag saying `stored`, so a newest row whose config still
+   * matches would report `expired` honestly and then offer undo anyway — the
+   * GUI draws the button, restore answers 410.
+   */
+  test("a newest row whose snapshot bytes are gone is not undoable", async () => {
+    const configPath = installHermes();
+    // A snapshot only exists when there were bytes to capture, so the file has
+    // to pre-date the apply. A first apply to an absent path records `none`.
+    writeFileSync(configPath, "providers:\n  mine:\n    api: http://keep\n");
+    expect((await put("hermes", true)).status).toBe(200);
+
+    const before = await journal();
+    expect(before[0]!.snapshot).toBe("stored");
+    expect(before[0]!.undoable).toBe(true);
+
+    // Delete the snapshot file itself, leaving the journal row and the config
+    // exactly as they were: the row still says `stored`, and the live config
+    // still matches `resultFingerprint`, so nothing but the bytes changed.
+    const operation = store.listOperations("hermes")[0]!;
+    const resolved = store.readSnapshot(operation);
+    expect(resolved.kind).toBe("stored");
+    if (resolved.kind === "stored") rmSync(resolved.path, { force: true });
+
+    const after = await journal();
+    expect(after[0]!.opId).toBe(operation.opId);
+    expect(after[0]!.snapshot).toBe("expired");
+    expect(after[0]!.undoable).toBe(false);
+
+    // And the route the button would have called agrees, which is the whole
+    // point of deriving both from one resolution.
+    expect((await restore({ opId: operation.opId })).status).toBe(410);
   });
 });
 
@@ -593,15 +742,82 @@ describe("request bodies", () => {
 });
 
 describe("admission", () => {
+  test("the real server admits before it dispatches an integration mutation", async () => {
+    /*
+     * Calling `requireManagementAuth` by hand and then declining to dispatch
+     * proves only that the helper works. The claim worth testing is ORDERING:
+     * that `src/server/index.ts` runs admission BEFORE `handleManagementAPI`.
+     * Only a real listener can show that, so this one starts one and lets an
+     * unauthenticated mutation try to reach the route.
+     */
+    const previousOpencodexHome = process.env.OPENCODEX_HOME;
+    const previousAdmin = process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+    const serverHome = join(base, "server-home");
+    mkdirSync(serverHome, { recursive: true });
+    process.env.OPENCODEX_HOME = serverHome;
+    process.env.OPENCODEX_ADMIN_AUTH_TOKEN = ["admission", "secret", "fixture"].join("-");
+    installHermes();
+
+    const { saveConfig } = await import("../src/config");
+    const { startServer } = await import("../src/server");
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const target = new URL("/api/client-integrations/hermes", server.url);
+      const unauthenticated = await fetch(target, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(unauthenticated.status).toBe(401);
+      expect(await unauthenticated.json()).toEqual({ error: "opencodex admin token required" });
+      // Admission ran first, so the route never wrote and never journaled.
+      expect(existsSync(hermesConfigPath())).toBe(false);
+      expect(store.listOperations()).toHaveLength(0);
+
+      // The control: the same request WITH the admin token reaches the route.
+      const authenticated = await fetch(target, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-opencodex-api-key": process.env.OPENCODEX_ADMIN_AUTH_TOKEN ?? "",
+        },
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(authenticated.status).toBe(200);
+      expect(store.listOperations("hermes")).toHaveLength(1);
+
+      // An authenticated but cross-origin read keeps the management envelope.
+      const crossOrigin = await fetch(new URL("/api/client-integrations", server.url), {
+        headers: {
+          Origin: "http://attacker.test",
+          "x-opencodex-api-key": process.env.OPENCODEX_ADMIN_AUTH_TOKEN ?? "",
+        },
+      });
+      expect(crossOrigin.status).toBe(403);
+      expect(await crossOrigin.json()).toEqual({ error: "cross-origin request blocked" });
+    } finally {
+      await server.stop(true);
+      if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousOpencodexHome;
+      if (previousAdmin === undefined) delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+      else process.env.OPENCODEX_ADMIN_AUTH_TOKEN = previousAdmin;
+    }
+  });
+
   test("a whole transaction stays inside the bound store", async () => {
     /*
      * The sharpest isolation claim in this work package: apply, disable,
      * restore and the collection read all have to land in the temp root. A
-     * real store is seeded first and compared byte-for-byte afterwards,
-     * including the maintenance marker that post-commit pruning touches —
-     * an earlier draft passed every other test while quietly writing there.
+     * SECOND store is seeded and compared byte-for-byte, and — the part that
+     * actually matters — the DEFAULT store the route would fall back to is
+     * inventoried before and after. Comparing only a second temp directory
+     * proves nothing about the developer's own `~/.opencodex/integrations`,
+     * which is the directory a lost seam would write to.
      */
-    const realRoot = join(base, "real-store", "integrations");
+    const defaultRoot = createIntegrationStateStore().root;
+    const defaultBefore = snapshotTreeIfPresent(defaultRoot);
+    const realRoot = join(base, "other-store", "integrations");
     const real = createIntegrationStateStore(realRoot);
     real.captureSnapshot("hermes", "seeded-op", "seeded snapshot bytes\n");
     real.appendJournal({
@@ -626,47 +842,93 @@ describe("admission", () => {
     expect((await api("/api/client-integrations")).status).toBe(200);
 
     expect(snapshotTree(realRoot)).toEqual(before);
+    // Nothing reached the real default store either — not a file, not a
+    // directory, not the maintenance marker.
+    expect(snapshotTreeIfPresent(defaultRoot)).toEqual(defaultBefore);
     // …and the whole transaction is in the temp root instead.
     expect(store.listOperations("hermes").length).toBeGreaterThanOrEqual(3);
+
+    /*
+     * The collection read is bound too. Undoing the disable puts the applied
+     * file back, so hermes reads `current` — and it can only read `current`
+     * if the ownership record written during this transaction was found. The
+     * default store holds no such record, so an unbound read would answer
+     * `conflict` instead: the block would be on disk with nothing claiming it.
+     */
+    const listed = await (await api("/api/client-integrations")).json() as { clients: { clientId: string; state: string }[] };
+    expect(listed.clients.find(client => client.clientId === "hermes")?.state).toBe("current");
+    expect(store.listOperations("hermes")[0]!.kind).toBe("restore");
   });
 
   test("a GUI-session mutation without CSRF is rejected before integration dispatch", async () => {
+    /*
+     * Driven through a REAL listener, the way a browser reaches this route.
+     *
+     * Calling `requireManagementAuth` by hand and then declining to dispatch
+     * proves only that the helper works: such a test stays green even if
+     * src/server/index.ts stopped calling it before `handleManagementAPI`,
+     * which is precisely the regression that would let a CSRF-less GUI
+     * mutation reach the writer. So the session is obtained the way the GUI
+     * obtains it — from the meta tags injected into the served page — and both
+     * requests go over the wire.
+     */
+    const previousOpencodexHome = process.env.OPENCODEX_HOME;
+    const previousAdmin = process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+    const serverHome = join(base, "csrf-server-home");
+    mkdirSync(serverHome, { recursive: true });
+    process.env.OPENCODEX_HOME = serverHome;
+    // A GUI session is only issued when no admin token is configured; with one
+    // set, `isApiAuthRequired` declines and there is no CSRF pair to test.
+    delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
     installHermes();
-    const authConfig = { ...config, hostname: "127.0.0.1" } as OcxConfig;
-    const state = initializeManagementAuthState(authConfig);
-    const session = issueGuiSession(
-      new Request("http://localhost:10100/", { headers: { Host: "localhost:10100" } }),
-      authConfig,
-      state,
-    );
-    expect(session).not.toBeNull();
 
-    const headers = {
-      Host: "localhost:10100",
-      Origin: "http://localhost:10100",
-      "Content-Type": "application/json",
-      "x-opencodex-api-key": session?.token ?? "",
-      "x-opencodex-gui-origin": "http://localhost:10100",
-    };
-    const url = new URL("http://localhost:10100/api/client-integrations/hermes");
-    const withoutCsrf = new Request(url, { method: "PUT", headers, body: JSON.stringify({ enabled: true }) });
-    const denial = requireManagementAuth(withoutCsrf, state, authConfig);
-    expect(denial?.status).toBe(401);
-    expect(await denial!.json()).toEqual({ error: "opencodex admin token required" });
-    expect(existsSync(hermesConfigPath())).toBe(false);
-    expect(store.listOperations()).toHaveLength(0);
+    const { saveConfig } = await import("../src/config");
+    const { startServer } = await import("../src/server");
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const origin = new URL(server.url).origin;
+      const page = await fetch(server.url, { headers: { Accept: "text/html" } });
+      expect(page.status).toBe(200);
+      const html = await page.text();
+      const meta = (name: string): string =>
+        new RegExp(`<meta name="${name}" content="([^"]*)">`).exec(html)?.[1] ?? "";
+      const token = meta("opencodex-session-token");
+      const csrf = meta("opencodex-session-csrf");
+      expect(token).not.toHaveLength(0);
+      expect(csrf).not.toHaveLength(0);
 
-    const withCsrf = new Request(url, {
-      method: "PUT",
-      headers: { ...headers, "x-opencodex-csrf-token": session?.csrfToken ?? "" },
-      body: JSON.stringify({ enabled: true }),
-    });
-    expect(requireManagementAuth(withCsrf, state, authConfig)).toBeNull();
-    const routed = await handleManagementAPI(withCsrf, url, authConfig, {
-      saveConfigPreservingClaudeCode: () => {},
-      refreshCodexCatalog: async () => {},
-    });
-    expect(routed?.status).toBe(200);
-    expect(store.listOperations("hermes")).toHaveLength(1);
+      const target = new URL("/api/client-integrations/hermes", server.url);
+      const guiHeaders = {
+        Origin: origin,
+        "Content-Type": "application/json",
+        "x-opencodex-api-key": token,
+        "x-opencodex-gui-origin": origin,
+      };
+
+      const withoutCsrf = await fetch(target, {
+        method: "PUT",
+        headers: guiHeaders,
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(withoutCsrf.status).toBe(401);
+      // Admission ran first, so the route never wrote and never journaled.
+      expect(existsSync(hermesConfigPath())).toBe(false);
+      expect(store.listOperations()).toHaveLength(0);
+
+      // The control: the same request WITH the CSRF token reaches the route.
+      const withCsrf = await fetch(target, {
+        method: "PUT",
+        headers: { ...guiHeaders, "x-opencodex-csrf-token": csrf },
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(withCsrf.status).toBe(200);
+      expect(store.listOperations("hermes")).toHaveLength(1);
+    } finally {
+      await server.stop(true);
+      if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousOpencodexHome;
+      if (previousAdmin !== undefined) process.env.OPENCODEX_ADMIN_AUTH_TOKEN = previousAdmin;
+    }
   });
 });

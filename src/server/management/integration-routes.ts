@@ -261,7 +261,14 @@ async function readJsonBody(ctx: ManagementContext): Promise<unknown | Response>
 
 function writerFailureResponse(
   clientId: IntegrationClientId,
-  result: { state: string; reason: string; message?: string; snapshotPath?: string; residual?: boolean },
+  /*
+   * The writer's own refusal type, not a structural echo of it.
+   *
+   * A local shape with an optional `message` accepted a refusal that had lost
+   * its message on the way here, which is exactly how the drift branch shipped
+   * without one. `WriteRefused` requires it, so the compiler now objects.
+   */
+  result: WriteRefused,
   ctx: ManagementContext,
 ): Response {
   /*
@@ -272,7 +279,7 @@ function writerFailureResponse(
    * carry (A-gate round 5, blocker 3).
    */
   const recovery = {
-    ...(result.message ? { message: result.message } : {}),
+    message: result.message,
     ...(result.snapshotPath ? { snapshotPath: result.snapshotPath } : {}),
     ...(result.residual ? { residual: true } : {}),
   };
@@ -354,12 +361,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
           newestByClient.set(operation.clientId, operation.opId);
         }
       }
-      const operations: IntegrationJournalRow[] = storedOperations.map(operation => ({
-        opId: operation.opId,
-        clientId: operation.clientId,
-        kind: operation.kind,
-        at: operation.at,
-        configPath: operation.configPath,
+      const operations: IntegrationJournalRow[] = storedOperations.map(operation => {
         /*
          * Resolved against the DISK, not read off the row.
          *
@@ -369,10 +371,26 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
          * the restore route would answer 410. `readSnapshot` is the same
          * resolver that preflight uses, which is what keeps the two agreeing.
          */
-        snapshot: store.readSnapshot(operation).kind,
-        undoable: newestByClient.get(operation.clientId) === operation.opId
-          && liveResultFingerprint(operation.configPath) === operation.resultFingerprint,
-      }));
+        const snapshot = store.readSnapshot(operation).kind;
+        return {
+          opId: operation.opId,
+          clientId: operation.clientId,
+          kind: operation.kind,
+          at: operation.at,
+          configPath: operation.configPath,
+          snapshot,
+          /*
+           * The SAME resolution decides `undoable`. Reporting the tag honestly
+           * and then offering undo anyway is the identical defect one field
+           * over: restore would answer 410 for a row the GUI drew a button on.
+           * `none` stays undoable — restoring an op that created a file means
+           * deleting it, and that needs no snapshot bytes.
+           */
+          undoable: snapshot !== "expired"
+            && newestByClient.get(operation.clientId) === operation.opId
+            && liveResultFingerprint(operation.configPath) === operation.resultFingerprint,
+        };
+      });
       return jsonResponse({ operations } satisfies IntegrationJournalEnvelope, 200, req, ctx.config);
     } catch (error) {
       return internalErrorResponse(error, ctx);
@@ -430,15 +448,15 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
         () => Promise.resolve(restoreIntegration(restoreInput)),
       );
       if (!result.ok) {
-        if (result.reason === "drift_requires_confirm") {
-          return jsonResponse({
-            error: "restore requires drift confirmation",
-            code: "integration_drift_confirmation_required",
-            clientId: operation.clientId,
-            state: result.state,
-            reason: result.reason,
-          }, 409, req, ctx.config);
-        }
+        /*
+         * Drift is NOT special-cased here.
+         *
+         * It used to be, and the hand-written branch dropped the writer's
+         * `message` — which is the only thing that tells the user WHICH file
+         * drifted and where its backup went. Every refusal leaves through the
+         * one serializer, so a refusal cannot lose its recovery fields by
+         * being routed through a shorter path.
+         */
         return writerFailureResponse(operation.clientId, result, ctx);
       }
       return jsonResponse(result satisfies IntegrationRestoreEnvelope, 200, req, ctx.config);
