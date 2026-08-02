@@ -1051,6 +1051,7 @@ export const en = {
   "pws.capacity.nextRecovery": "Next capacity recovery",
   "pws.capacity.recoveryShare": "+{percent}% pool capacity",
   "pws.capacity.incomplete": "Incomplete coverage: {excluded} account(s) excluded, including {unknown} unknown plan(s)",
+  "pws.capacity.partial": "Partial window coverage: {count} account(s) do not report every displayed limit window",
   "pws.dashboard.recentlyUsed": "RECENTLY USED",
   "pws.dashboard.requests": "{count} requests",
   "pws.dashboard.checkedAgo": "Checked {time}",

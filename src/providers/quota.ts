@@ -136,9 +136,13 @@ function publicCapacityAggregation(
   aggregation: CodexCapacityAggregation,
   presentation: NonNullable<CodexCapacityAggregation["presentation"]>,
 ): CodexCapacityAggregation {
+  const safeCurrentAccount = presentation === "coverage-only" && aggregation.currentAccount
+    ? { ...aggregation.currentAccount, quota: null }
+    : aggregation.currentAccount;
   return {
     ...aggregation,
     presentation,
+    ...(safeCurrentAccount ? { currentAccount: safeCurrentAccount } : {}),
     ...(aggregation.fiveHour ? { fiveHour: publicCapacityWindow(aggregation.fiveHour) } : {}),
     ...(aggregation.weekly ? { weekly: publicCapacityWindow(aggregation.weekly) } : {}),
     ...(aggregation.monthly ? { monthly: publicCapacityWindow(aggregation.monthly) } : {}),
@@ -235,7 +239,8 @@ async function fetchChatGptForwardQuota(
   const active = capacityAccounts.find(account => account.active)
     ?? accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)
     ?? accounts[0];
-  const capacity = aggregateCodexPoolCapacity(capacityAccounts, Date.now());
+  const now = Date.now();
+  const capacity = aggregateCodexPoolCapacity(capacityAccounts, now);
   if (capacity.aggregation && capacity.quota) {
     return report(
       provider,
@@ -247,7 +252,10 @@ async function fetchChatGptForwardQuota(
   const quota = active?.quota
     ? { ...active.quota, updatedAt: active.quota.updatedAt ?? Date.now() } as CodexCapacityQuota
     : null;
-  if (quota) {
+  const quotaFresh = !!quota
+    && Number.isFinite(quota.updatedAt)
+    && now - quota.updatedAt < CODEX_CAPACITY_MAX_QUOTA_AGE_MS;
+  if (quota && quotaFresh) {
     const fallback = report(
       provider,
       "chatgpt:wham",
@@ -256,7 +264,7 @@ async function fetchChatGptForwardQuota(
         ? publicCapacityAggregation(capacity.aggregation, "effective-account-fallback")
         : undefined,
     );
-    return fallback ? { ...fallback, updatedAt: Date.now() } : null;
+    return fallback;
   }
   if (capacity.aggregation) {
     const updatedAt = Date.now();

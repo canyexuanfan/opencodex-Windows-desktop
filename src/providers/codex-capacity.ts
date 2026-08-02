@@ -54,6 +54,7 @@ export interface CodexCapacityAggregation {
   pausedAccounts: number;
   reauthAccounts: number;
   staleQuotaAccounts: number;
+  partialWindowAccounts: number;
   incomplete: boolean;
   presentation?: "aggregate" | "effective-account-fallback" | "coverage-only";
   fiveHour?: CodexCapacityWindowAggregation;
@@ -220,6 +221,7 @@ export function aggregateCodexPoolCapacity(
       pausedAccounts,
       reauthAccounts,
       staleQuotaAccounts,
+      partialWindowAccounts: 0,
       incomplete: true,
       ...(currentAccount ? { currentAccount } : {}),
     };
@@ -244,10 +246,11 @@ export function aggregateCodexPoolCapacity(
     ),
   };
   const visibleWindowKeys = [...windows.keys()];
-  const excludedAccounts = accounts.filter(account => {
+  const partialWindowAccounts = accounts.filter(account => {
     const keys = contributions.get(account);
-    return !keys || visibleWindowKeys.some(key => !keys.has(key));
+    return !!keys && visibleWindowKeys.some(key => !keys.has(key));
   }).length;
+  const excludedAccounts = accounts.length - included.size;
   const aggregation: CodexCapacityAggregation = {
     kind: "capacity-weighted-v1",
     scope: "routable-known",
@@ -258,7 +261,8 @@ export function aggregateCodexPoolCapacity(
     pausedAccounts,
     reauthAccounts,
     staleQuotaAccounts,
-    incomplete: excludedAccounts > 0,
+    partialWindowAccounts,
+    incomplete: excludedAccounts > 0 || partialWindowAccounts > 0,
     ...(fiveHour ? { fiveHour } : {}),
     ...(weekly ? { weekly } : {}),
     ...(monthly ? { monthly } : {}),

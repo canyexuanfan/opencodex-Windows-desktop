@@ -1001,6 +1001,7 @@ export const ja: Record<TKey, string> = {
   "pws.capacity.nextRecovery": "次の容量回復",
   "pws.capacity.recoveryShare": "+{percent}% のプール容量",
   "pws.capacity.incomplete": "対象範囲が不完全です: {excluded} 件を除外（不明なプラン {unknown} 件）",
+  "pws.capacity.partial": "一部の期間の対象範囲が不完全です: {count} 件のアカウントでは表示中のすべての制限期間を取得できません",
   "pws.dashboard.recentlyUsed": "最近の使用",
   "pws.dashboard.requests": "{count} リクエスト",
   "pws.dashboard.checkedAgo": "{time} に確認",

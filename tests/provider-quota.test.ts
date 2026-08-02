@@ -535,6 +535,50 @@ describe("fetchProviderQuotaReports", () => {
     });
   });
 
+  test("stale effective-account quota becomes coverage-only and is never restamped as numeric fallback", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    config.activeCodexAccountId = "added";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    await fetchProviderQuotaReports(config, true);
+    clearProviderQuotaCache();
+
+    const realDateNow = Date.now;
+    const future = realDateNow() + 31 * 60_000;
+    try {
+      Date.now = () => future;
+      globalThis.fetch = (async () => new Response("unavailable", { status: 500 })) as typeof fetch;
+      const expired = await fetchProviderQuotaReports(config);
+      const openai = expired.reports.find(row => row.provider === "openai");
+      expect(openai?.aggregation).toMatchObject({
+        presentation: "coverage-only",
+        includedAccounts: 0,
+        staleQuotaAccounts: 1,
+        missingQuotaAccounts: 1,
+        unknownPlanAccounts: 1,
+        incomplete: true,
+        currentAccount: { plan: "prolite", quota: null },
+      });
+      expect(openai?.quota).toEqual({ updatedAt: future });
+      expect(openai?.quota).not.toHaveProperty("weeklyPercent");
+      const cached = await fetchProviderQuotaReports(config);
+      expect(cached.reports[0]?.quota).not.toHaveProperty("weeklyPercent");
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
   test("ordinary fetch reflects pausing a non-active pool account", async () => {
     saveCodexAccountCredential("added", {
       accessToken: "added-access", refreshToken: "added-refresh",

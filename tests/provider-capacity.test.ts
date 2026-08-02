@@ -82,7 +82,12 @@ describe("configured-weight Codex pool capacity", () => {
     ], NOW);
     expect(result.aggregation?.weekly?.totalWeight).toBe(21);
     expect(result.aggregation?.monthly?.totalWeight).toBe(6);
-    expect(result.aggregation).toMatchObject({ incomplete: true, excludedAccounts: 2 });
+    expect(result.aggregation).toMatchObject({
+      includedAccounts: 3,
+      excludedAccounts: 0,
+      partialWindowAccounts: 2,
+      incomplete: true,
+    });
     expect(result.aggregation?.weekly).toMatchObject({ includedAccounts: 2, excludedAccounts: 1, incomplete: true });
     expect(result.aggregation?.monthly).toMatchObject({ includedAccounts: 2, excludedAccounts: 1, incomplete: true });
     expect(result.quota?.weeklyPercent).toBeCloseTo(23.8095238, 7);

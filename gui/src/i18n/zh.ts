@@ -1405,6 +1405,7 @@ export const zh: Record<TKey, string> = {
   "pws.capacity.nextRecovery": "下一次容量恢复",
   "pws.capacity.recoveryShare": "+{percent}% 账户池容量",
   "pws.capacity.incomplete": "覆盖不完整：已排除 {excluded} 个账户，其中 {unknown} 个套餐未知",
+  "pws.capacity.partial": "部分窗口覆盖不完整：{count} 个账户未报告所有显示的限额窗口",
   "pws.dashboard.recentlyUsed": "最近使用",
   "pws.dashboard.requests": "{count} 个请求",
   "pws.dashboard.checkedAgo": "{time} 前检查",

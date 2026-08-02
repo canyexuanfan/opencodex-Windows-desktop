@@ -163,7 +163,7 @@ test("expired session quota is rejected and a failed fetch cannot keep it render
   expect(readSessionListCache(QUOTA_CACHE_KEY)).toEqual({});
 });
 
-test("all-stale effective fallback renders one raw bar without aggregate labelling", async () => {
+test("all-stale response renders coverage only without a numeric fallback", async () => {
   const old = Date.now() - 31 * 60_000;
   quotaPayload = {
     reports: [{
@@ -171,16 +171,17 @@ test("all-stale effective fallback renders one raw bar without aggregate labelli
       label: "OpenAI (Codex login)",
       source: "chatgpt:wham",
       updatedAt: Date.now(),
-      quota: { weeklyPercent: 80, updatedAt: old },
+      quota: { updatedAt: Date.now() },
       aggregation: {
         kind: "capacity-weighted-v1",
         scope: "routable-known",
-        presentation: "effective-account-fallback",
+        presentation: "coverage-only",
         includedAccounts: 0,
         excludedAccounts: 2,
         unknownPlanAccounts: 0,
         incomplete: true,
-        currentAccount: { isMain: true, plan: "pro", quota: { weeklyPercent: 80, updatedAt: old } },
+        partialWindowAccounts: 0,
+        currentAccount: { isMain: true, plan: "pro", quota: null },
       },
     }],
   };
@@ -190,6 +191,58 @@ test("all-stale effective fallback renders one raw bar without aggregate labelli
   const text = host.textContent ?? "";
   expect(text).not.toContain("Configured-weight pool estimate");
   expect(text).not.toContain("Current effective account");
-  expect(text.match(/80% used/g)?.length).toBe(1);
+  expect(text).not.toContain("80% used");
   expect(text).toContain("Incomplete coverage: 2 account(s) excluded");
+});
+
+test("coverage-only API report remains visible in the rate-limit overview", async () => {
+  quotaPayload = {
+    reports: [{
+      provider: "openai",
+      label: "OpenAI (Codex login)",
+      source: "chatgpt:wham",
+      updatedAt: Date.now(),
+      quota: { updatedAt: Date.now() },
+      aggregation: {
+        kind: "capacity-weighted-v1",
+        scope: "routable-known",
+        presentation: "coverage-only",
+        includedAccounts: 0,
+        excludedAccounts: 3,
+        unknownPlanAccounts: 1,
+        partialWindowAccounts: 0,
+        incomplete: true,
+      },
+    }],
+  };
+
+  await mountShell();
+
+  const text = host.textContent ?? "";
+  expect(text).toContain("OpenAI (Codex login)");
+  expect(text).toContain("Incomplete coverage: 3 account(s) excluded, including 1 unknown plan(s)");
+  expect(text).not.toContain("No rate-limit data yet");
+  expect(text).not.toMatch(/\d+(?:\.\d+)?% used/);
+});
+
+test("mixed-window coverage uses a distinct warning without whole-account exclusion", async () => {
+  const payload = aggregatePayload();
+  payload.reports[0].quota = { weeklyPercent: 25, monthlyPercent: 40, updatedAt: Date.now() };
+  payload.reports[0].aggregation.excludedAccounts = 0;
+  payload.reports[0].aggregation.unknownPlanAccounts = 0;
+  payload.reports[0].aggregation.partialWindowAccounts = 2;
+  payload.reports[0].aggregation.monthly = {
+    usedPercent: 40,
+    includedAccounts: 2,
+    excludedAccounts: 1,
+    incomplete: true,
+    updatedAt: Date.now(),
+  };
+  quotaPayload = payload;
+
+  await mountShell();
+
+  const text = host.textContent ?? "";
+  expect(text).toContain("Partial window coverage: 2 account(s) do not report every displayed limit window");
+  expect(text).not.toContain("Incomplete coverage: 0 account(s) excluded");
 });

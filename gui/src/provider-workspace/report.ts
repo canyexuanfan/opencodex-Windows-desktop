@@ -27,6 +27,7 @@ export interface ProviderCapacityAggregationView {
   incomplete: boolean;
   excludedAccounts: number;
   unknownPlanAccounts: number;
+  partialWindowAccounts: number;
   fiveHour?: CapacityWindowView;
   weekly?: CapacityWindowView;
   monthly?: CapacityWindowView;
@@ -124,6 +125,7 @@ export function capacityAggregationFromReport(report?: ProviderQuotaReportView):
     incomplete: row.incomplete,
     excludedAccounts,
     unknownPlanAccounts,
+    partialWindowAccounts: finite(row.partialWindowAccounts) ?? 0,
     ...(fiveHour ? { fiveHour } : {}),
     ...(weekly ? { weekly } : {}),
     ...(monthly ? { monthly } : {}),

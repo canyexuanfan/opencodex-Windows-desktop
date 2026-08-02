@@ -69,8 +69,9 @@ export default function ProviderOverviewDashboard({
     for (const item of allItems) {
       const report = quotaReports[item.name];
       const quota = report ? accountQuotaFromReport(report) : null;
-      if (report && quota) {
-        result.push({ item, report, urgency: maxQuotaUtilisation(quota) });
+      const aggregation = report ? capacityAggregationFromReport(report) : null;
+      if (report && (quota || aggregation?.presentation === "coverage-only")) {
+        result.push({ item, report, urgency: quota ? maxQuotaUtilisation(quota) : -1 });
       }
     }
     return result.sort((a, b) => b.urgency - a.urgency || a.item.name.localeCompare(b.item.name));
@@ -276,12 +277,17 @@ function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaRepor
               <QuotaBars quota={aggregation.currentAccount.quota} threshold={80} t={t} layout="stacked" />
             </div>
           )}
-          {aggregation.incomplete && (
+          {aggregation.incomplete && aggregation.excludedAccounts > 0 && (
             <div className="pws-capacity-incomplete">
               {t("pws.capacity.incomplete", {
                 excluded: aggregation.excludedAccounts,
                 unknown: aggregation.unknownPlanAccounts,
               })}
+            </div>
+          )}
+          {aggregation.partialWindowAccounts > 0 && (
+            <div className="pws-capacity-incomplete">
+              {t("pws.capacity.partial", { count: aggregation.partialWindowAccounts })}
             </div>
           )}
         </div>
