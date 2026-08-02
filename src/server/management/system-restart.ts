@@ -160,6 +160,34 @@ function spawnDetachedStart(port?: number): Promise<void> {
   });
 }
 
+async function completeDeadlineRestartHandoff(
+  io: SystemRestartIo,
+  exitProcess: (code: number) => void,
+): Promise<void> {
+  const supervised = (io.isSupervisedServiceChild ?? (() => isSupervisedServiceChild(io)))();
+  if (supervised) {
+    // Failure-only supervisors ignore exit(0); intentional non-zero triggers respawn.
+    exitProcess(1);
+    return;
+  }
+
+  const port = (io.listenPort ?? resolveListenPort)();
+  try {
+    // The pinned child has its own bounded port reclaim, so it can launch before this
+    // process exits without binding the old listener or extending the drain deadline.
+    await (io.spawnStart ?? spawnDetachedStart)(port);
+  } catch (err) {
+    console.warn(
+      `Drain-and-restart deadline spawn failed (${spawnFailureCode(err)}); exiting without replacement`,
+    );
+    delete process.env.OCX_SERVICE;
+    exitProcess(1);
+    return;
+  }
+  (io.markRecycling ?? markRecyclingForExit)();
+  exitProcess(0);
+}
+
 /**
  * Accept a drain-and-restart request. Returns immediately; the drain +
  * respawn runs on a short timer so the HTTP response can flush first.
@@ -197,8 +225,8 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
       const drainOutcome = await waitForRestartDrain(drainPromise, restartDeadlineMs, now, scheduleDeadline);
       const exitProcess = io.exitProcess ?? ((code: number) => { process.exit(code); });
       if (drainOutcome === "deadline") {
-        console.warn("Drain-and-restart deadline expired; forcing terminal exit");
-        exitProcess(1);
+        console.warn("Drain-and-restart deadline expired; forcing terminal restart handoff");
+        await completeDeadlineRestartHandoff(io, exitProcess);
         return;
       }
       if (drainOutcome === "rejected") {
