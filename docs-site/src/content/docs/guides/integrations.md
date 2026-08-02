@@ -16,7 +16,10 @@ file, and removes it again. Six clients work this way, each with a switch:
 | Gajae Code | `~/.gjc/agent/models.yml` | YAML | new sessions, or when you open `/model` |`OPENCODEX_GAJAE_API_KEY` |
 
 Paths honor each client's own environment override where it has one, so a relocated
-`HERMES_HOME` or `KIMI_CODE_HOME` is followed rather than guessed at.
+`HERMES_HOME`, `KIMI_CODE_HOME`, `XDG_CONFIG_HOME`, or OpenClaw's
+`OPENCLAW_CONFIG_PATH` / `OPENCLAW_STATE_DIR` is followed rather than guessed at.
+The table lists each client's default; an override always wins, and detection
+follows it too, so a relocated install still reads as installed.
 
 ## The other four surfaces are not switches
 

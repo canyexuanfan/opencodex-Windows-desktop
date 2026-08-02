@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { EXPORT_CLIENTS, EXPORT_CLIENT_IDS, type ExportModel } from "../src/clients/config-export";
@@ -300,6 +300,56 @@ describe("a container we would have to replace is refused, not overwritten", () 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("unsafe");
     expect(readFileSync(configPath, "utf8")).toBe(seed);
+  });
+});
+
+describe("openclaw follows the config path its gateway actually reads", () => {
+  test("OPENCLAW_CONFIG_PATH is where apply writes and disable removes", () => {
+    /*
+     * End to end, not just the resolver: the writer, the ownership record and
+     * the snapshot must all land on the overridden file. Writing the default
+     * while the gateway reads elsewhere is a success message attached to a
+     * file nobody loads.
+     */
+    const relocated = join(home, "elsewhere", "openclaw-custom.json");
+    mkdirSync(dirname(relocated), { recursive: true });
+    const seed = '{\n  models: {\n    providers: {\n      mine: { api: "http://keep-me" },\n    },\n  },\n}\n';
+    writeFileSync(relocated, seed);
+    const env = { OPENCLAW_CONFIG_PATH: relocated } as NodeJS.ProcessEnv;
+    // Detection still needs a directory to find; the state dir is separate.
+    mkdirSync(INTEGRATION_CLIENTS.openclaw.detectDir(env, home), { recursive: true });
+
+    const write = {
+      clientId: "openclaw" as const, models: MODELS, config: CONFIG, port: 10100,
+      env, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+
+    // The overridden file gained our block…
+    expect(readFileSync(relocated, "utf8")).toContain("opencodex");
+    // …the record points at it, so a later disable cannot go looking elsewhere…
+    expect(store.readRecords().openclaw?.configPath).toBe(relocated);
+    // …and the default path was never created.
+    expect(existsSync(join(home, ".openclaw", "openclaw.json"))).toBe(false);
+
+    expect(disableIntegration(write).ok).toBe(true);
+    expect(readFileSync(relocated, "utf8")).not.toContain("opencodex");
+    expect(readFileSync(relocated, "utf8")).toContain("keep-me");
+  });
+
+  test("OPENCLAW_STATE_DIR relocates the whole install, detection included", () => {
+    const stateDir = join(home, "custom-state");
+    const env = { OPENCLAW_STATE_DIR: stateDir } as NodeJS.ProcessEnv;
+    expect(INTEGRATION_CLIENTS.openclaw.detectDir(env, home)).toBe(stateDir);
+    mkdirSync(stateDir, { recursive: true });
+
+    const write = {
+      clientId: "openclaw" as const, models: MODELS, config: CONFIG, port: 10100,
+      env, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+    expect(existsSync(join(stateDir, "openclaw.json"))).toBe(true);
+    expect(existsSync(join(home, ".openclaw", "openclaw.json"))).toBe(false);
   });
 });
 

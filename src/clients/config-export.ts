@@ -198,11 +198,31 @@ export function hermesConfigPath(env: OpencodeLaunchEnv = process.env, home: str
   return join(hermesHomeDir(env, home), "config.yaml");
 }
 
-export function openclawHomeDir(_env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {
+/**
+ * OpenClaw's state directory: `OPENCLAW_STATE_DIR`, else `~/.openclaw`.
+ *
+ * This is also what "is it installed?" detection looks at, so it has to follow
+ * the same override the gateway does — otherwise a user who relocated their
+ * state reads as not installed while their gateway runs fine.
+ */
+export function openclawHomeDir(env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {
+  const stateDir = env.OPENCLAW_STATE_DIR?.trim();
+  if (stateDir) return stateDir;
   return join(home, ".openclaw");
 }
 
+/**
+ * The config file OpenClaw actually reads.
+ *
+ * Precedence per docs.openclaw.ai/gateway/configuration: an explicit
+ * `OPENCLAW_CONFIG_PATH` wins outright, otherwise `openclaw.json` under the
+ * state directory. Ignoring these overrides meant the toggle could report
+ * success after writing `~/.openclaw/openclaw.json` while the running gateway
+ * read somewhere else entirely — and snapshot the wrong file for rollback.
+ */
 export function openclawConfigPath(env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {
+  const explicit = env.OPENCLAW_CONFIG_PATH?.trim();
+  if (explicit) return explicit;
   return join(openclawHomeDir(env, home), "openclaw.json");
 }
 

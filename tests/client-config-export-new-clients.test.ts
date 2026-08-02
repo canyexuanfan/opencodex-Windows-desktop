@@ -14,6 +14,8 @@ import {
   gajaeConfigPath,
   hermesConfigPath,
   kimiConfigPath,
+  openclawConfigPath,
+  openclawHomeDir,
   type ExportContext,
   type ExportModel,
   type GajaeGeneratedConfig,
@@ -127,6 +129,35 @@ describe("openclaw", () => {
     expect(block.models.find(m => m.id === "gpt-5.5")?.contextWindow).toBe(400_000);
     // agents.defaults is deliberately absent: we do not pick the user's model.
     expect(doc).not.toHaveProperty("agents");
+  });
+
+  test("OPENCLAW_CONFIG_PATH wins outright", () => {
+    /*
+     * OpenClaw resolves an explicit config path above everything else. Ignoring
+     * it meant the toggle could report success after writing
+     * `~/.openclaw/openclaw.json` while the running gateway read a different
+     * file — and snapshot the wrong one for rollback.
+     */
+    expect(openclawConfigPath({ OPENCLAW_CONFIG_PATH: "/tmp/oc/custom.json" }, "/home/u"))
+      .toBe("/tmp/oc/custom.json");
+    // It outranks the state dir, not merely the home default.
+    expect(openclawConfigPath(
+      { OPENCLAW_CONFIG_PATH: "/tmp/oc/custom.json", OPENCLAW_STATE_DIR: "/tmp/state" },
+      "/home/u",
+    )).toBe("/tmp/oc/custom.json");
+  });
+
+  test("OPENCLAW_STATE_DIR relocates both the config file and detection", () => {
+    expect(openclawConfigPath({ OPENCLAW_STATE_DIR: "/tmp/state" }, "/home/u"))
+      .toBe(join("/tmp/state", "openclaw.json"));
+    // Detection has to follow, or a relocated install reads as not installed
+    // while the gateway runs perfectly well.
+    expect(openclawHomeDir({ OPENCLAW_STATE_DIR: "/tmp/state" }, "/home/u")).toBe("/tmp/state");
+  });
+
+  test("with no override the documented default still holds", () => {
+    expect(openclawConfigPath({}, "/home/u")).toBe(join("/home/u", ".openclaw", "openclaw.json"));
+    expect(openclawHomeDir({}, "/home/u")).toBe(join("/home/u", ".openclaw"));
   });
 });
 
