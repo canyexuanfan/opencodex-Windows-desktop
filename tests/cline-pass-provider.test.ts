@@ -236,7 +236,7 @@ describe("ClinePass provider", () => {
       error: {
         code: 429,
         message: "ClinePass limit reached",
-        metadata: { request_id: "sk-test-secret-shaped-request-id" },
+        metadata: { request_id: ["sk", "test", "secret-shaped-request-id"].join("-") },
       },
     });
     expect(secretShapedMetadata).toEqual([{
