@@ -11,6 +11,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  EXPORT_CLIENTS,
   gajaeConfigPath,
   gajaeHomeDir,
   hermesConfigPath,
@@ -35,12 +36,17 @@ export interface IntegrationClientSpec {
   configPath: (env?: NodeJS.ProcessEnv, home?: string) => string;
   /** Directory whose existence is the cheap "is it installed?" signal. */
   detectDir: (env?: NodeJS.ProcessEnv, home?: string) => string;
-  /**
-   * True when the client can only read credentials from its own config file.
-   * A non-loopback bind would then force the user's real key onto disk, so the
-   * writer refuses instead of writing it.
-   */
-  loopbackOnly: boolean;
+}
+
+/**
+ * True when the client has nowhere to put the dedicated admission header a
+ * non-loopback bind requires, so a generated config would simply be rejected.
+ *
+ * Read from the export registry rather than restated here: two lists of the
+ * same fact drift, and this one decides whether we write a file that 401s.
+ */
+export function isLoopbackOnly(clientId: IntegrationClientId): boolean {
+  return EXPORT_CLIENTS[clientId].loopbackOnly;
 }
 
 function xdgConfigHome(env: NodeJS.ProcessEnv, home: string): string {
@@ -56,25 +62,21 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
     // file lives and wrong for a writer that a test must be able to redirect.
     configPath: (env = process.env, home = homedir()) => opencodeGlobalConfigPath(env, home),
     detectDir: (env = process.env, home = homedir()) => join(xdgConfigHome(env, home), "opencode"),
-    loopbackOnly: false,
   },
   pi: {
     id: "pi",
     configPath: (_env = process.env, home = homedir()) => join(home, ".pi", "agent", "models.json"),
     detectDir: (_env = process.env, home = homedir()) => join(home, ".pi"),
-    loopbackOnly: false,
   },
   hermes: {
     id: "hermes",
     configPath: (env = process.env, home = homedir()) => hermesConfigPath(env, home),
     detectDir: (env = process.env, home = homedir()) => hermesHomeDir(env, home),
-    loopbackOnly: false,
   },
   openclaw: {
     id: "openclaw",
     configPath: (env = process.env, home = homedir()) => openclawConfigPath(env, home),
     detectDir: (env = process.env, home = homedir()) => openclawHomeDir(env, home),
-    loopbackOnly: false,
   },
   kimi: {
     id: "kimi",
@@ -83,13 +85,11 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
     // Kimi reads credentials only from config.toml — it never consults the
     // environment — so there is no way to point it at a remote bind without
     // serializing the user's key.
-    loopbackOnly: true,
   },
   gajae: {
     id: "gajae",
     configPath: (env = process.env, home = homedir()) => gajaeConfigPath(env, home),
     detectDir: (env = process.env, home = homedir()) => gajaeHomeDir(env, home),
-    loopbackOnly: false,
   },
 };
 

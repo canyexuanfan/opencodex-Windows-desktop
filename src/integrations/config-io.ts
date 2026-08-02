@@ -115,3 +115,23 @@ export function fileIO(): Omit<IntegrationIO, "appendJournal" | "putRecord" | "d
     now: () => Date.now(),
   };
 }
+
+/**
+ * The full seam: filesystem behavior plus bookkeeping bound to ONE store.
+ *
+ * Kept together so the IO a writer uses and the store it journals into can
+ * never point at different roots — that split is what let an "isolated"
+ * operation mutate the real state while a test believed otherwise.
+ */
+export function defaultIntegrationIO(store: {
+  appendJournal: IntegrationIO["appendJournal"];
+  putRecord: IntegrationIO["putRecord"];
+  dropRecord: IntegrationIO["dropRecord"];
+}): IntegrationIO {
+  return {
+    ...fileIO(),
+    appendJournal: entry => store.appendJournal(entry),
+    putRecord: record => store.putRecord(record),
+    dropRecord: clientId => store.dropRecord(clientId),
+  };
+}
