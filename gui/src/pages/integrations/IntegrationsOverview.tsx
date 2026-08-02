@@ -100,8 +100,22 @@ export default function IntegrationsOverview({
     setBulkPending(true);
     setBulkResult(null);
     const failed: string[] = [];
+    /*
+     * Sequential ON PURPOSE — do not convert this to `Promise.all`.
+     *
+     * The server's single-flight guard is keyed per client, so it does not
+     * serialize across different ones, and `writeRecord`/`deleteRecord`
+     * read-modify-write a SHARED records.json with no lock. Firing six
+     * disables together interleaves those writes and drops an ownership
+     * record, which loses the proof that a block is ours — the next disable
+     * then refuses as `unowned-key` and the block is stranded in the user's
+     * config with nothing claiming it.
+     *
+     * Six loopback requests are cheap; a lost ownership record is not.
+     */
     for (const client of appliedClients) {
       try {
+        // react-doctor-disable-next-line react-doctor/async-await-in-loop -- serial on purpose; see the block comment above
         await toggleIntegration(apiBase, client.clientId, false);
       } catch (error) {
         // Report which clients survived rather than a single opaque failure:
