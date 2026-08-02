@@ -102,6 +102,25 @@ async function withRecoveryGateTransition<T>(
   }
 }
 
+/**
+ * Keep recovery-state publication inside the scoped drain. A retained journal
+ * must make the native-main account ineligible before a new selection can
+ * observe the drain lease as released; non-main pool accounts stay available.
+ */
+async function withNativeMainProfileTransition<T>(
+  manager: NativeProfileManager,
+  deps: NativeProfileApiDeps,
+  operation: () => Promise<T>,
+  completeIfAlreadyClearAfterSuccess = false,
+): Promise<T> {
+  return withMainRequestDrain(deps, () => withRecoveryGateTransition(
+    manager,
+    deps,
+    operation,
+    completeIfAlreadyClearAfterSuccess,
+  ));
+}
+
 export async function handleNativeProfileAPI(
   req: Request,
   url: URL,
@@ -141,11 +160,11 @@ export async function handleNativeProfileAPI(
     if (url.pathname === "/api/native-main-profiles/switch" && req.method === "POST") {
       const input = await body(req);
       if (typeof input.target !== "string") throw new NativeProfileError("INVALID_REQUEST", "A target profile is required.", 400);
-      const switched = await withMainRequestDrain(deps, () => withRecoveryGateTransition(
+      const switched = await withNativeMainProfileTransition(
         manager,
         deps,
         () => manager.switch(input.target as string, input.confirmedStopped === true),
-      ));
+      );
       return jsonResponse(
         switched,
         200,
@@ -155,12 +174,12 @@ export async function handleNativeProfileAPI(
     }
     if (url.pathname === "/api/native-main-profiles/recover" && req.method === "POST") {
       const input = await body(req);
-      const recovered = await withMainRequestDrain(deps, () => withRecoveryGateTransition(
+      const recovered = await withNativeMainProfileTransition(
         manager,
         deps,
         () => manager.recover(input.rollback === true, input.confirmedStopped === true),
         true,
-      ));
+      );
       return jsonResponse(recovered, 200, req, config);
     }
     return jsonResponse({ error: "Unknown native-profile operation", code: "INVALID_REQUEST" }, 404, req, config);

@@ -243,7 +243,7 @@ describe("native main profile management API", () => {
     expect(nativeMainStartupGateSnapshot()).toMatchObject({ status: "ready", homeId });
   });
 
-  test("a clean matching gate closes before drain release when a switch retains a journal", async () => {
+  test("a retained journal publishes a matching main gate before drain release while pool turns remain available", async () => {
     const homeId = "home-clean-retained-journal";
     await initializeNativeMainStartupGate({
       manager: { context: { homeId } } as unknown as NativeProfileManager,
@@ -264,8 +264,17 @@ describe("native main profile management API", () => {
       manager,
       probeRecoveryState: () => states.shift() ?? "journal",
       blockRecovery: (id, state) => {
-        blockedWhileDraining = tryAdmitTurn() === null;
-        return blockNativeMainRecovery(id, state);
+        const blocked = blockNativeMainRecovery(id, state);
+        const poolTurn = tryAdmitTurn();
+        const selection = codexAccountSelectionForTurn(poolTurn!)!();
+        blockedWhileDraining = blocked
+          && nativeMainStartupGateSnapshot().status === "blocked"
+          && poolTurn !== null
+          && selection?.mainProfileDraining === true
+          && selection.claimMainProfile() === false;
+        selection?.release();
+        poolTurn?.release();
+        return blocked;
       },
     });
 
