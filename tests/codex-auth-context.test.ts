@@ -73,8 +73,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(testDir, { recursive: true, force: true });
   setIcaclsRunnerForTests(null);
+  rmSync(testDir, { recursive: true, force: true });
   clearThreadAccountMap();
   clearCodexUpstreamHealth();
   clearAccountQuota();

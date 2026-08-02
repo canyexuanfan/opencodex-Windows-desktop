@@ -28,9 +28,9 @@ describe("codex-account-store CRUD", () => {
   });
 
   afterEach(() => {
+    setIcaclsRunnerForTests(null);
     delete process.env.OPENCODEX_HOME;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
-    setIcaclsRunnerForTests(null);
   });
 
   test("save and load credential round-trip", async () => {
