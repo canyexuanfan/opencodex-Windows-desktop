@@ -55,10 +55,20 @@ function classify(body: string): "diff" | "fragment" | "unit" {
   const first = lines[0]!.trimStart();
   const topLevel = /^(import|export|type|interface|const|let|function|class|\/\*|\/\/|declare)/;
   if (!topLevel.test(first)) return "fragment";
-  // Unbalanced braces mean we are looking at part of something larger.
-  const opens = (body.match(/[{([]/g) ?? []).length;
-  const closes = (body.match(/[})\]]/g) ?? []).length;
-  return opens === closes ? "unit" : "fragment";
+  /*
+   * A block that STARTS at top level is a unit, full stop.
+   *
+   * Brace balance used to decide this, and that was a hole: an unmatched `}`
+   * — exactly the defect worth catching — made a paste-ready body look like a
+   * mid-file excerpt, so it was excluded from compilation and the run went
+   * green. A syntax error must never be able to disable its own check
+   * (A-gate round 8, blocker 1). Imbalance is now tsc's problem, which is
+   * what tsc is for.
+   *
+   * A genuine excerpt therefore has to look like one: start mid-expression,
+   * or be fenced as `diff`.
+   */
+  return "unit";
 }
 
 export function extractBlocks(file: string, text: string): Block[] {

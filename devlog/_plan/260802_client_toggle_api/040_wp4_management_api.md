@@ -476,7 +476,6 @@ function writerFailureResponse(
     clientId, state: result.state, reason: result.reason, ...recovery,
   }, 500, ctx.req, ctx.config);
 }
-}
 
 export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url } = ctx;

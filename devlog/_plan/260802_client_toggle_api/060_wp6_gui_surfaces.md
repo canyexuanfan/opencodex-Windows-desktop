@@ -520,6 +520,29 @@ const CLIENT_META: Record<FileIntegrationClientId, {
 4. Status `<dl className="integration-status-line">`: applied time, latest
    operation time, config path. Unknown facts render translated `—` labels,
    not fabricated dates.
+4b. Retention notice, rendered **only** when `status.retentionDegraded` is
+   true, immediately after the status list:
+
+   ```tsx
+   {status.retentionDegraded && (
+     <p className="integration-retention" role="status">
+       {t("integrations.retention.degraded")}
+     </p>
+   )}
+   ```
+
+   It is a line, never a state badge — pruning being behind is a maintenance
+   condition, not an integration state (006 §5). i18n key
+   `integrations.retention.degraded`: en "Backup cleanup is behind; older
+   backups may still be on disk." / ko "백업 정리가 밀려 있습니다 — 오래된
+   백업이 남아 있을 수 있습니다."
+
+   | Activation | Observable proof |
+   |---|---|
+   | state response carries `retentionDegraded: true` | the paragraph renders with `role="status"`; with `false` it is absent from the DOM |
+
+   Test (`gui/tests/integrations-surfaces.test.tsx`):
+   `renders the retention notice only when degraded`.
 5. Semantics note `<p className="integration-semantics">`.
 6. Error Notice adjacent to the header action that failed.
 7. Export/settings panel: `<ClientConfigPanel clients={[client]}

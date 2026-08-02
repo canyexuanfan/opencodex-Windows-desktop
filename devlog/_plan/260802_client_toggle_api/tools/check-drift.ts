@@ -80,16 +80,76 @@ function interfaceBodies(text: string, file: string): Map<string, { body: string
   return found;
 }
 
+/**
+ * Compare types by meaning, not by spelling. `SnapshotRef["kind"]` and the
+ * union it indexes are the same contract; so are `OperationKind` and its
+ * definition. Without this the checker reports style, and a checker that cries
+ * about style gets ignored — which is how a real drift would slip past.
+ */
+const TYPE_SYNONYMS: [RegExp, string][] = [
+  [/^SnapshotRef\["kind"\]$/, '"none" | "stored" | "expired"'],
+  [/^OperationKind$/, '"apply" | "disable" | "refresh" | "restore"'],
+];
+
+function normalizeType(text: string): string {
+  const collapsed = text
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\s+/g, " ")
+    .replace(/;$/, "")
+    .replace(/^\|\s*/, "")
+    .trim();
+  for (const [pattern, canonical] of TYPE_SYNONYMS) {
+    if (pattern.test(collapsed)) return canonical;
+  }
+  return collapsed;
+}
+
 /** Field names declared in an interface body, ignoring comments and optionality. */
 function fieldNames(body: string): Set<string> {
-  const names = new Set<string>();
+  return new Set(fieldSignatures(body).keys());
+}
+
+/**
+ * `name -> "?:type"`, normalized. Comparing names alone let `priorRecord:
+ * string` or `retentionDegraded?: boolean` pass as matching the canonical
+ * shape (A-gate round 8, blocker 2), so optionality and the declared type are
+ * part of the signature now.
+ */
+function fieldSignatures(body: string): Map<string, string> {
+  const fields = new Map<string, string>();
   for (const raw of body.split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("//") || line.startsWith("*") || line.startsWith("/*")) continue;
-    const match = /^([A-Za-z0-9_]+)\??\s*:/.exec(line);
-    if (match) names.add(match[1]!);
+    const match = /^(readonly\s+)?([A-Za-z0-9_]+)(\??)\s*:\s*(.+?);?\s*(\/\/.*)?$/.exec(line);
+    if (!match) continue;
+    fields.set(match[2]!, `${match[1] ? "readonly " : ""}${match[3]}:${normalizeType(match[4]!)}`);
   }
-  return names;
+  return fields;
+}
+
+/** `export type X = ...` bodies, so union aliases are compared too. */
+function typeAliases(text: string): Map<string, { body: string; line: number }> {
+  const found = new Map<string, { body: string; line: number }>();
+  const lines = text.split("\n");
+  for (const [i, line] of lines.entries()) {
+    const match = /^\s*(?:export\s+)?type\s+([A-Za-z0-9_]+)\s*=\s*(.*)$/.exec(line);
+    if (!match) continue;
+    const parts: string[] = [];
+    for (let j = i; j < lines.length; j += 1) {
+      const raw = j === i ? match[2]! : lines[j]!;
+      // Stop before a new top-level declaration: a union written without a
+      // terminator would otherwise swallow whatever follows it, which made two
+      // identical SnapshotRef declarations compare as different.
+      if (j > i && /^\s*(export|interface|type|function|const|\/\*\*)/.test(raw)) break;
+      parts.push(raw.replace(/\/\/.*$/, "").trimEnd());
+      // Detect the terminator on the RAW line: a trailing comment moves the
+      // semicolon off the end of the stripped code.
+      if (/;\s*(\/\/.*)?$/.test(raw)) break;
+      if (j > i && raw.trim().length === 0) break;
+    }
+    found.set(match[1]!, { body: normalizeType(parts.join(" ")), line: i + 1 });
+  }
+  return found;
 }
 
 function main(): void {
@@ -108,18 +168,34 @@ function main(): void {
       if (!truth || !copies) continue;
       const expected = fieldNames(truth.body);
       for (const copy of copies) {
-        const actual = fieldNames(copy.body);
+        const truthSig = fieldSignatures(truth.body);
+        const actualSig = fieldSignatures(copy.body);
+        const actual = new Set(actualSig.keys());
         const missing = [...expected].filter(f => !actual.has(f));
         const extra = [...actual].filter(f => !expected.has(f));
-        if (missing.length || extra.length) {
+        const changed = [...truthSig.entries()]
+          .filter(([name, sig]) => actualSig.has(name) && actualSig.get(name) !== sig)
+          .map(([name, sig]) => `${name} (${CANONICAL_DOC}: ${sig}, here: ${actualSig.get(name)})`);
+        if (missing.length || extra.length || changed.length) {
           findings.push({
             file, line: copy.line, rule: "canonical-shape",
             detail: `${name} disagrees with ${CANONICAL_DOC}` +
               (missing.length ? ` — missing: ${missing.join(", ")}` : "") +
-              (extra.length ? ` — unexpected: ${extra.join(", ")}` : ""),
+              (extra.length ? ` — unexpected: ${extra.join(", ")}` : "") +
+              (changed.length ? ` — changed: ${changed.join("; ")}` : ""),
           });
         }
       }
+    }
+    // Union aliases (SnapshotRef, RefusalReason) were not compared at all.
+    const canonicalAliases = typeAliases(readFileSync(join(unitDir, CANONICAL_DOC), "utf8"));
+    const hereAliases = typeAliases(readFileSync(join(unitDir, file), "utf8"));
+    for (const name of CANONICAL_TYPES) {
+      const truth = canonicalAliases.get(name);
+      const copy = hereAliases.get(name);
+      if (!truth || !copy || truth.body === copy.body) continue;
+      findings.push({ file, line: copy.line, rule: "canonical-shape",
+        detail: `type ${name} differs from ${CANONICAL_DOC}: "${copy.body}" vs "${truth.body}"` });
     }
   }
 

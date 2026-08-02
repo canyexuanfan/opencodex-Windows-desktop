@@ -357,7 +357,7 @@ for it, because it is a maintenance condition, not an integration state.
 `prune failure marks retention degraded and a later operation clears it`;
 `tests/management-integration-routes.test.ts` →
 `state envelope carries retentionDegraded and snapshotCount`;
-`gui/tests/integrations-client-page.test.tsx` →
+`gui/tests/integrations-surfaces.test.tsx` →
 `renders the retention notice only when degraded`.
 
 Claiming a rollback that did not happen is the one failure mode worse than the

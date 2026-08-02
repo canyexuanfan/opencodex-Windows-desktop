@@ -289,6 +289,7 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
   if (!target.ok) {
     return {
       clientId: input.clientId, state: "unsafe", installed, configPath,
+      ...retentionOf(input.clientId),
       reason: target.why === "read-failed" ? "unparseable" : "not-regular-file",
     };
   }
@@ -302,9 +303,21 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
 
   return {
     clientId: input.clientId, state, installed, configPath,
+    ...retentionOf(input.clientId),
     ...(reason ? { reason } : {}),
     ...(record ? { appliedAt: record.appliedAt, lastOpId: record.opId } : {}),
   };
+}
+
+/**
+ * Retention is derived from what is ON DISK, not from the maintenance marker.
+ * The marker schedules retries; it can itself fail to write, and a promise
+ * about the user's credential-bearing backups must not depend on a write that
+ * can fail (006 §5).
+ */
+function retentionOf(clientId: IntegrationClientId): { snapshotCount: number; retentionDegraded: boolean } {
+  const snapshotCount = countSnapshots(clientId);
+  return { snapshotCount, retentionDegraded: snapshotCount > SNAPSHOT_RETENTION };
 }
 ```
 
@@ -381,9 +394,11 @@ export function captureSnapshot(
 export function appendOperation(entry: JournalEntry): void {
   ensureDir(journalPath());
   appendFileSync(journalPath(), JSON.stringify(entry) + "\n", { encoding: "utf8", mode: 0o600 });
-  // Post-commit, best-effort. Old snapshot bytes lingering one extra cycle is
-  // harmless; a false append failure is not.
-  try { pruneSnapshots(entry.clientId); } catch { /* best effort by contract */ }
+  // Post-commit. A prune failure never fails the append — but it is marked so
+  // a later operation retries it, and `retentionDegraded` reports it meanwhile.
+  const pruned = pruneSnapshots(entry.clientId);
+  if (pruned.ok) clearPruneFailure(entry.clientId);
+  else markPruneFailure(entry.clientId, pruned.error);
 }
 
 /** Newest first. A torn final line (crash mid-append) is skipped, not thrown. */
@@ -416,16 +431,87 @@ export function readSnapshot(entry: JournalEntry):
 }
 
 /** Keep the newest N snapshot files per client; rows always survive. */
-function pruneSnapshots(clientId: IntegrationClientId): void {
+/** Snapshot files retained right now. The witness for `retentionDegraded`. */
+export function countSnapshots(clientId: IntegrationClientId): number {
+  try { return readdirSync(snapshotDir(clientId)).length; } catch { return 0; }
+}
+
+/**
+ * Keep the newest N snapshot files per client; journal rows always survive.
+ *
+ * Structured rather than throwing or swallowing: a swallowed failure would let
+ * credential-bearing snapshots pile up while every operation reported success
+ * (006 §5). The caller marks the failure and a later operation retries.
+ */
+export function pruneSnapshots(clientId: IntegrationClientId): { ok: true } | { ok: false; error: string } {
   const keep = new Set(
     listOperations(clientId, SNAPSHOT_RETENTION)
       .map(r => (r.snapshot.kind === "stored" ? r.opId : null))
       .filter((v): v is string => v !== null),
   );
   let names: string[];
-  try { names = readdirSync(snapshotDir(clientId)); } catch { return; }
+  try { names = readdirSync(snapshotDir(clientId)); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { ok: true };   // nothing written yet
+    return { ok: false, error: String(error) };
+  }
   for (const name of names) {
-    if (!keep.has(name)) rmSync(join(snapshotDir(clientId), name), { force: true });
+    if (keep.has(name)) continue;
+    try { rmSync(join(snapshotDir(clientId), name), { force: true }); }
+    catch (error) { return { ok: false, error: String(error) }; }
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance marker: a retry hint, never the witness.
+// ---------------------------------------------------------------------------
+
+export interface MaintenanceState {
+  pruneFailures: Partial<Record<IntegrationClientId, { at: string; error: string }>>;
+}
+
+function maintenancePath(): string { return join(integrationsDir(), "maintenance.json"); }
+
+export function readMaintenance(): MaintenanceState {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(maintenancePath(), "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as MaintenanceState;
+    }
+  } catch { /* absent or corrupt: no pending retries known */ }
+  return { pruneFailures: {} };
+}
+
+function writeMaintenance(state: MaintenanceState): void {
+  try {
+    ensureDir(maintenancePath());
+    atomicWriteFile(maintenancePath(), JSON.stringify(state, null, 2) + "\n");
+  } catch (error) {
+    // The marker is an optimization. `retentionDegraded` is derived from the
+    // snapshot count, so losing it costs a scheduled retry, not the claim.
+    console.error(`[integrations] could not record maintenance state: ${String(error)}`);
+  }
+}
+
+export function markPruneFailure(clientId: IntegrationClientId, error: string): void {
+  const state = readMaintenance();
+  state.pruneFailures[clientId] = { at: new Date().toISOString(), error };
+  writeMaintenance(state);
+}
+
+export function clearPruneFailure(clientId: IntegrationClientId): void {
+  const state = readMaintenance();
+  if (!(clientId in state.pruneFailures)) return;
+  delete state.pruneFailures[clientId];
+  writeMaintenance(state);
+}
+
+/** Re-attempt every marked client. Called at the start of each operation. */
+export function retryPendingPrunes(): void {
+  for (const clientId of Object.keys(readMaintenance().pruneFailures) as IntegrationClientId[]) {
+    if (pruneSnapshots(clientId).ok) clearPruneFailure(clientId);
   }
 }
 ```
