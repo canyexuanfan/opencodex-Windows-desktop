@@ -1759,7 +1759,7 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every(e => typeof e === "string");
 }
 
-/** Pick only allowlisted serializable hooks; drops afterSatelliteMutations and unknown keys. */
+/** Pick only allowlisted serializable hooks; drops function hooks (afterSatelliteMutations, beforeReconcileLock) and unknown keys. */
 export function pickWireCleanupTestHooks(raw: unknown): CleanupWireTestHooks | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const o = raw as Record<string, unknown>;
