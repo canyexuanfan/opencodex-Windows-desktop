@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusSummary, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceStatusSummary, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import type { ServiceDiagnostic } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -1170,6 +1171,67 @@ describe("service serving confirmation", () => {
         now: () => 0,
       });
       expect(seen).toEqual([18999]);
+    });
+  });
+
+  /**
+   * `ocx service status` printed raw `launchctl list` output, which reports a
+   * registered job identically whether it is serving, bound to nothing, or running
+   * an older plist. The reporter hit exactly that: a checkmark next to a dead port.
+   */
+  describe("serviceStatusReport", () => {
+    const installedDiag = (): ServiceDiagnostic => ({
+      supported: true,
+      installed: true,
+      enabled: true,
+      running: true,
+      viable: true,
+      startable: true,
+      stale: false,
+      conflict: false,
+      backend: "launchd",
+      summary: "installed and loaded (launchd)",
+    });
+
+    test("reports the serving port when a proxy answers", async () => {
+      const out = await serviceStatusReport({
+        diagnose: installedDiag,
+        serving: async () => ({ ok: true, port: 10100 }),
+      });
+      expect(out).toContain("Serving on port 10100");
+    });
+
+    test("names the log path and the repair command when nothing answers", async () => {
+      const out = await serviceStatusReport({
+        diagnose: installedDiag,
+        serving: async () => ({ ok: false, port: 10100 }),
+        matchesPlist: () => ({ loaded: true, matchesPlist: true }),
+      });
+      expect(out).toContain("no proxy is answering on port 10100");
+      expect(out).toContain("ocx service install");
+      expect(out).toContain("ocx start");
+    });
+
+    // The injected seam must win on every platform: the default is darwin-gated,
+    // the dep is not, so this case has to run on Linux and Windows CI too.
+    test("adds the bootout hint when launchd runs an older plist", async () => {
+      const out = await serviceStatusReport({
+        diagnose: installedDiag,
+        serving: async () => ({ ok: false, port: 10100 }),
+        matchesPlist: () => ({ loaded: true, matchesPlist: false }),
+      });
+      expect(out).toContain("OLDER plist");
+      expect(out).toContain("bootout");
+    });
+
+    test("reports not-installed without probing", async () => {
+      let probed = false;
+      const out = await serviceStatusReport({
+        diagnose: () => ({ ...installedDiag(), installed: false, summary: "not installed" }),
+        serving: async () => { probed = true; return { ok: false, port: 0 }; },
+      });
+      expect(out).toContain("not installed");
+      expect(probed).toBe(false);
     });
   });
 });

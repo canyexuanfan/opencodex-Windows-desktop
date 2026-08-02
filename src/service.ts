@@ -2240,6 +2240,60 @@ export function serviceStatusSummary(): string {
   return diagnoseService().summary;
 }
 
+/**
+ * Status a human can act on: registration state, whether a proxy actually answers,
+ * and — when it does not — whether launchd is running the plist we have on disk.
+ *
+ * `launchctl list` membership cannot distinguish "serving", "bootstrapped from an
+ * older plist", and "loaded but never bound"; the reported failure was the middle
+ * one presented as the first.
+ *
+ * Resolves the port through `confirmServiceServing`, i.e. the same
+ * `installedServiceListenPort()` path install/start/repair use, so those surfaces can
+ * never disagree about one service. The budget is short (2 probes) because this is a
+ * status read, not a post-install wait.
+ */
+export async function serviceStatusReport(
+  deps: {
+    diagnose?: () => ServiceDiagnostic;
+    serving?: () => Promise<{ ok: boolean; port: number }>;
+    matchesPlist?: () => { loaded: boolean; matchesPlist: boolean };
+  } = {},
+): Promise<string> {
+  const diag = (deps.diagnose ?? diagnoseService)();
+  if (!diag.installed) return `❌ ${diag.summary}`;
+
+  const serving = await (deps.serving ?? (() => confirmServiceServing({ timeoutMs: 1_500 })))();
+  if (serving.ok) return `✅ ${diag.summary}\n   Serving on port ${serving.port}.`;
+
+  // The dep is consulted FIRST; the platform check only guards the default. Wrapping
+  // the whole expression in a darwin check would discard an injected seam on
+  // Linux/Windows and make the stale-plist case untestable there.
+  const stalePlist = deps.matchesPlist?.() ?? (process.platform === "darwin"
+    ? (() => {
+        const entry = cliEntry();
+        // Pass the INSTALLED port explicitly: the default third argument is
+        // resolveServiceListenPort(), which reads OCX_BAKE_PORT/config.port, so after
+        // a config edit the expected string would never match and every run would
+        // print a false "OLDER plist".
+        return launchdJobMatchesPlist(
+          buildServiceShellCommand(entry.bun, entry.cli, installedServiceListenPort()),
+        );
+      })()
+    : null);
+  const staleLine = stalePlist && stalePlist.loaded && !stalePlist.matchesPlist
+    ? "   launchd is running an OLDER plist than the one on disk.\n"
+      + `   Fix:    launchctl bootout gui/$(id -u)/${LABEL} && ocx service install\n`
+    : "";
+
+  return `⚠️  ${diag.summary}\n`
+    + `   Registered, but no proxy is answering on port ${serving.port}.\n`
+    + staleLine
+    + `   Log:    ${serviceLogPath()}\n`
+    + "   Repair: ocx service install\n"
+    + "   Meanwhile: ocx start           (serves in the foreground)";
+}
+
 export function normalizeServiceSubcommand(sub?: string): string {
   return sub ?? "install";
 }
@@ -2375,8 +2429,10 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       if (process.platform === "win32" && backend === "scheduler") {
         console.log(await inspectWindowsSchedulerServiceStatus());
       } else {
-        const s = ops.status();
-        console.log(s ? `✅ running:\n${s}` : "❌ service not installed/running.");
+        // Replaces raw `ops.status()` output, which on darwin is a `launchctl list`
+        // line: registration reported as if it were service. serviceStatusReport
+        // subsumes the not-installed case and adds the serving / stale-plist split.
+        console.log(await serviceStatusReport());
       }
       console.log(`Diagnostics: ${serviceDiagnosticsSummary()}`);
       break;

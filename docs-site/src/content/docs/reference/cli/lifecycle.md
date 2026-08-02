@@ -219,6 +219,28 @@ A non-zero exit here means *registered but not serving* — not *not installed*.
 service manager accepted the job; the proxy behind it never bound the port. Read the
 log named in the message, and use `ocx start` to serve in the foreground meanwhile.
 
+`ocx service status` reports the same three states rather than raw manager output:
+
+```
+✅ installed and loaded (launchd; logs: …)
+   Serving on port 10100.
+```
+
+```
+⚠️  installed and loaded (launchd; logs: …)
+   Registered, but no proxy is answering on port 10100.
+   launchd is running an OLDER plist than the one on disk.
+   Fix:    launchctl bootout gui/$(id -u)/com.opencodex.proxy && ocx service install
+   Log:    ~/.opencodex/service.log
+   Repair: ocx service install
+   Meanwhile: ocx start           (serves in the foreground)
+```
+
+It no longer prints the raw `launchctl list` / `systemctl status` line, which
+reported a registered job identically whether it was serving, bound to nothing, or
+running a previous definition. The `Diagnostics:` line still carries the log path and
+any stale-baked-path finding.
+
 On macOS this also covers a subtler failure: `launchctl load` reports failure on
 stderr while exiting 0, so a load that did not take used to leave launchd running a
 **previous** version of the service definition while the command printed a checkmark.

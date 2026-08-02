@@ -5,6 +5,38 @@ Closes A2/A3 from `002_service_vs_start_asymmetry.md`. Depends on WP1.
 Line numbers below were re-derived with `grep -n` against the working tree after
 the round-1 audit found every R1 citation off by 5-370 lines.
 
+**Stale check (P, after WP1/WP2/WP3 landed).** Re-derived again — `src/service.ts`
+moved by ~230 lines across the three phases:
+
+| Symbol | Then | Now |
+|---|---|---|
+| darwin `running = ... statusLaunchd()` | 1965 | **2194** |
+| `case "status":` | 2130 | **2374** |
+| `ops.status()` inside it | 2134 | **2378** |
+| `serviceDiagnosticsSummary()` line | 2137 | **2381** |
+| `serviceStatusSummary()` | 2010 | **2239** |
+| `const service = diagnoseService()` in `src/cli/status.ts` | 171 | 171 (unchanged) |
+
+**What WP1-WP3 already give this phase.** The helpers it needs now exist and are
+exported, so the diffs below shrink to wiring:
+
+- `launchdJobMatchesPlist(expectedCommand, deps)` — WP1. Answers "is launchd running
+  the plist we have on disk?"
+- `confirmServiceServing(deps)` and `installedServiceListenPort()` — WP2. Answer "is
+  anything actually listening on the baked port?"
+- `buildServiceShellCommand(entry.bun, entry.cli)` via `cliEntry()` — the exact string
+  to compare against.
+
+So `serviceStatusReport` composes existing, already-tested pieces rather than
+introducing new probing logic.
+
+**Visibility constraint.** `cliEntry` (`:46`) and `buildServiceShellCommand` (`:331`)
+are module-private; only `launchdJobMatchesPlist` (`:526`) is exported. So
+`serviceStatusReport` must live **in `src/service.ts`**, not in a new module — which
+is where the diff below puts it. Do not "extract it for testability": the deps object
+is the test seam, and moving it out would force exporting two internals that nothing
+else should reach.
+
 ## Problem
 
 The reporter ran `ocx service`, got a green checkmark, hit a dead port, and had
@@ -68,28 +100,41 @@ callers above may not tolerate. Default is **no** — keep it in the async repor
 export async function serviceStatusReport(
   deps: {
     diagnose?: () => ServiceDiagnostic;
-    findProxy?: () => Promise<{ port: number } | null>;
+    serving?: () => Promise<{ ok: boolean; port: number }>;
     matchesPlist?: () => { loaded: boolean; matchesPlist: boolean };
   } = {},
 ): Promise<string> {
   const diag = (deps.diagnose ?? diagnoseService)();
   if (!diag.installed) return `❌ ${diag.summary}`;
-  const live = await (deps.findProxy ?? (() => findLiveProxy()))();
-  if (live) return `✅ ${diag.summary}\n   Serving on port ${live.port}.`;
 
-  const stalePlist = process.platform === "darwin"
-    ? (deps.matchesPlist ?? (() => {
+  // Resolve the port exactly as install/start/repair do, so the two surfaces can
+  // never disagree about the same service. A short budget: this is a status read,
+  // not a post-install wait.
+  const serving = await (deps.serving ?? (() => confirmServiceServing({ timeoutMs: 1_500 })))();
+  if (serving.ok) return `✅ ${diag.summary}\n   Serving on port ${serving.port}.`;
+
+  // The dep is consulted FIRST; the platform check only guards the default. Wrapping
+  // the whole expression in `platform === "darwin"` would discard an injected seam on
+  // Linux/Windows CI and make the stale-plist test unrunnable there.
+  const stalePlist = deps.matchesPlist?.() ?? (process.platform === "darwin"
+    ? (() => {
         const entry = cliEntry();
-        return launchdJobMatchesPlist(buildServiceShellCommand(entry.bun, entry.cli));
-      }))()
-    : null;
+        // Pass the INSTALLED port explicitly. The default third argument is
+        // resolveServiceListenPort(), which reads OCX_BAKE_PORT/config.port — after a
+        // config edit that string would never match the plist and every run would
+        // print a false "OLDER plist", sending users to bootout for nothing.
+        return launchdJobMatchesPlist(
+          buildServiceShellCommand(entry.bun, entry.cli, installedServiceListenPort()),
+        );
+      })()
+    : null);
   const staleLine = stalePlist && stalePlist.loaded && !stalePlist.matchesPlist
     ? `   launchd is running an OLDER plist than the one on disk.\n`
       + `   Fix:    launchctl bootout gui/$(id -u)/${LABEL} && ocx service install\n`
     : "";
 
   return `⚠️  ${diag.summary}\n`
-    + "   Registered, but no proxy is answering.\n"
+    + `   Registered, but no proxy is answering on port ${serving.port}.\n`
     + staleLine
     + `   Log:    ${serviceLogPath()}\n`
     + "   Repair: ocx service install\n"
@@ -97,11 +142,23 @@ export async function serviceStatusReport(
 }
 ```
 
-`buildServiceShellCommand` (`src/service.ts:331`) takes `(bun, cli, port?)`. Call
-it with the named fields rather than spreading `cliEntry()` — the expected command
-must come from the same builder the plist uses, and an argument-order slip in the
-one comparison that must not drift would produce a permanent false "stale" verdict
-sending users to `bootout` for nothing.
+`buildServiceShellCommand` (`src/service.ts:331`) takes `(bun, cli, port?)`. Two
+traps in one call, both of which produce a permanent false "stale" verdict:
+
+1. **Argument order** — call it with named fields rather than spreading `cliEntry()`.
+2. **The defaulted third argument** — omitting `port` silently uses
+   `resolveServiceListenPort()`, i.e. `OCX_BAKE_PORT`/`config.port`, not the port
+   actually baked into the plist. WP2 added `installedServiceListenPort()` for exactly
+   this divergence; pass it.
+
+### Why `confirmServiceServing`, not `findLiveProxy`
+
+An earlier draft used `findLiveProxy()`. That resolves through pidfile → runtime-port
+→ `config.port`, while WP2's install/start/repair probe `installedServiceListenPort()`.
+A service bound to a port that differs from either would let `ocx service install` say
+"serving on N" and `ocx service status` say "no proxy is answering" — two verdicts
+about one service, which is worse than the bug this unit set out to fix. Both surfaces
+now resolve the port the same way.
 
 ### 3. Wire it into `case "status"`
 
@@ -170,58 +227,91 @@ scope and simply not stated.
 +  : service.summary;
 ```
 
+**Required import change.** `src/cli/status.ts:6` currently reads
+`import { diagnoseService } from "../service";` — the diff above calls
+`serviceLogPath()`, so it must become:
+
+```diff
+-import { diagnoseService } from "../service";
++import { diagnoseService, serviceLogPath } from "../service";
+```
+
+Without it the file does not compile. Stated explicitly because "the seam is in the
+prose but not in the diff" is the failure mode that cost this unit three audit rounds.
+
 `serviceStatusSummary()` (`src/service.ts:2010`) has exactly one non-test caller,
 `src/cli/index.ts:31`. Confirm at B whether that call site should also move to the
 richer reporter or stay as the terse one-liner.
 
 ## MODIFY `tests/service.test.ts`
 
-```ts
-describe("serviceStatusReport", () => {
-  it("reports the serving port when a proxy answers", async () => {
-    const out = await serviceStatusReport({ findProxy: async () => ({ port: 10100 }) });
-    expect(out).toContain("Serving on port 10100");
-  });
+(Superseded — see the fixture-injected block below, which replaced this
+`findProxy`-only sketch after the round-1 audit.)
+Every test must inject `diagnose` as well as `serving`. `serviceStatusReport`
+resolves `!diag.installed` before it ever probes, so a test supplying only the probe
+runs the real `diagnoseService()` and behaves differently on a machine that happens
+to have a service installed.
 
-  // The reporter's exact situation: registered, nothing listening.
-  it("names the log path and the repair command when nothing answers", async () => {
-    const out = await serviceStatusReport({ findProxy: async () => null });
-    expect(out).toContain("no proxy is answering");
-    expect(out).toContain("ocx service install");
-    expect(out).toContain("ocx start");
-    expect(out).toContain("service.log");
-  });
+`ServiceDiagnostic` (`src/service.ts:2103`) has 11 required fields, so a partial
+literal will not typecheck and there is no existing `baseDiagnostic` fixture in
+`tests/service.test.ts` — define one:
+
+```ts
+const installedDiag = (): ServiceDiagnostic => ({
+  supported: true,
+  installed: true,
+  enabled: true,
+  running: true,
+  viable: true,
+  startable: true,
+  stale: false,
+  conflict: false,
+  backend: "launchd",
+  summary: "installed and loaded (launchd)",
 });
-```
 
-Both tests must inject `diagnose` as well as `findProxy`. `serviceStatusReport`
-resolves `!diag.installed` before it ever probes, so a test supplying only
-`findProxy` runs the real `diagnoseService()` and behaves differently on a machine
-that happens to have a service installed. The `diagnose` seam exists in the
-signature for exactly this reason — use it:
-
-```ts
-const installed = () => ({ ...baseDiagnostic, installed: true, summary: "installed and loaded (launchd)" });
-
-it("names the log path and the repair command when nothing answers", async () => {
+test("reports the serving port when a proxy answers", async () => {
   const out = await serviceStatusReport({
-    diagnose: installed,
-    findProxy: async () => null,
+    diagnose: installedDiag,
+    serving: async () => ({ ok: true, port: 10100 }),
+  });
+  expect(out).toContain("Serving on port 10100");
+});
+
+test("names the log path and the repair command when nothing answers", async () => {
+  const out = await serviceStatusReport({
+    diagnose: installedDiag,
+    serving: async () => ({ ok: false, port: 10100 }),
     matchesPlist: () => ({ loaded: true, matchesPlist: true }),
   });
-  expect(out).toContain("no proxy is answering");
+  expect(out).toContain("no proxy is answering on port 10100");
+  expect(out).toContain("ocx service install");
+  expect(out).toContain("ocx start");
 });
 
-it("adds the bootout hint when launchd runs an older plist", async () => {
+// Injected seam must win on every platform — the default is darwin-gated, the dep is not.
+test("adds the bootout hint when launchd runs an older plist", async () => {
   const out = await serviceStatusReport({
-    diagnose: installed,
-    findProxy: async () => null,
+    diagnose: installedDiag,
+    serving: async () => ({ ok: false, port: 10100 }),
     matchesPlist: () => ({ loaded: true, matchesPlist: false }),
   });
   expect(out).toContain("OLDER plist");
   expect(out).toContain("bootout");
 });
+
+test("reports not-installed without probing", async () => {
+  let probed = false;
+  const out = await serviceStatusReport({
+    diagnose: () => ({ ...installedDiag(), installed: false, summary: "not installed" }),
+    serving: async () => { probed = true; return { ok: false, port: 0 }; },
+  });
+  expect(out).toContain("not installed");
+  expect(probed).toBe(false);
+});
 ```
+
+`ServiceDiagnostic` is exported, so add it to the test file's type imports.
 
 ## Verification
 
