@@ -5,9 +5,9 @@ import { useT, type TKey } from "../../i18n/shared";
 import { Notice } from "../../ui";
 import IntegrationStateBadge from "./IntegrationStateBadge";
 import RestoreDialog from "./RestoreDialog";
+import { describeRefusal } from "./refusal-copy";
 import {
   FILE_INTEGRATION_CLIENTS,
-  IntegrationApiError,
   loadIntegrationJournal,
   loadIntegrationStates,
   toggleIntegration,
@@ -23,6 +23,13 @@ const TAB_LABEL_KEY: Record<FileIntegrationClientId, TKey> = {
   openclaw: "integrations.tab.openclaw",
   kimi: "integrations.tab.kimi",
   gajae: "integrations.tab.gajae",
+};
+
+const KIND_KEY: Record<IntegrationJournalRow["kind"], TKey> = {
+  apply: "integrations.kind.apply",
+  disable: "integrations.kind.disable",
+  refresh: "integrations.kind.refresh",
+  restore: "integrations.kind.restore",
 };
 
 function isApplied(status: IntegrationStatus): boolean {
@@ -69,9 +76,8 @@ export default function IntegrationsOverview({
   const appliedClients = clients.filter(isApplied);
   const staleCount = clients.filter(client => client.state === "stale").length;
 
-  const refresh = () => {
-    void statesResource.refresh();
-    void historyResource.refresh();
+  const refresh = async () => {
+    await Promise.all([statesResource.refresh(), historyResource.refresh()]);
   };
 
   /*
@@ -81,7 +87,9 @@ export default function IntegrationsOverview({
    */
   const disableAll = async () => {
     if (bulkPending || appliedClients.length === 0) return;
-    if (!confirm(t("integrations.bulk.body"))) return;
+    // Title then body, so the prompt names the action before its consequences.
+    const prompt = [t("integrations.bulk.title"), t("integrations.bulk.body")].join("\n\n");
+    if (!confirm(prompt)) return;
     setBulkPending(true);
     setBulkResult(null);
     const failed: string[] = [];
@@ -91,16 +99,23 @@ export default function IntegrationsOverview({
       } catch (error) {
         // Report which clients survived rather than a single opaque failure:
         // a partial result the user cannot see is worse than none.
-        failed.push(error instanceof IntegrationApiError
-          ? `${client.clientId} (${error.refusal?.message ?? error.message})`
-          : client.clientId);
+        // `describeRefusal` keeps the snapshot path and the residual warning,
+        // which a bare message would drop for exactly the clients that need
+        // manual recovery.
+        failed.push(`${client.clientId}: ${describeRefusal(t, error)}`);
       }
+    }
+    // Refresh BEFORE claiming success: announcing it while the cards still
+    // read "applied" tells the user two contradictory things at once.
+    try {
+      await refresh();
+    } catch {
+      failed.push(t("integrations.error.stale"));
     }
     setBulkPending(false);
     setBulkResult(failed.length === 0
       ? { tone: "ok", text: t("integrations.bulk.success") }
-      : { tone: "err", text: t("integrations.bulk.partial", { clients: failed.join(", ") }) });
-    refresh();
+      : { tone: "err", text: t("integrations.bulk.partial", { clients: failed.join("; ") }) });
   };
 
   const lastChange = history[0]?.at;
@@ -147,7 +162,17 @@ export default function IntegrationsOverview({
       )}
       {bulkResult && <Notice tone={bulkResult.tone}>{bulkResult.text}</Notice>}
 
-      {installed.length === 0 ? (
+      {/*
+        "No clients installed" is a CONCLUSION, and it can only be drawn from a
+        settled response. `clients` defaults to an empty array, so branching on
+        its length first told a user mid-load — and a user whose request had
+        just failed — that nothing was installed.
+      */}
+      {clients.length === 0 ? (
+        statesResource.state.kind === "failed-cold" ? null : (
+          <p className="page-sub">{t("common.loading")}</p>
+        )
+      ) : installed.length === 0 ? (
         <div className="integration-empty">
           <h4>{t("integrations.empty.title")}</h4>
           <p>{t("integrations.empty.body")}</p>
@@ -187,7 +212,7 @@ export default function IntegrationsOverview({
         <ul className="integration-history">
           {history.map(row => (
             <li key={row.opId}>
-              <span className="integration-history-kind">{row.kind}</span>
+              <span className="integration-history-kind">{t(KIND_KEY[row.kind])}</span>
               <span className="integration-history-client">{row.clientId}</span>
               <span className="integration-history-at">{new Date(row.at).toLocaleString()}</span>
               {row.snapshot === "expired" ? (
@@ -196,10 +221,12 @@ export default function IntegrationsOverview({
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  disabled={!row.undoable}
                   onClick={() => setRestoring(row)}
                 >
-                  {t("integrations.action.restorePoint")}
+                  {/* `undoable` picks the wording; the server owns eligibility. */}
+                  {row.undoable
+                    ? t("integrations.action.undo")
+                    : t("integrations.action.restorePoint")}
                 </button>
               )}
             </li>

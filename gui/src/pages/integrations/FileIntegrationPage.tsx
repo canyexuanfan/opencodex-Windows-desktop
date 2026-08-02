@@ -4,8 +4,8 @@ import { useT, type TKey } from "../../i18n/shared";
 import { Notice, Switch } from "../../ui";
 import IntegrationStateBadge from "./IntegrationStateBadge";
 import RestoreDialog from "./RestoreDialog";
+import { describeRefusal } from "./refusal-copy";
 import {
-  IntegrationApiError,
   loadIntegrationJournal,
   loadIntegrationState,
   toggleIntegration,
@@ -34,19 +34,12 @@ const TAB_LABEL_KEY: Record<FileIntegrationClientId, TKey> = {
   gajae: "integrations.tab.gajae",
 };
 
-/**
- * Map a refusal to the sentence a user can act on.
- *
- * Keyed on `reason`, never on `state`: a write that failed while the file
- * happened to be in conflict is still a write failure, and choosing the
- * message by state would tell the user to resolve a conflict that is not the
- * thing that went wrong.
- */
-function refusalMessageKey(reason: string | undefined): TKey {
-  if (reason === "conflict") return "integrations.error.conflict";
-  if (reason === "unsafe") return "integrations.error.unsafe";
-  return "integrations.error.generic";
-}
+const KIND_KEY: Record<IntegrationJournalRow["kind"], TKey> = {
+  apply: "integrations.kind.apply",
+  disable: "integrations.kind.disable",
+  refresh: "integrations.kind.refresh",
+  restore: "integrations.kind.restore",
+};
 
 export default function FileIntegrationPage({
   apiBase,
@@ -92,29 +85,30 @@ export default function FileIntegrationPage({
     void historyResource.refresh();
   };
 
-  const toggle = async () => {
+  const mutate = async (enabled: boolean) => {
     if (!status || pending) return;
     setPending(true);
     setFailure(null);
     try {
-      // `current` and `stale` both mean "our block is in the file", so the
-      // switch reads applied for either; only `current` needs no rewrite.
-      await toggleIntegration(apiBase, client, status.state === "absent" || status.state === "stale");
+      await toggleIntegration(apiBase, client, enabled);
       refresh();
     } catch (error) {
-      const refusal = error instanceof IntegrationApiError ? error.refusal : null;
-      const base = t(refusalMessageKey(refusal?.reason));
-      setFailure(
-        refusal?.snapshotPath
-          ? t("integrations.restore.manual", { reason: refusal.message, path: refusal.snapshotPath })
-          : refusal?.message
-            ? `${base} ${refusal.message}`
-            : base,
-      );
+      setFailure(describeRefusal(t, error));
     } finally {
       setPending(false);
     }
   };
+
+  /*
+   * The switch means exactly what its label says.
+   *
+   * `stale` also means our block is in the file, so the switch reads applied —
+   * but it once sent `enabled: true` for that state, which asked the server to
+   * REFRESH while the control was labelled Disable. Turning a switch off has
+   * to remove the block; updating a stale block is a separate action with its
+   * own button below.
+   */
+  const toggle = () => void mutate(!(status && (status.state === "current" || status.state === "stale")));
 
   if (!status) {
     return (
@@ -142,11 +136,27 @@ export default function FileIntegrationPage({
         />
         <Switch
           on={applied}
-          onClick={() => void toggle()}
+          onClick={toggle}
           disabled={locked || pending}
           label={applied ? t("integrations.action.disable") : t("integrations.action.apply")}
         />
       </div>
+
+      {/*
+        Updating a stale block is its own action. Folding it into the switch
+        made "off" mean "refresh", which is the opposite of what the control
+        said it would do.
+      */}
+      {status.state === "stale" && (
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => void mutate(true)}
+          disabled={pending}
+        >
+          {t("integrations.action.refresh")}
+        </button>
+      )}
 
       <p className="page-sub">{t(SEMANTICS_KEY[client])}</p>
       <p className="integration-path">{status.configPath}</p>
@@ -168,21 +178,27 @@ export default function FileIntegrationPage({
         <ul className="integration-history">
           {history.map(row => (
             <li key={row.opId}>
-              <span className="integration-history-kind">{row.kind}</span>
+              <span className="integration-history-kind">{t(KIND_KEY[row.kind])}</span>
               <span className="integration-history-at">{new Date(row.at).toLocaleString()}</span>
               {row.snapshot === "expired" ? (
+                // The only genuinely impossible case: the bytes are gone.
                 <span className="badge badge-muted">{t("integrations.action.snapshotExpired")}</span>
               ) : (
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  // `undoable` already accounts for an expired snapshot and for
-                  // a file edited since; offering the button anyway would call a
-                  // route that answers 410.
-                  disabled={!row.undoable}
                   onClick={() => setRestoring(row)}
                 >
-                  {t("integrations.action.restorePoint")}
+                  {/*
+                    `undoable` chooses the WORDING, not whether the action
+                    exists. Disabling everything else made the drift
+                    confirmation unreachable: an older row, or one whose file
+                    changed since, is exactly what a user reaches for, and the
+                    server accepts it after an explicit confirm.
+                  */}
+                  {row.undoable
+                    ? t("integrations.action.undo")
+                    : t("integrations.action.restorePoint")}
                 </button>
               )}
             </li>

@@ -1,11 +1,8 @@
 import { useState } from "react";
 import { useT } from "../../i18n/shared";
 import { Notice } from "../../ui";
-import {
-  IntegrationApiError,
-  restoreIntegration,
-  type IntegrationJournalRow,
-} from "./integration-api";
+import { describeRefusal, refusalOf } from "./refusal-copy";
+import { restoreIntegration, type IntegrationJournalRow } from "./integration-api";
 
 /**
  * Restore confirmation, including the drift second step.
@@ -40,23 +37,15 @@ export default function RestoreDialog({
       onRestored();
       onClose();
     } catch (error) {
-      if (error instanceof IntegrationApiError
-        && error.refusal?.reason === "drift_requires_confirm") {
+      if (refusalOf(error)?.reason === "drift_requires_confirm") {
         // Not a failure: the user has not been asked yet. Ask now.
         setDrift(true);
         setPending(false);
         return;
       }
-      const refusal = error instanceof IntegrationApiError ? error.refusal : null;
-      setFailure(
-        refusal?.snapshotPath
-          // `snapshotPath` exists so a dead end is still recoverable by hand.
-          ? t("integrations.restore.manual", {
-            reason: refusal.message,
-            path: refusal.snapshotPath,
-          })
-          : (error instanceof Error ? error.message : t("integrations.error.generic")),
-      );
+      // Shared formatter so a residual write — compensation itself failed, the
+      // file may be intermediate — is disclosed here too, not only its path.
+      setFailure(describeRefusal(t, error));
       setPending(false);
     }
   };
