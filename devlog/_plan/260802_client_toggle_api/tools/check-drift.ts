@@ -37,7 +37,18 @@ const OWNERSHIP: Record<string, string> = {
   parseConfig: "config-io.ts",
   loadTarget: "config-io.ts",
   defaultIntegrationIO: "config-io.ts",
+  /*
+   * A shared SENTINEL is the sharpest case: two `Symbol("parse-failed")`
+   * calls are different values, so a second declaration does not merely
+   * duplicate code — it silently breaks every comparison against it, and an
+   * unparseable config gets classified `absent` and overwritten
+   * (A-gate round 10, blocker 1).
+   */
+  PARSE_FAILED: "config-io.ts",
 };
+
+/** Owned symbols that other modules import, so the declaration must be exported. */
+const MUST_EXPORT = new Set(["parseConfig", "loadTarget", "defaultIntegrationIO", "PARSE_FAILED"]);
 
 /**
  * Cross-phase fields that must appear in every layer's copy of a shape.
@@ -220,6 +231,10 @@ function main(): void {
           const sites = declarationSites.get(symbol) ?? [];
           sites.push({ file, line: i + 1 });
           declarationSites.set(symbol, sites);
+          if (MUST_EXPORT.has(symbol) && !/^\s*export\s/.test(line)) {
+            findings.push({ file, line: i + 1, rule: "ownership",
+              detail: `${symbol} is imported by other modules but declared without \`export\`` });
+          }
         }
         const importMatch = new RegExp(`import\\s*\\{[^}]*\\b${symbol}\\b[^}]*\\}\\s*from\\s*"([^"]+)"`).exec(line);
         if (importMatch && !importMatch[1]!.endsWith("config-io")) {

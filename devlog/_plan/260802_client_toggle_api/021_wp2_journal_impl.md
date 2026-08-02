@@ -192,6 +192,11 @@ export function fragmentPathsOf(contribution: ManagedContribution): readonly (re
 ```ts
 import type { ManagedContribution } from "../clients/config-export";
 import { canonicalContribution, fingerprint, readRecords, type OwnershipRecord } from "./ownership";
+// The sentinel is a SYMBOL: two `Symbol("parse-failed")` calls are different
+// values, so a second declaration here would make every parse failure compare
+// unequal and fall through to `absent` — an unparseable file would then be
+// treated as empty and overwritten (A-gate round 10, blocker 1).
+import { PARSE_FAILED } from "./config-io";
 import { INTEGRATION_CLIENTS, type IntegrationClientId } from "./registry";
 
 export type IntegrationState = "absent" | "current" | "stale" | "conflict" | "unsafe";
@@ -213,7 +218,6 @@ export interface IntegrationStatus {
   retentionDegraded: boolean;
 }
 
-export const PARSE_FAILED = Symbol("parse-failed");
 
 /** Does the document carry every fragment path we would write? */
 export function hasOurFragments(doc: unknown, contribution: ManagedContribution): boolean {
@@ -270,6 +274,12 @@ import { defaultIntegrationIO, loadTarget, type IntegrationIO } from "./config-i
 
 export interface IntegrationStateInput {
   clientId: IntegrationClientId;
+  /**
+   * Opencodex config root for integration state. Threaded so a test redirects
+   * maintenance reads, snapshot counting and pruning to a temp dir instead of
+   * touching the developer's real store (A-gate round 10, blocker 3).
+   */
+  stateDir?: string;
   models: readonly ExportModel[];
   config: OcxConfig;
   port: number;
@@ -279,7 +289,7 @@ export interface IntegrationStateInput {
 }
 
 export function readIntegrationState(input: IntegrationStateInput): IntegrationStatus {
-  retryPendingPrunesOnce();   // once per process; never throws
+  retryPendingPrunesOnce(input.stateDir);   // scoped to the caller's store; never throws
   const io = input.io ?? defaultIntegrationIO();
   const spec = INTEGRATION_CLIENTS[input.clientId];
   const exportSpec = EXPORT_CLIENTS[input.clientId];
@@ -290,7 +300,7 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
   if (!target.ok) {
     return {
       clientId: input.clientId, state: "unsafe", installed, configPath,
-      ...retentionOf(input.clientId),
+      ...retentionOf(input.clientId, input.stateDir),
       reason: target.why === "read-failed" ? "unparseable" : "not-regular-file",
     };
   }
@@ -304,7 +314,7 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
 
   return {
     clientId: input.clientId, state, installed, configPath,
-    ...retentionOf(input.clientId),
+    ...retentionOf(input.clientId, input.stateDir),
     ...(reason ? { reason } : {}),
     ...(record ? { appliedAt: record.appliedAt, lastOpId: record.opId } : {}),
   };
@@ -316,8 +326,8 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
  * about the user's credential-bearing backups must not depend on a write that
  * can fail (006 §5).
  */
-function retentionOf(clientId: IntegrationClientId): { snapshotCount: number; retentionDegraded: boolean } {
-  const counted = countSnapshots(clientId);
+function retentionOf(clientId: IntegrationClientId, dir?: string): { snapshotCount: number; retentionDegraded: boolean } {
+  const counted = countSnapshots(clientId, dir);
   if (counted === null) {
     // Cannot inspect: report degraded with a count of -1 rather than a
     // reassuring zero. "Unknown" and "healthy" must never look alike here.
@@ -325,7 +335,7 @@ function retentionOf(clientId: IntegrationClientId): { snapshotCount: number; re
   }
   // A marked failure keeps the flag set even when the count is momentarily
   // within bound, so a retry that has not run yet is still visible.
-  const marked = readMaintenance().pruneFailures[clientId] !== undefined;
+  const marked = readMaintenance(dir).pruneFailures[clientId] !== undefined;
   return { snapshotCount: counted, retentionDegraded: marked || counted > SNAPSHOT_RETENTION };
 }
 ```
@@ -375,8 +385,8 @@ const SNAPSHOT_RETENTION = 10;
 export function newOpId(): string { return randomUUID(); }
 
 function journalPath(): string { return join(integrationsDir(), "journal.jsonl"); }
-function snapshotDir(clientId: IntegrationClientId): string {
-  return join(integrationsDir(), "snapshots", clientId);
+function snapshotDir(clientId: IntegrationClientId, dir?: string): string {
+  return join(integrationsDir(dir), "snapshots", clientId);
 }
 
 /**
@@ -455,8 +465,8 @@ export function readSnapshot(entry: JournalEntry):
  * unbounded, credential-bearing pile this field exists to disclose
  * (A-gate round 9, blocker 3).
  */
-export function countSnapshots(clientId: IntegrationClientId): number | null {
-  try { return readdirSync(snapshotDir(clientId)).length; }
+export function countSnapshots(clientId: IntegrationClientId, dir?: string): number | null {
+  try { return readdirSync(snapshotDir(clientId, dir)).length; }
   catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? 0 : null;
   }
@@ -469,14 +479,14 @@ export function countSnapshots(clientId: IntegrationClientId): number | null {
  * credential-bearing snapshots pile up while every operation reported success
  * (006 §5). The caller marks the failure and a later operation retries.
  */
-export function pruneSnapshots(clientId: IntegrationClientId): { ok: true } | { ok: false; error: string } {
+export function pruneSnapshots(clientId: IntegrationClientId, dir?: string): { ok: true } | { ok: false; error: string } {
   const keep = new Set(
     listOperations(clientId, SNAPSHOT_RETENTION)
       .map(r => (r.snapshot.kind === "stored" ? r.opId : null))
       .filter((v): v is string => v !== null),
   );
   let names: string[];
-  try { names = readdirSync(snapshotDir(clientId)); }
+  try { names = readdirSync(snapshotDir(clientId, dir)); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { ok: true };   // nothing written yet
@@ -484,7 +494,7 @@ export function pruneSnapshots(clientId: IntegrationClientId): { ok: true } | { 
   }
   for (const name of names) {
     if (keep.has(name)) continue;
-    try { rmSync(join(snapshotDir(clientId), name), { force: true }); }
+    try { rmSync(join(snapshotDir(clientId, dir), name), { force: true }); }
     catch (error) { return { ok: false, error: String(error) }; }
   }
   return { ok: true };
@@ -498,11 +508,11 @@ export interface MaintenanceState {
   pruneFailures: Partial<Record<IntegrationClientId, { at: string; error: string }>>;
 }
 
-function maintenancePath(): string { return join(integrationsDir(), "maintenance.json"); }
+function maintenancePath(dir?: string): string { return join(integrationsDir(dir), "maintenance.json"); }
 
-export function readMaintenance(): MaintenanceState {
+export function readMaintenance(dir?: string): MaintenanceState {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(maintenancePath(), "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(maintenancePath(dir), "utf8"));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       // Validate rather than cast: `{}` parses fine and would leave
       // `pruneFailures` undefined, so the next mark/clear would throw AFTER
@@ -525,10 +535,10 @@ export function readMaintenance(): MaintenanceState {
   return { pruneFailures: {} };
 }
 
-function writeMaintenance(state: MaintenanceState): void {
+function writeMaintenance(state: MaintenanceState, dir?: string): void {
   try {
-    ensureDir(maintenancePath());
-    atomicWriteFile(maintenancePath(), JSON.stringify(state, null, 2) + "\n");
+    ensureDir(maintenancePath(dir));
+    atomicWriteFile(maintenancePath(dir), JSON.stringify(state, null, 2) + "\n");
   } catch (error) {
     // The marker is an optimization. `retentionDegraded` is derived from the
     // snapshot count, so losing it costs a scheduled retry, not the claim.
@@ -536,23 +546,23 @@ function writeMaintenance(state: MaintenanceState): void {
   }
 }
 
-export function markPruneFailure(clientId: IntegrationClientId, error: string): void {
+export function markPruneFailure(clientId: IntegrationClientId, error: string, dir?: string): void {
   const state = readMaintenance();
   state.pruneFailures[clientId] = { at: new Date().toISOString(), error };
-  writeMaintenance(state);
+  writeMaintenance(state, dir);
 }
 
-export function clearPruneFailure(clientId: IntegrationClientId): void {
+export function clearPruneFailure(clientId: IntegrationClientId, dir?: string): void {
   const state = readMaintenance();
   if (!(clientId in state.pruneFailures)) return;
   delete state.pruneFailures[clientId];
-  writeMaintenance(state);
+  writeMaintenance(state, dir);
 }
 
 /** Re-attempt every marked client. Called at the start of each operation. */
-export function retryPendingPrunes(): void {
-  for (const clientId of Object.keys(readMaintenance().pruneFailures) as IntegrationClientId[]) {
-    if (pruneSnapshots(clientId).ok) clearPruneFailure(clientId);
+export function retryPendingPrunes(dir?: string): void {
+  for (const clientId of Object.keys(readMaintenance(dir).pruneFailures) as IntegrationClientId[]) {
+    if (pruneSnapshots(clientId, dir).ok) clearPruneFailure(clientId, dir);
   }
 }
 
@@ -572,10 +582,19 @@ export function retryPendingPrunes(): void {
  */
 let retriedThisProcess = false;
 
-export function retryPendingPrunesOnce(): void {
-  if (retriedThisProcess) return;
-  retriedThisProcess = true;
-  try { retryPendingPrunes(); }
+/**
+ * `dir` is threaded from the caller's input, not read from a global. Without
+ * it a focused test could prune the DEVELOPER'S real snapshot directory while
+ * believing it had substituted the seam wholesale (A-gate round 10, blocker 3).
+ * The once-guard is skipped whenever an explicit dir is supplied, so tests are
+ * order-independent.
+ */
+export function retryPendingPrunesOnce(dir?: string): void {
+  if (dir === undefined) {
+    if (retriedThisProcess) return;
+    retriedThisProcess = true;
+  }
+  try { retryPendingPrunes(dir); }
   catch (error) { console.error(`[integrations] prune retry failed: ${String(error)}`); }
 }
 ```
@@ -613,7 +632,8 @@ export interface IntegrationIO {
     | { kind: "text"; text: string }
     | { kind: "missing" }
     | { kind: "failed"; code?: string };
-  statKind: (path: string) => "file" | "dir" | "other" | "missing";
+  /** `failed` is distinct from `missing`: a path we cannot stat is not absent. */
+  statKind: (path: string) => "file" | "dir" | "other" | "missing" | "failed";
   writeText: (path: string, text: string) => void;
   removeFile: (path: string) => void;
   mkdirp: (path: string) => void;
@@ -624,11 +644,12 @@ export interface IntegrationIO {
 }
 
 /** Read + classify the target, collapsing the three failure shapes correctly. */
-function loadTarget(io: IntegrationIO, configPath: string):
+export function loadTarget(io: IntegrationIO, configPath: string):
   | { ok: true; before: string | null }
   | { ok: false; why: "not-regular-file" | "read-failed" } {
   const kind = io.statKind(configPath);
   if (kind === "missing") return { ok: true, before: null };
+  if (kind === "failed") return { ok: false, why: "read-failed" };
   if (kind !== "file") return { ok: false, why: "not-regular-file" };
   const read = io.readText(configPath);
   if (read.kind === "text") return { ok: true, before: read.text };
@@ -651,7 +672,13 @@ export function defaultIntegrationIO(): IntegrationIO {
     },
     statKind: p => {
       try { const s = statSync(p); return s.isFile() ? "file" : s.isDirectory() ? "dir" : "other"; }
-      catch { return "missing"; }
+      catch (error) {
+        // Only ENOENT is absence. An EACCES/EPERM stat failure previously
+        // returned "missing", which sent loadTarget down the absent path and
+        // skipped the tagged read entirely — the unreadable-file protection
+        // was bypassed before it ran (A-gate round 10, blocker 2).
+        return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "failed";
+      }
     },
     writeText: (p, t) => atomicWriteFile(p, t),
     removeFile: p => rmSync(p, { force: true }),
@@ -679,6 +706,10 @@ the `now` member is what makes WP4's stale-flight branch reachable.
 | path read miss | classify a doc whose `providers` is an array | `hasOurFragments` false → `absent`, no throw |
 | prune failure marks and retries | make `rmSync` throw for one client, append an op, then let a later op succeed | first: row committed, operation `ok`, marker present, `retentionDegraded` true; second: marker cleared, `retentionDegraded` false, count back within bound |
 | malformed marker cannot fake an append failure | write `{}` to `maintenance.json`, then append an op | the row is committed and `appendOperation` returns normally — no throw, so the writer performs no compensation and no phantom row exists |
+| unparseable file end to end | call `readIntegrationState` (not the classifier directly) on a config containing `{{{` | `state === "unsafe"` — proves both modules share ONE `PARSE_FAILED` symbol; a split sentinel would report `absent` |
+| stat failure is not absence | default IO, `statSync` throws `EACCES` | `loadTarget` returns `read-failed` → `unsafe`; the file is never written |
+| genuine ENOENT still reads as absence | default IO, no file present | `loadTarget` returns `{ before: null }`, apply proceeds and creates the file |
+| state is scoped to the caller's store | run an operation with `stateDir` pointed at a temp dir while a real marker exists | only the temp dir changes; the real snapshots/marker are byte-identical afterwards |
 | unreadable snapshot dir is not healthy | make `readdirSync` throw `EACCES` | `snapshotCount === -1` and `retentionDegraded === true` — never a reassuring `0` |
 
 ## 7. Tests

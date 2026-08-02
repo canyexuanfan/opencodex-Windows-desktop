@@ -221,6 +221,14 @@ export interface IntegrationWriteInput {
   port: number;
   env?: NodeJS.ProcessEnv;
   home?: string;
+  /**
+   * Opencodex config root for integration state (records, journal, snapshots,
+   * maintenance marker). Threaded through every maintenance/prune/count call
+   * so a test redirects them to a temp dir; without it, retry and pruning read
+   * a global and could touch the developer's real store while the test
+   * believed it had substituted the seam (A-gate round 10, blocker 3).
+   */
+  stateDir?: string;
   /** Test seam: read/write/now. Defaults to real fs + Date.now. */
   io?: IntegrationIO;
 }
@@ -237,7 +245,12 @@ export interface IntegrationIO {
     | { kind: "text"; text: string }
     | { kind: "missing" }
     | { kind: "failed"; code?: string };
-  statKind: (path: string) => "file" | "dir" | "other" | "missing";
+  /**
+   * `failed` is distinct from `missing`. Collapsing a stat failure into
+   * absence bypassed the unreadable-file protection before `readText` ever
+   * ran (A-gate round 10, blocker 2): only ENOENT is absence.
+   */
+  statKind: (path: string) => "file" | "dir" | "other" | "missing" | "failed";
   writeText: (path: string, text: string) => void;   // defaults to atomicWriteFile
   removeFile: (path: string) => void;
   mkdirp: (path: string) => void;

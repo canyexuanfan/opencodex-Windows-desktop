@@ -187,7 +187,7 @@ export { serializeDocument, renderToml, renderYaml };
 
 ```ts
 export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
-  retryPendingPrunes();   // before any write; logged no-op on failure
+  retryPendingPrunes(input.stateDir);   // before any write; logged no-op on failure
   const io = input.io ?? defaultIntegrationIO();
   const clientId = input.clientId;
   const spec = INTEGRATION_CLIENTS[clientId];
@@ -272,7 +272,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
 
 ```ts
 export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
-  retryPendingPrunes();
+  retryPendingPrunes(input.stateDir);
   const io = input.io ?? defaultIntegrationIO();
   const clientId = input.clientId;
   const spec = INTEGRATION_CLIENTS[clientId];
@@ -338,7 +338,7 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
 
 ```ts
 export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome {
-  retryPendingPrunes();
+  retryPendingPrunes(input.stateDir);
   const io = input.io ?? defaultIntegrationIO();
   const entry = findOperation(input.opId);
   if (!entry) throw new Error(`unknown operation ${input.opId}`);   // route maps to 404
