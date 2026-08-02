@@ -5,13 +5,27 @@ function jsonRejection(status: number, error: Record<string, unknown>): Response
   return Response.json({ error }, { status });
 }
 
+function jsonPayload(status: number, payload: Record<string, unknown>): Response {
+  return Response.json(payload, { status });
+}
+
 describe("Codex pre-stream quota rejection classification", () => {
   test.each([
-    [429, "code", "usage_limit_exceeded"],
-    [429, "type", "insufficient_quota"],
-    [402, "code", "insufficient_quota"],
-  ] as const)("accepts structured reset-eligible exhaustion on HTTP %i", async (status, field, code) => {
-    const result = await classifyCodexPreStreamRejection(jsonRejection(status, { [field]: code }));
+    [429, "nested code", { error: { code: "usage_limit_exceeded" } }, "usage_limit_exceeded"],
+    [429, "nested type", { error: { type: "insufficient_quota" } }, "insufficient_quota"],
+    [402, "nested code", { error: { code: "insufficient_quota" } }, "insufficient_quota"],
+    [429, "root code", { code: "usage_limit_exceeded" }, "usage_limit_exceeded"],
+    [402, "root type", { type: "insufficient_quota" }, "insufficient_quota"],
+    [429, "matching code and type", {
+      error: { code: "usage_limit_exceeded", type: "usage_limit_exceeded" },
+    }, "usage_limit_exceeded"],
+  ] as const)("accepts exact %s reset-eligible exhaustion on HTTP %i", async (
+    status,
+    _schema,
+    payload,
+    code,
+  ) => {
+    const result = await classifyCodexPreStreamRejection(jsonPayload(status, payload));
     expect(result).toEqual({
       kind: "reset-eligible-exhaustion",
       status,
@@ -19,6 +33,72 @@ describe("Codex pre-stream quota rejection classification", () => {
       resetCreditEligible: true,
       semanticCode: code,
     });
+  });
+
+  test.each([
+    ["leading and trailing whitespace", { error: { code: " usage_limit_exceeded " } }],
+    ["uppercase", { error: { code: "USAGE_LIMIT_EXCEEDED" } }],
+    ["mixed case", { type: "Insufficient_Quota" }],
+    ["trailing whitespace at the root", { code: "insufficient_quota " }],
+  ] as const)("rejects the %s near-miss", async (_case, payload) => {
+    const result = await classifyCodexPreStreamRejection(jsonPayload(429, payload));
+    expect(result).toMatchObject({
+      kind: "generic-rate-limit",
+      alternateRetryEligible: true,
+      resetCreditEligible: false,
+    });
+    expect(result).not.toHaveProperty("semanticCode");
+  });
+
+  test.each([
+    ["primitive error with a root code", {
+      error: "opaque",
+      code: "usage_limit_exceeded",
+    }],
+    ["matching root and nested codes", {
+      code: "usage_limit_exceeded",
+      error: { code: "usage_limit_exceeded" },
+    }],
+    ["unknown root and eligible nested codes", {
+      code: "unknown",
+      error: { code: "usage_limit_exceeded" },
+    }],
+    ["eligible root code with an empty nested error", {
+      code: "usage_limit_exceeded",
+      error: {},
+    }],
+  ] as const)("fails closed for ambiguous schemas: %s", async (_case, payload) => {
+    const result = await classifyCodexPreStreamRejection(jsonPayload(429, payload));
+    expect(result).toMatchObject({
+      kind: "generic-rate-limit",
+      alternateRetryEligible: true,
+      resetCreditEligible: false,
+    });
+    expect(result).not.toHaveProperty("semanticCode");
+  });
+
+  test.each([
+    ["nested unknown code and eligible type", {
+      error: { code: "unknown", type: "insufficient_quota" },
+    }],
+    ["root eligible code and unrelated type", {
+      code: "usage_limit_exceeded",
+      type: "rate_limit_error",
+    }],
+    ["two different eligible values", {
+      error: { code: "usage_limit_exceeded", type: "insufficient_quota" },
+    }],
+    ["eligible code and non-string type", {
+      error: { code: "usage_limit_exceeded", type: null },
+    }],
+  ] as const)("fails closed for code/type disagreement: %s", async (_case, payload) => {
+    const result = await classifyCodexPreStreamRejection(jsonPayload(429, payload));
+    expect(result).toMatchObject({
+      kind: "generic-rate-limit",
+      alternateRetryEligible: true,
+      resetCreditEligible: false,
+    });
+    expect(result).not.toHaveProperty("semanticCode");
   });
 
   test("keeps a generic 429 with Retry-After out of reset-credit eligibility", async () => {

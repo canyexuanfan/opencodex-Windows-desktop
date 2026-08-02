@@ -45,24 +45,42 @@ function rejection(
   };
 }
 
+function hasOwnField(container: Record<string, unknown>, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(container, field);
+}
+
+function exactResetEligibleCode(
+  container: Record<string, unknown>,
+): CodexResetEligibleExhaustionCode | undefined {
+  const hasCode = hasOwnField(container, "code");
+  const hasType = hasOwnField(container, "type");
+  if (!hasCode && !hasType) return undefined;
+
+  const code = hasCode ? container.code : undefined;
+  const type = hasType ? container.type : undefined;
+  if ((hasCode && typeof code !== "string") || (hasType && typeof type !== "string")) {
+    return undefined;
+  }
+  if (hasCode && hasType && code !== type) return undefined;
+
+  const value = hasCode ? code : type;
+  if (typeof value !== "string") return undefined;
+  return RESET_ELIGIBLE_CODES.has(value as CodexResetEligibleExhaustionCode)
+    ? value as CodexResetEligibleExhaustionCode
+    : undefined;
+}
+
 function structuredResetEligibleCode(payload: unknown): CodexResetEligibleExhaustionCode | undefined {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
   const root = payload as Record<string, unknown>;
-  const containers: Record<string, unknown>[] = [root];
-  if (root.error && typeof root.error === "object" && !Array.isArray(root.error)) {
-    containers.push(root.error as Record<string, unknown>);
-  }
-  for (const container of containers) {
-    for (const field of ["code", "type"] as const) {
-      const value = container[field];
-      if (typeof value !== "string") continue;
-      const normalized = value.trim().toLowerCase();
-      if (RESET_ELIGIBLE_CODES.has(normalized as CodexResetEligibleExhaustionCode)) {
-        return normalized as CodexResetEligibleExhaustionCode;
-      }
-    }
-  }
-  return undefined;
+  const hasRootDiscriminator = hasOwnField(root, "code") || hasOwnField(root, "type");
+
+  if (!hasOwnField(root, "error")) return exactResetEligibleCode(root);
+  if (hasRootDiscriminator) return undefined;
+
+  const nested = root.error;
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) return undefined;
+  return exactResetEligibleCode(nested as Record<string, unknown>);
 }
 
 async function resetEligibleCodeFromResponse(
