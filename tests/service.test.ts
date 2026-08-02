@@ -3,8 +3,9 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceStatusSummary, systemdNeedsDaemonReload, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import type { ServiceDiagnostic } from "../src/service";
+import { buildWinswXml } from "../src/lib/winsw";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -1282,5 +1283,58 @@ describe("service serving confirmation", () => {
     // A changed unit must be RESTARTED, not started: `start` is a no-op on an active
     // unit and would leave the stale process running the old ExecStart.
     expect(restartAt).toBeLessThan(startAt);
+  });
+
+  /**
+   * Windows bakes the port into two different artifacts depending on backend: the
+   * scheduler wrapper (`opencodex-service.cmd`) and the WinSW XML. Both must be
+   * readable or `start` probes a port the service was never told to use.
+   */
+  describe("windowsListenPort", () => {
+    test("reads the port baked into the scheduler wrapper", () => {
+      expect(windowsListenPort({
+        readScript: () => '"%OCX_BUN%" "%OCX_CLI%" start --port 18222 >>"%LOG%" 2>&1',
+      })).toBe(18222);
+    });
+
+    // Every `set "…"` line precedes the exec line, so a decoy in a path must lose.
+    test("prefers the argument tail over a path that looks like one", () => {
+      expect(windowsListenPort({
+        readScript: () => 'set "OCX_BUN=C:\\start --port 9999\\bun.exe"\r\n"%OCX_BUN%" "%OCX_CLI%" start --port 18222\r\n',
+      })).toBe(18222);
+    });
+
+    test("returns null when the wrapper cannot be read", () => {
+      expect(windowsListenPort({ readScript: () => { throw new Error("ENOENT"); } })).toBeNull();
+    });
+
+    test("rejects out-of-range ports", () => {
+      expect(windowsListenPort({ readScript: () => "start --port 0 " })).toBeNull();
+      expect(windowsListenPort({ readScript: () => "start --port 70000 " })).toBeNull();
+    });
+
+    // The generated wrapper is the real contract; assert against it, not a sketch.
+    test("reads the port out of a real generated wrapper", () => {
+      expect(windowsListenPort({ readScript: () => buildWindowsServiceScript() }))
+        .toBe(resolveServiceListenPort());
+    });
+  });
+
+  describe("winswListenPort", () => {
+    test("reads the port out of the WinSW <arguments> element", () => {
+      expect(winswListenPort({
+        readXml: () => "  <arguments>&quot;C:\\pkg\\cli.ts&quot; start --port 18222</arguments>",
+      })).toBe(18222);
+    });
+
+    // Scheduler install, or any non-Windows host: the XML is simply absent.
+    test("returns null when the XML cannot be read", () => {
+      expect(winswListenPort({ readXml: () => { throw new Error("ENOENT"); } })).toBeNull();
+    });
+
+    test("reads the port out of a real generated WinSW XML", () => {
+      const xml = buildWinswXml({ bun: "C:\\pkg\\bun.exe", cli: "C:\\pkg\\src\\cli\\index.ts" });
+      expect(winswListenPort({ readXml: () => xml })).toBe(resolveServiceListenPort());
+    });
   });
 });

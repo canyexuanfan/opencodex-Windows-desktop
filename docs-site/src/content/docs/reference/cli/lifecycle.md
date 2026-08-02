@@ -198,9 +198,9 @@ ocx service status
 ocx service uninstall
 ```
 
-On macOS and Linux, `install`, `start`, and `repair` confirm that a proxy actually
-answers on the port baked into the installed service before reporting success. They
-wait up to 20 seconds and then print the serving port:
+`install`, `start`, and `repair` confirm that a proxy actually answers on the port
+baked into the installed service before reporting success — on all three platforms.
+They wait up to 20 seconds and then print the serving port:
 
 ```
 ✅ opencodex service installed and serving on port 10100.
@@ -240,6 +240,9 @@ It no longer prints the raw `launchctl list` / `systemctl status` line, which
 reported a registered job identically whether it was serving, bound to nothing, or
 running a previous definition. The `Diagnostics:` line still carries the log path and
 any stale-baked-path finding.
+
+On Windows the scheduler backend keeps its own richer status output, which already
+reported Task Scheduler registration separately from proxy reachability.
 
 On macOS this also covers a subtler failure: `launchctl load` reports failure on
 stderr while exiting 0, so a load that did not take used to leave launchd running a

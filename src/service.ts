@@ -32,7 +32,7 @@ import {
   type ElevatedSchtasksCreateAndRunExecution,
   type ElevatedSchtasksCreateAndRunResult,
 } from "./lib/windows-elevation";
-import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
+import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, winswXmlPath, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
 import { recordOwnedConfigPath } from "./lib/config-ownership";
@@ -373,12 +373,53 @@ export function systemdListenPort(deps: { readUnit?: () => string } = {}): numbe
 }
 
 /**
+ * Shared tail parser for the baked `--port <n>`.
+ *
+ * Terminators cover all three artifact shapes: whitespace (batch wrapper, systemd
+ * unit), `"` (systemd's quoted ExecStart), `<` (WinSW's `</arguments>`), and `&` (an
+ * XML-escaped quote). Matched LAST because every artifact carries the Bun and CLI
+ * paths ahead of the argument, and a path containing the literal must not shadow it.
+ */
+function parseBakedListenPort(read: () => string): number | null {
+  try {
+    const last = [...read().matchAll(/start --port (\d{1,5})(?:\s|"|&|<|$)/gm)].at(-1);
+    if (!last) return null;
+    const n = Number(last[1]);
+    return n > 0 && n <= 65535 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `--port <n>` baked into the Task Scheduler wrapper. Windows scheduler backend. */
+export function windowsListenPort(deps: { readScript?: () => string } = {}): number | null {
+  return parseBakedListenPort(deps.readScript ?? (() => readFileSync(windowsServiceScriptPath(), "utf8")));
+}
+
+/**
+ * The `--port <n>` baked into the WinSW XML's `<arguments>`. Windows native backend.
+ *
+ * Separate from {@link windowsListenPort} rather than one function branching on
+ * `readServiceBackend()`: the recorded backend can disagree with what is actually on
+ * disk (the `stale` / `backendStateMismatch` cases `deriveWindowsServiceDiagnostic`
+ * exists to catch), and a reader that trusted it would then read the wrong file.
+ * Each returns null when its own artifact is absent, so the chain needs no branch.
+ */
+export function winswListenPort(deps: { readXml?: () => string } = {}): number | null {
+  return parseBakedListenPort(deps.readXml ?? (() => readFileSync(winswXmlPath(), "utf8")));
+}
+
+/**
  * The listen port of the INSTALLED service artifact, falling back to the configured
  * one. Each reader returns null off its own platform, so the chain needs no platform
  * branch — and on Windows both return null, preserving today's behavior.
  */
 export function installedServiceListenPort(): number {
-  return launchdListenPort() ?? systemdListenPort() ?? resolveServiceListenPort();
+  return launchdListenPort()
+    ?? systemdListenPort()
+    ?? windowsListenPort()
+    ?? winswListenPort()
+    ?? resolveServiceListenPort();
 }
 
 export const SERVICE_INSTALL_HEALTH_MS = 20_000;
@@ -447,6 +488,20 @@ async function reportServiceServing(
     + `   Meanwhile: ocx start   (serves in the foreground)`,
   );
   process.exitCode = 1;
+}
+
+/**
+ * The reinstall command for the CURRENTLY INSTALLED backend.
+ *
+ * Plain `ocx service install` on a native/WinSW install runs installWindows's
+ * transactional backend switch, which tears down WinSW and replaces it with the Task
+ * Scheduler backend. Advising it in a repair hint would silently change the user's
+ * backend, so the hint has to carry `--native` when that is what is installed.
+ */
+function serviceRepairCommand(): string {
+  return process.platform === "win32" && readServiceBackend() === "native"
+    ? "ocx service install --native"
+    : "ocx service install";
 }
 
 function systemdQuote(value: string): string {
@@ -2325,7 +2380,7 @@ export async function serviceStatusReport(
     + `   Registered, but no proxy is answering on port ${serving.port}.\n`
     + staleLine
     + `   Log:    ${serviceLogPath()}\n`
-    + "   Repair: ocx service install\n"
+    + `   Repair: ${serviceRepairCommand()}\n`
     + "   Meanwhile: ocx start           (serves in the foreground)";
 }
 
@@ -2382,14 +2437,11 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
     assertServiceEnvironmentMatchesInstall();
     assertServiceAuthEnvironment();
     await repairService();
-    if (process.platform === "win32") {
-      console.log("✅ opencodex background service repaired (assets refreshed, no Task Scheduler re-registration).");
-    } else {
-      // Same scope as install/start: Windows keeps its existing registration-health
-      // reporting; macOS/Linux gain the serving check. A repair that reports success
-      // while nothing serves is the defect class this unit exists to close.
-      await reportServiceServing("repaired");
-    }
+    // All three platforms: a repair that reports success while nothing serves is the
+    // defect class this unit exists to close. Windows bakes its port into the
+    // scheduler wrapper or the WinSW XML, both of which installedServiceListenPort()
+    // now reads.
+    await reportServiceServing("repaired");
     return;
   }
   // Non-install subcommands follow the backend recorded at install time (state v2).
@@ -2404,13 +2456,10 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       assertServiceEnvironmentMatchesInstall();
       assertServiceAuthEnvironment();
       await ops.install();
-      if (process.platform === "win32") {
-        console.log(backend === "native"
-          ? "✅ opencodex native service installed + started (windowless, starts at boot, auto-restarts on crash)."
-          : "✅ opencodex service installed + started (auto-starts on login, auto-restarts on crash).");
-      } else {
-        await reportServiceServing("installed", { port: resolveServiceListenPort() });
-      }
+      // The wrapper was written moments ago in this process, so the configured port
+      // and the baked one cannot have diverged yet — unlike `start`, which reads the
+      // installed artifact instead.
+      await reportServiceServing("installed", { port: resolveServiceListenPort() });
       if (process.platform === "linux") console.log("   For auto-start on boot: loginctl enable-linger $USER");
       // Service users never reach the `ocx start` prompt: the proxy they run is the
       // supervised child, which always carries OCX_SERVICE=1. This command, though, is
@@ -2420,11 +2469,7 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       break;
     case "start":
       ops.start();
-      if (process.platform === "win32") {
-        console.log("✅ service started.");
-      } else {
-        await reportServiceServing("started");
-      }
+      await reportServiceServing("started");
       break;
     case "stop": {
       assertServiceEnvironmentMatchesInstall();
