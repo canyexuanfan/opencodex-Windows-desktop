@@ -119,8 +119,8 @@ export function isLoopbackOnly(clientId: IntegrationClientId): boolean {
 
 A second copy on `IntegrationClientSpec` is what this amendment removes: two
 lists of the same security fact drift, and the half that drifts decides whether
-a user's key lands on disk or a config silently 401s. WP3 calls
-`isLoopbackOnly(clientId)` where `031` still writes `spec.loopbackOnly`.
+a user's key lands on disk or a config silently 401s. `030` and `031` are
+amended to match: the gate reads `isLoopbackOnly(clientId)`.
 
 ## 2. `src/integrations/ownership.ts` (NEW)
 

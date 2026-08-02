@@ -200,7 +200,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   }
   if (isLoopbackOnly(clientId) && !isLoopbackHostname(input.config.hostname)) {
     return refuse(clientId, "non_loopback", "absent",
-      `${clientId} reads credentials only from its config file, so a non-loopback bind would write your key to disk. Configure it manually instead.`);
+      `${clientId} has nowhere to put the admission header a non-loopback bind requires, so a generated config would be rejected. Configure it by hand instead.`);
   }
 
   const target = loadTarget(io, configPath);

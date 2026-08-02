@@ -118,8 +118,12 @@ Sequence:
 2. **Loopback gate.** `isLoopbackOnly(clientId) && !isLoopbackHostname(config.hostname)`
    → refuse `non_loopback`. This is the Grok reasoning applied to every client
    whose schema has nowhere to put the dedicated admission header — **pi, kimi,
-   gajae** (020 amendment). Making them work remotely would mean serializing the
-   user's real key, and AGENTS.md calls that a release blocker.
+   gajae** (020 amendment). With nowhere to carry `x-opencodex-api-key`, the
+   config we would generate simply fails authentication, so we decline instead
+   of writing a file that 401s. For Kimi there is a second reason on top: it
+   cannot carry an env reference either, so the only way to make it work
+   remotely is to serialize the user's real key — which AGENTS.md calls a
+   release blocker.
 3. **Classify** (WP2). `unsafe` → refuse `unsafe`. `conflict` → refuse
    `conflict` (the switch is locked in the UI; the API must agree).
    `current` → `{ ok: true, changed: false }` — apply is idempotent.
