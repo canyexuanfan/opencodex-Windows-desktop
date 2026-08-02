@@ -288,6 +288,26 @@ function usableToolUseId(id: unknown): string {
  */
 const MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES = 1024 * 1024;
 
+/**
+ * Whether `input` encodes to more than `max` UTF-8 bytes, with an early exit so the check
+ * itself never allocates a copy of a hostile string. `string.length` counts UTF-16 code
+ * units, which undercounts astral text by 2x against a byte budget.
+ */
+function utf8BytesExceed(input: string, max: number): boolean {
+  let bytes = 0;
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < input.length) {
+      bytes += 4;
+      i++;
+    } else bytes += 3; // lone surrogates encode as U+FFFD (3 bytes)
+    if (bytes > max) return true;
+  }
+  return false;
+}
+
 function lastValidJsonObject(input: string, maxCandidates: number): string | undefined {
   const tryParseObject = (candidate: string): string | undefined => {
     try {
@@ -323,7 +343,7 @@ function toolUseArguments(input: unknown, lenient = false): string {
       JSON.parse(trimmed);
       return trimmed;
     } catch {
-      if (lenient && trimmed.length <= MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES) {
+      if (lenient && !utf8BytesExceed(trimmed, MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES)) {
         const repaired = lastValidJsonObject(trimmed, 32);
         if (repaired !== undefined) return repaired;
       }

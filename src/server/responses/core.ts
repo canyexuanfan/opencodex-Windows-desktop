@@ -139,7 +139,6 @@ import {
   isNativePassthroughSseResponse,
   markEagerRelaySseResponse,
   markNativePassthroughSseResponse,
-  readBoundedResponseText,
   relaySseWithFailedTail,
   relayWithAbort,
   sanitizePassthroughHeaders,
@@ -687,6 +686,15 @@ export function buildComboChildHeaders(parentHeaders: HeadersInit): Headers {
 
 const UNREADABLE_ENCRYPTED_AGENT_TASK_MESSAGE =
   "Routed V2 worker task is encrypted for the native ChatGPT backend and cannot be read by the selected provider. Use plaintext V2 agent-message delivery or select a native ChatGPT model.";
+
+// Whole-body policy for non-streaming upstream JSON responses (see the application/json
+// branch of the passthrough return path). 32 MiB matches the continuation snapshot read
+// bound and is far above any legitimate non-streaming completion, including base64 image
+// payloads. The stall deadlines only govern the body transfer — generation time before
+// the response headers is untouched.
+const MAX_UPSTREAM_JSON_BODY_BYTES = 32 * 1024 * 1024;
+const UPSTREAM_JSON_BODY_TOTAL_TIMEOUT_MS = 180_000;
+const UPSTREAM_JSON_BODY_INACTIVITY_TIMEOUT_MS = 30_000;
 
 function unreadableEncryptedAgentTaskResponse(): Response {
   return new Response(
@@ -1969,9 +1977,17 @@ async function handleResponsesInner(
       // so an unbounded .text() would let a hostile or stuck upstream grow proxy memory
       // without limit. This path is no longer rare — WebSocket turns for models whose
       // streaming terminal event is unreliable are deliberately answered with bounded JSON.
-      const bounded = await readBoundedResponseText(upstreamResponse.body);
-      if (bounded.truncated) {
+      // Oversize and stall deadlines both fail closed; a partial body is never parsed.
+      const bounded = await readBoundedResponseBody(upstreamResponse, {
+        maxBytes: MAX_UPSTREAM_JSON_BODY_BYTES,
+        totalTimeoutMs: UPSTREAM_JSON_BODY_TOTAL_TIMEOUT_MS,
+        inactivityTimeoutMs: UPSTREAM_JSON_BODY_INACTIVITY_TIMEOUT_MS,
+      });
+      if (bounded.oversized) {
         return formatErrorResponse(502, "upstream_error", "upstream JSON response exceeded the safe body limit");
+      }
+      if (bounded.truncated) {
+        return formatErrorResponse(502, "upstream_error", "upstream JSON response stalled before completing");
       }
       const text = bounded.text;
       inspectResponseLogJson(logCtx, text);

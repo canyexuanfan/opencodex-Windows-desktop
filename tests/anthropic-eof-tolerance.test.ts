@@ -178,4 +178,16 @@ describe("AgentRouter Anthropic EOF tolerance (#658)", () => {
     const events = await createAnthropicAdapter(tolerant).parseResponse(new Response(payload));
     expect(events).toContainEqual({ type: "tool_call_delta", arguments: "{}" });
   });
+
+  test("the repair cap measures UTF-8 bytes, not UTF-16 code units", async () => {
+    // 600k 2-byte characters: 1.2 MB on the wire but only 600k code units, which a
+    // `string.length` check would wrongly admit into the parse attempts.
+    const oversized = `{${"é".repeat(600_000)}`;
+    const payload = JSON.stringify({
+      content: [{ type: "tool_use", id: "toolu_1", name: "get_weather", input: oversized }],
+    });
+
+    const events = await createAnthropicAdapter(tolerant).parseResponse(new Response(payload));
+    expect(events).toContainEqual({ type: "tool_call_delta", arguments: "{}" });
+  });
 });
