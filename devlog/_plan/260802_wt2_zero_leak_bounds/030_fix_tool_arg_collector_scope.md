@@ -8,6 +8,11 @@ Depends on: 001 root-cause delta. Translator budgets already landed (`a61607894`
 - Collector contract mirrors `openai-chat.ts:801-817`: `openCall(scope)` on first delta of an index, args charged `{ kind: "tool_args", callId: scope }` (2 MiB per call enforced by the budget), `closeCall(scope)` only AFTER the final serialized copy is charged (`outbound.ts` final `chargeRetained(JSON.stringify(copy))`), open scopes closed on every error path.
 - 502 shape mirrors `openai-chat.ts:929-937`: status 502, type `upstream_error`, code kept `translation_buffer_limit`.
 
+## Round-2 repair note (2026-08-02)
+
+- Owned default SSE budgets are disposed at every stream-death path AFTER final charges (terminal close, normal end, incomplete terminal, torn-down controller, heartbeat failure, cancel). ACCEPTED RESIDUAL: a stream abandoned with no terminal and no cancel (never pulled, process alive) leaves the default budget registered in `liveBudgets` — production callers always pass a budget, so this path is test-only; fixing it would need a finalizer the codebase deliberately avoids.
+- ACCEPTED RESIDUAL: `retainTranslatedEventBatch` leases are budget-identity-sensitive, so a default build budget cannot release leases charged by a different source budget. Production-impossible today (the same turn budget flows through every `core.ts` caller); if a future caller mixes budgets, the source budget's owner releases at turn end.
+
 ## File map
 
 - MODIFY `src/chat/outbound.ts`
