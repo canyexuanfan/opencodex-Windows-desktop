@@ -22,9 +22,14 @@ at. The table lists each client's default; an override always wins.
 OpenClaw has several, and they do different jobs. `OPENCLAW_CONFIG_PATH` selects the
 file; `OPENCLAW_STATE_DIR`, `OPENCLAW_PROFILE` and `OPENCLAW_HOME` select the state
 directory, which is also what detection looks at — so a profile or relocated home
-still reads as installed, while a config-path override moves only the file. Relative
-paths are made absolute before anything is written, because that path is stored on
-the ownership record and has to mean the same thing next time.
+still reads as installed, while a config-path override moves only the file. If you
+are still on the older `.clawdbot` layout, that is found too: the modern directory
+wins when it exists, and the legacy one is used when it is the only one there.
+
+These must be **absolute paths** or start with `~`. A relative one is refused rather
+than resolved, because it would mean whatever directory each process happened to
+start in — and that path is stored with the backup, so it has to name the same file
+tomorrow as it did today.
 
 opencodex reads these from its own environment. If your gateway runs with a profile
 or a relocated home, start opencodex with the same variables set, or it will

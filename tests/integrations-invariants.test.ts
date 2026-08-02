@@ -353,6 +353,48 @@ describe("openclaw follows the config path its gateway actually reads", () => {
   });
 });
 
+describe("openclaw's legacy layout is discovered, not declared obsolete", () => {
+  test("an unmigrated .clawdbot install is found instead of reported missing", () => {
+    /*
+     * OpenClaw still treats `.clawdbot` as an active runtime candidate rather
+     * than migration debris: it prefers the modern directory when present and
+     * otherwise selects the legacy one. Without mirroring that, an install
+     * that never migrated reads as "not installed" while its gateway runs
+     * perfectly well — and if we wrote anyway, we would create a modern file
+     * nothing loads.
+     */
+    const legacyDir = join(home, ".clawdbot");
+    mkdirSync(legacyDir, { recursive: true });
+    const legacyFile = join(legacyDir, "clawdbot.json");
+    writeFileSync(legacyFile, '{\n  models: { providers: { mine: { api: "http://keep-me" } } },\n}\n');
+
+    const env = {} as NodeJS.ProcessEnv;
+    expect(INTEGRATION_CLIENTS.openclaw.detectDir(env, home)).toBe(legacyDir);
+    expect(INTEGRATION_CLIENTS.openclaw.configPath(env, home)).toBe(legacyFile);
+
+    const write = {
+      clientId: "openclaw" as const, models: MODELS, config: CONFIG, port: 10100,
+      env, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+    expect(readFileSync(legacyFile, "utf8")).toContain("opencodex");
+    // No modern file conjured beside it.
+    expect(existsSync(join(home, ".openclaw", "openclaw.json"))).toBe(false);
+  });
+
+  test("the modern directory wins whenever it exists", () => {
+    // Both present: a migrated user must not have us writing to the old one.
+    mkdirSync(join(home, ".clawdbot"), { recursive: true });
+    writeFileSync(join(home, ".clawdbot", "clawdbot.json"), "{}\n");
+    mkdirSync(join(home, ".openclaw"), { recursive: true });
+
+    const env = {} as NodeJS.ProcessEnv;
+    expect(INTEGRATION_CLIENTS.openclaw.detectDir(env, home)).toBe(join(home, ".openclaw"));
+    expect(INTEGRATION_CLIENTS.openclaw.configPath(env, home))
+      .toBe(join(home, ".openclaw", "openclaw.json"));
+  });
+});
+
 describe("the base URL is composed, never interpolated", () => {
   test("IPv6 and wildcard binds produce a URL a client can actually dial", () => {
     /*

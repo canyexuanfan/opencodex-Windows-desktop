@@ -186,22 +186,38 @@ describe("openclaw", () => {
       .toBe("/tmp/state");
   });
 
-  test("overrides are made absolute, because the record outlives the cwd", () => {
+  test("a relative selector is refused, not silently anchored to our cwd", () => {
     /*
-     * A relative override was stored verbatim on the ownership record, so
-     * applying from one directory and disabling from another resolved
-     * different files: the second call reported "not applied" and left our
-     * block behind with nothing claiming it.
+     * A first attempt resolved these against `process.cwd()` and claimed the
+     * path would mean the same thing next time. It does not: `resolve()`
+     * anchors only the current invocation, so applying from one directory and
+     * disabling from another still named two different files — the second
+     * reported "not applied" and left the block behind, unowned.
+     *
+     * We cannot know the gateway's cwd, so the honest answer is to refuse at
+     * the boundary rather than pick a directory and hope.
      */
-    const fromRelative = openclawConfigPath({ OPENCLAW_CONFIG_PATH: "custom.json" }, "/home/u");
-    expect(fromRelative).toBe(join(process.cwd(), "custom.json"));
+    expect(() => openclawConfigPath({ OPENCLAW_CONFIG_PATH: "custom.json" }, "/home/u"))
+      .toThrow(/OPENCLAW_CONFIG_PATH must be an absolute path/);
+    expect(() => openclawHomeDir({ OPENCLAW_STATE_DIR: "state" }, "/home/u"))
+      .toThrow(/OPENCLAW_STATE_DIR must be an absolute path/);
+    expect(() => openclawHomeDir({ OPENCLAW_HOME: "srv/claw" }, "/home/u"))
+      .toThrow(/OPENCLAW_HOME must be an absolute path/);
+  });
 
-    // `~` expands against the EFFECTIVE home, which OPENCLAW_HOME can move.
+  test("~ is stable, because it anchors to the home rather than the cwd", () => {
     expect(openclawConfigPath({ OPENCLAW_CONFIG_PATH: "~/claw.json" }, "/home/u"))
       .toBe(join("/home/u", "claw.json"));
+    // …and OPENCLAW_HOME moves what `~` means, as it does for OpenClaw itself.
     expect(openclawConfigPath({ OPENCLAW_CONFIG_PATH: "~/claw.json", OPENCLAW_HOME: "/srv/claw" }, "/home/u"))
       .toBe(join("/srv/claw", "claw.json"));
     expect(openclawHomeDir({ OPENCLAW_STATE_DIR: "~/state" }, "/home/u")).toBe(join("/home/u", "state"));
+  });
+
+  test("the default profile comparison is case-insensitive, as OpenClaw's is", () => {
+    for (const spelling of ["default", "DEFAULT", "Default"]) {
+      expect(openclawHomeDir({ OPENCLAW_PROFILE: spelling }, "/home/u")).toBe(join("/home/u", ".openclaw"));
+    }
   });
 });
 
