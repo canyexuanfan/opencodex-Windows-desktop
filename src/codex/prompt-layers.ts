@@ -28,12 +28,13 @@
  */
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { expandUserPath } from "../config";
 import { CODEX_CONFIG_PATH } from "./paths";
 import { OCX_SECTION_MARKER } from "./injected-marker";
 import {
   durableWrite,
+  durableWriteExclusive,
   durableDelete,
   encodeJournal,
   ensureDir,
@@ -775,6 +776,189 @@ export function writeCustomLayers(layers: readonly CustomLayer[], revision: stri
     return {
       nextConfig: setProjection(configBytes, projection.length > 0 ? projection : null),
       nextStore: serializeStore(normalizedLayers),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Adoption — taking ownership of an externally authored key.
+//
+// Refusing alone was a dead end: the earlier answer was "delete your existing
+// instructions by hand", which is not a feature. Adoption previews the raw line
+// AND the exact body that will be committed, then imports on confirmation.
+// ---------------------------------------------------------------------------
+
+export interface AdoptPreview {
+  rawLine: string | null;
+  /** post-normalization body — byte-identical to what a confirm would store */
+  decodedBody: string | null;
+  reason: "ok" | "nothing_to_adopt" | "unsupported_form" | "invalid_characters";
+  path: string;
+  line: number | null;
+  detail?: string;
+}
+
+function newLayerId(existing: readonly CustomLayer[]): string {
+  const taken = new Set(existing.map(l => l.id));
+  for (;;) {
+    const id = randomBytes(4).toString("hex").slice(0, 6);
+    if (!taken.has(id)) return id;
+  }
+}
+
+/**
+ * Read-only. Runs the same five steps a confirm would, so preview and commit
+ * cannot disagree: decode -> normalize -> validate -> cap -> present.
+ */
+export function previewAdopt(opts?: Paths): AdoptPreview {
+  const configPath = activeConfigPath(opts);
+  const ownership = inspectOwnership(readFileOrNull(configPath));
+
+  if (ownership.state === "absent" || ownership.state === "owned") {
+    return { rawLine: null, decodedBody: null, reason: "nothing_to_adopt", path: configPath, line: null };
+  }
+
+  const raw = ownership.raw;
+  const line = ownership.line;
+  const eq = raw.indexOf("=");
+  const literal = eq === -1 ? "" : raw.slice(eq + 1).trim().replace(/\s*#.*$/, "");
+  const decoded = decodeBasicString(literal);
+  if (decoded === null) {
+    return {
+      rawLine: raw,
+      decodedBody: null,
+      reason: "unsupported_form",
+      path: configPath,
+      line,
+      detail: "only a single-line basic string using \\\", \\\\ and \\n can be decoded safely",
+    };
+  }
+
+  const normalized = normalizeBody(decoded);
+  const invalid = findInvalidCharacter(normalized);
+  if (invalid !== null) {
+    return {
+      rawLine: raw,
+      decodedBody: null,
+      reason: "invalid_characters",
+      path: configPath,
+      line,
+      detail: `code point ${invalid.position} is a ${invalid.reason}`,
+    };
+  }
+
+  return { rawLine: raw, decodedBody: normalized, reason: "ok", path: configPath, line };
+}
+
+/** Import the external value as one custom layer and take ownership of the key. */
+export function adoptDeveloperInstructions(revision: string, opts?: Paths): WriteResult {
+  const preview = previewAdopt(opts);
+  if (preview.reason !== "ok" || preview.decodedBody === null) {
+    return {
+      ok: false,
+      error: preview.reason === "invalid_characters" ? "invalid_characters" : "developer_instructions_not_owned",
+      detail: preview.detail,
+    };
+  }
+  const body = preview.decodedBody;
+  return commit(opts, revision, (snapshot, configBytes) => {
+    const existing = snapshot.custom;
+    const adopted: CustomLayer = {
+      id: newLayerId(existing),
+      title: "Imported from config.toml",
+      body,
+      enabled: true,
+    };
+    const layers = [adopted, ...existing];
+    // Drop the unowned line first, then write the canonical owned block.
+    const stripped = removeUnownedProjection(configBytes ?? "");
+    return {
+      nextConfig: setProjection(stripped, composeProjection(layers)),
+      nextStore: serializeStore(layers),
+    };
+  });
+}
+
+/** Remove an unowned or reshaped `developer_instructions` from the root scope. */
+function removeUnownedProjection(content: string): string {
+  const eol = dominantEol(content);
+  const lines = splitLines(content);
+  const limit = firstTableIndex(lines);
+  for (let i = 0; i < limit; i += 1) {
+    if (!ANY_DEV_INSTRUCTIONS.test(lines[i]!)) continue;
+    const marked = i > 0 && lines[i - 1]!.includes(OCX_SECTION_MARKER);
+    lines.splice(marked ? i - 1 : i, marked ? 2 : 1);
+    return joinLines(lines, eol);
+  }
+  return joinLines(lines, eol);
+}
+
+// ---------------------------------------------------------------------------
+// Salvage — the store is gone while a live projection remains.
+//
+// This is salvage, NOT reconstruction. The projection is one concatenated
+// string: layer boundaries, ids, titles, order, disabled layers, and whether a
+// blank line separated two layers or was the user's own text are all gone.
+// ---------------------------------------------------------------------------
+
+export interface SalvagePreview {
+  body: string | null;
+  /** the DIRECTORY backups land in. A read-only preview reserves no filename. */
+  backupDir: string;
+  unrecoverable: readonly string[];
+  reason: "ok" | "nothing_to_salvage";
+}
+
+const UNRECOVERABLE = Object.freeze([
+  "layer boundaries",
+  "layer ids",
+  "layer titles",
+  "row order",
+  "disabled layers and their bodies",
+  "whether a blank line separated two layers or was your own text",
+]);
+
+export function previewSalvage(opts?: Paths): SalvagePreview {
+  const configPath = activeConfigPath(opts);
+  const storePath = activeStorePath(opts);
+  const ownership = inspectOwnership(readFileOrNull(configPath));
+  const body = ownership.state === "owned" ? decodeBasicString(ownership.literal) : null;
+  return {
+    body,
+    backupDir: storePath.slice(0, storePath.lastIndexOf("/") + 1) || ".",
+    unrecoverable: UNRECOVERABLE,
+    reason: body !== null && body.length > 0 ? "ok" : "nothing_to_salvage",
+  };
+}
+
+/**
+ * Adopt the live projection as ONE layer. A durable backup is written first and
+ * salvage aborts if it cannot be created — a destructive operation whose safety
+ * net failed should not proceed.
+ */
+export function salvageProjection(revision: string, opts?: Paths): WriteResult {
+  const preview = previewSalvage(opts);
+  if (preview.reason !== "ok" || preview.body === null) {
+    return { ok: false, error: "developer_instructions_not_owned", detail: "no live projection to salvage" };
+  }
+  const body = preview.body;
+  const storePath = activeStorePath(opts);
+  const backupPath = `${storePath.replace(/\.json$/, "")}.salvage-${Date.now()}-${randomBytes(3).toString("hex")}.txt`;
+  try {
+    durableWriteExclusive(backupPath, body);
+  } catch {
+    return { ok: false, error: "recovery_required", detail: `could not write a durable backup at ${backupPath}` };
+  }
+  return commit(opts, revision, (_snapshot, configBytes) => {
+    const salvaged: CustomLayer = {
+      id: newLayerId([]),
+      title: "Salvaged from config.toml",
+      body,
+      enabled: true,
+    };
+    return {
+      nextConfig: setProjection(configBytes, body),
+      nextStore: serializeStore([salvaged]),
     };
   });
 }

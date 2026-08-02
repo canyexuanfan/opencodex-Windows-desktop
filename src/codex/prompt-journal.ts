@@ -95,6 +95,27 @@ export function durableDelete(path: string): void {
   }
 }
 
+/**
+ * Exclusive create for backups: a timestamp alone can collide, and a salvage
+ * whose safety net silently overwrote an earlier one is not a safety net.
+ * Throws if the path already exists.
+ */
+export function durableWriteExclusive(path: string, content: string): void {
+  let fd: number | undefined;
+  try {
+    writeFileSync(path, content, { encoding: "utf8", mode: FILE_MODE, flag: "wx" });
+    if (process.platform === "win32") hardenSecretPath(path, { required: false });
+    fd = openSync(path, "r+");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    fsyncDir(path);
+  } catch (error) {
+    try { if (fd !== undefined) closeSync(fd); } catch { /* ignore */ }
+    throw error;
+  }
+}
+
 export function ensureDir(path: string): void {
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: DIR_MODE });
