@@ -187,8 +187,8 @@ not a public issue.
 
 ## Development
 
-Source development requires the `bun` CLI on your `PATH` (separate from the npm package's bundled
-Bun runtime):
+Source development requires the `bun` CLI on your `PATH`. This is separate from the published npm
+package's bundled Bun runtime, which is used only by installed `ocx` commands.
 
 ```bash
 git clone https://github.com/lidge-jun/opencodex.git
