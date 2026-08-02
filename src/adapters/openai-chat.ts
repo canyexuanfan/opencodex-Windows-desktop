@@ -109,10 +109,11 @@ function upstreamErrorEvent(
   const rawMessage = typeof error === "string"
     ? error.trim() || "upstream error"
     : typeof details?.message === "string" ? details.message : "upstream error";
+  const safeMessage = redactSecretString(rawMessage);
   const requestId = safeUpstreamRequestId(details?.metadata);
-  const message = requestId !== undefined && !rawMessage.includes(requestId)
-    ? `${rawMessage} (request ID: ${requestId})`
-    : rawMessage;
+  const message = requestId !== undefined && !safeMessage.includes(requestId)
+    ? `${safeMessage} (request ID: ${requestId})`
+    : safeMessage;
   const code = typeof details?.code === "string"
     ? details.code
     : typeof details?.code === "number" && Number.isFinite(details.code) && Number.isInteger(details.code)

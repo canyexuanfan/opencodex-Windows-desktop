@@ -244,6 +244,15 @@ describe("ClinePass provider", () => {
     });
     expect(stringError).toEqual([{ type: "error", message: "ClinePass quota exhausted" }]);
 
+    const secretErrors = await Promise.all([
+      parseNonStream({ error: "Denied Bearer cline-secret-token" }),
+      parseNonStream({ error: { message: "Rejected api_key=sk-cline-secret" } }),
+    ]);
+    expect(secretErrors).toEqual([
+      [{ type: "error", message: "Denied Bearer [REDACTED]" }],
+      [{ type: "error", message: "Rejected api_key=[REDACTED]" }],
+    ]);
+
     const numericCode = await parseNonStream({
       error: {
         code: 429,
