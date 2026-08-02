@@ -24,6 +24,22 @@ Auth page can restore it: absent rows are created from the canonical preset, dis
 rows are re-enabled without replacing saved mode or model settings, and noncanonical `openai`
 rows are not offered that recovery path.
 
+### Providers overview pool capacity
+
+For Codex login in Pool mode, the Providers overview shows a configured-weight estimate of the
+pool's used capacity rather than presenting one arbitrary account as the provider total. The same
+row also shows the current effective account's raw quota percentage, so you can distinguish the
+pool estimate from the account that a new request would use.
+
+When reset information is available, the overview shows the next reset time and the capacity that
+reset is expected to recover as `+N% pool capacity`. **Incomplete coverage** means one or more pool
+accounts could not safely contribute to the estimate, for example because their plan or quota is
+unknown, their reading is stale, or the account is paused or needs reauthentication.
+
+This estimate is display-only. It does not change account selection, session affinity, automatic
+switching, cooldowns, or any other routing decision. Use the [Codex Auth account pool](/guides/web-dashboard/#codex-auth-and-account-pools)
+for the individual account state and routing controls.
+
 Shipped v1 configs migrate automatically to marker 2 and one option-aware row. The original config
 is retained once at `~/.opencodex/config.json.pre-openai-tiers-v2.bak`; restore it with
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`.
