@@ -577,6 +577,30 @@ describe("native main profile transactions", () => {
     expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("none");
   });
 
+  test("quarantines a semantically corrupt journal without mutating auth or vault", async () => {
+    const f = await enrolledFixture();
+    await leavePendingJournal(f);
+    const journal = JSON.parse(readFileSync(f.manager.context.journalPath, "utf8")) as {
+      sourceIdentityHash: string;
+    };
+    journal.sourceIdentityHash = "d".repeat(64);
+    writeFileSync(f.manager.context.journalPath, JSON.stringify(journal) + "\n");
+    const authBefore = readFileSync(f.manager.context.authPath);
+    const vaultBefore = readFileSync(f.manager.context.vaultPath);
+
+    let caught: unknown;
+    try { await f.manager.recover(true, true); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
+    expect(readFileSync(f.manager.context.authPath)).toEqual(authBefore);
+    expect(readFileSync(f.manager.context.vaultPath)).toEqual(vaultBefore);
+    expect(existsSync(f.manager.context.journalPath)).toBe(false);
+    expect(existsSync(f.manager.context.recoveryBlockPath)).toBe(true);
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("manual");
+    expect(readdirSync(f.manager.context.rootDir).filter(name => name.includes(".journal.quarantine-"))).toHaveLength(1);
+  });
+
   test("automatic recovery reports an externally refreshed target", async () => {
     const f = await enrolledFixture();
     await leavePendingJournal(f);

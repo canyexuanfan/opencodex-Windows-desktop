@@ -163,11 +163,69 @@ function journalAtExactLimit(): NativeProfileSwitchJournalV1 {
   const baseline = Buffer.byteLength(JSON.stringify(value) + "\n", "utf8");
   const paddingBytes = MAX_NATIVE_PROFILE_JOURNAL_BYTES - baseline;
   if (paddingBytes <= 0) throw new Error("journal fixture unexpectedly exceeds its target boundary");
-  value.sourcePayload.keyRef += "x".repeat(paddingBytes);
+  const correlatedPadding = Math.floor(paddingBytes / 2);
+  value.sourcePayload.keyRef += "x".repeat(correlatedPadding);
+  value.afterVault.profiles.find(profile => profile.id === SOURCE_ID)!.payload!.keyRef
+    += "x".repeat(correlatedPadding);
+  value.createdAt += "x".repeat(paddingBytes - correlatedPadding * 2);
   return value;
 }
 
+function inspectJournal(value: NativeProfileSwitchJournalV1) {
+  const store = context();
+  writeFileSync(store.journalPath, serializeNativeProfileJournal(value));
+  return inspectNativeProfileJournal(store);
+}
+
 describe("native-profile recovery journal storage", () => {
+  test("accepts correlated forward and rollback-preservation journals", () => {
+    for (const phase of ["prepared", "auth-replaced", "vault-committed"] as const) {
+      const forward = journal();
+      forward.phase = phase;
+      expect(inspectJournal(forward).status).toBe("valid");
+    }
+
+    const preservedRollback = journal();
+    const refreshedTargetPayload = payload("d".repeat(64));
+    const beforeTarget = preservedRollback.beforeVault.profiles.find(profile => profile.id === TARGET_ID)!;
+    preservedRollback.targetPayload = refreshedTargetPayload;
+    beforeTarget.payload = refreshedTargetPayload;
+    beforeTarget.updatedAt = "2026-08-02T00:01:00.000Z";
+    preservedRollback.beforeVault.revision += 1;
+
+    expect(inspectJournal(preservedRollback).status).toBe("valid");
+  });
+
+  test("rejects independently valid vault snapshots with corrupt switch correlations", () => {
+    const corruptions: Array<[string, (value: NativeProfileSwitchJournalV1) => void]> = [
+      ["source profile id", value => { value.sourceProfileId = TARGET_ID; }],
+      ["target profile id", value => { value.targetProfileId = SOURCE_ID; }],
+      ["source identity hash", value => { value.sourceIdentityHash = "d".repeat(64); }],
+      ["target identity hash", value => { value.targetIdentityHash = "e".repeat(64); }],
+      ["before active profile", value => { value.beforeVault = vault("target"); }],
+      ["after active profile", value => { value.afterVault = vault("source"); }],
+      ["swapped payloads", value => {
+        [value.sourcePayload, value.targetPayload] = [value.targetPayload, value.sourcePayload];
+      }],
+      ["missing target payload placement", value => {
+        value.beforeVault.profiles = value.beforeVault.profiles.filter(profile => profile.id !== TARGET_ID);
+      }],
+      ["missing source payload placement", value => {
+        value.afterVault.profiles = value.afterVault.profiles.filter(profile => profile.id !== SOURCE_ID);
+      }],
+      ["after profile metadata", value => {
+        value.afterVault.profiles.find(profile => profile.id === SOURCE_ID)!.label = "changed-source";
+      }],
+      ["after revision", value => { value.afterVault.revision += 1; }],
+    ];
+
+    for (const [name, corrupt] of corruptions) {
+      const value = journal();
+      corrupt(value);
+      expect(inspectJournal(value), name).toEqual({ status: "invalid" });
+    }
+  });
+
   test("accepts and reads a compact journal exactly at the 17 MiB boundary", () => {
     const store = context();
     const serialized = serializeNativeProfileJournal(journalAtExactLimit());

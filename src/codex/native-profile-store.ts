@@ -450,6 +450,85 @@ function parseVaultObject(value: unknown, homeId: string): NativeMainProfileVaul
   return vault;
 }
 
+function encryptedPayloadsMatch(
+  left: EncryptedNativeEnvelopeV1 | null,
+  right: EncryptedNativeEnvelopeV1 | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.cipher === right.cipher
+    && left.keyRef === right.keyRef
+    && left.nonce === right.nonce
+    && left.ciphertext === right.ciphertext
+    && left.tag === right.tag
+    && left.envelopeSha256 === right.envelopeSha256;
+}
+
+function profileMetadataMatches(
+  before: NativeMainProfileRecordV1,
+  after: NativeMainProfileRecordV1,
+): boolean {
+  return before.id === after.id
+    && before.label === after.label
+    && before.identityHash === after.identityHash
+    && before.identityHint === after.identityHint
+    && before.createdAt === after.createdAt;
+}
+
+function profileRecordsMatch(
+  before: NativeMainProfileRecordV1,
+  after: NativeMainProfileRecordV1,
+): boolean {
+  return profileMetadataMatches(before, after)
+    && before.state === after.state
+    && before.updatedAt === after.updatedAt
+    && encryptedPayloadsMatch(before.payload, after.payload);
+}
+
+function hasValidJournalSwitchInvariant(journal: NativeProfileSwitchJournalV1): boolean {
+  if (
+    journal.sourceProfileId === journal.targetProfileId
+    || journal.sourceIdentityHash === journal.targetIdentityHash
+    || journal.beforeVault.activeProfileId !== journal.sourceProfileId
+    || journal.afterVault.activeProfileId !== journal.targetProfileId
+    || journal.beforeVault.profiles.length !== journal.afterVault.profiles.length
+    || (
+      journal.afterVault.revision !== journal.beforeVault.revision + 1
+      && journal.afterVault.revision !== journal.beforeVault.revision
+    )
+  ) return false;
+
+  const beforeProfiles = new Map(journal.beforeVault.profiles.map(profile => [profile.id, profile]));
+  const afterProfiles = new Map(journal.afterVault.profiles.map(profile => [profile.id, profile]));
+  const beforeSource = beforeProfiles.get(journal.sourceProfileId);
+  const beforeTarget = beforeProfiles.get(journal.targetProfileId);
+  const afterSource = afterProfiles.get(journal.sourceProfileId);
+  const afterTarget = afterProfiles.get(journal.targetProfileId);
+
+  if (
+    !beforeSource || !beforeTarget || !afterSource || !afterTarget
+    || beforeSource.identityHash !== journal.sourceIdentityHash
+    || afterSource.identityHash !== journal.sourceIdentityHash
+    || beforeTarget.identityHash !== journal.targetIdentityHash
+    || afterTarget.identityHash !== journal.targetIdentityHash
+    || beforeSource.state !== "active" || beforeSource.payload !== null
+    || beforeTarget.state !== "inactive" || !encryptedPayloadsMatch(beforeTarget.payload, journal.targetPayload)
+    || afterSource.state !== "inactive" || !encryptedPayloadsMatch(afterSource.payload, journal.sourcePayload)
+    || afterTarget.state !== "active" || afterTarget.payload !== null
+    || !profileMetadataMatches(beforeSource, afterSource)
+    || !profileMetadataMatches(beforeTarget, afterTarget)
+    || afterSource.updatedAt !== afterTarget.updatedAt
+  ) return false;
+
+  for (const beforeProfile of journal.beforeVault.profiles) {
+    const afterProfile = afterProfiles.get(beforeProfile.id);
+    if (!afterProfile) return false;
+    if (beforeProfile.id !== journal.sourceProfileId
+      && beforeProfile.id !== journal.targetProfileId
+      && !profileRecordsMatch(beforeProfile, afterProfile)) return false;
+  }
+  return true;
+}
+
 export function readNativeProfileVault(context: NativeProfileContext): NativeMainProfileVaultV1 | null {
   if (!existsSync(context.vaultPath)) return null;
   try {
@@ -514,6 +593,7 @@ export function inspectNativeProfileJournal(context: NativeProfileContext): Nati
     ) throw new Error("journal");
     journal.beforeVault = parseVaultObject(journal.beforeVault, context.homeId);
     journal.afterVault = parseVaultObject(journal.afterVault, context.homeId);
+    if (!hasValidJournalSwitchInvariant(journal)) throw new Error("journal invariant");
     return { status: "valid", journal };
   } catch {
     return { status: "invalid" };
