@@ -308,7 +308,8 @@ export function assembleReleaseNotes(input: {
   parts.push([
     "## Windows desktop installer",
     "",
-    `Download \`${installerName}\` from this release for the Windows desktop app.`,
+    `Download \`${installerName}\` from this release for the Windows desktop app maintained in this fork.`,
+    "This distribution keeps attribution to the original opencodex project while packaging the Windows desktop host, installer shortcuts, bundled runtime, and recoverable local proxy route.",
     "Only the installer build is published. Portable builds are intentionally reserved for a future advanced/portable track if users ask for it.",
   ].join("\n"));
 

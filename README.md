@@ -1,25 +1,27 @@
-<h3 align="center">make codex open!</h3>
-<p align="center"><b>Universal provider proxy for OpenAI Codex, Claude Code, Claude Desktop &amp; Grok Build</b><br>
-Two commands, and every one of them runs any LLM you point it at.</p>
+<h3 align="center">OpenCodex Windows Desktop</h3>
+<p align="center"><b>A Windows desktop distribution of opencodex</b><br>
+Run the universal provider proxy for OpenAI Codex, Claude Code, Claude Desktop &amp; Grok Build from a normal Windows installer.</p>
 
 <p align="center">
   <a href="https://x.com/claudeebum"><img src="https://img.shields.io/badge/%40claudeebum-000000?logo=x&logoColor=white" alt="Follow @claudeebum on X"></a>
+  <a href="https://github.com/canyexuanfan/opencodex-Windows-desktop/releases"><img src="https://img.shields.io/badge/Windows%20desktop-installer-2563eb?logo=windows" alt="Windows desktop installer releases"></a>
   <a href="https://www.npmjs.com/package/@bitkyc08/opencodex"><img src="https://img.shields.io/npm/v/@bitkyc08/opencodex?color=cb3837&label=npm&logo=npm" alt="npm version"></a>
   <a href="https://github.com/lidge-jun/opencodex/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/@bitkyc08/opencodex?color=blue" alt="license"></a>
   <img src="https://img.shields.io/node/v/@bitkyc08/opencodex?logo=node.js&label=node" alt="node version">
 </p>
+
+> This fork is maintained by [@canyexuanfan](https://github.com/canyexuanfan) as a Windows desktop edition. It keeps attribution to the original opencodex project and author [@claudeebum](https://x.com/claudeebum); the core proxy, CLI workflow, and provider ecosystem remain rooted in upstream opencodex.
 
 ```bash
 npm install -g @bitkyc08/opencodex
 ocx start        # proxy + dashboard on localhost:10100
 ```
 
-Windows desktop users can use the installer from this fork's GitHub Releases:
-download the versioned installer, for example `OpenCodex-Setup-2.8.0-x64.exe`,
-run it, then start OpenCodex from the
-Start menu or desktop shortcut. Only the installer build is published; portable
-builds are intentionally left for a future advanced/portable track if users ask
-for it.
+## Windows desktop installer
+
+Download the latest installer from this fork's [GitHub Releases](https://github.com/canyexuanfan/opencodex-Windows-desktop/releases), for example `OpenCodex-Setup-2.8.0-x64.exe`. Run it, then start OpenCodex from the desktop shortcut or Start menu.
+
+This Windows edition bundles the desktop host and runtime, uses installer-created shortcuts with the OpenCodex icon, and keeps the local proxy route recoverable across normal desktop restarts and updates. Only the installer build is published; portable builds are left for a future advanced/portable track if users ask for it.
 
 <table align="center">
   <tr>
