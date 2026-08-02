@@ -227,6 +227,19 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
         ? `${configPath} changed after opencodex wrote it`
         : `${configPath} already contains an opencodex block we did not write`);
   }
+  /*
+   * `unsafe` from the classifier means the document is not one we may write
+   * through — today that is a container on our fragment path holding a
+   * non-object value the merge would replace with `{}`. Unreadable and
+   * unparseable files are caught earlier in preflight; this branch exists
+   * because the classifier can also refuse a file it CAN read.
+   */
+  if (classified.state === "unsafe") {
+    return refuse(clientId, "unsafe", "unsafe",
+      classified.reason === "blocked-container"
+        ? `${configPath} holds a value where opencodex would have to write a section, so applying would replace it`
+        : `${configPath} cannot be changed safely`);
+  }
   if (classified.state === "current") {
     return { ok: true, changed: false, state: "current", clientId, message: "already applied" };
   }
@@ -374,11 +387,27 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   // mean guessing which entries are ours, and a wrong guess deletes a user's.
   const restoredRecord = entry.priorRecord;
   const fresh = EXPORT_CLIENTS[clientId].buildContribution(exportContextOf(input));
+  /*
+   * Does the restored record actually describe the restored bytes?
+   *
+   * It usually does — `priorRecord` was written for exactly this snapshot. But
+   * a CONFIRMED drift-restore snapshots the user's edited file first, and
+   * undoing that restore puts those edited bytes back while carrying a record
+   * that describes what opencodex had written. Overwriting the record's
+   * fingerprint with the restored bytes then laundered a foreign edit into
+   * owned content: the state read `current`, and a later disable deleted
+   * fields the user had added by hand.
+   */
+  const restoredFingerprint = restoredText === null ? "" : fingerprint(restoredText);
+  const recordDescribesBytes = restoredRecord !== null
+    && restoredRecord.fileFingerprint === restoredFingerprint;
   const state: IntegrationState = restoredRecord === null
     ? (restoredText === null ? "absent" : "conflict")
-    : restoredRecord.blockFingerprint === fingerprint(canonicalContribution(fresh))
-      ? "current"
-      : "stale";
+    : !recordDescribesBytes
+      ? "conflict"
+      : restoredRecord.blockFingerprint === fingerprint(canonicalContribution(fresh))
+        ? "current"
+        : "stale";
 
   const at = new Date(io.now()).toISOString();
   const priorRecord = store.readRecords()[clientId] ?? null;
@@ -391,9 +420,14 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   return commit({
     io, store, clientId, configPath, before: current, nextText: restoredText, state,
     priorRecord,
+    /*
+     * Keep the record's ORIGINAL `fileFingerprint`. Restoring bytes it does not
+     * describe leaves the classifier reading `conflict`, which is the honest
+     * answer — we are no longer sure the block on disk is ours, and refusing
+     * is what stops a disable from deleting the user's edit.
+     */
     record: restoredRecord === null ? null : {
       ...restoredRecord,
-      fileFingerprint: restoredText === null ? "" : fingerprint(restoredText),
       appliedAt: at,
       opId,
     },

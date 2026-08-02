@@ -6,7 +6,8 @@ import { EXPORT_CLIENTS, EXPORT_CLIENT_IDS, type ExportModel } from "../src/clie
 import { parseConfig } from "../src/integrations/config-io";
 import { INTEGRATION_CLIENTS, INTEGRATION_CLIENT_IDS, type IntegrationClientId } from "../src/integrations/registry";
 import { createIntegrationStateStore, type IntegrationStateStore } from "../src/integrations/store";
-import { applyIntegration, disableIntegration } from "../src/integrations/writer";
+import { readIntegrationState } from "../src/integrations/state";
+import { applyIntegration, disableIntegration, restoreIntegration } from "../src/integrations/writer";
 import { printSubcommandUsage, printUsage } from "../src/cli/help";
 import type { OcxConfig } from "../src/types";
 
@@ -211,6 +212,86 @@ describe("a stale refresh does not forget what we created", () => {
 
     expect(disableIntegration(write(refreshed)).ok).toBe(true);
     expect(parseConfig(readFileSync(configPath, "utf8"), "toml")).toEqual(parseConfig(seed, "toml"));
+  });
+});
+
+describe("a container we would have to replace is refused, not overwritten", () => {
+  /*
+   * `setPath` replaces a non-object intermediate with `{}` on its way to our
+   * leaf, and the classifier used to call such a document `absent` — which
+   * authorized the write. A user whose config held an array or a scalar where
+   * our fragment path expects an object lost it to an apply that reported
+   * success. Per client, because each one's path shape differs.
+   */
+  const NON_OBJECT: Partial<Record<IntegrationClientId, string>> = {
+    pi: '{\n  "providers": ["user-value"]\n}\n',
+    opencode: '{\n  "provider": ["user-value"]\n}\n',
+    hermes: "providers:\n  - user-value\n",
+    kimi: 'models = ["user-value"]\n',
+  };
+
+  for (const [clientId, seed] of Object.entries(NON_OBJECT) as [IntegrationClientId, string][]) {
+    test(`${clientId}: apply refuses and leaves the user's value untouched`, () => {
+      const configPath = installClient(clientId);
+      writeFileSync(configPath, seed);
+
+      const result = applyIntegration({
+        clientId, models: MODELS, config: CONFIG, port: 10100,
+        env: TEST_ENV, home, store,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("unsafe");
+      // The bytes are exactly as the user left them — not restored from a
+      // snapshot afterwards, never written in the first place.
+      expect(readFileSync(configPath, "utf8")).toBe(seed);
+      expect(store.listOperations()).toHaveLength(0);
+    });
+  }
+});
+
+describe("a restore never launders a foreign edit into owned content", () => {
+  test("undoing a confirmed drift-restore leaves the user's edit protected", () => {
+    /*
+     * The chain: apply, user edits the file by hand, confirmed drift-restore
+     * rewinds it (snapshotting the edited bytes first), then undo THAT restore
+     * — which puts the user's edited bytes back on disk carrying a record that
+     * describes what opencodex wrote. Overwriting that record's fingerprint
+     * made the state read `current`, and disable then deleted the user's own
+     * field as if it were ours.
+     */
+    const configPath = installClient("hermes");
+    writeFileSync(configPath, "providers:\n  mine:\n    api: http://keep-me\n");
+    const write = {
+      clientId: "hermes" as const, models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+    const applyOp = store.listOperations("hermes")[0]!.opId;
+
+    // The user edits the file by hand, adding something of their own.
+    const edited = `${readFileSync(configPath, "utf8")}user_field: mine\n`;
+    writeFileSync(configPath, edited);
+
+    // Confirmed drift-restore back to the applied bytes; the edit is snapshotted.
+    expect(restoreIntegration({ ...write, opId: applyOp, confirmDrift: true }).ok).toBe(true);
+    const restoreOp = store.listOperations("hermes")[0]!.opId;
+
+    // Undo that restore: the user's edited bytes come back.
+    expect(restoreIntegration({ ...write, opId: restoreOp, confirmDrift: true }).ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toContain("user_field: mine");
+
+    // The record no longer describes these bytes, so the state is conflict…
+    const status = readIntegrationState({
+      clientId: "hermes", models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    });
+    expect(status.state).toBe("conflict");
+
+    // …and disable refuses rather than deleting what the user wrote.
+    const disabled = disableIntegration(write);
+    expect(disabled.ok).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toContain("user_field: mine");
   });
 });
 

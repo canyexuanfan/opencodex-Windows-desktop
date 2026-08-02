@@ -379,12 +379,23 @@ describe("nothing leaks", () => {
     expect(applyIntegration(input()).ok).toBe(true);
     const appliedBytes = readFileSync(configA, "utf8");
 
+    /*
+     * Home B is built through the registry, not by hand. Hermes resolves to
+     * `%LOCALAPPDATA%\hermes` on Windows and ignores the `home` argument
+     * entirely there, so a hand-built `<home-b>/.hermes` left both homes
+     * pointing at the SAME file — the record legitimately matched and the
+     * refusal this test exists for never fired. `HERMES_HOME` is honored on
+     * every platform, so it is what actually separates the two.
+     */
     const otherHome = join(dirname(home), "home-b");
-    mkdirSync(join(otherHome, ".hermes"), { recursive: true });
-    const configB = join(otherHome, ".hermes", "config.yaml");
+    const otherEnv = { HERMES_HOME: join(otherHome, ".hermes") } as NodeJS.ProcessEnv;
+    const spec = INTEGRATION_CLIENTS.hermes;
+    mkdirSync(spec.detectDir(otherEnv, otherHome), { recursive: true });
+    const configB = spec.configPath(otherEnv, otherHome);
+    expect(configB).not.toBe(configA);
     writeFileSync(configB, appliedBytes);
 
-    const result = disableIntegration(input({ home: otherHome }));
+    const result = disableIntegration(input({ home: otherHome, env: otherEnv }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("conflict");
     expect(readFileSync(configB, "utf8")).toBe(appliedBytes);
@@ -395,12 +406,17 @@ describe("nothing leaks", () => {
     expect(applyIntegration(input()).ok).toBe(true);
     const opId = store.listOperations("hermes")[0]!.opId;
 
+    // Same reason as the test above: only `HERMES_HOME` separates two homes on
+    // every platform. A hand-built `<home-c>/.hermes` collapses onto the same
+    // file as home A under Windows' `%LOCALAPPDATA%` resolution.
     const otherHome = join(dirname(home), "home-c");
-    mkdirSync(join(otherHome, ".hermes"), { recursive: true });
-    const configC = join(otherHome, ".hermes", "config.yaml");
+    const otherEnv = { HERMES_HOME: join(otherHome, ".hermes") } as NodeJS.ProcessEnv;
+    const spec = INTEGRATION_CLIENTS.hermes;
+    mkdirSync(spec.detectDir(otherEnv, otherHome), { recursive: true });
+    const configC = spec.configPath(otherEnv, otherHome);
     writeFileSync(configC, "providers:\n  mine:\n    api: http://keep\n");
 
-    const result = restoreIntegration({ ...input({ home: otherHome }), opId });
+    const result = restoreIntegration({ ...input({ home: otherHome, env: otherEnv }), opId });
     expect(result.ok).toBe(false);
     expect(readFileSync(configC, "utf8")).toContain("mine");
   });

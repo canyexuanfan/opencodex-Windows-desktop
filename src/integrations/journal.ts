@@ -186,10 +186,20 @@ export function pruneSnapshots(
   clientId: IntegrationClientId,
   dir: string = integrationsDir(),
 ): { ok: true } | { ok: false; error: string } {
+  /*
+   * Filter to rows that HAVE a snapshot first, then take the newest N.
+   *
+   * Taking the newest N operations and filtering afterwards counted rows that
+   * never stored anything: an apply-to-absent records `snapshot: none`, so a
+   * client whose history alternates stored and none kept only half the backups
+   * the contract promises. The docs say ten backups per client, and this is
+   * the code that has to make that true.
+   */
   const keep = new Set(
-    listOperations(clientId, SNAPSHOT_RETENTION, dir)
-      .map(row => (row.snapshot.kind === "stored" ? row.opId : null))
-      .filter((value): value is string => value !== null),
+    listOperations(clientId, Number.MAX_SAFE_INTEGER, dir)
+      .filter(row => row.snapshot.kind === "stored")
+      .slice(0, SNAPSHOT_RETENTION)
+      .map(row => row.opId),
   );
   let names: string[];
   try {

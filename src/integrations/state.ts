@@ -8,7 +8,7 @@
  *
  * Design of record: devlog/_plan/260802_client_toggle_api/021 §3.
  */
-import { EXPORT_CLIENTS, type ExportModel, type ManagedContribution } from "../clients/config-export";
+import { EXPORT_CLIENTS, opencodeProxyBaseUrl, type ExportModel, type ManagedContribution } from "../clients/config-export";
 import type { OcxConfig } from "../types";
 import { PARSE_FAILED, loadTarget, parseConfig, type IntegrationIO } from "./config-io";
 import { SNAPSHOT_RETENTION } from "./journal";
@@ -17,7 +17,13 @@ import { INTEGRATION_CLIENTS, type IntegrationClientId } from "./registry";
 import { createIntegrationStateStore, type IntegrationStateStore } from "./store";
 
 export type IntegrationState = "absent" | "current" | "stale" | "conflict" | "unsafe";
-export type StateReason = "unparseable" | "not-regular-file" | "foreign-edit" | "unowned-key";
+export type StateReason =
+  | "unparseable"
+  | "not-regular-file"
+  | "foreign-edit"
+  | "unowned-key"
+  /** A container we would have to write through holds a non-object value. */
+  | "blocked-container";
 
 export interface IntegrationStatus {
   clientId: IntegrationClientId;
@@ -49,6 +55,38 @@ export function hasOurFragments(doc: unknown, contribution: ManagedContribution)
 }
 
 /**
+ * A container on one of our fragment paths that exists but is NOT an object.
+ *
+ * `setPath` replaces such a value with `{}` on the way to writing our leaf, so
+ * a user whose config held `providers: ["something"]` — legal in their schema,
+ * just not ours — lost it to an apply that reported success. The classifier
+ * called that document `absent` because our leaf was missing, which authorized
+ * the write. Detecting it here turns a silent overwrite into a refusal the
+ * user can act on; the snapshot exists, but "we backed up the thing we should
+ * not have destroyed" is not the promise this feature makes.
+ */
+export function blockedContainerPath(
+  doc: unknown,
+  contribution: ManagedContribution,
+): readonly string[] | null {
+  for (const fragment of contribution.fragments) {
+    let cursor: unknown = doc;
+    for (let depth = 0; depth < fragment.path.length - 1; depth += 1) {
+      const key = fragment.path[depth]!;
+      if (cursor === undefined || cursor === null) break;
+      if (typeof cursor !== "object" || Array.isArray(cursor)) return fragment.path.slice(0, depth);
+      const next = (cursor as Record<string, unknown>)[key];
+      if (next === undefined) break;
+      if (typeof next !== "object" || next === null || Array.isArray(next)) {
+        return fragment.path.slice(0, depth + 1);
+      }
+      cursor = next;
+    }
+  }
+  return null;
+}
+
+/**
  * The two-axis rule: the FILE hash proves nobody touched the file after us, and
  * the BLOCK hash proves our content is still what we would write today.
  */
@@ -70,6 +108,13 @@ export function classifyIntegration(input: {
     return { state: "unsafe", reason: "not-regular-file" };
   }
   if (input.parsed === PARSE_FAILED) return { state: "unsafe", reason: "unparseable" };
+  /*
+   * Checked BEFORE `absent`: our leaf is missing in exactly this case, so the
+   * absent branch would authorize an apply that replaces the user's value.
+   */
+  if (blockedContainerPath(input.parsed, input.contribution)) {
+    return { state: "unsafe", reason: "blocked-container" };
+  }
   if (!hasOurFragments(input.parsed, input.contribution)) return { state: "absent" };
   if (!input.record) return { state: "conflict", reason: "unowned-key" };
   /*
@@ -112,7 +157,16 @@ export function exportContextOf(input: {
   port: number;
 }): { baseUrl: string; models: readonly ExportModel[]; config: OcxConfig } {
   return {
-    baseUrl: `http://${input.config.hostname ?? "127.0.0.1"}:${input.port}/v1`,
+    /*
+     * Composed through the SAME helper `ocx export` uses. Interpolating the
+     * hostname by hand looked equivalent and was not: `::1` produced
+     * `http://::1:10100/v1` and `::` produced `http://:::10100/v1`, neither of
+     * which is a URL, and a `0.0.0.0` bind wrote a wildcard address no client
+     * can dial. `opencodeProxyBaseUrl` brackets IPv6 and maps wildcards to
+     * loopback, and every client we write into deserves the same answer the
+     * export command already gives.
+     */
+    baseUrl: opencodeProxyBaseUrl(input.port, input.config.hostname),
     models: input.models,
     config: input.config,
   };
