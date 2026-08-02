@@ -58,15 +58,33 @@ describe("raw /v1/models list reasoning-effort advertisement (Grok Build discove
         { value: "high", label: "High Effort", default: true },
         { value: "max", label: "Max Effort" },
       ]);
-      // Native rows advertise the upstream ladder and preserve the pinned upstream default
-      // (gpt-5.6-sol => low), matching the Codex catalog path.
-      const native = body.data.find(m => m.id === "gpt-5.6-sol");
-      expect(native).toBeDefined();
-      expect(native!.supports_reasoning_effort).toBe(true);
-      expect(native!.reasoning_effort).toBe("low");
-      expect((native!.reasoning_efforts as Array<{ value: string }>).map(option => option.value)).toEqual([
-        "low", "medium", "high", "xhigh", "max", "ultra",
-      ]);
+      // Native rows preserve the pinned per-model ladder and default. Sol and Terra include
+      // ultra, while Luna intentionally ends at max, matching the canonical Codex catalog.
+      const nativeExpectations = [
+        {
+          id: "gpt-5.6-sol",
+          defaultEffort: "low",
+          efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+        },
+        {
+          id: "gpt-5.6-terra",
+          defaultEffort: "medium",
+          efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+        },
+        {
+          id: "gpt-5.6-luna",
+          defaultEffort: "medium",
+          efforts: ["low", "medium", "high", "xhigh", "max"],
+        },
+      ];
+      for (const expected of nativeExpectations) {
+        const native = body.data.find(m => m.id === expected.id);
+        expect(native).toBeDefined();
+        expect(native!.supports_reasoning_effort).toBe(true);
+        expect(native!.reasoning_effort).toBe(expected.defaultEffort);
+        expect((native!.reasoning_efforts as Array<{ value: string }>).map(option => option.value))
+          .toEqual(expected.efforts);
+      }
     } finally {
       await server.stop(true);
     }

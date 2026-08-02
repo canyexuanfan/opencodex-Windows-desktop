@@ -34,7 +34,6 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { filterSupportedNativeSlugs } from "./parsing";
 import type { RawEntry } from "./parsing";
 import { readCurrentCatalogOrCache, unique } from "./bundled";
-import { ensureGpt56ReasoningLevels, isGpt56NativeSlug } from "./effort";
 
 export const NATIVE_OPENAI_MODELS = [
   "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
@@ -88,16 +87,9 @@ export function nativeReasoningEfforts(slug: string): string[] {
     ? upstream!.supported_reasoning_levels as Array<{ effort?: string }>
     : [];
   if (levels.length > 0) {
-    const efforts = levels.flatMap(l => typeof l.effort === "string" ? [l.effort] : []);
-    // gpt-5.6 natives get max+ultra restored (ensureGpt56ReasoningLevels catalog path does
-    // the same); older natives (gpt-5.5/5.4/5.4-mini/5.3-codex-spark) stop at xhigh per
-    // upstream snapshot.
-    if (isGpt56NativeSlug(slug)) {
-      const set = new Set(efforts);
-      for (const e of ["max", "ultra"]) set.add(e);
-      return [...set];
-    }
-    return efforts;
+    // Preserve the exact pinned per-model ladder. In particular, GPT-5.6 Sol and Terra
+    // include ultra while Luna intentionally ends at max.
+    return levels.flatMap(l => typeof l.effort === "string" ? [l.effort] : []);
   }
   // gpt-5.3-codex-spark is not in upstream snapshot — use the standard old-ladder default.
   return ["low", "medium", "high", "xhigh"];
