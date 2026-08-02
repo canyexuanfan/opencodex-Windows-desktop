@@ -34,11 +34,15 @@ Acceptance + activation:
 
 File map:
 
-- MODIFY `src/claude/context-windows.ts` — add `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6` at 1M (externally verified: Anthropic announcements 2026-02-05 / 2026-04-16 / 2026-02-17 + model overview).
+- MODIFY `src/providers/registry.ts:217` — `ANTHROPIC_MODEL_CONTEXT_WINDOWS` lives here (verified on dev@3195c7194; it does omit the three models). Add `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6` at 1M (externally verified: Anthropic announcements 2026-02-05 / 2026-04-16 / 2026-02-17 + model overview). `src/claude/context-windows.ts` only hosts `shouldMarkOneMillion` (:83) and marker helpers — no map change there.
 - MODIFY `src/claude/model-info.ts` — generated profiles: `[1m]` marker only when the authoritative effective window ≥ 1M (fixes the 372K-route-marked-`[1m]` defect from #854); honor provider caps + case-insensitive marker spelling.
 - Tests: picker row emission (`[1m]` present for the three models, absent for sub-1M routes).
 
 Land as ONE PR crediting #839 and #854.
+
+## Cross-worktree coordination (wt2 #847)
+
+wt3 Bug B and wt2 #847 both touch `src/adapters/openai-responses.ts` and `src/server/responses/core.ts`. The changes live in different code paths (wt2: SSE record/tool-argument caps; wt3: `service_tier` injection at `core.ts:803-807`), so either landing order works — but whichever lane lands second MUST rebase over the other and re-run its payload-shape tests. Both units name this file pair in their ledgers.
 
 ## Bug D (optional) — #616/#837 hosted image tools
 

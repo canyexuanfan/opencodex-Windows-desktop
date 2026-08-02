@@ -6,8 +6,8 @@ Branch `codex/wt4-server-config` off `dev`. Security-boundary lane: per AGENTS.m
 
 File map:
 
-- MODIFY `src/server/index.ts` (`setCorsOrigin`, :136/:345) — canonicalize authority-based opaque origins as `scheme + "://" + authority` instead of the WHATWG `"null"` serialization; allow only the configured extension ID; `*` stays rejected. Externally verified basis: WHATWG URL §4.7 collapses all three extension schemes to `"null"`; compare scheme+host, never `.origin`.
-- COVER preflight AND data-plane (`origin_rejected` sites :424/:463/:580/:614/:635/:669, `/v1/models` named in PR).
+- MODIFY `src/server/auth-cors.ts` — the actual WHATWG `"null"`-collapse comparison lives in `isExtraAllowedOrigin` (:81-89, `new URL(allowed).origin === new URL(origin).origin`), with `isSameOriginAsRequest` (:64) adjacent; `setCorsOrigin` (:21) only sets `_corsOrigin`. Canonicalize authority-based opaque origins as `scheme + "://" + authority` instead of the `"null"` serialization; allow only the configured extension ID; `*` stays rejected. Externally verified basis: WHATWG URL §4.7 collapses all three extension schemes to `"null"`; compare scheme+host, never `.origin`.
+- COVER preflight AND every data-plane rejection path: at P, grep `origin_rejected` in `src/server/index.ts` and cover ALL ten sites (:424/:463/:580/:614/:635/:669/:694/:788/:819/:853 as of dev@3195c7194 — re-grep, do not trust this list). `src/server/index.ts` itself is listed for coverage sites only; the comparison change is in `auth-cors.ts`.
 - DOCS: EN + zh-CN configuration references.
 
 Acceptance + activation:
@@ -22,7 +22,7 @@ Acceptance + activation:
 File map:
 
 - MODIFY `src/config.ts:107` (`atomicWriteFile`) and `:184` (`atomicWriteFileAsync`) — resolve the destination through realpath before choosing the temp-file location, so the rename lands beside the real file and the symlink survives. Verified basis: POSIX.1-2024 `rename()` + Linux `rename(2)`: "if newpath refers to a symbolic link, the link will be overwritten."
-- Audit every caller (`src/config.ts:1627`, `:2070`, `:2098`, plus `src/responses/state.ts`, `src/codex/journal.ts`, `src/codex/inject.ts`, `src/grok/inject.ts`, `src/codex/history-provider.ts`) for symlink-destination exposure.
+- Audit EVERY caller: at P, grep `atomicWriteFile` across `src/` (~21 files as of dev@3195c7194) and classify each for symlink-destination exposure. Do not treat any inline list as exhaustive. Explicitly named because it is the most symlink-sensitive caller in the tree: `src/oauth/store.ts` (credential store). Also confirmed callers: `src/config.ts:1627/:2070/:2098`, `src/responses/state.ts`, `src/codex/journal.ts`, `src/codex/inject.ts`, `src/grok/inject.ts`, `src/codex/history-provider.ts`, `src/update/job.ts`, `src/update/notify.ts`, `src/claude/desktop-3p.ts`, `src/codex/{refresh,runtime,features,account-store,quota}.ts`, `src/codex/catalog/*`.
 - Caveat from research: canonicalization introduces a check/use race; for the config path this is acceptable (user-owned dir), but note it in the code comment — do not claim race-free.
 
 Acceptance + activation:

@@ -20,3 +20,7 @@ Branch `codex/wt2-zero-leak` off `dev`. One PABCD cycle per PR-family cluster; a
 ## Verification gate
 
 `bun run typecheck` + `bun run test` full suite (shared stores = full suite per AGENTS.md). No RSS superiority claims in docs/release notes — comparator cells remain `UNKNOWN`.
+
+## Cross-worktree coordination (wt3 Bug B)
+
+wt2 #847 and wt3 Bug B (#860) both touch `src/adapters/openai-responses.ts` and `src/server/responses/core.ts`. Different code paths (wt2: SSE record/tool-argument caps; wt3: `service_tier` injection at `core.ts:803-807`), so either order lands — but the second lane MUST rebase over the first and re-run its fault-injection tests. wt4's realpath fix (#869) precedes wt2 #840 as already ordered above.
