@@ -281,11 +281,25 @@ describe("stable ordering (accept criterion 4)", () => {
 });
 
 describe("EXPORT_CLIENTS registry", () => {
-  test("covers exactly the two supported clients", () => {
-    expect(EXPORT_CLIENT_IDS).toEqual(["opencode", "pi"]);
-    expect(isExportClientId("opencode")).toBe(true);
-    expect(isExportClientId("pi")).toBe(true);
+  test("covers exactly the six file-toggle clients", () => {
+    expect(EXPORT_CLIENT_IDS).toEqual(["opencode", "pi", "hermes", "openclaw", "kimi", "gajae"]);
+    for (const id of EXPORT_CLIENT_IDS) expect(isExportClientId(id)).toBe(true);
+    // The exception clients keep their own surfaces and are not export clients.
     expect(isExportClientId("claude-desktop")).toBe(false);
+    expect(isExportClientId("grok")).toBe(false);
+  });
+
+  test("every spec declares a format, a summarizer and a contribution", () => {
+    for (const id of EXPORT_CLIENT_IDS) {
+      const spec = EXPORT_CLIENTS[id];
+      expect(["json", "yaml", "toml", "json5"]).toContain(spec.format);
+      expect(typeof spec.summarize).toBe("function");
+      expect(typeof spec.buildContribution).toBe("function");
+      // The filename's extension must match the declared format, so a reader
+      // never has to guess which one is authoritative.
+      const extension = spec.filename.slice(spec.filename.lastIndexOf(".") + 1);
+      expect(extension).toBe(spec.format);
+    }
   });
 
   test("each spec's id matches its registry key", () => {
@@ -294,9 +308,28 @@ describe("EXPORT_CLIENTS registry", () => {
     }
   });
 
+  test("every filename's extension matches its declared format", () => {
+    const extensionFor = { json: "json", yaml: "yaml", toml: "toml", json5: "json5" } as const;
+    for (const id of EXPORT_CLIENT_IDS) {
+      const spec = EXPORT_CLIENTS[id];
+      expect(spec.filename.endsWith(`.${extensionFor[spec.format]}`)).toBe(true);
+    }
+  });
+
+  test("every spec can summarize its own document and name its fragments", () => {
+    for (const id of EXPORT_CLIENT_IDS) {
+      expect(typeof EXPORT_CLIENTS[id].summarize).toBe("function");
+      expect(typeof EXPORT_CLIENTS[id].buildContribution).toBe("function");
+    }
+  });
+
   test("filenames name the destination file, not the product", () => {
     expect(EXPORT_CLIENTS.opencode.filename).toBe("opencode.json");
     expect(EXPORT_CLIENTS.pi.filename).toBe("pi-models.json");
+    expect(EXPORT_CLIENTS.hermes.filename).toBe("hermes-config.yaml");
+    expect(EXPORT_CLIENTS.openclaw.filename).toBe("openclaw.json5");
+    expect(EXPORT_CLIENTS.kimi.filename).toBe("kimi-config.toml");
+    expect(EXPORT_CLIENTS.gajae.filename).toBe("gajae-models.yaml");
   });
 
   test("the opencode destination reuses the launcher's XDG resolution", () => {
