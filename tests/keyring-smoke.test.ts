@@ -54,4 +54,62 @@ describe("runKeyringSmoke", () => {
     expect(entry.deletes).toBe(1);
     expect(entry.secret).toBeNull();
   });
+
+  test("preserves a readback error when deletion returns false", async () => {
+    const entry = new MemoryKeyringEntry();
+    const generated = Buffer.alloc(32, 0x5a);
+    entry.getSecret = async () => Buffer.alloc(32, 0x00);
+    entry.deleteCredential = async () => {
+      entry.deletes += 1;
+      return false;
+    };
+
+    const error = await runKeyringSmoke({
+      createEntry: async () => entry,
+      createRandomBytes: () => generated,
+      createId: () => "test-id",
+    }).catch(cause => cause);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("readback did not match");
+    expect((error as Error & { cleanupError?: unknown }).cleanupError).toBeInstanceOf(Error);
+    expect(entry.deletes).toBe(1);
+    expect(generated.equals(Buffer.alloc(32))).toBe(true);
+  });
+
+  test("preserves a readback error when deletion throws", async () => {
+    const entry = new MemoryKeyringEntry();
+    const deletionError = new Error("injected keyring deletion failure");
+    entry.getSecret = async () => Buffer.alloc(32, 0x00);
+    entry.deleteCredential = async () => {
+      entry.deletes += 1;
+      throw deletionError;
+    };
+
+    const error = await runKeyringSmoke({
+      createEntry: async () => entry,
+      createRandomBytes: (size) => Buffer.alloc(size, 0x5a),
+      createId: () => "test-id",
+    }).catch(cause => cause);
+
+    expect((error as Error).message).toContain("readback did not match");
+    expect((error as Error & { cleanupError?: unknown }).cleanupError).toBe(deletionError);
+    expect(entry.deletes).toBe(1);
+  });
+
+  test("fails when deletion is the only failed operation", async () => {
+    const entry = new MemoryKeyringEntry();
+    entry.deleteCredential = async () => {
+      entry.deletes += 1;
+      return false;
+    };
+
+    await expect(runKeyringSmoke({
+      createEntry: async () => entry,
+      createRandomBytes: (size) => Buffer.alloc(size, 0x5a),
+      createId: () => "test-id",
+    })).rejects.toThrow("could not delete the temporary entry");
+
+    expect(entry.deletes).toBe(1);
+  });
 });

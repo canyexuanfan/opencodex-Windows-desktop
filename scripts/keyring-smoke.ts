@@ -30,6 +30,8 @@ export async function runKeyringSmoke({
   const secret = createRandomBytes(32);
   let entry: KeyringSmokeEntry | null = null;
   let stored: Buffer | null = null;
+  let operationFailed = false;
+  let operationError: unknown;
 
   try {
     entry = await createEntry(service, account);
@@ -39,16 +41,37 @@ export async function runKeyringSmoke({
     if (!stored || stored.byteLength !== secret.byteLength || !timingSafeEqual(stored, secret)) {
       throw new Error("OS keyring smoke readback did not match the stored value.");
     }
-  } finally {
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+
+  let cleanupFailed = false;
+  let cleanupError: unknown;
+  if (entry) {
     try {
-      if (entry && !await entry.deleteCredential(AbortSignal.timeout(timeoutMs))) {
+      if (!await entry.deleteCredential(AbortSignal.timeout(timeoutMs))) {
         throw new Error("OS keyring smoke could not delete the temporary entry.");
       }
-    } finally {
-      stored?.fill(0);
-      secret.fill(0);
+    } catch (error) {
+      cleanupFailed = true;
+      cleanupError = error;
     }
   }
+
+  stored?.fill(0);
+  secret.fill(0);
+
+  if (operationFailed) {
+    if (cleanupFailed && operationError instanceof Error) {
+      Object.defineProperty(operationError, "cleanupError", {
+        configurable: true,
+        value: cleanupError,
+      });
+    }
+    throw operationError;
+  }
+  if (cleanupFailed) throw cleanupError;
 }
 
 if (import.meta.main) {
