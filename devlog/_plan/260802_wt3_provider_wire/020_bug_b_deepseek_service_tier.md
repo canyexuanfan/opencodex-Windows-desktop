@@ -1,6 +1,12 @@
 # 020 — Bug B: DeepSeek service_tier capability gate (#860) + reasoning replay fix (#875)
 
-Consumed by work-phase wp-b. Re-verify against the current tree at wp-b's P (wt2 #847 may have touched the same files by then — see coordination note).
+Consumed by work-phase wp-b. Stale-checked against codex/wt3-exec after wp-a landed (wp-a touched only the github-copilot entry of registry.ts; no overlap with this file map).
+
+## P-phase decisions (2026-08-02, verified in code)
+
+- **service_tier semantics follow #860's REVIEWED final head, not its original body**: `supportsServiceTier === true` → fastMode injects/removes (fastMode unset preserves caller value); `false` OR `undefined` → strip caller value and never inject (fail closed — the owner's "fail-open unknowns" blocker). Escape hatch for custom providers that genuinely support tiers: explicit `supportsServiceTier: true` in the provider config (explicit config always wins over registry backfill). This supersedes the earlier "preserve caller-supplied values for unclassified custom providers" wording.
+- **Reasoning replay mechanism**: new provider-level flag `preserveResponsesReasoningContent` (registry + persisted config + derive/router backfill, exactly the `statelessResponses` flow: config.ts:484 zod, derive.ts:139/:236/:260, router.ts:259). `sanitizeReasoningInputContent(body, opts?)` gains an options param defaulting to current behavior; when the flag is set it still strips ocxr1 envelopes (proxy-minted Anthropic signatures no upstream can decrypt) but does NOT blank plaintext reasoning content. Existing callers (`compact.ts:255` and friends) pass nothing → unchanged behavior. Registry sets the flag on `deepseek`.
+- service_tier also flows through `parsed.options.serviceTier` (parser.ts:618) — stripping must clear the raw body field; options.logging follows existing behavior.
 
 ## Research findings (2026-08-02, sol-medium researcher, sources cited inline)
 
@@ -11,22 +17,23 @@ Consumed by work-phase wp-b. Re-verify against the current tree at wp-b's P (wt2
 
 ## File map
 
-- MODIFY `src/types.ts` — provider-level `supportsServiceTier` capability field (optional; tri-state semantics: `true` inject/strip allowed, `false` strip always, `undefined` preserve caller value).
-- MODIFY `src/config.ts` — accept the field in persisted provider configuration (per #860's config.ts:482 hunk).
-- MODIFY `src/providers/registry.ts` — registry-enriched metadata: canonical OpenAI Responses providers = `true`, DeepSeek = `false`. Capability is runtime metadata so older canonical OpenAI configs stay valid.
-- MODIFY `src/providers/derive.ts` — carry the value into key-login metadata; fill missing values during registry enrichment WITHOUT overriding explicit config.
-- MODIFY `src/router.ts` — independent backfill on the final routed provider (covers stale/minimal saved configs).
-- MODIFY `src/server/responses/core.ts` (:806-807 on dev@478354ee8) — `fastMode` currently does `if (tier) _rawBody.service_tier = tier; else delete ...` gated only by adapter kind. Consult the provider capability: inject/remove only for `true`; always delete for `false`; leave caller-supplied values untouched for `undefined`.
-- MODIFY `src/adapters/openai-responses.ts` — TWO changes: (1) `service_tier` decision happens in core.ts after final adapter resolution; the adapter stays provider-agnostic (commentary only, per #860). (2) NEW for #875: scope `sanitizeReasoningInputContent()` so it no longer blanks reasoning content for providers whose native contract accepts plaintext reasoning (DeepSeek first). Mechanism decision at B: provider-capability flag vs explicit provider-id check — prefer a registry capability to avoid a second provider-fact location (src/AGENTS.md: provider catalog metadata belongs in the registry).
-- DOCS: configuration reference EN + zh-CN (docs-site) — the capability and the DeepSeek behavior; ja locale must not contradict.
+- MODIFY `src/types.ts` — `OcxProviderConfig.supportsServiceTier?: boolean` and `OcxProviderConfig.preserveResponsesReasoningContent?: boolean`.
+- MODIFY `src/config.ts` — zod: both fields optional booleans beside `statelessResponses` (:484).
+- MODIFY `src/providers/registry.ts` — `ProviderRegistryEntry` gains both fields; `openai` + `openai-apikey` get `supportsServiceTier: true`; `deepseek` gets `supportsServiceTier: false` AND `preserveResponsesReasoningContent: true`; `volcengine-agent-plan` gets `supportsServiceTier: false` (per #860's reviewed head).
+- MODIFY `src/providers/derive.ts` — seed pass-through + backfill for both fields (the :139/:236/:260 pattern); never override explicit config.
+- MODIFY `src/router.ts` — final-route backfill for both fields (:259 pattern) covering stale/minimal saved configs.
+- MODIFY `src/server/responses/core.ts:803-808` — consult the effective capability: `true` keeps today's fastMode inject/remove (unset fastMode preserves caller); `false`/`undefined` always strip `_rawBody.service_tier` and never inject.
+- MODIFY `src/adapters/openai-responses.ts` — `sanitizeReasoningInputContent(body, { preserveRawReasoningContent })`; call site (:1027 chain) passes the provider flag. Comment must name the contract: ChatGPT's native backend requires empty reasoning content; DeepSeek's native contract accepts plaintext reasoning and REQUIRES it on tool-call continuations.
+- NEW `tests/service-tier-capability.test.ts` + reasoning replay cases in `tests/deepseek-inbound-wire.test.ts` (or a new focused file — decide by sibling proximity at B).
+- DOCS `docs-site/src/content/docs/reference/configuration/providers.md` + ko/ja/zh-cn/ru — `supportsServiceTier` and `preserveResponsesReasoningContent` rows; ja/zh-cn must not keep contradictory blanket service-tier wording (#860 open review issue).
 
 ## Acceptance + activation scenarios
 
 1. DeepSeek Responses request never carries `service_tier`, including with `fastMode` on. Activation: serialized-payload test with a DeepSeek provider config + fastMode, asserting the field is absent from `_rawBody`.
 2. Canonical OpenAI Responses provider keeps inject/remove behavior. Activation: payload test asserting `service_tier` present with fastMode on, absent with off.
-3. Unclassified custom Responses provider preserves a caller-supplied `service_tier`. Activation: payload test with pre-set field asserting pass-through.
+3. Unclassified custom Responses provider FAILS CLOSED: a caller-supplied `service_tier` is stripped, never injected. Activation: payload test asserting absence. Escape hatch: the same provider with explicit `supportsServiceTier: true` in config preserves/injects. Activation: second payload test.
 4. Older canonical OpenAI configs without the capability field still behave as today. Activation: backward-compat test with legacy config shape.
-5. Registry backfill is proven, not hardcoded: a provider config WITHOUT the field gets the registry value at derive/router boundaries. Activation: test asserting the enriched value appears with the field absent from config (addresses #860's open review issue).
+5. Registry backfill is proven, not hardcoded: a provider config WITHOUT the field gets the registry value at derive/router boundaries. Activation: test asserting the enriched value appears with the field absent from config (addresses #860's open review issue). An explicit config value beats the registry default in both directions. Activation: override tests.
 6. #875 regression: a continuation request carrying a plaintext reasoning item (`{type:"reasoning", content:[{type:"reasoning_text", text:...}]}`) through a DeepSeek Responses route keeps its reasoning content on the wire. Activation: adapter serialization test asserting non-empty content after `sanitizeReasoningInputContent` for DeepSeek, and emptied content for the OpenAI/ChatGPT path (unchanged behavior there).
 
 ## #875 triage verdict (recorded, discharge of the obligation)
