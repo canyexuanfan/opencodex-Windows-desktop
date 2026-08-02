@@ -22,7 +22,7 @@ Provider-adapter/wire bugs; all must-fix regardless of PR quality.
 
 ### Bug B — PR #860 (+ issue #875): DeepSeek `service_tier` must be capability-gated
 
-- Root cause: `fastMode` injects `service_tier` unconditionally on Responses routes; DeepSeek does not support the field. PR #860 adds a provider-level `supportsServiceTier` capability: canonical OpenAI Responses providers support it, DeepSeek explicitly rejects it (strip the field), unclassified custom providers keep caller-supplied values.
+- Root cause: `fastMode` injects `service_tier` unconditionally on Responses routes; DeepSeek does not support the field. PR #860 adds a provider-level `supportsServiceTier` capability: canonical OpenAI Responses providers support it, DeepSeek explicitly rejects it (strip the field), unclassified custom providers FAIL CLOSED (strip) unless explicitly configured with `supportsServiceTier: true` — the reviewed final-head semantics, which supersede the PR body's original "preserve caller-supplied values" wording.
 - Fresh corroboration: issue #875 (2026-08-02) "DeepSeek V4 Flash Responses route stalls after tool calls" — same wire family; executing session must check whether #875 is the same root cause or a second defect before closing either.
 - Grounding: `src/adapters/openai-responses.ts`, `src/server/responses/core.ts`, `src/types.ts`.
 
