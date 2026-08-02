@@ -50,3 +50,22 @@ Core asks per PR (from the audited triage):
   readiness endpoint needs independent security review.
 - 557: fix the whitespace-path redaction leak; resolve the non-mechanical
   conflicts; mandatory security review (update/recovery surface).
+
+## Results (2026-08-02, wp6 executed)
+
+All 21 tailored comments posted via subagent waves (each agent re-verified
+current PR state before posting):
+
+| PR | Comment | PR | Comment |
+|---|---|---|---|
+| 868 | 5154157722 | 840 | 5154166384 |
+| 861 | 5154156466 | 812 | 5154165787 |
+| 850 | 5154157071 | 811 | 5154172223 |
+| 839 | 5154156617 | 746 | 5154172627 |
+| 837 | 5154156992 | 744 | 5154172093 |
+| 847 | 5154155851 | 715 | 5154172245 |
+| 845 | 5154165556 | 693 | 5154172239 |
+| 844 | 5154165585 | 671 | 5154172192 |
+| 843 | 5154165434 | 581 | 5154177192 |
+| 841 | 5154166236 | 569 | 5154177408 |
+| 557 | 5154177093 | | |
