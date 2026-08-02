@@ -296,7 +296,9 @@ describe("GET /api/system/memory", () => {
       else process.env.OCX_BUN_RUNTIME_SOURCE = inherited;
       delete process.env.OCX_BUN_RUNTIME_PATH;
     }
-  });
+    // The route costs ~600 ms per read on the shared CI runners, and this test makes
+    // eight of them — marginally over bun's 5 s default on a loaded box.
+  }, 20_000);
 
   test("GET system memory includes privacy-safe appOwnedBytes scalars", async () => {
     registerDefaultAppOwnedMemoryStores();
