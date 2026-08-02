@@ -387,20 +387,17 @@ export function orderForSubagents(goModels: CatalogModel[], featured?: string[])
 
 /**
  * True when an existing catalog row was authored by OpenCodex routing (#855).
- * Generated rows carry `Routed via opencodex → <slug> (...)` as their
- * description (see deriveEntry call above); foreign rows from Cursor or user
- * tooling do not. `owned_by` cannot serve as the signal (upstream ownership),
- * and `comp_hash` defaults to "opencodex" for every normalized row.
+ * Every generated routed row — current full-slug form, the June–July 2026
+ * provider-name form, and legacy combo aliases — carries the stable
+ * description prefix `Routed via opencodex → `; foreign rows from Cursor or
+ * user tooling do not. `owned_by` cannot serve as the signal (upstream
+ * ownership), and `comp_hash` defaults to "opencodex" for every normalized
+ * row.
  */
 function isOcxAuthoredRoutedEntry(entry: RawEntry): boolean {
   const desc = typeof entry.description === "string" ? entry.description : "";
   const slug = typeof entry.slug === "string" ? entry.slug : "";
-  if (!slug.includes("/")) return false;
-  if (desc.startsWith(`Routed via opencodex → ${slug} (`)) return true;
-  // Legacy rows (June–July 2026, before 4cd6e646) carried the provider name
-  // instead of the full slug; without this form their ghosts survive (#855).
-  const provider = slug.slice(0, slug.indexOf("/"));
-  return desc.startsWith(`Routed via opencodex → ${provider} (`);
+  return slug.includes("/") && desc.startsWith("Routed via opencodex → ");
 }
 
 export function mergeCatalogEntriesForSync(

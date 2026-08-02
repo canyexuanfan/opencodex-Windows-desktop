@@ -390,6 +390,54 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).toContain("cursor/composer-2.5");
   });
 
+  test("drops legacy combo-alias ghost rows in both gather branches", () => {
+    const legacyComboAlias = {
+      ...routedEntry("vendor/fast", 5),
+      description: "Routed via opencodex → combo (combo).",
+      owned_by: "combo",
+    };
+    const seed = () => writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        legacyComboAlias,
+        routedEntry("cursor/composer-2.5", 6),
+      ],
+    }, null, 2) + "\n");
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+
+    // Partial-gather branch.
+    seed();
+    const partial = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: ["fresh-model"]
+          }
+        }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(partial.status).toBe(0);
+    let slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).not.toContain("vendor/fast");
+    expect(slugs).toContain("cursor/composer-2.5");
+
+    // Empty-gather branch.
+    seed();
+    const empty = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(empty.status).toBe(0);
+    slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).not.toContain("vendor/fast");
+    expect(slugs).toContain("cursor/composer-2.5");
+  });
+
   test("preserves existing routed entries for providers absent from the current sync config", () => {
     const catalogPath = join(codexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
