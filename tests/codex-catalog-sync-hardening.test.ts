@@ -68,6 +68,14 @@ function routedEntry(slug: string, priority: number): Record<string, unknown> {
   };
 }
 
+/** Row shape OpenCodex itself generates for routed models (ownership signature). */
+function ocxAuthoredEntry(slug: string, priority: number): Record<string, unknown> {
+  return {
+    ...routedEntry(slug, priority),
+    description: `Routed via opencodex → ${slug} (test-owner).`,
+  };
+}
+
 describe("Codex catalog sync hardening", () => {
   let codexHome: string;
   let opencodexHome: string;
@@ -248,6 +256,70 @@ describe("Codex catalog sync hardening", () => {
         : []
     ));
     expect(outOfEnum).toEqual([]);
+  });
+
+  /*
+   * #855. Deleting a provider must remove the rows OpenCodex generated for it
+   * on the next sync. Rows authored by foreign tooling (Cursor, user edits)
+   * stay preserved — the ownership signature in the generated description is
+   * what separates the two.
+   */
+  test("drops OpenCodex-authored rows of a deleted provider, keeps foreign rows", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        ocxAuthoredEntry("future-grok/old-model", 5),
+        routedEntry("cursor/composer-2.5", 6),
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: ["fresh-model"]
+          }
+        }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).not.toContain("future-grok/old-model");
+    expect(slugs).toContain("cursor/composer-2.5");
+    expect(slugs).toContain("openai/fresh-model");
+  });
+
+  test("empty-gather transient protection still drops deleted-provider ghost rows", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        ocxAuthoredEntry("future-grok/old-model", 5),
+        ocxAuthoredEntry("openai/keep-model", 6),
+        routedEntry("cursor/composer-2.5", 7),
+      ],
+    }, null, 2) + "\n");
+
+    // No providers configured at all: the fetch gathers nothing, so sync takes
+    // the preserve-existing branch. The deleted provider's authored row must
+    // still go; the still-configured provider's row and the foreign row stay.
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).not.toContain("future-grok/old-model");
+    expect(slugs).toContain("cursor/composer-2.5");
   });
 
   test("preserves existing routed entries for providers absent from the current sync config", () => {
