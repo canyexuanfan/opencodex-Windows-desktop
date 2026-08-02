@@ -291,6 +291,31 @@ describe("antigravity replay fixed-size key identities", () => {
     expect(antigravityFunctionCallKeyForTests(nasty, { k: `${nasty}x` })).not.toBe(a);
   });
 
+  test("a lone surrogate never collides with U+FFFD (ES2019 escaping)", () => {
+    const lone = "bad\ud800arg";
+    const replacement = "bad�arg";
+    const keyLone = antigravityFunctionCallKeyForTests("f", { k: lone });
+    const keyReplacement = antigravityFunctionCallKeyForTests("f", { k: replacement });
+    expect(keyLone).not.toBe(keyReplacement);
+    // End-to-end: two same-name calls differing only by surrogate vs U+FFFD
+    // keep DISTINCT signatures, and apply injects each onto its own call.
+    const sigLone = "sig-lone-aaaaaaaaaaa";
+    const sigReplacement = "sig-repl-bbbbbbbbbb";
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("f", { k: lone }, sigLone)]);
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("f", { k: replacement }, sigReplacement)]);
+    const contents = [{
+      role: "model",
+      parts: [fcPart("f", { k: lone }), fcPart("f", { k: replacement })],
+    }];
+    applyAntigravityReplay(MODEL, SESSION, contents);
+    const parts = contents[0].parts as Array<{ thoughtSignature?: string }>;
+    expect(parts[0]!.thoughtSignature).toBe(sigLone);
+    expect(parts[1]!.thoughtSignature).toBe(sigReplacement);
+    // Valid surrogate pairs keep deriving stably alongside.
+    expect(antigravityFunctionCallKeyForTests("f", { k: "pair🎆ok" }))
+      .toBe(antigravityFunctionCallKeyForTests("f", { k: "pair🎆ok" }));
+  });
+
   test("a session whose overhead exceeds its byte cap retains no zero-call shell", () => {
     setAntigravityReplayLimitsForTests({ maxBytesPerSession: 100 });
     // 64 key + (64 key + sig) call > 100: admitted then evicted by the overhead.

@@ -118,9 +118,9 @@ function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void
  * JSON.stringify string escaping, streamed in small chunks so the budget can
  * reject mid-string — calling JSON.stringify on a multi-MiB primitive would
  * materialize its full escaped form before the sink could refuse it.
- * Semantics mirror JSON.stringify for strings exactly: quotes/backslash and
- * control characters are escaped, everything else (including lone
- * surrogates) passes through raw.
+ * Semantics mirror JSON.stringify for strings exactly (ES2019 JSON
+ * superset): quotes/backslash and control characters are escaped, LONE
+ * surrogates become \uXXXX, and valid surrogate pairs pass through raw.
  */
 function writeJsonStringEscaped(value: string, sink: (chunk: string) => void): void {
   sink('"');
@@ -136,6 +136,9 @@ function writeJsonStringEscaped(value: string, sink: (chunk: string) => void): v
     else if (cp === "\r") escaped = "\\r";
     else if (cp === "\t") escaped = "\\t";
     else if (code < 0x20) escaped = `\\u${code.toString(16).padStart(4, "0")}`;
+    // Lone surrogates: JSON.stringify emits \uXXXX (a raw one would decode
+    // back as U+FFFD and collide with real U+FFFD content).
+    else if (code >= 0xd800 && code <= 0xdfff) escaped = `\\u${code.toString(16).padStart(4, "0")}`;
     else escaped = cp;
     buffer += escaped;
     if (buffer.length >= 4096) {
