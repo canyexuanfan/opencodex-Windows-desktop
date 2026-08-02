@@ -1056,6 +1056,7 @@ Codex / Claude Code / 其他现有客户端
 # 开源准备记录：Fork 仓库公开文案与发布边界（2026-08-02）
 - [x] 按用户要求使用 Claude CLI 起草公开文案方向；首次全仓读取超时已记录到 `questions/Claude CLI文案生成超时排查指南.md`，随后改用 README 顶部小输入并成功取得文案方向。
 - [x] README 顶部已改为突出 `OpenCodex Windows Desktop`，保留原作者/上游 opencodex 署名，并明确本 fork 维护 Windows 桌面安装版。
+- [x] README 后半公开入口已复核：文档说明改为指向上游公开文档站点，开发 clone 示例改为用户 fork，避免公开仓库首页前后矛盾。
 - [x] Release notes 生成逻辑已同步说明安装版资产、Windows 桌面维护边界、原项目归属和仅发布安装版策略。
 - [x] 验证通过：`bun test tests\release-notes.test.ts tests\desktop-release-update.test.ts` 28/28；`git diff --check` 通过。
 - [ ] 远端 fork 更新前需要公开内容审计：不得推送 `questions/`、`todolist.md`、内部过程文档、AGENTS 指令、本机路径、临时脚本、私钥/证书或内部 git-v0.x 存档历史；如需替换远端 `main` 为干净公开根提交，必须先得到用户明确确认。

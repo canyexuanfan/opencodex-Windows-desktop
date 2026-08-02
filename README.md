@@ -513,14 +513,9 @@ See the **[Configuration reference](https://opencodex.me/reference/configuration
 
 ## Documentation
 
-The public docs — install, providers, routing, sidecars, Codex integration, Codex App model picker, and CLI/config reference — are built from [`docs-site/`](./docs-site) and published to **[opencodex.me](https://opencodex.me/)**.
+For the upstream CLI/proxy documentation — install, providers, routing, sidecars, Codex integration, Codex App model picker, and CLI/config reference — see **[opencodex.me](https://opencodex.me/)**.
 
-Maintainer source-of-truth notes live under [`structure/`](./structure). Historical investigations remain under [`docs/`](./docs).
-Contributor setup lives in [`CONTRIBUTING.md`](./CONTRIBUTING.md), and security reporting guidance
-lives in [`SECURITY.md`](./SECURITY.md).
-Report undisclosed vulnerabilities privately through
-[GitHub private vulnerability reporting](https://github.com/lidge-jun/opencodex/security/advisories/new),
-not a public issue.
+This fork keeps Windows desktop packaging notes in this README and the release notes. Contributor setup lives in [`CONTRIBUTING.md`](./CONTRIBUTING.md), and security reporting guidance lives in [`SECURITY.md`](./SECURITY.md). Please report undisclosed vulnerabilities privately instead of opening a public issue.
 
 ## Development
 
@@ -528,8 +523,8 @@ Source development requires the `bun` CLI on your `PATH`. This is separate from 
 package's bundled Bun runtime, which is used only by installed `ocx` commands.
 
 ```bash
-git clone https://github.com/lidge-jun/opencodex.git
-cd opencodex
+git clone https://github.com/canyexuanfan/opencodex-Windows-desktop.git
+cd opencodex-Windows-desktop
 bun install
 bun run dev:proxy    # start the proxy API in dev mode
 bun run dev:gui      # start the dashboard dev server in another terminal
