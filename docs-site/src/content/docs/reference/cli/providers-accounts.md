@@ -78,7 +78,7 @@ remove <provider> <id> --yes  Remove a stored account or key after an existence 
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
 login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.
 reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 All subcommands require the proxy to be running; the CLI auto-resolves its recorded runtime port.
@@ -132,8 +132,18 @@ returns:
 ### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 Selects an existing Codex account, OAuth account, or API key. For `openai`, `main` selects the Codex
-App login. Codex selections apply only to **new sessions**; existing threads keep their account, and
-an enabled auto-switch threshold may later override the manual pin. Unknown providers or ids exit 1.
+App login. A Codex Pool selection clears process-local affinity and applies to the next request,
+including one from an existing visible task; proxy restart or affinity eviction can also leave a task
+unbound, while in-flight requests keep their captured account. This controls Pool routing only;
+Direct mode keeps using the caller-owned/native main credential. Usage-based proactive switching,
+401/403 reauthentication, 429/retry-after cooldowns, exclusion, and pre-output 429/402 failure
+recovery may later select another eligible Pool account. Those recovery paths remain active when
+usage-based switching is off. OpenCodex replays the conversation after an account change, but the
+provider-side prompt cache may be cold. Unknown providers or ids exit 1.
+On a **401/403**, App login clears that account's process-local affinity and requires reauthentication.
+On a **429**, opencodex honors `Retry-After`, starts the account cooldown, clears affinity, and may
+rotate the request to another eligible Pool account. These failure transitions remain active with
+`autoSwitchThreshold: 0`; that setting disables only usage-based proactive switching.
 `--json` returns:
 
 ```text

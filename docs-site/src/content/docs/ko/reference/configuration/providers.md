@@ -18,9 +18,9 @@ description: 공급자 항목, 인증, 엔드포인트, 모델 카탈로그, 할
 | `pausedCodexAccountIds?` | `string[]` | `[]` | 일시 중지된 `__main__` 계정을 포함해, 재개될 때까지 Pool 선택에서 제외되는 계정입니다. |
 | `codexAccountNamespaces?` | `Record<string, string>` | — | 공개 모델 선택기 네임스페이스를 저장된 Codex 계정 대상으로 연결합니다. 이 설정은 매핑을 검증하고 저장하지만, 그 자체로 선택기 행을 추가하거나 라우팅을 바꾸지는 않습니다. |
 | `activeCodexAccountId?` | `string` | — | 다음 요청에 수동으로 선택한 Pool 계정입니다. 선택하면 thread 결속이 해제되며, 진행 중인 요청은 캡처한 자격 증명을 유지합니다. |
-| `autoSwitchThreshold?` | `number` | `80` | 새 세션 Pool 전환에 쓰는 사용률입니다. `0`으로 두면 할당량 기반 전환을 끕니다. |
-| `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | 새 세션 계정 순환 전략입니다. 기존 thread id는 결속을 유지합니다. |
-| `accountPoolStickyLimit?` | `number` | `1` | 성공한 새 세션 결속이 한 번의 라운드로빈 선택에 유지되는 횟수입니다. 범위는 1–100입니다. |
+| `autoSwitchThreshold?` | `number` | `80` | 사용량 기반 선제 전환 임계값입니다. `quota`는 바인딩된 작업과 바인딩 없는 작업의 다음 요청을 모두 재평가할 수 있고, `fill-first`는 바인딩 없는 작업 배정의 소진 기준으로만 사용하며, 기본 `round-robin` 선택은 이 값을 사용하지 않습니다. 알려진 5시간, 주간, 30일 quota window 중 가장 높은 점수를 씁니다. `0`은 사용량 기반 전환만 끄며 바인딩 없는 작업 배정이나 실패 복구는 끄지 않습니다. |
+| `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | 새 작업/바인딩 없는 Codex 요청의 계정 배정 전략입니다. `(parent thread id, quota scope)`의 live affinity가 없으면 바인딩 없는 요청이며, 프록시 재시작이나 affinity 초기화 뒤에는 기존에 보이던 작업도 바인딩이 없어질 수 있습니다. `quota`는 활성 계정이 없을 때 알려진 usage가 가장 낮은 적격 계정을 선택하고, 적격 활성 계정이 `autoSwitchThreshold` 미만이면 유지합니다. 임계값 도달 뒤에는 바인딩 없는 요청이나 바인딩된 작업의 다음 요청을 usage가 더 낮은 적격 계정으로 옮길 수 있습니다. `round-robin`은 바인딩 없는 요청을 균등 분배하고, `fill-first`는 cooldown, 사용 불가 또는 drain threshold까지 활성 계정에 배정합니다. |
+| `accountPoolStickyLimit?` | `number` | `1` | 한 round-robin 선택이 다음으로 넘어가기 전에 유지하는 새 작업/바인딩 없는 작업 배정 수입니다. 카운터는 업스트림 성공 뒤가 아니라 작업을 바인딩할 때 증가합니다. 범위 1–100이며 `accountPoolStrategy`가 `round-robin`일 때만 적용됩니다. |
 | `upstreamFailoverThreshold?` | `number` | `3` | 연속된 일시적 실패가 이 횟수에 도달하면 이후 새 세션은 failover됩니다. `0`으로 두면 비활성화됩니다. |
 | `modelCacheTtlMs?` | `number` | `300000` | 공급자별 `/models` 캐시의 최신성 창입니다. |
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic 프롬프트 캐시 정책입니다. 비활성, 5분짜리 임시, 1시간짜리 확장 중 하나입니다. |
@@ -100,17 +100,32 @@ API 키 공급자는 리터럴 키나 환경 참조를 둘 수 있습니다. OAu
 
 ## Codex 계정 풀
 
-대시보드의 **Codex Auth**를 사용해 풀 계정을 추가하고 할당량을 새로 고칩니다. `config.json`에는 비밀이 아닌 메타데이터만 저장되고, access token과 refresh token은 강화된 자격 증명 저장소를 사용합니다. 기존 thread id는 계정 결속을 유지합니다. 새 세션은 `accountPoolStrategy`, 할당량, 쿨다운, 상태에 따라 라우팅됩니다. 스트림 시작 전 429 또는 402가 나오면 같은 요청 안에서 조건을 만족하는 다른 계정으로 한 번 재시도합니다.
+pool 계정 추가와 quota 갱신은 대시보드의 **Codex Auth** 페이지에서 처리하세요. 설정에는 secret이
+아닌 계정 metadata만 저장하고, access/refresh token은 강화된 Codex 계정 credential store에 따로
+보관합니다. Pool 라우팅은 새 작업/바인딩 없는 작업 배정, 사용량 기반 선제 전환, 실패 복구로
+구분됩니다. 바인딩된 작업은 보통 affinity를 유지하지만 `quota`는 사용량 임계값을 넘은 뒤 다음
+요청에서 재바인딩할 수 있고, 일시 중지, cooldown, 재인증, 실패 처리도 독립적으로 라우팅을
+지우거나 바꿀 수 있습니다. 바인딩 없는 요청은 live 계정 바인딩이 없는 요청이며, 프록시 재시작이나
+affinity 초기화 뒤의 기존 작업도 포함될 수 있습니다. 출력 전 **429/402**는 사용량 기반 선제
+전환이 꺼져 있어도 같은 요청에서 적격 대체 계정으로 한 번 재시도할 수 있습니다. 계정이 바뀌어도
+대화 문맥은 보존·재생되지만 계정 간 프로바이더 측 prompt cache 재사용은 보장되지 않아 다시
+예열해야 할 수 있습니다.
+일시 중지된 계정과 quota metadata는 계속 표시되지만 자동 전환, 재시도/failover 선택, cooldown 복구 probe, 수동 활성화에서는 제외됩니다.
+일시 중지는 해당 계정의 thread affinity map도 지웁니다. 진행 중인 요청은 이미 확보한 credential을 유지하지만, 이후 턴은 다시 라우팅되며 일시 중지된 계정은 재사용할 수 없습니다.
+상태는 재시작 후에도 유지되며, 모든 계정이 일시 중지되면 Pool 라우팅은 계정을 몰래 선택하지 않고 실패합니다.
+**한도 도달 계정 일시 중지**는 credential이 있는 적격 계정만 먼저 새로고친 뒤 관련 quota window가 이번 응답에서 100%로 확인된 계정만 일시 중지합니다. credential이 없는 계정과 quota가 없거나 새로고침에 실패한 계정은 변경하지 않습니다.
+**401/403**이 발생하면 해당 계정의 프로세스 로컬 affinity를 해제하고 재인증을 요구합니다.
+**429**에서는 `Retry-After`를 준수해 계정 cooldown을 시작하고 affinity를 해제한 뒤,
+다른 적격 Pool 계정으로 요청을 전환할 수 있습니다. 이러한 실패 복구는
+`autoSwitchThreshold: 0`에서도 계속 작동하며, `0`은 사용량 기반 선제 전환만 비활성화합니다.
 
-계정을 일시 중지하면 할당량 메타데이터는 유지되지만, 전환, failover, 복구 probe, 수동 활성화에서는 제외됩니다. 그 계정의 thread 결속도 함께 지워집니다. 진행 중인 요청은 캡처한 자격 증명을 유지하고, 이후 턴은 다시 라우팅됩니다. 모든 계정이 일시 중지되면 Pool 라우팅은 조용히 하나를 고르지 않고 실패합니다. **Pause exhausted**는 사용 가능한 자격 증명이 있는 적격 계정을 새로 갱신하고, 100%로 방금 확인된 계정만 일시 중지합니다. 알 수 없거나 실패한 갱신은 그대로 둡니다.
-
-| 전략 | 동작 |
-| --- | --- |
-| `quota` (기본값) | 활성 사용량이 `autoSwitchThreshold`를 넘으면, 5시간, 주간, 30일 창에서 사용량이 가장 낮은 적격 계정을 고릅니다. `0`이면 quota 선택을 끕니다. |
-| `round-robin` | 고르게 분산합니다. `accountPoolStickyLimit`는 성공한 새 세션 결속 1–100개를 한 번의 선택에 유지합니다. |
-| `fill-first` | 쿨다운, 재인증, 설정한 임계값이 올 때까지 활성 계정을 유지한 뒤 안정적인 순서로 다음 계정으로 넘어갑니다. 알 수 없는 사용량은 전환을 강제하지 않습니다. |
-
-계정 순환은 공급자 강제를 막아주지 않습니다. 다중 계정 사용은 공급자 약관을 위반할 수 있습니다.
+**배정 및 선제 전환 전략:** `quota`(기본)는 활성 계정이 없을 때 최저 usage의 적격 계정을 선택하고,
+적격 활성 계정이 `autoSwitchThreshold` 미만이면 유지합니다. 임계값 도달 뒤에는 바인딩 없는 요청이나 바인딩된 작업의 다음 요청을 usage가 더 낮은 적격 계정으로 옮길 수 있습니다.
+`round-robin`은 바인딩 없는 요청을 균등 분배하며 임계값은 기본 순환에 영향을 주지 않습니다.
+`accountPoolStickyLimit`(기본 `1`, 1–100)은 성공 응답이 아니라 배정/바인딩 횟수를 셉니다.
+`fill-first`는 바인딩 없는 요청을 cooldown, 재인증 또는 drain threshold까지 활성 계정에 배정하고,
+정상적인 바인딩 작업은 affinity를 유지합니다. 이 전략들은 provider enforcement를 우회하지 않으며
+다계정 사용은 ToS 위반일 수 있습니다.
 
 ### `anthropicAccountPool` (실험적)
 
