@@ -276,6 +276,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
     return {
       taskInstalled: true,
       registrationHealthy: true,
+      registrationInvalid: false,
       assetsHealthy: true,
       nativeServiceAbsent: true,
       nativeStatusUnknown: false,
@@ -699,6 +700,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
       verify: () => ({
         taskInstalled: true,
         registrationHealthy: true,
+        registrationInvalid: false,
         assetsHealthy: true,
         nativeServiceAbsent: false,
         nativeStatusUnknown: false,
@@ -725,6 +727,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
       verify: () => ({
         taskInstalled: true,
         registrationHealthy: true,
+        registrationInvalid: false,
         assetsHealthy: true,
         nativeServiceAbsent: false,
         nativeStatusUnknown: true,
@@ -752,6 +755,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
     return {
       taskInstalled: false,
       registrationHealthy: false,
+      registrationInvalid: false,
       assetsHealthy: true,
       nativeServiceAbsent: true,
       nativeStatusUnknown: false,
@@ -761,10 +765,27 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
     };
   }
 
+  // Transient lag: the task is visible but its XML has not been published yet.
   function unhealthyVerify(): WindowsSchedulerInstallVerification {
     return {
       taskInstalled: true,
       registrationHealthy: false,
+      registrationInvalid: false,
+      assetsHealthy: true,
+      nativeServiceAbsent: true,
+      nativeStatusUnknown: false,
+      conflict: false,
+      ok: false,
+      detail: "Task Scheduler registration is present but unhealthy.",
+    };
+  }
+
+  // Permanent invalidity: the XML IS published and violates the contract.
+  function invalidVerify(): WindowsSchedulerInstallVerification {
+    return {
+      taskInstalled: true,
+      registrationHealthy: false,
+      registrationInvalid: true,
       assetsHealthy: true,
       nativeServiceAbsent: true,
       nativeStatusUnknown: false,
@@ -819,6 +840,26 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
     expect(parentRollbackLaunches).toBe(1);
   });
 
+  test("a published-but-invalid registration rolls back immediately with zero delays", async () => {
+    mockParentRollbackSpawn();
+    const delays: number[] = [];
+    let probes = 0;
+    setFinalizeWindowsSchedulerHooksForTests({
+      elevateCreateAndRun: succeedingElevation(),
+      verify: () => { probes += 1; return invalidVerify(); },
+      settleDelay: async ms => { delays.push(ms); },
+      writeInstallState: () => { writeCount += 1; },
+    });
+
+    // Permanent invalidity: ONE probe, no settle delay, rollback right away —
+    // waiting can never repair published-but-violating XML.
+    await expect(finalizeWindowsSchedulerServiceRegistration()).rejects.toThrow(/present but unhealthy/);
+    expect(probes).toBe(1);
+    expect(delays).toEqual([]);
+    expect(writeCount).toBe(0);
+    expect(parentRollbackLaunches).toBe(1);
+  });
+
   test("a proven conflict is never retried into success", async () => {
     mockParentRollbackSpawn();
     const delays: number[] = [];
@@ -830,6 +871,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
         return {
           taskInstalled: true,
           registrationHealthy: true,
+          registrationInvalid: false,
           assetsHealthy: true,
           nativeServiceAbsent: false,
           nativeStatusUnknown: false,
@@ -860,6 +902,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
         return {
           taskInstalled: true,
           registrationHealthy: true,
+          registrationInvalid: false,
           assetsHealthy: false,
           nativeServiceAbsent: true,
           nativeStatusUnknown: false,
@@ -893,6 +936,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
         return {
           taskInstalled: false,
           registrationHealthy: false,
+          registrationInvalid: false,
           assetsHealthy: true,
           nativeServiceAbsent: false,
           nativeStatusUnknown: false,
@@ -923,6 +967,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
         return {
           taskInstalled: true,
           registrationHealthy: true,
+          registrationInvalid: false,
           assetsHealthy: true,
           nativeServiceAbsent: false,
           nativeStatusUnknown: true,
@@ -1020,6 +1065,7 @@ describe("evaluateSchedulerInstallRestartReconciliation", () => {
     expect(evaluateSchedulerInstallRestartReconciliation({
       taskInstalled: true,
       registrationHealthy: true,
+      registrationInvalid: false,
       assetsHealthy: true,
       nativeStatus: "nonexistent",
       installStateBackend: null,
@@ -1030,6 +1076,7 @@ describe("evaluateSchedulerInstallRestartReconciliation", () => {
     expect(evaluateSchedulerInstallRestartReconciliation({
       taskInstalled: false,
       registrationHealthy: false,
+      registrationInvalid: false,
       assetsHealthy: true,
       nativeStatus: "nonexistent",
       installStateBackend: "scheduler",
@@ -1040,6 +1087,7 @@ describe("evaluateSchedulerInstallRestartReconciliation", () => {
     expect(evaluateSchedulerInstallRestartReconciliation({
       taskInstalled: true,
       registrationHealthy: true,
+      registrationInvalid: false,
       assetsHealthy: true,
       nativeStatus: "stopped",
       installStateBackend: "scheduler",
@@ -1050,6 +1098,7 @@ describe("evaluateSchedulerInstallRestartReconciliation", () => {
     expect(evaluateSchedulerInstallRestartReconciliation({
       taskInstalled: true,
       registrationHealthy: true,
+      registrationInvalid: false,
       assetsHealthy: true,
       nativeStatus: "nonexistent",
       installStateBackend: "scheduler",
@@ -1060,6 +1109,7 @@ describe("evaluateSchedulerInstallRestartReconciliation", () => {
     expect(evaluateSchedulerInstallRestartReconciliation({
       taskInstalled: true,
       registrationHealthy: true,
+      registrationInvalid: false,
       assetsHealthy: true,
       nativeStatus: "unknown",
       installStateBackend: "scheduler",
@@ -1070,6 +1120,7 @@ describe("evaluateSchedulerInstallRestartReconciliation", () => {
     expect(evaluateSchedulerInstallRestartReconciliation({
       taskInstalled: true,
       registrationHealthy: false,
+      registrationInvalid: false,
       assetsHealthy: true,
       nativeStatus: "nonexistent",
       installStateBackend: "scheduler",
@@ -1077,6 +1128,7 @@ describe("evaluateSchedulerInstallRestartReconciliation", () => {
     expect(evaluateSchedulerInstallRestartReconciliation({
       taskInstalled: true,
       registrationHealthy: true,
+      registrationInvalid: false,
       assetsHealthy: false,
       nativeStatus: "nonexistent",
       installStateBackend: "scheduler",
