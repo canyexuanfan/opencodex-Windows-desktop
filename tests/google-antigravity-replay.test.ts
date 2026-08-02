@@ -334,7 +334,7 @@ describe("antigravity replay fixed-size key identities", () => {
     }
     const metrics = antigravityReplayMetrics();
     expect(metrics.sessions).toBe(10_240);
-    // 10,240 sessions x (64 session key + 64 call key + 19-byte signature) —
+    // 10,240 sessions x (64 session key + 64 call key + 20-byte signature) —
     // keys never scale with input length, all within the 64 MiB global cap.
     expect(metrics.totalBytes).toBeLessThan(64 * 1024 * 1024);
     expect(metrics.totalBytes).toBe(10_240 * (64 + 64 + SIG.length));
