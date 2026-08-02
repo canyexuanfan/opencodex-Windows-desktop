@@ -17,7 +17,7 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
-import { forgetEphemeralSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetEphemeralSecretPath, forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxProviderContinuationState } from "../types";
 
 export const RESPONSE_SPILL_VERSION = 1;
@@ -196,15 +196,26 @@ function closeFile(fd: number): void {
   record("close");
 }
 
-function unlink(path: string): void {
+function unlink(path: string, ephemeral = false): void {
   try {
     if (spillIoForTest?.unlink) spillIoForTest.unlink(path);
     else unlinkSync(path);
-    forgetEphemeralSecretPath(path);
+    // Ephemeral release only for publish temps; stable spill files keep their
+    // destination-keyed timeout memos (anti-restall) and drop just the
+    // success memo for the now-deleted file.
+    if (ephemeral) forgetEphemeralSecretPath(path);
+    else forgetHardenedSecretPath(path);
   } catch (error) {
-    if (isErrno(error, "ENOENT")) forgetEphemeralSecretPath(path);
+    if (isErrno(error, "ENOENT")) {
+      if (ephemeral) forgetEphemeralSecretPath(path);
+      else forgetHardenedSecretPath(path);
+    }
     throw error;
   }
+}
+
+function unlinkEphemeral(path: string): void {
+  unlink(path, true);
 }
 
 function publishNoReplace(tempPath: string, destinationPath: string): void {
@@ -304,7 +315,7 @@ export function writeResponseSpillDurably(
       try {
         publishNoReplace(publishTempPath, destinationPath);
         fsyncDirectoryBestEffort(dir);
-        unlink(publishTempPath);
+        unlinkEphemeral(publishTempPath);
         tempPath = null;
         return { version: 1, fileName, digest, payloadBytes: bytes.byteLength };
       } catch (error) {
@@ -318,7 +329,7 @@ export function writeResponseSpillDurably(
       try { closeSync(fd); } catch { /* best effort */ }
     }
     if (tempPath) {
-      try { unlink(tempPath); } catch { /* best effort */ }
+      try { unlinkEphemeral(tempPath); } catch { /* best effort */ }
     }
     throw new Error("Response spill write failed");
   }

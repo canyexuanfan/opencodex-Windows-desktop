@@ -19,6 +19,12 @@ import {
   recoverIfNeeded,
   type JournalRecord,
 } from "../src/codex/prompt-journal";
+import {
+  hardenedSecretPathCountForTests,
+  resetHardenedStateForTests,
+  setIcaclsRunnerForTests,
+  setPlatformForTests,
+} from "../src/lib/windows-secret-acl";
 
 const roots: string[] = [];
 
@@ -217,5 +223,26 @@ describe("durable write", () => {
     durableWrite(path, "one");
     durableWrite(path, "two");
     expect(readFileSync(path, "utf8")).toBe("two");
+  });
+
+  test("successful durable writes release temp ACL memos", () => {
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    try {
+      const dir = root();
+      durableWrite(join(dir, "one.json"), "one");
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+      durableWrite(join(dir, "two.json"), "two");
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
   });
 });

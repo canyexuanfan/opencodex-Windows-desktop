@@ -31,6 +31,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { atomicWriteFile, expandUserPath } from "../config";
+import { forgetEphemeralSecretPath } from "../lib/windows-secret-acl";
 import { CODEX_CONFIG_PATH } from "./paths";
 
 // EOL preservation, local copies of inject.ts dominantEol/applyEol: importing
@@ -847,7 +848,15 @@ function applyConfigEditsAtomically(path: string, edit: (tempPath: string) => Co
     atomicWriteFile(path, edited);
     return { ok: true, changed: true };
   } finally {
-    try { unlinkSync(tempPath); } catch { /* already absent */ }
+    try {
+      unlinkSync(tempPath);
+      forgetEphemeralSecretPath(tempPath);
+    } catch (error) {
+      // Already absent is also proven-absent; other failures keep the memo.
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        forgetEphemeralSecretPath(tempPath);
+      }
+    }
   }
 }
 

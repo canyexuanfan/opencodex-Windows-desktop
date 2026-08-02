@@ -20,6 +20,7 @@ import {
   resetHardenedStateForTests,
   setIcaclsRunnerForTests,
   setPlatformForTests,
+  timedOutSecretPathCountForTests,
   hardenSecretDir,
 } from "../src/lib/windows-secret-acl";
 
@@ -107,6 +108,32 @@ describe("management and data-plane credential separation", () => {
         throw Object.assign(new Error("injected unlink failure"), { code: "EPERM" });
       });
       expect(hardenedSecretPathCountForTests()).toBe(1);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+
+  test("final-path timeout memo survives stable-path cleanup (anti-restall)", async () => {
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    // The temp harden succeeds; the FINAL path harden times out.
+    let calls = 0;
+    setIcaclsRunnerForTests(() => {
+      calls += 1;
+      return calls <= 3
+        ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
+        : { success: false, exitCode: null, timedOut: true, stdout: "" };
+    });
+    try {
+      initializeManagementAuthState(remoteConfig());
+      expect(timedOutSecretPathCountForTests()).toBe(1);
     } finally {
       setIcaclsRunnerForTests(null);
       setPlatformForTests(null);

@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
-import { forgetEphemeralSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetEphemeralSecretPath, forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxConfig } from "../types";
 import {
   isAllowedManagementOrigin,
@@ -95,12 +95,17 @@ function readExistingToken(path: string): string {
 export function removeManagementTokenPathBestEffort(
   path: string,
   remove: (path: string) => void = unlinkSync,
+  options?: { ephemeral?: boolean },
 ): void {
+  // Temps get the full ephemeral release (success + both timeout namespaces);
+  // stable token paths drop only the success memo — destination-keyed timeout
+  // memos are intentional anti-restall state.
+  const forget = options?.ephemeral ? forgetEphemeralSecretPath : forgetHardenedSecretPath;
   try {
     remove(path);
-    forgetEphemeralSecretPath(path);
+    forget(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetEphemeralSecretPath(path);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") forget(path);
     /* other failures retain fail-closed state for the caller */
   }
 }
@@ -156,7 +161,7 @@ function createTokenFile(path: string): string {
     if (fd !== null) {
       try { closeSync(fd); } catch { /* best effort */ }
     }
-    removeManagementTokenPathBestEffort(temporary);
+    removeManagementTokenPathBestEffort(temporary, unlinkSync, { ephemeral: true });
   }
 }
 

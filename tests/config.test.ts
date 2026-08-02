@@ -1700,3 +1700,43 @@ describe("config.ts – Windows ACL hardening integration", () => {
     spy.mockRestore();
   });
 });
+
+describe("config.ts – sync writer timeout keying (#840 refinement)", () => {
+  test("the production sync harden keys timeouts by destination", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "src", "config.ts"), "utf-8");
+    expect(source).toContain("hardenSecretPath(target, { required: true, timeoutMemoKey: path })");
+  });
+
+  test("timed-out write with a RESIDUAL temp retains both memos (fail-closed)", () => {
+    const destination = join(testDir, "residual-timeout.json");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    windowsAcl.resetHardenedStateForTests();
+    windowsAcl.setPlatformForTests("win32");
+    windowsAcl.setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    const io = {
+      write: (path: string, content: string) => writeFileSync(path, content, { mode: 0o600 }),
+      harden: (path: string) => {
+        chmodSync(path, 0o600);
+        windowsAcl.hardenSecretPath(path, { required: true, timeoutMemoKey: destination });
+      },
+      rename: renameSync,
+      truncate: (path: string) => truncateSync(path, 0),
+      unlink: () => {
+        throw Object.assign(new Error("denied"), { code: "EPERM" });
+      },
+    };
+    try {
+      expect(() => atomicWriteFile(destination, "secret", io)).toThrow();
+      // Destination timeout memo retained (anti-restall) while the residual
+      // temp remains on disk.
+      expect(windowsAcl.timedOutSecretPathCountForTests()).toBe(1);
+    } finally {
+      windowsAcl.setIcaclsRunnerForTests(null);
+      windowsAcl.setPlatformForTests(null);
+      windowsAcl.resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+});

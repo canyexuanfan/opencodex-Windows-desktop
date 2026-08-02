@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, openSync, closeSync, fsyncSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetEphemeralSecretPath, hardenSecretPath } from "../lib/windows-secret-acl";
 
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
@@ -78,10 +78,17 @@ export function durableWrite(path: string, content: string): void {
     closeSync(fd);
     fd = undefined;
     renameSync(tmp, path);
+    // The temp is renamed away: proven absent — release its ACL memos.
+    forgetEphemeralSecretPath(tmp);
     fsyncDir(path);
   } catch (error) {
     try { if (fd !== undefined) closeSync(fd); } catch { /* ignore */ }
-    try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* ignore */ }
+    try {
+      if (existsSync(tmp)) {
+        unlinkSync(tmp);
+        forgetEphemeralSecretPath(tmp);
+      }
+    } catch { /* residual temp: memos stay (fail-closed) */ }
     throw error;
   }
 }
