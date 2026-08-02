@@ -35,8 +35,9 @@ Also update:
 - Any nav/sidebar entry naming "Codex Auth".
 
 Astro's config lists locales explicitly; a page added to English only shows a
-missing-translation state. Either all six, or an explicit decision — and the
-`260802_docs_overhaul` unit already established all six as the standard.
+missing-translation state. Either all five docs variants (English + four), or an
+explicit decision — and the `260802_docs_overhaul` unit already established that
+as the standard. The GUI's six-locale rule is separate and stated below.
 
 ## Locale parity
 
@@ -100,10 +101,16 @@ safe; an API-only guarantee is a boundary nobody exercises.
 5. **Shared key ownership.** `003` §4 — Codex may rewrite
    `developer_instructions` itself. An earlier draft called this non-blocking
    while having no concurrency mechanism at all; an audit was right to reject
-   that. `010` §Concurrency now adds revision checks and a reparse-or-rollback
-   step. What remains genuinely residual: Codex could replace the value between
-   our reparse and the next read, which our revision check detects on the
-   following write rather than prevents.
+   that. `010` now adds whole-byte revisions, a journal whose recovery refuses to
+   touch an externally modified file, a tokenized cross-process lock, and a
+   pre-rename hash guard. What remains genuinely residual: Codex can replace the
+   file inside the rename window itself, which no user-space mechanism prevents.
+   It is detected on the next read as `projection-stale` and surfaced as a
+   Repair action, not silently absorbed.
+6. **Byte equality is not Rust equivalence.** `010` carries one golden fixture
+   parsed by the real `toml_edit`, run on demand. Between runs, the encoder's
+   correctness rests on a restricted character set and a hand-written grammar
+   matcher — strong, but not the same as continuous proof.
 
 Risks 1 and 5 deserve a live re-check whenever opencodex bumps its supported
 Codex version. None blocks the unit; all belong in the close-out.

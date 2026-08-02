@@ -135,8 +135,9 @@ Three places where the UI must resist claiming more than it knows:
 
 1. **Timing.** "새 세션부터 적용됩니다" (`003` §3). Never "즉시 적용", never
    "재시작 필요" — neither is proven.
-2. **Override.** A managed layer can beat our write (`003` §6). When configured
-   and effective disagree, say so instead of showing a toggle that looks applied.
+2. **Scope of what we read.** opencodex reads one of the eight config layers in
+   `003` §1, so the panel says "이 파일의 설정" and never claims the running
+   Codex agrees. Managed-override detection is deferred, not approximated.
 3. **Completeness.** Third-party extensions can add layers we cannot enumerate
    (`001` needs-verification). The list is labelled as the layers opencodex
    knows about, not as every layer that exists.
@@ -152,9 +153,15 @@ Three places where the UI must resist claiming more than it knows:
   `003` §4 — Codex cannot parse malformed TOML either, so writing would compound
   the failure rather than recover from it.
 - **`developer_instructions` exists without our marker:** built-in toggles keep
-  working; custom layers are unavailable, with a plain explanation that the key
-  is externally managed and the one-line manual step to hand it over. `010`
-  §Ownership explains why refusing beats guessing.
+  working; the custom group offers **Adopt**, which previews the original line
+  and the exact decoded body, offers a copy, and imports it only on
+  confirmation (`010` §Ownership).
+- **Our line exists but is malformed:** `drift: "owned-malformed"`, handled the
+  same way — preview, copy, confirmed re-adopt or replace. Reformatting a line
+  we generated must never lock a user out.
+- **Store lost with a live projection:** `drift: "store-missing"`. Writes are
+  refused until the user salvages the projected text as one layer, with the
+  losses listed and a backup written first.
 - **No custom layers:** the CUSTOM group shows a one-line invitation, not an
   empty box.
 

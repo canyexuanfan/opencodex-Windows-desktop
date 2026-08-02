@@ -67,7 +67,12 @@ export type WriteResult =
 
 export type WriteError =
   | "config_unreadable" | "stale_revision" | "developer_instructions_not_owned"
-  | "unknown_layer" | "reparse_failed" | "store_unreadable";
+  | "unknown_layer" | "store_unreadable" | "invalid_characters"
+  | "adopt_unsupported_form" | "write_superseded" | "recovery_required";
+
+export type Drift =
+  | "journal-present" | "projection-stale" | "store-missing"
+  | "owned-malformed" | null;
 
 export function readPromptLayers(opts?: Paths): PromptLayerSnapshot;
 export function setToggle(id: ToggleId, enabled: boolean, revision: string, opts?: Paths): WriteResult;
@@ -176,8 +181,9 @@ it on four counts, all correct:
 **`$CODEX_HOME/opencodex-prompt.json` is the single source of truth** for custom
 layers — every layer, enabled or not, with body, title, and order.
 
-`config.toml` receives exactly one generated root key, written through a real
-TOML serializer:
+`config.toml` receives exactly one generated root key, emitted by our own
+three-rule encoder over a restricted character set (§Why no prompt text goes
+into config.toml at all):
 
 ```toml
 # Auto-injected by opencodex
@@ -189,9 +195,10 @@ Consequences that dissolve three blockers at once:
 - **No fences.** Bodies are joined with `\n\n` and never carry structure that
   has to survive a round trip through TOML. The value is write-only from our
   side; we never parse it back to recover layer identity.
-- **Encoding is a solved problem.** We emit through a serializer that escapes
-  `"`, `\`, and control characters, and we assert the result re-parses. No body
-  can produce malformed TOML.
+- **Encoding is total.** Three escapes — `"`, `\`, newline — over a character
+  set that excludes everything ambiguous. Verification is a byte comparison, not
+  a reparse, because no TOML parser we could run is trustworthy enough to be the
+  judge (measured defects in `Bun.TOML` are recorded below).
 - **Reconciliation disappears.** There is exactly one authority. `config.toml`
   is a *projection*, never a source.
 
@@ -249,20 +256,42 @@ control.
 
 **Resolution: restrict the writable body character set.**
 
-A body is accepted only if it consists of printable Unicode, spaces, `\n`, and
-`\t`. Tabs are normalized to four spaces at save time — a prompt loses nothing,
-and the transposition defect disappears with the character. Everything else is
-rejected at the API with a precise message.
+"Printable Unicode" is not executable, as the audit noted. The rule is defined
+over **Unicode scalar values**, not UTF-16 code units:
 
-Within that set, TOML basic-string encoding is trivially total: escape `"` and
-`\`, emit `\n` for newline, pass every other character through. Three escapes,
-all unambiguous, none in the defective set. CRLF is normalized to LF on the way
-in, so `\r` never appears.
+| Input | Handling |
+|---|---|
+| U+0009 tab | normalized to four spaces |
+| CRLF, lone CR | normalized to LF |
+| U+000A newline | accepted, encoded as `\n` |
+| other C0 controls, U+007F DEL | **rejected** with position |
+| C1 controls U+0080–U+009F | **rejected** — invisible and rarely intentional |
+| **unpaired surrogate** | **rejected** — not a scalar value; UTF-8 encoding would substitute U+FFFD and silently alter the prompt |
+| U+2028, U+2029 | accepted; they are not TOML line terminators and cannot end a basic string |
+| everything else, incl. non-BMP | accepted verbatim |
+
+Validation iterates code points, so positions are reported as **code-point
+indices** consistently across the API, the linter, and the editor. Size caps are
+measured in **UTF-8 bytes after normalization** — tab expansion can grow a body,
+so checking before normalization would let an oversized value through.
+
+Within that set, TOML basic-string encoding is total: escape `"` and `\`, emit
+`\n` for newline, pass everything else through. Three escapes, all unambiguous,
+none in the defective set. `\r` never appears because CRLF is normalized away.
 
 Verification is then a **byte-level** assertion rather than a semantic one: the
 emitted line must equal `key = "` + escaped + `"`, and re-reading the file must
-yield that exact line. No TOML parser is involved on the write path, which means
-no parser's defects can hide a divergence.
+yield that exact line. No TOML parser is involved on the write path, so no
+parser's defects can hide a divergence.
+
+**Byte equality is not the same as Rust agreeing with us**, which the audit
+rightly pressed on. A hand-written grammar matcher tests the encoder against the
+encoder's own assumptions. So WP1 also carries **one** independent proof: a
+checked-in fixture of generated lines covering every accepted character class,
+parsed by the real `toml_edit` through a tiny Rust test in the pinned upstream
+checkout, with the decoded values committed as a golden file. It runs on demand,
+not in the GUI suite, and it is the only thing that settles what Codex actually
+reads.
 
 This costs the user the ability to put a NUL or a bell character in a prompt.
 That is not a real loss, and it buys a guarantee that a dependency plus a
@@ -308,23 +337,43 @@ your existing instructions by hand. That is not a feature.
 
 **Takeover (`POST /api/codex-prompt/adopt`):**
 
-1. read the raw source line, verbatim, without decoding it
-2. show it to the user exactly as it appears in the file, alongside a plain
-   statement of what adoption will do
-3. on explicit confirmation, and only then:
-   - write the raw text into `opencodex-prompt.json` as one custom layer titled
-     "Imported from config.toml", enabled
-   - replace the original two lines with the canonical owned form, through the
-     journal transaction every other write uses
-4. offer a copy button first, so the user can keep a copy outside opencodex
+1. read the raw source line
+2. **decode it** with the inverse of our own encoder (below) — an earlier draft
+   stored the raw line as the body, which an audit correctly called a semantics
+   change: `"hello\nworld"` would have been imported as those twelve literal
+   characters rather than two lines
+3. show the user **both** the original source line and the exact decoded body
+   that will be imported, plus a copy button
+4. on explicit confirmation: write the decoded body into
+   `opencodex-prompt.json` as one enabled layer titled "Imported from
+   config.toml", and replace the original lines with the canonical owned form,
+   through the journal transaction every other write uses
 
-If the existing value cannot be read as a single-line basic string — the only
-form we can extract without a trustworthy parser — adoption is refused with the
-file path and line number, and the user is told to move the text manually. That
-is a narrower dead end than before, and it names exactly where to look.
+**The decoder is deliberately narrow.** It accepts a single-line basic string
+containing only `\"`, `\\`, and `\n` — precisely the three escapes our encoder
+emits. Anything else is refused:
 
-Nothing is deleted without confirmation, and the original text is shown before
-anything is changed.
+| Input | Result |
+|---|---|
+| `\t`, `\f`, `\b`, `\r` | refused — `Bun.TOML` transposes two of these, so we will not guess |
+| `\uXXXX` | refused — decoding it correctly is exactly the ambiguity we removed |
+| multi-line basic or literal string | refused |
+| unterminated or unbalanced quotes | refused |
+
+Refusal is `adopt_unsupported_form` with the file path and line number. That is
+a narrow dead end that names where to look, and it is honest about the reason:
+we do not have a parser we trust for the general case.
+
+### Malformed owned lines
+
+Marker present, shape non-canonical. The audit flagged this as a new dead end,
+and it was — Adopt covered only the marker-absent case, and Repair only drift.
+
+It is now its own state, `drift: "owned-malformed"`, with the same treatment as
+Adopt: show the raw line, offer a copy, and on confirmation either re-adopt it
+through the narrow decoder or replace it outright with an empty owned line if
+the user prefers. A user cannot be locked out by reformatting a line we
+generated.
 
 ### Revision — hashes the edit base, not a summary of it
 
@@ -380,18 +429,64 @@ projection first means that if step 5 fails, the recorded pre-image restores
 config.toml and the source of truth was never touched — a failed request leaves
 *nothing* changed, which is the semantics blocker 2 demanded.
 
-**Recovery — at service start and at lock acquisition, never in a GET:**
+**Recovery — at service start and at lock acquisition, never in a GET.**
 
-- journal present, both targets already match its post-image → delete it, done
-- journal present, either target does not match → rewrite both from the
-  post-image, then delete
-- journal present but itself truncated or unparseable → restore both from the
-  pre-image if it is intact; otherwise leave every file untouched and report
-  `recovery_required`
+An earlier draft said "if either target differs from the post-image, rewrite
+both from the post-image". An audit found that destroys legitimate work: crash
+after writing config.toml, user or Codex then edits config.toml, recovery sees a
+mismatch and overwrites their edit with a stale post-image.
 
-If rollback itself fails, nothing further is attempted and `recovery_required`
-is returned with both paths named. Silent best-effort repair on a file the user
-also edits is worse than an honest stop.
+Recovery therefore classifies **each target independently** against both
+recorded hashes, and never writes a file it does not recognise:
+
+| Target matches | Meaning | Action |
+|---|---|---|
+| post-image | already applied | leave it |
+| pre-image | not yet applied | roll forward from post-image |
+| **neither** | **externally modified** | **stop; `recovery_required`** |
+
+A single unrecognised target aborts the whole recovery. We do not roll forward
+one file while another carries a stranger's edit — that would produce a state
+neither the user nor the journal ever intended.
+
+`recovery_required` names both paths and the journal, and blocks mutations until
+the user resolves it. An honest stop beats best-effort repair on a file the user
+also edits by hand.
+
+If the journal itself is truncated or unparseable: restore from the pre-image
+**only if every target still matches its recorded pre-image or post-image
+hash**; otherwise touch nothing and report `recovery_required`.
+
+### Commit point — one state machine, not two
+
+The same audit found the draft mixing two models: journal-rename-is-commit
+(implying roll-forward) alongside "a step-5 failure restores the pre-image"
+(implying the journal is only intent). Both cannot hold.
+
+**Chosen: the journal is prepared intent. Commit is when both targets match the
+post-image.**
+
+- Failure before both targets are written → roll **back** to the pre-image, and
+  the API reports a plain error. Nothing changed.
+- Failure after both match → the write succeeded; recovery only deletes the
+  journal.
+- The unrecognised-target case above overrides everything and stops.
+
+This is the model that makes "a failed request changes nothing" true, which is
+what audit blocker 2 required. Roll-forward-after-journal would have made a
+failed request silently succeed later.
+
+### Durability
+
+`fsync` on a temp file does not make its directory entry durable. Each step is:
+write temp → `fsync` file → rename → **`fsync` the parent directory**. Journal
+deletion is also followed by a directory `fsync` before completion is reported.
+
+On Windows, directory `fsync` is unavailable; `FlushFileBuffers` on the file plus
+`MoveFileEx` with write-through is the documented fallback, and the
+`030`-era Windows CI job covers it. Where neither is available, the journal is
+still written first, so the worst case is a recovery that reports
+`recovery_required` rather than one that loses data silently.
 
 ### Reads never write
 
@@ -418,9 +513,19 @@ Three distinct states, distinguished before anything is written:
 | absent | **present and non-empty** | **store lost** | refuse writes, `drift: "store-missing"`, offer Repair |
 | present | either | normal | normal |
 
-Repair from `store-missing` reconstructs a single custom layer from the projected
-text, presented to the user for confirmation before it is saved. The text is
-still in config.toml; it is recoverable, and it is not discarded silently.
+Repair from `store-missing` is **salvage, not reconstruction** — the audit was
+right that the earlier wording oversold it.
+
+The projection holds one concatenated string of the enabled layers. It cannot
+recover layer boundaries, ids, titles, row order, disabled layers, or their
+bodies, and it cannot tell a `\n\n` that separated two layers from one that a
+user typed. All of that is gone with the store.
+
+So salvage takes the whole projected text and offers it as **one new layer**,
+with the exact body previewed and the losses listed explicitly before the user
+confirms. The pre-salvage bytes of config.toml are copied to
+`opencodex-prompt.salvage-<timestamp>.txt` first, so even a mistaken
+confirmation is recoverable.
 
 ### Cross-process locking
 
@@ -429,8 +534,24 @@ one service. A CLI invocation, a second service, or Codex itself can all write
 the same file.
 
 `$CODEX_HOME/opencodex-prompt.lock` is an advisory lock created with `wx`,
-carrying pid and start time. A lock whose pid is gone is stale and may be broken
-after 10 seconds. Every opencodex writer — service, CLI, route — takes it.
+carrying a random **token**, pid, and start time. Every opencodex writer —
+service, CLI, route — takes it.
+
+Naive stale-breaking is racy, as the audit showed: A judges the lock stale, B
+removes it and acquires its own, A then deletes *B's live lock* and both
+proceed. Unlinking a path you did not verify is the bug.
+
+**Race-safe takeover:**
+
+1. read the lock; if its pid is live or it is younger than 10s, wait
+2. otherwise `rename()` it to `opencodex-prompt.lock.stale-<our token>` — an
+   atomic operation exactly one contender can win
+3. the winner creates the real lock with `wx` and deletes the quarantined file
+4. a loser's rename fails with `ENOENT`; it returns to step 1
+
+**Release deletes only a lock whose token still matches ours.** A token mismatch
+means we were superseded: we do not delete, and we report `write_superseded`
+rather than assuming the file is still ours.
 
 That covers opencodex against itself. **It does not cover Codex**, which knows
 nothing about our lock. The residual window is between step 2's read and step 4's
@@ -478,6 +599,13 @@ Every case takes explicit temp paths (`004` §H: never resolve the real
     expected two lines** — the assertion that replaces reparse verification
 21. **a golden fixture of the emitted line is checked against the TOML spec's
     basic-string grammar by hand-written matcher**, not by `Bun.TOML`
+21a. unpaired high surrogate → rejected with code-point position
+21b. unpaired low surrogate → rejected
+21c. U+007F DEL and a C1 control (U+0085) → rejected
+21d. U+2028 / U+2029 accepted and pass through unescaped
+21e. size caps measured in UTF-8 bytes **after** tab expansion
+21f. **golden Rust fixture**: generated lines for every accepted character class
+     parsed by real `toml_edit`, decoded values matching a committed golden file
 
 Cases 20-21 exist because `Bun.TOML.parse` on Bun 1.3.14 transposes `\t`/`\f`
 and rejects `\u0007` (measured; see §Why no prompt text goes into config.toml).

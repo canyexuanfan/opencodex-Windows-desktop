@@ -70,7 +70,10 @@ own developer-role section ahead of world-state content
 (`config_toml.rs:216`, `session/mod.rs:3413`). So:
 
 - **Custom layers compose into `developer_instructions`**, concatenated in row
-  order, each wrapped in a marker comment carrying its row id.
+  order. Layer identity lives in `$CODEX_HOME/opencodex-prompt.json`, which
+  opencodex owns; config.toml receives only a generated projection of the
+  enabled subset. `010` §Storage explains why an earlier in-TOML marker scheme
+  was abandoned.
 - **`model_instructions_file` is not written by the `+` flow at all.** It
   appears in the Prompt section only as a read-only *status* row that reports
   whether something outside opencodex has replaced the base prompt.
