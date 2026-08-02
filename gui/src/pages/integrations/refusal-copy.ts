@@ -2,6 +2,17 @@ import type { TKey } from "../../i18n/shared";
 import { IntegrationApiError, type IntegrationRefusalEnvelope } from "./integration-api";
 
 /**
+ * Envelopes the server sends that are NOT writer refusals.
+ *
+ * `integration_mutation_busy` is the common one: it carries no `reason`, so it
+ * never becomes a refusal, and without this map the user saw the server's raw
+ * English `error` string in every locale.
+ */
+const CODE_KEYS: Record<string, TKey> = {
+  integration_mutation_busy: "integrations.error.busy",
+};
+
+/**
  * One place that turns a refusal into the sentence a user can act on.
  *
  * Every surface used to format its own, and each one dropped a different
@@ -26,6 +37,9 @@ export type Translate = (key: TKey, vars?: Record<string, string>) => string;
 export function describeRefusal(t: Translate, error: unknown, fallback?: string): string {
   const refusal = refusalOf(error);
   if (!refusal) {
+    const code = error instanceof IntegrationApiError ? String(error.body.code ?? "") : "";
+    const known = CODE_KEYS[code];
+    if (known) return t(known);
     return error instanceof Error && error.message
       ? error.message
       : fallback ?? t("integrations.error.generic");

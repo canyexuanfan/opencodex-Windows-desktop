@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { useDataSurface } from "../../data-surface";
 import { navigateHash } from "../../hash-routing";
 import { useT, type TKey } from "../../i18n/shared";
-import { Notice } from "../../ui";
+import { Notice, Switch } from "../../ui";
 import IntegrationStateBadge from "./IntegrationStateBadge";
 import RestoreDialog from "./RestoreDialog";
 import { describeRefusal } from "./refusal-copy";
@@ -76,8 +76,15 @@ export default function IntegrationsOverview({
   const appliedClients = clients.filter(isApplied);
   const staleCount = clients.filter(client => client.state === "stale").length;
 
-  const refresh = async () => {
-    await Promise.all([statesResource.refresh(), historyResource.refresh()]);
+  /*
+   * `refresh()` on the resource layer is deliberately fire-and-forget: it
+   * kicks a fetch and stores the error rather than throwing. Awaiting it
+   * resolves immediately, so it can only ever repaint the UI — it can never
+   * tell a caller whether the new state actually arrived.
+   */
+  const refresh = () => {
+    statesResource.refresh();
+    historyResource.refresh();
   };
 
   /*
@@ -105,13 +112,24 @@ export default function IntegrationsOverview({
         failed.push(`${client.clientId}: ${describeRefusal(t, error)}`);
       }
     }
-    // Refresh BEFORE claiming success: announcing it while the cards still
-    // read "applied" tells the user two contradictory things at once.
+    /*
+     * Confirm the outcome against the server before claiming it.
+     *
+     * Announcing success while the cards still read "applied" tells the user
+     * two contradictory things at once, and the resource `refresh()` above
+     * cannot be awaited for the answer. So re-read the states directly: this
+     * one IS awaitable, and it also catches a client the server declined to
+     * change without raising an error we would have seen.
+     */
+    let unsettled = false;
     try {
-      await refresh();
+      const confirmed = await loadIntegrationStates(apiBase);
+      unsettled = confirmed.clients.some(isApplied);
     } catch {
       failed.push(t("integrations.error.stale"));
     }
+    if (unsettled && failed.length === 0) failed.push(t("integrations.error.stale"));
+    refresh();
     setBulkPending(false);
     setBulkResult(failed.length === 0
       ? { tone: "ok", text: t("integrations.bulk.success") }
@@ -119,6 +137,28 @@ export default function IntegrationsOverview({
   };
 
   const lastChange = history[0]?.at;
+
+  /*
+   * The card carries its own switch. Sending the user to a sub-page to flip
+   * one client turns the overview into a directory of links, and the summary
+   * counts right above it exist precisely so a user can act on what they see.
+   */
+  const [cardPending, setCardPending] = useState<FileIntegrationClientId | null>(null);
+  const toggleCard = async (client: IntegrationStatus) => {
+    if (cardPending) return;
+    setCardPending(client.clientId);
+    setBulkResult(null);
+    try {
+      // Same rule as the client page: turning it off means disable, for
+      // `stale` as much as for `current`.
+      await toggleIntegration(apiBase, client.clientId, !isApplied(client));
+      refresh();
+    } catch (error) {
+      setBulkResult({ tone: "err", text: `${client.clientId}: ${describeRefusal(t, error)}` });
+    } finally {
+      setCardPending(null);
+    }
+  };
 
   return (
     <section className="integrations-overview">
@@ -189,13 +229,28 @@ export default function IntegrationsOverview({
                   <IntegrationStateBadge state={status.state} installed={status.installed} />
                 </div>
                 <p className="integration-path">{status.configPath}</p>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => navigateHash(`integrations/${clientId}`)}
-                >
-                  {t("integrations.action.settings")}
-                </button>
+                <div className="integration-card-actions">
+                  <Switch
+                    on={isApplied(status)}
+                    onClick={() => void toggleCard(status)}
+                    // Conflict and unsafe are never resolved from a card: the
+                    // client page is where the reason is explained.
+                    disabled={!status.installed
+                      || status.state === "conflict"
+                      || status.state === "unsafe"
+                      || cardPending !== null}
+                    label={isApplied(status)
+                      ? t("integrations.action.disable")
+                      : t("integrations.action.apply")}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => navigateHash(`integrations/${clientId}`)}
+                  >
+                    {t("integrations.action.settings")}
+                  </button>
+                </div>
               </li>
             );
           })}

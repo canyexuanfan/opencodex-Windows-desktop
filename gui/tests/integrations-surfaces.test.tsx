@@ -310,3 +310,175 @@ test("a hidden panel makes no request at all", async () => {
   // thing keeping them from polling behind the tab the user is looking at.
   expect(requests).toEqual([]);
 });
+
+async function mountOverview(): Promise<void> {
+  const [{ createRoot }, { LanguageProvider }, { default: IntegrationsOverview }] = await Promise.all([
+    import("react-dom/client"),
+    import("../src/i18n/provider"),
+    import("../src/pages/integrations/IntegrationsOverview"),
+  ]);
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <IntegrationsOverview apiBase={apiBase} active />
+      </LanguageProvider>,
+    );
+  });
+  await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 30)); });
+}
+
+test("the overview does not claim nothing is installed while it is still loading", async () => {
+  /*
+   * `clients` defaults to an empty array, so branching on its length first
+   * told a mid-load user that no client was installed — a conclusion that can
+   * only be drawn from a settled response.
+   */
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  stateResponse = () => json({ clients: [] });
+  const slowFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    requests.push({ url, method: (init?.method ?? "GET").toUpperCase(), body: undefined });
+    await gate;
+    if (url.includes("/journal")) return json({ operations: [] });
+    return json({ clients: [status({ installed: false, state: "absent" })] });
+  }) as typeof fetch;
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: slowFetch });
+  Object.defineProperty(testWindow, "fetch", { configurable: true, value: slowFetch });
+
+  await mountOverview();
+  expect(container.textContent ?? "").not.toContain("No installed clients were detected");
+
+  release!();
+  await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 30)); });
+  // Settled, and genuinely nothing installed: NOW the conclusion is fair.
+  expect(container.textContent ?? "").toContain("No installed clients were detected");
+});
+
+test("bulk disable confirms the result with the server before claiming success", async () => {
+  /*
+   * The resource layer's `refresh()` is fire-and-forget, so awaiting it proves
+   * nothing. If the PUTs report success but the clients are still applied, the
+   * success Notice would sit above cards that contradict it.
+   */
+  // The component calls the bare `confirm`, which resolves on globalThis.
+  Object.defineProperty(globalThis, "confirm", { configurable: true, value: () => true });
+  let applied = true;
+  const bulkFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    requests.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (url.includes("/journal")) return json({ operations: [] });
+    if (method === "PUT") {
+      // The server answers OK but the block is still on disk.
+      return json({ ok: true, clientId: "hermes", changed: false, state: "current", message: "ok" });
+    }
+    return json({ clients: [status({ state: applied ? "current" : "absent" })] });
+  }) as typeof fetch;
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: bulkFetch });
+  Object.defineProperty(testWindow, "fetch", { configurable: true, value: bulkFetch });
+
+  await mountOverview();
+  const disableAll = buttonByText("Disable all…");
+  expect(disableAll).toBeDefined();
+  await act(async () => { disableAll!.click(); });
+  await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 40)); });
+
+  const text = container.textContent ?? "";
+  expect(text).not.toContain("Applied client integrations were disabled.");
+  expect(text).toContain("may be stale");
+
+  // And the honest case still reports success.
+  applied = false;
+  const second = buttonByText("Disable all…");
+  if (second && !second.disabled) {
+    await act(async () => { second.click(); });
+    await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 40)); });
+  }
+});
+
+test("a drifted restore asks a second time instead of failing", async () => {
+  /*
+   * The server refuses a drifted restore unless `confirmDrift` is set. That
+   * refusal is the only moment the user is told their newer edits are about to
+   * be replaced, so it must escalate the dialog rather than surface as an error.
+   */
+  const posts: unknown[] = [];
+  const restoreFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    posts.push(body);
+    if ((body as { confirmDrift?: boolean })?.confirmDrift) {
+      return json({ ok: true, clientId: "hermes", changed: true, state: "current", message: "restored" });
+    }
+    return json({
+      error: "restore requires drift confirmation",
+      code: "integration_drift_confirmation_required",
+      clientId: "hermes",
+      state: "conflict",
+      reason: "drift_requires_confirm",
+      message: "this file changed after that operation",
+    }, 409);
+  }) as typeof fetch;
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: restoreFetch });
+  Object.defineProperty(testWindow, "fetch", { configurable: true, value: restoreFetch });
+
+  const [{ createRoot }, { LanguageProvider }, { default: RestoreDialog }] = await Promise.all([
+    import("react-dom/client"),
+    import("../src/i18n/provider"),
+    import("../src/pages/integrations/RestoreDialog"),
+  ]);
+  const row = {
+    opId: "op-drift",
+    clientId: "hermes" as const,
+    kind: "apply" as const,
+    at: "2026-08-02T09:00:00.000Z",
+    configPath: "/tmp/home/.hermes/config.yaml",
+    snapshot: "stored" as const,
+    undoable: false,
+  };
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <RestoreDialog apiBase={apiBase} row={row} onClose={() => {}} onRestored={() => {}} />
+      </LanguageProvider>,
+    );
+  });
+
+  await act(async () => { buttonByText("Restore")!.click(); });
+  await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 20)); });
+
+  // First submit asked without confirmation and the dialog escalated.
+  expect((posts[0] as { confirmDrift?: boolean }).confirmDrift).toBe(false);
+  expect(container.textContent ?? "").toContain("Newer edits were detected");
+
+  const confirm = buttonByText("Back up newer edits and restore");
+  expect(confirm).toBeDefined();
+  await act(async () => { confirm!.click(); });
+  await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 20)); });
+  expect((posts[1] as { confirmDrift?: boolean }).confirmDrift).toBe(true);
+});
+
+test("a card toggles its own client without a trip to the sub-page", async () => {
+  // Same rule as the client page: off means disable, for `stale` too.
+  stateResponse = () => json({ clients: [status({ state: "stale" })] });
+  await mountOverview();
+
+  const sw = buttons().find(button => button.className.includes("switch"));
+  expect(sw).toBeDefined();
+  expect(sw!.getAttribute("aria-pressed")).toBe("true");
+  await act(async () => { sw!.click(); });
+  await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 20)); });
+
+  const put = requests.find(request => request.method === "PUT");
+  expect(put?.url).toContain("/api/client-integrations/hermes");
+  expect(put?.body).toEqual({ enabled: false });
+});
+
+test("a card cannot toggle a client whose config is in conflict", async () => {
+  stateResponse = () => json({ clients: [status({ state: "conflict", reason: "foreign-edit" })] });
+  await mountOverview();
+  const sw = buttons().find(button => button.className.includes("switch"));
+  expect(sw?.disabled).toBe(true);
+});

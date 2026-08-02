@@ -3,6 +3,37 @@
 **A-gate amendments (round 1).** This document and `050` are ONE work-phase
 (see 050's header); they are built and verified together.
 
+**A-gate amendment (round 2) — native capability cards are deferred.** The
+audit was right that a follow-up cannot be declared by silence while this
+document remains authoritative, so the scope moves here explicitly.
+
+SHIPPED in this phase: the six file-toggle clients end to end — summary strip
+with counts and last change, capability card grid for the six with a state
+badge and a working per-card switch, bulk disable that sequences single-client
+PUTs and confirms the result against the server, per-client pages with switch,
+stale Update, apply-semantics, path, retention warning and history, the
+rollback centre, and the restore/drift dialog.
+
+DEFERRED to a follow-up unit: the four NATIVE exception cards (Codex CLI,
+Claude Code, Claude Desktop, Grok Build) on the Overview, their status reads
+against `/healthz`, `/api/claude-code`, `/api/claude-desktop/status` and
+`/api/grok`, the reusable `ClientConfigPanel` under each file-client page, and
+the Advanced disclosure.
+
+The reason is a dependency, not effort. Each native client keeps its own
+semantics (004 §5.0) and its own page inside the tab strip, which is where
+those controls already live and work; a card that mirrors them is a second
+read of the same state, and mirroring a state whose write path this unit does
+not own is how the two surfaces start disagreeing. The file-toggle clients
+carry no such problem because this unit owns their whole contract. Nothing
+deferred here blocks a user from applying, disabling, updating or rolling back
+any of the six.
+
+Acceptance for the phase is amended to match: the four native cards, native
+status reads, `ClientConfigPanel` reuse, and the Advanced disclosure are NOT
+phase-closing criteria. The `Component and data tree` in §3 keeps the full
+target shape; the deferred rows are marked there.
+
 Shared types come from `006_module_contracts.md` and resolve the open
 questions this document raised:
 
@@ -84,14 +115,14 @@ Integrations (WP5 hash owner)
 ├─ IntegrationsOverview(active)
 │  ├─ GET /api/client-integrations
 │  ├─ GET /api/client-integrations/journal
-│  ├─ native status reads: /healthz, /api/claude-code,
+│  ├─ native status reads: /healthz, /api/claude-code,        [DEFERRED]
 │  │  /api/claude-desktop/status, /api/grok
 │  ├─ IntegrationSummary
 │  │  ├─ counts + last operation
 │  │  ├─ onboarding line
 │  │  └─ BulkDisableDialog -> six possible PUTs
 │  ├─ CapabilityCardGrid
-│  │  ├─ four native exception cards
+│  │  ├─ four native exception cards                          [DEFERRED]
 │  │  └─ six FileClientCard -> IntegrationStateBadge + Switch
 │  └─ RollbackCenter
 │     └─ RestoreDialog -> POST /api/client-integrations/restore
@@ -105,8 +136,8 @@ Integrations (WP5 hash owner)
    ├─ IntegrationStateBadge
    ├─ Switch / refresh / restore actions
    ├─ status + apply-semantics facts
-   ├─ ClientConfigPanel(clients=[client])
-   ├─ Advanced disclosure (contract-backed facts only)
+   ├─ ClientConfigPanel(clients=[client])                     [DEFERRED]
+   ├─ Advanced disclosure (contract-backed facts only)        [DEFERRED]
    └─ RestoreDialog
 ```
 
