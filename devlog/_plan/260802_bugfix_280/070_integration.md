@@ -14,20 +14,21 @@ branch `codex/bugfix-280` in worktree `/Users/jun/Developer/opencodex-bugfix280`
 ## Steps
 
 1. `git fetch origin`; `git merge origin/dev` into codex/bugfix-280.
-   Expected touch overlap: devlog dirs (additive), possibly
-   src/codex/catalog/sync.ts (incoming #653 Baseten + #763 revert) and
-   src/providers/registry.ts. Resolve favoring BOTH changes (our ownership
-   filter + their provider additions are orthogonal).
-2. Post-merge verification: `bun run typecheck` + focused suites:
-   tests/storage-cleanup, storage-policy, codex-catalog,
-   codex-catalog-sync-hardening, claude-desktop-cli, claude-management-api,
-   relay-eager, bun-stream-caps, passthrough-abort,
-   codex-app-server-processes, multi-agent-compat.
-3. `git push origin codex/bugfix-280:dev` (fast-forwards only because the
-   branch contains origin/dev after step 1). No force.
-4. Watch the dev-branch CI run; record per-leg results. The Windows leg is
-   the runtime proof for #864 (Bun#32111 stall). macOS leg also carries the
-   storage/worker suites.
+   Audit note: from merge base 55ce981d only src/codex/catalog/sync.ts
+   changed on both sides and `git merge-tree` shows zero conflict markers;
+   registry.ts changed only on origin/dev, devlog only on our branch.
+2. Post-merge verification: `bun run prepush` (typecheck + GUI lint + FULL
+   test suite + privacy scan — the required pre-push gate; focused suites
+   alone are insufficient per AGENTS.md). Preflight: never stage the
+   untracked node_modules symlink.
+3. Immediately before push, `git fetch origin` again and require
+   `git merge-base --is-ancestor origin/dev HEAD` (the FF guarantee is only
+   as fresh as the last fetch). Then `git push origin codex/bugfix-280:dev`.
+   No force.
+4. Watch the dev-branch CI run; require EVERY job green for the exact pushed
+   SHA (Linux/macOS/Windows, GUI gates, privacy scan, npm-global smoke —
+   MAINTAINERS.md holds direct pushes to the same bar). The Windows leg is
+   the runtime proof for #864 (Bun#32111 stall).
 5. Comment + close issues 858, 855, 859, 864, 857 with the merge SHA and CI
    outcome. #848 stays open (its fix rides PR #861; rebase instruction
    already posted).
@@ -35,5 +36,5 @@ branch `codex/bugfix-280` in worktree `/Users/jun/Developer/opencodex-bugfix280`
 ## Failure handling
 
 - Non-fast-forward push → stop, report (NEEDS_HUMAN).
-- CI leg red in a bugfix area → do NOT close that issue; report and
+- Any CI job red for the pushed SHA → do NOT close the issues; report and
   investigate as a new work-phase.
