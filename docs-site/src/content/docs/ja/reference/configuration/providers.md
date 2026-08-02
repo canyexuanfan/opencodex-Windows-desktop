@@ -65,7 +65,7 @@ description: プロバイダー エントリ、認証、エンドポイント、
 | `modelReasoningEfforts?` | `Record<string, string[]>` |モデルごとのラベル。空のリストは努力制御を非表示にします。 |
 | `modelSupportsReasoningSummaries?` | `Record<string, boolean>` |モデルを `false` に設定して、概要の広告を停止し、概要配信フィールドを削除します。 |
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` |モデルごとの応答配信列挙型。既存の配信フィールドを書き換えます。 |
-| `modelAdapters?` | `Record<string, string>` |混合配線ゲートウェイのモデルごとの `openai-chat` または `openai-responses` 配線オーバーライド。明示的なエントリはレジストリのデフォルトを破ります。 DeepSeek のプリセットは、`deepseek-v4-flash` のネイティブ レスポンスを選択できます。単線アップストリーム ピンと正規の ChatGPT 転送拒否オーバーライド。 |
+| `modelAdapters?` | `Record<string, string>` | 混合配線ゲートウェイのモデルごとの `openai-chat` または `openai-responses` 配線オーバーライド。明示的なエントリはレジストリのデフォルトを破ります。DeepSeek のプリセットは `deepseek-v4-flash` のネイティブ Responses を選択でき、GitHub Copilot は GPT-5 ファミリー (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`) を Responses 専用デフォルトとして宣言します。これらのモデルはエージェント トラフィックで `/chat/completions` を拒否するためです。`gpt-5.4-nano` のようなビルトイン デフォルトのないモデルはここでオプトインできます。単線アップストリーム ピンと正規の ChatGPT 転送はオーバーライドを拒否します。 |
 | `reasoningEffortMap?` | `Record<string, string>` |ラベルを推論するためのプロバイダー全体のワイヤ エイリアス。 |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` |推論ラベルのモデルごとのワイヤ エイリアス。 |
 | `noReasoningModels?` | `string[]` |推論/思考パラメーターを拒否するモデル。 |

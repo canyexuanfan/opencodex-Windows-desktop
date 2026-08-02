@@ -65,7 +65,7 @@ description: 提供者条目、身份验证、端点、模型目录、配额、�
 | `modelReasoningEfforts?` | `Record<string, string[]>` | 按模型设置的标签。空列表会隐藏 effort 控件。 |
 | `modelSupportsReasoningSummaries?` | `Record<string, boolean>` | 将某个模型设为 `false`，即可停止暴露摘要并移除摘要交付字段。 |
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | 按模型设置的 Responses 交付枚举；会重写现有的 delivery 字段。 |
-| `modelAdapters?` | `Record<string, string>` | 按模型设置的 `openai-chat` 或 `openai-responses` 线协议覆盖项，用于混合线协议网关。显式条目优先于注册表默认值；DeepSeek 预设可以为 `deepseek-v4-flash` 选择原生 Responses。单一线协议上游固定项和规范 ChatGPT forward 会拒绝覆盖。 |
+| `modelAdapters?` | `Record<string, string>` | 按模型设置的 `openai-chat` 或 `openai-responses` 线协议覆盖项，用于混合线协议网关。显式条目优先于注册表默认值；DeepSeek 预设可以为 `deepseek-v4-flash` 选择原生 Responses，GitHub Copilot 则为 GPT-5 系列（`gpt-5.3-codex`、`gpt-5.4`、`gpt-5.4-mini`、`gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`）声明了 Responses 专用默认值，因为这些模型在代理流量下会拒绝 `/chat/completions`。没有内置默认值的模型（例如 `gpt-5.4-nano`）可以在此手动启用。单一线协议上游固定项和规范 ChatGPT forward 会拒绝覆盖。 |
 | `reasoningEffortMap?` | `Record<string, string>` | 提供者级、用于推理标签的线协议别名。 |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | 按模型设置的推理标签线协议别名。 |
 | `noReasoningModels?` | `string[]` | 会拒绝推理/思考参数的模型。 |
