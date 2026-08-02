@@ -27,12 +27,14 @@ deliberate deviation from the literal ask.
 
 `010` §Storage settles the mechanics: `opencodex-prompt.json` is the single
 source of truth for every layer including disabled bodies, and
-`developer_instructions` is a generated projection of the enabled subset,
-serialized through a real TOML writer. No fences, no two-way reconciliation.
+`developer_instructions` is a generated projection of the enabled subset, always
+in the canonical two-line form. One authority, no reconciliation.
 
-When the key exists without our marker, the whole custom group is unavailable
-with an explanation (`010` §Ownership). The `+` button is hidden rather than
-failing on save.
+When the key exists without our marker, the custom group offers **Adopt**
+(`010` §Ownership): the existing text is shown verbatim, copied if the user
+wants, and imported as a custom layer only on explicit confirmation. `+` stays
+hidden until ownership is settled, but the user is never told to go delete their
+own instructions by hand.
 
 ## Row
 
@@ -72,6 +74,12 @@ than on Save:
 | body > 64 KiB | size shown, Save disabled |
 | composed total > 128 KiB | which layers overflow |
 | > 32 layers | `+` disabled with the reason |
+| control character in body | the offending position, Save disabled |
+
+Tabs and CRLF are **normalized, not rejected** — four spaces and LF — with a
+quiet note the first time it happens. `010` explains why the character set is
+restricted: a measured `Bun.TOML.parse` defect makes local verification
+untrustworthy, so the encoding is kept to three unambiguous escapes instead.
 
 The server still enforces every one of these (`020`). Client validation is
 courtesy; the API is the boundary.
@@ -105,8 +113,8 @@ drag-only affordance is not reachable.
 ## Delete
 
 Confirms first, because a body can be long and there is no undo. Delete removes
-the row from the list and PUTs the remainder; WP1 then drops its fence from
-config.toml and its entry from the JSON file.
+the row and PUTs the remainder; WP1 drops its entry from the JSON and
+regenerates the projection without it.
 
 ## Tests — `gui/tests/codex-set-custom-layers.test.tsx`
 
@@ -123,13 +131,18 @@ config.toml and its entry from the JSON file.
 11. a rejected PUT restores the previous list
 12. built-in rows still have no delete control
 13. stale revision → re-read, no blind retry
-14. unowned `developer_instructions` hides `+` and explains why
-15. a body containing the literal text `# >>> ocx-layer:abc123` saves and
-    round-trips unharmed — the fence-collision class is gone by construction
-16. linter: one case per rule, positive and negative
-17. clean behavioral text produces zero findings
-18. lint spans point at the right substring
-19. no rule throws on empty, whitespace-only, or 64 KiB input
+14. unowned `developer_instructions` hides `+` and offers Adopt
+15. Adopt shows the raw text and requires confirmation before writing
+16. Adopt is refused, with path and line, when the value is not a single-line
+    basic string
+17. a body containing `"` and `\` saves and round-trips unharmed
+18. tabs normalize to four spaces; CRLF normalizes to LF
+19. a control character is rejected with its position
+20. `drift` states render with a Repair action rather than silently self-healing
+21. linter: one case per rule, positive and negative
+22. clean behavioral text produces zero findings
+23. lint spans point at the right substring
+24. no rule throws on empty, whitespace-only, or 64 KiB input
 
 Case 12 re-asserts ask item 6 from the custom-layer side: adding delete to one
 row family must not leak it into the other.

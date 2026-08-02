@@ -80,10 +80,14 @@ asserts the partition is total and disjoint.
 
 | id | Layer | Why it is class A |
 |---|---|---|
-| `base-instructions` | base/model instructions | the outbound request always carries non-empty base instructions (`client.rs:861-887`); no `include_base_instructions` exists. Content is replaceable via `model_instructions_file`; presence is not. |
+| `base-instructions` | base/model instructions | base instructions travel in the Responses `instructions` field, or as a leading developer message under Responses Lite (`client.rs:861-887`). **No `include_base_instructions` key exists anywhere in the schema.** Content is replaceable via `model_instructions_file`; the field itself is not user-suppressible. |
 
-Exactly one member. It is not a world-state section at all — it travels in the
-Responses `instructions` field.
+Exactly one member. It is not a world-state section at all.
+
+The audit judged an earlier wording — "the request always carries non-empty base
+instructions" — overstated, since `client.rs:861-887` shows *how* they are sent
+rather than proving they are never empty. Narrowed accordingly: what class A
+asserts is the absence of an off-switch, which is exactly what the schema shows.
 
 ### Class B — `config-toggle` — a direct boolean in config.toml
 

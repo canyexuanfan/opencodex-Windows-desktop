@@ -45,6 +45,13 @@ The first draft derived row kind from a server `locked` array that WP1 never
 exported, and an audit found it also mis-listed Plugins as non-disableable.
 Deriving from `class` removes both failure modes: the taxonomy is the contract.
 
+Precise wording matters in the UI copy too. `base` and `runtime-conditional`
+rows have **no off-switch anywhere in Codex**. `feature-gated` rows *are*
+disableable — through `[features]`, not through this page. An earlier draft
+applied the stronger sentence to all non-switch rows, which is false for
+feature-gated ones and would mislead a user into thinking a setting does not
+exist.
+
 "No switch element at all" is literal: no `<input type="checkbox" disabled>`,
 no greyed toggle. `005` explains the reasoning — a disabled control claims the
 capability exists and is temporarily unavailable, which is false. `001` §4

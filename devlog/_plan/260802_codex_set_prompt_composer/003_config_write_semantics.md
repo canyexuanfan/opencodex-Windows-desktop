@@ -100,9 +100,16 @@ keys — `ConfigRequirements` has no `include_*` fields
 But legacy `managed_config.toml` / MDM is appended **after** runtime layers
 (`loader/mod.rs:369-413`), so a managed value silently overrides ours.
 
-WP2 therefore returns an `effective` value alongside the `configured` value
-where it can determine one, and the UI shows an override notice rather than
-claiming a toggle took hold.
+**This is why WP1 reports `defaultedUserValue`, not `effective`.** An earlier
+draft of this document told WP2 to return an effective value and render an
+override notice. opencodex reads exactly one of the eight layers above, so it
+cannot compute the effective value, and an audit correctly rejected the
+instruction as an overclaim.
+
+Resolved-configuration reporting is **deferred**, not approximated: promising
+override detection without a read path would relocate the false claim rather
+than remove it. `010` and `005` carry the same rule; this section no longer
+contradicts them.
 
 ## 7. Canonical target file
 
@@ -124,7 +131,7 @@ Verified against `config.schema.json:5411-5426` and `skills_config.rs:30`.
 | Risk | Mitigation | Phase |
 |---|---|---|
 | Typo'd key silently no-ops or bricks strict mode | fixed allowlist, no free-form keys | WP1 |
-| Managed layer overrides our write | report effective vs configured | WP2 |
+| Managed layer overrides our write | **deferred** — we report this file's value under a name that says so | WP1/WP2 |
 | Codex overwrites our value | same-path keys are shared; never assume ownership | WP1 |
 | User expects instant effect | "new sessions" copy, enforced by test | WP3 |
 | Upstream renames a key | absent key = unknown, not false | WP1 |

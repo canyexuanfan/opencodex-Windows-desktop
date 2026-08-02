@@ -92,23 +92,38 @@ Either way the result is a custom row: editable, toggleable, deletable.
 
 ## What custom rows actually write
 
-All enabled custom layers concatenate, in row order, into the root
-`developer_instructions` string. Each is fenced by a marker comment carrying its
-id and enabled state, so opencodex can round-trip its own block without
-touching anything a user wrote by hand:
+Every layer — enabled or not — lives in `$CODEX_HOME/opencodex-prompt.json`,
+which opencodex owns outright. `config.toml` receives a generated projection of
+the **enabled** subset, in row order, as exactly two lines:
 
 ```toml
-developer_instructions = """
-# >>> ocx-layer:a1b2c3 My house rules
-<body>
-# <<< ocx-layer:a1b2c3
-"""
+# Auto-injected by opencodex
+developer_instructions = "escaped composition of enabled layers"
 ```
 
-A disabled layer keeps its stored body but is omitted from the composed string.
-If a user had authored `developer_instructions` before opencodex ever ran, that
-text is preserved as an unowned prefix and is never edited or deleted — the
-adjacency-ownership discipline from `injected-marker.ts:53-60`.
+A disabled layer keeps its body in the JSON and is simply absent from the
+projection, so switching it off removes it from the prompt without losing it.
+
+`010` §Canonical physical form fixes the shape: always a single-line basic
+string, always directly under the marker. Replacement is "find marker, replace
+next line" — not a search for a value span.
+
+If `developer_instructions` exists without our marker, opencodex refuses to
+write it and offers an explicit **Adopt** flow that shows the existing text and
+imports it as a custom layer on confirmation (`010` §Ownership). Nothing is
+overwritten or deleted silently.
+
+### Accepted characters
+
+Bodies accept printable Unicode, spaces, and newlines. Tabs are normalized to
+four spaces; CRLF is normalized to LF. Control characters are rejected with a
+precise message.
+
+This is not fussiness. `010` records a measured defect in `Bun.TOML.parse` on
+Bun 1.3.14 — it transposes `\t` and `\f`, and rejects `\u0007` — so an encoding
+we could verify locally is not necessarily the encoding Codex's Rust parser
+reads. Restricting the character set makes the escaping total and unambiguous
+with three rules, which no parser defect can undermine.
 
 `model_instructions_file` is never written here. `002` §3 explains why. When
 something else has set it, the Prompt panel shows a warning row: the base prompt

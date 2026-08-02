@@ -16,6 +16,7 @@ Shape from `sidebar-routes.ts:23-89`; GET/PUT semantics from
   "configExists": true,
   "readable": true,
   "developerInstructionsOwned": true,
+  "drift": null,
   "revision": "sha256:...",
   "inventory": [
     { "id": "base-instructions", "class": "base",
@@ -91,6 +92,7 @@ Validation before any file access:
 | title empty, > 80 chars, or contains a newline | `400 invalid_title` |
 | body > 64 KiB | `400 body_too_large` |
 | composed total > 128 KiB | `400 composed_too_large` |
+| control character in body | `400 invalid_characters` with position |
 
 The size caps are **opencodex policy**, not a Codex limit. `002` §3 records that
 Codex validates nothing beyond readable-and-non-empty. The audit correctly
@@ -99,8 +101,30 @@ rejected an earlier draft that justified a cap with the 32 KiB AGENTS.md budget
 `developer_instructions`. The real justification is request cost and keeping a
 hand-editable file hand-editable.
 
-No character is forbidden in a body. Blocker 2 is gone with the fences: bodies
-are never re-parsed, so no text can collide with a delimiter.
+Tabs and CRLF are normalized rather than rejected. Control characters are
+refused: `010` records a measured `Bun.TOML.parse` defect that makes local
+verification untrustworthy, so the encoding is restricted to a character set
+whose escaping is total under three unambiguous rules.
+
+### `POST /api/codex-prompt/adopt`
+
+Takes ownership of an externally authored `developer_instructions`. Returns the
+raw source line for preview when called with `{ "confirm": false }`, and
+performs the import only on `{ "confirm": true, "revision": "..." }`.
+
+Refused with `409 adopt_unsupported_form` when the value is not a single-line
+basic string, naming the file path and line number so the user can move it by
+hand. `010` §Ownership explains why a broader extraction is not attempted.
+
+### `POST /api/codex-prompt/repair`
+
+The only endpoint that resolves a `drift` state. Revision-checked like any
+mutation. GET never repairs anything — an HTTP GET must not modify a user's
+configuration.
+
+`drift` values: `"journal-present"`, `"projection-stale"`, `"store-missing"`,
+or `null`. For `store-missing`, repair returns the reconstructed layer for
+confirmation before writing.
 
 ## Response echoes the snapshot
 
@@ -141,11 +165,17 @@ WP1 module is injected so **no test touches the real `CODEX_HOME`**.
    `config-toggle` has a non-null key** — the partition guard
 7. PUT custom round-trips order
 8. each validation rule, one case each
-9. stale revision → 409 on both PUTs
-10. unowned `developer_instructions` → 409 on custom, toggles still work
-11. unreadable config → 409 on both
+9. stale revision → 409 on every mutating verb
+10. unowned `developer_instructions` → 409 on custom; toggles still work
+11. unreadable config → 409 on all mutations
 12. hostile Origin rejected (mirrors `management-client-config-route.test.ts:240`)
 13. unhandled path returns `null` so the chain continues
+14. adopt preview returns the raw line and **writes nothing**
+15. adopt without `confirm: true` writes nothing
+16. adopt on an unsupported form → 409 with path and line
+17. every `drift` state is reported by GET and **GET writes nothing**
+18. repair requires a matching revision
+19. control-character body → 400 with position
 
 Cases 5 and 6 are load-bearing: 5 proves ask item 9 at the API boundary, 6
 prevents the inventory drift the audit found in the first draft.
