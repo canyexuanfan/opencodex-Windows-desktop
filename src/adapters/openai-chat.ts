@@ -102,30 +102,33 @@ function safeUpstreamRequestId(metadata: unknown): string | undefined {
 }
 
 function upstreamErrorEvent(
-  error: OpenAIChatError | undefined,
+  error: OpenAIChatError | string | undefined,
   usage?: OcxUsage,
 ): Extract<AdapterEvent, { type: "error" }> {
-  const rawMessage = typeof error?.message === "string" ? error.message : "upstream error";
-  const requestId = safeUpstreamRequestId(error?.metadata);
+  const details = typeof error === "string" ? undefined : error;
+  const rawMessage = typeof error === "string"
+    ? error.trim() || "upstream error"
+    : typeof details?.message === "string" ? details.message : "upstream error";
+  const requestId = safeUpstreamRequestId(details?.metadata);
   const message = requestId !== undefined && !rawMessage.includes(requestId)
     ? `${rawMessage} (request ID: ${requestId})`
     : rawMessage;
-  const code = typeof error?.code === "string"
-    ? error.code
-    : typeof error?.code === "number" && Number.isFinite(error.code) && Number.isInteger(error.code)
-      ? String(error.code)
+  const code = typeof details?.code === "string"
+    ? details.code
+    : typeof details?.code === "number" && Number.isFinite(details.code) && Number.isInteger(details.code)
+      ? String(details.code)
       : undefined;
-  const errorType = typeof error?.type === "string" ? error.type : undefined;
-  const codeStatus = typeof error?.code === "number"
-    && Number.isInteger(error.code)
-    && error.code >= 100
-    && error.code <= 599
-    ? error.code
+  const errorType = typeof details?.type === "string" ? details.type : undefined;
+  const codeStatus = typeof details?.code === "number"
+    && Number.isInteger(details.code)
+    && details.code >= 100
+    && details.code <= 599
+    ? details.code
     : undefined;
   const status = isCyberPolicyCode(code)
     ? 400
-    : typeof error?.status === "number" && Number.isInteger(error.status)
-      ? error.status
+    : typeof details?.status === "number" && Number.isInteger(details.status)
+      ? details.status
       : codeStatus;
   return {
     type: "error",

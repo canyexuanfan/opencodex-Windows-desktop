@@ -238,6 +238,12 @@ describe("ClinePass provider", () => {
     });
     expect(failed).toEqual([{ type: "error", code: "rate_limit", message: "ClinePass limit reached" }]);
 
+    const stringError = await parseNonStream({
+      success: false,
+      error: "ClinePass quota exhausted",
+    });
+    expect(stringError).toEqual([{ type: "error", message: "ClinePass quota exhausted" }]);
+
     const numericCode = await parseNonStream({
       error: {
         code: 429,
