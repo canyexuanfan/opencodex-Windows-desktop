@@ -62,6 +62,7 @@ type AtomicWriter = (path: string, content: string) => Promise<void>;
 type TransitionApplier = (fromAccountId: string, toAccountId: string) => void;
 type EnvelopeReader = (path: string) => NativeEnvelopeSnapshot;
 type VaultReader = () => NativeMainProfileVaultV1 | null;
+type EnvelopeResultReader = (path: string) => ReturnType<typeof readNativeEnvelopeResult>;
 export type NativeProfileSwitchBoundary =
   | "journal-prepared"
   | "auth-replaced"
@@ -88,6 +89,7 @@ export interface NativeProfileManagerOptions {
   /** Test-only reader seams; production uses the native profile store directly. */
   readEnvelope?: EnvelopeReader;
   readVault?: VaultReader;
+  readEnvelopeResult?: EnvelopeResultReader;
 }
 
 export interface NativeProfileListResult {
@@ -124,6 +126,7 @@ export class NativeProfileManager {
   private readonly onSwitchBoundary: (boundary: NativeProfileSwitchBoundary) => void | Promise<void>;
   private readonly readEnvelope: EnvelopeReader;
   private readonly readVault: VaultReader;
+  private readonly readEnvelopeResult: EnvelopeResultReader;
 
   constructor(options: NativeProfileManagerOptions = {}) {
     this.context = resolveNativeProfileContext(options);
@@ -141,6 +144,7 @@ export class NativeProfileManager {
     this.onSwitchBoundary = options.onSwitchBoundary ?? (() => {});
     this.readEnvelope = options.readEnvelope ?? readNativeEnvelope;
     this.readVault = options.readVault ?? (() => readNativeProfileVault(this.context));
+    this.readEnvelopeResult = options.readEnvelopeResult ?? readNativeEnvelopeResult;
   }
 
   private async ensureRoot(): Promise<void> {
@@ -414,46 +418,50 @@ export class NativeProfileManager {
     const mode = (() => {
       try { return resolveNativeCredentialStoreMode(this.context); } catch { return "unknown"; }
     })();
-    const auth = readNativeEnvelopeResult(this.context.authPath);
-    let vault: NativeMainProfileVaultV1 | null = null;
-    let vaultStatus: "ok" | "missing" | "invalid" = "missing";
+    const auth = this.readEnvelopeResult(this.context.authPath);
     try {
-      vault = readNativeProfileVault(this.context);
-      vaultStatus = vault ? "ok" : "missing";
-    } catch {
-      vaultStatus = "invalid";
-    }
-    let keyStore: "available" | "missing-key" | "unavailable" = "available";
-    try {
-      const key = await this.keyProvider.get(this.context.homeId);
-      if (vaultStatus !== "missing" && !key) keyStore = "missing-key";
-      if (key) key.key.fill(0);
-    } catch {
-      keyStore = "unavailable";
-    }
-    let stagingCount: number | null = 0;
-    try {
-      if (existsSync(this.context.stagingRoot)) {
-        stagingCount = Array.from(new Bun.Glob("*").scanSync({ cwd: this.context.stagingRoot, onlyFiles: false })).length;
+      let vault: NativeMainProfileVaultV1 | null = null;
+      let vaultStatus: "ok" | "missing" | "invalid" = "missing";
+      try {
+        vault = this.readVault();
+        vaultStatus = vault ? "ok" : "missing";
+      } catch {
+        vaultStatus = "invalid";
       }
-    } catch {
-      stagingSweep = "unreadable";
-      stagingCount = null;
+      let keyStore: "available" | "missing-key" | "unavailable" = "available";
+      try {
+        const key = await this.keyProvider.get(this.context.homeId);
+        if (vaultStatus !== "missing" && !key) keyStore = "missing-key";
+        if (key) key.key.fill(0);
+      } catch {
+        keyStore = "unavailable";
+      }
+      let stagingCount: number | null = 0;
+      try {
+        if (existsSync(this.context.stagingRoot)) {
+          stagingCount = Array.from(new Bun.Glob("*").scanSync({ cwd: this.context.stagingRoot, onlyFiles: false })).length;
+        }
+      } catch {
+        stagingSweep = "unreadable";
+        stagingCount = null;
+      }
+      return {
+        effectiveCodexHome: this.context.codexHome,
+        credentialStoreMode: mode,
+        supported: mode === "file",
+        authStatus: auth.status,
+        keyStore,
+        vaultStatus,
+        profileCount: vaultStatus === "invalid" ? null : vault?.profiles.length ?? 0,
+        activeProfileId: vault?.activeProfileId ?? null,
+        recoveryPending: probeNativeProfileRecoveryState(this.context) !== "none",
+        recoveryState: probeNativeProfileRecoveryState(this.context),
+        stagingSweep,
+        stagingCount,
+      };
+    } finally {
+      if (auth.status === "ok") auth.envelope.raw.fill(0);
     }
-    return {
-      effectiveCodexHome: this.context.codexHome,
-      credentialStoreMode: mode,
-      supported: mode === "file",
-      authStatus: auth.status,
-      keyStore,
-      vaultStatus,
-      profileCount: vaultStatus === "invalid" ? null : vault?.profiles.length ?? 0,
-      activeProfileId: vault?.activeProfileId ?? null,
-      recoveryPending: probeNativeProfileRecoveryState(this.context) !== "none",
-      recoveryState: probeNativeProfileRecoveryState(this.context),
-      stagingSweep,
-      stagingCount,
-    };
     });
   }
 

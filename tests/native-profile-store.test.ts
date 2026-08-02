@@ -6,6 +6,7 @@ import {
   inspectNativeProfileJournal,
   MAX_NATIVE_PROFILE_JOURNAL_BYTES,
   MAX_NATIVE_PROFILE_METADATA_BYTES,
+  OsNativeProfileKeyProvider,
   readNativeProfileVault,
   serializeNativeProfileJournal,
   type NativeProfileContext,
@@ -58,6 +59,41 @@ function context(): NativeProfileContext {
 
 function installBoundedReadTestSeam(store: NativeProfileContext, seam: BoundedReadTestSeam): void {
   (store as NativeProfileContext & { [key: symbol]: unknown })[BOUNDED_READ_TEST_SEAM] = seam;
+}
+
+function expectZeroized(buffer: Buffer): void {
+  expect([...buffer].every(byte => byte === 0)).toBe(true);
+}
+
+class TestKeyringEntry {
+  private written: Buffer | null = null;
+  private getCalls = 0;
+  constructor(
+    private readonly initial: Buffer | null,
+    private readonly readback?: Buffer | null,
+    private readonly readError?: Error,
+    private readonly writeError?: Error,
+  ) {}
+  async setSecret(secret: Uint8Array): Promise<void> {
+    if (this.writeError) throw this.writeError;
+    this.written = Buffer.from(secret);
+  }
+  async getSecret(): Promise<Buffer | null> {
+    if (this.readError) throw this.readError;
+    this.getCalls += 1;
+    if (this.getCalls === 1) return this.initial;
+    return this.readback ?? this.written;
+  }
+}
+
+function keyringProvider(
+  entry: TestKeyringEntry,
+  buffers: Buffer[],
+): OsNativeProfileKeyProvider {
+  return new OsNativeProfileKeyProvider({
+    entryFactory: async () => entry,
+    onSecretBufferCreated: buffer => buffers.push(buffer),
+  });
 }
 
 function payload(identityHash: string): EncryptedNativeEnvelopeV1 {
@@ -229,5 +265,83 @@ describe("native-profile recovery journal storage", () => {
     expect(inspectNativeProfileJournal(store)).toEqual({ status: "invalid" });
     expect(allocations).toEqual([MAX_NATIVE_PROFILE_JOURNAL_BYTES + 1]);
     expect(totalBytesRead).toBe(MAX_NATIVE_PROFILE_JOURNAL_BYTES + 1);
+  });
+
+  test("keyring get zeroizes the provider-owned secret after returning a copied key", async () => {
+    const original = Buffer.alloc(32, 0x2a);
+    const buffers: Buffer[] = [];
+    const key = await keyringProvider(new TestKeyringEntry(original), buffers).get(HOME_ID);
+
+    expect(key).not.toBeNull();
+    expectZeroized(original);
+    expect(buffers).toHaveLength(1);
+    expect(buffers[0]).toEqual(key!.key);
+    expect(buffers[0].some(byte => byte !== 0)).toBe(true);
+    key!.key.fill(0);
+    expectZeroized(buffers[0]);
+  });
+
+  test("keyring get zeroizes both original and copy on invalid length", async () => {
+    const original = Buffer.alloc(8, 0x2a);
+    const buffers: Buffer[] = [];
+    let caught: unknown;
+    try { await keyringProvider(new TestKeyringEntry(original), buffers).get(HOME_ID); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("KEYRING_UNAVAILABLE");
+    expectZeroized(original);
+    expect(buffers).toHaveLength(1);
+    expectZeroized(buffers[0]);
+  });
+
+  test("keyring get preserves the mapped error when the provider throws", async () => {
+    const buffers: Buffer[] = [];
+    let caught: unknown;
+    try {
+      await keyringProvider(new TestKeyringEntry(null, null, new Error("injected keyring read")), buffers).get(HOME_ID);
+    } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("KEYRING_UNAVAILABLE");
+    expect(buffers).toHaveLength(0);
+  });
+
+  test("keyring create zeroizes originals and verification copies on readback mismatch", async () => {
+    const returned = Buffer.alloc(32, 0x2a);
+    const buffers: Buffer[] = [];
+    let caught: unknown;
+    try { await keyringProvider(new TestKeyringEntry(null, returned), buffers).create(HOME_ID); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("KEYRING_UNAVAILABLE");
+    expectZeroized(returned);
+    expect(buffers.length).toBe(2);
+    for (const buffer of buffers) expectZeroized(buffer);
+  });
+
+  test("keyring create zeroizes its generated key when writing throws", async () => {
+    const buffers: Buffer[] = [];
+    let caught: unknown;
+    try {
+      await keyringProvider(new TestKeyringEntry(null, null, undefined, new Error("injected keyring write")), buffers).create(HOME_ID);
+    } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("KEYRING_UNAVAILABLE");
+    expect(buffers).toHaveLength(1);
+    expectZeroized(buffers[0]);
+  });
+
+  test("keyring create preserves copied key ownership on verified success", async () => {
+    const buffers: Buffer[] = [];
+    const created = await keyringProvider(new TestKeyringEntry(null), buffers).create(HOME_ID);
+
+    expect(buffers.length).toBe(3);
+    expectZeroized(buffers[0]);
+    expectZeroized(buffers[1]);
+    expect(created.key).toBe(buffers[2]);
+    expect(created.key.some(byte => byte !== 0)).toBe(true);
+    created.key.fill(0);
+    expectZeroized(buffers[2]);
   });
 });

@@ -8,6 +8,7 @@ import {
   MAX_NATIVE_PROFILE_JOURNAL_BYTES,
   MAX_NATIVE_PROFILE_METADATA_BYTES,
   readNativeEnvelope,
+  readNativeEnvelopeResult,
   probeNativeProfileRecoveryState,
   readNativeProfileVault,
   type NativeEnvelopeSnapshot,
@@ -911,6 +912,27 @@ describe("native main profile transactions", () => {
     expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
     expect(f.keyProvider.issuedKeys.slice(issuedBefore)).not.toHaveLength(0);
     for (const key of f.keyProvider.issuedKeys.slice(issuedBefore)) expectZeroized(key);
+  });
+
+  test("doctor zeroizes a successful auth snapshot across report degradation", async () => {
+    const f = fixture();
+    const captured: NativeEnvelopeSnapshot[] = [];
+    const manager = new NativeProfileManager({
+      ...f.options,
+      readEnvelopeResult: path => {
+        const result = readNativeEnvelopeResult(path);
+        if (result.status === "ok") captured.push(result.envelope);
+        return result;
+      },
+      readVault: () => { throw new Error("injected doctor vault failure"); },
+    });
+
+    const report = await manager.doctor();
+
+    expect(report.authStatus).toBe("ok");
+    expect(report.vaultStatus).toBe("invalid");
+    expect(captured).toHaveLength(1);
+    expectZeroized(captured[0].raw);
   });
 
   test("non-file Codex credential stores fail before vault or auth mutation", async () => {

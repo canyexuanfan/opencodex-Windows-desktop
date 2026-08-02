@@ -78,11 +78,40 @@ export type NativeEnvelopeReadResult =
   | { status: "ok"; envelope: NativeEnvelopeSnapshot }
   | { status: "missing" | "invalid" | "unreadable" };
 
+type NativeKeyringSecret = string | Uint8Array | null;
+type NativeKeyringEntry = {
+  getSecret(signal: AbortSignal): Promise<NativeKeyringSecret>;
+  setSecret(secret: Uint8Array, signal: AbortSignal): Promise<void>;
+};
+
+function wipeKeyringSecret(value: NativeKeyringSecret | undefined): void {
+  if (!value || typeof value === "string") return;
+  try { value.fill(0); } catch { /* cleanup must not replace the primary keyring error */ }
+}
+
 export class OsNativeProfileKeyProvider implements NativeProfileKeyProvider {
-  private async entry(homeId: string): Promise<import("@napi-rs/keyring").AsyncEntry> {
+  private readonly entryFactory: (homeId: string) => Promise<NativeKeyringEntry>;
+  private readonly onSecretBufferCreated?: (buffer: Buffer) => void;
+
+  constructor(options: {
+    /** Test-only seam for deterministic keyring cleanup coverage. */
+    entryFactory?: (homeId: string) => Promise<NativeKeyringEntry>;
+    /** Test-only seam for observing internal secret-buffer ownership. */
+    onSecretBufferCreated?: (buffer: Buffer) => void;
+  } = {}) {
+    this.entryFactory = options.entryFactory ?? (homeId => this.entry(homeId));
+    this.onSecretBufferCreated = options.onSecretBufferCreated;
+  }
+
+  private trackSecretBuffer(buffer: Buffer): Buffer {
+    this.onSecretBufferCreated?.(buffer);
+    return buffer;
+  }
+
+  private async entry(homeId: string): Promise<NativeKeyringEntry> {
     try {
       const { AsyncEntry } = await import("@napi-rs/keyring");
-      return new AsyncEntry(KEYRING_SERVICE, homeId);
+      return new AsyncEntry(KEYRING_SERVICE, homeId) as unknown as NativeKeyringEntry;
     } catch {
       throw new NativeProfileError(
         "KEYRING_UNAVAILABLE",
@@ -94,16 +123,18 @@ export class OsNativeProfileKeyProvider implements NativeProfileKeyProvider {
   }
 
   async get(homeId: string): Promise<NativeProfileKey | null> {
+    let secret: NativeKeyringSecret | undefined;
+    let key: Buffer | null = null;
     try {
-      const secret = await (await this.entry(homeId)).getSecret(AbortSignal.timeout(8_000));
+      secret = await (await this.entryFactory(homeId)).getSecret(AbortSignal.timeout(8_000));
       if (!secret) return null;
-      const key = Buffer.from(secret);
+      key = this.trackSecretBuffer(Buffer.from(secret));
       if (key.byteLength !== 32) {
-        key.fill(0);
         throw new NativeProfileError("KEYRING_UNAVAILABLE", "The OS credential-store key is invalid.", 503);
       }
       return { keyRef: `${KEYRING_SERVICE}:${homeId}`, key };
     } catch (error) {
+      if (key) wipeKeyringSecret(key);
       if (error instanceof NativeProfileError) throw error;
       throw new NativeProfileError(
         "KEYRING_UNAVAILABLE",
@@ -111,25 +142,28 @@ export class OsNativeProfileKeyProvider implements NativeProfileKeyProvider {
         503,
         true,
       );
+    } finally {
+      wipeKeyringSecret(secret);
     }
   }
 
   async create(homeId: string): Promise<NativeProfileKey> {
     const existing = await this.get(homeId);
     if (existing) return existing;
-    const key = randomBytes(32);
+    const key = this.trackSecretBuffer(randomBytes(32));
+    let stored: NativeKeyringSecret | undefined;
+    let verified: Buffer | null = null;
     try {
-      const entry = await this.entry(homeId);
+      const entry = await this.entryFactory(homeId);
       await entry.setSecret(key, AbortSignal.timeout(8_000));
-      const stored = await entry.getSecret(AbortSignal.timeout(8_000));
-      const verified = stored ? Buffer.from(stored) : null;
+      stored = await entry.getSecret(AbortSignal.timeout(8_000));
+      verified = stored ? this.trackSecretBuffer(Buffer.from(stored)) : null;
       if (!verified || verified.byteLength !== key.byteLength || !timingSafeEqual(verified, key)) {
-        verified?.fill(0);
         throw new NativeProfileError("KEYRING_UNAVAILABLE", "The OS credential-store key could not be verified.", 503);
       }
-      verified.fill(0);
-      return { keyRef: `${KEYRING_SERVICE}:${homeId}`, key: Buffer.from(key) };
+      return { keyRef: `${KEYRING_SERVICE}:${homeId}`, key: this.trackSecretBuffer(Buffer.from(key)) };
     } catch (error) {
+      wipeKeyringSecret(verified);
       if (error instanceof NativeProfileError) throw error;
       throw new NativeProfileError(
         "KEYRING_UNAVAILABLE",
@@ -138,7 +172,9 @@ export class OsNativeProfileKeyProvider implements NativeProfileKeyProvider {
         true,
       );
     } finally {
-      key.fill(0);
+      wipeKeyringSecret(stored);
+      wipeKeyringSecret(verified ?? undefined);
+      wipeKeyringSecret(key);
     }
   }
 }
