@@ -63,9 +63,17 @@ edits were yours.
 
 **Formatting is not preserved.** Applying parses your config and writes it back out, so
 every format may be reformatted, and YAML, JSON5 and TOML additionally lose their
-comments. Your settings survive — every value you had is still there and equal — but the
-bytes change. If you need the file exactly as it was, use Restore rather than Disable:
-the snapshot is a verbatim copy.
+comments. Your settings survive the round trip and the bytes change. If you need the
+file exactly as it was, use Restore rather than Disable: the snapshot is a verbatim
+copy.
+
+**If a value cannot be rewritten faithfully, the switch refuses instead.** The round
+trip covers the value kinds these formats use in practice, and where it does not —
+a TOML file using `inf` or `nan`, for instance, which the parser available to us
+cannot read back accurately — applying stops and says so rather than writing a
+changed value and calling it success. You will see the file named and nothing on
+disk will have moved. Editing that file by hand still works; it is only our
+automatic rewrite that declines.
 
 **Pi, Kimi Code and Gajae Code only work against a loopback bind.** None of their config
 schemas has a place for the `x-opencodex-api-key` header that a non-loopback bind
