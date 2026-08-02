@@ -36,13 +36,13 @@ Rejected alternatives (with reasons): provider-wide `openai-responses` (breaks C
 
 ## Selection rule (decision reference; full evidence in `000_plan.md`)
 
-Built-in = field report in issue #748 AND independent corroboration. `gpt-5.6-sol`/`gpt-5.4-nano` fail that rule (lead-only) and stay out. Lookup is exact normalized-ID (`trim().toLowerCase()`, `registry.ts:1568`) — no family/snapshot prefix matching.
+Built-in = field report in issue #748 AND independent corroboration. All seven Responses-required models meet it, including `gpt-5.6-sol`; `gpt-5.4-nano` alone fails it (no field-report leg) and stays out as a documented `modelAdapters` example. Lookup is exact normalized-ID (`trim().toLowerCase()`, `registry.ts:1568`) — no family/snapshot prefix matching.
 
 ## Acceptance + activation scenarios
 
 1. `gpt-5.4` via the github-copilot preset resolves to the Responses wire and the upstream request goes to the Responses endpoint, never `/chat/completions`. Activation: captured-upstream-URL test (runtime-wire proof, not just resolver proof).
-2. All six built-in models resolve Responses on all three inbound wires (Responses, Chat Completions, Anthropic inbound). Activation: parametrized resolver + URL tests.
-3. Explicit user `modelAdapters` override beats the registry default in BOTH directions (user pins a listed model back to chat; user maps `gpt-5.6-sol` to Responses). Activation: precedence tests.
+2. All seven built-in models resolve Responses on all three inbound wires (Responses, Chat Completions, Anthropic inbound). Activation: parametrized resolver + URL tests.
+3. Explicit user `modelAdapters` override beats the registry default in BOTH directions: a listed Responses-default model (e.g. `gpt-5.4`) pinned back to chat proves the opt-out direction; an unlisted chat model (e.g. `gpt-5.4-nano`, or seeded `gpt-5-mini`) mapped to Responses proves the opt-in direction. Activation: precedence tests — note `gpt-5.6-sol` cannot serve as the opt-in case because it is itself a default.
 4. Chat-served Copilot models (`gpt-4o`, `gpt-4.1`, `gpt-4.1-mini`, `claude-sonnet-4`, `gemini-2.5-pro`, `gpt-5-mini`) still use chat completions. Activation: regression assertions on the seed's chat set (`gpt-5-mini` is newly seeded, not pre-existing — its assertion guards against accidental inclusion in `modelWireDefaults`).
 5. Unrelated providers are isolated (no wire change for non-copilot providers with same-named models). Activation: isolation test.
 6. Credentials/base URL preserved through the resolved copy. Activation: adapter-resolve test shape per `adapter-resolve.ts:14`.
