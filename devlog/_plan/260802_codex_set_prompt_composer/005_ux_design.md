@@ -128,10 +128,27 @@ Three places where the UI must resist claiming more than it knows:
 
 ## Empty and error states
 
-- No `~/.codex/config.toml`: built-ins render at their documented defaults, all
-  rows read-only, with a note that the file will be created on first change.
-- Unreadable or malformed config: the panel refuses to write and says so.
-  `003` §4 — Codex itself cannot parse malformed TOML either, so an attempted
-  write would be the second failure, not a recovery.
-- No custom layers: the CUSTOM group shows a one-line invitation, not an empty
-  box.
+- **No `~/.codex/config.toml`:** rows render at documented defaults and switches
+  are **live**. The first toggle creates the file (`010` §First write). An
+  earlier draft disabled the switches while promising creation "on first
+  change", which an audit correctly called a contradiction — a disabled switch
+  makes that first change impossible.
+- **Unreadable or malformed config:** the panel refuses to write and says so.
+  `003` §4 — Codex cannot parse malformed TOML either, so writing would compound
+  the failure rather than recover from it.
+- **`developer_instructions` exists without our marker:** built-in toggles keep
+  working; custom layers are unavailable, with a plain explanation that the key
+  is externally managed and the one-line manual step to hand it over. `010`
+  §Ownership explains why refusing beats guessing.
+- **No custom layers:** the CUSTOM group shows a one-line invitation, not an
+  empty box.
+
+## What the UI does not claim
+
+`010` renames `effective` to `defaultedUserValue` because opencodex reads one
+file out of the eight config layers in `003` §1. The panel therefore says
+"이 파일의 설정" and never asserts the running Codex agrees.
+
+The managed-override notice from `003` §6 is **deferred with the field**.
+Detecting an MDM override needs a resolved-config read path we do not have;
+shipping the notice without it would move the overclaim rather than remove it.

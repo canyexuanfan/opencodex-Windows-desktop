@@ -1,7 +1,12 @@
 # 030 — WP3: Codex Auth → Codex Set
 
-The rename and the two-panel shell. No prompt rows yet: WP3 ends with a Prompt
-panel that mounts and says it is empty.
+The rename, the two-panel shell, and a **working** Prompt panel showing the five
+toggle rows. WP4 then adds the other four layer classes and the dialog.
+
+The first draft ended here with an empty placeholder and deferred the
+loading-contract migration to WP4. An audit called that a forward dependency,
+correctly: a phase that ships a panel saying "nothing here yet" cannot be
+verified against anything.
 
 ## Route rename
 
@@ -28,11 +33,24 @@ to that namespace and renaming it buys nothing.
 ## Files
 
 ```
-gui/src/pages/CodexSet.tsx           (new — shell, ~120 lines)
+gui/src/pages/CodexSet.tsx            (new — shell, ~120 lines)
 gui/src/pages/codex-set-multiauth.tsx (new — today's CodexAuth body, moved)
-gui/src/pages/codex-set-prompt.tsx   (new — placeholder in WP3)
-gui/src/pages/CodexAuth.tsx          (deleted)
+gui/src/pages/codex-set-prompt.tsx    (new — toggle rows + data surface)
+gui/src/pages/CodexAuth.tsx           (deleted)
 ```
+
+## The Prompt panel in this phase
+
+`useDataSurface("codex-prompt:" + apiBase, ...)` over `GET /api/codex-prompt`
+(`004` §G). Renders only `class === "config-toggle"` rows — five switches, each
+PUTting with the snapshot revision and republishing the echoed snapshot via
+`setClientResourceData`.
+
+`CodexSet` joins `MIGRATED` in `page-loading-contract.test.tsx:25-39` **in this
+phase**, since it now has a real data surface.
+
+Rows for the other classes are deliberately absent, not stubbed. A phase that
+renders half a taxonomy invites a reader to assume the rest does not exist.
 
 `codex-set-multiauth.tsx` is a **move, not a rewrite**. Everything
 `CodexAuth.tsx:93-177` owns — the `/api/config` fetch, the session cache key,
@@ -103,12 +121,13 @@ Add `gui/tests/codex-set-shell.test.tsx`:
 5. Prompt stays mounted after switching away
 6. tab switch pushes history; back returns to the previous tab
 7. the timing string renders and contains neither "즉시" nor "재시작"
+8. the five toggle rows render from the inventory
+9. toggling PUTs once, with the current revision
+10. a stale-revision 409 re-reads instead of retrying blindly
+11. `configExists: false` leaves switches **live**, not disabled
 
 Case 7 pins `003` §3 into a test so a later copy edit cannot quietly promise
-something the runtime does not do.
-
-Also add `CodexSet` to `MIGRATED` in `page-loading-contract.test.tsx:25-39`
-once WP4 gives it a real data surface — noted here, done in WP4.
+something the runtime does not do. Case 11 pins the audit's blocker-9 fix.
 
 ## Verification
 

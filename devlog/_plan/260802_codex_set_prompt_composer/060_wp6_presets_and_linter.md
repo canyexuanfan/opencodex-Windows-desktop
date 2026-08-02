@@ -1,4 +1,9 @@
-# 060 — WP6: presets and the compatibility linter
+# 060 — WP6: presets
+
+The linter moved to `050`, where it is consumed. WP6 is presets and the picker
+that offers them — content for a UI that already exists rather than UI ahead of
+content. The rule table below stays here as the linter's specification; `050`
+implements it.
 
 Ask item 10: "클로드 코드의 프리셋을 제공한다든지, 아니면 Grok Build의 어떤
 시스템 프롬프트를 제공한다든지 ... 하지만 codex 호환성이 있게 우리가 좀 조작을
@@ -39,7 +44,7 @@ Every preset is a **behavioral instruction**. None names a tool, none claims an
 identity, none describes the environment. That is what makes them safe to
 append, and it is exactly the constraint the linter enforces.
 
-## The linter
+## Linter specification (implemented in WP5)
 
 `gui/src/components/codex-set/prompt-lint.ts` — pure function, no I/O:
 
@@ -64,7 +69,14 @@ Rules, each traceable to `002` §6:
 | `apply-patch` | `apply_patch` with redefining verbs | warn | same registry argument |
 | `approval-vocab` | `always-approve`, `ask mode`, `acceptEdits` | warn | Codex injects its own — `world_state.rs:114` |
 | `environment` | claims about cwd, date, network, OS | warn | generated later — `world_state.rs:149` |
-| `size` | body > 8 KB | info | budget pressure — `agents_md.rs:109` |
+| `size` | body > 8 KB | info | **opencodex policy** — see below |
+
+The size rule cites no upstream limit, because none exists.
+`developer_instructions` is a plain config string with no cap
+(`config_toml.rs:216`), and `002` §6 records that an earlier draft wrongly cited
+the 32 KiB AGENTS.md project-doc budget, which governs an unrelated mechanism.
+The 8 KB advisory is ours, justified by per-request token cost and by keeping a
+hand-editable config file hand-editable. It is `info`, never `warn`.
 
 **Warnings never block.** A user who means to override identity may; the linter
 ensures it is a decision rather than an accident. `002` §6 says the same.
@@ -80,26 +92,22 @@ fully editable** — a preset is a starting point, not a locked artifact.
 Presets are linted on selection like any other text. If a preset ever trips its
 own linter, that is a bug in the preset, and the test below catches it.
 
-## Tests
+## Tests — `gui/tests/codex-set-presets.test.tsx`
 
-`gui/tests/prompt-lint.test.ts`:
+Rule-level linter cases live in WP5 (`050` cases 16-19). This phase tests the
+presets and the picker:
 
-1. one case per rule, positive and negative
-2. clean behavioral text produces zero findings
-3. spans point at the right substring
-4. **every shipped preset lints clean** — the self-consistency check
-5. an 8 KB body produces exactly one `info`
-6. no rule throws on empty, whitespace-only, or 64 KB input
+1. **every shipped preset lints clean** — the self-consistency check
+2. every preset is ≤ 2 KB and names no tool, identity, or environment fact
+3. picker lists every preset with its provenance line
+4. choosing one opens a pre-filled, editable editor
+5. the result is an ordinary custom layer — toggleable, editable, deletable
+6. preset text is editable before save
+7. the submenu appears only in this phase's build — absent when the preset list
+   is empty
 
-`gui/tests/codex-set-presets.test.tsx`:
-
-7. picker lists every preset with its provenance
-8. choosing one opens a pre-filled editable editor
-9. the result is an ordinary custom layer — toggleable, editable, deletable
-10. preset text is editable before save
-
-Case 4 is the one that keeps this phase honest: presets that violate our own
-compatibility rules would be worse than shipping none.
+Case 1 keeps the phase honest: presets that violate our own compatibility rules
+would be worse than shipping none.
 
 ## i18n
 

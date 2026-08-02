@@ -1,7 +1,8 @@
-# 040 — WP4: built-in layer rows
+# 040 — WP4: the full layer taxonomy
 
-The Prompt panel gets real content: every built-in layer, its switch or its
-lock, and a read-only dialog. Custom layers are WP5.
+WP3 shipped the five `config-toggle` rows. WP4 adds the remaining four classes
+from `001` §4 — `base`, `feature-gated`, `runtime-conditional`,
+`extension-unknown` — and the read-only dialog. Custom layers are WP5.
 
 ## Files
 
@@ -19,34 +20,30 @@ which already solve "compact row, detail behind a dialog" in this codebase
 
 ## Data
 
-`useDataSurface("codex-prompt:" + apiBase, [apiBase], loader, { isEmpty })`
-(`004` §G). Cold load shows `DataSurfaceSkeleton`; a refresh keeps stale rows
-visible rather than blanking the panel. After a successful PUT, publish the
-echoed snapshot with `setClientResourceData` — never optimistic local state,
-because `003` §6 means the server may report a different effective value than
-the one just requested.
+The WP3 data surface is reused unchanged. No polling: the file changes when the
+user changes it, and a 30s timer would fight the editor for no gain.
 
-No polling. This file changes when the user changes it, or out of band; a 30s
-timer would fight the editor for no gain.
+## Row kinds come from the class, not a list
 
-## Row kinds
-
-`005` defines four. The distinction is enforced by the server's `locked` list
-(`020`), not by a GUI constant:
+There is no `rowKind()` heuristic. The server sends
+`inventory[].class` (`020`), which is `LAYER_INVENTORY` from WP1, which is
+`001` §4. One definition, three consumers:
 
 ```tsx
-function rowKind(id: string, snapshot: Snapshot): RowKind {
-  if (snapshot.locked.includes(id)) return "locked";
-  if (snapshot.features.some(f => f.id === id)) return "feature";
-  return "toggleable";
-}
+const kind = descriptor.class;   // that is the whole mapping
 ```
 
-| Kind | Renders |
+| Class | Renders |
 |---|---|
-| `locked` | lock glyph, "always on", **no switch element at all** |
-| `feature` | gear glyph, governing key, link to its owner, no switch |
-| `toggleable` | a real switch |
+| `config-toggle` | a real switch (shipped in WP3) |
+| `base` | lock glyph, "always on", **no switch element at all** |
+| `runtime-conditional` | lock glyph, the condition it follows, no switch |
+| `feature-gated` | gear glyph, governing key, link to its owner, no switch |
+| `extension-unknown` | rendered as a count, never as rows |
+
+The first draft derived row kind from a server `locked` array that WP1 never
+exported, and an audit found it also mis-listed Plugins as non-disableable.
+Deriving from `class` removes both failure modes: the taxonomy is the contract.
 
 "No switch element at all" is literal: no `<input type="checkbox" disabled>`,
 no greyed toggle. `005` explains the reasoning — a disabled control claims the
@@ -64,12 +61,16 @@ registration-dependent (`001` ordering caveat).
 Ask item 8: built-in layers open a popup that cannot be edited. Contents:
 
 - what the layer does, in one sentence
-- the exact config key and its TOML position
-- default, configured, effective
-- when configured ≠ effective, the override notice from `003` §6
-- rendered text where opencodex can read it; otherwise an honest "not readable
-  from here"
-- Copy button
+- its class, and for classes B/C the exact key and its TOML position
+- for class B: default and this file's value
+- for class D: the runtime condition that decides emission
+- Copy button for the key name
+
+**No rendered prompt text.** The first draft promised to show each layer's
+actual content; an audit noted nothing produces it. Codex exposes no API for
+rendered layer bodies, and reconstructing them would mean reimplementing
+`world_state.rs` against a moving target (`001` §6). The dialog explains the
+layer and names its key — the honest scope.
 
 No textarea, no Save. Escape closes and returns focus, matching
 `client-config-panel.test.tsx:204-222`.
@@ -78,36 +79,35 @@ No textarea, no Save. Escape closes and returns focus, matching
 
 From `005`:
 
-- `configExists: false` → rows at documented defaults, switches disabled with a
-  note that the file is created on first change. (Here a disabled switch **is**
-  right: the capability exists, the file merely does not yet.)
-- `readable: false` → panel refuses writes and says so. `003` §4: Codex cannot
-  parse malformed TOML either, so writing would compound the problem.
+- `configExists: false` → defaults, switches **live**; the first write creates
+  the file (`010` §First write).
+- `readable: false` → writes refused with an explanation.
+- `developerInstructionsOwned: false` → toggles still work; the custom group
+  explains the key is externally managed.
 - PUT rejected → revert the row to the server snapshot and surface the error.
-  Never leave the switch showing a state the file does not have.
+  Never leave a switch showing a state the file does not have.
 
 ## Tests — `gui/tests/codex-set-prompt-layers.test.tsx`
 
 Harness from `client-config-panel.test.tsx:86-152`.
 
-1. every snapshot layer renders a row
-2. a `locked` id renders **no switch element** — query returns null
-3. a `feature` id renders no switch and names its governing key
-4. a `toggleable` id renders a working switch
-5. toggling PUTs once with the right body
+1. every inventory entry renders a row, in `order`
+2. **table-driven over the inventory: every non-`config-toggle` class renders
+   no switch element** — query returns null for each
+3. a `feature-gated` row names its governing key and links out
+4. a `runtime-conditional` row states its condition
+5. `extension-unknown` renders as a count, never as rows
 6. a rejected PUT reverts the row
 7. dialog opens read-only: no textarea, no Save
 8. Escape closes and returns focus
-9. `configExists: false` disables switches with the create-on-write note
+9. the dialog claims no rendered prompt text
 10. `readable: false` refuses writes
-11. configured ≠ effective renders the override notice
-12. cold load renders the skeleton; refresh keeps rows visible
+11. cold load renders the skeleton; refresh keeps rows visible
 
 Case 2 is ask item 9 at the rendering layer; `020` case 5 is the same guarantee
 at the API layer. Both are required — one without the other is a UI that merely
-looks safe, or an API nobody exercises.
-
-Also add `CodexSet` to `MIGRATED` in `page-loading-contract.test.tsx:25-39`.
+looks safe, or an API nobody exercises. Driving it from the inventory means a
+new upstream layer is covered the day WP1 lists it.
 
 ## Styling
 

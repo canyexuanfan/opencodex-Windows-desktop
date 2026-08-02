@@ -12,42 +12,73 @@ Shape from `sidebar-routes.ts:23-89`; GET/PUT semantics from
 ```jsonc
 {
   "configPath": "/Users/x/.codex/config.toml",
+  "storePath": "/Users/x/.codex/opencodex-prompt.json",
   "configExists": true,
   "readable": true,
-  "layers": [
+  "developerInstructionsOwned": true,
+  "revision": "sha256:...",
+  "inventory": [
+    { "id": "base-instructions", "class": "base",
+      "key": null, "default": null, "order": 0 },
+    { "id": "permissions", "class": "config-toggle",
+      "key": "include_permissions_instructions", "default": true, "order": 6 },
+    { "id": "plugins", "class": "feature-gated",
+      "key": "features.plugins", "default": true, "order": 11 },
+    { "id": "agents-md", "class": "runtime-conditional",
+      "key": null, "default": null, "order": 5 }
+  ],
+  "toggles": [
     { "id": "permissions", "key": "include_permissions_instructions",
-      "configured": null, "effective": true, "default": true }
+      "userFileValue": null, "defaultedUserValue": true, "default": true }
   ],
-  "locked": ["model", "agents-md", "realtime", "plugins", "model-switch"],
-  "features": [
-    { "id": "personality", "key": "features.personality", "effective": true }
-  ],
+  "extensionLayersEnumerable": false,
   "custom": [
     { "id": "a1b2c3", "title": "My house rules", "enabled": true, "body": "..." }
   ],
-  "unownedDeveloperInstructions": null,
   "modelInstructionsFile": null
 }
 ```
 
-`locked` is a **server-supplied list**, not a GUI constant. `001` §4 is the
-source; putting it on the wire means one place changes when upstream adds an
-off-switch. Ask item 9 depends on this list being right.
+`inventory` **is** `LAYER_INVENTORY` from WP1, serialized. The audit found the
+first draft inventing `locked` and `features` arrays the core module did not
+export — two constants that would drift apart within a release. There is now one
+definition, in WP1, and the route projects it.
 
-### `PUT /api/codex-prompt/layer`
+A row gets a switch **iff** `class === "config-toggle"`. Classes `base` and
+`runtime-conditional` are the non-disableable set behind ask item 9;
+`feature-gated` rows are configurable, but not from here.
 
-`{ "id": "apps", "enabled": false }` → `{ "ok": true, "changed": true, ...snapshot }`
+`extensionLayersEnumerable: false` is the honest statement of `001` class E: we
+cannot list third-party extension layers, so we say so rather than implying the
+inventory is exhaustive.
 
-- `id` not in the WP1 allowlist → `400 unknown_layer`.
-- `id` in `locked` → `409 layer_not_toggleable`. The GUI never sends this; the
-  route refuses it anyway, because a hand-rolled request must not be able to do
-  what the UI forbids.
+No `effective` field exists. `010` explains why: opencodex reads one file out of
+the eight layers in `003` §1, so it reports that file's value under a name that
+says as much.
+
+### `PUT /api/codex-prompt/toggle`
+
+`{ "id": "apps", "enabled": false, "revision": "sha256:..." }`
+→ `{ "ok": true, "changed": true, "snapshot": {...} }`
+
+- `id` not a `config-toggle` in `LAYER_INVENTORY` → `409 layer_not_toggleable`.
+  This covers classes A, C, D, and E in one rule, derived from the inventory
+  rather than a hand-maintained deny-list.
+- `id` unknown entirely → `400 unknown_layer`.
+- missing/stale `revision` → `409 stale_revision`.
 - unreadable config → `409 config_unreadable`.
+
+The GUI never sends a locked id. The route refuses it anyway: a hand-rolled
+request must not be able to do what the UI forbids.
 
 ### `PUT /api/codex-prompt/custom`
 
-`{ "layers": [ {id,title,body,enabled}, ... ] }` — full replacement, order is
+`{ "layers": [...], "revision": "sha256:..." }` — full replacement, order is
 composition order.
+
+Refused with `409 developer_instructions_not_owned` when the key exists without
+our marker (`010` §Ownership). The GUI surfaces this as "이 키는 외부에서
+관리됩니다" with the manual step, rather than silently overwriting.
 
 Validation before any file access:
 
@@ -61,9 +92,15 @@ Validation before any file access:
 | body > 64 KiB | `400 body_too_large` |
 | composed total > 128 KiB | `400 composed_too_large` |
 
-The body cap is ours, not Codex's — `002` §3 records that Codex validates
-nothing beyond readable-and-non-empty. Something has to, and a management API
-that writes a file the user's editor also opens is the right place.
+The size caps are **opencodex policy**, not a Codex limit. `002` §3 records that
+Codex validates nothing beyond readable-and-non-empty. The audit correctly
+rejected an earlier draft that justified a cap with the 32 KiB AGENTS.md budget
+— that budget governs project-doc loading and has nothing to do with
+`developer_instructions`. The real justification is request cost and keeping a
+hand-editable file hand-editable.
+
+No character is forbidden in a body. Blocker 2 is gone with the fences: bodies
+are never re-parsed, so no text can collide with a delimiter.
 
 ## Response echoes the snapshot
 
@@ -93,16 +130,22 @@ Harness from `sidebar-routes.test.ts:18-58`: a helper building Host-bearing
 requests, dispatching `handleManagementAPI`, restoring seams in `finally`. The
 WP1 module is injected so **no test touches the real `CODEX_HOME`**.
 
-1. GET returns the snapshot with `locked` populated
+1. GET returns the snapshot with the full inventory
 2. GET on a missing config → defaults, `configExists: false`
-3. PUT layer flips a toggle and echoes the new snapshot
-4. PUT layer with an unknown id → 400
-5. PUT layer on a locked id → 409, **and the writer is never called**
-6. PUT custom round-trips order
-7. each validation rule above, one case each
-8. unreadable config → 409 on both PUTs
-9. hostile Origin rejected (mirrors `management-client-config-route.test.ts:240`)
-10. unhandled path returns `null` so the chain continues
+3. PUT toggle flips a value and echoes the new snapshot
+4. unknown id → 400
+5. **every non-`config-toggle` inventory id → 409, writer never called** —
+   table-driven over `LAYER_INVENTORY`, so a new upstream layer is covered the
+   day it is added
+6. **contract test: every inventory id has exactly one class, and every
+   `config-toggle` has a non-null key** — the partition guard
+7. PUT custom round-trips order
+8. each validation rule, one case each
+9. stale revision → 409 on both PUTs
+10. unowned `developer_instructions` → 409 on custom, toggles still work
+11. unreadable config → 409 on both
+12. hostile Origin rejected (mirrors `management-client-config-route.test.ts:240`)
+13. unhandled path returns `null` so the chain continues
 
-Case 5 is the load-bearing one: it proves ask item 9 holds at the API boundary,
-not merely in the rendering layer.
+Cases 5 and 6 are load-bearing: 5 proves ask item 9 at the API boundary, 6
+prevents the inventory drift the audit found in the first draft.

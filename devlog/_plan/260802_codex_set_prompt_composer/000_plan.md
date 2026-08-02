@@ -123,17 +123,35 @@ across a dozen test files and renaming it buys nothing.
 
 One decade doc per phase; one PABCD cycle per decade doc.
 
-| Phase | Doc | Deliverable |
-|---|---|---|
-| WP1 | `010` | `src/codex/prompt-layers.ts` — read/write the toggles and the composed custom block |
-| WP2 | `020` | `/api/codex-prompt` GET/PUT route + registration |
-| WP3 | `030` | Page shell: rename, tabpanels, hash routing, legacy redirect, i18n |
-| WP4 | `040` | Prompt section: layer rows, switches, read-only dialog |
-| WP5 | `050` | Custom layers: `+`, editable dialog, delete, reorder |
-| WP6 | `060` | Presets + the compatibility linter |
-| WP7 | `070` | Docs sync, locale parity, full-gate verification |
+| Phase | Doc | Deliverable | Independently landable because |
+|---|---|---|---|
+| WP1 | `010` | `prompt-layers.ts`: inventory, toggles, custom store, revisions | pure module + tests, no consumer needed |
+| WP2 | `020` | `/api/codex-prompt` — the **complete** DTO | WP1 exports every field it serializes |
+| WP3 | `030` | Shell: rename, tabpanels, routing, i18n, loading contract | Prompt panel renders live toggle rows from WP2 |
+| WP4 | `040` | Full layer list: all five classes, read-only dialog | WP2's inventory already carries class and order |
+| WP5 | `050` | Custom layers: `+`, editor, delete, reorder, **linter** | linter moves here; no forward dependency |
+| WP6 | `060` | Presets only | presets need the linter, so it ships after it |
+| WP7 | `070` | Docs, locale parity, full gate | everything above has landed |
 
 Deferred, stub only: `090` (Theme).
+
+### Re-slicing after audit
+
+The first split had four forward dependencies, all found by an independent
+audit: WP3 deferred its loading-contract migration to WP4, WP5 rendered a linter
+WP6 owned and shipped an empty preset submenu, WP4's dialog promised per-layer
+text nothing produced, and WP2 needed inventory metadata WP1 did not export.
+
+Four corrections, in order:
+
+1. **WP1 owns `LAYER_INVENTORY`.** One definition; WP2 projects it. Blocker 7.
+2. **WP3 ships a working panel**, not a placeholder: toggle rows plus the
+   loading contract. WP4 then adds the non-toggle classes and the dialog.
+3. **The linter moves to WP5**, where it is consumed. WP6 becomes presets alone
+   and no longer ships UI ahead of content.
+4. **WP4's dialog shows what we can read**, and says so plainly where we cannot.
+   Codex exposes no API for rendered layer text, so the dialog explains the
+   layer, names its key, and shows its value — the honest scope.
 
 ## Out of scope
 

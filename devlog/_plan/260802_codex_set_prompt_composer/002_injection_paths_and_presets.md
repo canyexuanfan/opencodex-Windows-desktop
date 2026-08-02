@@ -123,7 +123,16 @@ Each is grounded in something read above:
 | Redefining `apply_patch` or prescribing another edit protocol | same registry argument | `model_info.rs:151` |
 | Foreign approval vocabulary (`always-approve`, Claude permission modes) | Codex injects its own permission block afterwards | `world_state.rs:114` |
 | Claims about cwd, date, network, installed tools | authoritative environment context is generated later | `world_state.rs:149` |
-| Text over the 32 KiB project-doc budget | silently truncates, deepest-first | `agents_md.rs:109` |
+
+**The 32 KiB budget does not belong on this list.** An earlier draft cited
+`agents_md.rs:109` as a reason to warn on long custom layers. That budget
+governs **project-document loading** — the AGENTS.md chain — and has no bearing
+on root `developer_instructions`, which is read as a plain config string with no
+cap (`config_toml.rs:216`). An independent audit flagged the citation as simply
+wrong, and it is.
+
+`060`'s size advisory survives, but as declared opencodex policy justified by
+request cost, not as an upstream constraint we discovered.
 
 The linter warns; it does not block. A user who wants to override Codex's
 identity is allowed to — but not by accident.

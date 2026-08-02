@@ -1,7 +1,13 @@
 # 050 — WP5: custom layers
 
-The `+` button, the editable dialog, delete, reorder. This is ask items 5, 6,
-7 and the half of item 4 that applies to user-authored rows.
+The `+` button, the editable dialog, delete, reorder, **and the compatibility
+linter**. This is ask items 5, 6, 7 and the half of item 4 that applies to
+user-authored rows.
+
+The linter moved here from WP6. An audit found WP5 rendering findings from an
+API WP6 owned — a forward dependency. The linter is a pure function with no
+dependency on presets, so it belongs in the phase that consumes it; WP6 becomes
+presets alone.
 
 ## Files
 
@@ -9,6 +15,7 @@ The `+` button, the editable dialog, delete, reorder. This is ask items 5, 6,
 gui/src/components/codex-set/CustomLayerRow.tsx      (new)
 gui/src/components/codex-set/CustomLayerDialog.tsx   (new)
 gui/src/components/codex-set/custom-layer-state.ts   (new — reducer)
+gui/src/components/codex-set/prompt-lint.ts          (new — moved from WP6)
 ```
 
 ## Where the text goes
@@ -18,10 +25,14 @@ gui/src/components/codex-set/custom-layer-state.ts   (new — reducer)
 would delete Codex's own instructions on first save. `000` records this as the
 deliberate deviation from the literal ask.
 
-WP1 also settled where a *disabled* body lives: `.opencodex-prompt-layers.json`
-beside config.toml holds every layer including disabled bodies, while
-`developer_instructions` holds only the enabled subset. Anything else would
-inject text the user just switched off.
+`010` §Storage settles the mechanics: `opencodex-prompt.json` is the single
+source of truth for every layer including disabled bodies, and
+`developer_instructions` is a generated projection of the enabled subset,
+serialized through a real TOML writer. No fences, no two-way reconciliation.
+
+When the key exists without our marker, the whole custom group is unavailable
+with an explanation (`010` §Ownership). The `+` button is hidden rather than
+failing on save.
 
 ## Row
 
@@ -44,15 +55,10 @@ dialog they glanced at.
 
 ## The `+` flow
 
-```
-[ + Add layer ]
-  ├── Blank
-  └── From preset ▸   (WP6 fills this; WP5 ships Blank only)
-```
-
-WP5 ends with a working Blank path and the preset submenu present but empty.
-WP6 populates it. Splitting here keeps the phases independent: presets need the
-linter, and the linter needs a dialog to render into.
+WP5 ships a single action: `+ Add layer` opens an empty editor. **No preset
+submenu exists yet** — an empty menu is worse than no menu, and the audit was
+right that shipping one is a forward dependency on WP6. WP6 adds the submenu
+together with the presets that fill it.
 
 ## Client-side validation
 
@@ -70,18 +76,28 @@ than on Save:
 The server still enforces every one of these (`020`). Client validation is
 courtesy; the API is the boundary.
 
-## Compatibility warnings
+## The linter
 
-The `002` §6 checks run live in the editor, **as warnings, not blocks**. A user
-who deliberately wants to override Codex's identity may; they just should not
-do it by accident. WP6 owns the linter implementation; WP5 renders whatever it
-returns.
+`prompt-lint.ts` — pure, no I/O:
 
-## Reorder
+```ts
+export function lintPromptLayer(body: string): LintFinding[];
+```
 
-Order is composition order in `developer_instructions`. Reordering PUTs the
-full list — `020`'s custom endpoint is full-replacement precisely so ordering
-needs no separate verb.
+Rules and their evidence live in `060`; the implementation ships here. Findings
+render inline with the offending span highlighted, **as warnings, never
+blocks**. A user who deliberately wants to override Codex's identity may; they
+just should not do it by accident.
+
+## Reorder and revisions
+
+Order is composition order. Reordering PUTs the full list — `020`'s endpoint is
+full-replacement precisely so ordering needs no separate verb.
+
+Every PUT carries the snapshot revision (`010` §Concurrency). A `409
+stale_revision` means another tab or a manual edit moved the file: the editor
+re-reads and tells the user their view was stale rather than silently
+overwriting someone else's work.
 
 Keyboard reorder must work: up/down buttons alongside the drag handle. A
 drag-only affordance is not reachable.
@@ -106,6 +122,14 @@ config.toml and its entry from the JSON file.
 10. each validation rule disables Save with its message
 11. a rejected PUT restores the previous list
 12. built-in rows still have no delete control
+13. stale revision → re-read, no blind retry
+14. unowned `developer_instructions` hides `+` and explains why
+15. a body containing the literal text `# >>> ocx-layer:abc123` saves and
+    round-trips unharmed — the fence-collision class is gone by construction
+16. linter: one case per rule, positive and negative
+17. clean behavioral text produces zero findings
+18. lint spans point at the right substring
+19. no rule throws on empty, whitespace-only, or 64 KiB input
 
 Case 12 re-asserts ask item 6 from the custom-layer side: adding delete to one
 row family must not leak it into the other.

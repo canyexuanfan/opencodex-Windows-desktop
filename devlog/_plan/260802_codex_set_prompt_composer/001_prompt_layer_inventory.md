@@ -64,27 +64,84 @@ prompt page would silently reconfigure subagent concurrency.
 `:1337`), `deferred_executor` (off, `:883`), `plugins` (on, `:1181`),
 `deferred_tool_world_state` (off, `:1151`), `multi_agent_v2` (off, `:1097`).
 
-## 4. Layers that CANNOT be turned off — the hard constraint
+## 4. The canonical taxonomy — five classes, not two
 
-This is the set behind ask item 9. Each has no `include_*` key anywhere in the
-schema; the UI must render them permanently on, with the switch absent rather
-than merely disabled.
+An earlier draft of this section carried a single "cannot be turned off" list.
+An independent audit found it self-contradictory: it listed Plugins as
+feature-gated in §3 and simultaneously as non-disableable here, and it conflated
+"has no `include_*` key" with "cannot be suppressed at all". Both errors would
+have propagated straight into the API's `locked` array.
 
-1. **Base / model instructions.** The outbound request always carries non-empty
-   base instructions (`client.rs:868`). `model_instructions_file` replaces the
-   text; there is no `include_base_instructions`.
-2. **Model-switch instructions.** Always registered, emitted whenever the model
-   changed and instructions are non-empty (`model.rs:44`, `:56`).
-3. **AGENTS.md user instructions.** `add_section` at `world_state.rs:113` sits
-   under no boolean. Absent content suppresses output, but that is emptiness,
-   not a toggle (`agents_md.rs:27`).
-4. **Realtime transition instructions.** Follows realtime activation state, no
-   boolean (`realtime.rs:43`).
-5. **Plugins instructions.** No `include_plugins_instructions` exists; only
-   availability decides (`world_state.rs:187`).
-6. **Extension-contributed layers other than Skills.** Core iterates registered
-   contributors unconditionally (`world_state.rs:208`); gates are
-   extension-defined and not enumerable from config.
+Every layer belongs to exactly **one** of these classes. This taxonomy is the
+single source for `020`'s response and `040`'s row kinds; a contract test
+asserts the partition is total and disjoint.
+
+### Class A — `base` — the request's own instruction field
+
+| id | Layer | Why it is class A |
+|---|---|---|
+| `base-instructions` | base/model instructions | the outbound request always carries non-empty base instructions (`client.rs:861-887`); no `include_base_instructions` exists. Content is replaceable via `model_instructions_file`; presence is not. |
+
+Exactly one member. It is not a world-state section at all — it travels in the
+Responses `instructions` field.
+
+### Class B — `config-toggle` — a direct boolean in config.toml
+
+`permissions`, `collaboration`, `environment`, `apps`, `skills`. The five keys
+of §2. **These are the only rows that get a switch.**
+
+### Class C — `feature-gated` — reachable, but through `[features]`
+
+| id | Governing key | Default |
+|---|---|---|
+| `personality` | `[features] personality` | on |
+| `context-window-guidance` | `[features] token_budget` | off |
+| `environments-instructions` | `[features] deferred_executor` | off |
+| `plugins` | `[features] plugins` | on |
+| `tools` | `[features] deferred_tool_world_state` | off |
+| `multi-agent-mode` | `[features.multi_agent_v2] enabled` | off |
+
+**Plugins belongs here, not in the non-disableable set.** `session/mod.rs:3422-3430`
+checks `Feature::Plugins` when building plugin context. The audit was right; the
+earlier draft was wrong. What is true is narrower: there is no
+`include_plugins_instructions` key. That makes it feature-gated, not immovable.
+
+Class C rows get **no switch** — flipping `multi_agent_v2` from a prompt page
+would silently reconfigure subagent concurrency — but they are honestly labelled
+as configurable elsewhere, with a link to the setting that owns them.
+
+### Class D — `runtime-conditional` — no config gate, presence follows state
+
+| id | Emits when | Evidence |
+|---|---|---|
+| `model-switch` | the model changed and instructions are non-empty | `model.rs:44-58` |
+| `agents-md` | discovered project docs produced content | `world_state.rs:113`, `agents_md.rs:89-110` |
+| `realtime` | entering or leaving active realtime | `realtime.rs:43-66` |
+
+No boolean anywhere suppresses these. They can still be *empty* — a zero
+`project_doc_max_bytes` yields no AGENTS.md content — but emptiness is not a
+toggle, and the UI must not present it as one.
+
+### Class E — `extension-unknown`
+
+Core iterates registered extension contributors unconditionally
+(`world_state.rs:208`), but each extension decides its own availability. So the
+honest claim is "no *core* include switch", not "cannot be turned off" — the
+audit flagged the stronger wording as overstated and it is.
+
+Skills is the one extension with a known config gate and therefore sits in class
+B. Every other extension layer is class E: enumerable only at runtime, if at
+all.
+
+### What "locked" means on the wire
+
+`020`'s `locked` array is **classes A and D only** — the rows where a switch
+cannot exist. Class C rows are `features`. Class E is reported as a count, not a
+list, because we cannot enumerate it.
+
+Ask item 9 — "절대 끌 수 없는 프롬프트는 절대 끌 수 없게" — is satisfied by
+classes A and D. That is the set the tests in `020` case 5 and `040` case 2
+defend.
 
 ## 5. Content-override keys
 
