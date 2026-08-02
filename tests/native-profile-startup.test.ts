@@ -20,7 +20,8 @@ import {
   probeNativeProfileRecoveryState,
   readNativeEnvelope,
   readNativeProfileVault,
-  serializeNativeProfileMetadata,
+  inspectNativeProfileJournal,
+  serializeNativeProfileJournal,
 } from "../src/codex/native-profile-store";
 import type {
   NativeProfileKey,
@@ -144,9 +145,10 @@ async function fixture(phase: Phase, observation: Observation, activePool = fals
     targetPayload: targetRecord.payload!,
     beforeVault,
     afterVault,
-    createdAt: new Date().toISOString(),
+    createdAt: switchedAt,
   };
-  writeFileSync(manager.context.journalPath, serializeNativeProfileMetadata(journal));
+  writeFileSync(manager.context.journalPath, serializeNativeProfileJournal(journal));
+  expect(inspectNativeProfileJournal(manager.context).status).toBe("valid");
 
   const observed = observation === "source-exact" ? source
     : observation === "source-changed" ? envelope("account-source", "source-changed")

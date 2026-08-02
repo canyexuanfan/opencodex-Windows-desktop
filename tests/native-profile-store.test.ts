@@ -216,6 +216,9 @@ describe("native-profile recovery journal storage", () => {
       ["after profile metadata", value => {
         value.afterVault.profiles.find(profile => profile.id === SOURCE_ID)!.label = "changed-source";
       }],
+      ["mismatched after profile updatedAt", value => {
+        value.afterVault.profiles.find(profile => profile.id === SOURCE_ID)!.updatedAt = "2026-08-02T00:01:00.000Z";
+      }],
       ["after revision", value => { value.afterVault.revision += 1; }],
     ];
 
