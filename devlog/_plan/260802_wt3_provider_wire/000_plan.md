@@ -45,6 +45,23 @@ Provider-adapter/wire bugs; all must-fix regardless of PR quality.
 | 3 | DeepSeek Responses route stalls after tool calls (hosted api.deepseek.com) | Local root cause found: `sanitizeReasoningInputContent()` (`src/adapters/openai-responses.ts:35`, called :1027 for every Responses provider) blanks plaintext reasoning content on continuations; schema supports `reasoning_text` (`src/responses/schema.ts:23`); DeepSeek native contract accepts it. Residual: "no follow-up request sent" piece unexplained locally | verified local defect (separate from #860) + open external residual — fixed in wp-b, #875 commented not closed |
 | 4 | Claude Opus 4.6/4.7 + Sonnet 4.6 are documented at 1M context | Anthropic official: Opus 4.6 (1M beta, 2026-02-05), Opus 4.7 (1M, 2026-04-16, migration guide), Sonnet 4.6 (1M beta, 2026-02-17); model overview cross-check | verified |
 
+## Bug A model evidence (consumed by `010_bug_a_copilot_mixed_wire.md`)
+
+Selection rule: built-in = field report in issue #748 AND independent corroboration. Resolver lookup is exact normalized-ID (`trim().toLowerCase()`), so dated/bracket-suffixed IDs intentionally miss.
+
+| Model | #748 field report | Independent corroboration | Status | Built-in |
+|---|---|---|---|---|
+| `gpt-5.3-codex` | yes (live run) | pi.dev/models/github-copilot/gpt-5-3-codex declares `openai-responses` | field-verified, corroborated | yes |
+| `gpt-5.4` | yes (exact tools+reasoning chat failure + successful Responses run) | BerriAI/litellm#23332 (`unsupported_api_for_model`); pi.dev/models/github-copilot/gpt-5-4 | verified Responses-required | yes |
+| `gpt-5.4-mini` | yes | pi.dev/models/github-copilot/gpt-5-4-mini | field-verified, corroborated | yes |
+| `gpt-5.5` | yes | pi.dev/models/github-copilot/gpt-5-5 | field-verified, corroborated | yes |
+| `gpt-5.6-luna` | yes | pi.dev/models/github-copilot/gpt-5-6-luna | field-verified, corroborated | yes |
+| `gpt-5.6-terra` | yes | pi.dev/models/github-copilot/gpt-5-6-terra | field-verified, corroborated | yes |
+| `gpt-5.4-nano` | NO — absent from the 2026-07-30 captured catalog, never field-run | GitHub supported-models list + pi.dev/models/github-copilot/gpt-5-4-nano | lead-only | NO (`modelAdapters` documented) |
+| `gpt-5.6-sol` | claimed but not independently confirmed; its chat rejection is conditional (function tools + reasoning_effort, JetBrains LLM-29711), not an endpoint-level contract | pi.dev/models/github-copilot/gpt-5-6-sol (single corroborator class) | lead-only | NO (`modelAdapters` documented) |
+
+Why luna/terra are in while sol is out, given #748 reports all seven: the rule requires BOTH legs. Luna/terra have a field report plus an independent wire declaration; sol's field claim is the same single source as the original report and its demonstrated failure is request-shape-conditional, so a hardcoded Responses default for sol could flip traffic that chat currently serves. Sol users opt in via `modelAdapters`.
+
 ## Out of scope
 
 - New provider presets (covered by separate enhancement PRs).

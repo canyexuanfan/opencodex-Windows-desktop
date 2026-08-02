@@ -1,6 +1,6 @@
 # 010 — Bug A: Copilot mixed-wire routing (#746 / #748)
 
-Consumed by work-phase wp-a. Verified against dev@478354ee8 (2026-08-02, sol-medium researcher; per-source evidence below).
+Consumed by work-phase wp-a. Verified against dev@478354ee8. Model-by-model evidence and source URLs live in `000_plan.md` (claim ledger + evidence table) — this doc carries only the decision and its implementation consequences.
 
 ## Mechanism (decided)
 
@@ -25,26 +25,18 @@ Rejected alternatives (with reasons): provider-wide `openai-responses` (breaks C
 ## File map
 
 - MODIFY `src/providers/registry.ts` (github-copilot entry at :1470) — add `modelWireDefaults` with the conservative verified set:
-  `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-terra` → `"openai-responses"`.
-  Refresh the cold-start seed model list as justified by the same evidence (static seed is a cold-start fallback per the entry's FREEZE comment).
+  `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-terra` → `"openai-responses"` (bare strings, every inbound).
+- MODIFY the same entry's cold-start seed. Exact before/after:
+  - before: `models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro"]`
+  - after: `models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra"]`
+  - `defaultModel: "gpt-4o"` unchanged. Lead-only `gpt-5.4-nano` / `gpt-5.6-sol` are NOT added to the seed — they ship only as documented `modelAdapters` examples (evidence status in `000_plan.md`). `providerConfigSeed()` copies this list into saved config (`src/providers/derive.ts:105`), so the seed carries verified models only.
 - NEW `tests/github-copilot-wire-defaults.test.ts` — focused suite (cases below).
-- DOCS `docs-site/src/content/docs/guides/providers.md` + `docs-site/src/content/docs/reference/configuration.md` + maintained locales — name the built-in defaults and the `modelAdapters` escape hatch for lead-only models.
+- DOCS `docs-site/src/content/docs/reference/configuration/providers.md` (the authoritative `modelAdapters` contract lives at its :79) + maintained locale equivalents (ko, ja, zh-cn, ru) — the table currently carries DeepSeek-only wording and would contradict the new Copilot behavior. `docs-site/src/content/docs/guides/providers.md` gets a short routing-precedence note naming the built-in Copilot defaults and the `modelAdapters` escape hatch for lead-only models.
 - NO CHANGES: `github-copilot-transport.ts`, `adapter-resolve.ts`, `types.ts`, `derive.ts`. The sampling/credential-replay parts of PR #746 are a separate parity/security unit — out of scope here.
 
-## Model evidence table
+## Selection rule (decision reference; full evidence in `000_plan.md`)
 
-| Model | Evidence | Status | In built-in set |
-|---|---|---|---|
-| `gpt-5.3-codex` | #748 field run + Pi metadata declares Responses | field-verified, corroborated | yes |
-| `gpt-5.4` | exact tools+reasoning chat failure + successful Responses run in #748; litellm#23332 | verified Responses-required | yes |
-| `gpt-5.4-mini` | #748 field run + Pi metadata | field-verified, corroborated | yes |
-| `gpt-5.5` | #748 field run + Pi metadata | field-verified, corroborated | yes |
-| `gpt-5.6-luna` | #748 field run + Pi metadata | field-verified, corroborated | yes |
-| `gpt-5.6-terra` | #748 field run + Pi metadata | field-verified, corroborated | yes |
-| `gpt-5.4-nano` | GitHub catalog + Pi labels; NOT in captured catalog, never field-run | lead-only | NO — document `modelAdapters` override |
-| `gpt-5.6-sol` | #748 claims a run; JetBrains LLM-29711 shows tools+reasoning rejected on chat; no authoritative endpoint contract | lead-only | NO — document `modelAdapters` override |
-
-Exact normalized-ID lookup only — no family/snapshot prefix matching (this tree's resolver behavior; PR #746's dated-snapshot matching was dropped at its final head too).
+Built-in = field report in issue #748 AND independent corroboration. `gpt-5.6-sol`/`gpt-5.4-nano` fail that rule (lead-only) and stay out. Lookup is exact normalized-ID (`trim().toLowerCase()`, `registry.ts:1568`) — no family/snapshot prefix matching.
 
 ## Acceptance + activation scenarios
 
