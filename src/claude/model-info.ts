@@ -18,7 +18,7 @@
 import { catalogModelEfforts, nativeEffortClamp, nativeOpenAiContextWindow, type CatalogModel } from "../codex/catalog";
 import { claudeCodeAlias, claudeCodeNativeAlias } from "./alias";
 import { desktop3pAlias } from "./desktop-3p";
-import { AUTO_CONTEXT_OFF, shouldMarkOneMillion, type AutoContextMode } from "./context-windows";
+import { AUTO_CONTEXT_OFF, type AutoContextMode } from "./context-windows";
 
 const MODEL_INFO_CREATED_AT = "2026-01-01T00:00:00Z";
 const ANTHROPIC_EFFORT_RUNGS = new Set(["low", "medium", "high", "xhigh", "max"]);
