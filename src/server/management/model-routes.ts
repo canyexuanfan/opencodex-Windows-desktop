@@ -90,7 +90,7 @@ import {
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
   OPENCODE_PROVIDER_ID,
-  buildClientConfig,
+  buildClientConfigText,
   isExportClientId,
   opencodeProxyBaseUrl,
 } from "../../clients/config-export";
@@ -114,13 +114,10 @@ import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
  * core's "authoritative context window" rule would be free to drift from it silently.
  */
 function summarizeExportedModels(client: ExportClientId, document: unknown): { modelCount: number; modelsWithoutLimits: number } {
-  if (client === "opencode") {
-    const models = (document as OpencodeGeneratedConfig).provider[OPENCODE_PROVIDER_ID].models;
-    const entries = Object.values(models);
-    return { modelCount: entries.length, modelsWithoutLimits: entries.filter(entry => entry.limit === undefined).length };
-  }
-  const models = (document as PiGeneratedConfig).providers[OPENCODE_PROVIDER_ID].models;
-  return { modelCount: models.length, modelsWithoutLimits: models.filter(entry => entry.contextWindow === undefined).length };
+  // Each client counts its own document shape. The previous branch assumed
+  // "anything that is not OpenCode must be Pi", which silently misread the
+  // moment a third client existed.
+  return EXPORT_CLIENTS[client].summarize(document);
 }
 
 export async function handleModelRoutes(ctx: ManagementContext): Promise<Response | null> {
@@ -184,17 +181,24 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     // user disabled in the Models tab is absent from /v1/models, so exporting it would hand the
     // client a selector the proxy refuses to route.
     const models = rows.filter(row => !row.disabled).map(toExportModel);
-    const document = buildClientConfig(requested, {
+    const built = buildClientConfigText(requested, {
       baseUrl: opencodeProxyBaseUrl(Number(url.port) || config.port, config.hostname),
       models,
       config,
     });
+    const document = built.document;
     return jsonResponse({
       client: spec.id,
       filename: spec.filename,
       destination: spec.destination(process.env),
       apiKeyEnv: spec.apiKeyEnv,
       exportHint: spec.exportHint,
+      // The client's own format and the exact bytes for it. The GUI previously
+      // re-serialized `config` as JSON, which is wrong for four of the six
+      // clients; `mediaType` also drives the download blob.
+      format: built.format,
+      mediaType: built.mediaType,
+      text: built.text,
       ...summarizeExportedModels(requested, document),
       config: document,
     }, 200, req, config);
