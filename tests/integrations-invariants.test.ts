@@ -248,6 +248,87 @@ describe("a container we would have to replace is refused, not overwritten", () 
       expect(store.listOperations()).toHaveLength(0);
     });
   }
+
+  test("openclaw: a collision in the NESTED container is refused too", () => {
+    // OpenClaw's fragment path is two segments (`models.providers`), so a
+    // one-level check would miss a collision at the inner container.
+    const configPath = installClient("openclaw");
+    const seed = '{\n  models: {\n    providers: ["user-value"],\n  },\n}\n';
+    writeFileSync(configPath, seed);
+
+    const result = applyIntegration({
+      clientId: "openclaw", models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    expect(readFileSync(configPath, "utf8")).toBe(seed);
+  });
+
+  test("a document that is literally null is not treated as absent", () => {
+    /*
+     * A missing file parses as `{}`, so an absent prefix reads `undefined`.
+     * A parsed `null` is a value the file actually contains — treating it as
+     * absent let apply replace the whole document and report success.
+     */
+    const configPath = installClient("pi");
+    writeFileSync(configPath, "null\n");
+
+    const result = applyIntegration({
+      clientId: "pi", models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    });
+    expect(result.ok).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toBe("null\n");
+  });
+
+  test("disable refuses a blocked container instead of throwing", () => {
+    /*
+     * The GUI locks the switch for `unsafe`, but `ocx integration client
+     * disable` and direct API callers do not — and the removal path
+     * dereferences a record that a blocked container never has, so this threw
+     * a TypeError and surfaced as a 500.
+     */
+    const configPath = installClient("pi");
+    const seed = '{\n  "providers": ["user-value"]\n}\n';
+    writeFileSync(configPath, seed);
+
+    const result = disableIntegration({
+      clientId: "pi", models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    expect(readFileSync(configPath, "utf8")).toBe(seed);
+  });
+});
+
+describe("the base URL is composed, never interpolated", () => {
+  test("IPv6 and wildcard binds produce a URL a client can actually dial", () => {
+    /*
+     * The defect was bypassing the shared composer, so this asserts the
+     * emitted bytes rather than the helper — bypassing it again would pass a
+     * helper-level test.
+     */
+    const cases: [string, string][] = [
+      ["::1", "http://[::1]:10100/v1"],
+      ["::", "http://127.0.0.1:10100/v1"],
+      ["0.0.0.0", "http://127.0.0.1:10100/v1"],
+    ];
+    for (const [hostname, expected] of cases) {
+      const configPath = installClient("hermes");
+      writeFileSync(configPath, "providers: {}\n");
+      const result = applyIntegration({
+        clientId: "hermes", models: MODELS, port: 10100,
+        config: { ...CONFIG, hostname } as OcxConfig,
+        env: TEST_ENV, home, store,
+      });
+      expect(result.ok).toBe(true);
+      expect(readFileSync(configPath, "utf8")).toContain(expected);
+      rmSync(configPath, { force: true });
+      store.dropRecord("hermes");
+    }
+  });
 });
 
 describe("a restore never launders a foreign edit into owned content", () => {

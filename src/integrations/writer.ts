@@ -304,6 +304,19 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
         ? `${configPath} changed after opencodex wrote it; disabling would discard that edit`
         : `${configPath} contains an opencodex block we did not write`);
   }
+  /*
+   * `unsafe` reaches here the same way it reaches apply, and the code below
+   * dereferences `record` on the assumption that anything past this point is
+   * `current` or `stale`. A blocked container has no record, so disable threw
+   * a TypeError and the route answered 500 — the GUI locks the switch, but the
+   * CLI and direct API callers do not.
+   */
+  if (classified.state === "unsafe") {
+    return refuse(clientId, "unsafe", "unsafe",
+      classified.reason === "blocked-container"
+        ? `${configPath} holds a value where opencodex would have to read a section, so nothing can be removed safely`
+        : `${configPath} cannot be changed safely`);
+  }
 
   // current | stale only: the file fingerprint still matches our record, so the
   // recorded paths are exactly what we put there.

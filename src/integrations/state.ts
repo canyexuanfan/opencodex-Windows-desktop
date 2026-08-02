@@ -73,8 +73,19 @@ export function blockedContainerPath(
     let cursor: unknown = doc;
     for (let depth = 0; depth < fragment.path.length - 1; depth += 1) {
       const key = fragment.path[depth]!;
-      if (cursor === undefined || cursor === null) break;
-      if (typeof cursor !== "object" || Array.isArray(cursor)) return fragment.path.slice(0, depth);
+      /*
+       * ONLY `undefined` means absent. A missing file parses as `{}`, so an
+       * absent prefix reads `undefined` — but a parsed `null` is a value the
+       * user's file actually contains, and treating it as absent let a
+       * document that is literally `null` be replaced wholesale by a
+       * "successful" apply.
+       */
+      if (cursor === undefined) break;
+      // `typeof null === "object"`, so null has to be named explicitly or it
+      // walks straight into the dereference below.
+      if (cursor === null || typeof cursor !== "object" || Array.isArray(cursor)) {
+        return fragment.path.slice(0, depth);
+      }
       const next = (cursor as Record<string, unknown>)[key];
       if (next === undefined) break;
       if (typeof next !== "object" || next === null || Array.isArray(next)) {
