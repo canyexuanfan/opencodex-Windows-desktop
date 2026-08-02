@@ -249,7 +249,7 @@ describe("native main profile management API", () => {
       manager: { context: { homeId } } as unknown as NativeProfileManager,
       probeRecoveryState: () => "none",
     });
-    let blockedWhileDraining = false;
+    let gateClosedBeforeDrainRelease = false;
     const states = ["none", "journal"] as const;
     const manager = {
       context: { homeId, journalPath: "pending", recoveryBlockPath: "missing-block" },
@@ -267,7 +267,7 @@ describe("native main profile management API", () => {
         const blocked = blockNativeMainRecovery(id, state);
         const poolTurn = tryAdmitTurn();
         const selection = codexAccountSelectionForTurn(poolTurn!)!();
-        blockedWhileDraining = blocked
+        gateClosedBeforeDrainRelease = blocked
           && nativeMainStartupGateSnapshot().status === "blocked"
           && poolTurn !== null
           && selection?.mainProfileDraining === true
@@ -279,7 +279,7 @@ describe("native main profile management API", () => {
     });
 
     expect(response?.status).toBe(409);
-    expect(blockedWhileDraining).toBe(true);
+    expect(gateClosedBeforeDrainRelease).toBe(true);
     expect(nativeMainStartupGateSnapshot()).toEqual({
       status: "blocked",
       homeId,
