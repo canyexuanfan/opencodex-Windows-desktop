@@ -1476,8 +1476,23 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     featured: false,
     dashboardUrl: "https://github.com/settings/copilot",
     liveModels: true,
-    models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro"],
+    models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"],
     defaultModel: "gpt-4o",
+    // Copilot fronts a mixed-wire catalog: these models reject /chat/completions for
+    // real Codex-agent traffic (function tools + reasoning), so every inbound wire
+    // rides Responses. Evidence: issue #748 field runs, pi.dev/models/github-copilot/*
+    // wire declarations, BerriAI/litellm#23332 (gpt-5.4), JetBrains LLM-29711
+    // (gpt-5.6-sol). gpt-5.4-nano is deliberately absent — it has no field report; a
+    // user can opt it in with an explicit modelAdapters entry, which always wins.
+    modelWireDefaults: {
+      "gpt-5.3-codex": "openai-responses",
+      "gpt-5.4": "openai-responses",
+      "gpt-5.4-mini": "openai-responses",
+      "gpt-5.5": "openai-responses",
+      "gpt-5.6-luna": "openai-responses",
+      "gpt-5.6-sol": "openai-responses",
+      "gpt-5.6-terra": "openai-responses",
+    },
     note: "Experimental unofficial Copilot bridge. Logs in via GitHub device flow using the public VS Code OAuth client id, then exchanges for a short-lived Copilot API token (copilot_internal). Requires an active Copilot subscription. GitHub may tighten or revoke this path; do not send confidential material you would not paste into Copilot Chat.",
   },
   // FREEZE 2026-07-10: no public OpenAI-compatible endpoint is documented. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
