@@ -1,8 +1,14 @@
-# 007 — Execution method change (LOOP-REPAIR-01)
+# 007 — Roadmap verification tooling (LOOP-REPAIR-01)
 
-P-phase amendment, adopted after the A-gate loop hit its repair bound. This
-document changes *how* the roadmap is executed. It does not change what the
-feature does; `002`-`006` still govern that.
+P-phase amendment, adopted after the A-gate loop hit its repair bound.
+
+**This document does NOT relax DIFFLEVEL-ROADMAP-01.** An earlier draft of it
+tried to, by declaring that decade docs need only carry contracts and
+signatures. The A-gate was right to reject that: the rule is STRICT and asks
+for copy-paste-executable bodies, and a unit-local doc cannot redefine a
+governing gate. That draft is withdrawn.
+
+The bodies stay. What was missing was not a lower bar — it was a **compiler**.
 
 ## 1. What went wrong
 
@@ -33,82 +39,71 @@ Writing a compiler-checkable artifact without a compiler is the wrong shape of
 work. That is the root cause; the remaining transcription defects are its
 symptoms.
 
-## 2. The change
+## 2. The fix: give the roadmap a compiler
 
-**The roadmap stops carrying full implementation bodies. The repository
-carries them, and `tsc` checks them.**
+`tools/check-blocks.ts` (new, lives with the unit it verifies) extracts every
+fenced `ts`/`tsx` block from the unit's numbered docs, classifies it, and
+writes the compilable ones to `.blocks/` for `tsc`:
 
-What each decade doc must still carry — unchanged, and audited as before:
+```
+bun devlog/_plan/260802_client_toggle_api/tools/check-blocks.ts
+cd devlog/_plan/260802_client_toggle_api/.blocks
+bun x tsc --noEmit --skipLibCheck --strict --noResolve \
+  --target esnext --module esnext --moduleResolution bundler --jsx react-jsx *.ts *.tsx
+```
 
-- exact file list with NEW/MODIFY per path;
-- the canonical contracts (`006`) they implement;
-- **exported signatures and type declarations** — the cross-module surface,
-  which is where every genuine drift actually happened;
-- mechanical move instructions with source line numbers, for extractions;
-- the activation table: every conditional branch, its trigger, its observable
-  proof;
-- exact test filenames and test names;
-- accept criteria a reviewer can check mechanically.
+Classification matters, because not every fenced block is a compilation unit:
 
-What they no longer carry:
+| Class | Treatment |
+|---|---|
+| unit (top-level decl, balanced braces) | compiled |
+| diff (`+`/`-` markers) | counted, not compiled — it is a patch, not TypeScript |
+| fragment (mid-function excerpt) | counted, not compiled |
+| **placeholder** (`/* … */`, `/* moved verbatim */`) | **reported by path and line** — a body we did not write cannot pass silently |
 
-- complete function bodies, component bodies, or route handlers as
-  paste-ready markdown. Where a body is subtle (the classifier's ordering,
-  the compensation sequence, `renderYaml`'s quoting), the doc states the rule
-  and its proof obligation in prose plus a **short** illustrative excerpt —
-  not a transcription of the whole file.
+`--noResolve` is deliberate: each block is checked as a self-contained unit for
+syntax and internal consistency. Cross-module identifier resolution belongs to
+the implementing phase, where the real imports exist and the repository's own
+`bun run typecheck` covers it.
 
-## 3. Why this is not scope reduction
+## 3. What it caught immediately
 
-DIFFLEVEL-ROADMAP-01 asks for a plan precise enough to execute without
-invention. Precision lives in contracts, signatures, activation proofs, and
-tests — all retained. A hand-copied body adds no precision a signature plus a
-named test does not, and it adds a defect class the toolchain cannot see.
+First run over 19 docs / 79 blocks: 73 compilable units, 5 fragments, and
+**1 placeholder** (`011:73`) plus **1 syntax error** — the `ctx: {...}`
+pseudo-signature still sitting in `030`, which four rounds of human review had
+walked past. Fixed in the same pass; the suite is now clean.
 
-The evidence is in the audit ledger above: **every genuine design fault was
-found in a contract or a rule, and every transcription fault was found in a
-body.** The bodies were not paying for themselves.
+That is the entire argument for this tool in one data point: the design faults
+across five rounds were all caught by review, and the transcription faults were
+all invisible to it.
 
-## 4. How each B phase now runs
+## 4. When it runs
 
-1. P re-verifies that phase's doc against the current tree (unchanged).
-2. B writes real files in `src/`, `gui/`, `tests/`.
-3. **`bun run typecheck` runs before the phase's first commit**, and after
-   every subsequent step. A cross-module mismatch is caught in seconds by the
-   tool built for it.
-4. The phase's focused tests are written from the activation table and run
-   green.
-5. C runs the phase's full gate; the A-gate reviewer audits the **diff**, with
-   `tsc` output as evidence, instead of auditing prose about a diff.
+- **Now**, and after any edit to a decade doc: the placeholder count must be
+  0 and `tsc` must be clean before the roadmap re-enters the A-gate.
+- **At each phase's P**, as part of the stale check.
+- **At each phase's C**, alongside the repository gates, so a doc amended
+  during B cannot drift from the code it describes.
 
-## 5. Disposition of the existing body docs
+DIFFLEVEL-ROADMAP-01 is satisfied in its own terms: every decade doc still
+carries exact paths, NEW/MODIFY, real signatures, and copy-paste-executable
+bodies — and now the bodies are checked by a compiler instead of by eye.
 
-`011`, `021`, `031`, `061` keep their value as **reference drafts**: they were
-written against the real contracts and they encode a lot of thinking. They are
-demoted from "paste this" to "this is the intended shape; write it against the
-compiler." Their headers say so. Their activation tables and test lists are
-promoted into the decade docs' accept criteria, where they were always the
-load-bearing part.
+## 5. Carried-forward implementation notes
 
-The known transcription defects in them (`config-io.ts` split incomplete,
-`JournalEntry.priorRecord` missing from the WP2 body, `parseConfig` declared
-twice) are therefore no longer blockers to fix in markdown — they are notes
-the implementing phase resolves at the keyboard, with `tsc` confirming. Each
-is listed in §6 so nothing is lost.
+These were found by review and are fixed in the docs; the checker guards
+against their reintroduction:
 
-## 6. Carried-forward implementation notes
-
-| Note | Phase | Resolution at the keyboard |
+| Note | Phase | Guard |
 |---|---|---|
-| `config-io.ts` owns `parseConfig`, `loadTarget`, `defaultIntegrationIO`; `state.ts` and `merge.ts` import them | WP2 | `tsc` fails if either redeclares |
-| `JournalEntry` must carry `priorRecord: OwnershipRecord \| null` | WP2 | `tsc` fails at every WP3 call site otherwise |
+| `config-io.ts` owns `parseConfig`, `loadTarget`, `defaultIntegrationIO`; `state.ts` and `merge.ts` import them | WP2 | duplicate declaration shows as a redeclaration error |
+| `JournalEntry` carries `priorRecord: OwnershipRecord \| null` | WP2 | missing property errors at every construction site |
 | HTTP failure mapping routes by `reason`, never `state` | WP4 | route test asserts `write_failed` in a `conflict` state still yields `integration_mutation_failed` with recovery fields |
-| Prune failure is structured, marked, retried, and surfaced as `retentionDegraded` | WP2 | test per 006 §5 |
+| Prune failure is structured, marked, retried, surfaced as `retentionDegraded` | WP2 | test per `006` §5 |
 | `model-rows.ts` is a verbatim cut of `model-routes.ts:114/129/182` | WP1 | existing client-config route test must pass unchanged |
 
-## 7. Goalplan effect
+## 6. Goalplan effect
 
-No work-phase is added or removed; WP0's deliverable changes from "decade docs
-with full bodies" to "decade docs with contracts, signatures, activation
-tables, and tests." The criterion `c-docs` is amended accordingly, and
-`c-gates` gains "typecheck runs before each phase's first commit."
+No work-phase is added or removed and no deliverable is weakened. `c-docs`
+keeps its meaning; `c-gates` gains "the block checker reports 0 placeholders
+and clean `tsc` before each A-gate and at each phase's C."

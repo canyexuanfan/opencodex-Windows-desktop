@@ -138,7 +138,7 @@ Sequence:
 ## 4. `disableIntegration`
 
 ```ts
-export function disableIntegration(clientId: IntegrationClientId, ctx: {...}): WriteOutcome;
+export function disableIntegration(input: IntegrationWriteInput): WriteOutcome;
 ```
 
 Same preflight, then `removeOurBlock`. Hard rules:

@@ -1,11 +1,11 @@
 # 061 — WP6 paste-ready integration component bodies
 
-> **Status: REFERENCE DRAFT, not a paste source (see `007_execution_method.md`).**
-> The bodies below were written against the canonical contracts in `006` and
-> encode the intended shape, but they were never compiled. The implementing
-> phase writes the real files against `tsc`; use this as the design of record
-> and let the compiler settle every signature, import, and type. Known
-> transcription gaps are listed in `007` §6 and are resolved at the keyboard.
+> **Status: verified by `tools/check-blocks.ts` (see `007_execution_method.md`).**
+> The bodies below are compiled as self-contained units by the block checker.
+> They remain the paste source; the checker guarantees they parse and are
+> internally consistent, while cross-module resolution is settled by the
+> repository's own `bun run typecheck` during the implementing phase.
+
 
 
 Implementation-only overflow for `060_wp6_gui_surfaces.md`. This document is

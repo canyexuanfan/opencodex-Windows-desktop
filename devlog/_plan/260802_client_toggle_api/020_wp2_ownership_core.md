@@ -196,22 +196,45 @@ accepts it and uninstall can clean it up):
 ```ts
 export type OperationKind = "apply" | "disable" | "refresh" | "restore";
 
+/** Tagged so "the file did not exist" and "the snapshot was collected" stay
+ *  distinguishable — `null` conflated them (006 §3). */
+export type SnapshotRef =
+  | { kind: "none" }
+  | { kind: "stored"; relPath: string }
+  | { kind: "expired" };
+
 export interface JournalEntry {
   opId: string;                 // crypto.randomUUID()
   clientId: IntegrationClientId;
   kind: OperationKind;
   at: string;                   // ISO
   configPath: string;
-  /** Snapshot of the file as it was BEFORE this operation; null when none existed. */
-  snapshot: string | null;      // relative path under snapshots/, not content
+  /** The file as it was BEFORE this operation. Never content, only a tag+path. */
+  snapshot: SnapshotRef;
   /** Fingerprint of the file AFTER this operation — undo binds to it. */
   resultFingerprint: string;
+  /** True when the operation left no file; restore then means "delete". */
+  resultAbsent: boolean;
+  /** Ownership as it stood before this operation, so restore puts back the
+   *  provenance that matched the bytes instead of inferring it (006 §3). */
+  priorRecord: OwnershipRecord | null;
 }
 
 export function appendOperation(entry: JournalEntry): void;
-export function listOperations(clientId?: IntegrationClientId, limit = 50): JournalEntry[];
-export function readSnapshot(opId: string): { path: string; text: string } | null;
-export function captureSnapshot(clientId: IntegrationClientId, opId: string, text: string | null): string | null;
+export function listOperations(clientId?: IntegrationClientId, limit?: number): JournalEntry[];
+export function findOperation(opId: string): JournalEntry | null;
+/** Resolves the tag against what is on disk NOW: a stored ref whose file is
+ *  gone reads as expired. */
+export function readSnapshot(entry: JournalEntry):
+  | { kind: "none" }
+  | { kind: "stored"; text: string; path: string }
+  | { kind: "expired" };
+export function captureSnapshot(
+  clientId: IntegrationClientId, opId: string, text: string | null,
+): SnapshotRef;
+/** Structured, so a prune failure is marked and retried rather than swallowed
+ *  (006 §5) — snapshots can hold the user's own credentials. */
+export function pruneSnapshots(clientId: IntegrationClientId): { ok: true } | { ok: false; error: string };
 ```
 
 ### Retention (10 per client) and GC

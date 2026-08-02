@@ -1,11 +1,11 @@
 # 011 — WP1: paste-ready serializer and client builders
 
-> **Status: REFERENCE DRAFT, not a paste source (see `007_execution_method.md`).**
-> The bodies below were written against the canonical contracts in `006` and
-> encode the intended shape, but they were never compiled. The implementing
-> phase writes the real files against `tsc`; use this as the design of record
-> and let the compiler settle every signature, import, and type. Known
-> transcription gaps are listed in `007` §6 and are resolved at the keyboard.
+> **Status: verified by `tools/check-blocks.ts` (see `007_execution_method.md`).**
+> The bodies below are compiled as self-contained units by the block checker.
+> They remain the paste source; the checker guarantees they parse and are
+> internally consistent, while cross-module resolution is settled by the
+> repository's own `bun run typecheck` during the implementing phase.
+
 
 
 **A-gate round-3 addendum (read first).** Two items the audit found missing
@@ -151,6 +151,15 @@ function yamlScalar(value: string | number | boolean): string {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (Number.isFinite(value)) return String(value);
   throw new Error(`unsupported YAML number: ${String(value)}`);
+}
+
+/**
+ * Type guard, not a boolean check — the renderer walks `unknown`, so without
+ * the predicate every narrowed branch stays `unknown` and `Object.entries`
+ * rejects it. (Caught by tools/check-blocks.ts, TS2769.)
+ */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function yamlEmptyCollection(value: unknown): "[]" | "{}" | undefined {
@@ -540,7 +549,9 @@ export function summarizeKimiClientConfig(document: unknown): {
   modelCount: number;
   modelsWithoutLimits: number;
 } {
-  const models = Object.values((document as KimiGeneratedConfig).models);
+  // Annotate the value type: `Object.values` on an indexed record widens to
+  // `unknown` under strict mode without it. (check-blocks.ts, TS18046.)
+  const models: KimiModelBlock[] = Object.values((document as KimiGeneratedConfig).models ?? {});
   return {
     modelCount: models.length,
     modelsWithoutLimits: models.filter(model => model.max_context_size === undefined).length,

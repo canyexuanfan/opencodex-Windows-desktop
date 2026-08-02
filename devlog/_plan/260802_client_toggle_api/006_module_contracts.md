@@ -21,7 +21,7 @@ bytes we control.
 
 ```ts
 /** Block-style YAML for the shallow shapes we emit. Throws on anything else. */
-export function renderYaml(value: unknown, indent = 0): string;
+export function renderYaml(value: unknown, indent?: number): string;
 
 /** Every serializer returns text ending in exactly one "\n". */
 export function serializeDocument(document: unknown, format: ConfigFormat): string;
