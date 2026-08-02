@@ -83,24 +83,34 @@ function stubRoute(handler: (client: string) => Response | Promise<Response>) {
   return calls;
 }
 
-async function mountPanel(props: { hasKeys?: boolean } = {}): Promise<{ root: Root; container: HTMLElement }> {
+async function mountPanel(props: { hasKeys?: boolean; apiBase?: string } = {}): Promise<{
+  root: Root;
+  container: HTMLElement;
+  /** Re-render with a different apiBase, which is part of a row's request identity. */
+  rerender: (next: { apiBase: string }) => Promise<void>;
+}> {
   const { createRoot } = await import("react-dom/client");
   const container = document.createElement("div");
   document.body.append(container);
+  const render = (apiBase: string) => (
+    <LanguageProvider>
+      <ClientConfigPanel
+        apiBase={apiBase}
+        baseUrl="http://127.0.0.1:10100/v1"
+        hasKeys={props.hasKeys ?? true}
+      />
+    </LanguageProvider>
+  );
   let root!: Root;
   await act(async () => {
     root = createRoot(container);
-    root.render(
-      <LanguageProvider>
-        <ClientConfigPanel
-          apiBase=""
-          baseUrl="http://127.0.0.1:10100/v1"
-          hasKeys={props.hasKeys ?? true}
-        />
-      </LanguageProvider>,
-    );
+    root.render(render(props.apiBase ?? ""));
   });
-  return { root, container };
+  return {
+    root,
+    container,
+    rerender: async ({ apiBase }) => { await act(async () => { root.render(render(apiBase)); }); },
+  };
 }
 
 function button(container: HTMLElement, label: string): HTMLButtonElement {
@@ -212,6 +222,61 @@ test("dialog closes on Escape and returns focus to its trigger", async () => {
   await act(async () => { root.unmount(); });
 });
 
+test("the backdrop dismisses the dialog and also returns focus", async () => {
+  // Escape and Close were covered; the backdrop is the third way out and had no
+  // assertion, so a regression there would have shipped silently.
+  stubRoute(client => Response.json(client === "pi" ? PI_ENVELOPE : OPENCODE_ENVELOPE));
+  const { root, container } = await mountPanel();
+
+  const trigger = rowButton(container, "OpenCode", "Details");
+  await act(async () => { trigger.click(); });
+  const backdrop = container.querySelector<HTMLButtonElement>(".modal-backdrop-dismiss")!;
+  expect(backdrop).not.toBeNull();
+  // Never a tab stop: it is a click target behind the card, not a control.
+  expect(backdrop.tabIndex).toBe(-1);
+
+  await act(async () => { backdrop.click(); });
+
+  expect(container.querySelector("dialog")).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+
+  await act(async () => { root.unmount(); });
+});
+
+test("a superseded response never replaces a newer one", async () => {
+  // `apiBase` is part of a row's request identity. Before it was, a result from
+  // the previous origin still matched the key and stayed copyable while the
+  // replacement request was in flight.
+  let releaseSlow: (() => void) | null = null;
+  const slow = new Promise<void>(resolve => { releaseSlow = resolve; });
+  const seen: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://localhost");
+    const client = url.searchParams.get("client") ?? "";
+    const origin = url.origin;
+    seen.push(`${origin}:${client}`);
+    const envelope = client === "pi" ? PI_ENVELOPE : OPENCODE_ENVELOPE;
+    // The FIRST origin answers late, after the second has already settled.
+    if (origin === "http://localhost") {
+      await slow;
+      return Response.json({ ...envelope, destination: "/stale/path.json" });
+    }
+    return Response.json(envelope);
+  }) as typeof fetch;
+
+  const { root, container, rerender } = await mountPanel();
+  await rerender({ apiBase: "http://127.0.0.1:9999" });
+  expect(row(container, "OpenCode").textContent).toContain(OPENCODE_ENVELOPE.destination);
+
+  // The first origin's reply lands now. It must not overwrite the newer result.
+  await act(async () => { releaseSlow!(); await slow; });
+
+  expect(row(container, "OpenCode").textContent).toContain(OPENCODE_ENVELOPE.destination);
+  expect(container.textContent).not.toContain("/stale/path.json");
+
+  await act(async () => { root.unmount(); });
+});
+
 test("download emits the fetched config under the server-provided filename and never says applied", async () => {
   stubRoute(() => Response.json(OPENCODE_ENVELOPE));
   const blobs: Blob[] = [];
@@ -280,6 +345,12 @@ test("one client's failure isolates to its row, with no partial JSON and the bas
   expect(row(container, "Pi").textContent).toContain("Could not build the Pi config.");
   expect(container.querySelector(".awi-clientconfig-json")).toBeNull();
   expect(container.textContent).toContain("http://127.0.0.1:10100/v1");
+
+  // The failed row offers repair and nothing else. Asserting only that no JSON
+  // is on screen proves nothing here — successful rows render none either, so
+  // that check passes whether or not the failure is isolated.
+  expect([...row(container, "Pi").querySelectorAll("button")].map(b => b.textContent?.trim()))
+    .toEqual(["Retry"]);
 
   // The sibling row is untouched by its neighbour's 503.
   expect(rowButton(container, "OpenCode", "Copy JSON").disabled).toBe(false);
