@@ -20,6 +20,48 @@ export const MAX_INSPECTION_SSE_FRAME_BYTES = 4 * 1024 * 1024;
 export const MAX_COMPLETED_OUTPUT_ITEMS = 256;
 export const MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES = 8 * 1024 * 1024;
 export const MAX_TAIL_ERROR_MESSAGE_CHARS = 512;
+// Whole-body ceiling for a non-streaming upstream JSON response. The caller materializes
+// the body for logging and (on the WebSocket bridge) reframing, so an unbounded `.text()`
+// read would let a hostile or broken upstream grow proxy memory without limit. 32 MiB
+// matches the continuation snapshot read bound and is far above any legitimate
+// non-streaming completion (including base64 image payloads).
+export const MAX_UPSTREAM_JSON_BODY_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Read an entire upstream body as text with a hard byte ceiling. Returns `truncated: true`
+ * (with the body already cancelled) when the body exceeds `maxBytes`; callers must treat
+ * truncation as an upstream failure, never parse the partial text. A null body reads as "".
+ */
+export async function readBoundedResponseText(
+  body: ReadableStream<Uint8Array> | null,
+  maxBytes: number = MAX_UPSTREAM_JSON_BODY_BYTES,
+): Promise<{ text: string; truncated: boolean }> {
+  if (!body) return { text: "", truncated: false };
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel("upstream body exceeded the safe byte limit").catch(() => {});
+        return { text: "", truncated: true };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { text: new TextDecoder().decode(merged), truncated: false };
+}
 
 export type InspectionCounters = {
   frameBufferHighWaterBytes: number;

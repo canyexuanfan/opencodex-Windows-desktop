@@ -135,6 +135,32 @@ describe("the inbound scope survives the handleResponses replay", () => {
   test("ordinary HTTP Responses requests keep streaming upstream", async () => {
     expect((await drive("responses")).body.stream).toBe(true);
   });
+
+  test("an oversized upstream JSON body fails closed instead of buffering without limit", async () => {
+    // Review finding: the WebSocket bounded-JSON path (and every non-streaming upstream)
+    // materializes the whole body, so the read must have a hard byte ceiling. 33 MiB is
+    // one MiB over MAX_UPSTREAM_JSON_BODY_BYTES.
+    globalThis.fetch = (async () => new Response(" ".repeat(33 * 1024 * 1024), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+    const config = { providers: { deepseek: deepseekProvider() } } as unknown as OcxConfig;
+    const response = await handleResponses(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: MODEL, input: "ping", stream: true }),
+      }),
+      config,
+      { model: "", provider: "" },
+      { inboundWire: "responses", inboundTransport: "websocket" },
+    );
+
+    expect(response.status).toBe(502);
+    const payload = (await response.json()) as { error?: { code?: string; message?: string } };
+    expect(payload.error?.code).toBe("upstream_server_error");
+    expect(payload.error?.message).toContain("exceeded the safe body limit");
+  });
 });
 
 /**

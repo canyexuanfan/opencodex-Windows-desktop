@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter as createAnthropicAdapterProduction } from "../src/adapters/anthropic";
 import { FREE_PROVIDER_DIRECTORY } from "../src/providers/free-directory";
 import type { AdapterEvent, OcxProviderConfig } from "../src/types";
-import { withTestTranslatorBudget } from "./helpers/translator-budget";
+import { createTestTranslatorBudget, withTestTranslatorBudget } from "./helpers/translator-budget";
 
 /**
  * #658: AgentRouter's Anthropic-compatible endpoint can close the stream before
@@ -118,5 +118,64 @@ describe("AgentRouter Anthropic EOF tolerance (#658)", () => {
   test("the AgentRouter directory row declares the EOF tolerance capability", () => {
     const row = FREE_PROVIDER_DIRECTORY.find(provider => provider.id === "agentrouter");
     expect(row?.anthropicEofTolerance).toBe(true);
+  });
+
+  test("an empty text delta at EOF stays a truncation error even when tolerant", async () => {
+    // Review finding: `sawVisibleText` must require non-empty text, or a cut-off turn
+    // surfaces as a successful empty answer.
+    const events = await collect(tolerant, [
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":2}}}',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}',
+    ]);
+
+    expect(events.at(-1)).toEqual({ type: "error", message: TRUNCATION });
+    expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  test("a budget overflow is the single terminal event on the tolerant path", async () => {
+    // Review finding: after the translation_buffer_limit error the generator must return,
+    // not fall through to EOF tolerance and append tool_call_end/done behind the error.
+    const adapter = createAnthropicAdapter(tolerant);
+    const events: AdapterEvent[] = [];
+    for await (const event of adapter.parseStream(
+      sseResponse(toolEof('{"value":42}', "toolu_1").concat([
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: ',"extra":true' } })}`,
+      ])),
+      createTestTranslatorBudget({ maxCallArgumentBytes: 16 }),
+    )) {
+      events.push(event);
+    }
+
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe("error");
+    expect((terminal as { code?: string }).code).toBe("translation_buffer_limit");
+    const firstError = events.findIndex(event => event.type === "error");
+    expect(events.slice(firstError + 1).some(event => event.type === "done" || event.type === "tool_call_end")).toBe(false);
+  });
+
+  test("repair never materializes a brace index over hostile input", async () => {
+    // Review finding: the repair scan must stay backward and candidate-bounded. 4 MiB of
+    // unmatched opens would have built two O(n) offset arrays in the original helper; the
+    // result must still be the plain fallback.
+    const hostile = "{".repeat(4 * 1024 * 1024);
+    const payload = JSON.stringify({
+      content: [{ type: "tool_use", id: "toolu_1", name: "get_weather", input: hostile }],
+    });
+
+    const started = Date.now();
+    const events = await createAnthropicAdapter(tolerant).parseResponse(new Response(payload));
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(events).toContainEqual({ type: "tool_call_delta", arguments: "{}" });
+  });
+
+  test("repair declines input above the byte cap", async () => {
+    const oversized = `{"pad":"${"x".repeat(1024 * 1024 + 8)}`; // > 1 MiB, unparseable
+    const payload = JSON.stringify({
+      content: [{ type: "tool_use", id: "toolu_1", name: "get_weather", input: oversized }],
+    });
+
+    const events = await createAnthropicAdapter(tolerant).parseResponse(new Response(payload));
+    expect(events).toContainEqual({ type: "tool_call_delta", arguments: "{}" });
   });
 });

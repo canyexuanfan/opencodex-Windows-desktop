@@ -281,30 +281,36 @@ function usableToolUseId(id: unknown): string {
  * Bound repair for a malformed tool-arguments string under the compatibility profile (#658):
  * a gateway such as AgentRouter can concatenate JSON objects (`{}{"value":42}`). Find the
  * last parseable JSON object by scanning suffixes from each object-open brace and prefixes
- * ending at each object-close brace, bounded so hostile input cannot cost unbounded time.
+ * ending at each object-close brace. Both scans walk backwards from the end trying at most
+ * `maxCandidates` positions, so no offset index is ever materialized: a brace-dense hostile
+ * input costs at most 2 × maxCandidates bounded JSON.parse attempts and no extra storage.
+ * Inputs above MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES are not repaired at all.
  */
+const MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES = 1024 * 1024;
+
 function lastValidJsonObject(input: string, maxCandidates: number): string | undefined {
-  const opens: number[] = [];
-  const closes: number[] = [];
-  for (let i = 0; i < input.length; i++) {
-    if (input[i] === "{") opens.push(i);
-    else if (input[i] === "}") closes.push(i);
-  }
-  let tried = 0;
-  for (let i = opens.length - 1; i >= 0 && tried < maxCandidates; i--, tried++) {
-    const candidate = input.slice(opens[i]);
+  const tryParseObject = (candidate: string): string | undefined => {
     try {
       const parsed = JSON.parse(candidate) as unknown;
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return candidate;
     } catch { /* keep scanning */ }
+    return undefined;
+  };
+  let scanFrom = input.length - 1;
+  for (let tried = 0; tried < maxCandidates && scanFrom >= 0; tried++) {
+    const open = input.lastIndexOf("{", scanFrom);
+    if (open === -1) break;
+    const repaired = tryParseObject(input.slice(open));
+    if (repaired !== undefined) return repaired;
+    scanFrom = open - 1;
   }
-  tried = 0;
-  for (let i = closes.length - 1; i >= 0 && tried < maxCandidates; i--, tried++) {
-    const candidate = input.slice(0, closes[i] + 1);
-    try {
-      const parsed = JSON.parse(candidate) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return candidate;
-    } catch { /* keep scanning */ }
+  scanFrom = input.length - 1;
+  for (let tried = 0; tried < maxCandidates && scanFrom >= 0; tried++) {
+    const close = input.lastIndexOf("}", scanFrom);
+    if (close === -1) break;
+    const repaired = tryParseObject(input.slice(0, close + 1));
+    if (repaired !== undefined) return repaired;
+    scanFrom = close - 1;
   }
   return undefined;
 }
@@ -317,7 +323,7 @@ function toolUseArguments(input: unknown, lenient = false): string {
       JSON.parse(trimmed);
       return trimmed;
     } catch {
-      if (lenient) {
+      if (lenient && trimmed.length <= MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES) {
         const repaired = lastValidJsonObject(trimmed, 32);
         if (repaired !== undefined) return repaired;
       }
@@ -890,7 +896,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 const delta = data.delta as Record<string, unknown> | undefined;
                 if (!delta) break;
                 if (delta.type === "text_delta" && typeof delta.text === "string") {
-                  sawVisibleText = true;
+                  // Only non-empty text proves the upstream produced usable output; an empty
+                  // delta followed by EOF must stay a truncation error even on the tolerant
+                  // profile, or a cut-off turn would surface as a successful empty answer.
+                  if (delta.text.length > 0) sawVisibleText = true;
                   yield { type: "text_delta", text: delta.text };
                 } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
                   yield { type: "thinking_delta", thinking: delta.thinking };
@@ -972,6 +981,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
           code: "translation_buffer_limit",
           message: "upstream translation buffer exceeded the safe limit",
         };
+        // The budget error IS the terminal event for this stream. Falling through to the
+        // EOF handling below could append tool_call_end/done after it, violating the
+        // one-terminal-event contract for consumers that keep draining the generator.
+        return;
       } finally {
         if (currentToolCallId) budget.closeCall(currentToolCallId);
       }

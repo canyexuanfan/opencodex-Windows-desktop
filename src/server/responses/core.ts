@@ -139,6 +139,7 @@ import {
   isNativePassthroughSseResponse,
   markEagerRelaySseResponse,
   markNativePassthroughSseResponse,
+  readBoundedResponseText,
   relaySseWithFailedTail,
   relayWithAbort,
   sanitizePassthroughHeaders,
@@ -1963,7 +1964,16 @@ async function handleResponsesInner(
       }));
     }
     if (headers.get("content-type")?.toLowerCase().includes("application/json")) {
-      const text = await upstreamResponse.text();
+      // Bounded whole-body read: a non-streaming upstream JSON body is fully materialized
+      // here (and again by the request-log finalizer and the WebSocket bridge's reframing),
+      // so an unbounded .text() would let a hostile or stuck upstream grow proxy memory
+      // without limit. This path is no longer rare — WebSocket turns for models whose
+      // streaming terminal event is unreliable are deliberately answered with bounded JSON.
+      const bounded = await readBoundedResponseText(upstreamResponse.body);
+      if (bounded.truncated) {
+        return formatErrorResponse(502, "upstream_error", "upstream JSON response exceeded the safe body limit");
+      }
+      const text = bounded.text;
       inspectResponseLogJson(logCtx, text);
       if (rememberPassthroughResponse) {
         try {
