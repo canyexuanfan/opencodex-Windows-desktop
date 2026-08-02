@@ -577,7 +577,9 @@ describe("Cursor live transport incomplete-frame EOF", () => {
           }
         })();
         // Give A a beat to park its incomplete frame before B overflows.
-        await new Promise(resolve => setTimeout(resolve, 500));
+        for (let attempt = 0; attempt < 200 && budget.snapshot().currentBytes < 16 * 1024 * 1024 + 4; attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
         expect(budget.snapshot().currentBytes).toBe(16 * 1024 * 1024 + 4);
         let failureB: Error | undefined;
         try {
@@ -602,5 +604,44 @@ describe("Cursor live transport incomplete-frame EOF", () => {
       });
     });
   }, 20_000);
+
+  test("data arriving after terminal failure is never charged", async () => {
+    const budget = createTestTranslatorBudget();
+    await withDiscoveryServer(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      // A complete frame whose payload is NOT valid protobuf: handling fails
+      // and settles the turn. Two more bytes arrive afterwards.
+      stream.write(Buffer.from(encodeConnectFrame(new Uint8Array([1, 2, 3, 4]))));
+      setTimeout(() => {
+        try { stream.write(Buffer.from([0, 0])); } catch { /* closed */ }
+        stream.end();
+      }, 25);
+    }, async baseUrl => {
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        translatorBudget: budget,
+        firstFrameTimeoutMs: 5_000,
+      });
+      let failure: Error | undefined;
+      try {
+        for await (const _message of transport.run({
+          modelId: "composer-2",
+          conversationId: "cursor_late_data_test",
+          system: [],
+          messages: [{ role: "user", content: "hello" }],
+        })) {
+          // drain
+        }
+      } catch (err) {
+        failure = err instanceof Error ? err : new Error(String(err));
+      }
+      expect(failure).toBeDefined();
+      // Let the delayed bytes land, then prove no lease formed.
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(budget.snapshot().currentBytes).toBe(0);
+      await transport.close?.();
+      expect(budget.snapshot().currentBytes).toBe(0);
+    });
+  });
 });
 import { ManagementRequest as Request } from "./helpers/management-auth";

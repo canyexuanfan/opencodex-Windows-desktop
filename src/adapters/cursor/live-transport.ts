@@ -922,6 +922,9 @@ class LiveCursorTransport implements CursorTransport {
     };
     this.stream.on("data", chunk => {
       this.clearFirstFrameTimer();
+      // Once the turn has settled, late network bytes must never be charged —
+      // the backlog lease is already released and nobody would own these.
+      if (settler.settled()) return;
       if (!this.firstFrameLogged) {
         this.firstFrameLogged = true;
         this.firstFrameAt = Date.now();
