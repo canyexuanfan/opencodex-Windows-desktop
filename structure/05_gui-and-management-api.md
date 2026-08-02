@@ -117,16 +117,28 @@ endpoint restores native Codex config, stops any installed service to prevent re
 `GET /api/system/memory` may report `bunRuntimeSource` — one of `override`, `bundled`, or
 `process` — describing how the **running service** obtained its Bun binary.
 
-The value is stamped into the launched process's environment (`OCX_BUN_RUNTIME_SOURCE`) by
-whichever launcher selected the binary: the npm Node launcher, the Windows Task Scheduler
-wrapper, the native WinSW service, launchd, systemd, the Codex autostart shim, and the Windows
-tray host. Provenance and path come from a single `durableBunRuntime()` resolution at each of
-those sites, so the marker can never describe a different binary than the one actually baked.
+The value is stamped into the launched process's environment as a pair —
+`OCX_BUN_RUNTIME_SOURCE` plus `OCX_BUN_RUNTIME_PATH`, the binary it was minted for — by whichever
+launcher selected that binary: the npm Node launcher, the Windows Task Scheduler wrapper, the
+native WinSW service, launchd, systemd, the Codex autostart shim, and the Windows tray host. Both
+halves come from a single `durableBunRuntime()` resolution at each site, so the marker can never
+describe a different binary than the one actually baked.
 
 Launchers that re-exec `process.execPath` instead of resolving a binary — `ocx ensure`, GUI/Claude/
 OpenCode start, `POST /api/system/restart`, and the update relaunch — go through
-`withProcessRuntimeProvenance()`. Re-execing the current runtime does not change how that runtime
-was obtained, so an inherited marker is preserved and only its absence records `process`.
+`withProcessRuntimeProvenance()`. An inherited marker is carried forward only when its recorded
+path is the executable about to run, compared through `realpath` so symlinks, junctions, and
+Windows case differences do not break a valid match. The recorded path is what settles this rather
+than re-deriving the original selection: a service installed with a shell-local override keeps
+neither that shell nor its `OPENCODEX_BUN_PATH`, so re-deriving would demote a correct `override`
+to `process` on the first relaunch. A marker that describes some other binary — inheritance
+travels down a process tree and can outlive the binary it was minted for — is dropped in favor of
+what is actually executing.
+
+The Codex shims scope the pair to their `ensure` invocation (an assignment prefix in `sh`,
+`setlocal`/`endlocal` in `cmd`, save-and-restore in PowerShell) rather than exporting it. A shim
+wraps the real `codex`, so an exported marker would be inherited by Codex and everything it
+spawns.
 
 **Trust rule: a reporting surface must never resolve provenance for itself.** Calling
 `durableBunRuntime()` at report time answers "what would this process pick right now", which is

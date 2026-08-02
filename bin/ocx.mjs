@@ -321,6 +321,7 @@ const BUN_OVERRIDE_ENV = "OPENCODEX_BUN_PATH";
 // Node and runs before any TypeScript is loaded, so the name is repeated rather than
 // imported; tests/ocx-launcher-source.test.ts pins the two together.
 const BUN_RUNTIME_SOURCE_ENV = "OCX_BUN_RUNTIME_SOURCE";
+const BUN_RUNTIME_PATH_ENV = "OCX_BUN_RUNTIME_PATH";
 
 function findBunBinary(bunDir) {
   // The npm `bun` package ships the binary as bin/bun.exe on every platform;
@@ -423,6 +424,7 @@ const child = spawn(bun, [cliPath, ...process.argv.slice(2)], {
     ...process.env,
     OCX_PRE_BUN_ANTHROPIC_ENV: preBunAnthropicSlots.join(","),
     [BUN_RUNTIME_SOURCE_ENV]: bunRuntime.source,
+    [BUN_RUNTIME_PATH_ENV]: bunRuntime.path,
   },
 });
 

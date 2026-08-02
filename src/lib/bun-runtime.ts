@@ -11,6 +11,7 @@
  * back to `process.execPath` (which is itself Bun when run via `bun src/cli/index.ts`).
  */
 import { createRequire } from "node:module";
+import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isRealBunBinary } from "./bun-binary-validator.mjs";
 
@@ -29,6 +30,13 @@ const BUN_OVERRIDE_ENV = "OPENCODEX_BUN_PATH";
  * this service started with", and those differ exactly when the answer matters.
  */
 export const BUN_RUNTIME_SOURCE_ENV = "OCX_BUN_RUNTIME_SOURCE";
+
+/**
+ * The binary the marker was minted for. Stamped beside the source so a reader can tell
+ * whether a marker still describes the process holding it, without re-deriving the
+ * selection from an environment that may no longer contain it.
+ */
+export const BUN_RUNTIME_PATH_ENV = "OCX_BUN_RUNTIME_PATH";
 
 export type BunRuntimeSource = "override" | "bundled" | "process";
 
@@ -58,6 +66,11 @@ export function reportedBunRuntimeSource(
   return BUN_RUNTIME_SOURCES.find(source => source === raw);
 }
 
+/** Env pair a launcher stamps for the binary it just selected. */
+export function bunRuntimeProvenanceEnv(runtime: DurableBunRuntime): Record<string, string> {
+  return { [BUN_RUNTIME_SOURCE_ENV]: runtime.source, [BUN_RUNTIME_PATH_ENV]: runtime.path };
+}
+
 /**
  * Child environment for a proxy started with `process.execPath` — the runtime this
  * process is already using.
@@ -67,45 +80,51 @@ export function reportedBunRuntimeSource(
  * be silently dropped on `ocx ensure`, GUI start, restart, and update-relaunch, and the
  * service would report an unknown origin it actually knows.
  *
- * An inherited marker is only carried forward when it still DESCRIBES the executable
- * about to be re-executed. Inheritance travels down a process tree, so a marker can
- * outlive the binary it was minted for — something started under a marked process but
- * running a different Bun would otherwise relaunch the daemon with a provenance
- * contradicting the binary actually serving it. When the claim does not match
- * `process.execPath`, the honest answer is this executable's own origin.
+ * An inherited marker is carried forward only when the binary it was minted for is the
+ * one about to be re-executed. Inheritance travels down a process tree, so a marker can
+ * outlive its binary — something started under a marked process but running a different
+ * Bun would otherwise relaunch the daemon with a provenance contradicting the binary
+ * actually serving it. The check compares the recorded path rather than re-deriving the
+ * selection, because a service installed with a shell-local override keeps neither that
+ * shell nor its `OPENCODEX_BUN_PATH`, and re-deriving would demote a correct `override`
+ * to `process` on its first relaunch.
  */
 export function withProcessRuntimeProvenance(
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  return { ...env, [BUN_RUNTIME_SOURCE_ENV]: currentRuntimeProvenance(env) };
+  return { ...env, ...bunRuntimeProvenanceEnv(currentRuntimeProvenance(env)) };
 }
 
 /**
- * Provenance for `process.execPath`: the inherited claim when it is corroborated by
- * re-resolving that source, otherwise what this executable actually is.
+ * Provenance for `process.execPath`: the inherited claim when it was minted for this
+ * exact executable, otherwise what this executable actually is.
  */
-function currentRuntimeProvenance(env: NodeJS.ProcessEnv): BunRuntimeSource {
+function currentRuntimeProvenance(env: NodeJS.ProcessEnv): DurableBunRuntime {
   const claimed = reportedBunRuntimeSource(env);
-  if (claimed && samePath(resolvedPathForSource(claimed, env), process.execPath)) return claimed;
-  // No trustworthy claim: report what is running, re-deriving it rather than guessing.
-  return durableBunRuntime().path === process.execPath ? durableBunRuntime().source : "process";
-}
-
-function resolvedPathForSource(source: BunRuntimeSource, env: NodeJS.ProcessEnv): string | null {
-  if (source === "process") return process.execPath;
-  if (source === "override") {
-    const value = env[BUN_OVERRIDE_ENV]?.trim();
-    return value ? resolve(value) : null;
+  const claimedPath = env[BUN_RUNTIME_PATH_ENV]?.trim();
+  if (claimed && claimedPath && samePath(claimedPath, process.execPath)) {
+    return { path: process.execPath, source: claimed, overrideEnv: BUN_OVERRIDE_ENV };
   }
-  return bundledBunPath();
+  // No marker that describes this binary: report what is running. One resolution
+  // supplies both halves so the pair can never disagree.
+  const runtime = durableBunRuntime();
+  return samePath(runtime.path, process.execPath)
+    ? runtime
+    : { path: process.execPath, source: "process", overrideEnv: BUN_OVERRIDE_ENV };
 }
 
-/** Windows paths are case-insensitive; everything else compares exactly. */
-function samePath(left: string | null, right: string): boolean {
-  if (!left) return false;
-  return process.platform === "win32"
-    ? left.toLowerCase() === right.toLowerCase()
-    : left === right;
+/**
+ * Same file, allowing for the aliases a path can pick up between launch and relaunch:
+ * symlinks/junctions, mapped drives, and Windows case differences. Falls back to a
+ * lexical comparison when a path cannot be resolved (it may be gone).
+ */
+function samePath(left: string, right: string): boolean {
+  const canonical = (value: string): string => {
+    let resolved = value;
+    try { resolved = realpathSync(value); } catch { /* keep the literal path */ }
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return canonical(left) === canonical(right);
 }
 
 /**

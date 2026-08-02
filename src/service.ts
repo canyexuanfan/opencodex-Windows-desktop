@@ -15,7 +15,7 @@ import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex/inject";
 import { stripGrokConfig } from "./grok/inject";
 import { isWslRuntime } from "./codex/home";
-import { BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "./lib/bun-runtime";
+import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "./lib/bun-runtime";
 import type { BunRuntimeSource } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
@@ -281,6 +281,7 @@ export function buildPlist(): string {
   const envLines = [
     `    <key>OCX_SERVICE</key><string>1</string>`,
     `    <key>${BUN_RUNTIME_SOURCE_ENV}</key><string>${bunRuntimeSource}</string>`,
+    `    <key>${BUN_RUNTIME_PATH_ENV}</key><string>${plistString(bun)}</string>`,
     `    <key>PATH</key><string>${plistString(path)}</string>`,
     codexHome ? `    <key>CODEX_HOME</key><string>${plistString(codexHome)}</string>` : null,
     opencodexHome ? `    <key>OPENCODEX_HOME</key><string>${plistString(opencodexHome)}</string>` : null,
@@ -1343,6 +1344,7 @@ export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServ
     "chcp 65001 >nul",
     windowsBatchSet("OCX_SERVICE", "1"),
     windowsBatchSet(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource),
+    windowsBatchSet(BUN_RUNTIME_PATH_ENV, bun, "path"),
     windowsBatchSet("PATH", path, "pathList"),
     windowsBatchSet("CODEX_HOME", process.env.CODEX_HOME?.trim(), "path"),
     windowsBatchSet("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim(), "path"),
@@ -1936,6 +1938,7 @@ export function buildUnit(): string {
   const envLines = [
     systemdEnvironmentAssignment("OCX_SERVICE", "1"),
     systemdEnvironmentAssignment(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource),
+    systemdEnvironmentAssignment(BUN_RUNTIME_PATH_ENV, bun),
     systemdEnvironmentAssignment("PATH", path),
     codexHome,
     opencodexHome,

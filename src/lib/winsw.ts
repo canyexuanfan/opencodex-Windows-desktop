@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, loadConfig } from "../config";
 import { recordOwnedConfigPath } from "./config-ownership";
-import { BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "./bun-runtime";
+import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "./bun-runtime";
 import type { BunRuntimeSource } from "./bun-runtime";
 import { serviceApiTokenFilePath } from "./service-secrets";
 
@@ -99,6 +99,7 @@ export function buildWinswXml(entry: WinswEntry, env: NodeJS.ProcessEnv = proces
   const envLines = [
     `  <env name="OCX_SERVICE" value="1"/>`,
     `  <env name="${BUN_RUNTIME_SOURCE_ENV}" value="${xmlEscape(entry.bunRuntimeSource)}"/>`,
+    `  <env name="${BUN_RUNTIME_PATH_ENV}" value="${xmlEscape(entry.bun)}"/>`,
     `  <env name="OCX_API_TOKEN_FILE" value="${xmlEscape(serviceApiTokenFilePath())}"/>`,
     `  <env name="PATH" value="${xmlEscape(env.PATH ?? "")}"/>`,
     env.CODEX_HOME?.trim() ? `  <env name="CODEX_HOME" value="${xmlEscape(currentCodexHomeAbsolute())}"/>` : null,

@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUN_RUNTIME_SOURCE_ENV, isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, overrideBunPath, reportedBunRuntimeSource, withProcessRuntimeProvenance } from "../src/lib/bun-runtime";
+import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, overrideBunPath, reportedBunRuntimeSource, withProcessRuntimeProvenance } from "../src/lib/bun-runtime";
 
 // realpath the temp root: on macOS /var is a symlink to /private/var, so a path built
 // from mkdtemp compares unequal to the same path resolved through process.cwd().
@@ -150,22 +150,35 @@ describe("reportedBunRuntimeSource (#848 launch-time provenance)", () => {
 });
 
 describe("withProcessRuntimeProvenance (execPath relaunch paths)", () => {
-  it("records `process` when the relaunching parent carries no marker", () => {
+  // Under `bun test` the runner may itself BE the bundled binary, in which case
+  // `bundled` is the correct answer rather than `process`. Both are legitimate;
+  // what matters is that a real origin is always recorded.
+  const executingOrigin = bundledBunPath() === process.execPath ? "bundled" : "process";
+
+  it("records the executable's real origin when the relaunching parent carries no marker", () => {
     // `ocx ensure`, GUI start, restart, and update-relaunch all re-exec
     // process.execPath. Without this they would hand the daemon no provenance at
     // all, and doctor would report unknown for an origin the launcher knew.
-    expect(withProcessRuntimeProvenance({})[BUN_RUNTIME_SOURCE_ENV]).toBe("process");
+    expect(withProcessRuntimeProvenance({})[BUN_RUNTIME_SOURCE_ENV]).toBe(executingOrigin);
   });
 
   it("preserves an inherited marker instead of relabeling the same runtime", () => {
     // Re-execing the current runtime does not change how that runtime was obtained,
-    // but the claim is only carried forward when it still describes process.execPath.
+    // but the claim is only carried forward when the binary it was minted for is the
+    // one about to run. The recorded path is what settles that — re-deriving the
+    // selection would demote a service installed with a shell-local override.
     const overrideEnv = {
       [BUN_RUNTIME_SOURCE_ENV]: "override",
-      OPENCODEX_BUN_PATH: process.execPath,
+      [BUN_RUNTIME_PATH_ENV]: process.execPath,
     };
     expect(withProcessRuntimeProvenance(overrideEnv)[BUN_RUNTIME_SOURCE_ENV]).toBe("override");
-    expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: "process" })[BUN_RUNTIME_SOURCE_ENV]).toBe("process");
+
+    // Crucially this holds with no OPENCODEX_BUN_PATH in the environment at all: an
+    // installed service keeps neither the shell that installed it nor its variables.
+    expect(overrideEnv).not.toHaveProperty("OPENCODEX_BUN_PATH");
+
+    // The pair is re-stamped for the child, so the next relaunch can do the same check.
+    expect(withProcessRuntimeProvenance(overrideEnv)[BUN_RUNTIME_PATH_ENV]).toBe(process.execPath);
   });
 
   it("drops an inherited marker that no longer describes the running binary", () => {
@@ -174,19 +187,16 @@ describe("withProcessRuntimeProvenance (execPath relaunch paths)", () => {
     // different Bun must not relaunch the daemon claiming that other binary's origin.
     const staleOverride = {
       [BUN_RUNTIME_SOURCE_ENV]: "override",
-      OPENCODEX_BUN_PATH: join(tmp, "some-other-bun.exe"),
+      [BUN_RUNTIME_PATH_ENV]: join(tmp, "some-other-bun.exe"),
     };
     expect(withProcessRuntimeProvenance(staleOverride)[BUN_RUNTIME_SOURCE_ENV]).not.toBe("override");
 
-    // Same for a `bundled` claim while the bundled path is not what is executing.
-    const bundled = bundledBunPath();
-    if (bundled && bundled !== process.execPath) {
-      expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: "bundled" })[BUN_RUNTIME_SOURCE_ENV]).not.toBe("bundled");
-    }
+    // A source with no recorded path cannot be corroborated and is not carried forward.
+    expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: "override" })[BUN_RUNTIME_SOURCE_ENV]).not.toBe("override");
   });
 
   it("replaces an unrecognized inherited value rather than forwarding it", () => {
-    expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: "system" })[BUN_RUNTIME_SOURCE_ENV]).toBe("process");
+    expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: "system" })[BUN_RUNTIME_SOURCE_ENV]).toBe(executingOrigin);
   });
 
   it("leaves every other variable untouched", () => {

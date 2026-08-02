@@ -64,7 +64,8 @@ describe("Codex autostart shim", () => {
     // The shim reaches the daemon through `ocx ensure`, which inherits this env;
     // without it a Codex-autostarted service reports no provenance at all.
     const unix = buildUnixCodexShim("/usr/local/bin/codex-real", "/usr/local/bin/bun", "/opt/opencodex/src/cli.ts", "override", "/tmp/token");
-    expect(unix).toContain("OCX_BUN_RUNTIME_SOURCE='override' '/usr/local/bin/bun' '/opt/opencodex/src/cli.ts' ensure");
+    // Source and the binary it describes are stamped as a pair.
+    expect(unix).toContain("OCX_BUN_RUNTIME_SOURCE='override' OCX_BUN_RUNTIME_PATH='/usr/local/bin/bun' '/usr/local/bin/bun' '/opt/opencodex/src/cli.ts' ensure");
 
     expect(buildWindowsCodexShim("C:\\Tools\\codex-real.exe", "C:\\Bun\\bun.exe", "C:\\ocx\\cli.ts", "override"))
       .toContain('set "OCX_BUN_RUNTIME_SOURCE=override"');
@@ -82,6 +83,7 @@ describe("Codex autostart shim", () => {
     expect(unix).not.toContain("export OCX_BUN_RUNTIME_SOURCE");
     // The only occurrence is the one-shot assignment prefixed onto `ensure`.
     expect((unix.match(/OCX_BUN_RUNTIME_SOURCE/g) ?? []).length).toBe(1);
+    expect((unix.match(/OCX_BUN_RUNTIME_PATH/g) ?? []).length).toBe(1);
     expect(unix.indexOf("OCX_BUN_RUNTIME_SOURCE")).toBeGreaterThan(unix.indexOf("ocx_subcommand"));
 
     // cmd.exe: set inside a setlocal/endlocal pair around `ensure` only.
@@ -90,7 +92,9 @@ describe("Codex autostart shim", () => {
     expect(ensureBlock).toContain("setlocal");
     expect(ensureBlock).toContain('set "OCX_BUN_RUNTIME_SOURCE=override"');
     expect(ensureBlock).toContain("endlocal");
+    expect(ensureBlock).toContain("OCX_BUN_RUNTIME_PATH");
     expect((cmd.match(/OCX_BUN_RUNTIME_SOURCE/g) ?? []).length).toBe(1);
+    expect((cmd.match(/OCX_BUN_RUNTIME_PATH/g) ?? []).length).toBe(1);
 
     // PowerShell: assigned around the ensure call and restored/removed afterwards.
     const ps = buildWindowsPowerShellCodexShim("C:\\codex-real.ps1", "C:\\bun.exe", "C:\\cli.ts", "override");

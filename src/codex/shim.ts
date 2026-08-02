@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { getConfigDir } from "../config";
-import { BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "../lib/bun-runtime";
+import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "../lib/bun-runtime";
 import type { BunRuntimeSource } from "../lib/bun-runtime";
 import { isProcessAlive } from "../lib/process-control";
 import { serviceApiTokenFilePath } from "../lib/service-secrets";
@@ -418,7 +418,7 @@ case "$ocx_subcommand" in
     ;;
   *)
     if [ -z "$OCX_SHIM_BYPASS" ]; then
-      ${BUN_RUNTIME_SOURCE_ENV}=${shQuote(bunRuntimeSource)} ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
+      ${BUN_RUNTIME_SOURCE_ENV}=${shQuote(bunRuntimeSource)} ${BUN_RUNTIME_PATH_ENV}=${shQuote(bunPath)} ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
     fi
     ;;
 esac
@@ -476,6 +476,7 @@ goto scan_codex_args\r
 :ensure_ocx\r
 setlocal\r
 ${windowsBatchSet(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource)}\r
+${windowsBatchSet(BUN_RUNTIME_PATH_ENV, bunPath)}\r
 "%OCX_BUN%" "%OCX_CLI%" ensure >nul 2>nul\r
 endlocal\r
 :run_codex\r
@@ -513,11 +514,15 @@ foreach ($argValue in $args) {
 $skipEnsure = $env:OCX_SHIM_BYPASS -or $internalCommands -contains $subcommand -or @("--help", "-h", "--version", "-V") -contains $subcommand
 if (-not $skipEnsure) {
   $priorRuntimeSource = $env:${BUN_RUNTIME_SOURCE_ENV}
+  $priorRuntimePath = $env:${BUN_RUNTIME_PATH_ENV}
   $env:${BUN_RUNTIME_SOURCE_ENV} = ${psString(bunRuntimeSource)}
+  $env:${BUN_RUNTIME_PATH_ENV} = ${psString(bunPath)}
   try { & ${psString(bunPath)} ${psString(cliPath)} ensure *> $null }
   finally {
     if ($null -eq $priorRuntimeSource) { Remove-Item Env:\\${BUN_RUNTIME_SOURCE_ENV} -ErrorAction SilentlyContinue }
     else { $env:${BUN_RUNTIME_SOURCE_ENV} = $priorRuntimeSource }
+    if ($null -eq $priorRuntimePath) { Remove-Item Env:\\${BUN_RUNTIME_PATH_ENV} -ErrorAction SilentlyContinue }
+    else { $env:${BUN_RUNTIME_PATH_ENV} = $priorRuntimePath }
   }
 }
 & ${psString(realCodexPath)} @args

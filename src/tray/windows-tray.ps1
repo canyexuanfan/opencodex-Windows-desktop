@@ -95,7 +95,12 @@ function Start-OcxCommand([string[]]$CommandArgs) {
     $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
     $psi.EnvironmentVariables["CODEX_HOME"] = $CodexHome
     $psi.EnvironmentVariables["OPENCODEX_HOME"] = $OpenCodexHome
-    if ($BunRuntimeSource) { $psi.EnvironmentVariables["OCX_BUN_RUNTIME_SOURCE"] = $BunRuntimeSource }
+    if ($BunRuntimeSource) {
+      $psi.EnvironmentVariables["OCX_BUN_RUNTIME_SOURCE"] = $BunRuntimeSource
+      # Paired with the source so a later relaunch can tell the marker still describes
+      # this binary rather than one it merely inherited.
+      $psi.EnvironmentVariables["OCX_BUN_RUNTIME_PATH"] = $BunPath
+    }
     $process = [System.Diagnostics.Process]::Start($psi)
     if ($null -ne $process) { $process.Dispose() }
     Write-ActionLog "dispatched $($CommandArgs -join ' ')"
