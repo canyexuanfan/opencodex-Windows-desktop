@@ -794,8 +794,9 @@ test("collectChatCompletion releases every call scope after the final owner is c
 test("collectChatCompletion final-copy overflow cleans up scopes and charges", async () => {
   const module = await import("../src/chat/outbound");
   // Args (100 bytes) fit; args + serialized copy exceed the turn cap, so the
-  // overflow fires during the final owner transfer, not mid-stream.
-  const budget = createTestTranslatorBudget({ maxCallArgumentBytes: 4096, maxTurnBytes: 150 });
+  // overflow fires during the final owner transfer, not mid-stream. The 250
+  // threshold lets the ~213-byte frame and the 100-byte args through first.
+  const budget = createTestTranslatorBudget({ maxCallArgumentBytes: 4096, maxTurnBytes: 250 });
   const frame = `data: ${JSON.stringify({
     choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", function: { name: "f", arguments: "a".repeat(100) } }] } }],
   })}\n\n`;
@@ -1400,6 +1401,68 @@ test("/v1/chat/completions non-OK upstream preserves structured model_not_found"
       type: "invalid_request_error",
       message: "Request failed",
     });
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("/v1/chat/completions status:failed replay normalizes translation_buffer_limit to 502 upstream_error", async () => {
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return Response.json({
+        id: "resp_overflow",
+        object: "response",
+        status: "failed",
+        error: {
+          message: "upstream translation buffer exceeded the safe limit",
+          type: "server_error",
+          code: "translation_buffer_limit",
+        },
+      });
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    if (url.hostname === "chatgpt.com" && url.pathname.startsWith("/backend-api/codex")) {
+      return originalFetch(new URL(`${url.pathname.slice("/backend-api/codex".length)}${url.search}`, upstream.url), init);
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  saveConfig({
+    port: 0,
+    defaultProvider: "openai",
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: ["Bear" + "er", "caller-direct-token"].join(" "),
+      },
+      body: JSON.stringify({
+        model: "gpt-test",
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    // Provider-controlled overflow is an upstream failure on every path.
+    expect(response.status).toBe(502);
+    const json = await response.json() as { error?: { code?: string; type?: string } };
+    expect(json.error).toMatchObject({ code: "translation_buffer_limit", type: "upstream_error" });
   } finally {
     server.stop(true);
     upstream.stop(true);

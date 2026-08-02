@@ -703,6 +703,9 @@ export function bridgeToResponsesSSE(
         while (!terminated && !closed && emittedFrames === emittedAtStart) {
           iteratorStarted = true;
           const next = await it.next();
+          // A cancel during this await disposes the owned budget; a late event
+          // must never be processed or charged against it.
+          if (closed || clientCancelled) { upstreamDone = true; break; }
           if (next.done) { upstreamDone = true; break; }
           const event = next.value;
           let terminalEvent = false;

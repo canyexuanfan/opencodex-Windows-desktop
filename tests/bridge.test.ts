@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
-import { translatorLiveBudgetCountForTests } from "../src/lib/translator-budget";
+import {
+  resetTranslatorAggregateForTests,
+  translatorAggregateCurrentBytesForTests,
+  translatorLiveBudgetCountForTests,
+} from "../src/lib/translator-budget";
 import type { AdapterEvent } from "../src/types";
 
 async function* replay(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
@@ -1057,5 +1061,32 @@ describe("bridgeToResponsesSSE owned default budget lifecycle", () => {
     ]), "mock/test-model");
     await stream.cancel(new Error("client gone"));
     expect(translatorLiveBudgetCountForTests()).toBe(before);
+  });
+
+  test("cancel during a pending upstream next never charges the disposed budget", async () => {
+    resetTranslatorAggregateForTests();
+    let release: ((event: AdapterEvent) => void) | null = null;
+    async function* gated(): AsyncGenerator<AdapterEvent> {
+      yield { type: "text_delta", text: "first" };
+      yield await new Promise<AdapterEvent>((resolve) => { release = resolve; });
+      yield { type: "done" };
+    }
+    const stream = bridgeToResponsesSSE(gated(), "mock/test-model");
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    // Drain frames until the first text arrives; the next read leaves step()
+    // parked inside `await it.next()`.
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) throw new Error("stream closed before the first text frame");
+      if (decoder.decode(value).includes("first")) break;
+    }
+    const pending = reader.read();
+    await reader.cancel(new Error("client gone"));
+    release?.({ type: "text_delta", text: "late event after cancel" });
+    await pending;
+    reader.releaseLock();
+    expect(translatorLiveBudgetCountForTests()).toBe(0);
+    expect(translatorAggregateCurrentBytesForTests()).toBe(0);
   });
 });

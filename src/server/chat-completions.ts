@@ -327,7 +327,7 @@ async function handleChatCompletionsWithBudget(
     }
     return chatCompletionsErrorResponse(
       classified.code === "translation_buffer_limit"
-        ? 413
+        ? 502
         : isCyberPolicyCode(classified.code) ? 400 : 502,
       message,
       classified.type,
