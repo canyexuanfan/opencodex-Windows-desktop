@@ -83,9 +83,13 @@ export async function* sleepWithHeartbeats(
   signal?: AbortSignal,
   heartbeatIntervalMs = 10_000,
 ): AsyncGenerator<{ type: "heartbeat" }> {
+  if (ms <= 0) return;
+  // Guard against a non-positive interval: a zero/negative step would spin the loop forever
+  // while sleepWithAbort early-returns without ever observing the abort signal.
+  const stepMs = Math.max(1, heartbeatIntervalMs);
   let remaining = ms;
   while (remaining > 0) {
-    const chunk = Math.min(remaining, heartbeatIntervalMs);
+    const chunk = Math.min(remaining, stepMs);
     await sleepWithAbort(chunk, signal);
     remaining -= chunk;
     yield { type: "heartbeat" };

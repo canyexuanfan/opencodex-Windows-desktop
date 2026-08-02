@@ -10,6 +10,7 @@ import {
   saveConfig,
   saveConfigPreservingClaudeCode,
 } from "../src/config";
+import { rateLimitRetryPolicyFor } from "../src/providers/key-failover";
 import type { OcxConfig } from "../src/types";
 
 /**
@@ -163,6 +164,32 @@ test("an invalid retryOn429 master switch discards the policy instead of enablin
   expect(live.providers.test).toBeDefined();
   // A hand-edit that tried to disable retries must not become default-ENABLED.
   expect(live.providers.test.retryOn429).toBeUndefined();
+});
+
+test("a retryOn429 policy degraded to an empty object still resolves as enabled (presence = opt-in)", () => {
+  writeDiskConfig({
+    providers: {
+      test: {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "k",
+        allowPrivateNetwork: true,
+        // Every field invalid: the sanitizer drops them all and writes back {}.
+        retryOn429: { attempts: 0 },
+      },
+    },
+  });
+  const live = loadConfig();
+  expect(live.providers.test.retryOn429).toEqual({});
+  // Object presence is the opt-in contract: an emptied object resolves to the enabled defaults,
+  // exactly like an explicit `retryOn429: {}` in a hand-written config.
+  expect(rateLimitRetryPolicyFor(live.providers.test)).toEqual({
+    enabled: true,
+    attempts: 3,
+    intervalMs: 5_000,
+    maxIntervalMs: 60_000,
+    respectRetryAfter: true,
+  });
 });
 
 test("invalid retryOn429 values never log the raw value", () => {

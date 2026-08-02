@@ -3,6 +3,7 @@ import {
   fetchWithResetRetry,
   isConnectionResetError,
   retryBackoffDelayMs,
+  sleepWithHeartbeats,
 } from "../src/lib/upstream-retry";
 
 function bunResetError(): Error {
@@ -57,6 +58,25 @@ describe("isConnectionResetError", () => {
     err.name = "TimeoutError";
     (err as Error & { code: string }).code = "ECONNRESET";
     expect(isConnectionResetError(err)).toBe(false);
+  });
+});
+
+describe("sleepWithHeartbeats", () => {
+  test("a non-positive heartbeat interval is clamped instead of spinning forever", async () => {
+    const events: string[] = [];
+    for await (const event of sleepWithHeartbeats(3, undefined, 0)) {
+      events.push(event.type);
+    }
+    // 3ms of wait with a clamped 1ms step -> exactly 3 beats, then termination (no spin).
+    expect(events).toHaveLength(3);
+  });
+
+  test("zero wait yields nothing", async () => {
+    const events: string[] = [];
+    for await (const event of sleepWithHeartbeats(0, undefined)) {
+      events.push(event.type);
+    }
+    expect(events).toEqual([]);
   });
 });
 
