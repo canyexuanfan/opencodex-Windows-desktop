@@ -219,7 +219,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   }
   if (isLoopbackOnly(clientId) && !isLoopbackHostname(input.config.hostname)) {
     return refuse(clientId, "non_loopback", classified.state,
-      `${clientId} has nowhere to put the admission header a non-loopback bind requires, so a generated config would be rejected. Configure it by hand instead.`);
+      `${clientId} has nowhere to put the admission header a non-loopback bind requires, so a generated config would be rejected — and writing one by hand would not help either. Give it loopback access instead, through a tunnel or a local forwarder.`);
   }
   if (classified.state === "conflict") {
     return refuse(clientId, "conflict", "conflict",
@@ -234,8 +234,15 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   // A stale refresh drops what the PREVIOUS record owned before merging: a
   // model that left the catalog would otherwise stay behind as an orphan the
   // new record no longer covers, and disable could never remove it.
+  /*
+   * The previous record's `createdContainers` has to travel with this removal.
+   * Without it the refresh leaves our own empty scaffolding behind in `base`,
+   * `createdContainerPaths` then sees the container already present and
+   * concludes the user owns it, and the replacement record forgets we made it
+   * — so a later disable strands it forever.
+   */
   const base = classified.state === "stale" && record
-    ? removeFragments(parsed, record.fragmentPaths).doc
+    ? removeFragments(parsed, record.fragmentPaths, new Set(record.createdContainers ?? [])).doc
     : parsed;
   // Computed against the document as it stands BEFORE the merge: afterwards
   // every container exists and "did we create this?" is unanswerable.

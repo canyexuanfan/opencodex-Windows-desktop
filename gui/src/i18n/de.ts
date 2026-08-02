@@ -723,7 +723,7 @@ export const de: Record<TKey, string> = {
   "integrations.error.conflict": "Die Konfiguration wurde geändert, nachdem opencodex sie geschrieben hatte. Es wurde nichts entfernt.",
   "integrations.error.unsafe": "Die Konfiguration kann nicht sicher geändert werden.",
   "integrations.error.generic": "Die Integrationsänderung ist fehlgeschlagen. Der vorherige Zustand wurde beibehalten.",
-  "integrations.error.nonLoopback": "{client} erreicht nur einen Proxy auf localhost. opencodex schreibt daher keine Konfiguration, die abgelehnt würde — richten Sie eine Remote-Bindung von Hand ein.",
+  "integrations.error.nonLoopback": "{client} erreicht nur einen Proxy auf localhost. In seiner Konfiguration ist kein Platz für den Header, den eine Remote-Bindung verlangt — von Hand geschrieben hilft es also ebenso wenig. Ermöglichen Sie stattdessen Loopback-Zugriff, etwa über einen Tunnel oder lokalen Forwarder.",
   "integrations.status.installed": "Installiert",
   "integrations.status.notInstalled": "Nicht installiert",
   "integrations.status.appliedAt": "Angewendet",

@@ -172,8 +172,53 @@ describe("every client survives a full lifecycle", () => {
   }
 });
 
-describe("the store keeps nothing outside its own root", () => {
-  test("a full lifecycle writes only records, journal and snapshots", () => {
+describe("a stale refresh does not forget what we created", () => {
+  test("kimi: apply, refresh with a changed catalog, disable — no residue", () => {
+    /*
+     * The boundary the plain lifecycle test cannot reach. A refresh removes
+     * the previous fragments before merging the new ones, and if that removal
+     * does not carry the old `createdContainers`, our own empty `models` map
+     * survives into the document the new record is derived from — which makes
+     * the new record conclude the user owns it. The residue then outlives
+     * every future disable.
+     */
+    const spec = INTEGRATION_CLIENTS.kimi;
+    mkdirSync(spec.detectDir({} as NodeJS.ProcessEnv, home), { recursive: true });
+    const configPath = spec.configPath({} as NodeJS.ProcessEnv, home);
+    mkdirSync(dirname(configPath), { recursive: true });
+    const seed = '[providers.mine]\napi = "http://keep-me"\n';
+    writeFileSync(configPath, seed);
+
+    const write = (models: ExportModel[]) => ({
+      clientId: "kimi" as const, models, config: CONFIG, port: 10100,
+      env: {} as NodeJS.ProcessEnv, home, store,
+    });
+
+    expect(applyIntegration(write(MODELS)).ok).toBe(true);
+    expect(store.readRecords().kimi?.createdContainers).toContain("models");
+
+    // The catalog moves, so the next apply classifies as `stale` and refreshes.
+    const refreshed: ExportModel[] = [
+      { namespaced: "openai/gpt-5.5", provider: "openai", id: "gpt-5.5", contextWindow: 400_000 },
+    ];
+    expect(applyIntegration(write(refreshed)).ok).toBe(true);
+    // The replacement record must still know the container is ours.
+    expect(store.readRecords().kimi?.createdContainers).toContain("models");
+
+    expect(disableIntegration(write(refreshed)).ok).toBe(true);
+    expect(parseConfig(readFileSync(configPath, "utf8"), "toml")).toEqual(parseConfig(seed, "toml"));
+  });
+});
+
+describe("the store's own root stays tidy", () => {
+  test("a full lifecycle leaves exactly records, journal and snapshots", () => {
+    /*
+     * Scoped honestly: listing the root cannot prove nothing was written
+     * OUTSIDE it — `tests/integrations-journal.test.ts` owns that claim by
+     * asserting the real config dir's manifest is untouched. What this
+     * catches is a new bookkeeping file appearing without anyone deciding it
+     * should exist.
+     */
     mkdirSync(join(home, ".hermes"), { recursive: true });
     writeFileSync(join(home, ".hermes", "config.yaml"), "providers: {}\n");
     const write = {

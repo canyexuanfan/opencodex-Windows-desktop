@@ -44,25 +44,27 @@ edits were yours.
 
 ## What to expect, honestly
 
-**Comments and formatting are not preserved.** Applying parses your config and writes it
-back out, so YAML, JSON5 and TOML files lose comments and original layout. Your settings
-survive — every value you had is still there and equal — but the bytes change. If you
-need the file exactly as it was, use Restore rather than Disable: the snapshot is a
-verbatim copy.
+**Formatting is not preserved.** Applying parses your config and writes it back out, so
+every format may be reformatted, and YAML, JSON5 and TOML additionally lose their
+comments. Your settings survive — every value you had is still there and equal — but the
+bytes change. If you need the file exactly as it was, use Restore rather than Disable:
+the snapshot is a verbatim copy.
 
 **Pi, Kimi Code and Gajae Code only work against a loopback bind.** None of their config
 schemas has a place for the `x-opencodex-api-key` header that a non-loopback bind
-requires, so a generated config would simply be rejected. opencodex declines to write
-one instead of leaving you with a file that returns 401. Configure those by hand if you
-run the proxy remotely.
+requires, so a generated config would simply be rejected — and writing one by hand does
+not help, because there is nowhere in the file to put the header either. Reaching a
+remote opencodex from these clients is not supported directly; give them loopback access
+instead, through an SSH tunnel or a local forwarder that adds the header.
 
 **Kimi Code cannot hold an environment reference,** so its config carries an
 `opencodex-loopback` placeholder rather than a key. No real credential is ever written
 into any client config.
 
-**OpenCode launched through `ocx opencode` ignores this file.** That launcher injects its
-provider block through `OPENCODE_CONFIG_CONTENT`, which outranks config on disk. The
-switch here is for launching `opencode` directly.
+**For `ocx opencode`, the launcher's provider block wins.** That launcher injects
+`provider.opencodex` through `OPENCODE_CONFIG_CONTENT`, which outranks the same entry on
+disk — the rest of your opencode config still applies as usual. The switch here is what
+matters when you launch `opencode` directly.
 
 ## From the terminal
 
