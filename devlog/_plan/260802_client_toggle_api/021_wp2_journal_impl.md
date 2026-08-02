@@ -426,9 +426,11 @@ export function appendOperation(entry: JournalEntry, dir: string = integrationsD
   // already committed, so an exception here would be read by the writer as an
   // append failure and trigger compensation for work that succeeded.
   try {
-    const pruned = pruneSnapshots(entry.clientId);
-    if (pruned.ok) clearPruneFailure(entry.clientId);
-    else markPruneFailure(entry.clientId, pruned.error);
+    // `dir` matters here too: without it a temporary apply would commit its row
+    // under the temp root and then prune/mark the REAL store (A-gate round 13).
+    const pruned = pruneSnapshots(entry.clientId, dir);
+    if (pruned.ok) clearPruneFailure(entry.clientId, dir);
+    else markPruneFailure(entry.clientId, pruned.error, dir);
   } catch (error) {
     console.error(`[integrations] post-commit maintenance failed: ${String(error)}`);
   }

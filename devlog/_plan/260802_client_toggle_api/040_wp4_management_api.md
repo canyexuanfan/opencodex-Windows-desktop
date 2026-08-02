@@ -373,6 +373,8 @@ function runIntegrationMutationFlight<T>(
 export function setIntegrationMutationFlightTestHooks(
   hooks: {
     io?: IntegrationIO;
+    /** Binds the WHOLE request — reads, writes and journal — to one store. */
+    store?: IntegrationStateStore;
     run?: (operation: () => Promise<unknown>) => Promise<unknown>;
   } | null,
 ): void {
@@ -502,9 +504,13 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
     try {
       const models = await loadExportModels(ctx.config);
       const port = Number(url.port) || ctx.config.port;
+      // One store for the whole collection read: without it this route retried
+      // maintenance and counted snapshots in the default store even when the
+      // caller had bound everything else to a temp root (A-gate round 13).
+      const store = integrationStore();
       const clients = await Promise.all(INTEGRATION_CLIENT_IDS.map(async clientId => ({
         clientId,
-        ...await readIntegrationState({ clientId, models, config: ctx.config, port }),
+        ...await readIntegrationState({ clientId, models, config: ctx.config, port, store }),
       })));
       return jsonResponse({ clients } satisfies IntegrationStateListEnvelope, 200, req, ctx.config);
     } catch (error) {
@@ -719,7 +725,7 @@ result if the branch did not run.
 | unsafe rejection | Point a client config path at a directory (or the WP2 unsafe fixture), confirm GET reports `state: "unsafe"`, then PUT either toggle direction. | Mutation response is exactly 409 `integration_unsafe`; directory/file bytes and journal length are unchanged. |
 | conflict rejection | Apply a managed config, edit its on-disk bytes so the persisted fingerprint no longer matches, then PUT `{ "enabled": false }`. | Response is exactly 409 `integration_conflict`; the edited provider block remains byte-for-byte present; no disable operation is appended. |
 | restore-to-absence | Apply when the client config file is missing, producing a journal row with `snapshot.kind === "none"`, then restore that `opId` while its result fingerprint still matches. | Restore returns 200, deletes the file created by apply, appends a restore row, and GET reports `state: "absent"`; no 410 envelope is emitted. |
-| store isolation (routes) | seed a real store, then drive `PUT /api/client-integrations/:id` (apply), the same route again (disable) and `POST /api/client-integrations/restore` with `integrationMutationTestHooks.store` rooted at a temp dir | every real record/journal/snapshot file is byte-identical afterwards; the temp root holds the whole transaction, and the journal route reads it back through the same store |
+| store isolation (routes) | seed a real store (records, journal, snapshots, marker), then drive `PUT /api/client-integrations/:id` (apply), the same route again (disable), `POST /api/client-integrations/restore`, and finally `GET /api/client-integrations` — all with `setIntegrationMutationFlightTestHooks({ store })` rooted at a temp dir | every real file is byte-identical afterwards, including the maintenance marker that the post-commit prune used to touch; the temp root holds the whole transaction; and the collection GET reports the temp store's state, proving reads are bound too |
 | journal-expired 410 | Produce 11 operations for one client so WP3's 10-snapshot GC changes the first snapshot tag to `expired` while retaining its immutable history row; restore the first `opId`. | Journal GET still contains the first row with `snapshot: "expired"`; restore returns exactly 410 `integration_snapshot_expired`; target bytes and journal length are unchanged. |
 
 ## 7. New test file — `tests/management-integration-routes.test.ts`
@@ -735,7 +741,7 @@ The file contains these exact test names:
 
 1. `GET /api/client-integrations lists all registry clients in registry order`
    - status 200; ids exactly equal `INTEGRATION_CLIENTS`; each item equals
-     `readIntegrationState({ clientId, models, config, port })`; fingerprints and
+     `readIntegrationState({ clientId, models, config, port, store })`; fingerprints and
      `configPath` are present; no snapshot bytes appear in serialized JSON.
 2. `GET /api/client-integrations/:clientId returns one five-state record`
    - create a current fixture; status 200; exact `clientId`, `state`,
