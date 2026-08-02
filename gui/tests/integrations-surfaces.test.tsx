@@ -22,6 +22,7 @@ const globals = [
   "localStorage",
   "sessionStorage",
   "fetch",
+  "confirm",
   "IS_REACT_ACT_ENVIRONMENT",
 ] as const;
 
@@ -389,13 +390,38 @@ test("bulk disable confirms the result with the server before claiming success",
   expect(text).not.toContain("Applied client integrations were disabled.");
   expect(text).toContain("may be stale");
 
-  // And the honest case still reports success.
-  applied = false;
-  const second = buttonByText("Disable all…");
-  if (second && !second.disabled) {
-    await act(async () => { second.click(); });
-    await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 40)); });
-  }
+});
+
+test("bulk disable does report success once the server agrees", async () => {
+  /*
+   * The other half of the claim. Without it, "withholds success" could be
+   * satisfied by a component that never reports success at all.
+   */
+  Object.defineProperty(globalThis, "confirm", { configurable: true, value: () => true });
+  let applied = true;
+  const bulkFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    requests.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (url.includes("/journal")) return json({ operations: [] });
+    if (method === "PUT") {
+      applied = false;
+      return json({ ok: true, clientId: "hermes", changed: true, state: "absent", message: "ok" });
+    }
+    return json({ clients: [status({ state: applied ? "current" : "absent" })] });
+  }) as typeof fetch;
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: bulkFetch });
+  Object.defineProperty(testWindow, "fetch", { configurable: true, value: bulkFetch });
+
+  await mountOverview();
+  const disableAll = buttonByText("Disable all…");
+  expect(disableAll).toBeDefined();
+  await act(async () => { disableAll!.click(); });
+  await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 40)); });
+
+  const text = container.textContent ?? "";
+  expect(text).toContain("Applied client integrations were disabled.");
+  expect(text).not.toContain("may be stale");
 });
 
 test("a drifted restore asks a second time instead of failing", async () => {

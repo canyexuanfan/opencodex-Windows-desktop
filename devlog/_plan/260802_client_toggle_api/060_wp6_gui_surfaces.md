@@ -65,7 +65,8 @@ Implementation plan. Depends on WP1–WP5, especially the exact HTTP contract in
 - `gui/src/pages/integrations/FileIntegrationPage.tsx` — new shared page for
   OpenCode, Pi, Hermes, OpenClaw, Kimi, and Gajae.
 - `gui/src/pages/integrations/RestoreDialog.tsx` — new restore/drift dialog.
-- `gui/src/components/apikeys-workspace/ClientConfigPanel.tsx` and
+- **[DEFERRED — round-2 amendment]**
+  `gui/src/components/apikeys-workspace/ClientConfigPanel.tsx` and
   `ClientConfigDialog.tsx` — make the existing export surface reusable for one
   client without asserting whether an API key exists.
 - `gui/src/ui.tsx` — extend `Switch` with `aria-describedby`.
@@ -387,7 +388,8 @@ type RestoreSelection = { operation: IntegrationJournalRow; mode: "undo" | "rest
 - Journal resource key: `integrations-journal:${apiBase}`; exact
   `GET /api/client-integrations/journal`; `enabled: active`; `isEmpty` means
   `operations.length === 0`.
-- Native resource key: `integrations-native:${apiBase}`; one loader uses
+- **[DEFERRED — round-2 amendment]** Native resource key:
+  `integrations-native:${apiBase}`; one loader uses
   `Promise.allSettled` for exact existing reads:
   `GET /healthz`, `GET /api/claude-code`,
   `GET /api/claude-desktop/status`, `GET /api/grok`. A failed child maps only
@@ -424,9 +426,10 @@ assert that the edited file still routes correctly. Unsafe is also excluded.
 4. Known-structure skeleton grid when state list is cold-loading.
 5. Empty `EmptyState` when all six report `installed: false`; include a list of
    supported client names and deep links, not a bare grid.
-6. Otherwise `<ul className="integration-card-grid">` in stable order:
-   Codex, Claude Code, Claude Desktop, Grok, OpenCode, Pi, Hermes, OpenClaw,
-   Kimi, Gajae.
+6. Otherwise `<ul className="integration-card-grid">` in stable order.
+   SHIPPED: the six file clients — OpenCode, Pi, Hermes, OpenClaw, Kimi,
+   Gajae. **[DEFERRED — round-2 amendment]** the four native cards that would
+   precede them: Codex, Claude Code, Claude Desktop, Grok.
 7. `<section className="rollback-center">` with heading and newest five rows.
 
 The summary is compact ops chrome, not a marketing hero: no oversized display
@@ -460,7 +463,11 @@ const locked = !installed || state === "conflict" || state === "unsafe" || pendi
 - any failure retains the old card state and maps the server error code to an
   error Notice; never optimistically flip a file mutation.
 
-### 6.5 Native exception cards
+### 6.5 Native exception cards — **[DEFERRED — round-2 amendment]**
+
+This whole section is target state, not phase-closing scope. The four native
+clients keep their own semantics and each already owns a working page inside
+the tab strip.
 
 - Codex: `/healthz` liveness text; no switch; action deep-links `#startup`.
 - Claude Code: native enabled status and `Switch`; mutation remains exact
@@ -576,12 +583,13 @@ const CLIENT_META: Record<FileIntegrationClientId, {
    `renders the retention notice only when degraded`.
 5. Semantics note `<p className="integration-semantics">`.
 6. Error Notice adjacent to the header action that failed.
-7. Export/settings panel: `<ClientConfigPanel clients={[client]}
-   apiBase={apiBase} />` after §9 refactor.
-8. `<details className="integration-advanced">`: config path, state reason,
-   last operation id, and an explicit note that raw file/fingerprint data is
-   unavailable until §2 is resolved. Do not display generated export text as
-   if it were current on-disk content.
+7. **[DEFERRED — round-2 amendment]** Export/settings panel:
+   `<ClientConfigPanel clients={[client]} apiBase={apiBase} />` after §9
+   refactor.
+8. **[DEFERRED — round-2 amendment]** `<details className="integration-advanced">`:
+   config path, state reason, last operation id, and an explicit note that raw
+   file/fingerprint data is unavailable until §2 is resolved. Do not display
+   generated export text as if it were current on-disk content.
 9. Per-client history list using the same row helper as Overview; extract a
    local shared `OperationRows` component only if implementation proves both
    call sites have identical props and branches.
@@ -704,7 +712,10 @@ does not guess drift from timestamps. When either `integration_unsafe` or
 `integrations.restore.manual` with the exact path and refusal reason, keeps the
 dialog open, and leaves retry/cancel available.
 
-## 9. Reuse the existing export surface
+## 9. Reuse the existing export surface — **[DEFERRED — round-2 amendment]**
+
+The `ClientConfigPanel` refactor lands with the deferred per-client
+export/settings panel, not in this phase.
 
 Change `ClientConfigPanel` props to:
 
@@ -822,7 +833,7 @@ already exists.
 
 | State | Activation | Markup | Observable proof |
 |---|---|---|---|
-| loading | active page has no held data and request is in flight | `<div className="integration-card-grid" role="status" aria-label={t("common.loading")}>` with ten `.integration-skeleton-card` children; client page uses header/fact/panel skeletons | stable card geometry; no empty message or enabled action |
+| loading | active page has no held data and request is in flight | `<div className="integration-card-grid" role="status" aria-label={t("common.loading")}>` with one `.integration-skeleton-card` child per rendered card (six in this phase; ten once the deferred native cards land); client page uses header/fact/panel skeletons | stable card geometry; no empty message or enabled action |
 | empty | state list settled and all six `installed === false` | `<EmptyState title=...><ul>` containing six install/client links; rollback renders its separate empty state | no bare grid; each supported client remains discoverable |
 | failed cold | list/status request failed with no held data | `<Notice tone="err">` + Retry; return before empty/grid | error and empty never coexist; retry calls resource refresh |
 | failed with stale | refresh failed while held data exists | keep cards/history, prepend `<Notice tone="err">` with stale wording + Retry | old data remains visible but is not presented as fresh |
@@ -956,7 +967,7 @@ Every implementation branch must have the named fixture and proof below.
 | onboarding | empty journal + no local key | safety line visible; first success writes key; reload hides it |
 | bulk confirm | at least one current/stale client | dialog names exactly candidates; no mutation before confirm |
 | bulk partial failure | second of multiple PUTs rejects | remaining clients still attempted; Notice names failures; resources refresh |
-| native card unavailable | one native read rejects | only that card says unavailable; file cards still render |
+| native card unavailable **[DEFERRED]** | one native read rejects | only that card says unavailable; file cards still render |
 
 ## 16. Tests and verification
 
@@ -975,7 +986,7 @@ React imports, `act`, and fetch stubs matching
 9. `rollback rows distinguish undo restore restore-to-absence and expired snapshots`
 10. `restore requires a second explicit submit after drift is reported`
 11. `restore refusal keeps the dialog open and names the manual snapshot path`
-12. `native exception cards never receive file-toggle badges or rollback rows`
+12. `native exception cards never receive file-toggle badges or rollback rows` **[DEFERRED]**
 13. `hidden Integration panels stop their data resources without losing mounted drafts`
 
 Fixture requirements:
@@ -1000,8 +1011,9 @@ bun run build
 
 Browser QA after the automated gate:
 
-1. Desktop and 720 px: summary, ten-card grid, wrapped tabs, rollback rows,
-   and dialogs fit without horizontal page overflow.
+1. Desktop and 720 px: summary, card grid (six file clients in this phase),
+   wrapped tabs, rollback rows, and dialogs fit without horizontal page
+   overflow.
 2. Keyboard-only: outer tabs, inner Claude tabs, every switch/action, bulk
    dialog, restore/drift dialog, Escape, and trigger focus restoration.
 3. Light/dark: all six badge states and disabled controls retain text and UI
@@ -1011,6 +1023,10 @@ Browser QA after the automated gate:
 5. Korean: no clipped tab/card/action labels and no orphaned sentence fragment
    in onboarding, bulk, or restore copy.
 
-Acceptance requires all §15 branches, including expired history,
-restore-to-absence, and both manual-recovery envelope codes, to be activated by
-the final contract fixtures and pass with observable proof.
+Acceptance requires every §15 branch REACHABLE IN THIS PHASE — including
+expired history, restore-to-absence, and both manual-recovery envelope codes —
+to be activated by the final contract fixtures and pass with observable proof.
+Branches belonging to the deferred native cards, the per-client export panel
+and the Advanced disclosure move to the follow-up unit's acceptance along with
+the surfaces themselves (round-2 amendment); they cannot be activated while
+the surfaces that own them do not exist.
