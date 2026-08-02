@@ -128,6 +128,8 @@ const blobs = new Map<string, CursorBlobEntry>();
 const blobRequestScopes = new Map<CursorBlobRequestScopeToken, CursorBlobRequestScopeState>();
 let blobLimits = { ...DEFAULT_BLOB_LIMITS };
 let blobBytes = 0;
+/** Retained key-string bytes (separate from the payload cap — see key()). */
+let blobKeyBytes = 0;
 let blobLocalBytes = 0;
 let blobPinnedBytes = 0;
 let blobEvictableBytes = 0;
@@ -196,6 +198,7 @@ function deleteBlob(k: string, recompute = true): number {
   if (!entry) return 0;
   blobs.delete(k);
   blobBytes -= entry.sizeBytes;
+  blobKeyBytes -= k.length;
   for (const scope of entry.requestPins) blobRequestScopes.get(scope)?.keys.delete(k);
   if (recompute) recomputeBlobClassAccounting();
   return entry.sizeBytes;
@@ -313,6 +316,7 @@ function setBlob(
   if (blobs.has(k)) deleteBlob(k, false);
   blobs.set(k, entry);
   blobBytes += entry.sizeBytes;
+  blobKeyBytes += k.length;
   for (const scope of entry.requestPins) blobRequestScopes.get(scope)?.keys.add(k);
   reconcileBlobClassAccountingAndEnforce();
   return { admitted: true, replaced: existing !== undefined };
@@ -328,8 +332,18 @@ function getBlob(k: string): Uint8Array | undefined {
   return entry.data;
 }
 
+/**
+ * Raw blob IDs up to this size keep their hex passthrough (every ID the live
+ * protocol carries is a 32-byte digest). Anything larger maps to a fixed-size
+ * SHA-256 hex of the raw bytes — the derivation is symmetric across
+ * setBlobArgs/getBlobArgs, so the round-trip still works, but a hostile or
+ * malformed multi-MiB ID can never become an unbounded hex Map key.
+ */
+const MAX_BLOB_ID_PASSTHROUGH_BYTES = 64;
+
 function key(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
+  if (bytes.byteLength <= MAX_BLOB_ID_PASSTHROUGH_BYTES) return Buffer.from(bytes).toString("hex");
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 /**
@@ -382,6 +396,7 @@ export function storeCursorBlob(data: Uint8Array, requestScope?: CursorBlobReque
 export interface CursorBlobMetrics {
   count: number;
   totalBytes: number;
+  keyBytes: number;
   localBytes: number;
   pinnedBytes: number;
   rejectedEntryTooLarge: number;
@@ -393,6 +408,7 @@ export function cursorBlobMetrics(): CursorBlobMetrics {
   return {
     count: blobs.size,
     totalBytes: blobBytes,
+    keyBytes: blobKeyBytes,
     localBytes: blobLocalBytes,
     pinnedBytes: blobPinnedBytes,
     rejectedEntryTooLarge,
@@ -440,6 +456,7 @@ export function resetCursorBlobStateForTests(): void {
   blobs.clear();
   blobRequestScopes.clear();
   blobBytes = 0;
+  blobKeyBytes = 0;
   rejectedEntryTooLarge = 0;
   rejectedPinnedSaturation = 0;
   recomputeBlobClassAccounting();

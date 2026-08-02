@@ -1202,3 +1202,53 @@ describe("Cursor bounded blob store", () => {
     expect(cursorBlobMetrics()).toMatchObject({ count: 0, totalBytes: 0, localBytes: 0, pinnedBytes: 0 });
   });
 });
+
+describe("Cursor blob ID key channel bounds", () => {
+  test("conforming 32-byte IDs keep their hex passthrough", () => {
+    const blobId = sha256(new TextEncoder().encode("payload"));
+    setBlobReply(blobId, new TextEncoder().encode("payload"));
+    const keys = cursorBlobStoreDebugSnapshotForTests().map(entry => entry.key);
+    expect(keys).toEqual([Buffer.from(blobId).toString("hex")]);
+    expect(cursorBlobMetrics().keyBytes).toBe(64);
+  });
+
+  test("a multi-MiB remote ID becomes a fixed-size digest key and still round-trips", () => {
+    const hugeId = new Uint8Array(1024 * 1024).fill(7);
+    hugeId[0] = 1;
+    const data = new TextEncoder().encode("blob-content");
+    setBlobReply(hugeId, data);
+    const snapshot = cursorBlobStoreDebugSnapshotForTests();
+    expect(snapshot).toHaveLength(1);
+    // Fixed 64-char SHA-256 key — the raw 1 MiB ID is never retained as a key.
+    expect(snapshot[0]!.key).toMatch(/^[0-9a-f]{64}$/);
+    expect(cursorBlobMetrics().keyBytes).toBe(64);
+    // Symmetric derivation: the same huge ID fetches the data back.
+    expect([...blobData(hugeId)]).toEqual([...data]);
+  });
+
+  test("the passthrough/digest boundary sits at 64 raw bytes", () => {
+    const id64 = new Uint8Array(64).fill(3);
+    const id65 = new Uint8Array(65).fill(4);
+    setBlobReply(id64, new TextEncoder().encode("a"));
+    setBlobReply(id65, new TextEncoder().encode("b"));
+    const keys = cursorBlobStoreDebugSnapshotForTests().map(entry => entry.key).sort();
+    expect(keys).toContain(Buffer.from(id64).toString("hex"));
+    expect(keys.every(k => k.length <= 128)).toBe(true);
+    expect(keys.some(k => k.length === 64)).toBe(true);
+    expect([...blobData(id64)]).toEqual([...new TextEncoder().encode("a")]);
+    expect([...blobData(id65)]).toEqual([...new TextEncoder().encode("b")]);
+  });
+
+  test("aggregate key bytes stay bounded across oversized-ID admissions", () => {
+    for (let index = 0; index < 32; index++) {
+      const hugeId = new Uint8Array(256 * 1024).fill(index + 1);
+      setBlobReply(hugeId, new TextEncoder().encode(`blob-${index}`));
+    }
+    const metrics = cursorBlobMetrics();
+    expect(metrics.count).toBe(32);
+    // 32 entries x fixed 64-char digest keys — never 32 x 512 KiB of hex.
+    expect(metrics.keyBytes).toBe(32 * 64);
+    // Payload accounting is untouched by the key channel.
+    expect(metrics.totalBytes).toBeGreaterThan(0);
+  });
+});
