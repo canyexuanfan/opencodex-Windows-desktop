@@ -38,3 +38,20 @@ branch `codex/bugfix-280` in worktree `/Users/jun/Developer/opencodex-bugfix280`
 - Non-fast-forward push → stop, report (NEEDS_HUMAN).
 - Any CI job red for the pushed SHA → do NOT close the issues; report and
   investigate as a new work-phase.
+
+## Results (2026-08-02, executed)
+
+- Merge: 808b885c (zero conflicts; 74 files from origin/dev merged in).
+- prepush: typecheck, GUI lint, full suite 6911 pass 0 fail (480 files),
+  privacy scan, react-doctor — all green.
+- Push: 253455bc..808b885c → origin/dev (FF verified immediately before
+  push).
+- CI run 30733116558: all 7 jobs success for the exact pushed SHA, incl.
+  the Windows leg (#864 runtime proof).
+- Issues closed with fix-reference comments:
+  - 858 (comment 5155571704)
+  - 855 (comment 5155571918)
+  - 859 (comment 5155574271)
+  - 864 (comment 5155574529)
+  - 857 (comment 5155574750)
+- 848 stays open: fix rides PR #861 (rebase instruction posted earlier).
