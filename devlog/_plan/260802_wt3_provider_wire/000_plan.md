@@ -62,6 +62,16 @@ Selection rule: built-in = field report in issue #748 AND independent corroborat
 
 Why nano is the only exclusion, given #748 reports seven models: the two-leg rule (field report AND independent corroboration) is applied uniformly — sol meets both legs exactly as luna/terra do, so it is in; nano has no field report (never present in the captured catalog), so it stays out regardless of catalog/metadata labels. Sol's demonstrated chat failure is request-shape-conditional (tools + reasoning), which is precisely the Codex-agent traffic this bug is about; its bare-string default is safe for text-only chat clients because inbound chat is translated to the verified-working Responses wire rather than dropped.
 
+## Bug B research findings (consumed by `020_bug_b_deepseek_service_tier.md`)
+
+2026-08-02, sol-medium researcher; sources inline.
+
+- PR #860's capability design fits this tree and applies cleanly (`git apply --check` passed on the dev lineage). Its file map is adopted with two corrections from its open review threads: the canonical-`openai` test must prove REGISTRY BACKFILL (not hardcode the field), and localized docs must not keep contradictory blanket wording.
+- Official DeepSeek Responses docs list `service_tier` as unsupported but say unsupported Responses parameters are SILENTLY IGNORED (api-docs.deepseek.com/guides/responses_api/). Stripping remains sensible compatibility policy, but `service_tier` cannot explain #875's stall.
+- #875 root cause (local, separate from #860): the continuation store preserves reasoning items (`src/responses/state.ts:699`, `:806`, `:837`; recorder installed at `src/server/responses/core.ts:1554`), DeepSeek stateless cleanup (`src/adapters/openai-responses.ts:1003`) does not remove them, but then `sanitizeReasoningInputContent()` (`src/adapters/openai-responses.ts:35`, blanks every non-empty reasoning item's `content` to `[]` at :45-56) is invoked at `:1027` for EVERY Responses provider. The function is OpenAI/ChatGPT-backend-motivated but unscoped. The local schema explicitly supports plaintext `{type:"reasoning_text"}` (`src/responses/schema.ts:23`, `:52`), and DeepSeek's native Responses contract accepts plaintext reasoning content — so current ocx deterministically sends DeepSeek an emptied reasoning item on every continuation. DeepSeek's registry `preserveReasoningContentModels` protects only Chat-Completions serialization, not native passthrough.
+- Evidence calibration (audit round-1): DeepSeek's Responses docs confirm plaintext reasoning items are accepted and merged into adjacent assistant messages; the must-replay-on-tool-call-continuation rule is explicit only in the CHAT Thinking-Mode docs — mapping it to native Responses is an inference and is labeled as such in code comments.
+- Caveat recorded: the reasoning defect only fires once a follow-up request REACHES ocx; it cannot by itself explain #875's "no follow-up HTTP request sent at all" observation, which may be a separate client/SSE handoff issue. #875 stays open with a comment; the reasoning replay defect is fixed here as the local half.
+
 ## Out of scope
 
 - New provider presets (covered by separate enhancement PRs).
