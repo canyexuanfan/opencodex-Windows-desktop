@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   inspectNativeProfileJournal,
   MAX_NATIVE_PROFILE_JOURNAL_BYTES,
+  MAX_NATIVE_PROFILE_METADATA_BYTES,
+  readNativeProfileVault,
   serializeNativeProfileJournal,
   type NativeProfileContext,
 } from "../src/codex/native-profile-store";
@@ -24,6 +26,14 @@ const TRANSACTION_ID = "33333333-3333-4333-8333-333333333333";
 const SOURCE_HASH = "b".repeat(64);
 const TARGET_HASH = "c".repeat(64);
 const CREATED_AT = "2026-08-02T00:00:00.000Z";
+const REPLACEMENT_TRANSACTION_ID = "44444444-4444-4444-8444-444444444444";
+const BOUNDED_READ_TEST_SEAM = Symbol.for("opencodex.native-profile-store.bounded-read-test-seam");
+
+interface BoundedReadTestSeam {
+  afterValidatedOpen?: (path: string, fd: number) => void;
+  onBufferAllocated?: (byteLength: number) => void;
+  onRead?: (requestedBytes: number, bytesRead: number, totalBytesRead: number) => void;
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -44,6 +54,10 @@ function context(): NativeProfileContext {
     recoveryBlockPath: join(rootDir, "recovery-block.json"),
     lockPath: join(rootDir, "profiles.lock.sqlite"),
   };
+}
+
+function installBoundedReadTestSeam(store: NativeProfileContext, seam: BoundedReadTestSeam): void {
+  (store as NativeProfileContext & { [key: symbol]: unknown })[BOUNDED_READ_TEST_SEAM] = seam;
 }
 
 function payload(identityHash: string): EncryptedNativeEnvelopeV1 {
@@ -90,10 +104,10 @@ function vault(active: "source" | "target"): NativeMainProfileVaultV1 {
   };
 }
 
-function journal(): NativeProfileSwitchJournalV1 {
+function journal(transactionId = TRANSACTION_ID): NativeProfileSwitchJournalV1 {
   return {
     version: 1,
-    transactionId: TRANSACTION_ID,
+    transactionId,
     homeId: HOME_ID,
     phase: "prepared",
     sourceProfileId: SOURCE_ID,
@@ -121,6 +135,12 @@ describe("native-profile recovery journal storage", () => {
   test("accepts and reads a compact journal exactly at the 17 MiB boundary", () => {
     const store = context();
     const serialized = serializeNativeProfileJournal(journalAtExactLimit());
+    const allocations: number[] = [];
+    let totalBytesRead = 0;
+    installBoundedReadTestSeam(store, {
+      onBufferAllocated: byteLength => allocations.push(byteLength),
+      onRead: (_requestedBytes, _bytesRead, total) => { totalBytesRead = total; },
+    });
 
     expect(Buffer.byteLength(serialized, "utf8")).toBe(MAX_NATIVE_PROFILE_JOURNAL_BYTES);
     writeFileSync(store.journalPath, serialized);
@@ -131,6 +151,8 @@ describe("native-profile recovery journal storage", () => {
       expect(inspection.journal.transactionId).toBe(TRANSACTION_ID);
       expect(inspection.journal.phase).toBe("prepared");
     }
+    expect(allocations).toEqual([MAX_NATIVE_PROFILE_JOURNAL_BYTES + 1]);
+    expect(totalBytesRead).toBe(MAX_NATIVE_PROFILE_JOURNAL_BYTES);
   });
 
   test("rejects a compact journal one byte over the 17 MiB boundary", () => {
@@ -147,5 +169,65 @@ describe("native-profile recovery journal storage", () => {
     expect(Buffer.byteLength(serialized, "utf8")).toBe(MAX_NATIVE_PROFILE_JOURNAL_BYTES + 1);
     writeFileSync(store.journalPath, serialized);
     expect(inspectNativeProfileJournal(store)).toEqual({ status: "invalid" });
+  });
+
+  test("reads the opened descriptor when the journal path is replaced after validation", () => {
+    const store = context();
+    writeFileSync(store.journalPath, serializeNativeProfileJournal(journal()));
+    installBoundedReadTestSeam(store, {
+      afterValidatedOpen: path => {
+        renameSync(path, path + ".opened");
+        writeFileSync(path, serializeNativeProfileJournal(journal(REPLACEMENT_TRANSACTION_ID)));
+      },
+    });
+
+    const inspection = inspectNativeProfileJournal(store);
+
+    expect(inspection.status).toBe("valid");
+    if (inspection.status === "valid") {
+      expect(inspection.journal.transactionId).toBe(TRANSACTION_ID);
+    }
+  });
+
+  test("reads at most vault cap plus one when the opened vault grows after fstat", () => {
+    const store = context();
+    const initial = JSON.stringify(vault("source")) + "\n";
+    writeFileSync(store.vaultPath, initial);
+    const allocations: number[] = [];
+    let totalBytesRead = 0;
+    installBoundedReadTestSeam(store, {
+      afterValidatedOpen: path => {
+        appendFileSync(path, Buffer.alloc(MAX_NATIVE_PROFILE_METADATA_BYTES + 2 - Buffer.byteLength(initial), 0x20));
+      },
+      onBufferAllocated: byteLength => allocations.push(byteLength),
+      onRead: (_requestedBytes, _bytesRead, total) => { totalBytesRead = total; },
+    });
+
+    let caught: unknown;
+    try { readNativeProfileVault(store); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("VAULT_INVALID");
+    expect(allocations).toEqual([MAX_NATIVE_PROFILE_METADATA_BYTES + 1]);
+    expect(totalBytesRead).toBe(MAX_NATIVE_PROFILE_METADATA_BYTES + 1);
+  });
+
+  test("reads at most journal cap plus one when the opened journal grows after fstat", () => {
+    const store = context();
+    const initial = serializeNativeProfileJournal(journal());
+    writeFileSync(store.journalPath, initial);
+    const allocations: number[] = [];
+    let totalBytesRead = 0;
+    installBoundedReadTestSeam(store, {
+      afterValidatedOpen: path => {
+        appendFileSync(path, Buffer.alloc(MAX_NATIVE_PROFILE_JOURNAL_BYTES + 2 - Buffer.byteLength(initial), 0x20));
+      },
+      onBufferAllocated: byteLength => allocations.push(byteLength),
+      onRead: (_requestedBytes, _bytesRead, total) => { totalBytesRead = total; },
+    });
+
+    expect(inspectNativeProfileJournal(store)).toEqual({ status: "invalid" });
+    expect(allocations).toEqual([MAX_NATIVE_PROFILE_JOURNAL_BYTES + 1]);
+    expect(totalBytesRead).toBe(MAX_NATIVE_PROFILE_JOURNAL_BYTES + 1);
   });
 });

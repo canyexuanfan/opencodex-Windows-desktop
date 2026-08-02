@@ -6,7 +6,17 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfigDir } from "../config";
 import { extractAccountId } from "../oauth/chatgpt";
@@ -32,6 +42,7 @@ export const MAX_NATIVE_PROFILE_JOURNAL_BYTES = 17 * 1024 * 1024;
 export const MAX_NATIVE_PROFILES = 32;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/;
+const BOUNDED_READ_TEST_SEAM = Symbol.for("opencodex.native-profile-store.bounded-read-test-seam");
 
 export interface NativeProfileContext {
   codexHome: string;
@@ -44,6 +55,16 @@ export interface NativeProfileContext {
   journalPath: string;
   recoveryBlockPath: string;
   lockPath: string;
+}
+
+interface BoundedReadTestSeam {
+  afterValidatedOpen?: (path: string, fd: number) => void;
+  onBufferAllocated?: (byteLength: number) => void;
+  onRead?: (requestedBytes: number, bytesRead: number, totalBytesRead: number) => void;
+}
+
+function boundedReadTestSeam(context: NativeProfileContext): BoundedReadTestSeam | undefined {
+  return (context as NativeProfileContext & { [BOUNDED_READ_TEST_SEAM]?: BoundedReadTestSeam })[BOUNDED_READ_TEST_SEAM];
 }
 
 export interface NativeEnvelopeSnapshot {
@@ -152,10 +173,52 @@ export function resolveNativeProfileContext(options: { codexHome?: string; confi
   };
 }
 
-function readBounded(path: string, limit: number): Buffer {
-  const stat = statSync(path);
-  if (!stat.isFile() || stat.size > limit) throw new Error("invalid bounded file");
-  return readFileSync(path);
+function readBounded(path: string, limit: number, testSeam?: BoundedReadTestSeam): Buffer {
+  let fd: number | undefined;
+  let failed = false;
+  try {
+    const flags = process.platform === "win32"
+      ? fsConstants.O_RDONLY
+      : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
+    fd = openSync(path, flags);
+    const opened = fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.size > BigInt(limit)) throw new Error("invalid bounded file");
+
+    if (process.platform === "win32") {
+      const pathEntry = lstatSync(path, { bigint: true });
+      if (
+        !pathEntry.isFile()
+        || pathEntry.isSymbolicLink()
+        || pathEntry.dev !== opened.dev
+        || pathEntry.ino !== opened.ino
+      ) throw new Error("invalid bounded file");
+    }
+
+    testSeam?.afterValidatedOpen?.(path, fd);
+    const buffer = Buffer.allocUnsafe(limit + 1);
+    testSeam?.onBufferAllocated?.(buffer.byteLength);
+    let totalBytesRead = 0;
+    while (totalBytesRead < buffer.byteLength) {
+      const requestedBytes = buffer.byteLength - totalBytesRead;
+      const bytesRead = readSync(fd, buffer, totalBytesRead, requestedBytes, totalBytesRead);
+      totalBytesRead += bytesRead;
+      testSeam?.onRead?.(requestedBytes, bytesRead, totalBytesRead);
+      if (bytesRead === 0) break;
+    }
+    if (totalBytesRead > limit) throw new Error("invalid bounded file");
+    return buffer.subarray(0, totalBytesRead);
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch (error) {
+        if (!failed) throw error;
+      }
+    }
+  }
 }
 
 export function resolveNativeCredentialStoreMode(context: NativeProfileContext): string {
@@ -355,7 +418,11 @@ export function readNativeProfileVault(context: NativeProfileContext): NativeMai
   if (!existsSync(context.vaultPath)) return null;
   try {
     return parseVaultObject(
-      JSON.parse(readBounded(context.vaultPath, MAX_NATIVE_PROFILE_METADATA_BYTES).toString("utf8")),
+      JSON.parse(readBounded(
+        context.vaultPath,
+        MAX_NATIVE_PROFILE_METADATA_BYTES,
+        boundedReadTestSeam(context),
+      ).toString("utf8")),
       context.homeId,
     );
   } catch {
@@ -396,7 +463,11 @@ export function inspectNativeProfileJournal(context: NativeProfileContext): Nati
   if (state === "unreadable") return { status: "invalid" };
   try {
     const journal = JSON.parse(
-      readBounded(context.journalPath, MAX_NATIVE_PROFILE_JOURNAL_BYTES).toString("utf8"),
+      readBounded(
+        context.journalPath,
+        MAX_NATIVE_PROFILE_JOURNAL_BYTES,
+        boundedReadTestSeam(context),
+      ).toString("utf8"),
     ) as NativeProfileSwitchJournalV1;
     if (
       journal.version !== 1 || journal.homeId !== context.homeId || !UUID_RE.test(journal.transactionId)

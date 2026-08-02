@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { NativeProfileManager } from "../src/codex/native-profile-manager";
 import {
   decryptNativeEnvelope,
+  MAX_NATIVE_PROFILE_JOURNAL_BYTES,
   MAX_NATIVE_PROFILE_METADATA_BYTES,
   probeNativeProfileRecoveryState,
   readNativeProfileVault,
@@ -388,21 +389,56 @@ describe("native main profile transactions", () => {
     const stage = await manager.prepareStage();
     const large = JSON.parse(f.target) as Record<string, unknown>;
     large.padding = "x".repeat(Math.floor(MAX_NATIVE_PROFILE_METADATA_BYTES * 0.42));
-    writeFileSync(join(stage.stagingCodexHome, "auth.json"), JSON.stringify(large, null, 2) + "\n");
+    const largeTarget = JSON.stringify(large, null, 2) + "\n";
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), largeTarget);
     const work = await manager.finishStage(stage.stageId, "work");
     const switched = await manager.switch("work", true);
-    expect(readFileSync(manager.context.authPath, "utf8")).toBe(JSON.stringify(large, null, 2) + "\n");
+    expect(readFileSync(manager.context.authPath, "utf8")).toBe(largeTarget);
     expect((switched.activeProfile as { id: string }).id).toBe(work.profile.id);
     expect((await manager.list()).activeProfileId).toBe(work.profile.id);
     expect(existsSync(manager.context.journalPath)).toBe(false);
     expect(f.transitions).toEqual(["account-source->account-target"]);
+
+    await manager.switch("personal", true);
+    const authPath = manager.context.authPath;
+    const journalPath = manager.context.journalPath;
+    let authWrites = 0;
+    const interrupted = new NativeProfileManager({
+      ...f.options,
+      atomicWrite: async (path, content) => {
+        if (path === authPath && authWrites++ > 0) throw new Error("injected restore failure");
+        if (path === journalPath && hasJournalPhase(content, "auth-replaced")) {
+          throw new Error("injected post-replacement failure");
+        }
+        return atomic(path, content);
+      },
+    });
+    let interruptedError: unknown;
+    try { await interrupted.switch("work", true); } catch (error) { interruptedError = error; }
+    expect(interruptedError).toBeInstanceOf(NativeProfileError);
+    expect((interruptedError as NativeProfileError).code).toBe("AUTH_RESTORE_FAILED");
+    const persistedJournal = readFileSync(journalPath, "utf8");
+    expect(Buffer.byteLength(persistedJournal)).toBeGreaterThan(MAX_NATIVE_PROFILE_METADATA_BYTES);
+    expect(Buffer.byteLength(persistedJournal)).toBeLessThanOrEqual(MAX_NATIVE_PROFILE_JOURNAL_BYTES);
+    expect(readFileSync(authPath, "utf8")).toBe(largeTarget);
+    const vaultBeforeRecovery = readFileSync(manager.context.vaultPath, "utf8");
+
+    expect(await manager.recover(false)).toMatchObject({
+      recovered: true,
+      action: "commit-target",
+      externallyRefreshed: false,
+    });
+    expect(readFileSync(authPath, "utf8")).toBe(largeTarget);
+    expect(readFileSync(manager.context.vaultPath, "utf8")).not.toBe(vaultBeforeRecovery);
+    expect((await manager.list()).activeProfileId).toBe(work.profile.id);
+    expect(existsSync(journalPath)).toBe(false);
   }, 30_000);
 
   test("fails closed for an oversized on-disk journal without mutating auth or vault", async () => {
     const f = await enrolledFixture();
     const authBefore = readFileSync(f.manager.context.authPath, "utf8");
     const vaultBefore = readFileSync(f.manager.context.vaultPath, "utf8");
-    writeFileSync(f.manager.context.journalPath, "x".repeat(17 * 1024 * 1024 + 1));
+    writeFileSync(f.manager.context.journalPath, "x".repeat(MAX_NATIVE_PROFILE_JOURNAL_BYTES + 1));
 
     let caught: unknown;
     try { await f.manager.switch("work", true); } catch (error) { caught = error; }
