@@ -31,7 +31,10 @@ function printDesktopHelp(): void {
 
 export interface ApplyProfileDeps {
   findLiveProxyImpl?: typeof findLiveProxy;
-  postApplyImpl?: (mode: Desktop3pConfigMode) => Promise<{ ok?: boolean; path?: string; error?: string }>;
+  postApplyImpl?: (
+    mode: Desktop3pConfigMode,
+    profile: DesktopProfile,
+  ) => Promise<{ ok?: boolean; path?: string; error?: string }>;
 }
 
 export async function applyProfile(
@@ -48,15 +51,15 @@ export async function applyProfile(
     // #859: the Desktop alias reverse-map is process-local. Applying through the
     // serving process installs the map there; a local-only write leaves the
     // daemon unable to decode aliases, and the provider rejects them (400).
-    const post = deps.postApplyImpl ?? (async (m: Desktop3pConfigMode) =>
+    const post = deps.postApplyImpl ?? (async (m: Desktop3pConfigMode, p: DesktopProfile) =>
       runtimeRequest<{ ok?: boolean; path?: string; error?: string }>(
         "/api/claude-desktop/apply",
         // The daemon's config may be older than what we just saved, so the
         // profile travels with the request instead of being re-read there.
-        { method: "POST", body: JSON.stringify({ mode: m, profile: state.profile }) },
+        { method: "POST", body: JSON.stringify({ mode: m, profile: p }) },
       ));
     try {
-      const applied = await post(mode);
+      const applied = await post(mode, state.profile);
       if (applied.ok === false) return { ok: false, path: applied.path ?? "", reason: applied.error ?? "daemon apply failed" };
       return { ok: true, path: applied.path ?? "" };
     } catch (error) {

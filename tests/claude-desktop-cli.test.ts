@@ -104,15 +104,19 @@ test("desktopNativeModels:false omits native/* from show and exported profile", 
  */
 test("apply delegates to the live proxy management API instead of writing locally", async () => {
   const state = await buildClaudeDesktopState(loadConfig());
-  const posted: string[] = [];
+  const posted: Array<{ mode: string; profile: unknown }> = [];
   const result = await applyProfile(state.profile, "hybrid", {
     findLiveProxyImpl: async () => ({ pid: 4242, port: 10100, hostname: "127.0.0.1", source: "runtime" }),
-    postApplyImpl: async mode => {
-      posted.push(mode);
+    postApplyImpl: async (mode, profile) => {
+      posted.push({ mode, profile });
       return { ok: true, path: "/daemon-side/path" };
     },
   });
-  expect(posted).toEqual(["hybrid"]);
+  expect(posted.length).toBe(1);
+  expect(posted[0]!.mode).toBe("hybrid");
+  // The profile must cross the boundary; dropping it reintroduces #859's
+  // stale-daemon variant.
+  expect(posted[0]!.profile).toEqual(state.profile);
   expect(result.ok).toBe(true);
   expect(result.path).toBe("/daemon-side/path");
   // No local Desktop config write: the daemon performed it.

@@ -630,6 +630,14 @@ test("Claude Desktop profile GET, PUT and apply round-trip four-family assignmen
  */
 test("Claude Desktop apply installs the alias registry in the serving process (#859)", async () => {
   const { resolveDesktop3pAlias, activeDesktop3pAlias } = await import("../src/claude/desktop-3p");
+  // A provider unique to this test: no prior test can have populated its
+  // alias, so resolution proves THIS apply built the registry in-process.
+  const seeded = loadConfig();
+  seeded.providers = {
+    ...seeded.providers,
+    unique859: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", allowPrivateNetwork: true, models: ["test-model-x"] },
+  };
+  saveConfig(seeded);
   const server = startServer(0);
   try {
     const apply = await fetch(new URL("/api/claude-desktop/apply", server.url), {
@@ -640,8 +648,8 @@ test("Claude Desktop apply installs the alias registry in the serving process (#
     expect(apply.status).toBe(200);
     // Without another /v1/models discovery call, the serving process must now
     // decode the alias the CLI would have generated.
-    const alias = activeDesktop3pAlias("mock", "test-model");
-    expect(resolveDesktop3pAlias(alias)).toBe("mock/test-model");
+    const alias = activeDesktop3pAlias("unique859", "test-model-x");
+    expect(resolveDesktop3pAlias(alias)).toBe("unique859/test-model-x");
   } finally {
     server.stop(true);
   }
