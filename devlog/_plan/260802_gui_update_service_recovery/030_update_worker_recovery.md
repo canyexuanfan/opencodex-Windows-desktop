@@ -3,6 +3,51 @@
 Closes D3 from `000_plan.md`. Depends on WP1 (stronger `stale`) and WP2
 (install-time verification).
 
+**Stale check (P, after WP1 and WP2 landed).** `src/update/job.ts` was not touched
+by either, so every citation below still holds — verified with `grep -n`:
+`RESTART_HEALTH_TIMEOUT_MS` 45, `healthTimeoutMs` 639, the `viable` early return
+782, `awaitRestartedProxyHealthy`'s deadline 1022, `RESTART_TIMEOUT_MS` 44 with its
+call site 761.
+
+What *did* change is the premise, and the first draft of this paragraph got it wrong.
+
+On macOS and Linux, WP2 has already closed the hole this phase was written for. The
+chain: the worker sets `OCX_BAKE_PORT` before spawning the child
+(`src/update/job.ts:757-762`) → the child's `resolveServiceListenPort()` gives that
+variable precedence (`src/service.ts:317-329`) → `reportServiceServing` probes that
+exact port for 20s and sets `process.exitCode = 1` when nothing answers. So on the
+originally reported platform the child's **exit code is already a port assertion**,
+not a registration one, and `serviceOk = result.status === 0` catches the failure
+before `viable` is ever consulted.
+
+The residual paths — the honest scope of this phase — are three the first draft never
+named:
+
+1. **Windows.** `case "install"` still prints the checkmark unconditionally there
+   (`src/service.ts:2318-2321`, gated out of WP2 by design), and the worker only skips
+   the reinstall when `OCX_SERVICE === "1"` (`src/update/job.ts:734-738`). A
+   CLI-initiated update on Windows therefore lands on exactly
+   `exit 0 + viable + dead port`.
+2. **A flapping supervisor.** WP2's install probe returns on the first successful
+   poll, so a service that binds for two seconds and then dies exits 0 legitimately.
+3. **A child CLI older than WP2.** The worker executes the *newly installed* CLI; a
+   downgrade, or an update to a target predating WP2, carries no serving check at all.
+
+State it plainly: on macOS this is defence in depth behind WP2, not the primary fix.
+Its real value is (1) and (3).
+
+**Known limitation, inherited:** `serviceRestartServed` also returns on the first
+successful probe, so it does not distinguish serving from flapping any better than
+WP2 does — it only asks again, later. Closing case (2) properly needs a stability
+window like `awaitRestartedProxyHealthy`'s (`src/update/job.ts:1030-1050`), which this
+phase deliberately does not duplicate. Recorded rather than silently accepted.
+
+**Serial cost.** `SERVICE_RECOVERY_HEALTH_MS` (25s) sits *after* WP2's
+`SERVICE_INSTALL_HEALTH_MS` (20s, `src/service.ts:384`), so a macOS reinstall that
+exits 0 but never serves now spends up to 45s before the direct-start fallback, inside
+a `RESTART_TIMEOUT_MS` of 60s. That is the reason the recovery window is 25s and not
+larger.
+
 ## Problem
 
 `src/update/job.ts:778-792`:
@@ -155,11 +200,57 @@ What is still wrong is the message:
 The "as administrator" advice is Windows-specific and is noise on macOS/Linux,
 where the failure is almost always a bad baked path rather than elevation.
 
+**WP2 makes this urgent rather than cosmetic.** Before WP2 a non-zero exit from
+`ocx service install` on macOS was rare (the command essentially could not fail).
+WP2 added exactly such an exit — a service that registers but does not serve — so
+this branch now fires on macOS routinely, and the current message tells the user to
+re-run the command "as administrator", which is meaningless there and hides the real
+cause. Verified at `src/update/job.ts:771`: the string is unconditional.
+
+The replacement message must also point at what WP2 actually reported, since the
+child already printed the log path and the serving-vs-registered distinction:
+
+```
+  Service reinstall failed (exit 1); falling back to a direct proxy start.
+  Run 'ocx service install' by hand to see the reason, then 'ocx service status'.
+```
+
+**Two more copies of the same advice live in `src/update/index.ts`**, both unguarded:
+`:346` ("Run 'ocx service install' as administrator, then 'ocx start --port …'") and
+`:353` ("… to refresh the background service"). That is the CLI update path rather
+than the GUI worker, but it reaches the same macOS users for the same reason. Gate
+all three in this commit rather than leaving two behind — a half-applied fix here is
+worse than none, because the remaining copies make the guarded one look like a typo.
+
 ## MODIFY `tests/update-job.test.ts`
 
 Clock convention: the file uses a local `let now = 0` with
 `sleepMs: async ms => { now += ms; }` (`tests/update-job.test.ts:436`, `:463`,
 `:492`). There is no `advancingClock()` helper in `tests/` — do not invent one.
+
+Fixture convention, likewise from the file: every sibling builds an
+`UpdateJobState` inline and `writeFileSync`s it to `updateJobPath(job.id)`, and the
+service cases `delete process.env.OCX_SERVICE` around the call (restoring it in a
+`finally`). The blocks below elide that for readability — write it out when
+implementing:
+
+```ts
+const job: UpdateJobState = {
+  id: "svc-health-gate",
+  status: "restarting",
+  startedAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  currentVersion: "2.7.26",
+  latestVersion: "2.7.28",
+  channel: "latest",
+  installer: "npm",
+  restart: true,
+  command: "",
+  log: [],
+};
+writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+const captured = { port: 18765, hostname: "127.0.0.1" };
+```
 
 ```ts
 describe("restartAfterUpdate — service recovery is health-gated", () => {
@@ -226,24 +317,32 @@ style in this file (`tests/update-job.test.ts:153`, `:248`, `:278`).
 
 ### Pre-existing test that this change WILL break
 
-`tests/update-job.test.ts:306-325` ("bakes the captured port for the service
+`tests/update-job.test.ts:286-325` ("bakes the captured port for the service
 reinstall") drives `serviceInstalledFn: () => true` + `serviceViableFn: () => true`
-+ `runService: () => ({ status: 0 })` and supplies **no** `probeProxy`. Under the
-current code it returns at the `viable` early return; under WP3 it will fall into
-`serviceRestartServed`, whose default probe performs a real `proxyIdentityAt`
-network call against port 18765 and then burns the full
-`SERVICE_RECOVERY_HEALTH_MS` before falling through to a direct start.
++ `runService: () => ({ status: 0 })` and supplies **no** `probeProxy` and **no**
+`spawnStart`. Under the current code it returns at the `viable` early return.
 
-That test asserts `waited` and `bakeDuringInstall`, both of which still hold — but
-it would gain a ~25s wall-clock cost and an unstubbed socket probe. Fix it in the
-same commit by adding `probeProxy: async () => true` (the intent of that test is
-the `OCX_BAKE_PORT` lifecycle, not the recovery decision) and note the change in
-the B attest. Do not weaken `SERVICE_RECOVERY_HEALTH_MS` to make a test fast —
-inject the probe.
+**It will FAIL, not merely slow down.** Correcting the first draft, which claimed its
+assertions "still hold": with no `probeProxy`, `serviceRestartServed` returns false,
+execution falls through to the direct-start path, and that path calls `waitFn` a
+**second** time at `src/update/job.ts:811`. The test's
+`expect(waited).toEqual([{ port: 18765, hostname: "127.0.0.1" }])` then sees two
+entries and fails. With no `spawnStart` injected it also enters the real 90s
+ghost-LISTEN wait at `:832`.
 
-Check the two sibling cases at `:347` and `:383` as well: both pass
-`serviceViableFn: () => false`, so they take the unchanged branch and should stay
-green without edits. Confirm that by running the file rather than by reading it.
+Fix: add `probeProxy: async () => true`, which restores the early return. That test's
+intent is the `OCX_BAKE_PORT` lifecycle, not the recovery decision. Do not weaken
+`SERVICE_RECOVERY_HEALTH_MS` to make a test fast — inject the probe.
+
+Prove it: run that single test against the modified worker BEFORE fixing the fixture
+and record the two-entry `waited` failure in the B attest. A green run recorded
+without that step would be exactly the "validated against a model, not the artifact"
+failure this unit has already hit.
+
+The sibling cases pass `serviceViableFn: () => false` and take the unchanged `else`
+branch, so they need no edits: they sit at `tests/update-job.test.ts:349` and `:386`
+(their `test(` lines begin at `:328` and `:364`), plus a fourth at `:403`/`:428`.
+Confirm by running the file rather than by reading it.
 
 ### Red-first proof
 
