@@ -84,7 +84,7 @@ type MutableWindow = {
 
 function configuredWeight(plan: string | null | undefined): number | undefined {
   const normalized = plan?.trim().toLowerCase();
-  return normalized && normalized in CODEX_CONFIGURED_CAPACITY_WEIGHTS
+  return normalized && Object.hasOwn(CODEX_CONFIGURED_CAPACITY_WEIGHTS, normalized)
     ? CODEX_CONFIGURED_CAPACITY_WEIGHTS[normalized as keyof typeof CODEX_CONFIGURED_CAPACITY_WEIGHTS]
     : undefined;
 }
@@ -99,6 +99,22 @@ function futureResetMs(value: unknown, now: number): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const milliseconds = value > 10_000_000_000 ? value : value * 1000;
   return milliseconds > now ? milliseconds : undefined;
+}
+
+function hasKnownQuotaWindow(quota: CodexCapacityQuota | null): quota is CodexCapacityQuota {
+  if (!quota) return false;
+  return normalizedPercent(quota.fiveHourPercent) !== undefined
+    || normalizedPercent(quota.weeklyPercent) !== undefined
+    || normalizedPercent(quota.monthlyPercent) !== undefined
+    || !!quota.customWindows?.some(window => normalizedPercent(window.percent) !== undefined);
+}
+
+function currentQuotaForDisplay(account: CodexCapacityAccount, now: number): CodexCapacityQuota | null {
+  const quota = account.quota;
+  const fresh = !!quota
+    && Number.isFinite(quota.updatedAt)
+    && now - quota.updatedAt <= CODEX_CAPACITY_MAX_QUOTA_AGE_MS;
+  return !account.paused && !account.needsReauth && fresh && hasKnownQuotaWindow(quota) ? quota : null;
 }
 
 function addWindow(
@@ -121,7 +137,7 @@ function addWindow(
   window.consumedWeight += consumed;
   window.includedAccounts += 1;
   window.oldestUpdatedAt = Math.min(window.oldestUpdatedAt, updatedAt);
-  if (resetAt !== undefined) {
+  if (resetAt !== undefined && consumed > 0) {
     window.recoveries.set(resetAt, (window.recoveries.get(resetAt) ?? 0) + consumed);
   }
   windows.set(key, window);
@@ -155,7 +171,7 @@ export function aggregateCodexPoolCapacity(
   const currentAccount = current ? {
     isMain: current.isMain,
     ...(current.plan !== undefined ? { plan: current.plan } : {}),
-    quota: current.quota,
+    quota: currentQuotaForDisplay(current, now),
   } : undefined;
   const windows = new Map<string, MutableWindow>();
   const included = new Set<CodexCapacityAccount>();
@@ -182,8 +198,7 @@ export function aggregateCodexPoolCapacity(
       ["monthly", quota.monthlyPercent, quota.monthlyResetAt],
     ] as const : [];
     const custom = quota?.customWindows ?? [];
-    const hasQuota = standard.some(([, percent]) => normalizedPercent(percent) !== undefined)
-      || custom.some(window => normalizedPercent(window.percent) !== undefined);
+    const hasQuota = hasKnownQuotaWindow(quota);
     if (!hasQuota) missingQuotaAccounts += 1;
     if (account.paused || account.needsReauth || weight === undefined || !quota || !hasQuota || !quotaFresh) continue;
 

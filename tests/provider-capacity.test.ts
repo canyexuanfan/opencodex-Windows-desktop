@@ -54,6 +54,15 @@ describe("configured-weight Codex pool capacity", () => {
     expect(result.aggregation?.weekly).not.toHaveProperty("projectedUsedPercentAfterReset");
   });
 
+  test("the next recovery skips earlier zero-consumption resets", () => {
+    const result = aggregateCodexPoolCapacity([
+      account("pro", 0, { weeklyResetAt: NOW + 10_000 }),
+      account("prolite", 40, { weeklyResetAt: NOW + 20_000 }),
+    ], NOW);
+    expect(result.aggregation?.weekly?.nextRecoveryAt).toBe(NOW + 20_000);
+    expect(result.aggregation?.weekly?.nextRecoveryPercent).toBeCloseTo(2 / 25 * 100, 8);
+  });
+
   test("unknown, missing, paused, and reauth rows are excluded with incomplete coverage", () => {
     const result = aggregateCodexPoolCapacity([
       account("pro", 10, { active: true, isMain: true }),
@@ -133,6 +142,41 @@ describe("configured-weight Codex pool capacity", () => {
       staleQuotaAccounts: 1,
       incomplete: true,
     });
+  });
+
+  test("a stale effective secondary quota is hidden while a fresh main account still aggregates", () => {
+    const main = account("plus", 20, { isMain: true });
+    const staleActive = account("pro", 90, { active: true });
+    staleActive.quota = {
+      ...staleActive.quota!,
+      updatedAt: NOW - CODEX_CAPACITY_MAX_QUOTA_AGE_MS - 1,
+    };
+
+    const result = aggregateCodexPoolCapacity([main, staleActive], NOW);
+    expect(result.quota?.weeklyPercent).toBe(20);
+    expect(result.aggregation).toMatchObject({
+      includedAccounts: 1,
+      excludedAccounts: 1,
+      staleQuotaAccounts: 1,
+      currentAccount: { plan: "pro", quota: null },
+    });
+  });
+
+  test("prototype and unknown plan names never become configured weights", () => {
+    const result = aggregateCodexPoolCapacity([
+      account("plus", 20),
+      account("constructor", 100),
+      account("toString", 100),
+      account("valueOf", 100),
+      account("unknown", 100),
+    ], NOW);
+    expect(result.quota?.weeklyPercent).toBe(20);
+    expect(result.aggregation).toMatchObject({
+      includedAccounts: 1,
+      excludedAccounts: 4,
+      unknownPlanAccounts: 4,
+    });
+    expect(Number.isFinite(result.quota?.weeklyPercent)).toBe(true);
   });
 
   test("all-stale rows expose incomplete coverage without an aggregate window", () => {

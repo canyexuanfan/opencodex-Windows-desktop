@@ -104,9 +104,9 @@ export function capacityAggregationFromReport(report?: ProviderQuotaReportView):
     ? row.currentAccount as Record<string, unknown>
     : null;
   const customWindows = Array.isArray(row.customWindows)
-    ? row.customWindows.flatMap(value => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-        const custom = value as Record<string, unknown>;
+    ? row.customWindows.flatMap(entry => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+        const custom = entry as Record<string, unknown>;
         const window = capacityWindow(custom);
         return typeof custom.label === "string" && window ? [{ label: custom.label, ...window }] : [];
       })

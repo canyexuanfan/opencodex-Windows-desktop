@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { capacityAggregationFromReport } from "../src/provider-workspace/report";
 
+function selectorBlock(css: string, selector: string): string {
+  const start = css.indexOf(`${selector} {`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = css.indexOf("}", start);
+  expect(end).toBeGreaterThan(start);
+  return css.slice(start, end + 1);
+}
+
 test("legacy provider quota reports remain valid without aggregation metadata", () => {
   expect(capacityAggregationFromReport({ quota: { weeklyPercent: 42 } })).toBeNull();
 });
@@ -97,14 +105,15 @@ test("fallback and coverage-only metadata never become aggregate presentation", 
 test("capacity recovery layout wraps and stacks in narrow provider panes", async () => {
   const css = await Bun.file(new URL("../src/styles/provider-overview-dashboard.css", import.meta.url)).text();
   const quotaCss = await Bun.file(new URL("../src/styles/provider-quota.css", import.meta.url)).text();
-  expect(css).toContain(".pws-capacity-recovery {");
-  expect(css).toContain("flex-wrap: wrap;");
-  expect(css).toContain("overflow-wrap: anywhere;");
+  const recovery = selectorBlock(css, ".pws-capacity-recovery");
+  const recoveryText = selectorBlock(css, ".pws-capacity-recovery span");
+  expect(recovery).toContain("flex-wrap: wrap;");
+  expect(recoveryText).toContain("overflow-wrap: anywhere;");
   expect(css).toContain("@container (max-width: 520px)");
   expect(css.slice(css.indexOf("@container (max-width: 520px)"))).toContain("grid-template-columns: minmax(0, 1fr);");
-  expect(quotaCss).toContain(".quota-stacked-limit-group {");
-  expect(quotaCss).toContain("flex-wrap: wrap;");
-  expect(quotaCss).toContain("overflow-wrap: anywhere;");
+  const limitGroup = selectorBlock(quotaCss, ".quota-stacked-limit-group");
+  expect(limitGroup).toContain("flex-wrap: wrap;");
+  expect(limitGroup).toContain("overflow-wrap: anywhere;");
 });
 
 test("malformed or future aggregation contracts fail closed", () => {

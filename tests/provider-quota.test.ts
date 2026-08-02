@@ -515,6 +515,29 @@ describe("fetchProviderQuotaReports", () => {
     expect(JSON.stringify(openai?.aggregation)).not.toMatch(/(?:total|consumed|remaining)Weight|projectedUsedPercent/i);
   });
 
+  test("one forced Pool refresh probes each account once", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    const calls = new Map<string, number>();
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const accountId = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] ?? "main";
+      calls.set(accountId, (calls.get(accountId) ?? 0) + 1);
+      return new Response(JSON.stringify({
+        plan_type: accountId === "added-chatgpt-id" ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: 25, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await fetchProviderQuotaReports(config, true);
+
+    expect(calls).toEqual(new Map([["chatgpt-main-account", 1], ["added-chatgpt-id", 1]]));
+  });
+
   test("all-excluded pool still returns a coverage-only OpenAI report", async () => {
     rmSync(join(codexHome, "auth.json"), { force: true });
     clearMainAccountInfoCache();

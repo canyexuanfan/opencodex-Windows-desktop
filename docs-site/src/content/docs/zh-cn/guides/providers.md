@@ -19,6 +19,22 @@ bare `gpt-5.6-sol` 遵循 Providers 页面中的 Pool/Direct 选项，
 
 若内置 `openai` 提供商缺失或已禁用，可在仪表盘 Accounts 选择器或 Codex Auth 页面恢复：缺失行会从规范预设创建，已禁用的规范行会在不替换已保存模式/模型设置的情况下重新启用，非规范的 `openai` 行不会提供该恢复路径。
 
+### 提供商概览中的账户池容量
+
+Codex 登录使用 Pool 模式时，Providers 概览显示整个账户池的已用容量估算，而不是任意一个
+账户的数值。同一行还会显示当前有效账户的原始配额使用率，便于区分账户池估算与下一次请求
+将使用的账户状态。
+
+如果有重置信息，概览会显示下一次重置时间以及届时恢复的账户池容量。**覆盖不完整**表示某些
+账户无法安全计入估算，例如套餐或配额未知、读数过旧、账户已暂停或需要重新认证。
+
+**部分窗口覆盖不完整**表示某些已计入账户只报告了部分显示的配额窗口。概览会保持各窗口相互
+独立，逐一标记受影响的窗口，并且不会把缺失值当作该窗口的使用量。
+
+此估算仅用于显示，不会改变账户选择、会话关联、自动切换、cooldown 或任何其他路由决策。
+各账户状态和路由控制请参阅
+[Codex Auth 账户池](/zh-cn/guides/web-dashboard/#codex-auth-and-account-pools)。
+
 shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保留一次到
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak`；恢复命令：
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`。

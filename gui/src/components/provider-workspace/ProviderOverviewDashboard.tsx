@@ -252,11 +252,11 @@ function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaRepor
       if (window.incomplete) incompleteCustomWindowLabels.add(window.label);
     }
   }
-  const recoveryRows: Array<{ label: string; window: CapacityWindowView }> = showsAggregate && aggregation ? [
-    ...(aggregation.fiveHour ? [{ label: t("codexAuth.fiveHour"), window: aggregation.fiveHour }] : []),
-    ...(aggregation.weekly ? [{ label: t("codexAuth.weekly"), window: aggregation.weekly }] : []),
-    ...(aggregation.monthly ? [{ label: t("codexAuth.monthly"), window: aggregation.monthly }] : []),
-    ...(aggregation.customWindows ?? []).map(window => ({ label: window.label, window })),
+  const recoveryRows: Array<{ key: number; label: string; window: CapacityWindowView }> = showsAggregate && aggregation ? [
+    ...(aggregation.fiveHour ? [{ key: 0, label: t("codexAuth.fiveHour"), window: aggregation.fiveHour }] : []),
+    ...(aggregation.weekly ? [{ key: 1, label: t("codexAuth.weekly"), window: aggregation.weekly }] : []),
+    ...(aggregation.monthly ? [{ key: 2, label: t("codexAuth.monthly"), window: aggregation.monthly }] : []),
+    ...(aggregation.customWindows ?? []).map((window, index) => ({ key: index + 3, label: window.label, window })),
   ] : [];
   const formatPercent = (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
   const formatRecoveryAt = (value: number) => new Intl.DateTimeFormat(locale, {
@@ -280,9 +280,9 @@ function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaRepor
       )}
       {aggregation && (
         <div className="pws-capacity-details">
-          {recoveryRows.flatMap(({ label, window }) => (
+          {recoveryRows.flatMap(({ key, label, window }) => (
             window.nextRecoveryAt !== undefined && window.nextRecoveryPercent !== undefined
-              ? [<div className="pws-capacity-recovery" key={label}>
+              ? [<div className="pws-capacity-recovery" key={key}>
                   <span>{t("pws.capacity.nextRecovery")} · {label} · {formatRecoveryAt(window.nextRecoveryAt)}</span>
                   <strong>{t("pws.capacity.recoveryShare", { percent: formatPercent(window.nextRecoveryPercent) })}</strong>
                 </div>]

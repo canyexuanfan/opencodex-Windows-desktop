@@ -276,6 +276,7 @@ export default function ProviderWorkspaceShell({
           writeSessionListCache(quotasCacheKey, next);
         })
         .catch(() => {
+          if (cancelled) return;
           // Keep last-good only inside the same server freshness bound.
           setQuotaReports(prev => {
             const next = freshQuotaReportRecord(prev) ?? {};

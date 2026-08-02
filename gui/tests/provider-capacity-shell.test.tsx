@@ -14,6 +14,7 @@ let host: HTMLElement;
 let root: Root | null = null;
 let quotaPayload: unknown;
 let rejectQuotaFetch = false;
+let quotaFetchOverride: (() => Promise<Response>) | null = null;
 
 const QUOTA_CACHE_KEY = "ocx.providers.quotas.v1:";
 const RECOVERY_AT = Date.UTC(2026, 7, 8, 4, 32);
@@ -21,7 +22,44 @@ const providers = {
   openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex" },
 } as never;
 
-function aggregatePayload() {
+type TestCapacityWindow = {
+  usedPercent: number;
+  includedAccounts: number;
+  excludedAccounts: number;
+  incomplete: boolean;
+  updatedAt: number;
+  nextRecoveryAt?: number;
+  nextRecoveryPercent?: number;
+};
+
+type AggregateTestPayload = {
+  reports: [{
+    provider: string;
+    label: string;
+    source: string;
+    updatedAt: number;
+    quota: { weeklyPercent: number; monthlyPercent?: number; updatedAt: number };
+    aggregation: {
+      kind: string;
+      scope: string;
+      presentation: string;
+      includedAccounts: number;
+      excludedAccounts: number;
+      unknownPlanAccounts: number;
+      missingQuotaAccounts: number;
+      pausedAccounts: number;
+      reauthAccounts: number;
+      staleQuotaAccounts: number;
+      partialWindowAccounts?: number;
+      incomplete: boolean;
+      weekly: TestCapacityWindow;
+      monthly?: TestCapacityWindow;
+      currentAccount: { isMain: boolean; plan: string; quota: { weeklyPercent: number; updatedAt: number } };
+    };
+  }];
+};
+
+function aggregatePayload(): AggregateTestPayload {
   return {
     reports: [{
       provider: "openai",
@@ -54,6 +92,15 @@ function aggregatePayload() {
       },
     }],
   };
+}
+
+function quotaResponse(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
 }
 
 function aggregateWindowPayload(weeklyIncomplete: boolean, monthlyIncomplete: boolean) {
@@ -110,13 +157,15 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   quotaPayload = aggregatePayload();
   rejectQuotaFetch = false;
+  quotaFetchOverride = null;
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     value: async (input: string) => {
       const url = String(input);
       if (url.includes("/api/provider-quotas") && rejectQuotaFetch) throw new Error("quota unavailable");
+      if (url.includes("/api/provider-quotas") && quotaFetchOverride) return quotaFetchOverride();
       const body = url.includes("/api/provider-quotas") ? quotaPayload : {};
-      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as unknown as Response;
+      return quotaResponse(body);
     },
   });
   host = win.document.createElement("div") as unknown as HTMLElement;
@@ -133,10 +182,10 @@ afterEach(async () => {
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: originalFetch });
 });
 
-async function mountShell() {
+async function mountShell(quotaRefreshEpoch = 0) {
   const { createRoot } = await import("react-dom/client");
   await act(async () => {
-    root = createRoot(host);
+    root ??= createRoot(host);
     root.render(
       <LanguageProvider>
         <ProviderWorkspaceShell
@@ -146,6 +195,7 @@ async function mountShell() {
           selectedName={null}
           onSelect={() => {}}
           onAddProvider={() => {}}
+          quotaRefreshEpoch={quotaRefreshEpoch}
         />
       </LanguageProvider>,
     );
@@ -164,7 +214,11 @@ test("provider quota fetch preserves aggregate capacity through shell state and 
   expect(text).toContain("Incomplete coverage: 1 account(s) excluded, including 1 unknown plan(s)");
   expect(text).toContain("Next capacity recovery");
   expect(text).toContain("+19.2% pool capacity");
-  expect(text).toMatch(/Aug 8, 2026.*(4:32|1:32)/);
+  const expectedRecoveryAt = new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(RECOVERY_AT));
+  expect(text).toContain(expectedRecoveryAt);
   expect(text).not.toMatch(/configured units|weighted units|units remaining|projected/i);
 });
 
@@ -199,6 +253,44 @@ test("expired session quota is rejected and a failed fetch cannot keep it render
   expect(text).not.toContain("Configured-weight pool estimate");
   expect(text).not.toContain("99% used");
   expect(readSessionListCache(QUOTA_CACHE_KEY)).toEqual({});
+});
+
+test("a cancelled superseded quota rejection cannot rewrite state or session cache", async () => {
+  let rejectFirst!: (reason?: unknown) => void;
+  const first = new Promise<Response>((_resolve, reject) => { rejectFirst = reject; });
+  const fresh = aggregatePayload();
+  fresh.reports[0].quota.weeklyPercent = 63;
+  fresh.reports[0].aggregation.weekly.usedPercent = 63;
+  let calls = 0;
+  quotaFetchOverride = () => {
+    calls += 1;
+    return calls === 1 ? first : Promise.resolve(quotaResponse(fresh));
+  };
+
+  await mountShell(0);
+  await mountShell(1);
+  expect(calls).toBe(2);
+  expect(host.textContent ?? "").toContain("63% used");
+  const cached = readSessionListCache(QUOTA_CACHE_KEY);
+  const writes: string[] = [];
+  const storage = win.sessionStorage as unknown as Storage;
+  const setItem = storage.setItem.bind(storage);
+  Object.defineProperty(storage, "setItem", {
+    configurable: true,
+    value: (key: string, value: string) => {
+      writes.push(key);
+      setItem(key, value);
+    },
+  });
+
+  await act(async () => {
+    rejectFirst(new Error("superseded"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+
+  expect(writes).toEqual([]);
+  expect(readSessionListCache(QUOTA_CACHE_KEY)).toEqual(cached);
+  expect(host.textContent ?? "").toContain("63% used");
 });
 
 test("all-stale response renders coverage only without a numeric fallback", async () => {

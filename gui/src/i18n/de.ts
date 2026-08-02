@@ -1380,7 +1380,7 @@ export const de: Record<TKey, string> = {
   "pws.dashboard.title": "Anbieterübersicht",
   "pws.dashboard.subtitle": "Verwalten Sie alle Ihre Modellanbieter an einem Ort.",
   "pws.dashboard.rateLimits": "RATE LIMITS",
-  "pws.capacity.estimate": "Konfiguriert gewichtete Pool-Schätzung",
+  "pws.capacity.estimate": "Pool-Schätzung anhand konfigurierter Gewichtungen",
   "pws.capacity.currentAccount": "Aktuelles effektives Konto",
   "pws.capacity.nextRecovery": "Nächste Kapazitätswiederherstellung",
   "pws.capacity.recoveryShare": "+{percent} % Pool-Kapazität",

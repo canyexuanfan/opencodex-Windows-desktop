@@ -81,6 +81,16 @@ function cacheKey(config: OcxConfig): string {
   return `${config.defaultProvider}|${providers}`;
 }
 
+type CodexAuthAccountsPromise = ReturnType<typeof listCodexAuthAccounts>;
+
+function hasCodexPoolProvider(config: OcxConfig): boolean {
+  return Object.entries(config.providers).some(([name, provider]) => (
+    provider.disabled !== true
+    && isBuiltInChatGptForwardProvider(name, provider)
+    && providerCodexAccountMode(name, provider) !== "direct"
+  ));
+}
+
 function quotaSignatureValue(quota: CodexCapacityQuota | null): unknown {
   if (!quota) return null;
   return {
@@ -98,18 +108,16 @@ function quotaSignatureValue(quota: CodexCapacityQuota | null): unknown {
 }
 
 /** Hash only presentation-relevant state; account ids and email addresses never enter the key. */
-function cacheKeyWithAggregationState(config: OcxConfig): string | Promise<string> {
+function cacheKeyWithAggregationState(
+  config: OcxConfig,
+  prefetchedAccounts?: CodexAuthAccountsPromise,
+): string | Promise<string> {
   const base = cacheKey(config);
-  const poolEnabled = Object.entries(config.providers).some(([name, provider]) => (
-    provider.disabled !== true
-    && isBuiltInChatGptForwardProvider(name, provider)
-    && providerCodexAccountMode(name, provider) !== "direct"
-  ));
-  if (!poolEnabled) return base;
+  if (!hasCodexPoolProvider(config)) return base;
   return (async () => {
     try {
       const activeId = effectiveCodexAuthAccountId(config);
-      const rows = (await listCodexAuthAccounts(config, false)).map(account => ({
+      const rows = (await (prefetchedAccounts ?? listCodexAuthAccounts(config, false))).map(account => ({
         isMain: account.isMain,
         active: account.id === activeId,
         plan: account.plan?.trim().toLowerCase() ?? null,
@@ -227,13 +235,14 @@ async function fetchChatGptForwardQuota(
   provider: string,
   providerConfig: OcxProviderConfig,
   forceRefresh: boolean,
+  prefetchedAccounts?: CodexAuthAccountsPromise,
 ): Promise<ProviderQuotaReport | null> {
   if (providerCodexAccountMode(provider, providerConfig) === "direct") {
     const main = await fetchMainAccountInfo(forceRefresh);
     const quota = main.quota ? { ...main.quota, updatedAt: Date.now() } as ProviderQuota : null;
     return quota ? report(provider, "chatgpt:wham", quota) : null;
   }
-  const accounts = await listCodexAuthAccounts(config, forceRefresh);
+  const accounts = await (prefetchedAccounts ?? listCodexAuthAccounts(config, forceRefresh));
   const activeId = effectiveCodexAuthAccountId(config);
   const capacityAccounts = accounts.map(account => ({ ...account, active: account.id === activeId }));
   const active = capacityAccounts.find(account => account.active)
@@ -1022,10 +1031,13 @@ async function maybeFetchProviderQuota(
   provider: OcxProviderConfig,
   config: OcxConfig,
   forceRefresh: boolean,
+  prefetchedCodexAccounts?: CodexAuthAccountsPromise,
 ): Promise<ProviderQuotaReport | null> {
   if (provider.disabled === true) return null;
   try {
-    if (isBuiltInChatGptForwardProvider(name, provider)) return fetchChatGptForwardQuota(config, name, provider, forceRefresh);
+    if (isBuiltInChatGptForwardProvider(name, provider)) {
+      return fetchChatGptForwardQuota(config, name, provider, forceRefresh, prefetchedCodexAccounts);
+    }
     if (provider.authMode === "oauth" && name === "xai") return fetchXaiQuota(name);
     if (provider.authMode === "oauth" && name === "anthropic") return fetchAnthropicQuota(name);
     if (provider.authMode === "oauth" && name === "cursor") return fetchCursorQuota(name);
@@ -1043,7 +1055,12 @@ async function maybeFetchProviderQuota(
 }
 
 export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh = false): Promise<ProviderQuotaResponse> {
-  const keyCandidate = cacheKeyWithAggregationState(config);
+  // A forced Pool refresh must share one account-list probe between the pre-signature and
+  // provider fetch. The commit-time signature still re-reads current state to reject races.
+  const prefetchedCodexAccounts = forceRefresh && hasCodexPoolProvider(config)
+    ? listCodexAuthAccounts(config, true)
+    : undefined;
+  const keyCandidate = cacheKeyWithAggregationState(config, prefetchedCodexAccounts);
   const key = typeof keyCandidate === "string" ? keyCandidate : await keyCandidate;
   const writerGeneration = captureConfigGeneration();
   const now = Date.now();
@@ -1061,7 +1078,9 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
   const promise = (async (): Promise<ProviderQuotaResponse> => {
     const previous = cache && cache.key === key ? cache.response.reports : [];
     const fresh = (await Promise.all(
-      Object.entries(config.providers).map(([name, provider]) => maybeFetchProviderQuota(name, provider, config, forceRefresh)),
+      Object.entries(config.providers).map(([name, provider]) => (
+        maybeFetchProviderQuota(name, provider, config, forceRefresh, prefetchedCodexAccounts)
+      )),
     )).filter((item): item is ProviderQuotaReport => item !== null);
 
     // Keep bounded last-good rows when a probe fails (e.g. transient upstream flake); never
