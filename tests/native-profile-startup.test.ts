@@ -28,7 +28,6 @@ import type {
 import type { OcxConfig } from "../src/types";
 import {
   initializeNativeMainStartupGate,
-  inspectNativeMainRecoveryJournal,
   nativeMainStartupGateSnapshot,
 } from "../src/codex/native-profile-startup";
 
@@ -252,28 +251,52 @@ const recoverable: Array<{ phase: Phase; observation: Observation; active: "sour
 ];
 
 describe("native-main startup journal gate", () => {
-  test("sync journal inspection treats only ENOENT as absent and propagates other failures", () => {
-    expect(inspectNativeMainRecoveryJournal("missing", () => {
-      throw Object.assign(new Error("missing"), { code: "ENOENT" });
-    })).toBe("absent");
-    expect(() => inspectNativeMainRecoveryJournal("denied", () => {
-      throw Object.assign(new Error("private path"), { code: "EACCES" });
-    })).toThrow();
+  test("manual and unreadable recovery states close the main gate without automatic recovery", async () => {
+    let recoverCalls = 0;
+    for (const state of ["manual", "unreadable"] as const) {
+      const homeId = `home-${state}`;
+      const gate = await initializeNativeMainStartupGate({
+        manager: {
+          context: { homeId },
+          recover: async () => { recoverCalls += 1; return {}; },
+        } as unknown as NativeProfileManager,
+        probeRecoveryState: () => state,
+      });
+      expect(gate).toEqual({ status: "blocked", homeId, reason: "manual-recovery" });
+      expect(nativeMainStartupGateSnapshot()).toEqual(gate);
+    }
+    expect(recoverCalls).toBe(0);
   });
 
-  test("startup inspection failure closes the main gate without attempting recovery", async () => {
+  test("journal recovery opens only after the post-recovery probe reaches none", async () => {
+    const states = ["journal", "none"] as const;
     let recoverCalls = 0;
-    const homeId = "home-inspection-failure";
+    const homeId = "home-journal-recovered";
     const gate = await initializeNativeMainStartupGate({
       manager: {
-        context: { homeId, journalPath: "denied" },
-        recover: async () => { recoverCalls += 1; return {}; },
+        context: { homeId },
+        recover: async () => { recoverCalls += 1; return { recovered: true }; },
       } as unknown as NativeProfileManager,
-      inspectJournal: () => { throw Object.assign(new Error("private path"), { code: "EACCES" }); },
+      probeRecoveryState: () => states.shift() ?? "none",
     });
-    expect(gate).toEqual({ status: "blocked", homeId, reason: "manual-recovery" });
-    expect(nativeMainStartupGateSnapshot()).toEqual(gate);
-    expect(recoverCalls).toBe(0);
+    expect(gate).toEqual({ status: "ready", homeId });
+    expect(recoverCalls).toBe(1);
+  });
+
+  test("marker-only restart remains blocked after a malformed journal is quarantined", async () => {
+    const f = await fixture("prepared", "target-exact");
+    writeFileSync(f.manager.context.journalPath, "{malformed-journal\n");
+    writeFileSync(f.manager.context.authPath, f.target);
+    await expect(f.manager.recover(true, true)).rejects.toMatchObject({ code: "RECOVERY_REQUIRED" });
+    expect(existsSync(f.manager.context.journalPath)).toBe(false);
+    expect(existsSync(f.manager.context.recoveryBlockPath)).toBe(true);
+
+    const gate = await initializeNativeMainStartupGate({ manager: f.manager });
+    expect(gate).toEqual({
+      status: "blocked",
+      homeId: f.manager.context.homeId,
+      reason: "manual-recovery",
+    });
   });
 
   test("fresh processes gate first admission and converge every recoverable phase/observation", async () => {

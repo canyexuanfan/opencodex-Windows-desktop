@@ -8,13 +8,14 @@ import {
 } from "../server/management/body";
 import { NativeProfileManager } from "./native-profile-manager";
 import { NativeProfileError } from "./native-profile-types";
-import { completeNativeMainRecovery, inspectNativeMainRecoveryJournal } from "./native-profile-startup";
+import { completeNativeMainRecovery } from "./native-profile-startup";
+import { probeNativeProfileRecoveryState } from "./native-profile-store";
 
 export interface NativeProfileApiDeps {
   manager?: NativeProfileManager;
   drainTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
-  inspectRecoveryJournal?: typeof inspectNativeMainRecoveryJournal;
+  probeRecoveryState?: typeof probeNativeProfileRecoveryState;
   completeRecovery?: typeof completeNativeMainRecovery;
 }
 
@@ -42,6 +43,23 @@ async function withMainRequestDrain<T>(deps: NativeProfileApiDeps, operation: ()
   } finally {
     drainLease.release();
   }
+}
+
+async function withRecoveryGateTransition<T>(
+  manager: NativeProfileManager,
+  deps: NativeProfileApiDeps,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const context = manager.context;
+  if (!context) return operation();
+  const probe = deps.probeRecoveryState ?? probeNativeProfileRecoveryState;
+  const before = probe(context);
+  const result = await operation();
+  const after = probe(context);
+  if (before !== "none" && after === "none") {
+    (deps.completeRecovery ?? completeNativeMainRecovery)(context.homeId);
+  }
+  return result;
 }
 
 export async function handleNativeProfileAPI(
@@ -83,17 +101,11 @@ export async function handleNativeProfileAPI(
     if (url.pathname === "/api/native-main-profiles/switch" && req.method === "POST") {
       const input = await body(req);
       if (typeof input.target !== "string") throw new NativeProfileError("INVALID_REQUEST", "A target profile is required.", 400);
-      const switched = await withMainRequestDrain(deps, async () => {
-        const context = manager.context;
-        const hadPendingRecovery = context
-          ? (deps.inspectRecoveryJournal ?? inspectNativeMainRecoveryJournal)(context.journalPath) === "present"
-          : false;
-        const result = await manager.switch(input.target as string, input.confirmedStopped === true);
-        if (hadPendingRecovery && context?.homeId) {
-          (deps.completeRecovery ?? completeNativeMainRecovery)(context.homeId);
-        }
-        return result;
-      });
+      const switched = await withMainRequestDrain(deps, () => withRecoveryGateTransition(
+        manager,
+        deps,
+        () => manager.switch(input.target as string, input.confirmedStopped === true),
+      ));
       return jsonResponse(
         switched,
         200,
@@ -103,11 +115,11 @@ export async function handleNativeProfileAPI(
     }
     if (url.pathname === "/api/native-main-profiles/recover" && req.method === "POST") {
       const input = await body(req);
-      const recovered = await withMainRequestDrain(
+      const recovered = await withMainRequestDrain(deps, () => withRecoveryGateTransition(
+        manager,
         deps,
         () => manager.recover(input.rollback === true, input.confirmedStopped === true),
-      );
-      if (manager.context?.homeId) completeNativeMainRecovery(manager.context.homeId);
+      ));
       return jsonResponse(recovered, 200, req, config);
     }
     return jsonResponse({ error: "Unknown native-profile operation", code: "INVALID_REQUEST" }, 404, req, config);

@@ -1,8 +1,10 @@
-import { statSync } from "node:fs";
-
 import { NativeProfileManager } from "./native-profile-manager";
 import { clearAccountNeedsReauth } from "./account-runtime-state";
 import { MAIN_CODEX_ACCOUNT_ID } from "./main-account";
+import {
+  probeNativeProfileRecoveryState,
+  type NativeProfileRecoveryState,
+} from "./native-profile-store";
 
 export type NativeMainStartupGateSnapshot =
   | { status: "ready"; homeId: string | null }
@@ -12,7 +14,7 @@ export interface NativeMainStartupGateDeps {
   manager?: NativeProfileManager;
   /** Test-only barrier used to prove admission stays closed while startup recovery is pending. */
   beforeRecovery?: () => void | Promise<void>;
-  inspectJournal?: typeof inspectNativeMainRecoveryJournal;
+  probeRecoveryState?: typeof probeNativeProfileRecoveryState;
 }
 
 let epoch = 0;
@@ -21,19 +23,6 @@ let settled: Promise<NativeMainStartupGateSnapshot> = Promise.resolve(snapshot);
 
 function ready(homeId: string | null): NativeMainStartupGateSnapshot {
   return { status: "ready", homeId };
-}
-
-export function inspectNativeMainRecoveryJournal(
-  path: string,
-  stat: (path: string) => unknown = statSync,
-): "present" | "absent" {
-  try {
-    stat(path);
-    return "present";
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return "absent";
-    throw error;
-  }
 }
 
 /**
@@ -56,16 +45,23 @@ export function initializeNativeMainStartupGate(
   }
 
   const homeId = manager.context.homeId;
-  let journal: "present" | "absent";
+  const probe = deps.probeRecoveryState ?? probeNativeProfileRecoveryState;
+  let recoveryState: NativeProfileRecoveryState;
   try {
-    journal = (deps.inspectJournal ?? inspectNativeMainRecoveryJournal)(manager.context.journalPath);
+    recoveryState = probe(manager.context);
   } catch {
     snapshot = { status: "blocked", homeId, reason: "manual-recovery" };
     settled = Promise.resolve(snapshot);
     return settled;
   }
-  if (journal === "absent") {
+  if (recoveryState === "none") {
     snapshot = ready(homeId);
+    settled = Promise.resolve(snapshot);
+    return settled;
+  }
+
+  if (recoveryState !== "journal") {
+    snapshot = { status: "blocked", homeId, reason: "manual-recovery" };
     settled = Promise.resolve(snapshot);
     return settled;
   }
@@ -75,9 +71,11 @@ export function initializeNativeMainStartupGate(
     try {
       await deps.beforeRecovery?.();
       await manager.recover(false);
-      if (epoch === currentEpoch) {
+      if (epoch === currentEpoch && probe(manager.context) === "none") {
         clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
         snapshot = ready(homeId);
+      } else if (epoch === currentEpoch) {
+        snapshot = { status: "blocked", homeId, reason: "manual-recovery" };
       }
     } catch {
       if (epoch === currentEpoch) snapshot = { status: "blocked", homeId, reason: "manual-recovery" };
