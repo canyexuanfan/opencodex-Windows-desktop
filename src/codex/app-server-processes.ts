@@ -337,7 +337,7 @@ export function listWindowsSnapshots(): ProcessSnapshot[] {
     "} | ForEach-Object {",
     "  try {",
     "    $o=Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction Stop",
-    "    if($null -eq $o -or $o.ReturnValue -ne 0 -or [string]::IsNullOrWhiteSpace($o.User)){return}",
+    "    if($null -eq $o -or $o.ReturnValue -ne 0 -or [string]::IsNullOrWhiteSpace($o.User)){\"__OCX_ENUM_INCOMPLETE__\"; return}",
     "    $owner=if($o.Domain){\"$($o.Domain)\\$($o.User)\"}else{$o.User}",
     "    if($owner -ine $me){return}",
     "    $cmd=($_.CommandLine -replace \"`t\",\" \")",
@@ -491,7 +491,7 @@ export function readProcessStartMsBatch(
       const stdout = execFileSync("ps", ["-o", "pid=,lstart=", "-p", pids.join(",")], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
-        timeout: 4_000,
+        timeout: 3_000,
       });
       const byPid = new Map<number, number>();
       for (const raw of stdout.split(/\r?\n/)) {
@@ -515,7 +515,7 @@ export function readProcessStartMsBatch(
         "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
         "-Command",
         `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { "$($_.ProcessId)\t$($_.CreationDate.ToUniversalTime().ToString("o"))" }`,
-      ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 8_000, windowsHide: true });
+      ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, windowsHide: true });
       const byPid = new Map<number, number>();
       for (const line of stdout.split(/\r?\n/)) {
         const tab = line.indexOf("\t");
