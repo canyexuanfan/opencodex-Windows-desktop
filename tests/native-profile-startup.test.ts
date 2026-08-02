@@ -31,9 +31,14 @@ const roots: string[] = [];
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
 const previousCodexHome = process.env.CODEX_HOME;
 
+function restoreEnv(name: "OPENCODEX_HOME" | "CODEX_HOME", value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 afterEach(() => {
-  process.env.OPENCODEX_HOME = previousOpencodexHome;
-  process.env.CODEX_HOME = previousCodexHome;
+  restoreEnv("OPENCODEX_HOME", previousOpencodexHome);
+  restoreEnv("CODEX_HOME", previousCodexHome);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -168,8 +173,8 @@ async function fixture(phase: Phase, observation: Observation, activePool = fals
       chatgptAccountId: "pool-account",
     });
   }
-  process.env.OPENCODEX_HOME = previousOpencodexHome;
-  process.env.CODEX_HOME = previousCodexHome;
+  restoreEnv("OPENCODEX_HOME", previousOpencodexHome);
+  restoreEnv("CODEX_HOME", previousCodexHome);
   return { root, codexHome, configDir, key, manager, target, sourceProfileId: sourceRecord.id, targetProfileId: targetRecord.id };
 }
 

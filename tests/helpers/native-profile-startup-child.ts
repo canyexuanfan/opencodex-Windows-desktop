@@ -74,6 +74,10 @@ void waitForNativeMainStartupGate().then(() => {
     mainTokenLive: isMainAccountTokenLive(),
     mainUsable: isCodexAccountUsable(loadConfig(), MAIN_CODEX_ACCOUNT_ID),
   }));
+}).catch((error: unknown) => {
+  writeFileSync(settledPath, JSON.stringify({
+    error: error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error),
+  }));
 });
 
 while (!existsSync(stopPath)) await Bun.sleep(10);

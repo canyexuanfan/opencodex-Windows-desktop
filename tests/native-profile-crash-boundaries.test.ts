@@ -14,9 +14,14 @@ const roots: string[] = [];
 const oldOcx = process.env.OPENCODEX_HOME;
 const oldCodex = process.env.CODEX_HOME;
 
+function restoreEnv(name: "OPENCODEX_HOME" | "CODEX_HOME", value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 afterEach(() => {
-  process.env.OPENCODEX_HOME = oldOcx;
-  process.env.CODEX_HOME = oldCodex;
+  restoreEnv("OPENCODEX_HOME", oldOcx);
+  restoreEnv("CODEX_HOME", oldCodex);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -67,8 +72,8 @@ async function fixture() {
     activeCodexAccountId: MAIN_CODEX_ACCOUNT_ID,
     autoSwitchThreshold: 0,
   } as OcxConfig);
-  process.env.OPENCODEX_HOME = oldOcx;
-  process.env.CODEX_HOME = oldCodex;
+  restoreEnv("OPENCODEX_HOME", oldOcx);
+  restoreEnv("CODEX_HOME", oldCodex);
   return { root, home, codexHome, configDir, source, target, key, manager, sourceProfile, targetProfile, initialRevision };
 }
 
@@ -78,7 +83,7 @@ async function waitFor(path: string, timeout = 10_000): Promise<void> {
   if (!existsSync(path)) throw new Error(`timed out waiting for ${path}`);
 }
 
-function spawnSwitch(f: Awaited<ReturnType<typeof fixture>>, options: { boundary?: NativeProfileSwitchBoundary; marker?: string; release?: string; result: string }) {
+function spawnSwitch(f: Awaited<ReturnType<typeof fixture>>, options: { boundary?: NativeProfileSwitchBoundary; marker?: string; release?: string; contention?: string; result: string }) {
   return Bun.spawn([process.execPath, join(import.meta.dir, "helpers", "native-profile-switch-child.ts")], {
     cwd: join(import.meta.dir, ".."),
     env: {
@@ -94,6 +99,7 @@ function spawnSwitch(f: Awaited<ReturnType<typeof fixture>>, options: { boundary
       ...(options.boundary ? { NATIVE_SWITCH_CRASH_BOUNDARY: options.boundary } : {}),
       ...(options.marker ? { NATIVE_SWITCH_MARKER: options.marker } : {}),
       ...(options.release ? { NATIVE_SWITCH_RELEASE: options.release } : {}),
+      ...(options.contention ? { NATIVE_SWITCH_CONTENTION: options.contention } : {}),
     },
     stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
@@ -199,19 +205,29 @@ describe("native profile subprocess crash boundaries", () => {
     const firstRelease = join(f.root, "first-release");
     const firstResult = join(f.root, "first-result");
     const secondResult = join(f.root, "second-result");
+    const secondContention = join(f.root, "second-contention");
     const first = spawnSwitch(f, { marker: firstReady, release: firstRelease, result: firstResult });
-    await waitFor(firstReady);
-    const second = spawnSwitch(f, { result: secondResult });
-    await Bun.sleep(100);
-    expect(existsSync(secondResult)).toBe(false);
-    writeFileSync(firstRelease, "release");
-    expect(await first.exited).toBe(0);
-    expect(await second.exited).toBe(0);
-    const results = [JSON.parse(readFileSync(firstResult, "utf8")), JSON.parse(readFileSync(secondResult, "utf8"))];
-    if (results.filter(item => item.ok).length !== 1) throw new Error(`unexpected concurrent results: ${JSON.stringify(results)}`);
-    expect(results.filter(item => !item.ok).map(item => item.code)).toEqual(["INVALID_REQUEST"]);
-    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(f.target);
-    expect(readNativeProfileVault(f.manager.context)!.activeProfileId).toBe(f.targetProfile.id);
-    expect(readNativeProfileJournal(f.manager.context)).toBeNull();
+    let second: ReturnType<typeof spawnSwitch> | undefined;
+    try {
+      await waitFor(firstReady);
+      second = spawnSwitch(f, { contention: secondContention, result: secondResult });
+      await waitFor(secondContention);
+      expect(existsSync(secondResult)).toBe(false);
+      writeFileSync(firstRelease, "release");
+      expect(await first.exited).toBe(0);
+      expect(await second.exited).toBe(0);
+      const results = [JSON.parse(readFileSync(firstResult, "utf8")), JSON.parse(readFileSync(secondResult, "utf8"))];
+      if (results.filter(item => item.ok).length !== 1) throw new Error(`unexpected concurrent results: ${JSON.stringify(results)}`);
+      expect(results.filter(item => !item.ok).map(item => item.code)).toEqual(["INVALID_REQUEST"]);
+      expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(f.target);
+      expect(readNativeProfileVault(f.manager.context)!.activeProfileId).toBe(f.targetProfile.id);
+      expect(readNativeProfileJournal(f.manager.context)).toBeNull();
+    } finally {
+      try { writeFileSync(firstRelease, "release"); } catch { /* fixture cleanup */ }
+      if (first.exitCode === null) first.kill();
+      if (second?.exitCode === null) second.kill();
+      await first.exited;
+      if (second) await second.exited;
+    }
   }, 20_000);
 });

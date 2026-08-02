@@ -36,6 +36,10 @@ async function atomic(path: string, content: string): Promise<void> {
   renameSync(temp, path);
 }
 
+function hasJournalPhase(content: string, phase: string): boolean {
+  return (JSON.parse(content) as { phase?: unknown }).phase === phase;
+}
+
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "ocx-native-profile-"));
   roots.push(root);
@@ -82,7 +86,7 @@ async function leavePendingJournal(f: Awaited<ReturnType<typeof enrolledFixture>
         authWrites += 1;
         if (authWrites > 1) throw new Error("injected restore failure");
       }
-      if (path === journalPath && content.includes('"phase": "auth-replaced"')) {
+      if (path === journalPath && hasJournalPhase(content, "auth-replaced")) {
         throw new Error("injected post-replacement failure");
       }
       return atomic(path, content);
@@ -106,7 +110,7 @@ function spawnLockHolder(
   f: ReturnType<typeof fixture>,
   readyPath: string,
   releasePath: string,
-  crash = false,
+  options: { crash?: boolean; contention?: string } = {},
 ): ReturnType<typeof Bun.spawn> {
   return Bun.spawn([process.execPath, join(import.meta.dir, "helpers", "native-profile-lock-child.ts")], {
     cwd: join(import.meta.dir, ".."),
@@ -116,7 +120,8 @@ function spawnLockHolder(
       NATIVE_PROFILE_TEST_CONFIG_DIR: f.configDir,
       NATIVE_PROFILE_TEST_READY: readyPath,
       NATIVE_PROFILE_TEST_RELEASE: releasePath,
-      NATIVE_PROFILE_TEST_CRASH: crash ? "1" : "0",
+      NATIVE_PROFILE_TEST_CRASH: options.crash ? "1" : "0",
+      ...(options.contention ? { NATIVE_PROFILE_TEST_CONTENTION: options.contention } : {}),
     },
     stdin: "ignore",
     stdout: "pipe",
@@ -128,9 +133,9 @@ describe("native main profile transactions", () => {
   test("an abruptly exited child releases the OS-backed profile transaction", async () => {
     const f = fixture();
     const readyPath = join(f.root, "crash-ready");
-    const child = spawnLockHolder(f, readyPath, join(f.root, "unused-release"), true);
+    const child = spawnLockHolder(f, readyPath, join(f.root, "unused-release"), { crash: true });
     await waitForPath(readyPath);
-    expect(await child.exited).toBe(0);
+    expect(await child.exited).toBe(87);
 
     const successor = new NativeProfileManager({ ...f.options, lockWaitMs: 250 });
     expect((await successor.recover(false)).recovered).toBe(false);
@@ -142,12 +147,13 @@ describe("native main profile transactions", () => {
     const firstRelease = join(f.root, "first-release");
     const secondReady = join(f.root, "second-ready");
     const secondRelease = join(f.root, "second-release");
+    const secondContention = join(f.root, "second-contention");
     const first = spawnLockHolder(f, firstReady, firstRelease);
     let second: ReturnType<typeof Bun.spawn> | undefined;
     try {
       await waitForPath(firstReady);
-      second = spawnLockHolder(f, secondReady, secondRelease);
-      await Bun.sleep(150);
+      second = spawnLockHolder(f, secondReady, secondRelease, { contention: secondContention });
+      await waitForPath(secondContention);
       expect(existsSync(secondReady)).toBe(false);
 
       writeFileSync(firstRelease, "release");
@@ -364,7 +370,7 @@ describe("native main profile transactions", () => {
           authWrites += 1;
           if (authWrites > 1) throw new Error("injected restore failure");
         }
-        if (path === journalPath && content.includes('"phase": "auth-replaced"')) {
+        if (path === journalPath && hasJournalPhase(content, "auth-replaced")) {
           throw new Error("injected post-replacement failure");
         }
         return atomic(path, content);

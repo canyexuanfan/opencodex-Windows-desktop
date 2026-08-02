@@ -16,6 +16,7 @@ const keyBytes = Buffer.from(required("NATIVE_SWITCH_KEY"), "base64");
 const resultPath = required("NATIVE_SWITCH_RESULT");
 const markerPath = process.env.NATIVE_SWITCH_MARKER;
 const releasePath = process.env.NATIVE_SWITCH_RELEASE;
+const contentionPath = process.env.NATIVE_SWITCH_CONTENTION;
 const crashBoundary = process.env.NATIVE_SWITCH_CRASH_BOUNDARY as NativeProfileSwitchBoundary | undefined;
 
 class EnvKeyProvider implements NativeProfileKeyProvider {
@@ -29,6 +30,10 @@ const manager = new NativeProfileManager({
   keyProvider: new EnvKeyProvider(),
   hardenPath: async () => {},
   processProbe: async () => ({ status: "clear", count: 0 }),
+  sleep: async ms => {
+    if (contentionPath) writeFileSync(contentionPath, "contended");
+    await Bun.sleep(ms);
+  },
   onLockAcquired: async () => {
     if (markerPath && !crashBoundary) writeFileSync(markerPath, "lock-acquired");
     if (releasePath && !crashBoundary) while (!existsSync(releasePath)) await Bun.sleep(10);

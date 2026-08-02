@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import type { OcxConfig } from "../src/types";
 import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
 import type { NativeProfileManager } from "../src/codex/native-profile-manager";
@@ -53,29 +53,34 @@ describe("native main profile management API", () => {
     expect(oldTurn).not.toBeNull();
     const order: string[] = [];
     let slept = false;
-    const manager = {
-      switch: async () => { order.push("switch"); return { ok: true }; },
-    } as unknown as NativeProfileManager;
-    const request = new Request("http://localhost/api/native-main-profiles/switch", {
-      method: "POST",
-      body: JSON.stringify({ target: "target", confirmedStopped: true }),
-    });
-    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
-      manager,
-      drainTimeoutMs: 1_000,
-      sleep: async () => {
-        if (slept) return Bun.sleep(1);
-        slept = true;
-        expect(tryAdmitTurn()).toBeNull();
-        order.push("old-http-or-ws-response-finished");
-        oldTurn?.release();
-      },
-    });
-    expect(response?.status).toBe(200);
-    expect(order).toEqual(["old-http-or-ws-response-finished", "switch"]);
-    const after = tryAdmitTurn();
-    expect(after).not.toBeNull();
-    after?.release();
+    let after: ReturnType<typeof tryAdmitTurn> = null;
+    try {
+      const manager = {
+        switch: async () => { order.push("switch"); return { ok: true }; },
+      } as unknown as NativeProfileManager;
+      const request = new Request("http://localhost/api/native-main-profiles/switch", {
+        method: "POST",
+        body: JSON.stringify({ target: "target", confirmedStopped: true }),
+      });
+      const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+        manager,
+        drainTimeoutMs: 1_000,
+        sleep: async () => {
+          if (slept) return Bun.sleep(1);
+          slept = true;
+          expect(tryAdmitTurn()).toBeNull();
+          order.push("old-http-or-ws-response-finished");
+          oldTurn?.release();
+        },
+      });
+      expect(response?.status).toBe(200);
+      expect(order).toEqual(["old-http-or-ws-response-finished", "switch"]);
+      after = tryAdmitTurn();
+      expect(after).not.toBeNull();
+    } finally {
+      oldTurn?.release();
+      after?.release();
+    }
   });
 
   test("length-unknown native-profile bodies use the bounded management reader", async () => {
@@ -111,7 +116,7 @@ describe("native main profile management API", () => {
     expect(response!.status).toBeGreaterThanOrEqual(400);
     const payload = JSON.stringify(await response!.json());
     expect(payload).not.toContain(missingHome);
-    expect(payload).not.toContain(process.env.USERNAME ?? "Administrator");
+    expect(payload).not.toContain(userInfo().username);
   });
 
   test("pending-recovery errors retain actionable public recovery commands", async () => {

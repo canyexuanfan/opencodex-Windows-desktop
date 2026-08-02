@@ -6,6 +6,7 @@ const codexHome = process.env.NATIVE_PROFILE_TEST_CODEX_HOME;
 const configDir = process.env.NATIVE_PROFILE_TEST_CONFIG_DIR;
 const readyPath = process.env.NATIVE_PROFILE_TEST_READY;
 const releasePath = process.env.NATIVE_PROFILE_TEST_RELEASE;
+const contentionPath = process.env.NATIVE_PROFILE_TEST_CONTENTION;
 
 if (!codexHome || !configDir || !readyPath || !releasePath) {
   throw new Error("native-profile lock child is missing required test paths");
@@ -16,9 +17,13 @@ const manager = new NativeProfileManager({
   configDir,
   hardenPath: async () => {},
   lockWaitMs: 5_000,
+  sleep: async ms => {
+    if (contentionPath) writeFileSync(contentionPath, "contended");
+    await Bun.sleep(ms);
+  },
   onLockAcquired: async () => {
     writeFileSync(readyPath, "ready");
-    if (process.env.NATIVE_PROFILE_TEST_CRASH === "1") process.exit(0);
+    if (process.env.NATIVE_PROFILE_TEST_CRASH === "1") process.exit(87);
     while (!existsSync(releasePath)) await Bun.sleep(10);
   },
 });
