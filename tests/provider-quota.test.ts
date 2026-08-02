@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
 import { clearAccountNeedsReauth, markAccountNeedsReauth } from "../src/codex/account-runtime-state";
+import { clearMainAccountInfoCache } from "../src/codex/auth-api";
 import { clearCodexUpstreamHealth } from "../src/codex/routing";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { saveCredential } from "../src/oauth/store";
@@ -514,6 +515,26 @@ describe("fetchProviderQuotaReports", () => {
     expect(JSON.stringify(openai?.aggregation)).not.toMatch(/(?:total|consumed|remaining)Weight|projectedUsedPercent/i);
   });
 
+  test("all-excluded pool still returns a coverage-only OpenAI report", async () => {
+    rmSync(join(codexHome, "auth.json"), { force: true });
+    clearMainAccountInfoCache();
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "missing", email: "missing@example.test", plan: "plus", isMain: false }];
+
+    const result = await fetchProviderQuotaReports(config);
+    const openai = result.reports.find(row => row.provider === "openai");
+    expect(openai).toBeDefined();
+    expect(openai?.quota).toEqual({ updatedAt: openai?.updatedAt });
+    expect(openai?.aggregation).toMatchObject({
+      presentation: "coverage-only",
+      includedAccounts: 0,
+      excludedAccounts: 2,
+      reauthAccounts: 2,
+      incomplete: true,
+    });
+  });
+
   test("ordinary fetch reflects pausing a non-active pool account", async () => {
     saveCodexAccountCredential("added", {
       accessToken: "added-access", refreshToken: "added-refresh",
@@ -857,6 +878,49 @@ describe("fetchProviderQuotaReports", () => {
 
     const cached = await fetchProviderQuotaReports(config, false);
     expect(cached.reports[0]?.quota.monthlyPercent).toBe(90);
+  });
+
+  test("effective-account change during a pool probe cannot cache under the new signature", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    const responseFor = (init?: RequestInit) => {
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => responseFor(init)) as typeof fetch;
+    await fetchProviderQuotaReports(config, true);
+    clearProviderQuotaCache();
+
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let startedResolve!: () => void;
+    const started = new Promise<void>(resolve => { startedResolve = resolve; });
+    let startedProbe = false;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!startedProbe) {
+        startedProbe = true;
+        startedResolve();
+      }
+      await gate;
+      return responseFor(init);
+    }) as typeof fetch;
+
+    const racing = fetchProviderQuotaReports(config, true);
+    await started;
+    config.activeCodexAccountId = "added";
+    release();
+    const racedResponse = await racing;
+    const next = await fetchProviderQuotaReports(config);
+    expect(next).not.toBe(racedResponse);
+    expect(next.reports[0]?.aggregation?.currentAccount).toMatchObject({ plan: "prolite", quota: { weeklyPercent: 77 } });
   });
 
   test("last-good rows survive a transient failure with original timestamps, are replaced by fresh rows, expire past the cap, and a disabled provider yields no rows", async () => {

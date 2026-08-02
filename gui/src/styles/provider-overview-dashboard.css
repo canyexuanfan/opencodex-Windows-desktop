@@ -211,14 +211,35 @@
 
 .pws-capacity-recovery {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 12px;
   color: var(--fg-muted, #888);
+}
+
+.pws-capacity-recovery span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .pws-capacity-recovery strong {
   color: var(--text);
   white-space: nowrap;
+  margin-left: auto;
+}
+
+@container (max-width: 520px) {
+  .pws-capacity-recovery {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .pws-capacity-recovery strong {
+    margin-left: 0;
+    white-space: normal;
+  }
 }
 
 .pws-capacity-current {

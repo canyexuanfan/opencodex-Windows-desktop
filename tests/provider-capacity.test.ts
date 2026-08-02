@@ -82,6 +82,9 @@ describe("configured-weight Codex pool capacity", () => {
     ], NOW);
     expect(result.aggregation?.weekly?.totalWeight).toBe(21);
     expect(result.aggregation?.monthly?.totalWeight).toBe(6);
+    expect(result.aggregation).toMatchObject({ incomplete: true, excludedAccounts: 2 });
+    expect(result.aggregation?.weekly).toMatchObject({ includedAccounts: 2, excludedAccounts: 1, incomplete: true });
+    expect(result.aggregation?.monthly).toMatchObject({ includedAccounts: 2, excludedAccounts: 1, incomplete: true });
     expect(result.quota?.weeklyPercent).toBeCloseTo(23.8095238, 7);
     expect(result.quota?.monthlyPercent).toBeCloseTo(51.6666667, 7);
   });
@@ -95,7 +98,12 @@ describe("configured-weight Codex pool capacity", () => {
       account("team", 70, { active: true, isMain: true }),
       account("go", 80),
     ], NOW);
-    expect(fallback.aggregation).toBeNull();
+    expect(fallback.aggregation).toMatchObject({
+      includedAccounts: 0,
+      excludedAccounts: 2,
+      unknownPlanAccounts: 2,
+      incomplete: true,
+    });
     expect(fallback.currentAccount?.quota?.weeklyPercent).toBe(70);
   });
 
@@ -136,5 +144,28 @@ describe("configured-weight Codex pool capacity", () => {
       incomplete: true,
     });
     expect(result.aggregation?.weekly).toBeUndefined();
+  });
+
+  test("all exclusion reasons retain a coverage envelope without a quota window", () => {
+    const stale = account("pro", 90);
+    stale.quota = { ...stale.quota!, updatedAt: NOW - CODEX_CAPACITY_MAX_QUOTA_AGE_MS - 1 };
+    const result = aggregateCodexPoolCapacity([
+      account("team", 10, { active: true, isMain: true }),
+      account("plus", undefined),
+      account("prolite", 20, { paused: true }),
+      account("business", 30, { needsReauth: true }),
+      stale,
+    ], NOW);
+    expect(result.quota).toBeNull();
+    expect(result.aggregation).toMatchObject({
+      includedAccounts: 0,
+      excludedAccounts: 5,
+      unknownPlanAccounts: 1,
+      missingQuotaAccounts: 1,
+      pausedAccounts: 1,
+      reauthAccounts: 1,
+      staleQuotaAccounts: 1,
+      incomplete: true,
+    });
   });
 });

@@ -16,11 +16,14 @@ export interface ProviderQuotaReportView {
 
 export interface CapacityWindowView {
   usedPercent: number;
+  incomplete?: boolean;
+  excludedAccounts?: number;
   nextRecoveryAt?: number;
   nextRecoveryPercent?: number;
 }
 
 export interface ProviderCapacityAggregationView {
+  presentation: "aggregate" | "effective-account-fallback" | "coverage-only";
   incomplete: boolean;
   excludedAccounts: number;
   unknownPlanAccounts: number;
@@ -80,6 +83,8 @@ function capacityWindow(value: unknown): CapacityWindowView | undefined {
   if (usedPercent === undefined) return undefined;
   return {
     usedPercent,
+    ...(typeof row.incomplete === "boolean" ? { incomplete: row.incomplete } : {}),
+    ...(finite(row.excludedAccounts) !== undefined ? { excludedAccounts: row.excludedAccounts as number } : {}),
     ...(finite(row.nextRecoveryAt) !== undefined ? { nextRecoveryAt: row.nextRecoveryAt as number } : {}),
     ...(finite(row.nextRecoveryPercent) !== undefined ? { nextRecoveryPercent: row.nextRecoveryPercent as number } : {}),
   };
@@ -105,13 +110,23 @@ export function capacityAggregationFromReport(report?: ProviderQuotaReportView):
         return typeof custom.label === "string" && window ? [{ label: custom.label, ...window }] : [];
       })
     : [];
+  const fiveHour = capacityWindow(row.fiveHour);
+  const weekly = capacityWindow(row.weekly);
+  const monthly = capacityWindow(row.monthly);
+  const hasAggregateWindow = !!fiveHour || !!weekly || !!monthly || customWindows.length > 0;
+  const presentation = row.presentation === "aggregate"
+    || row.presentation === "effective-account-fallback"
+    || row.presentation === "coverage-only"
+    ? row.presentation
+    : hasAggregateWindow ? "aggregate" : "coverage-only";
   return {
+    presentation,
     incomplete: row.incomplete,
     excludedAccounts,
     unknownPlanAccounts,
-    ...(capacityWindow(row.fiveHour) ? { fiveHour: capacityWindow(row.fiveHour) } : {}),
-    ...(capacityWindow(row.weekly) ? { weekly: capacityWindow(row.weekly) } : {}),
-    ...(capacityWindow(row.monthly) ? { monthly: capacityWindow(row.monthly) } : {}),
+    ...(fiveHour ? { fiveHour } : {}),
+    ...(weekly ? { weekly } : {}),
+    ...(monthly ? { monthly } : {}),
     ...(customWindows.length > 0 ? { customWindows } : {}),
     ...(currentRaw ? {
       currentAccount: {

@@ -132,9 +132,13 @@ function publicCapacityWindow(window: import("./codex-capacity").CodexCapacityWi
 }
 
 /** Management API metadata intentionally omits configured/weighted unit counts. */
-function publicCapacityAggregation(aggregation: CodexCapacityAggregation): CodexCapacityAggregation {
+function publicCapacityAggregation(
+  aggregation: CodexCapacityAggregation,
+  presentation: NonNullable<CodexCapacityAggregation["presentation"]>,
+): CodexCapacityAggregation {
   return {
     ...aggregation,
+    presentation,
     ...(aggregation.fiveHour ? { fiveHour: publicCapacityWindow(aggregation.fiveHour) } : {}),
     ...(aggregation.weekly ? { weekly: publicCapacityWindow(aggregation.weekly) } : {}),
     ...(aggregation.monthly ? { monthly: publicCapacityWindow(aggregation.monthly) } : {}),
@@ -233,17 +237,39 @@ async function fetchChatGptForwardQuota(
     ?? accounts[0];
   const capacity = aggregateCodexPoolCapacity(capacityAccounts, Date.now());
   if (capacity.aggregation && capacity.quota) {
-    return report(provider, "chatgpt:wham", capacity.quota as ProviderQuota, publicCapacityAggregation(capacity.aggregation));
+    return report(
+      provider,
+      "chatgpt:wham",
+      capacity.quota as ProviderQuota,
+      publicCapacityAggregation(capacity.aggregation, "aggregate"),
+    );
   }
   const quota = active?.quota
     ? { ...active.quota, updatedAt: active.quota.updatedAt ?? Date.now() } as CodexCapacityQuota
     : null;
-  return quota ? report(
-    provider,
-    "chatgpt:wham",
-    quota as ProviderQuota,
-    capacity.aggregation ? publicCapacityAggregation(capacity.aggregation) : undefined,
-  ) : null;
+  if (quota) {
+    const fallback = report(
+      provider,
+      "chatgpt:wham",
+      quota as ProviderQuota,
+      capacity.aggregation
+        ? publicCapacityAggregation(capacity.aggregation, "effective-account-fallback")
+        : undefined,
+    );
+    return fallback ? { ...fallback, updatedAt: Date.now() } : null;
+  }
+  if (capacity.aggregation) {
+    const updatedAt = Date.now();
+    return {
+      provider,
+      label: providerLabel(provider),
+      source: "chatgpt:wham",
+      quota: { updatedAt },
+      updatedAt,
+      aggregation: publicCapacityAggregation(capacity.aggregation, "coverage-only"),
+    };
+  }
+  return null;
 }
 
 function centsValue(value: unknown): number | undefined {
@@ -1045,10 +1071,12 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
     const response = { generatedAt: Date.now(), reports: [...byProvider.values()] };
     // Commit only when this probe still holds authority (no clear/force superseded it).
     if (epoch === invalidationEpoch) {
-      const reports = response.reports.filter(item => mayCommitProviderQuotaKey(item.provider, writerGeneration));
       const commitKeyCandidate = cacheKeyWithAggregationState(config);
       const commitKey = typeof commitKeyCandidate === "string" ? commitKeyCandidate : await commitKeyCandidate;
-      cache = { key: commitKey, ts: Date.now(), response: { ...response, reports } };
+      if (epoch === invalidationEpoch && commitKey === key) {
+        const reports = response.reports.filter(item => mayCommitProviderQuotaKey(item.provider, writerGeneration));
+        cache = { key, ts: Date.now(), response: { ...response, reports } };
+      }
     }
     return response;
   })();

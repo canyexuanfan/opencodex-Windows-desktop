@@ -239,7 +239,9 @@ function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaRepor
   const t = useT();
   const { locale } = useI18n();
   const aggregation = capacityAggregationFromReport(report);
-  const recoveryRows: Array<{ label: string; window: CapacityWindowView }> = aggregation ? [
+  const primaryQuota = accountQuotaFromReport(report);
+  const showsAggregate = aggregation?.presentation === "aggregate";
+  const recoveryRows: Array<{ label: string; window: CapacityWindowView }> = showsAggregate && aggregation ? [
     ...(aggregation.fiveHour ? [{ label: t("codexAuth.fiveHour"), window: aggregation.fiveHour }] : []),
     ...(aggregation.weekly ? [{ label: t("codexAuth.weekly"), window: aggregation.weekly }] : []),
     ...(aggregation.monthly ? [{ label: t("codexAuth.monthly"), window: aggregation.monthly }] : []),
@@ -253,8 +255,8 @@ function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaRepor
 
   return (
     <>
-      {aggregation && <div className="pws-capacity-label">{t("pws.capacity.estimate")}</div>}
-      <QuotaBars quota={accountQuotaFromReport(report)} threshold={80} t={t} layout="stacked" pending={pending} />
+      {showsAggregate && <div className="pws-capacity-label">{t("pws.capacity.estimate")}</div>}
+      {(primaryQuota || pending) && <QuotaBars quota={primaryQuota} threshold={80} t={t} layout="stacked" pending={pending} />}
       {aggregation && (
         <div className="pws-capacity-details">
           {recoveryRows.flatMap(({ label, window }) => (
@@ -265,7 +267,7 @@ function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaRepor
                 </div>]
               : []
           ))}
-          {aggregation.currentAccount?.quota && (
+          {showsAggregate && aggregation.currentAccount?.quota && (
             <div className="pws-capacity-current">
               <span className="pws-capacity-label">
                 {t("pws.capacity.currentAccount")}

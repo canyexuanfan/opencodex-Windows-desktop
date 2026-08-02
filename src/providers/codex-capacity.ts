@@ -31,6 +31,8 @@ export interface CodexCapacityAccount {
 export interface CodexCapacityWindowAggregation {
   usedPercent: number;
   includedAccounts: number;
+  excludedAccounts: number;
+  incomplete: boolean;
   /** Internal calculation evidence; stripped from the management API response. */
   totalWeight?: number;
   /** Internal calculation evidence; stripped from the management API response. */
@@ -53,6 +55,7 @@ export interface CodexCapacityAggregation {
   reauthAccounts: number;
   staleQuotaAccounts: number;
   incomplete: boolean;
+  presentation?: "aggregate" | "effective-account-fallback" | "coverage-only";
   fiveHour?: CodexCapacityWindowAggregation;
   weekly?: CodexCapacityWindowAggregation;
   monthly?: CodexCapacityWindowAggregation;
@@ -123,12 +126,14 @@ function addWindow(
   windows.set(key, window);
 }
 
-function finalizeWindow(window: MutableWindow): CodexCapacityWindowAggregation {
+function finalizeWindow(window: MutableWindow, totalAccounts: number): CodexCapacityWindowAggregation {
   const nextRecoveryAt = [...window.recoveries.keys()].sort((a, b) => a - b)[0];
   const recovered = nextRecoveryAt === undefined ? undefined : window.recoveries.get(nextRecoveryAt);
   return {
     usedPercent: window.consumedWeight / window.totalWeight * 100,
     includedAccounts: window.includedAccounts,
+    excludedAccounts: totalAccounts - window.includedAccounts,
+    incomplete: window.includedAccounts < totalAccounts,
     totalWeight: window.totalWeight,
     consumedWeight: window.consumedWeight,
     remainingWeight: window.totalWeight - window.consumedWeight,
@@ -153,6 +158,7 @@ export function aggregateCodexPoolCapacity(
   } : undefined;
   const windows = new Map<string, MutableWindow>();
   const included = new Set<CodexCapacityAccount>();
+  const contributions = new Map<CodexCapacityAccount, Set<string>>();
   let unknownPlanAccounts = 0;
   let missingQuotaAccounts = 0;
   let pausedAccounts = 0;
@@ -181,25 +187,29 @@ export function aggregateCodexPoolCapacity(
     if (account.paused || account.needsReauth || weight === undefined || !quota || !hasQuota || !quotaFresh) continue;
 
     let contributed = false;
+    const contributionKeys = new Set<string>();
     for (const [key, rawPercent, rawReset] of standard) {
       const percent = normalizedPercent(rawPercent);
       if (percent === undefined) continue;
       addWindow(windows, key, weight, percent, futureResetMs(rawReset, now), quota.updatedAt);
+      contributionKeys.add(key);
       contributed = true;
     }
     for (const customWindow of custom) {
       const percent = normalizedPercent(customWindow.percent);
       if (percent === undefined) continue;
       addWindow(windows, `custom:${customWindow.label}`, weight, percent, futureResetMs(customWindow.resetAt, now), quota.updatedAt);
+      contributionKeys.add(`custom:${customWindow.label}`);
       contributed = true;
     }
     if (contributed) {
       included.add(account);
+      contributions.set(account, contributionKeys);
     }
   }
 
   if (windows.size === 0) {
-    if (staleQuotaAccounts === 0) return { quota: null, aggregation: null, ...(currentAccount ? { currentAccount } : {}) };
+    if (accounts.length === 0) return { quota: null, aggregation: null, ...(currentAccount ? { currentAccount } : {}) };
     const aggregation: CodexCapacityAggregation = {
       kind: "capacity-weighted-v1",
       scope: "routable-known",
@@ -215,11 +225,11 @@ export function aggregateCodexPoolCapacity(
     };
     return { quota: null, aggregation, ...(currentAccount ? { currentAccount } : {}) };
   }
-  const fiveHour = windows.get("fiveHour") ? finalizeWindow(windows.get("fiveHour")!) : undefined;
-  const weekly = windows.get("weekly") ? finalizeWindow(windows.get("weekly")!) : undefined;
-  const monthly = windows.get("monthly") ? finalizeWindow(windows.get("monthly")!) : undefined;
+  const fiveHour = windows.get("fiveHour") ? finalizeWindow(windows.get("fiveHour")!, accounts.length) : undefined;
+  const weekly = windows.get("weekly") ? finalizeWindow(windows.get("weekly")!, accounts.length) : undefined;
+  const monthly = windows.get("monthly") ? finalizeWindow(windows.get("monthly")!, accounts.length) : undefined;
   const customWindows = [...windows.entries()].flatMap(([key, window]) => key.startsWith("custom:")
-    ? [{ label: key.slice("custom:".length), ...finalizeWindow(window) }]
+    ? [{ label: key.slice("custom:".length), ...finalizeWindow(window, accounts.length) }]
     : []);
   const quota: CodexCapacityQuota = {
     ...(fiveHour ? { fiveHourPercent: fiveHour.usedPercent } : {}),
@@ -233,7 +243,11 @@ export function aggregateCodexPoolCapacity(
         .flatMap(window => window ? [window.updatedAt] : []),
     ),
   };
-  const excludedAccounts = accounts.length - included.size;
+  const visibleWindowKeys = [...windows.keys()];
+  const excludedAccounts = accounts.filter(account => {
+    const keys = contributions.get(account);
+    return !keys || visibleWindowKeys.some(key => !keys.has(key));
+  }).length;
   const aggregation: CodexCapacityAggregation = {
     kind: "capacity-weighted-v1",
     scope: "routable-known",
