@@ -395,6 +395,53 @@ describe("openclaw's legacy layout is discovered, not declared obsolete", () => 
   });
 });
 
+describe("a real user document is not rejected for being richer than ours", () => {
+  test("hermes: YAML nulls survive an apply and a disable", () => {
+    /*
+     * The serializers were written against our own builder output, so the
+     * first value a real config held that our generators never emit — a
+     * `null` — threw out of the writer and reached the user as a 500. Nothing
+     * was overwritten, but a valid file could not use the feature at all.
+     */
+    const configPath = installClient("hermes");
+    const seed = "providers:\n  mine:\n    api: http://keep-me\n    token: null\n";
+    writeFileSync(configPath, seed);
+
+    const write = {
+      clientId: "hermes" as const, models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+
+    const applied = parseConfig(readFileSync(configPath, "utf8"), "yaml") as Record<string, unknown>;
+    const providers = applied.providers as Record<string, Record<string, unknown>>;
+    expect(providers.mine!.token).toBeNull();
+    expect(providers.opencodex).toBeDefined();
+
+    expect(disableIntegration(write).ok).toBe(true);
+    expect(parseConfig(readFileSync(configPath, "utf8"), "yaml")).toEqual(parseConfig(seed, "yaml"));
+  });
+
+  test("kimi: a numeric TOML array survives an apply and a disable", () => {
+    const configPath = installClient("kimi");
+    const seed = '[providers.mine]\napi = "http://keep-me"\nports = [1, 2]\n';
+    writeFileSync(configPath, seed);
+
+    const write = {
+      clientId: "kimi" as const, models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+    const applied = parseConfig(readFileSync(configPath, "utf8"), "toml") as Record<string, unknown>;
+    const providers = applied.providers as Record<string, Record<string, unknown>>;
+    expect(providers.mine!.ports).toEqual([1, 2]);
+
+    expect(disableIntegration(write).ok).toBe(true);
+    expect(parseConfig(readFileSync(configPath, "utf8"), "toml")).toEqual(parseConfig(seed, "toml"));
+  });
+
+});
+
 describe("the base URL is composed, never interpolated", () => {
   test("IPv6 and wildcard binds produce a URL a client can actually dial", () => {
     /*

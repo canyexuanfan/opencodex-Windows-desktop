@@ -19,7 +19,7 @@ import { createdContainerPaths, mergeContribution, removeFragments } from "./mer
 import { INTEGRATION_CLIENTS, isLoopbackOnly, type IntegrationClientId } from "./registry";
 import { classifyIntegration, exportContextOf } from "./state";
 import type { IntegrationState } from "./state";
-import { serializeDocument } from "./serialize";
+import { serializeDocument, UnserializableValueError } from "./serialize";
 import { newOpId, type JournalEntry } from "./journal";
 import { createIntegrationStateStore, type IntegrationStateStore } from "./store";
 
@@ -260,7 +260,20 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   // Computed against the document as it stands BEFORE the merge: afterwards
   // every container exists and "did we create this?" is unanswerable.
   const created = createdContainerPaths(base, contribution);
-  const text = serializeDocument(mergeContribution(base, contribution), exportSpec.format);
+  /*
+   * A document can hold a value its own format cannot round-trip through our
+   * renderers. That used to throw straight out of the writer and reach the
+   * user as a 500 with no path and no advice; it is a refusal like any other,
+   * and the file is untouched because this happens before any write.
+   */
+  let text: string;
+  try {
+    text = serializeDocument(mergeContribution(base, contribution), exportSpec.format);
+  } catch (error) {
+    if (!(error instanceof UnserializableValueError)) throw error;
+    return refuse(clientId, "unsafe", "unsafe",
+      `${configPath} contains something opencodex cannot rewrite safely (${error.message}), so it was left alone`);
+  }
 
   // Compare-before-commit: someone may have written between classify and now.
   const recheck = io.readText(configPath);
@@ -328,7 +341,14 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
   if (!removed) {
     return { ok: true, changed: false, state: "absent", clientId, message: "nothing to remove" };
   }
-  const text = serializeDocument(doc, exportSpec.format);
+  let text: string;
+  try {
+    text = serializeDocument(doc, exportSpec.format);
+  } catch (error) {
+    if (!(error instanceof UnserializableValueError)) throw error;
+    return refuse(clientId, "unsafe", "unsafe",
+      `${configPath} contains something opencodex cannot rewrite safely (${error.message}), so nothing was removed`);
+  }
 
   const recheck = io.readText(configPath);
   const rechecked = recheck.kind === "text" ? recheck.text : recheck.kind === "missing" ? null : undefined;
