@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceStatusSummary, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceStatusSummary, systemdNeedsDaemonReload, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import type { ServiceDiagnostic } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
 import type { OcxConfig } from "../src/types";
@@ -1233,5 +1233,54 @@ describe("service serving confirmation", () => {
       expect(out).toContain("not installed");
       expect(probed).toBe(false);
     });
+  });
+
+  /**
+   * systemd's analogue of the macOS stale-plist case: writing the unit file does not
+   * change the definition systemd has loaded until `daemon-reload`, so `ocx service
+   * start` would run the PREVIOUS ExecStart.
+   */
+  describe("systemdNeedsDaemonReload", () => {
+    test("detects a unit changed on disk", () => {
+      expect(systemdNeedsDaemonReload({ show: () => "NeedDaemonReload=yes" })).toBe(true);
+    });
+
+    test("is false when systemd is already in sync", () => {
+      expect(systemdNeedsDaemonReload({ show: () => "NeedDaemonReload=no" })).toBe(false);
+    });
+
+    // No user bus, or not installed: never block a start we cannot judge.
+    test("is false when the query fails", () => {
+      expect(systemdNeedsDaemonReload({ show: () => { throw new Error("no bus"); } })).toBe(false);
+    });
+  });
+
+  test("systemdListenPort reads the port out of a real generated unit", () => {
+    expect(systemdListenPort({ readUnit: () => buildUnit() })).toBe(resolveServiceListenPort());
+  });
+
+  /**
+   * The defect is an ORDERING property of startSystemd, and this host is macOS so the
+   * systemd path cannot be executed. Pin the order in source instead — the same
+   * instrument this file already uses for the adjacent install-ordering invariant.
+   */
+  test("service start reloads and restarts systemd for a changed unit", async () => {
+    const service = await readText("src/service.ts");
+    const startSystemd = service.slice(
+      service.indexOf("function startSystemd()"),
+      service.indexOf("function stopSystemd()"),
+    );
+
+    const needsReloadAt = startSystemd.indexOf("systemdNeedsDaemonReload()");
+    const reloadAt = startSystemd.indexOf("systemctl --user daemon-reload");
+    const restartAt = startSystemd.indexOf("systemctl --user restart");
+    const startAt = startSystemd.indexOf("systemctl --user start");
+
+    expect(needsReloadAt).toBeGreaterThan(-1);
+    expect(needsReloadAt).toBeLessThan(reloadAt);
+    expect(reloadAt).toBeLessThan(restartAt);
+    // A changed unit must be RESTARTED, not started: `start` is a no-op on an active
+    // unit and would leave the stale process running the old ExecStart.
+    expect(restartAt).toBeLessThan(startAt);
   });
 });

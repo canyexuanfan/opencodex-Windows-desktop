@@ -1875,12 +1875,47 @@ function installSystemd(): void {
   sh(`systemctl --user restart ${TASK}`);
   writeServiceInstallState();
 }
+/**
+ * Whether systemd's in-memory unit differs from the file on disk.
+ *
+ * The systemd analogue of launchd's stale-plist case: writing
+ * `~/.config/systemd/user/<unit>` does not change the definition systemd has loaded
+ * until `daemon-reload`, so a plain `systemctl start` would run the PREVIOUS
+ * ExecStart. `NeedDaemonReload` is a per-unit property emitted as a bare
+ * `NeedDaemonReload=yes|no` line; pass the unit name or `show` reports the manager's
+ * own property instead, which answers a different question.
+ *
+ * Fail-open: if the query cannot run (no user bus, unit absent) we must not block a
+ * start that would otherwise work.
+ */
+export function systemdNeedsDaemonReload(deps: { show?: () => string } = {}): boolean {
+  try {
+    const out = (deps.show ?? (() => sh(`systemctl --user show -p NeedDaemonReload ${TASK}`)))();
+    return /NeedDaemonReload\s*=\s*yes/i.test(out);
+  } catch {
+    return false;
+  }
+}
+
 function startSystemd(): void {
   ensureUserBusEnv();
   if (!existsSync(unitPath())) {
     console.error(`opencodex service is not installed: ${unitPath()}`);
     console.error("Run `ocx service install` first to create and enable the systemd user unit.");
     process.exit(1);
+  }
+  // The unit on disk may be newer than what systemd loaded; starting now would run
+  // the previous definition.
+  //
+  // `start` alone is not enough after a reload: it is a no-op on an already-active
+  // unit, so the stale process would keep running the old ExecStart. NeedDaemonReload
+  // compares disk against loaded, never loaded against running, so the only way to
+  // make the running process match the file is to restart it.
+  if (systemdNeedsDaemonReload()) {
+    console.log("ℹ️  unit file changed on disk; reloading systemd and restarting the service.");
+    sh("systemctl --user daemon-reload");
+    sh(`systemctl --user restart ${TASK}`);
+    return;
   }
   sh(`systemctl --user start ${TASK}`);
 }
