@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   adoptDeveloperInstructions,
   previewAdopt,
@@ -129,7 +129,13 @@ describe("salvage", () => {
     const preview = previewSalvage(paths);
     expect(preview.reason).toBe("ok");
     expect(preview.body).toBe("salvage me");
-    expect(preview.backupDir.endsWith("/")).toBe(true);
+    /*
+     * The claim is "a directory, not the store file" — asserting a trailing
+     * "/" asserted POSIX separators instead, and `dirname` (which is what
+     * makes this correct on Windows) does not leave one.
+     */
+    expect(preview.backupDir).toBe(dirname(paths.storePath));
+    expect(preview.backupDir).not.toBe(paths.storePath);
     // A read-only preview must create nothing at all.
     expect(readdirSync(paths.root).filter(f => f.includes("salvage"))).toEqual([]);
   });

@@ -91,6 +91,57 @@ each remaining failure, record whether it is feature-caused (fix it) or
 pre-existing (name the earlier failing run id). "Already red" is not
 attribution.
 
+### Result
+
+The earlier red run `30738272930` (`release: v2.10.0`, commit `f9b9440c5`) is
+**not** what the first reading of it suggested. Its failing job was **ubuntu**,
+not windows — windows and macos both passed there — and the job died at 3m47s
+with no test summary in the log at all: a crashed step, not a test failure.
+
+`src/integrations` does not exist at `f9b9440c5` (`git ls-tree` returns
+nothing), and `f9b9440c5` is an ancestor of this work. So that failure is
+**pre-existing and unrelated**, established by the tree at that commit rather
+than by argument.
+
+That also corrects an assumption in the CONTEXT above: this feature did not
+inherit a red Windows leg. Windows was green before the feature and the 24
+failures were entirely ours.
+
+The CSRF failure deserves the same correction. It was reported as a Windows
+failure and it was not: run `30759521240` failed it on **ubuntu** too. Reading
+only the Windows job would have produced a Windows-shaped fix for a
+cross-platform cause (the missing `gui/dist`). Inspect every job, not the one
+that looks guilty.
+
+## WP-S3 — semantic stabilization: result
+
+Seven cross-phase defects, all reproduced at runtime by the reviewer. Five are
+fixed (`3bc89c283`, `52a9fa2bd`); three are deferred with reasons, in the
+order the reviewer recommended:
+
+1. **OpenClaw ignores its documented path overrides.** `openclawHomeDir`
+   returns `~/.openclaw` unconditionally, while every sibling client honors an
+   override (`HERMES_HOME`, `KIMI_CODE_HOME`, `XDG_CONFIG_HOME`). Current
+   OpenClaw resolves `OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR` and
+   profiles, so the toggle can report success after writing a file the running
+   gateway never reads — and snapshot the wrong file too. Release-blocking for
+   the OpenClaw integration specifically; the other five are unaffected.
+2. **Export serializers meet arbitrary user documents.** `renderYaml` and
+   `renderToml` were written for builder output; the writer feeds them the
+   user's whole parsed file. A YAML `null` or a TOML numeric array throws out
+   of the writer and surfaces as a 500. Nothing is overwritten — the throw
+   happens before commit — but a valid client config cannot use the feature.
+   The minimum honest fix is a structured `unsafe` refusal; the real fix is
+   serializers covering each client's valid domain.
+3. **Absence-result Undo disagrees with restore drift detection.** The route
+   represents a missing file as `""` and marks such a row undoable; the writer
+   compares `fingerprint("")` against `""` and demands drift confirmation. A
+   shared matcher honoring `resultAbsent` belongs in both. Costs an
+   unnecessary confirmation, preserves bytes — the least urgent of the three.
+
+Each is its own work-phase, appended to the goalplan rather than folded into a
+stabilization commit that would hide them.
+
 ## WP-S3 — semantic stabilization
 
 Every phase is landed now, so the contract can be read end to end for the first
