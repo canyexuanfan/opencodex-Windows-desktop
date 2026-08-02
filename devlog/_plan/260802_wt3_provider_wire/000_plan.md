@@ -56,11 +56,11 @@ Selection rule: built-in = field report in issue #748 AND independent corroborat
 | `gpt-5.4-mini` | yes | pi.dev/models/github-copilot/gpt-5-4-mini | field-verified, corroborated | yes |
 | `gpt-5.5` | yes | pi.dev/models/github-copilot/gpt-5-5 | field-verified, corroborated | yes |
 | `gpt-5.6-luna` | yes | pi.dev/models/github-copilot/gpt-5-6-luna | field-verified, corroborated | yes |
+| `gpt-5.6-sol` | yes (chat rejection + successful Responses run) | pi.dev/models/github-copilot/gpt-5-6-sol declares `openai-responses`; JetBrains LLM-29711 independently shows chat rejects sol under function tools + reasoning_effort (the Codex-agent request shape) | field-verified, corroborated (audit round-2: same evidence class as luna/terra — excluding it applied the rule inconsistently) | yes |
 | `gpt-5.6-terra` | yes | pi.dev/models/github-copilot/gpt-5-6-terra | field-verified, corroborated | yes |
 | `gpt-5.4-nano` | NO — absent from the 2026-07-30 captured catalog, never field-run | GitHub supported-models list + pi.dev/models/github-copilot/gpt-5-4-nano | lead-only | NO (`modelAdapters` documented) |
-| `gpt-5.6-sol` | claimed but not independently confirmed; its chat rejection is conditional (function tools + reasoning_effort, JetBrains LLM-29711), not an endpoint-level contract | pi.dev/models/github-copilot/gpt-5-6-sol (single corroborator class) | lead-only | NO (`modelAdapters` documented) |
 
-Why luna/terra are in while sol is out, given #748 reports all seven: the rule requires BOTH legs. Luna/terra have a field report plus an independent wire declaration; sol's field claim is the same single source as the original report and its demonstrated failure is request-shape-conditional, so a hardcoded Responses default for sol could flip traffic that chat currently serves. Sol users opt in via `modelAdapters`.
+Why nano is the only exclusion, given #748 reports seven models: the two-leg rule (field report AND independent corroboration) is applied uniformly — sol meets both legs exactly as luna/terra do, so it is in; nano has no field report (never present in the captured catalog), so it stays out regardless of catalog/metadata labels. Sol's demonstrated chat failure is request-shape-conditional (tools + reasoning), which is precisely the Codex-agent traffic this bug is about; its bare-string default is safe for text-only chat clients because inbound chat is translated to the verified-working Responses wire rather than dropped.
 
 ## Out of scope
 
