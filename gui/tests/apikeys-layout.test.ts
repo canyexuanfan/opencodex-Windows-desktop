@@ -36,9 +36,12 @@ test("ApiKeys workspace avoids nested main and stacks via container query", asyn
 
   expect(src).toContain('<section className="apikeys-workspace-main"');
   expect(src).not.toContain('<main className="apikeys-workspace-main"');
-  expect(src).toContain('t("api.workspace.overview")');
   expect(src).toContain('t("api.workspace.details")');
   expect(src).toContain("showKeyList={false}");
+  // The side rail is gone: a pinned section strip selects, and the page scrolls.
+  expect(src).toContain("<SectionTabs");
+  expect(src).toContain('scope="api"');
+  expect(src).not.toContain("apikeys-workspace-rail");
   expect(page).toContain("creatingRef");
   expect(page).toContain("if (creatingRef.current) return false");
   // Cold paint: seed Endpoints from apiBase only when it has a usable origin/host.
