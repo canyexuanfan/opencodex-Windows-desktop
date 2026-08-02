@@ -398,16 +398,24 @@ describe("antigravity replay fixed-size key identities", () => {
     resetCanonicalScanUnitsForTests();
     const hugeString = "y".repeat(10 * 1024 * 1024);
     expect(antigravityCanonicalJsonBoundedForTests(hugeString, 100)).toBeNull();
-    // The walk stopped at the first 4 KiB flush — not 10 MiB of code points.
-    expect(canonicalScanUnitsForTestsValue()).toBeLessThan(8192);
+    // EXACT abort point: 1 node + 4096 code points (first 4 KiB flush crosses
+    // the 100-byte budget). A stringify-then-measure regression reads 0 here,
+    // an unbounded walk reads 10 MiB — only mid-walk abort reads 4097.
+    expect(canonicalScanUnitsForTestsValue()).toBe(4097);
 
     resetCanonicalScanUnitsForTests();
     // A 20k-key object exceeds the guaranteed-overflow key bound (64 KiB / 4),
     // so it is rejected after key collection but BEFORE the sorted walk.
     const wide: Record<string, number> = {};
     for (let index = 0; index < 20_000; index += 1) wide[`k${index}`] = index;
+    const sortSpy = spyOn(Array.prototype, "sort");
     expect(antigravityCanonicalJsonBoundedForTests(wide, 64 * 1024)).toBeNull();
-    expect(canonicalScanUnitsForTestsValue()).toBeLessThan(100);
+    // Exactly one node visited (the object itself) and NO sort happened.
+    expect(canonicalScanUnitsForTestsValue()).toBe(1);
+    expect(sortSpy).not.toHaveBeenCalled();
+    sortSpy.mockRestore();
+    // A conforming object still sorts and walks normally.
+    expect(antigravityCanonicalJsonBoundedForTests({ b: 1, a: 2 }, 1024)).toBe('{"a":2,"b":1}');
   });
 
   test("fixed session keys are counted per session and released exactly", () => {

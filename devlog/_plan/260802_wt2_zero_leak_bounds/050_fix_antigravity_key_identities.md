@@ -28,3 +28,8 @@ Scope OUT: TTL value (1h), the existing numeric caps (10,240/256/2 MiB/64 MiB/64
 
 - Any hashing mismatch between observe and apply breaks replay → upstream signature errors (covered by #2, but watch e2e-style replay tests).
 - Do not change duplicate-observation TTL refresh (recorded decision).
+
+## Implementation-phase accepted residuals (2026-08-02, wp6)
+
+- Canonicalization transient is O(total key count + cap), not O(cap): `Object.keys` materializes the full key array of a wide object before the count check can reject it (there is no streaming key API in JS). Sorting and value-walking past the 16,384-key guaranteed-overflow bound ARE eliminated. Recorded after three audit rounds; the cap still bounds every RETAINED byte.
+- Key hashing is injective at the ENCODING level (length-prefixed UTF-16 code units); SHA-256 collision space is cryptographic, not deterministic — stated for precision after reviewer correction.
