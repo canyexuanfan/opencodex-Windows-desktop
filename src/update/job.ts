@@ -2,8 +2,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
+import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort, saveConfig } from "../config";
 import { isProcessAlive, killProxy } from "../lib/process-control";
+import { findAvailablePort, shouldPersistSelectedPort } from "../server/ports";
 import { reclaimListenPort } from "../server/port-reclaim";
 import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
 import { isServiceInstalled } from "../service";
@@ -471,6 +472,8 @@ export interface RestartProxyIdentity {
 /** Test seam: the wait/spawn pair is injectable so the restart path is verifiable. */
 export interface RestartIo {
   waitForPort?: typeof reclaimListenPort;
+  findAvailablePort?: typeof findAvailablePort;
+  saveConfigFn?: typeof saveConfig;
   spawnStart?: (job: UpdateJobState, installer: Installer, port?: number) => void;
   serviceInstalledFn?: () => boolean;
   probeProxy?: (port: number, hostname?: string) => Promise<boolean>;
@@ -492,6 +495,46 @@ export interface RestartIo {
   ) => Promise<void>;
 }
 
+async function selectRestartPortAfterReclaim(
+  job: UpdateJobState,
+  preferredPort: number,
+  hostname: string,
+  reclaimSucceeded: boolean,
+  config: ReturnType<typeof loadConfig>,
+  io: RestartIo = {},
+): Promise<number | null> {
+  if (reclaimSucceeded) return preferredPort;
+  updateJob(
+    job,
+    {},
+    `Port ${preferredPort} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; selecting a new persistent port.`,
+  );
+  try {
+    const selected = await (io.findAvailablePort ?? findAvailablePort)(preferredPort, hostname, {
+      preferRetryMs: 0,
+      allowEphemeralFallback: true,
+    });
+    if (selected === preferredPort) return preferredPort;
+    if (shouldPersistSelectedPort(config.port, selected, preferredPort)) {
+      config.port = selected;
+      (io.saveConfigFn ?? saveConfig)(config);
+    }
+    updateJob(
+      job,
+      {},
+      `Port ${preferredPort} was unavailable; migrated OpenCodex default port to ${selected}. Existing Codex sessions may need a manual restart to read the new route.`,
+    );
+    return selected;
+  } catch (error) {
+    updateJob(
+      job,
+      {},
+      `Port ${preferredPort} was unavailable and no fallback port could be allocated: ${error instanceof Error ? error.message : String(error)}.`,
+    );
+    return null;
+  }
+}
+
 async function restartAfterUpdate(
   job: UpdateJobState,
   captured?: { port: number; hostname: string; oldPid?: number },
@@ -510,7 +553,7 @@ async function restartAfterUpdate(
   // The stop-first update flow has already cleared pid/runtime state by the time we run,
   // so the pre-update capture (taken before the update command) is the authoritative
   // port to wait on; config is only the cold-start fallback.
-  const port = captured?.port ?? config.port ?? 10100;
+  let port = captured?.port ?? config.port ?? 10100;
   const hostname = captured?.hostname ?? config.hostname ?? "127.0.0.1";
   const oldPid = typeof captured?.oldPid === "number" && captured.oldPid > 0
     ? captured.oldPid
@@ -522,7 +565,6 @@ async function restartAfterUpdate(
       svcArgs = serviceReinstallArgs();
     } catch { /* fallback to default service install */ }
   }
-  const cmd = restartCommand(serviceInstalled, installer, packageLauncherPath(), port, svcArgs);
   const waitFn = io.waitForPort ?? reclaimListenPort;
   const reclaimOpts = {
     timeoutMs: RESTART_PORT_RECLAIM_MS,
@@ -531,14 +573,20 @@ async function restartAfterUpdate(
     killOcxHolders: oldPid != null,
     onlyKillPids: oldPid != null ? [oldPid] : [],
   };
+  let portReclaimed = false;
 
   if (serviceInstalled) {
     // Stop-first update already unloaded the service; reclaim the socket (only the
-    // captured old PID when trusted), then reinstall wrappers that bake `--port`.
-    const freed = await waitFn(port, hostname, reclaimOpts);
-    if (!freed) {
-      updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; refusing to hop — reinstall may fail until the port is free.`);
+    // captured old PID when trusted), then reinstall wrappers that bake the selected port.
+    portReclaimed = await waitFn(port, hostname, reclaimOpts);
+    const selectedPort = await selectRestartPortAfterReclaim(job, port, hostname, portReclaimed, config, io);
+    if (selectedPort === null) return;
+    if (selectedPort !== port) {
+      port = selectedPort;
+      if (captured) captured.port = selectedPort;
+      portReclaimed = true;
     }
+    const cmd = restartCommand(serviceInstalled, installer, packageLauncherPath(), port, svcArgs);
     const prevBake = process.env.OCX_BAKE_PORT;
     process.env.OCX_BAKE_PORT = String(Math.trunc(port));
     let serviceOk = false;
@@ -570,12 +618,17 @@ async function restartAfterUpdate(
     killProxy(pid);
   }
   // Reclaim the captured port before the pinned start. Spawning `--port` while the old
-  // socket is still busy is how Windows updates used to fail health checks (or hop).
-  // Only the trusted pre-update PID may be killed; never an arbitrary ocx listener.
-  const freed = await waitFn(port, hostname, reclaimOpts);
-  if (!freed) {
-    updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket); not starting on another port. Retry 'ocx start --port ${port}'.`);
-    return;
+  // socket is still busy is how Windows updates used to fail health checks. Only the
+  // trusted pre-update PID may be killed; never an arbitrary listener. If a foreign
+  // process keeps the old socket, migrate once and make that port the next default.
+  if (!portReclaimed) {
+    portReclaimed = await waitFn(port, hostname, reclaimOpts);
+    const selectedPort = await selectRestartPortAfterReclaim(job, port, hostname, portReclaimed, config, io);
+    if (selectedPort === null) return;
+    if (selectedPort !== port) {
+      port = selectedPort;
+      if (captured) captured.port = selectedPort;
+    }
   }
   (io.spawnStart ?? spawnDetachedStart)(job, installer, port);
 }

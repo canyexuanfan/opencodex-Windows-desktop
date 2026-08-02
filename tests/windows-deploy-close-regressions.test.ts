@@ -25,8 +25,10 @@ describe("update-job restart avoids the shell-less .cmd EINVAL (Windows, bun/sou
   });
   test("service update restart bakes OCX_BAKE_PORT so wrappers hard-pin the captured port", () => {
     expect(src).toContain("OCX_BAKE_PORT");
-    // Service reinstall still runs (with bake) even when reclaim warns; direct start refuses to hop.
-    expect(src).toContain("refusing to hop");
+    // Service reinstall still runs (with bake); if the captured port is held by
+    // something else, the restart path selects and persists a replacement port.
+    expect(src).toContain("selecting a new persistent port");
+    expect(src).toContain("shouldPersistSelectedPort");
     expect(src).toContain("runtimeTrusted");
     expect(read("src/cli/index.ts")).toContain("allowEphemeralFallback: !hardPin");
     expect(read("src/cli/index.ts")).toContain("preferRetryMs: hardPin ? 0 : 750");

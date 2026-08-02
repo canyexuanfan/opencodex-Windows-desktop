@@ -2,7 +2,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
+import { getConfigDir, loadConfig, readPid, readRuntimePort, saveConfig } from "../config";
+import { findAvailablePort, shouldPersistSelectedPort } from "../server/ports";
 import { npmInvocation } from "./npm-invocation.mjs";
 import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
 
@@ -63,6 +64,31 @@ function updateSpawnTarget(bin: string, args: readonly string[]): { bin: string;
     return { bin: process.execPath, args: [...args], options: {} };
   }
   return { bin, args: [...args], options: {} };
+}
+
+async function selectPostUpdatePort(
+  preferredPort: number,
+  hostname: string,
+  freed: boolean,
+): Promise<number | null> {
+  if (freed) return preferredPort;
+  console.warn(`⚠️  Port ${preferredPort} still busy after 30s; selecting a new persistent port.`);
+  try {
+    const config = loadConfig();
+    const selected = await findAvailablePort(preferredPort, hostname, {
+      preferRetryMs: 0,
+      allowEphemeralFallback: true,
+    });
+    if (selected !== preferredPort && shouldPersistSelectedPort(config.port, selected, preferredPort)) {
+      config.port = selected;
+      saveConfig(config);
+      console.warn(`⚠️  Migrated OpenCodex default port to ${selected}. Existing Codex sessions may need a manual restart to read the new route.`);
+    }
+    return selected;
+  } catch (error) {
+    console.warn(`⚠️  Could not allocate a fallback port: ${error instanceof Error ? error.message : String(error)}.`);
+    return null;
+  }
 }
 
 /**
@@ -308,11 +334,13 @@ export async function runUpdate(): Promise<void> {
         killOcxHolders: capturedListen.oldPid != null,
         onlyKillPids: capturedListen.oldPid != null ? [capturedListen.oldPid] : [],
       });
-      if (!freed) {
-        console.warn(`⚠️  Port ${capturedListen.port} still busy after 30s; reinstalling service with pinned --port ${capturedListen.port} anyway (refusing to hop).`);
+      const restartPort = await selectPostUpdatePort(capturedListen.port, capturedListen.hostname, freed);
+      if (!restartPort) {
+        console.warn(`   Run 'ocx service install' as administrator, then 'ocx start --port ${capturedListen.port}'.`);
+        return;
       }
       const prevBake = process.env.OCX_BAKE_PORT;
-      process.env.OCX_BAKE_PORT = String(capturedListen.port);
+      process.env.OCX_BAKE_PORT = String(restartPort);
       try {
         const svcStdio = updateChildStdio();
         const svc = spawnSync(process.execPath, [process.argv[1], ...serviceReinstallArgs()], {
@@ -325,24 +353,20 @@ export async function runUpdate(): Promise<void> {
           // On Windows, schtasks /create requires elevation. The CLI inherits the
           // user's (non-admin) token, so the service reinstall can fail with access
           // denied. Fall back to a direct detached proxy start so the update never
-          // leaves the user without a running proxy — but only when the port is free.
-          if (!freed) {
-            console.warn("⚠️  Service refresh failed and the captured port is still busy; not starting on another port.");
-            console.warn(`   Run 'ocx service install' as administrator, then 'ocx start --port ${capturedListen.port}'.`);
-          } else {
-            console.warn("⚠️  Service refresh failed — starting the proxy directly instead.");
-            console.warn("   Run 'ocx service install' as administrator to refresh the background service.");
-            const env = { ...process.env };
-            delete env.OCX_SERVICE;
-            const child = spawn(process.execPath, [process.argv[1], "start", "--port", String(capturedListen.port)], {
-              detached: true,
-              stdio: "ignore",
-              windowsHide: true,
-              env,
-            });
-            child.unref();
-            console.log(`✅ Proxy starting on port ${capturedListen.port}.`);
-          }
+          // leaves the user without a running proxy. When the captured port is
+          // unavailable, `restartPort` is the newly persisted fallback.
+          console.warn("⚠️  Service refresh failed — starting the proxy directly instead.");
+          console.warn("   Run 'ocx service install' as administrator to refresh the background service.");
+          const env = { ...process.env };
+          delete env.OCX_SERVICE;
+          const child = spawn(process.execPath, [process.argv[1], "start", "--port", String(restartPort)], {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+            env,
+          });
+          child.unref();
+          console.log(`✅ Proxy starting on port ${restartPort}.`);
         }
       } finally {
         if (prevBake === undefined) delete process.env.OCX_BAKE_PORT;
