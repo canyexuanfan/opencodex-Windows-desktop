@@ -1,0 +1,11 @@
+---
+// Landing pages (template: splash) render their own h1#_top inside Landing.astro,
+// so the default PageTitle is skipped there to keep a single h1 and a working
+// skip-link target. All other pages use the stock component.
+import Default from '@astrojs/starlight/components/PageTitle.astro';
+
+const { entry } = Astro.locals.starlightRoute;
+const isSplash = entry.data.template === 'splash';
+---
+
+{!isSplash && <Default><slot /></Default>}

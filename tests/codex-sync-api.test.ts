@@ -1,0 +1,428 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { syncModelsToCodex } from "../src/codex/sync";
+import { MANAGED_AGENTS_TABLE_MARKER, MANAGED_SUBAGENT_DEFAULT_MARKER } from "../src/codex/subagent-defaults";
+import type { OcxConfig } from "../src/types";
+import type { OrcaCodexHomeDiagnostic } from "../src/codex/home";
+
+const TEST_DIR = join(import.meta.dir, ".tmp-codex-sync-api");
+const TEST_CODEX_HOME = join(TEST_DIR, "codex");
+let prevCodexHome: string | undefined;
+
+const config = {
+  port: 10100,
+  defaultProvider: "openai",
+  providers: {},
+} as OcxConfig;
+
+function homeDiagnostic(overrides: Partial<OrcaCodexHomeDiagnostic> = {}): OrcaCodexHomeDiagnostic {
+  return {
+    applicable: false,
+    mismatch: false,
+    effectiveCodexHome: "C:\\Users\\[USER]\\.codex",
+    appCodexHome: "C:\\Users\\[USER]\\.codex",
+    orcaCodexHome: null,
+    warning: null,
+    action: null,
+    ...overrides,
+  };
+}
+
+describe("GUI/CLI Codex sync backend", () => {
+  beforeEach(() => {
+    prevCodexHome = process.env.CODEX_HOME;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_CODEX_HOME, { recursive: true });
+    process.env.CODEX_HOME = TEST_CODEX_HOME;
+    writeFileSync(join(TEST_CODEX_HOME, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
+  });
+
+  afterEach(() => {
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+  });
+  test("returns the structured sync result used by POST /api/sync", async () => {
+    let injectedPort = 0;
+    let injectedCatalogPath: string | null | undefined;
+
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const result = await syncModelsToCodex(12345, config, { log: line => logs.push(String(line)), error: line => errors.push(String(line)) }, {
+      refreshCodexModelCatalog: async () => ({
+        added: 3,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: true,
+        cacheSynced: true,
+        comboOmissions: [],
+      }),
+      injectCodexConfig: async (port, _config, options) => {
+        injectedPort = port;
+        injectedCatalogPath = options.catalogPath;
+        return { success: true, message: "injected" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      collectCodexHomeDiagnostic: () => homeDiagnostic(),
+      findLiveProxy: async () => ({ pid: null, port: 12345, source: "config" as const }),
+    });
+
+    expect(injectedPort).toBe(12345);
+    expect(injectedCatalogPath).toBe("/tmp/opencodex-catalog.json");
+    expect(result).toEqual({
+      ok: true,
+      added: 3,
+      catalogPath: "/tmp/opencodex-catalog.json",
+      catalogExists: true,
+      catalogWritten: true,
+      cacheSynced: true,
+      message: "injected",
+    });
+    expect(logs).toContain("   Target Codex home: C:\\Users\\[USER]\\.codex");
+    expect(errors).toEqual([]);
+  });
+
+  test("restores native routing and refuses injection when no healthy proxy exists", async () => {
+    let injected = false;
+    let restored = false;
+    const result = await syncModelsToCodex(37692, config, null, {
+      refreshCodexModelCatalog: async () => { throw new Error("must not refresh without a proxy"); },
+      injectCodexConfig: async () => {
+        injected = true;
+        return { success: true, message: "unexpected injection" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => null,
+      restoreNativeCodex: () => {
+        restored = true;
+        return { success: true, message: "native restored" };
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("no healthy OpenCodex proxy");
+    expect(injected).toBe(false);
+    expect(restored).toBe(true);
+  });
+
+  test("uses the identity-checked live port when the requested port drifted", async () => {
+    let injectedPort = 0;
+    const errors: string[] = [];
+    const result = await syncModelsToCodex(1496, config, { log: () => {}, error: line => errors.push(String(line)) }, {
+      refreshCodexModelCatalog: async () => ({
+        added: 0,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: false,
+        cacheSynced: false,
+      }),
+      injectCodexConfig: async (port) => {
+        injectedPort = port;
+        return { success: true, message: "injected" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => ({ pid: 42, port: 37692, source: "runtime" as const }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(injectedPort).toBe(37692);
+    expect(errors).toContain("Codex sync corrected a stale port 1496 to the live OpenCodex port 37692.");
+  });
+
+  test("rechecks liveness after catalog refresh and refuses a route whose proxy stopped", async () => {
+    let probeCount = 0;
+    let injected = false;
+    let restored = false;
+    const result = await syncModelsToCodex(1496, config, null, {
+      refreshCodexModelCatalog: async () => ({
+        added: 1,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: true,
+        cacheSynced: true,
+      }),
+      injectCodexConfig: async () => {
+        injected = true;
+        return { success: true, message: "unexpected injection" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => {
+        probeCount += 1;
+        return probeCount === 1 ? { pid: 42, port: 37692, source: "runtime" as const } : null;
+      },
+      restoreNativeCodex: () => {
+        restored = true;
+        return { success: true, message: "native restored" };
+      },
+    });
+
+    expect(probeCount).toBe(2);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("stopped during catalog refresh");
+    expect(injected).toBe(false);
+    expect(restored).toBe(true);
+  });
+
+  test("uses the refreshed live port when the proxy moves during catalog refresh", async () => {
+    let probeCount = 0;
+    let injectedPort = 0;
+    const errors: string[] = [];
+    const result = await syncModelsToCodex(1496, config, {
+      log: () => {},
+      error: line => errors.push(String(line)),
+    }, {
+      refreshCodexModelCatalog: async () => ({
+        added: 0,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: false,
+        cacheSynced: false,
+      }),
+      injectCodexConfig: async (port) => {
+        injectedPort = port;
+        return { success: true, message: "injected" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => {
+        probeCount += 1;
+        return {
+          pid: 42,
+          port: probeCount === 1 ? 37692 : 45678,
+          source: "runtime" as const,
+        };
+      },
+    });
+
+    expect(probeCount).toBe(2);
+    expect(result.ok).toBe(true);
+    expect(injectedPort).toBe(45678);
+    expect(errors).toContain("Codex sync refreshed the live OpenCodex port from 37692 to 45678.");
+  });
+
+  test("rechecks a trusted in-process port with /healthz before injection", async () => {
+    let probed = 0;
+    let injected = false;
+    let restored = false;
+    const result = await syncModelsToCodex(12345, config, null, {
+      refreshCodexModelCatalog: async () => ({
+        added: 0,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: false,
+        cacheSynced: false,
+      }),
+      injectCodexConfig: async () => {
+        injected = true;
+        return { success: true, message: "unexpected injection" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      restoreNativeCodex: () => {
+        restored = true;
+        return { success: true, message: "native restored" };
+      },
+    }, { trustedServerPort: 12345, proxyIdentityAt: async (port, options) => {
+      probed += 1;
+      expect(port).toBe(12345);
+      expect(options.expectedPid).toBe(process.pid);
+      return null;
+    } });
+
+    expect(probed).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(injected).toBe(false);
+    expect(restored).toBe(true);
+  });
+
+  test("surfaces combo catalog omissions in sync result and CLI stderr (#484)", async () => {
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const omission = {
+      id: "k3k3",
+      targets: ["kimi/k3", "xianyu/kimi-k3"],
+      reason: "incomplete_metadata" as const,
+      message: "[opencodex] Combo \"k3k3\" is omitted from the catalog because member capabilities are incomplete: kimi/k3, xianyu/kimi-k3.",
+    };
+    const result = await syncModelsToCodex(12345, config, { log: line => logs.push(String(line)), error: line => errors.push(String(line)) }, {
+      refreshCodexModelCatalog: async () => ({
+        added: 1,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: true,
+        cacheSynced: true,
+        comboOmissions: [omission],
+      }),
+      injectCodexConfig: async () => ({ success: true, message: "injected" }),
+      currentExternalCodexModelProvider: () => null,
+      collectCodexHomeDiagnostic: () => homeDiagnostic(),
+      findLiveProxy: async () => ({ pid: null, port: 12345, source: "config" as const }),
+    });
+
+    expect(result.comboOmissions).toEqual([omission]);
+    expect(result.warning).toContain("1 combo omitted from the catalog");
+    expect(errors).toEqual([
+      "1 combo omitted from the catalog because member capabilities are incomplete.",
+    ]);
+  });
+
+  test("CLI sync summary uses incompatible_modalities reason, not incomplete (#516)", async () => {
+    const errors: string[] = [];
+    const omission = {
+      id: "disjoint",
+      targets: ["a/m1", "b/m2"],
+      reason: "incompatible_modalities" as const,
+      message: "[opencodex] Combo \"disjoint\" is omitted from the catalog because members have no common input modalities: a/m1, b/m2.",
+    };
+    const result = await syncModelsToCodex(12345, config, { log: () => {}, error: line => errors.push(String(line)) }, {
+      refreshCodexModelCatalog: async () => ({
+        added: 0,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        catalogWritten: true,
+        cacheSynced: true,
+        comboOmissions: [omission],
+      }),
+      injectCodexConfig: async () => ({ success: true, message: "injected" }),
+      currentExternalCodexModelProvider: () => null,
+      collectCodexHomeDiagnostic: () => homeDiagnostic(),
+      findLiveProxy: async () => ({ pid: null, port: 12345, source: "config" as const }),
+    });
+
+    expect(result.comboOmissions).toEqual([omission]);
+    expect(result.warning).toBe(
+      "1 combo omitted from the catalog because members have no common input modalities.",
+    );
+    expect(errors).toEqual([
+      "1 combo omitted from the catalog because members have no common input modalities.",
+    ]);
+    expect(errors.join("\n")).not.toContain("member capabilities are incomplete");
+  });
+
+  test("keeps injection fallback behavior when catalog refresh throws", async () => {
+    let injectedCatalogPath: string | null | undefined = "unset";
+
+    const result = await syncModelsToCodex(undefined, config, null, {
+      refreshCodexModelCatalog: async () => {
+        throw new Error("catalog boom");
+      },
+      injectCodexConfig: async (_port, _config, options) => {
+        injectedCatalogPath = options.catalogPath;
+        return { success: true, message: "injected fallback" };
+      },
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => ({ pid: null, port: 10100, source: "config" as const }),
+    });
+
+    expect(injectedCatalogPath).toBeUndefined();
+    expect(result.ok).toBe(true);
+    expect(result.catalogPath).toBeNull();
+    expect(result.warning).toContain("catalog boom");
+  });
+
+  test("returns native subagent default conflicts as structured warnings", async () => {
+    const result = await syncModelsToCodex(10100, config, null, {
+      refreshCodexModelCatalog: async () => ({
+        added: 0,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        cacheSynced: true,
+      }),
+      injectCodexConfig: async () => ({
+        success: true,
+        message: "injected with a preserved user setting",
+        nativeSubagentDefaultsWarning: "Native Codex sub-agent defaults were not injected: user-owned agents.default_subagent_model preserved.",
+      }),
+      currentExternalCodexModelProvider: () => null,
+      findLiveProxy: async () => ({ pid: null, port: 10100, source: "config" as const }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.nativeSubagentDefaultsWarning).toContain("user-owned agents.default_subagent_model preserved");
+  });
+
+  test("POST /api/sync exposes an actionable error when native defaults are ambiguous", () => {
+    const ocxHome = join(TEST_DIR, "opencodex");
+    mkdirSync(ocxHome, { recursive: true });
+    writeFileSync(join(TEST_CODEX_HOME, "config.toml"), [
+      MANAGED_AGENTS_TABLE_MARKER,
+      "[agents]",
+      MANAGED_SUBAGENT_DEFAULT_MARKER,
+      "",
+      'default_subagent_model = "gpt-5.6-sol"',
+      "",
+    ].join("\n"), "utf8");
+
+    const child = spawnSync(process.execPath, ["-e", `
+      const { handleManagementAPI } = await import("./src/server/management-api.ts");
+      const config = { port: 10100, defaultProvider: "openai", providers: {} };
+      const response = await handleManagementAPI(
+        new Request("http://localhost/api/sync", { method: "POST", headers: { Host: "localhost" } }),
+        new URL("http://localhost/api/sync"),
+        config,
+        { proxyIdentityAt: async () => ({ pid: process.pid }) },
+      );
+      console.log(JSON.stringify({ status: response.status, body: await response.json() }));
+    `], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, CODEX_HOME: TEST_CODEX_HOME, OPENCODEX_HOME: ocxHome },
+      encoding: "utf8",
+    });
+
+    expect(child.status).toBe(0);
+    const payload = JSON.parse(child.stdout.trim()) as {
+      status: number;
+      body: { ok: boolean; error?: string; message: string };
+    };
+    expect(payload.status).toBe(500);
+    expect(payload.body.ok).toBe(false);
+    expect(payload.body.error).toBe(payload.body.message);
+    expect(payload.body.error).toContain("inspect");
+    expect(payload.body.error).toContain(join(TEST_CODEX_HOME, "config.toml"));
+  });
+
+  test("skips catalog refresh before preserving an external provider", async () => {
+    let refreshed = false;
+    let injectedCatalogPath: string | null | undefined = "unset";
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const mismatch = homeDiagnostic({
+      applicable: true,
+      mismatch: true,
+      effectiveCodexHome: "C:\\Users\\[USER]\\AppData\\Roaming\\orca\\codex-runtime-home\\home",
+      orcaCodexHome: "C:\\Users\\[USER]\\AppData\\Roaming\\orca\\codex-runtime-home\\home",
+      warning: "Orca target does not reach the app",
+      action: "migrate the installed service",
+    });
+    const result = await syncModelsToCodex(10100, config, { log: line => logs.push(String(line)), error: line => errors.push(String(line)) }, {
+      refreshCodexModelCatalog: async () => {
+        refreshed = true;
+        throw new Error("must not refresh");
+      },
+      injectCodexConfig: async (_port, _config, options) => {
+        injectedCatalogPath = options.catalogPath;
+        return { success: true, message: "external provider preserved" };
+      },
+      currentExternalCodexModelProvider: () => "custom",
+      collectCodexHomeDiagnostic: () => mismatch,
+    });
+
+    expect(refreshed).toBe(false);
+    expect(injectedCatalogPath).toBeUndefined();
+    expect(result).toEqual({
+      ok: true,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: "external provider preserved",
+    });
+    expect(logs).toContain(`   Target Codex home: ${mismatch.effectiveCodexHome}`);
+    expect(errors).toEqual([
+      `WARNING: ${mismatch.warning}`,
+      `Action: ${mismatch.action}`,
+    ]);
+  });
+});
+import { ManagementRequest as Request } from "./helpers/management-auth";

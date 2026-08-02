@@ -1,0 +1,53 @@
+<svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Codex multi-account routing</title>
+  <desc id="desc">Existing Codex sessions stay pinned to one ChatGPT account, while new sessions can route to the lowest-usage healthy account after quota refresh.</desc>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1; rx: 8; }
+    .box-strong { fill: #ecfeff; stroke: #0891b2; stroke-width: 1; rx: 8; }
+    .box-warn { fill: #fff7ed; stroke: #ea580c; stroke-width: 1; rx: 8; }
+    .line { stroke: #64748b; stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
+    .label { fill: #0f172a; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; font-weight: 500; }
+    .sub { fill: #475569; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; font-weight: 400; }
+    .tiny { fill: #64748b; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; font-weight: 400; }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#64748b" />
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="680" height="320" rx="12" />
+
+  <rect class="box" x="28" y="104" width="128" height="72" />
+  <text class="label" x="92" y="134" text-anchor="middle">Codex session</text>
+  <text class="sub" x="92" y="154" text-anchor="middle">CLI, app, SSH</text>
+
+  <path class="line" d="M156 140 H218" />
+  <rect class="box-strong" x="218" y="84" width="144" height="112" />
+  <text class="label" x="290" y="118" text-anchor="middle">opencodex</text>
+  <text class="sub" x="290" y="140" text-anchor="middle">thread affinity</text>
+  <text class="sub" x="290" y="160" text-anchor="middle">quota routing</text>
+
+  <path class="line" d="M362 118 H428" />
+  <rect class="box" x="428" y="52" width="202" height="72" />
+  <text class="label" x="529" y="82" text-anchor="middle">Existing thread</text>
+  <text class="sub" x="529" y="102" text-anchor="middle">keeps the same account</text>
+
+  <path class="line" d="M362 164 H428" />
+  <rect class="box" x="428" y="152" width="202" height="86" />
+  <text class="label" x="529" y="184" text-anchor="middle">New session</text>
+  <text class="sub" x="529" y="204" text-anchor="middle">lowest usage account</text>
+  <text class="sub" x="529" y="224" text-anchor="middle">healthy, not cooled down</text>
+
+  <path class="line" d="M290 84 V48 H504 V52" />
+  <text class="tiny" x="396" y="38" text-anchor="middle">resume/mobile-safe</text>
+
+  <path class="line" d="M504 238 V278 H290 V196" />
+  <text class="tiny" x="404" y="296" text-anchor="middle">5h, weekly, 30d quota headers</text>
+
+  <rect class="box-warn" x="72" y="232" width="206" height="54" />
+  <text class="label" x="175" y="254" text-anchor="middle">401/403/429</text>
+  <text class="sub" x="175" y="274" text-anchor="middle">reauth, cooldown, failover</text>
+
+  <path class="line" d="M278 259 H332 V196" />
+</svg>

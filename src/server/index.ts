@@ -1,0 +1,953 @@
+import { markActivity } from "../lib/sidecar-tracker";
+import {
+  buildWarmupCompletionFrames,
+  buildWsErrorFrame,
+  selectForwardHeaders,
+  sendJsonFrame,
+  sendResponseToWebSocket,
+  sendTextFrame,
+  type WsData,
+} from "./ws-bridge";
+import type { Server, ServerWebSocket } from "bun";
+import {
+  DEFAULT_SUBAGENT_MODELS,
+  applyProxyEnv,
+  armClaudeCodeBaseline,
+  loadConfig,
+  saveConfig,
+  websocketsEnabled,
+} from "../config";
+import { reconcileOAuthProviders } from "../oauth";
+import { invalidateCodexModelsCache } from "../codex/catalog";
+import { startMemoryWatchdog } from "./memory-watchdog";
+import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
+import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
+import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler } from "../storage/policy-scheduler";
+import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
+import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
+import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { providerCodexAccountMode } from "../providers/registry";
+import type { StorageCleanupPolicy } from "../types";
+import {
+  CodexAccountCooldownError,
+  cooldownErrorMessage,
+} from "../codex/auth-context";
+export {
+  clearThreadAccountMap,
+  formatCodexProviderForLog,
+  resolveCodexAccountForThread,
+} from "../codex/routing";
+import { formatCodexProviderForLog } from "../codex/routing";
+import { registerCodexWebSocket, unregisterCodexWebSocket, updateCodexWebSocketAuthContext } from "../codex/websocket-registry";
+import { resolveGuiFilePath, rootFallbackPayload, serveGuiFile } from "./gui-static";
+export { resolveGuiFilePath, rootFallbackPayload } from "./gui-static";
+export { resolveAdapter } from "./adapter-resolve";
+import { formatErrorResponse, type ResponsesTerminalStatus } from "../bridge";
+import {
+  drainAndShutdown,
+  getActiveTurnCount,
+  isDraining,
+  registerTurn,
+  setServerRef,
+  trackStreamLifetime,
+  unregisterTurn,
+} from "./lifecycle";
+export {
+  drainAndShutdown,
+  getActiveTurnCount,
+  isDraining,
+  isRecyclingForExit,
+  markRecyclingForExit,
+  registerTurn,
+  trackStreamLifetime,
+  unregisterTurn,
+} from "./lifecycle";
+import {
+  addFinalRequestLog,
+  hydrateRequestLogsFromDisk,
+  httpStatusForRequestLogTerminal,
+  httpStatusForTerminalStatus,
+  inspectResponseLogSsePayload,
+  nextRequestLogId,
+  recordFirstOutput,
+  type RequestLogContext,
+  type RequestLogEntry,
+} from "./request-log";
+export {
+  addFinalRequestLog,
+  filterRequestLogs,
+  hydrateRequestLogsFromDisk,
+  httpStatusForTerminalStatus,
+  httpStatusFromTerminalError,
+  nextRequestLogId,
+  requestLogErrorCode,
+  requestLogSpeedLabel,
+  usageFromResponsesPayload,
+  type RequestLogContext,
+  type RequestLogEntry,
+} from "./request-log";
+import {
+  consumeForInspection,
+  relaySseWithHeartbeat,
+  relayWithAbort,
+  responseWithDeferredRequestLog,
+  sanitizePassthroughHeaders,
+} from "./relay";
+export {
+  consumeForInspection,
+  relaySseWithFailedTail,
+  relaySseWithHeartbeat,
+  relayWithAbort,
+  responseWithDeferredRequestLog,
+  sanitizePassthroughHeaders,
+} from "./relay";
+import {
+  assertServerAuthConfig,
+  corsHeaders,
+  managementCorsHeaders,
+  hasValidApiAuth,
+  isAllowedRequestOrigin,
+  isAllowedManagementOrigin,
+  isApiAuthRequired,
+  isLoopbackHostname,
+  jsonResponse,
+  requireApiAuth,
+  requireResponsesApiAuth,
+  safeConfigDTO,
+  setCorsOrigin,
+  withCors,
+  withManagementCors,
+} from "./auth-cors";
+export {
+  assertServerAuthConfig,
+  corsHeaders,
+  hasValidApiAuth,
+  isApiAuthRequired,
+  isLoopbackHostname,
+  jsonResponse,
+  safeConfigDTO,
+} from "./auth-cors";
+import { disableResponsesRequestTimeout, handleResponses, handleResponsesCompact } from "./responses";
+export { disableResponsesRequestTimeout, linkAbortSignal } from "./responses";
+import { handleClaudeCountTokens, handleClaudeMessages } from "./claude-messages";
+import { handleChatCompletions } from "./chat-completions";
+import { anthropicErrorResponse } from "../claude/outbound";
+import { buildDesktop3pRegistry } from "../claude/desktop-3p";
+import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
+import { handleImages } from "./images";
+import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
+import { handleSearch } from "./search";
+import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
+import { initializeManagementAuthState, issueGuiSession, requireManagementAuth } from "./management-auth";
+
+const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
+const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
+const LIVE_SIDEBAND_PENDING_MAX = 32;
+
+function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""): void {
+  try {
+    ws.data.liveUpstream?.close(code, reason);
+  } catch {
+    /* upstream already gone */
+  }
+  ws.data.liveUpstream = undefined;
+  ws.data.livePending = undefined;
+  try {
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close(code, reason);
+    }
+  } catch {
+    /* client already gone */
+  }
+}
+
+function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
+  const url = ws.data.liveUpstreamUrl;
+  if (!url) {
+    closeLiveSideband(ws, 1011, "missing upstream");
+    return;
+  }
+  let upstream: WebSocket;
+  try {
+    // Bun accepts per-handshake headers; the DOM lib types only list protocol arrays.
+    upstream = new WebSocket(url, { headers: ws.data.liveUpstreamHeaders ?? {} } as unknown as string[]);
+  } catch {
+    closeLiveSideband(ws, 1011, "upstream connect failed");
+    return;
+  }
+  ws.data.liveUpstream = upstream;
+  ws.data.cancel = () => {
+    try {
+      upstream.close(1000, "client closed");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  upstream.addEventListener("open", () => {
+    ws.data.liveOpened = true;
+    const pending = ws.data.livePending ?? [];
+    ws.data.livePending = undefined;
+    for (const frame of pending) {
+      try {
+        upstream.send(frame);
+      } catch {
+        closeLiveSideband(ws, 1011, "upstream send failed");
+        return;
+      }
+    }
+  });
+  upstream.addEventListener("message", (event) => {
+    try {
+      logLiveSidebandFrame("u2c", event.data);
+      if (typeof event.data === "string") ws.send(event.data);
+      else if (event.data instanceof ArrayBuffer) ws.send(event.data);
+      else if (ArrayBuffer.isView(event.data)) {
+        ws.send(event.data.buffer.slice(event.data.byteOffset, event.data.byteOffset + event.data.byteLength));
+      } else ws.send(event.data as Buffer);
+    } catch {
+      closeLiveSideband(ws, 1011, "client send failed");
+    }
+  });
+  upstream.addEventListener("close", (event) => {
+    try {
+      ws.close(event.code || 1000, event.reason || "");
+    } catch {
+      /* ignore */
+    }
+    ws.data.liveUpstream = undefined;
+  });
+  upstream.addEventListener("error", () => {
+    closeLiveSideband(ws, 1011, "upstream error");
+  });
+}
+
+// GUI static serving extracted to ./server/gui-static. Re-exported below to keep the
+// "../src/server" import surface stable for tests/callers.
+
+// Adapter resolution + wire-protocol override extracted to ./server/adapter-resolve.
+
+// Source invariant for tests/passthrough-abort.test.ts after the pure module split:
+// if (isEventStream && upstreamResponse.body) {
+// const repairConfig = route.provider.responsesItemIdRepair;
+// const needsClientRewrite = imageGenCallAliases.size > 0
+// #314 gated shape (win32-no-client-rewrite only; default OFF on the bundled known-bad runtime):
+// decideEagerRelay(config.streamMode ?? "auto")
+// relaySseEagerBounded(upstreamResponse.body, turnAc,
+// new Response(eagerBody,
+// Default shape (tee + background inspection):
+// upstreamResponse.body.tee()
+// const repairedBody = hasResponsesItemIdRepair(repairConfig)
+// process.platform === "win32"
+// && !needsClientRewrite
+// ? nativeBody
+// relaySseWithFailedTail(repairedBody, upstream)
+// new Response(clientBody
+// markNativePassthroughSseResponse
+// const body = relayWithAbort(upstreamResponse.body, upstream);
+// function responseWithDeferredRequestLog
+// isNativePassthroughSseResponse(response)
+// trackSseForRequestLog(
+// export function relaySseWithHeartbeat
+
+export type ServerStartOptions = {
+  /** Override the configured bind host for an owning desktop sidecar. */
+  hostname?: string;
+};
+
+export function startServer(port?: number, options: ServerStartOptions = {}) {
+  const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
+  applyProxyEnv(config);
+  assertServerAuthConfig(config);
+  const managementAuth = initializeManagementAuthState(config);
+  // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
+  // adding/dropping models reaches existing configs on start — not just fresh installs.
+  reconcileOAuthProviders(config);
+  // Seed default featured subagent models on first run only (UNSET → defaults). A user-set list,
+  // even [], is left alone so GUI removals persist.
+  if (config.subagentModels === undefined) {
+    config.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
+    saveConfig(config);
+  }
+  // authMode migration (devlog 260726_claude_auth_auto/015): before "auto" existed,
+  // choosing Subscription DELETED the key, so a pre-upgrade block with no authMode is
+  // indistinguishable from "never chose". Pin those to subscription once so an upgrade
+  // never silently moves a deliberate subscriber onto proxy.
+  if (runClaudeAuthModeMigration(config)) saveConfig(config);
+  // Sidecar model migration (KST 2026-07-10 06:00 = UTC 2026-07-09 21:00): auto-migrate the old
+  // gpt-5.4-mini default to gpt-5.6-luna for both search and vision sidecars. Only touches configs
+  // still on the old default — explicit user choices are preserved.
+  {
+    const SIDECAR_MIGRATION_CUTOFF = Date.UTC(2026, 6, 9, 21, 0); // July 9 21:00 UTC = KST July 10 06:00
+    if (Date.now() >= SIDECAR_MIGRATION_CUTOFF) {
+      let migrated = false;
+      if (config.webSearchSidecar?.model === "gpt-5.4-mini") {
+        config.webSearchSidecar = { ...config.webSearchSidecar, model: "gpt-5.6-luna" };
+        migrated = true;
+      }
+      if (config.visionSidecar?.model === "gpt-5.4-mini") {
+        config.visionSidecar = { ...config.visionSidecar, model: "gpt-5.6-luna" };
+        migrated = true;
+      }
+      if (migrated) saveConfig(config);
+    }
+  }
+  invalidateCodexModelsCache();
+  // Arm the `claudeCode` hand-edit guard (devlog 260726_claude_auth_auto/040 H1) BEFORE
+  // the server can serve a request, and AFTER the startup migrations above — those run
+  // against a config nobody else holds and are the documented exception to the save
+  // boundary, so the baseline should reflect what they wrote. Arming is eager on
+  // purpose: a lazy "arm on first save" loses exactly the hand edit made before that
+  // first save, which is the case the guard exists for.
+  armClaudeCodeBaseline(config);
+  // usage.jsonl already persists every request; rehydrate the in-memory Logs ring so
+  // /api/logs (and the GUI) survive `ocx stop` / `ocx start` process restarts.
+  hydrateRequestLogsFromDisk();
+  // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
+  // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
+  startMemoryWatchdog();
+  // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
+  // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
+  // Heavy work runs in a Worker via the single-flight job controller.
+  // Keep live config.policy in sync when background runs advance nextRun/lastRun.
+  const applyPolicy = (policy: StorageCleanupPolicy) => {
+    config.storageCleanupPolicy = policy;
+  };
+  setStorageCleanupPolicyLiveSink(applyPolicy);
+  setStorageCleanupPolicyJobLiveApply(applyPolicy);
+  startStorageCleanupScheduler();
+
+  const listenPort = port ?? config.port ?? 10100;
+  setCorsOrigin(listenPort);
+
+  // Canonicalize an explicit "localhost" bind to IPv4 so it matches the injected base_url (which
+  // resolves localhost→127.0.0.1): on Windows `localhost` resolves ::1-first, but the injected URL
+  // is 127.0.0.1, so binding literal "localhost" would reintroduce the F4 refusal. Wildcards
+  // (0.0.0.0/::) and specific hosts are left untouched so intentional exposure is preserved.
+  const configuredHost = options.hostname?.trim() ?? config.hostname?.trim();
+  const bindHost = !configuredHost || /^localhost$/i.test(configuredHost) ? "127.0.0.1" : configuredHost;
+
+  // Codex treats empty / non-JSON 503 bodies as "Unknown error" (#452). Keep Retry-After and
+  // the server_is_overloaded code so clients can back off, but always return a JSON envelope.
+  function drainingResponse(req: Request): Response {
+    const response = formatErrorResponse(503, "server_error", "Service shutting down");
+    const headers = new Headers(response.headers);
+    for (const [name, value] of Object.entries(corsHeaders(req, config))) {
+      headers.set(name, value);
+    }
+    headers.set("Retry-After", "5");
+    return new Response(response.body, { status: 503, headers });
+  }
+
+  const server: Server<WsData> = Bun.serve<WsData>({
+    port: listenPort,
+    hostname: bindHost,
+    idleTimeout: 255,
+    async fetch(req, requestServer): Promise<Response> {
+      const url = new URL(req.url);
+      markActivity(`${req.method} ${url.pathname}`);
+
+      if (req.method === "OPTIONS") {
+        const managementPreflight = url.pathname.startsWith("/api/");
+        const allowed = managementPreflight
+          ? isAllowedManagementOrigin(req, config)
+          : isAllowedRequestOrigin(req, config);
+        if (!allowed) {
+          return new Response(null, { status: 403, headers: corsHeaders() });
+        }
+        return new Response(null, {
+          status: 204,
+          headers: managementPreflight ? managementCorsHeaders(req, config) : corsHeaders(req, config),
+        });
+      }
+
+      // Responses WebSocket (phase 120.2). Codex upgrades the same /v1/responses path; auth is
+      // handshake-time only, so capture inbound headers and thread them into the pipeline.
+      if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        const apiAuthError = requireResponsesApiAuth(req, config);
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin"), req, config);
+        }
+        // WS transport gate: Codex's built-in `openai` provider hardcodes supports_websockets=true,
+        // so under Design B it always tries the WS transport first. When the feature is off, reject
+        // the upgrade with 426 — codex-rs maps a connect-time UPGRADE_REQUIRED to a clean
+        // session-scoped HTTP fallback (client.rs WebsocketStreamOutcome::FallbackToHttp) instead of
+        // surfacing broken-pipe errors from sockets a "disabled" feature would otherwise accept.
+        if (!websocketsEnabled(config)) {
+          return withCors(formatErrorResponse(426, "upgrade_required", "Responses WebSocket transport is disabled; use HTTP"), req, config);
+        }
+        if (server.upgrade(req, {
+          data: {
+            headers: selectForwardHeaders(req.headers),
+          },
+        })) return undefined as unknown as Response;
+        return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, config);
+      }
+
+      if (url.pathname === "/healthz" && req.method === "GET") {
+        // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
+        return jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: listenPort }, 200, req, config);
+      }
+
+      if (url.pathname.startsWith("/api/")) {
+        const apiAuthError = requireManagementAuth(req, managementAuth, config);
+        if (apiAuthError) return withManagementCors(apiAuthError, req, config);
+        const mgmtResponse = await handleManagementAPI(req, url, config);
+        if (mgmtResponse) return withManagementCors(mgmtResponse, req, config);
+        return withManagementCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
+      }
+
+      if (url.pathname === "/v1/models" && req.method === "GET") {
+        // Model discovery never forwards Authorization upstream, so the broader admission
+        // set (Authorization / x-api-key / x-opencodex-api-key) is safe here and required by
+        // remote OpenAI-style bearer clients and Claude gateway discovery (anthropic-version).
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const goModels = await fetchAllModels(config);
+        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents, filterCatalogVisibleModels, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs } = await import("../codex/catalog");
+        const nativeSlugs = nativeOpenAiSlugs();
+        const goEnabled = filterCatalogVisibleModels(goModels, config);
+        const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
+        // Claude Code / Claude Desktop gateway model discovery (GET /v1/models with
+        // Anthropic-style headers; 003 G1-G8 + devlog 131). Entries use the official
+        // ModelInfo shape incl. capabilities (effort ladder / thinking) — Desktop 3P can
+        // only learn capabilities through discovery, and Claude Code 2.1.207 strips the
+        // extra fields (backward-safe). Ids are the claude-opus-4-8-{code} Desktop
+        // aliases; legacy claude-ocx-* ids keep decoding via resolveAlias. Detection:
+        // anthropic-version header (Claude Code sends it) or explicit ?flavor=anthropic.
+        // Codex catalog (client_version) and the OpenAI list shape below stay byte-identical.
+        const wantsAnthropicList = req.headers.get("anthropic-version") !== null
+          || url.searchParams.get("flavor") === "anthropic";
+        if (wantsAnthropicList && !url.searchParams.has("client_version")) {
+          if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, config);
+          // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
+          buildDesktop3pRegistry(
+            [...visibleNativeSlugs(config)],
+            goOrdered.map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow })),
+            config.claudeCode?.desktopProfile,
+          );
+          const { buildAnthropicModelInfos } = await import("../claude/model-info");
+          const { resolveAutoContext } = await import("../claude/context-windows");
+          const { activeDesktop3pAlias } = await import("../claude/desktop-3p");
+          // Per-surface id family (devlog 050): explicit ?ids= wins; otherwise the
+          // Claude Code CLI discovery UA (`claude-code/<version>`, binary n_()) gets
+          // readable claude-ocx ids and every other client (Desktop 3P) keeps the
+          // hashed family its config was written with. Unknown UA -> hashed (safe).
+          const idsParam = url.searchParams.get("ids");
+          const idStyle = idsParam === "cli"
+            ? "readable" as const
+            : idsParam === "desktop"
+              ? "desktop3p" as const
+              : (/^claude-code\//i.test(req.headers.get("user-agent") ?? "") ? "readable" as const : "desktop3p" as const);
+          const data = buildAnthropicModelInfos([...visibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode), idStyle, activeDesktop3pAlias);
+          return jsonResponse({ data }, 200, req, config);
+        }
+        if (url.searchParams.has("client_version")) {
+          // Codex client → Codex catalog shape: native gpt + namespaced routed models,
+          // cloned from a native template so required fields (base_instructions, etc.) are present.
+          // Pass the subagent picks so featured models lead by priority (matches the on-disk file).
+          // Disabled natives stay in the catalog shape with visibility "hide" (mirrors the
+          // on-disk sync; codex-rs keeps them out of the picker itself).
+          const maMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
+          const entries = buildCatalogEntries(loadCatalogTemplate(), nativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config));
+          return jsonResponse({ models: applyNativeVisibility(entries, disabledNativeSlugs(config)) }, 200, req, config);
+        }
+        // OpenAI list shape: native gpt bare + routed models namespaced "<provider>/<id>"
+        // (pure availability list — disabled natives are omitted entirely).
+        const data = [
+          ...visibleNativeSlugs(config).map(id => ({ id, object: "model", created: 0, owned_by: "openai" })),
+          ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => ({ id: m.alias ?? `${m.provider}/${m.id}`, object: "model", created: 0, owned_by: m.owned_by ?? m.provider })),
+        ];
+        return jsonResponse({ object: "list", data }, 200, req, config);
+      }
+
+      // Remote compaction v1 (codex-rs with Feature::RemoteCompactionV2 off — the default).
+      // Must be matched BEFORE the /v1/responses POST branch never sees it (distinct path) and
+      // before the /v1/* 404 guard below.
+      if (url.pathname === "/v1/responses/compact" && req.method === "POST") {
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        const apiAuthError = requireResponsesApiAuth(req, config);
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+        let response: Response;
+        try {
+          response = await handleResponsesCompact(req, config, logCtx);
+        } catch {
+          response = formatErrorResponse(500, "server_error", "Unexpected compact request failure");
+        }
+        addFinalRequestLog(
+          requestId,
+          start,
+          logCtx,
+          response.status,
+          response.status === 499 ? { closeReason: "client_cancel" } : undefined,
+        );
+        return withCors(response, req, config);
+      }
+
+      if (
+        req.method === "POST"
+        && (url.pathname === "/v1/images/generations" || url.pathname === "/v1/images/edits")
+      ) {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "image_gen", provider: "unknown" };
+        const endpoint = url.pathname.endsWith("/edits") ? "edits" as const : "generations" as const;
+        const response = await handleImages(req, config, endpoint, logCtx);
+        addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
+        return withCors(response, req, config);
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/v1/opencodex/artifacts/")) {
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const id = decodeURIComponent(url.pathname.slice("/v1/opencodex/artifacts/".length));
+        const { resolveArtifactPath } = await import("../images/artifacts");
+        const artifactPath = resolveArtifactPath(id);
+        if (!artifactPath) {
+          return withCors(formatErrorResponse(404, "not_found", "artifact not found"), req, config);
+        }
+        const file = Bun.file(artifactPath);
+        const ext = artifactPath.split(".").pop()?.toLowerCase();
+        const contentType =
+          ext === "png" ? "image/png"
+            : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+              : ext === "webp" ? "image/webp"
+                : ext === "gif" ? "image/gif"
+                  : "application/octet-stream";
+        return withCors(new Response(file, {
+          status: 200,
+          headers: {
+            "content-type": contentType,
+            "cache-control": "private, max-age=3600",
+            "x-content-type-options": "nosniff",
+          },
+        }), req, config);
+      }
+
+      if (url.pathname === "/v1/alpha/search" && req.method === "POST") {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "web_search", provider: "unknown" };
+        const response = await handleSearch(req, config, logCtx);
+        addFinalRequestLog(
+          requestId,
+          start,
+          logCtx,
+          response.status,
+          response.status === 499 ? { closeReason: "client_cancel" } : undefined,
+        );
+        return withCors(response, req, config);
+      }
+
+      if (url.pathname === "/v1/responses" && req.method === "POST") {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        const apiAuthError = requireResponsesApiAuth(req, config);
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx = { model: "unknown", provider: "unknown" };
+        let logged = false;
+        const finalizeNativePassthroughLog = (
+          status: number,
+          meta: { terminalStatus?: ResponsesTerminalStatus; closeReason: "terminal" | "client_cancel" },
+        ) => {
+          if (logged) return;
+          logged = true;
+          addFinalRequestLog(requestId, start, logCtx, status, meta);
+        };
+        const response = await handleResponses(req, config, logCtx, {
+          abortSignal: req.signal,
+          onFirstOutput: () => recordFirstOutput(logCtx, start),
+          onNativePassthroughTerminal: status => {
+            finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
+              terminalStatus: status,
+              closeReason: "terminal",
+            });
+          },
+          onNativePassthroughCancel: () => {
+            finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
+          },
+        });
+        return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
+      }
+
+      // Anthropic Messages inbound (Claude Code). count_tokens FIRST (longer path).
+      // Claude Code posts `/v1/messages?beta=true` — pathname match ignores the query (003 G9).
+      if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") {
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        if (!hasValidApiAuth(req, config)) {
+          return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
+        }
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(anthropicErrorResponse(403, "cross-origin data-plane request blocked", "permission_error"), req, config);
+        }
+        const response = await handleClaudeCountTokens(req, config);
+        return withCors(response, req, config);
+      }
+
+      if (url.pathname === "/v1/messages" && req.method === "POST") {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        if (!hasValidApiAuth(req, config)) {
+          return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
+        }
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(anthropicErrorResponse(403, "cross-origin data-plane request blocked", "permission_error"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+        // Logging is finalized inside handleClaudeMessages (Responses-vocab tap on the
+        // pre-translation stream + native passthrough callbacks) — do not re-wrap the
+        // translated Anthropic stream here.
+        const response = await handleClaudeMessages(req, config, logCtx, { requestId, start });
+        return withCors(response, req, config);
+      }
+
+
+      // OpenAI Chat Completions inbound (GitHub Copilot App / OpenAI-compatible clients).
+      if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        const apiAuthError = requireResponsesApiAuth(req, config);
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+        const response = await handleChatCompletions(req, config, logCtx, { requestId, start });
+        return withCors(response, req, config);
+      }
+
+      // ChatGPT / Codex App voice (GPT‑Live / Frameless Bidi) + OpenAI Realtime call-create.
+      // Clients hit either /v1/live (Frameless App) or /v1/realtime/calls (codex RealtimeCallClient /
+      // public Realtime API). Sideband WS joins are handled just below.
+      if (
+        req.method === "POST"
+        && (url.pathname === "/v1/live" || url.pathname === "/v1/realtime/calls")
+      ) {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "gpt-live", provider: "unknown" };
+        const response = await handleLive(req, config, logCtx);
+        addFinalRequestLog(
+          requestId,
+          start,
+          logCtx,
+          response.status,
+          response.status === 499 ? { closeReason: "client_cancel" } : undefined,
+        );
+        return withCors(response, req, config);
+      }
+
+      // Voice / Realtime sideband WebSocket: Frameless joins /v1/live/{callId}; Realtime v1 joins
+      // /v1/realtime?call_id= (or /v1/realtime/calls/{callId}). Transparent bidirectional relay.
+      const liveSidebandTarget = req.headers.get("upgrade")?.toLowerCase() === "websocket"
+        ? parseLiveSidebandTarget(url.pathname, url.searchParams)
+        : null;
+      if (liveSidebandTarget) {
+        if (isDraining()) {
+          return drainingResponse(req);
+        }
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "gpt-live", provider: "unknown" };
+        const resolved = await resolveLiveSidebandUpgrade(req, config, logCtx, liveSidebandTarget);
+        if (resolved instanceof Response) {
+          addFinalRequestLog(requestId, start, logCtx, resolved.status);
+          return withCors(resolved, req, config);
+        }
+        addFinalRequestLog(requestId, start, logCtx, 101);
+        if (server.upgrade(req, {
+          data: {
+            kind: "live-sideband",
+            liveUpstreamUrl: resolved.upstreamWsUrl,
+            liveUpstreamHeaders: resolved.headers,
+            livePending: [],
+            liveOpened: false,
+          } satisfies WsData,
+        })) return undefined as unknown as Response;
+        return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, config);
+      }
+
+      // Data-plane guard: unknown /v1/* paths must fail with JSON 404, never fall through to the
+      // GUI static handler (extensionless paths would get index.html with HTTP 200 and codex-rs
+      // endpoint clients — memories/*, realtime/* — would surface confusing
+      // serde decode errors instead of a clean not-found).
+      if (url.pathname.startsWith("/v1/")) {
+        return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
+      }
+
+      const guiSessionCandidate = req.method === "GET" && (url.pathname === "/" || !url.pathname.includes("."))
+        ? issueGuiSession(req, config, managementAuth)
+        : null;
+      const guiFile = serveGuiFile(url.pathname, undefined, guiSessionCandidate ?? undefined);
+      if (guiFile) return guiFile;
+      if (url.pathname === "/" && req.method === "GET") {
+        return jsonResponse(rootFallbackPayload());
+      }
+
+      return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
+    },
+    websocket: {
+      idleTimeout: WEBSOCKET_IDLE_TIMEOUT_SECONDS,
+      // Responses WebSocket data plane (phase 120.2). Re-frames the same SSE pipeline onto the
+      // socket: parse response.create → run handleResponses unchanged → pump its SSE body as WS
+      // Text frames. response.processed is a no-op ack. close() aborts the upstream (RC2 parity).
+      // Live sideband sockets (kind=live-sideband) are a transparent bidirectional relay instead.
+      open(ws: ServerWebSocket<WsData>) {
+        if (ws.data.kind === "live-sideband") {
+          attachLiveSidebandUpstream(ws);
+          return;
+        }
+        registerCodexWebSocket(ws);
+      },
+      message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
+        if (ws.data.kind === "live-sideband") {
+          logLiveSidebandFrame("c2u", raw);
+          const upstream = ws.data.liveUpstream;
+          if (!upstream || upstream.readyState === WebSocket.CONNECTING || !ws.data.liveOpened) {
+            const pending = ws.data.livePending ?? (ws.data.livePending = []);
+            if (pending.length >= LIVE_SIDEBAND_PENDING_MAX) {
+              closeLiveSideband(ws, 1009, "too many pending frames");
+              return;
+            }
+            pending.push(raw);
+            return;
+          }
+          if (upstream.readyState !== WebSocket.OPEN) {
+            closeLiveSideband(ws, 1011, "upstream not open");
+            return;
+          }
+          try {
+            upstream.send(raw);
+          } catch {
+            closeLiveSideband(ws, 1011, "upstream send failed");
+          }
+          return;
+        }
+        const rawBytes = typeof raw === "string" ? Buffer.byteLength(raw) : raw.byteLength;
+        if (rawBytes > MAX_WS_FRAME_BYTES) {
+          sendJsonFrame(ws, buildWsErrorFrame(413, {
+            type: "invalid_request_error",
+            message: "WebSocket response.create frame is too large",
+          }));
+          ws.close(1009, "message too large");
+          return;
+        }
+        let frame: Record<string, unknown>;
+        try {
+          frame = JSON.parse(typeof raw === "string" ? raw : raw.toString()) as Record<string, unknown>;
+        } catch {
+          return; // text-only contract; ignore unparseable frames
+        }
+        if (frame.type === "response.processed") return; // ack — no-op
+        if (frame.type !== "response.create") return;
+        markActivity("ws response.create");
+
+        ws.data.cancel?.();
+        const turnId = (ws.data.turnId ?? 0) + 1;
+        ws.data.turnId = turnId;
+        const isCurrent = () => ws.data.turnId === turnId;
+        const turnAbort = new AbortController();
+        const cancelTurn = () => {
+          turnAbort.abort("websocket turn superseded or closed");
+        };
+        ws.data.cancel = cancelTurn;
+        // A socket may carry several response.create frames. Clear the previous
+        // account before resolving this frame so a failed Multi resolution cannot
+        // leave stale invalidation ownership behind.
+        updateCodexWebSocketAuthContext(ws, undefined);
+
+        if (frame.generate === false) {
+          for (const payload of buildWarmupCompletionFrames(frame)) {
+            if (!isCurrent()) return;
+            sendTextFrame(ws, payload);
+          }
+          if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
+          return;
+        }
+
+        const payload: Record<string, unknown> = { ...frame };
+        delete payload.type;
+        registerTurn(turnAbort);
+        void (async () => {
+          const start = Date.now();
+          const requestId = nextRequestLogId(start);
+          const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+          let logged = false;
+          const finalizeLog = (
+            status: number,
+            meta?: Pick<RequestLogEntry, "terminalStatus" | "closeReason">,
+          ) => {
+            if (logged) return;
+            logged = true;
+            addFinalRequestLog(requestId, start, logCtx, status, meta);
+          };
+          const baseHeaders = ws.data.headers ?? new Headers();
+          const fwd = new Headers({ "content-type": "application/json" });
+          baseHeaders.forEach((value, key) => fwd.set(key, value));
+          const req = new Request("http://localhost/v1/responses", {
+            method: "POST",
+            headers: fwd,
+            body: JSON.stringify({ ...payload, stream: true }),
+          });
+          try {
+            let terminalRecorder: ((status: ResponsesTerminalStatus, httpStatusOverride?: number) => void) | undefined;
+            const response = await handleResponses(req, config, logCtx, {
+              forceEmptyResponseId: true,
+              abortSignal: turnAbort.signal,
+              onFirstOutput: () => recordFirstOutput(logCtx, start),
+              onCodexAuthContextResolved: context => updateCodexWebSocketAuthContext(ws, context),
+              recordTerminalOutcomes: false,
+              setTerminalOutcomeRecorder: recorder => {
+                terminalRecorder = recorder;
+              },
+            });
+            await sendResponseToWebSocket(ws, response, isCurrent, {
+              onSsePayload: payload => inspectResponseLogSsePayload(logCtx, payload),
+              onTerminal: status => {
+                terminalRecorder?.(status, logCtx.terminalHttpStatus);
+                finalizeLog(httpStatusForRequestLogTerminal(status, logCtx), {
+                  terminalStatus: status,
+                  closeReason: "terminal",
+                });
+              },
+            });
+            if (!logged) finalizeLog(turnAbort.signal.aborted ? 499 : response.status);
+          } catch (err) {
+            if (!isCurrent()) return;
+            try {
+              if (err instanceof CodexAccountCooldownError) {
+                finalizeLog(429);
+                // Codex Desktop rides this WS transport, so it must carry the same
+                // actionable text as HTTP; a frame has no headers, hence message-only.
+                sendJsonFrame(ws, buildWsErrorFrame(429, {
+                  type: "rate_limit_error",
+                  message: cooldownErrorMessage(err),
+                }));
+                return;
+              }
+              finalizeLog(502);
+              sendJsonFrame(ws, buildWsErrorFrame(502, {
+                type: "proxy_error",
+                message: err instanceof Error ? err.message : String(err),
+              }));
+            } catch {
+              /* socket already gone or send dropped */
+            }
+          } finally {
+            unregisterTurn(turnAbort);
+            if (!logged && turnAbort.signal.aborted) finalizeLog(499);
+            if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
+          }
+        })();
+      },
+      close(ws: ServerWebSocket<WsData>) {
+        if (ws.data.kind === "live-sideband") {
+          ws.data.cancel?.();
+          ws.data.liveUpstream = undefined;
+          return;
+        }
+        unregisterCodexWebSocket(ws);
+        ws.data.cancel?.(); // RC2: abort the upstream when the client disconnects
+      },
+    },
+  });
+
+  setServerRef(server);
+  const actualPort = server.port ?? listenPort;
+  setCorsOrigin(actualPort);
+
+  console.log(`🚀 opencodex proxy running on http://localhost:${actualPort}`);
+  console.log(`   POST /v1/responses → provider translation`);
+  console.log(`   POST /v1/chat/completions → OpenAI-compatible clients`);
+  console.log(`   GET  /healthz      → health check`);
+  console.log(`   GET  /api/*        → management API`);
+  console.log(`   GET  /             → GUI dashboard`);
+
+  // Prime pool-account quota in the background so the rotation engine has real
+  // usage scores from the first routing decision, even when the dashboard is
+  // never opened (the common CLI/WSL case). Fire-and-forget: never blocks the
+  // listener, and a blocked network silently no-ops (see Phase 30 diagnostics).
+  const openAiProvider = config.providers.openai;
+  if (
+    openAiProvider
+    && openAiProvider.disabled !== true
+    && isCanonicalOpenAiForwardProvider(openAiProvider)
+    && providerCodexAccountMode("openai", openAiProvider) === "pool"
+  ) {
+    import("../codex/auth-api")
+      .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
+      .catch(() => {});
+  }
+
+  // Opt-in storage policy (default OFF). Never blocks listen; cancellable on shutdown.
+  scheduleStorageCleanupStartupRun();
+
+  return server;
+}
