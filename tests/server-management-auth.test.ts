@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { SERVER_BUDGET_MS } from "./helpers/test-budget";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
@@ -108,6 +108,37 @@ describe("management and data-plane credential separation", () => {
         throw Object.assign(new Error("injected unlink failure"), { code: "EPERM" });
       });
       expect(hardenedSecretPathCountForTests()).toBe(1);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+
+  test("stable-path cleanup drops only the success memo; temp cleanup releases all", () => {
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    const stable = join(testHome, "admin-api-token");
+    const temp = join(testHome, ".admin-token.tmp");
+    writeFileSync(stable, "x", { mode: 0o600 });
+    writeFileSync(temp, "y", { mode: 0o600 });
+    try {
+      // Optional timeouts memoize by path (required:false soft-fails).
+      expect(hardenSecretPath(stable, { required: false }).ok).toBe(false);
+      expect(hardenSecretPath(temp, { required: false }).ok).toBe(false);
+      expect(timedOutSecretPathCountForTests()).toBe(2);
+      // Stable cleanup: success memo gone, timeout memos UNTOUCHED (anti-restall).
+      removeManagementTokenPathBestEffort(stable);
+      expect(timedOutSecretPathCountForTests()).toBe(2);
+      // Temp cleanup with the ephemeral flag: only the temp's memo is released;
+      // the stable destination memo still stands.
+      removeManagementTokenPathBestEffort(temp, unlinkSync, { ephemeral: true });
+      expect(timedOutSecretPathCountForTests()).toBe(1);
     } finally {
       setIcaclsRunnerForTests(null);
       setPlatformForTests(null);

@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, openSync, closeSync, fsyncSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { forgetEphemeralSecretPath, hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetEphemeralSecretPath, hardenSecretPath, windowsSecretAclApplies } from "../lib/windows-secret-acl";
 
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
@@ -72,7 +72,7 @@ export function durableWrite(path: string, content: string): void {
   let fd: number | undefined;
   try {
     writeFileSync(tmp, content, { encoding: "utf8", mode: FILE_MODE });
-    if (process.platform === "win32") hardenSecretPath(tmp, { required: false, timeoutMemoKey: path });
+    if (windowsSecretAclApplies()) hardenSecretPath(tmp, { required: false, timeoutMemoKey: path });
     fd = openSync(tmp, "r+");
     fsyncSync(fd);
     closeSync(fd);
