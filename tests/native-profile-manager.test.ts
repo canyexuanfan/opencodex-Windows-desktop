@@ -7,8 +7,10 @@ import {
   decryptNativeEnvelope,
   MAX_NATIVE_PROFILE_JOURNAL_BYTES,
   MAX_NATIVE_PROFILE_METADATA_BYTES,
+  readNativeEnvelope,
   probeNativeProfileRecoveryState,
   readNativeProfileVault,
+  type NativeEnvelopeSnapshot,
 } from "../src/codex/native-profile-store";
 import { NativeProfileError, type NativeProfileKey, type NativeProfileKeyProvider } from "../src/codex/native-profile-types";
 
@@ -20,14 +22,20 @@ afterEach(() => {
 
 class MemoryKeyProvider implements NativeProfileKeyProvider {
   private readonly keys = new Map<string, Buffer>();
+  readonly issuedKeys: Buffer[] = [];
   async get(homeId: string): Promise<NativeProfileKey | null> {
     const key = this.keys.get(homeId);
-    return key ? { keyRef: `memory:${homeId}`, key: Buffer.from(key) } : null;
+    if (!key) return null;
+    const returned = Buffer.from(key);
+    this.issuedKeys.push(returned);
+    return { keyRef: `memory:${homeId}`, key: returned };
   }
   async create(homeId: string): Promise<NativeProfileKey> {
     const key = Buffer.alloc(32, 7);
     this.keys.set(homeId, key);
-    return { keyRef: `memory:${homeId}`, key: Buffer.from(key) };
+    const returned = Buffer.from(key);
+    this.issuedKeys.push(returned);
+    return { keyRef: `memory:${homeId}`, key: returned };
   }
 }
 
@@ -44,6 +52,18 @@ async function atomic(path: string, content: string): Promise<void> {
 
 function hasJournalPhase(content: string, phase: string): boolean {
   return (JSON.parse(content) as { phase?: unknown }).phase === phase;
+}
+
+function expectZeroized(buffer: Buffer): void {
+  expect([...buffer].every(byte => byte === 0)).toBe(true);
+}
+
+function captureEnvelopes(captured: NativeEnvelopeSnapshot[]): (path: string) => NativeEnvelopeSnapshot {
+  return path => {
+    const snapshot = readNativeEnvelope(path);
+    captured.push(snapshot);
+    return snapshot;
+  };
 }
 
 function fixture() {
@@ -827,6 +847,70 @@ describe("native main profile transactions", () => {
     const journalText = readFileSync(f.manager.context.journalPath, "utf8");
     expect(journalText).not.toContain("target-refreshed-failure");
     expect(journalText).not.toContain("opaque-refresh-target-refreshed-failure");
+  });
+
+  test("register zeroizes the auth envelope when vault loading fails early", async () => {
+    const f = fixture();
+    const captured: NativeEnvelopeSnapshot[] = [];
+    const manager = new NativeProfileManager({
+      ...f.options,
+      readEnvelope: captureEnvelopes(captured),
+      readVault: () => { throw new Error("injected vault read failure"); },
+    });
+
+    let caught: unknown;
+    try { await manager.register("personal"); } catch (error) { caught = error; }
+
+    expect(caught).toEqual(new Error("injected vault read failure"));
+    expect(captured).toHaveLength(1);
+    expectZeroized(captured[0].raw);
+    expect(f.keyProvider.issuedKeys).toHaveLength(0);
+  });
+
+  test("prepareStage zeroizes the key and auth envelope when identity validation fails early", async () => {
+    const f = await enrolledFixture();
+    const captured: NativeEnvelopeSnapshot[] = [];
+    const manager = new NativeProfileManager({ ...f.options, readEnvelope: captureEnvelopes(captured) });
+    writeFileSync(f.manager.context.authPath, f.target);
+
+    let caught: unknown;
+    try { await manager.prepareStage(); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("ACTIVE_PROFILE_MISMATCH");
+    expect(captured).toHaveLength(1);
+    expectZeroized(captured[0].raw);
+    expectZeroized(f.keyProvider.issuedKeys.at(-1)!);
+  });
+
+  test("switch zeroizes the key and source envelope when target resolution fails early", async () => {
+    const f = await enrolledFixture();
+    const captured: NativeEnvelopeSnapshot[] = [];
+    const manager = new NativeProfileManager({ ...f.options, readEnvelope: captureEnvelopes(captured) });
+
+    let caught: unknown;
+    try { await manager.switch("missing", true); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("PROFILE_NOT_FOUND");
+    expect(captured).toHaveLength(1);
+    expectZeroized(captured[0].raw);
+    expectZeroized(f.keyProvider.issuedKeys.at(-1)!);
+  });
+
+  test("recover zeroizes the key when current auth inspection fails after key acquisition", async () => {
+    const f = await enrolledFixture();
+    await leavePendingJournal(f);
+    const issuedBefore = f.keyProvider.issuedKeys.length;
+    writeFileSync(f.manager.context.authPath, "{}\n");
+
+    let caught: unknown;
+    try { await f.manager.recover(true, true); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
+    expect(f.keyProvider.issuedKeys.slice(issuedBefore)).not.toHaveLength(0);
+    for (const key of f.keyProvider.issuedKeys.slice(issuedBefore)) expectZeroized(key);
   });
 
   test("non-file Codex credential stores fail before vault or auth mutation", async () => {
