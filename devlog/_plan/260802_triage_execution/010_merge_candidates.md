@@ -60,3 +60,21 @@ wp6).
 - Merge with the repo's usual strategy (check recent dev history; default
   `gh pr merge <n> --merge` unless history shows squash convention).
 - Record merge SHA + comment URL per PR in this doc's results section.
+
+## Results (2026-08-02, wp2 executed)
+
+Six independent reviewer subagents (one per PR) read full diffs, CI rollups,
+and local source. Outcome: 2 merged, 4 blocked with precise feedback — the
+meticulous review caught real defects that green-CI snapshots had hidden.
+
+| PR | Verdict | Outcome |
+|---|---|---|
+| 862 | MERGE | MERGED 2026-08-02T00:02:36Z; comment 5154095016 |
+| 653 | MERGE | MERGED; owner re-review superseded stale CR; comment 5154097081 |
+| 866 | NO-MERGE | classifier not fail-closed (trim/lowercase + ambiguous shapes); blocking comment 5154104384 |
+| 860 | NO-MERGE | unknown capability fails open; volcengine-agent-plan exposed; no full CI; comment 5154104403 |
+| 853 | NO-MERGE | Luna advertised ultra vs canonical max; test gap; windows CI pending; comment 5154105797 |
+| 854 | NO-MERGE | stale 200k Sonnet 4.6 metadata vs upstream 1M; registry omits windows; no full CI; comment 5154105790 |
+
+Note: 854's blocker overlaps #839's needed reconciliation (Claude 4.6/4.7
+1M source of truth) — flagged for coordination in the 854 comment.
