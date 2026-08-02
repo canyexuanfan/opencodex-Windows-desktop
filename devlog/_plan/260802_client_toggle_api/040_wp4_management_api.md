@@ -303,6 +303,12 @@ class IntegrationMutationBusyError extends Error {
 const integrationMutationFlights = new Map<IntegrationClientId, IntegrationMutationFlight>();
 let integrationMutationTestHooks: {
   io?: IntegrationIO;
+  /**
+   * Bind every read and write in the request to one store. Without this a
+   * route test could isolate the writer but not the journal listing or the
+   * restore preflight (A-gate round 12).
+   */
+  store?: IntegrationStateStore;
   run?: (operation: () => Promise<unknown>) => Promise<unknown>;
 } | null = null;
 
@@ -374,15 +380,27 @@ export function setIntegrationMutationFlightTestHooks(
   integrationMutationFlights.clear();
 }
 
+/**
+ * ONE store per request, used by every read and every write in that request.
+ * The route previously called module-level `listOperations`/`readSnapshot`
+ * while handing the writer a separate default store, so a test could not bind
+ * the whole operation to a temp root (A-gate round 12).
+ */
+function integrationStore(): IntegrationStateStore {
+  return integrationMutationTestHooks?.store ?? createIntegrationStateStore();
+}
+
 async function buildIntegrationWriteInput(
   clientId: IntegrationClientId,
   ctx: ManagementContext,
+  store: IntegrationStateStore,
 ): Promise<IntegrationWriteInput> {
   return {
     clientId,
     models: await loadExportModels(ctx.config),
     config: ctx.config,
     port: Number(ctx.url.port) || ctx.config.port,
+    store,
     io: integrationMutationTestHooks?.io,
   };
 }
@@ -501,7 +519,8 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
       return invalidClientResponse(ctx);
     }
     try {
-      const storedOperations = await listOperations(requestedClient ?? undefined);
+      const store = integrationStore();
+      const storedOperations = store.listOperations(requestedClient ?? undefined);
       const newestByClient = new Map<IntegrationClientId, string>();
       for (const operation of storedOperations) {
         if (!newestByClient.has(operation.clientId)) {
@@ -544,7 +563,8 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
     const opId = parsed.opId.trim();
     const confirmDrift = parsed.confirmDrift ?? false;
     try {
-      const operation = (await listOperations()).find(entry => entry.opId === opId);
+      const store = integrationStore();
+      const operation = store.findOperation(opId);
       if (!operation) {
         return jsonResponse({
           error: "integration operation not found",
@@ -552,7 +572,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
           opId,
         }, 404, req, ctx.config);
       }
-      const snapshot = readSnapshot(operation);   // 021: takes the row, not an id
+      const snapshot = store.readSnapshot(operation);
       if (snapshot.kind === "expired") {
         return jsonResponse({
           error: "integration snapshot expired",
@@ -561,7 +581,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
         }, 410, req, ctx.config);
       }
 
-      const writeInput = await buildIntegrationWriteInput(operation.clientId, ctx);
+      const writeInput = await buildIntegrationWriteInput(operation.clientId, ctx, store);
       const restoreInput: IntegrationRestoreInput = {
         ...writeInput,
         opId,
@@ -605,7 +625,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
 
   if (req.method === "GET") {
     try {
-      const input = await buildIntegrationWriteInput(requestedClient, ctx);
+      const input = await buildIntegrationWriteInput(requestedClient, ctx, integrationStore());
       const state = await readIntegrationState(input);
       return jsonResponse({ clientId: requestedClient, ...state } satisfies IntegrationStateEnvelope, 200, req, ctx.config);
     } catch (error) {
@@ -623,7 +643,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
   }
 
   try {
-    const input = await buildIntegrationWriteInput(requestedClient, ctx);
+    const input = await buildIntegrationWriteInput(requestedClient, ctx, integrationStore());
     const result = await runIntegrationMutationFlight(
       requestedClient,
       parsed.enabled ? "apply" : "disable",
@@ -699,6 +719,7 @@ result if the branch did not run.
 | unsafe rejection | Point a client config path at a directory (or the WP2 unsafe fixture), confirm GET reports `state: "unsafe"`, then PUT either toggle direction. | Mutation response is exactly 409 `integration_unsafe`; directory/file bytes and journal length are unchanged. |
 | conflict rejection | Apply a managed config, edit its on-disk bytes so the persisted fingerprint no longer matches, then PUT `{ "enabled": false }`. | Response is exactly 409 `integration_conflict`; the edited provider block remains byte-for-byte present; no disable operation is appended. |
 | restore-to-absence | Apply when the client config file is missing, producing a journal row with `snapshot.kind === "none"`, then restore that `opId` while its result fingerprint still matches. | Restore returns 200, deletes the file created by apply, appends a restore row, and GET reports `state: "absent"`; no 410 envelope is emitted. |
+| store isolation (routes) | seed a real store, then drive `PUT /api/client-integrations/:id` (apply), the same route again (disable) and `POST /api/client-integrations/restore` with `integrationMutationTestHooks.store` rooted at a temp dir | every real record/journal/snapshot file is byte-identical afterwards; the temp root holds the whole transaction, and the journal route reads it back through the same store |
 | journal-expired 410 | Produce 11 operations for one client so WP3's 10-snapshot GC changes the first snapshot tag to `expired` while retaining its immutable history row; restore the first `opId`. | Journal GET still contains the first row with `snapshot: "expired"`; restore returns exactly 410 `integration_snapshot_expired`; target bytes and journal length are unchanged. |
 
 ## 7. New test file — `tests/management-integration-routes.test.ts`

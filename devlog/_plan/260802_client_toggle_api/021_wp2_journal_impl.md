@@ -139,18 +139,23 @@ export interface OwnershipRecord {
   opId: string;
 }
 
-/** `dir` is the test seam — no env mutation required. */
-export function integrationsDir(dir: string = getConfigDir()): string {
-  return join(dir, "integrations");
+/**
+ * The integrations directory itself. Every primitive below takes THIS path,
+ * never a config root, so a caller cannot accidentally produce
+ * `<root>/integrations/integrations` by passing an already-resolved value
+ * (A-gate round 12).
+ */
+export function integrationsDir(configDir: string = getConfigDir()): string {
+  return join(configDir, "integrations");
 }
 
-function recordsPath(): string {
-  return join(integrationsDir(), "records.json");
+function recordsPath(dir: string): string {
+  return join(dir, "records.json");
 }
 
-export function readRecords(): Partial<Record<IntegrationClientId, OwnershipRecord>> {
+export function readRecords(dir: string = integrationsDir()): Partial<Record<IntegrationClientId, OwnershipRecord>> {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(recordsPath(), "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(recordsPath(dir), "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Partial<Record<IntegrationClientId, OwnershipRecord>>)
       : {};
@@ -162,19 +167,19 @@ export function readRecords(): Partial<Record<IntegrationClientId, OwnershipReco
   }
 }
 
-export function writeRecord(record: OwnershipRecord): void {
-  const all = readRecords();
+export function writeRecord(record: OwnershipRecord, dir: string = integrationsDir()): void {
+  const all = readRecords(dir);
   all[record.clientId] = record;
-  ensureDir(recordsPath());
-  atomicWriteFile(recordsPath(), JSON.stringify(all, null, 2) + "\n");
+  ensureDir(recordsPath(dir));
+  atomicWriteFile(recordsPath(dir), JSON.stringify(all, null, 2) + "\n");
 }
 
-export function deleteRecord(clientId: IntegrationClientId): void {
-  const all = readRecords();
+export function deleteRecord(clientId: IntegrationClientId, dir: string = integrationsDir()): void {
+  const all = readRecords(dir);
   if (!(clientId in all)) return;
   delete all[clientId];
-  ensureDir(recordsPath());
-  atomicWriteFile(recordsPath(), JSON.stringify(all, null, 2) + "\n");
+  ensureDir(recordsPath(dir));
+  atomicWriteFile(recordsPath(dir), JSON.stringify(all, null, 2) + "\n");
 }
 
 /** atomicWriteFile does not create parents (005 §3). */
@@ -292,7 +297,7 @@ export interface IntegrationStateInput {
 export function readIntegrationState(input: IntegrationStateInput): IntegrationStatus {
   const store = input.store ?? createIntegrationStateStore();
   retryPendingPrunesOnce(store);   // scoped to THIS store; never throws
-  const io = input.io ?? defaultIntegrationIO();
+  const io = input.io ?? defaultIntegrationIO(store);
   const spec = INTEGRATION_CLIENTS[input.clientId];
   const exportSpec = EXPORT_CLIENTS[input.clientId];
   const configPath = spec.configPath(input.env);
@@ -386,9 +391,9 @@ const SNAPSHOT_RETENTION = 10;
 
 export function newOpId(): string { return randomUUID(); }
 
-function journalPath(): string { return join(integrationsDir(), "journal.jsonl"); }
-function snapshotDir(clientId: IntegrationClientId, dir?: string): string {
-  return join(integrationsDir(dir), "snapshots", clientId);
+function journalPath(dir: string): string { return join(dir, "journal.jsonl"); }
+function snapshotDir(clientId: IntegrationClientId, dir: string = integrationsDir()): string {
+  return join(dir, "snapshots", clientId);
 }
 
 /**
@@ -397,10 +402,10 @@ function snapshotDir(clientId: IntegrationClientId, dir?: string): string {
  * atomicWriteFile, which applies 0600 plus Windows ACL hardening.
  */
 export function captureSnapshot(
-  clientId: IntegrationClientId, opId: string, text: string | null,
+  clientId: IntegrationClientId, opId: string, text: string | null, dir: string = integrationsDir(),
 ): SnapshotRef {
   if (text === null) return { kind: "none" };
-  const target = join(snapshotDir(clientId), opId);
+  const target = join(snapshotDir(clientId, dir), opId);
   ensureDir(target);
   atomicWriteFile(target, text);
   return { kind: "stored", relPath: join("snapshots", clientId, opId) };
@@ -412,9 +417,9 @@ export function captureSnapshot(
  * already succeeded — the phantom row the ordering exists to prevent
  * (A-gate round 4, blocker 5).
  */
-export function appendOperation(entry: JournalEntry): void {
-  ensureDir(journalPath());
-  appendFileSync(journalPath(), JSON.stringify(entry) + "\n", { encoding: "utf8", mode: 0o600 });
+export function appendOperation(entry: JournalEntry, dir: string = integrationsDir()): void {
+  ensureDir(journalPath(dir));
+  appendFileSync(journalPath(dir), JSON.stringify(entry) + "\n", { encoding: "utf8", mode: 0o600 });
   // Post-commit. A prune failure never fails the append — but it is marked so
   // a later operation retries it, and `retentionDegraded` reports it meanwhile.
   // Everything after the append is best-effort AND non-throwing: the row is
@@ -430,9 +435,9 @@ export function appendOperation(entry: JournalEntry): void {
 }
 
 /** Newest first. A torn final line (crash mid-append) is skipped, not thrown. */
-export function listOperations(clientId?: IntegrationClientId, limit = 50): JournalEntry[] {
+export function listOperations(clientId?: IntegrationClientId, limit = 50, dir: string = integrationsDir()): JournalEntry[] {
   let raw: string;
-  try { raw = readFileSync(journalPath(), "utf8"); } catch { return []; }
+  try { raw = readFileSync(journalPath(dir), "utf8"); } catch { return []; }
   const rows: JournalEntry[] = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
@@ -444,16 +449,16 @@ export function listOperations(clientId?: IntegrationClientId, limit = 50): Jour
   return rows.reverse().slice(0, limit);
 }
 
-export function findOperation(opId: string): JournalEntry | null {
-  return listOperations(undefined, Number.MAX_SAFE_INTEGER).find(r => r.opId === opId) ?? null;
+export function findOperation(opId: string, dir: string = integrationsDir()): JournalEntry | null {
+  return listOperations(undefined, Number.MAX_SAFE_INTEGER, dir).find(r => r.opId === opId) ?? null;
 }
 
 /** Resolves the tag against what is actually on disk now. */
-export function readSnapshot(entry: JournalEntry):
+export function readSnapshot(entry: JournalEntry, dir: string = integrationsDir()):
   | { kind: "none" } | { kind: "stored"; text: string; path: string } | { kind: "expired" } {
   if (entry.snapshot.kind === "none") return { kind: "none" };
   if (entry.snapshot.kind === "expired") return { kind: "expired" };
-  const abs = join(integrationsDir(), entry.snapshot.relPath);
+  const abs = join(dir, entry.snapshot.relPath);
   if (!existsSync(abs)) return { kind: "expired" };
   return { kind: "stored", text: readFileSync(abs, "utf8"), path: abs };
 }
@@ -483,7 +488,7 @@ export function countSnapshots(clientId: IntegrationClientId, dir?: string): num
  */
 export function pruneSnapshots(clientId: IntegrationClientId, dir?: string): { ok: true } | { ok: false; error: string } {
   const keep = new Set(
-    listOperations(clientId, SNAPSHOT_RETENTION)
+    listOperations(clientId, SNAPSHOT_RETENTION, dir)
       .map(r => (r.snapshot.kind === "stored" ? r.opId : null))
       .filter((v): v is string => v !== null),
   );
@@ -510,7 +515,7 @@ export interface MaintenanceState {
   pruneFailures: Partial<Record<IntegrationClientId, { at: string; error: string }>>;
 }
 
-function maintenancePath(dir?: string): string { return join(integrationsDir(dir), "maintenance.json"); }
+function maintenancePath(dir: string = integrationsDir()): string { return join(dir, "maintenance.json"); }
 
 export function readMaintenance(dir?: string): MaintenanceState {
   try {
@@ -549,13 +554,13 @@ function writeMaintenance(state: MaintenanceState, dir?: string): void {
 }
 
 export function markPruneFailure(clientId: IntegrationClientId, error: string, dir?: string): void {
-  const state = readMaintenance();
+  const state = readMaintenance(dir);
   state.pruneFailures[clientId] = { at: new Date().toISOString(), error };
   writeMaintenance(state, dir);
 }
 
 export function clearPruneFailure(clientId: IntegrationClientId, dir?: string): void {
-  const state = readMaintenance();
+  const state = readMaintenance(dir);
   if (!(clientId in state.pruneFailures)) return;
   delete state.pruneFailures[clientId];
   writeMaintenance(state, dir);
@@ -703,8 +708,10 @@ Every function above takes an explicit root. This factory binds them once so a
 caller holds ONE object and cannot straddle two stores (006 §Config-dir seam).
 
 ```ts
-export function createIntegrationStateStore(root?: string): IntegrationStateStore {
-  const dir = integrationsDir(root);
+export function createIntegrationStateStore(root: string = integrationsDir()): IntegrationStateStore {
+  // `root` IS the integrations directory. Resolving it again here is what
+  // produced `<tmp>/integrations/integrations` (A-gate round 12).
+  const dir = root;
   const store: IntegrationStateStore = {
     root: dir,
     readRecords: () => readRecords(dir),
@@ -719,7 +726,7 @@ export function createIntegrationStateStore(root?: string): IntegrationStateStor
     pruneSnapshots: clientId => pruneSnapshots(clientId, dir),
     readMaintenance: () => readMaintenance(dir),
     markPruneFailure: (clientId, error) => markPruneFailure(clientId, error, dir),
-    clearPruneFailure: (clientId, error) => clearPruneFailure(clientId, dir),
+    clearPruneFailure: clientId => clearPruneFailure(clientId, dir),
     retryPendingPrunes: () => {
       for (const clientId of Object.keys(store.readMaintenance().pruneFailures) as IntegrationClientId[]) {
         if (store.pruneSnapshots(clientId).ok) store.clearPruneFailure(clientId);
