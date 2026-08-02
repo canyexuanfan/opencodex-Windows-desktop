@@ -12,6 +12,8 @@ import {
   deriveProviderPresets,
   providerConfigSeed,
 } from "../src/providers/derive";
+import { FREE_PROVIDER_DIRECTORY } from "../src/providers/free-directory";
+import { resolveProviderModelDiscovery } from "../src/providers/model-discovery";
 import { PROVIDER_REGISTRY, type ProviderRegistryEntry } from "../src/providers/registry";
 import { routedSlug } from "../src/providers/slug-codec";
 import { routeModel } from "../src/router";
@@ -51,6 +53,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   clearModelCache("sambanova");
   clearModelCache("nebius");
+  clearModelCache("nebius-team");
 });
 
 function registryEntry(id: ProviderId): ProviderRegistryEntry {
@@ -90,7 +93,9 @@ describe("SambaNova and Nebius providers", () => {
       dashboardUrl: PROVIDERS.sambanova.dashboardUrl,
       liveModels: true,
       preserveCustomDestination: true,
+      apiKeyValidation: "unknown",
       parallelToolCalls: false,
+      reasoningEfforts: [],
       modelDiscovery: {
         path: "models",
         maxResponseBytes: 131_072,
@@ -109,6 +114,7 @@ describe("SambaNova and Nebius providers", () => {
       liveModels: true,
       preserveCustomDestination: true,
       parallelToolCalls: false,
+      reasoningEfforts: [],
       modelDiscovery: {
         path: "models",
         query: { verbose: "true" },
@@ -120,6 +126,16 @@ describe("SambaNova and Nebius providers", () => {
       },
     });
     expect(registryEntry("nebius").note).toContain("embedding and image-generation rows");
+    expect(FREE_PROVIDER_DIRECTORY.find(row => row.id === "sambanova")).toMatchObject({
+      label: "SambaNova Cloud",
+      lastVerified: "2026-08-02",
+      modelsUrl: PROVIDERS.sambanova.modelsUrl,
+    });
+    expect(FREE_PROVIDER_DIRECTORY.find(row => row.id === "nebius")).toMatchObject({
+      label: "Nebius Token Factory",
+      lastVerified: "2026-08-02",
+      modelsUrl: PROVIDERS.nebius.modelsUrl,
+    });
   });
 
   test("derives CLI and dashboard presets without persisting registry trust policy", () => {
@@ -133,6 +149,7 @@ describe("SambaNova and Nebius providers", () => {
         baseUrl: provider.baseUrl,
         dashboardUrl: provider.dashboardUrl,
         liveModels: true,
+        ...(id === "sambanova" ? { apiKeyValidation: "unknown" } : {}),
       });
       expect(buildInitProviders().find(row => row.id === id)).toMatchObject({
         kind: "key",
@@ -151,7 +168,9 @@ describe("SambaNova and Nebius providers", () => {
         authMode: "key",
         liveModels: true,
         parallelToolCalls: false,
+        reasoningEfforts: [],
       });
+      expect(seed).not.toHaveProperty("apiKeyValidation");
       expect(seed).not.toHaveProperty("modelDiscovery");
       expect(seed).not.toHaveProperty("preserveCustomDestination");
       expect(KEY_LOGIN_PROVIDERS[id]).not.toHaveProperty("modelDiscovery");
@@ -159,26 +178,42 @@ describe("SambaNova and Nebius providers", () => {
     }
   });
 
-  test("lists and validates models through each registry-owned endpoint", async () => {
+  test("builds each registry-owned models request and validates the authenticated Nebius catalog", async () => {
     for (const id of ["sambanova", "nebius"] as const) {
       const provider = PROVIDERS[id];
       expect(buildModelsRequest(providerConfig(id).providers[id]!, provider.key, id)).toEqual({
         url: provider.modelsUrl,
         headers: { Authorization: `Bearer ${provider.key}` },
       });
-
-      globalThis.fetch = (async (input, init) => {
-        expect(String(input)).toBe(provider.modelsUrl);
-        expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${provider.key}`);
-        expect(init?.redirect).toBe("error");
-        return new Response(provider.fixture, {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }) as typeof fetch;
-
-      expect(await validateApiKey(id, KEY_LOGIN_PROVIDERS[id]!, provider.key)).toBe(true);
     }
+
+    const provider = PROVIDERS.nebius;
+    globalThis.fetch = (async (input, init) => {
+      expect(String(input)).toBe(provider.modelsUrl);
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${provider.key}`);
+      expect(init?.redirect).toBe("error");
+      return new Response(provider.fixture, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    expect(await validateApiKey("nebius", KEY_LOGIN_PROVIDERS.nebius!, provider.key)).toBe(true);
+  });
+
+  test("does not treat SambaNova's public model catalog as proof that a key is valid", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(SAMBANOVA_FIXTURE, { status: 200 });
+    }) as typeof fetch;
+
+    expect(await validateApiKey(
+      "sambanova",
+      KEY_LOGIN_PROVIDERS.sambanova!,
+      PROVIDERS.sambanova.key,
+    )).toBe("unknown");
+    expect(fetchCalled).toBe(false);
   });
 
   test("filters Nebius mixed rows and preserves model metadata and native ids", async () => {
@@ -220,6 +255,7 @@ describe("SambaNova and Nebius providers", () => {
     expect(sambanovaModels[1]).toMatchObject({
       owned_by: "sambanova",
       contextWindow: 131_072,
+      reasoningEfforts: [],
     });
     expect(nebiusModels.map(row => row.id)).toEqual([
       "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
@@ -230,6 +266,7 @@ describe("SambaNova and Nebius providers", () => {
       contextWindow: 131_072,
       inputModalities: ["text"],
       capabilities: ["function-calling", "json-mode"],
+      reasoningEfforts: [],
     });
     expect(nebiusModels[1]).toMatchObject({
       contextWindow: 262_144,
@@ -244,6 +281,33 @@ describe("SambaNova and Nebius providers", () => {
       expect(routeModel(config, `${providerId}/${modelId}`).modelId).toBe(modelId);
       expect(routeModel(config, routedSlug(providerId, modelId)).modelId).toBe(modelId);
     }
+  });
+
+  test("keeps Nebius query and text-output filtering when the preset is renamed", async () => {
+    const provider = PROVIDERS.nebius;
+    globalThis.fetch = (async (input, init) => {
+      expect(String(input)).toBe(provider.modelsUrl);
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${provider.key}`);
+      expect(init?.redirect).toBe("manual");
+      return new Response(provider.fixture, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const renamed = "nebius-team";
+    const config = withStubbedProviderFetch({
+      port: 10100,
+      defaultProvider: renamed,
+      providers: {
+        [renamed]: providerConfig("nebius").providers.nebius!,
+      },
+    } satisfies OcxConfig);
+    const models = await gatherRoutedModels(config);
+    expect(models.filter(row => row.provider === renamed).map(row => row.id)).toEqual([
+      "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+      "Qwen/Qwen3-VL-235B-A22B-Instruct",
+    ]);
   });
 
   test("routes tool requests to the fixed hosts without claiming parallel tool calls", () => {
@@ -265,7 +329,7 @@ describe("SambaNova and Nebius providers", () => {
           }],
         },
         stream: true,
-        options: {},
+        options: { reasoning: "high" },
       });
       const body = JSON.parse(String(request.body)) as Record<string, unknown>;
 
@@ -273,6 +337,7 @@ describe("SambaNova and Nebius providers", () => {
       expect(request.headers.Authorization).toBe(`Bearer ${PROVIDERS[providerId].key}`);
       expect(body.model).toBe(modelId);
       expect(body.parallel_tool_calls).toBe(false);
+      expect(body).not.toHaveProperty("reasoning_effort");
     }
   });
 
@@ -300,5 +365,14 @@ describe("SambaNova and Nebius providers", () => {
         authMode: "key",
       });
     }
+
+    const crossPreset = providerConfig("sambanova", {
+      baseUrl: PROVIDERS.nebius.baseUrl,
+    }).providers.sambanova!;
+    expect(resolveProviderModelDiscovery("sambanova", crossPreset).spec).toBeUndefined();
+    expect(buildModelsRequest(crossPreset, "custom-key", "sambanova")).toEqual({
+      url: `${PROVIDERS.nebius.baseUrl}/models`,
+      headers: { Authorization: "Bearer custom-key" },
+    });
   });
 });

@@ -311,9 +311,11 @@ configured Bearer key. Create keys at
 [Command Code Studio](https://commandcode.ai/studio/).
 
 **SambaNova Cloud discovery.** The preset reads SambaNova Cloud's public `/v1/models` list from the fixed API
-host, preserves provider-native ids, and caps discovery at 128 KiB and 128 raw rows. Chat requests
-use the configured Bearer key and disable parallel function calls, which SambaNova does not yet
-support. Private SambaStudio deployment endpoints are out of scope. Create keys in
+host, preserves provider-native ids, and caps discovery at 128 KiB and 128 raw rows. Because the
+catalog is unauthenticated, the CLI login flow reports the key as unverifiable instead of treating
+the public response as proof. Chat requests still use the configured Bearer key and disable parallel
+function calls, which SambaNova does not yet support. Private SambaStudio deployment endpoints are
+out of scope. Create keys in
 [SambaNova Cloud](https://cloud.sambanova.ai/apis).
 
 **Nebius Token Factory discovery.** The preset requests the authenticated verbose model catalog and

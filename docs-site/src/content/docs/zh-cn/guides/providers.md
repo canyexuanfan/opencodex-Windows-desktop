@@ -214,8 +214,9 @@ image、audio 和 GPU 端点不在范围内。密钥可在 [Hyperbolic](https://
 端点获取。聊天请求使用已配置的 bearer 密钥。密钥可在 [Command Code Studio](https://commandcode.ai/studio/) 创建。
 
 **SambaNova Cloud 发现：**该预设从固定 API 主机读取 SambaNova Cloud 的公开 `/v1/models` 列表，保留提供商原生
-模型 id，并将发现限制为 128 KiB 和 128 条原始记录。chat 请求使用已配置的 Bearer 密钥；由于
-SambaNova 尚不支持并行 function call，该能力会被禁用。私有 SambaStudio 部署端点不在范围内。
+模型 id，并将发现限制为 128 KiB 和 128 条原始记录。该目录无需鉴权，因此 CLI 登录流程不会把公开响应
+当作密钥有效性的证明，而会将密钥报告为无法验证。chat 请求仍使用已配置的 Bearer 密钥；由于 SambaNova
+尚不支持并行 function call，该能力会被禁用。私有 SambaStudio 部署端点不在范围内。
 密钥可在 [SambaNova Cloud](https://cloud.sambanova.ai/apis) 创建。
 
 **Nebius Token Factory 发现：**该预设请求需要鉴权的 verbose 模型目录，仅保留 architecture 输出 text

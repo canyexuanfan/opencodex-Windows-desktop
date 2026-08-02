@@ -1420,8 +1420,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       maxResponseBytes: 512 * 1024,
       maxModels: 512,
       filter: {
-        // Token Factory's verbose catalog also contains embeddings and image generation.
-        // Keep text- and vision-input rows whose output modality is text.
+        // Keep rows whose reported architecture output includes text (for example,
+        // text->text or text+image->text); embedding and image-generation rows are excluded.
         allOf: [{ path: ["architecture", "modality"], containsAny: ["->text"] }],
       },
     },

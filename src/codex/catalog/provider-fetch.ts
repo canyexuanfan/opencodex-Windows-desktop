@@ -741,11 +741,11 @@ function modelInputModalities(
     ? normalizedMetadataString(architecture.modality, 64)
     : undefined;
   if (architectureModality?.includes("->")) {
-    const [rawInput] = architectureModality.split("->");
+    const [rawInput = ""] = architectureModality.split("->");
     const inferred = rawInput
-      ?.split("+")
+      .split("+")
       .filter(value => value === "text" || value === "image" || value === "audio");
-    if (inferred && inferred.length > 0) return [...new Set(inferred)];
+    if (inferred.length > 0) return [...new Set(inferred)];
   }
   if (capabilityRecord?.vision === false) return ["text"];
   if (capabilityRecord?.vision === true || capabilities?.some(value => value === "vision" || value === "image-input")) {

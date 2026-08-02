@@ -232,8 +232,9 @@ discovery エンドポイントから取得します。チャットリクエス�
 キーは [Command Code Studio](https://commandcode.ai/studio/) で作成します。
 
 **SambaNova Cloud の discovery:** preset は固定 API ホスト上の SambaNova Cloud の公開 `/v1/models` 一覧を読み、
-プロバイダー固有の ID を保持し、discovery を 128 KiB と raw 128 行に制限します。chat リクエストは
-設定済み Bearer キーを使い、SambaNova がまだ対応していない並列 function call は無効にします。
+プロバイダー固有の ID を保持し、discovery を 128 KiB と raw 128 行に制限します。カタログは認証不要のため、
+CLI の login flow は公開レスポンスをキーの有効性の証拠にせず、キーを検証不能として報告します。chat リクエストは
+引き続き設定済み Bearer キーを使い、SambaNova がまだ対応していない並列 function call は無効にします。
 非公開の SambaStudio deployment endpoint は対象外です。キーは
 [SambaNova Cloud](https://cloud.sambanova.ai/apis) で作成します。
 

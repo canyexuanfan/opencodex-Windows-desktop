@@ -13,7 +13,11 @@ import {
   readBoundedDiscoveryJson,
   resolveProviderModelDiscovery,
 } from "../src/providers/model-discovery";
-import { PROVIDER_REGISTRY, type ProviderModelDiscoverySpec } from "../src/providers/registry";
+import {
+  PROVIDER_REGISTRY,
+  registryEntryForProviderDestination,
+  type ProviderModelDiscoverySpec,
+} from "../src/providers/registry";
 import { routeModel } from "../src/router";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
@@ -104,6 +108,18 @@ describe("registry-owned provider model discovery", () => {
     }
   });
 
+  test("keeps discovery-bearing fixed key destinations unambiguous for renamed presets", () => {
+    for (const entry of PROVIDER_REGISTRY) {
+      if (!entry.modelDiscovery || entry.authKind !== "key") continue;
+      if (entry.allowBaseUrlOverride || /\{[^}]*\}/.test(entry.baseUrl)) continue;
+      expect(registryEntryForProviderDestination({
+        adapter: entry.adapter,
+        baseUrl: entry.baseUrl,
+        authMode: "key",
+      })?.id).toBe(entry.id);
+    }
+  });
+
   test("derives an alternate path and query only for the canonical destination", async () => {
     await withTogetherDiscovery({
       path: "catalog",
@@ -111,6 +127,14 @@ describe("registry-owned provider model discovery", () => {
     }, () => {
       const canonical = buildModelsRequest(togetherConfig().providers.together!, "secret", "together");
       expect(canonical.url).toBe("https://api.together.xyz/v1/catalog?capability=chat&limit=100");
+
+      const renamedCanonical = buildModelsRequest(
+        togetherConfig().providers.together!,
+        "secret",
+        "together-team",
+      );
+      expect(renamedCanonical.url)
+        .toBe("https://api.together.xyz/v1/catalog?capability=chat&limit=100");
 
       const collidingCustom: OcxProviderConfig = {
         adapter: "openai-chat",

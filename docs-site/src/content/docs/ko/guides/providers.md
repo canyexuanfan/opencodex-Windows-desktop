@@ -230,9 +230,11 @@ CLI 사용자는 `~/.commandcode/auth.json`의 로컬 CLI 자격 증명을 가�
 키를 사용합니다. 키는 [Command Code Studio](https://commandcode.ai/studio/)에서 생성합니다.
 
 **SambaNova Cloud 검색:** 프리셋은 고정 API 호스트의 SambaNova Cloud 공개 `/v1/models` 목록을 읽고, 프로바이더
-네이티브 ID를 보존하며 discovery를 128 KiB와 raw 행 128개로 제한합니다. chat 요청은 설정된 Bearer
-키를 사용하고 SambaNova가 아직 지원하지 않는 병렬 function call은 비활성화합니다. 비공개 SambaStudio
-deployment 엔드포인트는 범위에서 제외합니다. 키는 [SambaNova Cloud](https://cloud.sambanova.ai/apis)에서 생성합니다.
+네이티브 ID를 보존하며 discovery를 128 KiB와 raw 행 128개로 제한합니다. 카탈로그에는 인증이 필요하지 않으므로
+CLI 로그인 흐름은 공개 응답을 키 유효성의 증거로 사용하지 않고 키를 검증할 수 없는 것으로 보고합니다. chat 요청은
+계속 설정된 Bearer 키를 사용하고 SambaNova가 아직 지원하지 않는 병렬 function call은 비활성화합니다. 비공개
+SambaStudio deployment 엔드포인트는 범위에서 제외합니다. 키는
+[SambaNova Cloud](https://cloud.sambanova.ai/apis)에서 생성합니다.
 
 **Nebius Token Factory 검색:** 프리셋은 인증된 verbose 모델 카탈로그를 요청하고 architecture가 text를
 출력하는 행만 유지해 embedding 및 image-generation 모델을 제외합니다. 슬래시가 포함된 네이티브 ID와
