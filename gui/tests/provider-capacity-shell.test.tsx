@@ -56,6 +56,44 @@ function aggregatePayload() {
   };
 }
 
+function aggregateWindowPayload(weeklyIncomplete: boolean, monthlyIncomplete: boolean) {
+  const now = Date.now();
+  const incomplete = weeklyIncomplete || monthlyIncomplete;
+  return {
+    reports: [{
+      provider: "openai",
+      label: "OpenAI (Codex login)",
+      source: "chatgpt:wham",
+      updatedAt: now,
+      quota: { weeklyPercent: 20, monthlyPercent: 40, updatedAt: now },
+      aggregation: {
+        kind: "capacity-weighted-v1",
+        scope: "routable-known",
+        presentation: "aggregate",
+        includedAccounts: 2,
+        excludedAccounts: 0,
+        unknownPlanAccounts: 0,
+        partialWindowAccounts: incomplete ? 1 : 0,
+        incomplete,
+        weekly: {
+          usedPercent: 20,
+          includedAccounts: weeklyIncomplete ? 1 : 2,
+          excludedAccounts: weeklyIncomplete ? 1 : 0,
+          incomplete: weeklyIncomplete,
+          updatedAt: now,
+        },
+        monthly: {
+          usedPercent: 40,
+          includedAccounts: monthlyIncomplete ? 1 : 2,
+          excludedAccounts: monthlyIncomplete ? 1 : 0,
+          incomplete: monthlyIncomplete,
+          updatedAt: now,
+        },
+      },
+    }],
+  };
+}
+
 beforeEach(() => {
   previous = Object.fromEntries(globals.map(key => [key, Reflect.get(globalThis, key)])) as typeof previous;
   originalFetch = globalThis.fetch;
@@ -245,4 +283,65 @@ test("mixed-window coverage uses a distinct warning without whole-account exclus
   const text = host.textContent ?? "";
   expect(text).toContain("Partial window coverage: 2 account(s) do not report every displayed limit window");
   expect(text).not.toContain("Incomplete coverage: 0 account(s) excluded");
+});
+
+test("only the monthly aggregate window receives a localized partial marker", async () => {
+  quotaPayload = aggregateWindowPayload(false, true);
+  await mountShell();
+
+  const markers = [...host.querySelectorAll<HTMLElement>(".quota-window-partial")];
+  expect(markers).toHaveLength(1);
+  expect(markers[0]?.textContent).toBe("Partial");
+  expect(markers[0]?.getAttribute("aria-label")).toBe("30-day limit: incomplete account coverage");
+});
+
+test("only the weekly aggregate window receives a localized partial marker", async () => {
+  quotaPayload = aggregateWindowPayload(true, false);
+  await mountShell();
+
+  const markers = [...host.querySelectorAll<HTMLElement>(".quota-window-partial")];
+  expect(markers).toHaveLength(1);
+  expect(markers[0]?.getAttribute("aria-label")).toBe("Weekly limit: incomplete account coverage");
+});
+
+test("complete aggregate windows do not receive partial markers", async () => {
+  quotaPayload = aggregateWindowPayload(false, false);
+  await mountShell();
+
+  expect(host.querySelectorAll(".quota-window-partial")).toHaveLength(0);
+  expect(host.textContent ?? "").not.toContain("Partial window coverage");
+});
+
+test("five-hour and custom aggregate windows can be marked independently", async () => {
+  const now = Date.now();
+  quotaPayload = {
+    reports: [{
+      provider: "openai",
+      label: "OpenAI (Codex login)",
+      source: "chatgpt:wham",
+      updatedAt: now,
+      quota: {
+        fiveHourPercent: 10,
+        customWindows: [{ label: "Burst", percent: 30 }],
+        updatedAt: now,
+      },
+      aggregation: {
+        kind: "capacity-weighted-v1",
+        scope: "routable-known",
+        presentation: "aggregate",
+        includedAccounts: 2,
+        excludedAccounts: 0,
+        unknownPlanAccounts: 0,
+        partialWindowAccounts: 1,
+        incomplete: true,
+        fiveHour: { usedPercent: 10, includedAccounts: 2, excludedAccounts: 0, incomplete: false, updatedAt: now },
+        customWindows: [{ label: "Burst", usedPercent: 30, includedAccounts: 1, excludedAccounts: 1, incomplete: true, updatedAt: now }],
+      },
+    }],
+  };
+  await mountShell();
+
+  const markers = [...host.querySelectorAll<HTMLElement>(".quota-window-partial")];
+  expect(markers).toHaveLength(1);
+  expect(markers[0]?.getAttribute("aria-label")).toBe("Burst: incomplete account coverage");
 });

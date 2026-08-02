@@ -1413,6 +1413,8 @@ export const ko: Record<TKey, string> = {
   "pws.capacity.recoveryShare": "+{percent}% 풀 용량",
   "pws.capacity.incomplete": "불완전한 범위: {excluded}개 계정 제외, 알 수 없는 요금제 {unknown}개 포함",
   "pws.capacity.partial": "일부 기간의 범위가 불완전합니다: {count}개 계정에서 표시된 모든 한도 기간을 확인할 수 없습니다",
+  "pws.capacity.windowPartial": "일부만",
+  "pws.capacity.windowPartialA11y": "{window}: 계정 범위가 불완전합니다",
   "pws.dashboard.recentlyUsed": "최근 사용",
   "pws.dashboard.requests": "{count}건 요청",
   "pws.dashboard.checkedAgo": "{time} 전 확인",

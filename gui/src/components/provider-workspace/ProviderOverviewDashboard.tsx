@@ -22,7 +22,7 @@ import {
   relativeTimeLabelsFromT,
   type ProviderUsageTotals,
 } from "../../provider-workspace/usage";
-import { maxQuotaUtilisation } from "../QuotaBars";
+import { maxQuotaUtilisation, type QuotaWindowKey } from "../QuotaBars";
 import { ProviderIcon } from "./ProviderRail";
 import { formatProviderDisplayName } from "../../provider-icons";
 import QuotaBars from "../QuotaBars";
@@ -242,6 +242,16 @@ function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaRepor
   const aggregation = capacityAggregationFromReport(report);
   const primaryQuota = accountQuotaFromReport(report);
   const showsAggregate = aggregation?.presentation === "aggregate";
+  const incompleteWindowKeys = new Set<QuotaWindowKey>();
+  const incompleteCustomWindowLabels = new Set<string>();
+  if (showsAggregate && aggregation) {
+    if (aggregation.fiveHour?.incomplete) incompleteWindowKeys.add("fiveHour");
+    if (aggregation.weekly?.incomplete) incompleteWindowKeys.add("weekly");
+    if (aggregation.monthly?.incomplete) incompleteWindowKeys.add("monthly");
+    for (const window of aggregation.customWindows ?? []) {
+      if (window.incomplete) incompleteCustomWindowLabels.add(window.label);
+    }
+  }
   const recoveryRows: Array<{ label: string; window: CapacityWindowView }> = showsAggregate && aggregation ? [
     ...(aggregation.fiveHour ? [{ label: t("codexAuth.fiveHour"), window: aggregation.fiveHour }] : []),
     ...(aggregation.weekly ? [{ label: t("codexAuth.weekly"), window: aggregation.weekly }] : []),
@@ -257,7 +267,17 @@ function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaRepor
   return (
     <>
       {showsAggregate && <div className="pws-capacity-label">{t("pws.capacity.estimate")}</div>}
-      {(primaryQuota || pending) && <QuotaBars quota={primaryQuota} threshold={80} t={t} layout="stacked" pending={pending} />}
+      {(primaryQuota || pending) && (
+        <QuotaBars
+          quota={primaryQuota}
+          threshold={80}
+          t={t}
+          layout="stacked"
+          pending={pending}
+          incompleteWindowKeys={showsAggregate ? incompleteWindowKeys : undefined}
+          incompleteCustomWindowLabels={showsAggregate ? incompleteCustomWindowLabels : undefined}
+        />
+      )}
       {aggregation && (
         <div className="pws-capacity-details">
           {recoveryRows.flatMap(({ label, window }) => (

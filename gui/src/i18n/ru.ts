@@ -1044,6 +1044,8 @@ export const ru: Record<TKey, string> = {
   "pws.capacity.recoveryShare": "+{percent}% ёмкости пула",
   "pws.capacity.incomplete": "Неполное покрытие: исключено аккаунтов: {excluded}, неизвестных планов: {unknown}",
   "pws.capacity.partial": "Частичное покрытие окон: для {count} аккаунтов доступны не все показанные окна лимитов",
+  "pws.capacity.windowPartial": "Частично",
+  "pws.capacity.windowPartialA11y": "{window}: неполное покрытие аккаунтов",
   "pws.dashboard.recentlyUsed": "Недавно использованные",
   "pws.dashboard.requests": "{count} запросов",
   "pws.dashboard.checkedAgo": "Проверено {time}",

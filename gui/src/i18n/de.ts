@@ -1386,6 +1386,8 @@ export const de: Record<TKey, string> = {
   "pws.capacity.recoveryShare": "+{percent} % Pool-Kapazität",
   "pws.capacity.incomplete": "Unvollständige Abdeckung: {excluded} Konten ausgeschlossen, davon {unknown} mit unbekanntem Tarif",
   "pws.capacity.partial": "Teilweise Fensterabdeckung: {count} Konten melden nicht jedes angezeigte Limitfenster",
+  "pws.capacity.windowPartial": "Teilweise",
+  "pws.capacity.windowPartialA11y": "{window}: unvollständige Kontoabdeckung",
   "pws.dashboard.recentlyUsed": "KÜRZLICH VERWENDET",
   "pws.dashboard.requests": "{count} Anfragen",
   "pws.dashboard.checkedAgo": "Geprüft {time}",
