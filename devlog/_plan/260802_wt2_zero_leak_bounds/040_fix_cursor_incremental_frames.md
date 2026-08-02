@@ -2,6 +2,26 @@
 
 Depends on: 001 root-cause delta. Header-time validation, 32/16 MiB caps, and 1,024-frame flow control already landed; this closes the concat-first growth and the silent partial-EOF discard.
 
+## P re-verification note (2026-08-02, wp4 cycle — implementation-level design)
+
+Current machinery (live-transport.ts:827-960, framing.ts:129-200):
+
+- `pending: Uint8Array` accumulates via `concatBytes(pending, bytes)` per chunk (whole-backlog copy each time — O(n²) on a large incomplete frame).
+- Master counter `transportBufferedBytes` tracks PAYLOAD bytes only (`connectBufferedPayloadBytes`), charged `cursor_transport`, cap 32 MiB (`CURSOR_TRANSPORT_MAX_BUFFERED_BYTES`), drives pause/resume with `CURSOR_MAX_PENDING_FRAMES` slots.
+- `decodeAvailableConnectFrames(pending, 16 MiB, availableSlots, reservePayloadCopy)` returns `{frames, remainder}` — frames are `slice` COPIES (accounted per-frame), remainder is a fresh copy too (accounted via `remainderReservation`).
+- `frameWork` is a self-extending promise chain; `.finally` releases each frame's payload and re-drains.
+- EOF ("end"): zero-frame unexpected EOF fails; with frames → `settleFinish()` immediately — frameWork NOT awaited, pending remainder NOT classified.
+
+Design (implements the raw-backlog + parser-cursor requirement):
+
+1. Replace `pending` with `{ buf, start, end }` (cursor + capacity growth): append copies ONLY the new chunk (grow capacity ≤ cap, compact consumed prefix when `start` crosses a threshold); per-chunk cost O(chunk) amortized.
+2. Raw cap INCLUDING headers: `end - start + chunk.byteLength > CURSOR_TRANSPORT_MAX_BUFFERED_BYTES` → typed overflow (`cursor_transport`). This closes the tiny-frame/header-flood gap (payload-only accounting missed headers). `transportBufferedBytes` semantics shift from payload-bytes to raw-used-bytes — a STRICTER counter; flow-control thresholds unchanged.
+3. Drain without remainder copies: add a framing.ts export `consumeConnectFrames(input, start, maxPayloadBytes, availableSlots, reservePayloadCopy)` returning `{ frames, nextOffset }` (same inspect loop + per-frame reservations, NO remainder allocation); advance `start`. Frames stay slice copies with their existing reservation lifecycle.
+4. EOF: settle via drain-to-quiescence — `do { prev = frameWork; await prev; } while (prev !== frameWork)` — then classify: `end - start > 0` leftover → fail typed `frame_incomplete` (unless `expectedClose`); else `settleFinish()`. Zero-frame unexpected-EOF behavior preserved.
+5. `connectBufferedPayloadBytes(Across)` usages in the data handler are replaced by raw-used accounting; keep both helpers where the decoder still needs payload math.
+
+Test hooks: existing cursor-framing/cursor-hardening suites drive transports with scripted chunks; new fixtures per scenarios 1-9. The saturation test asserts `transportBufferedBytes` never exceeds the raw cap and lease counters (`translatorBudget.snapshot()` via an injected budget, if the transport accepts one — check `LiveCursorTransport` constructor for the budget seam before writing tests).
+
 ## File map
 
 - MODIFY `src/adapters/cursor/live-transport.ts`
