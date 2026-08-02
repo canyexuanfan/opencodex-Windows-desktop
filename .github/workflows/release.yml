@@ -60,7 +60,7 @@ jobs:
             exit 1
           fi
 
-      # opencodex is bun-native (the prepublishOnly GUI build + typecheck run under bun).
+      # opencodex is bun-native (the prepublishOnly audit, GUI build, and typecheck run under bun).
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -91,6 +91,33 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Dependency audit (high severity)
+        run: bun audit --audit-level=high
+
+      # Release runs on Linux, whose hosted image has no user keyring session.
+      # Use an isolated HOME and D-Bus session so this validates Secret Service
+      # without touching persistent runner state or silently skipping the check.
+      - name: Install Secret Service dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends dbus-x11 gnome-keyring
+
+      - name: OS keyring create/read/delete smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          keyring_home="$(mktemp -d)"
+          runtime_dir="$(mktemp -d)"
+          cleanup() { rm -rf "$keyring_home" "$runtime_dir"; }
+          trap cleanup EXIT
+          chmod 700 "$keyring_home" "$runtime_dir"
+          HOME="$keyring_home" XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session -- bash -euo pipefail -c '
+            eval "$(gnome-keyring-daemon --start --components=secrets)"
+            bun run scripts/keyring-smoke.ts
+          '
 
       - name: Verify version matches package.json
         env:

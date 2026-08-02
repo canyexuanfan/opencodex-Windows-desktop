@@ -432,6 +432,64 @@ jobs:
       - name: CLI help smoke
         run: bun run src/cli/index.ts help
 
+  # Keep OS credential-store checks on disposable GitHub-hosted machines. The
+  # Windows platform leg may use the persistent ocx-home runner for trusted push
+  # events; a force-cancelled process cannot run its in-process finally cleanup.
+  keyring-smoke:
+    name: keyring ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu
+            runner: ubuntu-latest
+          - name: windows
+            runner: windows-latest
+          - name: macos
+            runner: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Linux hosted runners do not provide an unlocked desktop keyring session.
+      # Run Secret Service with temporary state instead of skipping Linux.
+      - name: Install Secret Service dependencies (Linux)
+        if: matrix.name == 'ubuntu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends dbus-x11 gnome-keyring
+
+      - name: OS keyring create/read/delete smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" != "Linux" ]; then
+            bun run scripts/keyring-smoke.ts
+            exit 0
+          fi
+
+          keyring_home="$(mktemp -d)"
+          runtime_dir="$(mktemp -d)"
+          cleanup() { rm -rf "$keyring_home" "$runtime_dir"; }
+          trap cleanup EXIT
+          chmod 700 "$keyring_home" "$runtime_dir"
+          HOME="$keyring_home" XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session -- bash -euo pipefail -c '
+            eval "$(gnome-keyring-daemon --start --components=secrets)"
+            bun run scripts/keyring-smoke.ts
+          '
+
   npm-global-smoke:
     name: npm-global ${{ matrix.os }}
     needs: changes
@@ -507,7 +565,7 @@ jobs:
     # direct dependencies only, so a failing `select-windows-runner` would
     # otherwise reach this gate as nothing at all while its dependents report
     # `skipped` — which the gate is required to read as a deliberate skip.
-    needs: [changes, select-windows-runner, test, gates, platform-macos, platform-windows, npm-global-smoke]
+    needs: [changes, select-windows-runner, test, gates, platform-macos, platform-windows, keyring-smoke, npm-global-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
