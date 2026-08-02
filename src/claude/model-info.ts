@@ -118,14 +118,17 @@ export function buildAnthropicModelInfos(
   // host the compact window — display stays honest (real window, not "1M"). Guards
   // (audit R1#11): same dedupe set, never double-suffix.
   const push1mVariant = (base: AnthropicModelInfo, contextWindow: number | undefined, mode: AutoContextMode = auto) => {
-    if (!shouldMarkOneMillion(contextWindow, mode)) return;
+    // The [1m] marker makes Claude Code account 1e6 tokens for the row, so it
+    // may only name models whose AUTHORITATIVE effective window is >= 1M —
+    // never the auto-context widening, which would mark a 372K route and have
+    // Claude Code over-fill it (the #854 defect).
+    if (contextWindow === undefined || contextWindow < ONE_MILLION) return;
     if (base.id.includes("[1m]")) return;
     const id = `${base.id}[1m]`;
     if (seen.has(id)) return;
     seen.add(id);
     const window = contextWindow as number;
-    const label = window >= ONE_MILLION ? "1M" : `${Math.round(window / 1_000)}k`;
-    out.push({ ...base, id, display_name: `${base.display_name} · ${label}`, max_input_tokens: Math.min(window, ONE_MILLION) });
+    out.push({ ...base, id, display_name: `${base.display_name} · 1M`, max_input_tokens: ONE_MILLION });
   };
   for (const slug of nativeSlugs) {
     const id = idStyle === "readable" ? claudeCodeNativeAlias(slug) : aliasForRoute("native", slug);

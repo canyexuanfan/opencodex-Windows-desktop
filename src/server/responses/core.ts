@@ -1147,17 +1147,20 @@ function finalizeOwnedTranslatorBudget(response: Response, budget: TranslatorBud
 
 /**
  * Service-tier capability gate, applied after the final route/wire is settled. A
- * provider that does not document `service_tier` must never receive it: strip the
- * field and clear the logging value even when the caller supplied one (fail
- * closed). An explicit `supportsServiceTier: true` on the provider config is the
- * escape hatch for gateways that genuinely honour tiers.
+ * provider explicitly documented as NOT supporting `service_tier` must never
+ * receive it: strip the field and clear the logging value even when the caller
+ * supplied one (fail closed). Tri-state contract: `true` supports (injection
+ * allowed, caller values preserved), `false` strips, and an UNCLASSIFIED custom
+ * provider (`undefined`) preserves caller-supplied values but never gets an
+ * injection — deleting the caller's field there would silently change their
+ * request against a gateway we know nothing about.
  */
 export function applyServiceTierGate(
   provider: OcxProviderConfig,
   rawBody: unknown,
   options: { serviceTier?: string },
 ): void {
-  if (provider.adapter !== "openai-responses" || provider.supportsServiceTier === true) return;
+  if (provider.adapter !== "openai-responses" || provider.supportsServiceTier !== false) return;
   if (rawBody && typeof rawBody === "object") {
     delete (rawBody as Record<string, unknown>).service_tier;
   }

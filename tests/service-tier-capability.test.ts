@@ -58,12 +58,14 @@ describe("applyServiceTierGate fails closed", () => {
     expect(options.serviceTier).toBeUndefined();
   });
 
-  test("an unclassified provider (undefined capability) also fails closed", () => {
+  test("an unclassified provider (undefined capability) preserves the caller value", () => {
     const body = { model: "m", service_tier: "priority" };
     const options: { serviceTier?: string } = { serviceTier: "priority" };
     applyServiceTierGate({ adapter: "openai-responses", baseUrl: "https://example.com/v1" }, body, options);
-    expect("service_tier" in body).toBe(false);
-    expect(options.serviceTier).toBeUndefined();
+    // Tri-state: only an explicit `false` strips; unknown gateways keep the
+    // caller's field (we know nothing about them), and never get an injection.
+    expect(body.service_tier).toBe("priority");
+    expect(options.serviceTier).toBe("priority");
   });
 
   test("a non-Responses adapter is out of scope", () => {
@@ -136,9 +138,11 @@ describe("the gate fires on the live handleResponses path", () => {
     expect(body.service_tier).toBe("flex");
   });
 
-  test("an unclassified custom Responses provider fails closed unless explicitly opted in", async () => {
+  test("an unclassified custom Responses provider keeps caller values; only explicit false strips", async () => {
     const custom = (): OcxProviderConfig => ({ adapter: "openai-responses", baseUrl: "https://gateway.example.com/v1", apiKey: "sk-test" });
-    const stripped = await drive("custom-gw", custom(), "some-model", { service_tier: "priority" });
+    const preserved = await drive("custom-gw", custom(), "some-model", { service_tier: "priority" });
+    expect(preserved.service_tier).toBe("priority");
+    const stripped = await drive("custom-gw", { ...custom(), supportsServiceTier: false }, "some-model", { service_tier: "priority" });
     expect("service_tier" in stripped).toBe(false);
     const optedIn = await drive("custom-gw", { ...custom(), supportsServiceTier: true }, "some-model", { service_tier: "priority" });
     expect(optedIn.service_tier).toBe("priority");

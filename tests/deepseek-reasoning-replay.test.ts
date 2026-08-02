@@ -76,6 +76,32 @@ describe("DeepSeek Responses replay keeps reasoning on the wire", () => {
     expect(item.content).toEqual([{ type: "reasoning_text", text: "think step by step" }]);
   });
 
+  test("a real tool-call continuation (reasoning → call → output) keeps all three for DeepSeek", () => {
+    // The documented DeepSeek failure shape: the turn AFTER a tool call must
+    // carry reasoning_content, or the upstream answers HTTP 400.
+    const provider = { ...providerConfigSeed(getProviderRegistryEntry("deepseek")!), apiKey: "sk-test" };
+    enrichProviderFromRegistry("deepseek", provider);
+    const built = createResponsesPassthroughAdapter(provider).buildRequest({
+      modelId: "deepseek-v4-flash",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "deepseek-v4-flash",
+        input: [
+          reasoningItem(),
+          { type: "function_call", id: "fc_1", call_id: "call_1", name: "get_weather", arguments: "{\"city\":\"Seoul\"}" },
+          { type: "function_call_output", call_id: "call_1", output: "rain" },
+        ],
+      },
+    } as Parameters<ReturnType<typeof createResponsesPassthroughAdapter>["buildRequest"]>[0], { headers: new Headers() });
+    const body = JSON.parse(String(built.body)) as { input: Record<string, unknown>[] };
+    expect(body.input).toHaveLength(3);
+    expect(body.input[0]!.content).toEqual([{ type: "reasoning_text", text: "think step by step" }]);
+    expect(body.input[1]).toMatchObject({ type: "function_call", call_id: "call_1", name: "get_weather" });
+    expect(body.input[2]).toMatchObject({ type: "function_call_output", call_id: "call_1", output: "rain" });
+  });
+
   test("a canonical OpenAI provider still blanks reasoning content", () => {
     const provider = { ...providerConfigSeed(getProviderRegistryEntry("openai-apikey")!), apiKey: "sk-test" };
     const body = buildBody(provider);
