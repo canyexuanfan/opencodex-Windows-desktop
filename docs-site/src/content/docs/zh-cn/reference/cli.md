@@ -210,7 +210,7 @@ refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 所有子命令都要求代理正在运行；CLI 会自动解析已记录的运行时端口。成功时退出码为 0。用法错误、
@@ -259,8 +259,11 @@ Kiro 账号时，输出会说明它只有一个登录 slot，再次登录会替�
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 选择已有的 Codex 账号、OAuth 账号或 API key。对 `openai` 而言，`main` 选择 Codex App 登录。
-Codex 选择只对**新 session**生效；已有 thread 保持其账号。启用的 auto-switch threshold 之后可能
-覆盖手动 pin。未知 provider 或 id 返回退出码 1。`--json` 返回：
+Codex Pool 选择会清除进程本地 affinity，并从下一次请求开始生效，包括已有可见任务的请求；代理重启或 affinity eviction 后，任务也可能变为未绑定，但进行中的请求保留已捕获账号。此选择只控制 Pool routing；Direct mode 继续使用 caller-owned/native main credential。基于用量的主动切换、401/403 重新认证、429/retry-after cooldown、排除，以及输出前 429/402 故障恢复之后仍可能选择其他合格 Pool 账号。这些恢复路径在关闭基于用量的切换时仍然有效。账号变化后 OpenCodex 会重放对话上下文，但 provider prompt cache 可能需要重新预热。未知 provider 或 id 返回退出码 1。`--json` 返回：
+遇到 **401/403** 时，App 登录会清除该账户的进程内 affinity 并要求重新认证。
+遇到 **429** 时，它会遵循 `Retry-After`、启动账户 cooldown、清除 affinity，
+并可将请求切换到另一个符合条件的 Pool 账户。即使 `autoSwitchThreshold: 0`，
+这些故障恢复流程仍然有效；`0` 只会禁用基于用量的主动切换。
 
 ```text
 { ok: true, provider, type, activeId }

@@ -223,7 +223,7 @@ refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
-Codex pool switches apply to new sessions; running threads keep their account.
+Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.
 ```
 
 すべてのサブコマンドはプロキシが実行中である必要があり、CLI が記録されたランタイムポートを自動的に探します。成功は
@@ -268,9 +268,12 @@ API エラーは終了コード 1 です。認証情報フィールドは manage
 #### `ocx account use <provider> <account-or-key-id|main> [--json]`
 
 既存の Codex アカウント、OAuth アカウント、または API key を選びます。`openai` で `main` は Codex App ログインを
-選択します。Codex の選択は **新しいセッション** から適用され、既存の thread は現在のアカウントを維持します。auto-switch
-threshold がオンなら後で手動 pin を上書きできます。不明なプロバイダーや id は終了
-コード 1 です。`--json` は次を返します。
+選択します。Codex Pool の選択は process-local affinity を消去し、既存の表示タスクを含む次のリクエストから適用されます。プロキシ再起動や affinity eviction 後もタスクは未紐付けになり得ますが、処理中のリクエストは取得済みアカウントを維持します。この選択は Pool routing のみを制御し、Direct mode は caller-owned/native main credential を使い続けます。使用量ベースのプロアクティブ切り替え、401/403 再認証、429/retry-after cooldown、除外、出力前 429/402 の障害回復により、後で別の適格 Pool アカウントが選ばれる場合があります。これらの回復経路は使用量ベース切り替えが off でも有効です。アカウント変更後も OpenCodex は会話コンテキストを再生しますが、provider prompt cache は再ウォームアップが必要な場合があります。
+不明なプロバイダーや id は終了コード 1 です。`--json` は次を返します。
+**401/403** では、そのアカウントへのプロセスローカルな affinity を解除し、再認証を要求します。
+**429** では `Retry-After` を尊重してアカウントの cooldown を開始し、affinity を解除したうえで、
+別の適格な Pool アカウントへリクエストを切り替えることがあります。これらの障害回復は
+`autoSwitchThreshold: 0` でも有効であり、`0` が無効にするのは使用量に基づく予防的な切り替えだけです。
 
 ```text
 { ok: true, provider, type, activeId }
