@@ -22,6 +22,12 @@ Scope OUT: changing TTL (1h), count cap (1,000), stub/tombstone semantics, Windo
 4. Oversized spill payload on disk: replay rejects typed before read; no unbounded allocation; error surfaces as structured continuation miss. Activation: fixture spill file over the replay ceiling.
 5. Multibyte snapshot: entries whose UTF-8 bytes exceed 2 MiB but whose `.length` does not are now correctly excluded from snapshot output. Activation: multibyte fixture + byte-length assertion.
 6. Red-green: each new test fails on the pre-fix tree (verify at least #1, #3, #4 red first).
+7. Direct-spill WRITE FAILURE for an oversized candidate: bounded tombstone installed, candidate never resident, unrelated residents untouched. Activation: fault-injected spill write (chmod/readonly dir or mock) asserting tombstone + resident map unchanged (audit round 1 gap).
+8. Same-ID replacement: an oversized candidate replacing an existing resident ID installs the stub and unlinks the old generation in the existing deferred order. Activation: replace-then-crash-ordering fixture (audit round 1 gap).
+
+## Typed observability (audit round 1 blocker — current contracts swallow the new outcomes)
+
+- Snapshot load errors are swallowed today (`state.ts:453` catch-all) and spill reads expose only `missing | corrupt` (`spill-store.ts:48`). The new outcomes need INTERNAL reason seams, not wire changes: extend the spill-read reason union with `too_large` (still surfaced upstream as the existing structured continuation miss), and record snapshot-load refusal as a typed metric/log (`snapshot_oversized`) plus a test-visible reason. No response-shape changes.
 
 ## Regression risks (watch in C)
 

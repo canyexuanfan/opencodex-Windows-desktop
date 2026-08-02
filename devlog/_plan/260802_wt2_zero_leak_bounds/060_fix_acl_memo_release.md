@@ -5,7 +5,7 @@ Depends on: 001 root-cause delta. Success-memo cleanup already landed; this clos
 ## File map
 
 - MODIFY `src/lib/windows-secret-acl.ts`
-  - Extend/replace `forgetHardenedSecretPath` (:171) with an ephemeral release clearing `hardenedPaths.delete(temp)` AND `timedOutPaths` in both namespaces (`required:<temp>`, `optional:<temp>`). Export a test-only count for both memo sets (PR shape).
+  - Add a TEMP-ONLY ephemeral release (audit round 1 correction — a generic both-namespace helper would also clear INTENTIONAL destination memos at existing non-temp call sites): clears `hardenedPaths.delete(temp)` plus `timedOutPaths` entries keyed by THAT TEMP path in both namespaces (`required:<temp>`, `optional:<temp>`), and nothing else. Keep destination cleanup a separate, explicit operation. Export a test-only count for both memo sets (PR shape).
   - NEVER clear the stable DESTINATION timeout memo via this helper (destination memoization is intentional anti-restall state).
 - MODIFY `src/config.ts`
   - Sync `atomicWriteFile` (:107-109): pass `timeoutMemoKey: path` (the destination) when hardening the temp — a failed temp harden must not mint a new unique timeout key per write (matches async at :187).
@@ -17,10 +17,10 @@ Scope OUT: registering the memo sets with the app-owned framework (self-releasin
 
 ## Acceptance + activation scenarios
 
-1. Timed-out unique temp subsequently removed: timeout-memo counts return to baseline. Activation: inject ACL timeout on a temp write, then complete cleanup, assert both memo-set counts at baseline (red on pre-fix tree — `required:<unique-temp>` leaks). NOTE: current `required:true` behavior THROWS on timeout — adapt PR #840's test which assumed `{ok:false}`.
+1. Legacy temp-keyed timeout memo (from manual temp writers — management-token, tray) + temp proven absent: temp-keyed memo released, count drops. Activation: inject ACL timeout on a temp-keyed path, complete cleanup, assert that memo gone (red on pre-fix tree). NOTE: current `required:true` behavior THROWS on timeout — adapt PR #840's test which assumed `{ok:false}`.
 2. Repeated timed-out writes to the SAME destination (sync path): ONE shared destination-keyed timeout memo, not N unique-temp memos. Activation: two timeouts on one destination, count assertion (red on pre-fix tree).
-3. Residual temp remains on disk (unlink fails): memos RETAINED (fail-closed). Activation: existing `config.test.ts:1536` stays green + timeout-namespace variant.
-4. Destination timeout memo survives ephemeral release (anti-restall intact). Activation: explicit assertion after release call.
+3. Destination-keyed timeout memo SURVIVES temp cleanup (audit round 1 correction: once sync writes are destination-keyed, deleting the temp must NOT return counts to baseline — the anti-restall memo is intentional). Activation: assert destination memo present after the temp release ran.
+4. Residual temp remains on disk (unlink fails): memos RETAINED (fail-closed). Activation: existing `config.test.ts:1536` stays green + timeout-namespace variant.
 5. required/optional namespace isolation preserved. Activation: namespace-mixed fixture.
 6. Red-green: #1 and #2 red on the pre-fix tree.
 

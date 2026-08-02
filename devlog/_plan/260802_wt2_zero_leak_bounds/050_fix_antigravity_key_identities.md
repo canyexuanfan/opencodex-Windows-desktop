@@ -5,9 +5,10 @@ Depends on: 001 root-cause delta. Caps/TTL/sweeper already landed (`034d320b8`);
 ## File map
 
 - MODIFY `src/adapters/google-antigravity-replay.ts`
-  - `replayKey` (:57): SHA-256 hex of `model + "\0" + sessionId` — fixed 64-char outer key regardless of input length.
-  - `functionCallKey` (:61/:70): SHA-256 hex of `functionName + "\0" + canonicalArgs` — fixed 64-char call key.
-  - Transient bound: pre-check the serialized argument size BEFORE recursive canonicalization (reject typed over the 64 KiB signature budget), or canonicalize incrementally feeding the hash — pick the simpler of the two that preserves the canonical-form equality semantics existing tests rely on.
+  - `replayKey` (:57): SHA-256 hex over LENGTH-PREFIXED UTF-8 components (`len + ":" + model`, `len + ":" + sessionId` concatenated) — fixed 64-char outer key regardless of input length. (Audit round 1: NUL separators are collision-ambiguous — `("a\0b","c")` vs `("a","b\0c")`.)
+  - `functionCallKey` (:61/:70): same treatment for `functionName` + canonical args.
+  - Transient bound: bounded recursive/streaming canonicalization that rejects over-budget input DURING the walk (audit round 1: a `JSON.stringify` size precheck would itself allocate the temporary we are avoiding). Preserve canonical-form equality semantics the existing tests rely on.
+  - Test seam: expose a test-only key-derivation hook (audit round 1: `snapshot.bytes` excludes outer keys, so the fixed-key regression cannot go red through that metric — assert on derived keys directly).
   - PRESERVE: `ReplayCall.touchedAtMs` LRU, exact deletion accounting, `antigravityReplayRetainedStoreSnapshot`, centralized sweeper registration, shared-budget call, TTL-refresh-on-duplicate-observation (native semantics, recorded decision in 001).
 - MODIFY `tests/google-antigravity-replay.test.ts`: new regressions (below).
 
@@ -15,12 +16,13 @@ Scope OUT: TTL value (1h), the existing numeric caps (10,240/256/2 MiB/64 MiB/64
 
 ## Acceptance + activation scenarios
 
-1. Enormous model/session identities (e.g. 1 MiB strings): retained store size stays fixed — snapshot `bytes` for such a session reflects only the fixed key + counted payload, not the raw identity strings. Activation: fixture with 1 MiB model + session IDs asserting bounded `replayBytes` (red on pre-fix tree — raw keys are retained).
-2. Functional matching unchanged: observe-then-apply with identical calls still replays; nested canonicalization equality preserved. Activation: existing :23 tests stay green (hash mismatch between observe/apply would break these).
-3. Delimiter ambiguity impossible: model `"a\0b"` vs model `"a"` + session `"b..."` cannot collide (NUL separators + fixed-length hex). Activation: collision-fixture test.
-4. Oversized arguments rejected typed BEFORE canonicalization allocation (if the pre-check shape is chosen). Activation: large-argument fixture with allocation-guard assertion.
-5. Eviction still returns exact released bytes (shared-budget eligibility preserved). Activation: existing budget-eviction tests stay green.
-6. Red-green: #1 red on the pre-fix tree.
+1. Enormous model/session identities (e.g. 1 MiB strings): the derived outer key is exactly 64 hex chars and the raw identity strings are not retained as keys — assert via the test-only key-derivation seam, NOT `snapshot.bytes` (audit round 1: that metric already excludes outer keys, so a bytes assertion cannot go red). Activation: fixture with 1 MiB model + session IDs asserting derived-key shape and internal map keys (red on pre-fix tree — raw strings ARE the keys).
+2. Worst-case pinned-cap accounting (audit round 1): the pinned-cap test must cover KEY storage, not payload constants alone — after fixed keys, worst-case key bytes = 10,240 sessions × 64 chars (+ 256 calls × 64 chars/session) and fits the documented ceiling. Activation: updated worst-case test.
+3. Functional matching unchanged: observe-then-apply with identical calls still replays; nested canonicalization equality preserved. Activation: existing :23 tests stay green (hash mismatch between observe/apply would break these).
+4. Length-prefix unambiguity: `("a\0b","c")` vs `("a","b\0c")` derive DIFFERENT keys; equal inputs derive equal keys. Activation: collision-fixture test.
+5. Oversized arguments rejected typed DURING the canonicalization walk — no full-size temporary string materializes. Activation: large-argument fixture with allocation-guard assertion.
+6. Eviction still returns exact released bytes (shared-budget eligibility preserved). Activation: existing budget-eviction tests stay green.
+7. Red-green: #1 and #4 red on the pre-fix tree.
 
 ## Regression risks (watch in C)
 

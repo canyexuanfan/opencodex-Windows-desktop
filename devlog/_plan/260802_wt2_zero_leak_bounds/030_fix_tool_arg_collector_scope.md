@@ -8,7 +8,8 @@ Depends on: 001 root-cause delta. Translator budgets already landed (`a61607894`
   - `collectChatCompletion()` (~:621, ~:700): open/close per-call ownership by stable tool-call index (fall back to call ID) and charge argument bytes as `tool_args` under that call scope — 2 MiB per call, 32 MiB per turn — including authoritative replacement snapshots (last-write-wins replaces, not accumulates). Today args charge to generic `retained_collectors`, so one call can eat the whole turn budget.
   - Overflow mapping: translator/tool overflow in the non-stream Chat path becomes 502 `upstream_error` (matching adapter/bridge), not 413 `invalid_request_error`.
 - MODIFY `src/bridge.ts`
-  - Option type (~:136): make `translatorBudget` mandatory. All production callers pass one today (`src/server/responses/core.ts:2644`); typecheck will catch any straggler — that is the point.
+  - BOTH optional-budget sites (audit round 1): `bridgeToResponsesSSE` options (~:159) and `buildResponseJSON` options (~:1227) — make `translatorBudget` mandatory in both. All production callers pass one today (`src/server/responses/core.ts:2644`); typecheck will catch any straggler — that is the point.
+- MODIFY `src/chat/outbound.ts` overflow mapping (audit round 1 precision): the actual 413 mappings are the rejected-read path (~:650) and the parsed error-frame path (~:679) — normalize BOTH to 502 `upstream_error` explicitly.
 - MODIFY `tests/chat-outbound.test.ts` (or the collector's owning suite — confirm at P) + bridge tests: new regressions (below).
 
 Scope OUT: the SSE record ceiling (stays 32 MiB — recorded decision in 001), routing OpenAI Chat through the shared SSE decoder (nice-to-have, separate unit), `service_tier` paths (wt3's lane), PR #847's 4 MiB/8 MiB numbers (native 2 MiB/call is STRICTER; keep).
@@ -16,11 +17,12 @@ Scope OUT: the SSE record ceiling (stays 32 MiB — recorded decision in 001), r
 ## Acceptance + activation scenarios
 
 1. Non-stream collector: a single tool call streaming >2 MiB of arguments fails typed (`translation_buffer_limit`-class) at the 2 MiB per-call boundary — not at 32 MiB. Activation: feed chunked arguments over 2 MiB under the test budget; assert typed overflow, no completed tool call in the collected result.
-2. Two parallel calls each under 2 MiB but summing >32 MiB turn budget: turn-scope overflow fires. Activation: two-call fixture.
+2. Turn-scope overflow: TWO calls under 2 MiB cannot reach 32 MiB (audit round 1 math correction) — use at least 17 calls of ~2 MiB each, or precharge other retained ownership near the turn cap, and assert the turn overflow fires on the call that crosses it. Activation: 17-call fixture.
 3. Done-frame authoritative snapshot larger than streamed deltas replaces (does not double-charge). Activation: delta-then-done fixture asserting final charged bytes.
-4. Overflow surfaces as 502 `upstream_error` in the non-stream path. Activation: assert status+type on the mapped error (was 413).
-5. Omitting `translatorBudget` from a bridge call is a compile error. Activation: typecheck (the negative is structural).
+4. Overflow surfaces as 502 `upstream_error` on BOTH mapping sites (:650 rejected-read, :679 error-frame). Activation: assert status+type on each path (was 413).
+5. Omitting `translatorBudget` from either bridge entry is a compile error. Activation: typecheck (the negative is structural).
 6. Red-green: #1 and #4 red on the pre-fix tree.
+7. Call scope lifetime (audit round 1): the synthetic per-index scope closes only AFTER the final collected output's ownership is charged — closing earlier would release the argument string while the finalized output still retains it. Activation: assertion on final charged bytes equaling the surviving output's arguments exactly.
 
 ## Regression risks (watch in C)
 

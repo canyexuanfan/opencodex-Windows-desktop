@@ -5,8 +5,8 @@ Depends on: 001 root-cause delta. Header-time validation, 32/16 MiB caps, and 1,
 ## File map
 
 - MODIFY `src/adapters/cursor/live-transport.ts`
-  - Pending-chunk handling (~:894, `concatBytes()` :906-918): replace concatenate-first with incremental completion — append only the bytes needed to complete the current header (5 bytes) then the current payload, leaving at most ONE bounded incomplete frame carried between chunks. Preserve translator reservations, copy-overlap accounting, frame-slot backpressure, and rollback.
-  - EOF handling (~:949): when the stream ends and a bounded incomplete remainder exists (after queued async `frameWork` settles), fail the turn with typed `frame_incomplete` — today complete-frames-plus-trailing-partial settles successfully and silently discards. Expected client-tool cancellation must NOT produce this error.
+  - Pending-chunk handling (~:894, `concatBytes()` :906-918): replace concatenate-first with a bounded raw-backlog + parser-cursor state machine (audit round 1 correction — "at most one incomplete frame" is WRONG when one delivered chunk contains additional complete frames while all 1,024 slots are occupied: those bytes cannot be returned to the HTTP/2 stream). The raw backlog stays bounded by the existing 32 MiB transport budget and header validation at 5 bytes; the cursor consumes complete frames WITHOUT re-concatenating the whole backlog per chunk; slot admission, reservation rollback, and pause/resume are preserved exactly.
+  - EOF handling (~:949): settlement must first DEFER through queued async `frameWork` (currently settles without awaiting it — audit round 1); once work drains, a leftover incomplete remainder fails the turn with typed `frame_incomplete` — today complete-frames-plus-trailing-partial settles successfully and silently discards. Expected client-tool cancellation must NOT produce this error.
   - Terminal paths: explicitly release any remaining pending-payload lease on every settle path.
 - MODIFY `src/adapters/cursor/framing.ts` (only if the streaming decode helper belongs there — wrap/extend :129, accepting the existing max-payload + reservation callbacks; keep `decodeConnectFrame` semantics for existing callers).
 - MODIFY `tests/cursor-framing.test.ts` + `tests/cursor-hardening.test.ts`: new regressions (below).
@@ -15,13 +15,14 @@ Scope OUT: raising the 16 MiB effective inbound cap (recorded decision in 001 �
 
 ## Acceptance + activation scenarios
 
-1. Chunked delivery of one frame split across many small chunks: pending buffer never exceeds one frame + header; byte accounting matches the old concat path's final state. Activation: chunk-size sweep test (1,3,7,64 KiB chunkings) asserting identical decoded frames and bounded high-water pending bytes.
-2. Complete frame + trailing partial frame + EOF: turn fails typed `frame_incomplete`; the completed frame was still delivered. Activation: hardening test driving exactly this sequence (red on pre-fix tree — today it settles clean).
+1. Chunked delivery of one frame split across many small chunks: raw backlog high-water stays bounded (backlog ≤ 32 MiB transport budget; no whole-backlog re-concat per chunk — assert allocation/copy counts or high-water mark); decoded frames and final byte accounting identical to the old path. Activation: chunk-size sweep test (1,3,7,64 KiB chunkings).
+2. Complete frame + trailing partial frame + EOF (after frameWork drains): turn fails typed `frame_incomplete`; the completed frame was still delivered. Activation: hardening test driving exactly this sequence (red on pre-fix tree — today it settles clean).
 3. EOF with only partial header (<5 bytes): same typed failure. Activation: variant of #2.
 4. Expected cancellation with pending remainder: no `frame_incomplete`. Activation: cancellation fixture.
 5. Oversized declared length is still rejected at header arrival (existing behavior preserved through the refactor). Activation: existing :124 tests stay green.
 6. 1,024-frame flood + rollback behavior unchanged. Activation: existing :155 tests stay green.
-7. Red-green: #2 and #3 red on the pre-fix tree.
+7. Slot saturation + multi-frame chunk + trailing partial EOF (audit round 1 scenario): all 1,024 slots occupied when a chunk carries further complete frames plus a partial; backpressure holds, no bytes lost, EOF classifies the partial typed after work drains, and the pending-payload lease is released on every terminal path. Activation: saturation fixture asserting lease counters return to zero.
+8. Red-green: #2, #3 and #7 red on the pre-fix tree.
 
 ## Regression risks (watch in C)
 

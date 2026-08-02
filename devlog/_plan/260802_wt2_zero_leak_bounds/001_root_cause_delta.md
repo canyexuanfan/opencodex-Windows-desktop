@@ -44,16 +44,18 @@ Current: declared-length validation at header arrival exists (`src/adapters/curs
 
 Decision: do NOT adopt PR #844's flat 32 MiB effective inbound — current 16 MiB effective preserves the copy-overlap budget inside the 32 MiB transport budget.
 
-### #845 — Cursor blob store: NOOP (verified superseded)
+### #845 — Cursor blob store: payload bounded, KEYS UNBOUNDED (audit round 1 refuted the NOOP)
 
-`src/adapters/cursor/native-exec.ts` already has: 16 MiB/entry, 64 MiB aggregate, 4,096 entries, 15-min TTL, request-scope pinning with seal/rollback (`:351`), typed atomic admission failures (`entry_too_large`, `pinned_saturation`, `request_pinned_conflict`, `:219`), protobuf error acknowledgement for rejected `setBlobArgs` (`:551`, wire shape `gen/agent_pb.ts:7904`), per-key hydration release (`:537`), app-owned-memory integration. PR #845's only unretained behavior is true access-LRU — a policy nicety, not a leak. Verdict: NOOP with this evidence; no code change. Residual edge (documented, accepted): remote `setBlobArgs` after scope sealing is TTL-protected only; PR has the same limitation.
+`src/adapters/cursor/native-exec.ts` already has: 16 MiB/entry, 64 MiB aggregate, 4,096 entries, 15-min TTL, request-scope pinning with seal/rollback (`:351`), typed atomic admission failures (`entry_too_large`, `pinned_saturation`, `request_pinned_conflict`, `:219`), protobuf error acknowledgement for rejected `setBlobArgs` (`:551`), per-key hydration release (`:537`), app-owned-memory integration.
+
+**Audit blocker (Critical, accepted):** the caps account only `blobData`. A remote `blobId` of arbitrary length becomes an unbounded, UNCOUNTED `Map` key (`:219`, `:551`) — a near-16 MiB ID with tiny data can be retained across 4,096 entries (~64 GiB worst case of pure key strings). The NOOP verdict was wrong. Fix in `045`: bound/digest IDs at admission. Accepted residual (unchanged): remote `setBlobArgs` after scope sealing is TTL-protected only; PR has the same limitation.
 
 ### #843 — Antigravity replay: fixed-size identities (refinement)
 
 Current: caps exist (10,240 sessions, 256 calls/session, 2 MiB/session, 64 MiB global counted, 64 KiB signature — `src/adapters/google-antigravity-replay.ts:29`), 1h TTL + centralized sweep. Remaining gaps:
 
-1. Outer key retains raw `model`/`sessionId` (`replayKey`, `:57`) and inner key raw function name + canonical args (`functionCallKey`, `:61`/`:70`) — key bytes are NOT counted in `replayBytes`; an attacker-controlled long model/session pair retains unaccounted strings across up to 10,240 sessions. Fix: SHA-256 fixed-size identities with NUL separators for both key classes (PR #843 shape), preserving native `touchedAtMs`, exact deletion accounting, retained-store snapshot, sweeper, and shared-budget call.
-2. Transient canonical JSON allocation before admission checks — large arguments produce an unbounded temporary string. Fix: hash streaming/incrementally or pre-check serialized input size before canonicalization.
+1. Outer key retains raw `model`/`sessionId` (`replayKey`, `:57`) and inner key raw function name + canonical args (`functionCallKey`, `:61`/`:70`) — key bytes are NOT counted in `replayBytes`. **Audit sharpening (Critical, accepted):** this means the advertised 64 MiB global / 2 MiB per-session caps do NOT cap total retained memory at all — keys are outside them. Fix: SHA-256 fixed-size identities with LENGTH-PREFIXED UTF-8 components (NUL separators are collision-ambiguous: `("a\0b","c")` vs `("a","b\0c")` serialize identically), preserving native `touchedAtMs`, exact deletion accounting, retained-store snapshot, sweeper, and shared-budget call. Worst-case pinned-cap test must cover key storage, not payload constants alone.
+2. Transient canonical JSON allocation before admission checks — large arguments produce an unbounded temporary string. Fix: bounded recursive/streaming canonicalization (a `JSON.stringify` size precheck would itself allocate the temporary we are avoiding). Red-green seam: `snapshot.bytes` already excludes outer keys, so the fixed-key regression needs a test-only key-derivation seam, not a bytes assertion.
 
 Decision: keep native TTL-refresh-on-duplicate-observation (PR #843 does not refresh; changing it alters TTL semantics for no leak benefit).
 
