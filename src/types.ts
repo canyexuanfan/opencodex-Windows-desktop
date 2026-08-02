@@ -941,10 +941,11 @@ export interface OcxProviderConfig {
   /**
    * Whether this provider's Responses route honours the OpenAI `service_tier`
    * parameter. Tri-state: `true` lets fast mode inject/remove the field (an unset
-   * fast mode preserves a caller-supplied value); `false` or absent strips the
-   * field and never injects — fail closed, because an upstream that does not
-   * document the parameter must not receive a knob it never asked for. An explicit
-   * config value always wins over the registry default.
+   * fast mode preserves a caller-supplied value); `false` strips the field and
+   * never injects, because an upstream documented as not supporting the parameter
+   * must not receive it; absent (`undefined`) leaves the provider unclassified —
+   * caller-supplied values are preserved untouched, and fast mode never injects.
+   * An explicit config value always wins over the registry default.
    */
   supportsServiceTier?: boolean;
   /**

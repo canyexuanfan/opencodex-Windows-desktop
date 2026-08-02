@@ -1,9 +1,10 @@
 /**
  * `service_tier` is an OpenAI-only Responses parameter. Fast mode used to inject it
  * for EVERY Responses provider; now a provider-level `supportsServiceTier` capability
- * gates it after the final route is settled: canonical OpenAI providers keep the
- * fast-mode behavior, DeepSeek/Volcengine strip it, and unclassified custom
- * providers fail closed unless the user explicitly opts in (PR #860 family).
+ * gates it after the final route is settled (tri-state): canonical OpenAI providers
+ * keep the fast-mode behavior (`true`), DeepSeek/Volcengine strip it (`false`), and
+ * unclassified custom providers preserve caller-supplied values untouched without
+ * ever receiving an injection (PR #860 family).
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { providerConfigSeed, enrichProviderFromRegistry } from "../src/providers/derive";
