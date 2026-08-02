@@ -218,6 +218,17 @@ jobs:
           cd gui
           bun install --frozen-lockfile
 
+      # Nor is the build. Tests that fetch the served dashboard read the session
+      # bootstrap meta tags out of `gui/dist/index.html`, so without a build the
+      # server has no index to serve and those assertions see an empty string.
+      # The old three-platform job happened to satisfy this because every leg ran
+      # the GUI build as part of the same job; splitting the suite away from the
+      # gates removed that coincidence, so the dependency has to be explicit.
+      - name: Build GUI
+        run: |
+          cd gui
+          bun run build
+
       - name: Test
         run: bun test --isolate tests --shard=${{ matrix.shard }}/4
 
@@ -301,6 +312,12 @@ jobs:
           cd gui
           bun install --frozen-lockfile
 
+      # Same reason as the shards: the suite serves gui/dist and reads it back.
+      - name: Build GUI
+        run: |
+          cd gui
+          bun run build
+
       - name: Test
         run: bun test --isolate tests
 
@@ -365,6 +382,12 @@ jobs:
           bun install --frozen-lockfile
           cd gui
           bun install --frozen-lockfile
+
+      # Same reason as the shards: the suite serves gui/dist and reads it back.
+      - name: Build GUI
+        run: |
+          cd gui
+          bun run build
 
       - name: Test
         run: bun test --isolate tests

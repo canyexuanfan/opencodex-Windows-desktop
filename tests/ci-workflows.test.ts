@@ -105,6 +105,20 @@ describe("GitHub Actions hardening", () => {
     expect(winSteps.some(step => step.run?.includes("--shard"))).toBe(false);
     expect(winSteps.some(step => step.if === "runner.environment == 'self-hosted'"
       && step.run?.includes("git clean -xffd"))).toBe(true);
+
+    // Every job that runs the root suite must build the GUI first, unconditionally.
+    // Tests that fetch the served dashboard read their session bootstrap out of
+    // `gui/dist/index.html`; with no build the server has no index to serve and the
+    // assertions read an empty string. The old three-platform job satisfied this by
+    // accident, because the same job also ran the GUI build — splitting the suite
+    // away from the gates removed that coincidence, and the shards went red on a
+    // pull request before this pin existed.
+    for (const jobName of ["test", "platform-macos", "platform-windows"]) {
+      const steps = (ci.jobs?.[jobName] as { steps?: { if?: string; run?: string }[] })?.steps ?? [];
+      const build = steps.find(step => step.run?.includes("bun run build"));
+      expect(`${jobName}:${build === undefined}`).toBe(`${jobName}:false`);
+      expect(`${jobName}:${build?.if ?? "unconditional"}`).toBe(`${jobName}:unconditional`);
+    }
   });
 
   test("PR checks reach every branch the target gate accepts", async () => {
