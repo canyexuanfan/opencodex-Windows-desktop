@@ -315,3 +315,69 @@ believe it is.
 Standing rule adopted for the implementation phases: after any amendment a
 later step depends on, grep for the changed token in the changed file before
 writing a sentence that assumes it landed.
+
+---
+
+## Round 5 — the first live CI run, and the review bots
+
+The pre-merge audit ran four rounds against the plan. This round is what
+running it actually taught, which is a different thing.
+
+### The first sharded run went red, and it was my fault
+
+Shard 1/4 and macOS failed on `management-integration-routes.test.ts`: a test
+that fetches the served dashboard and reads its session bootstrap out of the
+meta tags. The token came back empty.
+
+Diagnosed rather than guessed. The test also fails on an untouched checkout of
+`dev` when `gui/dist` is absent, and passes there after `bun run build` — so
+the dependency is pre-existing and real. What my change removed was its
+*accidental* satisfaction: the old three-platform job ran the suite and the GUI
+build in the same job, so `gui/dist` always existed by the time tests ran.
+Splitting the suite away from the gates broke that without anyone noticing,
+and area-scoping the gates' build behind `gui/**` meant even that copy was
+conditional.
+
+Every job that runs the root suite now builds the GUI unconditionally, and a
+suite pin asserts it — driven red first.
+
+**This is the failure the four planning rounds could not have caught.** The
+dependency was invisible in the workflow, invisible in the test file, and only
+existed as a side effect of two things sharing a job. No amount of reading
+finds that; running it does.
+
+### Review bots: 9 comments, dispositions
+
+| Source | Finding | Disposition |
+|---|---|---|
+| Codex P1 | `release.yml` accepts any successful `ci.yml` run for a SHA, so a green PR run — which skips Windows — could satisfy the publish gate | **FIXED** |
+| Codex P2 | `.gitattributes` missing from the packaging filter | **FIXED** |
+| CodeRabbit (Major) | `git clean -xffd . \|\| true` swallows a failed self-hosted wipe | **FIXED** |
+| CodeRabbit (Minor) | `persist-credentials: false` missing on checkouts | **FIXED** |
+| CodeRabbit (Minor) | Plan's shard/platform examples omit the GUI build | **FIXED** |
+| CodeRabbit (Minor) | `040`'s gate sequence claims fail-fast without `set -e` | **FIXED** |
+| CodeRabbit (Major) | `040`'s leak scan omits `devlog` and uses two different pattern sets | **FIXED** |
+| CodeRabbit (Minor) | Devlog dates are "future-dated" (2026-08-03) | **REBUTTED** |
+
+**The Codex P1 was the best find of the entire review**, planning rounds
+included. My change made the Windows leg conditional on the event, but
+`release.yml` selects a CI run by SHA and status alone. After a promotion, the
+PR run for that same commit is still there, still green, and still Windows-free
+— so the publish gate could be satisfied by a run that proved nothing about
+Windows, while the promotion run carrying Windows was still in flight or had
+failed. That is precisely the coverage hole this unit promised not to open, and
+it was outside the file I was editing. The gate now selects a `push` run on the
+release branch specifically.
+
+**The date rebuttal.** The bot read CI timestamps in UTC (`2026-08-02T17:xx`)
+and concluded the 2026-08-03 dates were in the future. The workspace runs in
+Asia/Seoul, where those UTC timestamps are already the 3rd:
+
+```
+local: 2026-08-03 02:55 KST
+utc:   2026-08-02 17:55 UTC
+```
+
+The dates are correct in the timezone they were written in, and the unit slug
+matches them. Changing them to match a UTC reading would make the record less
+accurate, not more.

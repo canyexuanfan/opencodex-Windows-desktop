@@ -103,9 +103,18 @@ ordinary jobs.
           cd gui
           bun install --frozen-lockfile
       # The whole suite, unsharded and in one pool. Deliberately NOT the gates:
-      # typecheck, privacy scan, lint, and GUI build are platform-independent and
-      # already run once in `gates`. Repeating them here is what made the old
-      # three-OS matrix pay for everything three times.
+      # typecheck, privacy scan, and lint are platform-independent and already
+      # run once in `gates`. Repeating them here is what made the old three-OS
+      # matrix pay for everything three times.
+      #
+      # The GUI *build* is the exception, and it is not optional: each job has its
+      # own workspace, so `gates` building the GUI does nothing for this one, and
+      # the root suite serves gui/dist and reads it back.
+      - name: Build GUI
+        run: |
+          cd gui
+          bun run build
+
       - name: Test
         run: bun test --isolate tests
       - name: CLI help smoke
@@ -154,6 +163,11 @@ ordinary jobs.
           bun install --frozen-lockfile
           cd gui
           bun install --frozen-lockfile
+
+      - name: Build GUI
+        run: |
+          cd gui
+          bun run build
 
       - name: Test
         run: bun test --isolate tests

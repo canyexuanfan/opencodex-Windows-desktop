@@ -12,6 +12,7 @@ Run in this order, because each one's failure makes the next one's output
 meaningless:
 
 ```bash
+set -euo pipefail
 actionlint .github/workflows/ci.yml
 bun x tsc --noEmit
 bun test tests/ci-workflows.test.ts
@@ -43,9 +44,17 @@ worktree directory name, a machine name, or an internal session reference.
 Check before pushing:
 
 ```bash
-git log origin/dev..HEAD --format='%B' | grep -nEi '/Users/|worktree|macmini|session' || echo clean
-git diff origin/dev..HEAD -- .github tests | grep -nEi '/Users/|macmini' || echo clean
+# One pattern set for both checks, and the diff scan covers every path the
+# branch touches — including devlog, which is exactly as public as the workflow
+# files and was omitted from an earlier version of this command.
+leak='/Users/|worktree|macmini|session|\.codex/'
+git log origin/dev..HEAD --format='%B' | grep -nEi "$leak" || echo clean
+git diff origin/dev..HEAD | grep -nEi "$leak" || echo clean
 ```
+
+A hit is not automatically a leak — this plan legitimately contains the word
+`worktree` when describing why the local test runner serializes. Read each hit
+rather than trusting the exit code.
 
 The devlog files are tracked and public by design (`AGENTS.md`: the devlog is a
 public directory in a public repository), so they are held to the same standard

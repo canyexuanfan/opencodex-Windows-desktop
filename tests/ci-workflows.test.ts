@@ -119,6 +119,25 @@ describe("GitHub Actions hardening", () => {
       expect(`${jobName}:${build === undefined}`).toBe(`${jobName}:false`);
       expect(`${jobName}:${build?.if ?? "unconditional"}`).toBe(`${jobName}:unconditional`);
     }
+
+    // No job in this workflow pushes, and the self-hosted runner keeps its
+    // checkout between jobs, so a persisted token is avoidable residue. The
+    // other workflows in this repository already set this; ci.yml was the gap.
+    const checkouts = Object.values(ci.jobs ?? {})
+      .flatMap(job => (job as { steps?: { uses?: string; with?: Record<string, unknown> }[] })?.steps ?? [])
+      .filter(step => step.uses?.startsWith("actions/checkout@"));
+    expect(checkouts.length).toBeGreaterThan(0);
+    for (const [index, step] of checkouts.entries()) {
+      expect(`checkout[${index}]:${step.with?.["persist-credentials"]}`).toBe(`checkout[${index}]:false`);
+    }
+
+    // The self-hosted workspace wipe must not swallow its own failure. A clean
+    // that fails on permissions leaves deleted files on disk, and the checkout
+    // after it then validates a tree that no longer exists in git.
+    const wipe = ((ci.jobs?.["platform-windows"] as { steps?: { if?: string; run?: string }[] })?.steps ?? [])
+      .find(step => step.run?.includes("git clean -xffd"));
+    expect(wipe?.run).not.toContain("|| true");
+    expect(wipe?.run).toContain("git rev-parse --is-inside-work-tree");
   });
 
   test("PR checks reach every branch the target gate accepts", async () => {
@@ -247,6 +266,7 @@ describe("GitHub Actions hardening", () => {
     const packaging = [...packagingBlock.matchAll(/-\s*'([^']+)'/g)].map(match => match[1]).sort();
     expect(packaging).toEqual([
       ".npmignore",
+      ".gitattributes",
       "LICENSE",
       "README.md",
       "assets/**",
@@ -256,7 +276,7 @@ describe("GitHub Actions hardening", () => {
       "package.json",
       "scripts/prepare-package.ts",
       "src/**",
-    ]);
+    ].sort());
 
     // A per-job filter can only narrow what the workflow-level filter admits, so
     // every packaging pattern that names a real path must also appear in the

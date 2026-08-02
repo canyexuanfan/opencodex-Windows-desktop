@@ -101,6 +101,16 @@ AFTER:
           cd gui
           bun install --frozen-lockfile
 
+      # Each job gets its own workspace, so `gates` building the GUI does nothing
+      # for this one. Tests that fetch the served dashboard read their session
+      # bootstrap out of gui/dist/index.html, and with no build the server has no
+      # index to serve. The old three-platform job satisfied this by accident,
+      # because the suite and the GUI build shared a job.
+      - name: Build GUI
+        run: |
+          cd gui
+          bun run build
+
       - name: Test
         run: bun test --isolate tests --shard=${{ matrix.shard }}/4
 ```

@@ -142,6 +142,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # No job here pushes, and the self-hosted box keeps its checkout
+          # between jobs, so leaving a usable token in .git/config is avoidable
+          # residue. Matches the convention already used by the other workflows.
+          persist-credentials: false
 
       - name: Detect changed areas
         id: filter
@@ -173,6 +178,10 @@ jobs:
               - 'gui/**'
               - 'assets/**'
               - '.npmignore'
+              # `.gitattributes` decides how tracked package inputs are
+              # materialized on each runner, so an attribute change can put CRLF
+              # shebangs into the tarball without any source file moving.
+              - '.gitattributes'
               - 'README.md'
               - 'LICENSE'
               - 'scripts/prepare-package.ts'
@@ -201,6 +210,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # No job here pushes, and the self-hosted box keeps its checkout
+          # between jobs, so leaving a usable token in .git/config is avoidable
+          # residue. Matches the convention already used by the other workflows.
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -243,6 +257,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # No job here pushes, and the self-hosted box keeps its checkout
+          # between jobs, so leaving a usable token in .git/config is avoidable
+          # residue. Matches the convention already used by the other workflows.
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -300,6 +319,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # No job here pushes, and the self-hosted box keeps its checkout
+          # between jobs, so leaving a usable token in .git/config is avoidable
+          # residue. Matches the convention already used by the other workflows.
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -367,10 +391,23 @@ jobs:
       - name: Clean workspace (self-hosted only)
         if: runner.environment == 'self-hosted'
         shell: bash
-        run: git clean -xffd . || true
+        # `|| true` used to swallow this, which defeats the point: a clean that
+        # fails on permissions leaves the deleted files in place and the checkout
+        # below then validates a tree that no longer exists in git. Only the
+        # not-a-repository case is tolerated — that is the first run on a fresh
+        # box, where there is nothing to clean.
+        run: |
+          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git clean -xffd .
+          fi
 
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # No job here pushes, and the self-hosted box keeps its checkout
+          # between jobs, so leaving a usable token in .git/config is avoidable
+          # residue. Matches the convention already used by the other workflows.
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -412,6 +449,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # No job here pushes, and the self-hosted box keeps its checkout
+          # between jobs, so leaving a usable token in .git/config is avoidable
+          # residue. Matches the convention already used by the other workflows.
+          persist-credentials: false
 
       # Deliberately NO setup-bun: prove `npm install -g` works without a
       # separately-installed Bun. The launcher uses the bundled `bun` dependency.
