@@ -134,8 +134,11 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.deepseek.preserveReasoningContentModels).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
     // Issue #88: every DeepSeek API model is text-only input — the vision sidecar covers them.
     expect(KEY_LOGIN_PROVIDERS.deepseek.noVisionModels).toEqual([
-      "deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro", "deepseek-v4-flash",
+      "deepseek-v4-pro", "deepseek-v4-flash",
     ]);
+    expect(KEY_LOGIN_PROVIDERS.deepseek.models).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
+    expect(KEY_LOGIN_PROVIDERS.deepseek.models).not.toContain("deepseek-chat");
+    expect(KEY_LOGIN_PROVIDERS.deepseek.models).not.toContain("deepseek-reasoner");
   });
 
   test("OpenAI API route max-input metadata is trusted and user values only lower it", () => {
@@ -366,6 +369,7 @@ describe("provider registry parity", () => {
 
   test("Kimi coding aliases preserve model context and capability parity", () => {
     const codingModels = [
+      "k3-256k",
       "k3",
       "k3[1m]",
       "kimi-k2.7-code",
@@ -373,6 +377,7 @@ describe("provider registry parity", () => {
       "kimi-k2.6",
       "kimi-k2.5",
       "kimi-for-coding",
+      "kimi-for-coding-highspeed",
     ];
     const parityLists = [
       "noReasoningModels",
@@ -386,8 +391,9 @@ describe("provider registry parity", () => {
     for (const providerId of ["kimi", "kimi-code"]) {
       const entry = PROVIDER_REGISTRY.find(provider => provider.id === providerId);
       expect(entry?.models).toEqual(codingModels);
+      expect(entry?.defaultModel).toBe("k3-256k");
       for (const modelId of codingModels) {
-        expect(entry?.modelContextWindows?.[modelId]).toBe(modelId === "k3[1m]" ? 1_048_576 : 262_144);
+        expect(entry?.modelContextWindows?.[modelId]).toBe(modelId === "k3" || modelId === "k3[1m]" ? 1_048_576 : 262_144);
       }
       for (const field of parityLists) {
         expect(entry?.[field]).toContain("kimi-k2.7-code");
@@ -401,11 +407,13 @@ describe("provider registry parity", () => {
       const enriched: OcxProviderConfig = { adapter: "openai-chat", baseUrl: entry!.baseUrl };
       enrichProviderFromCatalog(providerId, enriched);
       expect(enriched.promptCacheKey).toBe(true);
+      expect(entry?.noReasoningModels).not.toContain("k3-256k");
       expect(entry?.noReasoningModels).not.toContain("k3");
       expect(entry?.noReasoningModels).not.toContain("k3[1m]");
+      expect(entry?.modelReasoningEfforts?.["k3-256k"]).toEqual(["low", "high", "max"]);
       expect(entry?.modelReasoningEfforts?.k3).toEqual(["low", "high", "max"]);
       expect(entry?.modelReasoningEfforts?.["k3[1m]"]).toEqual(["low", "high", "max"]);
-      for (const modelId of ["k3", "k3[1m]"]) {
+      for (const modelId of ["k3-256k", "k3", "k3[1m]"]) {
         expect(entry?.modelDefaultReasoningEfforts?.[modelId]).toBe("max");
         expect(entry?.modelReasoningEffortMap?.[modelId]).toEqual({
           none: "none",
@@ -416,12 +424,17 @@ describe("provider registry parity", () => {
           max: "max",
         });
       }
+      expect(entry?.modelInputModalities?.["k3-256k"]).toEqual(["text", "image"]);
       expect(entry?.modelInputModalities?.k3).toEqual(["text", "image"]);
       expect(entry?.modelInputModalities?.["k3[1m]"]).toEqual(["text", "image"]);
+      expect(entry?.noTemperatureModels).toContain("k3-256k");
       expect(entry?.noTemperatureModels).toContain("k3");
       expect(entry?.noTemperatureModels).toContain("k3[1m]");
+      expect(entry?.noTopPModels).toContain("k3-256k");
       expect(entry?.noTopPModels).toContain("k3");
+      expect(entry?.noPenaltyModels).toContain("k3-256k");
       expect(entry?.noPenaltyModels).toContain("k3");
+      expect(entry?.preserveReasoningContentModels).toContain("k3-256k");
       expect(entry?.preserveReasoningContentModels).toContain("k3");
       expect(entry?.preserveReasoningContentModels).toContain("k3[1m]");
       expect(entry?.modelReasoningEfforts?.["kimi-for-coding"]).toEqual([]);
@@ -433,6 +446,7 @@ describe("provider registry parity", () => {
     expect(kimiEntry?.default_reasoning_level).toBe("max");
 
     const moonshot = PROVIDER_REGISTRY.find(provider => provider.id === "moonshot");
+    expect(moonshot?.defaultModel).toBe("kimi-k3");
     expect(moonshot?.models).toContain("kimi-k3");
     expect(moonshot?.models).not.toContain("k3");
     expect(moonshot?.models).not.toContain("kimi-for-coding");

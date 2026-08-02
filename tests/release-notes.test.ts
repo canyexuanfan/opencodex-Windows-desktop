@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   assembleReleaseNotes,
+  desktopVersionFromReleaseBoundary,
   hasMeaningfulCarriedNotes,
   hasNonWhitespace,
   joinCarriedPreviewNotes,
@@ -207,6 +208,12 @@ describe("selectNewestCarriedPreviewTag", () => {
 });
 
 describe("assembleReleaseNotes", () => {
+  test("derives the versioned Windows installer name from the release boundary", () => {
+    expect(desktopVersionFromReleaseBoundary("v2.8.0")).toBe("2.8.0");
+    expect(desktopVersionFromReleaseBoundary("Published @pkg@2.8.1-preview.3")).toBe("2.8.1-preview.3");
+    expect(desktopVersionFromReleaseBoundary("no version")).toBeNull();
+  });
+
   test("copies preview notes and appends only the since-preview delta", () => {
     const notes = assembleReleaseNotes({
       npmMetadata: "Published to npm as `@bitkyc08/opencodex@2.7.39` with dist-tag `latest`.",
@@ -219,7 +226,7 @@ describe("assembleReleaseNotes", () => {
     });
 
     expect(notes).toContain("dist-tag `latest`");
-    expect(notes).toContain("Download `OpenCodex-Setup-x64.exe`");
+    expect(notes).toContain("Download `OpenCodex-Setup-2.7.39-x64.exe`");
     expect(notes).toContain("Only the installer build is published");
     expect(notes).toContain("## What's Changed\n### Bug Fixes\n* fix A");
     expect(notes).toContain("## Since preview\n\n## What's Changed\n### Bug Fixes\n* fix B");

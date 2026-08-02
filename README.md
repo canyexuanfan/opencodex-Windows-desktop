@@ -15,7 +15,8 @@ ocx start        # proxy + dashboard on localhost:10100
 ```
 
 Windows desktop users can use the installer from this fork's GitHub Releases:
-download `OpenCodex-Setup-x64.exe`, run it, then start OpenCodex from the
+download the versioned installer, for example `OpenCodex-Setup-2.8.0-x64.exe`,
+run it, then start OpenCodex from the
 Start menu or desktop shortcut. Only the installer build is published; portable
 builds are intentionally left for a future advanced/portable track if users ask
 for it.

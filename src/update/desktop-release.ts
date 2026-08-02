@@ -3,7 +3,9 @@ import type { Channel } from "./index";
 export const DESKTOP_RELEASE_REPO = "canyexuanfan/opencodex-Windows-desktop";
 export const DESKTOP_RELEASE_NOTES_URL = `https://github.com/${DESKTOP_RELEASE_REPO}/releases/latest`;
 export const DESKTOP_RELEASES_API_URL = `https://api.github.com/repos/${DESKTOP_RELEASE_REPO}/releases`;
-export const DESKTOP_SETUP_ASSET_NAME = "OpenCodex-Setup-x64.exe";
+export function desktopSetupAssetName(version: string): string {
+  return `OpenCodex-Setup-${version}-x64.exe`;
+}
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<{
   ok: boolean;
@@ -41,11 +43,12 @@ function isReleaseRecord(value: unknown): value is GitHubRelease {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function setupAsset(release: GitHubRelease): { name: string; downloadUrl: string } | null {
+function setupAsset(release: GitHubRelease, version: string): { name: string; downloadUrl: string } | null {
+  const expectedName = desktopSetupAssetName(version);
   const assets = Array.isArray(release.assets) ? release.assets as GitHubAsset[] : [];
   for (const asset of assets) {
-    if (asset.name === DESKTOP_SETUP_ASSET_NAME && typeof asset.browser_download_url === "string") {
-      return { name: DESKTOP_SETUP_ASSET_NAME, downloadUrl: asset.browser_download_url };
+    if (asset.name === expectedName && typeof asset.browser_download_url === "string") {
+      return { name: expectedName, downloadUrl: asset.browser_download_url };
     }
   }
   return null;
@@ -91,7 +94,7 @@ export async function fetchDesktopInstallerRelease(
   if (!release) return null;
   const latestVersion = releaseVersion(release);
   if (!latestVersion) return null;
-  const asset = setupAsset(release);
+  const asset = setupAsset(release, latestVersion);
   return {
     latestVersion,
     releaseNotesUrl: releaseUrl(release),

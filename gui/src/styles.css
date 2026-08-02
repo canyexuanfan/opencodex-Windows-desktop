@@ -337,7 +337,26 @@ input[type="checkbox"]:hover:not(:disabled), input[type="radio"]:hover:not(:disa
    is one or two circles wide — never a placeholder. */
 .sidebar-github-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .sidebar-github-link { flex: 1 1 auto; min-width: 0; }
-.sidebar-github-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.sidebar-github-actions {
+  display: flex; align-items: center; gap: 4px;
+  flex: 0 0 auto;
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(6px);
+  transition:
+    width var(--motion-normal),
+    opacity var(--motion-fast),
+    transform var(--motion-fast);
+}
+.sidebar-github-row:hover .sidebar-github-actions,
+.sidebar-github-row:focus-within .sidebar-github-actions {
+  width: 60px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
 .sidebar-orb {
   position: relative;
   display: inline-flex; align-items: center; justify-content: center;
