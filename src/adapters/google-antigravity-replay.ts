@@ -99,7 +99,27 @@ const REPLAY_MAX_CANONICAL_ARGS_BYTES = 64 * 1024;
 const CANONICAL_OVERFLOW = Symbol("canonical-overflow");
 
 /** Byte-identical output to the old recursive canonicalJson, written incrementally. */
+/**
+ * Key-count pre-check: every object key costs at least 4 canonical bytes
+ * (two quotes, colon, separator), so a wider object ALWAYS overflows the
+ * canonical budget — skip the sort and the walk. Object.keys allocation
+ * itself is linear and irreducible in JS (there is no streaming key API),
+ * but it is transient and never sorted or walked past this bound.
+ */
+const CANONICAL_MAX_KEYS_PER_OBJECT = REPLAY_MAX_CANONICAL_ARGS_BYTES / 4;
+
+/** Test-only scan instrumentation: proves overflow aborts the walk near the
+ * cap instead of scanning/materializing the whole input. */
+let canonicalScanUnitsForTests = 0;
+export function canonicalScanUnitsForTestsValue(): number {
+  return canonicalScanUnitsForTests;
+}
+export function resetCanonicalScanUnitsForTests(): void {
+  canonicalScanUnitsForTests = 0;
+}
+
 function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void {
+  canonicalScanUnitsForTests += 1;
   if (typeof value === "string") {
     writeJsonStringEscaped(value, sink);
     return;
@@ -119,7 +139,9 @@ function writeCanonicalJson(value: unknown, sink: (chunk: string) => void): void
     sink("]");
     return;
   }
-  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const keys = Object.keys(value as Record<string, unknown>);
+  if (keys.length > CANONICAL_MAX_KEYS_PER_OBJECT) throw CANONICAL_OVERFLOW;
+  keys.sort();
   sink("{");
   keys.forEach((k, index) => {
     if (index > 0) sink(",");
@@ -142,6 +164,7 @@ function writeJsonStringEscaped(value: string, sink: (chunk: string) => void): v
   sink('"');
   let buffer = "";
   for (const cp of value) {
+    canonicalScanUnitsForTests += 1;
     const code = cp.codePointAt(0)!;
     let escaped: string;
     if (cp === '"') escaped = '\\"';

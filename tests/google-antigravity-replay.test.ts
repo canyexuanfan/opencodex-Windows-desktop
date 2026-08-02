@@ -2,6 +2,8 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
   antigravityCanonicalJsonBoundedForTests,
   antigravityFunctionCallKeyForTests,
+  canonicalScanUnitsForTestsValue,
+  resetCanonicalScanUnitsForTests,
   antigravityReplayMetrics,
   antigravityReplayKeyForTests,
   antigravityReplayRetainedStoreSnapshot,
@@ -390,6 +392,22 @@ describe("antigravity replay fixed-size key identities", () => {
     expect(antigravityCanonicalJsonBoundedForTests(hugeNested, 100)).toBeNull();
     // Under the budget the exact canonical form is produced.
     expect(antigravityCanonicalJsonBoundedForTests({ a: [1, "x"] }, 1024)).toBe('{"a":[1,"x"]}');
+  });
+
+  test("overflow aborts the walk near the cap, proven by scan instrumentation", () => {
+    resetCanonicalScanUnitsForTests();
+    const hugeString = "y".repeat(10 * 1024 * 1024);
+    expect(antigravityCanonicalJsonBoundedForTests(hugeString, 100)).toBeNull();
+    // The walk stopped at the first 4 KiB flush — not 10 MiB of code points.
+    expect(canonicalScanUnitsForTestsValue()).toBeLessThan(8192);
+
+    resetCanonicalScanUnitsForTests();
+    // A 20k-key object exceeds the guaranteed-overflow key bound (64 KiB / 4),
+    // so it is rejected after key collection but BEFORE the sorted walk.
+    const wide: Record<string, number> = {};
+    for (let index = 0; index < 20_000; index += 1) wide[`k${index}`] = index;
+    expect(antigravityCanonicalJsonBoundedForTests(wide, 64 * 1024)).toBeNull();
+    expect(canonicalScanUnitsForTestsValue()).toBeLessThan(100);
   });
 
   test("fixed session keys are counted per session and released exactly", () => {
