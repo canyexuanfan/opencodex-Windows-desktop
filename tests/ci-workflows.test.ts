@@ -35,19 +35,76 @@ describe("GitHub Actions hardening", () => {
     };
 
     // Job-scoped: a global count still passes if values are swapped between jobs.
-    // Pin ownership explicitly. `test` is 30m for Windows isolate margin on #827
-    // after state-store admission — do not raise again; fix hung tests instead
-    // (unref'd oauth waitMs / shell kill-grace). Selector stays at 2; smoke at 8.
+    // Pin ownership explicitly. `platform-windows` keeps the 30m Windows isolate
+    // margin from #827 after state-store admission — do not raise again; fix hung
+    // tests instead (unref'd oauth waitMs / shell kill-grace). A `test` shard runs
+    // a quarter of the suite, so 15m there means wedged rather than slow.
     expect(ci.jobs?.["select-windows-runner"]?.["timeout-minutes"]).toBe(2);
-    expect(ci.jobs?.test?.["timeout-minutes"]).toBe(30);
+    expect(ci.jobs?.test?.["timeout-minutes"]).toBe(15);
+    expect(ci.jobs?.gates?.["timeout-minutes"]).toBe(15);
+    expect(ci.jobs?.["platform-macos"]?.["timeout-minutes"]).toBe(30);
+    expect(ci.jobs?.["platform-windows"]?.["timeout-minutes"]).toBe(30);
     expect(ci.jobs?.["npm-global-smoke"]?.["timeout-minutes"]).toBe(8);
+    expect(ci.jobs?.ci?.["timeout-minutes"]).toBe(5);
     // Every job must stay bounded — an unbounded job can hang a queue for hours.
-    expect(count(workflow, "timeout-minutes:")).toBe(3);
+    // Asserted structurally rather than by counting the string: a count passes if
+    // a job is added while another loses its bound in the same edit. Iterating the
+    // parsed jobs proves what the sentence above always claimed, and names the
+    // offending job when it fails.
+    for (const [name, job] of Object.entries(ci.jobs ?? {})) {
+      expect(`${name}:${typeof job?.["timeout-minutes"]}`).toBe(`${name}:number`);
+    }
     expect(workflow).toContain("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
     expect(workflow).toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
     expect(workflow).toContain("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e");
     expect(workflow).toContain("bun test --isolate tests");
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
+
+    // Sharding is only safe while the shards tile the suite exactly. If the
+    // matrix and the divisor drift apart, some files stop running and CI stays
+    // green — the worst failure available here. Pin them to each other.
+    const shards = (ci.jobs?.test as { strategy?: { matrix?: { shard?: number[] } } })
+      ?.strategy?.matrix?.shard ?? [];
+    expect(shards).toEqual([1, 2, 3, 4]);
+    expect(workflow).toContain(`--shard=\${{ matrix.shard }}/${shards.length}`);
+
+    // The aggregate gate is the check a human trusts. Three ways to break it
+    // silently: drop `if: always()` so it skips (and a skipped job reports
+    // success), shrink `needs:` so it stops covering a job, or add a job and
+    // forget to gate it. Deriving the expected list from the workflow's own job
+    // keys closes all three — a hardcoded list rots on the next job added.
+    const gate = ci.jobs?.ci as { if?: unknown; needs?: string[] } | undefined;
+    expect(gate?.if).toBe("always()");
+    expect([...(gate?.needs ?? [])].sort())
+      .toEqual(Object.keys(ci.jobs ?? {}).filter(name => name !== "ci").sort());
+
+    // macOS is the unsharded control for the sharded Linux lane: it is the only
+    // place the whole suite runs in one pool. Sharded or conditional, it stops
+    // being a control.
+    const macosSteps = (ci.jobs?.["platform-macos"] as { steps?: { run?: string }[] })?.steps ?? [];
+    expect(macosSteps.some(step => step.run?.includes("bun test --isolate tests"))).toBe(true);
+    expect(macosSteps.some(step => step.run?.includes("--shard"))).toBe(false);
+    expect(ci.jobs?.["platform-macos"]).not.toHaveProperty("if");
+
+    // Windows leaving the PR lane is a trade, not a deletion: it still runs
+    // before anything is published. Assert the positive condition rather than the
+    // absence of `pull_request` — `!= 'pull_request'` also matches every push to
+    // dev, which would restore the 16-minute leg to the busiest lane while still
+    // passing a loosely-worded test.
+    const windowsIf = String((ci.jobs?.["platform-windows"] as { if?: string })?.if ?? "");
+    expect(windowsIf).toContain("github.event_name == 'workflow_dispatch'");
+    expect(windowsIf).toContain("github.ref == 'refs/heads/main'");
+    expect(windowsIf).toContain("github.ref == 'refs/heads/preview'");
+    expect(windowsIf).not.toContain("refs/heads/dev");
+
+    // Windows runs the same full suite, and keeps the self-hosted workspace wipe.
+    // Without the wipe a deleted file survives on the runner's disk and the suite
+    // passes against a tree that no longer exists in git.
+    const winSteps = (ci.jobs?.["platform-windows"] as { steps?: { if?: string; run?: string }[] })?.steps ?? [];
+    expect(winSteps.some(step => step.run?.includes("bun test --isolate tests"))).toBe(true);
+    expect(winSteps.some(step => step.run?.includes("--shard"))).toBe(false);
+    expect(winSteps.some(step => step.if === "runner.environment == 'self-hosted'"
+      && step.run?.includes("git clean -xffd"))).toBe(true);
   });
 
   test("PR checks reach every branch the target gate accepts", async () => {
