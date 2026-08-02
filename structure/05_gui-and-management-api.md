@@ -108,6 +108,10 @@ identity, active selection, and routing never consult these fields. The matching
 
 ## Sidebar stop button
 
+The dashboard sidebar includes a stop button that calls `POST /api/stop`. The button shows a
+confirmation prompt, then fires the request and accepts the connection drop (the proxy exits). The
+endpoint restores native Codex config, stops any installed service to prevent respawn, and exits.
+
 ## Bun runtime provenance
 
 `GET /api/system/memory` may report `bunRuntimeSource` — one of `override`, `bundled`, or
@@ -118,6 +122,11 @@ whichever launcher selected the binary: the npm Node launcher, the Windows Task 
 wrapper, the native WinSW service, launchd, systemd, the Codex autostart shim, and the Windows
 tray host. Provenance and path come from a single `durableBunRuntime()` resolution at each of
 those sites, so the marker can never describe a different binary than the one actually baked.
+
+Launchers that re-exec `process.execPath` instead of resolving a binary — `ocx ensure`, GUI/Claude/
+OpenCode start, `POST /api/system/restart`, and the update relaunch — go through
+`withProcessRuntimeProvenance()`. Re-execing the current runtime does not change how that runtime
+was obtained, so an inherited marker is preserved and only its absence records `process`.
 
 **Trust rule: a reporting surface must never resolve provenance for itself.** Calling
 `durableBunRuntime()` at report time answers "what would this process pick right now", which is
@@ -135,10 +144,6 @@ unrecognized wire value is treated as absent rather than passed through.
 `bunRevision` remains informational and carries no capability meaning. Provenance does not feed
 the eager-relay decision: the conservative `auto-known-bad` result for canary and otherwise
 unvalidated Bun builds is unchanged (`src/lib/bun-stream-caps.ts`).
-
-The dashboard sidebar includes a stop button that calls `POST /api/stop`. The button shows a
-confirmation prompt, then fires the request and accepts the connection drop (the proxy exits). The
-endpoint restores native Codex config, stops any installed service to prevent respawn, and exits.
 
 ## Startup safety
 

@@ -369,7 +369,10 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-export function buildUnixCodexShim(realCodexPath: string, bunPath: string, cliPath: string, tokenFile = serviceApiTokenFilePath(), bunRuntimeSource: BunRuntimeSource = "bundled"): string {
+// Provenance is required rather than defaulted: a default would let a caller pass an
+// override binary and silently label it something else, which is precisely the
+// path/marker disagreement this feature exists to prevent.
+export function buildUnixCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource, tokenFile = serviceApiTokenFilePath()): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.join("|");
   const valueOptions = CODEX_GLOBAL_OPTIONS_WITH_VALUE.join("|");
   return `#!/usr/bin/env sh
@@ -436,7 +439,7 @@ function windowsBatchSet(name: string, value: string): string {
   return `set "${name}=${windowsEnvIndirectBatchValue(value, windowsBatchValue)}"`;
 }
 
-export function buildWindowsCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource = "bundled"): string {
+export function buildWindowsCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource): string {
   const internalCommandChecks = CODEX_INTERNAL_COMMANDS.map(command => `if /I "%~1"=="${command}" goto run_codex`).join("\r\n");
   const valueOptionChecks = CODEX_GLOBAL_OPTIONS_WITH_VALUE.map(option => `if /I "%~1"=="${option}" goto skip_option_value`).join("\r\n");
   return `@echo off\r
@@ -478,7 +481,7 @@ function psString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-export function buildWindowsPowerShellCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource = "bundled"): string {
+export function buildWindowsPowerShellCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.map(command => psString(command)).join(", ");
   const valueOptions = CODEX_GLOBAL_OPTIONS_WITH_VALUE.map(option => psString(option)).join(", ");
   const tokenFile = serviceApiTokenFilePath();
@@ -621,12 +624,12 @@ function writeShim(wrapperPath: string, realCodexPath: string): void {
       // Extensionless Git-Bash sh launcher: sh shim with forward-slash paths.
       writeFileSync(
         wrapperPath,
-        buildUnixCodexShim(gitBashPath(realCodexPath), gitBashPath(bun), gitBashPath(cli), gitBashPath(serviceApiTokenFilePath()), bunRuntimeSource),
+        buildUnixCodexShim(gitBashPath(realCodexPath), gitBashPath(bun), gitBashPath(cli), bunRuntimeSource, gitBashPath(serviceApiTokenFilePath())),
         "utf8",
       );
     }
   } else {
-    writeFileSync(wrapperPath, buildUnixCodexShim(realCodexPath, bun, cli, serviceApiTokenFilePath(), bunRuntimeSource), "utf8");
+    writeFileSync(wrapperPath, buildUnixCodexShim(realCodexPath, bun, cli, bunRuntimeSource), "utf8");
     chmodSync(wrapperPath, 0o755);
   }
 }

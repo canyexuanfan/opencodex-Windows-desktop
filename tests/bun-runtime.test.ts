@@ -1,8 +1,8 @@
 import { describe, it, expect, afterAll } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUN_RUNTIME_SOURCE_ENV, isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, overrideBunPath, reportedBunRuntimeSource } from "../src/lib/bun-runtime";
+import { BUN_RUNTIME_SOURCE_ENV, isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, overrideBunPath, reportedBunRuntimeSource, withProcessRuntimeProvenance } from "../src/lib/bun-runtime";
 
 // realpath the temp root: on macOS /var is a symlink to /private/var, so a path built
 // from mkdtemp compares unequal to the same path resolved through process.cwd().
@@ -145,6 +145,52 @@ describe("reportedBunRuntimeSource (#848 launch-time provenance)", () => {
     } finally {
       if (inherited === undefined) delete process.env.OPENCODEX_BUN_PATH;
       else process.env.OPENCODEX_BUN_PATH = inherited;
+    }
+  });
+});
+
+describe("withProcessRuntimeProvenance (execPath relaunch paths)", () => {
+  it("records `process` when the relaunching parent carries no marker", () => {
+    // `ocx ensure`, GUI start, restart, and update-relaunch all re-exec
+    // process.execPath. Without this they would hand the daemon no provenance at
+    // all, and doctor would report unknown for an origin the launcher knew.
+    expect(withProcessRuntimeProvenance({})[BUN_RUNTIME_SOURCE_ENV]).toBe("process");
+  });
+
+  it("preserves an inherited marker instead of relabeling the same runtime", () => {
+    // Re-execing the current runtime does not change how that runtime was obtained,
+    // so an override started by the npm launcher stays `override` across a restart.
+    for (const source of ["override", "bundled", "process"] as const) {
+      expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: source })[BUN_RUNTIME_SOURCE_ENV]).toBe(source);
+    }
+  });
+
+  it("replaces an unrecognized inherited value rather than forwarding it", () => {
+    expect(withProcessRuntimeProvenance({ [BUN_RUNTIME_SOURCE_ENV]: "system" })[BUN_RUNTIME_SOURCE_ENV]).toBe("process");
+  });
+
+  it("leaves every other variable untouched", () => {
+    const result = withProcessRuntimeProvenance({ OCX_SERVICE: "1", PATH: "/usr/bin" });
+    expect(result.OCX_SERVICE).toBe("1");
+    expect(result.PATH).toBe("/usr/bin");
+  });
+
+  it("is applied by every detached proxy launcher that re-execs process.execPath", () => {
+    // A launcher added later that copies process.env directly would silently drop
+    // provenance again, so the launch sites are pinned here rather than left to review.
+    const launchers = [
+      "src/cli/index.ts",
+      "src/cli/claude.ts",
+      "src/cli/opencode.ts",
+      "src/server/management/system-restart.ts",
+      "src/update/index.ts",
+    ];
+    for (const relative of launchers) {
+      const text = readFileSync(join(import.meta.dir, "..", relative), "utf8");
+      const spawnCount = (text.match(/spawn\(process\.execPath/g) ?? []).length;
+      const stampCount = (text.match(/env: withProcessRuntimeProvenance\(/g) ?? []).length;
+      expect(spawnCount).toBeGreaterThan(0);
+      expect(stampCount).toBe(spawnCount);
     }
   });
 });

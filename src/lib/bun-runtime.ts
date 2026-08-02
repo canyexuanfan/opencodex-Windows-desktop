@@ -59,6 +59,23 @@ export function reportedBunRuntimeSource(
 }
 
 /**
+ * Child environment for a proxy started with `process.execPath` — the runtime this
+ * process is already using.
+ *
+ * These launchers re-exec the current runtime rather than resolving a binary, so the
+ * provenance they should report is whatever launched THIS process. An inherited marker
+ * is therefore still accurate and is preserved; only when there is none does the
+ * executable's own origin (`process`) get recorded. Without this the marker would be
+ * silently dropped on `ocx ensure`, GUI start, restart, and update-relaunch, and the
+ * service would report an unknown origin it actually knows.
+ */
+export function withProcessRuntimeProvenance(
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return { ...env, [BUN_RUNTIME_SOURCE_ENV]: reportedBunRuntimeSource(env) ?? "process" };
+}
+
+/**
  * Absolute path to the bundled Bun binary, or null if the `bun` dependency is
  * not installed/resolvable (or only the un-downloaded placeholder is present).
  * The npm `bun` package ships the binary as `bin/bun.exe` on every platform;
