@@ -27,6 +27,9 @@ interface ProviderAdapter {
 
 - 内部メッセージを OpenAI role に変換し、ツールは `{type:"function", function:{…}}` と
   `tool_choice`（`auto`/`none`/`required` または指定関数）にマッピングします。
+- **ツール結果内の画像**は、`role:"tool"` がテキスト専用のため、ツールラウンドが閉じた後に後続の
+  user vision メッセージ（`image_url` パート）として送られます。ツールメッセージ側には `[image]`
+  マーカーがアンカーとして残ります。
 - **Codex の GPT-5 アイデンティティプロンプトを書き直し**、モデル中立な紹介に変えます。そのためルーティングされたモデルが自分を OpenAI だと主張しません。
 - 正確な段階がないときは **`reasoning_effort` をモデルが公表したサブセットに合わせて調整**します。
   プロバイダーが明示的に alias を設定しない限り、`xhigh` と `max` は異なるラベルのまま保ちます。`provider.noReasoningModels` に含まれる id には値を **一切送りません**。
