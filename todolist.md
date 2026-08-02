@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 36：当前发布资产命名与版本链路复核已完成（仅待真实安装/全量外部环境验收）`
+- 状态：`阶段 38：真实环境非重启验收与版本化安装包签名修复已完成（仍待覆盖安装/外部环境验收）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-代码与本机可安全验证范围已收尾。普通发布链只发布带版本号安装版 `OpenCodex-Setup-2.8.0-x64.exe`，不发布 portable；桌面壳版本与根包版本同为 `2.8.0`；桌面更新检测按 GitHub Release 版本精确匹配 `OpenCodex-Setup-<version>-x64.exe`。无版本名 `OpenCodex-Setup-x64.exe` 只允许作为历史记录或负向测试样本出现，不是当前发布资产。剩余验收是用户/测试机真实双击安装、桌面快捷方式和开始菜单图标目视确认，以及 Windows 10/11 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存、受信测试机 Authenticode `Valid` 与 exact-HEAD 跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
+代码与本机可安全验证范围已收尾。普通发布链只发布带版本号安装版 `OpenCodex-Setup-2.8.0-x64.exe`，不发布 portable；桌面壳版本与根包版本同为 `2.8.0`；桌面更新检测按 GitHub Release 版本精确匹配 `OpenCodex-Setup-<version>-x64.exe`。无版本名 `OpenCodex-Setup-x64.exe` 只允许作为历史记录或负向测试样本出现，不是当前发布资产。阶段 38 已修复版本化安装包漏签名问题，当前待验收安装包 SHA-256=`8126A8059130E41511CE60028DE417F549E34020EAE9D502AE3A46906BAAF602`，签名主体 `CN=十七°`，本机自签链状态 `UnknownError`。真实运行态在不重启 Codex 的前提下已验证：Codex 当前路由端口 36723 可用，`/healthz` 与 `/v1/models` 正常；用户新增 `zhipu-bigmodel` Provider 已存在且默认模型为 `glm-5.2`。剩余验收集中在覆盖安装最新版、桌面快捷方式/开始菜单/卸载注册表、已安装 exe 签名，以及阶段 37 的干净 VM、受信签名链、睡眠/重启和跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
 
 ---
 
@@ -738,7 +738,7 @@ Electron 单实例宿主
 Codex / Claude Code / 其他现有客户端
 ```
 
-当前结论：本机桌面端源码改造、preload CJS 修复、copyfile 生产依赖、独立 node_modules 资源、当前 HEAD 带版本号安装版重建已完成；当前最终产物为 `desktop/out/OpenCodex-Setup-2.8.0-x64.exe`，SHA-256=`368F70370A7BC95B6C1C560EC938629DC91BB8582200EF2FBD893B32B053022D`，普通发布链无 portable。工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、中文/空格安装目录真实向导、受信证书链 `Valid`、真实 Provider 保留和卸载保留用户目录。根完整测试在授权临时根仍因总时长/运行器限制未完成；项目 bundled Bun 下 GUI 446/446 已通过。
+当前结论：本机桌面端源码改造、preload CJS 修复、copyfile 生产依赖、独立 node_modules 资源、当前 HEAD 带版本号安装版重建与补签名已完成；当前最终产物为 `desktop/out/OpenCodex-Setup-2.8.0-x64.exe`，SHA-256=`8126A8059130E41511CE60028DE417F549E34020EAE9D502AE3A46906BAAF602`，签名主体 `CN=十七°`，普通发布链无 portable。真实运行态非重启验收已确认 Codex 当前注入端口 36723 可用、`/healthz` 和 `/v1/models` 正常、用户新增 `zhipu-bigmodel` Provider 未丢失且默认模型为 `glm-5.2`。当前已安装运行目录 `E:\Program\OpenCodex` 仍是未覆盖安装的旧未签名 exe，且本轮只读检查未发现桌面快捷方式或 NSIS 卸载注册表项；这些必须等用户允许覆盖安装最新版后再验收，不能在当前对话中通过重启/覆盖运行中的 Codex 强行完成。根完整测试在授权临时根仍因总时长/运行器限制未完成；项目 bundled Bun 下 GUI 446/446 已通过。
 # 桌面端功能对齐增量（2026-08-01）
 
 - [x] 桌面 sidecar 停止前调用 `restoreNativeCodex()`，下次启动清理上次崩溃残留的 marker-owned 路由；健康外部 proxy 不受影响。
@@ -990,3 +990,30 @@ Codex / Claude Code / 其他现有客户端
 - [x] Git 存档链路复核：阶段 36 主提交 `933ea89` 已完成；默认权限首次 `git tag -a git-v0.54` 因 Git 元数据写权限失败，已记录到 `questions/Git索引权限排查指南.md`，随后用最小范围授权成功补打 `git-v0.54`；成功经验继续补写入排查指南并单独存档。
 - [x] 本轮未改代码、未重启或关闭当前正在使用的 Codex；仅校正 `todolist.md` 顶部口径并记录复核证据。
 - [ ] 外部验收项保持不变：真实覆盖安装、桌面快捷方式/开始菜单图标、安装向导视觉、受信签名链 `Valid`、系统重启/睡眠唤醒、干净 Windows VM 与跨平台 exact-HEAD CI 仍需用户或测试机完成。
+
+# 阶段 37：外部验收矩阵与完成边界收口（2026-08-02）
+- [x] 将分散在历史阶段中的剩余未完成项合并为外部验收矩阵，避免后续线程重复翻旧包名、旧 portable 或旧阶段记录。
+- [x] 阶段 37 当时待验收安装包唯一入口：`desktop/out/OpenCodex-Setup-2.8.0-x64.exe`；SHA-256=`368F70370A7BC95B6C1C560EC938629DC91BB8582200EF2FBD893B32B053022D`；普通发布链无 portable。该未签名版本化包已由阶段 38 的签名包取代。
+- [x] 干净 VM 验收证据要求：Windows 10 x64 与 Windows 11 x64 各至少一次真实双击安装；VM 内无 Node.js、无 Bun、无项目依赖；安装后从桌面快捷方式或开始菜单启动，Dashboard 在线且 `/v1/models` 可用。
+- [x] 安装向导/快捷方式验收证据要求：目录页默认路径为正常 Windows 用户安装目录；浏览选择父目录时仍显示并安装到 `OpenCodex` 程序名子文件夹；桌面快捷方式与开始菜单快捷方式存在，图标不是 Electron 默认图标；卸载后安装目录删除但用户配置目录保留。
+- [x] 真实用户配置验收证据要求：使用带自定义 Provider、默认 Provider 和 Codex 配置的真实或 VM 复制配置覆盖安装；启动、开启/停止代理、退出、再次启动后，用户自有 Provider 不被覆盖，Codex 死路由会被 health gate/service/shim 恢复。
+- [x] 生命周期验收证据要求：标准用户/非管理员、中文用户名、睡眠/唤醒、注销/重启、操作系统强制结束或断电后 Codex 先于 OpenCodex 启动、已有 Task Scheduler/WinSW/旧托盘共存场景均需外部机器验证；当前对话中的 Codex 不作为这些场景的测试对象。
+- [x] 签名验收证据要求：在受信测试机导入“十七°”测试根后，对安装包执行 `signtool verify /pa /v` 或等效 Authenticode 验证并取得 `Valid`；未受信机器出现 SmartScreen/Unknown Publisher 属于已说明限制，不可误记为 Valid。
+- [x] 回归验收证据要求：exact-HEAD 的 Windows/macOS/Linux CI 或等效干净环境跑通根级必要测试；当前 Windows 本机完整 `bun run test` / `bun run prepush` 因运行器总时长和子进程/临时目录限制保留为未完成，不能用 focused 结果冒充全量通过。
+- [x] 视觉验收证据要求：Provider、模型、日志、用量、存储、API、Claude/Grok 等主要页面至少完成一次鼠标/键盘遍历，重点确认停止代理不切空白页、左下角按钮在停止/开启间切换、顶部 Electron 默认菜单隐藏、Provider 默认星标和删除按钮不互相遮挡、开启代理不自动跳回仪表盘。
+- [x] 本轮仅整理验收边界和证据要求，未重启、关闭、覆盖安装或修改当前正在使用的 Codex；未 push、未创建 Release、未上传安装包。
+- [ ] 阶段 37 矩阵本身仍需用户或测试机执行并回填结果；没有这些外部证据前，不得把“桌面端改造目标”标记为完整完成。
+
+# 阶段 38：真实环境非重启验收与版本化安装包签名修复（2026-08-02）
+- [x] 用户已自行重启 Codex 并新增 Provider；本阶段遵守用户要求，没有重启、关闭、覆盖安装或停止当前正在使用的 Codex。
+- [x] 真实 Codex 路由恢复验收：`C:\Users\wzm33\.codex\config.toml` 当前 `openai_base_url` 指向 `http://127.0.0.1:36723/v1`；`GET http://127.0.0.1:36723/healthz` 返回 `status=ok`、`service=opencodex`、`version=2.8.0`、`pid=33868`；`GET /v1/models` 返回 list，17 个模型，包含 `zhipu-bigmodel/glm-4.6` 兼容模型，证明 Codex 未再被死路由拦住。
+- [x] 新增 Provider 保留验收：通过授权只读、脱敏读取 `C:\Users\wzm33\.opencodex\config.json`，确认存在 2 个 Provider：`openai` 与 `zhipu-bigmodel`；`zhipu-bigmodel` 的 adapter 为 `openai-chat`，Base URL 为 `https://open.bigmodel.cn/api/paas/v4`，默认模型为 `glm-5.2`，且存在 API Key（未输出密钥）。
+- [x] 真实快捷方式只读验收：开始菜单快捷方式存在于 `C:\Users\wzm33\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\OpenCodex\OpenCodex.lnk`，目标为 `E:\Program\OpenCodex\OpenCodex.exe`，图标为 `E:\Program\OpenCodex\resources\tray\opencodex-tray-online.ico,0`，不是 Electron 默认图标。
+- [ ] 真实桌面快捷方式仍未通过：只读枚举 `C:\Users\wzm33\Desktop` 未发现 OpenCodex `.lnk`；当前运行安装目录看起来不是最新版签名安装包覆盖后的标准 NSIS 注册态，需等用户允许覆盖安装最新版后复核。
+- [ ] 真实卸载注册表仍未通过：HKCU 的 `Software\65450dd5-cb01-5699-92e3-de59ccbfbe4d` 与 `Software\Microsoft\Windows\CurrentVersion\Uninstall\65450dd5-cb01-5699-92e3-de59ccbfbe4d` 均未发现；需等覆盖安装最新版后复核注册表和卸载器。
+- [x] 发现并修复版本化安装包漏签名：阶段 38 初始只读验收中，`desktop/out/OpenCodex-Setup-2.8.0-x64.exe` 与已安装 `E:\Program\OpenCodex\OpenCodex.exe` 均为 `NotSigned`；随后使用临时 `CN=十七°` 代码签名证书重新执行 `desktop` build 与 electron-builder NSIS 构建，只更新仓库 `desktop/out`，没有覆盖当前运行安装目录。
+- [x] 当前最终安装包签名验收：`desktop/out/OpenCodex-Setup-2.8.0-x64.exe` SHA-256=`8126A8059130E41511CE60028DE417F549E34020EAE9D502AE3A46906BAAF602`；`Get-AuthenticodeSignature` 可读取签名主体 `CN=十七°`，thumbprint=`5D5152DA699A8A22227DD0CF9C40877EC6B71D34`，本机自签链状态为 `UnknownError`（未受信测试根的预期状态，不等于 `Valid`）。
+- [x] 当前最终 unpacked 签名验收：`desktop/out/win-unpacked/OpenCodex.exe` 与 `desktop/out/win-unpacked/resources/opencodex/runtime/bun.exe` 均可读取签名主体 `CN=十七°`，本机自签链状态为 `UnknownError`。
+- [x] 签名临时物清理：临时 PFX 已删除，CurrentUser 私钥证书已删除，`C:\tmp\opencodex-stage38-sign-20260802` 与 `C:\tmp\opencodex-stage38-electron-cache-20260802` 已清理为不存在。
+- [x] 排查流程闭环：PowerShell 复合匹配失败、`$home` 变量冲突、版本化包漏签名、随机数 API 兼容、electron-builder CLI 路径错误均已写入对应 `questions/` 排查指南，并记录成功方法。
+- [ ] 当前已安装运行中的 `E:\Program\OpenCodex\OpenCodex.exe` 仍是旧未签名文件；这是本阶段不覆盖安装、不重启 Codex 的刻意边界。用户允许覆盖安装最新版后，需复核已安装 exe 签名、桌面快捷方式、注册表、安装向导视觉和卸载保留。
