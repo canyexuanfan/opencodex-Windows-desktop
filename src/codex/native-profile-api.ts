@@ -54,12 +54,26 @@ async function withRecoveryGateTransition<T>(
   if (!context) return operation();
   const probe = deps.probeRecoveryState ?? probeNativeProfileRecoveryState;
   const before = probe(context);
-  const result = await operation();
-  const after = probe(context);
-  if (before !== "none" && after === "none") {
-    (deps.completeRecovery ?? completeNativeMainRecovery)(context.homeId);
+  let operationFailed = false;
+  try {
+    return await operation();
+  } catch (error) {
+    operationFailed = true;
+    throw error;
+  } finally {
+    if (before !== "none") {
+      try {
+        const after = probe(context);
+        if (after === "none") {
+          (deps.completeRecovery ?? completeNativeMainRecovery)(context.homeId);
+        }
+      } catch (transitionError) {
+        // Preserve the operation's typed/public error. A post-operation probe or
+        // completion failure must not replace it; the gate remains fail closed.
+        if (!operationFailed) throw transitionError;
+      }
+    }
   }
-  return result;
 }
 
 export async function handleNativeProfileAPI(

@@ -14,8 +14,10 @@ import { saveConfig } from "../src/config";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import { NativeProfileManager } from "../src/codex/native-profile-manager";
+import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
 import {
   encryptNativeEnvelope,
+  probeNativeProfileRecoveryState,
   readNativeEnvelope,
   readNativeProfileVault,
   serializeNativeProfileMetadata,
@@ -28,6 +30,7 @@ import type {
 import type { OcxConfig } from "../src/types";
 import {
   initializeNativeMainStartupGate,
+  isNativeMainTrafficBlocked,
   nativeMainStartupGateSnapshot,
 } from "../src/codex/native-profile-startup";
 
@@ -297,6 +300,53 @@ describe("native-main startup journal gate", () => {
       homeId: f.manager.context.homeId,
       reason: "manual-recovery",
     });
+  });
+
+  test("a switch error after real journal convergence preserves the selector error and reopens main", async () => {
+    const f = await fixture("prepared", "source-exact");
+    await initializeNativeMainStartupGate({
+      manager: f.manager,
+      // Arm the matching startup gate without consuming the real journal; the
+      // API switch below owns and exercises the actual convergence path.
+      probeRecoveryState: () => "manual",
+    });
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("journal");
+    expect(isNativeMainTrafficBlocked()).toBe(true);
+
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "missing-after-recovery", confirmedStopped: true }),
+    });
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager: f.manager,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(await response?.json()).toMatchObject({ code: "PROFILE_NOT_FOUND" });
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("none");
+    expect(nativeMainStartupGateSnapshot()).toMatchObject({ status: "ready", homeId: f.manager.context.homeId });
+    expect(isNativeMainTrafficBlocked()).toBe(false);
+  });
+
+  test("a failed real recovery that retains its journal preserves recovery-required and keeps main blocked", async () => {
+    const f = await fixture("prepared", "third");
+    await initializeNativeMainStartupGate({
+      manager: f.manager,
+      probeRecoveryState: () => "manual",
+    });
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "missing-after-recovery", confirmedStopped: true }),
+    });
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager: f.manager,
+    });
+
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toMatchObject({ code: "RECOVERY_REQUIRED" });
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("journal");
+    expect(nativeMainStartupGateSnapshot()).toMatchObject({ status: "blocked", homeId: f.manager.context.homeId });
+    expect(isNativeMainTrafficBlocked()).toBe(true);
   });
 
   test("fresh processes gate first admission and converge every recoverable phase/observation", async () => {
