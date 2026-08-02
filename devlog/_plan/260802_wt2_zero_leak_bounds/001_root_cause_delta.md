@@ -48,7 +48,7 @@ Decision: do NOT adopt PR #844's flat 32 MiB effective inbound — current 16 Mi
 
 `src/adapters/cursor/native-exec.ts` already has: 16 MiB/entry, 64 MiB aggregate, 4,096 entries, 15-min TTL, request-scope pinning with seal/rollback (`:351`), typed atomic admission failures (`entry_too_large`, `pinned_saturation`, `request_pinned_conflict`, `:219`), protobuf error acknowledgement for rejected `setBlobArgs` (`:551`), per-key hydration release (`:537`), app-owned-memory integration.
 
-**Audit blocker (Critical, accepted):** the caps account only `blobData`. A remote `blobId` of arbitrary length becomes an unbounded, UNCOUNTED `Map` key (`:219`, `:551`) — a near-16 MiB ID with tiny data can be retained across 4,096 entries (~64 GiB worst case of pure key strings). The NOOP verdict was wrong. Fix in `045`: bound/digest IDs at admission. Accepted residual (unchanged): remote `setBlobArgs` after scope sealing is TTL-protected only; PR has the same limitation.
+**Audit blocker (Critical, accepted):** the caps account only `blobData`. A remote `blobId` of arbitrary length becomes an unbounded, UNCOUNTED `Map` key (`:219`, `:551`) — a near-16 MiB raw ID becomes a ~32 MiB hex-expanded key (`key(blobId)` at `:331`, before admission), retainable across 4,096 entries (~128 GiB worst case of pure key strings). The NOOP verdict was wrong. Fix in `045`: validate/digest IDs from raw bytes before hex expansion, with a SEPARATE key-bytes counter so the 64 MiB payload cap is unchanged. Accepted residual (unchanged): remote `setBlobArgs` after scope sealing is TTL-protected only; PR has the same limitation.
 
 ### #843 — Antigravity replay: fixed-size identities (refinement)
 
