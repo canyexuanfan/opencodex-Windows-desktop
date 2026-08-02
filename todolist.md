@@ -1061,3 +1061,7 @@ Codex / Claude Code / 其他现有客户端
 - [x] 验证通过：`bun test tests\release-notes.test.ts tests\desktop-release-update.test.ts` 28/28；`git diff --check` 通过。
 - [x] 远端 fork 更新前公开内容审计已完成：公开树已排除 `questions/`、`todolist.md`、`docs/`、`reference/`、`.github/`、`.coderabbit.yaml`、AGENTS 指令、本机路径、临时脚本、私钥/证书和内部 git-v0.x 存档历史。
 - [x] 已在 `C:\tmp\opencodex-public-20260802-v1` 创建单一公开根提交 `2655f1b`，并在用户授权的 `--force-with-lease` 下更新 `https://github.com/canyexuanfan/opencodex-Windows-desktop.git` 的 `main`；远端复核 `refs/heads/main=2655f1b280cbf3eff1634183868da476bcae438e`，且未推送 `git-v0.61/git-v0.62/git-v0.63` 内部 tag。
+- [x] 用户验收发现 README 断图后已纠正公开树策略：不能从 sparse 工作树导出公开仓库，必须从完整 Git 对象树导出并保留原仓库公开内容；已记录到 `questions/GitHub公开树资源缺失排查指南.md`。
+- [x] 已重新生成完整公开根提交 `30d9ede`，保留原仓库公开 `assets/`、`readme/`、`docs-site/`、`docs/`、`.github/`、`devlog/` 等内容，仅排除本地内部过程文件；README 本地链接审计通过，远端 `main=30d9ede446ef131a05389df74bceb6ee04aa0f76`。
+- [x] 已创建 GitHub Release `v2.8.0` 并上传安装包 `OpenCodex-Setup-2.8.0-x64.exe`；GitHub asset digest 与本地 SHA-256 `1812F1F2F6849868C5E212F5D579ACD500134B7B58725F404CC251F7999FEC27` 一致。
+- [x] Release 正文已按用户要求通过 Claude CLI 起草为中英文双语版，并审计后覆盖 `v2.8.0`；远端 tag `v2.8.0` 指向完整公开根提交 `30d9ede`。
