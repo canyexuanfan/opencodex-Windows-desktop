@@ -59,21 +59,37 @@ let replayOldestAt: number | null = null;
 
 /**
  * Fixed-size identity for a (model, sessionId) pair: SHA-256 over
- * length-prefixed UTF-8 components fed incrementally (no separator ambiguity
+ * length-prefixed UTF-16 code units fed incrementally (no separator ambiguity
  * — `("a\0b","c")` and `("a","b\0c")` derive different keys — and no raw
  * model/session strings retained as Map keys, which the byte caps never
  * counted).
  */
+/**
+ * Injective string feed for key derivation: length-prefixed in CODE UNITS,
+ * then each code unit as two little-endian bytes. TextEncoder/UTF-8 would
+ * fold lone surrogates into U+FFFD, colliding distinct strings (e.g.
+ * "�" and "�") into the same key.
+ */
+function updateHashWithString(hash: ReturnType<typeof createHash>, value: string): void {
+  hash.update(String(value.length));
+  hash.update("\0");
+  const buf = Buffer.allocUnsafe(8192);
+  let offset = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    buf.writeUInt16LE(value.charCodeAt(index), offset);
+    offset += 2;
+    if (offset === buf.length) {
+      hash.update(buf);
+      offset = 0;
+    }
+  }
+  if (offset > 0) hash.update(buf.subarray(0, offset));
+}
+
 function replayKey(model: string, sessionId: string): string {
   const hash = createHash("sha256");
-  const m = utf8.encode(model);
-  const s = utf8.encode(sessionId);
-  hash.update(String(m.byteLength));
-  hash.update("\0");
-  hash.update(m);
-  hash.update(String(s.byteLength));
-  hash.update("\0");
-  hash.update(s);
+  updateHashWithString(hash, model);
+  updateHashWithString(hash, sessionId);
   return hash.digest("hex");
 }
 
@@ -184,14 +200,8 @@ function functionCallKey(name: unknown, args: unknown): string | undefined {
   }
   if (canonical === null) return undefined;
   const hash = createHash("sha256");
-  const n = utf8.encode(name);
-  const a = utf8.encode(canonical);
-  hash.update(String(n.byteLength));
-  hash.update("\0");
-  hash.update(n);
-  hash.update(String(a.byteLength));
-  hash.update("\0");
-  hash.update(a);
+  updateHashWithString(hash, name);
+  updateHashWithString(hash, canonical);
   return hash.digest("hex");
 }
 
@@ -203,6 +213,12 @@ export function antigravityReplayKeyForTests(model: string, sessionId: string): 
 
 export function antigravityFunctionCallKeyForTests(name: unknown, args: unknown): string | undefined {
   return functionCallKey(name, args);
+}
+
+/** Test-only bounded-canonicalization seam: proves mid-walk rejection without
+ * materializing the escaped form (allocation guard). */
+export function antigravityCanonicalJsonBoundedForTests(value: unknown, maxBytes: number): string | null {
+  return canonicalJsonBounded(value, maxBytes);
 }
 
 /** Test-only: the ACTUAL internal session keys, so tests can prove raw

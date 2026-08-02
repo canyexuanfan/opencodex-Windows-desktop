@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
+  antigravityCanonicalJsonBoundedForTests,
   antigravityFunctionCallKeyForTests,
   antigravityReplayMetrics,
   antigravityReplayKeyForTests,
@@ -365,5 +366,48 @@ describe("antigravity replay fixed-size key identities", () => {
     expect(a).toBe(b);
     const different = antigravityFunctionCallKeyForTests("f", { x: [1, { a: 3, b: 9 }], y: "z" });
     expect(different).not.toBe(a);
+  });
+
+  test("session and function-name keys never fold lone surrogates into U+FFFD", () => {
+    // The hash-level injectivity contract: UTF-8 encoding would map both to
+    // the same bytes; code-unit streaming must keep them distinct.
+    expect(antigravityReplayKeyForTests("m", "bad\ud800session"))
+      .not.toBe(antigravityReplayKeyForTests("m", "bad�session"));
+    expect(antigravityFunctionCallKeyForTests("bad\ud800name", {}))
+      .not.toBe(antigravityFunctionCallKeyForTests("bad�name", {}));
+    // End-to-end: the two sessions stay separate caches.
+    observeAntigravityReplay(MODEL, "bad\ud800session", [fcPart("f", {}, "sig-1234567890abcdef")]);
+    observeAntigravityReplay(MODEL, "bad�session", [fcPart("f", {}, "sig-1234567890abcdef")]);
+    expect(antigravityReplayMetrics().sessions).toBe(2);
+  });
+
+  test("bounded canonicalization rejects mid-walk without materializing the escape", () => {
+    const hugeString = "y".repeat(10 * 1024 * 1024);
+    // A 100-byte budget must refuse almost immediately — an implementation
+    // that materialized the escaped string first would succeed-or-OOM, never null.
+    expect(antigravityCanonicalJsonBoundedForTests(hugeString, 100)).toBeNull();
+    const hugeNested = { blob: hugeString };
+    expect(antigravityCanonicalJsonBoundedForTests(hugeNested, 100)).toBeNull();
+    // Under the budget the exact canonical form is produced.
+    expect(antigravityCanonicalJsonBoundedForTests({ a: [1, "x"] }, 1024)).toBe('{"a":[1,"x"]}');
+  });
+
+  test("fixed session keys are counted per session and released exactly", () => {
+    setAntigravityReplayLimitsForTests({ maxCallsPerSession: 3 });
+    for (let session = 0; session < 4; session += 1) {
+      for (let call = 0; call < 3; call += 1) {
+        observeAntigravityReplay(MODEL, `session-${session}`, [fcPart(`f${call}`, {}, "sig-1234567890abcdef")]);
+      }
+    }
+    const metrics = antigravityReplayMetrics();
+    expect(metrics.sessions).toBe(4);
+    expect(metrics.calls).toBe(12);
+    // 4 sessions x 64-byte fixed outer key + 12 call records (fixed 64-byte
+    // call key + 20-byte signature each).
+    expect(metrics.totalBytes).toBe(4 * 64 + 12 * (64 + "sig-1234567890abcdef".length));
+    for (let session = 0; session < 4; session += 1) {
+      clearAntigravityReplay(MODEL, `session-${session}`);
+    }
+    expect(antigravityReplayMetrics().totalBytes).toBe(0);
   });
 });
