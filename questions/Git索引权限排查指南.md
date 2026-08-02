@@ -49,3 +49,4 @@ fatal: Unable to create 'F:/workbuddy/opencodex/.git/index.lock': Permission den
 - ❌ 2026-08-01：本阶段路由健康门修复完成后按最小文件清单执行 `git add --sparse`，确认没有 `.git/index.lock` 残留但默认权限仍无法创建锁文件；按既有记录改用最小范围授权重试，未改动未跟踪用户文档。
 - ❌ 2026-08-01：本轮收尾在默认权限下执行 `git add -- todolist.md questions/桌面端启动链排查指南.md questions/阶段0基线依赖缺失排查指南.md`，Git 因 `questions/` 位于 sparse-checkout 范围外而拒绝更新索引；未改变索引，需按既有指南使用 `git add --sparse` 的精确文件清单重试。
 - ❌ 2026-08-02：阶段 30 收尾首次执行普通 `git add` 暂存桌面源码、测试和 `questions/` 文档，被 sparse-checkout 拒绝，提示相关路径在稀疏范围外；未改变索引。继续按既有经验使用 `git add --sparse -- <精确文件清单>`，不扩大 sparse-checkout 规则。
+- ❌ 2026-08-02：阶段 36 已成功提交 `todolist.md` 后，默认权限执行 `git tag -a git-v0.54` 失败，报 `insufficient permission for adding an object to repository database .git/objects` 与 `unable to write tag file`。这与此前 index 写入失败同属 Git 元数据写权限边界；提交对象未丢失，tag message 留在 `.git/TAG_EDITMSG`，下一步用最小范围授权重试 `git tag`。
