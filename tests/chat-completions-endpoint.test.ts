@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
@@ -10,6 +10,11 @@ import { chatCompletionsToResponsesBody, ChatCompletionsRequestError } from "../
 import { chatCompletionsUsage } from "../src/chat/outbound";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
 import type { TranslatorBudget } from "../src/lib/translator-budget";
+import {
+  acquireNativeMainProfileDrain,
+  getNativeMainProfileRequestCount,
+  resetLifecycleDrainStateForTests,
+} from "../src/server/lifecycle";
 
 function budgetedChatOutbound(module: typeof import("../src/chat/outbound")) {
   const translatorBudget = createTestTranslatorBudget();
@@ -536,6 +541,70 @@ test("POST /v1/chat/completions direct mode forwards caller Authorization", asyn
     server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("Chat main-token replay owns native main through the stream and rejects post-fence work", async () => {
+  resetLifecycleDrainStateForTests();
+  writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
+    tokens: { access_token: "chat-main-access", account_id: "chat-main-account" },
+  }));
+  let upstreamCalls = 0;
+  let finishUpstream: (() => void) | undefined;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const encoder = new TextEncoder();
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      upstreamCalls += 1;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"held"}}]}\n\n'));
+          finishUpstream = () => {
+            finishUpstream = undefined;
+            controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+            controller.close();
+          };
+          markStarted();
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  const request = () => fetch(new URL("/v1/chat/completions", server.url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "mock/test-model",
+      stream: true,
+      messages: [{ role: "user", content: "hold" }],
+    }),
+  });
+  let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
+  try {
+    const pending = request();
+    await started;
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(getNativeMainProfileRequestCount()).toBe(1);
+    drain = acquireNativeMainProfileDrain("chat-overlap");
+    expect(drain).not.toBeNull();
+    const blocked = await request();
+    expect(blocked.status).toBe(503);
+    expect(blocked.headers.get("Retry-After")).toBe("1");
+    expect(upstreamCalls).toBe(1);
+
+    finishUpstream?.();
+    await response.text();
+    expect(getNativeMainProfileRequestCount()).toBe(0);
+  } finally {
+    drain?.release();
+    finishUpstream?.();
+    server.stop(true);
+    upstream.stop(true);
+    resetLifecycleDrainStateForTests();
   }
 });
 

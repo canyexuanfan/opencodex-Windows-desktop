@@ -32,6 +32,8 @@ import {
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 import type { AdmissionLease } from "../lib/admission";
+import { codexMainProfileDrainingResponse } from "../codex/auth-context";
+import { tryClaimNativeMainProfileForTurn } from "./lifecycle";
 import {
   createTranslatorBudget,
   finalizeTranslatorBudgetResponse,
@@ -158,15 +160,21 @@ async function handleChatCompletionsWithBudget(
     if (value) headers.set(name, value);
   }
   // Prefer main ChatGPT auth so OpenAI-backed sidecars remain reachable on routed turns.
-  if (!directRoute) try {
-    const { getMainAccountToken } = await import("../codex/main-account");
-    const token = getMainAccountToken();
-    if (token) {
-      headers.set("authorization", `Bearer ${token.accessToken}`);
-      headers.set("chatgpt-account-id", token.chatgptAccountId);
+  if (!directRoute) {
+    if (!tryClaimNativeMainProfileForTurn(logIds?.turnAdmissionLease)) {
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 503, { closeReason: "non_stream" });
+      return codexMainProfileDrainingResponse();
     }
-  } catch {
-    /* optional */
+    try {
+      const { getMainAccountToken } = await import("../codex/main-account");
+      const token = getMainAccountToken();
+      if (token) {
+        headers.set("authorization", `Bearer ${token.accessToken}`);
+        headers.set("chatgpt-account-id", token.chatgptAccountId);
+      }
+    } catch {
+      /* optional */
+    }
   }
 
   const internalBodyJson = JSON.stringify(internalBody);

@@ -34,6 +34,7 @@ import { conversationIdFromClaudeMetadata } from "./request-log-conversation";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 import type { AdmissionLease } from "../lib/admission";
+import { tryClaimNativeMainProfileForTurn } from "./lifecycle";
 import {
   createTranslatorBudget,
   finalizeTranslatorBudgetResponse,
@@ -671,24 +672,26 @@ async function handleClaudeMessagesWithBudget(
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
-  if (!nativeRoute) {
-    // Routed replays need main ChatGPT auth so OpenAI-backed sidecars remain reachable.
-    const { getMainAccountToken } = await import("../codex/main-account");
-    const token = getMainAccountToken();
-    if (token) {
-      headers.set("authorization", `Bearer ${token.accessToken}`);
-      headers.set("chatgpt-account-id", token.chatgptAccountId);
-    }
+  if (!tryClaimNativeMainProfileForTurn(logIds?.turnAdmissionLease)) {
+    const response = anthropicErrorResponse(
+      503,
+      "Native Codex main profile is switching; retry this request",
+      "overloaded_error",
+    );
+    response.headers.set("Retry-After", "1");
+    if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 503, { closeReason: "non_stream" });
+    return response;
+  }
+  // Routed replays need main ChatGPT auth so OpenAI-backed sidecars remain reachable;
+  // native replays have no caller ChatGPT credential. The turn claim above keeps any
+  // materialized main token owned through the complete translated response lifetime.
+  const { getMainAccountToken } = await import("../codex/main-account");
+  const token = getMainAccountToken();
+  if (token) {
+    headers.set("authorization", `Bearer ${token.accessToken}`);
+    headers.set("chatgpt-account-id", token.chatgptAccountId);
   }
   if (nativeRoute) {
-    // No forwarded ChatGPT auth exists on this surface. Attach the main codex login
-    // (read-only auth.json token); account-pool rotation still overrides downstream.
-    const { getMainAccountToken } = await import("../codex/main-account");
-    const token = getMainAccountToken();
-    if (token) {
-      headers.set("authorization", `Bearer ${token.accessToken}`);
-      headers.set("chatgpt-account-id", token.chatgptAccountId);
-    }
     // ChatGPT-backend prompt-cache affinity rides the session_id HEADER (codex
     // clients always send their session uuid; devlog 090 follow-up: body-level
     // prompt_cache_key alone still yielded cached_tokens:0). Claude Code never sends

@@ -3,6 +3,11 @@ import type { ServerWebSocket } from "bun";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  acquireNativeMainProfileDrain,
+  getNativeMainProfileRequestCount,
+  resetLifecycleDrainStateForTests,
+} from "../src/server/lifecycle";
 import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../src/codex/account-label";
 import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
@@ -208,6 +213,7 @@ function seedPoolAccount(
 }
 
 beforeEach(() => {
+  resetLifecycleDrainStateForTests();
   previousOpencodexHome = process.env.OPENCODEX_HOME;
   previousCodexHome = process.env.CODEX_HOME;
   previousManualImportEnv = process.env[MANUAL_IMPORT_ENV];
@@ -230,6 +236,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetLifecycleDrainStateForTests();
   setPersistedConfigMutationBeforeCommitForTests(null);
   clearAccountNeedsReauth("__main__");
   clearAccountQuota();
@@ -251,6 +258,56 @@ afterEach(() => {
 });
 
 describe("codex-auth API", () => {
+  test("main reset-credit consume owns native main through destructive upstream work and rejects post-fence work", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-reset-owned", account_id: "acct-main-reset-owned" },
+    }));
+    let consumeCalls = 0;
+    let releaseConsume!: () => void;
+    const consumeGate = new Promise<void>(resolve => { releaseConsume = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/rate-limit-reset-credits/consume")) {
+        consumeCalls += 1;
+        markStarted();
+        await consumeGate;
+        return Response.json({ code: "noop" });
+      }
+      return previousFetch(input, init);
+    }) as typeof fetch;
+    const request = () => {
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: MAIN_CODEX_ACCOUNT_ID }),
+      });
+      return handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    };
+
+    const pending = request();
+    await started;
+    expect(getNativeMainProfileRequestCount()).toBe(1);
+    const drain = acquireNativeMainProfileDrain("reset-credit-overlap");
+    expect(drain).not.toBeNull();
+    try {
+      const blocked = await request();
+      expect(blocked?.status).toBe(503);
+      expect(blocked?.headers.get("Retry-After")).toBe("1");
+      expect(await blocked?.json()).toMatchObject({ code: "server_busy" });
+      expect(consumeCalls).toBe(1);
+
+      releaseConsume();
+      const completed = await pending;
+      expect(completed?.status).toBe(200);
+      expect(await completed?.json()).toEqual({ code: "noop" });
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+    } finally {
+      releaseConsume();
+      drain?.release();
+    }
+  });
+
   test("pool-quota flight 17 total across accounts rejects before request creation while compatible generation joins", async () => {
     const clearLoginOwners = seedCodexAuthAdmissionForTests({ loginFlows: 32 });
     try {

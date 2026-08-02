@@ -215,6 +215,29 @@ export function codexAccountSelectionForTurn(
   const activeLease = lease as ActiveTurnLease;
   return () => activeLease.beginCodexAccountSelection();
 }
+
+/** Promote a physical native-main credential read onto an already admitted turn. */
+export function tryClaimNativeMainProfileForTurn(lease?: AdmissionLease): boolean {
+  const beginSelection = codexAccountSelectionForTurn(lease);
+  if (!beginSelection) return false;
+  const selection = beginSelection();
+  if (!selection) return false;
+  try {
+    return !selection.mainProfileDraining && selection.claimMainProfile();
+  } finally {
+    selection.release();
+  }
+}
+
+/** Acquire standalone native-main ownership for management/background work. */
+export function tryAcquireNativeMainProfileClaim(): AdmissionLease | null {
+  const turn = tryAdmitTurn();
+  if (!turn) return null;
+  if (tryClaimNativeMainProfileForTurn(turn)) return turn;
+  turn.release();
+  return null;
+}
+
 export function registerTurn(ac: AbortController, lease?: AdmissionLease): void {
   if (lease && "bindAbortController" in lease) (lease as ActiveTurnLease).bindAbortController(ac);
 }

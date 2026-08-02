@@ -84,13 +84,19 @@ import {
 } from "./account-id";
 import { codexAccountIdNamespaceCollisionError } from "./account-namespace-match";
 import { ResourceAdmissionError, type AdmissionLease } from "../lib/admission";
-import { tryAdmitTurn } from "../server/lifecycle";
+import { tryAcquireNativeMainProfileClaim } from "../server/lifecycle";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function nativeMainProfileBusyResponse(): Response {
+  const response = jsonResponse({ error: "server_busy", code: "server_busy" }, 503);
+  response.headers.set("Retry-After", "1");
+  return response;
 }
 
 const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
@@ -191,16 +197,32 @@ async function resolveResetCreditAuth(
   runtimeConfig: OcxConfig,
   accountId: string,
 ): Promise<
-  | { ok: true; isMain: boolean; accessToken: string; chatgptAccountId: string }
+  | { ok: true; isMain: boolean; accessToken: string; chatgptAccountId: string; nativeMainLease?: AdmissionLease }
   | { ok: false; response: Response }
 > {
   if (accountId === MAIN_CODEX_ACCOUNT_ID) {
     if (hasLegacyMainCodexPoolAccount(runtimeConfig.codexAccounts)) {
       return { ok: false, response: jsonResponse({ error: "Remove the legacy __main__ pool row before using the Desktop account" }, 409) };
     }
-    const tokens = readCodexTokens();
-    if (!tokens) return { ok: false, response: jsonResponse({ error: "Main Codex account not logged in" }, 401) };
-    return { ok: true, isMain: true, accessToken: tokens.access_token, chatgptAccountId: tokens.account_id };
+    const nativeMainLease = tryAcquireNativeMainProfileClaim();
+    if (!nativeMainLease) return { ok: false, response: nativeMainProfileBusyResponse() };
+    try {
+      const tokens = readCodexTokens();
+      if (!tokens) {
+        nativeMainLease.release();
+        return { ok: false, response: jsonResponse({ error: "Main Codex account not logged in" }, 401) };
+      }
+      return {
+        ok: true,
+        isMain: true,
+        accessToken: tokens.access_token,
+        chatgptAccountId: tokens.account_id,
+        nativeMainLease,
+      };
+    } catch (error) {
+      nativeMainLease.release();
+      throw error;
+    }
   }
   if (!isValidCodexAccountId(accountId)) {
     return { ok: false, response: jsonResponse({ error: "Invalid account id format" }, 400) };
@@ -704,24 +726,15 @@ export interface PrimeCodexPoolQuotasOptions {
 
 function tryAcquireNativeMainPrimeLease(): AdmissionLease | null {
   if (isNativeMainTrafficBlocked()) return null;
-  const turn = tryAdmitTurn();
-  if (!turn) return null;
-  const selection = turn.beginCodexAccountSelection();
-  let claimed = false;
-  try {
-    if (selection.mainProfileDraining || !selection.claimMainProfile()) return null;
-    // Recovery may be discovered after generic admission. Recheck after main
-    // ownership is established and before reconciliation or credential reads.
-    if (isNativeMainTrafficBlocked()) return null;
-    claimed = true;
-    selection.release();
-    return turn;
-  } finally {
-    if (!claimed) {
-      selection.release();
-      turn.release();
-    }
+  const claim = tryAcquireNativeMainProfileClaim();
+  if (!claim) return null;
+  // Recovery may be discovered after generic admission. Recheck after main
+  // ownership is established and before reconciliation or credential reads.
+  if (isNativeMainTrafficBlocked()) {
+    claim.release();
+    return null;
   }
+  return claim;
 }
 
 /**
@@ -1219,22 +1232,25 @@ export async function handleCodexAuthAPI(
     try {
       const auth = await resolveResetCreditAuth(getRuntimeConfig(config), accountId);
       if (!auth.ok) return auth.response;
-
-      const resp = await fetch(
-        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
-        {
-          headers: {
-            Authorization: `Bearer ${auth.accessToken}`,
-            "ChatGPT-Account-Id": auth.chatgptAccountId,
+      try {
+        const resp = await fetch(
+          "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+          {
+            headers: {
+              Authorization: `Bearer ${auth.accessToken}`,
+              "ChatGPT-Account-Id": auth.chatgptAccountId,
+            },
+            signal: AbortSignal.timeout(8000),
           },
-          signal: AbortSignal.timeout(8000),
-        },
-      );
-      if (!resp.ok) {
-        await resp.body?.cancel().catch(() => {});
-        return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
+        );
+        if (!resp.ok) {
+          await resp.body?.cancel().catch(() => {});
+          return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
+        }
+        return jsonResponse(safeResetCreditsDto(await resp.json()));
+      } finally {
+        auth.nativeMainLease?.release();
       }
-      return jsonResponse(safeResetCreditsDto(await resp.json()));
     } catch (e) {
       return jsonResponse({ error: e instanceof Error ? e.message : "Reset credit lookup failed" }, 500);
     }
@@ -1247,45 +1263,48 @@ export async function handleCodexAuthAPI(
     try {
       const auth = await resolveResetCreditAuth(getRuntimeConfig(config), body.accountId);
       if (!auth.ok) return auth.response;
-
-      const idempotencyKey = crypto.randomUUID();
-      const resp = await fetch(
-        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${auth.accessToken}`,
-            "ChatGPT-Account-Id": auth.chatgptAccountId,
-            "Content-Type": "application/json",
+      try {
+        const idempotencyKey = crypto.randomUUID();
+        const resp = await fetch(
+          "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${auth.accessToken}`,
+              "ChatGPT-Account-Id": auth.chatgptAccountId,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ redeem_request_id: idempotencyKey }),
+            signal: AbortSignal.timeout(10_000),
           },
-          body: JSON.stringify({ redeem_request_id: idempotencyKey }),
-          signal: AbortSignal.timeout(10_000),
-        },
-      );
-      if (!resp.ok) {
-        await resp.body?.cancel().catch(() => {});
-        return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
-      }
-      const result = safeResetCreditConsumeDto(await resp.json());
-      // After a successful redeem (or an idempotent already_redeemed), refresh WHAM usage
-      // and return remaining only when that refresh freshly parsed available_count.
-      // Do not fall back to a preserved cached resetCredits (failed/omitted refresh).
-      if (result.code === "reset" || result.code === "already_redeemed") {
-        let freshResetCredits: number | undefined;
-        if (auth.isMain) {
-          ({ freshResetCredits } = await fetchMainAccountInfoAttempt(true, 1));
-        } else {
-          const account = configuredPoolAccount(getRuntimeConfig(config), body.accountId);
-          ({ freshResetCredits } = await fetchPoolAccountQuota(body.accountId, true, account?.plan));
+        );
+        if (!resp.ok) {
+          await resp.body?.cancel().catch(() => {});
+          return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
         }
-        return jsonResponse({
-          code: result.code,
-          ...(typeof freshResetCredits === "number" && Number.isFinite(freshResetCredits)
-            ? { remaining: freshResetCredits }
-            : {}),
-        });
+        const result = safeResetCreditConsumeDto(await resp.json());
+        // After a successful redeem (or an idempotent already_redeemed), refresh WHAM usage
+        // and return remaining only when that refresh freshly parsed available_count.
+        // Do not fall back to a preserved cached resetCredits (failed/omitted refresh).
+        if (result.code === "reset" || result.code === "already_redeemed") {
+          let freshResetCredits: number | undefined;
+          if (auth.isMain) {
+            ({ freshResetCredits } = await fetchMainAccountInfoAttempt(true, 1));
+          } else {
+            const account = configuredPoolAccount(getRuntimeConfig(config), body.accountId);
+            ({ freshResetCredits } = await fetchPoolAccountQuota(body.accountId, true, account?.plan));
+          }
+          return jsonResponse({
+            code: result.code,
+            ...(typeof freshResetCredits === "number" && Number.isFinite(freshResetCredits)
+              ? { remaining: freshResetCredits }
+              : {}),
+          });
+        }
+        return jsonResponse(result);
+      } finally {
+        auth.nativeMainLease?.release();
       }
-      return jsonResponse(result);
     } catch (e) {
       if (e instanceof PoolQuotaProbeBusyError) {
         const response = jsonResponse({ error: "server_busy", code: "server_busy" }, 503);
