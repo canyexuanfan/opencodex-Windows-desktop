@@ -2,9 +2,11 @@ import http2 from "node:http2";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { describe, expect, spyOn, test } from "bun:test";
 import {
+  AgentServerMessageSchema,
   GetUsableModelsResponseSchema,
   ModelDetailsSchema,
 } from "../src/adapters/cursor/gen/agent_pb";
+import { encodeConnectFrame } from "../src/adapters/cursor/framing";
 import { fetchCursorUsableModels } from "../src/adapters/cursor/live-models";
 import { armTimeoutDestroyFallback, createLiveCursorTransport, createTerminalSettler } from "../src/adapters/cursor/live-transport";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
@@ -365,6 +367,74 @@ describe("Cursor live transport unexpected EOF", () => {
       expect(failure).toBeDefined();
       expect(failure?.message).toContain("unexpected EOF");
     });
+  });
+});
+
+describe("Cursor live transport incomplete-frame EOF", () => {
+  function validEmptyFrame(): Uint8Array {
+    return encodeConnectFrame(toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, {})));
+  }
+
+  async function runTurn(
+    script: (stream: import("node:http2").ServerHttp2Stream) => void,
+  ): Promise<{ failure: Error | undefined }> {
+    return withDiscoveryServer(script, async baseUrl => {
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        translatorBudget: createTestTranslatorBudget(),
+        firstFrameTimeoutMs: 2_000,
+      });
+      let failure: Error | undefined;
+      try {
+        for await (const _message of transport.run({
+          modelId: "composer-2",
+          conversationId: "cursor_eof_partial_test",
+          system: [],
+          messages: [{ role: "user", content: "hello" }],
+        })) {
+          // drain
+        }
+      } catch (err) {
+        failure = err instanceof Error ? err : new Error(String(err));
+      } finally {
+        await transport.close?.();
+      }
+      return { failure };
+    });
+  }
+
+  test("complete frame followed by a trailing partial frame fails typed frame_incomplete", async () => {
+    const { failure } = await runTurn(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.write(Buffer.from(validEmptyFrame()));
+      // Three bytes of the next header, then the peer drops: previously a silent success.
+      stream.end(Buffer.from([0, 0, 0]));
+    });
+    expect(failure).toBeDefined();
+    expect((failure as { code?: unknown } | undefined)?.code).toBe("frame_incomplete");
+  });
+
+  test("only a partial header before EOF fails typed frame_incomplete", async () => {
+    const { failure } = await runTurn(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.end(Buffer.from([0, 0]));
+    });
+    expect(failure).toBeDefined();
+    expect((failure as { code?: unknown } | undefined)?.code).toBe("frame_incomplete");
+  });
+
+  test("chunked delivery of small frames completes cleanly", async () => {
+    const { failure } = await runTurn(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      const frame = validEmptyFrame();
+      // Byte-at-a-time delivery exercises the incremental append path.
+      for (let index = 0; index < frame.byteLength; index += 1) {
+        stream.write(Buffer.from(frame.subarray(index, index + 1)));
+      }
+      stream.write(Buffer.from(validEmptyFrame()));
+      stream.end();
+    });
+    expect(failure).toBeUndefined();
   });
 });
 import { ManagementRequest as Request } from "./helpers/management-auth";

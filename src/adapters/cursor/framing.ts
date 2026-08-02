@@ -168,6 +168,47 @@ export function decodeAvailableConnectFrames(
   }
 }
 
+/**
+ * Cursor-based sibling of decodeAvailableConnectFrames for callers that keep
+ * their own raw backlog: consumes complete frames from the FRONT of `input`
+ * and reports how many bytes were consumed (headers included) instead of
+ * materializing a remainder copy. Frame payloads remain per-frame copies with
+ * the same reservation lifecycle; the caller advances its own cursor by
+ * `consumedBytes` and never pays an O(backlog) copy per drain.
+ */
+export function consumeConnectFrames(
+  input: Uint8Array,
+  maxPayloadBytes = MAX_CONNECT_FRAME_PAYLOAD_BYTES,
+  availableFrameSlots = Number.POSITIVE_INFINITY,
+  reservePayloadCopy?: (bytes: number) => CopyReservation | undefined,
+): { frames: ConnectFrame[]; consumedBytes: number } {
+  const planned: Array<InspectedConnectFrame & { reservation?: CopyReservation }> = [];
+  let offset = 0;
+  try {
+    while (offset < input.length && planned.length < availableFrameSlots) {
+      const inspected = inspectConnectFrame(input, offset, maxPayloadBytes);
+      if (!inspected) break;
+      const reservation = reservePayloadCopy?.(inspected.length);
+      planned.push({ ...inspected, reservation });
+      offset += inspected.readBytes;
+    }
+    const frames = planned.map(({ flags, length, payloadStart }) => {
+      const payload = input.slice(payloadStart, payloadStart + length);
+      return {
+        flags,
+        payload,
+        compressed: isConnectFrameCompressed(flags),
+        endStream: isConnectFrameEndStream(flags),
+      };
+    });
+    for (const entry of planned) entry.reservation?.commitRetained();
+    return { frames, consumedBytes: offset };
+  } catch (error) {
+    for (const entry of planned) entry.reservation?.release();
+    throw error;
+  }
+}
+
 function inspectConnectFrame(
   input: Uint8Array,
   offset: number,
