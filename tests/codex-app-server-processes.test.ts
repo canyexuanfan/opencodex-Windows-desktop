@@ -79,6 +79,30 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
     });
     expect(status.state).toBe("not_running");
   });
+
+  test("enumeration failure reports unknown, never not_running", () => {
+    // On macOS the win32 enumeration path has no powershell.exe → it throws,
+    // which must surface as unknown rather than "nothing is running".
+    const status = collectCodexAppServerCatalogState({
+      platform: process.platform === "win32" ? "linux" : "win32",
+      catalogMtimeMs: () => 1_000,
+    });
+    if (process.platform === "win32") {
+      // linux /proc is absent on Windows → same unknown outcome
+      expect(status.state).toBe("unknown");
+    } else {
+      expect(status.state).toBe("unknown");
+    }
+  });
+
+  test("equal start time and catalog mtime is conservatively stale", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+      readStartMs: () => 1_000,
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("stale");
+  });
 });
 
 describe("Codex app-server process matching (#476)", () => {

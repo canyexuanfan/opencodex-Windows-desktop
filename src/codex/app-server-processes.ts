@@ -266,40 +266,38 @@ function listUnixProcSnapshots(uid: number | undefined): ProcessSnapshot[] {
 
 function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
   const out: ProcessSnapshot[] = [];
-  try {
-    const output = uid !== undefined
-      ? execFileSync("ps", ["-u", String(uid), "-o", "pid=,command="], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 8_000,
-      })
-      : execFileSync("ps", ["-axo", "pid=,uid=,command="], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 8_000,
-      });
-    for (const raw of output.split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line) continue;
-      if (uid !== undefined) {
-        const match = /^(\d+)\s+(.*)$/.exec(line);
-        if (!match) continue;
-        const pid = Number(match[1]);
-        const commandLine = match[2]?.trim() ?? "";
-        if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine) continue;
-        out.push({ pid, commandLine, uid });
-        continue;
-      }
-      const match = /^(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+  // Top-level exec failure propagates: callers decide their own safe default
+  // (restart flow → treat as none; staleness check → unknown, never "fresh").
+  const output = uid !== undefined
+    ? execFileSync("ps", ["-u", String(uid), "-o", "pid=,command="], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 8_000,
+    })
+    : execFileSync("ps", ["-axo", "pid=,uid=,command="], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 8_000,
+    });
+  for (const raw of output.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (uid !== undefined) {
+      const match = /^(\d+)\s+(.*)$/.exec(line);
       if (!match) continue;
       const pid = Number(match[1]);
-      const processUid = Number(match[2]);
-      const commandLine = match[3]?.trim() ?? "";
+      const commandLine = match[2]?.trim() ?? "";
       if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine) continue;
-      out.push({ pid, commandLine, uid: Number.isSafeInteger(processUid) ? processUid : undefined });
+      out.push({ pid, commandLine, uid });
+      continue;
     }
-  } catch {
-    return out;
+    const match = /^(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const processUid = Number(match[2]);
+    const commandLine = match[3]?.trim() ?? "";
+    if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine) continue;
+    out.push({ pid, commandLine, uid: Number.isSafeInteger(processUid) ? processUid : undefined });
   }
   return out;
 }
@@ -345,25 +343,22 @@ export function listWindowsSnapshots(): ProcessSnapshot[] {
     "  } catch { }",
     "}",
   ].join("\n");
-  try {
-    const output = execFileSync("powershell.exe", [
-      "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
-      "-Command",
-      psCommand,
-    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 12_000, windowsHide: true });
-    for (const line of output.split(/\r?\n/)) {
-      const tab = line.indexOf("\t");
-      if (tab <= 0) continue;
-      const tab2 = line.indexOf("\t", tab + 1);
-      if (tab2 <= tab) continue;
-      const pid = Number(line.slice(0, tab));
-      const commandLine = line.slice(tab + 1, tab2).trim();
-      const owner = line.slice(tab2 + 1).trim();
-      if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine || !owner) continue;
-      out.push({ pid, commandLine, owner });
-    }
-  } catch {
-    return out;
+  // Top-level exec failure propagates (see listDarwinSnapshots note).
+  const output = execFileSync("powershell.exe", [
+    "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
+    "-Command",
+    psCommand,
+  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 12_000, windowsHide: true });
+  for (const line of output.split(/\r?\n/)) {
+    const tab = line.indexOf("\t");
+    if (tab <= 0) continue;
+    const tab2 = line.indexOf("\t", tab + 1);
+    if (tab2 <= tab) continue;
+    const pid = Number(line.slice(0, tab));
+    const commandLine = line.slice(tab + 1, tab2).trim();
+    const owner = line.slice(tab2 + 1).trim();
+    if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine || !owner) continue;
+    out.push({ pid, commandLine, owner });
   }
   return out;
 }
@@ -383,7 +378,18 @@ export function listCodexAppServerProcesses(io: CodexAppServerProcessIo = {}): C
       return undefined;
     }
   });
-  const snapshots = io.listSnapshots?.() ?? defaultListSnapshots(platform, getuid);
+  let snapshots: ProcessSnapshot[];
+  if (io.listSnapshots) {
+    snapshots = io.listSnapshots();
+  } else {
+    // Restart/kill contract (#476): enumeration failure means no targets —
+    // never signal a process we could not verify.
+    try {
+      snapshots = defaultListSnapshots(platform, getuid);
+    } catch {
+      snapshots = [];
+    }
+  }
   const seen = new Set<number>();
   const matched: CodexAppServerProcess[] = [];
   for (const snapshot of snapshots) {
@@ -463,6 +469,66 @@ export function readProcessStartMs(pid: number, platform: NodeJS.Platform = proc
   return readLinuxProcStartMs(pid);
 }
 
+/**
+ * Start times for many pids in ONE platform call where possible, so the
+ * staleness check does not serialize per-process ps/PowerShell invocations
+ * on the request path (#857). Missing entries come back as null.
+ */
+export function readProcessStartMsBatch(
+  pids: readonly number[],
+  platform: NodeJS.Platform = process.platform,
+): Map<number, number | null> {
+  const out = new Map<number, number | null>();
+  if (pids.length === 0) return out;
+  if (platform === "darwin") {
+    try {
+      const stdout = execFileSync("ps", ["-o", "pid=,lstart=", "-p", pids.join(",")], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 4_000,
+      });
+      const byPid = new Map<number, number>();
+      for (const raw of stdout.split(/\r?\n/)) {
+        const match = /^\s*(\d+)\s+(.+)$/.exec(raw);
+        if (!match) continue;
+        const pid = Number(match[1]);
+        const parsed = Date.parse(match[2]!.trim());
+        if (Number.isSafeInteger(pid) && Number.isFinite(parsed)) byPid.set(pid, parsed);
+      }
+      for (const pid of pids) out.set(pid, byPid.get(pid) ?? null);
+      return out;
+    } catch {
+      for (const pid of pids) out.set(pid, null);
+      return out;
+    }
+  }
+  if (platform === "win32") {
+    try {
+      const filter = pids.map(pid => `ProcessId=${pid}`).join(" OR ");
+      const stdout = execFileSync("powershell.exe", [
+        "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
+        "-Command",
+        `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { "$($_.ProcessId)\t$($_.CreationDate.ToUniversalTime().ToString("o"))" }`,
+      ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 8_000, windowsHide: true });
+      const byPid = new Map<number, number>();
+      for (const line of stdout.split(/\r?\n/)) {
+        const tab = line.indexOf("\t");
+        if (tab <= 0) continue;
+        const pid = Number(line.slice(0, tab));
+        const parsed = Date.parse(line.slice(tab + 1).trim());
+        if (Number.isSafeInteger(pid) && Number.isFinite(parsed)) byPid.set(pid, parsed);
+      }
+      for (const pid of pids) out.set(pid, byPid.get(pid) ?? null);
+      return out;
+    } catch {
+      for (const pid of pids) out.set(pid, null);
+      return out;
+    }
+  }
+  for (const pid of pids) out.set(pid, readLinuxProcStartMs(pid));
+  return out;
+}
+
 export type CodexAppServerCatalogState = "fresh" | "stale" | "not_running" | "unknown";
 
 export interface CodexAppServerCatalogStatus {
@@ -499,26 +565,65 @@ export function collectCodexAppServerCatalogState(
   io: CodexAppServerProcessIo = {},
 ): CodexAppServerCatalogStatus {
   const now = (io.now ?? Date.now)();
-  if (!io.listSnapshots && !io.readStartMs && !io.catalogMtimeMs
+  const fullyDefault = !io.listSnapshots && !io.readStartMs && !io.catalogMtimeMs
+    && !io.platform && !io.getuid && !io.now;
+  if (fullyDefault
     && catalogStateCache && now - catalogStateCache.atMs < CATALOG_STATE_TTL_MS) {
     return catalogStateCache.status;
   }
   const compute = (): CodexAppServerCatalogStatus => {
-    const processes = listCodexAppServerProcesses(io);
+    const platform = io.platform ?? process.platform;
+    const getuid = io.getuid ?? (() => {
+      try {
+        return typeof process.getuid === "function" ? process.getuid() : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+    let snapshots: ProcessSnapshot[];
+    let enumerationFailed = false;
+    if (io.listSnapshots) {
+      snapshots = io.listSnapshots();
+    } else {
+      try {
+        snapshots = defaultListSnapshots(platform, getuid);
+      } catch {
+        // Enumeration failure must never read as "nothing running" — that
+        // would let positive model guidance through on guesswork (#857).
+        snapshots = [];
+        enumerationFailed = true;
+      }
+    }
+    const processes: CodexAppServerProcess[] = [];
+    const seen = new Set<number>();
+    for (const snapshot of snapshots) {
+      if (seen.has(snapshot.pid)) continue;
+      if (!isCodexAppServerCommandLine(snapshot.commandLine)) continue;
+      seen.add(snapshot.pid);
+      processes.push({ pid: snapshot.pid, commandLine: snapshot.commandLine });
+    }
     if (processes.length === 0) {
-      return { state: "not_running", processes: [], catalogMtimeMs: null };
+      return enumerationFailed
+        ? { state: "unknown", processes: [], catalogMtimeMs: null }
+        : { state: "not_running", processes: [], catalogMtimeMs: null };
     }
     const catalogMtimeMs = (io.catalogMtimeMs ?? defaultCatalogMtimeMs)();
-    const readStart = io.readStartMs ?? ((pid: number) => readProcessStartMs(pid, io.platform ?? process.platform));
-    const withStarts = processes.map(proc => ({ pid: proc.pid, startedAtMs: readStart(proc.pid) }));
+    const withStarts = io.readStartMs
+      ? processes.map(proc => ({ pid: proc.pid, startedAtMs: io.readStartMs!(proc.pid) }))
+      : (() => {
+        const batch = readProcessStartMsBatch(processes.map(proc => proc.pid), platform);
+        return processes.map(proc => ({ pid: proc.pid, startedAtMs: batch.get(proc.pid) ?? null }));
+      })();
     if (catalogMtimeMs === null || withStarts.some(proc => proc.startedAtMs === null)) {
       return { state: "unknown", processes: withStarts, catalogMtimeMs };
     }
-    const stale = withStarts.some(proc => proc.startedAtMs! < catalogMtimeMs);
+    // `<=` is deliberate: coarse clocks (ps lstart is second-granularity) can
+    // report equal values when the catalog actually changed after startup.
+    const stale = withStarts.some(proc => proc.startedAtMs! <= catalogMtimeMs);
     return { state: stale ? "stale" : "fresh", processes: withStarts, catalogMtimeMs };
   };
   const status = compute();
-  if (!io.listSnapshots && !io.readStartMs && !io.catalogMtimeMs) {
+  if (fullyDefault) {
     catalogStateCache = { atMs: now, status };
   }
   return status;
