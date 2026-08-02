@@ -8,7 +8,7 @@
  *
  * Design of record: devlog/_plan/260802_client_toggle_api/021 §3.
  */
-import { EXPORT_CLIENTS, type ExportModel, type ManagedContribution } from "../clients/config-export";
+import { ClientPathError, EXPORT_CLIENTS, opencodeProxyBaseUrl, type ExportModel, type ManagedContribution } from "../clients/config-export";
 import type { OcxConfig } from "../types";
 import { PARSE_FAILED, loadTarget, parseConfig, type IntegrationIO } from "./config-io";
 import { SNAPSHOT_RETENTION } from "./journal";
@@ -17,7 +17,15 @@ import { INTEGRATION_CLIENTS, type IntegrationClientId } from "./registry";
 import { createIntegrationStateStore, type IntegrationStateStore } from "./store";
 
 export type IntegrationState = "absent" | "current" | "stale" | "conflict" | "unsafe";
-export type StateReason = "unparseable" | "not-regular-file" | "foreign-edit" | "unowned-key";
+export type StateReason =
+  | "unparseable"
+  | "not-regular-file"
+  | "foreign-edit"
+  | "unowned-key"
+  /** A container we would have to write through holds a non-object value. */
+  | "blocked-container"
+  /** A path selector we cannot resolve, e.g. a relative OPENCLAW_CONFIG_PATH. */
+  | "unresolvable-path";
 
 export interface IntegrationStatus {
   clientId: IntegrationClientId;
@@ -49,6 +57,49 @@ export function hasOurFragments(doc: unknown, contribution: ManagedContribution)
 }
 
 /**
+ * A container on one of our fragment paths that exists but is NOT an object.
+ *
+ * `setPath` replaces such a value with `{}` on the way to writing our leaf, so
+ * a user whose config held `providers: ["something"]` — legal in their schema,
+ * just not ours — lost it to an apply that reported success. The classifier
+ * called that document `absent` because our leaf was missing, which authorized
+ * the write. Detecting it here turns a silent overwrite into a refusal the
+ * user can act on; the snapshot exists, but "we backed up the thing we should
+ * not have destroyed" is not the promise this feature makes.
+ */
+export function blockedContainerPath(
+  doc: unknown,
+  contribution: ManagedContribution,
+): readonly string[] | null {
+  for (const fragment of contribution.fragments) {
+    let cursor: unknown = doc;
+    for (let depth = 0; depth < fragment.path.length - 1; depth += 1) {
+      const key = fragment.path[depth]!;
+      /*
+       * ONLY `undefined` means absent. A missing file parses as `{}`, so an
+       * absent prefix reads `undefined` — but a parsed `null` is a value the
+       * user's file actually contains, and treating it as absent let a
+       * document that is literally `null` be replaced wholesale by a
+       * "successful" apply.
+       */
+      if (cursor === undefined) break;
+      // `typeof null === "object"`, so null has to be named explicitly or it
+      // walks straight into the dereference below.
+      if (cursor === null || typeof cursor !== "object" || Array.isArray(cursor)) {
+        return fragment.path.slice(0, depth);
+      }
+      const next = (cursor as Record<string, unknown>)[key];
+      if (next === undefined) break;
+      if (typeof next !== "object" || next === null || Array.isArray(next)) {
+        return fragment.path.slice(0, depth + 1);
+      }
+      cursor = next;
+    }
+  }
+  return null;
+}
+
+/**
  * The two-axis rule: the FILE hash proves nobody touched the file after us, and
  * the BLOCK hash proves our content is still what we would write today.
  */
@@ -70,6 +121,13 @@ export function classifyIntegration(input: {
     return { state: "unsafe", reason: "not-regular-file" };
   }
   if (input.parsed === PARSE_FAILED) return { state: "unsafe", reason: "unparseable" };
+  /*
+   * Checked BEFORE `absent`: our leaf is missing in exactly this case, so the
+   * absent branch would authorize an apply that replaces the user's value.
+   */
+  if (blockedContainerPath(input.parsed, input.contribution)) {
+    return { state: "unsafe", reason: "blocked-container" };
+  }
   if (!hasOurFragments(input.parsed, input.contribution)) return { state: "absent" };
   if (!input.record) return { state: "conflict", reason: "unowned-key" };
   /*
@@ -112,7 +170,16 @@ export function exportContextOf(input: {
   port: number;
 }): { baseUrl: string; models: readonly ExportModel[]; config: OcxConfig } {
   return {
-    baseUrl: `http://${input.config.hostname ?? "127.0.0.1"}:${input.port}/v1`,
+    /*
+     * Composed through the SAME helper `ocx export` uses. Interpolating the
+     * hostname by hand looked equivalent and was not: `::1` produced
+     * `http://::1:10100/v1` and `::` produced `http://:::10100/v1`, neither of
+     * which is a URL, and a `0.0.0.0` bind wrote a wildcard address no client
+     * can dial. `opencodeProxyBaseUrl` brackets IPv6 and maps wildcards to
+     * loopback, and every client we write into deserves the same answer the
+     * export command already gives.
+     */
+    baseUrl: opencodeProxyBaseUrl(input.port, input.config.hostname),
     models: input.models,
     config: input.config,
   };
@@ -162,9 +229,29 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
   const io = input.io ?? store.io();
   const spec = INTEGRATION_CLIENTS[input.clientId];
   const exportSpec = EXPORT_CLIENTS[input.clientId];
-  const configPath = spec.configPath(input.env, input.home);
-  const installed = io.statKind(spec.detectDir(input.env, input.home)) === "dir";
   const retention = retentionOf(input.clientId, store);
+  /*
+   * Resolution can refuse — a relative OPENCLAW_* selector names a file whose
+   * meaning depends on a working directory we cannot know. The LIST route asks
+   * every client for its state, so letting that escape would answer 500 for
+   * the whole Integrations page because one client is misconfigured.
+   */
+  let configPath: string;
+  let installed: boolean;
+  try {
+    configPath = spec.configPath(input.env, input.home);
+    installed = io.statKind(spec.detectDir(input.env, input.home)) === "dir";
+  } catch (error) {
+    if (!(error instanceof ClientPathError)) throw error;
+    return {
+      clientId: input.clientId,
+      state: "unsafe",
+      installed: false,
+      configPath: "",
+      reason: "unresolvable-path",
+      ...retention,
+    };
+  }
 
   const target = loadTarget(io, configPath);
   if (!target.ok) {

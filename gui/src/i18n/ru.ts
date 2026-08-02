@@ -1157,6 +1157,7 @@ export const ru: Record<TKey, string> = {
   "integrations.error.conflict": "После записи opencodex конфигурация изменилась. Ничего не было удалено.",
   "integrations.error.unsafe": "Конфигурацию нельзя изменить безопасно.",
   "integrations.error.generic": "Изменить интеграцию не удалось. Предыдущее состояние сохранено.",
+  "integrations.error.nonLoopback": "{client} может обращаться только к прокси на localhost: в его конфигурации негде разместить заголовок, который требуется при удалённой привязке, поэтому ручная настройка тоже не поможет. Обеспечьте доступ через loopback — туннелем или локальным форвардером.",
   "integrations.status.installed": "Установлен",
   "integrations.status.notInstalled": "Не установлен",
   "integrations.status.appliedAt": "Применено",

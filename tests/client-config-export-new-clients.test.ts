@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
@@ -13,6 +14,8 @@ import {
   gajaeConfigPath,
   hermesConfigPath,
   kimiConfigPath,
+  openclawConfigPath,
+  openclawHomeDir,
   type ExportContext,
   type ExportModel,
   type GajaeGeneratedConfig,
@@ -108,7 +111,10 @@ describe("hermes", () => {
   });
 
   test("HERMES_HOME wins over the platform default", () => {
-    expect(hermesConfigPath({ HERMES_HOME: "/tmp/h" }, "/home/u")).toBe("/tmp/h/config.yaml");
+    // `join` rather than a literal: the claim is that the override wins, and
+    // spelling the separator by hand asserted POSIX layout instead — which is
+    // false on Windows, where the same call returns backslashes.
+    expect(hermesConfigPath({ HERMES_HOME: "/tmp/h" }, "/home/u")).toBe(join("/tmp/h", "config.yaml"));
   });
 });
 
@@ -123,6 +129,95 @@ describe("openclaw", () => {
     expect(block.models.find(m => m.id === "gpt-5.5")?.contextWindow).toBe(400_000);
     // agents.defaults is deliberately absent: we do not pick the user's model.
     expect(doc).not.toHaveProperty("agents");
+  });
+
+  test("OPENCLAW_CONFIG_PATH wins outright", () => {
+    /*
+     * OpenClaw resolves an explicit config path above everything else. Ignoring
+     * it meant the toggle could report success after writing
+     * `~/.openclaw/openclaw.json` while the running gateway read a different
+     * file — and snapshot the wrong one for rollback.
+     */
+    expect(openclawConfigPath({ OPENCLAW_CONFIG_PATH: "/tmp/oc/custom.json" }, "/home/u"))
+      .toBe("/tmp/oc/custom.json");
+    // It outranks the state dir, not merely the home default.
+    expect(openclawConfigPath(
+      { OPENCLAW_CONFIG_PATH: "/tmp/oc/custom.json", OPENCLAW_STATE_DIR: "/tmp/state" },
+      "/home/u",
+    )).toBe("/tmp/oc/custom.json");
+  });
+
+  test("OPENCLAW_STATE_DIR relocates both the config file and detection", () => {
+    expect(openclawConfigPath({ OPENCLAW_STATE_DIR: "/tmp/state" }, "/home/u"))
+      .toBe(join("/tmp/state", "openclaw.json"));
+    // Detection has to follow, or a relocated install reads as not installed
+    // while the gateway runs perfectly well.
+    expect(openclawHomeDir({ OPENCLAW_STATE_DIR: "/tmp/state" }, "/home/u")).toBe("/tmp/state");
+  });
+
+  test("with no override the documented default still holds", () => {
+    expect(openclawConfigPath({}, "/home/u")).toBe(join("/home/u", ".openclaw", "openclaw.json"));
+    expect(openclawHomeDir({}, "/home/u")).toBe(join("/home/u", ".openclaw"));
+  });
+
+  test("OPENCLAW_PROFILE selects .openclaw-<profile>, and default stays unnamed", () => {
+    /*
+     * An operator running a profile had their config written to the unnamed
+     * state directory their gateway does not read — and read as not installed
+     * besides, because detection looked at the same wrong place.
+     */
+    expect(openclawHomeDir({ OPENCLAW_PROFILE: "work" }, "/home/u")).toBe(join("/home/u", ".openclaw-work"));
+    expect(openclawConfigPath({ OPENCLAW_PROFILE: "work" }, "/home/u"))
+      .toBe(join("/home/u", ".openclaw-work", "openclaw.json"));
+    // `default` is the unnamed profile, not a directory suffix.
+    expect(openclawHomeDir({ OPENCLAW_PROFILE: "default" }, "/home/u")).toBe(join("/home/u", ".openclaw"));
+  });
+
+  test("OPENCLAW_HOME outranks the OS home for everything derived from it", () => {
+    expect(openclawHomeDir({ OPENCLAW_HOME: "/srv/claw" }, "/home/u")).toBe(join("/srv/claw", ".openclaw"));
+    expect(openclawHomeDir({ OPENCLAW_HOME: "/srv/claw", OPENCLAW_PROFILE: "work" }, "/home/u"))
+      .toBe(join("/srv/claw", ".openclaw-work"));
+    expect(openclawConfigPath({ OPENCLAW_HOME: "/srv/claw" }, "/home/u"))
+      .toBe(join("/srv/claw", ".openclaw", "openclaw.json"));
+  });
+
+  test("an explicit state dir outranks a profile", () => {
+    expect(openclawHomeDir({ OPENCLAW_STATE_DIR: "/tmp/state", OPENCLAW_PROFILE: "work" }, "/home/u"))
+      .toBe("/tmp/state");
+  });
+
+  test("a relative selector is refused, not silently anchored to our cwd", () => {
+    /*
+     * A first attempt resolved these against `process.cwd()` and claimed the
+     * path would mean the same thing next time. It does not: `resolve()`
+     * anchors only the current invocation, so applying from one directory and
+     * disabling from another still named two different files — the second
+     * reported "not applied" and left the block behind, unowned.
+     *
+     * We cannot know the gateway's cwd, so the honest answer is to refuse at
+     * the boundary rather than pick a directory and hope.
+     */
+    expect(() => openclawConfigPath({ OPENCLAW_CONFIG_PATH: "custom.json" }, "/home/u"))
+      .toThrow(/OPENCLAW_CONFIG_PATH must be an absolute path/);
+    expect(() => openclawHomeDir({ OPENCLAW_STATE_DIR: "state" }, "/home/u"))
+      .toThrow(/OPENCLAW_STATE_DIR must be an absolute path/);
+    expect(() => openclawHomeDir({ OPENCLAW_HOME: "srv/claw" }, "/home/u"))
+      .toThrow(/OPENCLAW_HOME must be an absolute path/);
+  });
+
+  test("~ is stable, because it anchors to the home rather than the cwd", () => {
+    expect(openclawConfigPath({ OPENCLAW_CONFIG_PATH: "~/claw.json" }, "/home/u"))
+      .toBe(join("/home/u", "claw.json"));
+    // …and OPENCLAW_HOME moves what `~` means, as it does for OpenClaw itself.
+    expect(openclawConfigPath({ OPENCLAW_CONFIG_PATH: "~/claw.json", OPENCLAW_HOME: "/srv/claw" }, "/home/u"))
+      .toBe(join("/srv/claw", "claw.json"));
+    expect(openclawHomeDir({ OPENCLAW_STATE_DIR: "~/state" }, "/home/u")).toBe(join("/home/u", "state"));
+  });
+
+  test("the default profile comparison is case-insensitive, as OpenClaw's is", () => {
+    for (const spelling of ["default", "DEFAULT", "Default"]) {
+      expect(openclawHomeDir({ OPENCLAW_PROFILE: spelling }, "/home/u")).toBe(join("/home/u", ".openclaw"));
+    }
   });
 });
 
@@ -149,7 +244,7 @@ describe("kimi", () => {
   });
 
   test("KIMI_CODE_HOME wins over the default", () => {
-    expect(kimiConfigPath({ KIMI_CODE_HOME: "/tmp/k" }, "/home/u")).toBe("/tmp/k/config.toml");
+    expect(kimiConfigPath({ KIMI_CODE_HOME: "/tmp/k" }, "/home/u")).toBe(join("/tmp/k", "config.toml"));
   });
 });
 
@@ -167,7 +262,7 @@ describe("gajae", () => {
   });
 
   test("the destination is the documented models file", () => {
-    expect(gajaeConfigPath({}, "/home/u")).toBe("/home/u/.gjc/agent/models.yml");
+    expect(gajaeConfigPath({}, "/home/u")).toBe(join("/home/u", ".gjc", "agent", "models.yml"));
   });
 });
 

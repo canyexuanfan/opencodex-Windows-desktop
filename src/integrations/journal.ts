@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { atomicWriteFile } from "../config";
-import { ensureDir, integrationsDir, type OwnershipRecord } from "./ownership";
+import { ensureDir, fingerprint, integrationsDir, type OwnershipRecord } from "./ownership";
 import { isIntegrationClientId, type IntegrationClientId } from "./registry";
 
 export type OperationKind = "apply" | "disable" | "refresh" | "restore";
@@ -52,6 +52,25 @@ export interface JournalEntry {
 }
 
 export const SNAPSHOT_RETENTION = 10;
+
+/**
+ * Does the file on disk still hold what this operation left behind?
+ *
+ * The one place that answers it, because two places answered differently. An
+ * operation whose result was ABSENCE records `resultAbsent: true` and an empty
+ * `resultFingerprint`; the route compared a missing file to `""` and called it
+ * a match, while restore hashed `""` into a real digest and called the same
+ * unchanged absence a drift. So the journal offered Undo and the restore
+ * route then demanded a confirmation for edits nobody had made.
+ *
+ * `currentText` is `null` for a missing file — not `""`, which is a file that
+ * exists and is empty. The distinction is the whole point.
+ */
+export function matchesOperationResult(entry: JournalEntry, currentText: string | null): boolean {
+  if (entry.resultAbsent) return currentText === null;
+  if (currentText === null) return false;
+  return fingerprint(currentText) === entry.resultFingerprint;
+}
 
 export function newOpId(): string {
   return randomUUID();
@@ -186,10 +205,20 @@ export function pruneSnapshots(
   clientId: IntegrationClientId,
   dir: string = integrationsDir(),
 ): { ok: true } | { ok: false; error: string } {
+  /*
+   * Filter to rows that HAVE a snapshot first, then take the newest N.
+   *
+   * Taking the newest N operations and filtering afterwards counted rows that
+   * never stored anything: an apply-to-absent records `snapshot: none`, so a
+   * client whose history alternates stored and none kept only half the backups
+   * the contract promises. The docs say ten backups per client, and this is
+   * the code that has to make that true.
+   */
   const keep = new Set(
-    listOperations(clientId, SNAPSHOT_RETENTION, dir)
-      .map(row => (row.snapshot.kind === "stored" ? row.opId : null))
-      .filter((value): value is string => value !== null),
+    listOperations(clientId, Number.MAX_SAFE_INTEGER, dir)
+      .filter(row => row.snapshot.kind === "stored")
+      .slice(0, SNAPSHOT_RETENTION)
+      .map(row => row.opId),
   );
   let names: string[];
   try {

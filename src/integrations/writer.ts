@@ -15,12 +15,13 @@ import { isLoopbackHostname } from "../codex/inject";
 import type { OcxConfig } from "../types";
 import { PARSE_FAILED, defaultIntegrationIO, loadTarget, parseConfig, type IntegrationIO } from "./config-io";
 import { fingerprint, canonicalContribution, fragmentPathsOf, type OwnershipRecord } from "./ownership";
-import { mergeContribution, removeFragments } from "./merge";
+import { createdContainerPaths, mergeContribution, removeFragments } from "./merge";
 import { INTEGRATION_CLIENTS, isLoopbackOnly, type IntegrationClientId } from "./registry";
 import { classifyIntegration, exportContextOf } from "./state";
 import type { IntegrationState } from "./state";
-import { serializeDocument } from "./serialize";
-import { newOpId, type JournalEntry } from "./journal";
+import { serializeDocument, UnserializableValueError } from "./serialize";
+import { ClientPathError } from "../clients/config-export";
+import { matchesOperationResult, newOpId, type JournalEntry } from "./journal";
 import { createIntegrationStateStore, type IntegrationStateStore } from "./store";
 
 export type RefusalReason =
@@ -174,7 +175,20 @@ function preflight(input: IntegrationWriteInput) {
   const clientId = input.clientId;
   const spec = INTEGRATION_CLIENTS[clientId];
   const exportSpec = EXPORT_CLIENTS[clientId];
-  const configPath = spec.configPath(input.env, input.home);
+  /*
+   * Resolution itself can refuse: a relative OPENCLAW_* selector is rejected
+   * because we cannot know the gateway's working directory. That is a refusal
+   * about the user's configuration, not an internal fault, so it must not
+   * escape as an exception — the collection route would answer 500 for the
+   * whole Integrations page because one client is misconfigured.
+   */
+  let configPath: string;
+  try {
+    configPath = spec.configPath(input.env, input.home);
+  } catch (error) {
+    if (!(error instanceof ClientPathError)) throw error;
+    return { failed: refuse(clientId, "unsafe", "unsafe", error.message) } as const;
+  }
   store.retryPendingPrunes();
 
   const target = loadTarget(io, configPath);
@@ -219,13 +233,26 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   }
   if (isLoopbackOnly(clientId) && !isLoopbackHostname(input.config.hostname)) {
     return refuse(clientId, "non_loopback", classified.state,
-      `${clientId} has nowhere to put the admission header a non-loopback bind requires, so a generated config would be rejected. Configure it by hand instead.`);
+      `${clientId} has nowhere to put the admission header a non-loopback bind requires, so a generated config would be rejected — and writing one by hand would not help either. Give it loopback access instead, through a tunnel or a local forwarder.`);
   }
   if (classified.state === "conflict") {
     return refuse(clientId, "conflict", "conflict",
       classified.reason === "foreign-edit"
         ? `${configPath} changed after opencodex wrote it`
         : `${configPath} already contains an opencodex block we did not write`);
+  }
+  /*
+   * `unsafe` from the classifier means the document is not one we may write
+   * through — today that is a container on our fragment path holding a
+   * non-object value the merge would replace with `{}`. Unreadable and
+   * unparseable files are caught earlier in preflight; this branch exists
+   * because the classifier can also refuse a file it CAN read.
+   */
+  if (classified.state === "unsafe") {
+    return refuse(clientId, "unsafe", "unsafe",
+      classified.reason === "blocked-container"
+        ? `${configPath} holds a value where opencodex would have to write a section, so applying would replace it`
+        : `${configPath} cannot be changed safely`);
   }
   if (classified.state === "current") {
     return { ok: true, changed: false, state: "current", clientId, message: "already applied" };
@@ -234,10 +261,33 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   // A stale refresh drops what the PREVIOUS record owned before merging: a
   // model that left the catalog would otherwise stay behind as an orphan the
   // new record no longer covers, and disable could never remove it.
+  /*
+   * The previous record's `createdContainers` has to travel with this removal.
+   * Without it the refresh leaves our own empty scaffolding behind in `base`,
+   * `createdContainerPaths` then sees the container already present and
+   * concludes the user owns it, and the replacement record forgets we made it
+   * — so a later disable strands it forever.
+   */
   const base = classified.state === "stale" && record
-    ? removeFragments(parsed, record.fragmentPaths).doc
+    ? removeFragments(parsed, record.fragmentPaths, new Set(record.createdContainers ?? [])).doc
     : parsed;
-  const text = serializeDocument(mergeContribution(base, contribution), exportSpec.format);
+  // Computed against the document as it stands BEFORE the merge: afterwards
+  // every container exists and "did we create this?" is unanswerable.
+  const created = createdContainerPaths(base, contribution);
+  /*
+   * A document can hold a value its own format cannot round-trip through our
+   * renderers. That used to throw straight out of the writer and reach the
+   * user as a 500 with no path and no advice; it is a refusal like any other,
+   * and the file is untouched because this happens before any write.
+   */
+  let text: string;
+  try {
+    text = serializeDocument(mergeContribution(base, contribution), exportSpec.format);
+  } catch (error) {
+    if (!(error instanceof UnserializableValueError)) throw error;
+    return refuse(clientId, "unsafe", "unsafe",
+      `${configPath} contains something opencodex cannot rewrite safely (${error.message}), so it was left alone`);
+  }
 
   // Compare-before-commit: someone may have written between classify and now.
   const recheck = io.readText(configPath);
@@ -259,7 +309,8 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
     record: {
       clientId, configPath, fileFingerprint: fingerprint(text),
       blockFingerprint: fingerprint(canonicalContribution(contribution)),
-      fragmentPaths: fragmentPathsOf(contribution), appliedAt: at, opId,
+      fragmentPaths: fragmentPathsOf(contribution), createdContainers: created,
+      appliedAt: at, opId,
     },
     entry,
     snapshotPath: snapshotAbsPath(store, entry),
@@ -280,14 +331,38 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
         ? `${configPath} changed after opencodex wrote it; disabling would discard that edit`
         : `${configPath} contains an opencodex block we did not write`);
   }
+  /*
+   * `unsafe` reaches here the same way it reaches apply, and the code below
+   * dereferences `record` on the assumption that anything past this point is
+   * `current` or `stale`. A blocked container has no record, so disable threw
+   * a TypeError and the route answered 500 — the GUI locks the switch, but the
+   * CLI and direct API callers do not.
+   */
+  if (classified.state === "unsafe") {
+    return refuse(clientId, "unsafe", "unsafe",
+      classified.reason === "blocked-container"
+        ? `${configPath} holds a value where opencodex would have to read a section, so nothing can be removed safely`
+        : `${configPath} cannot be changed safely`);
+  }
 
   // current | stale only: the file fingerprint still matches our record, so the
   // recorded paths are exactly what we put there.
-  const { doc, removed } = removeFragments(parsed, record!.fragmentPaths);
+  const { doc, removed } = removeFragments(
+    parsed,
+    record!.fragmentPaths,
+    new Set(record!.createdContainers ?? []),
+  );
   if (!removed) {
     return { ok: true, changed: false, state: "absent", clientId, message: "nothing to remove" };
   }
-  const text = serializeDocument(doc, exportSpec.format);
+  let text: string;
+  try {
+    text = serializeDocument(doc, exportSpec.format);
+  } catch (error) {
+    if (!(error instanceof UnserializableValueError)) throw error;
+    return refuse(clientId, "unsafe", "unsafe",
+      `${configPath} contains something opencodex cannot rewrite safely (${error.message}), so nothing was removed`);
+  }
 
   const recheck = io.readText(configPath);
   const rechecked = recheck.kind === "text" ? recheck.text : recheck.kind === "missing" ? null : undefined;
@@ -342,8 +417,16 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   }
   const current = target.before;
 
-  // Drift: the file changed after the operation we are undoing.
-  if (fingerprint(current ?? "") !== entry.resultFingerprint && !input.confirmDrift) {
+  /*
+   * Drift: the file changed after the operation we are undoing.
+   *
+   * Through the shared matcher, because `fingerprint(current ?? "")` treated a
+   * MISSING file as an empty one — so restoring an operation whose result was
+   * absence, with the file still absent, read as drift and demanded a
+   * confirmation for edits nobody had made. The journal meanwhile offered the
+   * same row as Undo.
+   */
+  if (!matchesOperationResult(entry, current) && !input.confirmDrift) {
     return refuse(clientId, "drift_requires_confirm", "conflict",
       "this file changed after that operation; confirm to replace it (the current version is backed up first)");
   }
@@ -359,11 +442,27 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   // mean guessing which entries are ours, and a wrong guess deletes a user's.
   const restoredRecord = entry.priorRecord;
   const fresh = EXPORT_CLIENTS[clientId].buildContribution(exportContextOf(input));
+  /*
+   * Does the restored record actually describe the restored bytes?
+   *
+   * It usually does — `priorRecord` was written for exactly this snapshot. But
+   * a CONFIRMED drift-restore snapshots the user's edited file first, and
+   * undoing that restore puts those edited bytes back while carrying a record
+   * that describes what opencodex had written. Overwriting the record's
+   * fingerprint with the restored bytes then laundered a foreign edit into
+   * owned content: the state read `current`, and a later disable deleted
+   * fields the user had added by hand.
+   */
+  const restoredFingerprint = restoredText === null ? "" : fingerprint(restoredText);
+  const recordDescribesBytes = restoredRecord !== null
+    && restoredRecord.fileFingerprint === restoredFingerprint;
   const state: IntegrationState = restoredRecord === null
     ? (restoredText === null ? "absent" : "conflict")
-    : restoredRecord.blockFingerprint === fingerprint(canonicalContribution(fresh))
-      ? "current"
-      : "stale";
+    : !recordDescribesBytes
+      ? "conflict"
+      : restoredRecord.blockFingerprint === fingerprint(canonicalContribution(fresh))
+        ? "current"
+        : "stale";
 
   const at = new Date(io.now()).toISOString();
   const priorRecord = store.readRecords()[clientId] ?? null;
@@ -376,9 +475,14 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   return commit({
     io, store, clientId, configPath, before: current, nextText: restoredText, state,
     priorRecord,
+    /*
+     * Keep the record's ORIGINAL `fileFingerprint`. Restoring bytes it does not
+     * describe leaves the classifier reading `conflict`, which is the honest
+     * answer — we are no longer sure the block on disk is ours, and refusing
+     * is what stops a disable from deleting the user's edit.
+     */
     record: restoredRecord === null ? null : {
       ...restoredRecord,
-      fileFingerprint: restoredText === null ? "" : fingerprint(restoredText),
       appliedAt: at,
       opId,
     },

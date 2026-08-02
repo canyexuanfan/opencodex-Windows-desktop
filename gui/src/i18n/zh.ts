@@ -740,6 +740,7 @@ export const zh: Record<TKey, string> = {
   "integrations.error.conflict": "opencodex 写入后配置又发生了更改。未移除任何内容。",
   "integrations.error.unsafe": "无法安全地更改配置。",
   "integrations.error.generic": "集成更改失败。已保留之前的状态。",
+  "integrations.error.nonLoopback": "{client} 只能连接 localhost 上的代理：其配置没有位置放置远程绑定所需的准入标头，手动编写同样无效。请改用隧道或本地转发器提供 loopback 访问。",
   "integrations.status.installed": "已安装",
   "integrations.status.notInstalled": "未安装",
   "integrations.status.appliedAt": "已应用",

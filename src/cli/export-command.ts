@@ -1,13 +1,19 @@
 /**
- * `ocx export --client <opencode|pi>` — print a client config for the live proxy.
+ * `ocx export --client <id>` — print a client config for the live proxy.
+ *
+ * Six clients, four formats: opencode and Pi are JSON, Hermes and Gajae YAML,
+ * OpenClaw JSON5, Kimi TOML.
  *
  * Two consumers, one payload (devlog 260731_client_config_export/020):
  *
- * - **Agent** (`--json`): stdout is exactly the client config JSON and nothing else, so
- *   `ocx export --client pi --json > models.json` is safe to pipe. Every diagnostic —
- *   including the `--out` write note — goes to stderr.
- * - **Human** (no flag): the JSON leads, then the destination path, the merge warning,
- *   the env export line, and the model/degraded counts.
+ * - **Agent** (`--json`): stdout is exactly the client config as JSON and nothing else,
+ *   so `ocx export --client pi --json > models.json` is safe to pipe. This is JSON for
+ *   every client, including the YAML/JSON5/TOML ones — the flag is about machine
+ *   readability, not the client's native format. Every diagnostic — including the
+ *   `--out` write note — goes to stderr.
+ * - **Human** (no flag) and `--out`: the client's NATIVE serialization leads, then the
+ *   destination path, the merge warning, the env export line, and the model/degraded
+ *   counts.
  *
  * The command never writes the user's real config path. `--out` is an explicit target and
  * refuses to clobber an existing file without `--force`, because the common mistake
@@ -15,7 +21,8 @@
  *
  * Serialization itself belongs to src/clients/config-export.ts; this module only resolves
  * the base URL, filters the catalog, and renders. No secret is ever serialized: the config
- * carries the client's documented env reference and the real key stays in the environment.
+ * carries the client's documented env reference — or, for Kimi, which cannot hold one, a
+ * loopback placeholder — and the real key stays in the environment.
  */
 import { writeFileSync } from "node:fs";
 import { loadConfig } from "../config";

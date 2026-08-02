@@ -29,8 +29,22 @@ export function refusalOf(error: unknown): IntegrationRefusalEnvelope | null {
 function reasonKey(reason: string | undefined): TKey {
   if (reason === "conflict") return "integrations.error.conflict";
   if (reason === "unsafe") return "integrations.error.unsafe";
+  if (reason === "non_loopback") return "integrations.error.nonLoopback";
   return "integrations.error.generic";
 }
+
+/**
+ * Reasons whose localized copy REPLACES the server's message rather than
+ * accompanying it.
+ *
+ * The writer always sends a non-empty English `message`, so anything that
+ * merely falls back to a dictionary key never evaluates it. For most refusals
+ * that is right — the message names the user's own file and we cannot say it
+ * better. `non_loopback` is the exception: it is a fixed policy explanation
+ * with no per-file detail, so a Korean or Japanese user was reading English
+ * prose written for a server log.
+ */
+const LOCALIZED_REASONS: ReadonlySet<string> = new Set(["non_loopback"]);
 
 export type Translate = (key: TKey, vars?: Record<string, string>) => string;
 
@@ -44,7 +58,9 @@ export function describeRefusal(t: Translate, error: unknown, fallback?: string)
       ? error.message
       : fallback ?? t("integrations.error.generic");
   }
-  const message = refusal.message || t(reasonKey(refusal.reason));
+  const message = LOCALIZED_REASONS.has(refusal.reason)
+    ? t(reasonKey(refusal.reason), { client: refusal.clientId })
+    : refusal.message || t(reasonKey(refusal.reason));
   if (refusal.snapshotPath) {
     // A dead end the user cannot finish by hand is worse than no rollback at
     // all, so the path rides along whenever the server sent one.

@@ -298,11 +298,41 @@ describe("classifier unit behavior", () => {
     config: CONFIG,
   });
 
-  test("a document whose container is an array reads as absent, not a throw", () => {
+  test("a document whose container is an array is unsafe, not absent", () => {
+    /*
+     * This used to assert `absent`, on the reasoning that not throwing was
+     * enough. It is not: `absent` authorizes an apply, and `setPath` replaces
+     * a non-object container with `{}` on its way to our leaf — so a user with
+     * `providers: []` (legal in their schema, not in ours) had it silently
+     * replaced by an operation that reported success.
+     */
     const result = classifyIntegration({
       fileText: "{}",
       fileIsRegular: true,
       parsed: { providers: [] },
+      record: null,
+      contribution,
+    });
+    expect(result).toEqual({ state: "unsafe", reason: "blocked-container" });
+  });
+
+  test("a scalar where a container belongs is unsafe too", () => {
+    const result = classifyIntegration({
+      fileText: "{}",
+      fileIsRegular: true,
+      parsed: { providers: "not-an-object" },
+      record: null,
+      contribution,
+    });
+    expect(result).toEqual({ state: "unsafe", reason: "blocked-container" });
+  });
+
+  test("an ordinary empty container is still absent, not blocked", () => {
+    // The guard must not turn a normal first-time apply into a refusal.
+    const result = classifyIntegration({
+      fileText: "{}",
+      fileIsRegular: true,
+      parsed: { providers: {} },
       record: null,
       contribution,
     });
