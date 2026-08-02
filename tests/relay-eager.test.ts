@@ -183,15 +183,14 @@ describe("relaySseEagerBounded — inline payload rewrite (#864)", () => {
     const relayed = relaySseEagerBounded(up.stream, new AbortController(), hooks);
     const reading = readAll(relayed);
 
-    // A multibyte character split across the EOF boundary: the decoder flush
-    // completes it AFTER the buffered text, not before.
+    // Close with an INCOMPLETE multibyte sequence: the decoder flush emits the
+    // replacement char AFTER the buffered text, never before it.
     const euro = enc.encode("data: €");
     up.push(euro.subarray(0, euro.length - 1));
-    up.push(euro.subarray(euro.length - 1));
     up.close();
 
     const text = await reading;
-    expect(text).toBe("data: €");
+    expect(text).toBe("data: �");
   });
 
   test("retained rewrite-budget bytes are released on upstream abort", async () => {
