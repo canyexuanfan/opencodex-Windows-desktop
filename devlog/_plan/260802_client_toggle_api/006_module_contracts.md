@@ -209,13 +209,73 @@ export interface IntegrationWriteInput {
 }
 
 export interface IntegrationIO {
-  readText: (path: string) => string | null;
+  /**
+   * ONLY a missing file yields `{ kind: "missing" }`. Every other failure
+   * (EACCES, EPERM, EISDIR, …) yields `{ kind: "failed" }`, which the writer
+   * MUST treat as `unsafe`. Collapsing both to `null` would let an
+   * unreadable-but-present config be overwritten as if it were absent
+   * (A-gate round 3, blocker 3).
+   */
+  readText: (path: string) =>
+    | { kind: "text"; text: string }
+    | { kind: "missing" }
+    | { kind: "failed"; code?: string };
   statKind: (path: string) => "file" | "dir" | "other" | "missing";
   writeText: (path: string, text: string) => void;   // defaults to atomicWriteFile
   removeFile: (path: string) => void;
   mkdirp: (path: string) => void;
   now: () => number;
+  /**
+   * Bookkeeping seams. Without them the compensating-write path cannot be
+   * activated in a test, so the rollback guarantee would be unverifiable
+   * (A-gate round 3, blocker 6).
+   */
+  appendJournal: (entry: JournalEntry) => void;
+  putRecord: (record: OwnershipRecord) => void;
+  dropRecord: (clientId: IntegrationClientId) => void;
 }
+```
+
+### Bookkeeping order and compensation (blocker 6)
+
+Fixed order: **client file → ownership record → journal row.** The record
+precedes the row because a record without a row is just a thin history, while
+a row without a record advertises an operation the classifier cannot
+corroborate — a phantom.
+
+| Failure point | Compensation | Result |
+|---|---|---|
+| record write throws | restore the client file, drop any partial record | `write_failed` |
+| journal append throws | restore the client file, drop the record just written | `write_failed` (no phantom row is possible — the row is last) |
+| **compensation itself throws** | none available | `write_failed` with `residual: true` and `snapshotPath`; the message says the file is in an intermediate state and names the snapshot |
+
+Claiming a rollback that did not happen is the one failure mode worse than the
+original error, so the refusal type carries the residual flag:
+
+```ts
+export interface WriteRefused {
+  ok: false;
+  reason: RefusalReason;
+  state: IntegrationState;
+  clientId: IntegrationClientId;
+  message: string;
+  snapshotPath?: string;
+  /** True when compensation failed and the file is in an intermediate state. */
+  residual?: boolean;
+}
+```
+
+`restoreIntegration` uses the same order and the same compensation, including
+for its own record/journal writes.
+
+### Config-dir seam
+
+`resolveConfigDir` is **private** in `src/config.ts`; the public accessor is
+`getConfigDir()`. Every integration module uses `getConfigDir()`, and
+`integrationsDir(dir = getConfigDir())` takes an optional override so tests
+redirect state without mutating the environment.
+
+```ts
 
 export function readIntegrationState(input: Omit<IntegrationWriteInput, "io"> & { io?: IntegrationIO }): IntegrationStatus;
 export function applyIntegration(input: IntegrationWriteInput): WriteOutcome;
@@ -295,11 +355,32 @@ Named gaps and where they are now closed:
 | Gap | Closed in |
 |---|---|
 | Hermes/OpenClaw/Kimi/Gajae builder + contribution bodies | `011_wp1_builders.md` |
-| Journal + ownership implementation bodies | `021_wp2_journal_impl.md` |
-| Writer bodies (apply/disable/restore, merge/remove) | `031_wp3_writer_impl.md` |
+| OpenCode/Pi `summarize` + `buildContribution` | `011` addendum A |
+| `model-rows.ts` canonical loader body | `011` addendum B |
+| Journal + ownership bodies, `readIntegrationState` | `021_wp2_journal_impl.md` |
+| Writer bodies + the shared `writer-io.ts` seam | `031_wp3_writer_impl.md` |
 | Journal route handler + row derivation | `040` §journal (rewritten in place) |
 | WP6 principal components | `061_wp6_components.md` |
 | docs-site + test filenames | `070` scope list (already concrete) |
+
+### Module map (every new file, one place)
+
+| Path | Phase | Purpose |
+|---|---|---|
+| `src/integrations/serialize.ts` | WP1 | `renderYaml`, `renderToml`, `serializeDocument` |
+| `src/server/management/model-rows.ts` | WP1 | canonical `ExportModel[]` loader |
+| `src/integrations/registry.ts` | WP2 | client paths, detection, `loopbackOnly` |
+| `src/integrations/ownership.ts` | WP2 | fingerprints, records |
+| `src/integrations/state.ts` | WP2 | classifier + `readIntegrationState` |
+| `src/integrations/journal.ts` | WP2 | journal + snapshots |
+| `src/integrations/writer-io.ts` | WP3 | `loadTarget`, `defaultIntegrationIO` (shared reader/writer seam) |
+| `src/integrations/merge.ts` | WP3 | parse, path set/delete, fragment merge/remove |
+| `src/integrations/writer.ts` | WP3 | apply / disable / restore |
+| `src/server/management/integration-routes.ts` | WP4 | the five routes |
+
+`writer-io.ts` is imported by WP2's `state.ts`, so it lands in WP2's phase
+even though its body is documented in `031` — the reader and the writer must
+never disagree about what counts as file absence.
 
 Sub-decade docs (`011`, `021`, `031`, `061`) are the standard overflow form
 (LEXICO-SPLIT-01): they carry the long paste-ready bodies so the decade doc

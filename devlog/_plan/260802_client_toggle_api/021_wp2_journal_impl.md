@@ -95,7 +95,9 @@ function hermesHome(env: NodeJS.ProcessEnv, home: string): string {
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { atomicWriteFile, resolveConfigDir } from "../config";
+// `resolveConfigDir` is PRIVATE in src/config.ts; `getConfigDir` is the public
+// accessor (A-gate round 3, blocker 2).
+import { atomicWriteFile, getConfigDir } from "../config";
 import type { ManagedContribution, ManagedFragment } from "../clients/config-export";
 import type { IntegrationClientId } from "./registry";
 
@@ -129,8 +131,9 @@ export interface OwnershipRecord {
   opId: string;
 }
 
-export function integrationsDir(): string {
-  return join(resolveConfigDir(), "integrations");
+/** `dir` is the test seam — no env mutation required. */
+export function integrationsDir(dir: string = getConfigDir()): string {
+  return join(dir, "integrations");
 }
 
 function recordsPath(): string {
@@ -242,9 +245,58 @@ export function classifyIntegration(input: {
 ```
 
 `readIntegrationState` (the exported entry point named in 006 §5) composes
-this with the IO seam: read the file, stat it, parse via WP3's `parseConfig`,
-load the record, build the contribution from WP1, classify, and attach
-`installed` from `detectDir`.
+this with the IO seam. It lives in `state.ts` and is the ONE reader every
+surface uses:
+
+```ts
+import { EXPORT_CLIENTS, type ExportModel } from "../clients/config-export";
+import type { OcxConfig } from "../types";
+import { parseConfig } from "./merge";
+import { defaultIntegrationIO, loadTarget, type IntegrationIO } from "./writer-io";
+
+export interface IntegrationStateInput {
+  clientId: IntegrationClientId;
+  models: readonly ExportModel[];
+  config: OcxConfig;
+  port: number;
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  io?: IntegrationIO;
+}
+
+export function readIntegrationState(input: IntegrationStateInput): IntegrationStatus {
+  const io = input.io ?? defaultIntegrationIO();
+  const spec = INTEGRATION_CLIENTS[input.clientId];
+  const exportSpec = EXPORT_CLIENTS[input.clientId];
+  const configPath = spec.configPath(input.env);
+  const installed = io.statKind(spec.detectDir(input.env, input.home)) === "dir";
+
+  const target = loadTarget(io, configPath);
+  if (!target.ok) {
+    return {
+      clientId: input.clientId, state: "unsafe", installed, configPath,
+      reason: target.why === "read-failed" ? "unparseable" : "not-regular-file",
+    };
+  }
+
+  const parsed = parseConfig(target.before, exportSpec.format);
+  const contribution = exportSpec.buildContribution(exportContextOf(input));
+  const record = readRecords()[input.clientId] ?? null;
+  const { state, reason } = classifyIntegration({
+    fileText: target.before, fileIsRegular: true, parsed, record, contribution,
+  });
+
+  return {
+    clientId: input.clientId, state, installed, configPath,
+    ...(reason ? { reason } : {}),
+    ...(record ? { appliedAt: record.appliedAt, lastOpId: record.opId } : {}),
+  };
+}
+```
+
+`loadTarget` and `defaultIntegrationIO` live in `src/integrations/writer-io.ts`
+(shared by the reader and the writer so they can never disagree about what
+counts as absence); their bodies are in `031` §0 and §5.
 
 ## 4. `src/integrations/journal.ts` (NEW)
 
@@ -372,7 +424,7 @@ the opencodex config dir so nothing touches the developer's real state.
 
 ## OPEN QUESTIONS
 
-- `resolveConfigDir()` is read at call time; tests must override it the same
-  way existing config tests do. If no seam exists, WP2 adds an optional
-  `dir` parameter to `integrationsDir()` rather than mutating env inside the
-  module.
+None. The config-dir seam question is resolved above: `integrationsDir(dir =
+getConfigDir())` takes an explicit override, so tests redirect integration
+state without mutating the environment, and the module never reaches for the
+private `resolveConfigDir`.

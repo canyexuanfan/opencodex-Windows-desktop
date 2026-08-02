@@ -3,6 +3,95 @@
 Paste-ready implementation for `030`. Types come from `006_module_contracts.md`
 (authoritative). Sub-decade doc per LEXICO-SPLIT-01 overflow; same phase as 030.
 
+**A-gate round-3 corrections folded in — read these before the bodies below:**
+
+1. **A read failure is not absence.** `io.readText` returns a tagged result
+   (006 §5). Only `missing` means "no file"; `failed` (EACCES/EPERM/EISDIR)
+   is `unsafe` and must never reach parse/merge/write.
+2. **A stale refresh removes the previous fragments first.** Apply from
+   `stale` deletes the *recorded* paths, then merges the fresh contribution
+   into that result. Otherwise a renamed or dropped Kimi model leaves an
+   orphan the new record no longer owns, and disable can never remove it.
+3. **Restore records what it actually restored**, derived from the restored
+   bytes — not the fresh contribution. Recording the fresh one would let a
+   later disable delete paths the restored file does not have while leaving
+   the ones it does.
+4. **Bookkeeping order is file → record → journal**, with compensation and a
+   `residual: true` refusal when compensation itself fails (006 §5). All
+   bookkeeping goes through the injected seams so the failure is testable.
+
+The bodies in §2-§4 are written against these rules.
+
+## 0. `src/integrations/writer-io.ts` (NEW) — the seam both reader and writer use
+
+`loadTarget` and `defaultIntegrationIO` live here rather than in `writer.ts`
+because `readIntegrationState` (021) needs them too, and a reader that
+disagreed with the writer about what counts as absence would reintroduce
+blocker 3 through the back door.
+
+```ts
+/** Read + classify the target, collapsing the three failure shapes correctly. */
+function loadTarget(io: IntegrationIO, configPath: string):
+  | { ok: true; before: string | null }
+  | { ok: false; why: "not-regular-file" | "read-failed" } {
+  const kind = io.statKind(configPath);
+  if (kind === "missing") return { ok: true, before: null };
+  if (kind !== "file") return { ok: false, why: "not-regular-file" };
+  const read = io.readText(configPath);
+  if (read.kind === "text") return { ok: true, before: read.text };
+  // stat said "file" but the read failed: a real file we cannot see. Never
+  // treat this as absence — that is how an unreadable config gets clobbered.
+  if (read.kind === "failed") return { ok: false, why: "read-failed" };
+  return { ok: true, before: null };   // raced deletion between stat and read
+}
+
+/**
+ * Commit the client file, then the record, then the journal row — restoring
+ * the file and dropping the record if either bookkeeping step fails.
+ */
+function commit(io: IntegrationIO, args: {
+  configPath: string; before: string | null; nextText: string | null;
+  record: OwnershipRecord | null; clientId: IntegrationClientId; entry: JournalEntry;
+  snapshotPath?: string; state: IntegrationState;
+}): WriteOutcome {
+  try {
+    if (args.nextText === null) io.removeFile(args.configPath);
+    else { io.mkdirp(dirname(args.configPath)); io.writeText(args.configPath, args.nextText); }
+  } catch (error) {
+    return refuse(args.clientId, "write_failed", args.state, msg(error), args.snapshotPath);
+  }
+  try {
+    if (args.record) io.putRecord(args.record); else io.dropRecord(args.clientId);
+  } catch (error) {
+    return compensate(io, args, error, "could not record ownership");
+  }
+  try {
+    io.appendJournal(args.entry);
+  } catch (error) {
+    try { io.dropRecord(args.clientId); } catch { /* covered by residual below */ }
+    return compensate(io, args, error, "could not append the journal row");
+  }
+  return { ok: true, changed: true, state: args.state, clientId: args.clientId,
+           opId: args.entry.opId, message: "ok" };
+}
+
+function compensate(io: IntegrationIO, args: { configPath: string; before: string | null;
+  clientId: IntegrationClientId; state: IntegrationState; snapshotPath?: string },
+  cause: unknown, what: string): WriteRefused {
+  try {
+    if (args.before === null) io.removeFile(args.configPath);
+    else io.writeText(args.configPath, args.before);
+  } catch {
+    // Rollback failed. Say so — a false "rolled back" is worse than the error.
+    return { ok: false, reason: "write_failed", state: args.state, clientId: args.clientId,
+      residual: true, snapshotPath: args.snapshotPath,
+      message: `${what}, and the file could not be rolled back. It is in an intermediate state; the backup is at ${args.snapshotPath ?? "(none)"}.` };
+  }
+  return { ok: false, reason: "write_failed", state: args.state, clientId: args.clientId,
+    snapshotPath: args.snapshotPath, message: `${what}; the change was rolled back. Cause: ${msg(cause)}` };
+}
+```
+
 ## 1. `src/integrations/merge.ts` (NEW)
 
 ```ts
@@ -103,10 +192,10 @@ export { serializeDocument, renderToml, renderYaml };
 ```ts
 export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   const io = input.io ?? defaultIntegrationIO();
-  const spec = INTEGRATION_CLIENTS[input.clientId];
-  const exportSpec = EXPORT_CLIENTS[input.clientId];
-  const configPath = spec.configPath(input.env);
   const clientId = input.clientId;
+  const spec = INTEGRATION_CLIENTS[clientId];
+  const exportSpec = EXPORT_CLIENTS[clientId];
+  const configPath = spec.configPath(input.env);
 
   if (io.statKind(spec.detectDir(input.env, input.home)) !== "dir") {
     return refuse(clientId, "not_installed", "absent", `${clientId} is not installed`);
@@ -116,11 +205,15 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
       `${clientId} reads credentials only from its config file, so a non-loopback bind would write your key to disk. Configure it manually instead.`);
   }
 
-  const before = io.readText(configPath);
-  const kind = io.statKind(configPath);
-  if (before !== null && kind !== "file") {
-    return refuse(clientId, "unsafe", "unsafe", `${configPath} is not a regular file`);
+  const target = loadTarget(io, configPath);
+  if (!target.ok) {
+    return refuse(clientId, "unsafe", "unsafe",
+      target.why === "read-failed"
+        ? `${configPath} exists but could not be read`
+        : `${configPath} is not a regular file`);
   }
+  const before = target.before;
+
   const parsed = parseConfig(before, exportSpec.format);
   if (parsed === PARSE_FAILED) {
     return refuse(clientId, "unsafe", "unsafe", `${configPath} could not be parsed`);
@@ -129,8 +222,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   const contribution = exportSpec.buildContribution(exportContextOf(input));
   const record = readRecords()[clientId] ?? null;
   const { state, reason } = classifyIntegration({
-    fileText: before, fileIsRegular: before === null || kind === "file",
-    parsed, record, contribution,
+    fileText: before, fileIsRegular: true, parsed, record, contribution,
   });
   if (state === "conflict") {
     return refuse(clientId, "conflict", "conflict",
@@ -142,51 +234,38 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
     return { ok: true, changed: false, state, clientId, message: "already applied" };
   }
 
-  const merged = mergeContribution(parsed, contribution);
+  // A stale refresh must first drop the fragments the PREVIOUS record owned.
+  // Merging alone would strand a renamed/removed model (e.g. a Kimi selector
+  // that left the catalog) as an orphan the new record no longer owns, so a
+  // later disable could never remove it.
+  const base = state === "stale" && record
+    ? removeFragments(parsed, record.fragmentPaths).doc
+    : parsed;
+  const merged = mergeContribution(base, contribution);
   const text = serializeDocument(merged, exportSpec.format);
   const opId = newOpId();
 
-  // Compare-before-commit: re-read immediately before writing. A mismatch means
-  // someone wrote between our classify and now — abort rather than lose it.
-  if (io.readText(configPath) !== before) {
+  // Compare-before-commit: re-read immediately before writing. A mismatch
+  // means someone wrote between classify and now — abort rather than lose it.
+  const recheck = io.readText(configPath);
+  const rechecked = recheck.kind === "text" ? recheck.text : recheck.kind === "missing" ? null : undefined;
+  if (rechecked === undefined || rechecked !== before) {
     return refuse(clientId, "conflict", "conflict", `${configPath} changed while applying`);
   }
 
   const snapshot = captureSnapshot(clientId, opId, before);
-  try {
-    io.mkdirp(dirname(configPath));
-    io.writeText(configPath, text);
-  } catch (error) {
-    return refuse(clientId, "write_failed", state,
-      error instanceof Error ? error.message : String(error),
-      snapshotAbsPath(snapshot));
-  }
-
-  // Compensating: if bookkeeping fails after the config write, put the file
-  // back. A half-applied state with no journal row would be unrecoverable.
-  try {
-    appendOperation({
-      opId, clientId, kind: "apply", at: new Date(io.now()).toISOString(), configPath,
-      snapshot, resultFingerprint: fingerprint(text), resultAbsent: false,
-    });
-    writeRecord({
+  const at = new Date(io.now()).toISOString();
+  return commit(io, {
+    configPath, before, nextText: text, clientId, state: "current",
+    snapshotPath: snapshotAbsPath(snapshot),
+    record: {
       clientId, configPath, fileFingerprint: fingerprint(text),
       blockFingerprint: fingerprint(canonicalContribution(contribution)),
-      fragmentPaths: fragmentPathsOf(contribution),
-      appliedAt: new Date(io.now()).toISOString(), opId,
-    });
-  } catch (error) {
-    rollbackTo(io, configPath, before);
-    return refuse(clientId, "write_failed", state,
-      `applied but could not record it; the change was rolled back: ${String(error)}`,
-      snapshotAbsPath(snapshot));
-  }
-
-  return { ok: true, changed: true, state: "current", clientId, opId, message: "applied" };
-}
-
-function rollbackTo(io: IntegrationIO, path: string, before: string | null): void {
-  try { before === null ? io.removeFile(path) : io.writeText(path, before); } catch { /* best effort */ }
+      fragmentPaths: fragmentPathsOf(contribution), appliedAt: at, opId,
+    },
+    entry: { opId, clientId, kind: state === "stale" ? "refresh" : "apply", at, configPath,
+             snapshot, resultFingerprint: fingerprint(text), resultAbsent: false },
+  });
 }
 ```
 
@@ -194,35 +273,63 @@ function rollbackTo(io: IntegrationIO, path: string, before: string | null): voi
 
 ```ts
 export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
-  /* identical preflight through classify */
+  const io = input.io ?? defaultIntegrationIO();
+  const clientId = input.clientId;
+  const spec = INTEGRATION_CLIENTS[clientId];
+  const exportSpec = EXPORT_CLIENTS[clientId];
+  const configPath = spec.configPath(input.env);
+
+  const target = loadTarget(io, configPath);
+  if (!target.ok) {
+    return refuse(clientId, "unsafe", "unsafe",
+      target.why === "read-failed"
+        ? `${configPath} exists but could not be read`
+        : `${configPath} is not a regular file`);
+  }
+  const before = target.before;
+  const parsed = parseConfig(before, exportSpec.format);
+  if (parsed === PARSE_FAILED) {
+    return refuse(clientId, "unsafe", "unsafe", `${configPath} could not be parsed`);
+  }
+
+  const contribution = exportSpec.buildContribution(exportContextOf(input));
+  const record = readRecords()[clientId] ?? null;
+  const { state, reason } = classifyIntegration({
+    fileText: before, fileIsRegular: true, parsed, record, contribution,
+  });
   if (state === "absent") {
     return { ok: true, changed: false, state, clientId, message: "not applied" };
   }
-  if (state === "conflict" || state === "unsafe") {
-    return refuse(clientId, state === "unsafe" ? "unsafe" : "conflict", state, /* … */);
+  if (state === "conflict") {
+    return refuse(clientId, "conflict", "conflict",
+      reason === "foreign-edit"
+        ? `${configPath} changed after opencodex wrote it; disable would discard that edit`
+        : `${configPath} contains an opencodex block we did not write`);
   }
-  // current | stale only — i.e. the file fingerprint still matches our record.
+  // current | stale only — the file fingerprint still matches our record, so
+  // the recorded paths are exactly what we put there.
   const { doc, removed } = removeFragments(parsed, record!.fragmentPaths);
   if (!removed) {
     return { ok: true, changed: false, state: "absent", clientId, message: "nothing to remove" };
   }
   const text = serializeDocument(doc, exportSpec.format);
-  if (io.readText(configPath) !== before) {
+
+  const recheck = io.readText(configPath);
+  const rechecked = recheck.kind === "text" ? recheck.text : recheck.kind === "missing" ? null : undefined;
+  if (rechecked === undefined || rechecked !== before) {
     return refuse(clientId, "conflict", "conflict", `${configPath} changed while disabling`);
   }
+
   const opId = newOpId();
   const snapshot = captureSnapshot(clientId, opId, before);
-  try { io.writeText(configPath, text); }
-  catch (error) { return refuse(clientId, "write_failed", state, String(error), snapshotAbsPath(snapshot)); }
-  try {
-    appendOperation({ opId, clientId, kind: "disable", at: nowIso(io), configPath, snapshot,
-      resultFingerprint: fingerprint(text), resultAbsent: false });
-    deleteRecord(clientId);   // a record with no block would later read as conflict
-  } catch (error) {
-    rollbackTo(io, configPath, before);
-    return refuse(clientId, "write_failed", state, `disabled but could not record it; rolled back: ${String(error)}`, snapshotAbsPath(snapshot));
-  }
-  return { ok: true, changed: true, state: "absent", clientId, opId, message: "disabled" };
+  const at = new Date(io.now()).toISOString();
+  // record: null drops it — a record with no block would later read as conflict.
+  return commit(io, {
+    configPath, before, nextText: text, clientId, state: "absent", record: null,
+    snapshotPath: snapshotAbsPath(snapshot),
+    entry: { opId, clientId, kind: "disable", at, configPath, snapshot,
+             resultFingerprint: fingerprint(text), resultAbsent: false },
+  });
 }
 ```
 
@@ -273,49 +380,100 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   }
 
   const restoredText = snapshot.kind === "none" ? null : snapshot.text;
-  appendOperation({
-    opId, clientId: entry.clientId, kind: "restore", at: nowIso(io), configPath,
-    snapshot: preSnapshot,
-    resultFingerprint: restoredText === null ? "" : fingerprint(restoredText),
-    resultAbsent: restoredText === null,
-  });
+  const exportSpec = EXPORT_CLIENTS[entry.clientId];
+  const restoredDoc = parseConfig(restoredText, exportSpec.format);
+  const fresh = exportSpec.buildContribution(exportContextOf(input));
 
-  // Reclassify the restored content so the caller knows what it produced —
-  // this is why restore needs models/config/port (006 §5).
-  const contribution = EXPORT_CLIENTS[entry.clientId].buildContribution(exportContextOf(input));
-  const parsed = parseConfig(restoredText, EXPORT_CLIENTS[entry.clientId].format);
-  const { state } = classifyIntegration({
-    fileText: restoredText, fileIsRegular: true, parsed, record: null, contribution,
-  });
-  if (state === "absent") deleteRecord(entry.clientId);
-  else writeRecord({
-    clientId: entry.clientId, configPath,
-    fileFingerprint: restoredText === null ? "" : fingerprint(restoredText),
-    blockFingerprint: fingerprint(canonicalContribution(contribution)),
-    fragmentPaths: fragmentPathsOf(contribution),
-    appliedAt: nowIso(io), opId,
-  });
+  // The record must describe what was RESTORED, not what we would write now.
+  // A snapshot taken under an older catalog/port owns different fragment
+  // values — and for Kimi, a different SET of model paths. Recording the fresh
+  // contribution would let a later disable delete paths the file does not have
+  // while orphaning the ones it does (A-gate round 3, blocker 5).
+  const actual = extractContribution(restoredDoc, entry.clientId, fresh);
+  const state: IntegrationState =
+    actual.fragments.length === 0
+      ? "absent"
+      : fingerprint(canonicalContribution(actual)) === fingerprint(canonicalContribution(fresh))
+        ? "current"
+        : "stale";
 
-  return { ok: true, changed: true, state, clientId: entry.clientId, opId, message: "restored" };
+  const at = new Date(io.now()).toISOString();
+  return commit(io, {
+    configPath, before: current, nextText: restoredText, clientId: entry.clientId, state,
+    snapshotPath: snapshotAbsPath(preSnapshot),
+    record: state === "absent" ? null : {
+      clientId: entry.clientId, configPath,
+      fileFingerprint: restoredText === null ? "" : fingerprint(restoredText),
+      blockFingerprint: fingerprint(canonicalContribution(actual)),
+      fragmentPaths: fragmentPathsOf(actual),
+      appliedAt: at, opId,
+    },
+    entry: { opId, clientId: entry.clientId, kind: "restore", at, configPath,
+             snapshot: preSnapshot,
+             resultFingerprint: restoredText === null ? "" : fingerprint(restoredText),
+             resultAbsent: restoredText === null },
+  });
+}
+
+/**
+ * Read back the fragments actually present in a document, using the fresh
+ * contribution only as the shape guide (which paths this client can own) —
+ * never as the values.
+ *
+ * Kimi is why this cannot be a simple path lookup: its model fragments are
+ * one per selector, so a restored file may own a different set than we would
+ * write today. We therefore enumerate the client's owning containers and take
+ * every key that carries our provider id.
+ */
+export function extractContribution(
+  doc: unknown, clientId: IntegrationClientId, shape: ManagedContribution,
+): ManagedContribution {
+  const containers = new Map<string, readonly string[]>();
+  for (const fragment of shape.fragments) {
+    containers.set(fragment.path.slice(0, -1).join("\u0000"), fragment.path.slice(0, -1));
+  }
+  const fragments: ManagedFragment[] = [];
+  for (const container of containers.values()) {
+    const node = readPath(doc, container);
+    if (typeof node !== "object" || node === null || Array.isArray(node)) continue;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === OPENCODE_PROVIDER_ID || key.startsWith(`${OPENCODE_PROVIDER_ID}/`)) {
+        fragments.push({ path: [...container, key], value });
+      }
+    }
+  }
+  return { clientId, fragments };
 }
 ```
 
-A restored file that still contains our fragments gets a **fresh record whose
-`fileFingerprint` is of the restored bytes** — so the very next classify reads
-`current`/`stale` rather than `conflict`. Without that step every restore
-would leave the client permanently locked.
+`extractContribution` is deliberately the ONLY place a prefix is consulted,
+and only to read. Removal still uses recorded paths exclusively (§1), so a
+user's own `opencodex/...` entry can be *observed* here — it makes the state
+`conflict` at the next classify because no record covers it — but never
+deleted.
 
 ## 5. Default IO seam
 
 ```ts
 export function defaultIntegrationIO(): IntegrationIO {
   return {
-    readText: p => { try { return readFileSync(p, "utf8"); } catch { return null; } },
+    readText: p => {
+      try { return { kind: "text", text: readFileSync(p, "utf8") }; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        // ONLY ENOENT is absence. EACCES/EPERM/EISDIR mean a file we cannot
+        // see, which must never be overwritten as if it were missing.
+        return code === "ENOENT" ? { kind: "missing" } : { kind: "failed", ...(code ? { code } : {}) };
+      }
+    },
     statKind: p => { try { const s = statSync(p); return s.isFile() ? "file" : s.isDirectory() ? "dir" : "other"; } catch { return "missing"; } },
     writeText: (p, t) => atomicWriteFile(p, t),
     removeFile: p => rmSync(p, { force: true }),
     mkdirp: p => mkdirSync(p, { recursive: true, mode: 0o700 }),
     now: () => Date.now(),
+    appendJournal: entry => appendOperation(entry),
+    putRecord: record => writeRecord(record),
+    dropRecord: clientId => deleteRecord(clientId),
   };
 }
 ```
@@ -336,7 +494,12 @@ Every test substitutes this wholesale — no `node:fs` monkey-patching, and the
 | idempotent apply | apply twice | second `changed === false`, no new journal row |
 | compare-before-commit | `readText` returns A then B | refused `conflict`; snapshot dir gains nothing |
 | `write_failed` | `writeText` throws | `reason === "write_failed"`, `snapshotPath` set |
-| compensating rollback | `writeText` succeeds, journal append throws | file restored to `before`; refusal returned |
+| compensating rollback (record) | `putRecord` throws | file restored to `before`; refusal returned; no record persisted |
+| compensating rollback (journal) | `appendJournal` throws | file restored to `before`; the record just written is dropped; **no phantom row** |
+| residual failure | `appendJournal` throws AND the rollback `writeText` also throws | `residual === true`, message names the snapshot path, no false "rolled back" claim |
+| unreadable existing file | `statKind` = `file`, `readText` returns `{kind:"failed",code:"EACCES"}` | `reason === "unsafe"`; file bytes unchanged; no snapshot captured |
+| stale refresh drops orphans | apply kimi with models A+B, then re-apply after B leaves the catalog | B's `models["opencodex/B"]` is gone; an unrelated user `models["opencodex/x"]` written by hand survives |
+| restore records actual ownership | restore a snapshot taken under an older catalog | the new record's `fragmentPaths` match the restored file, and the next classify is `stale` (not `conflict`, not a false `current`) |
 | disable `absent` | disable a clean config | `ok`, `changed === false` |
 | disable removes only ours | seed a foreign `opencodex/x` model entry | it survives; our recorded paths are gone |
 | restore-to-absence | apply onto a missing file, restore that op | file no longer exists; `resultAbsent === true` |

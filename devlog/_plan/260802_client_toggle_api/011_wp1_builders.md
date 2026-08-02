@@ -1,5 +1,89 @@
 # 011 — WP1: paste-ready serializer and client builders
 
+**A-gate round-3 addendum (read first).** Two items the audit found missing
+from WP1's executable surface, specified here so the phase needs no invention.
+
+### A. OpenCode and Pi also gain `summarize` and `buildContribution`
+
+`ExportClientSpec` requires both on **every** entry (010 §2.1), so the two
+existing clients are not exempt. These bodies extract current behavior rather
+than inventing any:
+
+```ts
+// opencode — models live in provider.opencodex.models (a keyed object)
+function summarizeOpencode(document: unknown): { modelCount: number; modelsWithoutLimits: number } {
+  const block = (document as OpencodeGeneratedConfig | undefined)?.provider?.[OPENCODE_PROVIDER_ID];
+  const models = Object.values(block?.models ?? {});
+  return { modelCount: models.length, modelsWithoutLimits: models.filter(m => !m.limit).length };
+}
+
+function buildOpencodeContribution(ctx: ExportContext): ManagedContribution {
+  const doc = buildOpencodeClientConfig(ctx);
+  return {
+    clientId: "opencode",
+    fragments: [{ path: ["provider", OPENCODE_PROVIDER_ID], value: doc.provider[OPENCODE_PROVIDER_ID] }],
+  };
+}
+
+// pi — models are an ARRAY under providers.opencodex.models
+function summarizePi(document: unknown): { modelCount: number; modelsWithoutLimits: number } {
+  const models = (document as PiGeneratedConfig | undefined)?.providers?.[OPENCODE_PROVIDER_ID]?.models ?? [];
+  return {
+    modelCount: models.length,
+    modelsWithoutLimits: models.filter(m => m.contextWindow === undefined).length,
+  };
+}
+
+function buildPiContribution(ctx: ExportContext): ManagedContribution {
+  const doc = buildPiClientConfig(ctx);
+  return {
+    clientId: "pi",
+    fragments: [{ path: ["providers", OPENCODE_PROVIDER_ID], value: doc.providers[OPENCODE_PROVIDER_ID] }],
+  };
+}
+```
+
+Both registry entries gain `format: "json"`, `summarize`, and
+`buildContribution`; nothing else about them changes, so their golden bytes
+stay identical (010 §5 accept criterion 4).
+
+### B. `src/server/management/model-rows.ts` (NEW) — the canonical loader
+
+Extraction only, no behavior change. The declarations move out of
+`model-routes.ts`, which then imports them:
+
+```ts
+import type { OcxConfig } from "../../types";
+import type { ExportModel } from "../../clients/config-export";
+
+export interface ManagementModelRow { /* moved verbatim from model-routes.ts */ }
+
+/** Unchanged body, moved verbatim. */
+export async function listManagementModelRows(config: OcxConfig): Promise<ManagementModelRow[]> { /* … */ }
+
+/** Unchanged body, moved verbatim. */
+export function toExportModel(row: ManagementModelRow): ExportModel { /* … */ }
+
+/**
+ * Visible (non-disabled) rows as export models — the ONE loader used by both
+ * /api/client-config and the integration routes, so the two can never
+ * disagree about which models a client is told about.
+ */
+export async function loadExportModels(config: OcxConfig): Promise<ExportModel[]> {
+  const rows = await listManagementModelRows(config);
+  return rows.filter(row => !row.disabled).map(toExportModel);
+}
+```
+
+`model-routes.ts` replaces its local declarations with
+`import { listManagementModelRows, loadExportModels, toExportModel } from "./model-rows";`
+and its `/api/client-config` branch calls `loadExportModels(config)` instead
+of inlining the filter+map.
+
+Regression proof: `tests/management-client-config-route.test.ts` pins that
+envelope and must pass unchanged — that is what makes the extraction provably
+mechanical.
+
 Implementation-only overflow for `010_wp1_client_registry.md`. Shared types and
 fragment ownership are authoritative in `006_module_contracts.md`; this file does
 not import from `src/integrations/registry.ts`.

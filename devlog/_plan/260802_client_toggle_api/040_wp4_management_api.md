@@ -198,7 +198,7 @@ attempted and the writer refuses it.
 | 409 | apply/disable/restore writer result has `state: "unsafe"` | `{"error":"integration config is unsafe","code":"integration_unsafe","clientId":"<clientId>","state":"unsafe","reason":"<writer reason>","snapshotPath":"<writer snapshotPath when present>"}` |
 | 409 | apply/disable, or confirmed restore, returns `state: "conflict"` | `{"error":"integration config conflicts with ownership record","code":"integration_conflict","clientId":"<clientId>","state":"conflict","reason":"<writer reason>"}` |
 | 409 | restore returns `reason: "drift_requires_confirm"` | `{"error":"restore requires drift confirmation","code":"integration_drift_confirmation_required","clientId":"<clientId>","state":"<writer state>","reason":"drift_requires_confirm"}` |
-| 410 | journal row exists and `readSnapshot(opId).kind === "expired"` | `{"error":"integration snapshot expired","code":"integration_snapshot_expired","opId":"<request opId>"}` |
+| 410 | journal row exists and `readSnapshot(row).kind === "expired"` | `{"error":"integration snapshot expired","code":"integration_snapshot_expired","opId":"<request opId>"}` |
 | 413 | declared body exceeds outer 2 MiB cap, or decompressed body exceeds `readManagementJsonBody` 4 MiB cap | `{"error":"request body too large"}` |
 | 500 | writer returns another `ok: false` result | `{"error":"integration mutation failed","code":"integration_mutation_failed","clientId":"<clientId>","state":"<writer state>","reason":"<writer reason>","snapshotPath":"<writer snapshotPath when present>"}` |
 | 500 | unexpected thrown error | `{"error":"<Error.message or String(error)>","code":"integration_internal_error"}` |
@@ -221,10 +221,10 @@ Create the file with this complete content:
 ```ts
 import { readFileSync } from "node:fs";
 import {
-  INTEGRATION_CLIENTS,
+  INTEGRATION_CLIENT_IDS,
   type IntegrationClientId,
 } from "../../integrations/registry";
-import { listOperations, readSnapshot } from "../../integrations/journal";
+import { findOperation, listOperations, readSnapshot } from "../../integrations/journal";
 import { fingerprint } from "../../integrations/ownership";
 import { readIntegrationState } from "../../integrations/state";
 import {
@@ -311,7 +311,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isIntegrationClientId(value: string | null): value is IntegrationClientId {
-  return value !== null && INTEGRATION_CLIENTS.includes(value as IntegrationClientId);
+  return value !== null && INTEGRATION_CLIENT_IDS.includes(value as IntegrationClientId);
 }
 
 function decodeClientPath(pathname: string): string | null {
@@ -464,7 +464,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
     try {
       const models = await loadExportModels(ctx.config);
       const port = Number(url.port) || ctx.config.port;
-      const clients = await Promise.all(INTEGRATION_CLIENTS.map(async clientId => ({
+      const clients = await Promise.all(INTEGRATION_CLIENT_IDS.map(async clientId => ({
         clientId,
         ...await readIntegrationState({ clientId, models, config: ctx.config, port }),
       })));
@@ -532,7 +532,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
           opId,
         }, 404, req, ctx.config);
       }
-      const snapshot = await readSnapshot(opId);
+      const snapshot = readSnapshot(operation);   // 021: takes the row, not an id
       if (snapshot.kind === "expired") {
         return jsonResponse({
           error: "integration snapshot expired",
@@ -636,7 +636,7 @@ export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<R
   request older than 120 seconds is also busy through 10 minutes.
 - A flight older than 10 minutes is replaced. Its eventual `finally` is
   identity-checked and cannot clear the replacement.
-- The map is bounded by `INTEGRATION_CLIENTS.length`; the test hook clears all
+- The map is bounded by `INTEGRATION_CLIENT_IDS.length`; the test hook clears all
   entries between tests.
 
 ## 5. Exact `src/server/management-api.ts` diff
