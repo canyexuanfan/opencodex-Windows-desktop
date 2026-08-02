@@ -1028,3 +1028,10 @@ Codex / Claude Code / 其他现有客户端
 - [x] 验证通过：默认沙箱中 `tests/ports.test.ts` 9/9 通过、`tests/windows-deploy-close-regressions.test.ts` 6/6 通过；`tests/update-job.test.ts` 在默认 `%TEMP%` 和仓库 `.tmp` 均因 Windows 沙箱 `EPERM/EACCES` 原子写/清理假失败中断，已记录到排查指南；非沙箱精确临时根 `C:\tmp\opencodex-port-update-test-20260802` 复跑 `bun test tests\ports.test.ts tests\update-job.test.ts tests\windows-deploy-close-regressions.test.ts` 51/51 通过、174 个断言通过。
 - [x] 验证通过：`bun run typecheck`、`git diff --check`。
 - [x] 本轮没有重启、关闭、覆盖安装当前正在使用的 Codex，也没有停止当前真实 OpenCodex 代理；只修改源码、测试和验收/排查记录。
+# 验收记录：用户更新后端口包版本复核与重打包收口（2026-08-02）
+- [x] 用户手动更新安装并重启 Codex 后，只读复核发现当前 Codex 路由端口 `18313` 的 `/healthz` 返回 200，说明不是死路由；但 `~/.opencodex/config.json` 默认 `port` 仍为 `10100`，与当前路由端口不一致。
+- [x] 只读检查安装目录 `E:\Program\OpenCodex\resources\opencodex`，确认用户当前安装包未包含 `git-v0.58` 的 `selectRestartPortAfterReclaim` / `selectPostUpdatePort` 端口迁移逻辑，因此判断用户安装的是最终收口前的包。
+- [x] 使用当前仓库 `git-v0.58` 代码重新生成 GUI 与桌面安装包；未运行安装包、未停止代理、未重启 Codex、未覆盖当前安装目录。
+- [x] 新产物为 `desktop/out/OpenCodex-Setup-2.8.0-x64.exe`，SHA-256=`197519DCD6C0649D524E95766A504420FA65A70BF6760A173A491A0BBD39C302`；`desktop/out` 中没有 portable 产物。
+- [x] 产物资源验收确认 staging 内包含 `selectRestartPortAfterReclaim`、`selectPostUpdatePort` 与 `shouldPersistSelectedPort`，即端口固定/迁移/持久化机制已经进入本次重新生成的安装包。
+- [x] 本次剩余动作交还用户：如需让当前真实安装目录也带上该机制，需要稍后手动运行新版安装包并重启 OpenCodex/Codex；当前对话中不继续自动覆盖安装或重启。
