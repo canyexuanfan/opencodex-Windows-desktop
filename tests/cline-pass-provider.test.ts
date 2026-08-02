@@ -140,6 +140,26 @@ describe("ClinePass provider", () => {
     expect(request.reasoningLog).toBeUndefined();
   });
 
+  test("routing preserves an explicitly configured ClinePass reasoning wire format", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "cline-pass",
+      providers: {
+        "cline-pass": {
+          adapter: "openai-chat",
+          baseUrl: "https://api.cline.bot/api/v1",
+          apiKey: "cline-test-key",
+          authMode: "key",
+          reasoningWireFormat: "gateway-object",
+        },
+      },
+    };
+
+    const route = routeModel(config, "cline-pass/cline-pass/kimi-k3");
+
+    expect(route.provider.reasoningWireFormat).toBe("gateway-object");
+  });
+
   test("same-named custom provider keeps its own destination and credential boundary", () => {
     const config: OcxConfig = {
       port: 10100,

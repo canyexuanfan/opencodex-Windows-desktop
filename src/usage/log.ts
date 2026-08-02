@@ -271,6 +271,7 @@ function normalizeUsageAttempt(raw: unknown): PersistedUsageAttempt | null {
     ...(typeof attempt.reasoningWireValue === "string" && attempt.reasoningWireValue
       ? { reasoningWireValue: capMetadataString(attempt.reasoningWireValue) }
       : typeof attempt.reasoningWireValue === "boolean"
+          && attempt.reasoningWireField === "reasoning.enabled"
         ? { reasoningWireValue: attempt.reasoningWireValue }
         : isNonNegativeFiniteNumber(attempt.reasoningWireValue)
         ? { reasoningWireValue: attempt.reasoningWireValue }
@@ -328,6 +329,7 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
     ...(typeof entry.reasoningWireValue === "string" && entry.reasoningWireValue
       ? { reasoningWireValue: capMetadataString(entry.reasoningWireValue) }
       : typeof entry.reasoningWireValue === "boolean"
+          && entry.reasoningWireField === "reasoning.enabled"
         ? { reasoningWireValue: entry.reasoningWireValue }
         : isNonNegativeFiniteNumber(entry.reasoningWireValue)
         ? { reasoningWireValue: entry.reasoningWireValue }
