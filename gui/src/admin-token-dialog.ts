@@ -1,15 +1,21 @@
-import { DICTS, detectInitial } from "./i18n/shared";
+import { DICTS, getActiveLocale, type Locale } from "./i18n/shared";
 
 const ADMIN_TOKEN_DIALOG_ID = "opencodex-admin-token-dialog";
 const ADMIN_TOKEN_USERNAME = "OpenCodex";
+
+export type AdminTokenValidation = "accepted" | "rejected" | "unavailable";
+export type AdminTokenVerifier = (token: string) => Promise<AdminTokenValidation>;
 
 /**
  * Ask for the management credential with a real sign-in form so browsers and
  * password managers can offer save/autofill. OpenCodex itself still keeps the
  * submitted token in memory only; persistence remains entirely browser-owned.
  */
-export function promptForAdminToken(): Promise<string | null> {
-  const messages = DICTS[detectInitial()];
+export function promptForAdminToken(
+  verifyToken: AdminTokenVerifier,
+  locale: Locale = getActiveLocale(),
+): Promise<string | null> {
+  const messages = DICTS[locale];
   const titleText = messages["auth.adminTokenTitle"];
 
   return new Promise((resolve) => {
@@ -40,7 +46,7 @@ export function promptForAdminToken(): Promise<string | null> {
     const accountLabel = document.createElement("label");
     accountLabel.className = "field-label";
     accountLabel.htmlFor = `${ADMIN_TOKEN_DIALOG_ID}-username`;
-    accountLabel.textContent = ADMIN_TOKEN_USERNAME;
+    accountLabel.textContent = messages["auth.adminAccountLabel"];
     const username = document.createElement("input");
     username.id = accountLabel.htmlFor;
     username.className = "input";
@@ -56,7 +62,7 @@ export function promptForAdminToken(): Promise<string | null> {
     const tokenLabel = document.createElement("label");
     tokenLabel.className = "field-label";
     tokenLabel.htmlFor = `${ADMIN_TOKEN_DIALOG_ID}-password`;
-    tokenLabel.textContent = titleText;
+    tokenLabel.textContent = messages["auth.adminTokenFieldLabel"];
     const password = document.createElement("input");
     password.id = tokenLabel.htmlFor;
     password.className = "input";
@@ -67,6 +73,11 @@ export function promptForAdminToken(): Promise<string | null> {
     password.spellcheck = false;
     password.autocapitalize = "none";
     tokenField.append(tokenLabel, password);
+
+    const validationError = document.createElement("div");
+    validationError.className = "notice notice-err";
+    validationError.setAttribute("role", "alert");
+    validationError.hidden = true;
 
     const actions = document.createElement("div");
     actions.className = "modal-actions";
@@ -80,7 +91,7 @@ export function promptForAdminToken(): Promise<string | null> {
     submit.textContent = messages["common.ok"];
     actions.append(cancel, submit);
 
-    form.append(heading, accountField, tokenField, actions);
+    form.append(heading, accountField, tokenField, validationError, actions);
     dialog.append(form);
 
     const finish = (value: string | null): void => {
@@ -100,7 +111,33 @@ export function promptForAdminToken(): Promise<string | null> {
         password.reportValidity();
         return;
       }
-      finish(token);
+      password.disabled = true;
+      submit.disabled = true;
+      validationError.hidden = true;
+
+      void verifyToken(token).then((result) => {
+        if (settled) return;
+        if (result === "accepted") {
+          finish(token);
+          return;
+        }
+        password.value = "";
+        password.disabled = false;
+        submit.disabled = false;
+        validationError.textContent = result === "rejected"
+          ? messages["auth.adminTokenRejected"]
+          : messages["auth.adminTokenUnavailable"];
+        validationError.hidden = false;
+        password.focus();
+      }).catch(() => {
+        if (settled) return;
+        password.value = "";
+        password.disabled = false;
+        submit.disabled = false;
+        validationError.textContent = messages["auth.adminTokenUnavailable"];
+        validationError.hidden = false;
+        password.focus();
+      });
     });
     cancel.addEventListener("click", () => finish(null));
     dialog.addEventListener("cancel", (event) => {

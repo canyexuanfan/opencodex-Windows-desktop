@@ -84,6 +84,37 @@ test("prompted API tokens stay memory-only and are not written to sessionStorage
   expect(sessionStorage.length).toBe(0);
 });
 
+test("validates prompted tokens with a safe read before retrying the failed request", async () => {
+  const validationResults: string[] = [];
+  const seenRequests: Array<[string, string | null]> = [];
+  resetApiAuthFetchForTests(async (verifyToken) => {
+    validationResults.push(await verifyToken("wrong-token"));
+    validationResults.push(await verifyToken("fresh-token"));
+    return "fresh-token";
+  });
+
+  const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost/");
+    const key = new Headers(init?.headers).get("X-OpenCodex-API-Key");
+    seenRequests.push([url.pathname, key]);
+    if (url.pathname === "/api/settings" && key === "fresh-token") {
+      return new Response("{}", { status: 200 });
+    }
+    if (url.pathname === "/api/config" && key === "fresh-token") {
+      return new Response("{}", { status: 200 });
+    }
+    return new Response("unauthorized", { status: 401 });
+  }) as typeof fetch;
+  await installMockAuthFetch(mockFetch);
+
+  expect((await fetch("/api/config")).status).toBe(200);
+  expect(validationResults).toEqual(["rejected", "accepted"]);
+  expect(seenRequests).toContainEqual(["/api/settings", "wrong-token"]);
+  expect(seenRequests).toContainEqual(["/api/settings", "fresh-token"]);
+  expect(seenRequests).not.toContainEqual(["/api/config", "wrong-token"]);
+  expect(sessionStorage.length).toBe(0);
+});
+
 test("cross-origin /api/* requests do not receive the API key or token prompt", async () => {
   let promptCalls = 0;
   let phase: "seed" | "cross" = "seed";

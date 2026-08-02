@@ -1,4 +1,4 @@
-import { promptForAdminToken } from "./admin-token-dialog";
+import { promptForAdminToken, type AdminTokenVerifier } from "./admin-token-dialog";
 
 let installed = false;
 /** Shared 401 refresh gate — concurrent waiters join one prompt / token resolution. */
@@ -13,11 +13,13 @@ let rawFetch: typeof fetch | null = null;
  */
 let promptCancelled = false;
 
-type AdminTokenPrompt = () => Promise<string | null>;
+type AdminTokenPrompt = (verifyToken: AdminTokenVerifier) => Promise<string | null>;
 let requestAdminToken: AdminTokenPrompt = promptForAdminToken;
 
 /** Document path re-fetched to mint a fresh loopback GUI session (server injects meta tags). */
 const SESSION_REBOOTSTRAP_PATH = "/";
+/** Safe authenticated read used to validate a raw admin token before closing the sign-in form. */
+const ADMIN_TOKEN_VALIDATION_PATH = "/api/settings";
 
 function needsApiAuth(input: RequestInfo | URL): boolean {
   try {
@@ -116,6 +118,18 @@ async function reBootstrapSessionToken(): Promise<string | null> {
   }
 }
 
+async function verifyAdminToken(token: string): ReturnType<AdminTokenVerifier> {
+  if (!rawFetch) return "unavailable";
+  try {
+    const [input, init] = withToken(ADMIN_TOKEN_VALIDATION_PATH, { cache: "no-store" }, token);
+    const response = await rawFetch(input, init);
+    if (response.status === 401) return "rejected";
+    return response.ok ? "accepted" : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
 function clearLegacySessionToken(): void {
   try {
     sessionStorage.removeItem(LEGACY_TOKEN_KEY);
@@ -156,7 +170,7 @@ async function resolveTokenAfter401(failedToken: string | null): Promise<string 
     const renewed = await reBootstrapSessionToken();
     if (renewed) return renewed;
 
-    const prompted = await requestAdminToken();
+    const prompted = await requestAdminToken(verifyAdminToken);
     if (prompted) {
       storeToken(prompted);
       return prompted;
