@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import * as z from "zod/v4";
 import {
@@ -104,6 +104,57 @@ function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
+/**
+ * Resolve a write target through any symlink before the temp+rename dance.
+ *
+ * rename(2) replaces a directory ENTRY. When the entry is itself a symlink
+ * (a dotfiles-managed `~/.codex/config.toml` -> `~/dotfiles/.codex/config.toml`,
+ * say), renaming a sibling temp file over it destroys the link and leaves a plain
+ * file behind — the repo silently stops receiving writes. Resolving first puts both
+ * the temp file and the rename target inside the link's real directory, so the entry
+ * being replaced is the real file and the symlink survives.
+ *
+ * Same-filesystem atomicity is preserved because the temp file stays beside its
+ * resolved target. A genuinely absent destination (not yet created) falls back to
+ * the literal path, which is the correct target for a first write.
+ *
+ * An EXISTING symlink that cannot be resolved — dangling because its target volume
+ * is unmounted, an ELOOP chain, an EACCES parent — is refused instead. Falling back
+ * to the literal path there would let the rename replace the link, recreating the
+ * exact dotfiles-divergence failure this helper exists to prevent (audit: wt4 wp2).
+ */
+export function resolveWriteTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (cause) {
+    let entry;
+    try {
+      entry = lstatSync(path);
+    } catch (error) {
+      if (isMissingPathError(error)) return path; // no entry at all — first write
+      throw error;
+    }
+    if (entry.isSymbolicLink()) {
+      throw new Error(`refusing to replace unresolvable symlinked write target: ${path}`, { cause });
+    }
+    return path;
+  }
+}
+
+/**
+ * Re-apply the real-home guard to a RESOLVED write target.
+ *
+ * Callers such as saveConfig check only their logical config dir, which passes when
+ * OPENCODEX_HOME points at a temp fixture. Following a symlink out of that fixture
+ * would land on the protected home the caller's own check just cleared, so the guard
+ * has to run again on wherever the write actually terminates. Inert in production,
+ * where the guard is disarmed.
+ */
+function assertResolvedTargetAllowed(path: string, target: string): void {
+  if (target === path) return;
+  assertNotRealHomeUnderTest(dirname(target));
+}
+
 export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO = {
   write: (target, value) => writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 }),
   harden: target => {
@@ -117,13 +168,15 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
   unlink: unlinkSync,
 }): void {
   recordOwnedConfigPath(resolveConfigDir(), path);
-  const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
+  const target = resolveWriteTarget(path);
+  assertResolvedTargetAllowed(path, target);
+  const tmp = `${target}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let hardened = false;
   try {
     io.write(tmp, content);
     io.harden(tmp);
     hardened = true;
-    io.rename(tmp, path);
+    io.rename(tmp, target);
     forgetEphemeralSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
@@ -203,13 +256,15 @@ export async function atomicWriteFileAsync(
     truncate: target => truncateSync(target, 0),
     unlink: unlinkSync,
   };
-  const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
+  const target = resolveWriteTarget(path);
+  assertResolvedTargetAllowed(path, target);
+  const tmp = `${target}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let hardened = false;
   try {
     await effective.write(tmp, content);
     await effective.harden(tmp);
     hardened = true;
-    await effective.rename(tmp, path);
+    await effective.rename(tmp, target);
     forgetEphemeralSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
