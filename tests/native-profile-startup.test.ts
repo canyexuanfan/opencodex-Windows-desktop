@@ -121,10 +121,13 @@ async function fixture(phase: Phase, observation: Observation, activePool = fals
   const afterVault = structuredClone(beforeVault);
   const afterSource = afterVault.profiles.find(profile => profile.id === sourceRecord.id)!;
   const afterTarget = afterVault.profiles.find(profile => profile.id === targetRecord.id)!;
+  const switchedAt = new Date().toISOString();
   afterSource.state = "inactive";
   afterSource.payload = sourcePayload;
+  afterSource.updatedAt = switchedAt;
   afterTarget.state = "active";
   afterTarget.payload = null;
+  afterTarget.updatedAt = switchedAt;
   afterVault.activeProfileId = afterTarget.id;
   afterVault.revision += 1;
 
