@@ -41,7 +41,7 @@ export interface WsData {
   liveOpened?: boolean;
   /** Once teardown starts, ignore new client frames until the upstream closes. */
   liveClosing?: boolean;
-  /** Bounds an uncooperative upstream close so native-main cannot remain drained forever. */
+  /** Schedules one bounded close retry without surrendering native-main ownership. */
   liveCloseFallback?: ReturnType<typeof setTimeout>;
   /** Turn/account ownership retained for the complete sideband socket lifetime. */
   liveTurnAdmissionLease?: AdmissionLease;

@@ -176,6 +176,11 @@ const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 const LIVE_SIDEBAND_PENDING_MAX = 32;
 const LIVE_SIDEBAND_CLOSE_FALLBACK_MS = 1_000;
 
+type LiveSidebandWebSocketFactory = (
+  url: string,
+  headers: Record<string, string>,
+) => WebSocket;
+
 function releaseLiveSidebandAdmission(ws: ServerWebSocket<WsData>): void {
   ws.data.liveTurnAdmissionLease?.release();
   ws.data.liveTurnAdmissionLease = undefined;
@@ -198,14 +203,22 @@ function armLiveSidebandCloseFallback(ws: ServerWebSocket<WsData>, upstream: Web
   ws.data.liveCloseFallback = setTimeout(() => {
     ws.data.liveCloseFallback = undefined;
     if (ws.data.liveUpstream !== upstream) return;
-    // A close frame was already sent below. Retry once before releasing the
-    // drain, then force local cleanup if the peer never completes the handshake.
+    if (upstream.readyState === WebSocket.CLOSED) {
+      finalizeLiveSideband(ws, upstream);
+      return;
+    }
+    // A close frame was already sent below. Retry once, but never surrender
+    // native-main ownership while the authenticated transport remains live.
     try {
       upstream.close(1000, "upstream close timeout");
     } catch {
       /* upstream is already unusable */
     }
-    finalizeLiveSideband(ws, upstream);
+    // Some implementations transition synchronously without delivering the
+    // close event. That is still an observed CLOSED transport and is safe to
+    // finalize. CONNECTING/CLOSING peers keep the lease so profile switching
+    // fails at its own bounded drain deadline instead of racing live traffic.
+    if (upstream.readyState === WebSocket.CLOSED) finalizeLiveSideband(ws, upstream);
   }, LIVE_SIDEBAND_CLOSE_FALLBACK_MS);
 }
 
@@ -220,12 +233,13 @@ function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""
   } else {
     // The sideband holds a native-main admission lease. Do not release it just
     // because the downstream left: its authenticated upstream remains live
-    // until this close handshake completes (or the bounded fallback runs).
+    // until the close event arrives or the transport is observed CLOSED. The
+    // bounded fallback only retries close; it does not release ownership.
     armLiveSidebandCloseFallback(ws, upstream);
     try {
       upstream.close(code, reason);
     } catch {
-      /* the fallback releases ownership if this socket never reports close */
+      /* the fallback retries close without releasing ownership */
     }
   }
   try {
@@ -237,7 +251,12 @@ function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""
   }
 }
 
-function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
+function attachLiveSidebandUpstream(
+  ws: ServerWebSocket<WsData>,
+  createWebSocket: LiveSidebandWebSocketFactory = (url, headers) => (
+    new WebSocket(url, { headers } as unknown as string[])
+  ),
+): void {
   const url = ws.data.liveUpstreamUrl;
   if (!url) {
     closeLiveSideband(ws, 1011, "missing upstream");
@@ -246,7 +265,7 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
   let upstream: WebSocket;
   try {
     // Bun accepts per-handshake headers; the DOM lib types only list protocol arrays.
-    upstream = new WebSocket(url, { headers: ws.data.liveUpstreamHeaders ?? {} } as unknown as string[]);
+    upstream = createWebSocket(url, ws.data.liveUpstreamHeaders ?? {});
   } catch {
     closeLiveSideband(ws, 1011, "upstream connect failed");
     return;
@@ -335,6 +354,8 @@ export interface StartServerDeps {
   managementApi?: ManagementApiDeps;
   /** Test-only native-main recovery dependencies; production constructs the normal manager. */
   nativeMainStartup?: NativeMainStartupGateDeps;
+  /** Test-only seam for an upstream that cannot complete its WebSocket close handshake. */
+  liveSidebandWebSocketFactory?: LiveSidebandWebSocketFactory;
 }
 
 export function startServer(port?: number, deps: StartServerDeps = {}) {
@@ -994,7 +1015,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
             closeLiveSideband(ws, 1013, "server busy");
             return;
           }
-          attachLiveSidebandUpstream(ws);
+          attachLiveSidebandUpstream(ws, deps.liveSidebandWebSocketFactory);
           return;
         }
         if (!ws.data.admissionLease) {

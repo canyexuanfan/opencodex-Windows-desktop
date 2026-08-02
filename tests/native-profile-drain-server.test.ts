@@ -342,4 +342,114 @@ describe("native main profile scoped server admission", () => {
       await upstream.stop(true);
     }
   });
+
+  test("uncooperative Live sideband keeps main ownership through close fallback and switch timeout", async () => {
+    class UncooperativeUpstream extends EventTarget {
+      readyState = WebSocket.CONNECTING;
+      closeCalls = 0;
+
+      open(): void {
+        this.readyState = WebSocket.OPEN;
+        this.dispatchEvent(new Event("open"));
+      }
+
+      send(): void {}
+
+      close(): void {
+        this.closeCalls += 1;
+        this.readyState = WebSocket.CLOSING;
+      }
+
+      finishClose(): void {
+        this.readyState = WebSocket.CLOSED;
+        this.dispatchEvent(new CloseEvent("close", { code: 1000, reason: "test cleanup" }));
+      }
+    }
+
+    saveConfig({
+      port: 0,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+      },
+      activeCodexAccountId: MAIN_CODEX_ACCOUNT_ID,
+      autoSwitchThreshold: 0,
+      codexAccounts: [],
+      experimentalRealtimeWsBaseUrl: "ws://uncooperative.invalid/",
+    } as OcxConfig);
+    updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 1, 1);
+
+    let upstream: UncooperativeUpstream | undefined;
+    let switches = 0;
+    const manager = {
+      switch: async () => {
+        switches += 1;
+        return { ok: true };
+      },
+    } as unknown as NativeProfileManager;
+    const server = startServer(0, {
+      liveSidebandWebSocketFactory: () => {
+        upstream = new UncooperativeUpstream();
+        queueMicrotask(() => upstream?.open());
+        return upstream as unknown as WebSocket;
+      },
+    });
+    const url = new URL("/v1/live/uncooperative", server.url);
+    url.protocol = "ws:";
+    const client = new WebSocket(url);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("sideband websocket open timeout")), 2_000);
+        client.addEventListener("open", () => {
+          clearTimeout(timer);
+          resolve();
+        }, { once: true });
+        client.addEventListener("error", () => {
+          clearTimeout(timer);
+          reject(new Error("sideband websocket failed to open"));
+        }, { once: true });
+      });
+      await Bun.sleep(0);
+      expect(upstream?.readyState).toBe(WebSocket.OPEN);
+      expect(getNativeMainProfileRequestCount()).toBe(1);
+
+      await new Promise<void>(resolve => {
+        client.addEventListener("close", () => resolve(), { once: true });
+        client.close();
+      });
+      await Bun.sleep(1_100);
+      expect(upstream?.closeCalls).toBe(2);
+      expect(upstream?.readyState).toBe(WebSocket.CLOSING);
+      expect(getNativeMainProfileRequestCount()).toBe(1);
+
+      const blocked = await handleNativeProfileAPI(
+        new Request("http://localhost/api/native-main-profiles/switch", {
+          method: "POST",
+          body: JSON.stringify({ target: "target", confirmedStopped: true }),
+        }),
+        new URL("http://localhost/api/native-main-profiles/switch"),
+        {} as OcxConfig,
+        { manager, drainTimeoutMs: 75 },
+      );
+      expect(blocked?.status).toBe(409);
+      expect(switches).toBe(0);
+      expect(getNativeMainProfileRequestCount()).toBe(1);
+
+      upstream?.finishClose();
+      await Bun.sleep(0);
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+      upstream?.finishClose();
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+    } finally {
+      upstream?.finishClose();
+      await server.stop(true);
+    }
+  });
 });
