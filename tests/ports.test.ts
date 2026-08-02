@@ -56,10 +56,11 @@ describe("port selection", () => {
     expect(await isPortAvailable(selected)).toBe(true);
   });
 
-  test("persists only the preferred port, not a transient fallback", () => {
+  test("persists a concrete selected port for future fixed-port starts", () => {
     expect(shouldPersistSelectedPort(58195, 10100, 10100)).toBe(true);
-    expect(shouldPersistSelectedPort(10100, 58195, 10100)).toBe(false);
+    expect(shouldPersistSelectedPort(10100, 58195, 10100)).toBe(true);
     expect(shouldPersistSelectedPort(10100, 10100, 10100)).toBe(false);
+    expect(shouldPersistSelectedPort(0, 58195, 0)).toBe(false);
   });
 
   test("waitForPortAvailable resolves once a busy port is released", async () => {

@@ -243,8 +243,9 @@ describe("GUI update execution decisions", () => {
     expect(optsSeen).toEqual([{ killOcxHolders: true, onlyKillPids: [4242] }]);
   });
 
-  test("restart refuses to spawn when the captured port never becomes free", async () => {
+  test("restart migrates and persists a new port when the captured port never becomes free", async () => {
     const spawned: Array<{ port?: number }> = [];
+    const savedPorts: number[] = [];
     const job: UpdateJobState = {
       id: "restart-busy",
       status: "restarting",
@@ -262,13 +263,24 @@ describe("GUI update execution decisions", () => {
     await restartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1" }, {
       serviceInstalledFn: () => false,
       waitForPort: async () => false,
+      findAvailablePort: async () => 24567,
+      saveConfigFn: config => {
+        savedPorts.push(config.port ?? 0);
+      },
       spawnStart: (_job, _installer, port) => {
         spawned.push({ port });
       },
     });
-    expect(spawned).toEqual([]);
+    expect(spawned).toEqual([{ port: 24567 }]);
+    expect(savedPorts).toEqual([24567]);
     const saved = readUpdateJob(job.id);
-    expect(saved?.log.some(line => line.includes("still busy") && line.includes("not starting on another port"))).toBe(true);
+    expect(saved?.log.some(line =>
+      line.includes("Port 10100 still busy")
+      && line.includes("selecting a new persistent port"),
+    )).toBe(true);
+    expect(saved?.log.some(line =>
+      line.includes("migrated OpenCodex default port to 24567"),
+    )).toBe(true);
   });
 
   test("service restart waits on the captured port and clears OCX_BAKE_PORT after install", async () => {
@@ -633,8 +645,13 @@ describe("GUI update execution decisions", () => {
     )).toBe(true);
   });
 
-  test("npm finish fails when port reclaim leaves the pre-update proxy healthy", async () => {
+  test("npm finish migrates to a new port when port reclaim leaves the old socket busy", async () => {
     let now = 0;
+    let spawnedPort = 0;
+    let livePort = 10100;
+    let livePid = 111;
+    let liveVersion = "2.7.40";
+    const savedPorts: number[] = [];
     const job: UpdateJobState = {
       id: "npm-reclaim-stale",
       status: "restarting",
@@ -655,26 +672,31 @@ describe("GUI update execution decisions", () => {
       { port: 10100, hostname: "127.0.0.1", oldPid: 111 },
       "npm",
       {
-        // Direct path: reclaim failure returns without spawning a replacement.
         serviceInstalledFn: () => false,
         waitForPort: async () => false,
-        spawnStart: () => {
-          throw new Error("must not spawn when reclaim failed");
+        findAvailablePort: async () => 24567,
+        saveConfigFn: config => {
+          savedPorts.push(config.port ?? 0);
         },
-        probeProxy: async () => true,
-        probeProxyIdentity: async () => ({ pid: 111, version: "2.7.40" }),
+        spawnStart: (_job, _installer, port) => {
+          spawnedPort = port ?? 0;
+          livePort = spawnedPort;
+          livePid = 222;
+          liveVersion = "2.7.41";
+          now = 0;
+        },
+        probeProxy: async port => port === livePort,
+        probeProxyIdentity: async port => port === livePort ? { pid: livePid, version: liveVersion } : null,
         now: () => now,
         sleepMs: async (ms) => { now += ms; },
       },
     );
-    expect(ok).toBe(false);
-    expect(readUpdateJob(job.id)).toMatchObject({
-      status: "failed",
-      restarted: false,
-    });
-    expect(readUpdateJob(job.id)?.error).toContain("still the pre-update PID");
+    expect(ok).toBe(true);
+    expect(spawnedPort).toBe(24567);
+    expect(savedPorts).toEqual([24567]);
+    expect(readUpdateJob(job.id)?.status).not.toBe("failed");
     expect(readUpdateJob(job.id)?.log.some(line =>
-      line.includes("still busy") && line.includes("not starting on another port"),
+      line.includes("migrated OpenCodex default port to 24567"),
     )).toBe(true);
   });
 

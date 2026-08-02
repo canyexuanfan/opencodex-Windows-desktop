@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-代码与本机可安全验证范围已收尾；后续只做“验收回填/问题修复记录”，不再为每次验收发现新增开发阶段号。普通发布链只发布带版本号安装版 `OpenCodex-Setup-2.8.0-x64.exe`，不发布 portable；桌面壳版本与根包版本同为 `2.8.0`；桌面更新检测按 GitHub Release 版本精确匹配 `OpenCodex-Setup-<version>-x64.exe`。无版本名 `OpenCodex-Setup-x64.exe` 只允许作为历史记录或负向测试样本出现，不是当前发布资产。验收记录已修复版本化安装包漏签名问题，当前待验收安装包 SHA-256=`8126A8059130E41511CE60028DE417F549E34020EAE9D502AE3A46906BAAF602`，签名主体 `CN=十七°`，本机自签链状态 `UnknownError`。真实运行态在不重启 Codex 的前提下已验证：Codex 当前路由端口 36723 可用，`/healthz` 与 `/v1/models` 正常；用户新增 `zhipu-bigmodel` Provider 已存在且默认模型为 `glm-5.2`。剩余验收集中在覆盖安装最新版、桌面快捷方式/开始菜单/卸载注册表、已安装 exe 签名，以及验收矩阵中的干净 VM、受信签名链、睡眠/重启和跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
+代码与本机可安全验证范围已收尾；后续只做“验收回填/问题修复记录”，不再为每次验收发现新增开发阶段号。普通发布链只发布带版本号安装版 `OpenCodex-Setup-2.8.0-x64.exe`，不发布 portable；桌面壳版本与根包版本同为 `2.8.0`；桌面更新检测按 GitHub Release 版本精确匹配 `OpenCodex-Setup-<version>-x64.exe`。无版本名 `OpenCodex-Setup-x64.exe` 只允许作为历史记录或负向测试样本出现，不是当前发布资产。验收记录已修复版本化安装包漏签名问题，当前待验收安装包 SHA-256=`8126A8059130E41511CE60028DE417F549E34020EAE9D502AE3A46906BAAF602`，签名主体 `CN=十七°`，本机自签链状态 `UnknownError`。真实运行态在不重启 Codex 的前提下已验证：Codex 当前路由端口 36723 可用，`/healthz` 与 `/v1/models` 正常；用户新增 `zhipu-bigmodel` Provider 已存在且默认模型为 `glm-5.2`。端口机制已按“默认固定、占用迁移、迁移后持久化”收口：正常启动/更新优先沿用当前运行端口或配置端口，只有端口被外部占用时才选择新端口并写回默认配置；已运行的 Codex 如遇端口变更仍由用户稍后手动重启读取新路由。剩余验收集中在覆盖安装最新版、桌面快捷方式/开始菜单/卸载注册表、已安装 exe 签名，以及验收矩阵中的干净 VM、受信签名链、睡眠/重启和跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
 
 ---
 
@@ -75,6 +75,7 @@
 - [x] 桌面 UI 不启动 Vite 或额外 HTTP 服务。
 - [x] 代理只监听一个 `127.0.0.1` 动态端口。
 - [x] 固定端口被占用时自动选择动态端口，不终止第三方进程。
+- [x] 固定端口 fallback 到新端口后会写回默认配置；更新重启优先复用正在运行的实际端口，其次复用用户配置端口。
 - [x] 实际端口确定后才写入 runtime 状态和客户端配置。
 - [x] 停止、重启、崩溃恢复继续保护原有 Codex 配置（真实用户 Provider 保留仍待 VM）。
 - [x] 保留原有 Provider、模型、OAuth、路由、日志和存储能力（复用完整 Dashboard；GUI 全套、桌面页面契约与 CLI/headless 对齐回归通过）。
@@ -1018,3 +1019,12 @@ Codex / Claude Code / 其他现有客户端
 - [x] 排查流程闭环：PowerShell 复合匹配失败、`$home` 变量冲突、版本化包漏签名、随机数 API 兼容、electron-builder CLI 路径错误均已写入对应 `questions/` 排查指南，并记录成功方法。
 - [x] 验收回填复核：在不重启/不覆盖安装 Codex 的前提下再次确认 `GET http://127.0.0.1:36723/healthz` 正常，`/v1/models` 返回 17 个模型且包含 10 个 `zhipu-bigmodel/*` 模型；开始菜单快捷方式存在、桌面快捷方式仍不存在、当前已安装 exe 仍为旧 `NotSigned` 文件；版本化安装包、unpacked `OpenCodex.exe` 和内置 `bun.exe` 均可读取 `CN=十七°` 签名主体。
 - [ ] 当前已安装运行中的 `E:\Program\OpenCodex\OpenCodex.exe` 仍是旧未签名文件；这是本轮不覆盖安装、不重启 Codex 的刻意边界。用户允许覆盖安装最新版后，需复核已安装 exe 签名、桌面快捷方式、注册表、安装向导视觉和卸载保留。
+
+# 验收记录：端口固定/迁移机制收口（2026-08-02）
+- [x] 普通启动端口策略修复：固定偏好端口可用时保持原端口；偏好端口被占用并 fallback 到新端口时，新端口会写回 `~/.opencodex/config.json` 的默认 `port`，所以下次启动默认使用迁移后的端口；显式动态端口 `port: 0` 不被错误持久化。
+- [x] GUI/CLI 更新重启端口策略修复：更新前优先捕获正在运行的实际端口（`runtime-port.json` + pid/health 语义），没有健康运行实例时回退到用户配置端口；重启时先尝试复用该端口，若旧端口被外部进程占用且无法释放，则选择新端口、写回默认配置，并用新端口启动与验证。
+- [x] 服务重装 fallback 对齐：service reinstall 仍通过 `OCX_BAKE_PORT` 固定实际选定端口；若服务刷新失败，直接代理 fallback 也使用同一端口，避免服务和手动启动端口错位。
+- [x] API 页面说明口径确认：截图中的 `API 访问 -> 网关端点` 显示的是当前正在运行的实际端口，不是单独的默认端口设置；只要本机制生效，正常情况下当前端口与默认端口会保持一致，因此本轮不新增 UI 端口设置。
+- [x] 验证通过：默认沙箱中 `tests/ports.test.ts` 9/9 通过、`tests/windows-deploy-close-regressions.test.ts` 6/6 通过；`tests/update-job.test.ts` 在默认 `%TEMP%` 和仓库 `.tmp` 均因 Windows 沙箱 `EPERM/EACCES` 原子写/清理假失败中断，已记录到排查指南；非沙箱精确临时根 `C:\tmp\opencodex-port-update-test-20260802` 复跑 `bun test tests\ports.test.ts tests\update-job.test.ts tests\windows-deploy-close-regressions.test.ts` 51/51 通过、174 个断言通过。
+- [x] 验证通过：`bun run typecheck`、`git diff --check`。
+- [x] 本轮没有重启、关闭、覆盖安装当前正在使用的 Codex，也没有停止当前真实 OpenCodex 代理；只修改源码、测试和验收/排查记录。

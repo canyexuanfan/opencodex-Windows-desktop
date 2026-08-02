@@ -110,5 +110,10 @@ export function shouldPersistSelectedPort(
   selectedPort: number,
   preferredPort: number,
 ): boolean {
-  return selectedPort === preferredPort && configPort !== selectedPort;
+  if (!Number.isInteger(selectedPort) || selectedPort <= 0 || selectedPort > 65535) return false;
+  // Preserve an explicit dynamic-port configuration (`port: 0`). Otherwise the selected
+  // concrete port becomes the next preferred default, including the case where the
+  // previous preferred port was occupied and we had to fall back.
+  if (!Number.isInteger(preferredPort) || preferredPort <= 0) return false;
+  return configPort !== selectedPort;
 }
