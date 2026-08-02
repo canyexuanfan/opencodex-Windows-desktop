@@ -73,4 +73,3 @@ No production code in this spike reads or writes a user's `auth.json`, vault, ta
 ## PR readiness
 
 The design and pure state model are suitable for maintainer discussion. A behavior-changing upstream PR is not suitable until maintainers choose the OS key-provider approach and confirm the file-only v1 boundary.
-
