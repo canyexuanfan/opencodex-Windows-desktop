@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 32：Provider 获取地址与 BigModel 模型刷新已完成（仅待真实安装/全量外网死链监控验收）`
+- 状态：`阶段 34：Provider/桌面交互与带版本安装包收尾已完成（仅待真实安装/全量外部环境验收）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-代码与本机可安全验证范围已收尾。普通发布链只发布安装版 `OpenCodex-Setup-x64.exe`，不发布 portable；剩余验收是用户/测试机真实双击安装、桌面快捷方式和开始菜单图标目视确认，以及 Windows 10/11 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存、受信测试机 Authenticode `Valid` 与 exact-HEAD 跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
+代码与本机可安全验证范围已收尾。普通发布链只发布带版本号安装版 `OpenCodex-Setup-2.8.0-x64.exe`，不发布 portable；桌面更新检测按 GitHub Release 版本精确匹配 `OpenCodex-Setup-<version>-x64.exe`。剩余验收是用户/测试机真实双击安装、桌面快捷方式和开始菜单图标目视确认，以及 Windows 10/11 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存、受信测试机 Authenticode `Valid` 与 exact-HEAD 跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
 
 ---
 
@@ -705,7 +705,7 @@ Git 边界：本次仅本地提交和 tag，不 push、不创建 Release、不�
 
 ## 16. 最终完成定义
 
-- [ ] 安装版和便携版在干净 Windows x64 VM 双击可用。
+- [ ] 安装版 `OpenCodex-Setup-<version>-x64.exe` 在干净 Windows x64 VM 双击可用；portable 不属于普通发布链，仅在未来 advanced/portable 需求出现时单独验收。
 - [x] 用户无需安装任何依赖（隔离 PATH smoke）。
 - [x] 无控制台窗口（代码与本机 smoke；待 VM 复核）。
 - [x] 永远只有一个主窗口（单实例/并发 smoke）。
@@ -738,7 +738,7 @@ Electron 单实例宿主
 Codex / Claude Code / 其他现有客户端
 ```
 
-当前结论：本机桌面端源码改造、preload CJS 修复、copyfile 生产依赖、独立 node_modules 资源、当前 HEAD 安装版/便携版重建和便携版 healthz/模型回归已完成；当前产物哈希已写入本节。工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、中文/空格安装目录真实向导、受信证书链 `Valid`、真实 Provider 保留和卸载保留用户目录。根完整测试在授权临时根仍因 420 秒超时未完成；项目 bundled Bun 下 GUI 439/439 已通过。
+当前结论：本机桌面端源码改造、preload CJS 修复、copyfile 生产依赖、独立 node_modules 资源、当前 HEAD 带版本号安装版重建已完成；当前最终产物为 `desktop/out/OpenCodex-Setup-2.8.0-x64.exe`，SHA-256=`368F70370A7BC95B6C1C560EC938629DC91BB8582200EF2FBD893B32B053022D`，普通发布链无 portable。工作树外部验收仍保留为真实阻塞项：Windows 10/11 干净 VM 双击、中文/空格安装目录真实向导、受信证书链 `Valid`、真实 Provider 保留和卸载保留用户目录。根完整测试在授权临时根仍因总时长/运行器限制未完成；项目 bundled Bun 下 GUI 446/446 已通过。
 # 桌面端功能对齐增量（2026-08-01）
 
 - [x] 桌面 sidecar 停止前调用 `restoreNativeCodex()`，下次启动清理上次崩溃残留的 marker-owned 路由；健康外部 proxy 不受影响。
@@ -972,3 +972,10 @@ Codex / Claude Code / 其他现有客户端
 - [x] 本轮临时目录已清理：`C:\tmp`、`%TEMP%\ocx-update-job-30732-*` 与仓库 `.tmp` 的 stage34 精确临时目录复核输出 `STAGE34_TEMP_CLEAN`。
 - [x] 验证通过：GUI 锁定 Bun 全套 446/446；GUI lint/i18n/build；desktop tests 25/25；desktop build；root typecheck；Provider/Router 聚焦 58/58；Release/update/version 聚焦 64/64；git diff --check。
 - [ ] 未重启或关闭当前正在使用的 Codex；真实覆盖安装后的桌面快捷方式/开始菜单图标、安装向导视觉、受信签名链和系统重启/睡眠唤醒仍建议由用户用最新安装包目视验收。
+
+# 阶段 35：todolist 当前口径校正（2026-08-02）
+- [x] 将 `todolist.md` 顶部“当前执行项”更新为阶段 34 已完成，避免新线程继续按阶段 32/旧安装包策略推进。
+- [x] 将“下一任务”与“最终完成定义”改为普通发布链只发布带版本号安装版 `OpenCodex-Setup-2.8.0-x64.exe`，并明确 portable 不属于普通发布链。
+- [x] 将“当前结论”改为当前最终产物 `desktop/out/OpenCodex-Setup-2.8.0-x64.exe` 与 SHA-256=`368F70370A7BC95B6C1C560EC938629DC91BB8582200EF2FBD893B32B053022D`。
+- [x] 历史阶段中的旧包名、旧 portable hash 和旧验证记录保留为历史证据，不回写篡改。
+- [ ] 外部验收项保持不变：干净 Windows VM、真实双击覆盖安装、快捷方式/开始菜单图标、受信签名链和系统重启/睡眠唤醒仍需用户或测试机完成。
