@@ -9,11 +9,14 @@ on:
       - "tests/**"
       - "scripts/**"
       - "gui/**"
+      - "assets/**"
       - ".gitattributes"
       - ".npmignore"
       - "package.json"
       - "bun.lock"
       - "tsconfig.json"
+      - "README.md"
+      - "LICENSE"
       - ".github/workflows/ci.yml"
       - ".github/workflows/release.yml"
       - ".github/workflows/enforce-pr-target.yml"
@@ -26,11 +29,14 @@ on:
       - "tests/**"
       - "scripts/**"
       - "gui/**"
+      - "assets/**"
       - ".gitattributes"
       - ".npmignore"
       - "package.json"
       - "bun.lock"
       - "tsconfig.json"
+      - "README.md"
+      - "LICENSE"
       - ".github/workflows/ci.yml"
       - ".github/workflows/release.yml"
       - ".github/workflows/enforce-pr-target.yml"
@@ -111,6 +117,66 @@ jobs:
             echo 'label=windows-latest' >> "$GITHUB_OUTPUT"
           fi
 
+  # Which areas this push actually touches.
+  #
+  # Deliberately a job-level filter rather than a wider workflow-level `paths:`
+  # one. A workflow skipped by path filtering leaves its checks Pending forever,
+  # so a PR requiring them can never merge; a skipped *job* reports success.
+  # That asymmetry is the whole reason this job exists instead of more entries
+  # in the `on:` block above.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The workflow grants only `contents: read`, and specifying any permission
+    # sets every unspecified one to `none`. paths-filter reads the PR's file list
+    # through the API on `pull_request`, so without this it fails outright — and
+    # a failed filter produces empty outputs, which every `== 'true'` condition
+    # below would read as "nothing changed, skip".
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      gui: ${{ steps.filter.outputs.gui }}
+      packaging: ${{ steps.filter.outputs.packaging }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Detect changed areas
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          # Without this the action compares against the repository's DEFAULT
+          # branch, which is `main`. A push to `dev` would then be diffed against
+          # `main`, so every area touched since the last promotion keeps reading
+          # as "changed" — the scoped jobs would run on nearly every dev push and
+          # the saving would silently not happen while CI stayed green.
+          #
+          # On `pull_request` the action ignores this and uses the PR's own file
+          # list. On a branch push it means "compare against the previous commit
+          # on this branch", which is the intent.
+          base: ${{ github.ref }}
+          filters: |
+            gui:
+              - 'gui/**'
+            # Everything that ends up inside `npm pack`, or that decides what
+            # does. `src/**` belongs here because package.json ships `src` and
+            # bin/ocx.mjs executes it: without that entry an ordinary source PR
+            # would get no Windows verification at all, since the Windows suite
+            # now runs only at the shipping boundary.
+            packaging:
+              - 'package.json'
+              - 'bun.lock'
+              - 'src/**'
+              - 'bin/**'
+              - 'gui/**'
+              - 'assets/**'
+              - '.npmignore'
+              - 'README.md'
+              - 'LICENSE'
+              - 'scripts/prepare-package.ts'
+
   # The suite, split by file across four Linux runners.
   #
   # `bun test --shard=i/N` sorts test files by path and deals them round-robin,
@@ -160,6 +226,7 @@ jobs:
   # fixed couple of minutes four times to save nothing.
   gates:
     name: gates
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -190,11 +257,13 @@ jobs:
         run: bun build scripts/release.ts --target=bun --outdir=.tmp/ci-release-script-check
 
       - name: GUI lint
+        if: needs.changes.outputs.gui == 'true'
         run: |
           cd gui
           bun run lint
 
       - name: GUI build
+        if: needs.changes.outputs.gui == 'true'
         run: |
           cd gui
           bun run build
@@ -305,6 +374,8 @@ jobs:
 
   npm-global-smoke:
     name: npm-global ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.packaging == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 8
     strategy:
@@ -371,7 +442,7 @@ jobs:
     # direct dependencies only, so a failing `select-windows-runner` would
     # otherwise reach this gate as nothing at all while its dependents report
     # `skipped` — which the gate is required to read as a deliberate skip.
-    needs: [select-windows-runner, test, gates, platform-macos, platform-windows, npm-global-smoke]
+    needs: [changes, select-windows-runner, test, gates, platform-macos, platform-windows, npm-global-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

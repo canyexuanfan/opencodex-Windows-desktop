@@ -163,6 +163,9 @@ describe("GitHub Actions hardening", () => {
       ".github/workflows/release.yml",
       ".github/workflows/stale-needs-info.yml",
       ".npmignore",
+      "LICENSE",
+      "README.md",
+      "assets/**",
       "bin/**",
       "bun.lock",
       "gui/**",
@@ -187,6 +190,70 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("bun run lint");
     expect(workflow).toContain("- name: GUI build");
     expect(workflow).toContain("bun run build");
+
+    // Presence is no longer enough. After area scoping, a step conditioned on a
+    // filter that never fires is a dropped gate wearing the step's name — the
+    // same outcome #97 hit, reached a different way. Pin the condition to the
+    // filter output, and pin the filter to patterns that can actually match.
+    const ci = Bun.YAML.parse(workflow) as {
+      jobs?: Record<string, Record<string, unknown> | undefined>;
+    };
+    const gateSteps = (ci.jobs?.gates as {
+      steps?: { name?: string; if?: string }[];
+    })?.steps ?? [];
+    for (const stepName of ["GUI lint", "GUI build"]) {
+      const step = gateSteps.find(candidate => candidate.name === stepName);
+      expect(`${stepName}:${step === undefined}`).toBe(`${stepName}:false`);
+      expect(step?.if).toBe("needs.changes.outputs.gui == 'true'");
+    }
+
+    const filterStep = (ci.jobs?.changes as {
+      steps?: { with?: Record<string, string> }[];
+    })?.steps?.find(step => step.with?.filters);
+
+    // `base` is not cosmetic. Unset, paths-filter diffs a `dev` push against the
+    // repository default branch (`main`), so everything changed since the last
+    // promotion still reads as changed and the scoped jobs run anyway — the
+    // filter would look correct, stay green, and save nothing.
+    expect(filterStep?.with?.base).toBe("${{ github.ref }}");
+
+    // paths-filter cannot read a PR's file list without this, and a filter that
+    // errors produces empty outputs — which every `== 'true'` condition reads as
+    // "skip". The scoped jobs would silently stop running.
+    expect((ci.jobs?.changes as { permissions?: Record<string, string> })?.permissions)
+      .toEqual({ contents: "read", "pull-requests": "read" });
+
+    // Whole-list comparison, not samples. Every entry is an input to the
+    // published tarball; dropping one silently stops packaging verification for
+    // that surface. `src/**` is the load-bearing one: it keeps a source-only PR
+    // running the Windows packaged-CLI smoke now that the Windows suite only
+    // runs at the shipping boundary.
+    const filters = String(filterStep?.with?.filters ?? "");
+    const packagingBlock = filters.split(/\n\s*packaging:\s*\n/)[1] ?? "";
+    const packaging = [...packagingBlock.matchAll(/-\s*'([^']+)'/g)].map(match => match[1]).sort();
+    expect(packaging).toEqual([
+      ".npmignore",
+      "LICENSE",
+      "README.md",
+      "assets/**",
+      "bin/**",
+      "bun.lock",
+      "gui/**",
+      "package.json",
+      "scripts/prepare-package.ts",
+      "src/**",
+    ]);
+
+    // A per-job filter can only narrow what the workflow-level filter admits, so
+    // every packaging pattern that names a real path must also appear in the
+    // trigger's own path list. Otherwise the workflow never runs for that file
+    // and the filter entry is decoration.
+    const triggerPaths = (ci.on as { pull_request?: { paths?: string[] } } | undefined)
+      ?.pull_request?.paths ?? [];
+    for (const pattern of packaging) {
+      if (pattern === "scripts/prepare-package.ts") continue; // covered by scripts/**
+      expect(`${pattern}:${triggerPaths.includes(pattern)}`).toBe(`${pattern}:true`);
+    }
   });
 
   test("stale needs-info workflow is schedule-only and least-privilege", async () => {
