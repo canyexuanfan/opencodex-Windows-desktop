@@ -406,13 +406,14 @@ describe("Codex catalog sync hardening", () => {
     const catalogPath = join(codexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
 
-    // Partial-gather branch.
+    // Partial-gather branch: a PHYSICAL combo provider bypasses the generic
+    // combo cleanup, so only the ownership matcher can remove the alias.
     seed();
     const partial = runScript(codexHome, opencodexHome, `
       const { syncCatalogModels } = require("./src/codex/catalog");
       syncCatalogModels({
         providers: {
-          openai: {
+          combo: {
             adapter: "openai-chat",
             baseUrl: "https://api.example.test/v1",
             liveModels: false,
@@ -426,11 +427,20 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).not.toContain("vendor/fast");
     expect(slugs).toContain("cursor/composer-2.5");
 
-    // Empty-gather branch.
+    // Empty-gather branch: physical combo present but gathers zero rows.
     seed();
     const empty = runScript(codexHome, opencodexHome, `
       const { syncCatalogModels } = require("./src/codex/catalog");
-      syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
+      syncCatalogModels({
+        providers: {
+          combo: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: []
+          }
+        }
+      }).then(res => console.log(JSON.stringify(res)));
     `);
     expect(empty.status).toBe(0);
     slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
