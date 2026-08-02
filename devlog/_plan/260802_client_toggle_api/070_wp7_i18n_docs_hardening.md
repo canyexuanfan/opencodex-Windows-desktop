@@ -9,9 +9,19 @@ full gate rather than the per-phase subset.
 IN
 
 - `gui/src/i18n/{en,de,ko,zh,ru,ja}.ts` — MODIFY (every new key, six files).
-- `docs-site/` — MODIFY (Integrations page + the client matrix).
+- `docs-site/src/content/docs/guides/integrations.md` — NEW (English source);
+  the locale variants alongside it are updated only where a translation is
+  written, otherwise they link to the English page (§2).
+- `docs-site/astro.config.mjs` — MODIFY (sidebar entry for the new page).
 - `src/cli/help.ts` — MODIFY (`ocx export --client` list now names six clients).
-- `tests/` — MODIFY (full-suite green; add the cross-cutting invariants below).
+- `src/cli/export-command.ts` — MODIFY (usage string drops the hardcoded
+  `<opencode|pi>`).
+- `tests/integrations-invariants.test.ts` — NEW (the §4 cross-cutting table).
+
+**A-gate amendment (round 1):** the exact docs-site path above must be
+re-verified at this phase's P against the then-current `docs-site/` layout
+(LOOP-CONTINUITY-01); if Starlight's content root has moved, the plan follows
+the tree rather than this line.
 
 OUT
 

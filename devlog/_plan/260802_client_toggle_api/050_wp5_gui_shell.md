@@ -1,5 +1,16 @@
 # 050 — WP5: Integrations routing shell and page migration
 
+**A-gate amendment (round 1): WP5 and WP6 are ONE work-phase.** The audit was
+right that a shell whose first compilable checkpoint requires WP6 is not an
+independently verifiable phase boundary (PHASE-SPLIT-01). `050` and `060` are
+therefore two documents describing one phase, executed and verified together:
+the phase closes when `bun run build:gui` succeeds, `bun run lint:gui` is
+clean, and both the routing tests here and the surface tests in 060 pass.
+The goalplan is amended to seven work-phases.
+
+Shared types come from `006_module_contracts.md`; the journal row this GUI
+consumes is `IntegrationJournalRow` (006 §6) with `snapshot` and `undoable`.
+
 Implementation plan. Apply together with `060_wp6_gui_surfaces.md`; the
 paste-ready `Integrations.tsx` imports the WP6 components and the combined
 change is the first compilable checkpoint. Contract authority:

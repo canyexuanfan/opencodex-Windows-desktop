@@ -22,7 +22,7 @@ import { loadConfig } from "../config";
 import {
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
-  buildClientConfig,
+  buildClientConfigText,
   isExportClientId,
   opencodeProxyBaseUrl,
   type ExportClientId,
@@ -164,16 +164,23 @@ export async function handleExportCommand(argv: string[], deps: ExportCommandDep
       throw new RuntimeApiError("Management API returned an unexpected /api/models payload.", 502, rows);
     }
     const models = exportModelsFromProxyRows(rows, config);
-    const clientConfig = buildClientConfig(client, { baseUrl: proxyV1BaseUrl(root), models, config });
-    const text = JSON.stringify(clientConfig, null, 2);
+    // The text is the client's OWN format — YAML, TOML and JSON5 clients would
+    // otherwise receive a JSON rendering their parser reads differently.
+    const built = buildClientConfigText(client, { baseUrl: proxyV1BaseUrl(root), models, config });
+    const clientConfig = built.document;
+    const text = built.text;
 
-    if (out !== undefined) writeExport(out, `${text}\n`, force);
+    // Every serializer already ends with exactly one newline.
+    if (out !== undefined) writeExport(out, text, force);
     // stderr, so `--json` stdout stays byte-exact for a redirect.
     if (out !== undefined && wantsJson) console.error(`Wrote ${out}`);
 
     const degraded = models.filter(model => !hasContextLimit(model)).length;
+    // `--json` keeps emitting the DOCUMENT at the top level: a script that
+    // pipes it into a config file must not have to unwrap an envelope we added
+    // for our own convenience. Format metadata rides in the human lines below.
     printData(clientConfig, wantsJson, [
-      text,
+      text.trimEnd(),
       "",
       ...(out !== undefined ? [`Wrote ${out}`] : []),
       `Destination: ${spec.destination(process.env)}`,

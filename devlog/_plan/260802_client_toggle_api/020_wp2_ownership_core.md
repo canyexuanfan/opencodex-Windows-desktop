@@ -1,8 +1,29 @@
 # 020 — WP2: ownership core (fingerprint, five-state read-back, journal)
 
-Diff-level PRD. Depends on WP1 (`010`). Adds no writer and no route: this
-phase answers "what is on disk and did we put it there?" and records every
-operation, so WP3 can mutate safely and WP4 can report honestly.
+Diff-level PRD. Depends on WP1 (`010`). **Shared types live in
+`006_module_contracts.md` and are authoritative — where this document
+disagrees, 006 wins.** Adds no writer and no route: this phase answers "what
+is on disk and did we put it there?" and records every operation, so WP3 can
+mutate safely and WP4 can report honestly.
+
+**A-gate amendments folded in (round 1):**
+
+- `IntegrationClientSpec.ownership: { kind: "provider-key"; path }` below is
+  **retired**. Ownership is a set of fragments produced by WP1's
+  `buildContribution` (006 §2), because Kimi owns a provider entry *and* one
+  model entry per model. `OwnershipRecord` stores the recorded fragment paths;
+  removal touches exactly those and never a prefix scan.
+- `JournalEntry.snapshot` is a tagged `SnapshotRef` (`none`/`stored`/
+  `expired`), not a nullable string — "the file did not exist" and "the
+  snapshot was collected" are different facts (006 §3). `resultAbsent` makes
+  restore-to-absence representable.
+- Snapshot GC runs **after** the journal row commits, and snapshot bytes are
+  written through `atomicWriteFile` (0600 + Windows ACL), closing the
+  secret-handling open question.
+- **Every activation scenario in §3 is rewritten to build fixtures directly**
+  (write a config file, write an `OwnershipRecord`, classify). No scenario may
+  call apply — it does not exist until WP3, and a phase that cannot verify
+  itself is not a phase boundary (PHASE-SPLIT-01).
 
 ## Scope boundary
 
@@ -44,8 +65,6 @@ export interface IntegrationClientSpec {
    * exists so a future fenced/text client cannot be bolted on by accident.
    */
   ownership: { kind: "provider-key"; path: readonly string[] };
-  /** Loopback-only clients refuse to be applied on a non-loopback bind (WP3). */
-  loopbackOnly: boolean;
 }
 ```
 
@@ -60,9 +79,48 @@ export interface IntegrationClientSpec {
 | kimi | `["providers"]` | `opencodex` (plus `models` entries prefixed `opencodex/`) |
 | gajae | `["providers"]` | `opencodex` |
 
-`loopbackOnly` is **true for kimi only** — it is the one client that cannot
-carry an env reference (002 §Kimi), so a non-loopback bind would force a real
-secret onto disk. WP3 refuses instead.
+**Amended (WP2 A-gate, round 2).** The spec above no longer carries a
+`loopbackOnly` field, and the "kimi only" value it used to state was wrong.
+
+The real question is not "can this client carry an env reference" but "does
+its schema have anywhere to put the dedicated admission header". `/v1/chat/
+completions` rejects bearer credentials and requires `x-opencodex-api-key`
+(AUTH_MATRIX in `src/server/auth-cors.ts`), so a client with no header field
+cannot authenticate against a non-loopback bind at all — we would be writing a
+config that 401s. By that test the set is **pi, kimi, gajae**:
+
+| Client | loopback-only | why |
+|---|---|---|
+| opencode | no | its provider block carries arbitrary headers |
+| pi | yes | no header field in the provider block, and the schema is unverified against a real install |
+| hermes | no | headers are expressible |
+| openclaw | no | headers are expressible |
+| kimi | yes | no header field; it also cannot carry an env reference (002 §Kimi) |
+| gajae | yes | strict schema with no header field |
+
+The value lives on the **export** registry (`src/clients/config-export.ts`,
+`ExportClientSpec.loopbackOnly`, pinned by
+`tests/client-config-export-new-clients.test.ts`), because that is where a new
+client is declared and where the header shape is already known. WP2's registry
+exposes it as a function rather than restating it:
+
+```ts
+/**
+ * True when the client has nowhere to put the dedicated admission header a
+ * non-loopback bind requires, so a generated config would simply be rejected.
+ *
+ * Read from the export registry rather than restated here: two lists of the
+ * same fact drift, and this one decides whether we write a file that 401s.
+ */
+export function isLoopbackOnly(clientId: IntegrationClientId): boolean {
+  return EXPORT_CLIENTS[clientId].loopbackOnly;
+}
+```
+
+A second copy on `IntegrationClientSpec` is what this amendment removes: two
+lists of the same security fact drift, and the half that drifts decides whether
+a user's key lands on disk or a config silently 401s. `030` and `031` are
+amended to match: the gate reads `isLoopbackOnly(clientId)`.
 
 ## 2. `src/integrations/ownership.ts` (NEW)
 
@@ -117,6 +175,15 @@ export interface IntegrationStatus {
   lastOpId?: string;
   /** Why `unsafe`/`conflict` — a stable enum the GUI maps to copy. */
   reason?: "unparseable" | "not-regular-file" | "foreign-edit" | "unowned-key";
+  /** Snapshot files currently retained for this client. */
+  snapshotCount: number;
+  /**
+   * True when pruning is behind, so old (possibly credential-bearing)
+   * snapshots may still exist. Derived from the count, with the maintenance
+   * marker as a retry hint only — a durable claim must not depend on a write
+   * that can fail (006 §5).
+   */
+  retentionDegraded: boolean;
 }
 ```
 
@@ -153,9 +220,12 @@ reported as `absent`, and a foreign edit can never be reported as `stale`
 | `unsafe` / unparseable | write `{{{` to the config | `reason === "unparseable"` |
 | `absent` | fresh temp home, valid empty config | `state === "absent"` |
 | `conflict` / unowned-key | write a provider block by hand, no record | `reason === "unowned-key"` |
-| `conflict` / foreign-edit | apply, then append a comment to the file | `reason === "foreign-edit"` |
-| `stale` | apply, then classify with a different port's fresh fingerprint | `state === "stale"` |
-| `current` | apply, classify immediately | `state === "current"` |
+| `conflict` / foreign-edit | write a config containing our fragments, write a record whose `fileFingerprint` is of that text, then append a comment to the file | `reason === "foreign-edit"` |
+| `stale` | write config + a record whose `fileFingerprint` matches the file but whose `blockFingerprint` differs from the fresh one | `state === "stale"` |
+| `current` | write config + a record whose both fingerprints match | `state === "current"` |
+
+Every fixture is built by writing bytes and a record **directly** — WP2 never
+calls the writer, which does not exist until WP3 (006 §7).
 
 ## 4. `src/integrations/journal.ts` (NEW)
 
@@ -172,22 +242,45 @@ accepts it and uninstall can clean it up):
 ```ts
 export type OperationKind = "apply" | "disable" | "refresh" | "restore";
 
+/** Tagged so "the file did not exist" and "the snapshot was collected" stay
+ *  distinguishable — `null` conflated them (006 §3). */
+export type SnapshotRef =
+  | { kind: "none" }
+  | { kind: "stored"; relPath: string }
+  | { kind: "expired" };
+
 export interface JournalEntry {
   opId: string;                 // crypto.randomUUID()
   clientId: IntegrationClientId;
   kind: OperationKind;
   at: string;                   // ISO
   configPath: string;
-  /** Snapshot of the file as it was BEFORE this operation; null when none existed. */
-  snapshot: string | null;      // relative path under snapshots/, not content
+  /** The file as it was BEFORE this operation. Never content, only a tag+path. */
+  snapshot: SnapshotRef;
   /** Fingerprint of the file AFTER this operation — undo binds to it. */
   resultFingerprint: string;
+  /** True when the operation left no file; restore then means "delete". */
+  resultAbsent: boolean;
+  /** Ownership as it stood before this operation, so restore puts back the
+   *  provenance that matched the bytes instead of inferring it (006 §3). */
+  priorRecord: OwnershipRecord | null;
 }
 
 export function appendOperation(entry: JournalEntry): void;
-export function listOperations(clientId?: IntegrationClientId, limit = 50): JournalEntry[];
-export function readSnapshot(opId: string): { path: string; text: string } | null;
-export function captureSnapshot(clientId: IntegrationClientId, opId: string, text: string | null): string | null;
+export function listOperations(clientId?: IntegrationClientId, limit?: number): JournalEntry[];
+export function findOperation(opId: string): JournalEntry | null;
+/** Resolves the tag against what is on disk NOW: a stored ref whose file is
+ *  gone reads as expired. */
+export function readSnapshot(entry: JournalEntry):
+  | { kind: "none" }
+  | { kind: "stored"; text: string; path: string }
+  | { kind: "expired" };
+export function captureSnapshot(
+  clientId: IntegrationClientId, opId: string, text: string | null,
+): SnapshotRef;
+/** Structured, so a prune failure is marked and retried rather than swallowed
+ *  (006 §5) — snapshots can hold the user's own credentials. */
+export function pruneSnapshots(clientId: IntegrationClientId): { ok: true } | { ok: false; error: string };
 ```
 
 ### Retention (10 per client) and GC
@@ -208,9 +301,10 @@ not stored: an entry is undoable when it is the newest for its client AND the
 file's current fingerprint still equals `resultFingerprint`. Storing a boolean
 would go stale the moment anything else wrote the file.
 
-**Activation scenario:** apply, then hand-edit the file, then ask for undo
-eligibility — expect `false` with reason `foreign-edit`, and the row degrades
-to a restore offer.
+**Activation scenario:** append a journal row whose `resultFingerprint` is of
+a known text, write that text to the config, and assert undo eligibility is
+`true`; then append one byte to the file and assert it flips to `false` while
+the snapshot stays `stored`, so the row degrades to a restore offer.
 
 ## 5. Journal durability
 

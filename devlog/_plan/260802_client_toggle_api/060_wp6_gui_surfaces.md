@@ -1,5 +1,53 @@
 # 060 — WP6: Integrations overview, client pages, and rollback surfaces
 
+**A-gate amendments (round 1).** This document and `050` are ONE work-phase
+(see 050's header); they are built and verified together.
+
+**A-gate amendment (round 2) — native capability cards are deferred.** The
+audit was right that a follow-up cannot be declared by silence while this
+document remains authoritative, so the scope moves here explicitly.
+
+SHIPPED in this phase: the six file-toggle clients end to end — summary strip
+with counts and last change, capability card grid for the six with a state
+badge and a working per-card switch, bulk disable that sequences single-client
+PUTs and confirms the result against the server, per-client pages with switch,
+stale Update, apply-semantics, path, retention warning and history, the
+rollback centre, and the restore/drift dialog.
+
+DEFERRED to a follow-up unit: the four NATIVE exception cards (Codex CLI,
+Claude Code, Claude Desktop, Grok Build) on the Overview, their status reads
+against `/healthz`, `/api/claude-code`, `/api/claude-desktop/status` and
+`/api/grok`, the reusable `ClientConfigPanel` under each file-client page, and
+the Advanced disclosure.
+
+The reason is a dependency, not effort. Each native client keeps its own
+semantics (004 §5.0) and its own page inside the tab strip, which is where
+those controls already live and work; a card that mirrors them is a second
+read of the same state, and mirroring a state whose write path this unit does
+not own is how the two surfaces start disagreeing. The file-toggle clients
+carry no such problem because this unit owns their whole contract. Nothing
+deferred here blocks a user from applying, disabling, updating or rolling back
+any of the six.
+
+Acceptance for the phase is amended to match: the four native cards, native
+status reads, `ClientConfigPanel` reuse, and the Advanced disclosure are NOT
+phase-closing criteria. The `Component and data tree` in §3 keeps the full
+target shape; the deferred rows are marked there.
+
+Shared types come from `006_module_contracts.md` and resolve the open
+questions this document raised:
+
+- The journal row is `IntegrationJournalRow` (006 §6). Action eligibility is
+  **`undoable`**, and snapshot availability is the tag
+  `snapshot === "expired"`. Every reference here uses those canonical fields.
+- `snapshotPath` IS emitted by WP4 on `integration_unsafe` and
+  `integration_mutation_failed` envelopes (006 §4, 040 amendment), so the
+  manual-recovery Notice is reachable and must be implemented rather than
+  flagged as blocked.
+- Any surface branch that still cannot be reached through the final API
+  contract must be deleted rather than shipped as dead UI
+  (C-ACTIVATION-GROUNDING-01).
+
 Implementation plan. Depends on WP1–WP5, especially the exact HTTP contract in
 `040_wp4_management_api.md`. This package implements `004_ux_design.md`
 §§4–10 without adding a second state model in the browser.
@@ -17,7 +65,8 @@ Implementation plan. Depends on WP1–WP5, especially the exact HTTP contract in
 - `gui/src/pages/integrations/FileIntegrationPage.tsx` — new shared page for
   OpenCode, Pi, Hermes, OpenClaw, Kimi, and Gajae.
 - `gui/src/pages/integrations/RestoreDialog.tsx` — new restore/drift dialog.
-- `gui/src/components/apikeys-workspace/ClientConfigPanel.tsx` and
+- **[DEFERRED — round-2 amendment]**
+  `gui/src/components/apikeys-workspace/ClientConfigPanel.tsx` and
   `ClientConfigDialog.tsx` — make the existing export surface reusable for one
   client without asserting whether an API key exists.
 - `gui/src/ui.tsx` — extend `Switch` with `aria-describedby`.
@@ -38,33 +87,16 @@ Implementation plan. Depends on WP1–WP5, especially the exact HTTP contract in
   mutation, or snapshot-byte response.
 - No new color token, icon package, query library, or state store.
 
-## 2. Contract blockers and explicit open questions
+## 2. Contract boundaries and remaining open questions
 
 These are contract gaps, not GUI details. Do not infer the missing facts from
 paths or stale client state.
 
-**OPEN QUESTION — journal action eligibility.** WP4 returns raw
-`JournalEntry` rows (`snapshot` is a relative path recorded at operation time)
-but does not return whether GC has since removed that snapshot. It also does
-not return whether the newest operation's `resultFingerprint` still matches
-the current file. Therefore the GUI cannot truthfully choose among `되돌리기`,
-`이 시점으로 복원…`, and disabled `백업 만료됨` before attempting a restore.
-Before WP6 implementation, WP4 must either add non-sensitive derived fields
-`snapshotAvailable: boolean` and `undoEligible: boolean` (plus a stable
-ineligibility reason), or add a metadata-only preflight route. Snapshot bytes
-must remain private. Until resolved, render only a neutral `복원…` action and
-degrade 410 after the request; do not label an unverified action `되돌리기`.
-
-**OPEN QUESTION — manual restore path.** `030` can return `snapshotPath` on a
-restore refusal, but WP4's exact 409/500 envelopes drop it. `004` §6.2 requires
-the Notice to name that path. Either preserve `snapshotPath` in the WP4 error
-envelope or revise the UX contract; the GUI must not synthesize it from the
-journal's relative `snapshot` field.
-
 **OPEN QUESTION — advanced/settings data.** WP4 toggle accepts only
 `{ enabled: boolean }`; state does not expose model selection, default-model
-pointer, raw managed content, or ownership fingerprints. WP6 can ship export,
-path, state, reason, applied time, and history. The model picker, default-model
+pointer, raw managed content, or ownership fingerprints. WP6 can ship path,
+state, reason, applied time, and history; export ships with the deferred
+per-client panel (round-2 amendment), not in this phase. The model picker, default-model
 control, raw-file preview, and fingerprint detail from `004` §5.4 require a
 later contract. Keep an explicit unavailable note; do not create inert inputs.
 
@@ -72,10 +104,11 @@ later contract. Keep an explicit unavailable note; do not create inert inputs.
 Cards say installed/not installed and omit version. Add version only after a
 server-owned field exists.
 
-These questions do not block the shell, badges, state list, toggles, generic
-restore flow, native exception cards, loading/empty/error/onboarding states, or
-the responsive layout. They do block claiming the full expired-row/manual-path
-acceptance criteria.
+These questions do not block any specified WP6 branch; unavailable settings
+and version UI remains omitted rather than rendered as inert controls.
+
+Deleted branch: the disabled “No file to restore” row was unreachable because
+`snapshot: "none"` is a valid restore-to-absence operation under 006 §3/§6.
 
 ## 3. Component and data tree
 
@@ -84,14 +117,14 @@ Integrations (WP5 hash owner)
 ├─ IntegrationsOverview(active)
 │  ├─ GET /api/client-integrations
 │  ├─ GET /api/client-integrations/journal
-│  ├─ native status reads: /healthz, /api/claude-code,
+│  ├─ native status reads: /healthz, /api/claude-code,        [DEFERRED]
 │  │  /api/claude-desktop/status, /api/grok
 │  ├─ IntegrationSummary
 │  │  ├─ counts + last operation
 │  │  ├─ onboarding line
 │  │  └─ BulkDisableDialog -> six possible PUTs
 │  ├─ CapabilityCardGrid
-│  │  ├─ four native exception cards
+│  │  ├─ four native exception cards                          [DEFERRED]
 │  │  └─ six FileClientCard -> IntegrationStateBadge + Switch
 │  └─ RollbackCenter
 │     └─ RestoreDialog -> POST /api/client-integrations/restore
@@ -105,8 +138,8 @@ Integrations (WP5 hash owner)
    ├─ IntegrationStateBadge
    ├─ Switch / refresh / restore actions
    ├─ status + apply-semantics facts
-   ├─ ClientConfigPanel(clients=[client])
-   ├─ Advanced disclosure (contract-backed facts only)
+   ├─ ClientConfigPanel(clients=[client])                     [DEFERRED]
+   ├─ Advanced disclosure (contract-backed facts only)        [DEFERRED]
    └─ RestoreDialog
 ```
 
@@ -133,13 +166,13 @@ export const FILE_INTEGRATION_CLIENTS = [
 ] as const;
 
 export type FileIntegrationClientId = (typeof FILE_INTEGRATION_CLIENTS)[number];
+export type IntegrationClientId = FileIntegrationClientId;
 export type IntegrationState = "absent" | "current" | "stale" | "conflict" | "unsafe";
 export type IntegrationReason =
   | "unparseable"
   | "not-regular-file"
   | "foreign-edit"
   | "unowned-key";
-export type OperationKind = "apply" | "disable" | "refresh" | "restore";
 
 export interface IntegrationStatus {
   clientId: FileIntegrationClientId;
@@ -149,28 +182,32 @@ export interface IntegrationStatus {
   appliedAt?: string;
   lastOpId?: string;
   reason?: IntegrationReason;
+  /** Snapshot files retained for this client (006 §5). */
+  snapshotCount: number;
+  /**
+   * Pruning is behind, so old snapshots may still exist. Rendered as a line on
+   * the client page's status row, never as a state badge — it is a maintenance
+   * condition, not an integration state.
+   */
+  retentionDegraded: boolean;
 }
 
 export interface IntegrationStateListEnvelope {
   clients: IntegrationStatus[];
 }
 
-export interface IntegrationOperation {
+export interface IntegrationJournalRow {
   opId: string;
-  clientId: FileIntegrationClientId;
-  kind: OperationKind;
+  clientId: IntegrationClientId;
+  kind: "apply" | "disable" | "refresh" | "restore";
   at: string;
   configPath: string;
-  snapshot: string | null;
-  resultFingerprint: string;
-  // Add only if WP4 resolves §2. Never infer either from `snapshot` or order.
-  snapshotAvailable?: boolean;
-  undoEligible?: boolean;
-  undoIneligibleReason?: string;
+  snapshot: "none" | "stored" | "expired";
+  undoable: boolean;
 }
 
 export interface IntegrationJournalEnvelope {
-  operations: IntegrationOperation[];
+  operations: IntegrationJournalRow[];
 }
 
 export interface IntegrationMutationEnvelope {
@@ -264,8 +301,8 @@ export async function restoreIntegration(
 }
 ```
 
-The optional eligibility/path fields are guarded by §2. Delete them if WP4 is
-not expanded; no component may treat absence as `false`.
+`snapshot` and `undoable` are derived by WP4 for every request. The GUI never
+infers either value from row order, paths, or a failed restore.
 
 ## 5. `IntegrationStateBadge.tsx` — paste-ready
 
@@ -340,7 +377,7 @@ type NativeStatus = {
   desktopStale: boolean | null;
   grokPresent: boolean | null;
 };
-type RestoreSelection = { operation: IntegrationOperation; mode: "undo" | "restore" };
+type RestoreSelection = { operation: IntegrationJournalRow; mode: "undo" | "restore" };
 ```
 
 ### 6.1 Resource loading
@@ -352,7 +389,8 @@ type RestoreSelection = { operation: IntegrationOperation; mode: "undo" | "resto
 - Journal resource key: `integrations-journal:${apiBase}`; exact
   `GET /api/client-integrations/journal`; `enabled: active`; `isEmpty` means
   `operations.length === 0`.
-- Native resource key: `integrations-native:${apiBase}`; one loader uses
+- **[DEFERRED — round-2 amendment]** Native resource key:
+  `integrations-native:${apiBase}`; one loader uses
   `Promise.allSettled` for exact existing reads:
   `GET /healthz`, `GET /api/claude-code`,
   `GET /api/claude-desktop/status`, `GET /api/grok`. A failed child maps only
@@ -389,9 +427,10 @@ assert that the edited file still routes correctly. Unsafe is also excluded.
 4. Known-structure skeleton grid when state list is cold-loading.
 5. Empty `EmptyState` when all six report `installed: false`; include a list of
    supported client names and deep links, not a bare grid.
-6. Otherwise `<ul className="integration-card-grid">` in stable order:
-   Codex, Claude Code, Claude Desktop, Grok, OpenCode, Pi, Hermes, OpenClaw,
-   Kimi, Gajae.
+6. Otherwise `<ul className="integration-card-grid">` in stable order.
+   SHIPPED: the six file clients — OpenCode, Pi, Hermes, OpenClaw, Kimi,
+   Gajae. **[DEFERRED — round-2 amendment]** the four native cards that would
+   precede them: Codex, Claude Code, Claude Desktop, Grok.
 7. `<section className="rollback-center">` with heading and newest five rows.
 
 The summary is compact ops chrome, not a marketing hero: no oversized display
@@ -425,7 +464,11 @@ const locked = !installed || state === "conflict" || state === "unsafe" || pendi
 - any failure retains the old card state and maps the server error code to an
   error Notice; never optimistically flip a file mutation.
 
-### 6.5 Native exception cards
+### 6.5 Native exception cards — **[DEFERRED — round-2 amendment]**
+
+This whole section is target state, not phase-closing scope. The four native
+clients keep their own semantics and each already owns a working page inside
+the tab strip.
 
 - Codex: `/healthz` liveness text; no switch; action deep-links `#startup`.
 - Claude Code: native enabled status and `Switch`; mutation remains exact
@@ -457,12 +500,11 @@ deep link; it never borrows a five-state badge.
 - Empty: `<EmptyState title={t("integrations.rollback.empty")}>` plus the
   backup promise sentence.
 - Row: `<li>` with localized kind, client, formatted `at`, and one action.
-- With the §2 WP4 expansion: newest eligible row -> `되돌리기`; retained older
-  row -> `이 시점으로 복원…`; unavailable snapshot -> disabled
-  `백업 만료됨`.
-- Without expansion: every row with `snapshot !== null` uses neutral
-  `복원…`; `snapshot === null` has disabled `복원할 파일 없음`. A 410 updates
-  local row knowledge and disables it for the current session.
+- `undoable === true` -> `되돌리기`; opens undo-mode `RestoreDialog`.
+- `undoable === false && snapshot !== "expired"` -> `이 시점으로 복원…`;
+  this includes `snapshot === "none"`, whose restore target is file absence.
+- `snapshot === "expired"` -> disabled `백업 만료됨`; it takes precedence
+  over `undoable` and never opens a dialog or sends a request.
 - Restore opens `RestoreDialog`; no direct write on row click.
 
 ## 7. `FileIntegrationPage.tsx` — structural implementation spec
@@ -503,9 +545,10 @@ const CLIENT_META: Record<FileIntegrationClientId, {
   `integration-journal:${apiBase}:${client}`, `enabled: active`.
 - Toggle/refresh: exact PUT with boolean only.
 - Restore: exact POST with `{ opId, confirmDrift }` only.
-- Export: existing exact
+- Export **[DEFERRED — round-2 amendment]**: existing exact
   `GET /api/client-config?client=:clientId` through `ClientConfigRow`; no
-  duplicate serializer in the browser.
+  duplicate serializer in the browser. Ships with the per-client export panel
+  in the follow-up unit.
 
 ### 7.2 Markup anatomy
 
@@ -513,35 +556,59 @@ const CLIENT_META: Record<FileIntegrationClientId, {
 2. Cold error: `Notice tone="err"` + retry; no switch and no empty state.
 3. Header `<header className="integration-client-head">`:
    mark/name, badge (stable id), switch, stale-only refresh button, and restore
-   button when eligibility is contract-backed.
+   button when at least one non-expired journal row exists.
 4. Status `<dl className="integration-status-line">`: applied time, latest
    operation time, config path. Unknown facts render translated `—` labels,
    not fabricated dates.
+4b. Retention notice, rendered **only** when `status.retentionDegraded` is
+   true, immediately after the status list:
+
+   ```tsx
+   {status.retentionDegraded && (
+     <p className="integration-retention" role="status">
+       {t("integrations.retention.degraded")}
+     </p>
+   )}
+   ```
+
+   It is a line, never a state badge — pruning being behind is a maintenance
+   condition, not an integration state (006 §5). i18n key
+   `integrations.retention.degraded`: en "Backup cleanup is behind; older
+   backups may still be on disk." / ko "백업 정리가 밀려 있습니다 — 오래된
+   백업이 남아 있을 수 있습니다."
+
+   | Activation | Observable proof |
+   |---|---|
+   | state response carries `retentionDegraded: true` | the paragraph renders with `role="status"`; with `false` it is absent from the DOM |
+
+   Test (`gui/tests/integrations-surfaces.test.tsx`):
+   `renders the retention notice only when degraded`.
 5. Semantics note `<p className="integration-semantics">`.
 6. Error Notice adjacent to the header action that failed.
-7. Export/settings panel: `<ClientConfigPanel clients={[client]}
-   apiBase={apiBase} />` after §9 refactor.
-8. `<details className="integration-advanced">`: config path, state reason,
-   last operation id, and an explicit note that raw file/fingerprint data is
-   unavailable until §2 is resolved. Do not display generated export text as
-   if it were current on-disk content.
+7. **[DEFERRED — round-2 amendment]** Export/settings panel:
+   `<ClientConfigPanel clients={[client]} apiBase={apiBase} />` after §9
+   refactor.
+8. **[DEFERRED — round-2 amendment]** `<details className="integration-advanced">`:
+   config path, state reason, last operation id, and an explicit note that raw
+   file/fingerprint data is unavailable until §2 is resolved. Do not display
+   generated export text as if it were current on-disk content.
 9. Per-client history list using the same row helper as Overview; extract a
    local shared `OperationRows` component only if implementation proves both
    call sites have identical props and branches.
 
 ### 7.3 Header action branches
 
-- not installed: switch disabled, no restore unless snapshot availability is
-  positively known, install guidance visible.
+- not installed: switch disabled; restore remains available from any
+  non-expired history row, including `snapshot === "none"`; install guidance
+  visible.
 - absent: switch off/enabled; click applies.
 - current: switch on/enabled; click disables.
 - stale: switch on/enabled; click disables; separate Update button reapplies.
 - conflict: switch on only if backend semantics explicitly say managed block
   exists; current contract does not, so render `on={false}` but locked and let
-  the badge carry truth. Restore remains reachable when a retained snapshot is
-  positively known.
-- unsafe: switch off + locked; restore remains reachable on the same condition;
-  config-path action visible.
+  the badge carry truth. Restore remains reachable from non-expired history.
+- unsafe: switch off + locked; restore remains reachable from non-expired
+  history; config-path action visible.
 - pending: all mutation controls disabled; current badge remains visible;
   `aria-busy="true"` on page section.
 
@@ -554,7 +621,7 @@ contain a working block.
 ```tsx
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../../i18n/shared";
-import { IntegrationApiError, restoreIntegration, type IntegrationOperation } from "./integration-api";
+import { IntegrationApiError, restoreIntegration, type IntegrationJournalRow } from "./integration-api";
 
 export default function RestoreDialog({
   apiBase,
@@ -563,7 +630,7 @@ export default function RestoreDialog({
   onRestored,
 }: {
   apiBase: string;
-  operation: IntegrationOperation;
+  operation: IntegrationJournalRow;
   onClose: () => void;
   onRestored: () => void;
 }) {
@@ -642,9 +709,15 @@ export default function RestoreDialog({
 
 The initial submit is the plain confirm. Drift mode activates only after the
 exact WP4 409 code; its second submit sends `confirmDrift: true`. The dialog
-does not guess drift from timestamps.
+does not guess drift from timestamps. When either `integration_unsafe` or
+`integration_mutation_failed` carries `snapshotPath`, the error branch renders
+`integrations.restore.manual` with the exact path and refusal reason, keeps the
+dialog open, and leaves retry/cancel available.
 
-## 9. Reuse the existing export surface
+## 9. Reuse the existing export surface — **[DEFERRED — round-2 amendment]**
+
+The `ClientConfigPanel` refactor lands with the deferred per-client
+export/settings panel, not in this phase.
 
 Change `ClientConfigPanel` props to:
 
@@ -714,8 +787,8 @@ cannot be toggled.
 | absent | `badge badge-muted` | same | enabled/off; apply |
 | current | `badge badge-green` | `--green-soft`, `--green` | enabled/on; disable + restore |
 | stale | `badge badge-amber` | `--amber-soft`, `--amber` | enabled/on; refresh + disable + restore |
-| conflict | `integration-badge--danger` | `--red-soft`, `--red` | locked; restore if known + inspect |
-| unsafe | `integration-badge--danger-outline` | transparent, `--red`, `--border` | locked; restore if known + path |
+| conflict | `integration-badge--danger` | `--red-soft`, `--red` | locked; restore from non-expired history + inspect |
+| unsafe | `integration-badge--danger-outline` | transparent, `--red`, `--border` | locked; restore from non-expired history + path |
 
 Create `gui/src/styles-integrations.css` with these required rules (responsive
 values may be tuned during browser QA, but no token substitutions):
@@ -762,16 +835,17 @@ already exists.
 
 | State | Activation | Markup | Observable proof |
 |---|---|---|---|
-| loading | active page has no held data and request is in flight | `<div className="integration-card-grid" role="status" aria-label={t("common.loading")}>` with ten `.integration-skeleton-card` children; client page uses header/fact/panel skeletons | stable card geometry; no empty message or enabled action |
+| loading | active page has no held data and request is in flight | `<div className="integration-card-grid" role="status" aria-label={t("common.loading")}>` with one `.integration-skeleton-card` child per rendered card (six in this phase; ten once the deferred native cards land); client page uses header/fact/panel skeletons | stable card geometry; no empty message or enabled action |
 | empty | state list settled and all six `installed === false` | `<EmptyState title=...><ul>` containing six install/client links; rollback renders its separate empty state | no bare grid; each supported client remains discoverable |
 | failed cold | list/status request failed with no held data | `<Notice tone="err">` + Retry; return before empty/grid | error and empty never coexist; retry calls resource refresh |
 | failed with stale | refresh failed while held data exists | keep cards/history, prepend `<Notice tone="err">` with stale wording + Retry | old data remains visible but is not presented as fresh |
 | onboarding | journal settled empty and local key absent | `<p className="integrations-onboarding">` explains one owned block, backup first, surgical removal, restore | disappears only after successful apply/refresh and stays dismissed on reload |
 | mutation busy | WP4 409 `integration_mutation_busy` | error `Notice`; controls re-enable after request settles | no optimistic state change; message says retry after current mutation |
 | conflict error | WP4 409 `integration_conflict` | error `Notice`; card refreshes into conflict badge; switch locks | foreign-edited bytes remain server-owned proof; UI offers no second toggle bypass |
-| unsafe error | WP4 409 `integration_unsafe` | error `Notice` with reason and config path; restore remains only if eligibility is known | locked switch is described by unsafe badge/path |
-| expired journal row | positive `snapshotAvailable === false`, or observed 410 for that op id | disabled `<button>` labelled `백업 만료됨` | row remains in history; no dialog opens |
+| unsafe error | WP4 409 `integration_unsafe` without `snapshotPath` | error `Notice` with reason and config path | locked switch is described by unsafe badge/path |
+| expired journal row | `snapshot === "expired"` | disabled `<button>` labelled `백업 만료됨` | row remains in history; no dialog opens or request is sent |
 | drift confirm | first restore returns exact drift-confirmation code | same dialog changes title/body and confirm label; second POST sends `confirmDrift: true` | no overwrite on first response; explicit second activation required |
+| manual recovery | restore returns `integration_unsafe` or `integration_mutation_failed` with `snapshotPath` | dialog error Notice names the exact path and reason and remains open | `role="alert"` exposes both values; no path is synthesized from the journal row |
 | generic error Notice | any unmapped non-2xx/network failure | `Notice tone="err"` with localized generic copy; technical code may be appended in `<code>` | state/draft remains; retry path visible |
 
 ## 13. i18n source values
@@ -804,7 +878,6 @@ must be naturally translated in the same diff.
 | `integrations.action.undo` | Undo | 되돌리기 |
 | `integrations.action.restorePoint` | Restore this point… | 이 시점으로 복원… |
 | `integrations.action.snapshotExpired` | Backup expired | 백업 만료됨 |
-| `integrations.action.noSnapshot` | No file to restore | 복원할 파일 없음 |
 | `integrations.rollback.title` | Rollback center | 복원 센터 |
 | `integrations.rollback.empty` | No apply history yet | 아직 적용 기록이 없습니다 |
 | `integrations.rollback.emptyBody` | Every successful write keeps a pre-write snapshot first. | 모든 쓰기는 먼저 변경 전 스냅샷을 보관합니다. |
@@ -883,12 +956,11 @@ Every implementation branch must have the named fixture and proof below.
 | stale refresh | installed stale + click Update | PUT body exactly `{enabled:true}`; then status/journal refresh |
 | current disable | installed current + switch click | PUT exactly `{enabled:false}`; no optimistic visual flip |
 | absent apply | installed absent + switch click | PUT exactly `{enabled:true}`; successful response dismisses onboarding |
-| expired journal row | `snapshotAvailable:false` or prior 410 | disabled “Backup expired”; row remains; no dialog/request |
-| no-snapshot row | `snapshot:null` | disabled “No file to restore”; row remains |
-| undo row | newest + `undoEligible:true` + snapshot available | “Undo”; opens plain restore dialog for exact op id |
-| older restore row | retained older operation | “Restore this point…”; opens dialog; no immediate POST |
+| expired journal row | `snapshot:"expired"` | disabled “Backup expired”; row remains; no dialog/request |
+| undo row | `undoable:true` with `snapshot:"stored"` or `"none"` | “Undo”; opens plain restore dialog for exact op id |
+| restore row | `undoable:false` with `snapshot:"stored"` or `"none"` | “Restore this point…”; opens dialog; `"none"` remains actionable as restore-to-absence |
 | drift confirm dialog | first POST returns exact drift code | dialog changes copy; second POST includes `confirmDrift:true` |
-| restore refusal/manual Notice | error carries `snapshotPath` | role alert includes exact path + reason; dialog stays open |
+| restore refusal/manual Notice | `integration_unsafe` or `integration_mutation_failed` carries `snapshotPath` | role alert includes exact path + reason; dialog stays open |
 | generic error Notice | network/unmapped code | localized error visible; prior state and drafts retained |
 | failed-cold state | state request rejects, no cache | Notice + retry only; no empty/grid/actions |
 | stale-data error | held data + refresh rejects | cards remain + stale Notice |
@@ -897,7 +969,7 @@ Every implementation branch must have the named fixture and proof below.
 | onboarding | empty journal + no local key | safety line visible; first success writes key; reload hides it |
 | bulk confirm | at least one current/stale client | dialog names exactly candidates; no mutation before confirm |
 | bulk partial failure | second of multiple PUTs rejects | remaining clients still attempted; Notice names failures; resources refresh |
-| native card unavailable | one native read rejects | only that card says unavailable; file cards still render |
+| native card unavailable **[DEFERRED]** | one native read rejects | only that card says unavailable; file cards still render |
 
 ## 16. Tests and verification
 
@@ -913,19 +985,18 @@ React imports, `act`, and fetch stubs matching
 6. `dismisses onboarding only after a successful apply`
 7. `bulk disable lists and mutates only current and stale clients`
 8. `bulk disable reports deterministic partial failures and refreshes`
-9. `rollback rows distinguish undo restore expired and missing snapshots`
+9. `rollback rows distinguish undo restore restore-to-absence and expired snapshots`
 10. `restore requires a second explicit submit after drift is reported`
 11. `restore refusal keeps the dialog open and names the manual snapshot path`
-12. `native exception cards never receive file-toggle badges or rollback rows`
+12. `native exception cards never receive file-toggle badges or rollback rows` **[DEFERRED]**
 13. `hidden Integration panels stop their data resources without losing mounted drafts`
 
 Fixture requirements:
 
 - Stub exact WP4 bodies and error codes; do not branch on `error` prose.
 - Assert every conditional from §15 is activated at least once.
-- For the unresolved §2 fields, mark eligibility/manual-path tests blocked
-  until WP4 resolves the contract; do not fake server fields in a supposedly
-  final green suite.
+- Use exact canonical journal fixtures: `snapshot` is `"none"`, `"stored"`,
+  or `"expired"`, and every row carries `undoable`.
 - Add static assertion that `styles-integrations.css` contains only existing
   token names for colors (`--green`, `--amber`, `--red`, `--accent`, neutral
   surface/border tokens) and no hex/rgb color literal.
@@ -942,8 +1013,9 @@ bun run build
 
 Browser QA after the automated gate:
 
-1. Desktop and 720 px: summary, ten-card grid, wrapped tabs, rollback rows,
-   and dialogs fit without horizontal page overflow.
+1. Desktop and 720 px: summary, card grid (six file clients in this phase),
+   wrapped tabs, rollback rows, and dialogs fit without horizontal page
+   overflow.
 2. Keyboard-only: outer tabs, inner Claude tabs, every switch/action, bulk
    dialog, restore/drift dialog, Escape, and trigger focus restoration.
 3. Light/dark: all six badge states and disabled controls retain text and UI
@@ -953,6 +1025,10 @@ Browser QA after the automated gate:
 5. Korean: no clipped tab/card/action labels and no orphaned sentence fragment
    in onboarding, bulk, or restore copy.
 
-Acceptance is partial/blocked if either §2 eligibility or manual snapshot-path
-contract remains unresolved. Do not call `004` §§4.3/6 fully implemented while
-those observable branches cannot be grounded.
+Acceptance requires every §15 branch REACHABLE IN THIS PHASE — including
+expired history, restore-to-absence, and both manual-recovery envelope codes —
+to be activated by the final contract fixtures and pass with observable proof.
+Branches belonging to the deferred native cards, the per-client export panel
+and the Advanced disclosure move to the follow-up unit's acceptance along with
+the surfaces themselves (round-2 amendment); they cannot be activated while
+the surfaces that own them do not exist.
