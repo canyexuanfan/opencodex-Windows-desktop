@@ -129,8 +129,25 @@ export interface JournalEntry {
   resultFingerprint: string;
   /** True when the op's result was file absence — restore means "delete". */
   resultAbsent: boolean;
+  /**
+   * The ownership record as it stood BEFORE this operation (null when we
+   * owned nothing yet). This is what makes restore honest: the snapshot
+   * restores the bytes, and this restores the provenance that matched them.
+   *
+   * Without it, restore had to re-derive ownership from the restored file,
+   * and the only available signal was our provider-id prefix — which would
+   * silently adopt a user's own `opencodex/...` entry and let a later disable
+   * delete it. Ownership is never inferred from a prefix (A-gate round 4,
+   * blocker 4).
+   */
+  priorRecord: OwnershipRecord | null;
 }
 ```
+
+`priorRecord` also closes the compensation gap (blocker 5): a failed
+refresh/disable/restore restores the file **and** re-puts `priorRecord`, so a
+client whose record was replaced cannot end up with the new record after the
+new file was rolled back.
 
 `readSnapshot(opId)` returns `{ kind: "none" } | { kind: "stored"; text } |
 { kind: "expired" }`. Restore semantics follow the tag:
@@ -245,9 +262,19 @@ corroborate — a phantom.
 
 | Failure point | Compensation | Result |
 |---|---|---|
-| record write throws | restore the client file, drop any partial record | `write_failed` |
-| journal append throws | restore the client file, drop the record just written | `write_failed` (no phantom row is possible — the row is last) |
-| **compensation itself throws** | none available | `write_failed` with `residual: true` and `snapshotPath`; the message says the file is in an intermediate state and names the snapshot |
+| record write throws | restore the client file, then re-put `priorRecord` (or drop when it was null) | `write_failed` |
+| journal append throws | restore the client file, then re-put `priorRecord` (or drop when it was null) | `write_failed` — no phantom row is possible because the row is last |
+| **any compensating step throws** — file write, record put, or record drop | none available | `write_failed` with `residual: true` and `snapshotPath` |
+
+`residual` covers bookkeeping compensation too, not just the file: a swallowed
+`dropRecord`/`putRecord` failure would leave provenance that disagrees with
+the file, which is exactly the state the flag exists to announce.
+
+**Snapshot GC is not part of the transaction.** `appendOperation` commits the
+row; pruning old snapshots afterwards is post-commit best-effort and its
+failure is logged, never surfaced as an append failure. Otherwise a GC error
+would trigger compensation for an operation that already succeeded — the
+phantom row this ordering exists to prevent (blocker 5).
 
 Claiming a rollback that did not happen is the one failure mode worse than the
 original error, so the refusal type carries the residual flag:
@@ -372,15 +399,19 @@ Named gaps and where they are now closed:
 | `src/integrations/registry.ts` | WP2 | client paths, detection, `loopbackOnly` |
 | `src/integrations/ownership.ts` | WP2 | fingerprints, records |
 | `src/integrations/state.ts` | WP2 | classifier + `readIntegrationState` |
+| `src/integrations/config-io.ts` | **WP2** | `parseConfig`, `loadTarget`, `defaultIntegrationIO` |
 | `src/integrations/journal.ts` | WP2 | journal + snapshots |
-| `src/integrations/writer-io.ts` | WP3 | `loadTarget`, `defaultIntegrationIO` (shared reader/writer seam) |
-| `src/integrations/merge.ts` | WP3 | parse, path set/delete, fragment merge/remove |
+| `src/integrations/merge.ts` | WP3 | path set/delete, fragment merge/remove |
 | `src/integrations/writer.ts` | WP3 | apply / disable / restore |
 | `src/server/management/integration-routes.ts` | WP4 | the five routes |
 
-`writer-io.ts` is imported by WP2's `state.ts`, so it lands in WP2's phase
-even though its body is documented in `031` — the reader and the writer must
-never disagree about what counts as file absence.
+**Phase-boundary rule (blocker 2).** WP2 must typecheck and test with no WP3
+file present. Everything its reader needs — `parseConfig`, `loadTarget`,
+`defaultIntegrationIO` — therefore lives in **`src/integrations/config-io.ts`,
+owned by WP2**, and WP3's `merge.ts` imports `parseConfig` from there rather
+than declaring it. The earlier "writer-io.ts, WP3 but lands in WP2" phrasing
+was a dependency inversion wearing a note; a shared module owned by the
+earlier phase is the actual fix. `021` documents its body; `031` imports it.
 
 Sub-decade docs (`011`, `021`, `031`, `061`) are the standard overflow form
 (LEXICO-SPLIT-01): they carry the long paste-ready bodies so the decade doc

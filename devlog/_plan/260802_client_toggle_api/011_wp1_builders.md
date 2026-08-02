@@ -52,28 +52,55 @@ stay identical (010 §5 accept criterion 4).
 Extraction only, no behavior change. The declarations move out of
 `model-routes.ts`, which then imports them:
 
+The move is verbatim: `model-routes.ts:114` (type), `:129`
+(`listManagementModelRows`, including its `disabled` computation and the
+native/custom/routed merge), and `:182` (`toExportModel`) are cut and pasted
+unchanged, gaining `export`. Only the type declaration and the two new
+exports are reproduced here — the moved function bodies are not retyped,
+because retyping them by hand is how a "mechanical extraction" stops being
+mechanical. The instruction is: **cut lines 114-122, 129-180, and 182-192
+from `model-routes.ts` into this file, add `export` to each, and change
+nothing else.**
+
 ```ts
-import type { OcxConfig } from "../../types";
+import type { CatalogModel } from "../../codex/catalog";
 import type { ExportModel } from "../../clients/config-export";
+import type { OcxConfig } from "../../types";
 
-export interface ManagementModelRow { /* moved verbatim from model-routes.ts */ }
+/** Verbatim from model-routes.ts:114, now exported. */
+export type ManagementModelRow = Partial<CatalogModel> & {
+  provider: string;
+  id: string;
+  namespaced: string;
+  disabled: boolean;
+  native?: boolean;
+  custom?: boolean;
+  customId?: string;
+};
 
-/** Unchanged body, moved verbatim. */
-export async function listManagementModelRows(config: OcxConfig): Promise<ManagementModelRow[]> { /* … */ }
+/** Verbatim from model-routes.ts:129, now exported. Body unchanged. */
+export async function listManagementModelRows(config: OcxConfig): Promise<ManagementModelRow[]> { /* moved verbatim */ }
 
-/** Unchanged body, moved verbatim. */
-export function toExportModel(row: ManagementModelRow): ExportModel { /* … */ }
+/** Verbatim from model-routes.ts:182, now exported. Body unchanged. */
+export function toExportModel(row: ManagementModelRow): ExportModel { /* moved verbatim */ }
 
 /**
- * Visible (non-disabled) rows as export models — the ONE loader used by both
- * /api/client-config and the integration routes, so the two can never
- * disagree about which models a client is told about.
+ * NEW. Visible (non-disabled) rows as export models — the ONE loader used by
+ * both /api/client-config and the integration routes, so the two can never
+ * disagree about which models a client is told about. The filter+map is
+ * exactly what the client-config branch inlines today.
  */
 export async function loadExportModels(config: OcxConfig): Promise<ExportModel[]> {
   const rows = await listManagementModelRows(config);
   return rows.filter(row => !row.disabled).map(toExportModel);
 }
 ```
+
+`model-routes.ts` then adds
+`import { listManagementModelRows, loadExportModels, toExportModel, type ManagementModelRow } from "./model-rows";`
+and its `/api/client-config` branch replaces
+`rows.filter(row => !row.disabled).map(toExportModel)` with
+`await loadExportModels(config)`.
 
 `model-routes.ts` replaces its local declarations with
 `import { listManagementModelRows, loadExportModels, toExportModel } from "./model-rows";`

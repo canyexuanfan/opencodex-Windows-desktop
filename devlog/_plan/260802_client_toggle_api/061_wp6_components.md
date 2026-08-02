@@ -1482,12 +1482,11 @@ Fixed English/Korean intent for the non-client-specific additions:
 
 ## 17. OPEN QUESTIONS
 
-**OPEN QUESTION — `residual` forwarding.** `006` §5 makes `residual?: boolean`
-authoritative and this adapter/UI handles it, but the pasted
-`writerFailureResponse` in `040` currently forwards `snapshotPath` and omits
-`residual`. WP4 must forward `residual` on `integration_unsafe` and
-`integration_mutation_failed`; otherwise the two residual activation rows are
-unreachable and must not be claimed as tested.
+**Resolved — `residual` forwarding.** `040`'s `writerFailureResponse` now
+forwards `message`, `snapshotPath`, and `residual` on both
+`integration_unsafe` and `integration_mutation_failed` (A-gate round 4,
+blocker 6). The two residual activation rows are reachable, and their GUI
+branches are in scope for this phase's tests.
 
 **OPEN QUESTION — advanced settings contract.** The current WP4 routes expose
 no model selection, default-model pointer, raw managed content, or ownership

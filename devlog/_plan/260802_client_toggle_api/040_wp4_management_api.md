@@ -72,7 +72,7 @@ WP4 imports only the agreed WP1-WP3 exports:
 
 ```ts
 import {
-  INTEGRATION_CLIENTS,
+  INTEGRATION_CLIENT_IDS,
   type IntegrationClientId,
 } from "../../integrations/registry";
 import { readIntegrationState } from "../../integrations/state";
@@ -400,7 +400,7 @@ function invalidClientResponse(ctx: ManagementContext): Response {
   return jsonResponse({
     error: "invalid integration client",
     code: "invalid_integration_client",
-    validClients: INTEGRATION_CLIENTS,
+    validClients: INTEGRATION_CLIENT_IDS,
   }, 400, ctx.req, ctx.config);
 }
 
@@ -425,7 +425,7 @@ async function readJsonBody(ctx: ManagementContext): Promise<unknown | Response>
 
 function writerFailureResponse(
   clientId: IntegrationClientId,
-  result: { state: string; reason: string; snapshotPath?: string },
+  result: { state: string; reason: string; message?: string; snapshotPath?: string; residual?: boolean },
   ctx: ManagementContext,
 ): Response {
   if (result.state === "unsafe") {
@@ -435,7 +435,11 @@ function writerFailureResponse(
       clientId,
       state: "unsafe",
       reason: result.reason,
-      snapshotPath: result.snapshotPath,
+      // Forwarded so the GUI can offer manual recovery and warn about an
+      // intermediate state (A-gate round 4, blocker 6).
+      ...(result.message ? { message: result.message } : {}),
+      ...(result.snapshotPath ? { snapshotPath: result.snapshotPath } : {}),
+      ...(result.residual ? { residual: true } : {}),
     }, 409, ctx.req, ctx.config);
   }
   if (result.state === "conflict") {
@@ -453,6 +457,9 @@ function writerFailureResponse(
     clientId,
     state: result.state,
     reason: result.reason,
+    ...(result.message ? { message: result.message } : {}),
+    ...(result.snapshotPath ? { snapshotPath: result.snapshotPath } : {}),
+    ...(result.residual ? { residual: true } : {}),
     snapshotPath: result.snapshotPath,
   }, 500, ctx.req, ctx.config);
 }

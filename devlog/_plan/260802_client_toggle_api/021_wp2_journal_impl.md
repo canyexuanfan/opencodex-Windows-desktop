@@ -294,9 +294,9 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
 }
 ```
 
-`loadTarget` and `defaultIntegrationIO` live in `src/integrations/writer-io.ts`
+`loadTarget` and `defaultIntegrationIO` live in `src/integrations/config-io.ts`
 (shared by the reader and the writer so they can never disagree about what
-counts as absence); their bodies are in `031` §0 and §5.
+counts as absence); their bodies are in `021` §5 (WP2 owns it).
 
 ## 4. `src/integrations/journal.ts` (NEW)
 
@@ -352,11 +352,18 @@ export function captureSnapshot(
   return { kind: "stored", relPath: join("snapshots", clientId, opId) };
 }
 
-/** Append first, prune after — a crash mid-append can never orphan the newest snapshot. */
+/**
+ * Commit the row. Nothing else: a pruning failure must never look like an
+ * append failure, or the writer would compensate for an operation that
+ * already succeeded — the phantom row the ordering exists to prevent
+ * (A-gate round 4, blocker 5).
+ */
 export function appendOperation(entry: JournalEntry): void {
   ensureDir(journalPath());
   appendFileSync(journalPath(), JSON.stringify(entry) + "\n", { encoding: "utf8", mode: 0o600 });
-  pruneSnapshots(entry.clientId);
+  // Post-commit, best-effort. Old snapshot bytes lingering one extra cycle is
+  // harmless; a false append failure is not.
+  try { pruneSnapshots(entry.clientId); } catch { /* best effort by contract */ }
 }
 
 /** Newest first. A torn final line (crash mid-append) is skipped, not thrown. */

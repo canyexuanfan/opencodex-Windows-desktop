@@ -22,12 +22,13 @@ Paste-ready implementation for `030`. Types come from `006_module_contracts.md`
 
 The bodies in §2-§4 are written against these rules.
 
-## 0. `src/integrations/writer-io.ts` (NEW) — the seam both reader and writer use
+## 0. Shared seam — `src/integrations/config-io.ts` is **WP2's** module
 
-`loadTarget` and `defaultIntegrationIO` live here rather than in `writer.ts`
-because `readIntegrationState` (021) needs them too, and a reader that
-disagreed with the writer about what counts as absence would reintroduce
-blocker 3 through the back door.
+`parseConfig`, `loadTarget`, and `defaultIntegrationIO` are owned by WP2 and
+documented in `021` §5, because `readIntegrationState` needs them and WP2 must
+typecheck with no WP3 file present (006 §8 phase-boundary rule). WP3 imports
+them; `merge.ts` does NOT redeclare `parseConfig`. The bodies below are
+reproduced here only as the reference WP3 codes against.
 
 ```ts
 /** Read + classify the target, collapsing the three failure shapes correctly. */
@@ -53,6 +54,8 @@ function commit(io: IntegrationIO, args: {
   configPath: string; before: string | null; nextText: string | null;
   record: OwnershipRecord | null; clientId: IntegrationClientId; entry: JournalEntry;
   snapshotPath?: string; state: IntegrationState;
+  /** Ownership as it stood BEFORE this operation; restored on compensation. */
+  priorRecord: OwnershipRecord | null;
 }): WriteOutcome {
   try {
     if (args.nextText === null) io.removeFile(args.configPath);
@@ -68,7 +71,6 @@ function commit(io: IntegrationIO, args: {
   try {
     io.appendJournal(args.entry);
   } catch (error) {
-    try { io.dropRecord(args.clientId); } catch { /* covered by residual below */ }
     return compensate(io, args, error, "could not append the journal row");
   }
   return { ok: true, changed: true, state: args.state, clientId: args.clientId,
@@ -76,21 +78,34 @@ function commit(io: IntegrationIO, args: {
 }
 
 function compensate(io: IntegrationIO, args: { configPath: string; before: string | null;
-  clientId: IntegrationClientId; state: IntegrationState; snapshotPath?: string },
+  clientId: IntegrationClientId; state: IntegrationState; snapshotPath?: string;
+  priorRecord: OwnershipRecord | null },
   cause: unknown, what: string): WriteRefused {
+  // Every compensating step is guarded: a swallowed bookkeeping failure would
+  // leave provenance disagreeing with the file, which is exactly what the
+  // residual flag exists to announce (A-gate round 4, blocker 5).
   try {
     if (args.before === null) io.removeFile(args.configPath);
     else io.writeText(args.configPath, args.before);
+    // Put ownership back the way it was — not merely drop the new record,
+    // which would erase a record a refresh/disable/restore had replaced.
+    if (args.priorRecord) io.putRecord(args.priorRecord);
+    else io.dropRecord(args.clientId);
   } catch {
-    // Rollback failed. Say so — a false "rolled back" is worse than the error.
+    // Rollback failed (file or ownership). Say so — a false "rolled back" is
+    // worse than the original error.
     return { ok: false, reason: "write_failed", state: args.state, clientId: args.clientId,
       residual: true, snapshotPath: args.snapshotPath,
-      message: `${what}, and the file could not be rolled back. It is in an intermediate state; the backup is at ${args.snapshotPath ?? "(none)"}.` };
+      message: `${what}, and the change could not be rolled back. The file or its ownership record is in an intermediate state; the backup is at ${args.snapshotPath ?? "(none)"}.` };
   }
   return { ok: false, reason: "write_failed", state: args.state, clientId: args.clientId,
     snapshotPath: args.snapshotPath, message: `${what}; the change was rolled back. Cause: ${msg(cause)}` };
 }
 ```
+
+`io.appendJournal` commits the row and nothing else; snapshot pruning is
+post-commit best-effort inside `journal.ts` and can never surface as an append
+failure (006 §5). That is what makes "no phantom row" true rather than hoped.
 
 ## 1. `src/integrations/merge.ts` (NEW)
 
@@ -258,13 +273,15 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   return commit(io, {
     configPath, before, nextText: text, clientId, state: "current",
     snapshotPath: snapshotAbsPath(snapshot),
+    priorRecord: record,
     record: {
       clientId, configPath, fileFingerprint: fingerprint(text),
       blockFingerprint: fingerprint(canonicalContribution(contribution)),
       fragmentPaths: fragmentPathsOf(contribution), appliedAt: at, opId,
     },
     entry: { opId, clientId, kind: state === "stale" ? "refresh" : "apply", at, configPath,
-             snapshot, resultFingerprint: fingerprint(text), resultAbsent: false },
+             snapshot, resultFingerprint: fingerprint(text), resultAbsent: false,
+             priorRecord: record },
   });
 }
 ```
@@ -326,9 +343,10 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
   // record: null drops it — a record with no block would later read as conflict.
   return commit(io, {
     configPath, before, nextText: text, clientId, state: "absent", record: null,
-    snapshotPath: snapshotAbsPath(snapshot),
+    snapshotPath: snapshotAbsPath(snapshot), priorRecord: record,
     entry: { opId, clientId, kind: "disable", at, configPath, snapshot,
-             resultFingerprint: fingerprint(text), resultAbsent: false },
+             resultFingerprint: fingerprint(text), resultAbsent: false,
+             priorRecord: record },
   });
 }
 ```
@@ -349,13 +367,18 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
     return refuse(entry.clientId, "snapshot_expired", "absent", "that backup has expired");
   }
 
-  const current = io.readText(configPath);
-  const kind = io.statKind(configPath);
-  if (current !== null && kind !== "file") {
+  // Resolve current bytes through the SAME seam every other operation uses,
+  // so an unreadable file can never be mistaken for an absent one here either.
+  const target = loadTarget(io, configPath);
+  const backupHint = snapshot.kind === "stored" ? snapshot.path : undefined;
+  if (!target.ok) {
     return refuse(entry.clientId, "unsafe", "unsafe",
-      `${configPath} is not a regular file; the backup is at ${snapshot.kind === "stored" ? snapshot.path : "(none)"}`,
-      snapshot.kind === "stored" ? snapshot.path : undefined);
+      target.why === "read-failed"
+        ? `${configPath} exists but could not be read; the backup is at ${backupHint ?? "(none)"}`
+        : `${configPath} is not a regular file; the backup is at ${backupHint ?? "(none)"}`,
+      backupHint);
   }
+  const current = target.before;   // string | null
 
   // Drift: the file changed after the operation we are undoing.
   const drifted = fingerprint(current ?? "") !== entry.resultFingerprint;
@@ -368,32 +391,28 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   // first, so a confirmed drift-restore never destroys the newer edits.
   const opId = newOpId();
   const preSnapshot = captureSnapshot(entry.clientId, opId, current);
-  try {
-    if (snapshot.kind === "none") {
-      io.removeFile(configPath);              // restore-to-absence
-    } else {
-      io.mkdirp(dirname(configPath));
-      io.writeText(configPath, snapshot.text);
-    }
-  } catch (error) {
-    return refuse(entry.clientId, "write_failed", "conflict", String(error), snapshotAbsPath(preSnapshot));
-  }
-
   const restoredText = snapshot.kind === "none" ? null : snapshot.text;
+  // NOTE: no write happens here. `commit` below performs the ONE mutation, so
+  // a failure can never leave an unjournaled change (A-gate round 4, blocker 3).
   const exportSpec = EXPORT_CLIENTS[entry.clientId];
-  const restoredDoc = parseConfig(restoredText, exportSpec.format);
   const fresh = exportSpec.buildContribution(exportContextOf(input));
 
-  // The record must describe what was RESTORED, not what we would write now.
-  // A snapshot taken under an older catalog/port owns different fragment
-  // values — and for Kimi, a different SET of model paths. Recording the fresh
-  // contribution would let a later disable delete paths the file does not have
-  // while orphaning the ones it does (A-gate round 3, blocker 5).
-  const actual = extractContribution(restoredDoc, entry.clientId, fresh);
+  /**
+   * Provenance is RESTORED, never re-derived. `entry.priorRecord` is the
+   * ownership record as it stood when that snapshot was taken, so the record
+   * and the bytes always describe the same thing.
+   *
+   * The earlier attempt read the restored document and claimed every
+   * `opencodex/...` key as ours. That silently adopted a user's own entry and
+   * let a later disable delete it — the exact invariant this feature exists to
+   * protect (A-gate round 4, blocker 4). Ownership is never inferred from a
+   * prefix; `extractContribution` is deleted.
+   */
+  const restoredRecord = entry.priorRecord;
   const state: IntegrationState =
-    actual.fragments.length === 0
-      ? "absent"
-      : fingerprint(canonicalContribution(actual)) === fingerprint(canonicalContribution(fresh))
+    restoredRecord === null
+      ? (restoredText === null ? "absent" : "conflict")
+      : restoredRecord.blockFingerprint === fingerprint(canonicalContribution(fresh))
         ? "current"
         : "stale";
 
@@ -401,56 +420,31 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   return commit(io, {
     configPath, before: current, nextText: restoredText, clientId: entry.clientId, state,
     snapshotPath: snapshotAbsPath(preSnapshot),
-    record: state === "absent" ? null : {
-      clientId: entry.clientId, configPath,
+    // The restored record IS the prior one, with the file fingerprint refreshed
+    // to the bytes we just put back. Its fragmentPaths and blockFingerprint are
+    // carried verbatim — they described these bytes when the snapshot was taken.
+    record: restoredRecord === null ? null : {
+      ...restoredRecord,
       fileFingerprint: restoredText === null ? "" : fingerprint(restoredText),
-      blockFingerprint: fingerprint(canonicalContribution(actual)),
-      fragmentPaths: fragmentPathsOf(actual),
-      appliedAt: at, opId,
+      appliedAt: at,
+      opId,
     },
+    priorRecord: readRecords()[entry.clientId] ?? null,
     entry: { opId, clientId: entry.clientId, kind: "restore", at, configPath,
              snapshot: preSnapshot,
              resultFingerprint: restoredText === null ? "" : fingerprint(restoredText),
-             resultAbsent: restoredText === null },
+             resultAbsent: restoredText === null,
+             priorRecord: readRecords()[entry.clientId] ?? null },
   });
 }
 
-/**
- * Read back the fragments actually present in a document, using the fresh
- * contribution only as the shape guide (which paths this client can own) —
- * never as the values.
- *
- * Kimi is why this cannot be a simple path lookup: its model fragments are
- * one per selector, so a restored file may own a different set than we would
- * write today. We therefore enumerate the client's owning containers and take
- * every key that carries our provider id.
- */
-export function extractContribution(
-  doc: unknown, clientId: IntegrationClientId, shape: ManagedContribution,
-): ManagedContribution {
-  const containers = new Map<string, readonly string[]>();
-  for (const fragment of shape.fragments) {
-    containers.set(fragment.path.slice(0, -1).join("\u0000"), fragment.path.slice(0, -1));
-  }
-  const fragments: ManagedFragment[] = [];
-  for (const container of containers.values()) {
-    const node = readPath(doc, container);
-    if (typeof node !== "object" || node === null || Array.isArray(node)) continue;
-    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-      if (key === OPENCODE_PROVIDER_ID || key.startsWith(`${OPENCODE_PROVIDER_ID}/`)) {
-        fragments.push({ path: [...container, key], value });
-      }
-    }
-  }
-  return { clientId, fragments };
-}
 ```
 
-`extractContribution` is deliberately the ONLY place a prefix is consulted,
-and only to read. Removal still uses recorded paths exclusively (§1), so a
-user's own `opencodex/...` entry can be *observed* here — it makes the state
-`conflict` at the next classify because no record covers it — but never
-deleted.
+**No prefix is consulted anywhere in this module.** Ownership comes from a
+record — the live one for apply/disable, `entry.priorRecord` for restore — and
+removal touches only recorded paths. A user's own `opencodex/...` entry is
+therefore never owned, never removed, and correctly reads as `conflict`
+because no record covers it.
 
 ## 5. Default IO seam
 
