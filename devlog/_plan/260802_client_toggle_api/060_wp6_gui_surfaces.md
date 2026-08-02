@@ -94,8 +94,9 @@ paths or stale client state.
 
 **OPEN QUESTION — advanced/settings data.** WP4 toggle accepts only
 `{ enabled: boolean }`; state does not expose model selection, default-model
-pointer, raw managed content, or ownership fingerprints. WP6 can ship export,
-path, state, reason, applied time, and history. The model picker, default-model
+pointer, raw managed content, or ownership fingerprints. WP6 can ship path,
+state, reason, applied time, and history; export ships with the deferred
+per-client panel (round-2 amendment), not in this phase. The model picker, default-model
 control, raw-file preview, and fingerprint detail from `004` §5.4 require a
 later contract. Keep an explicit unavailable note; do not create inert inputs.
 
@@ -544,9 +545,10 @@ const CLIENT_META: Record<FileIntegrationClientId, {
   `integration-journal:${apiBase}:${client}`, `enabled: active`.
 - Toggle/refresh: exact PUT with boolean only.
 - Restore: exact POST with `{ opId, confirmDrift }` only.
-- Export: existing exact
+- Export **[DEFERRED — round-2 amendment]**: existing exact
   `GET /api/client-config?client=:clientId` through `ClientConfigRow`; no
-  duplicate serializer in the browser.
+  duplicate serializer in the browser. Ships with the per-client export panel
+  in the follow-up unit.
 
 ### 7.2 Markup anatomy
 
