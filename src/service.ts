@@ -6,7 +6,7 @@
  * restore it via the command.
  */
 import { execFileSync, execSync, spawnSync } from "node:child_process";
-import { findLiveProxy, SERVICE_STOP_LIVENESS } from "./server/proxy-liveness";
+import { findLiveProxy, proxyIdentityAt, SERVICE_STOP_LIVENESS } from "./server/proxy-liveness";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -331,6 +331,122 @@ export function resolveServiceListenPort(override?: number): number {
 function buildServiceShellCommand(bun: string, cli: string, port = resolveServiceListenPort()): string {
   const tokenFile = serviceApiTokenFilePath();
   return `if [ -f ${shellQuote(tokenFile)} ]; then OPENCODEX_API_AUTH_TOKEN="$(cat ${shellQuote(tokenFile)})"; export OPENCODEX_API_AUTH_TOKEN; fi; exec ${shellQuote(bun)} ${shellQuote(cli)} start --port ${port}`;
+}
+
+/**
+ * The `--port <n>` actually baked into the installed launchd plist, or null when it
+ * cannot be read. macOS only — named for launchd rather than "service" so no caller
+ * assumes it covers systemd or the Windows wrapper.
+ *
+ * `start` needs this because it does NOT rewrite the plist: an install made under
+ * OCX_BAKE_PORT, or any later config.port edit, would otherwise leave launchd serving
+ * one port while the confirmation probes another, failing a healthy service.
+ *
+ * Anchored on the closing tag and matched LAST: the command also carries the Bun and
+ * CLI paths, and a path containing the literal `start --port 9999` must not shadow
+ * the real argument. buildPlist emits the command as the final ProgramArguments
+ * string, and buildServiceShellCommand puts the port at the very end of it.
+ */
+export function launchdListenPort(deps: { readPlist?: () => string } = {}): number | null {
+  try {
+    const text = (deps.readPlist ?? (() => readFileSync(plistPath(), "utf8")))();
+    const last = [...text.matchAll(/start --port (\d{1,5})\s*<\/string>/g)].at(-1);
+    if (!last) return null;
+    const n = Number(last[1]);
+    return n > 0 && n <= 65535 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `--port <n>` baked into the installed systemd user unit. Linux only. */
+export function systemdListenPort(deps: { readUnit?: () => string } = {}): number | null {
+  try {
+    const text = (deps.readUnit ?? (() => readFileSync(unitPath(), "utf8")))();
+    const last = [...text.matchAll(/start --port (\d{1,5})(?:\s|"|$)/gm)].at(-1);
+    if (!last) return null;
+    const n = Number(last[1]);
+    return n > 0 && n <= 65535 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The listen port of the INSTALLED service artifact, falling back to the configured
+ * one. Each reader returns null off its own platform, so the chain needs no platform
+ * branch — and on Windows both return null, preserving today's behavior.
+ */
+export function installedServiceListenPort(): number {
+  return launchdListenPort() ?? systemdListenPort() ?? resolveServiceListenPort();
+}
+
+export const SERVICE_INSTALL_HEALTH_MS = 20_000;
+
+/**
+ * Whether a proxy actually answers on the port this install/start just produced.
+ *
+ * Registration is not service: `launchctl list` reports a job that never bound, and
+ * `systemctl is-active` reports a process that bound nothing. Probing is the only
+ * thing that answers the question the user is actually asking.
+ *
+ * Probes the BAKED target rather than resolving one. `findLiveProxy` resolves through
+ * pidfile -> runtime-port -> config.port, and a service reinstall has just invalidated
+ * the first two while `resolveServiceListenPort` (OCX_BAKE_PORT precedence, config.port
+ * === 0 normalization) can disagree with the third.
+ *
+ * Soft: returns the outcome, never throws; the caller chooses between a checkmark and
+ * an actionable warning.
+ */
+export async function confirmServiceServing(
+  deps: {
+    port?: number;
+    hostname?: string;
+    probe?: (port: number, hostname: string) => Promise<boolean>;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    timeoutMs?: number;
+  } = {},
+): Promise<{ ok: true; port: number } | { ok: false; port: number }> {
+  const port = deps.port ?? installedServiceListenPort();
+  const hostname = deps.hostname ?? loadConfig().hostname ?? "127.0.0.1";
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  const probe = deps.probe ?? (async (p, h) => !!(await proxyIdentityAt(p, { hostname: h })));
+  const deadline = now() + (deps.timeoutMs ?? SERVICE_INSTALL_HEALTH_MS);
+  for (;;) {
+    if (await probe(port, hostname)) return { ok: true, port };
+    if (now() >= deadline) return { ok: false, port };
+    await sleep(500);
+  }
+}
+
+/**
+ * Print the outcome of `install` / `start` / `repair` in terms of what the user cares
+ * about — is it serving? — instead of whether the manager accepted the registration.
+ *
+ * Sets `process.exitCode = 1` when nothing answers. That is deliberate: the GUI update
+ * worker reads the child's exit status, so a registered-but-silent service now makes it
+ * fall back to a direct proxy start rather than reporting a successful update over a
+ * dead port.
+ */
+async function reportServiceServing(
+  verb: "installed" | "started" | "repaired",
+  deps: Parameters<typeof confirmServiceServing>[0] = {},
+): Promise<void> {
+  const serving = await confirmServiceServing(deps);
+  if (serving.ok) {
+    console.log(`✅ opencodex service ${verb} and serving on port ${serving.port}.`);
+    return;
+  }
+  console.error(
+    `⚠️  Service ${verb}, but no proxy answered on port ${serving.port} within `
+    + `${Math.trunc(SERVICE_INSTALL_HEALTH_MS / 1000)}s.\n`
+    + `   The manager registered the job; that is not the same as serving.\n`
+    + `   Log:       ${serviceLogPath()}\n`
+    + `   Meanwhile: ocx start   (serves in the foreground)`,
+  );
+  process.exitCode = 1;
 }
 
 function systemdQuote(value: string): string {
@@ -2177,7 +2293,14 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
     assertServiceEnvironmentMatchesInstall();
     assertServiceAuthEnvironment();
     await repairService();
-    console.log("✅ opencodex background service repaired (assets refreshed, no Task Scheduler re-registration).");
+    if (process.platform === "win32") {
+      console.log("✅ opencodex background service repaired (assets refreshed, no Task Scheduler re-registration).");
+    } else {
+      // Same scope as install/start: Windows keeps its existing registration-health
+      // reporting; macOS/Linux gain the serving check. A repair that reports success
+      // while nothing serves is the defect class this unit exists to close.
+      await reportServiceServing("repaired");
+    }
     return;
   }
   // Non-install subcommands follow the backend recorded at install time (state v2).
@@ -2192,9 +2315,13 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       assertServiceEnvironmentMatchesInstall();
       assertServiceAuthEnvironment();
       await ops.install();
-      console.log(backend === "native"
-        ? "✅ opencodex native service installed + started (windowless, starts at boot, auto-restarts on crash)."
-        : "✅ opencodex service installed + started (auto-starts on login, auto-restarts on crash).");
+      if (process.platform === "win32") {
+        console.log(backend === "native"
+          ? "✅ opencodex native service installed + started (windowless, starts at boot, auto-restarts on crash)."
+          : "✅ opencodex service installed + started (auto-starts on login, auto-restarts on crash).");
+      } else {
+        await reportServiceServing("installed", { port: resolveServiceListenPort() });
+      }
       if (process.platform === "linux") console.log("   For auto-start on boot: loginctl enable-linger $USER");
       // Service users never reach the `ocx start` prompt: the proxy they run is the
       // supervised child, which always carries OCX_SERVICE=1. This command, though, is
@@ -2204,7 +2331,11 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       break;
     case "start":
       ops.start();
-      console.log("✅ service started.");
+      if (process.platform === "win32") {
+        console.log("✅ service started.");
+      } else {
+        await reportServiceServing("started");
+      }
       break;
     case "stop": {
       assertServiceEnvironmentMatchesInstall();

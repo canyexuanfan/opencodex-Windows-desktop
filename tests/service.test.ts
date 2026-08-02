@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusSummary, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusSummary, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -661,7 +661,7 @@ describe("service lifecycle cleanup ordering", () => {
     expect(service).toContain('verifyPidIdentity');
     expect(service).toContain("removeRuntimePort(pid);");
     expect(service).toContain('import { isProcessAlive, stopProxy } from "./lib/process-control";');
-    expect(service).toContain('import { findLiveProxy, SERVICE_STOP_LIVENESS } from "./server/proxy-liveness";');
+    expect(service).toContain('import { findLiveProxy, proxyIdentityAt, SERVICE_STOP_LIVENESS } from "./server/proxy-liveness";');
     expect(service).toContain('type TrackedProxyCleanupResult = "none" | "stale" | "stopped";');
     expect(service).toContain("async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult>");
     expect(service).toContain("...SERVICE_STOP_LIVENESS");
@@ -1064,6 +1064,112 @@ describe("launchctl load verification", () => {
         launchctl: failedLoad,
         matches: () => ({ loaded: false, matchesPlist: false }),
       })).toThrow(/service install/);
+    });
+  });
+});
+
+/**
+ * Registration is not service. `launchctl load` succeeding (or `systemctl enable`,
+ * or `schtasks /run`) proves the manager accepted the job, not that the proxy bound
+ * a port — so `install`/`start` printed a green checkmark for a service that never
+ * served. These helpers answer the second question.
+ */
+describe("service serving confirmation", () => {
+  describe("launchdListenPort", () => {
+    test("reads the port baked into the plist, not the current config", () => {
+      expect(launchdListenPort({
+        readPlist: () => "<string>exec '/b' '/c' start --port 18222</string>",
+      })).toBe(18222);
+    });
+
+    // The command's own Bun/CLI paths precede the argument; a path containing the
+    // literal must not shadow it.
+    test("prefers the argument tail over a path that looks like one", () => {
+      expect(launchdListenPort({
+        readPlist: () => "<string>exec '/opt/start --port 9999/bun' '/c' start --port 18222</string>",
+      })).toBe(18222);
+    });
+
+    test("returns null when there is no port to read", () => {
+      expect(launchdListenPort({ readPlist: () => "<string>no port here</string>" })).toBeNull();
+    });
+
+    test("rejects out-of-range ports rather than probing them", () => {
+      expect(launchdListenPort({ readPlist: () => "<string>start --port 0</string>" })).toBeNull();
+      expect(launchdListenPort({ readPlist: () => "<string>start --port 70000</string>" })).toBeNull();
+    });
+
+    // Linux/Windows hit this on every call: plistPath() has nothing to read.
+    test("returns null when the plist cannot be read", () => {
+      expect(launchdListenPort({ readPlist: () => { throw new Error("ENOENT"); } })).toBeNull();
+    });
+  });
+
+  describe("systemdListenPort", () => {
+    test("reads the port out of the unit's ExecStart line", () => {
+      expect(systemdListenPort({
+        readUnit: () => 'ExecStart="/bin/sh" -lc "exec \'/b\' \'/c\' start --port 18222"\n',
+      })).toBe(18222);
+    });
+
+    test("returns null when the unit cannot be read", () => {
+      expect(systemdListenPort({ readUnit: () => { throw new Error("ENOENT"); } })).toBeNull();
+    });
+
+    test("rejects out-of-range ports", () => {
+      expect(systemdListenPort({ readUnit: () => "ExecStart=... start --port 0\n" })).toBeNull();
+    });
+  });
+
+  describe("confirmServiceServing", () => {
+    test("returns the baked port once the proxy answers", async () => {
+      let calls = 0;
+      const out = await confirmServiceServing({
+        port: 10100,
+        hostname: "127.0.0.1",
+        probe: async () => ++calls >= 2,
+        sleep: async () => {},
+        now: () => 0,
+        timeoutMs: 5_000,
+      });
+      expect(out).toEqual({ ok: true, port: 10100 });
+    });
+
+    test("gives up at the deadline instead of hanging", async () => {
+      let now = 0;
+      const out = await confirmServiceServing({
+        port: 10100,
+        probe: async () => false,
+        sleep: async ms => { now += ms; },
+        now: () => now,
+        timeoutMs: 2_000,
+      });
+      expect(out).toEqual({ ok: false, port: 10100 });
+    });
+
+    test("probes at least once even with a zero budget", async () => {
+      let probes = 0;
+      await confirmServiceServing({
+        port: 10100,
+        probe: async () => { probes += 1; return false; },
+        sleep: async () => {},
+        now: () => 0,
+        timeoutMs: 0,
+      });
+      expect(probes).toBe(1);
+    });
+
+    // A service reinstall invalidates the pidfile, so resolving the target through
+    // it (findLiveProxy) would report a serving service as dead. Ask the baked port.
+    test("probes the port it was given rather than resolving one", async () => {
+      const seen: number[] = [];
+      await confirmServiceServing({
+        port: 18999,
+        probe: async p => { seen.push(p); return true; },
+        sleep: async () => {},
+        now: () => 0,
+      });
+      expect(seen).toEqual([18999]);
     });
   });
 });

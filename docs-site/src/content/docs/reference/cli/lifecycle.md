@@ -198,6 +198,33 @@ ocx service status
 ocx service uninstall
 ```
 
+On macOS and Linux, `install`, `start`, and `repair` confirm that a proxy actually
+answers on the port baked into the installed service before reporting success. They
+wait up to 20 seconds and then print the serving port:
+
+```
+✅ opencodex service installed and serving on port 10100.
+```
+
+If nothing answers, they warn and **exit non-zero**:
+
+```
+⚠️  Service installed, but no proxy answered on port 10100 within 20s.
+   The manager registered the job; that is not the same as serving.
+   Log:       ~/.opencodex/service.log
+   Meanwhile: ocx start   (serves in the foreground)
+```
+
+A non-zero exit here means *registered but not serving* — not *not installed*. The
+service manager accepted the job; the proxy behind it never bound the port. Read the
+log named in the message, and use `ocx start` to serve in the foreground meanwhile.
+
+On macOS this also covers a subtler failure: `launchctl load` reports failure on
+stderr while exiting 0, so a load that did not take used to leave launchd running a
+**previous** version of the service definition while the command printed a checkmark.
+`install` now fails loudly in that case and names the `launchctl bootout` command that
+clears the stale job.
+
 On Windows, `ocx service status` reports Task Scheduler registration separately from
 identity-verified OpenCodex proxy reachability. It does not print the localized `schtasks` table,
 so the summary remains readable across Windows code pages.
