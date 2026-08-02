@@ -425,6 +425,23 @@ Refusal is `adopt_unsupported_form` with the file path and line number. That is
 a narrow dead end that names where to look, and it is honest about the reason:
 we do not have a parser we trust for the general case.
 
+**The decoded text then goes through the ordinary pipeline, in this order:**
+
+1. decode with the narrow decoder → `adopt_unsupported_form` on refusal
+2. normalize: tab → four spaces, CRLF and lone CR → LF
+3. validate scalars: reject unpaired surrogates, C0, DEL, C1 → `invalid_characters`
+   with a code-point position
+4. enforce the 64 KiB body cap **after** normalization, in UTF-8 bytes, and the
+   128 KiB composed cap against the layers that already exist
+5. preview **the post-normalization body** — the exact bytes that will be
+   committed
+
+Step 5 matters: an earlier draft previewed the decoded text and committed the
+normalized text, so a body containing tabs would have been shown one way and
+saved another. Preview and commit must be the same string.
+
+The same five steps run for `owned-malformed` re-adoption.
+
 ### Malformed owned lines
 
 Marker present, shape non-canonical. The audit flagged this as a new dead end,
@@ -552,10 +569,6 @@ it happens anyway, failing closed is the whole point of having the record.
 `recovery_required` names both paths and the journal, and blocks mutations until
 the user resolves it. An honest stop beats best-effort repair on a file the user
 also edits by hand.
-
-If the journal itself is truncated or unparseable: restore from the pre-image
-**only if every target still matches its recorded pre-image or post-image
-hash**; otherwise touch nothing and report `recovery_required`.
 
 ### Commit point — one state machine, not two
 
@@ -757,6 +770,12 @@ might read differently.
 44. post-rename readback missing our lines → `write_superseded`
 45. lock held by a live pid → second writer waits then refuses
 46. lock held by a dead pid → broken after the timeout
+46a. **A quarantines the stale lock; B acquires the real lock before A can
+     recreate it; A's `wx` fails; A retries from the top without deleting B's
+     lock and without entering the critical section**
+46b. release with a mismatched token deletes nothing and reports
+     `write_superseded`
+46c. two contenders quarantine simultaneously → exactly one rename succeeds
 47. **`readPromptLayers` never writes**: a read against every drift state leaves
     both files byte-identical
 
@@ -770,6 +789,15 @@ Both behave differently enough on Windows that WP1's CI must run its suite on
 Linux, macOS, and Windows — the three platforms `AGENTS.md` names. Path
 separators and `realpathSync.native` on a WSL-visible `$CODEX_HOME`
 (`home.ts:90-107`) are covered by existing fixtures.
+
+**Windows durability is a WP1 acceptance gate, not an assumption.** Directory
+`fsync` is unavailable there, and the plan does not claim a Bun API for
+`MoveFileEx` write-through because none is established. WP1 must determine what
+Bun actually exposes and then either use it or **fail closed**: if
+write-through cannot be guaranteed, the journal is still written first, and a
+crash surfaces as `recovery_required` rather than as silent loss. A Windows test
+must exercise that branch explicitly. WP1 does not land until this is settled
+one way or the other and the answer is recorded here.
 
 ### No new production dependency
 

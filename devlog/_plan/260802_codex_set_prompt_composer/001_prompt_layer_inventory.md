@@ -27,7 +27,7 @@ because the fix had not actually landed on this block.
 | 8 | Environment context | `<environment_context>` | user | `include_environment_context` | on | `config-toggle` |
 | 9 | Environments instructions | `<environments_instructions>` | dev | `include_environment_context` AND `[features] deferred_executor` | off | `feature-gated` |
 | 10 | Apps | `<apps_instructions>` | dev | `include_apps_instructions` + connector present | on | `config-toggle` |
-| 11 | Plugins | `<plugins_instructions>` | dev | `[features] plugins` + availability | on | `feature-gated` |
+| 11 | Plugins | `<plugins_instructions>` | dev | `plugins_available` at turn build — see §Plugins | — | `runtime-conditional` |
 | 12 | Tools | `<tools>` | dev | `[features] deferred_tool_world_state` | off | `feature-gated` |
 | 13 | Skills (extension) | `<skills_instructions>` | dev | `[skills] include_instructions` | on | `config-toggle` |
 | 14 | Multi-agent mode | `<multi_agent_mode>` | dev | `[features.multi_agent_v2] enabled` | off | `feature-gated` |
@@ -71,8 +71,12 @@ shows these as **status rows, not switches** — flipping `multi_agent_v2` from 
 prompt page would silently reconfigure subagent concurrency.
 
 `personality` (default on, `features/lib.rs:1373`), `token_budget` (off,
-`:1337`), `deferred_executor` (off, `:883`), `plugins` (on, `:1181`),
+`:1337`), `deferred_executor` (off, `:883`),
 `deferred_tool_world_state` (off, `:1151`), `multi_agent_v2` (off, `:1097`).
+
+`[features] plugins` (on, `:1181`) is deliberately **not** in this list: it
+influences plugin loading but does not gate the `<plugins_instructions>`
+section, which follows a runtime OR. See §Plugins.
 
 ## 4. The canonical taxonomy — five classes, not two
 
@@ -111,18 +115,15 @@ of §2. **These are the only rows that get a switch.**
 | `personality` | `[features] personality` | on |
 | `context-window-guidance` | `[features] token_budget` | off |
 | `environments-instructions` | `[features] deferred_executor` | off |
-| `plugins` | `[features] plugins` | on |
 | `tools` | `[features] deferred_tool_world_state` | off |
 | `multi-agent-mode` | `[features.multi_agent_v2] enabled` | off |
-
-**Plugins belongs here, not in the non-disableable set.** `session/mod.rs:3422-3430`
-checks `Feature::Plugins` when building plugin context. The audit was right; the
-earlier draft was wrong. What is true is narrower: there is no
-`include_plugins_instructions` key. That makes it feature-gated, not immovable.
 
 Class C rows get **no switch** — flipping `multi_agent_v2` from a prompt page
 would silently reconfigure subagent concurrency — but they are honestly labelled
 as configurable elsewhere, with a link to the setting that owns them.
+
+**Plugins is not in this class**, though two earlier drafts put it here. See
+§Plugins below.
 
 ### Class D — `runtime-conditional` — no config gate, presence follows state
 
@@ -131,6 +132,38 @@ as configurable elsewhere, with a link to the setting that owns them.
 | `model-switch` | the model changed and instructions are non-empty | `model.rs:44-58` |
 | `agents-md` | discovered project docs produced content | `world_state.rs:113`, `agents_md.rs:89-110` |
 | `realtime` | entering or leaving active realtime | `realtime.rs:43-66` |
+| `plugins` | `plugins_available` is true at turn build | `mcp.rs:200-202`, `world_state.rs:187-189` |
+
+### Plugins — why it took three tries
+
+Draft 1 called this layer impossible to disable. Draft 2 moved it to
+`feature-gated`. Both overstated the source, and an audit round proved it by
+opening the code:
+
+```rust
+// core/src/mcp.rs:200-202
+let plugins_available =
+    selected_plugin_available || !loaded_plugins.capability_summaries().is_empty();
+```
+
+`Feature::Plugins` feeds `plugins_config_input()`, which governs ordinary plugin
+loading — the right operand. But `selected_plugin_available` is an **independent
+OR path** that can make the section emit regardless of the loaded set. The
+feature flag *influences* emission; it does not gate it.
+
+The citation earlier drafts leaned on, `session/mod.rs:3422-3430`, gates
+*recommended plugin candidates* — adjacent machinery, not this section. The
+section receives `step_context.mcp.plugins_available()`
+(`world_state.rs:187-189`).
+
+Defensible: there is no `include_plugins_instructions` key, and emission follows
+a runtime availability computation. That is `runtime-conditional` — the UI shows
+a condition and no switch.
+
+**UNKNOWN:** whether `[features] plugins = false` alone suppresses the section on
+every path, given the `selected_plugin_available` operand. Settling it needs a
+trace of that variable's producers. The UI renders identically either way, so it
+is recorded rather than resolved.
 
 No boolean anywhere suppresses these. They can still be *empty* — a zero
 `project_doc_max_bytes` yields no AGENTS.md content — but emptiness is not a

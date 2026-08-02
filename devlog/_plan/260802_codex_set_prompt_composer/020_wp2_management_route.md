@@ -122,9 +122,26 @@ The only endpoint that resolves a `drift` state. Revision-checked like any
 mutation. GET never repairs anything — an HTTP GET must not modify a user's
 configuration.
 
-`drift` values: `"journal-present"`, `"projection-stale"`, `"store-missing"`,
-or `null`. For `store-missing`, repair returns the reconstructed layer for
-confirmation before writing.
+`drift` is the canonical type from `010`: `"journal-present"`,
+`"projection-stale"`, `"store-missing"`, `"owned-malformed"`, or `null`. An
+earlier draft omitted `owned-malformed`, which would have left the GUI unable to
+resolve the one state a user can reach by reformatting a line we generated.
+
+| drift | Action | Preview |
+|---|---|---|
+| `journal-present` | run recovery; `recovery_required` is terminal until resolved | — |
+| `projection-stale` | re-project from the store | the resulting projection |
+| `store-missing` | **salvage** the projected text as **one** layer | body + the enumerated losses + backup path |
+| `owned-malformed` | `mode: "adopt"` re-adopts through the narrow decoder, `mode: "replace"` overwrites with an empty owned line | raw line + decoded body |
+
+`store-missing` is **salvage, not reconstruction**. `010` §Missing store
+enumerates what cannot come back: layer boundaries, ids, titles, order, disabled
+layers, and whether a `\n\n` was a separator or the user's own text. The preview
+lists them and a backup is written before anything is destroyed.
+
+Every preview is a **GET-shaped read** performed by `previewSalvage` /
+`previewAdopt`; the write happens only on a confirmed `POST` carrying a matching
+revision.
 
 ## Response echoes the snapshot
 
