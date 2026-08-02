@@ -11,8 +11,8 @@ Shape from `sidebar-routes.ts:23-89`; GET/PUT semantics from
 
 ```jsonc
 {
-  "configPath": "/Users/x/.codex/config.toml",
-  "storePath": "/Users/x/.codex/opencodex-prompt.json",
+  "configPath": "~/.codex/config.toml",
+  "storePath": "~/.codex/opencodex-prompt.json",
   "configExists": true,
   "readable": true,
   "developerInstructionsOwned": true,

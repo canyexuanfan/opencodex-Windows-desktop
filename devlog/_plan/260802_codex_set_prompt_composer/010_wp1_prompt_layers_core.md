@@ -314,7 +314,7 @@ file that opencodex owns outright. `config.toml` receives one generated line:
 
 ```toml
 # Auto-injected by opencodex
-model_instructions_file = "/Users/x/.codex/opencodex-prompt.md"
+model_instructions_file = "~/.codex/opencodex-prompt.md"
 ```
 
 No — see the next paragraph. That key replaces the base prompt (`002` §3), which
