@@ -2,6 +2,12 @@
 
 Depends on: 001 root-cause delta. Translator budgets already landed (`a61607894`); this closes the two narrow gaps and one contract inconsistency.
 
+## P re-verification note (2026-08-02, wp3 cycle — supersedes details below where they conflict)
+
+- Budget-default instead of mandatory type: ALL production callers of `bridgeToResponsesSSE` / `buildResponseJSON` already pass a budget (`core.ts:2172/2224/2656/2716`, `web-search/loop.ts:655`, `images/loop.ts:810`), but `options` itself is optional, so a required field would not compile-guard omission without making `options` required — a 20+-site blast across tests. Instead both entry points now CREATE a default `createTranslatorBudget()` when none is passed (disposed with the call), making omission SAFE rather than unbounded. This delivers the actual invariant (no unbounded caller, present or future) with zero call-site churn.
+- Collector contract mirrors `openai-chat.ts:801-817`: `openCall(scope)` on first delta of an index, args charged `{ kind: "tool_args", callId: scope }` (2 MiB per call enforced by the budget), `closeCall(scope)` only AFTER the final serialized copy is charged (`outbound.ts` final `chargeRetained(JSON.stringify(copy))`), open scopes closed on every error path.
+- 502 shape mirrors `openai-chat.ts:929-937`: status 502, type `upstream_error`, code kept `translation_buffer_limit`.
+
 ## File map
 
 - MODIFY `src/chat/outbound.ts`

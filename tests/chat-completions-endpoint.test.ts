@@ -699,9 +699,89 @@ test("responsesSseToChatCompletionsSse preserves translator overflow and cancels
   } catch (error) {
     expect(isChatCompletionsStreamError(error)).toBe(true);
     if (isChatCompletionsStreamError(error)) {
-      expect(error).toMatchObject({ status: 413, code: "translation_buffer_limit" });
+      // Provider-controlled overflow is an upstream failure (502), not a client error.
+      expect(error).toMatchObject({ status: 502, type: "upstream_error", code: "translation_buffer_limit" });
     }
   }
+});
+
+test("collectChatCompletion enforces the per-call argument cap", async () => {
+  const module = await import("../src/chat/outbound");
+  const budget = createTestTranslatorBudget({ maxCallArgumentBytes: 1024 });
+  const bigArgs = "x".repeat(2048);
+  const frame = `data: ${JSON.stringify({
+    choices: [{ delta: { tool_calls: [{ index: 0, id: "call_big", function: { name: "f", arguments: bigArgs } }] } }],
+  })}\n\n`;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame));
+      controller.close();
+    },
+  });
+  try {
+    await module.collectChatCompletion(stream, "mock/test-model", budget);
+    throw new Error("expected per-call overflow");
+  } catch (error) {
+    expect(module.isChatCompletionsStreamError(error)).toBe(true);
+    if (module.isChatCompletionsStreamError(error)) {
+      expect(error).toMatchObject({ status: 502, type: "upstream_error", code: "translation_buffer_limit" });
+    }
+  }
+  // The failed call's scope is released on the error path.
+  expect(budget.snapshot().activeCalls).toBe(0);
+});
+
+test("collectChatCompletion enforces the turn cap across many calls", async () => {
+  const module = await import("../src/chat/outbound");
+  const budget = createTestTranslatorBudget({ maxCallArgumentBytes: 512, maxTurnBytes: 4096 });
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      // 12 calls x 512 bytes: per-call fits, the turn cap trips mid-stream.
+      for (let index = 0; index < 12; index++) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          choices: [{ delta: { tool_calls: [{ index, id: `call_${index}`, function: { name: "f", arguments: "y".repeat(512) } }] } }],
+        })}\n\n`));
+      }
+      controller.close();
+    },
+  });
+  try {
+    await module.collectChatCompletion(stream, "mock/test-model", budget);
+    throw new Error("expected turn overflow");
+  } catch (error) {
+    expect(module.isChatCompletionsStreamError(error)).toBe(true);
+    if (module.isChatCompletionsStreamError(error)) {
+      expect(error).toMatchObject({ status: 502, type: "upstream_error", code: "translation_buffer_limit" });
+    }
+  }
+  expect(budget.snapshot().activeCalls).toBe(0);
+});
+
+test("collectChatCompletion releases every call scope after the final owner is charged", async () => {
+  const module = await import("../src/chat/outbound");
+  const budget = createTestTranslatorBudget();
+  const encoder = new TextEncoder();
+  const frames = [
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", function: { name: "alpha", arguments: "{\"q\":\"pa" } }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "rtial\"}" } }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 1, id: "call_b", function: { name: "beta", arguments: "{\"z\":1}" } }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ finish_reason: "tool_calls", delta: {} }] })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const frame of frames) controller.enqueue(encoder.encode(frame));
+      controller.close();
+    },
+  });
+  const completion = await module.collectChatCompletion(stream, "mock/test-model", budget);
+  const toolCalls = (completion.choices as Array<{ message?: { tool_calls?: Array<{ function?: { name?: string; arguments?: string } }> } }>)[0]
+    ?.message?.tool_calls ?? [];
+  expect(toolCalls).toHaveLength(2);
+  expect(toolCalls[0]?.function?.arguments).toBe('{"q":"partial"}');
+  // All per-call scopes closed: ownership moved to the serialized copies only.
+  expect(budget.snapshot().activeCalls).toBe(0);
 });
 
 test("responsesSseToChatCompletionsSse emits error frame on truncated stream", async () => {

@@ -1022,3 +1022,17 @@ describe("Responses bridge stopReason threading (issue #246)", () => {
     expect(json.incomplete_details).toBeUndefined();
   });
 });
+
+describe("buildResponseJSON default budget safety net", () => {
+  test("omitting the translator budget is bounded, never unbounded", () => {
+    // A single tool call with arguments above the 2 MiB default per-call cap
+    // must overflow even with NO budget option passed (previously unbounded).
+    const events: AdapterEvent[] = [
+      { type: "tool_call_start", id: "call_huge", name: "f" },
+      { type: "tool_call_delta", arguments: "x".repeat(3 * 1024 * 1024) },
+      { type: "tool_call_end", id: "call_huge" },
+      { type: "done" },
+    ];
+    expect(() => buildResponseJSON(events, "mock/test-model")).toThrow(/translation_buffer_limit|buffer exceeded/);
+  });
+});

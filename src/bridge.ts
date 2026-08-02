@@ -7,6 +7,7 @@ import { usageDisplayTotalTokens } from "./usage/totals";
 import {
   isTranslatorBudgetExceededError,
   releaseTranslatedEvent,
+  createTranslatorBudget,
   type TranslatorBudget,
   type TranslatorBufferKind,
 } from "./lib/translator-budget";
@@ -208,7 +209,11 @@ export function bridgeToResponsesSSE(
     try { const o = JSON.parse(args); return o && typeof o === "object" ? o : {}; } catch { return {}; }
   };
   const encoder = new TextEncoder();
-  const budget = options?.translatorBudget;
+  // Default-budget safety net: omission is SAFE (default turn limits), never
+  // unbounded. Production callers always pass one; an owned default is disposed
+  // at terminal/cancel below.
+  const ownsBudget = !options?.translatorBudget;
+  const budget = options?.translatorBudget ?? createTranslatorBudget();
   const bytesOf = (value: string): number => Buffer.byteLength(value);
   const appendString = (
     previous: string,
@@ -219,7 +224,6 @@ export function bridgeToResponsesSSE(
   ): { value: string; bytes: number } => {
     const fragmentBytes = bytesOf(fragment);
     const nextBytes = previousBytes + fragmentBytes;
-    if (!budget) return { value: previous + fragment, bytes: nextBytes };
     const scope = { kind, ...(callId ? { callId } : {}) };
     const reservation = budget.reserveTransient(nextBytes, scope);
     try {
@@ -257,6 +261,7 @@ export function bridgeToResponsesSSE(
     if (terminalReported || clientCancelled || closed) return;
     terminalReported = true;
     try { options?.onTerminal?.(status); } catch { /* terminal metrics must not break the stream */ }
+    if (ownsBudget) budget.dispose();
   };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
   // eventsource_stream; ANY received event re-arms it, while an unknown type is ignored
@@ -1207,11 +1212,28 @@ export function bridgeToResponsesSSE(
         closed = true;
         if (beat !== undefined) clearBeatInterval(beat);
         cancelUpstreamOnce();
+        if (ownsBudget) budget.dispose();
       },
     });
   }
 
 export function buildResponseJSON(
+  events: AdapterEvent[],
+  modelId: string,
+  options?: Parameters<typeof buildResponseJSONWithBudget>[2],
+): Record<string, unknown> {
+  // Default-budget safety net: a caller that omits the budget gets a bounded
+  // default (disposed with the call), never the unbounded append path.
+  if (options?.translatorBudget) return buildResponseJSONWithBudget(events, modelId, options);
+  const budget = createTranslatorBudget();
+  try {
+    return buildResponseJSONWithBudget(events, modelId, { ...options, translatorBudget: budget });
+  } finally {
+    budget.dispose();
+  }
+}
+
+function buildResponseJSONWithBudget(
   events: AdapterEvent[],
   modelId: string,
   options?: {
