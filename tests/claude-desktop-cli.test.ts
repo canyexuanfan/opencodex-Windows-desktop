@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleClaudeDesktopCommand } from "../src/cli/claude-desktop";
+import { applyProfile, handleClaudeDesktopCommand } from "../src/cli/claude-desktop";
+import { buildClaudeDesktopState } from "../src/server/management-api";
 import { loadConfig, saveConfig } from "../src/config";
 import type { OcxConfig } from "../src/types";
 
@@ -93,6 +94,43 @@ test("desktopNativeModels:false omits native/* from show and exported profile", 
   } finally {
     log.mockRestore();
   }
+});
+
+/*
+ * #859. The Desktop alias reverse-map is process-local to whichever process
+ * builds it. When a live proxy exists, apply must run inside THAT process
+ * through the management API; a local-only write leaves the serving daemon
+ * unable to decode aliases and the provider 400s.
+ */
+test("apply delegates to the live proxy management API instead of writing locally", async () => {
+  const state = await buildClaudeDesktopState(loadConfig());
+  const posted: string[] = [];
+  const result = await applyProfile(state.profile, "hybrid", {
+    findLiveProxyImpl: async () => ({ pid: 4242, port: 10100, hostname: "127.0.0.1", source: "runtime" }),
+    postApplyImpl: async mode => {
+      posted.push(mode);
+      return { ok: true, path: "/daemon-side/path" };
+    },
+  });
+  expect(posted).toEqual(["hybrid"]);
+  expect(result.ok).toBe(true);
+  expect(result.path).toBe("/daemon-side/path");
+  // No local Desktop config write: the daemon performed it.
+  expect(existsSync(join(dir, "desktop"))).toBe(false);
+  // The CLI still persisted the profile itself.
+  expect(loadConfig().claudeCode?.desktopProfile).toBeDefined();
+});
+
+test("apply writes locally only when no proxy is running", async () => {
+  const state = await buildClaudeDesktopState(loadConfig());
+  const result = await applyProfile(state.profile, "static", {
+    findLiveProxyImpl: async () => null,
+    postApplyImpl: async () => {
+      throw new Error("must not be called without a live proxy");
+    },
+  });
+  expect(result.ok).toBe(true);
+  expect(existsSync(join(dir, "desktop"))).toBe(true);
 });
 
 test("no-arg and legacy mode flags apply Desktop config", async () => {
