@@ -579,7 +579,10 @@ function ensureLoaded(): void {
       // symlinks deliberately — readFileSync below follows them too, so the
       // size gate must measure the same target the read would.
       const stat = statSync(path);
-      if (stat.isFile() && stat.size > SNAPSHOT_FILE_MAX_BYTES) {
+      if (!stat.isFile()) {
+        // Symlink to a FIFO/device (e.g. /dev/zero): reading would block or
+        // return unbounded input. Only regular files are ever parsed.
+      } else if (stat.size > SNAPSHOT_FILE_MAX_BYTES) {
         admissionCounters.snapshotOversizedRefusals += 1;
       } else {
         const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };

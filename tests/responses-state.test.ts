@@ -1933,6 +1933,14 @@ describe("Responses state admission boundary (oversized direct-spill)", () => {
     expect(responseAdmissionCountersForTests().snapshotOversizedRefusals).toBe(refusalsBefore + 1);
   });
 
+  test("snapshot symlinked to a non-regular target is never read", () => {
+    // /dev/null is the safe non-regular fixture (a FIFO would block an unfixed
+    // read forever — that hang IS the pre-fix behavior this guards).
+    symlinkSync("/dev/null", join(home, "responses-state.json"));
+    rememberResponseState({ model: "m", input: "x" }, completedResponse("resp_nr", "ok"));
+    expect((expandChained("resp_nr") as { input: unknown[] }).input.length).toBeGreaterThan(1);
+  });
+
   test("materializing an over-ceiling spill reports spill_too_large", () => {
     setResponseStateByteCapForTests(1024);
     rememberResponseState({ model: "m", input: "big" }, completedResponse("resp_mat", "w".repeat(4 * 1024)));
