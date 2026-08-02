@@ -30,3 +30,14 @@ English, maintainer voice, one concrete ask per issue.
   Note in comment: as of 2026-08-02 the official enterprise page still lists
   the CLI as "coming soon"; without a sanctioned API the request stays
   parked.
+
+## Results (2026-08-02, wp5 executed)
+
+All six comments posted:
+
+- 796: comment 5154147334
+- 695: comment 5154147408
+- 561: comment 5154147323
+- 553: comment 5154147401
+- 418: comment 5154147325
+- 201: comment 5154147404
