@@ -241,7 +241,9 @@ function parseUnixProcStatusUid(status: string): number | undefined {
 }
 
 function listUnixProcSnapshots(uid: number | undefined): ProcessSnapshot[] {
-  if (!existsSync("/proc")) return [];
+  // procfs missing on a Linux-shaped platform is an enumeration failure, not
+  // "no processes" — the staleness collector must not read it as not_running.
+  if (!existsSync("/proc")) throw new Error("procfs_unavailable");
   const out: ProcessSnapshot[] = [];
   for (const ent of readdirSync("/proc")) {
     if (!/^\d+$/.test(ent)) continue;
@@ -272,12 +274,12 @@ function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
     ? execFileSync("ps", ["-u", String(uid), "-o", "pid=,command="], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
-      timeout: 8_000,
+      timeout: 5_000,
     })
     : execFileSync("ps", ["-axo", "pid=,uid=,command="], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
-      timeout: 8_000,
+      timeout: 5_000,
     });
   for (const raw of output.split(/\r?\n/)) {
     const line = raw.trim();
@@ -340,7 +342,7 @@ export function listWindowsSnapshots(): ProcessSnapshot[] {
     "    if($owner -ine $me){return}",
     "    $cmd=($_.CommandLine -replace \"`t\",\" \")",
     "    \"{0}`t{1}`t{2}\" -f $_.ProcessId, $cmd, $owner",
-    "  } catch { }",
+    "  } catch { \"__OCX_ENUM_INCOMPLETE__\" }",
     "}",
   ].join("\n");
   // Top-level exec failure propagates (see listDarwinSnapshots note).
@@ -348,8 +350,12 @@ export function listWindowsSnapshots(): ProcessSnapshot[] {
     "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
     "-Command",
     psCommand,
-  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 12_000, windowsHide: true });
+  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 8_000, windowsHide: true });
   for (const line of output.split(/\r?\n/)) {
+    // A candidate whose owner could not be verified makes the whole
+    // enumeration incomplete — the staleness collector must not read the
+    // partial result as "nothing running".
+    if (line.trim() === "__OCX_ENUM_INCOMPLETE__") throw new Error("windows_enum_incomplete");
     const tab = line.indexOf("\t");
     if (tab <= 0) continue;
     const tab2 = line.indexOf("\t", tab + 1);
@@ -555,6 +561,12 @@ const CATALOG_STATE_TTL_MS = 5_000;
  * Compare the on-disk catalog mtime against the start time of running Codex
  * app-servers (#857): a server that started before the catalog changed keeps
  * an in-memory copy that disagrees with what ocx advertises.
+ *
+ * Cost note: a cold call synchronously runs the platform listing plus ONE
+ * batched start-time query (hard bounds: ~5s+3s macOS, ~8s+5s Windows,
+ * microseconds on Linux); the 5s TTL then serves repeats. Typical cold cost
+ * is tens of milliseconds; fully-async background refresh is deliberately
+ * out of scope for this slice.
  *
  * - not_running: no app-server process → nothing can disagree.
  * - unknown: catalog unreadable, or any server's start time is unreadable —
