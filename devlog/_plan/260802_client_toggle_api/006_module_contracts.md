@@ -222,14 +222,14 @@ export interface IntegrationWriteInput {
   env?: NodeJS.ProcessEnv;
   home?: string;
   /**
-   * Opencodex config root for integration state (records, journal, snapshots,
-   * maintenance marker). Threaded through every maintenance/prune/count call
-   * so a test redirects them to a temp dir; without it, retry and pruning read
-   * a global and could touch the developer's real store while the test
-   * believed it had substituted the seam (A-gate round 10, blocker 3).
+   * The whole integration state store, bound to one root (records, journal,
+   * snapshots, maintenance). Defaults to `createIntegrationStateStore()`.
+   * A per-call directory parameter was not enough: retention honored it while
+   * records and the journal still resolved the global root, so an "isolated"
+   * operation could still mutate the developer's store (A-gate round 11).
    */
-  stateDir?: string;
-  /** Test seam: read/write/now. Defaults to real fs + Date.now. */
+  store?: IntegrationStateStore;
+  /** Test seam: read/write/now. Defaults to `defaultIntegrationIO(store)`. */
   io?: IntegrationIO;
 }
 
@@ -398,6 +398,45 @@ for its own record/journal writes.
 `getConfigDir()`. Every integration module uses `getConfigDir()`, and
 `integrationsDir(dir = getConfigDir())` takes an optional override so tests
 redirect state without mutating the environment.
+
+**One store, bound once (A-gate round 11).** Threading a `stateDir` parameter
+through individual functions was half a fix: retention and pruning honored it
+while records, the journal, and snapshots still resolved the global root, so an
+operation that believed itself isolated could read and mutate the developer's
+real store. The seam is therefore an object, bound once and passed whole:
+
+```ts
+export interface IntegrationStateStore {
+  readonly root: string;                 // <config dir>/integrations
+  readRecords(): Partial<Record<IntegrationClientId, OwnershipRecord>>;
+  putRecord(record: OwnershipRecord): void;
+  dropRecord(clientId: IntegrationClientId): void;
+  appendJournal(entry: JournalEntry): void;
+  listOperations(clientId?: IntegrationClientId, limit?: number): JournalEntry[];
+  findOperation(opId: string): JournalEntry | null;
+  captureSnapshot(clientId: IntegrationClientId, opId: string, text: string | null): SnapshotRef;
+  readSnapshot(entry: JournalEntry): { kind: "none" } | { kind: "stored"; text: string; path: string } | { kind: "expired" };
+  countSnapshots(clientId: IntegrationClientId): number | null;
+  pruneSnapshots(clientId: IntegrationClientId): { ok: true } | { ok: false; error: string };
+  readMaintenance(): MaintenanceState;
+  markPruneFailure(clientId: IntegrationClientId, error: string): void;
+  clearPruneFailure(clientId: IntegrationClientId): void;
+  retryPendingPrunes(): void;
+}
+
+/** Every path this store touches derives from `root` — no global fallback. */
+export function createIntegrationStateStore(root?: string): IntegrationStateStore;
+```
+
+`IntegrationWriteInput.stateDir` is replaced by `store?: IntegrationStateStore`
+(defaulting to `createIntegrationStateStore()`), and `IntegrationIO`'s
+`appendJournal`/`putRecord`/`dropRecord` are bound to that same store rather
+than to module-level functions. There is no remaining path by which one
+operation can straddle two roots.
+
+Isolation test: seed real records, journal, snapshots and a maintenance marker;
+run apply → disable → restore against a store rooted at a temp dir; assert
+every real file is byte-identical afterwards.
 
 ```ts
 

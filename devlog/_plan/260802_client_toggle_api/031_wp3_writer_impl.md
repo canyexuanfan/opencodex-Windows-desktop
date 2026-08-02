@@ -187,8 +187,9 @@ export { serializeDocument, renderToml, renderYaml };
 
 ```ts
 export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
-  retryPendingPrunes(input.stateDir);   // before any write; logged no-op on failure
-  const io = input.io ?? defaultIntegrationIO();
+  const store = input.store ?? createIntegrationStateStore();
+  store.retryPendingPrunes();   // before any write; logged no-op on failure
+  const io = input.io ?? defaultIntegrationIO(store);
   const clientId = input.clientId;
   const spec = INTEGRATION_CLIENTS[clientId];
   const exportSpec = EXPORT_CLIENTS[clientId];
@@ -217,7 +218,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   }
 
   const contribution = exportSpec.buildContribution(exportContextOf(input));
-  const record = readRecords()[clientId] ?? null;
+  const record = store.readRecords()[clientId] ?? null;
   const { state, reason } = classifyIntegration({
     fileText: before, fileIsRegular: true, parsed, record, contribution,
   });
@@ -250,7 +251,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
     return refuse(clientId, "conflict", "conflict", `${configPath} changed while applying`);
   }
 
-  const snapshot = captureSnapshot(clientId, opId, before);
+  const snapshot = store.captureSnapshot(clientId, opId, before);
   const at = new Date(io.now()).toISOString();
   return commit(io, {
     configPath, before, nextText: text, clientId, state: "current",
@@ -272,8 +273,9 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
 
 ```ts
 export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
-  retryPendingPrunes(input.stateDir);
-  const io = input.io ?? defaultIntegrationIO();
+  const store = input.store ?? createIntegrationStateStore();
+  store.retryPendingPrunes();
+  const io = input.io ?? defaultIntegrationIO(store);
   const clientId = input.clientId;
   const spec = INTEGRATION_CLIENTS[clientId];
   const exportSpec = EXPORT_CLIENTS[clientId];
@@ -293,7 +295,7 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
   }
 
   const contribution = exportSpec.buildContribution(exportContextOf(input));
-  const record = readRecords()[clientId] ?? null;
+  const record = store.readRecords()[clientId] ?? null;
   const { state, reason } = classifyIntegration({
     fileText: before, fileIsRegular: true, parsed, record, contribution,
   });
@@ -321,7 +323,7 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
   }
 
   const opId = newOpId();
-  const snapshot = captureSnapshot(clientId, opId, before);
+  const snapshot = store.captureSnapshot(clientId, opId, before);
   const at = new Date(io.now()).toISOString();
   // record: null drops it — a record with no block would later read as conflict.
   return commit(io, {
@@ -338,15 +340,16 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
 
 ```ts
 export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome {
-  retryPendingPrunes(input.stateDir);
-  const io = input.io ?? defaultIntegrationIO();
-  const entry = findOperation(input.opId);
+  const store = input.store ?? createIntegrationStateStore();
+  store.retryPendingPrunes();
+  const io = input.io ?? defaultIntegrationIO(store);
+  const entry = store.findOperation(input.opId);
   if (!entry) throw new Error(`unknown operation ${input.opId}`);   // route maps to 404
   if (entry.clientId !== input.clientId) throw new Error("client mismatch");
 
   const spec = INTEGRATION_CLIENTS[entry.clientId];
   const configPath = spec.configPath(input.env);
-  const snapshot = readSnapshot(entry);
+  const snapshot = store.readSnapshot(entry);
   if (snapshot.kind === "expired") {
     return refuse(entry.clientId, "snapshot_expired", "absent", "that backup has expired");
   }
@@ -374,7 +377,7 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   // Restore is itself journaled and itself undoable: snapshot the CURRENT file
   // first, so a confirmed drift-restore never destroys the newer edits.
   const opId = newOpId();
-  const preSnapshot = captureSnapshot(entry.clientId, opId, current);
+  const preSnapshot = store.captureSnapshot(entry.clientId, opId, current);
   const restoredText = snapshot.kind === "none" ? null : snapshot.text;
   // NOTE: no write happens here. `commit` below performs the ONE mutation, so
   // a failure can never leave an unjournaled change (A-gate round 4, blocker 3).
@@ -413,12 +416,12 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
       appliedAt: at,
       opId,
     },
-    priorRecord: readRecords()[entry.clientId] ?? null,
+    priorRecord: store.readRecords()[entry.clientId] ?? null,
     entry: { opId, clientId: entry.clientId, kind: "restore", at, configPath,
              snapshot: preSnapshot,
              resultFingerprint: restoredText === null ? "" : fingerprint(restoredText),
              resultAbsent: restoredText === null,
-             priorRecord: readRecords()[entry.clientId] ?? null },
+             priorRecord: store.readRecords()[entry.clientId] ?? null },
   });
 }
 

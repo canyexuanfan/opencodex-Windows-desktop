@@ -275,11 +275,12 @@ import { defaultIntegrationIO, loadTarget, type IntegrationIO } from "./config-i
 export interface IntegrationStateInput {
   clientId: IntegrationClientId;
   /**
-   * Opencodex config root for integration state. Threaded so a test redirects
-   * maintenance reads, snapshot counting and pruning to a temp dir instead of
-   * touching the developer's real store (A-gate round 10, blocker 3).
+   * The whole integration state store, bound to one root. Passing a directory
+   * per call was half a fix: retention honored it while records, journal and
+   * snapshots still resolved the global root, so an "isolated" operation could
+   * still mutate the developer's store (A-gate round 11).
    */
-  stateDir?: string;
+  store?: IntegrationStateStore;
   models: readonly ExportModel[];
   config: OcxConfig;
   port: number;
@@ -289,7 +290,8 @@ export interface IntegrationStateInput {
 }
 
 export function readIntegrationState(input: IntegrationStateInput): IntegrationStatus {
-  retryPendingPrunesOnce(input.stateDir);   // scoped to the caller's store; never throws
+  const store = input.store ?? createIntegrationStateStore();
+  retryPendingPrunesOnce(store);   // scoped to THIS store; never throws
   const io = input.io ?? defaultIntegrationIO();
   const spec = INTEGRATION_CLIENTS[input.clientId];
   const exportSpec = EXPORT_CLIENTS[input.clientId];
@@ -300,21 +302,21 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
   if (!target.ok) {
     return {
       clientId: input.clientId, state: "unsafe", installed, configPath,
-      ...retentionOf(input.clientId, input.stateDir),
+      ...retentionOf(input.clientId, store),
       reason: target.why === "read-failed" ? "unparseable" : "not-regular-file",
     };
   }
 
   const parsed = parseConfig(target.before, exportSpec.format);
   const contribution = exportSpec.buildContribution(exportContextOf(input));
-  const record = readRecords()[input.clientId] ?? null;
+  const record = store.readRecords()[input.clientId] ?? null;
   const { state, reason } = classifyIntegration({
     fileText: target.before, fileIsRegular: true, parsed, record, contribution,
   });
 
   return {
     clientId: input.clientId, state, installed, configPath,
-    ...retentionOf(input.clientId, input.stateDir),
+    ...retentionOf(input.clientId, store),
     ...(reason ? { reason } : {}),
     ...(record ? { appliedAt: record.appliedAt, lastOpId: record.opId } : {}),
   };
@@ -326,8 +328,8 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
  * about the user's credential-bearing backups must not depend on a write that
  * can fail (006 §5).
  */
-function retentionOf(clientId: IntegrationClientId, dir?: string): { snapshotCount: number; retentionDegraded: boolean } {
-  const counted = countSnapshots(clientId, dir);
+function retentionOf(clientId: IntegrationClientId, store: IntegrationStateStore): { snapshotCount: number; retentionDegraded: boolean } {
+  const counted = store.countSnapshots(clientId);
   if (counted === null) {
     // Cannot inspect: report degraded with a count of -1 rather than a
     // reassuring zero. "Unknown" and "healthy" must never look alike here.
@@ -335,7 +337,7 @@ function retentionOf(clientId: IntegrationClientId, dir?: string): { snapshotCou
   }
   // A marked failure keeps the flag set even when the count is momentarily
   // within bound, so a retry that has not run yet is still visible.
-  const marked = readMaintenance(dir).pruneFailures[clientId] !== undefined;
+  const marked = store.readMaintenance().pruneFailures[clientId] !== undefined;
   return { snapshotCount: counted, retentionDegraded: marked || counted > SNAPSHOT_RETENTION };
 }
 ```
@@ -589,12 +591,12 @@ let retriedThisProcess = false;
  * The once-guard is skipped whenever an explicit dir is supplied, so tests are
  * order-independent.
  */
-export function retryPendingPrunesOnce(dir?: string): void {
-  if (dir === undefined) {
+export function retryPendingPrunesOnce(store: IntegrationStateStore): void {
+  if (store.root === createIntegrationStateStore().root) {
     if (retriedThisProcess) return;
     retriedThisProcess = true;
   }
-  try { retryPendingPrunes(dir); }
+  try { store.retryPendingPrunes(); }
   catch (error) { console.error(`[integrations] prune retry failed: ${String(error)}`); }
 }
 ```
@@ -659,7 +661,12 @@ export function loadTarget(io: IntegrationIO, configPath: string):
   return { ok: true, before: null };   // raced deletion between stat and read
 }
 
-export function defaultIntegrationIO(): IntegrationIO {
+/**
+ * Filesystem half of the seam. Split from the store-bound half so there is one
+ * place that decides what a failed read or stat MEANS, and one place that
+ * decides WHERE bookkeeping goes.
+ */
+export function fileIO(): Omit<IntegrationIO, "appendJournal" | "putRecord" | "dropRecord"> {
   return {
     readText: p => {
       try { return { kind: "text", text: readFileSync(p, "utf8") }; }
@@ -673,10 +680,9 @@ export function defaultIntegrationIO(): IntegrationIO {
     statKind: p => {
       try { const s = statSync(p); return s.isFile() ? "file" : s.isDirectory() ? "dir" : "other"; }
       catch (error) {
-        // Only ENOENT is absence. An EACCES/EPERM stat failure previously
-        // returned "missing", which sent loadTarget down the absent path and
-        // skipped the tagged read entirely — the unreadable-file protection
-        // was bypassed before it ran (A-gate round 10, blocker 2).
+        // A stat failure is not absence either: returning "missing" here sent
+        // loadTarget down the absent path and skipped the tagged read, so the
+        // unreadable-file guard never ran (A-gate round 10, blocker 2).
         return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "failed";
       }
     },
@@ -684,15 +690,60 @@ export function defaultIntegrationIO(): IntegrationIO {
     removeFile: p => rmSync(p, { force: true }),
     mkdirp: p => mkdirSync(p, { recursive: true, mode: 0o700 }),
     now: () => Date.now(),
-    appendJournal: entry => appendOperation(entry),
-    putRecord: record => writeRecord(record),
-    dropRecord: clientId => deleteRecord(clientId),
   };
 }
 ```
 
 Every test substitutes the seam wholesale — no `node:fs` monkey-patching — and
 the `now` member is what makes WP4's stale-flight branch reachable.
+
+## 5b. `createIntegrationStateStore` — the single binding point
+
+Every function above takes an explicit root. This factory binds them once so a
+caller holds ONE object and cannot straddle two stores (006 §Config-dir seam).
+
+```ts
+export function createIntegrationStateStore(root?: string): IntegrationStateStore {
+  const dir = integrationsDir(root);
+  const store: IntegrationStateStore = {
+    root: dir,
+    readRecords: () => readRecords(dir),
+    putRecord: record => writeRecord(record, dir),
+    dropRecord: clientId => deleteRecord(clientId, dir),
+    appendJournal: entry => appendOperation(entry, dir),
+    listOperations: (clientId, limit) => listOperations(clientId, limit, dir),
+    findOperation: opId => findOperation(opId, dir),
+    captureSnapshot: (clientId, opId, text) => captureSnapshot(clientId, opId, text, dir),
+    readSnapshot: entry => readSnapshot(entry, dir),
+    countSnapshots: clientId => countSnapshots(clientId, dir),
+    pruneSnapshots: clientId => pruneSnapshots(clientId, dir),
+    readMaintenance: () => readMaintenance(dir),
+    markPruneFailure: (clientId, error) => markPruneFailure(clientId, error, dir),
+    clearPruneFailure: (clientId, error) => clearPruneFailure(clientId, dir),
+    retryPendingPrunes: () => {
+      for (const clientId of Object.keys(store.readMaintenance().pruneFailures) as IntegrationClientId[]) {
+        if (store.pruneSnapshots(clientId).ok) store.clearPruneFailure(clientId);
+      }
+    },
+  };
+  return store;
+}
+```
+
+`defaultIntegrationIO(store)` binds its `appendJournal`/`putRecord`/`dropRecord`
+members to the SAME store, so the IO seam and the state store can never point at
+different roots:
+
+```ts
+export function defaultIntegrationIO(store: IntegrationStateStore): IntegrationIO {
+  return {
+    ...fileIO(),                       // readText / statKind / writeText / removeFile / mkdirp / now
+    appendJournal: entry => store.appendJournal(entry),
+    putRecord: record => store.putRecord(record),
+    dropRecord: clientId => store.dropRecord(clientId),
+  };
+}
+```
 
 ## 6. Activation table
 
@@ -709,7 +760,7 @@ the `now` member is what makes WP4's stale-flight branch reachable.
 | unparseable file end to end | call `readIntegrationState` (not the classifier directly) on a config containing `{{{` | `state === "unsafe"` — proves both modules share ONE `PARSE_FAILED` symbol; a split sentinel would report `absent` |
 | stat failure is not absence | default IO, `statSync` throws `EACCES` | `loadTarget` returns `read-failed` → `unsafe`; the file is never written |
 | genuine ENOENT still reads as absence | default IO, no file present | `loadTarget` returns `{ before: null }`, apply proceeds and creates the file |
-| state is scoped to the caller's store | run an operation with `stateDir` pointed at a temp dir while a real marker exists | only the temp dir changes; the real snapshots/marker are byte-identical afterwards |
+| the whole store is isolated | seed real records, journal, snapshots AND a maintenance marker; run apply → disable → restore against `createIntegrationStateStore(tmp)` | every real file is byte-identical afterwards, and the temp root holds the full transaction — records, journal rows and snapshots, not just the marker |
 | unreadable snapshot dir is not healthy | make `readdirSync` throw `EACCES` | `snapshotCount === -1` and `retentionDegraded === true` — never a reassuring `0` |
 
 ## 7. Tests
