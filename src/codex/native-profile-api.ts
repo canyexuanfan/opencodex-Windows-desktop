@@ -49,6 +49,7 @@ async function withRecoveryGateTransition<T>(
   manager: NativeProfileManager,
   deps: NativeProfileApiDeps,
   operation: () => Promise<T>,
+  completeIfAlreadyClearAfterSuccess = false,
 ): Promise<T> {
   const context = manager.context;
   if (!context) return operation();
@@ -61,7 +62,7 @@ async function withRecoveryGateTransition<T>(
     operationFailed = true;
     throw error;
   } finally {
-    if (before !== "none") {
+    if (before !== "none" || (completeIfAlreadyClearAfterSuccess && !operationFailed)) {
       try {
         const after = probe(context);
         if (after === "none") {
@@ -133,6 +134,7 @@ export async function handleNativeProfileAPI(
         manager,
         deps,
         () => manager.recover(input.rollback === true, input.confirmedStopped === true),
+        true,
       ));
       return jsonResponse(recovered, 200, req, config);
     }

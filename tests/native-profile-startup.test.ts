@@ -349,6 +349,45 @@ describe("native-main startup journal gate", () => {
     expect(isNativeMainTrafficBlocked()).toBe(true);
   });
 
+  test("explicit recovery reopens a stale matching gate after another manager converges the shared home", async () => {
+    const f = await fixture("prepared", "source-exact");
+    await initializeNativeMainStartupGate({
+      manager: f.manager,
+      probeRecoveryState: () => "manual",
+    });
+    expect(nativeMainStartupGateSnapshot()).toMatchObject({
+      status: "blocked",
+      homeId: f.manager.context.homeId,
+    });
+
+    const otherManager = new NativeProfileManager({
+      codexHome: f.codexHome,
+      configDir: f.configDir,
+      keyProvider: new MemoryKeyProvider(f.key),
+      hardenPath: async () => {},
+      processProbe: async () => ({ status: "clear", count: 0 }),
+    });
+    expect(await otherManager.recover(false)).toMatchObject({ recovered: true });
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("none");
+    expect(isNativeMainTrafficBlocked()).toBe(true);
+
+    const request = new Request("http://localhost/api/native-main-profiles/recover", {
+      method: "POST",
+      body: JSON.stringify({ rollback: false }),
+    });
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager: f.manager,
+    });
+
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toMatchObject({ recovered: false });
+    expect(nativeMainStartupGateSnapshot()).toMatchObject({
+      status: "ready",
+      homeId: f.manager.context.homeId,
+    });
+    expect(isNativeMainTrafficBlocked()).toBe(false);
+  });
+
   test("fresh processes gate first admission and converge every recoverable phase/observation", async () => {
     for (const scenario of recoverable) {
       const f = await fixture(scenario.phase, scenario.observation);
