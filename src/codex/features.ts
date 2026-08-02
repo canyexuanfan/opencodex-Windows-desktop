@@ -33,6 +33,9 @@ import { realpathSync } from "node:fs";
 import { atomicWriteFile, expandUserPath } from "../config";
 import { CODEX_CONFIG_PATH } from "./paths";
 
+/** Upstream codex-rs feature key: allow `request_user_input` in Default mode. */
+export const DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY = "default_mode_request_user_input";
+
 // EOL preservation, local copies of inject.ts dominantEol/applyEol: importing
 // inject here would close a module cycle (features -> inject -> catalog -> features).
 function dominantEol(content: string): "\r\n" | "\n" {
@@ -125,6 +128,22 @@ export function isMultiAgentV2Enabled(configPath?: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * TRUE when the codex `default_mode_request_user_input` feature is enabled in
+ * config.toml — lets a Default-mode session pause and ask the user questions
+ * through `request_user_input` (upstream FeatureSpec: under development,
+ * default_enabled = false). Recognizes the shipped boolean form
+ * `[features] default_mode_request_user_input = true`.
+ * Missing file/key -> false.
+ */
+export function isDefaultModeRequestUserInputEnabled(configPath?: string): boolean {
+  const content = readConfigText(configPath);
+  if (content === null) return false;
+  const features = tomlTableBody(content, "features");
+  if (features === null) return false;
+  return tomlBoolInBody(features, DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY) === true;
 }
 
 /**

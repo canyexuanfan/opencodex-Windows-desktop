@@ -30,13 +30,16 @@ export type CodexFeaturesInvocationDeps =
   & Pick<ResolveCodexRuntimeDeps, "existsSync" | "execFileSync" | "configDir" | "readFileSync">;
 
 /**
- * Shared invocation for `codex features enable|disable multi_agent_v2` — the single
+ * Shared invocation for `codex features enable|disable <feature>` — the single
  * source of truth for the CLI and the management API fallback. Windows npm installs
  * expose `codex` as a `.cmd` shim, which needs the win-exec launcher
- * (devlog 260715_cross_platform_audit/020).
+ * (devlog 260715_cross_platform_audit/020). Upstream `codex features` validates
+ * the key against the installed build's feature registry, so an old Codex will
+ * fail loudly instead of silently writing an unknown flag.
  */
 export function codexFeaturesInvocation(
   action: "enable" | "disable",
+  feature: string = "multi_agent_v2",
   platform: NodeJS.Platform = process.platform,
   deps: CodexFeaturesInvocationDeps = {},
 ): SpawnInvocation {
@@ -48,7 +51,7 @@ export function codexFeaturesInvocation(
     configDir: deps.configDir,
     readFileSync: deps.readFileSync,
   }).runtime.command || "codex";
-  return commandInvocation(command, ["features", action, "multi_agent_v2"], platform, deps);
+  return commandInvocation(command, ["features", action, feature], platform, deps);
 }
 
 function runCodexFeatures(action: "enable" | "disable", deps: V2CliDeps): void {

@@ -299,6 +299,54 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     });
   }
 
+  // default_mode_request_user_input feature toggle (Codex Auth page). GET reads the
+  // flag from $CODEX_HOME/config.toml; PUT flips it via the official `codex features`
+  // CLI so the TOML edit stays upstream-owned and format-preserving.
+  if (url.pathname === "/api/codex-auth/features/default-mode-request-user-input" && req.method === "GET") {
+    const { isDefaultModeRequestUserInputEnabled, DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY } = await import("../../codex/features");
+    return jsonResponse({
+      enabled: isDefaultModeRequestUserInputEnabled(),
+      key: DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY,
+    });
+  }
+  if (url.pathname === "/api/codex-auth/features/default-mode-request-user-input" && req.method === "PUT") {
+    let body: { enabled?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (typeof body.enabled !== "boolean") return jsonResponse({ error: "body.enabled must be a boolean" }, 400);
+    const { isDefaultModeRequestUserInputEnabled, DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY } = await import("../../codex/features");
+    const before = isDefaultModeRequestUserInputEnabled();
+    let toggle = deps.toggleDefaultModeRequestUserInput;
+    if (!toggle) {
+      const { execFileSync } = await import("node:child_process");
+      const { codexFeaturesInvocation } = await import("../../cli/v2");
+      toggle = (enabled: boolean) => {
+        const inv = codexFeaturesInvocation(enabled ? "enable" : "disable", DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY);
+        execFileSync(inv.file, inv.args,
+          { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true, ...inv.options });
+      };
+    }
+    let toggleError: string | null = null;
+    try {
+      toggle(body.enabled);
+    } catch (error) {
+      const err = error as { stderr?: unknown; message?: string };
+      toggleError = typeof err.stderr === "string" && err.stderr.trim()
+        ? err.stderr.trim()
+        : (err.message ?? String(error));
+    }
+    const enabled = isDefaultModeRequestUserInputEnabled();
+    if (toggleError !== null || enabled !== body.enabled) {
+      const reason = toggleError
+        ?? `postcondition failed - the installed Codex build may not know the ${DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY} flag yet`;
+      return jsonResponse({ error: `default_mode_request_user_input toggle failed: ${reason}` }, 502);
+    }
+    const warnings: string[] = [];
+    if (enabled !== before) {
+      warnings.push("Applies to new sessions; restart the Codex app or wait out its picker cache to see the change.");
+    }
+    return jsonResponse({ ok: true, enabled, changed: enabled !== before, warnings });
+  }
+
   // Subagent prompt injection model: single native or routed model whose info is
   // dynamically injected into the v1 proactive prompt, plus an optional reasoning
   // effort the prompt tells the agent to pass to spawn_agent. GET returns the current
