@@ -219,8 +219,9 @@ ocx account main doctor
 ocx account main list
 ocx account main register <name>
 ocx account main add <name>
-ocx account main switch <name>
+ocx account main switch <name> --yes
 ocx account main recover
+ocx account main recover --rollback --yes
 ```
 
 Version 1 supports file-based Codex authentication, encrypts stored profiles with AES-256-GCM, and

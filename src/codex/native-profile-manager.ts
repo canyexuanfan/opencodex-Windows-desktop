@@ -220,6 +220,15 @@ export class NativeProfileManager {
     try { unlinkSync(this.context.journalPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
   }
 
+  private assertNoPendingRecovery(): void {
+    if (!readNativeProfileJournal(this.context)) return;
+    throw new NativeProfileError(
+      "RECOVERY_REQUIRED",
+      "A native-profile recovery journal is pending. Run `ocx account main recover` or `ocx account main recover --rollback --yes` before registering or adding profiles.",
+      409,
+    );
+  }
+
   private requireVault(): NativeMainProfileVaultV1 {
     const vault = readNativeProfileVault(this.context);
     if (!vault) throw new NativeProfileError("PROFILE_NOT_FOUND", "Register the current native login before adding or switching profiles.", 404);
@@ -246,6 +255,7 @@ export class NativeProfileManager {
 
   async register(labelInput: string): Promise<{ effectiveCodexHome: string; profile: NativeProfilePublic }> {
     return this.withLock(async () => {
+      this.assertNoPendingRecovery();
       requireFileCredentialStore(this.context);
       const label = validateNativeProfileLabel(labelInput);
       const envelope = readNativeEnvelope(this.context.authPath);
@@ -417,6 +427,7 @@ export class NativeProfileManager {
 
   async prepareStage(): Promise<{ stageId: string; stagingCodexHome: string; effectiveCodexHome: string }> {
     return this.withLock(async () => {
+      this.assertNoPendingRecovery();
       this.sweepStaleStages();
       requireFileCredentialStore(this.context);
       const vault = this.requireVault();
@@ -445,6 +456,7 @@ export class NativeProfileManager {
 
   async finishStage(stageId: string, labelInput: string): Promise<{ effectiveCodexHome: string; profile: NativeProfilePublic }> {
     return this.withLock(async () => {
+      this.assertNoPendingRecovery();
       this.stagePath(stageId);
       let target: NativeEnvelopeSnapshot | null = null;
       let current: NativeEnvelopeSnapshot | null = null;
@@ -650,10 +662,43 @@ export class NativeProfileManager {
           journal.sourcePayload,
           key,
         );
+        let rollbackVault = journal.beforeVault;
+        let rollbackVaultPublished = false;
+        if (current.envelope.digest !== journal.targetPayload.envelopeSha256) {
+          rollbackVault = structuredClone(journal.beforeVault);
+          const targetProfile = rollbackVault.profiles.find(profile =>
+            profile.id === journal.targetProfileId
+            && profile.identityHash === journal.targetIdentityHash
+            && profile.state === "inactive"
+          );
+          if (!targetProfile) {
+            throw new NativeProfileError(
+              "VAULT_INVALID",
+              "Recovery could not preserve the refreshed target login in its inactive profile and made no credential write.",
+              409,
+            );
+          }
+          const refreshedTargetPayload = encryptNativeEnvelope(
+            this.context,
+            targetProfile.id,
+            targetProfile.identityHash,
+            current.envelope,
+            key,
+          );
+          targetProfile.payload = refreshedTargetPayload;
+          targetProfile.updatedAt = new Date(this.now()).toISOString();
+          rollbackVault.revision += 1;
+          const preservedJournal = structuredClone(journal);
+          preservedJournal.targetPayload = refreshedTargetPayload;
+          preservedJournal.beforeVault = structuredClone(rollbackVault);
+          await this.writeJournal(preservedJournal);
+          await this.writeVault(rollbackVault);
+          rollbackVaultPublished = true;
+        }
         await this.atomicWrite(this.context.authPath, sourceEnvelope.text);
         const restored = this.verifyWrittenEnvelope(sourceEnvelope.digest, journal.sourceIdentityHash, key);
         restored.raw.fill(0);
-        await this.writeVault(journal.beforeVault);
+        if (!rollbackVaultPublished) await this.writeVault(rollbackVault);
         this.applyTransition(current.envelope.accountId, sourceEnvelope.accountId);
         this.removeJournal();
         return { ok: true, recovered: true, action: "rollback-source", effectiveCodexHome: this.context.codexHome, restartRequired: true };

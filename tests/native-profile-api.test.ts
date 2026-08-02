@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import type { OcxConfig } from "../src/types";
 import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
 import type { NativeProfileManager } from "../src/codex/native-profile-manager";
+import { NativeProfileError } from "../src/codex/native-profile-types";
 import { setDraining, tryAdmitTurn } from "../src/server/lifecycle";
 
 const originalCodexHome = process.env.CODEX_HOME;
@@ -111,5 +112,21 @@ describe("native main profile management API", () => {
     const payload = JSON.stringify(await response!.json());
     expect(payload).not.toContain(missingHome);
     expect(payload).not.toContain(process.env.USERNAME ?? "Administrator");
+  });
+
+  test("pending-recovery errors retain actionable public recovery commands", async () => {
+    const message = "A native-profile recovery journal is pending. Run `ocx account main recover` or `ocx account main recover --rollback --yes` before registering or adding profiles.";
+    const manager = {
+      register: async () => { throw new NativeProfileError("RECOVERY_REQUIRED", message, 409); },
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/register", {
+      method: "POST",
+      body: JSON.stringify({ label: "personal" }),
+    });
+
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, { manager });
+
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toMatchObject({ code: "RECOVERY_REQUIRED", error: message });
   });
 });

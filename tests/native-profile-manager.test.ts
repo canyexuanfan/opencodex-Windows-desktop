@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NativeProfileManager } from "../src/codex/native-profile-manager";
+import { decryptNativeEnvelope, readNativeProfileVault } from "../src/codex/native-profile-store";
 import { NativeProfileError, type NativeProfileKey, type NativeProfileKeyProvider } from "../src/codex/native-profile-types";
 
 const roots: string[] = [];
@@ -68,6 +69,31 @@ async function enrolledFixture() {
   writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
   const targetProfile = await manager.finishStage(stage.stageId, "work");
   return { ...f, manager, sourceProfile: sourceProfile.profile, targetProfile: targetProfile.profile, stage };
+}
+
+async function leavePendingJournal(f: Awaited<ReturnType<typeof enrolledFixture>>): Promise<NativeProfileManager> {
+  const authPath = f.manager.context.authPath;
+  const journalPath = f.manager.context.journalPath;
+  let authWrites = 0;
+  const interrupted = new NativeProfileManager({
+    ...f.options,
+    atomicWrite: async (path, content) => {
+      if (path === authPath) {
+        authWrites += 1;
+        if (authWrites > 1) throw new Error("injected restore failure");
+      }
+      if (path === journalPath && content.includes('"phase": "auth-replaced"')) {
+        throw new Error("injected post-replacement failure");
+      }
+      return atomic(path, content);
+    },
+  });
+  let caught: unknown;
+  try { await interrupted.switch("work", true); } catch (error) { caught = error; }
+  expect(caught).toBeInstanceOf(NativeProfileError);
+  expect((caught as NativeProfileError).code).toBe("AUTH_RESTORE_FAILED");
+  expect(existsSync(journalPath)).toBe(true);
+  return interrupted;
 }
 
 async function waitForPath(path: string): Promise<void> {
@@ -361,6 +387,122 @@ describe("native main profile transactions", () => {
     expect((recoveryError as NativeProfileError).code).toBe("CODEX_BUSY");
     expect(readFileSync(authPath, "utf8")).toBe(f.target);
     expect(existsSync(journalPath)).toBe(true);
+  });
+
+  test("pending recovery blocks register before auth or vault mutation", async () => {
+    const f = await enrolledFixture();
+    await leavePendingJournal(f);
+    const authBefore = readFileSync(f.manager.context.authPath, "utf8");
+    const vaultBefore = readFileSync(f.manager.context.vaultPath, "utf8");
+    const journalBefore = readFileSync(f.manager.context.journalPath, "utf8");
+
+    let caught: unknown;
+    try { await f.manager.register("renamed"); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
+    expect((caught as NativeProfileError).message).toContain("ocx account main recover");
+    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(authBefore);
+    expect(readFileSync(f.manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    expect(readFileSync(f.manager.context.journalPath, "utf8")).toBe(journalBefore);
+  });
+
+  test("pending recovery blocks prepareStage before creating staging plaintext", async () => {
+    const f = await enrolledFixture();
+    await leavePendingJournal(f);
+    const authBefore = readFileSync(f.manager.context.authPath, "utf8");
+    const vaultBefore = readFileSync(f.manager.context.vaultPath, "utf8");
+    const journalBefore = readFileSync(f.manager.context.journalPath, "utf8");
+    const stagingBefore = readdirSync(f.manager.context.stagingRoot);
+
+    let caught: unknown;
+    try { await f.manager.prepareStage(); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
+    expect(readdirSync(f.manager.context.stagingRoot)).toEqual(stagingBefore);
+    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(authBefore);
+    expect(readFileSync(f.manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    expect(readFileSync(f.manager.context.journalPath, "utf8")).toBe(journalBefore);
+  });
+
+  test("pending recovery blocks finishStage without deleting staged plaintext", async () => {
+    const f = await enrolledFixture();
+    const stage = await f.manager.prepareStage();
+    const stagedEnvelope = envelope("account-third", "third");
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), stagedEnvelope);
+    await leavePendingJournal(f);
+    const authBefore = readFileSync(f.manager.context.authPath, "utf8");
+    const vaultBefore = readFileSync(f.manager.context.vaultPath, "utf8");
+    const journalBefore = readFileSync(f.manager.context.journalPath, "utf8");
+
+    let caught: unknown;
+    try { await f.manager.finishStage(stage.stageId, "third"); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
+    expect(readFileSync(join(stage.stagingCodexHome, "auth.json"), "utf8")).toBe(stagedEnvelope);
+    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(authBefore);
+    expect(readFileSync(f.manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    expect(readFileSync(f.manager.context.journalPath, "utf8")).toBe(journalBefore);
+  });
+
+  test("explicit rollback preserves a digest-changed target envelope before restoring source auth", async () => {
+    const f = await enrolledFixture();
+    await leavePendingJournal(f);
+    const refreshedTarget = envelope("account-target", "target-refreshed");
+    writeFileSync(f.manager.context.authPath, refreshedTarget);
+
+    const result = await f.manager.recover(true, true);
+
+    expect(result).toMatchObject({ recovered: true, action: "rollback-source", restartRequired: true });
+    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(f.source);
+    expect(existsSync(f.manager.context.journalPath)).toBe(false);
+    const vaultText = readFileSync(f.manager.context.vaultPath, "utf8");
+    expect(vaultText).not.toContain("target-refreshed");
+    expect(vaultText).not.toContain("opaque-access-target-refreshed");
+    expect(vaultText).not.toContain("opaque-refresh-target-refreshed");
+    const vault = readNativeProfileVault(f.manager.context)!;
+    expect(vault.activeProfileId).toBe(f.sourceProfile.id);
+    const targetProfile = vault.profiles.find(profile => profile.id === f.targetProfile.id)!;
+    expect(targetProfile.state).toBe("inactive");
+    const key = await f.keyProvider.get(f.manager.context.homeId);
+    expect(key).not.toBeNull();
+    const decrypted = decryptNativeEnvelope(
+      f.manager.context,
+      targetProfile.id,
+      targetProfile.identityHash,
+      targetProfile.payload!,
+      key!,
+    );
+    try { expect(decrypted.text).toBe(refreshedTarget); } finally { decrypted.raw.fill(0); key!.key.fill(0); }
+    expect(f.transitions).toEqual(["account-target->account-source"]);
+  });
+
+  test("rollback preservation failure leaves refreshed target auth untouched and journaled", async () => {
+    const f = await enrolledFixture();
+    await leavePendingJournal(f);
+    const refreshedTarget = envelope("account-target", "target-refreshed-failure");
+    writeFileSync(f.manager.context.authPath, refreshedTarget);
+    const vaultBefore = readFileSync(f.manager.context.vaultPath, "utf8");
+    const failing = new NativeProfileManager({
+      ...f.options,
+      atomicWrite: async (path, content) => {
+        if (path === f.manager.context.vaultPath) throw new Error("injected rollback vault failure");
+        return atomic(path, content);
+      },
+    });
+
+    let caught: unknown;
+    try { await failing.recover(true, true); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(refreshedTarget);
+    expect(readFileSync(f.manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    expect(existsSync(f.manager.context.journalPath)).toBe(true);
+    const journalText = readFileSync(f.manager.context.journalPath, "utf8");
+    expect(journalText).not.toContain("target-refreshed-failure");
+    expect(journalText).not.toContain("opaque-refresh-target-refreshed-failure");
   });
 
   test("non-file Codex credential stores fail before vault or auth mutation", async () => {
