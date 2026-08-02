@@ -4,6 +4,7 @@ import {
   hasCallerCodexBearer,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
+  type CodexAccountSelectionAdmission,
   type CodexAuthContext,
 } from "../codex/auth-context";
 import { recordCodexUpstreamOutcome, type CodexUpstreamOutcome } from "../codex/routing";
@@ -70,6 +71,7 @@ export async function resolveFirstUsableOpenAiSidecar(
   candidates: readonly OpenAiForwardSidecarCandidate[],
   incomingHeaders: Headers,
   config: OcxConfig,
+  options: { beginCodexAccountSelection?: () => CodexAccountSelectionAdmission | undefined } = {},
 ): Promise<ResolvedOpenAiForwardSidecar | undefined> {
   let callerBearerMayBeForwarded = true;
   try {
@@ -89,7 +91,9 @@ export async function resolveFirstUsableOpenAiSidecar(
         headers,
       };
     }
-    const authContext = await resolveCodexAuthContext(incomingHeaders, config, candidate.accountMode);
+    const authContext = await resolveCodexAuthContext(incomingHeaders, config, candidate.accountMode, {
+      beginCodexAccountSelection: options.beginCodexAccountSelection,
+    });
     if (!isCodexAuthContextUsable(authContext, config)) continue;
     return {
       ...candidate,

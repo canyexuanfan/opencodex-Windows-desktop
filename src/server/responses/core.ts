@@ -64,9 +64,11 @@ import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
+  codexMainProfileDrainingResponse,
   cooldownErrorResponse,
   CodexAuthContextError,
   CodexDirectAuthenticationError,
+  CodexMainProfileDrainingError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
@@ -100,7 +102,7 @@ import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../../provider
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { resolveProviderTransport } from "../../providers/xai-transport";
 import type { WsData } from "../ws-bridge";
-import { registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
+import { codexAccountSelectionForTurn, registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
 import { redactSecretString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import type { AdmissionLease } from "../../lib/admission";
@@ -265,6 +267,7 @@ interface CodexPoolAccountRetryArgs {
     // first attempt.
     inboundWire?: InboundWire;
     translatorBudget: TranslatorBudget;
+    turnAdmissionLease?: AdmissionLease;
   };
   firstAuthCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   firstResponse: Response;
@@ -333,13 +336,18 @@ async function retryCodexPoolOnAlternateAccount(
       req.headers,
       config,
       "pool",
-      { excludeAccountId: firstAuthCtx.accountId, modelId: route.modelId },
+      {
+        excludeAccountId: firstAuthCtx.accountId,
+        modelId: route.modelId,
+        beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
+      },
     );
   } catch (error) {
     if (
       !(error instanceof CodexPoolAuthenticationError)
       && !(error instanceof CodexAuthContextError)
       && !(error instanceof CodexAccountCooldownError)
+      && !(error instanceof CodexMainProfileDrainingError)
     ) throw error;
   }
   if (retryAuthCtx?.kind !== "pool" && retryAuthCtx?.kind !== "main-pool") {
@@ -727,7 +735,10 @@ async function resolveResponsesCodexAuth(
     if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
     let authCtx: CodexAuthContext;
     if (route.codexAccountMode) {
-      authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, { modelId: route.modelId });
+      authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
+        modelId: route.modelId,
+        beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
+      });
       options.onCodexAuthContextResolved?.(authCtx);
     } else {
       authCtx = { kind: "main", accountId: null };
@@ -748,6 +759,9 @@ async function resolveResponsesCodexAuth(
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
       return { ok: false, response: cooldownErrorResponse(err) };
+    }
+    if (err instanceof CodexMainProfileDrainingError) {
+      return { ok: false, response: codexMainProfileDrainingResponse() };
     }
     if (err instanceof CodexThreadAffinityExpiredError) {
       return {
@@ -1519,6 +1533,7 @@ async function handleResponsesInner(
         listOpenAiForwardSidecarCandidates(config),
         req.headers,
         config,
+        { beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease) },
       );
     } catch (err) {
       // Sidecars are optional helpers for an otherwise independent routed turn.
@@ -1529,6 +1544,7 @@ async function handleResponsesInner(
         && !(err instanceof CodexAuthContextError)
         && !(err instanceof CodexAccountCooldownError)
         && !(err instanceof CodexThreadAffinityExpiredError)
+        && !(err instanceof CodexMainProfileDrainingError)
       ) throw err;
     }
   }

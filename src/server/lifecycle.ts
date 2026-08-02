@@ -20,6 +20,7 @@ import {
   beginBackgroundShellShutdown,
   terminateAllBackgroundShells,
 } from "../adapters/cursor/native-exec-shell";
+import type { CodexAccountSelectionAdmission } from "../codex/auth-context";
 
 // ---------------------------------------------------------------------------
 // Active turn tracking + graceful shutdown drain
@@ -29,6 +30,7 @@ export const MAX_ACTIVE_TURNS = 256;
 const turnGate = createAdmissionGate("active_turns", MAX_ACTIVE_TURNS);
 export interface ActiveTurnLease extends AdmissionLease {
   bindAbortController(ac: AbortController): void;
+  beginCodexAccountSelection(): CodexAccountSelectionAdmission;
   isTransferred(): boolean;
 }
 const activeTurns = new Map<AbortController, ActiveTurnLease>();
@@ -37,7 +39,10 @@ const knownTurnControllers = new WeakSet<AbortController>();
 let turnReleaseMisses = 0;
 let shutdownDraining = false;
 const temporaryDrainOwners = new Set<symbol>();
+const nativeMainDrainOwners = new Set<symbol>();
 const temporaryDrainWaiters = new Set<() => void>();
+const nativeMainTurns = new Set<ActiveTurnLease>();
+let nativeMainSelections = 0;
 let legacyDrainLease: AdmissionLease | null = null;
 let recyclingForExit = false;
 let _serverRef: ReturnType<typeof Bun.serve> | undefined;
@@ -56,9 +61,19 @@ export function setDraining(value: boolean): void {
   }
 }
 
-/** Acquire the single owner-scoped temporary data-plane fence. */
+function temporaryDrainCount(): number {
+  return temporaryDrainOwners.size + nativeMainDrainOwners.size;
+}
+
+function notifyTemporaryDrainsSettled(): void {
+  if (temporaryDrainCount() !== 0) return;
+  for (const resolve of temporaryDrainWaiters) resolve();
+  temporaryDrainWaiters.clear();
+}
+
+/** Acquire the single owner-scoped global data-plane fence. */
 export function acquireTemporaryDrain(owner: string): AdmissionLease | null {
-  if (shutdownDraining || temporaryDrainOwners.size > 0) return null;
+  if (shutdownDraining || temporaryDrainCount() > 0) return null;
   const token = Symbol(owner);
   temporaryDrainOwners.add(token);
   let active = true;
@@ -67,10 +82,23 @@ export function acquireTemporaryDrain(owner: string): AdmissionLease | null {
       if (!active) return;
       active = false;
       temporaryDrainOwners.delete(token);
-      if (temporaryDrainOwners.size === 0) {
-        for (const resolve of temporaryDrainWaiters) resolve();
-        temporaryDrainWaiters.clear();
-      }
+      notifyTemporaryDrainsSettled();
+    },
+  };
+}
+
+/** Fence only turns that select the native Codex `__main__` account. */
+export function acquireNativeMainProfileDrain(owner: string): AdmissionLease | null {
+  if (shutdownDraining || temporaryDrainCount() > 0) return null;
+  const token = Symbol(owner);
+  nativeMainDrainOwners.add(token);
+  let active = true;
+  return {
+    release() {
+      if (!active) return;
+      active = false;
+      nativeMainDrainOwners.delete(token);
+      notifyTemporaryDrainsSettled();
     },
   };
 }
@@ -85,13 +113,13 @@ export function beginShutdownDrain(): boolean {
 export function isShutdownDraining(): boolean { return shutdownDraining; }
 
 export function waitForTemporaryDrains(): Promise<void> {
-  if (temporaryDrainOwners.size === 0) return Promise.resolve();
+  if (temporaryDrainCount() === 0) return Promise.resolve();
   return new Promise(resolve => temporaryDrainWaiters.add(resolve));
 }
 
 /** Wait for scoped drains without allowing them to outlive the shutdown deadline. */
 async function waitForTemporaryDrainsUntil(deadlineMs: number): Promise<boolean> {
-  if (temporaryDrainOwners.size === 0) return true;
+  if (temporaryDrainCount() === 0) return true;
   const remainingMs = Math.max(0, deadlineMs - Date.now());
   if (remainingMs === 0) return false;
   return new Promise<boolean>((resolve) => {
@@ -113,6 +141,9 @@ export function resetLifecycleDrainStateForTests(): void {
   legacyDrainLease?.release();
   legacyDrainLease = null;
   temporaryDrainOwners.clear();
+  nativeMainDrainOwners.clear();
+  nativeMainTurns.clear();
+  nativeMainSelections = 0;
   for (const resolve of temporaryDrainWaiters) resolve();
   temporaryDrainWaiters.clear();
   shutdownDraining = false;
@@ -124,6 +155,7 @@ export function tryAdmitTurn(): ActiveTurnLease | null {
   const controllers = new Set<AbortController>();
   let active = true;
   let transferred = false;
+  let nativeMainClaimed = false;
   const lease: ActiveTurnLease = {
     bindAbortController(ac) {
       knownTurnControllers.add(ac);
@@ -135,6 +167,31 @@ export function tryAdmitTurn(): ActiveTurnLease | null {
       controllers.add(ac);
       activeTurns.set(ac, lease);
     },
+    beginCodexAccountSelection() {
+      const mainProfileDraining = nativeMainDrainOwners.size > 0;
+      let selectionActive = !mainProfileDraining;
+      let released = false;
+      if (selectionActive) nativeMainSelections += 1;
+      return {
+        mainProfileDraining,
+        claimMainProfile() {
+          if (released || mainProfileDraining || !active) return false;
+          if (!nativeMainClaimed) {
+            nativeMainClaimed = true;
+            nativeMainTurns.add(lease);
+          }
+          return true;
+        },
+        release() {
+          if (released) return;
+          released = true;
+          if (selectionActive) {
+            selectionActive = false;
+            nativeMainSelections = Math.max(0, nativeMainSelections - 1);
+          }
+        },
+      };
+    },
     isTransferred() { return transferred; },
     release() {
       if (!active) return;
@@ -144,11 +201,19 @@ export function tryAdmitTurn(): ActiveTurnLease | null {
         if (activeTurns.get(controller) === lease) activeTurns.delete(controller);
       }
       controllers.clear();
+      nativeMainTurns.delete(lease);
       gateLease.release();
     },
   };
   admittedTurns.add(lease);
   return lease;
+}
+export function codexAccountSelectionForTurn(
+  lease?: AdmissionLease,
+): (() => CodexAccountSelectionAdmission | undefined) | undefined {
+  if (!lease || !("beginCodexAccountSelection" in lease)) return undefined;
+  const activeLease = lease as ActiveTurnLease;
+  return () => activeLease.beginCodexAccountSelection();
 }
 export function registerTurn(ac: AbortController, lease?: AdmissionLease): void {
   if (lease && "bindAbortController" in lease) (lease as ActiveTurnLease).bindAbortController(ac);
@@ -164,6 +229,9 @@ export function unregisterTurn(ac: AbortController): void {
 }
 export function isDraining(): boolean { return shutdownDraining || temporaryDrainOwners.size > 0; }
 export function getActiveTurnCount(): number { return turnGate.metrics().active; }
+export function getNativeMainProfileRequestCount(): number {
+  return nativeMainSelections + nativeMainTurns.size;
+}
 export function activeRegistryMetrics(): Record<string, AdmissionMetrics> {
   const turns = turnGate.metrics();
   return {

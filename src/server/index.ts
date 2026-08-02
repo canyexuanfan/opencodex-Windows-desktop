@@ -610,10 +610,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           ...admissionFields(admission),
           inboundProtocol: "responses",
         };
-        return runAdmittedHttpTurn(req, async () => {
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
           let response: Response;
           try {
-            response = await handleResponsesCompact(req, config, logCtx);
+            response = await handleResponsesCompact(req, config, logCtx, turnAdmissionLease);
           } catch {
             response = formatErrorResponse(500, "server_error", "Unexpected compact request failure");
           }
@@ -644,8 +644,8 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           ...admissionFields(admission),
         };
         const endpoint = url.pathname.endsWith("/edits") ? "edits" as const : "generations" as const;
-        return runAdmittedHttpTurn(req, async () => {
-          const response = await handleImages(req, config, endpoint, logCtx);
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+          const response = await handleImages(req, config, endpoint, logCtx, turnAdmissionLease);
           addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
           return withCors(response, req, config);
         });
@@ -698,8 +698,8 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           provider: "unknown",
           ...admissionFields(admission),
         };
-        return runAdmittedHttpTurn(req, async () => {
-          const response = await handleSearch(req, config, logCtx);
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+          const response = await handleSearch(req, config, logCtx, turnAdmissionLease);
           addFinalRequestLog(requestId, start, logCtx, response.status,
             response.status === 499 ? { closeReason: "client_cancel" } : undefined);
           return withCors(response, req, config);
@@ -848,8 +848,8 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           provider: "unknown",
           ...admissionFields(admission),
         };
-        return runAdmittedHttpTurn(req, async () => {
-          const response = await handleLive(req, config, logCtx);
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+          const response = await handleLive(req, config, logCtx, turnAdmissionLease);
           addFinalRequestLog(
             requestId,
             start,

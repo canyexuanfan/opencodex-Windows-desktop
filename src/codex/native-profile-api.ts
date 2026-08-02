@@ -1,6 +1,6 @@
 import type { OcxConfig } from "../types";
 import { jsonResponse } from "../server/auth-cors";
-import { acquireTemporaryDrain, getActiveTurnCount } from "../server/lifecycle";
+import { acquireNativeMainProfileDrain, getNativeMainProfileRequestCount } from "../server/lifecycle";
 import {
   managementBodyTooLargeResponse,
   readManagementJsonBody,
@@ -32,12 +32,12 @@ async function body(req: Request): Promise<Record<string, unknown>> {
 }
 
 async function withMainRequestDrain<T>(deps: NativeProfileApiDeps, operation: () => Promise<T>): Promise<T> {
-  const drainLease = acquireTemporaryDrain("native-main-profile");
+  const drainLease = acquireNativeMainProfileDrain("native-main-profile");
   if (!drainLease) throw new NativeProfileError("MAIN_REQUESTS_ACTIVE", "The proxy is already draining requests.", 503, true);
   try {
     const deadline = Date.now() + (deps.drainTimeoutMs ?? 10_000);
-    while (getActiveTurnCount() > 0 && Date.now() < deadline) await (deps.sleep ?? Bun.sleep)(50);
-    if (getActiveTurnCount() > 0) {
+    while (getNativeMainProfileRequestCount() > 0 && Date.now() < deadline) await (deps.sleep ?? Bun.sleep)(50);
+    if (getNativeMainProfileRequestCount() > 0) {
       throw new NativeProfileError("MAIN_REQUESTS_ACTIVE", "In-flight requests did not finish before the native-login switch deadline.", 409, true);
     }
     return await operation();

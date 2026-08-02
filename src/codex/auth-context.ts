@@ -107,6 +107,20 @@ export class CodexPoolAuthenticationError extends Error {
   }
 }
 
+export class CodexMainProfileDrainingError extends Error {
+  constructor() {
+    super("Native Codex main profile is switching; retry this request");
+    this.name = "CodexMainProfileDrainingError";
+  }
+}
+
+export function codexMainProfileDrainingResponse(): Response {
+  const response = formatErrorResponse(503, "server_busy", "Native Codex main profile is switching; retry this request");
+  const headers = new Headers(response.headers);
+  headers.set("Retry-After", "1");
+  return new Response(response.body, { status: response.status, headers });
+}
+
 export class CodexDirectAuthenticationError extends Error {
   constructor() {
     super("Codex Direct requires a caller Authorization bearer token");
@@ -198,6 +212,14 @@ export interface ResolveCodexAuthContextOptions {
   excludeAccountId?: string;
   /** Final native model selected for this request, used to select its quota group. */
   modelId?: string;
+  /** Short reservation converted to turn ownership before native `__main__` token materialization. */
+  beginCodexAccountSelection?: () => CodexAccountSelectionAdmission | undefined;
+}
+
+export interface CodexAccountSelectionAdmission {
+  readonly mainProfileDraining: boolean;
+  claimMainProfile(): boolean;
+  release(): void;
 }
 
 export async function resolveCodexAuthContext(
@@ -217,20 +239,37 @@ export async function resolveCodexAuthContext(
   if (isNativeMainTrafficBlocked() && config.activeCodexAccountId === MAIN_CODEX_ACCOUNT_ID) {
     throw new CodexPoolAuthenticationError();
   }
-  reconcileMainCodexAccountRuntimeState();
-  const threadId = headers.get("x-codex-parent-thread-id");
+  const selectionAdmission = options.beginCodexAccountSelection?.();
+  let accountId: string;
   const quotaScope = codexQuotaScopeForModel(options.modelId);
-  const resolution = options.excludeAccountId
-    ? (() => {
-        const accountId = pickAlternateCodexAccount(config, options.excludeAccountId!, Date.now(), quotaScope);
-        return accountId
-          ? { status: "selected" as const, accountId }
-          : { status: "none" as const };
-      })()
-    : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope);
-  if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
-  let accountId = resolution.status === "selected" ? resolution.accountId : null;
-  if (!accountId) throw new CodexPoolAuthenticationError();
+  try {
+    // A pre-drain selector reserves the native identity while reconciliation and
+    // routing inspect it. Selectors arriving after the fence skip reconciliation
+    // and may still route to non-main pool accounts without touching switch state.
+    if (!selectionAdmission?.mainProfileDraining) reconcileMainCodexAccountRuntimeState();
+    const threadId = headers.get("x-codex-parent-thread-id");
+    const resolution = options.excludeAccountId
+      ? (() => {
+          const selected = pickAlternateCodexAccount(config, options.excludeAccountId!, Date.now(), quotaScope);
+          return selected
+            ? { status: "selected" as const, accountId: selected }
+            : { status: "none" as const };
+        })()
+      : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope);
+    if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
+    const selected = resolution.status === "selected" ? resolution.accountId : null;
+    if (!selected) throw new CodexPoolAuthenticationError();
+    accountId = selected;
+    if (
+      accountId === MAIN_CODEX_ACCOUNT_ID
+      && selectionAdmission
+      && !selectionAdmission.claimMainProfile()
+    ) {
+      throw new CodexMainProfileDrainingError();
+    }
+  } finally {
+    selectionAdmission?.release();
+  }
   // Lazy prime: if the selected account has no quota yet, the pool is likely
   // unprimed (dashboard never opened, or startup prime was blocked). Kick a
   // best-effort prime so the NEXT routing decision has real scores. This never

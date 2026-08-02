@@ -5,7 +5,11 @@ import type { OcxConfig } from "../src/types";
 import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
 import type { NativeProfileManager } from "../src/codex/native-profile-manager";
 import { NativeProfileError } from "../src/codex/native-profile-types";
-import { resetLifecycleDrainStateForTests, setDraining, tryAdmitTurn } from "../src/server/lifecycle";
+import {
+  codexAccountSelectionForTurn,
+  resetLifecycleDrainStateForTests,
+  tryAdmitTurn,
+} from "../src/server/lifecycle";
 import {
   blockNativeMainRecovery,
   completeNativeMainRecovery,
@@ -22,19 +26,42 @@ afterEach(() => {
 });
 
 describe("native main profile management API", () => {
-  test("the shared admission gate rejects new turns during a native-profile drain", () => {
-    setDraining(true);
-    expect(tryAdmitTurn()).toBeNull();
-
-    setDraining(false);
-    const lease = tryAdmitTurn();
-    expect(lease).not.toBeNull();
-    lease?.release();
+  test("long Direct/non-main work does not block switch while new main selection is fenced", async () => {
+    const longPoolTurn = tryAdmitTurn();
+    expect(longPoolTurn).not.toBeNull();
+    let checkedScopedAdmission = false;
+    const manager = {
+      switch: async () => {
+        const directOrPoolTurn = tryAdmitTurn();
+        expect(directOrPoolTurn).not.toBeNull();
+        const selection = codexAccountSelectionForTurn(directOrPoolTurn!)!();
+        expect(selection?.mainProfileDraining).toBe(true);
+        expect(selection?.claimMainProfile()).toBe(false);
+        selection?.release();
+        directOrPoolTurn?.release();
+        checkedScopedAdmission = true;
+        return { ok: true };
+      },
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+    try {
+      const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, { manager });
+      expect(response?.status).toBe(200);
+      expect(checkedScopedAdmission).toBe(true);
+    } finally {
+      longPoolTurn?.release();
+    }
   });
 
   test("real drain timeout leaves an admitted HTTP response live and never enters switch", async () => {
     const lease = tryAdmitTurn();
     expect(lease).not.toBeNull();
+    const selection = codexAccountSelectionForTurn(lease!)!();
+    expect(selection?.claimMainProfile()).toBe(true);
+    selection?.release();
     let switched = 0;
     const manager = { switch: async () => { switched += 1; return { ok: true }; } } as unknown as NativeProfileManager;
     const request = new Request("http://localhost/api/native-main-profiles/switch", {
@@ -57,6 +84,9 @@ describe("native main profile management API", () => {
   test("stale HTTP/Responses-WebSocket work settles before switch and new turns stay fenced", async () => {
     const oldTurn = tryAdmitTurn();
     expect(oldTurn).not.toBeNull();
+    const oldSelection = codexAccountSelectionForTurn(oldTurn!)!();
+    expect(oldSelection?.claimMainProfile()).toBe(true);
+    oldSelection?.release();
     const order: string[] = [];
     let slept = false;
     let after: ReturnType<typeof tryAdmitTurn> = null;
@@ -74,7 +104,13 @@ describe("native main profile management API", () => {
         sleep: async () => {
           if (slept) return Bun.sleep(1);
           slept = true;
-          expect(tryAdmitTurn()).toBeNull();
+          const concurrentPool = tryAdmitTurn();
+          expect(concurrentPool).not.toBeNull();
+          const concurrentSelection = codexAccountSelectionForTurn(concurrentPool!)!();
+          expect(concurrentSelection?.mainProfileDraining).toBe(true);
+          expect(concurrentSelection?.claimMainProfile()).toBe(false);
+          concurrentSelection?.release();
+          concurrentPool?.release();
           order.push("old-http-or-ws-response-finished");
           oldTurn?.release();
         },
@@ -192,7 +228,13 @@ describe("native main profile management API", () => {
         return () => states.shift() ?? "none";
       })(),
       completeRecovery: id => {
-        completedWhileDraining = tryAdmitTurn() === null;
+        const turn = tryAdmitTurn();
+        const selection = codexAccountSelectionForTurn(turn!)!();
+        completedWhileDraining = turn !== null
+          && selection?.mainProfileDraining === true
+          && selection.claimMainProfile() === false;
+        selection?.release();
+        turn?.release();
         return completeNativeMainRecovery(id);
       },
     });

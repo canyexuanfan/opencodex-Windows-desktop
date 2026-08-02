@@ -11,8 +11,10 @@
 import { formatErrorResponse } from "../bridge";
 import {
   CodexAccountCooldownError,
+  codexMainProfileDrainingResponse,
   cooldownErrorResponse,
   CodexAuthContextError,
+  CodexMainProfileDrainingError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
 } from "../codex/auth-context";
@@ -25,6 +27,8 @@ import { readJsonRequestBody } from "./request-decompress";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "./auth-cors";
 import type { RequestLogContext } from "./request-log";
 import { codexLogAccountId, decodeRequestErrorResponse } from "./responses";
+import type { AdmissionLease } from "../lib/admission";
+import { codexAccountSelectionForTurn } from "./lifecycle";
 
 /**
  * Default TOTAL deadline for one search relay. alpha/search is non-streaming JSON — response
@@ -40,6 +44,7 @@ export async function handleSearch(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
+  turnAdmissionLease?: AdmissionLease,
 ): Promise<Response> {
   try { validateForwardAdmissionCredential(req.headers, config); }
   catch (err) {
@@ -67,7 +72,9 @@ export async function handleSearch(
 
   let upstream: Awaited<ReturnType<typeof resolveFirstUsableOpenAiSidecar>>;
   try {
-    upstream = await resolveFirstUsableOpenAiSidecar(candidates, req.headers, config);
+    upstream = await resolveFirstUsableOpenAiSidecar(candidates, req.headers, config, {
+      beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
+    });
     if (!upstream) {
       return formatErrorResponse(
         401,
@@ -80,6 +87,7 @@ export async function handleSearch(
     if (err instanceof CodexAccountCooldownError) {
       return cooldownErrorResponse(err);
     }
+    if (err instanceof CodexMainProfileDrainingError) return codexMainProfileDrainingResponse();
     if (err instanceof CodexThreadAffinityExpiredError) {
       return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
     }

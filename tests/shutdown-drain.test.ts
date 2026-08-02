@@ -15,10 +15,13 @@ import {
 } from "../src/server";
 import {
   acquireTemporaryDrain,
+  acquireNativeMainProfileDrain,
   activeRegistryMetrics,
   beginShutdownDrain,
   resetLifecycleDrainStateForTests,
   tryAdmitTurn,
+  codexAccountSelectionForTurn,
+  getNativeMainProfileRequestCount,
 } from "../src/server/lifecycle";
 import {
   backgroundShellAdmissionMetrics,
@@ -90,7 +93,44 @@ describe("active turn tracking", () => {
   test("shutdown first rejects profile leases and remains latched after scoped release attempts", () => {
     expect(beginShutdownDrain()).toBe(true);
     expect(acquireTemporaryDrain("native-profile")).toBeNull();
+    expect(acquireNativeMainProfileDrain("native-main-profile")).toBeNull();
     expect(isDraining()).toBe(true);
+  });
+
+  test("terminal shutdown dominates a native-main scoped drain and prevents all new traffic", () => {
+    const profileLease = acquireNativeMainProfileDrain("native-main-profile");
+    expect(profileLease).not.toBeNull();
+    expect(isDraining()).toBe(false);
+    const admitted = tryAdmitTurn();
+    expect(admitted).not.toBeNull();
+    const selection = codexAccountSelectionForTurn(admitted!)!();
+    expect(selection?.mainProfileDraining).toBe(true);
+    expect(selection?.claimMainProfile()).toBe(false);
+    selection?.release();
+    admitted?.release();
+
+    expect(beginShutdownDrain()).toBe(true);
+    expect(tryAdmitTurn()).toBeNull();
+    expect(acquireNativeMainProfileDrain("second-switch")).toBeNull();
+    profileLease?.release();
+    expect(isDraining()).toBe(true);
+  });
+
+  test("a pre-fence selector atomically converts to main turn ownership", () => {
+    const turn = tryAdmitTurn();
+    const selection = codexAccountSelectionForTurn(turn!)!();
+    expect(selection?.mainProfileDraining).toBe(false);
+    expect(getNativeMainProfileRequestCount()).toBe(1);
+
+    const profileLease = acquireNativeMainProfileDrain("native-main-profile");
+    expect(profileLease).not.toBeNull();
+    expect(selection?.claimMainProfile()).toBe(true);
+    selection?.release();
+    expect(getNativeMainProfileRequestCount()).toBe(1);
+
+    turn?.release();
+    expect(getNativeMainProfileRequestCount()).toBe(0);
+    profileLease?.release();
   });
 
   test("deadline forces shutdown past a never-releasing profile lease and keeps the latch terminal", async () => {
