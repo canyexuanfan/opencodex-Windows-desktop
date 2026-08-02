@@ -118,8 +118,10 @@ fast_mode = true
 ```
 
 하지만 모델 카탈로그와 런타임 요청 tier id는 `priority`를 씁니다. opencodex는 이 분리를 그대로
-유지합니다. 네이티브 OpenAI passthrough 모델은 fast 지원을 유지하고, 라우팅된 비 OpenAI 모델에서는
-service-tier 메타데이터를 지워 fast 옵션이 처리 불가능한 곳에서는 노출되지 않게 합니다.
+유지합니다. 네이티브 OpenAI passthrough 모델은 fast 지원을 유지하고, 라우팅된 프로바이더는
+케이퍼빌리티로 게이트되어 프로바이더가 `supportsServiceTier: true`를 선언하지 않으면
+`service_tier`가 제거됩니다(레지스트리가 정식 OpenAI, DeepSeek, Volcengine Ark를 분류). 따라서
+처리 불가능한 곳에 fast 옵션이 노출되지 않으며, 커스텀 게이트웨이는 명시적으로 옵트인할 수 있습니다.
 
 ## 서브에이전트 선택
 

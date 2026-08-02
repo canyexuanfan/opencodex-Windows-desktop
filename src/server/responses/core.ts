@@ -799,8 +799,9 @@ async function applyFinalRouteRequestNormalization(args: {
   // Virtual model rewriting: Pro aliases → base model + reasoning.mode="pro".
   applyOpenAiVirtualModel(parsed, route, logCtx);
 
-  // Fast mode override for OpenAI-routed models.
-  if (config.fastMode !== undefined && route.provider.adapter === "openai-responses") {
+  // Fast mode override for OpenAI-routed models, only where the provider's Responses
+  // route documents `service_tier` support (capability gate below strips everywhere else).
+  if (config.fastMode !== undefined && route.provider.adapter === "openai-responses" && route.provider.supportsServiceTier === true) {
     const tier = config.fastMode ? "priority" : undefined;
     if (parsed._rawBody && typeof parsed._rawBody === "object") {
       if (tier) (parsed._rawBody as Record<string, unknown>).service_tier = tier;
@@ -808,6 +809,7 @@ async function applyFinalRouteRequestNormalization(args: {
     }
     parsed.options.serviceTier = tier;
   }
+  applyServiceTierGate(route.provider, parsed._rawBody, parsed.options);
 
   {
     const guidance = await multiAgentGuidanceText(parsed, {
@@ -1141,6 +1143,25 @@ function finalizeOwnedTranslatorBudget(response: Response, budget: TranslatorBud
     markEagerRelaySseResponse(finalizedResponse);
   }
   return finalizedResponse;
+}
+
+/**
+ * Service-tier capability gate, applied after the final route/wire is settled. A
+ * provider that does not document `service_tier` must never receive it: strip the
+ * field and clear the logging value even when the caller supplied one (fail
+ * closed). An explicit `supportsServiceTier: true` on the provider config is the
+ * escape hatch for gateways that genuinely honour tiers.
+ */
+export function applyServiceTierGate(
+  provider: OcxProviderConfig,
+  rawBody: unknown,
+  options: { serviceTier?: string },
+): void {
+  if (provider.adapter !== "openai-responses" || provider.supportsServiceTier === true) return;
+  if (rawBody && typeof rawBody === "object") {
+    delete (rawBody as Record<string, unknown>).service_tier;
+  }
+  options.serviceTier = undefined;
 }
 
 export async function handleResponses(

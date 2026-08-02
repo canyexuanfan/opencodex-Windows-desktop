@@ -161,6 +161,16 @@ export interface ProviderRegistryEntry {
    * replay miss are repaired rather than forwarded.
    */
   statelessResponses?: boolean;
+  /**
+   * Registry default for the provider's Responses `service_tier` support; see
+   * `OcxProviderConfig.supportsServiceTier`. Registry-only: backfilled (never
+   * overriding) at enrich/route time and deliberately NOT seeded into saved
+   * config, so an explicit user value stays distinguishable from the default
+   * (and the canonical openai seed comparison keeps its exact key set).
+   */
+  supportsServiceTier?: boolean;
+  /** Registry default for plaintext reasoning replay; see `OcxProviderConfig.preserveResponsesReasoningContent`. Registry-only like `supportsServiceTier`. */
+  preserveResponsesReasoningContent?: boolean;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -214,7 +224,7 @@ export type ProviderConfigSeed = Pick<
 // 260710 context refresh: Tier-2 evidence in
 // devlog/_plan/260710_provider_hardening/001_research_frontier.md.
 const ANTHROPIC_MODELS = ["claude-fable-5", "claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
-const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet-5": 1_000_000, "claude-fable-5": 1_000_000, "claude-opus-5": 1_000_000, "claude-opus-4-8": 1_000_000, "claude-haiku-4-5": 200_000 };
+const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet-5": 1_000_000, "claude-fable-5": 1_000_000, "claude-opus-5": 1_000_000, "claude-opus-4-8": 1_000_000, "claude-opus-4-7": 1_000_000, "claude-opus-4-6": 1_000_000, "claude-sonnet-4-6": 1_000_000, "claude-haiku-4-5": 200_000 };
 
 const ZAI_GLM_52_MODELS = ["glm-5.2", "glm-5.2[1m]"];
 const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
@@ -575,6 +585,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://chatgpt.com/backend-api/codex",
     authKind: "forward",
     codexAccountMode: "pool",
+    supportsServiceTier: true,
     featured: true,
     note: "Codex login account pool (default) or Direct main-account mode via codexAccountMode",
   },
@@ -745,6 +756,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-responses",
     baseUrl: "https://api.openai.com/v1",
     authKind: "key",
+    supportsServiceTier: true,
     featured: true,
     dashboardUrl: "https://platform.openai.com/api-keys",
     defaultModel: "gpt-5.5",
@@ -965,6 +977,16 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // construction and the wire above can never route.
     // Evidence: https://api-docs.deepseek.com/api/create-response/
     responsesPath: "/responses",
+    // DeepSeek's Responses reference does not list `service_tier`; unsupported
+    // parameters are documented as silently ignored, but the fail-closed policy
+    // strips the field rather than forwarding a knob the upstream never asked for.
+    supportsServiceTier: false,
+    // DeepSeek's Responses compatibility guide accepts plaintext reasoning items and
+    // merges them into the adjacent assistant message, so replayed reasoning must
+    // not be blanked the way the ChatGPT backend requires. (Whether the Responses
+    // route REQUIRES replay on tool-call continuations is an inference from the
+    // Chat Thinking-Mode docs, not a confirmed Responses contract.)
+    preserveResponsesReasoningContent: true,
     // "The API is stateless: responses and conversations are not stored on the
     // server." https://api-docs.deepseek.com/api/create-response/
     statelessResponses: true,
@@ -1245,6 +1267,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     responsesPath: "/responses",
     adapter: "openai-responses",
     authKind: "key",
+    // Ark's plan route does not document `service_tier`; fail closed like DeepSeek.
+    supportsServiceTier: false,
     preserveCustomDestination: true,
     dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
     defaultModel: "deepseek-v4-pro",
@@ -1476,8 +1500,23 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     featured: false,
     dashboardUrl: "https://github.com/settings/copilot",
     liveModels: true,
-    models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro"],
+    models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"],
     defaultModel: "gpt-4o",
+    // Copilot fronts a mixed-wire catalog: these models reject /chat/completions for
+    // real Codex-agent traffic (function tools + reasoning), so every inbound wire
+    // rides Responses. Evidence: issue #748 field runs, pi.dev/models/github-copilot/*
+    // wire declarations, BerriAI/litellm#23332 (gpt-5.4), JetBrains LLM-29711
+    // (gpt-5.6-sol). gpt-5.4-nano is deliberately absent — it has no field report; a
+    // user can opt it in with an explicit modelAdapters entry, which always wins.
+    modelWireDefaults: {
+      "gpt-5.3-codex": "openai-responses",
+      "gpt-5.4": "openai-responses",
+      "gpt-5.4-mini": "openai-responses",
+      "gpt-5.5": "openai-responses",
+      "gpt-5.6-luna": "openai-responses",
+      "gpt-5.6-sol": "openai-responses",
+      "gpt-5.6-terra": "openai-responses",
+    },
     note: "Experimental unofficial Copilot bridge. Logs in via GitHub device flow using the public VS Code OAuth client id, then exchanges for a short-lived Copilot API token (copilot_internal). Requires an active Copilot subscription. GitHub may tighten or revoke this path; do not send confidential material you would not paste into Copilot Chat.",
   },
   // FREEZE 2026-07-10: no public OpenAI-compatible endpoint is documented. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
