@@ -36,6 +36,10 @@ reset is expected to recover as `+N% pool capacity`. **Incomplete coverage** mea
 accounts could not safely contribute to the estimate, for example because their plan or quota is
 unknown, their reading is stale, or the account is paused or needs reauthentication.
 
+A **partial window coverage** warning means some included accounts reported one quota window but
+not another. The overview keeps those windows separate and marks each affected window incomplete
+instead of treating the missing reading as usage for that window.
+
 This estimate is display-only. It does not change account selection, session affinity, automatic
 switching, cooldowns, or any other routing decision. Use the [Codex Auth account pool](/guides/web-dashboard/#codex-auth-and-account-pools)
 for the individual account state and routing controls.
