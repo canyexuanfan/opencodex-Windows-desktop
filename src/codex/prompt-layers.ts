@@ -244,3 +244,239 @@ export function computeRevision(configBytes: string | null, storeBytes: string |
 }
 
 export { readFileOrNull as readFileBytes };
+
+// ---------------------------------------------------------------------------
+// Scoped TOML scanning. Line-based like `features.ts:80-93`: booleans need no
+// escaping, and line editing preserves the user's comments and formatting
+// exactly where a re-serialize would not.
+// ---------------------------------------------------------------------------
+
+const TABLE_HEADER = /^\s*\[/;
+
+/** Lines of the root scope: everything before the first `[table]` header. */
+function rootLines(content: string): string[] {
+  const lines = content.split("\n");
+  const first = lines.findIndex(l => TABLE_HEADER.test(l));
+  return first === -1 ? lines : lines.slice(0, first);
+}
+
+/** Lines of `[header]`'s body, up to the next table header. */
+function tableLines(content: string, header: string): string[] | null {
+  const lines = content.split("\n");
+  const escaped = header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const start = lines.findIndex(l => new RegExp(`^\\s*\\[${escaped}\\]\\s*(?:#.*)?$`).test(l));
+  if (start === -1) return null;
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex(l => TABLE_HEADER.test(l));
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+function boolInLines(lines: string[], key: string): boolean | null {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^\\s*${escaped}\\s*=\\s*(true|false)\\s*(?:#.*)?$`);
+  for (const line of lines) {
+    const m = pattern.exec(line);
+    if (m) return m[1] === "true";
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Ownership of the generated projection.
+//
+// Canonical physical form, always exactly two lines at the top of the document:
+//
+//     # Auto-injected by opencodex
+//     developer_instructions = "<single-line basic string>"
+//
+// Replacement is "find the marker, replace the next line" — never a span search.
+// Adjacency mirrors `injected-marker.ts:53-60`, tightened by a shape check.
+// ---------------------------------------------------------------------------
+
+const DEV_INSTRUCTIONS_KEY = "developer_instructions";
+const CANONICAL_LINE = /^developer_instructions = "(?:[^"\\]|\\.)*"$/;
+const ANY_DEV_INSTRUCTIONS = /^\s*(?:developer_instructions|"developer_instructions"|'developer_instructions')\s*=/;
+
+export type Ownership =
+  /** no such key anywhere in the root scope */
+  | { state: "absent" }
+  /** marker-adjacent and canonically shaped: ours to rewrite */
+  | { state: "owned"; line: number; literal: string }
+  /** marker-adjacent but reshaped: refuse, offer repair */
+  | { state: "owned-malformed"; line: number; raw: string }
+  /** no marker: externally authored, refuse and offer adoption */
+  | { state: "external"; line: number; raw: string };
+
+export function inspectOwnership(configBytes: string | null): Ownership {
+  if (configBytes === null) return { state: "absent" };
+  const lines = rootLines(configBytes);
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i]!;
+    if (!ANY_DEV_INSTRUCTIONS.test(raw)) continue;
+    const marked = i > 0 && lines[i - 1]!.includes(OCX_SECTION_MARKER);
+    if (!marked) return { state: "external", line: i + 1, raw };
+    if (!CANONICAL_LINE.test(raw)) return { state: "owned-malformed", line: i + 1, raw };
+    const literal = raw.slice(`${DEV_INSTRUCTIONS_KEY} = `.length);
+    return { state: "owned", line: i + 1, literal };
+  }
+  return { state: "absent" };
+}
+
+// ---------------------------------------------------------------------------
+// Store — the single source of truth for custom layers.
+// ---------------------------------------------------------------------------
+
+export interface CustomLayer {
+  /** [a-z0-9]{6}, stable across edits */
+  id: string;
+  title: string;
+  body: string;
+  enabled: boolean;
+}
+
+const LAYER_ID = /^[a-z0-9]{6}$/;
+
+function isCustomLayer(value: unknown): value is CustomLayer {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.id === "string" && LAYER_ID.test(v.id)
+    && typeof v.title === "string"
+    && typeof v.body === "string"
+    && typeof v.enabled === "boolean";
+}
+
+/** null means unreadable/malformed, which is NOT the same as an empty store. */
+export function parseStore(storeBytes: string | null): CustomLayer[] | null {
+  if (storeBytes === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(storeBytes);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const layers = (parsed as { layers?: unknown }).layers;
+  if (!Array.isArray(layers) || !layers.every(isCustomLayer)) return null;
+  const ids = new Set(layers.map(l => l.id));
+  if (ids.size !== layers.length) return null;
+  return layers;
+}
+
+/** Enabled layers, joined in order. This is the value written to config.toml. */
+export function composeProjection(layers: readonly CustomLayer[]): string {
+  return layers.filter(l => l.enabled).map(l => l.body).join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot
+// ---------------------------------------------------------------------------
+
+export interface ToggleState {
+  id: ToggleId;
+  key: string;
+  /** null = the key is absent from the user file */
+  userFileValue: boolean | null;
+  /**
+   * userFileValue ?? default. NOT the resolved Codex value: opencodex reads one
+   * of the eight config layers, so it reports this file's value under a name
+   * that says as much.
+   */
+  defaultedUserValue: boolean;
+  default: boolean;
+}
+
+export type Drift =
+  | "journal-present"
+  | "projection-stale"
+  | "store-missing"
+  | "owned-malformed"
+  | null;
+
+export interface PromptLayerSnapshot {
+  configPath: string;
+  storePath: string;
+  configExists: boolean;
+  readable: boolean;
+  developerInstructionsOwned: boolean;
+  /** non-null blocks mutations until resolved */
+  drift: Drift;
+  toggles: ToggleState[];
+  custom: CustomLayer[];
+  modelInstructionsFile: string | null;
+  revision: string;
+}
+
+function readToggle(configBytes: string | null, id: ToggleId): ToggleState {
+  const spec = TOGGLE_KEYS[id];
+  const descriptor = LAYER_INVENTORY.find(d => d.id === id)!;
+  const fallback = descriptor.default ?? true;
+  const key = spec.table ? `${spec.table}.${spec.key}` : spec.key;
+  let value: boolean | null = null;
+  if (configBytes !== null) {
+    const scope = spec.table ? tableLines(configBytes, spec.table) : rootLines(configBytes);
+    value = scope === null ? null : boolInLines(scope, spec.key);
+  }
+  return {
+    id,
+    key,
+    userFileValue: value,
+    defaultedUserValue: value ?? fallback,
+    default: fallback,
+  };
+}
+
+function readModelInstructionsFile(configBytes: string | null): string | null {
+  if (configBytes === null) return null;
+  for (const line of rootLines(configBytes)) {
+    const m = /^\s*model_instructions_file\s*=\s*"([^"]*)"\s*(?:#.*)?$/.exec(line);
+    if (m) return m[1]!;
+  }
+  return null;
+}
+
+/**
+ * Pure. Never writes, never locks, never recovers — a GET must not modify a
+ * user's configuration, so drift is REPORTED here and resolved elsewhere.
+ */
+export function readPromptLayers(opts?: Paths): PromptLayerSnapshot {
+  const configPath = activeConfigPath(opts);
+  const storePath = activeStorePath(opts);
+  const configExists = existsSync(configPath);
+  const configBytes = readFileOrNull(configPath);
+  const storeExists = existsSync(storePath);
+  const storeBytes = readFileOrNull(storePath);
+
+  // Present but unreadable is a hard stop; absent is an ordinary first run.
+  const readable = !configExists || configBytes !== null;
+  const ownership = inspectOwnership(configBytes);
+  const layers = parseStore(storeBytes);
+  const projection = ownership.state === "owned"
+    ? decodeBasicString(ownership.literal)
+    : null;
+
+  let drift: Drift = null;
+  if (existsSync(`${storePath.replace(/\.json$/, "")}.journal`)) {
+    drift = "journal-present";
+  } else if (ownership.state === "owned-malformed") {
+    drift = "owned-malformed";
+  } else if (!storeExists && projection !== null && projection.length > 0) {
+    // The store is gone while a live projection remains. Treating this as an
+    // empty store would erase the active prompt on the next write.
+    drift = "store-missing";
+  } else if (layers !== null && projection !== null && composeProjection(layers) !== projection) {
+    drift = "projection-stale";
+  }
+
+  return {
+    configPath,
+    storePath,
+    configExists,
+    readable,
+    developerInstructionsOwned: ownership.state === "owned",
+    drift,
+    toggles: TOGGLE_IDS.map(id => readToggle(configBytes, id)),
+    custom: layers ?? [],
+    modelInstructionsFile: readModelInstructionsFile(configBytes),
+    revision: computeRevision(configBytes, storeBytes),
+  };
+}
