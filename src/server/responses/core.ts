@@ -144,7 +144,7 @@ import {
   sanitizePassthroughHeaders,
 } from "../relay";
 import { relaySseEagerBounded } from "../relay-eager";
-import { selectEagerPath } from "../../lib/bun-stream-caps";
+import { isWin32EagerRewrite, selectEagerPath } from "../../lib/bun-stream-caps";
 import { cancelBodyOnAbort } from "../../lib/abort";
 import {
   createResponsesItemIdPayloadRewrite,
@@ -1769,7 +1769,7 @@ async function handleResponsesInner(
       // #864: win32 rewrite traffic must never enter the tee()+JS-pull chain
       // (Bun#32111 JS-sink segfault — text frames pass, the terminal block is
       // lost). The eager single reader applies the same rewrites inline.
-      const win32EagerRewrite = process.platform === "win32" && needsClientRewrite;
+      const win32EagerRewrite = isWin32EagerRewrite(process.platform, needsClientRewrite);
       const eagerPath = selectEagerPath(
         process.platform,
         needsClientRewrite,

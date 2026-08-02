@@ -122,7 +122,13 @@ export function relaySseEagerBounded(
       const next = nextSseBlock(frameBuffer);
       if (!next) break;
       const payload = sseDataPayload(next.block);
-      const block = payload === null ? next.block : replaceSseDataPayload(next.block, rewrite!(payload));
+      const rewrittenPayload = payload === null ? null : rewrite!(payload);
+      // Replace only on an actual change: replaceSseDataPayload collapses
+      // multi-data-line events and normalizes newline style even when the
+      // payload is identical, which corrupts valid streams.
+      const block = payload !== null && rewrittenPayload !== payload
+        ? replaceSseDataPayload(next.block, rewrittenPayload!)
+        : next.block;
       out += block + next.delimiter;
       frameBuffer = next.rest;
     }
@@ -135,10 +141,16 @@ export function relaySseEagerBounded(
     }
     return rewriteEncoder!.encode(out);
   };
-  /** Flush any trailing partial block at upstream end (rewritten verbatim tail). */
+  /** Flush any trailing partial block at upstream end (rewrite applied, matching the pull relay). */
   const flushRewriteTail = (): Uint8Array => {
     if (!rewrite) return new Uint8Array(0);
-    const tail = rewriteDecoder!.decode() + frameBuffer;
+    // Decoder-flushed bytes logically follow everything already decoded.
+    let tail = frameBuffer + rewriteDecoder!.decode();
+    const payload = sseDataPayload(tail);
+    if (payload !== null) {
+      const rewrittenPayload = rewrite(payload);
+      if (rewrittenPayload !== payload) tail = replaceSseDataPayload(tail, rewrittenPayload);
+    }
     frameBuffer = "";
     if (rewriteBudget && frameBufferBytes > 0) {
       rewriteBudget.releaseRetained(frameBufferBytes, { kind: "live_transient" });
@@ -253,6 +265,13 @@ export function relaySseEagerBounded(
         }
       }
     } finally {
+      // Release any retained rewrite-buffer bytes on every teardown path
+      // (error, cancel, upstream abort) — consumption/EOF release alone
+      // leaves them charged.
+      if (rewriteBudget && frameBufferBytes > 0) {
+        try { rewriteBudget.releaseRetained(frameBufferBytes, { kind: "live_transient" }); } catch { /* teardown must not throw */ }
+        frameBufferBytes = 0;
+      }
       if (syntheticKind) hooks.onSynthetic(syntheticKind);
       if (cancelled && !hooks.sawTerminal()) {
         hooks.onClientCancel();
