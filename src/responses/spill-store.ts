@@ -17,7 +17,7 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
-import { forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetEphemeralSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxProviderContinuationState } from "../types";
 
 export const RESPONSE_SPILL_VERSION = 1;
@@ -200,9 +200,9 @@ function unlink(path: string): void {
   try {
     if (spillIoForTest?.unlink) spillIoForTest.unlink(path);
     else unlinkSync(path);
-    forgetHardenedSecretPath(path);
+    forgetEphemeralSecretPath(path);
   } catch (error) {
-    if (isErrno(error, "ENOENT")) forgetHardenedSecretPath(path);
+    if (isErrno(error, "ENOENT")) forgetEphemeralSecretPath(path);
     throw error;
   }
 }

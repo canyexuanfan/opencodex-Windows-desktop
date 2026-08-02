@@ -14,7 +14,7 @@ import {
 } from "./codex/account-namespace-match";
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
 import {
-  forgetHardenedSecretPath,
+  forgetEphemeralSecretPath,
   hardenSecretDir,
   hardenSecretPath,
   hardenSecretPathAsync,
@@ -108,7 +108,9 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
   write: (target, value) => writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 }),
   harden: target => {
     try { chmodSync(target, 0o600); } catch { /* platform may ignore chmod */ }
-    if (process.platform === "win32") hardenSecretPath(target, { required: true });
+    // Timeout memo keyed by the stable destination (matches the async writer):
+    // a failed temp harden must not mint a new unique-temp key on every write.
+    if (process.platform === "win32") hardenSecretPath(target, { required: true, timeoutMemoKey: path });
   },
   rename: renameAtomicFile,
   truncate: target => truncateSync(target, 0),
@@ -122,7 +124,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
     io.harden(tmp);
     hardened = true;
     io.rename(tmp, path);
-    forgetHardenedSecretPath(tmp);
+    forgetEphemeralSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -149,7 +151,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
     if (!removed && !hardened) {
       try { io.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
-    if (removed) forgetHardenedSecretPath(tmp);
+    if (removed) forgetEphemeralSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -208,7 +210,7 @@ export async function atomicWriteFileAsync(
     await effective.harden(tmp);
     hardened = true;
     await effective.rename(tmp, path);
-    forgetHardenedSecretPath(tmp);
+    forgetEphemeralSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -235,7 +237,7 @@ export async function atomicWriteFileAsync(
     if (!removed && !hardened) {
       try { await effective.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
-    if (removed) forgetHardenedSecretPath(tmp);
+    if (removed) forgetEphemeralSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -379,7 +381,7 @@ export function backupConfigBeforeOpenAiTierMigration(
         }
       }
     }
-    if (removed) forgetHardenedSecretPath(temp);
+    if (removed) forgetEphemeralSecretPath(temp);
     if (!removed && !scrubbed) throw new OpenAiTierBackupSecretResidualError(temp);
     if (!removed) throw new OpenAiTierBackupCleanupError();
   };
@@ -400,16 +402,16 @@ export function backupConfigBeforeOpenAiTierMigration(
     published = true;
     try {
       io.unlink(temp);
-      forgetHardenedSecretPath(temp);
+      forgetEphemeralSecretPath(temp);
     } catch (firstError) {
       if (isMissingPathError(firstError)) {
-        forgetHardenedSecretPath(temp);
+        forgetEphemeralSecretPath(temp);
       } else try {
         io.unlink(temp);
-        forgetHardenedSecretPath(temp);
+        forgetEphemeralSecretPath(temp);
       } catch (secondError) {
         if (isMissingPathError(secondError)) {
-          forgetHardenedSecretPath(temp);
+          forgetEphemeralSecretPath(temp);
           return "created";
         }
         // temp and backup are hard links to the same inode. Roll back the backup

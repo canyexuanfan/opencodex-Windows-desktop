@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
-import { forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetEphemeralSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxConfig } from "../types";
 import {
   isAllowedManagementOrigin,
@@ -98,9 +98,9 @@ export function removeManagementTokenPathBestEffort(
 ): void {
   try {
     remove(path);
-    forgetHardenedSecretPath(path);
+    forgetEphemeralSecretPath(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetHardenedSecretPath(path);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetEphemeralSecretPath(path);
     /* other failures retain fail-closed state for the caller */
   }
 }
@@ -120,7 +120,8 @@ function createTokenFile(path: string): string {
     chmodSync(temporary, 0o600);
     let temporaryHardened: { ok: boolean };
     try {
-      temporaryHardened = hardenSecretPath(temporary, { required: true });
+      // Destination-keyed timeout memo (the final token path), not the temp.
+      temporaryHardened = hardenSecretPath(temporary, { required: true, timeoutMemoKey: path });
     } catch {
       temporaryHardened = { ok: false };
     }

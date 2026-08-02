@@ -72,7 +72,7 @@ export function durableWrite(path: string, content: string): void {
   let fd: number | undefined;
   try {
     writeFileSync(tmp, content, { encoding: "utf8", mode: FILE_MODE });
-    if (process.platform === "win32") hardenSecretPath(tmp, { required: false });
+    if (process.platform === "win32") hardenSecretPath(tmp, { required: false, timeoutMemoKey: path });
     fd = openSync(tmp, "r+");
     fsyncSync(fd);
     closeSync(fd);

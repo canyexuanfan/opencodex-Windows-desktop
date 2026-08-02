@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandUserPath, getConfigDir } from "../config";
 import { durableBunPath } from "../lib/bun-runtime";
-import { forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetEphemeralSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
 
 const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -233,7 +233,8 @@ export function replaceWindowsTrayOwnedFile(
     harden: target => {
       try { chmodSync(target, 0o600); } catch { /* best-effort */ }
       if (process.platform !== "win32") return;
-      const hardened = hardenSecretPath(target, { required: true });
+      // Destination-keyed timeout memo: retries share one memo per final path.
+      const hardened = hardenSecretPath(target, { required: true, timeoutMemoKey: path });
       if (!hardened.ok) throw new Error("Windows tray ACL hardening did not complete; refusing to persist executable state.");
     },
     rename: renameSync,
@@ -247,14 +248,14 @@ export function replaceWindowsTrayOwnedFile(
     io.harden(temporary);
     io.rename(temporary, path);
     renamed = true;
-    forgetHardenedSecretPath(temporary);
+    forgetEphemeralSecretPath(temporary);
   } finally {
     if (!renamed) {
       try {
         io.unlink(temporary);
-        forgetHardenedSecretPath(temporary);
+        forgetEphemeralSecretPath(temporary);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetHardenedSecretPath(temporary);
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetEphemeralSecretPath(temporary);
       }
     }
   }

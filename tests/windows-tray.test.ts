@@ -415,7 +415,7 @@ describe("Windows tray packaging and command safety", () => {
     expect(tray).toContain('join(getConfigDir(), "opencodex-tray.ps1")');
     expect(tray).toContain('join(import.meta.dir, "assets", name)');
     expect(tray).toContain("installedTrayIconPaths()");
-    expect(tray).toContain("const hardened = hardenSecretPath(target, { required: true })");
+    expect(tray).toContain("const hardened = hardenSecretPath(target, { required: true, timeoutMemoKey: path })");
     expect(tray).toContain("if (!hardened.ok)");
     expect(tray).toContain("if (!hardenedDir.ok)");
     expect(tray).toContain("refusing to replace its persistent script");
