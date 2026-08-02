@@ -35,6 +35,9 @@ describe("acceptSystemRestart", () => {
   test("uses the remaining absolute restart budget, spawns start, marks recycle, then exits 0", async () => {
     const calls: string[] = [];
     let scheduled: (() => void | Promise<void>) | null = null;
+    let deadlineCallback: (() => void) | null = null;
+    let deadlineDelay = -1;
+    let deadlineCancellations = 0;
     let now = 10_000;
 
     const result = acceptSystemRestart({
@@ -43,6 +46,11 @@ describe("acceptSystemRestart", () => {
       isSupervisedServiceChild: () => false,
       listenPort: () => 10123,
       schedule: (fn) => { scheduled = fn; },
+      scheduleDeadline: (fn, ms) => {
+        deadlineCallback = fn;
+        deadlineDelay = ms;
+        return () => { deadlineCancellations += 1; };
+      },
       now: () => now,
       setDraining: (value) => { calls.push(`draining:${value}`); },
       drainAndShutdown: async (_server, timeoutMs) => {
@@ -66,6 +74,106 @@ describe("acceptSystemRestart", () => {
     now += 15_000;
     await scheduled!();
     expect(calls).toEqual(["draining:true", "drain:45000", "start:10123", "recycle", "exit:0"]);
+    expect(deadlineDelay).toBe(45_000);
+    expect(deadlineCancellations).toBe(1);
+    deadlineCallback?.();
+    expect(calls).toEqual(["draining:true", "drain:45000", "start:10123", "recycle", "exit:0"]);
+  });
+
+  test("never-settling drain reaches one terminal exit at the original deadline", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+    let fireDeadline: (() => void) | null = null;
+    let now = 1_000;
+
+    acceptSystemRestart({
+      isDraining: () => false,
+      getActiveTurnCount: () => 1,
+      schedule: (fn) => { scheduled = fn; },
+      scheduleDeadline: (fn, ms) => {
+        expect(ms).toBe(60_000);
+        fireDeadline = fn;
+        return () => {};
+      },
+      now: () => now,
+      setDraining: () => { calls.push("latched"); },
+      drainAndShutdown: () => {
+        calls.push("drain");
+        return new Promise<void>(() => {});
+      },
+      spawnStart: () => { calls.push("start"); },
+      exitProcess: (code) => { calls.push(`exit:${code}`); },
+    });
+
+    const running = scheduled!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual(["latched", "drain"]);
+    now += 60_000;
+    fireDeadline?.();
+    await running;
+    expect(calls).toEqual(["latched", "drain", "exit:1"]);
+  });
+
+  test("exactly elapsed deadline exits without waiting for late drain resolution", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+    let resolveDrain!: () => void;
+    let now = 5_000;
+
+    acceptSystemRestart({
+      isDraining: () => false,
+      getActiveTurnCount: () => 0,
+      schedule: (fn) => { scheduled = fn; },
+      scheduleDeadline: () => { throw new Error("exact deadline must not schedule another timer"); },
+      now: () => now,
+      setDraining: () => { calls.push("latched"); },
+      drainAndShutdown: (_server, timeoutMs) => {
+        calls.push(`drain:${timeoutMs}`);
+        return new Promise<void>(resolve => { resolveDrain = resolve; });
+      },
+      spawnStart: () => { calls.push("start"); },
+      exitProcess: (code) => { calls.push(`exit:${code}`); },
+    });
+
+    now += MEMORY_DRAIN_RESTART_MS;
+    await scheduled!();
+    expect(calls).toEqual(["latched", "drain:0", "exit:1"]);
+    resolveDrain();
+    await Promise.resolve();
+    expect(calls).toEqual(["latched", "drain:0", "exit:1"]);
+  });
+
+  test("late drain rejection after timeout is observed without a second terminal action", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+    let fireDeadline: (() => void) | null = null;
+    let rejectDrain!: (reason?: unknown) => void;
+
+    acceptSystemRestart({
+      isDraining: () => false,
+      getActiveTurnCount: () => 1,
+      schedule: (fn) => { scheduled = fn; },
+      scheduleDeadline: (fn) => { fireDeadline = fn; return () => {}; },
+      setDraining: () => { calls.push("latched"); },
+      drainAndShutdown: () => {
+        calls.push("drain");
+        return new Promise<void>((_resolve, reject) => { rejectDrain = reject; });
+      },
+      spawnStart: () => { calls.push("start"); },
+      exitProcess: (code) => { calls.push(`exit:${code}`); },
+    });
+
+    const running = scheduled!();
+    await Promise.resolve();
+    await Promise.resolve();
+    fireDeadline?.();
+    await running;
+    expect(calls).toEqual(["latched", "drain", "exit:1"]);
+    rejectDrain(new Error("late fixture rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual(["latched", "drain", "exit:1"]);
   });
 
   test("supervised service child exits 1 so failure-only supervisors respawn", async () => {

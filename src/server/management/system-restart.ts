@@ -48,6 +48,7 @@ export interface SystemRestartIo {
   markRecycling?: () => void;
   exitProcess?: (code: number) => void;
   schedule?: (fn: () => void | Promise<void>, ms: number) => void;
+  scheduleDeadline?: (fn: () => void, ms: number) => () => void;
   isDraining?: () => boolean;
   isShutdownDraining?: () => boolean;
   beginShutdownDrain?: () => boolean;
@@ -60,6 +61,38 @@ export interface SystemRestartIo {
 let restartIo: SystemRestartIo = {};
 /** Prevents double-scheduling in the 200ms window before drainAndShutdown sets draining. */
 let restartAccepted = false;
+
+type RestartDrainOutcome = "completed" | "rejected" | "deadline";
+
+function waitForRestartDrain(
+  drainPromise: Promise<void>,
+  deadlineMs: number,
+  now: () => number,
+  scheduleDeadline: NonNullable<SystemRestartIo["scheduleDeadline"]>,
+): Promise<RestartDrainOutcome> {
+  const remainingMs = Math.max(0, deadlineMs - now());
+  if (remainingMs === 0) {
+    // Observe any late rejection even though orchestration is already terminal.
+    void drainPromise.catch(() => {});
+    return Promise.resolve("deadline");
+  }
+  return new Promise<RestartDrainOutcome>((resolve) => {
+    let settled = false;
+    let cancelDeadline: (() => void) | undefined;
+    const finish = (outcome: RestartDrainOutcome) => {
+      if (settled) return;
+      settled = true;
+      cancelDeadline?.();
+      resolve(outcome);
+    };
+    cancelDeadline = scheduleDeadline(() => finish("deadline"), remainingMs);
+    if (settled) cancelDeadline();
+    void drainPromise.then(
+      () => finish("completed"),
+      () => finish("rejected"),
+    );
+  });
+}
 
 /** Test seam — reset between tests. */
 export function setSystemRestartIoForTests(io: SystemRestartIo = {}): void {
@@ -156,9 +189,19 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
     schedule(async () => {
       const drain = io.drainAndShutdown ?? drainAndShutdown;
       const remainingMs = Math.max(0, restartDeadlineMs - now());
-      try {
-        await drain(undefined, remainingMs);
-      } catch {
+      const drainPromise = Promise.resolve().then(() => drain(undefined, remainingMs));
+      const scheduleDeadline = io.scheduleDeadline ?? ((fn, ms) => {
+        const timer = setTimeout(fn, ms);
+        return () => clearTimeout(timer);
+      });
+      const drainOutcome = await waitForRestartDrain(drainPromise, restartDeadlineMs, now, scheduleDeadline);
+      const exitProcess = io.exitProcess ?? ((code: number) => { process.exit(code); });
+      if (drainOutcome === "deadline") {
+        console.warn("Drain-and-restart deadline expired; forcing terminal exit");
+        exitProcess(1);
+        return;
+      }
+      if (drainOutcome === "rejected") {
         // drainAndShutdown stops the listener in finally. Even if ancillary cleanup
         // rejects, an accepted restart must still reach replacement or terminal exit.
         console.warn("Drain-and-restart cleanup failed; continuing terminal restart handoff");
@@ -170,7 +213,6 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
         return;
       }
       const port = (io.listenPort ?? resolveListenPort)();
-      const exitProcess = io.exitProcess ?? ((code: number) => { process.exit(code); });
       try {
         await (io.spawnStart ?? spawnDetachedStart)(port);
       } catch (err) {
