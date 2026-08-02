@@ -687,6 +687,7 @@ test("responsesSseToChatCompletionsSse preserves translator overflow and cancels
 
   const text = await new Response(responsesSseToChatCompletionsSse(source(), "mock/test-model")).text();
   expect(text).toContain('"code":"translation_buffer_limit"');
+  expect(text).toContain('"type":"upstream_error"');
   expect(text).not.toContain("data: [DONE]");
   expect(cancelled).toBe(true);
 
@@ -782,6 +783,39 @@ test("collectChatCompletion releases every call scope after the final owner is c
   expect(toolCalls[0]?.function?.arguments).toBe('{"q":"partial"}');
   // All per-call scopes closed: ownership moved to the serialized copies only.
   expect(budget.snapshot().activeCalls).toBe(0);
+  // Exact surviving charge: the two serialized owners, nothing else.
+  const copyA = { id: "call_a", type: "function", function: { name: "alpha", arguments: '{"q":"partial"}' } };
+  const copyB = { id: "call_b", type: "function", function: { name: "beta", arguments: '{"z":1}' } };
+  expect(budget.snapshot().currentBytes).toBe(
+    Buffer.byteLength(JSON.stringify(copyA)) + Buffer.byteLength(JSON.stringify(copyB)),
+  );
+});
+
+test("collectChatCompletion final-copy overflow cleans up scopes and charges", async () => {
+  const module = await import("../src/chat/outbound");
+  // Args (100 bytes) fit; args + serialized copy exceed the turn cap, so the
+  // overflow fires during the final owner transfer, not mid-stream.
+  const budget = createTestTranslatorBudget({ maxCallArgumentBytes: 4096, maxTurnBytes: 150 });
+  const frame = `data: ${JSON.stringify({
+    choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", function: { name: "f", arguments: "a".repeat(100) } }] } }],
+  })}\n\n`;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame));
+      controller.close();
+    },
+  });
+  try {
+    await module.collectChatCompletion(stream, "mock/test-model", budget);
+    throw new Error("expected final-copy overflow");
+  } catch (error) {
+    expect(module.isChatCompletionsStreamError(error)).toBe(true);
+    if (module.isChatCompletionsStreamError(error)) {
+      expect(error).toMatchObject({ status: 502, type: "upstream_error", code: "translation_buffer_limit" });
+    }
+  }
+  expect(budget.snapshot().activeCalls).toBe(0);
+  expect(budget.snapshot().currentBytes).toBe(0);
 });
 
 test("responsesSseToChatCompletionsSse emits error frame on truncated stream", async () => {

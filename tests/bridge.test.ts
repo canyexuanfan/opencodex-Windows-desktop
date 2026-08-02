@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
+import { translatorLiveBudgetCountForTests } from "../src/lib/translator-budget";
 import type { AdapterEvent } from "../src/types";
 
 async function* replay(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
@@ -1034,5 +1035,27 @@ describe("buildResponseJSON default budget safety net", () => {
       { type: "done" },
     ];
     expect(() => buildResponseJSON(events, "mock/test-model")).toThrow(/translation_buffer_limit|buffer exceeded/);
+  });
+});
+
+describe("bridgeToResponsesSSE owned default budget lifecycle", () => {
+  test("terminal completion disposes the owned default budget", async () => {
+    const before = translatorLiveBudgetCountForTests();
+    const stream = bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "hi" },
+      { type: "done" },
+    ]), "mock/test-model");
+    await new Response(stream).text();
+    expect(translatorLiveBudgetCountForTests()).toBe(before);
+  });
+
+  test("client cancel disposes the owned default budget", async () => {
+    const before = translatorLiveBudgetCountForTests();
+    const stream = bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "hi" },
+      { type: "done" },
+    ]), "mock/test-model");
+    await stream.cancel(new Error("client gone"));
+    expect(translatorLiveBudgetCountForTests()).toBe(before);
   });
 });

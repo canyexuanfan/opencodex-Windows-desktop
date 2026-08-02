@@ -319,7 +319,9 @@ export function responsesSseToChatCompletionsSse(
           closeToolCalls();
           try { void sseIterator?.return(undefined).catch(() => {}); } catch { /* already closed */ }
           classified.code = "translation_buffer_limit";
-          classified.type = "invalid_request_error";
+          // Provider-controlled overflow is an upstream failure on every path:
+          // streaming frame, collector, and defensive JSON agree on 502.
+          classified.type = "upstream_error";
         } else if (isCyberPolicyCode(details?.code) || classified.code === CYBER_POLICY_ERROR_CODE) {
           classified.code = CYBER_POLICY_ERROR_CODE;
           classified.type = "invalid_request_error";
@@ -468,7 +470,7 @@ export function responsesSseToChatCompletionsSse(
             fail(message, {
               code,
               ...(code === "translation_buffer_limit"
-                ? { status: 413, type: "invalid_request_error" }
+                ? { status: 502, type: "upstream_error" }
                 : { type, ...(code === CYBER_POLICY_ERROR_CODE ? { status: 400 } : {}) }),
             });
             break;
@@ -514,7 +516,7 @@ export function responsesSseToChatCompletionsSse(
           if (isTranslatorBudgetExceededError(err)) {
             upstreamAbort.abort(err);
             closeToolCalls();
-            fail(err.message, { status: 413, type: "invalid_request_error", code: err.code });
+            fail(err.message, { status: 502, type: "upstream_error", code: err.code });
           } else {
             fail(err instanceof Error ? err.message : String(err));
           }
@@ -765,19 +767,40 @@ export async function collectChatCompletion(
   };
   if (reasoning) message.reasoning_content = reasoning;
   if (toolCalls.size > 0) {
-    message.tool_calls = [...toolCalls.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([index, tc]) => {
-        const copy = {
-        id: tc.id || `call_${uuid().slice(0, 16)}`,
-        type: "function",
-        function: { name: tc.name, arguments: tc.arguments },
-        };
-        translatorBudget.chargeRetained(Buffer.byteLength(JSON.stringify(copy)), { kind: "retained_collectors" });
-        // The serialized owner is charged; release the per-call accumulation.
-        translatorBudget.closeCall(callScope(index));
-        return copy;
-      });
+    // Final owner transfer is itself a charging operation: if it overflows,
+    // release every copy already charged in this loop and close every scope
+    // still open — the error must not escape as a raw budget exception.
+    const chargedCopies: number[] = [];
+    try {
+      message.tool_calls = [...toolCalls.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([index, tc]) => {
+          const copy = {
+          id: tc.id || `call_${uuid().slice(0, 16)}`,
+          type: "function",
+          function: { name: tc.name, arguments: tc.arguments },
+          };
+          const copyBytes = Buffer.byteLength(JSON.stringify(copy));
+          translatorBudget.chargeRetained(copyBytes, { kind: "retained_collectors" });
+          chargedCopies.push(copyBytes);
+          // The serialized owner is charged; release the per-call accumulation.
+          translatorBudget.closeCall(callScope(index));
+          return copy;
+        });
+    } catch (error) {
+      for (const copyBytes of chargedCopies) {
+        translatorBudget.releaseRetained(copyBytes, { kind: "retained_collectors" });
+      }
+      for (const index of toolCalls.keys()) translatorBudget.closeCall(callScope(index));
+      if (isTranslatorBudgetExceededError(error)) {
+        throw new ChatCompletionsStreamError(error.message, {
+          status: 502,
+          type: "upstream_error",
+          code: error.code,
+        });
+      }
+      throw error;
+    }
     if (finishReason === "stop") finishReason = "tool_calls";
   }
 

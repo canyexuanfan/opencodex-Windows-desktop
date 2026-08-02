@@ -214,6 +214,9 @@ export function bridgeToResponsesSSE(
   // at terminal/cancel below.
   const ownsBudget = !options?.translatorBudget;
   const budget = options?.translatorBudget ?? createTranslatorBudget();
+  // Idempotent: safe to call at every stream-death path; disposal must come
+  // AFTER the final charges (emitDone), never inside reportTerminal.
+  const disposeOwnedBudget = () => { if (ownsBudget) budget.dispose(); };
   const bytesOf = (value: string): number => Buffer.byteLength(value);
   const appendString = (
     previous: string,
@@ -261,7 +264,6 @@ export function bridgeToResponsesSSE(
     if (terminalReported || clientCancelled || closed) return;
     terminalReported = true;
     try { options?.onTerminal?.(status); } catch { /* terminal metrics must not break the stream */ }
-    if (ownsBudget) budget.dispose();
   };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
   // eventsource_stream; ANY received event re-arms it, while an unknown type is ignored
@@ -294,6 +296,7 @@ export function bridgeToResponsesSSE(
             return;
           }
           closed = true;
+          disposeOwnedBudget();
         }
       };
       const emitDone = () => {
@@ -687,6 +690,7 @@ export function bridgeToResponsesSSE(
         beat = undefined;
         try { controller.close(); } catch { /* already closed */ }
         closed = true;
+        disposeOwnedBudget();
         gated = true;
         stepping = false;
       };
@@ -1146,6 +1150,7 @@ export function bridgeToResponsesSSE(
         /* already closed (e.g. client cancelled) */
       }
       closed = true;
+      disposeOwnedBudget();
       gated = true;
       stepping = false;
       };
@@ -1181,6 +1186,7 @@ export function bridgeToResponsesSSE(
             beat = undefined;
             try { controller.close(); } catch { /* already closed */ }
             closed = true;
+            disposeOwnedBudget();
             return;
           }
           // Wire silence is independent of upstream adapter heartbeats.
@@ -1193,6 +1199,7 @@ export function bridgeToResponsesSSE(
             emittedFrames++;
           } catch {
             closed = true;
+            disposeOwnedBudget();
           }
         }, heartbeatMs);
       };
@@ -1212,7 +1219,7 @@ export function bridgeToResponsesSSE(
         closed = true;
         if (beat !== undefined) clearBeatInterval(beat);
         cancelUpstreamOnce();
-        if (ownsBudget) budget.dispose();
+        disposeOwnedBudget();
       },
     });
   }

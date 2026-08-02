@@ -315,6 +315,11 @@ export function translatorObservedOverflowCount(): number {
   return aggregateOverflows;
 }
 
+/** Test-only: proves owned default budgets are disposed on every stream-death path. */
+export function translatorLiveBudgetCountForTests(): number {
+  return liveBudgets.size;
+}
+
 /** Clears process-wide translator diagnostics and disposes leaked test budgets. */
 export function resetTranslatorAggregateForTests(): void {
   for (const budget of liveBudgets) budget.dispose();
