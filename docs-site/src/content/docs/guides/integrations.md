@@ -16,10 +16,19 @@ file, and removes it again. Six clients work this way, each with a switch:
 | Gajae Code | `~/.gjc/agent/models.yml` | YAML | new sessions, or when you open `/model` |`OPENCODEX_GAJAE_API_KEY` |
 
 Paths honor each client's own environment override where it has one, so a relocated
-`HERMES_HOME`, `KIMI_CODE_HOME`, `XDG_CONFIG_HOME`, or OpenClaw's
-`OPENCLAW_CONFIG_PATH` / `OPENCLAW_STATE_DIR` is followed rather than guessed at.
-The table lists each client's default; an override always wins, and detection
-follows it too, so a relocated install still reads as installed.
+`HERMES_HOME`, `KIMI_CODE_HOME` or `XDG_CONFIG_HOME` is followed rather than guessed
+at. The table lists each client's default; an override always wins.
+
+OpenClaw has several, and they do different jobs. `OPENCLAW_CONFIG_PATH` selects the
+file; `OPENCLAW_STATE_DIR`, `OPENCLAW_PROFILE` and `OPENCLAW_HOME` select the state
+directory, which is also what detection looks at — so a profile or relocated home
+still reads as installed, while a config-path override moves only the file. Relative
+paths are made absolute before anything is written, because that path is stored on
+the ownership record and has to mean the same thing next time.
+
+opencodex reads these from its own environment. If your gateway runs with a profile
+or a relocated home, start opencodex with the same variables set, or it will
+correctly follow a different installation.
 
 ## The other four surfaces are not switches
 

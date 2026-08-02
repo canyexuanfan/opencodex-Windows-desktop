@@ -20,7 +20,7 @@
  * targeting it is the caller's explicit act.
  */
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { shouldInjectApiAuthHeader } from "../codex/inject";
 import { FORMAT_MEDIA_TYPE, serializeDocument, type ConfigFormat } from "../integrations/serialize";
 import { probeHostname } from "../server/proxy-liveness";
@@ -199,30 +199,75 @@ export function hermesConfigPath(env: OpencodeLaunchEnv = process.env, home: str
 }
 
 /**
- * OpenClaw's state directory: `OPENCLAW_STATE_DIR`, else `~/.openclaw`.
+ * Expand `~` and make a user-supplied path absolute.
+ *
+ * An override is stored on the ownership record and in every journal row, so a
+ * relative one is a time bomb: apply from one directory and disable from
+ * another and the second call resolves a different file, reports "not
+ * applied", and leaves our block behind with nothing claiming it. OpenClaw
+ * itself expands `~` against the effective home and `resolve()`s the rest, so
+ * this matches rather than invents.
+ */
+function absoluteClientPath(raw: string, home: string): string {
+  const trimmed = raw.trim();
+  const expanded = trimmed === "~" ? home
+    : trimmed.startsWith("~/") || trimmed.startsWith("~\\") ? join(home, trimmed.slice(2))
+      : trimmed;
+  return resolve(expanded);
+}
+
+/**
+ * OpenClaw's EFFECTIVE home: `OPENCLAW_HOME` outranks the OS home.
+ *
+ * Everything below derives from this, which is why it is separate: a profile
+ * directory and the default state directory both hang off the effective home,
+ * not off `homedir()`.
+ */
+function openclawEffectiveHome(env: OpencodeLaunchEnv, home: string): string {
+  const override = env.OPENCLAW_HOME?.trim();
+  return override ? absoluteClientPath(override, home) : home;
+}
+
+/**
+ * OpenClaw's state directory, in the gateway's own precedence order:
+ *
+ * 1. `OPENCLAW_STATE_DIR` — an explicit relocation wins outright.
+ * 2. `OPENCLAW_PROFILE` — a named profile is `.openclaw-<profile>` under the
+ *    effective home. `default` is the unnamed profile, so it stays
+ *    `.openclaw`.
+ * 3. `.openclaw` under the effective home (`OPENCLAW_HOME` or the OS home).
  *
  * This is also what "is it installed?" detection looks at, so it has to follow
- * the same override the gateway does — otherwise a user who relocated their
- * state reads as not installed while their gateway runs fine.
+ * the same selectors the gateway does — otherwise an operator running a
+ * profile reads as not installed while their gateway runs fine. We honor the
+ * ENVIRONMENT selectors only: a `--profile` flag passed to some other process
+ * is not something we can observe, and guessing it would be worse than
+ * following the same environment the user gave us.
  */
 export function openclawHomeDir(env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {
   const stateDir = env.OPENCLAW_STATE_DIR?.trim();
-  if (stateDir) return stateDir;
-  return join(home, ".openclaw");
+  const effectiveHome = openclawEffectiveHome(env, home);
+  if (stateDir) return absoluteClientPath(stateDir, effectiveHome);
+  const profile = env.OPENCLAW_PROFILE?.trim();
+  if (profile && profile !== "default") return join(effectiveHome, `.openclaw-${profile}`);
+  return join(effectiveHome, ".openclaw");
 }
 
 /**
  * The config file OpenClaw actually reads.
  *
- * Precedence per docs.openclaw.ai/gateway/configuration: an explicit
- * `OPENCLAW_CONFIG_PATH` wins outright, otherwise `openclaw.json` under the
- * state directory. Ignoring these overrides meant the toggle could report
- * success after writing `~/.openclaw/openclaw.json` while the running gateway
- * read somewhere else entirely — and snapshot the wrong file for rollback.
+ * An explicit `OPENCLAW_CONFIG_PATH` wins outright — it is a file selector, so
+ * it does NOT relocate the state directory that detection looks at. Otherwise
+ * `openclaw.json` under the resolved state directory.
+ *
+ * Ignoring these selectors meant the toggle could report success after writing
+ * `~/.openclaw/openclaw.json` while the running gateway read somewhere else —
+ * and snapshot the wrong file, so the rollback promise pointed at a file
+ * nobody loads.
  */
 export function openclawConfigPath(env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {
   const explicit = env.OPENCLAW_CONFIG_PATH?.trim();
-  if (explicit) return explicit;
+  if (explicit) return absoluteClientPath(explicit, openclawEffectiveHome(env, home));
   return join(openclawHomeDir(env, home), "openclaw.json");
 }
 

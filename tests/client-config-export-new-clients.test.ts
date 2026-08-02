@@ -159,6 +159,50 @@ describe("openclaw", () => {
     expect(openclawConfigPath({}, "/home/u")).toBe(join("/home/u", ".openclaw", "openclaw.json"));
     expect(openclawHomeDir({}, "/home/u")).toBe(join("/home/u", ".openclaw"));
   });
+
+  test("OPENCLAW_PROFILE selects .openclaw-<profile>, and default stays unnamed", () => {
+    /*
+     * An operator running a profile had their config written to the unnamed
+     * state directory their gateway does not read — and read as not installed
+     * besides, because detection looked at the same wrong place.
+     */
+    expect(openclawHomeDir({ OPENCLAW_PROFILE: "work" }, "/home/u")).toBe(join("/home/u", ".openclaw-work"));
+    expect(openclawConfigPath({ OPENCLAW_PROFILE: "work" }, "/home/u"))
+      .toBe(join("/home/u", ".openclaw-work", "openclaw.json"));
+    // `default` is the unnamed profile, not a directory suffix.
+    expect(openclawHomeDir({ OPENCLAW_PROFILE: "default" }, "/home/u")).toBe(join("/home/u", ".openclaw"));
+  });
+
+  test("OPENCLAW_HOME outranks the OS home for everything derived from it", () => {
+    expect(openclawHomeDir({ OPENCLAW_HOME: "/srv/claw" }, "/home/u")).toBe(join("/srv/claw", ".openclaw"));
+    expect(openclawHomeDir({ OPENCLAW_HOME: "/srv/claw", OPENCLAW_PROFILE: "work" }, "/home/u"))
+      .toBe(join("/srv/claw", ".openclaw-work"));
+    expect(openclawConfigPath({ OPENCLAW_HOME: "/srv/claw" }, "/home/u"))
+      .toBe(join("/srv/claw", ".openclaw", "openclaw.json"));
+  });
+
+  test("an explicit state dir outranks a profile", () => {
+    expect(openclawHomeDir({ OPENCLAW_STATE_DIR: "/tmp/state", OPENCLAW_PROFILE: "work" }, "/home/u"))
+      .toBe("/tmp/state");
+  });
+
+  test("overrides are made absolute, because the record outlives the cwd", () => {
+    /*
+     * A relative override was stored verbatim on the ownership record, so
+     * applying from one directory and disabling from another resolved
+     * different files: the second call reported "not applied" and left our
+     * block behind with nothing claiming it.
+     */
+    const fromRelative = openclawConfigPath({ OPENCLAW_CONFIG_PATH: "custom.json" }, "/home/u");
+    expect(fromRelative).toBe(join(process.cwd(), "custom.json"));
+
+    // `~` expands against the EFFECTIVE home, which OPENCLAW_HOME can move.
+    expect(openclawConfigPath({ OPENCLAW_CONFIG_PATH: "~/claw.json" }, "/home/u"))
+      .toBe(join("/home/u", "claw.json"));
+    expect(openclawConfigPath({ OPENCLAW_CONFIG_PATH: "~/claw.json", OPENCLAW_HOME: "/srv/claw" }, "/home/u"))
+      .toBe(join("/srv/claw", "claw.json"));
+    expect(openclawHomeDir({ OPENCLAW_STATE_DIR: "~/state" }, "/home/u")).toBe(join("/home/u", "state"));
+  });
 });
 
 describe("kimi", () => {
