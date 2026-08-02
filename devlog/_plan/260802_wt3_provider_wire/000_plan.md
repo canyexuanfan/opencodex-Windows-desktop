@@ -1,7 +1,16 @@
 # wt3 — Provider wire correctness (research)
 
-Worktree: `/Users/jun/.codex/worktrees/260802-wt3-provider-wire` (branch `codex/wt3-provider-wire`, off `dev`).
+Executing worktree: `/Users/jun/.codex/worktrees/8e2b/opencodex` (branch `codex/wt3-exec`, off dev@478354ee8). A spare prepared worktree also exists at `/Users/jun/.codex/worktrees/260802-wt3-provider-wire`.
 Provider-adapter/wire bugs; all must-fix regardless of PR quality.
+
+## Roadmap map (work-phase → decade doc)
+
+| Work-phase | Bug | Decade doc |
+|------------|-----|------------|
+| wp-a | A — Copilot mixed-wire (#746/#748) | `010_bug_a_copilot_mixed_wire.md` |
+| wp-b | B — DeepSeek service_tier (#860) + #875 triage | `020_bug_b_deepseek_service_tier.md` |
+| wp-c | C — Claude 1M windows (#839+#854) | `030_bug_c_claude_1m_windows.md` |
+| (follow-up, not this goal) | D — hosted image tools (#616/#837) | to be written when picked up |
 
 ## Scope
 
@@ -32,8 +41,8 @@ Provider-adapter/wire bugs; all must-fix regardless of PR quality.
 | # | Claim | Source | Status |
 |---|-------|--------|--------|
 | 1 | Copilot serves some models Responses-only | gpt-5.4 verified (BerriAI/litellm#23332, exact `unsupported_api_for_model` error); gpt-5.6-sol lead only (JetBrains LLM-29711: function tools + reasoning_effort rejected on `/chat/completions`); same pattern for gpt-5-codex (opencode #2758) | verified (5.4) / lead (sol) |
-| 2 | DeepSeek rejects/mishandles `service_tier` | No primary evidence either way (api-docs.deepseek.com does not list the field; Anthropic-compatible API marks it "Ignored" — different endpoint) | unresolved — capability-gating is safe regardless; do not claim rejection without a live probe |
-| 3 | DeepSeek Responses route stalls after tool calls (hosted api.deepseek.com) | Stall reports are NIM/vLLM compatibility paths, not hosted; verified hosted failure mode is a 400 when `reasoning_content` is omitted after a tool call (official Thinking Mode docs; claude-code-router#1378) | contradicted as stated — #875 may be a `reasoning_content` echo defect, not #860's root cause; executing session must split them |
+| 2 | DeepSeek rejects/mishandles `service_tier` | Official Responses docs: field unsupported but unsupported params are SILENTLY IGNORED (api-docs.deepseek.com/guides/responses_api/, opened 2026-08-02 by researcher) | resolved — strip as compatibility policy; NOT a 400 and NOT #875's cause |
+| 3 | DeepSeek Responses route stalls after tool calls (hosted api.deepseek.com) | Local root cause found: `sanitizeReasoningInputContent()` (`src/adapters/openai-responses.ts:35`, called :1027 for every Responses provider) blanks plaintext reasoning content on continuations; schema supports `reasoning_text` (`src/responses/schema.ts:23`); DeepSeek native contract accepts it. Residual: "no follow-up request sent" piece unexplained locally | verified local defect (separate from #860) + open external residual — fixed in wp-b, #875 commented not closed |
 | 4 | Claude Opus 4.6/4.7 + Sonnet 4.6 are documented at 1M context | Anthropic official: Opus 4.6 (1M beta, 2026-02-05), Opus 4.7 (1M, 2026-04-16, migration guide), Sonnet 4.6 (1M beta, 2026-02-17); model overview cross-check | verified |
 
 ## Out of scope
