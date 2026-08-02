@@ -35,7 +35,7 @@ export interface PersistedUsageAttempt {
   requestedEffort?: string;
   effectiveEffort?: string;
   reasoningWireField?: string;
-  reasoningWireValue?: string | number;
+  reasoningWireValue?: string | number | boolean;
 }
 
 export interface PersistedUsageEntry {
@@ -59,7 +59,7 @@ export interface PersistedUsageEntry {
   /** Adapter-normalized tier and exact upstream parameter emitted for this request. */
   effectiveEffort?: string;
   reasoningWireField?: string;
-  reasoningWireValue?: string | number;
+  reasoningWireValue?: string | number | boolean;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -270,7 +270,9 @@ function normalizeUsageAttempt(raw: unknown): PersistedUsageAttempt | null {
       : {}),
     ...(typeof attempt.reasoningWireValue === "string" && attempt.reasoningWireValue
       ? { reasoningWireValue: capMetadataString(attempt.reasoningWireValue) }
-      : isNonNegativeFiniteNumber(attempt.reasoningWireValue)
+      : typeof attempt.reasoningWireValue === "boolean"
+        ? { reasoningWireValue: attempt.reasoningWireValue }
+        : isNonNegativeFiniteNumber(attempt.reasoningWireValue)
         ? { reasoningWireValue: attempt.reasoningWireValue }
         : {}),
   };
@@ -325,7 +327,9 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
       : {}),
     ...(typeof entry.reasoningWireValue === "string" && entry.reasoningWireValue
       ? { reasoningWireValue: capMetadataString(entry.reasoningWireValue) }
-      : isNonNegativeFiniteNumber(entry.reasoningWireValue)
+      : typeof entry.reasoningWireValue === "boolean"
+        ? { reasoningWireValue: entry.reasoningWireValue }
+        : isNonNegativeFiniteNumber(entry.reasoningWireValue)
         ? { reasoningWireValue: entry.reasoningWireValue }
         : {}),
     ...(typeof entry.requestedServiceTier === "string" && entry.requestedServiceTier

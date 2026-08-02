@@ -509,6 +509,7 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       "modelOpenRouterRouting",
       "reasoningEfforts",
       "modelReasoningEfforts",
+      "reasoningWireFormat",
       "noVisionModels",
       "noReasoningModels",
       "noTemperatureModels",

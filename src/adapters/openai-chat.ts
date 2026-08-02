@@ -70,6 +70,73 @@ function extractErrorDetail(parsed: unknown): string | undefined {
   return undefined;
 }
 
+// ClinePass live responses observed 2026-08-02 wrap non-stream Chat Completions in
+// `{ success, error, data }`; its public Chat Completions docs do not currently describe that
+// envelope. Keep ordinary OpenAI-shaped responses on the direct path.
+function unwrapChatCompletionPayload(json: Record<string, unknown>): Record<string, unknown> {
+  if ((json.error !== undefined && json.error !== null) || Array.isArray(json.choices)) return json;
+  const data = json.data;
+  return data !== null && typeof data === "object" && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : json;
+}
+
+interface OpenAIChatError {
+  message?: unknown;
+  code?: unknown;
+  type?: unknown;
+  status?: unknown;
+  metadata?: unknown;
+}
+
+function safeUpstreamRequestId(metadata: unknown): string | undefined {
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  const record = metadata as Record<string, unknown>;
+  const value = record.request_id ?? record.requestId;
+  if (typeof value !== "string") return undefined;
+  const requestId = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)
+    && redactSecretString(requestId) === requestId
+    ? requestId
+    : undefined;
+}
+
+function upstreamErrorEvent(
+  error: OpenAIChatError | undefined,
+  usage?: OcxUsage,
+): Extract<AdapterEvent, { type: "error" }> {
+  const rawMessage = typeof error?.message === "string" ? error.message : "upstream error";
+  const requestId = safeUpstreamRequestId(error?.metadata);
+  const message = requestId !== undefined && !rawMessage.includes(requestId)
+    ? `${rawMessage} (request ID: ${requestId})`
+    : rawMessage;
+  const code = typeof error?.code === "string"
+    ? error.code
+    : typeof error?.code === "number" && Number.isFinite(error.code) && Number.isInteger(error.code)
+      ? String(error.code)
+      : undefined;
+  const errorType = typeof error?.type === "string" ? error.type : undefined;
+  const codeStatus = typeof error?.code === "number"
+    && Number.isInteger(error.code)
+    && error.code >= 100
+    && error.code <= 599
+    ? error.code
+    : undefined;
+  const status = isCyberPolicyCode(code)
+    ? 400
+    : typeof error?.status === "number" && Number.isInteger(error.status)
+      ? error.status
+      : codeStatus;
+  return {
+    type: "error",
+    message,
+    ...(usage !== undefined ? { usage } : {}),
+    ...(code !== undefined ? { code } : {}),
+    ...(errorType !== undefined ? { errorType } : {}),
+    ...(status !== undefined ? { status } : {}),
+  };
+}
+
 function developerSystemText(message: OcxMessage): string | undefined {
   if (message.role !== "developer") return undefined;
   if (typeof message.content === "string") return message.content;
@@ -591,10 +658,27 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         body.top_p = parsed.options.topP;
       }
       if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
+      const reasoningDisabled = modelInList(provider.noReasoningModels, parsed.modelId);
       const reasoningEffort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
       let reasoningLog: AdapterRequest["reasoningLog"];
-      if (reasoningEffort !== undefined) {
-        if (modelInList(provider.thinkingBudgetModels, parsed.modelId)) {
+      // ClinePass live requests observed 2026-08-02 require this gateway-specific object; the
+      // public API docs do not currently specify its request shape.
+      if (!reasoningDisabled && provider.reasoningWireFormat === "gateway-object" && parsed.options.reasoning === "none") {
+        body.reasoning = { enabled: false };
+        reasoningLog = {
+          effectiveEffort: "none",
+          wireField: "reasoning.enabled",
+          wireValue: false,
+        };
+      } else if (reasoningEffort !== undefined) {
+        if (provider.reasoningWireFormat === "gateway-object") {
+          body.reasoning = { enabled: true, effort: reasoningEffort };
+          reasoningLog = {
+            effectiveEffort: reasoningEffort,
+            wireField: "reasoning.effort",
+            wireValue: reasoningEffort,
+          };
+        } else if (modelInList(provider.thinkingBudgetModels, parsed.modelId)) {
           const budget = thinkingBudgetForEffort(parsed, reasoningEffort, maxTokens);
           if (budget !== undefined) {
             body.thinking_budget = budget;
@@ -719,6 +803,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         pendingToolCalls.length = 0;
       };
+      const discardToolCalls = (): void => {
+        for (const call of pendingToolCalls) budget.closeCall(call.key);
+        pendingToolCalls.length = 0;
+      };
       let pendingUsage: OcxUsage | undefined;
       // Track terminal signals so a socket EOF without any terminator can fail closed instead of
       // being reported as a clean completion (silent truncation). A graceful close is either an
@@ -759,21 +847,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // instead of a clean [DONE]. Surface it as a terminal error so the bridge emits a
         // classified response.failed (bridge case "error") — never a truncated completion.
         if (chunk.error) {
-          const err = chunk.error as { message?: string; code?: string; type?: string; status?: number } | undefined;
-          const message = err?.message ?? "upstream error";
-          debugProviderDiagnostic("openai-chat", "stream-error", { message });
-          yield* flushToolCalls();
-          yield {
-            type: "error",
-            message,
-            ...(typeof err?.code === "string" ? { code: err.code } : {}),
-            ...(typeof err?.type === "string" ? { errorType: err.type } : {}),
-            ...(isCyberPolicyCode(err?.code)
-              ? { status: 400 }
-              : typeof err?.status === "number" && Number.isInteger(err.status)
-                ? { status: err.status }
-                : {}),
-          };
+          const event = upstreamErrorEvent(chunk.error as OpenAIChatError, pendingUsage);
+          debugProviderDiagnostic("openai-chat", "stream-error", { message: event.message });
+          discardToolCalls();
+          yield event;
           return "terminate";
         }
 
@@ -784,8 +861,19 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>);
         }
 
-        const choices = chunk.choices as { delta?: Record<string, unknown>; finish_reason?: string }[] | undefined;
+        const choices = chunk.choices as {
+          delta?: Record<string, unknown>;
+          finish_reason?: string;
+          error?: OpenAIChatError;
+        }[] | undefined;
         if (!choices || choices.length === 0) return "continue";
+        if (choices[0].finish_reason === "error") {
+          const event = upstreamErrorEvent(choices[0].error, pendingUsage);
+          debugProviderDiagnostic("openai-chat", "stream-error", { message: event.message });
+          discardToolCalls();
+          yield event;
+          return "terminate";
+        }
         // Observe the terminator BEFORE the delta guard: a finish-only chunk (finish_reason set,
         // no delta) is a graceful close and must record finishReason even though we skip it below.
         if (typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
@@ -793,8 +881,13 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         const delta = choices[0].delta;
         if (delta) {
-          if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
-            yield { type: "reasoning_raw_delta", text: delta.reasoning_content };
+          const reasoningText = typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0
+            ? delta.reasoning_content
+            : typeof delta.reasoning === "string" && delta.reasoning.length > 0
+              ? delta.reasoning
+              : undefined;
+          if (reasoningText !== undefined) {
+            yield { type: "reasoning_raw_delta", text: reasoningText };
           }
           if (typeof delta.content === "string" && delta.content.length > 0) {
             sawUserFacingOutput = true;
@@ -953,34 +1046,36 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       const responseBytes = new TextEncoder().encode(JSON.stringify(json)).byteLength;
       budget.chargeRetained(responseBytes, { kind: "retained_collectors" });
       try {
-      if (json.error) {
-        const upstreamError = json.error as { message?: unknown; code?: unknown; type?: unknown; status?: unknown };
-        const message = typeof upstreamError.message === "string" ? upstreamError.message : "upstream error";
-        const code = typeof upstreamError.code === "string" ? upstreamError.code : undefined;
-        const errorType = typeof upstreamError.type === "string" ? upstreamError.type : undefined;
-        const status = isCyberPolicyCode(code)
-          ? 400
-          : typeof upstreamError.status === "number" && Number.isInteger(upstreamError.status)
-            ? upstreamError.status
-            : undefined;
-        return [{
-          type: "error",
-          message,
-          ...(code !== undefined ? { code } : {}),
-          ...(errorType !== undefined ? { errorType } : {}),
-          ...(status !== undefined ? { status } : {}),
-        }];
+      const payload = unwrapChatCompletionPayload(json);
+      if (json.success === false && payload.error === undefined) {
+        return [{ type: "error", message: "upstream reported failure without an error payload" }];
+      }
+      const usage = usageFromOpenAIChat(payload.usage as Record<string, unknown> | undefined);
+      if (payload.error) {
+        return [upstreamErrorEvent(payload.error as OpenAIChatError, usage)];
       }
 
       const events: AdapterEvent[] = [];
-      const choices = json.choices as { message?: Record<string, unknown> }[] | undefined;
-      if (!Array.isArray(choices) || choices.length === 0 || !choices[0].message) {
-        return [{ type: "error", message: "upstream response contained no choices" }];
+      const choices = payload.choices as {
+        message?: Record<string, unknown>;
+        finish_reason?: unknown;
+        error?: OpenAIChatError;
+      }[] | undefined;
+      if (!Array.isArray(choices) || choices.length === 0) {
+        return [{ type: "error", message: "upstream response contained no choices", ...(usage ? { usage } : {}) }];
       }
+      const choice = choices[0];
+      if (choice.finish_reason === "error") return [upstreamErrorEvent(choice.error, usage)];
+      if (!choice.message) return [{ type: "error", message: "upstream response contained no choices", ...(usage ? { usage } : {}) }];
 
-      const msg = choices[0].message;
-      if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
-        events.push({ type: "reasoning_raw_delta", text: msg.reasoning_content });
+      const msg = choice.message;
+      const reasoningText = typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0
+        ? msg.reasoning_content
+        : typeof msg.reasoning === "string" && msg.reasoning.length > 0
+          ? msg.reasoning
+          : undefined;
+      if (reasoningText !== undefined) {
+        events.push({ type: "reasoning_raw_delta", text: reasoningText });
       }
       if (typeof msg.content === "string") {
         events.push({ type: "text_delta", text: msg.content });
@@ -993,10 +1088,15 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           events.push({ type: "tool_call_end" });
         }
       }
-      const usage = json.usage as Record<string, unknown> | undefined;
+      const stopReason = choice.finish_reason === "length"
+        ? "max_tokens"
+        : choice.finish_reason === "content_filter"
+          ? "content_filter"
+          : undefined;
       events.push({
         type: "done",
-        usage: usageFromOpenAIChat(usage),
+        usage,
+        ...(stopReason ? { stopReason } : {}),
       });
       retainTranslatedEventBatch(events, budget);
       return events;
