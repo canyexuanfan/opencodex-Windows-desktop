@@ -194,7 +194,7 @@ export async function handleManagementAPI(
 
   if (url.pathname.startsWith("/api/native-main-profiles")) {
     const { handleNativeProfileAPI } = await import("../codex/native-profile-api");
-    return handleNativeProfileAPI(req, url, config);
+    return handleNativeProfileAPI(req, url, config, deps.nativeProfileApi);
   }
 
   if (url.pathname.startsWith("/api/codex-auth/")) {

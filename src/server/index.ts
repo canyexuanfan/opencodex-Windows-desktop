@@ -156,8 +156,14 @@ import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
 import { handleImages } from "./images";
 import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
 import { handleSearch } from "./search";
-import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
-import { initializeManagementAuthState, issueGuiSession, managementPrincipal, requireManagementAuth } from "./management-auth";
+import { fetchAllModels, handleManagementAPI, VERSION, type ManagementApiDeps } from "./management-api";
+import {
+  initializeManagementAuthState,
+  issueGuiSession,
+  managementPrincipal,
+  requireManagementAuth,
+  type ManagementAuthState,
+} from "./management-auth";
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -271,12 +277,19 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
 // trackSseForRequestLog(
 // export function relaySseWithHeartbeat
 
-export function startServer(port?: number) {
+export interface StartServerDeps {
+  /** Test-only seam; production always initializes its own management credential state. */
+  managementAuthState?: ManagementAuthState;
+  /** Test-only route dependencies, forwarded only after management admission succeeds. */
+  managementApi?: ManagementApiDeps;
+}
+
+export function startServer(port?: number, deps: StartServerDeps = {}) {
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   setLiveStateStoreConfig(config);
   applyProxyEnv(config);
   assertServerAuthConfig(config);
-  const managementAuth = initializeManagementAuthState(config);
+  const managementAuth = deps.managementAuthState ?? initializeManagementAuthState(config);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
@@ -452,7 +465,7 @@ export function startServer(port?: number) {
         // gate used. Consent-bearing routes need this: request headers are forgeable
         // by anything holding the admin token, the credential is not.
         const principal = managementPrincipal(req, managementAuth, config) ?? undefined;
-        const mgmtResponse = await handleManagementAPI(req, url, config, {}, principal);
+        const mgmtResponse = await handleManagementAPI(req, url, config, deps.managementApi, principal);
         if (mgmtResponse) return withManagementCors(mgmtResponse, req, config);
         return withManagementCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
       }
