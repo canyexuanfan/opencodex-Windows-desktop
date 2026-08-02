@@ -47,7 +47,7 @@
 
 ### 当前执行项
 
-- 状态：`阶段 34：Provider/桌面交互与带版本安装包收尾已完成（仅待真实安装/全量外部环境验收）`
+- 状态：`阶段 36：当前发布资产命名与版本链路复核已完成（仅待真实安装/全量外部环境验收）`
 - 阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已完成：基线/参考检查、Electron 空壳骨架、Bun sidecar 动态端口、单实例唯一窗口、托盘与生命周期均已存档。
 - 负责人/线程：`Codex / 当前线程`
 - 允许修改范围：`当前工作包明确列出的文件`
@@ -55,7 +55,7 @@
 
 ### 下一任务
 
-代码与本机可安全验证范围已收尾。普通发布链只发布带版本号安装版 `OpenCodex-Setup-2.8.0-x64.exe`，不发布 portable；桌面更新检测按 GitHub Release 版本精确匹配 `OpenCodex-Setup-<version>-x64.exe`。剩余验收是用户/测试机真实双击安装、桌面快捷方式和开始菜单图标目视确认，以及 Windows 10/11 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存、受信测试机 Authenticode `Valid` 与 exact-HEAD 跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
+代码与本机可安全验证范围已收尾。普通发布链只发布带版本号安装版 `OpenCodex-Setup-2.8.0-x64.exe`，不发布 portable；桌面壳版本与根包版本同为 `2.8.0`；桌面更新检测按 GitHub Release 版本精确匹配 `OpenCodex-Setup-<version>-x64.exe`。无版本名 `OpenCodex-Setup-x64.exe` 只允许作为历史记录或负向测试样本出现，不是当前发布资产。剩余验收是用户/测试机真实双击安装、桌面快捷方式和开始菜单图标目视确认，以及 Windows 10/11 干净 VM、标准用户/中文用户名、睡眠/唤醒、注销/系统重启、真实 Task Scheduler/WinSW/旧托盘共存、受信测试机 Authenticode `Valid` 与 exact-HEAD 跨平台 CI。不要为这些外部项重启当前正在使用的 Codex。
 
 ---
 
@@ -979,3 +979,13 @@ Codex / Claude Code / 其他现有客户端
 - [x] 将“当前结论”改为当前最终产物 `desktop/out/OpenCodex-Setup-2.8.0-x64.exe` 与 SHA-256=`368F70370A7BC95B6C1C560EC938629DC91BB8582200EF2FBD893B32B053022D`。
 - [x] 历史阶段中的旧包名、旧 portable hash 和旧验证记录保留为历史证据，不回写篡改。
 - [ ] 外部验收项保持不变：干净 Windows VM、真实双击覆盖安装、快捷方式/开始菜单图标、受信签名链和系统重启/睡眠唤醒仍需用户或测试机完成。
+
+# 阶段 36：当前发布资产命名与版本链路复核（2026-08-02）
+- [x] 重新复核当前构建产物：`desktop/out` 中存在 `OpenCodex-Setup-2.8.0-x64.exe` 与对应 `.blockmap`，不存在 `OpenCodex-Setup-x64.exe` 或 `OpenCodex-Portable-x64.exe`。
+- [x] 复核当前安装包 SHA-256：`368F70370A7BC95B6C1C560EC938629DC91BB8582200EF2FBD893B32B053022D`，与阶段 34/35 记录一致。
+- [x] 复核桌面壳版本链路：`desktop/package.json` 版本为 `2.8.0`，`electron-builder` NSIS `artifactName` 为 `OpenCodex-Setup-${version}-x64.${ext}`，文件名版本来自应用版本，不再使用无版本名资产。
+- [x] 复核桌面更新检测链路：`src/update/desktop-release.ts` 从 fork GitHub Release tag/name 解析版本，并只接受 `OpenCodex-Setup-<version>-x64.exe`；`tests/desktop-release-update.test.ts` 明确把 `OpenCodex-Setup-x64.exe` 和 `OpenCodex-Portable-x64.exe` 作为负向干扰项拒绝。
+- [x] 复核公开文案链路：README 和 Release notes 只引导下载带版本号安装包；portable 继续不进入普通发布链。
+- [x] 验证通过：`bun test tests\desktop-release-update.test.ts tests\release-notes.test.ts` 28/28、54 个断言；`cd desktop && bun test tests\package-static.test.ts` 6/6、33 个断言；`git diff --check`。
+- [x] 本轮未改代码、未重启或关闭当前正在使用的 Codex；仅校正 `todolist.md` 顶部口径并记录复核证据。
+- [ ] 外部验收项保持不变：真实覆盖安装、桌面快捷方式/开始菜单图标、安装向导视觉、受信签名链 `Valid`、系统重启/睡眠唤醒、干净 Windows VM 与跨平台 exact-HEAD CI 仍需用户或测试机完成。
