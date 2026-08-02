@@ -30,7 +30,6 @@ import {
   isDraining,
   isShutdownDraining,
   markRecyclingForExit,
-  waitForTemporaryDrains,
 } from "../lifecycle";
 import { isServiceViable } from "../../service";
 import { readRuntimePort } from "../../config";
@@ -52,10 +51,10 @@ export interface SystemRestartIo {
   isDraining?: () => boolean;
   isShutdownDraining?: () => boolean;
   beginShutdownDrain?: () => boolean;
-  waitForTemporaryDrains?: () => Promise<void>;
   setDraining?: (value: boolean) => void;
   getActiveTurnCount?: () => number;
   listenPort?: () => number | undefined;
+  now?: () => number;
 }
 
 let restartIo: SystemRestartIo = {};
@@ -148,14 +147,22 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
 
   if (!alreadyDraining) {
     restartAccepted = true;
+    const now = io.now ?? Date.now;
+    const restartDeadlineMs = now() + MEMORY_DRAIN_RESTART_MS;
     // Reject new data-plane traffic immediately (503), before the 200ms response-flush delay.
     if (io.beginShutdownDrain) io.beginShutdownDrain();
     else if (io.setDraining) io.setDraining(true);
     else beginShutdownDrain();
     schedule(async () => {
-      await (io.waitForTemporaryDrains ?? waitForTemporaryDrains)();
       const drain = io.drainAndShutdown ?? drainAndShutdown;
-      await drain(undefined, MEMORY_DRAIN_RESTART_MS);
+      const remainingMs = Math.max(0, restartDeadlineMs - now());
+      try {
+        await drain(undefined, remainingMs);
+      } catch {
+        // drainAndShutdown stops the listener in finally. Even if ancillary cleanup
+        // rejects, an accepted restart must still reach replacement or terminal exit.
+        console.warn("Drain-and-restart cleanup failed; continuing terminal restart handoff");
+      }
       const supervised = (io.isSupervisedServiceChild ?? (() => isSupervisedServiceChild(io)))();
       if (supervised) {
         // Failure-only supervisors ignore exit(0); intentional non-zero triggers respawn.

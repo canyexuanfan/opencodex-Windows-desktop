@@ -32,9 +32,10 @@ afterEach(() => {
 });
 
 describe("acceptSystemRestart", () => {
-  test("schedules a 60s drain, spawns start on the live port, marks recycle, then exits 0", async () => {
+  test("uses the remaining absolute restart budget, spawns start, marks recycle, then exits 0", async () => {
     const calls: string[] = [];
     let scheduled: (() => void | Promise<void>) | null = null;
+    let now = 10_000;
 
     const result = acceptSystemRestart({
       isDraining: () => false,
@@ -42,6 +43,7 @@ describe("acceptSystemRestart", () => {
       isSupervisedServiceChild: () => false,
       listenPort: () => 10123,
       schedule: (fn) => { scheduled = fn; },
+      now: () => now,
       setDraining: (value) => { calls.push(`draining:${value}`); },
       drainAndShutdown: async (_server, timeoutMs) => {
         calls.push(`drain:${timeoutMs}`);
@@ -61,8 +63,9 @@ describe("acceptSystemRestart", () => {
     expect(calls).toEqual(["draining:true"]);
     expect(MEMORY_DRAIN_RESTART_MS).toBe(60_000);
     expect(scheduled).not.toBeNull();
+    now += 15_000;
     await scheduled!();
-    expect(calls).toEqual(["draining:true", "drain:60000", "start:10123", "recycle", "exit:0"]);
+    expect(calls).toEqual(["draining:true", "drain:45000", "start:10123", "recycle", "exit:0"]);
   });
 
   test("supervised service child exits 1 so failure-only supervisors respawn", async () => {
@@ -202,6 +205,30 @@ describe("acceptSystemRestart", () => {
     expect(calls).toEqual(["drain", "start", "exit:1"]);
   });
 
+  test("drain rejection still reaches one replacement handoff and terminal exit", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+
+    acceptSystemRestart({
+      isDraining: () => false,
+      getActiveTurnCount: () => 1,
+      isSupervisedServiceChild: () => false,
+      listenPort: () => 10123,
+      schedule: (fn) => { scheduled = fn; },
+      setDraining: () => { calls.push("latched"); },
+      drainAndShutdown: async () => {
+        calls.push("drain");
+        throw new Error("fixture cleanup rejection");
+      },
+      spawnStart: (port) => { calls.push(`start:${port}`); },
+      markRecycling: () => { calls.push("recycle"); },
+      exitProcess: (code) => { calls.push(`exit:${code}`); },
+    });
+
+    await scheduled!();
+    expect(calls).toEqual(["latched", "drain", "start:10123", "recycle", "exit:0"]);
+  });
+
   test("spawn failure clears OCX_SERVICE so exit cleanup can restore fences", async () => {
     const calls: string[] = [];
     let scheduled: (() => void | Promise<void>) | null = null;
@@ -261,31 +288,28 @@ describe("acceptSystemRestart", () => {
     expect(scheduled).toBe(1);
   });
 
-  test("profile drain first queues one restart and waits for its owner lease", async () => {
+  test("profile-first ordering queues and hands off exactly once across repeated accepts", async () => {
     const calls: string[] = [];
     let scheduled: (() => void | Promise<void>) | null = null;
-    let releaseProfile!: () => void;
-    const profileReleased = new Promise<void>(resolve => { releaseProfile = resolve; });
+    let scheduleCount = 0;
     const io = {
       isShutdownDraining: () => false,
       getActiveTurnCount: () => 0,
       beginShutdownDrain: () => { calls.push("shutdown-latched"); return true; },
-      waitForTemporaryDrains: async () => { calls.push("wait-profile"); await profileReleased; },
-      schedule: (fn: () => void | Promise<void>) => { scheduled = fn; },
+      schedule: (fn: () => void | Promise<void>) => { scheduleCount += 1; scheduled = fn; },
       drainAndShutdown: async () => { calls.push("shutdown"); },
-      isSupervisedServiceChild: () => true,
+      isSupervisedServiceChild: () => false,
+      spawnStart: () => { calls.push("start"); },
+      markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code: number) => { calls.push(`exit:${code}`); },
     };
     const first = acceptSystemRestart(io);
     const second = acceptSystemRestart(io);
     expect(first.alreadyDraining).toBe(false);
     expect(second.alreadyDraining).toBe(true);
-    const running = scheduled!();
-    await Promise.resolve();
-    expect(calls).toEqual(["shutdown-latched", "wait-profile"]);
-    releaseProfile();
-    await running;
-    expect(calls).toEqual(["shutdown-latched", "wait-profile", "shutdown", "exit:1"]);
+    expect(scheduleCount).toBe(1);
+    await scheduled!();
+    expect(calls).toEqual(["shutdown-latched", "shutdown", "start", "recycle", "exit:0"]);
   });
 });
 

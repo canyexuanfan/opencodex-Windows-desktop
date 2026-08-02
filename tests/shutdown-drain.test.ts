@@ -93,6 +93,37 @@ describe("active turn tracking", () => {
     expect(isDraining()).toBe(true);
   });
 
+  test("deadline forces shutdown past a never-releasing profile lease and keeps the latch terminal", async () => {
+    const profileLease = acquireTemporaryDrain("native-profile");
+    expect(profileLease).not.toBeNull();
+    const fake = fakeServer();
+
+    await drainAndShutdown(fake.server, 0);
+
+    expect(fake.stops()).toBe(1);
+    expect(isDraining()).toBe(true);
+    profileLease?.release();
+    expect(isDraining()).toBe(true);
+    expect(tryAdmitTurn()).toBeNull();
+  });
+
+  test("profile-first shutdown resumes on normal early lease release", async () => {
+    const profileLease = acquireTemporaryDrain("native-profile");
+    expect(profileLease).not.toBeNull();
+    const fake = fakeServer();
+    let settled = false;
+    const draining = drainAndShutdown(fake.server, 1_000).then(() => { settled = true; });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    profileLease?.release();
+    await draining;
+
+    expect(fake.stops()).toBe(1);
+    expect(isDraining()).toBe(true);
+  });
+
   test("forced shutdown releases an admitted turn before controller binding", async () => {
     const before = getActiveTurnCount();
     const releaseMissesBefore = activeRegistryMetrics().activeTurns.releaseMisses;

@@ -89,6 +89,25 @@ export function waitForTemporaryDrains(): Promise<void> {
   return new Promise(resolve => temporaryDrainWaiters.add(resolve));
 }
 
+/** Wait for scoped drains without allowing them to outlive the shutdown deadline. */
+async function waitForTemporaryDrainsUntil(deadlineMs: number): Promise<boolean> {
+  if (temporaryDrainOwners.size === 0) return true;
+  const remainingMs = Math.max(0, deadlineMs - Date.now());
+  if (remainingMs === 0) return false;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (drained: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(drained);
+    };
+    timer = setTimeout(() => finish(false), remainingMs);
+    void waitForTemporaryDrains().then(() => finish(true));
+  });
+}
+
 /** Test-only process-lifetime reset. Never call from production recovery paths. */
 export function resetLifecycleDrainStateForTests(): void {
   legacyDrainLease?.release();
@@ -216,11 +235,16 @@ export async function drainAndShutdown(
   timeoutMs: number,
 ): Promise<void> {
   const s = server ?? _serverRef;
+  // One absolute budget covers both a pre-existing scoped profile drain and
+  // ordinary in-flight turns. A stuck scoped owner must not pin shutdown forever.
+  const deadline = Date.now() + Math.max(0, timeoutMs);
   beginShutdownDrain();
-  await waitForTemporaryDrains();
+  const temporaryDrainsSettled = await waitForTemporaryDrainsUntil(deadline);
+  if (!temporaryDrainsSettled) {
+    console.warn("Temporary drain lease did not settle before the shutdown deadline; forcing shutdown");
+  }
   beginBackgroundShellShutdown();
   try {
-    const deadline = Date.now() + timeoutMs;
     while (admittedTurns.size > 0 && Date.now() < deadline) {
       await Bun.sleep(100);
     }
