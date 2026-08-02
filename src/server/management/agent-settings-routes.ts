@@ -650,8 +650,8 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       // process. Accept an optional mode; default stays static for back-compat.
       let mode: "static" | "hybrid" | "discovery" = "static";
       const rawBody = await req.text();
+      let parsed: unknown;
       if (rawBody.trim()) {
-        let parsed: unknown;
         try {
           parsed = JSON.parse(rawBody);
         } catch {
@@ -666,7 +666,20 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
           }
         }
       }
-      const state = await buildClaudeDesktopState(config);
+      // #859: a delegated CLI apply carries the profile it just saved — the
+      // daemon's own config can be older, and building state from it would
+      // apply (and persist) the stale profile over the newer one.
+      const bodyProfile = (parsed as { profile?: unknown } | null)?.profile;
+      let profileOverride: Parameters<typeof buildClaudeDesktopState>[1];
+      if (bodyProfile !== undefined) {
+        const { parseDesktopProfile } = await import("../../claude/desktop-profile");
+        try {
+          profileOverride = parseDesktopProfile(bodyProfile);
+        } catch (error) {
+          return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 400);
+        }
+      }
+      const state = await buildClaudeDesktopState(config, profileOverride);
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: state.profile };
       saveConfigPreservingClaudeCode(config);
       const { writeDesktop3pConfig } = await import("../../claude/desktop-3p");

@@ -622,6 +622,12 @@ test("Claude Desktop profile GET, PUT and apply round-trip four-family assignmen
   }
 });
 
+/*
+ * Mechanism guard for #859: the apply route must keep building the alias
+ * registry in the serving process. (The CLI→daemon delegation half is pinned
+ * in tests/claude-desktop-cli.test.ts; this module-global registry is shared
+ * in-process, so this test guards the route, not the delegation.)
+ */
 test("Claude Desktop apply installs the alias registry in the serving process (#859)", async () => {
   const { resolveDesktop3pAlias, activeDesktop3pAlias } = await import("../src/claude/desktop-3p");
   const server = startServer(0);
@@ -636,6 +642,38 @@ test("Claude Desktop apply installs the alias registry in the serving process (#
     // decode the alias the CLI would have generated.
     const alias = activeDesktop3pAlias("mock", "test-model");
     expect(resolveDesktop3pAlias(alias)).toBe("mock/test-model");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("Claude Desktop apply honors the profile in the request body over daemon-stale config (#859)", async () => {
+  const server = startServer(0);
+  try {
+    const current = await fetch(new URL("/api/claude-desktop", server.url)).then(r => r.json()) as Record<string, any>;
+    const edited = structuredClone(current.profile);
+    edited.assignments["mock/test-model"].family = "sonnet";
+    edited.defaults.sonnet = "mock/test-model";
+    edited.defaults.opus = Object.keys(edited.assignments)
+      .filter(route => edited.assignments[route].family === "opus")
+      .sort()[0] ?? null;
+
+    const apply = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "static", profile: edited }),
+    });
+    expect(apply.status).toBe(200);
+    // The delegated profile wins: persisted state shows sonnet, not the stale opus.
+    expect(loadConfig().claudeCode?.desktopProfile?.assignments["mock/test-model"]?.family).toBe("sonnet");
+    expect(loadConfig().claudeCode?.desktopProfile?.defaults.sonnet).toBe("mock/test-model");
+
+    const badProfile = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "static", profile: { version: 2 } }),
+    });
+    expect(badProfile.status).toBe(400);
   } finally {
     server.stop(true);
   }

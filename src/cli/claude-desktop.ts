@@ -51,7 +51,9 @@ export async function applyProfile(
     const post = deps.postApplyImpl ?? (async (m: Desktop3pConfigMode) =>
       runtimeRequest<{ ok?: boolean; path?: string; error?: string }>(
         "/api/claude-desktop/apply",
-        { method: "POST", body: JSON.stringify({ mode: m }) },
+        // The daemon's config may be older than what we just saved, so the
+        // profile travels with the request instead of being re-read there.
+        { method: "POST", body: JSON.stringify({ mode: m, profile: state.profile }) },
       ));
     try {
       const applied = await post(mode);
@@ -100,7 +102,11 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
       const config = loadConfig();
       const state = await buildClaudeDesktopState(config);
       const result = await applyProfile(state.profile, parsedMode.mode, deps);
-      if (!result.ok) { console.error(`설정 적용 실패: ${result.reason ?? "unknown error"}`); return 1; }
+      if (!result.ok) {
+        console.error(`설정 적용 실패: ${result.reason ?? "unknown error"}`);
+        console.error("프로필은 저장되었지만 Claude Desktop 설정 파일에는 반영되지 않았습니다. 프록시 상태를 확인한 뒤 다시 적용해 주세요.");
+        return 1;
+      }
       console.log(`Claude Desktop 설정을 적용했습니다: ${result.path}`);
       console.log("Claude Desktop을 완전히 종료한 뒤 다시 열어 주세요.");
       return 0;
