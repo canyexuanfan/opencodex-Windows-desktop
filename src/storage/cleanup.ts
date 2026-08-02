@@ -791,6 +791,8 @@ type SatelliteBackupRead =
   | { status: "invalid" };
 
 interface ReconcileTestHooks {
+  /** Runs at the top of reconcileDeletedThreads, before the write lock is taken. */
+  beforeReconcileLock?: () => void;
   failAfterLogsMutation?: boolean;
   failAfterMemoriesMutation?: boolean;
   failAfterGoalsMutation?: boolean;
@@ -1502,6 +1504,8 @@ function reconcileDeletedThreads(
 ): ReconcileOk | ReconcileErr {
   if (!paths.state || !existsSync(paths.state)) return { ok: true, threads: [] };
 
+  if (hooks?.beforeReconcileLock) hooks.beforeReconcileLock();
+
   let stateDb: Database | undefined;
   let backup: SatelliteBackup | undefined;
   let satellitesMutated = false;
@@ -1741,13 +1745,14 @@ export interface ExecuteCleanupOptions {
     failSatelliteBackupWrite?: boolean;
     failSatelliteBackupReplace?: boolean;
     afterSatelliteMutations?: () => void;
+    beforeReconcileLock?: () => void;
   };
 }
 
 /** Serializable cleanup test hooks allowed on the management API wire. */
 export type CleanupWireTestHooks = Omit<
   NonNullable<ExecuteCleanupOptions["_test"]>,
-  "afterSatelliteMutations"
+  "afterSatelliteMutations" | "beforeReconcileLock"
 >;
 
 function isStringArray(v: unknown): v is string[] {

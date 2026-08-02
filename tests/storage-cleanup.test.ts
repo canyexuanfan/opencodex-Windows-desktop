@@ -282,6 +282,44 @@ describe("pinned archived threads", () => {
       "archived_sessions/rollout-new.jsonl",
     ]);
   }, { timeout: STORE_BUDGET_MS });
+
+  test("pin landing after staging stops the locked reconcile and restores files", () => {
+    home = buildHome();
+    // Schema carries the column but nothing is pinned yet, so the preview
+    // still selects the oldest archived thread.
+    const db0 = new Database(join(home, "state_5.sqlite"));
+    db0.exec("ALTER TABLE threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
+    db0.close();
+
+    const preview = previewArchivedCleanup(50, home);
+    expect(preview.candidates.map(c => c.relPath)).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+    ]);
+
+    const result = executeArchivedCleanup({
+      percent: 50,
+      mode: "quarantine",
+      digest: preview.digest,
+      codexHome: home,
+      _test: {
+        // The realistic race: the pin lands between preview/digest
+        // recompute and the reconcile write lock.
+        beforeReconcileLock: () => {
+          const db = new Database(join(home, "state_5.sqlite"));
+          db.exec("UPDATE threads SET is_pinned = 1 WHERE id = 'told'");
+          db.close();
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("pinned_thread");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+
+    const check = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(check.query("SELECT id FROM threads WHERE id = 'told'").get()).toBeTruthy();
+    check.close();
+  }, { timeout: STORE_BUDGET_MS });
 });
 
 describe("previewArchivedCleanup", () => {
