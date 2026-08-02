@@ -169,21 +169,60 @@ import {
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 const LIVE_SIDEBAND_PENDING_MAX = 32;
+const LIVE_SIDEBAND_CLOSE_FALLBACK_MS = 1_000;
 
 function releaseLiveSidebandAdmission(ws: ServerWebSocket<WsData>): void {
   ws.data.liveTurnAdmissionLease?.release();
   ws.data.liveTurnAdmissionLease = undefined;
 }
 
-function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""): void {
-  releaseLiveSidebandAdmission(ws);
-  try {
-    ws.data.liveUpstream?.close(code, reason);
-  } catch {
-    /* upstream already gone */
+function finalizeLiveSideband(ws: ServerWebSocket<WsData>, upstream?: WebSocket): void {
+  if (upstream && ws.data.liveUpstream !== upstream) return;
+  if (ws.data.liveCloseFallback !== undefined) {
+    clearTimeout(ws.data.liveCloseFallback);
+    ws.data.liveCloseFallback = undefined;
   }
   ws.data.liveUpstream = undefined;
   ws.data.livePending = undefined;
+  ws.data.cancel = undefined;
+  releaseLiveSidebandAdmission(ws);
+}
+
+function armLiveSidebandCloseFallback(ws: ServerWebSocket<WsData>, upstream: WebSocket): void {
+  if (ws.data.liveCloseFallback !== undefined) return;
+  ws.data.liveCloseFallback = setTimeout(() => {
+    ws.data.liveCloseFallback = undefined;
+    if (ws.data.liveUpstream !== upstream) return;
+    // A close frame was already sent below. Retry once before releasing the
+    // drain, then force local cleanup if the peer never completes the handshake.
+    try {
+      upstream.close(1000, "upstream close timeout");
+    } catch {
+      /* upstream is already unusable */
+    }
+    finalizeLiveSideband(ws, upstream);
+  }, LIVE_SIDEBAND_CLOSE_FALLBACK_MS);
+}
+
+function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""): void {
+  if (ws.data.liveClosing) return;
+  ws.data.liveClosing = true;
+  ws.data.livePending = undefined;
+  ws.data.cancel = undefined;
+  const upstream = ws.data.liveUpstream;
+  if (!upstream || upstream.readyState === WebSocket.CLOSED) {
+    finalizeLiveSideband(ws, upstream);
+  } else {
+    // The sideband holds a native-main admission lease. Do not release it just
+    // because the downstream left: its authenticated upstream remains live
+    // until this close handshake completes (or the bounded fallback runs).
+    armLiveSidebandCloseFallback(ws, upstream);
+    try {
+      upstream.close(code, reason);
+    } catch {
+      /* the fallback releases ownership if this socket never reports close */
+    }
+  }
   try {
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
       ws.close(code, reason);
@@ -208,15 +247,11 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
     return;
   }
   ws.data.liveUpstream = upstream;
-  ws.data.cancel = () => {
-    try {
-      upstream.close(1000, "client closed");
-    } catch {
-      /* ignore */
-    }
-  };
+  ws.data.liveClosing = false;
+  ws.data.cancel = () => closeLiveSideband(ws, 1000, "client closed");
 
   upstream.addEventListener("open", () => {
+    if (ws.data.liveUpstream !== upstream || ws.data.liveClosing) return;
     ws.data.liveOpened = true;
     const pending = ws.data.livePending ?? [];
     ws.data.livePending = undefined;
@@ -230,6 +265,7 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
     }
   });
   upstream.addEventListener("message", (event) => {
+    if (ws.data.liveUpstream !== upstream || ws.data.liveClosing) return;
     try {
       logLiveSidebandFrame("u2c", event.data);
       if (typeof event.data === "string") ws.send(event.data);
@@ -242,15 +278,17 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
     }
   });
   upstream.addEventListener("close", (event) => {
-    releaseLiveSidebandAdmission(ws);
+    if (ws.data.liveUpstream !== upstream) return;
+    ws.data.liveClosing = true;
+    finalizeLiveSideband(ws, upstream);
     try {
       ws.close(event.code || 1000, event.reason || "");
     } catch {
       /* ignore */
     }
-    ws.data.liveUpstream = undefined;
   });
   upstream.addEventListener("error", () => {
+    if (ws.data.liveUpstream !== upstream) return;
     closeLiveSideband(ws, 1011, "upstream error");
   });
 }
@@ -961,6 +999,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
       },
       message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
         if (ws.data.kind === "live-sideband") {
+          if (ws.data.liveClosing) return;
           logLiveSidebandFrame("c2u", raw);
           const upstream = ws.data.liveUpstream;
           if (!upstream || upstream.readyState === WebSocket.CONNECTING || !ws.data.liveOpened) {
@@ -1126,9 +1165,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
       },
       close(ws: ServerWebSocket<WsData>) {
         if (ws.data.kind === "live-sideband") {
-          ws.data.cancel?.();
-          ws.data.liveUpstream = undefined;
-          releaseLiveSidebandAdmission(ws);
+          closeLiveSideband(ws);
           return;
         }
         unregisterCodexWebSocket(ws);

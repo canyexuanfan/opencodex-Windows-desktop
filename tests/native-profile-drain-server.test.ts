@@ -160,6 +160,7 @@ describe("native main profile scoped server admission", () => {
 
   test("Live/Realtime sideband retains main ownership while Direct and non-main Pool continue", async () => {
     let upstreamConnections = 0;
+    let upstreamCloses = 0;
     const upstream = Bun.serve({
       port: 0,
       fetch(req, server) {
@@ -172,6 +173,7 @@ describe("native main profile scoped server admission", () => {
       websocket: {
         open() { upstreamConnections += 1; },
         message(ws, message) { ws.send(`echo:${String(message)}`); },
+        close() { upstreamCloses += 1; },
       },
     });
     const liveProvider = (codexAccountMode: "direct" | "pool") => ({
@@ -218,13 +220,18 @@ describe("native main profile scoped server admission", () => {
       });
       return ws;
     };
-    const closeSocket = async (ws: WebSocket): Promise<void> => {
-      if (ws.readyState === WebSocket.CLOSED) return;
-      const closed = new Promise<void>(resolve => ws.addEventListener("close", () => resolve(), { once: true }));
+    const closeSocket = async (ws: WebSocket): Promise<number> => {
+      if (ws.readyState === WebSocket.CLOSED) return getNativeMainProfileRequestCount();
+      let requestCountAtDownstreamClose = -1;
+      const closed = new Promise<void>(resolve => ws.addEventListener("close", () => {
+        requestCountAtDownstreamClose = getNativeMainProfileRequestCount();
+        resolve();
+      }, { once: true }));
       ws.close();
       await closed;
       const deadline = Date.now() + 2_000;
       while (getNativeMainProfileRequestCount() > 0 && Date.now() < deadline) await Bun.sleep(10);
+      return requestCountAtDownstreamClose;
     };
     const handshakeStatus = (server: ReturnType<typeof startServer>, path: string) => new Promise<number>((resolve, reject) => {
       const url = new URL(path, server.url);
@@ -270,11 +277,14 @@ describe("native main profile scoped server admission", () => {
         {} as OcxConfig,
         { manager, drainTimeoutMs: 0 },
       );
-      expect(blocked?.status).toBe(409);
-      expect(switches).toBe(0);
-      await closeSocket(client);
-      client = undefined;
-      expect(getNativeMainProfileRequestCount()).toBe(0);
+       expect(blocked?.status).toBe(409);
+       expect(switches).toBe(0);
+       // The proxy must still own native-main at the downstream close boundary,
+       // then release only after the mock authenticated upstream closes.
+       expect(await closeSocket(client)).toBe(1);
+       client = undefined;
+       expect(upstreamCloses).toBe(1);
+       expect(getNativeMainProfileRequestCount()).toBe(0);
       const afterClose = await handleNativeProfileAPI(
         switchRequest(),
         new URL("http://localhost/api/native-main-profiles/switch"),
