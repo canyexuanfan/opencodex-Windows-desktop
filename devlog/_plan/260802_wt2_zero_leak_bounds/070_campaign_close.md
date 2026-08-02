@@ -1,4 +1,4 @@
-# 070 — Campaign close-out (pending final full-suite gate)
+# 070 — Campaign close-out
 
 Date: 2026-08-02. Branch `codex/wt2-zero-leak-impl` (worktree 616c), executed as 7 work-phases, each a full PABCD cycle with an independent sol-medium adversarial reviewer.
 
@@ -29,7 +29,8 @@ A second session (identity bitkyc08-arch) co-worked this branch throughout: augm
 
 - `bun x tsc --noEmit`: PASS (repeated across all cycles).
 - `bun run privacy:scan`: PASS (wp1; re-verified wp7 by reviewer).
-- Full `bun run test`: RUNNING in this worktree (launched by the concurrent session); result to be recorded here before `_fin` archival.
+- Full `bun run test`: **PASS** — 7162 pass, 8 skip, 0 fail, 34,386 expect() calls across 487 files (256.21s), recorded 2026-08-02 on this branch.
+- `bun run privacy:scan`: **PASS** (final re-run after the full suite).
 - Per-fix focused suites: all green (evidence in goalplan criteria).
 
 ## Out of scope (recorded, not silent)
