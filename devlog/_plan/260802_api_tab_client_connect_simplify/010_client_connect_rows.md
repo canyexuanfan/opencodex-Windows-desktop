@@ -22,12 +22,15 @@ IN
 - Eight new `api.clientConfig.*` strings in all six locales, plus the removal of
   `api.clientConfig.clientLabel` from all six.
 - Update `gui/tests/client-config-panel.test.tsx` to the new contract.
+- The `SectionTabs` decision deferred from `020` (see accept criterion 11).
 
 OUT
 
 - Any change to `/api/client-config`, `src/clients/config-export.ts`, or the
   client id list.
-- Column structure, rail, or any other panel on the tab — that is `020`.
+- Column structure, rail, or any other panel on the tab — that is `020`. The one
+  exception is the `SectionTabs` strip deferred here by `020` (accept criterion
+  11), which is a page-level addition this phase may make.
 - New brand assets.
 
 ## File change map
@@ -40,6 +43,8 @@ OUT
 | `gui/src/styles-apikeys-workspace.css` | MODIFY — `.awi-clientconfig-row*`, mark slot, dialog body; delete `.awi-clientconfig-segmented*` (`:489-509`) |
 | `gui/src/i18n/en.ts` (+ ko, ja, zh, de, ru) | MODIFY — **add the eight keys in §Strings and remove `api.clientConfig.clientLabel`** from all six |
 | `gui/tests/client-config-panel.test.tsx` | MODIFY — contract edits per §Test changes |
+| `gui/src/components/apikeys-workspace/ApiKeysWorkspace.tsx` | MODIFY **only if** accept criterion 11's measurement calls for a `SectionTabs` strip |
+| `gui/tests/apikeys-layout.test.ts` | MODIFY **only if** the strip is added |
 
 ## Client list ownership
 
@@ -56,7 +61,9 @@ coupling. **No automatic membership tracking is implied or delivered**; adding a
 third export client will require touching this tuple by hand, exactly as today.
 
 `ApiKeysWorkspace.tsx` keeps rendering `<ClientConfigPanel apiBase baseUrl
-hasKeys />` with the same props, so the phase does not touch it.
+hasKeys />` with the same props, so the row work does not touch it. The single
+authorized reason to edit that file in this phase is adding the `SectionTabs`
+strip if criterion 11's measurement calls for one.
 
 ## Component contract
 
@@ -185,6 +192,11 @@ explicitly and named in the "Guard carried" column.
    truncates rather than wrapping to a third line, and every action stays
    reachable in tab order.
 10. The GUI gate set in §Verifier commands passes.
+11. The `SectionTabs` decision, deferred here from `020`: measure the finished
+    page height at 1280×720 once the rows have replaced the JSON block. Add the
+    strip only if the page exceeds roughly two viewport heights, and record the
+    measured number either way. `020` could not decide this — it runs first, so
+    its measurement would still have included the tall block this phase removes.
 
 ## Row marks (revised at the A gate)
 

@@ -182,17 +182,19 @@ announcements name the client so two rows cannot produce an ambiguous message.
 One column, page-scrolled, in this order: keys → connect → endpoints and auth →
 models → examples.
 
-The rail is the open question. `260731_api_tab_improvement/003` §2 kept it
-conditional on attribution landing, and attribution did land, so deleting it is
-not automatic. Two candidate resolutions, decided with the `020` reviewer:
+The rail **stays**. This was an open question when this document was written and
+is now settled by measurement at `020`'s P gate, not by taste: a six-column key
+table needs ~1064px inside a 912px table interior at 1280×720, so the fold
+would have required a horizontal scroller and the decision rule refused it.
+`020` §Rail decision carries the arithmetic.
 
-- **Keep the rail, narrow it.** Preserves per-key detail navigation; keeps a
-  second band on wide screens, which is the thing the maintainer asked to remove.
-- **Fold keys into a table with a detail dialog.** Removes the last band and
-  makes keys comparable by sorting rather than by scanning a rail. Its dialog
-  follows the same existing native-`<dialog>` pattern; `020` runs first, so it
-  inherits nothing from `010`.
+What the phase delivers instead: the overview's two tracks (339px and 357px)
+become one 708px track, taking panel interior from roughly 300px to 670px. The
+three-band geometry becomes rail plus one content band.
 
-Current lean is the table, because it satisfies "3분할은 진짜 없애고 싶어"
-literally and because a comparative surface is what a table is for. This is not
-settled here: `020` states the decision with the reviewer's verdict attached.
+Honest statement of the limit: this satisfies "3분할은 진짜 없애고 싶어" read as
+*remove the three-band split*, and does not satisfy it read as *remove the rail
+entirely*. Going literally single-column would mean dropping a key fact,
+accepting a scroller, or switching from a table to cards — all worse than a rail
+that attribution data now justifies. If the maintainer wants the rail gone
+regardless, that is a scope decision for them to make, not an arithmetic one.

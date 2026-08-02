@@ -95,7 +95,7 @@ Dependency-ordered, not effort-ordered.
 
 | Phase | Doc | Delivers | Verified by |
 |-------|-----|----------|-------------|
-| 1 | `020_single_column_layout.md` | Single-column overview, full-width catalog and matrix, rail decision | `cd gui && bun test tests`, `bun run lint`, `bun run build`, plus `bun run lint:i18n` if the rail fold adds keys; rendered observation at 1280x720 |
+| 1 | `020_single_column_layout.md` | Single-column overview, full-width catalog and matrix; rail retained (P-gate measurement) | `cd gui && bun test tests`, `bun run lint`, `bun run build`; rendered observation at 1280x720. No copy change, so no `lint:i18n` |
 | 2 | `010_client_connect_rows.md` | Row list + detail dialog in `ClientConfigPanel` | same gate set plus `bun run lint:i18n`; rendered observation |
 | — | `030_external_client_research.md` | Feasibility record for gajae-code and oh-my-openagent | Cited URLs + commit anchors; no writes to those repos |
 
@@ -103,7 +103,7 @@ Dependency-ordered, not effort-ordered.
 
 The original map put the connect rows first on the reasoning that a panel's
 internals settle before the panel moves. The audit rejected that, correctly: a
-row built inside today's ~430px column is designed against geometry the very
+row built inside today's ~300px panel interior is designed against geometry the very
 next phase deletes. Its wrapping behavior, destination truncation, and action
 placement would all be tuned twice, and the second tuning would be invisible to
 the tests written during the first.
@@ -141,6 +141,15 @@ order.**
    `opencode.svg` and no Pi asset, so the OpenCode row uses its real logo and Pi
    falls back to a monogram tile (`002` §4, revised at the A gate). Inventing a
    Pi logo is out of scope and an emoji is banned outright.
-3. **The rail's fate depends on `020`'s audit.** `260731_api_tab_improvement/003`
-   §2 kept it conditional on attribution landing. Attribution did land, so the
-   rail is not automatically deletable; `020` decides with the reviewer.
+3. **The rail stays — settled, no longer an assumption.** `020`'s P gate ran the
+   decision rule and the arithmetic refused the fold: a six-column key table
+   needs ~1064px inside a 912px table interior at 1280×720, once the 232px app
+   sidebar (`styles.css:241`), the panel and `.tbl-wrap` border/padding, and
+   `.tbl` cell padding are all counted — an overflow of 152px. The rule's own
+   fallback therefore applies and the rail is retained. See `020` §Rail decision
+   for the corrected measurement and the errors in the first pass.
+
+   Consequence for this unit's scope: no key table, no `ApiKeyDetailDialog`, and
+   no locale change in phase `020`. The unit's locale work stays exactly what
+   §Scope declares — `api.clientConfig.*` in `010` — and the three GUI test files
+   listed there remain the full set.

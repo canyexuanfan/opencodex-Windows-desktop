@@ -400,7 +400,14 @@ export default function ApiKeysWorkspace({
             </div>
           ) : (
             <div className="awi-overview">
-              <div className="awi-overview-left">
+              {/* One column, in reading order: identity (generate a key) →
+                  transport (where to point a client) → reference (what the
+                  endpoints accept) → inventory (what to call) → examples. Each
+                  step is a precondition of the next. The previous two-column
+                  split left each band near 340px inside a 708px main track,
+                  which clipped the auth matrix and forced the catalog to stack
+                  its action chips. */}
+              <div className="awi-overview-section">
                 <ApiKeysManagePanel
                   keys={keys}
                   keysLoading={keysLoading}
@@ -420,14 +427,10 @@ export default function ApiKeysWorkspace({
                   onCancelDelete={() => {}}
                   onDelete={() => {}}
                 />
-                <ApiKeysEndpointsPanel endpoints={endpoints} claudeCodeEnabled={claudeCodeEnabled} authMatrix={authMatrix} />
-                {/* 003 §6 fallback placement: the connect-bar rework has not landed, so the
-                    panel sits in the left column directly below Endpoints — it answers the same
-                    "how do I point a client at this proxy" question. */}
+                {/* Transport before reference: "where do I point a client" is the
+                    question a reader has before "what headers does it accept". */}
                 <ClientConfigPanel apiBase={apiBase} baseUrl={endpoints.baseUrl} hasKeys={keys.length > 0} />
-                <ApiKeysUsagePanel endpoints={endpoints} claudeCodeEnabled={claudeCodeEnabled} />
-              </div>
-              <div className="awi-overview-right">
+                <ApiKeysEndpointsPanel endpoints={endpoints} claudeCodeEnabled={claudeCodeEnabled} authMatrix={authMatrix} />
                 <ApiKeysModelsPanel
                   filteredModels={filteredModels}
                   modelsLoading={modelsLoading}
@@ -447,6 +450,7 @@ export default function ApiKeysWorkspace({
                   sourceLabel={sourceLabel}
                   protocolLabel={protocolLabel}
                 />
+                <ApiKeysUsagePanel endpoints={endpoints} claudeCodeEnabled={claudeCodeEnabled} />
               </div>
             </div>
           )}

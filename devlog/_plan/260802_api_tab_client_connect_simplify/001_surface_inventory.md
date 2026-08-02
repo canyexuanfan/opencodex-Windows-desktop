@@ -16,8 +16,12 @@ read, not a recollection.
       └ .awi-overview-right                  band 3
 ```
 
-With `--space-3` gutters and the rail's 240px, bands 2 and 3 each land near
-430px at a 1200px shell. That number is the root cause of every defect below.
+Measured at a 1280px viewport: the app sidebar takes 232px (`styles.css:241`),
+so the 1200px shell cap is never reached and `.main-inner` yields 976px of
+content. After the rail (240 + 12 gap) and the main pane's 8px padding, the
+overview track is 708px, which the `1fr / 1.05fr` grid splits into **339px and
+357px** — a panel interior near 300px once border and padding are removed. That
+number is the root cause of every defect below.
 
 ### Band 2 (`awi-overview-left`), in render order
 
@@ -47,7 +51,7 @@ the tab's only vertical cap and that rule is asserted by test.
 | D2 | Catalog actions stack vertically; one model row = 4 lines | `css:405-415`, whose comment states the cause outright |
 | D3 | Config JSON block is screen-height at rest in the narrowest band | `ClientConfigPanel.tsx:182-190` renders `JSON.stringify(config, null, 2)` unconditionally |
 | D4 | Empty state spends a 240px rail on one "Overview" row | `ApiKeysWorkspace.tsx:203-222` |
-| D5 | Endpoint URLs truncate to `http://localhost:101…` | `EndpointUrl`, `api-keys-copy.tsx:10` inside a ~430px band |
+| D5 | Endpoint URLs truncate to `http://localhost:101…` | `EndpointUrl`, `api-keys-copy.tsx:10` inside a ~300px panel interior |
 
 ## 3. What `GET /api/client-config` supplies
 
@@ -98,7 +102,7 @@ edits with stated reasons**, never by deletion.
 | `client-config-panel.test.tsx:126` download filename + "never says applied" | server filename, forbidden words, **and the merge warning visible at rest** (`:162`) | 010 (keeps passing; the merge-warning half must be retargeted, not dropped) |
 | `client-config-panel.test.tsx:173` "route failure … no partial JSON, base URL visible" | failed state renders no JSON and keeps the base URL | 010 |
 | `client-config-panel.test.tsx:236` "cold load … no second live region" | exactly one `[aria-live]` | 010 (N rows must not mean N live regions) |
-| `apikeys-workspace.test.tsx:132` and its three siblings | pending-secret preservation, delete-confirm reset/return, stale selected-key fallback, truncated-attribution wording | 020, only if the rail folds |
+| `apikeys-workspace.test.tsx:132` and its three siblings | pending-secret preservation, delete-confirm reset/return, stale selected-key fallback, truncated-attribution wording | **Nobody.** `020`'s P gate settled that the rail stays, so these are untouched; editing them signals a scope breach |
 | `apikeys-layout.test.ts:157` "usage examples … left column keeps its order" | `Manage → Endpoints → Usage` index order | 020 |
 | `apikeys-layout.test.ts:118` "page owns vertical scroll" | exactly one `max-height`, `min(574px, 58vh)` | 020 (must keep passing) |
 | `apikeys-layout.test.ts:100` six-locale `api.*` parity | identical key sets | 010 |
