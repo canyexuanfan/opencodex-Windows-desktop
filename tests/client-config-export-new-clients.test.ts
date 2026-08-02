@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
@@ -108,7 +109,10 @@ describe("hermes", () => {
   });
 
   test("HERMES_HOME wins over the platform default", () => {
-    expect(hermesConfigPath({ HERMES_HOME: "/tmp/h" }, "/home/u")).toBe("/tmp/h/config.yaml");
+    // `join` rather than a literal: the claim is that the override wins, and
+    // spelling the separator by hand asserted POSIX layout instead — which is
+    // false on Windows, where the same call returns backslashes.
+    expect(hermesConfigPath({ HERMES_HOME: "/tmp/h" }, "/home/u")).toBe(join("/tmp/h", "config.yaml"));
   });
 });
 
@@ -149,7 +153,7 @@ describe("kimi", () => {
   });
 
   test("KIMI_CODE_HOME wins over the default", () => {
-    expect(kimiConfigPath({ KIMI_CODE_HOME: "/tmp/k" }, "/home/u")).toBe("/tmp/k/config.toml");
+    expect(kimiConfigPath({ KIMI_CODE_HOME: "/tmp/k" }, "/home/u")).toBe(join("/tmp/k", "config.toml"));
   });
 });
 
@@ -167,7 +171,7 @@ describe("gajae", () => {
   });
 
   test("the destination is the documented models file", () => {
-    expect(gajaeConfigPath({}, "/home/u")).toBe("/home/u/.gjc/agent/models.yml");
+    expect(gajaeConfigPath({}, "/home/u")).toBe(join("/home/u", ".gjc", "agent", "models.yml"));
   });
 });
 

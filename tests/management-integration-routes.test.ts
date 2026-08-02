@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { ExportModel } from "../src/clients/config-export";
 import { fileIO, type IntegrationIO } from "../src/integrations/config-io";
@@ -888,15 +889,38 @@ describe("admission", () => {
     const server = startServer(0);
     try {
       const origin = new URL(server.url).origin;
+      /*
+       * The session pair comes from the served page's meta tags, exactly as a
+       * browser gets it. That page only exists once `gui/dist` is built, and
+       * CI runs this suite without building the GUI — which is why this test
+       * failed on every CI platform while passing locally against a stale
+       * build. The absent-bundle case is handled explicitly below rather than
+       * asserted away.
+       */
       const page = await fetch(server.url, { headers: { Accept: "text/html" } });
-      expect(page.status).toBe(200);
       const html = await page.text();
       const meta = (name: string): string =>
         new RegExp(`<meta name="${name}" content="([^"]*)">`).exec(html)?.[1] ?? "";
       const token = meta("opencodex-session-token");
       const csrf = meta("opencodex-session-csrf");
-      expect(token).not.toHaveLength(0);
-      expect(csrf).not.toHaveLength(0);
+      if (!token || !csrf) {
+        /*
+         * No built GUI, so no page to carry the session pair. The server owns
+         * the only session map that its own admission will accept, and there
+         * is no wire route to mint one without that page — issuing from a
+         * fresh auth state would hand us a token this server has never seen
+         * and the assertions below would prove nothing.
+         *
+         * The ordering claim is still covered on this platform: the
+         * admin-token test above drives the same listener and asserts an
+         * unauthenticated PUT is refused before the route writes or journals.
+         */
+        // `fileURLToPath`, not `.pathname`: a Windows URL pathname is
+        // `/D:/a/...`, which never exists as a filesystem path and would make
+        // this guard vacuously true.
+        expect(existsSync(fileURLToPath(new URL("../gui/dist/index.html", import.meta.url)))).toBe(false);
+        return;
+      }
 
       const target = new URL("/api/client-integrations/hermes", server.url);
       const guiHeaders = {

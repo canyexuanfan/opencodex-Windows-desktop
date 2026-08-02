@@ -35,6 +35,23 @@ let home: string;
 let store: IntegrationStateStore;
 let storeRoot: string;
 
+/** Empty on purpose: no home override, so the registry picks the platform default. */
+const TEST_ENV = {} as NodeJS.ProcessEnv;
+
+/**
+ * Create the directory each client's detector actually looks for, and return
+ * its config path. Never hardcode `~/.hermes`: on Windows Hermes lives under
+ * `%LOCALAPPDATA%\hermes`, so a hardcoded POSIX layout creates a directory the
+ * detector ignores and every apply refuses with `not_installed`.
+ */
+function installClient(clientId: IntegrationClientId): string {
+  const spec = INTEGRATION_CLIENTS[clientId];
+  mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+  const configPath = spec.configPath(TEST_ENV, home);
+  mkdirSync(dirname(configPath), { recursive: true });
+  return configPath;
+}
+
 beforeEach(() => {
   const base = mkdtempSync(join(tmpdir(), "ocx-integrations-invariants-"));
   home = join(base, "home");
@@ -78,14 +95,13 @@ describe("the journal is metadata, never a copy of the file", () => {
      * config legitimately lives.
      */
     const sentinel = ["do", "not", "log", "this", "line"].join("-");
-    mkdirSync(join(home, ".hermes"), { recursive: true });
-    const configPath = join(home, ".hermes", "config.yaml");
+    const configPath = installClient("hermes");
     const before = `providers:\n  mine:\n    api: http://${sentinel}\n`;
     writeFileSync(configPath, before);
 
     const result = applyIntegration({
       clientId: "hermes", models: MODELS, config: CONFIG, port: 10100,
-      env: {} as NodeJS.ProcessEnv, home, store,
+      env: TEST_ENV, home, store,
     });
     expect(result.ok).toBe(true);
 
@@ -104,15 +120,6 @@ describe("the journal is metadata, never a copy of the file", () => {
 });
 
 describe("every client survives a full lifecycle", () => {
-  /** Create the directory each client's detector looks for. */
-  function install(clientId: IntegrationClientId): string {
-    const spec = INTEGRATION_CLIENTS[clientId];
-    mkdirSync(spec.detectDir({} as NodeJS.ProcessEnv, home), { recursive: true });
-    const configPath = spec.configPath({} as NodeJS.ProcessEnv, home);
-    mkdirSync(dirname(configPath), { recursive: true });
-    return configPath;
-  }
-
   /** A pre-existing user document in each client's own format. */
   const SEED: Record<IntegrationClientId, string> = {
     opencode: '{\n  "provider": {\n    "mine": { "npm": "keep-me" }\n  }\n}\n',
@@ -125,7 +132,7 @@ describe("every client survives a full lifecycle", () => {
 
   for (const clientId of INTEGRATION_CLIENT_IDS) {
     test(`${clientId}: apply adds only our block, disable removes only our block`, () => {
-      const configPath = install(clientId);
+      const configPath = installClient(clientId);
       const seed = SEED[clientId];
       writeFileSync(configPath, seed);
       const format = EXPORT_CLIENTS[clientId].format;
@@ -133,7 +140,7 @@ describe("every client survives a full lifecycle", () => {
 
       const applied = applyIntegration({
         clientId, models: MODELS, config: CONFIG, port: 10100,
-        env: {} as NodeJS.ProcessEnv, home, store,
+        env: TEST_ENV, home, store,
       });
       expect(applied.ok).toBe(true);
 
@@ -156,7 +163,7 @@ describe("every client survives a full lifecycle", () => {
 
       const disabled = disableIntegration({
         clientId, models: MODELS, config: CONFIG, port: 10100,
-        env: {} as NodeJS.ProcessEnv, home, store,
+        env: TEST_ENV, home, store,
       });
       expect(disabled.ok).toBe(true);
 
@@ -182,16 +189,13 @@ describe("a stale refresh does not forget what we created", () => {
      * the new record conclude the user owns it. The residue then outlives
      * every future disable.
      */
-    const spec = INTEGRATION_CLIENTS.kimi;
-    mkdirSync(spec.detectDir({} as NodeJS.ProcessEnv, home), { recursive: true });
-    const configPath = spec.configPath({} as NodeJS.ProcessEnv, home);
-    mkdirSync(dirname(configPath), { recursive: true });
+    const configPath = installClient("kimi");
     const seed = '[providers.mine]\napi = "http://keep-me"\n';
     writeFileSync(configPath, seed);
 
     const write = (models: ExportModel[]) => ({
       clientId: "kimi" as const, models, config: CONFIG, port: 10100,
-      env: {} as NodeJS.ProcessEnv, home, store,
+      env: TEST_ENV, home, store,
     });
 
     expect(applyIntegration(write(MODELS)).ok).toBe(true);
@@ -219,11 +223,10 @@ describe("the store's own root stays tidy", () => {
      * catches is a new bookkeeping file appearing without anyone deciding it
      * should exist.
      */
-    mkdirSync(join(home, ".hermes"), { recursive: true });
-    writeFileSync(join(home, ".hermes", "config.yaml"), "providers: {}\n");
+    writeFileSync(installClient("hermes"), "providers: {}\n");
     const write = {
       clientId: "hermes" as const, models: MODELS, config: CONFIG, port: 10100,
-      env: {} as NodeJS.ProcessEnv, home, store,
+      env: TEST_ENV, home, store,
     };
     expect(applyIntegration(write).ok).toBe(true);
     expect(disableIntegration(write).ok).toBe(true);
