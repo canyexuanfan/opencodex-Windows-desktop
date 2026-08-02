@@ -143,7 +143,7 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL http
 
 ## 3. API 키 카탈로그
 
-opencodex에는 빌트인 프리셋이 72개 들어 있습니다. 키 방식 60개, OAuth 8개, 로컬 3개,
+opencodex에는 빌트인 프리셋이 74개 들어 있습니다. 키 방식 62개, OAuth 8개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
 입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다릅니다). 주요 항목은 다음과 같습니다:
 
@@ -182,6 +182,8 @@ Cline IDE/CLI에서만 제공되며 API로는 사용할 수 없습니다. `minim
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
 | Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
+| DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
+| Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -242,6 +244,16 @@ SambaStudio deployment 엔드포인트는 범위에서 제외합니다. 키는
 보고된 context 및 input modality metadata를 보존하며 discovery를 512 KiB와 raw 행 512개로 제한합니다.
 dedicated deployment 호스트는 범위에서 제외합니다. 키는
 [Nebius Token Factory](https://tokenfactory.nebius.com)에서 생성합니다.
+**DigitalOcean 검색:** 프리셋은 model access key를 고정된 공유 Serverless Inference 호스트에 사용하고,
+인증된 `/v1/models` 응답과 DigitalOcean 공식 문서로 확인한 Chat Completions allowlist의 교집합만
+노출합니다. 알 수 없는 ID, Responses 전용, embedding 및 media-generation ID는 fail closed로 제외하며,
+discovery를 256 KiB와 raw 행 256개로 제한합니다. agent 전용 및 dedicated 호스트는 범위에서 제외합니다.
+키는 [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys)에서 생성합니다.
+
+**Scaleway 검색:** 인증된 모델 목록과 현재 Serverless chat-model allowlist의 교집합만 노출하여 embedding과
+audio transcription을 제외하고, discovery를 128 KiB와 raw 행 128개로 제한합니다. 기본 Project의 공유
+endpoint를 사용합니다. Project ID가 포함된 URL과 dedicated deployment는 custom provider로 설정하세요.
+API 키는 [Scaleway console](https://console.scaleway.com/generative-api)에서 생성합니다.
 
 > **Baseten 범위:** 이 프리셋은 Baseten의 공유 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)만
 > 지원합니다. 로컬 사용에는 개인 [API 키](https://docs.baseten.co/organization/api-keys)를, 공유/프로덕션

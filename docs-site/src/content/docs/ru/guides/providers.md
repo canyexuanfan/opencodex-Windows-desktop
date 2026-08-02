@@ -154,7 +154,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 72 встроенными пресетами: 60 на основе ключей, восемь OAuth, три локальных и
+opencodex поставляется с 74 встроенными пресетами: 62 на основе ключей, восемь OAuth, три локальных и
 один пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его; проверка зависит от провайдера.
 Наиболее заметные записи:
@@ -193,6 +193,8 @@ opencodex поставляется с 72 встроенными пресетам
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
 | Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
+| DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
+| Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -258,6 +260,18 @@ SambaStudio не входят в область пресета. Ключи со�
 Он сохраняет нативные id со знаком `/`, а также заявленные context и input-modality metadata, и
 ограничивает discovery размером 512 KiB и 512 исходными строками. Хосты dedicated deployment не
 входят в область пресета. Ключи создаются в [Nebius Token Factory](https://tokenfactory.nebius.com).
+**Discovery для DigitalOcean.** Пресет использует model access key на фиксированном общем хосте
+Serverless Inference и публикует только пересечение аутентифицированного ответа `/v1/models` с
+подтверждённым документацией allowlist для Chat Completions. Неизвестные, Responses-only,
+embedding- и media-generation id исключаются по принципу fail closed. Discovery ограничен 256 KiB
+и 256 исходными строками; agent-specific и dedicated хосты не входят в область пресета. Ключи
+создаются в [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys).
+
+**Discovery для Scaleway.** Пресет публикует пересечение аутентифицированного списка моделей с
+текущим allowlist serverless chat-моделей Scaleway, исключая embedding и audio transcription, и
+ограничивает discovery размером 128 KiB и 128 исходными строками. Используется общий endpoint
+Project по умолчанию; URL с Project ID и dedicated deployment настраиваются как custom provider.
+API-ключ создаётся в [консоли Scaleway](https://console.scaleway.com/generative-api).
 
 > **Область Baseten:** пресет поддерживает только общие [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > Baseten. Для локальной работы используйте личный [API-ключ](https://docs.baseten.co/organization/api-keys),

@@ -137,7 +137,7 @@ const CONNECTABLE: Record<string, ConnectableOverride> = {
   nscale: openAi("https://inference.api.nscale.com/v1", "https://console.nscale.com", { verification: "official" }),
   nvidia: openAi("https://integrate.api.nvidia.com/v1", "https://build.nvidia.com", { supportLevel: "supported", verification: "official", documentationUrl: "https://docs.api.nvidia.com/nim/reference/llm-apis" }),
   publicai: openAi("https://api.publicai.co/v1", "https://publicai.co"),
-  scaleway: openAi("https://api.scaleway.ai/v1", "https://console.scaleway.com/generative-api", { verification: "official" }),
+  scaleway: openAi("https://api.scaleway.ai/v1", "https://console.scaleway.com/generative-api", { supportLevel: "supported", verification: "official", documentationUrl: "https://www.scaleway.com/en/docs/generative-apis/api-cli/using-generative-apis/", modelsUrl: "https://api.scaleway.ai/v1/models", lastVerified: "2026-08-01" }),
   sensenova: openAi("https://token.sensenova.cn/v1", "https://console.sensenova.cn", { verification: "official" }),
   stepfun: openAi("https://api.stepfun.com/v1", "https://platform.stepfun.com", { verification: "official" }),
   together: openAi("https://api.together.xyz/v1", "https://api.together.xyz/settings/api-keys", { supportLevel: "supported", verification: "official", documentationUrl: "https://docs.together.ai/reference/models-1" }),

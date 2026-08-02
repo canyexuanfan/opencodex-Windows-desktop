@@ -217,7 +217,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 72 built-in presets: 60 key-based, eight OAuth, three local, and one default
+opencodex ships 74 built-in presets: 62 key-based, eight OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it; validation is provider-specific. Notable entries:
 
@@ -255,6 +255,8 @@ free-experimentation model.
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
 | Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
+| DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
+| Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -324,6 +326,17 @@ keeps only rows whose architecture produces text, excluding embedding and image-
 It preserves slash-containing native ids plus reported context and input-modality metadata, and caps
 discovery at 512 KiB and 512 raw rows. Dedicated deployment hosts are out of scope. Create keys in
 [Nebius Token Factory](https://tokenfactory.nebius.com).
+**DigitalOcean discovery.** The preset uses a model access key against the fixed shared Serverless
+Inference host and intersects the authenticated `/v1/models` response with DigitalOcean's
+docs-backed Chat Completions allowlist. Unknown, Responses-only, embedding, and media-generation
+ids fail closed. Discovery is capped at 256 KiB and 256 raw rows; agent-specific and dedicated
+hosts are out of scope. Create a key in the [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys).
+
+**Scaleway discovery.** The preset intersects the authenticated model list with Scaleway's current
+Serverless chat-model allowlist, excluding embeddings and audio transcription, and caps discovery
+at 128 KiB and 128 raw rows. It uses the default Project's shared endpoint; project-qualified URLs
+and dedicated deployments require a custom provider. Create an API key in the
+[Scaleway console](https://console.scaleway.com/generative-api).
 
 > **Baseten scope:** The preset covers Baseten's shared [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > only. Use a personal [API key](https://docs.baseten.co/organization/api-keys) for local use, or a team key
