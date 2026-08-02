@@ -228,7 +228,8 @@ describe("the store's own root stays tidy", () => {
     expect(applyIntegration(write).ok).toBe(true);
     expect(disableIntegration(write).ok).toBe(true);
 
-    // An unexpected entry here means some path escaped the bound store.
+    // An unexpected entry here means a new bookkeeping file appeared without
+    // anyone deciding it should exist.
     expect(readdirSync(storeRoot).sort()).toEqual(["journal.jsonl", "records.json", "snapshots"]);
   });
 });
