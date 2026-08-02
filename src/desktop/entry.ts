@@ -1,6 +1,6 @@
 import { drainAndShutdown, startServer } from "../server";
-import { isAddrInUse } from "../server/ports";
-import { loadConfig, removePid, removeRuntimePort, writePid, writeRuntimePort } from "../config";
+import { findAvailablePort, isAddrInUse, shouldPersistSelectedPort } from "../server/ports";
+import { loadConfig, removePid, removeRuntimePort, saveConfig, writePid, writeRuntimePort } from "../config";
 import {
   currentExternalCodexModelProvider,
   isCodexRoutingInjected,
@@ -193,9 +193,16 @@ async function main(): Promise<void> {
       console.log(`desktop sidecar recovered stale Codex routing: ${recovered.message}`);
     }
 
+    const diskConfig = loadConfig();
+    const config = { ...diskConfig, hostname: DESKTOP_HOSTNAME };
+    const preferredPort = diskConfig.port ?? 10100;
     for (let attempt = 0; ; attempt += 1) {
       try {
-        server = startServer(0, { hostname: DESKTOP_HOSTNAME });
+        const selectedPort = await findAvailablePort(preferredPort, DESKTOP_HOSTNAME, {
+          preferRetryMs: preferredPort > 0 ? 750 : 0,
+          preferRetryIntervalMs: 50,
+        });
+        server = startServer(selectedPort, { hostname: DESKTOP_HOSTNAME });
         scheduleCatalogPrewarm();
         break;
       } catch (error) {
@@ -207,13 +214,17 @@ async function main(): Promise<void> {
     installCrashGuards();
     const port = server.port;
     if (!port || port <= 0) throw new Error("desktop sidecar did not receive a concrete port");
+    if (shouldPersistSelectedPort(diskConfig.port, port, preferredPort)) {
+      diskConfig.port = port;
+      config.port = port;
+      saveConfig(diskConfig);
+    }
 
     writePid(process.pid);
     writeRuntimePort({ pid: process.pid, port, hostname: DESKTOP_HOSTNAME });
 
     // The desktop listener is always loopback even when a previous CLI config saved a different
     // hostname. Use the actual bind identity for every integration derived during this lease.
-    const config = { ...loadConfig(), hostname: DESKTOP_HOSTNAME };
     tokenGuardian = startTokenGuardian();
     integrationEnvironmentOwned = serviceEnvironmentOwnedHere();
     if (integrationEnvironmentOwned) {

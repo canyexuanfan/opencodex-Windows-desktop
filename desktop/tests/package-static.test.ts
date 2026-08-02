@@ -93,6 +93,7 @@ describe("desktop package contract", () => {
     expect(customInstaller).toContain('CreateShortCut "$newStartMenuLink" "$appExe" "" "$0"');
     expect(customInstaller).toContain('Delete "$newDesktopLink"');
     expect(customInstaller).toContain('CreateShortCut "$newDesktopLink" "$appExe" "" "$0"');
+    expect(customInstaller).not.toContain("${isNoDesktopShortcut}");
     expect(customInstaller).toContain("Shell32::SHChangeNotify");
   });
 
