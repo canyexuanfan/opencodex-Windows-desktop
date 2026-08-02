@@ -21,6 +21,8 @@ export type NativeProfileErrorCode =
   | "SWITCH_ROLLED_BACK"
   | "STAGING_NOT_FOUND"
   | "STAGING_CLEANUP_REQUIRED"
+  | "PROFILE_METADATA_TOO_LARGE"
+  | "INTERNAL_ERROR"
   | "VAULT_INVALID";
 
 export class NativeProfileError extends Error {
@@ -65,7 +67,13 @@ export interface NativeMainProfileVaultV1 {
   profiles: NativeMainProfileRecordV1[];
 }
 
-export type NativeProfileJournalPhase = "prepared" | "auth-replaced" | "vault-committed";
+export const NATIVE_PROFILE_JOURNAL_PHASES = [
+  "prepared",
+  "auth-replaced",
+  "vault-committed",
+] as const;
+
+export type NativeProfileJournalPhase = (typeof NATIVE_PROFILE_JOURNAL_PHASES)[number];
 
 export interface NativeProfileSwitchJournalV1 {
   version: 1;

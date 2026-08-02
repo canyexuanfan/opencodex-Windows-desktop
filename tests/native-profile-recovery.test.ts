@@ -29,6 +29,7 @@ describe("native profile crash recovery decisions", () => {
         expect(decideNativeProfileRecovery(phase, observation)).toEqual({
           action: "rollback-source",
           publishRuntimeTransition: false,
+          externallyRefreshed: observation.digest === "changed",
           reason: "source-active",
         });
       });
@@ -41,6 +42,7 @@ describe("native profile crash recovery decisions", () => {
         expect(decideNativeProfileRecovery(phase, observation)).toEqual({
           action: "commit-target",
           publishRuntimeTransition: true,
+          externallyRefreshed: observation.digest === "changed",
           reason: "target-active-vault-pending",
         });
       });
@@ -54,6 +56,7 @@ describe("native profile crash recovery decisions", () => {
       ).toEqual({
         action: "finalize-target",
         publishRuntimeTransition: true,
+        externallyRefreshed: observation.digest === "changed",
         reason: "target-active-vault-committed",
       });
     });
@@ -69,6 +72,7 @@ describe("native profile crash recovery decisions", () => {
       ).toEqual({
         action: "manual-recovery",
         publishRuntimeTransition: false,
+        externallyRefreshed: false,
         reason: "auth-unconfirmed",
       });
     });
@@ -82,6 +86,7 @@ describe("native profile crash recovery decisions", () => {
       ).toEqual({
         action: "manual-recovery",
         publishRuntimeTransition: false,
+        externallyRefreshed: false,
         reason: "third-identity",
       });
     });

@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   truncateSync,
@@ -24,14 +25,16 @@ import {
   assertUniqueNativeProfileLabel,
   decryptNativeEnvelope,
   encryptNativeEnvelope,
+  inspectNativeProfileJournal,
+  MAX_NATIVE_PROFILES,
   nativeIdentityHash,
   nativeIdentityHint,
   OsNativeProfileKeyProvider,
   publicNativeProfile,
   readNativeEnvelope,
   readNativeEnvelopeResult,
-  readNativeProfileJournal,
   readNativeProfileVault,
+  probeNativeProfileRecoveryState,
   requireFileCredentialStore,
   resolveNativeCredentialStoreMode,
   resolveNativeProfileContext,
@@ -220,8 +223,87 @@ export class NativeProfileManager {
     try { unlinkSync(this.context.journalPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
   }
 
+  private removeRecoveryBlock(): void {
+    try { unlinkSync(this.context.recoveryBlockPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
+  }
+
+  private async currentOwnershipConfirmed(): Promise<boolean> {
+    let key: NativeProfileKey | null = null;
+    let current: NativeEnvelopeSnapshot | null = null;
+    try {
+      const vault = readNativeProfileVault(this.context);
+      if (!vault) return false;
+      key = await this.keyForVault(vault);
+      current = readNativeEnvelope(this.context.authPath);
+      this.assertCurrentIdentity(vault, current, key);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      current?.raw.fill(0);
+      key?.key.fill(0);
+    }
+  }
+
+  private async clearRecoveryBlockLocked(): Promise<Record<string, unknown>> {
+    if (!(await this.currentOwnershipConfirmed())) {
+      throw new NativeProfileError(
+        "RECOVERY_REQUIRED",
+        "The quarantined recovery state remains blocked until auth.json matches the active encrypted profile.",
+        409,
+      );
+    }
+    this.removeRecoveryBlock();
+    return {
+      ok: true,
+      recovered: true,
+      action: "confirm-current-owner",
+      externallyRefreshed: false,
+      effectiveCodexHome: this.context.codexHome,
+      restartRequired: false,
+    };
+  }
+
+  private async quarantineInvalidJournalLocked(): Promise<Record<string, unknown>> {
+    const quarantineFile = this.context.homeId + ".journal.quarantine-" + this.uuid() + ".json";
+    const quarantinePath = join(this.context.rootDir, quarantineFile);
+    await this.atomicWrite(this.context.recoveryBlockPath, serializeNativeProfileMetadata({
+      version: 1,
+      homeId: this.context.homeId,
+      reason: "malformed-journal",
+      quarantineFile,
+      createdAt: new Date(this.now()).toISOString(),
+    }));
+    try {
+      renameSync(this.context.journalPath, quarantinePath);
+    } catch {
+      throw new NativeProfileError(
+        "RECOVERY_REQUIRED",
+        "The invalid recovery journal could not be quarantined; the fail-closed recovery marker remains active.",
+        409,
+      );
+    }
+    if (!(await this.currentOwnershipConfirmed())) {
+      throw new NativeProfileError(
+        "RECOVERY_REQUIRED",
+        "The invalid recovery journal was quarantined as " + quarantineFile + ", but current credential ownership is not confirmed.",
+        409,
+      );
+    }
+    this.removeRecoveryBlock();
+    return {
+      ok: true,
+      recovered: true,
+      action: "quarantine-invalid-journal",
+      quarantineFile,
+      externallyRefreshed: false,
+      effectiveCodexHome: this.context.codexHome,
+      restartRequired: false,
+    };
+  }
+
   private assertNoPendingRecovery(): void {
-    if (!readNativeProfileJournal(this.context)) return;
+    if (probeNativeProfileRecoveryState(this.context) === "none") return;
     throw new NativeProfileError(
       "RECOVERY_REQUIRED",
       "A native-profile recovery journal is pending. Run `ocx account main recover` or `ocx account main recover --rollback --yes` before registering or adding profiles.",
@@ -309,35 +391,55 @@ export class NativeProfileManager {
 
   async doctor(): Promise<Record<string, unknown>> {
     return this.withLock(async () => {
-    this.sweepStaleStages();
+    let stagingSweep: "ok" | "cleanup-required" | "unreadable" = "ok";
+    try {
+      this.sweepStaleStages();
+    } catch (error) {
+      stagingSweep = error instanceof NativeProfileError && error.code === "STAGING_CLEANUP_REQUIRED"
+        ? "cleanup-required"
+        : "unreadable";
+    }
     const mode = (() => {
       try { return resolveNativeCredentialStoreMode(this.context); } catch { return "unknown"; }
     })();
     const auth = readNativeEnvelopeResult(this.context.authPath);
-    const vault = readNativeProfileVault(this.context);
+    let vault: NativeMainProfileVaultV1 | null = null;
+    let vaultStatus: "ok" | "missing" | "invalid" = "missing";
+    try {
+      vault = readNativeProfileVault(this.context);
+      vaultStatus = vault ? "ok" : "missing";
+    } catch {
+      vaultStatus = "invalid";
+    }
     let keyStore: "available" | "missing-key" | "unavailable" = "available";
     try {
       const key = await this.keyProvider.get(this.context.homeId);
-      if (vault && !key) keyStore = "missing-key";
+      if (vaultStatus !== "missing" && !key) keyStore = "missing-key";
       if (key) key.key.fill(0);
     } catch {
       keyStore = "unavailable";
     }
-    let stagingCount = 0;
+    let stagingCount: number | null = 0;
     try {
       if (existsSync(this.context.stagingRoot)) {
         stagingCount = Array.from(new Bun.Glob("*").scanSync({ cwd: this.context.stagingRoot, onlyFiles: false })).length;
       }
-    } catch { stagingCount = 0; }
+    } catch {
+      stagingSweep = "unreadable";
+      stagingCount = null;
+    }
     return {
       effectiveCodexHome: this.context.codexHome,
       credentialStoreMode: mode,
       supported: mode === "file",
       authStatus: auth.status,
       keyStore,
-      profileCount: vault?.profiles.length ?? 0,
+      vaultStatus,
+      profileCount: vaultStatus === "invalid" ? null : vault?.profiles.length ?? 0,
       activeProfileId: vault?.activeProfileId ?? null,
-      recoveryPending: existsSync(this.context.journalPath),
+      recoveryPending: probeNativeProfileRecoveryState(this.context) !== "none",
+      recoveryState: probeNativeProfileRecoveryState(this.context),
+      stagingSweep,
       stagingCount,
     };
     });
@@ -461,6 +563,9 @@ export class NativeProfileManager {
       let target: NativeEnvelopeSnapshot | null = null;
       let current: NativeEnvelopeSnapshot | null = null;
       let key: NativeProfileKey | null = null;
+      let operationFailed = false;
+      let importCommitted = false;
+      let result: { effectiveCodexHome: string; profile: NativeProfilePublic } | undefined;
       try {
         const stagePath = this.verifiedStagePath(stageId);
         requireFileCredentialStore(this.context);
@@ -468,6 +573,9 @@ export class NativeProfileManager {
         target = readNativeEnvelope(join(stagePath, "auth.json"));
         current = readNativeEnvelope(this.context.authPath);
         const vault = this.requireVault();
+        if (vault.profiles.length >= MAX_NATIVE_PROFILES) {
+          throw new NativeProfileError("INVALID_REQUEST", "Native profiles are limited to 32 entries.", 400);
+        }
         key = await this.keyForVault(vault);
         this.assertCurrentIdentity(vault, current, key);
         assertUniqueNativeProfileLabel(vault, label);
@@ -490,7 +598,11 @@ export class NativeProfileManager {
         vault.profiles.push(profile);
         vault.revision += 1;
         await this.writeVault(vault);
-        return { effectiveCodexHome: this.context.codexHome, profile: publicNativeProfile(profile) };
+        importCommitted = true;
+        result = { effectiveCodexHome: this.context.codexHome, profile: publicNativeProfile(profile) };
+      } catch (error) {
+        operationFailed = true;
+        throw error;
       } finally {
         target?.raw.fill(0);
         current?.raw.fill(0);
@@ -498,13 +610,18 @@ export class NativeProfileManager {
         try {
           this.deleteStageById(stageId);
         } catch {
-          throw new NativeProfileError(
-            "STAGING_CLEANUP_REQUIRED",
-            "The native-login staging session could not be securely removed; fix filesystem permissions and cancel it explicitly.",
-            500,
-          );
+          if (!operationFailed) {
+            throw new NativeProfileError(
+              "STAGING_CLEANUP_REQUIRED",
+              importCommitted
+                ? "The native profile was imported, but its staging session could not be securely removed. Do not retry the import; fix filesystem permissions and cancel it explicitly."
+                : "The native-login staging session could not be securely removed; fix filesystem permissions and cancel it explicitly.",
+              500,
+            );
+          }
         }
       }
+      return result!;
     });
   }
 
@@ -541,7 +658,7 @@ export class NativeProfileManager {
       this.sweepStaleStages();
       requireFileCredentialStore(this.context);
       await this.assertNativeCodexStopped(confirmedStopped);
-      if (readNativeProfileJournal(this.context)) await this.recoverLocked(false);
+      if (probeNativeProfileRecoveryState(this.context) !== "none") await this.recoverLocked(false);
       const beforeVault = this.requireVault();
       const key = await this.keyForVault(beforeVault);
       const source = readNativeEnvelope(this.context.authPath);
@@ -583,6 +700,10 @@ export class NativeProfileManager {
           afterVault,
           createdAt: timestamp,
         };
+        serializeNativeProfileMetadata(afterVault);
+        serializeNativeProfileMetadata({ ...journal, phase: "prepared" });
+        serializeNativeProfileMetadata({ ...journal, phase: "auth-replaced" });
+        serializeNativeProfileMetadata({ ...journal, phase: "vault-committed" });
         await this.writeJournal(journal);
         journalPrepared = true;
         await this.onSwitchBoundary("journal-prepared");
@@ -635,8 +756,30 @@ export class NativeProfileManager {
   }
 
   private async recoverLocked(rollback: boolean): Promise<Record<string, unknown>> {
-    const journal = readNativeProfileJournal(this.context);
-    if (!journal) return { ok: true, recovered: false, effectiveCodexHome: this.context.codexHome };
+    const inspection = inspectNativeProfileJournal(this.context);
+    const recoveryState = probeNativeProfileRecoveryState(this.context);
+    if (inspection.status === "invalid" || recoveryState === "unreadable") {
+      throw new NativeProfileError(
+        "RECOVERY_REQUIRED",
+        "The native-profile recovery state is invalid and requires explicit confirmed rollback quarantine.",
+        409,
+      );
+    }
+    if (recoveryState === "manual") {
+      if (inspection.status !== "missing") {
+        throw new NativeProfileError("RECOVERY_REQUIRED", "Manual native-profile recovery remains pending.", 409);
+      }
+      return this.clearRecoveryBlockLocked();
+    }
+    const journal = inspection.status === "valid" ? inspection.journal : null;
+    if (!journal) {
+      return {
+        ok: true,
+        recovered: false,
+        externallyRefreshed: false,
+        effectiveCodexHome: this.context.codexHome,
+      };
+    }
     const key = await this.keyForVault(journal.beforeVault);
     const current = readNativeEnvelopeResult(this.context.authPath);
     if (current.status !== "ok") {
@@ -650,7 +793,14 @@ export class NativeProfileManager {
         if (currentHash === journal.sourceIdentityHash) {
           await this.writeVault(journal.beforeVault);
           this.removeJournal();
-          return { ok: true, recovered: true, action: "rollback-source", effectiveCodexHome: this.context.codexHome, restartRequired: false };
+          return {
+            ok: true,
+            recovered: true,
+            action: "rollback-source",
+            externallyRefreshed: current.envelope.digest !== journal.sourcePayload.envelopeSha256,
+            effectiveCodexHome: this.context.codexHome,
+            restartRequired: false,
+          };
         }
         if (currentHash !== journal.targetIdentityHash) {
           throw new NativeProfileError("RECOVERY_REQUIRED", "Recovery found a third or unknown native identity and made no credential write.", 409);
@@ -663,6 +813,7 @@ export class NativeProfileManager {
           key,
         );
         let rollbackVault = journal.beforeVault;
+        const externallyRefreshed = current.envelope.digest !== journal.targetPayload.envelopeSha256;
         let rollbackVaultPublished = false;
         if (current.envelope.digest !== journal.targetPayload.envelopeSha256) {
           rollbackVault = structuredClone(journal.beforeVault);
@@ -701,7 +852,14 @@ export class NativeProfileManager {
         if (!rollbackVaultPublished) await this.writeVault(rollbackVault);
         this.applyTransition(current.envelope.accountId, sourceEnvelope.accountId);
         this.removeJournal();
-        return { ok: true, recovered: true, action: "rollback-source", effectiveCodexHome: this.context.codexHome, restartRequired: true };
+        return {
+          ok: true,
+          recovered: true,
+          action: "rollback-source",
+          externallyRefreshed,
+          effectiveCodexHome: this.context.codexHome,
+          restartRequired: true,
+        };
       }
       const observation = currentHash === journal.sourceIdentityHash
         ? { identity: "source" as const, digest: current.envelope.digest === journal.sourcePayload.envelopeSha256 ? "exact" as const : "changed" as const }
@@ -715,7 +873,14 @@ export class NativeProfileManager {
       if (decision.action === "rollback-source") {
         await this.writeVault(journal.beforeVault);
         this.removeJournal();
-        return { ok: true, recovered: true, action: decision.action, effectiveCodexHome: this.context.codexHome, restartRequired: false };
+        return {
+          ok: true,
+          recovered: true,
+          action: decision.action,
+          externallyRefreshed: decision.externallyRefreshed,
+          effectiveCodexHome: this.context.codexHome,
+          restartRequired: false,
+        };
       }
       sourceEnvelope = decryptNativeEnvelope(
         this.context,
@@ -727,7 +892,14 @@ export class NativeProfileManager {
       await this.writeVault(journal.afterVault);
       this.applyTransition(sourceEnvelope.accountId, current.envelope.accountId);
       this.removeJournal();
-      return { ok: true, recovered: true, action: decision.action, effectiveCodexHome: this.context.codexHome, restartRequired: true };
+      return {
+        ok: true,
+        recovered: true,
+        action: decision.action,
+        externallyRefreshed: decision.externallyRefreshed,
+        effectiveCodexHome: this.context.codexHome,
+        restartRequired: true,
+      };
     } finally {
       current.envelope.raw.fill(0);
       sourceEnvelope?.raw.fill(0);
@@ -738,7 +910,19 @@ export class NativeProfileManager {
   async recover(rollback = false, confirmedStopped = false): Promise<Record<string, unknown>> {
     return this.withLock(async () => {
       requireFileCredentialStore(this.context);
-      if (rollback && readNativeProfileJournal(this.context)) {
+      const inspection = inspectNativeProfileJournal(this.context);
+      if (inspection.status === "invalid") {
+        if (!rollback) {
+          throw new NativeProfileError(
+            "RECOVERY_REQUIRED",
+            "The invalid native-profile recovery journal requires recover --rollback --yes.",
+            409,
+          );
+        }
+        await this.assertNativeCodexStopped(confirmedStopped);
+        return this.quarantineInvalidJournalLocked();
+      }
+      if (rollback && inspection.status === "valid") {
         await this.assertNativeCodexStopped(confirmedStopped);
       }
       return this.recoverLocked(rollback);

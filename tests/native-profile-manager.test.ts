@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NativeProfileManager } from "../src/codex/native-profile-manager";
-import { decryptNativeEnvelope, readNativeProfileVault } from "../src/codex/native-profile-store";
+import {
+  decryptNativeEnvelope,
+  MAX_NATIVE_PROFILE_METADATA_BYTES,
+  probeNativeProfileRecoveryState,
+  readNativeProfileVault,
+} from "../src/codex/native-profile-store";
 import { NativeProfileError, type NativeProfileKey, type NativeProfileKeyProvider } from "../src/codex/native-profile-types";
 
 const roots: string[] = [];
@@ -180,6 +185,27 @@ describe("native main profile transactions", () => {
     }
   }, 15_000);
 
+  test("the same canonical CODEX_HOME serializes different OpenCodex config roots", async () => {
+    const f = fixture();
+    const secondConfigDir = join(f.root, "opencodex-second");
+    mkdirSync(secondConfigDir, { recursive: true });
+    const ready = join(f.root, "canonical-home-ready");
+    const release = join(f.root, "canonical-home-release");
+    const first = spawnLockHolder(f, ready, release);
+    try {
+      await waitForPath(ready);
+      const contender = new NativeProfileManager({ ...f.options, configDir: secondConfigDir, lockWaitMs: 100 });
+      expect(contender.context.lockPath).toBe(new NativeProfileManager(f.options).context.lockPath);
+      let caught: unknown;
+      try { await contender.recover(false); } catch (error) { caught = error; }
+      expect(caught).toBeInstanceOf(NativeProfileError);
+      expect((caught as NativeProfileError).code).toBe("NATIVE_PROFILE_BUSY");
+    } finally {
+      writeFileSync(release, "release");
+      await first.exited;
+    }
+  }, 15_000);
+
   test("finish removes staging after auth validation failure", async () => {
     const f = fixture();
     const manager = new NativeProfileManager(f.options);
@@ -248,8 +274,170 @@ describe("native main profile transactions", () => {
     try { await failing.finishStage(stage.stageId, "work"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).code).toBe("STAGING_CLEANUP_REQUIRED");
+    expect((caught as NativeProfileError).message).toContain("was imported");
+    expect((caught as NativeProfileError).message).toContain("Do not retry");
+    expect((await manager.list()).profiles.some(profile => profile.label === "work")).toBe(true);
     expect(existsSync(stage.stagingCodexHome)).toBe(true);
     await manager.cancelStage(stage.stageId);
+  });
+
+  test("finish preserves the primary validation error when cleanup also fails", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    await manager.register("personal");
+    const stage = await manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), "{}\n");
+    const failing = new NativeProfileManager({
+      ...f.options,
+      removeStageTree: () => { throw new Error("injected cleanup failure"); },
+    });
+    let caught: unknown;
+    try { await failing.finishStage(stage.stageId, "invalid"); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("AUTH_INVALID");
+    expect(existsSync(stage.stagingCodexHome)).toBe(true);
+    await manager.cancelStage(stage.stageId);
+  });
+
+  test("doctor degrades for corrupt vaults and stale-stage cleanup failures", async () => {
+    const f = fixture();
+    let now = Date.now();
+    const manager = new NativeProfileManager({ ...f.options, now: () => now });
+    const registered = await manager.register("personal");
+    expect(await manager.doctor()).toMatchObject({
+      vaultStatus: "ok",
+      profileCount: 1,
+      activeProfileId: registered.profile.id,
+      stagingSweep: "ok",
+    });
+    const stage = await manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
+    now += 31 * 60_000;
+    const degraded = new NativeProfileManager({
+      ...f.options,
+      now: () => now,
+      removeStageTree: () => { throw new Error("injected cleanup failure"); },
+    });
+    expect(await degraded.doctor()).toMatchObject({
+      vaultStatus: "ok",
+      stagingSweep: "cleanup-required",
+      stagingCount: 1,
+    });
+    await manager.cancelStage(stage.stageId);
+    writeFileSync(manager.context.vaultPath, "{invalid-json\n");
+    expect(await manager.doctor()).toMatchObject({
+      vaultStatus: "invalid",
+      profileCount: null,
+      activeProfileId: null,
+    });
+  });
+
+  test("rejects Unicode format labels and canonicalizes NFC before uniqueness", async () => {
+    for (const bad of ["work\u202E", "work\u2066", "work\u200E", "work\u200D", "\uFEFFwork"]) {
+      const f = fixture();
+      const manager = new NativeProfileManager(f.options);
+      let caught: unknown;
+      try { await manager.register(bad); } catch (error) { caught = error; }
+      expect(caught).toBeInstanceOf(NativeProfileError);
+      expect((caught as NativeProfileError).code).toBe("INVALID_REQUEST");
+      expect(existsSync(manager.context.vaultPath)).toBe(false);
+    }
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    const registered = await manager.register("개인 Cafe\u0301");
+    expect(registered.profile.label).toBe("개인 Café");
+    const stage = await manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
+    let duplicate: unknown;
+    try { await manager.finishStage(stage.stageId, "개인 Café"); } catch (error) { duplicate = error; }
+    expect(duplicate).toBeInstanceOf(NativeProfileError);
+    expect((duplicate as NativeProfileError).code).toBe("PROFILE_ALREADY_EXISTS");
+  });
+
+  test("allows 32 profiles and rejects profile 33 without changing the vault", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    await manager.register("personal");
+    for (let index = 1; index < 32; index += 1) {
+      const stage = await manager.prepareStage();
+      writeFileSync(join(stage.stagingCodexHome, "auth.json"), envelope("account-" + index, "profile-" + index));
+      await manager.finishStage(stage.stageId, "profile-" + index);
+    }
+    expect((await manager.list()).profiles).toHaveLength(32);
+    const vaultBefore = readFileSync(manager.context.vaultPath, "utf8");
+    const overflow = await manager.prepareStage();
+    writeFileSync(join(overflow.stagingCodexHome, "auth.json"), envelope("account-overflow", "overflow"));
+    let caught: unknown;
+    try { await manager.finishStage(overflow.stageId, "overflow"); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("INVALID_REQUEST");
+    expect(readFileSync(manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    expect((await manager.list()).profiles).toHaveLength(32);
+    expect(existsSync(overflow.stagingCodexHome)).toBe(false);
+  }, 30_000);
+
+  test("rejects an oversized prospective journal before the first durable switch write", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    const sourceProfile = await manager.register("personal");
+    const stage = await manager.prepareStage();
+    const large = JSON.parse(f.target) as Record<string, unknown>;
+    large.padding = "x".repeat(Math.floor(MAX_NATIVE_PROFILE_METADATA_BYTES * 0.42));
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), JSON.stringify(large, null, 2) + "\n");
+    await manager.finishStage(stage.stageId, "work");
+    const authBefore = readFileSync(manager.context.authPath, "utf8");
+    const vaultBefore = readFileSync(manager.context.vaultPath, "utf8");
+    let caught: unknown;
+    try { await manager.switch("work", true); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("PROFILE_METADATA_TOO_LARGE");
+    expect(readFileSync(manager.context.authPath, "utf8")).toBe(authBefore);
+    expect(readFileSync(manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    expect(existsSync(manager.context.journalPath)).toBe(false);
+    expect((await manager.list()).activeProfileId).toBe(sourceProfile.profile.id);
+    expect(f.transitions).toEqual([]);
+  }, 30_000);
+
+  test("quarantines malformed journals byte-for-byte and keeps ownership fail closed", async () => {
+    const f = await enrolledFixture();
+    const malformed = "{malformed-journal\n";
+    writeFileSync(f.manager.context.journalPath, malformed);
+    writeFileSync(f.manager.context.authPath, f.target);
+    const authBefore = readFileSync(f.manager.context.authPath);
+    const vaultBefore = readFileSync(f.manager.context.vaultPath);
+    let caught: unknown;
+    try { await f.manager.recover(true, true); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
+    expect(readFileSync(f.manager.context.authPath)).toEqual(authBefore);
+    expect(readFileSync(f.manager.context.vaultPath)).toEqual(vaultBefore);
+    expect(existsSync(f.manager.context.journalPath)).toBe(false);
+    expect(existsSync(f.manager.context.recoveryBlockPath)).toBe(true);
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("manual");
+    const quarantine = readdirSync(f.manager.context.rootDir).filter(name => name.includes(".journal.quarantine-"));
+    expect(quarantine).toHaveLength(1);
+    expect(readFileSync(join(f.manager.context.rootDir, quarantine[0]!), "utf8")).toBe(malformed);
+    writeFileSync(f.manager.context.authPath, f.source);
+    expect(await f.manager.recover(false)).toMatchObject({
+      recovered: true,
+      action: "confirm-current-owner",
+    });
+    expect(existsSync(f.manager.context.recoveryBlockPath)).toBe(false);
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("none");
+  });
+
+  test("automatic recovery reports an externally refreshed target", async () => {
+    const f = await enrolledFixture();
+    await leavePendingJournal(f);
+    const refreshed = envelope("account-target", "target-refreshed-auto");
+    writeFileSync(f.manager.context.authPath, refreshed);
+    expect(await f.manager.recover(false)).toMatchObject({
+      recovered: true,
+      action: "commit-target",
+      externallyRefreshed: true,
+      restartRequired: true,
+    });
+    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(refreshed);
   });
 
   test("preserves exact auth bytes, encrypts inactive profiles, and leaves task/history files untouched", async () => {

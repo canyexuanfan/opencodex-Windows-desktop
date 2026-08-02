@@ -6,13 +6,14 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfigDir } from "../config";
 import { extractAccountId } from "../oauth/chatgpt";
 import { getCodexHome, readRootTomlString } from "./paths";
 import {
   NativeProfileError,
+  NATIVE_PROFILE_JOURNAL_PHASES,
   type EncryptedNativeEnvelopeV1,
   type NativeMainProfileRecordV1,
   type NativeMainProfileVaultV1,
@@ -26,8 +27,8 @@ const DOMAIN_HOME = "opencodex-native-profile-home-v1\0";
 const DOMAIN_IDENTITY = "opencodex-native-profile-identity-v1\0";
 const KEYRING_SERVICE = "opencodex.native-main-profile.v1";
 const MAX_AUTH_BYTES = 4 * 1024 * 1024;
-const MAX_METADATA_BYTES = 4 * 1024 * 1024;
-const MAX_PROFILES = 32;
+export const MAX_NATIVE_PROFILE_METADATA_BYTES = 4 * 1024 * 1024;
+export const MAX_NATIVE_PROFILES = 32;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
@@ -40,6 +41,7 @@ export interface NativeProfileContext {
   authPath: string;
   vaultPath: string;
   journalPath: string;
+  recoveryBlockPath: string;
   lockPath: string;
 }
 
@@ -144,7 +146,8 @@ export function resolveNativeProfileContext(options: { codexHome?: string; confi
     authPath: join(codexHome, "auth.json"),
     vaultPath: join(rootDir, `${homeId}.vault.json`),
     journalPath: join(rootDir, `${homeId}.journal.json`),
-    lockPath: join(rootDir, `${homeId}.lock`),
+    recoveryBlockPath: join(rootDir, `${homeId}.recovery-block.json`),
+    lockPath: join(codexHome, ".opencodex-native-profile.lock.sqlite"),
   };
 }
 
@@ -319,7 +322,7 @@ function parseVaultObject(value: unknown, homeId: string): NativeMainProfileVaul
   if (!value || typeof value !== "object") throw new Error("root");
   const vault = value as NativeMainProfileVaultV1;
   if (vault.version !== 1 || vault.homeId !== homeId || !Number.isSafeInteger(vault.revision) || vault.revision < 0) throw new Error("header");
-  if (!Array.isArray(vault.profiles) || vault.profiles.length > MAX_PROFILES) throw new Error("profiles");
+  if (!Array.isArray(vault.profiles) || vault.profiles.length > MAX_NATIVE_PROFILES) throw new Error("profiles");
   if (vault.activeProfileId !== null && (typeof vault.activeProfileId !== "string" || !UUID_RE.test(vault.activeProfileId))) throw new Error("active");
   const ids = new Set<string>();
   const labels = new Set<string>();
@@ -327,8 +330,9 @@ function parseVaultObject(value: unknown, homeId: string): NativeMainProfileVaul
   let activeCount = 0;
   for (const profile of vault.profiles) {
     if (!profile || typeof profile !== "object" || !UUID_RE.test(profile.id) || ids.has(profile.id)) throw new Error("id");
-    const label = profile.label?.trim();
-    if (!label || label.length > 64 || /[\u0000-\u001f\u007f]/.test(label)) throw new Error("label");
+    const label = normalizedNativeProfileLabel(profile.label);
+    if (!label) throw new Error("label");
+    profile.label = label;
     const normalizedLabel = label.toLowerCase();
     if (labels.has(normalizedLabel) || !HASH_RE.test(profile.identityHash) || identities.has(profile.identityHash)) throw new Error("identity");
     if (profile.identityHint !== nativeIdentityHint(profile.identityHash)) throw new Error("hint");
@@ -349,38 +353,100 @@ function parseVaultObject(value: unknown, homeId: string): NativeMainProfileVaul
 export function readNativeProfileVault(context: NativeProfileContext): NativeMainProfileVaultV1 | null {
   if (!existsSync(context.vaultPath)) return null;
   try {
-    return parseVaultObject(JSON.parse(readBounded(context.vaultPath, MAX_METADATA_BYTES).toString("utf8")), context.homeId);
+    return parseVaultObject(
+      JSON.parse(readBounded(context.vaultPath, MAX_NATIVE_PROFILE_METADATA_BYTES).toString("utf8")),
+      context.homeId,
+    );
   } catch {
     throw new NativeProfileError("VAULT_INVALID", "The encrypted native-profile vault is invalid.", 409);
   }
 }
 
-export function readNativeProfileJournal(context: NativeProfileContext): NativeProfileSwitchJournalV1 | null {
-  if (!existsSync(context.journalPath)) return null;
+type PrivateFileState = "missing" | "present" | "unreadable";
+
+function privateFileState(path: string): PrivateFileState {
   try {
-    const journal = JSON.parse(readBounded(context.journalPath, MAX_METADATA_BYTES).toString("utf8")) as NativeProfileSwitchJournalV1;
+    const stat = lstatSync(path);
+    return stat.isFile() && !stat.isSymbolicLink() ? "present" : "unreadable";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable";
+  }
+}
+
+export type NativeProfileRecoveryState = "none" | "journal" | "manual" | "unreadable";
+
+export function probeNativeProfileRecoveryState(context: NativeProfileContext): NativeProfileRecoveryState {
+  const block = privateFileState(context.recoveryBlockPath);
+  if (block === "unreadable") return "unreadable";
+  if (block === "present") return "manual";
+  const journal = privateFileState(context.journalPath);
+  if (journal === "unreadable") return "unreadable";
+  return journal === "present" ? "journal" : "none";
+}
+
+export type NativeProfileJournalInspection =
+  | { status: "missing" }
+  | { status: "valid"; journal: NativeProfileSwitchJournalV1 }
+  | { status: "invalid" };
+
+export function inspectNativeProfileJournal(context: NativeProfileContext): NativeProfileJournalInspection {
+  const state = privateFileState(context.journalPath);
+  if (state === "missing") return { status: "missing" };
+  if (state === "unreadable") return { status: "invalid" };
+  try {
+    const journal = JSON.parse(
+      readBounded(context.journalPath, MAX_NATIVE_PROFILE_METADATA_BYTES).toString("utf8"),
+    ) as NativeProfileSwitchJournalV1;
     if (
       journal.version !== 1 || journal.homeId !== context.homeId || !UUID_RE.test(journal.transactionId)
-      || !["prepared", "auth-replaced", "vault-committed"].includes(journal.phase)
+      || !NATIVE_PROFILE_JOURNAL_PHASES.includes(journal.phase)
       || !UUID_RE.test(journal.sourceProfileId) || !UUID_RE.test(journal.targetProfileId)
       || !HASH_RE.test(journal.sourceIdentityHash) || !HASH_RE.test(journal.targetIdentityHash)
       || !isEncryptedPayload(journal.sourcePayload) || !isEncryptedPayload(journal.targetPayload)
     ) throw new Error("journal");
     journal.beforeVault = parseVaultObject(journal.beforeVault, context.homeId);
     journal.afterVault = parseVaultObject(journal.afterVault, context.homeId);
-    return journal;
+    return { status: "valid", journal };
   } catch {
-    throw new NativeProfileError("RECOVERY_REQUIRED", "The native-profile recovery journal is invalid.", 409);
+    return { status: "invalid" };
   }
 }
 
+export function readNativeProfileJournal(context: NativeProfileContext): NativeProfileSwitchJournalV1 | null {
+  const inspection = inspectNativeProfileJournal(context);
+  if (inspection.status === "missing") return null;
+  if (inspection.status === "valid") return inspection.journal;
+  throw new NativeProfileError(
+    "RECOVERY_REQUIRED",
+    "The native-profile recovery journal is invalid. Run account main recover --rollback --yes to quarantine it.",
+    409,
+  );
+}
+
 export function serializeNativeProfileMetadata(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
+  const serialized = JSON.stringify(value, null, 2) + "\n";
+  if (Buffer.byteLength(serialized, "utf8") > MAX_NATIVE_PROFILE_METADATA_BYTES) {
+    throw new NativeProfileError(
+      "PROFILE_METADATA_TOO_LARGE",
+      "Native-profile metadata exceeds the 4 MiB recovery limit; no credential write was made.",
+      409,
+    );
+  }
+  return serialized;
+}
+
+const FORBIDDEN_PROFILE_LABEL_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+function normalizedNativeProfileLabel(value: unknown): string | null {
+  if (typeof value !== "string" || FORBIDDEN_PROFILE_LABEL_RE.test(value)) return null;
+  const normalized = value.normalize("NFC").trim();
+  if (!normalized || normalized.length > 64 || FORBIDDEN_PROFILE_LABEL_RE.test(normalized)) return null;
+  return normalized;
 }
 
 export function validateNativeProfileLabel(label: string): string {
-  const trimmed = label.trim();
-  if (!trimmed || trimmed.length > 64 || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+  const trimmed = normalizedNativeProfileLabel(label);
+  if (!trimmed) {
     throw new NativeProfileError("INVALID_REQUEST", "Profile labels must contain 1-64 printable characters.", 400);
   }
   return trimmed;

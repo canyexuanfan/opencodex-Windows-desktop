@@ -6,10 +6,9 @@
  * exactly one decision returned here while holding the home-scoped lock.
  */
 
-export type NativeProfileJournalPhase =
-  | "prepared"
-  | "auth-replaced"
-  | "vault-committed";
+import type { NativeProfileJournalPhase } from "./native-profile-types";
+
+export type { NativeProfileJournalPhase } from "./native-profile-types";
 
 export type NativeProfileAuthObservation =
   | {
@@ -29,21 +28,25 @@ export type NativeProfileRecoveryDecision =
   | {
       action: "rollback-source";
       publishRuntimeTransition: false;
+      externallyRefreshed: boolean;
       reason: "source-active";
     }
   | {
       action: "commit-target";
       publishRuntimeTransition: true;
+      externallyRefreshed: boolean;
       reason: "target-active-vault-pending";
     }
   | {
       action: "finalize-target";
       publishRuntimeTransition: true;
+      externallyRefreshed: boolean;
       reason: "target-active-vault-committed";
     }
   | {
       action: "manual-recovery";
       publishRuntimeTransition: false;
+      externallyRefreshed: false;
       reason: "auth-unconfirmed" | "third-identity";
     };
 
@@ -55,6 +58,7 @@ export function decideNativeProfileRecovery(
     return {
       action: "manual-recovery",
       publishRuntimeTransition: false,
+      externallyRefreshed: false,
       reason: "auth-unconfirmed",
     };
   }
@@ -63,6 +67,7 @@ export function decideNativeProfileRecovery(
     return {
       action: "manual-recovery",
       publishRuntimeTransition: false,
+      externallyRefreshed: false,
       reason: "third-identity",
     };
   }
@@ -71,6 +76,7 @@ export function decideNativeProfileRecovery(
     return {
       action: "rollback-source",
       publishRuntimeTransition: false,
+      externallyRefreshed: observation.digest === "changed",
       reason: "source-active",
     };
   }
@@ -79,6 +85,7 @@ export function decideNativeProfileRecovery(
     return {
       action: "finalize-target",
       publishRuntimeTransition: true,
+      externallyRefreshed: observation.digest === "changed",
       reason: "target-active-vault-committed",
     };
   }
@@ -86,6 +93,7 @@ export function decideNativeProfileRecovery(
   return {
     action: "commit-target",
     publishRuntimeTransition: true,
+    externallyRefreshed: observation.digest === "changed",
     reason: "target-active-vault-pending",
   };
 }
