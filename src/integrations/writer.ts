@@ -108,7 +108,7 @@ interface CommitArgs {
  * restore the ownership the operation replaced.
  */
 function commit(args: CommitArgs): WriteOutcome {
-  const { io, store, clientId, configPath } = args;
+  const { io, clientId, configPath } = args;
   try {
     if (args.nextText === null) io.removeFile(configPath);
     else {
@@ -119,13 +119,13 @@ function commit(args: CommitArgs): WriteOutcome {
     return refuse(clientId, "write_failed", args.state, messageOf(error), args.snapshotPath);
   }
   try {
-    if (args.record) store.putRecord(args.record);
-    else store.dropRecord(clientId);
+    if (args.record) io.putRecord(args.record);
+    else io.dropRecord(clientId);
   } catch (error) {
     return compensate(args, error, "could not record ownership");
   }
   try {
-    store.appendJournal(args.entry);
+    io.appendJournal(args.entry);
   } catch (error) {
     return compensate(args, error, "could not append the journal row");
   }
@@ -140,12 +140,12 @@ function commit(args: CommitArgs): WriteOutcome {
 }
 
 function compensate(args: CommitArgs, cause: unknown, what: string): WriteRefused {
-  const { io, store, clientId, configPath } = args;
+  const { io, clientId, configPath } = args;
   try {
     if (args.before === null) io.removeFile(configPath);
     else io.writeText(configPath, args.before);
-    if (args.priorRecord) store.putRecord(args.priorRecord);
-    else store.dropRecord(clientId);
+    if (args.priorRecord) io.putRecord(args.priorRecord);
+    else io.dropRecord(clientId);
   } catch {
     // Say so. A false "rolled back" is worse than the original error, because
     // the user would stop looking for the file we left half-written.
@@ -193,7 +193,13 @@ function preflight(input: IntegrationWriteInput) {
   }
   const contribution = exportSpec.buildContribution(exportContextOf(input));
   const record = store.readRecords()[clientId] ?? null;
-  const classified = classifyIntegration({ fileText: before, fileIsRegular: true, parsed, record, contribution });
+  // `configPath`/`clientId` are load-bearing, not decoration: a record proves
+  // ownership of ONE file, and the writer mutates whatever path resolves NOW.
+  // Without them a record written for another home directory would grant
+  // ownership here and disable would delete fragments it never wrote.
+  const classified = classifyIntegration({
+    fileText: before, fileIsRegular: true, parsed, record, contribution, configPath, clientId,
+  });
   return { failed: undefined, store, io, clientId, spec, exportSpec, configPath, before, parsed, contribution, record, classified } as const;
 }
 

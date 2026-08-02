@@ -282,4 +282,72 @@ describe("nothing leaks", () => {
     }));
     expect(readFileSync(configPath, "utf8")).not.toContain(secret);
   });
+
+  test("a failed record write rolls the file back and says so", () => {
+    const configPath = installHermes();
+    const original = "providers: {}\n";
+    writeFileSync(configPath, original);
+    const io: IntegrationIO = {
+      ...fileIO(),
+      appendJournal: entry => store.appendJournal(entry),
+      putRecord: () => { throw new Error("record disk full"); },
+      dropRecord: clientId => store.dropRecord(clientId),
+    };
+
+    const result = applyIntegration(input({ io }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("write_failed");
+      expect(result.message).toContain("rolled back");
+    }
+    // The file is back to what it was; no half-applied state survives.
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+    expect(store.listOperations("hermes")).toHaveLength(0);
+  });
+
+  test("a failed journal append rolls back and leaves no phantom row", () => {
+    const configPath = installHermes();
+    const original = "providers: {}\n";
+    writeFileSync(configPath, original);
+    const io: IntegrationIO = {
+      ...fileIO(),
+      appendJournal: () => { throw new Error("journal disk full"); },
+      putRecord: record => store.putRecord(record),
+      dropRecord: clientId => store.dropRecord(clientId),
+    };
+
+    const result = applyIntegration(input({ io }));
+    expect(result.ok).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+    // The row is written last precisely so this cannot leave one behind.
+    expect(store.listOperations("hermes")).toHaveLength(0);
+    // And the record it wrote first is gone again.
+    expect(store.readRecords().hermes).toBeUndefined();
+  });
+
+  test("when compensation itself fails, the result says residual instead of claiming a rollback", () => {
+    installHermes();
+    let writes = 0;
+    const io: IntegrationIO = {
+      ...fileIO(),
+      writeText: (path, text) => {
+        writes += 1;
+        // First write succeeds (the apply); the compensating write fails.
+        if (writes > 1) throw new Error("rollback also failed");
+        fileIO().writeText(path, text);
+      },
+      appendJournal: () => { throw new Error("journal disk full"); },
+      putRecord: record => store.putRecord(record),
+      dropRecord: clientId => store.dropRecord(clientId),
+    };
+    const configPath = installHermes();
+    writeFileSync(configPath, "providers: {}\n");
+
+    const result = applyIntegration(input({ io }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.residual).toBe(true);
+      expect(result.message).toContain("intermediate state");
+    }
+  });
 });
