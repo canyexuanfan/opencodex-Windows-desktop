@@ -1,0 +1,263 @@
+# 020 — WP2: ownership core (fingerprint, five-state read-back, journal)
+
+Diff-level PRD. Depends on WP1 (`010`). Adds no writer and no route: this
+phase answers "what is on disk and did we put it there?" and records every
+operation, so WP3 can mutate safely and WP4 can report honestly.
+
+## Scope boundary
+
+IN
+
+- `src/integrations/registry.ts` — NEW (the integration-side client table:
+  config path, detection, capability flags).
+- `src/integrations/ownership.ts` — NEW (fingerprint + ownership record).
+- `src/integrations/state.ts` — NEW (five-state classifier).
+- `src/integrations/journal.ts` — NEW (operation log + snapshot store + GC).
+- `tests/integrations-state.test.ts`, `tests/integrations-journal.test.ts` — NEW.
+
+OUT
+
+- No file mutation of client configs (WP3 owns every write). This phase's
+  journal writes only under the opencodex config dir.
+- No routes (WP4), no GUI (WP5/WP6).
+
+## 1. `src/integrations/registry.ts` (NEW)
+
+The export registry (WP1) says how to *render* a client. This one says where
+it lives and what it supports — the 004 §5.0 capability matrix as code.
+
+```ts
+import type { ExportClientId } from "../clients/config-export";
+
+/** The six file-toggle clients. Exception clients (codex/claude/grok) are NOT here. */
+export type IntegrationClientId = ExportClientId;
+
+export interface IntegrationClientSpec {
+  id: IntegrationClientId;
+  /** Absolute path of the client's config file, honoring its own env overrides. */
+  configPath: (env: NodeJS.ProcessEnv, home?: string) => string;
+  /** Directory whose existence is the cheap "is it installed?" signal. */
+  detectDir: (env: NodeJS.ProcessEnv, home?: string) => string;
+  /**
+   * How our block is identified inside the document. Every current client is
+   * `provider-key`: an object entry keyed by OPENCODE_PROVIDER_ID. The union
+   * exists so a future fenced/text client cannot be bolted on by accident.
+   */
+  ownership: { kind: "provider-key"; path: readonly string[] };
+  /** Loopback-only clients refuse to be applied on a non-loopback bind (WP3). */
+  loopbackOnly: boolean;
+}
+```
+
+`ownership.path` is the JSON path to the map that holds our key:
+
+| Client | path | key |
+|---|---|---|
+| opencode | `["provider"]` | `opencodex` |
+| pi | `["providers"]` | `opencodex` |
+| hermes | `["providers"]` | `opencodex` |
+| openclaw | `["models","providers"]` | `opencodex` |
+| kimi | `["providers"]` | `opencodex` (plus `models` entries prefixed `opencodex/`) |
+| gajae | `["providers"]` | `opencodex` |
+
+`loopbackOnly` is **true for kimi only** — it is the one client that cannot
+carry an env reference (002 §Kimi), so a non-loopback bind would force a real
+secret onto disk. WP3 refuses instead.
+
+## 2. `src/integrations/ownership.ts` (NEW)
+
+```ts
+import { createHash } from "node:crypto";
+
+/** 16 hex chars, same shape as the Claude Desktop applied fingerprint. */
+export function fingerprint(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+/**
+ * What opencodex remembers about one client between operations. Persisted in
+ * the opencodex config dir (never in the client's own file), because the
+ * client file must stay a faithful copy of what the client expects.
+ */
+export interface OwnershipRecord {
+  clientId: IntegrationClientId;
+  /** Hash of the WHOLE file as we left it. Detects foreign edits after us. */
+  fileFingerprint: string;
+  /** Hash of just our block, canonically serialized. Detects catalog drift. */
+  blockFingerprint: string;
+  configPath: string;
+  appliedAt: string;
+  /** Operation that produced this record — links state to the journal. */
+  opId: string;
+}
+```
+
+Two hashes, because the two axes of 003 §3 are genuinely independent: the
+file hash answers *did anyone touch this after us*, the block hash answers
+*is our content still what we would write today*. One hash cannot do both,
+which is precisely the bug the round-4 audit caught in the design doc.
+
+## 3. `src/integrations/state.ts` (NEW)
+
+```ts
+export type IntegrationState =
+  | "absent"    // no opencodex entry
+  | "current"   // ours, untouched, and equal to a fresh regeneration
+  | "stale"     // ours, untouched, but the catalog/port moved
+  | "conflict"  // file changed after us, or our key exists with no record
+  | "unsafe";   // unparseable, or the path is not a regular writable file
+
+export interface IntegrationStatus {
+  clientId: IntegrationClientId;
+  state: IntegrationState;
+  installed: boolean;
+  configPath: string;
+  /** Present only when a record exists. Never echoes user content. */
+  appliedAt?: string;
+  lastOpId?: string;
+  /** Why `unsafe`/`conflict` — a stable enum the GUI maps to copy. */
+  reason?: "unparseable" | "not-regular-file" | "foreign-edit" | "unowned-key";
+}
+```
+
+### Classifier (the two-axis rule from 003 §3, verbatim)
+
+```ts
+export function classifyIntegration(input: {
+  spec: IntegrationClientSpec;
+  fileText: string | null;          // null = file missing
+  fileIsRegular: boolean;
+  parsed: unknown | typeof PARSE_FAILED;
+  record: OwnershipRecord | null;
+  freshBlockFingerprint: string;    // what we WOULD write now
+}): IntegrationState {
+  if (input.fileText !== null && !input.fileIsRegular) return "unsafe";
+  if (input.parsed === PARSE_FAILED) return "unsafe";
+  const ourKey = readOurBlock(input.parsed, input.spec);   // undefined when absent
+  if (ourKey === undefined) return "absent";               // record, if any, is stale bookkeeping
+  if (!input.record) return "conflict";                    // our key with no ownership proof
+  if (fingerprint(input.fileText ?? "") !== input.record.fileFingerprint) return "conflict";
+  return input.record.blockFingerprint === input.freshBlockFingerprint ? "current" : "stale";
+}
+```
+
+Order matters and is asserted by tests: an unreadable file can never be
+reported as `absent`, and a foreign edit can never be reported as `stale`
+(reporting drift as stale would let disable delete a user's edits).
+
+**Activation scenarios (C-ACTIVATION-GROUNDING-01):**
+
+| Branch | How C triggers it | Observable proof |
+|---|---|---|
+| `unsafe` / not-regular | point `configPath` at a directory in a temp home | `state === "unsafe"`, `reason === "not-regular-file"` |
+| `unsafe` / unparseable | write `{{{` to the config | `reason === "unparseable"` |
+| `absent` | fresh temp home, valid empty config | `state === "absent"` |
+| `conflict` / unowned-key | write a provider block by hand, no record | `reason === "unowned-key"` |
+| `conflict` / foreign-edit | apply, then append a comment to the file | `reason === "foreign-edit"` |
+| `stale` | apply, then classify with a different port's fresh fingerprint | `state === "stale"` |
+| `current` | apply, classify immediately | `state === "current"` |
+
+## 4. `src/integrations/journal.ts` (NEW)
+
+Layout, all under the opencodex config dir (so `recordOwnedConfigPath`
+accepts it and uninstall can clean it up):
+
+```
+<ocx config dir>/integrations/
+  records.json                  # OwnershipRecord per client
+  journal.jsonl                 # append-only operation log
+  snapshots/<clientId>/<opId>   # pre-write copies of the client file
+```
+
+```ts
+export type OperationKind = "apply" | "disable" | "refresh" | "restore";
+
+export interface JournalEntry {
+  opId: string;                 // crypto.randomUUID()
+  clientId: IntegrationClientId;
+  kind: OperationKind;
+  at: string;                   // ISO
+  configPath: string;
+  /** Snapshot of the file as it was BEFORE this operation; null when none existed. */
+  snapshot: string | null;      // relative path under snapshots/, not content
+  /** Fingerprint of the file AFTER this operation — undo binds to it. */
+  resultFingerprint: string;
+}
+
+export function appendOperation(entry: JournalEntry): void;
+export function listOperations(clientId?: IntegrationClientId, limit = 50): JournalEntry[];
+export function readSnapshot(opId: string): { path: string; text: string } | null;
+export function captureSnapshot(clientId: IntegrationClientId, opId: string, text: string | null): string | null;
+```
+
+### Retention (10 per client) and GC
+
+`captureSnapshot` writes `snapshots/<clientId>/<opId>` then prunes that
+directory to the 10 newest by journal order. A pruned entry keeps its journal
+row — `readSnapshot` returns `null` and the GUI renders `백업 만료됨`
+(004 §6.1). The row is history; only the action expires.
+
+**Activation scenario:** create 11 operations for one client; assert the
+oldest snapshot file is gone, its journal row still parses, and
+`readSnapshot(oldestOpId) === null`.
+
+### Undo binding
+
+`listOperations` returns newest-first. Undo eligibility is computed by WP3,
+not stored: an entry is undoable when it is the newest for its client AND the
+file's current fingerprint still equals `resultFingerprint`. Storing a boolean
+would go stale the moment anything else wrote the file.
+
+**Activation scenario:** apply, then hand-edit the file, then ask for undo
+eligibility — expect `false` with reason `foreign-edit`, and the row degrades
+to a restore offer.
+
+## 5. Journal durability
+
+`journal.jsonl` is append-only via `appendFileSync` with `0600`; a torn final
+line is tolerated by skipping unparseable lines on read (a crash mid-append
+must not brick the surface). `records.json` is written with `atomicWriteFile`
+because it is read-modify-write. Both live under the opencodex config dir, so
+they are covered by existing ownership/uninstall behavior.
+
+**Activation scenario:** append a truncated line manually, then
+`listOperations` returns the valid rows and drops the torn one without throwing.
+
+## 6. Tests
+
+`tests/integrations-state.test.ts`
+
+- One test per row of the activation table in §3 (7 tests), each on a
+  `mkdtempSync` home with `rmSync` cleanup.
+- `classify never reports absent for an unreadable file` — ordering guard.
+- `classify never reports stale after a foreign edit` — the audit's blocker,
+  pinned as a regression test.
+
+`tests/integrations-journal.test.ts`
+
+- append/list round-trip preserves order (newest first).
+- retention prunes to 10 and keeps rows.
+- `readSnapshot` returns null for a pruned op.
+- torn final line is skipped.
+- snapshot capture of a missing file records `snapshot: null` (apply onto a
+  fresh install has nothing to back up, and that is not an error).
+
+## 7. Accept criteria
+
+1. `bun run typecheck` clean.
+2. `bun test tests/integrations-state.test.ts tests/integrations-journal.test.ts` green.
+3. Every branch in the §3 activation table has a test that triggers it.
+4. Nothing in this phase writes to a client config file (grep the diff for
+   `atomicWriteFile` outside the journal/records paths — must be none).
+5. `bun run privacy:scan` clean: the journal stores paths and hashes, never
+   file content beyond the snapshot files themselves, and never a credential.
+
+## OPEN QUESTIONS
+
+- Snapshot files inherit the client config's own secrets (a user's key may sit
+  in the same file we back up). They are written `0600` under the opencodex
+  config dir; whether they additionally need Windows ACL hardening via the
+  `atomicWriteFile` `harden` path is a WP3 decision when the writer lands.
+- Whether `records.json` should be per-client files instead of one map is
+  deferred; one file is simpler and the write is atomic, but concurrent
+  multi-client applies would serialize on it.

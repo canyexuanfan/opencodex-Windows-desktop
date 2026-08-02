@@ -1,5 +1,25 @@
 # 010 — WP1: the config.toml read/write core
 
+> **Status: LANDED.** Six commits, `e0b15feb0` through `d70fde4d9`.
+> Files: `src/codex/prompt-layers.ts`, `src/codex/prompt-journal.ts`,
+> `src/codex/prompt-lock.ts`, plus six test files (134 cases).
+> Full suite green at 7095 pass / 0 fail.
+>
+> Deviations from this document, all recorded below where they occur:
+>
+> - `Bun.TOML` is not used to verify writes. A live probe on Bun 1.3.14 found it
+>   transposes `\t` and `\f`, rejects `\u0007`, and does not trim the newline
+>   after an opening `'''`. Verification is byte-level instead.
+> - Salvage returns `backupDir`, not `backupPath` — a read-only preview must not
+>   reserve a filename.
+> - `previewAdopt` runs the full validation pipeline so preview and commit agree
+>   byte-for-byte; asserted by test.
+>
+> Still open, carried as the WP1 acceptance gate the audit named: Windows
+> write-through. `fsyncDir` no-ops on win32 today, so a crash there surfaces as
+> `recovery_required` rather than silent loss. That branch needs a Windows CI
+> run before WP2 depends on it.
+
 New file: `src/codex/prompt-layers.ts`. No GUI, no route. Pure module + tests.
 
 `004` §E: `features.ts` forbids broadening itself beyond `multi_agent_v2`, so
