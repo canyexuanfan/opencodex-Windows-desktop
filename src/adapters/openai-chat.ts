@@ -102,10 +102,12 @@ function safeUpstreamRequestId(metadata: unknown): string | undefined {
 }
 
 function upstreamErrorEvent(
-  error: OpenAIChatError | string | undefined,
+  error: unknown,
   usage?: OcxUsage,
 ): Extract<AdapterEvent, { type: "error" }> {
-  const details = typeof error === "string" ? undefined : error;
+  const details = error !== null && typeof error === "object" && !Array.isArray(error)
+    ? error as OpenAIChatError
+    : undefined;
   const rawMessage = typeof error === "string"
     ? error.trim() || "upstream error"
     : typeof details?.message === "string" ? details.message : "upstream error";
@@ -850,8 +852,8 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // A 200/OK chat-completions stream may carry an inline provider error envelope
         // instead of a clean [DONE]. Surface it as a terminal error so the bridge emits a
         // classified response.failed (bridge case "error") — never a truncated completion.
-        if (chunk.error) {
-          const event = upstreamErrorEvent(chunk.error as OpenAIChatError, pendingUsage);
+        if (chunk.error !== undefined && chunk.error !== null) {
+          const event = upstreamErrorEvent(chunk.error, pendingUsage);
           debugProviderDiagnostic("openai-chat", "stream-error", { message: event.message });
           discardToolCalls();
           yield event;
@@ -865,14 +867,35 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>);
         }
 
-        const choices = chunk.choices as {
+        const choices = chunk.choices;
+        if (choices === undefined) return "continue";
+        if (!Array.isArray(choices)) {
+          discardToolCalls();
+          yield {
+            type: "error",
+            message: "upstream response contained invalid choices",
+            ...(pendingUsage ? { usage: pendingUsage } : {}),
+          };
+          return "terminate";
+        }
+        if (choices.length === 0) return "continue";
+        const rawChoice = choices[0];
+        if (rawChoice === null || typeof rawChoice !== "object" || Array.isArray(rawChoice)) {
+          discardToolCalls();
+          yield {
+            type: "error",
+            message: "upstream response contained invalid choices",
+            ...(pendingUsage ? { usage: pendingUsage } : {}),
+          };
+          return "terminate";
+        }
+        const choice = rawChoice as {
           delta?: Record<string, unknown>;
           finish_reason?: string;
-          error?: OpenAIChatError;
-        }[] | undefined;
-        if (!choices || choices.length === 0) return "continue";
-        if (choices[0].finish_reason === "error") {
-          const event = upstreamErrorEvent(choices[0].error, pendingUsage);
+          error?: unknown;
+        };
+        if (choice.finish_reason === "error") {
+          const event = upstreamErrorEvent(choice.error, pendingUsage);
           debugProviderDiagnostic("openai-chat", "stream-error", { message: event.message });
           discardToolCalls();
           yield event;
@@ -880,10 +903,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         // Observe the terminator BEFORE the delta guard: a finish-only chunk (finish_reason set,
         // no delta) is a graceful close and must record finishReason even though we skip it below.
-        if (typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
-          finishReason = choices[0].finish_reason;
+        if (typeof choice.finish_reason === "string" && choice.finish_reason) {
+          finishReason = choice.finish_reason;
         }
-        const delta = choices[0].delta;
+        const delta = choice.delta;
         if (delta) {
           const reasoningText = typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0
             ? delta.reasoning_content
@@ -939,7 +962,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
         // Any non-empty finish_reason ends the generation: flush assembled tool calls as
         // atomic sequences (covers "tool_calls" AND providers that close tool turns with "stop").
-        if (typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
+        if (typeof choice.finish_reason === "string" && choice.finish_reason) {
           yield* flushToolCalls();
         }
         return "continue";
@@ -1059,8 +1082,8 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           ...(usage ? { usage } : {}),
         }];
       }
-      if (payload.error) {
-        return [upstreamErrorEvent(payload.error as OpenAIChatError, usage)];
+      if (payload.error !== undefined && payload.error !== null) {
+        return [upstreamErrorEvent(payload.error, usage)];
       }
 
       const events: AdapterEvent[] = [];
@@ -1072,7 +1095,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (!Array.isArray(choices) || choices.length === 0) {
         return [{ type: "error", message: "upstream response contained no choices", ...(usage ? { usage } : {}) }];
       }
-      const choice = choices[0];
+      const rawChoice = choices[0];
+      if (rawChoice === null || typeof rawChoice !== "object" || Array.isArray(rawChoice)) {
+        return [{ type: "error", message: "upstream response contained invalid choices", ...(usage ? { usage } : {}) }];
+      }
+      const choice = rawChoice;
       if (choice.finish_reason === "error") return [upstreamErrorEvent(choice.error, usage)];
       if (!choice.message) return [{ type: "error", message: "upstream response contained no choices", ...(usage ? { usage } : {}) }];
 
