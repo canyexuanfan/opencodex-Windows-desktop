@@ -20,7 +20,7 @@ import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { fetchWithResetRetry, sleepWithAbort } from "../lib/upstream-retry";
+import { fetchWithResetRetry, sleepWithHeartbeats } from "../lib/upstream-retry";
 import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   isTranslatorBudgetExceededError,
@@ -442,14 +442,25 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
       /**
        * Build and fetch one image-bridge iteration on the given adapter, under the iteration
        * header deadline. The caller owns same-target 429 replays and key rotation around it.
+       * The outbound request is cached per adapter so a same-target replay reuses the EXACT
+       * URL, serialized body, and headers (builder runs once per target sequence).
        */
+      let cachedRequest: AdapterRequest | undefined;
+      let cachedAdapter: ProviderAdapter | undefined;
       const fetchOnce = async (requestAdapter: ProviderAdapter, recovery?: AttemptRecoveryKind): Promise<IterationResponse> => {
-        const request = await requestAdapter.buildRequest(iterParsed, {
-          headers: deps.forwardHeaders ? new Headers(deps.forwardHeaders) : new Headers(),
-          abortSignal: headerDeadline.signal,
-          translatorBudget,
-        });
-        try { deps.onRequestBuilt?.(request); } catch { /* diagnostics are best-effort */ }
+        let request: AdapterRequest;
+        if (cachedRequest !== undefined && cachedAdapter === requestAdapter) {
+          request = cachedRequest;
+        } else {
+          request = await requestAdapter.buildRequest(iterParsed, {
+            headers: deps.forwardHeaders ? new Headers(deps.forwardHeaders) : new Headers(),
+            abortSignal: headerDeadline.signal,
+            translatorBudget,
+          });
+          try { deps.onRequestBuilt?.(request); } catch { /* diagnostics are best-effort */ }
+          cachedRequest = request;
+          cachedAdapter = requestAdapter;
+        }
         deps.onAttemptSend?.(recovery);
         let response: Response;
         try {
@@ -496,9 +507,10 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         // before sleeping so a stale expiry can never race the client-cancel path.
         headerDeadline.clear();
         try {
-          await sleepWithAbort(
+          yield* sleepWithHeartbeats(
             rateLimitRetryDelayMs(rateLimitRetryPolicy, retryAfterHeader, Date.now()),
             signal,
+            Math.min(10_000, Math.max(250, stallTimeoutMs / 2)),
           );
         } catch {
           throw new LoopError(499, "client closed request during image-bridge");

@@ -270,4 +270,51 @@ describe("server terminal guard integration", () => {
     expect(sends).toBe(2);
   });
 
+  test("terminal-guard 429 wait longer than the stall budget still succeeds (heartbeats)", async () => {
+    const stallConfig = {
+      ...config,
+      stallTimeoutSec: 1,
+      providers: {
+        "claude-se": {
+          adapter: "anthropic",
+          baseUrl: "https://example.test",
+          apiKey: "sk-test",
+          retryOn429: { attempts: 1, intervalMs: 1_500, respectRetryAfter: false },
+        },
+      },
+    } as unknown as OcxConfig;
+    let sends = 0;
+    globalThis.fetch = (async () => {
+      sends += 1;
+      if (sends === 1) {
+        return anthropicSse(firstTurn);
+      }
+      if (sends === 2) {
+        return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return anthropicSse(continuationTurn);
+    }) as typeof fetch;
+
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "se-claude-opus-4.8",
+        input: "请检查这个问题并修复代码",
+        stream: true,
+        tools: [{ type: "function", name: "exec_command", description: "run a command", parameters: { type: "object" } }],
+      }),
+    }), stallConfig, { model: "", provider: "" });
+
+    const text = await response.text();
+    // A 1.5s continuation backoff under a 1s stall budget must not trip upstream_stall_timeout:
+    // the wait yields heartbeat events, the replay lands, and the turn completes.
+    expect(sends).toBe(3);
+    expect(text).toContain("response.completed");
+    expect(text).not.toContain("upstream_stall_timeout");
+  }, 5_000);
+
 });

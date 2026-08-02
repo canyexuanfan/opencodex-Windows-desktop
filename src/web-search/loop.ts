@@ -8,7 +8,7 @@ import { runAnthropicWebSearch } from "./anthropic-executor";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { fetchWithResetRetry, sleepWithAbort } from "../lib/upstream-retry";
+import { fetchWithResetRetry, sleepWithHeartbeats } from "../lib/upstream-retry";
 import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   isTranslatorBudgetExceededError,
@@ -266,6 +266,12 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   // Mutable: 429 key-failover (deps.on429) can swap in a rebuilt adapter mid-loop.
   let adapter = deps.adapter;
 
+  // Bridge stall budget (seconds of silence before upstream_stall_timeout); the retry backoff
+  // heartbeat interval is derived from it so the watchdog is always fed during deliberate waits.
+  const stallTimeoutMs = typeof deps.stallTimeoutSec === "number" && Number.isFinite(deps.stallTimeoutSec) && deps.stallTimeoutSec > 0
+    ? Math.floor(deps.stallTimeoutSec * 1000)
+    : 300_000;
+
   const messages: OcxMessage[] = [...parsed.context.messages];
   const loopT0 = Date.now();
   const allTools = parsed.context.tools ?? [];
@@ -335,17 +341,28 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       /**
        * Build and fetch one web-search iteration on the given adapter, under the iteration
        * header deadline. The caller owns same-target 429 replays and key rotation around it.
+       * The outbound request is cached per adapter so a same-target replay reuses the EXACT
+       * URL, serialized body, and headers (builder runs once per target sequence).
        */
+      let cachedRequest: AdapterRequest | undefined;
+      let cachedAdapter: ProviderAdapter | undefined;
       const fetchOnce = async (requestAdapter: ProviderAdapter, recovery?: AttemptRecoveryKind): Promise<IterationResponse> => {
-        const request = await requestAdapter.buildRequest(iterParsed, {
-          headers: selectedForwardHeaders,
-          abortSignal: headerDeadline.signal,
-          translatorBudget,
-        });
-        try {
-          deps.onRequestBuilt?.(request);
-        } catch {
-          // Diagnostics are best-effort and must never abort a web-search iteration.
+        let request: AdapterRequest;
+        if (cachedRequest !== undefined && cachedAdapter === requestAdapter) {
+          request = cachedRequest;
+        } else {
+          request = await requestAdapter.buildRequest(iterParsed, {
+            headers: selectedForwardHeaders,
+            abortSignal: headerDeadline.signal,
+            translatorBudget,
+          });
+          try {
+            deps.onRequestBuilt?.(request);
+          } catch {
+            // Diagnostics are best-effort and must never abort a web-search iteration.
+          }
+          cachedRequest = request;
+          cachedAdapter = requestAdapter;
         }
         deps.onAttemptSend?.(recovery);
         let response: Response;
@@ -393,9 +410,10 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         // before sleeping so a stale expiry can never race the client-cancel path.
         headerDeadline.clear();
         try {
-          await sleepWithAbort(
+          yield* sleepWithHeartbeats(
             rateLimitRetryDelayMs(rateLimitRetryPolicy, retryAfterHeader, Date.now()),
             signal,
+            Math.min(10_000, Math.max(250, stallTimeoutMs / 2)),
           );
         } catch {
           throw new LoopError(499, "client closed request during web-search");

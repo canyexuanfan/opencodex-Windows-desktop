@@ -71,6 +71,27 @@ export async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<
   });
 }
 
+/**
+ * Abort-aware sleep that yields an adapter `heartbeat` at least every `heartbeatIntervalMs`.
+ * The Responses bridge treats a returned iterator event as upstream liveness and aborts turns
+ * that stay silent past the stall budget (default 300s), while a retryOn429 wait may legally
+ * reach 600s — so deliberate waits must keep the watchdog fed or a long backoff is killed
+ * mid-turn. The final chunk always yields once, which doubles as the post-wait liveness beat.
+ */
+export async function* sleepWithHeartbeats(
+  ms: number,
+  signal?: AbortSignal,
+  heartbeatIntervalMs = 10_000,
+): AsyncGenerator<{ type: "heartbeat" }> {
+  let remaining = ms;
+  while (remaining > 0) {
+    const chunk = Math.min(remaining, heartbeatIntervalMs);
+    await sleepWithAbort(chunk, signal);
+    remaining -= chunk;
+    yield { type: "heartbeat" };
+  }
+}
+
 export function isConnectionResetError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   // Aborts and timeouts are caller decisions / honest failures — never retryable.

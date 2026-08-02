@@ -214,7 +214,71 @@ describe("runWithImageBridge", () => {
     expect(sends).toBe(2);
     expect(rotations).toBe(0);
     expect(retrySends).toBe(1);
+    // Same-target replay reuses the ONE built request (builder runs once per target sequence).
+    expect(buildRequestCalls).toBe(1);
   });
+
+  test("retry wait longer than the stall budget still succeeds (heartbeats feed the watchdog)", async () => {
+    let sends = 0;
+    const retryingAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1) {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      },
+    };
+    streamQueue = [[{ type: "text_delta" as const, text: "recovered" }, { type: "done" as const }]];
+    const response = await runWithImageBridge({
+      parsed: makeParsed(),
+      adapter: retryingAdapter,
+      plan,
+      stallTimeoutSec: 1,
+      retryOn429Policy: { enabled: true, attempts: 1, intervalMs: 1_500, maxIntervalMs: 60_000, respectRetryAfter: false },
+    });
+    const sse = await response.text();
+    // A 1.5s backoff under a 1s stall budget must not trip upstream_stall_timeout: the wait
+    // yields heartbeat events, the replay lands, and the turn completes.
+    expect(sends).toBe(2);
+    expect(sse).toContain("recovered");
+    expect(sse).not.toContain("upstream_stall_timeout");
+  }, 5_000);
+
+  test("retry wait longer than connectTimeoutMs restarts the header deadline (no 504)", async () => {
+    let sends = 0;
+    const retryingAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1) {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      },
+    };
+    streamQueue = [[{ type: "text_delta" as const, text: "recovered" }, { type: "done" as const }]];
+    const response = await runWithImageBridge({
+      parsed: makeParsed(),
+      adapter: retryingAdapter,
+      plan,
+      connectTimeoutMs: 100,
+      retryOn429Policy: { enabled: true, attempts: 1, intervalMs: 150, maxIntervalMs: 60_000, respectRetryAfter: false },
+    });
+    const sse = await response.text();
+    // The deliberate backoff must not consume the response-header deadline: a fresh deadline is
+    // armed after the wait, so the replay gets a new connect budget instead of a 504.
+    expect(sends).toBe(2);
+    expect(sse).toContain("recovered");
+    expect(sse).not.toContain("504");
+  }, 5_000);
 
   test("retryOn429 budget is shared across iterations (per request, not per round)", async () => {
     let sends = 0;

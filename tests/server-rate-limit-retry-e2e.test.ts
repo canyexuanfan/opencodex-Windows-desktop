@@ -49,10 +49,16 @@ describe("server same-target 429 retry (end-to-end)", () => {
   test("single-key provider replays the identical request until upstream succeeds", async () => {
     const originalFetch = globalThis.fetch;
     const seenBodies: string[] = [];
+    const seenHeaders: string[][] = [];
     globalThis.fetch = (async (input, init) => {
       const url = input instanceof Request ? input.url : String(input);
       if (url === "https://llmapi.blsc.cn/chat/completions") {
         seenBodies.push(String(init?.body));
+        seenHeaders.push(
+          [...new Headers(init?.headers).entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .flat(),
+        );
         if (seenBodies.length <= 2) {
           return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
             status: 429,
@@ -89,6 +95,10 @@ describe("server same-target 429 retry (end-to-end)", () => {
       expect(seenBodies).toHaveLength(3);
       expect(seenBodies[0]).toBe(seenBodies[1]);
       expect(seenBodies[1]).toBe(seenBodies[2]);
+      // Same-target replays reuse the ONE built request: full header set identical too.
+      expect(seenHeaders).toHaveLength(3);
+      expect(seenHeaders[0]).toEqual(seenHeaders[1]);
+      expect(seenHeaders[1]).toEqual(seenHeaders[2]);
     } finally {
       server?.stop(true);
       globalThis.fetch = originalFetch;
