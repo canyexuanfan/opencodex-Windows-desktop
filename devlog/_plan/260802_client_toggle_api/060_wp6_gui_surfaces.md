@@ -149,6 +149,14 @@ export interface IntegrationStatus {
   appliedAt?: string;
   lastOpId?: string;
   reason?: IntegrationReason;
+  /** Snapshot files retained for this client (006 §5). */
+  snapshotCount: number;
+  /**
+   * Pruning is behind, so old snapshots may still exist. Rendered as a line on
+   * the client page's status row, never as a state badge — it is a maintenance
+   * condition, not an integration state.
+   */
+  retentionDegraded: boolean;
 }
 
 export interface IntegrationStateListEnvelope {

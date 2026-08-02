@@ -315,6 +315,51 @@ still succeeds, assert the marker exists and `retentionDegraded` is true, then
 let the next operation prune successfully and assert the bound is restored and
 the marker is gone.
 
+### `retentionDegraded` — the full cross-phase contract
+
+A retention promise the user cannot see is not a promise, so this field is
+specified end to end rather than left for each layer to invent (A-gate round 6,
+blocker 3).
+
+**Marker (WP2).** `<ocx config dir>/integrations/maintenance.json`:
+
+```ts
+export interface MaintenanceState {
+  /** Per client: the last prune failure, or absent when healthy. */
+  pruneFailures: Partial<Record<IntegrationClientId, { at: string; error: string }>>;
+}
+
+export function readMaintenance(dir?: string): MaintenanceState;
+export function markPruneFailure(clientId: IntegrationClientId, error: string): void;
+export function clearPruneFailure(clientId: IntegrationClientId): void;
+/** Re-attempts every marked client; called at the start of each operation. */
+export function retryPendingPrunes(): void;
+```
+
+If writing the marker *itself* fails, the failure is logged once and the state
+is still derivable without it: `readIntegrationState` counts snapshot files and
+sets `retentionDegraded` when the count exceeds the bound. The marker is an
+optimization for retry scheduling, never the only witness — a durable claim
+must not depend on a write that can fail.
+
+**WP2 status.** `IntegrationStatus` gains
+`retentionDegraded: boolean` and `snapshotCount: number`.
+
+**WP4 envelope.** Both `IntegrationStateEnvelope` and each list item carry
+those two fields verbatim from the status object; no route recomputes them.
+
+**GUI.** The client page's status line appends
+`integrations.retention.degraded` ("백업 정리가 밀려 있습니다 — 오래된 백업이
+남아 있을 수 있습니다") when the flag is set; the overview card shows no badge
+for it, because it is a maintenance condition, not an integration state.
+
+**Tests.** `tests/integrations-journal.test.ts` →
+`prune failure marks retention degraded and a later operation clears it`;
+`tests/management-integration-routes.test.ts` →
+`state envelope carries retentionDegraded and snapshotCount`;
+`gui/tests/integrations-client-page.test.tsx` →
+`renders the retention notice only when degraded`.
+
 Claiming a rollback that did not happen is the one failure mode worse than the
 original error, so the refusal type carries the residual flag:
 

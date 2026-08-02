@@ -74,11 +74,11 @@ than none."
 Additive merge and surgical removal, per format, preserving unknown fields.
 
 ```ts
-/** Parse a client config, tolerating an absent file. PARSE_FAILED on garbage. */
-export function parseConfig(text: string | null, format: ConfigFormat): unknown | typeof PARSE_FAILED;
+// `parseConfig` is NOT declared here — it belongs to WP2's config-io.ts, which
+// the reader also uses (006 §8). merge.ts imports it.
 
-/** Insert/replace ONLY our key at spec.ownership.path. Everything else is preserved. */
-export function mergeOurBlock(doc: unknown, spec: IntegrationClientSpec, block: unknown): unknown;
+/** Insert/replace ONLY our recorded fragments. Everything else is preserved. */
+export function mergeContribution(doc: unknown, contribution: ManagedContribution): unknown;
 
 /** Remove ONLY our key. Returns { doc, removed } — removed:false means it was not there. */
 export function removeOurBlock(doc: unknown, spec: IntegrationClientSpec): { doc: unknown; removed: boolean };

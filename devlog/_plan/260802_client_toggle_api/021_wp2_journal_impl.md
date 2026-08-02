@@ -205,6 +205,12 @@ export interface IntegrationStatus {
   appliedAt?: string;
   lastOpId?: string;
   reason?: StateReason;
+  /** Snapshot files currently retained for this client. */
+  snapshotCount: number;
+  /** True when pruning is behind, so old (possibly credential-bearing)
+   *  snapshots may still exist. Derived from the count, with the maintenance
+   *  marker as a retry hint only (006 §5). */
+  retentionDegraded: boolean;
 }
 
 export const PARSE_FAILED = Symbol("parse-failed");
@@ -259,7 +265,7 @@ surface uses:
 ```ts
 import { EXPORT_CLIENTS, type ExportModel } from "../clients/config-export";
 import type { OcxConfig } from "../types";
-import { parseConfig } from "./merge";
+import { parseConfig } from "./config-io";
 import { defaultIntegrationIO, loadTarget, type IntegrationIO } from "./config-io";
 
 export interface IntegrationStateInput {
@@ -334,6 +340,12 @@ export interface JournalEntry {
   resultFingerprint: string;
   /** True when the op's result was file absence — restore means "delete". */
   resultAbsent: boolean;
+  /**
+   * Ownership as it stood BEFORE this operation. Restore puts this back
+   * alongside the bytes, so provenance always describes the file it came with
+   * and is never re-derived from a provider-id prefix (006 §3).
+   */
+  priorRecord: OwnershipRecord | null;
 }
 
 const SNAPSHOT_RETENTION = 10;

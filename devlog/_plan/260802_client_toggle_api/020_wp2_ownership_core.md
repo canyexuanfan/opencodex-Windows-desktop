@@ -138,6 +138,15 @@ export interface IntegrationStatus {
   lastOpId?: string;
   /** Why `unsafe`/`conflict` — a stable enum the GUI maps to copy. */
   reason?: "unparseable" | "not-regular-file" | "foreign-edit" | "unowned-key";
+  /** Snapshot files currently retained for this client. */
+  snapshotCount: number;
+  /**
+   * True when pruning is behind, so old (possibly credential-bearing)
+   * snapshots may still exist. Derived from the count, with the maintenance
+   * marker as a retry hint only — a durable claim must not depend on a write
+   * that can fail (006 §5).
+   */
+  retentionDegraded: boolean;
 }
 ```
 

@@ -66,21 +66,58 @@ syntax and internal consistency. Cross-module identifier resolution belongs to
 the implementing phase, where the real imports exist and the repository's own
 `bun run typecheck` covers it.
 
-## 3. What it caught immediately
+## 3. The second checker: cross-document drift
 
-First run over 19 docs / 79 blocks: 73 compilable units, 5 fragments, and
-**1 placeholder** (`011:73`) plus **1 syntax error** — the `ctx: {...}`
-pseudo-signature still sitting in `030`, which four rounds of human review had
-walked past. Fixed in the same pass; the suite is now clean.
+Isolated block compilation is blind by construction to the defect that kept
+recurring — a canonical declaration in `006` and a consumer elsewhere
+disagreeing — because each block is its own file and `noResolve` discards the
+very diagnostics that would show it. The A-gate caught that claim and it was
+right: green was false confidence.
+
+`tools/check-drift.ts` closes it by comparing declared shapes across documents
+rather than type-checking them:
+
+| Rule | What it enforces |
+|---|---|
+| `canonical-shape` | any redeclaration of a `006`-owned type matches it field-for-field |
+| `ownership` | a symbol is declared in exactly one module, and imports point at that owner |
+| `propagation` | a cross-phase field (`retentionDegraded`, `snapshotCount`, `priorRecord`) appears in every layer's copy of its shape |
+| `reason-first` | failure mapping branches on `result.reason`, never `result.state` (006 §5) |
+| `diff-placeholder` / `diff-nested-marker` | the 18 `diff` fences — which the block checker does not read — carry no placeholder bodies or pasted-into-itself markers |
+
+Bracket balance is deliberately NOT checked on diff hunks: a hunk legitimately
+shows the middle of a file, so imbalance is normal. That rule was written,
+produced five false positives on correct patches, and was removed.
+
+**Adversarial proof.** Deleting `retentionDegraded` from `060`'s
+`IntegrationStatus` makes the checker report exactly that, at that line;
+restoring it returns to clean. The checker fails on the defect it claims to
+guard, which is the only evidence that a green result means anything.
+
+## 4. What the checkers caught immediately
+
+
+Block checker, first run over 19 docs / 79 blocks: **1 placeholder** and
+**1 syntax error** — the `ctx: {...}` pseudo-signature still sitting in `030`
+after four rounds of human review. Then four real type defects: a missing
+`isPlainRecord` type guard (so the YAML renderer's narrowing silently produced
+`unknown`), an unannotated `Object.values` widening, a parameter initializer on
+a declaration-only signature, and `020`'s retired journal contract.
+
+Drift checker, first run: **7 findings**, including all four the A-gate had
+found by hand — `021`'s `JournalEntry` missing `priorRecord`, its import of
+`parseConfig` from the wrong module, two redeclarations of that symbol, and
+`040` still routing failures by `state`.
 
 That is the entire argument for this tool in one data point: the design faults
 across five rounds were all caught by review, and the transcription faults were
 all invisible to it.
 
-## 4. When it runs
+## 5. When they run
 
-- **Now**, and after any edit to a decade doc: the placeholder count must be
-  0 and `tsc` must be clean before the roadmap re-enters the A-gate.
+- **Now**, and after any edit to a decade doc: both checkers must be clean
+  (0 placeholders, `tsc` clean, 0 drift findings) before the roadmap re-enters
+  the A-gate.
 - **At each phase's P**, as part of the stale check.
 - **At each phase's C**, alongside the repository gates, so a doc amended
   during B cannot drift from the code it describes.
@@ -89,7 +126,7 @@ DIFFLEVEL-ROADMAP-01 is satisfied in its own terms: every decade doc still
 carries exact paths, NEW/MODIFY, real signatures, and copy-paste-executable
 bodies — and now the bodies are checked by a compiler instead of by eye.
 
-## 5. Carried-forward implementation notes
+## 6. Carried-forward implementation notes
 
 These were found by review and are fixed in the docs; the checker guards
 against their reintroduction:
@@ -102,7 +139,7 @@ against their reintroduction:
 | Prune failure is structured, marked, retried, surfaced as `retentionDegraded` | WP2 | test per `006` §5 |
 | `model-rows.ts` is a verbatim cut of `model-routes.ts:114/129/182` | WP1 | existing client-config route test must pass unchanged |
 
-## 6. Goalplan effect
+## 7. Goalplan effect
 
 No work-phase is added or removed and no deliverable is weakened. `c-docs`
 keeps its meaning; `c-gates` gains "the block checker reports 0 placeholders

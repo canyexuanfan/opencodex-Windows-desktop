@@ -120,22 +120,10 @@ failure (006 §5). That is what makes "no phantom row" true rather than hoped.
 ```ts
 import type { ConfigFormat, ManagedContribution, ManagedFragment } from "../clients/config-export";
 import { renderToml, renderYaml, serializeDocument } from "./serialize";
-import { PARSE_FAILED } from "./state";
+import { parseConfig, PARSE_FAILED } from "./config-io";
 
-/** Parse a client config, tolerating absence. PARSE_FAILED on garbage. */
-export function parseConfig(text: string | null, format: ConfigFormat): unknown | typeof PARSE_FAILED {
-  if (text === null || text.trim().length === 0) return {};
-  try {
-    switch (format) {
-      case "json": return JSON.parse(text);
-      case "json5": return Bun.JSON5.parse(text);
-      case "yaml": return Bun.YAML.parse(text);
-      case "toml": return Bun.TOML.parse(text);
-    }
-  } catch {
-    return PARSE_FAILED;
-  }
-}
+// parseConfig lives in WP2's config-io.ts (006 §8) — merge.ts imports it
+// rather than declaring a second copy that could drift.
 
 function clone<T>(value: T): T {
   return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
@@ -454,34 +442,14 @@ removal touches only recorded paths. A user's own `opencodex/...` entry is
 therefore never owned, never removed, and correctly reads as `conflict`
 because no record covers it.
 
-## 5. Default IO seam
+## 5. IO seam (WP2-owned)
 
-```ts
-export function defaultIntegrationIO(): IntegrationIO {
-  return {
-    readText: p => {
-      try { return { kind: "text", text: readFileSync(p, "utf8") }; }
-      catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        // ONLY ENOENT is absence. EACCES/EPERM/EISDIR mean a file we cannot
-        // see, which must never be overwritten as if it were missing.
-        return code === "ENOENT" ? { kind: "missing" } : { kind: "failed", ...(code ? { code } : {}) };
-      }
-    },
-    statKind: p => { try { const s = statSync(p); return s.isFile() ? "file" : s.isDirectory() ? "dir" : "other"; } catch { return "missing"; } },
-    writeText: (p, t) => atomicWriteFile(p, t),
-    removeFile: p => rmSync(p, { force: true }),
-    mkdirp: p => mkdirSync(p, { recursive: true, mode: 0o700 }),
-    now: () => Date.now(),
-    appendJournal: entry => appendOperation(entry),
-    putRecord: record => writeRecord(record),
-    dropRecord: clientId => deleteRecord(clientId),
-  };
-}
-```
+`defaultIntegrationIO` and `loadTarget` live in `src/integrations/config-io.ts`,
+which WP2 owns because `readIntegrationState` needs them too (006 §8). Their
+bodies are in `021` §6; WP3 imports them and declares neither.
 
-Every test substitutes this wholesale — no `node:fs` monkey-patching, and the
-`now` seam is what makes WP4's stale-flight branch reachable.
+Every test substitutes the seam wholesale — no `node:fs` monkey-patching — and
+the `now` member is what makes WP4's stale-flight branch reachable.
 
 ## 6. Activation table (superset of 030 §5)
 

@@ -428,40 +428,54 @@ function writerFailureResponse(
   result: { state: string; reason: string; message?: string; snapshotPath?: string; residual?: boolean },
   ctx: ManagementContext,
 ): Response {
-  if (result.state === "unsafe") {
-    return jsonResponse({
-      error: "integration config is unsafe",
-      code: "integration_unsafe",
-      clientId,
-      state: "unsafe",
-      reason: result.reason,
-      // Forwarded so the GUI can offer manual recovery and warn about an
-      // intermediate state (A-gate round 4, blocker 6).
-      ...(result.message ? { message: result.message } : {}),
-      ...(result.snapshotPath ? { snapshotPath: result.snapshotPath } : {}),
-      ...(result.residual ? { residual: true } : {}),
-    }, 409, ctx.req, ctx.config);
-  }
-  if (result.state === "conflict") {
-    return jsonResponse({
-      error: "integration config conflicts with ownership record",
-      code: "integration_conflict",
-      clientId,
-      state: "conflict",
-      reason: result.reason,
-    }, 409, ctx.req, ctx.config);
-  }
-  return jsonResponse({
-    error: "integration mutation failed",
-    code: "integration_mutation_failed",
-    clientId,
-    state: result.state,
-    reason: result.reason,
+  /*
+   * Routed by `reason`, never by `state` (006 §5). A `write_failed` that
+   * happens to occur while the file is in a `conflict` state is still a write
+   * failure, and mapping on state first silently dropped its message,
+   * snapshotPath, and residual — the recovery information the flag exists to
+   * carry (A-gate round 5, blocker 3).
+   */
+  const recovery = {
     ...(result.message ? { message: result.message } : {}),
     ...(result.snapshotPath ? { snapshotPath: result.snapshotPath } : {}),
     ...(result.residual ? { residual: true } : {}),
-    snapshotPath: result.snapshotPath,
+  };
+
+  if (result.reason === "unsafe") {
+    return jsonResponse({
+      error: "integration config is unsafe",
+      code: "integration_unsafe",
+      clientId, state: result.state, reason: result.reason, ...recovery,
+    }, 409, ctx.req, ctx.config);
+  }
+  if (result.reason === "conflict") {
+    return jsonResponse({
+      error: "integration config conflicts with ownership record",
+      code: "integration_conflict",
+      clientId, state: result.state, reason: result.reason, ...recovery,
+    }, 409, ctx.req, ctx.config);
+  }
+  if (result.reason === "drift_requires_confirm") {
+    return jsonResponse({
+      error: "restore requires drift confirmation",
+      code: "integration_drift_confirmation_required",
+      clientId, state: result.state, reason: result.reason, ...recovery,
+    }, 409, ctx.req, ctx.config);
+  }
+  if (result.reason === "snapshot_expired") {
+    return jsonResponse({
+      error: "integration snapshot expired",
+      code: "integration_snapshot_expired",
+      clientId, state: result.state, reason: result.reason, ...recovery,
+    }, 410, ctx.req, ctx.config);
+  }
+  // not_installed, non_loopback, write_failed — always carry recovery fields.
+  return jsonResponse({
+    error: "integration mutation failed",
+    code: "integration_mutation_failed",
+    clientId, state: result.state, reason: result.reason, ...recovery,
   }, 500, ctx.req, ctx.config);
+}
 }
 
 export async function handleIntegrationRoutes(ctx: ManagementContext): Promise<Response | null> {
