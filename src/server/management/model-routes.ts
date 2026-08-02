@@ -104,7 +104,7 @@ import type {
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
-import { listManagementModelRows, loadExportModels, toExportModel, type ManagementModelRow } from "./model-rows";
+import { listManagementModelRows, loadExportModels } from "./model-rows";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 
 /**
@@ -162,9 +162,12 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       );
     }
     const spec = EXPORT_CLIENTS[requested];
-    let rows: ManagementModelRow[];
+    let models: ExportModel[];
     try {
-      rows = await listManagementModelRows(config);
+      // The ONE loader every export surface uses. It carries the visibility
+      // filter with it, so this route and the integration routes cannot end up
+      // telling a client about different models.
+      models = await loadExportModels(config);
     } catch (error) {
       // A partial or empty `models` block reads as a valid config while offering nothing,
       // so a catalog failure is surfaced as unavailable rather than serialized. The
@@ -177,10 +180,6 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
         config,
       );
     }
-    // The export core does not filter visibility — it serializes what it is given. A model the
-    // user disabled in the Models tab is absent from /v1/models, so exporting it would hand the
-    // client a selector the proxy refuses to route.
-    const models = rows.filter(row => !row.disabled).map(toExportModel);
     const built = buildClientConfigText(requested, {
       baseUrl: opencodeProxyBaseUrl(Number(url.port) || config.port, config.hostname),
       models,

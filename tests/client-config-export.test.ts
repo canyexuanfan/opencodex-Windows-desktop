@@ -10,6 +10,7 @@ import {
   PI_API_KEY_ENV_REF,
   SCHEMA_REQUIRED_OUTPUT_BUDGET,
   buildClientConfig,
+  buildClientConfigText,
   isExportClientId,
   normalizeExportModels,
   type ExportContext,
@@ -287,6 +288,107 @@ describe("EXPORT_CLIENTS registry", () => {
     // The exception clients keep their own surfaces and are not export clients.
     expect(isExportClientId("claude-desktop")).toBe(false);
     expect(isExportClientId("grok")).toBe(false);
+  });
+
+  /**
+   * Full-text goldens, not field spot-checks. Adding four clients must not move
+   * a single byte for the two that already shipped — indentation and the one
+   * trailing newline included — and only a fixed expected string proves that.
+   */
+  test("opencode bytes are unchanged, to the last newline", () => {
+    const built = buildClientConfigText("opencode", ctx({ config: cfg() }));
+    expect(built.format).toBe("json");
+    expect(built.text).toBe(`{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "opencodex": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenCodex",
+      "options": {
+        "baseURL": "http://127.0.0.1:10100/v1",
+        "apiKey": "{env:OPENCODEX_OPENCODE_API_KEY}"
+      },
+      "models": {
+        "anthropic/claude-opus-5": {
+          "name": "Claude Opus 5 (anthropic)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "custom/no-context": {
+          "name": "no-context (custom)"
+        },
+        "gpt-5.6-luna": {
+          "name": "gpt-5.6-luna (native)",
+          "limit": {
+            "context": 272000,
+            "output": 32000
+          }
+        },
+        "tiny/small-ctx": {
+          "name": "small-ctx (tiny)",
+          "limit": {
+            "context": 8000,
+            "output": 8000
+          }
+        }
+      }
+    }
+  }
+}
+`);
+  });
+
+  test("pi bytes are unchanged, to the last newline", () => {
+    const built = buildClientConfigText("pi", ctx({ config: cfg() }));
+    expect(built.format).toBe("json");
+    expect(built.text).toBe(`{
+  "providers": {
+    "opencodex": {
+      "baseUrl": "http://127.0.0.1:10100/v1",
+      "api": "openai-completions",
+      "apiKey": "$OPENCODEX_API_KEY",
+      "models": [
+        {
+          "id": "anthropic/claude-opus-5",
+          "name": "Claude Opus 5 (anthropic)",
+          "input": [
+            "text"
+          ],
+          "contextWindow": 200000,
+          "maxTokens": 32000
+        },
+        {
+          "id": "custom/no-context",
+          "name": "no-context (custom)",
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "name": "gpt-5.6-luna (native)",
+          "input": [
+            "text"
+          ],
+          "contextWindow": 272000,
+          "maxTokens": 32000
+        },
+        {
+          "id": "tiny/small-ctx",
+          "name": "small-ctx (tiny)",
+          "input": [
+            "text"
+          ],
+          "contextWindow": 8000,
+          "maxTokens": 8000
+        }
+      ]
+    }
+  }
+}
+`);
   });
 
   test("every spec declares a format, a summarizer and a contribution", () => {

@@ -105,6 +105,11 @@ export function toExportModel(row: ManagementModelRow): ExportModel {
  * Visible (non-disabled) rows as export models — the ONE loader both
  * `/api/client-config` and the integration routes use, so the two can never
  * disagree about which models a client is told about.
+ *
+ * The visibility filter lives HERE rather than at each call site: the export
+ * core serializes what it is given, so a model the user disabled in the Models
+ * tab is absent from `/v1/models` and exporting it would hand the client a
+ * selector the proxy refuses to route.
  */
 export async function loadExportModels(config: OcxConfig): Promise<ExportModel[]> {
   const rows = await listManagementModelRows(config);

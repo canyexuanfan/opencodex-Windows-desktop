@@ -70,6 +70,26 @@ const PI_ENVELOPE = {
   text: `${JSON.stringify(PI_ENVELOPE_BASE.config, null, 2)}\n`,
 };
 
+
+/**
+ * A TOML client. This fixture is the one that actually activates the non-JSON
+ * path: `text` is not `JSON.stringify(config)`, so restoring the old
+ * re-serializing implementation fails these assertions instead of passing.
+ */
+const KIMI_ENVELOPE = {
+  client: "kimi",
+  filename: "kimi-config.toml",
+  destination: "/home/dev/.kimi-code/config.toml",
+  apiKeyEnv: "",
+  exportHint: "Kimi Code reads credentials from its config file; loopback needs no key.",
+  modelCount: 1,
+  modelsWithoutLimits: 0,
+  format: "toml",
+  mediaType: "application/toml",
+  text: '[providers.opencodex]\ntype = "openai"\nbase_url = "http://127.0.0.1:10100/v1"\n',
+  config: { providers: { opencodex: { type: "openai", base_url: "http://127.0.0.1:10100/v1" } } },
+};
+
 beforeEach(() => {
   previousGlobals = Object.fromEntries(globals.map(key => [key, Reflect.get(globalThis, key)])) as typeof previousGlobals;
   testWindow = new Window({ url: "http://localhost/" });
@@ -322,7 +342,7 @@ test("a superseded response never replaces a newer one", async () => {
 });
 
 test("download emits the fetched config under the server-provided filename and never says applied", async () => {
-  stubRoute(() => Response.json(OPENCODE_ENVELOPE));
+  stubRoute(client => Response.json(client === "kimi" ? KIMI_ENVELOPE : OPENCODE_ENVELOPE));
   const blobs: Blob[] = [];
   const createObjectURL = ((blob: Blob) => { blobs.push(blob); return "blob:stub"; }) as typeof URL.createObjectURL;
   const originalCreate = URL.createObjectURL;
@@ -353,9 +373,24 @@ test("download emits the fetched config under the server-provided filename and n
     // re-serializes, so a TOML client downloads TOML rather than JSON.
     expect(await blobs[0]!.text()).toBe(OPENCODE_ENVELOPE.text);
 
+    const firstAnnouncement = container.querySelector(".sr-only[aria-live='polite']")!.textContent!;
+    expect(firstAnnouncement).toContain("Downloaded opencode.json");
+
+    // The TOML client is the case that actually distinguishes the two
+    // implementations: its bytes are not JSON, so a re-serializing panel would
+    // hand the user a file Kimi cannot parse.
+    await act(async () => { rowButton(container, "Kimi Code", "Download").click(); });
+    expect(downloaded).toEqual(["opencode.json", "kimi-config.toml"]);
+    expect(blobs).toHaveLength(2);
+    expect(blobs[1]!.type).toStartWith("application/toml");
+    const tomlBytes = await blobs[1]!.text();
+    expect(tomlBytes).toBe(KIMI_ENVELOPE.text);
+    expect(tomlBytes).not.toBe(`${JSON.stringify(KIMI_ENVELOPE.config, null, 2)}\n`);
+    expect(tomlBytes.startsWith("[providers.opencodex]")).toBe(true);
+
     const announcement = container.querySelector(".sr-only[aria-live='polite']")!.textContent!;
-    expect(announcement).toContain("Downloaded opencode.json");
-    expect(announcement).toContain(OPENCODE_ENVELOPE.destination);
+    expect(announcement).toContain("Downloaded kimi-config.toml");
+    expect(announcement).toContain(KIMI_ENVELOPE.destination);
     for (const forbidden of ["applied", "saved", "configured"]) {
       expect(announcement.toLowerCase()).not.toContain(forbidden);
     }
