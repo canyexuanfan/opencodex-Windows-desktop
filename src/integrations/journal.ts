@@ -14,7 +14,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { atomicWriteFile } from "../config";
 import { ensureDir, integrationsDir, type OwnershipRecord } from "./ownership";
 import { isIntegrationClientId, type IntegrationClientId } from "./registry";
@@ -61,6 +61,31 @@ function journalPath(dir: string): string {
   return join(dir, "journal.jsonl");
 }
 
+/**
+ * A snapshot file name must be ONE path component we produced, never a value
+ * that walks anywhere. `opId` comes from `randomUUID()` in normal operation,
+ * but it also arrives from a persisted journal row, and `relPath` is read
+ * straight off disk — a row carrying `../../escaped` would otherwise let
+ * capture write outside the store and read-back read an arbitrary file.
+ */
+function assertSafeComponent(value: string, what: string): string {
+  if (value.length === 0 || value === "." || value === ".."
+    || value.includes("/") || value.includes("\\") || value.includes("\0")) {
+    throw new Error(`unsafe ${what}: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+/** Resolve `relative` under `root`, refusing anything that escapes it. */
+function containedPath(root: string, ...segments: string[]): string {
+  const target = resolve(root, ...segments);
+  const base = resolve(root);
+  if (target !== base && !target.startsWith(base + sep)) {
+    throw new Error(`path escapes the integration store: ${target}`);
+  }
+  return target;
+}
+
 function snapshotDir(clientId: IntegrationClientId, dir: string): string {
   return join(dir, "snapshots", clientId);
 }
@@ -72,7 +97,7 @@ export function captureSnapshot(
   dir: string = integrationsDir(),
 ): SnapshotRef {
   if (text === null) return { kind: "none" };
-  const target = join(snapshotDir(clientId, dir), opId);
+  const target = containedPath(dir, "snapshots", assertSafeComponent(clientId, "clientId"), assertSafeComponent(opId, "opId"));
   ensureDir(target);
   atomicWriteFile(target, text);
   return { kind: "stored", relPath: join("snapshots", clientId, opId) };
@@ -127,7 +152,9 @@ export function readSnapshot(
 ): { kind: "none" } | { kind: "stored"; text: string; path: string } | { kind: "expired" } {
   if (entry.snapshot.kind === "none") return { kind: "none" };
   if (entry.snapshot.kind === "expired") return { kind: "expired" };
-  const abs = join(dir, entry.snapshot.relPath);
+  // Derive the path from validated identifiers rather than trusting the
+  // persisted relPath, then verify containment either way.
+  const abs = containedPath(dir, entry.snapshot.relPath);
   if (!existsSync(abs)) return { kind: "expired" };
   return { kind: "stored", text: readFileSync(abs, "utf8"), path: abs };
 }

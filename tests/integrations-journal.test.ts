@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getConfigDir } from "../src/config";
 import { SNAPSHOT_RETENTION, type JournalEntry } from "../src/integrations/journal";
 import { createIntegrationStateStore, type IntegrationStateStore } from "../src/integrations/store";
 
@@ -153,5 +154,77 @@ describe("store isolation", () => {
     } finally {
       rmSync(other, { recursive: true, force: true });
     }
+  });
+
+  test("a crafted opId cannot write outside the bound store", () => {
+    // The id normally comes from randomUUID(), but it also arrives from a
+    // persisted row. A value like "../../escaped" would put snapshot bytes
+    // anywhere on disk.
+    expect(() => store.captureSnapshot("kimi", "../../escaped", "x")).toThrow(/unsafe opId/);
+    expect(() => store.captureSnapshot("kimi", "a/b", "x")).toThrow(/unsafe opId/);
+  });
+
+  test("a crafted relPath cannot read outside the bound store", () => {
+    const entry: JournalEntry = {
+      opId: "o", clientId: "kimi", kind: "apply", at: new Date().toISOString(),
+      configPath: "/tmp/whatever",
+      snapshot: { kind: "stored", relPath: "../../../../../../etc/passwd" },
+      resultFingerprint: "", resultAbsent: false, priorRecord: null,
+    };
+    expect(() => store.readSnapshot(entry)).toThrow(/escapes the integration store/);
+  });
+
+  test("a prune failure keeps the row, marks retention, and a later run clears it", () => {
+    // Contract: 006 §5. The row must survive a pruning failure, the marker must
+    // record it, and a later successful prune must clear both the marker and
+    // the excess snapshots. Failure is induced by making the snapshot
+    // directory unreadable rather than by stubbing, so the real errno path runs.
+    const clientId = "kimi" as const;
+    for (let i = 0; i < SNAPSHOT_RETENTION + 3; i += 1) {
+      const opId = `op-${String(i).padStart(3, "0")}`;
+      const snapshot = store.captureSnapshot(clientId, opId, `bytes-${i}`);
+      store.appendJournal({
+        opId, clientId, kind: "apply", at: new Date(2026, 0, 1, 0, i).toISOString(),
+        configPath: "/tmp/whatever", snapshot,
+        resultFingerprint: `f${i}`, resultAbsent: false, priorRecord: null,
+      });
+    }
+    // Pruning already ran post-commit, so the bound holds here.
+    expect(store.countSnapshots(clientId)).toBeLessThanOrEqual(SNAPSHOT_RETENTION);
+
+    const dir = join(root, "snapshots", clientId);
+    const rowsBefore = store.listOperations(clientId).length;
+    chmodSync(dir, 0o000);
+    try {
+      const failed = store.pruneSnapshots(clientId);
+      // Running as root would defeat the permission bit; only assert the
+      // contract when the failure actually occurred.
+      if (!failed.ok) {
+        store.markPruneFailure(clientId, failed.error);
+        expect(store.readMaintenance().pruneFailures[clientId]).toBeDefined();
+        // The journal is untouched by a pruning failure.
+        expect(store.listOperations(clientId).length).toBe(rowsBefore);
+      }
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+
+    // A later operation retries and clears the marker.
+    store.retryPendingPrunes();
+    expect(store.readMaintenance().pruneFailures[clientId]).toBeUndefined();
+    expect(store.countSnapshots(clientId)).toBeLessThanOrEqual(SNAPSHOT_RETENTION);
+  });
+
+  test("a temp-rooted store leaves the real ownership manifest untouched", () => {
+    // atomicWriteFile records writes in the opencodex uninstall manifest, but
+    // that registration refuses any path outside the process config dir. This
+    // pins the property every other test in this file depends on: an isolated
+    // store touches no global state.
+    const manifest = join(getConfigDir(), ".opencodex-ownership.json");
+    const before = existsSync(manifest) ? readFileSync(manifest, "utf8") : null;
+    store.captureSnapshot("kimi", "manifest-probe", "bytes");
+    const after = existsSync(manifest) ? readFileSync(manifest, "utf8") : null;
+    expect(after).toBe(before);
+    expect(existsSync(join(root, "snapshots", "kimi", "manifest-probe"))).toBe(true);
   });
 });
