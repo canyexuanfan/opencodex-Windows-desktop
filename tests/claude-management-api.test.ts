@@ -622,6 +622,49 @@ test("Claude Desktop profile GET, PUT and apply round-trip four-family assignmen
   }
 });
 
+test("Claude Desktop apply installs the alias registry in the serving process (#859)", async () => {
+  const { resolveDesktop3pAlias, activeDesktop3pAlias } = await import("../src/claude/desktop-3p");
+  const server = startServer(0);
+  try {
+    const apply = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "static" }),
+    });
+    expect(apply.status).toBe(200);
+    // Without another /v1/models discovery call, the serving process must now
+    // decode the alias the CLI would have generated.
+    const alias = activeDesktop3pAlias("mock", "test-model");
+    expect(resolveDesktop3pAlias(alias)).toBe("mock/test-model");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("Claude Desktop apply validates the mode body", async () => {
+  const server = startServer(0);
+  try {
+    const bad = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "nonsense" }),
+    });
+    expect(bad.status).toBe(400);
+
+    const hybrid = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "hybrid" }),
+    });
+    expect(hybrid.status).toBe(200);
+    const result = await hybrid.json() as { path: string };
+    const written = JSON.parse(readFileSync(result.path, "utf8")) as { modelDiscoveryEnabled: boolean };
+    expect(written.modelDiscoveryEnabled).toBe(true);
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("Claude Desktop PUT rejects invalid JSON profile without mutating saved config", async () => {
   const server = startServer(0);
   try {

@@ -137,8 +137,10 @@ test("no-arg and legacy mode flags apply Desktop config", async () => {
   const log = spyOn(console, "log").mockImplementation(() => {});
   const error = spyOn(console, "error").mockImplementation(() => {});
   try {
-    expect(await handleClaudeDesktopCommand([])).toBe(0);
-    expect(await handleClaudeDesktopCommand(["--static"])).toBe(0);
+    // Deterministic: no live proxy in the test environment, so apply writes locally.
+    const noProxy = { findLiveProxyImpl: async () => null };
+    expect(await handleClaudeDesktopCommand([], noProxy)).toBe(0);
+    expect(await handleClaudeDesktopCommand(["--static"], noProxy)).toBe(0);
     expect(readFileSync(join(process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR!, "_meta.json"), "utf8")).toContain("opencodex");
     expect(error).not.toHaveBeenCalled();
   } finally {

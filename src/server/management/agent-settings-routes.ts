@@ -646,6 +646,26 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
   }
   if (url.pathname === "/api/claude-desktop/apply" && req.method === "POST") {
     try {
+      // #859: the CLI delegates here so the registry is built in the serving
+      // process. Accept an optional mode; default stays static for back-compat.
+      let mode: "static" | "hybrid" | "discovery" = "static";
+      const rawBody = await req.text();
+      if (rawBody.trim()) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(rawBody);
+        } catch {
+          return jsonResponse({ error: "invalid JSON body" }, 400);
+        }
+        const requested = (parsed as { mode?: unknown } | null)?.mode;
+        if (requested !== undefined) {
+          if (requested === "static" || requested === "hybrid" || requested === "discovery") {
+            mode = requested;
+          } else {
+            return jsonResponse({ error: "mode must be static, hybrid, or discovery" }, 400);
+          }
+        }
+      }
       const state = await buildClaudeDesktopState(config);
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: state.profile };
       saveConfigPreservingClaudeCode(config);
@@ -662,7 +682,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         [...desktopVisibleNativeSlugs(config)],
         routed,
         config.apiKeys?.[0]?.key,
-        "static",
+        mode,
         state.profile,
       );
       if (!result.written) return jsonResponse({ error: result.reason ?? "Claude Desktop apply failed", saved: true, path: result.path }, 500);
