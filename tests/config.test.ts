@@ -150,6 +150,37 @@ describe("opencodex config defaults", () => {
     }
   });
 
+  test("Antigravity static-catalog migration marker is schema-safe but not default-injected", () => {
+    expect(getDefaultConfig().googleAntigravityStaticCatalogVersion).toBeUndefined();
+
+    writeConfig({
+      port: 12345,
+      defaultProvider: "custom",
+      googleAntigravityStaticCatalogVersion: 1,
+      providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1" } },
+    });
+    expect(loadConfig().googleAntigravityStaticCatalogVersion).toBe(1);
+
+    writeConfig({
+      port: 12345,
+      defaultProvider: "custom",
+      googleAntigravityStaticCatalogVersion: 99,
+      providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1" } },
+    });
+    const degraded = loadConfig();
+    expect(degraded.googleAntigravityStaticCatalogVersion).toBeUndefined();
+    expect(degraded.providers.custom.baseUrl).toBe("https://example.test/v1");
+    expect(backupNames()).toEqual([]);
+
+    expect(validateConfigCandidate({
+      ...getDefaultConfig(),
+      googleAntigravityStaticCatalogVersion: 99,
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("googleAntigravityStaticCatalogVersion"),
+    });
+  });
+
   test("Codex autostart can be disabled explicitly", () => {
     expect(codexAutoStartEnabled({ codexAutoStart: false })).toBe(false);
     expect(codexAutoStartEnabled({ codexAutoStart: true })).toBe(true);
@@ -1413,6 +1444,10 @@ describe("opencodex config defaults", () => {
     expect(isOcxStartCommandLine('bun run src/cli.ts start')).toBe(true);
     expect(isOcxStartCommandLine('"C:/tools/bun/bin/bun.exe" "run" "src/cli/index.ts" "start"')).toBe(true);
     expect(isOcxStartCommandLine('bun C:/tools/bun/install/global/node_modules/@bitkyc08/opencodex/src/cli.ts start')).toBe(true);
+    // npm's in-place rename during `npm install -g` (Windows service wrapper respawn mid-update).
+    expect(isOcxStartCommandLine(
+      'bun C:/nvm/node_modules/@bitkyc08/.opencodex-1JejBqbZ/src/cli/index.ts start --port 10100',
+    )).toBe(true);
     expect(isOcxStartCommandLine("opencodex start")).toBe(true);
 
     expect(isOcxStartCommandLine("bun run src/cli.ts status")).toBe(false);
@@ -1611,7 +1646,10 @@ describe("config.ts – Windows ACL hardening integration", () => {
     try {
       const spy = spyOn(windowsAcl, "hardenSecretDir").mockReturnValue({ ok: true });
       saveConfig(getDefaultConfig());
-      expect(spy).toHaveBeenCalledWith(testDir, { required: true });
+      expect(spy).toHaveBeenCalledWith(testDir, {
+        required: true,
+        timeoutMemoKey: `${testDir}::config-mutation`,
+      });
       expect(existsSync(getConfigPath())).toBe(true);
       spy.mockRestore();
     } finally {
