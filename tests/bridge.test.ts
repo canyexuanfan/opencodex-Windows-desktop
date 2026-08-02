@@ -1082,6 +1082,12 @@ describe("bridgeToResponsesSSE owned default budget lifecycle", () => {
       if (decoder.decode(value).includes("first")) break;
     }
     const pending = reader.read();
+    // Prove the second upstream next() has STARTED before cancelling — otherwise
+    // the cancel happens before the race exists and the regression is vacuous.
+    for (let attempt = 0; attempt < 200 && !release; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(release).not.toBeNull();
     await reader.cancel(new Error("client gone"));
     release?.({ type: "text_delta", text: "late event after cancel" });
     await pending;

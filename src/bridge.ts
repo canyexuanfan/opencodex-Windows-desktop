@@ -704,8 +704,14 @@ export function bridgeToResponsesSSE(
           iteratorStarted = true;
           const next = await it.next();
           // A cancel during this await disposes the owned budget; a late event
-          // must never be processed or charged against it.
-          if (closed || clientCancelled) { upstreamDone = true; break; }
+          // must never be processed or charged against it. Exit step() outright:
+          // falling into EOF synthesis would let closeCurrentMessage() charge
+          // finished-item retention against the disposed budget.
+          if (closed || clientCancelled) {
+            gated = true;
+            stepping = false;
+            return;
+          }
           if (next.done) { upstreamDone = true; break; }
           const event = next.value;
           let terminalEvent = false;
