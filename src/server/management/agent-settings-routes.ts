@@ -460,7 +460,11 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       ...listCatalogNativeSlugs().filter(ns => !disabled.has(ns)),
       ...visibleRouted,
     ];
-    return jsonResponse({ chosen: config.subagentModels ?? [], available });
+    // #857: let CLI/GUI show when a running Codex app-server keeps an older
+    // in-memory catalog than the one on disk.
+    const { collectCodexAppServerCatalogState } = await import("../../codex/app-server-processes");
+    const catalogState = collectCodexAppServerCatalogState();
+    return jsonResponse({ chosen: config.subagentModels ?? [], available, catalogState });
   }
   if (url.pathname === "/api/subagent-models" && req.method === "PUT") {
     let body: { models?: unknown };

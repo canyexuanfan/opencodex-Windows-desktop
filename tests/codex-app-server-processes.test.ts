@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   afterCatalogWriteHandleAppServers,
   attachStaleAppServerHint,
+  collectCodexAppServerCatalogState,
   formatStaleCodexAppServerWarning,
   isCodexAppServerCommandLine,
   isWindowsCodexCandidateCommandLine,
@@ -14,6 +15,71 @@ import {
   STALE_CODEX_APP_SERVER_HINT,
   WINDOWS_CODEX_BASENAME_CANDIDATE_RE,
 } from "../src/codex/app-server-processes";
+
+describe("collectCodexAppServerCatalogState (#857)", () => {
+  const APP_SERVER_CMD = "/usr/local/bin/codex app-server";
+
+  test("not_running when no app-server process exists", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [],
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("not_running");
+    expect(status.processes).toEqual([]);
+  });
+
+  test("fresh when every app-server started after the catalog changed", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+      readStartMs: () => 2_000,
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("fresh");
+  });
+
+  test("stale when any app-server predates the catalog mtime", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [
+        { pid: 42, commandLine: APP_SERVER_CMD },
+        { pid: 43, commandLine: APP_SERVER_CMD },
+      ],
+      readStartMs: pid => (pid === 42 ? 500 : 3_000),
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("stale");
+    expect(status.processes).toEqual([
+      { pid: 42, startedAtMs: 500 },
+      { pid: 43, startedAtMs: 3_000 },
+    ]);
+  });
+
+  test("unknown when a start time is unreadable, and when the catalog is unreadable", () => {
+    const noStart = collectCodexAppServerCatalogState({
+      listSnapshots: () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+      readStartMs: () => null,
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(noStart.state).toBe("unknown");
+
+    const noCatalog = collectCodexAppServerCatalogState({
+      listSnapshots: () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+      readStartMs: () => 500,
+      catalogMtimeMs: () => null,
+    });
+    expect(noCatalog.state).toBe("unknown");
+  });
+
+  test("unrelated processes never enter the comparison", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [
+        { pid: 7, commandLine: "node worker.js codex app-server" },
+        { pid: 8, commandLine: "/usr/bin/hermes-codex-bridge-mcp" },
+      ],
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("not_running");
+  });
+});
 
 describe("Codex app-server process matching (#476)", () => {
   test("matches Codex app-server and code-mode-host command lines", () => {

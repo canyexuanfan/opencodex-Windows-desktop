@@ -8,8 +8,9 @@
  * `hermes-codex-bridge-mcp`.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isProcessAlive, waitForExit } from "../lib/process-control";
+import { readCodexCatalogPath } from "./catalog/parsing";
 
 export const STALE_CODEX_APP_SERVER_HINT =
   "If Codex still shows an older model list, restart its long-lived app-server process after sync (ocx sync --restart-codex).";
@@ -72,6 +73,7 @@ export interface ProcessSnapshot {
   commandLine: string;
   uid?: number;
   owner?: string;
+  startedAtMs?: number;
 }
 
 export interface CodexAppServerProcessIo {
@@ -82,6 +84,8 @@ export interface CodexAppServerProcessIo {
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   waitExit?: (pid: number, timeoutMs: number) => boolean;
   now?: () => number;
+  readStartMs?: (pid: number) => number | null;
+  catalogMtimeMs?: () => number | null;
 }
 
 /** Split a process command line into argv-like tokens (handles simple quotes). */
@@ -399,6 +403,130 @@ export function formatStaleCodexAppServerWarning(processes: readonly CodexAppSer
     + "Re-run with `ocx sync --restart-codex` (or `ocx sync-cache --restart-codex`) to send SIGTERM only to matching app-server processes. "
     + "Active turns may be interrupted."
   );
+}
+
+/** /proc/<pid>/stat starttime (clock ticks since boot) → epoch ms, or null. */
+function readLinuxProcStartMs(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // Field 22 (starttime) follows the comm field, which may contain spaces
+    // inside parentheses — split after the final ")".
+    const close = stat.lastIndexOf(")");
+    if (close < 0) return null;
+    const fields = stat.slice(close + 2).split(/\s+/);
+    const startTicks = Number(fields[19]); // field 22 = index 19 after comm
+    const boot = /^btime\s+(\d+)/m.exec(readFileSync("/proc/stat", "utf8"));
+    if (!Number.isFinite(startTicks) || !boot) return null;
+    const hertz = 100; // USER_HZ on every supported Linux target
+    return (Number(boot[1]) + startTicks / hertz) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+/** `ps` lstart → epoch ms, or null (macOS). */
+function readDarwinProcStartMs(pid: number): number | null {
+  try {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 4_000,
+    }).trim();
+    if (!out) return null;
+    const parsed = Date.parse(out);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Win32_Process.CreationDate → epoch ms, or null (Windows). */
+function readWindowsProcStartMs(pid: number): number | null {
+  try {
+    const out = execFileSync("powershell.exe", [
+      "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
+      "-Command",
+      `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CreationDate.ToUniversalTime().ToString("o")`,
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 8_000, windowsHide: true }).trim();
+    if (!out) return null;
+    const parsed = Date.parse(out);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort process start time; null when the platform source is unreadable. */
+export function readProcessStartMs(pid: number, platform: NodeJS.Platform = process.platform): number | null {
+  if (platform === "win32") return readWindowsProcStartMs(pid);
+  if (platform === "darwin") return readDarwinProcStartMs(pid);
+  return readLinuxProcStartMs(pid);
+}
+
+export type CodexAppServerCatalogState = "fresh" | "stale" | "not_running" | "unknown";
+
+export interface CodexAppServerCatalogStatus {
+  state: CodexAppServerCatalogState;
+  processes: Array<{ pid: number; startedAtMs: number | null }>;
+  catalogMtimeMs: number | null;
+}
+
+/** Resolve the catalog file Codex app-servers loaded at startup, for staleness checks. */
+function defaultCatalogMtimeMs(): number | null {
+  try {
+    return statSync(readCodexCatalogPath()).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+// Short TTL: process listing + stat run once per window even under per-turn
+// guidance calls (#857).
+let catalogStateCache: { atMs: number; status: CodexAppServerCatalogStatus } | null = null;
+const CATALOG_STATE_TTL_MS = 5_000;
+
+/**
+ * Compare the on-disk catalog mtime against the start time of running Codex
+ * app-servers (#857): a server that started before the catalog changed keeps
+ * an in-memory copy that disagrees with what ocx advertises.
+ *
+ * - not_running: no app-server process → nothing can disagree.
+ * - unknown: catalog unreadable, or any server's start time is unreadable —
+ *   callers must treat this conservatively (suppress positive model claims).
+ * - stale: at least one server predates the catalog mtime.
+ */
+export function collectCodexAppServerCatalogState(
+  io: CodexAppServerProcessIo = {},
+): CodexAppServerCatalogStatus {
+  const now = (io.now ?? Date.now)();
+  if (!io.listSnapshots && !io.readStartMs && !io.catalogMtimeMs
+    && catalogStateCache && now - catalogStateCache.atMs < CATALOG_STATE_TTL_MS) {
+    return catalogStateCache.status;
+  }
+  const compute = (): CodexAppServerCatalogStatus => {
+    const processes = listCodexAppServerProcesses(io);
+    if (processes.length === 0) {
+      return { state: "not_running", processes: [], catalogMtimeMs: null };
+    }
+    const catalogMtimeMs = (io.catalogMtimeMs ?? defaultCatalogMtimeMs)();
+    const readStart = io.readStartMs ?? ((pid: number) => readProcessStartMs(pid, io.platform ?? process.platform));
+    const withStarts = processes.map(proc => ({ pid: proc.pid, startedAtMs: readStart(proc.pid) }));
+    if (catalogMtimeMs === null || withStarts.some(proc => proc.startedAtMs === null)) {
+      return { state: "unknown", processes: withStarts, catalogMtimeMs };
+    }
+    const stale = withStarts.some(proc => proc.startedAtMs! < catalogMtimeMs);
+    return { state: stale ? "stale" : "fresh", processes: withStarts, catalogMtimeMs };
+  };
+  const status = compute();
+  if (!io.listSnapshots && !io.readStartMs && !io.catalogMtimeMs) {
+    catalogStateCache = { atMs: now, status };
+  }
+  return status;
+}
+
+/** Test hook: drop the memoized catalog state. */
+export function resetCodexAppServerCatalogStateCache(): void {
+  catalogStateCache = null;
 }
 
 export interface RestartCodexAppServersResult {
