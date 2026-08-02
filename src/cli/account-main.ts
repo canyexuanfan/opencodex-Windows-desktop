@@ -132,7 +132,9 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
       if (rollback && !confirmed) console.error("--rollback changes the native login and requires --yes.");
       return reject(args);
     }
-    const result = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/recover", { rollback });
+    const result = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/recover", rollback
+      ? { rollback: true, confirmedStopped: true }
+      : { rollback: false });
     if (result.status === 0) return proxyUnreachable();
     if (result.status !== 200) return apiError(result.json, "failed to recover the native-profile transaction");
     if (wantsJson) console.log(JSON.stringify(result.json, null, 2));

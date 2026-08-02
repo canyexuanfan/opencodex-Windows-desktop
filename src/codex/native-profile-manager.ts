@@ -3,6 +3,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -51,6 +52,7 @@ import {
 } from "./native-profile-types";
 
 const LOCK_WAIT_MS = 5_000;
+const LOCK_METADATA_GRACE_MS = 1_000;
 const LOCK_STALE_MS = 10 * 60_000;
 const STAGE_MAX_AGE_MS = 30 * 60_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -122,32 +124,62 @@ export class NativeProfileManager {
   }
 
   private isLockStale(): boolean {
+    const observedAt = this.now();
+    let pathAgeMs: number;
+    try {
+      pathAgeMs = Math.max(0, observedAt - lstatSync(this.context.lockPath).mtimeMs);
+    } catch (error) {
+      return errorCode(error) === "ENOENT";
+    }
     try {
       const lock = JSON.parse(readFileSync(this.context.lockPath, "utf8")) as { pid?: unknown; acquiredAt?: unknown };
       if (typeof lock.pid === "number" && processAlive(lock.pid)) return false;
-      return typeof lock.acquiredAt !== "number" || this.now() - lock.acquiredAt > LOCK_STALE_MS;
+      return typeof lock.acquiredAt === "number"
+        ? observedAt - lock.acquiredAt > LOCK_STALE_MS
+        : pathAgeMs > LOCK_METADATA_GRACE_MS;
     } catch {
-      return true;
+      return pathAgeMs > LOCK_METADATA_GRACE_MS;
     }
+  }
+
+  private releaseLock(ownerToken: string): void {
+    try {
+      const lock = JSON.parse(readFileSync(this.context.lockPath, "utf8")) as { ownerToken?: unknown };
+      if (lock.ownerToken !== ownerToken) return;
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return;
+      return;
+    }
+    try { unlinkSync(this.context.lockPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
   }
 
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
     await this.ensureRoot();
     const deadline = this.now() + LOCK_WAIT_MS;
-    let fd: number | null = null;
-    while (fd === null) {
+    let ownerToken: string | null = null;
+    while (ownerToken === null) {
+      const candidateToken = this.uuid();
+      const candidatePath = `${this.context.lockPath}.${candidateToken}.candidate`;
+      let candidateFd: number | null = null;
       try {
-        fd = openSync(this.context.lockPath, "wx", 0o600);
-        writeFileSync(fd, serializeNativeProfileMetadata({ pid: process.pid, acquiredAt: this.now(), homeId: this.context.homeId }));
-        await this.hardenPath(this.context.lockPath);
+        candidateFd = openSync(candidatePath, "wx", 0o600);
+        writeFileSync(candidateFd, serializeNativeProfileMetadata({
+          pid: process.pid,
+          acquiredAt: this.now(),
+          homeId: this.context.homeId,
+          ownerToken: candidateToken,
+        }));
+        closeSync(candidateFd);
+        candidateFd = null;
+        await this.hardenPath(candidatePath);
+        linkSync(candidatePath, this.context.lockPath);
+        unlinkSync(candidatePath);
+        ownerToken = candidateToken;
       } catch (error) {
-        if (fd !== null) {
-          closeSync(fd);
-          fd = null;
-          try { unlinkSync(this.context.lockPath); } catch { /* reported below */ }
-          throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock could not be secured.", 503, true);
-        }
+        if (candidateFd !== null) try { closeSync(candidateFd); } catch { /* reported below */ }
+        try { unlinkSync(candidatePath); } catch (cleanupError) { if (errorCode(cleanupError) !== "ENOENT") { /* reported below */ } }
         if (errorCode(error) !== "EEXIST") {
+          try { this.releaseLock(candidateToken); } catch { /* reported below */ }
           throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock is unavailable.", 503, true);
         }
         if (this.isLockStale()) {
@@ -163,8 +195,17 @@ export class NativeProfileManager {
     try {
       return await operation();
     } finally {
-      closeSync(fd);
-      try { unlinkSync(this.context.lockPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
+      this.releaseLock(ownerToken);
+    }
+  }
+
+  private async assertNativeCodexStopped(confirmedStopped: boolean): Promise<void> {
+    const processState = await this.processProbe();
+    if (processState.status === "busy") {
+      throw new NativeProfileError("CODEX_BUSY", `Close the ${processState.count} detected native Codex process(es) before switching.`, 409);
+    }
+    if (processState.status === "unknown" && !confirmedStopped) {
+      throw new NativeProfileError("CODEX_PROCESS_CHECK_UNAVAILABLE", "Codex process state could not be confirmed; close Codex and retry with explicit confirmation.", 409);
     }
   }
 
@@ -429,13 +470,7 @@ export class NativeProfileManager {
   async switch(targetSelector: string, confirmedStopped = false): Promise<Record<string, unknown>> {
     return this.withLock(async () => {
       requireFileCredentialStore(this.context);
-      const processState = await this.processProbe();
-      if (processState.status === "busy") {
-        throw new NativeProfileError("CODEX_BUSY", `Close the ${processState.count} detected native Codex process(es) before switching.`, 409);
-      }
-      if (processState.status === "unknown" && !confirmedStopped) {
-        throw new NativeProfileError("CODEX_PROCESS_CHECK_UNAVAILABLE", "Codex process state could not be confirmed; close Codex and retry with explicit confirmation.", 409);
-      }
+      await this.assertNativeCodexStopped(confirmedStopped);
       if (readNativeProfileJournal(this.context)) await this.recoverLocked(false);
       const beforeVault = this.requireVault();
       const key = await this.keyForVault(beforeVault);
@@ -592,9 +627,12 @@ export class NativeProfileManager {
     }
   }
 
-  async recover(rollback = false): Promise<Record<string, unknown>> {
+  async recover(rollback = false, confirmedStopped = false): Promise<Record<string, unknown>> {
     return this.withLock(async () => {
       requireFileCredentialStore(this.context);
+      if (rollback && readNativeProfileJournal(this.context)) {
+        await this.assertNativeCodexStopped(confirmedStopped);
+      }
       return this.recoverLocked(rollback);
     });
   }

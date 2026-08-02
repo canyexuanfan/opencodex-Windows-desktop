@@ -58,5 +58,11 @@ describe("ocx account main", () => {
     expect(await cmdAccount(["main", "switch", "work", "--yes"], deps)).toBe(0);
     expect(requests.at(-1)?.body).toEqual({ target: "work", confirmedStopped: true });
     expect(output.join("\n")).toContain("Restart Codex App/CLI");
+
+    const recoveryBefore = requests.length;
+    expect(await cmdAccount(["main", "recover", "--rollback"], deps)).toBe(1);
+    expect(requests).toHaveLength(recoveryBefore);
+    expect(await cmdAccount(["main", "recover", "--rollback", "--yes"], deps)).toBe(0);
+    expect(requests.at(-1)?.body).toEqual({ rollback: true, confirmedStopped: true });
   });
 });

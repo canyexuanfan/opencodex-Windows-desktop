@@ -42,6 +42,7 @@ let _serverRef: ReturnType<typeof Bun.serve> | undefined;
 export function setServerRef(server: ReturnType<typeof Bun.serve> | undefined): void { _serverRef = server; }
 export function setDraining(value: boolean): void { draining = value; }
 export function tryAdmitTurn(): ActiveTurnLease | null {
+  if (draining) return null;
   const gateLease = turnGate.tryAcquire();
   if (!gateLease) return null;
   const controllers = new Set<AbortController>();

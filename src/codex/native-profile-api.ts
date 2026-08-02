@@ -1,6 +1,11 @@
 import type { OcxConfig } from "../types";
 import { jsonResponse } from "../server/auth-cors";
 import { getActiveTurnCount, isDraining, setDraining } from "../server/lifecycle";
+import {
+  managementBodyTooLargeResponse,
+  readManagementJsonBody,
+  rethrowManagementBodyTooLarge,
+} from "../server/management/body";
 import { NativeProfileManager } from "./native-profile-manager";
 import { NativeProfileError } from "./native-profile-types";
 
@@ -12,10 +17,11 @@ export interface NativeProfileApiDeps {
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try {
-    const parsed = await req.json();
+    const parsed = await readManagementJsonBody(req);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("body");
     return parsed as Record<string, unknown>;
-  } catch {
+  } catch (error) {
+    rethrowManagementBodyTooLarge(error);
     throw new NativeProfileError("INVALID_REQUEST", "A JSON object body is required.", 400);
   }
 }
@@ -84,7 +90,7 @@ export async function handleNativeProfileAPI(
     if (url.pathname === "/api/native-main-profiles/recover" && req.method === "POST") {
       const input = await body(req);
       return jsonResponse(
-        await withMainRequestDrain(deps, () => manager.recover(input.rollback === true)),
+        await withMainRequestDrain(deps, () => manager.recover(input.rollback === true, input.confirmedStopped === true)),
         200,
         req,
         config,
@@ -92,6 +98,8 @@ export async function handleNativeProfileAPI(
     }
     return jsonResponse({ error: "Unknown native-profile operation", code: "INVALID_REQUEST" }, 404, req, config);
   } catch (error) {
+    const tooLarge = managementBodyTooLargeResponse(error, req, config);
+    if (tooLarge) return tooLarge;
     if (error instanceof NativeProfileError) {
       return jsonResponse({ error: error.message, code: error.code, retryable: error.retryable }, error.status, req, config);
     }
