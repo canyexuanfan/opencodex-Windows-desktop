@@ -262,6 +262,109 @@ describe("native main profile management API", () => {
     expect(nativeMainStartupGateSnapshot()).toMatchObject({ status: "ready", homeId });
   });
 
+  test("successful switch clears a matching stale startup gate after clean recovery probes", async () => {
+    const homeId = "home-stale-blocked-clean";
+    await initializeNativeMainStartupGate({
+      manager: { context: { homeId } } as unknown as NativeProfileManager,
+      probeRecoveryState: () => { throw new Error("startup recovery state was unreadable"); },
+    });
+    expect(nativeMainStartupGateSnapshot()).toEqual({
+      status: "blocked",
+      homeId,
+      reason: "manual-recovery",
+    });
+    let completedWhileDraining = false;
+    const manager = {
+      context: { homeId, journalPath: "missing", recoveryBlockPath: "missing" },
+      switch: async () => ({ ok: true }),
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager,
+      probeRecoveryState: () => "none",
+      completeRecovery: id => {
+        const turn = tryAdmitTurn();
+        const selection = codexAccountSelectionForTurn(turn!)!();
+        completedWhileDraining = turn !== null
+          && selection?.mainProfileDraining === true
+          && selection.claimMainProfile() === false;
+        selection?.release();
+        turn?.release();
+        return completeNativeMainRecovery(id);
+      },
+    });
+
+    expect(response?.status).toBe(200);
+    expect(completedWhileDraining).toBe(true);
+    expect(nativeMainStartupGateSnapshot()).toEqual({ status: "ready", homeId });
+  });
+
+  test("failed switch cannot clear a matching stale startup gate from clean probes", async () => {
+    const homeId = "home-stale-blocked-failed-switch";
+    await initializeNativeMainStartupGate({
+      manager: { context: { homeId } } as unknown as NativeProfileManager,
+      probeRecoveryState: () => { throw new Error("startup recovery state was unreadable"); },
+    });
+    let completions = 0;
+    const manager = {
+      context: { homeId, journalPath: "missing", recoveryBlockPath: "missing" },
+      switch: async () => { throw new NativeProfileError("RECOVERY_REQUIRED", "switch failed", 409); },
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager,
+      probeRecoveryState: () => "none",
+      completeRecovery: () => { completions += 1; return true; },
+    });
+
+    expect(response?.status).toBe(409);
+    expect(completions).toBe(0);
+    expect(nativeMainStartupGateSnapshot()).toEqual({
+      status: "blocked",
+      homeId,
+      reason: "manual-recovery",
+    });
+  });
+
+  test("successful switch cannot clear a stale startup gate for another home", async () => {
+    const blockedHomeId = "home-stale-blocked-owner";
+    await initializeNativeMainStartupGate({
+      manager: { context: { homeId: blockedHomeId } } as unknown as NativeProfileManager,
+      probeRecoveryState: () => { throw new Error("startup recovery state was unreadable"); },
+    });
+    let completions = 0;
+    const manager = {
+      context: { homeId: "home-clean-switch", journalPath: "missing", recoveryBlockPath: "missing" },
+      switch: async () => ({ ok: true }),
+    } as unknown as NativeProfileManager;
+    const request = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+
+    const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, {
+      manager,
+      probeRecoveryState: () => "none",
+      completeRecovery: () => { completions += 1; return true; },
+    });
+
+    expect(response?.status).toBe(200);
+    expect(completions).toBe(0);
+    expect(nativeMainStartupGateSnapshot()).toEqual({
+      status: "blocked",
+      homeId: blockedHomeId,
+      reason: "manual-recovery",
+    });
+  });
+
   test("a retained journal publishes a matching main gate before drain release while pool turns remain available", async () => {
     const homeId = "home-clean-retained-journal";
     await initializeNativeMainStartupGate({

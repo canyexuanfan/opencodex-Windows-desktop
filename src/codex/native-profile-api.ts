@@ -8,7 +8,11 @@ import {
 } from "../server/management/body";
 import { NativeProfileManager } from "./native-profile-manager";
 import { NativeProfileError } from "./native-profile-types";
-import { blockNativeMainRecovery, completeNativeMainRecovery } from "./native-profile-startup";
+import {
+  blockNativeMainRecovery,
+  completeNativeMainRecovery,
+  nativeMainStartupGateSnapshot,
+} from "./native-profile-startup";
 import { probeNativeProfileRecoveryState } from "./native-profile-store";
 import { nativeMainOwnerSnapshot, withNativeMainOwnerOperation } from "./native-main-owner";
 import { withNativeMainExclusiveClaim, withNativeMainSharedClaim } from "./native-main-claim";
@@ -74,7 +78,6 @@ async function withRecoveryGateTransition<T>(
   manager: NativeProfileManager,
   deps: NativeProfileApiDeps,
   operation: () => Promise<T>,
-  completeIfAlreadyClearAfterSuccess = false,
 ): Promise<T> {
   const context = manager.context;
   if (!context) return operation();
@@ -112,15 +115,20 @@ async function withRecoveryGateTransition<T>(
       } catch (error) {
         if (!operationFailed) throw error;
       }
-    } else if (before !== "none" || (completeIfAlreadyClearAfterSuccess && !operationFailed)) {
-      try {
-        if (after === "none") {
+    } else {
+      const gate = nativeMainStartupGateSnapshot();
+      const matchingGateCanComplete = gate.status === "blocked"
+        && gate.homeId === context.homeId
+        && (gate.reason === "recovery-pending" || gate.reason === "manual-recovery")
+        && (before !== "none" || !operationFailed);
+      if (matchingGateCanComplete) {
+        try {
           (deps.completeRecovery ?? completeNativeMainRecovery)(context.homeId);
+        } catch (transitionError) {
+          // Preserve the operation's typed/public error. A post-operation probe or
+          // completion failure must not replace it; the gate remains fail closed.
+          if (!operationFailed) throw transitionError;
         }
-      } catch (transitionError) {
-        // Preserve the operation's typed/public error. A post-operation probe or
-        // completion failure must not replace it; the gate remains fail closed.
-        if (!operationFailed) throw transitionError;
       }
     }
   }
@@ -218,7 +226,6 @@ export async function handleNativeProfileAPI(
           () => manager.recover(input.rollback === true, input.confirmedStopped === true),
           { mode: "exclusive", waitMs: deps.drainTimeoutMs ?? 10_000 },
         ),
-        true,
       ));
       return jsonResponse(recovered, 200, req, config);
     }

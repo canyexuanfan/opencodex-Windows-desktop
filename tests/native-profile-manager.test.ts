@@ -694,7 +694,11 @@ describe("native main profile transactions", () => {
     writeFileSync(join(stage.stagingCodexHome, "auth.json"), envelope("account-third", "third"));
     let importError: unknown;
     try {
-      await enrolled.manager.finishStage(stage.stageId, `  ${enrolled.sourceProfile.id.toUpperCase()}  `);
+      await enrolled.manager.finishStage(
+        stage.stageId,
+        stage.writerToken,
+        `  ${enrolled.sourceProfile.id.toUpperCase()}  `,
+      );
     } catch (error) {
       importError = error;
     }
