@@ -1,8 +1,29 @@
 # 020 — WP2: ownership core (fingerprint, five-state read-back, journal)
 
-Diff-level PRD. Depends on WP1 (`010`). Adds no writer and no route: this
-phase answers "what is on disk and did we put it there?" and records every
-operation, so WP3 can mutate safely and WP4 can report honestly.
+Diff-level PRD. Depends on WP1 (`010`). **Shared types live in
+`006_module_contracts.md` and are authoritative — where this document
+disagrees, 006 wins.** Adds no writer and no route: this phase answers "what
+is on disk and did we put it there?" and records every operation, so WP3 can
+mutate safely and WP4 can report honestly.
+
+**A-gate amendments folded in (round 1):**
+
+- `IntegrationClientSpec.ownership: { kind: "provider-key"; path }` below is
+  **retired**. Ownership is a set of fragments produced by WP1's
+  `buildContribution` (006 §2), because Kimi owns a provider entry *and* one
+  model entry per model. `OwnershipRecord` stores the recorded fragment paths;
+  removal touches exactly those and never a prefix scan.
+- `JournalEntry.snapshot` is a tagged `SnapshotRef` (`none`/`stored`/
+  `expired`), not a nullable string — "the file did not exist" and "the
+  snapshot was collected" are different facts (006 §3). `resultAbsent` makes
+  restore-to-absence representable.
+- Snapshot GC runs **after** the journal row commits, and snapshot bytes are
+  written through `atomicWriteFile` (0600 + Windows ACL), closing the
+  secret-handling open question.
+- **Every activation scenario in §3 is rewritten to build fixtures directly**
+  (write a config file, write an `OwnershipRecord`, classify). No scenario may
+  call apply — it does not exist until WP3, and a phase that cannot verify
+  itself is not a phase boundary (PHASE-SPLIT-01).
 
 ## Scope boundary
 
@@ -153,9 +174,12 @@ reported as `absent`, and a foreign edit can never be reported as `stale`
 | `unsafe` / unparseable | write `{{{` to the config | `reason === "unparseable"` |
 | `absent` | fresh temp home, valid empty config | `state === "absent"` |
 | `conflict` / unowned-key | write a provider block by hand, no record | `reason === "unowned-key"` |
-| `conflict` / foreign-edit | apply, then append a comment to the file | `reason === "foreign-edit"` |
-| `stale` | apply, then classify with a different port's fresh fingerprint | `state === "stale"` |
-| `current` | apply, classify immediately | `state === "current"` |
+| `conflict` / foreign-edit | write a config containing our fragments, write a record whose `fileFingerprint` is of that text, then append a comment to the file | `reason === "foreign-edit"` |
+| `stale` | write config + a record whose `fileFingerprint` matches the file but whose `blockFingerprint` differs from the fresh one | `state === "stale"` |
+| `current` | write config + a record whose both fingerprints match | `state === "current"` |
+
+Every fixture is built by writing bytes and a record **directly** — WP2 never
+calls the writer, which does not exist until WP3 (006 §7).
 
 ## 4. `src/integrations/journal.ts` (NEW)
 
@@ -208,9 +232,10 @@ not stored: an entry is undoable when it is the newest for its client AND the
 file's current fingerprint still equals `resultFingerprint`. Storing a boolean
 would go stale the moment anything else wrote the file.
 
-**Activation scenario:** apply, then hand-edit the file, then ask for undo
-eligibility — expect `false` with reason `foreign-edit`, and the row degrades
-to a restore offer.
+**Activation scenario:** append a journal row whose `resultFingerprint` is of
+a known text, write that text to the config, and assert undo eligibility is
+`true`; then append one byte to the file and assert it flips to `false` while
+the snapshot stays `stored`, so the row degrades to a restore offer.
 
 ## 5. Journal durability
 

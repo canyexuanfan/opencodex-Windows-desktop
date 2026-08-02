@@ -1,8 +1,33 @@
 # 030 — WP3: writer path (apply / disable / restore)
 
-Diff-level PRD. Depends on WP1 (`010`) and WP2 (`020`). This is the phase that
-earns the product's promise: every mutation is journaled, reversible, and
-refuses rather than guesses. It adds no route (WP4) and no UI (WP5/WP6).
+Diff-level PRD. Depends on WP1 (`010`) and WP2 (`020`). **Shared types live in
+`006_module_contracts.md` and are authoritative — where this document
+disagrees, 006 wins.** This is the phase that earns the product's promise:
+every mutation is journaled, reversible, and refuses rather than guesses. It
+adds no route (WP4) and no UI (WP5).
+
+**A-gate amendments folded in (round 1):**
+
+- The `WriteOutcome` sketch below is **superseded by 006 §4**: the failure
+  field is `reason` (not `refused`), literals are snake_case
+  (`drift_requires_confirm`, `non_loopback`, …), and `snapshotPath` rides on
+  the refusal so 040 can forward it and 060 can offer manual recovery.
+- Function signatures are **006 §5**: `applyIntegration(input:
+  IntegrationWriteInput)` etc. The `ctx: {...}` placeholders below are not
+  signatures. `ManagementContext` is never passed in — it carries neither
+  `models` nor `port`; the route builds the input.
+- Merge/remove operate on **`ManagedContribution` fragments** (006 §2), so
+  Kimi's model entries are removed along with its provider entry, and only
+  recorded paths are ever deleted.
+- Restore handles `SnapshotRef` tags (006 §3): `none` means restore-to-absence
+  (delete the file we created, fingerprint-guarded), `expired` refuses.
+- All I/O goes through the injected `IntegrationIO` seam (006 §5), which is
+  what makes compare-before-commit and `write_failed` testable without
+  monkey-patching `node:fs`.
+- The config write, the ownership record, and the journal row must be
+  **compensating**: if the record or journal write fails after the config
+  write succeeded, restore the pre-write snapshot and report `write_failed`.
+  A half-applied state with no journal row would be unrecoverable by design.
 
 ## Scope boundary
 

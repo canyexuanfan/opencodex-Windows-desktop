@@ -1,5 +1,23 @@
 # 060 — WP6: Integrations overview, client pages, and rollback surfaces
 
+**A-gate amendments (round 1).** This document and `050` are ONE work-phase
+(see 050's header); they are built and verified together.
+
+Shared types come from `006_module_contracts.md` and resolve the open
+questions this document raised:
+
+- The journal row is `IntegrationJournalRow` (006 §6). The field is
+  **`undoable`**, not `undoEligible`, and snapshot availability is the tag
+  `snapshot === "expired"` — not a boolean. Every reference here is read
+  against those names.
+- `snapshotPath` IS emitted by WP4 on `integration_unsafe` and
+  `integration_mutation_failed` envelopes (006 §4, 040 amendment), so the
+  manual-recovery Notice is reachable and must be implemented rather than
+  flagged as blocked.
+- Any surface branch that still cannot be reached through the final API
+  contract must be deleted rather than shipped as dead UI
+  (C-ACTIVATION-GROUNDING-01).
+
 Implementation plan. Depends on WP1–WP5, especially the exact HTTP contract in
 `040_wp4_management_api.md`. This package implements `004_ux_design.md`
 §§4–10 without adding a second state model in the browser.

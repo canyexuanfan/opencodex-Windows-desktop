@@ -1,9 +1,23 @@
 # 010 — WP1: client registry + per-client serializers
 
-Diff-level PRD. Baseline contracts: `005_contract_inventory.md`. Client
-schemas: `002_client_toggle_matrix.md`. This phase adds no writer and no
-route — it makes the export core able to *describe* six clients in three
-text formats, keeping the existing read-only surfaces byte-identical.
+Diff-level PRD. Baseline contracts: `005_contract_inventory.md`. **Shared
+types are defined in `006_module_contracts.md` and are authoritative — where
+this document disagrees with 006, 006 wins.** Client schemas:
+`002_client_toggle_matrix.md`. This phase adds no writer and no route — it
+makes the export core able to *describe* six clients in three text formats,
+keeping the existing read-only surfaces byte-identical.
+
+**A-gate amendments folded in (round 1):**
+
+- `Bun.YAML.stringify` emits flow style with no trailing newline (verified);
+  YAML is **hand-rendered** like TOML (006 §1). The `serializeDocument` sketch
+  below is superseded by 006 §1 on the YAML branch.
+- `ExportClientSpec` gains **both** `format` and `summarize` (the §3.2
+  consumer requires `summarize`; the §2.1 diff below omits it and is
+  corrected here).
+- This phase also lands `buildContribution` per client (006 §2) — the
+  writer-side fragment list — because only the builder knows each client's
+  schema. WP2/WP3 consume it; they do not re-derive paths.
 
 ## Scope boundary
 
@@ -144,6 +158,18 @@ result must survive `Bun.TOML.parse` — that round-trip IS the observable proof
 +   * consumer has to infer either from the name.
 +   */
 +  format: ConfigFormat;
++  /**
++   * Count models in THIS client's document shape. Required so a new client
++   * cannot be added without teaching the summarizer about it — the old
++   * "anything not OpenCode must be Pi" branch was a latent bug (§3.2).
++   */
++  summarize: (document: unknown) => { modelCount: number; modelsWithoutLimits: number };
++  /**
++   * Writer-side fragment list (006 §2). Only the builder knows where this
++   * client keeps our entries, so ownership paths originate here and WP2/WP3
++   * consume them rather than re-deriving a single "provider key" path.
++   */
++  buildContribution: BuildContribution;
  }
 ```
 

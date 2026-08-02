@@ -1,5 +1,30 @@
 # 040 — WP4 management API routes
 
+**A-gate amendments (round 1) — read before implementing.** Shared types live
+in `006_module_contracts.md` and are authoritative where this document
+disagrees:
+
+- The writer union is 006 §4: refusals carry `reason` (snake_case literals)
+  and may carry `snapshotPath`, which this module **forwards** on the
+  matching error envelopes (`integration_unsafe`,
+  `integration_mutation_failed`) so the GUI can offer manual recovery.
+- Handlers build an `IntegrationWriteInput` (006 §5) from `ManagementContext`
+  plus the catalog rows this router already fetches for `/api/client-config`.
+  `ManagementContext` is never passed to the writer — it carries neither
+  `models` nor `port`.
+- The journal handler must **build `IntegrationJournalRow`** (006 §6:
+  `snapshot: "none" | "stored" | "expired"`, `undoable`), not return raw
+  operations. The pasted handler below predates that decision and must be
+  updated in the same change.
+- Restore of an operation whose snapshot tag is `none` is
+  **restore-to-absence** (delete the file we created, fingerprint-guarded),
+  not a 410. Only the `expired` tag produces
+  `integration_snapshot_expired`.
+- The stale-flight replacement branch (>10 min) gains an activation scenario:
+  inject `now` through the writer's `IntegrationIO` seam (006 §5), start a
+  flight, advance the clock past the terminal window, and assert the second
+  request runs instead of returning 409.
+
 Implementation plan only. WP1-WP3 are prerequisites. This work package adds
 the management-plane HTTP adapter over their registry, state, journal, and
 writer contracts; it does not add a second integration model or duplicate
