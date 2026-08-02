@@ -233,6 +233,23 @@ describe("registry-owned provider model discovery", () => {
     })).toEqual({});
   });
 
+  test("infers Codex-safe input modalities from bounded architecture metadata", () => {
+    expect(catalogHintsFromModelsApiItem("example", {
+      id: "vision-chat",
+      architecture: { modality: "text+image->text" },
+    })).toEqual({ inputModalities: ["text", "image"] });
+
+    expect(catalogHintsFromModelsApiItem("example", {
+      id: "unknown-input",
+      architecture: { modality: "text+video->text" },
+    })).toEqual({ inputModalities: ["text"] });
+
+    expect(catalogHintsFromModelsApiItem("example", {
+      id: "controlled",
+      architecture: { modality: "text+im\u0000age->text" },
+    })).toEqual({});
+  });
+
   test("drops untrusted metadata tokens containing control characters", () => {
     expect(catalogHintsFromModelsApiItem("example", {
       id: "controlled",

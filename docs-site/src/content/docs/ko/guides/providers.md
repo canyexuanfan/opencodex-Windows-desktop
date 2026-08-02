@@ -142,7 +142,7 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL http
 
 ## 3. API 키 카탈로그
 
-opencodex에는 빌트인 프리셋이 70개 들어 있습니다. 키 방식 58개, OAuth 8개, 로컬 3개,
+opencodex에는 빌트인 프리셋이 72개 들어 있습니다. 키 방식 60개, OAuth 8개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
 입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다릅니다). 주요 항목은 다음과 같습니다:
 
@@ -179,6 +179,8 @@ Cline IDE/CLI에서만 제공되며 API로는 사용할 수 없습니다. `minim
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
+| SambaNova Cloud | `https://api.sambanova.ai/v1` |
+| Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -226,6 +228,17 @@ Bearer API 키를 사용합니다. registry가 소유하는 DeepInfra 모델 목
 CLI 사용자는 `~/.commandcode/auth.json`의 로컬 CLI 자격 증명을 가져올 수 있음), 모델 카탈로그는
 계정 단위이며 로그인 후 인증된 discovery 엔드포인트에서 가져옵니다. 채팅 요청은 설정된 bearer
 키를 사용합니다. 키는 [Command Code Studio](https://commandcode.ai/studio/)에서 생성합니다.
+
+**SambaNova Cloud 검색:** 프리셋은 고정 API 호스트의 SambaNova Cloud 공개 `/v1/models` 목록을 읽고, 프로바이더
+네이티브 ID를 보존하며 discovery를 128 KiB와 raw 행 128개로 제한합니다. chat 요청은 설정된 Bearer
+키를 사용하고 SambaNova가 아직 지원하지 않는 병렬 function call은 비활성화합니다. 비공개 SambaStudio
+deployment 엔드포인트는 범위에서 제외합니다. 키는 [SambaNova Cloud](https://cloud.sambanova.ai/apis)에서 생성합니다.
+
+**Nebius Token Factory 검색:** 프리셋은 인증된 verbose 모델 카탈로그를 요청하고 architecture가 text를
+출력하는 행만 유지해 embedding 및 image-generation 모델을 제외합니다. 슬래시가 포함된 네이티브 ID와
+보고된 context 및 input modality metadata를 보존하며 discovery를 512 KiB와 raw 행 512개로 제한합니다.
+dedicated deployment 호스트는 범위에서 제외합니다. 키는
+[Nebius Token Factory](https://tokenfactory.nebius.com)에서 생성합니다.
 
 > **Baseten 범위:** 이 프리셋은 Baseten의 공유 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)만
 > 지원합니다. 로컬 사용에는 개인 [API 키](https://docs.baseten.co/organization/api-keys)를, 공유/프로덕션

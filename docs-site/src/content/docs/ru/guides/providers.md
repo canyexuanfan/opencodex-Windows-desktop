@@ -153,7 +153,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 70 встроенными пресетами: 58 на основе ключей, восемь OAuth, три локальных и
+opencodex поставляется с 72 встроенными пресетами: 60 на основе ключей, восемь OAuth, три локальных и
 один пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его; проверка зависит от провайдера.
 Наиболее заметные записи:
@@ -190,6 +190,8 @@ opencodex поставляется с 70 встроенными пресетам
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
+| SambaNova Cloud | `https://api.sambanova.ai/v1` |
+| Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -241,6 +243,18 @@ endpoint в него не входят. Ключи создаются в [Hyperb
 пользователей CLI Command Code); каталог моделей привязан к учётной записи и берётся из
 аутентифицированного discovery endpoint после входа. Запросы чата используют настроенный bearer-ключ.
 Ключи создаются в [Command Code Studio](https://commandcode.ai/studio/).
+
+**Discovery для SambaNova Cloud.** Пресет читает общедоступный список SambaNova Cloud `/v1/models` на
+фиксированном API-хосте, сохраняет нативные id провайдера и ограничивает discovery размером 128 KiB
+и 128 исходными строками. Chat-запросы используют настроенный Bearer-ключ; параллельные вызовы
+функций отключены, поскольку SambaNova пока их не поддерживает. Частные endpoint развёртываний
+SambaStudio не входят в область пресета. Ключи создаются в [SambaNova Cloud](https://cloud.sambanova.ai/apis).
+
+**Discovery для Nebius Token Factory.** Пресет запрашивает аутентифицированный verbose-каталог и
+оставляет только модели, architecture которых выдаёт текст, исключая embedding и image-generation.
+Он сохраняет нативные id со знаком `/`, а также заявленные context и input-modality metadata, и
+ограничивает discovery размером 512 KiB и 512 исходными строками. Хосты dedicated deployment не
+входят в область пресета. Ключи создаются в [Nebius Token Factory](https://tokenfactory.nebius.com).
 
 > **Область Baseten:** пресет поддерживает только общие [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > Baseten. Для локальной работы используйте личный [API-ключ](https://docs.baseten.co/organization/api-keys),

@@ -143,7 +143,7 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 70 個含まれています。キー方式 58、OAuth 8、ローカル 3、
+opencodex には組み込みプリセットが 72 個含まれています。キー方式 60、OAuth 8、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します(検証はプロバイダー固有です)。主な項目は以下のとおりです:
 
@@ -179,6 +179,8 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
+| SambaNova Cloud | `https://api.sambanova.ai/v1` |
+| Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -228,6 +230,18 @@ Provider API ホストから読み、スラッシュを含むネイティブモ�
 CLI 資格情報の取り込みも可能)。モデルカタログはアカウント単位で、ログイン後に認証済みの
 discovery エンドポイントから取得します。チャットリクエストは設定済みの bearer キーを使います。
 キーは [Command Code Studio](https://commandcode.ai/studio/) で作成します。
+
+**SambaNova Cloud の discovery:** preset は固定 API ホスト上の SambaNova Cloud の公開 `/v1/models` 一覧を読み、
+プロバイダー固有の ID を保持し、discovery を 128 KiB と raw 128 行に制限します。chat リクエストは
+設定済み Bearer キーを使い、SambaNova がまだ対応していない並列 function call は無効にします。
+非公開の SambaStudio deployment endpoint は対象外です。キーは
+[SambaNova Cloud](https://cloud.sambanova.ai/apis) で作成します。
+
+**Nebius Token Factory の discovery:** preset は認証付きの verbose モデルカタログを取得し、architecture
+が text を出力する行だけを残して embedding と image-generation モデルを除外します。スラッシュを含む
+ネイティブ ID と、報告された context / input modality metadata を保持し、discovery を 512 KiB と raw
+512 行に制限します。dedicated deployment のホストは対象外です。キーは
+[Nebius Token Factory](https://tokenfactory.nebius.com) で作成します。
 
 > **Baseten の対象範囲:** このプリセットは Baseten の共有 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > のみを対象とします。ローカル利用では個人の [API キー](https://docs.baseten.co/organization/api-keys)を、

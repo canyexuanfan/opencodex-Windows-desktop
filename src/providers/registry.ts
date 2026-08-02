@@ -1380,6 +1380,53 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // 401 UNAUTHORIZED without a Bearer key. Primary source: https://commandcode.ai/docs/provider.
     note: "Command Code Provider API (OpenAI-compatible); API access requires the Provider plan. Use `ocx login command-code` for OAuth account login (imports an existing local Command Code CLI credential when present). Docs: https://commandcode.ai/docs/provider.",
   },
+  {
+    id: "sambanova",
+    label: "SambaNova Cloud",
+    baseUrl: "https://api.sambanova.ai/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://cloud.sambanova.ai/apis",
+    liveModels: true,
+    preserveCustomDestination: true,
+    apiKeyValidation: "unknown",
+    // SambaNova documents this request field but does not yet support parallel function calls.
+    parallelToolCalls: false,
+    // The public catalog does not report a trustworthy per-model reasoning contract.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 128 * 1024,
+      maxModels: 128,
+    },
+    note: "SambaNova Cloud text-generation models only; private SambaStudio deployment endpoints are outside this preset.",
+  },
+  {
+    id: "nebius",
+    label: "Nebius Token Factory",
+    baseUrl: "https://api.tokenfactory.nebius.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://tokenfactory.nebius.com",
+    liveModels: true,
+    preserveCustomDestination: true,
+    // The public tools guide documents single function selection, not parallel tool calls.
+    parallelToolCalls: false,
+    // Missing reasoning metadata must not promote a model to Codex's full fallback ladder.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      query: { verbose: "true" },
+      maxResponseBytes: 512 * 1024,
+      maxModels: 512,
+      filter: {
+        // Token Factory's verbose catalog also contains embeddings and image generation.
+        // Keep text- and vision-input rows whose output modality is text.
+        allOf: [{ path: ["architecture", "modality"], containsAny: ["->text"] }],
+      },
+    },
+    note: "Shared Token Factory text-output inference only; live discovery excludes embedding and image-generation rows.",
+  },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
   { id: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://fireworks.ai/account/api-keys" },
