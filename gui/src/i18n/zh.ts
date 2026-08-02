@@ -24,6 +24,7 @@ export const zh: Record<TKey, string> = {
   "common.remove": "移除",
   "common.loading": "加载中…",
   "common.retry": "重试",
+  "auth.adminTokenTitle": "OpenCodex 管理员令牌 (OPENCODEX_ADMIN_AUTH_TOKEN)",
   "theme.label": "主题",
   "theme.light": "浅色",
   "theme.dark": "深色",

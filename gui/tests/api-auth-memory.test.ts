@@ -19,7 +19,9 @@ beforeEach(() => {
     fetch: { configurable: true, value: testWindow.fetch.bind(testWindow) },
   });
   originalPrompt = window.prompt;
-  resetApiAuthFetchForTests();
+  resetApiAuthFetchForTests(async () => {
+    return window.prompt("OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)")?.trim() || null;
+  });
   sessionStorage.clear();
 });
 

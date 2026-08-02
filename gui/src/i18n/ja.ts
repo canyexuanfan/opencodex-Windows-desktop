@@ -26,6 +26,7 @@ export const ja: Record<TKey, string> = {
   "common.remove": "削除",
   "common.loading": "読み込み中…",
   "common.retry": "再試行",
+  "auth.adminTokenTitle": "OpenCodex 管理者トークン (OPENCODEX_ADMIN_AUTH_TOKEN)",
   "app.logoAria": "opencodex ロゴ",
   "app.claudeOn": "Claude オン",
   "app.claudeOff": "Claude オフ",

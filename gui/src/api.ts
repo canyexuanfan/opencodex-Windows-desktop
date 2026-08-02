@@ -1,3 +1,5 @@
+import { promptForAdminToken } from "./admin-token-dialog";
+
 let installed = false;
 /** Shared 401 refresh gate — concurrent waiters join one prompt / token resolution. */
 let resolutionInFlight: Promise<string | null> | null = null;
@@ -10,6 +12,9 @@ let rawFetch: typeof fetch | null = null;
  * A full reload clears module state and allows prompting again.
  */
 let promptCancelled = false;
+
+type AdminTokenPrompt = () => Promise<string | null>;
+let requestAdminToken: AdminTokenPrompt = promptForAdminToken;
 
 /** Document path re-fetched to mint a fresh loopback GUI session (server injects meta tags). */
 const SESSION_REBOOTSTRAP_PATH = "/";
@@ -135,8 +140,9 @@ function withToken(input: RequestInfo | URL, init: RequestInit | undefined, toke
 
 /**
  * Resolve a token after a 401. Concurrent callers share one in-flight resolution so a dashboard
- * fan-out does not open one window.prompt per /api request (#647). Re-reads memoryToken before
- * prompting so waiters that wake after another request already stored a token do not re-prompt.
+ * fan-out opens at most one credential dialog per /api request wave (#647). Re-reads
+ * memoryToken before prompting so waiters that wake after another request already stored a token
+ * do not re-prompt.
  */
 async function resolveTokenAfter401(failedToken: string | null): Promise<string | null> {
   if (promptCancelled) return null;
@@ -150,7 +156,7 @@ async function resolveTokenAfter401(failedToken: string | null): Promise<string 
     const renewed = await reBootstrapSessionToken();
     if (renewed) return renewed;
 
-    const prompted = window.prompt("OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)")?.trim() || null;
+    const prompted = await requestAdminToken();
     if (prompted) {
       storeToken(prompted);
       return prompted;
@@ -202,7 +208,7 @@ export function installApiAuthFetch(): void {
 }
 
 /** Test-only: allow a fresh `installApiAuthFetch()` in the same module instance. */
-export function resetApiAuthFetchForTests(): void {
+export function resetApiAuthFetchForTests(adminTokenPrompt: AdminTokenPrompt = promptForAdminToken): void {
   installed = false;
   memoryToken = null;
   memoryCsrfToken = null;
@@ -210,4 +216,5 @@ export function resetApiAuthFetchForTests(): void {
   resolutionInFlight = null;
   rawFetch = null;
   promptCancelled = false;
+  requestAdminToken = adminTokenPrompt;
 }

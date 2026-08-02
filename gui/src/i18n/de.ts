@@ -24,6 +24,7 @@ export const de: Record<TKey, string> = {
   "common.remove": "Entfernen",
   "common.loading": "Lädt…",
   "common.retry": "Wiederholen",
+  "auth.adminTokenTitle": "OpenCodex-Admin-Token (OPENCODEX_ADMIN_AUTH_TOKEN)",
   "theme.label": "Design",
   "theme.light": "Hell",
   "theme.dark": "Dunkel",

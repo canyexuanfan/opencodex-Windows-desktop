@@ -26,6 +26,7 @@ export const en = {
   "common.remove": "Remove",
   "common.loading": "Loading…",
   "common.retry": "Retry",
+  "auth.adminTokenTitle": "OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)",
   "app.logoAria": "opencodex logo",
   "app.claudeOn": "Claude ON",
   "app.claudeOff": "Claude OFF",

@@ -26,6 +26,7 @@ export const ru: Record<TKey, string> = {
   "common.remove": "Удалить",
   "common.loading": "Загрузка…",
   "common.retry": "Повторить",
+  "auth.adminTokenTitle": "Токен администратора OpenCodex (OPENCODEX_ADMIN_AUTH_TOKEN)",
   "app.logoAria": "Логотип opencodex",
   "app.claudeOn": "Claude ВКЛ",
   "app.claudeOff": "Claude ВЫКЛ",

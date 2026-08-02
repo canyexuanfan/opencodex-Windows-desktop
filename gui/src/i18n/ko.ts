@@ -24,6 +24,7 @@ export const ko: Record<TKey, string> = {
   "common.remove": "삭제",
   "common.loading": "불러오는 중…",
   "common.retry": "재시도",
+  "auth.adminTokenTitle": "OpenCodex 관리자 토큰 (OPENCODEX_ADMIN_AUTH_TOKEN)",
   "theme.label": "테마",
   "theme.light": "라이트",
   "theme.dark": "다크",
