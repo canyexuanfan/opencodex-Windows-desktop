@@ -1043,3 +1043,13 @@ Codex / Claude Code / 其他现有客户端
 - [x] 已重新生成并签名安装包：`desktop/out/OpenCodex-Setup-2.8.0-x64.exe`，SHA-256=`1812F1F2F6849868C5E212F5D579ACD500134B7B58725F404CC251F7999FEC27`；安装包、unpacked `OpenCodex.exe` 与内置 `bun.exe` 均可读取 `CN=十七°` 签名主体，本机自签链状态为 `UnknownError`。
 - [x] 本次只生成新版安装包，没有运行安装包、没有覆盖 `E:\Program\OpenCodex`、没有停止代理、没有重启当前 Codex；临时 PFX、临时证书和本次 `C:\tmp` 构建/签名目录均已清理。
 - [ ] 剩余动作交还用户：稍后手动运行新版安装包并重启后，再只读复核 `config.port`、`runtime-port.json`、Codex `base_url` 是否一致，以及桌面快捷方式是否出现。
+
+# 验收记录：用户安装重启后最终只读复核（2026-08-02）
+- [x] 用户手动安装并重启后，Codex 当前路由为 `http://127.0.0.1:10100/v1`，`GET /healthz` 返回 200，body 中 `service=opencodex`、`version=2.8.0`、`pid=36052`、`port=10100`。
+- [x] `~/.opencodex/config.json` 默认 `port=10100`，`~/.opencodex/runtime-port.json` 也为 `port=10100`、`hostname=127.0.0.1`，与 Codex `base_url` 三者一致，普通桌面启动固定端口机制已在真实安装后生效。
+- [x] 用户 Provider 保留：配置中仍存在 `openai` 与 `zhipu-bigmodel` 两个 Provider，未输出 API Key。
+- [x] 已安装目录包含普通启动固定端口与更新迁移逻辑：`src/desktop/entry.ts` 中存在 `findAvailablePort(preferredPort, DESKTOP_HOSTNAME)`、`shouldPersistSelectedPort(diskConfig.port, port, preferredPort)`、`saveConfig(diskConfig)`；更新路径仍包含 `selectRestartPortAfterReclaim` 与 `selectPostUpdatePort`。
+- [x] 开始菜单快捷方式存在：`C:\Users\wzm33\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\OpenCodex\OpenCodex.lnk`，目标为 `E:\Program\OpenCodex\OpenCodex.exe`，图标为 `E:\Program\OpenCodex\resources\tray\opencodex-tray-online.ico,0`。
+- [x] 桌面快捷方式存在于真实桌面重定向目录：`C:\Users\wzm33\OneDrive\Desktop\OpenCodex.lnk`，目标为 `E:\Program\OpenCodex\OpenCodex.exe`，图标为 `E:\Program\OpenCodex\resources\tray\opencodex-tray-online.ico,0`；传统路径 `C:\Users\wzm33\Desktop` 不存在，故此前只查传统路径会误判。
+- [x] 已安装 `OpenCodex.exe` 与内置 `bun.exe` 均可读取签名主体 `CN=十七°`，thumbprint=`1CDFF6DE61972259B655071130A66C756330DEB0`；本机自签链状态为 `UnknownError`，属于未导入受信测试根时的预期状态，不再是 `NotSigned`。
+- [x] 本次只读复核没有安装、停止代理或重启 Codex。
