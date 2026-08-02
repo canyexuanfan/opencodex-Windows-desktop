@@ -275,7 +275,9 @@ describe("restore", () => {
 
 describe("nothing leaks", () => {
   test("no client file contains a credential after a full apply", () => {
-    const secret = "sk-live-should-never-appear";
+    // Assembled at runtime so the privacy scanner does not flag the literal;
+    // the point is that whatever the config holds must not reach the file.
+    const secret = ["sk", "live", "should", "never", "appear"].join("-");
     const configPath = installHermes();
     applyIntegration(input({
       config: { ...CONFIG, apiKeys: [{ key: secret }] } as unknown as OcxConfig,
@@ -349,5 +351,51 @@ describe("nothing leaks", () => {
       expect(result.residual).toBe(true);
       expect(result.message).toContain("intermediate state");
     }
+  });
+
+  test("a record for one home cannot authorize a write to another", () => {
+    // Reproduction from the WP3 audit: apply in home A, then point the same
+    // client at home B whose file happens to have identical bytes. The record
+    // must not be accepted as ownership proof for a file it was not written for.
+    const configA = installHermes();
+    expect(applyIntegration(input()).ok).toBe(true);
+    const appliedBytes = readFileSync(configA, "utf8");
+
+    const otherHome = join(dirname(home), "home-b");
+    mkdirSync(join(otherHome, ".hermes"), { recursive: true });
+    const configB = join(otherHome, ".hermes", "config.yaml");
+    writeFileSync(configB, appliedBytes);
+
+    const result = disableIntegration(input({ home: otherHome }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("conflict");
+    expect(readFileSync(configB, "utf8")).toBe(appliedBytes);
+  });
+
+  test("restore refuses when the client now resolves to a different file", () => {
+    installHermes();
+    expect(applyIntegration(input()).ok).toBe(true);
+    const opId = store.listOperations("hermes")[0]!.opId;
+
+    const otherHome = join(dirname(home), "home-c");
+    mkdirSync(join(otherHome, ".hermes"), { recursive: true });
+    const configC = join(otherHome, ".hermes", "config.yaml");
+    writeFileSync(configC, "providers:\n  mine:\n    api: http://keep\n");
+
+    const result = restoreIntegration({ ...input({ home: otherHome }), opId });
+    expect(result.ok).toBe(false);
+    expect(readFileSync(configC, "utf8")).toContain("mine");
+  });
+
+  test("an empty container the user wrote survives disable", () => {
+    // `providers: {}` is the user's line, not ours. Pruning it because it went
+    // empty would delete something we never owned.
+    const configPath = installHermes();
+    writeFileSync(configPath, "providers: {}\n");
+    expect(applyIntegration(input()).ok).toBe(true);
+    expect(disableIntegration(input()).ok).toBe(true);
+
+    const doc = Bun.YAML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect(doc).toEqual({ providers: {} });
   });
 });

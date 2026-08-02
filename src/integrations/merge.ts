@@ -53,10 +53,10 @@ export function deletePath(doc: unknown, path: readonly string[]): { doc: unknow
   const leaf = path[path.length - 1]!;
   if (!(leaf in cursor)) return { doc: root, removed: false };
   delete cursor[leaf];
-  for (let i = chain.length - 1; i >= 1; i -= 1) {
-    if (Object.keys(chain[i]!).length > 0) break;
-    delete chain[i - 1]![path[i - 1]!];
-  }
+  // Parent containers are NOT pruned. We own the leaf we recorded, not the map
+  // that holds it: a user who wrote `providers: {}` before we existed still has
+  // it afterwards. Removing a now-empty parent looked tidy and quietly deleted
+  // a line the user had written.
   return { doc: root, removed: true };
 }
 

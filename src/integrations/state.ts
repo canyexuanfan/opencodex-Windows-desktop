@@ -58,6 +58,13 @@ export function classifyIntegration(input: {
   parsed: unknown | typeof PARSE_FAILED;
   record: OwnershipRecord | null;
   contribution: ManagedContribution;
+  /**
+   * The file being classified. A record only describes the file it was written
+   * for, so this is compared against `record.configPath` before any
+   * fingerprint is trusted.
+   */
+  configPath?: string;
+  clientId?: IntegrationClientId;
 }): { state: IntegrationState; reason?: StateReason } {
   if (input.fileText !== null && !input.fileIsRegular) {
     return { state: "unsafe", reason: "not-regular-file" };
@@ -65,6 +72,20 @@ export function classifyIntegration(input: {
   if (input.parsed === PARSE_FAILED) return { state: "unsafe", reason: "unparseable" };
   if (!hasOurFragments(input.parsed, input.contribution)) return { state: "absent" };
   if (!input.record) return { state: "conflict", reason: "unowned-key" };
+  /*
+   * A record proves ownership of ONE file. Change HOME, XDG_CONFIG_HOME,
+   * HERMES_HOME or KIMI_CODE_HOME and the same client resolves to a different
+   * path — whose contents may hash identically because we generate the same
+   * bytes. Trusting the fingerprint alone would let a record for path A grant
+   * `current` on path B, and the writer resolves the CURRENT path, so disable
+   * would then delete fragments from a file this record never owned.
+   */
+  if (input.clientId !== undefined && input.record.clientId !== input.clientId) {
+    return { state: "conflict", reason: "unowned-key" };
+  }
+  if (input.configPath !== undefined && input.record.configPath !== input.configPath) {
+    return { state: "conflict", reason: "unowned-key" };
+  }
   if (fingerprint(input.fileText ?? "") !== input.record.fileFingerprint) {
     return { state: "conflict", reason: "foreign-edit" };
   }
@@ -166,6 +187,8 @@ export function readIntegrationState(input: IntegrationStateInput): IntegrationS
     parsed,
     record,
     contribution,
+    configPath,
+    clientId: input.clientId,
   });
 
   return {

@@ -192,7 +192,13 @@ function preflight(input: IntegrationWriteInput) {
     return { failed: refuse(clientId, "unsafe", "unsafe", `${configPath} could not be parsed`) } as const;
   }
   const contribution = exportSpec.buildContribution(exportContextOf(input));
-  const record = store.readRecords()[clientId] ?? null;
+  // A record proves ownership of the file it was written FOR. Matching only by
+  // client id let a record for one home authorize a write to another whose
+  // bytes happened to hash the same — which deleted a config we never touched.
+  const stored = store.readRecords()[clientId] ?? null;
+  const record = stored && stored.clientId === clientId && stored.configPath === configPath
+    ? stored
+    : null;
   // `configPath`/`clientId` are load-bearing, not decoration: a record proves
   // ownership of ONE file, and the writer mutates whatever path resolves NOW.
   // Without them a record written for another home directory would grant
@@ -311,7 +317,15 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
   if (entry.clientId !== input.clientId) throw new Error("restore input names a different client than the operation");
 
   const clientId = entry.clientId;
-  const configPath = INTEGRATION_CLIENTS[clientId].configPath(input.env, input.home);
+  const resolvedPath = INTEGRATION_CLIENTS[clientId].configPath(input.env, input.home);
+  // Restore acts on the path the operation was journaled against. Resolving a
+  // different path here would let an operation recorded for one home delete a
+  // file in another.
+  const configPath = entry.configPath;
+  if (resolvedPath !== configPath) {
+    return refuse(clientId, "conflict", "conflict",
+      `that operation was recorded for ${configPath}, but this client now resolves to ${resolvedPath}`);
+  }
   const snapshot = store.readSnapshot(entry);
   if (snapshot.kind === "expired") {
     return refuse(clientId, "snapshot_expired", "absent", "that backup has expired");
