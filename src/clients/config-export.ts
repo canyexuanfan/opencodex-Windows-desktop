@@ -293,15 +293,33 @@ export function openclawHomeDir(env: OpencodeLaunchEnv = process.env, home: stri
 export function openclawConfigPath(env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {
   const explicit = env.OPENCLAW_CONFIG_PATH?.trim();
   if (explicit) return absoluteClientPath(explicit, openclawEffectiveHome(env, home), "OPENCLAW_CONFIG_PATH");
+  /*
+   * OpenClaw searches FILE candidates, not directories: a `.openclaw`
+   * directory that exists but holds no config does not beat an actual
+   * `.clawdbot/clawdbot.json`. Checking the directory first picked an
+   * absent modern file over a real legacy one and wrote where nothing reads.
+   *
+   * An explicit state dir still scopes the search to that directory, because
+   * the operator named it.
+   */
+  const stateOverride = env.OPENCLAW_STATE_DIR?.trim();
+  const effectiveHome = openclawEffectiveHome(env, home);
+  const profile = env.OPENCLAW_PROFILE?.trim();
+  const scoped = stateOverride !== undefined && stateOverride !== ""
+    || (profile !== undefined && profile !== "" && profile.toLowerCase() !== "default");
   const stateDir = openclawHomeDir(env, home);
-  // Within the chosen state directory the same rule applies to the file: the
-  // modern name wins, and a legacy `clawdbot.json` is honored only when it is
-  // the one that actually exists.
-  const modern = join(stateDir, "openclaw.json");
-  if (existsSync(modern)) return modern;
-  const legacy = join(stateDir, "clawdbot.json");
-  if (existsSync(legacy)) return legacy;
-  return modern;
+  const candidates = scoped
+    ? [join(stateDir, "openclaw.json"), join(stateDir, "clawdbot.json")]
+    : [
+      join(effectiveHome, ".openclaw", "openclaw.json"),
+      join(effectiveHome, ".openclaw", "clawdbot.json"),
+      join(effectiveHome, ".clawdbot", "openclaw.json"),
+      join(effectiveHome, ".clawdbot", "clawdbot.json"),
+    ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return candidates[0]!;
 }
 
 export function kimiHomeDir(env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {

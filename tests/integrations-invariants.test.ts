@@ -382,14 +382,30 @@ describe("openclaw's legacy layout is discovered, not declared obsolete", () => 
     expect(existsSync(join(home, ".openclaw", "openclaw.json"))).toBe(false);
   });
 
-  test("the modern directory wins whenever it exists", () => {
-    // Both present: a migrated user must not have us writing to the old one.
+  test("an empty modern directory does not beat a real legacy config", () => {
+    /*
+     * OpenClaw searches FILE candidates, not directories. Checking the
+     * directory first picked an ABSENT `.openclaw/openclaw.json` over a real
+     * `.clawdbot/clawdbot.json` and wrote where nothing reads — the same
+     * defect the legacy support was added to prevent.
+     */
     mkdirSync(join(home, ".clawdbot"), { recursive: true });
     writeFileSync(join(home, ".clawdbot", "clawdbot.json"), "{}\n");
     mkdirSync(join(home, ".openclaw"), { recursive: true });
 
     const env = {} as NodeJS.ProcessEnv;
-    expect(INTEGRATION_CLIENTS.openclaw.detectDir(env, home)).toBe(join(home, ".openclaw"));
+    expect(INTEGRATION_CLIENTS.openclaw.configPath(env, home))
+      .toBe(join(home, ".clawdbot", "clawdbot.json"));
+  });
+
+  test("a real modern config wins over a legacy one", () => {
+    // The other direction: a migrated user must not have us writing the old file.
+    mkdirSync(join(home, ".clawdbot"), { recursive: true });
+    writeFileSync(join(home, ".clawdbot", "clawdbot.json"), "{}\n");
+    mkdirSync(join(home, ".openclaw"), { recursive: true });
+    writeFileSync(join(home, ".openclaw", "openclaw.json"), "{}\n");
+
+    const env = {} as NodeJS.ProcessEnv;
     expect(INTEGRATION_CLIENTS.openclaw.configPath(env, home))
       .toBe(join(home, ".openclaw", "openclaw.json"));
   });
@@ -440,6 +456,70 @@ describe("a real user document is not rejected for being richer than ours", () =
     expect(parseConfig(readFileSync(configPath, "utf8"), "toml")).toEqual(parseConfig(seed, "toml"));
   });
 
+});
+
+describe("we refuse rather than corrupt or crash", () => {
+  test("a TOML file with special floats is refused, not silently rewritten", () => {
+    /*
+     * Bun's TOML parser mangles these before we ever see the document: `inf`
+     * comes back as the STRING "inf", `-inf` as the number 0, `nan` as "nan".
+     * Re-serializing that wrote the corruption back while reporting success —
+     * a silent value change is worse than a refusal.
+     */
+    const configPath = installClient("kimi");
+    const seed = '[providers.mine]\napi = "http://keep-me"\nvalues = [inf, -inf, nan]\n';
+    writeFileSync(configPath, seed);
+
+    const result = applyIntegration({
+      clientId: "kimi", models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    expect(readFileSync(configPath, "utf8")).toBe(seed);
+  });
+
+  test("an inline table survives, because TOML allows it", () => {
+    const configPath = installClient("kimi");
+    const seed = '[providers.mine]\napi = "http://keep-me"\nitems = [{ x = 1 }]\n';
+    writeFileSync(configPath, seed);
+
+    const write = {
+      clientId: "kimi" as const, models: MODELS, config: CONFIG, port: 10100,
+      env: TEST_ENV, home, store,
+    };
+    expect(applyIntegration(write).ok).toBe(true);
+    const applied = parseConfig(readFileSync(configPath, "utf8"), "toml") as Record<string, unknown>;
+    const providers = applied.providers as Record<string, Record<string, unknown>>;
+    expect(providers.mine!.items).toEqual([{ x: 1 }]);
+  });
+
+  test("a relative OpenClaw selector refuses instead of throwing a 500", () => {
+    /*
+     * Resolution itself can refuse. Letting that escape as an exception meant
+     * the LIST route answered 500 for the whole Integrations page because one
+     * client was misconfigured.
+     */
+    const env = { OPENCLAW_CONFIG_PATH: "relative/path.json" } as NodeJS.ProcessEnv;
+    const write = {
+      clientId: "openclaw" as const, models: MODELS, config: CONFIG, port: 10100,
+      env, home, store,
+    };
+    const result = applyIntegration(write);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("unsafe");
+      expect(result.message).toContain("OPENCLAW_CONFIG_PATH");
+    }
+
+    // And the read path reports it rather than throwing, so the page renders.
+    const status = readIntegrationState({
+      clientId: "openclaw", models: MODELS, config: CONFIG, port: 10100,
+      env, home, store,
+    });
+    expect(status.state).toBe("unsafe");
+    expect(status.reason).toBe("unresolvable-path");
+  });
 });
 
 describe("an absence is not a drift", () => {

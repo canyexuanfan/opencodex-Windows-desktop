@@ -20,6 +20,7 @@ import { INTEGRATION_CLIENTS, isLoopbackOnly, type IntegrationClientId } from ".
 import { classifyIntegration, exportContextOf } from "./state";
 import type { IntegrationState } from "./state";
 import { serializeDocument, UnserializableValueError } from "./serialize";
+import { ClientPathError } from "../clients/config-export";
 import { matchesOperationResult, newOpId, type JournalEntry } from "./journal";
 import { createIntegrationStateStore, type IntegrationStateStore } from "./store";
 
@@ -174,7 +175,20 @@ function preflight(input: IntegrationWriteInput) {
   const clientId = input.clientId;
   const spec = INTEGRATION_CLIENTS[clientId];
   const exportSpec = EXPORT_CLIENTS[clientId];
-  const configPath = spec.configPath(input.env, input.home);
+  /*
+   * Resolution itself can refuse: a relative OPENCLAW_* selector is rejected
+   * because we cannot know the gateway's working directory. That is a refusal
+   * about the user's configuration, not an internal fault, so it must not
+   * escape as an exception — the collection route would answer 500 for the
+   * whole Integrations page because one client is misconfigured.
+   */
+  let configPath: string;
+  try {
+    configPath = spec.configPath(input.env, input.home);
+  } catch (error) {
+    if (!(error instanceof ClientPathError)) throw error;
+    return { failed: refuse(clientId, "unsafe", "unsafe", error.message) } as const;
+  }
   store.retryPendingPrunes();
 
   const target = loadTarget(io, configPath);

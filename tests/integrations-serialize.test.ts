@@ -78,10 +78,17 @@ describe("renderYaml", () => {
 
   test("still refuses what YAML genuinely cannot represent", () => {
     expect(() => renderYaml({ k: Number.NaN })).toThrow(/YAML cannot represent the number/);
-    expect(() => renderYaml({ k: [[1]] })).toThrow(/unsupported YAML array item/);
     expect(() => renderYaml({ a: 1 }, -1)).toThrow(/non-negative integer/);
     // The message names the KIND, never the value — a config may hold secrets.
     expect(() => renderYaml({ k: () => 1 })).toThrow(/YAML cannot represent .*function/);
+  });
+
+  test("nested sequences render, because YAML has always allowed them", () => {
+    // This threw a PLAIN Error carrying `String(item)` — untyped, so the
+    // writer surfaced it as a 500, and it repeated the value's contents into
+    // the message of a config that may hold secrets.
+    expect(renderYaml({ matrix: [[1, 2], [3, 4]] })).toBe("matrix:\n  -\n    - 1\n    - 2\n  -\n    - 3\n    - 4\n");
+    expect(renderYaml({ k: [[]] })).toBe("k:\n  - []\n");
   });
 });
 
