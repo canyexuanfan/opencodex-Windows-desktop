@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { classifyCodexPreStreamRejection } from "../src/codex/quota-rejection";
+import { shouldRetryCodexPoolAccountQuota } from "../src/server/responses/core";
 
 function jsonRejection(status: number, error: Record<string, unknown>): Response {
   return Response.json({ error }, { status });
@@ -10,6 +11,15 @@ function jsonPayload(status: number, payload: Record<string, unknown>): Response
 }
 
 describe("Codex pre-stream quota rejection classification", () => {
+  test.each([
+    [402, true],
+    [429, true],
+    [400, false],
+    [503, false],
+  ])("selects pool-account retries synchronously for HTTP %i", (status, expected) => {
+    expect(shouldRetryCodexPoolAccountQuota(new Response(null, { status }))).toBe(expected);
+  });
+
   test.each([
     [429, "nested code", { error: { code: "usage_limit_exceeded" } }, "usage_limit_exceeded"],
     [429, "nested type", { error: { type: "insufficient_quota" } }, "insufficient_quota"],
