@@ -66,6 +66,8 @@ OpenCodex already crosses boundaries that a generic router normally does not:
 
 This makes OpenCodex a credible place to coordinate task continuity across harnesses.
 
+> FAB-00 correction (2026-08-03): these are provider-routing / data-plane seams. The Fabric's managed-execution role (Fabric -> codex app-server / Claude Agent SDK) is a separate upstream controller, not an extension of the `/v1/responses` seam. The Fabric runs in its own process boundary and does not reuse the data plane (`010` #6, `030` #2).
+
 ## 2.2 Gateway features are becoming commodities
 
 9Router, OmniRoute, LiteLLM, Bifrost, Portkey, TensorZero, and similar projects increasingly compete on:
@@ -298,6 +300,8 @@ Use a dedicated agent-control credential. Do not reuse data-plane or management-
 # 7. TypeScript and Go authority
 
 OpenCodex currently uses `dev` for normal integration and a parallel Go migration line. Applicable behaviour must eventually exist in the Go runtime.
+
+> FAB-00 correction (2026-08-03): the "parallel Go migration line" premise is INVALIDATED by FAB-00 evidence: current `origin/main` (v2.10.0) has no `go.mod` and no `*.go`; OpenCodex is 100% TypeScript/Bun; OpenAI Codex is Rust, not Go (`010` #8, `020` F). The preferred `GO_FIRST_AUTHORISED` outcome is therefore not valid against current repo state. `120` records the decision as `IMPLEMENTATION_BLOCKED_PENDING_GO_AUTHORITY` and recommends re-scoping to a TS-native Supervisor (or an explicit maintainer-authored Go migration line). FAB-01 depends on this authority decision.
 
 The programme must not build a full TypeScript Fabric and later port it.
 
@@ -699,6 +703,8 @@ All paths must be canonicalised and tested across platforms and symlink cases.
 
 FAB-00 must evaluate the official Claude Agent SDK and maintained ACP adapter path.
 
+> FAB-00 correction (2026-08-03): ACP has merged into A2A under the Linux Foundation (`020` C). Local managed execution uses the native SDKs (codex app-server for Codex; Claude Agent SDK for Claude), not the ACP/A2A protocol. A2A is deferred to the FAB-08 remote boundary (`070`, `110`).
+
 Required MVP capabilities:
 
 - Managed session.
@@ -728,7 +734,7 @@ The UI and event model must name these differently.
 # 14. Protocol boundaries
 
 - **Codex App Server:** managed Codex execution.
-- **ACP:** generic harness integration and future editor clients.
+- **ACP:** generic harness integration and future editor clients. (FAB-00 correction: converged into A2A under the Linux Foundation; local managed execution uses native SDKs -- `110`.)
 - **MCP:** tools and external context.
 - **AG-UI:** later dashboard/mobile event projection.
 - **A2A:** later external delegation and remote boundaries.
@@ -835,7 +841,7 @@ Rules:
 - Dirty state is checkpointed before handoff.
 - Untracked files require explicit inclusion rules.
 - Secret-pattern files are excluded by default.
-- Reviewer worktrees are read-only.
+- Reviewer worktrees are read-only (FAB-00 correction: enforced via OS/process sandbox, not git -- `020` D / `090`).
 - Deletion is quarantine-first.
 - Recovery never discards ambiguous changes automatically.
 
