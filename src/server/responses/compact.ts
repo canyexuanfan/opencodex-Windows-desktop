@@ -52,6 +52,7 @@ import {
   resolveCodexAuthContext,
   codexProbeLeaseId,
   codexProbeQuotaScope,
+  releaseCodexAuthContextProbeLease,
   type CodexAuthContext,
 } from "../../codex/auth-context";
 import {
@@ -423,7 +424,28 @@ export async function handleResponsesCompact(
         selectedModelId,
         excludeAccountId: authCtx.accountId,
       });
+      // Resolution can await a credential refresh, so the client may have gone away
+      // while we were choosing B. Re-check before spending anything: recording A,
+      // cancelling its body, and sending B are all observable side effects, and B's
+      // quota is not ours to spend on a request nobody is waiting for.
+      if (alternate && req.signal.aborted) {
+        releaseCodexAuthContextProbeLease(alternate.authCtx);
+        recordCompactPoolOutcome(outcomeCtx, 499);
+        return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
+      }
       if (alternate) {
+        // Same order the regular path uses (core.ts:349-357): a 429/402 carries the
+        // quota snapshot that produced it, so refresh A's cache before recording its
+        // rejection. Skipping this leaves quota-strategy routing and the dashboard
+        // reading numbers from before the account ran out.
+        if (authCtx.kind === "pool" || authCtx.kind === "main-pool") {
+          const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
+          applyAccountQuotaFromUpstreamHeaders(
+            authCtx.accountId,
+            upstream.headers,
+            authCtx.writerGeneration,
+          );
+        }
         recordCompactPoolOutcome(authCtx, upstream.status, {
           retryAfter: firstRetryAfter,
           resetAt: firstResetAt,
