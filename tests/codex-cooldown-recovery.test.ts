@@ -274,6 +274,20 @@ describe("Codex cooldown recovery worker", () => {
     walk(upstreamModels);
     expect(snapshotPlans.size).toBeGreaterThan(9);
 
+    // Pin the rule INDEPENDENTLY first. Deriving the expectation from
+    // codexQuotaWindowForPlan() below would only prove the loop agrees with itself, so state
+    // the contract in literals: Go and Free bill on the 30-day window, everything else weekly.
+    expect(codexQuotaWindowForPlan("go")).toBe("monthly");
+    expect(codexQuotaWindowForPlan("free")).toBe("monthly");
+    expect(codexQuotaWindowForPlan(" GO ")).toBe("monthly");
+    for (const plan of ["plus", "pro", "prolite", "team", "business", "enterprise", "edu", "finserv", "k12"]) {
+      expect(codexQuotaWindowForPlan(plan)).toBe("weekly");
+    }
+    expect(codexQuotaWindowForPlan(undefined)).toBe("weekly");
+    expect(codexQuotaWindowForPlan("")).toBe("weekly");
+    // "free_workspace" is not "free": only the exact names take the monthly window.
+    expect(codexQuotaWindowForPlan("free_workspace")).toBe("weekly");
+
     for (const plan of snapshotPlans) {
       const monthly = codexQuotaWindowForPlan(plan) === "monthly";
       const filled = monthly ? { monthlyPercent: 12 } : { weeklyPercent: 12 };
