@@ -551,6 +551,23 @@ export function reconcileConfigWarningMemos(generation: number): number {
   return removed;
 }
 
+/**
+ * Bounds for the opt-in same-target 429 wait-and-retry policy. Single source of truth
+ * shared by the config schema, the load-time sanitizer, and the management write
+ * boundary. Strict, so an unknown key is rejected at every validation boundary instead
+ * of being silently ignored (the load-time sanitizer still degrades unknown keys with a
+ * warning before schema validation, so hand-edited configs keep loading).
+ */
+const retryOn429PolicySchema = z.object({
+  enabled: z.boolean().optional(),
+  attempts: z.number().int().min(1).max(20).optional(),
+  intervalMs: z.number().int().min(100).max(600_000).optional(),
+  // The effective cap for a single wait is MAX_COOLDOWN_MS (10 min) in key-failover.ts;
+  // larger configured values would be dead config.
+  maxIntervalMs: z.number().int().min(100).max(600_000).optional(),
+  respectRetryAfter: z.boolean().optional(),
+}).strict();
+
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
@@ -563,15 +580,7 @@ const providerConfigSchema = z.object({
   supportsServiceTier: z.boolean().optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
-  retryOn429: z.object({
-    enabled: z.boolean().optional(),
-    attempts: z.number().int().min(1).max(20).optional(),
-    intervalMs: z.number().int().min(100).max(600_000).optional(),
-    // The effective cap for a single wait is MAX_COOLDOWN_MS (10 min) in key-failover.ts;
-    // larger configured values would be dead config.
-    maxIntervalMs: z.number().int().min(100).max(600_000).optional(),
-    respectRetryAfter: z.boolean().optional(),
-  }).optional(),
+  retryOn429: retryOn429PolicySchema.optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   responsesItemIdRepair: z.object({
     message: z.array(z.string().min(1)).optional(),
@@ -1337,22 +1346,18 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
       console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.enabled (${typeof policyRecord.enabled}) is invalid — ignoring the whole policy`);
       continue;
     }
-    const fields: Array<[string, (value: unknown) => boolean]> = [
-      ["enabled", value => typeof value === "boolean"],
-      ["attempts", value => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 20],
-      ["intervalMs", value => typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 600_000],
-      ["maxIntervalMs", value => typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 600_000],
-      ["respectRetryAfter", value => typeof value === "boolean"],
-    ];
+    // Field checks derive from the shared policy schema so the bounds cannot drift
+    // between the load-time sanitizer, the config schema, and the write boundary.
+    const policyShape = retryOn429PolicySchema.shape;
     const cleaned: Record<string, unknown> = {};
-    for (const [key, isValid] of fields) {
+    for (const [key, fieldSchema] of Object.entries(policyShape)) {
       const value = policyRecord[key];
       if (value === undefined) continue;
-      if (isValid(value)) cleaned[key] = value;
+      if (fieldSchema.safeParse(value).success) cleaned[key] = value;
       // Log only the received type, never the value (provider config can hold secrets).
       else console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.${key} (${typeof value}) is invalid — ignoring the field`);
     }
-    const knownKeys = new Set(fields.map(([key]) => key));
+    const knownKeys = new Set(Object.keys(policyShape));
     for (const key of Object.keys(policyRecord)) {
       if (!knownKeys.has(key)) {
         // Redact the field NAME before logging: a malformed hand-edit can place a secret in a
@@ -1364,6 +1369,28 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
     }
     p.retryOn429 = cleaned;
   }
+}
+
+/**
+ * Management write-boundary validation for `retryOn429` (fail closed). Unlike the
+ * lenient load-time sanitizer, invalid values and unknown keys are rejected outright so
+ * a POST/PATCH cannot persist a policy the proxy would then silently degrade. Reuses the
+ * shared policy schema. Never echoes values, and secret-shaped unknown field names are
+ * redacted (a malformed write can place a secret in a property name).
+ */
+export function retryOn429PolicyConfigError(policy: unknown): string | null {
+  if (policy === undefined) return null;
+  const result = retryOn429PolicySchema.safeParse(policy);
+  if (result.success) return null;
+  const first = result.error.issues[0];
+  if (!first) return "retryOn429 is invalid";
+  if (first.code === "unrecognized_keys") {
+    const names = first.keys.map(key => JSON.stringify(redactSecretString(key))).join(", ");
+    return `retryOn429 has unrecognized field${first.keys.length > 1 ? "s" : ""}: ${names}`;
+  }
+  if (first.path.length === 0) return `retryOn429 is invalid (${first.message})`;
+  const field = String(first.path[first.path.length - 1]);
+  return `retryOn429.${field} is invalid (${first.message})`;
 }
 
 /**
