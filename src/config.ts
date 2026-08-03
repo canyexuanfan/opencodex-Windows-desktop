@@ -724,7 +724,22 @@ export function modelPreferHostedToolsConfigError(
   if (prototype !== Object.prototype && prototype !== null) return `${field} must be a plain object with own properties`;
   const entries = Object.entries(value);
   const registry = getProviderRegistryEntry(providerName);
-  if (entries.length > 0 && (registry?.authKind === "forward" || (!registry && provider.authMode === "forward"))) {
+  // Effective transport: a `preserveCustomDestination` registry row reused under a
+  // different endpoint keeps its own adapter AND its own auth at runtime, because
+  // `routedProviderConfig()` honors `providerMatchesRegistryTransport()`. Both the
+  // wire check below and the forward-auth check here have to start from the same
+  // decision, or validation accepts a preference the adapter never applies —
+  // `preferConfiguredHostedTools()` runs only on the non-forward branch.
+  const registryTransportMatches = typeof provider.baseUrl === "string"
+    && providerMatchesRegistryTransport(providerName, {
+      baseUrl: provider.baseUrl,
+      adapter: provider.adapter as OcxProviderConfig["adapter"],
+      ...(typeof provider.authMode === "string" ? { authMode: provider.authMode as OcxProviderConfig["authMode"] } : {}),
+    });
+  const effectiveForwardAuth = registryTransportMatches
+    ? registry?.authKind === "forward"
+    : provider.authMode === "forward";
+  if (entries.length > 0 && effectiveForwardAuth) {
     return `${field} is not supported on forward-auth Responses providers`;
   }
   const requestedWireFor = (modelId: string): unknown => provider.modelAdapters
@@ -773,18 +788,9 @@ export function modelPreferHostedToolsConfigError(
         return `${field}.${key} cannot prefer ${tool}: the model does not support it`;
       }
     }
-    // Start from the registry adapter only when this config still points at the registry's
-    // documented transport. A `preserveCustomDestination` row reused under a different
-    // endpoint keeps its own adapter at runtime (`routedProviderConfig()` honors
-    // `providerMatchesRegistryTransport()`), so trusting `registry.adapter` there would
-    // accept a preference the Responses adapter never sees. Raised by the automated
-    // review on #924.
-    const registryTransportMatches = typeof provider.baseUrl === "string"
-      && providerMatchesRegistryTransport(providerName, {
-        baseUrl: provider.baseUrl,
-        adapter: provider.adapter as OcxProviderConfig["adapter"],
-        ...(typeof provider.authMode === "string" ? { authMode: provider.authMode as OcxProviderConfig["authMode"] } : {}),
-      });
+    // Same `registryTransportMatches` decision the forward-auth check above uses:
+    // start from the registry adapter only when this config still points at the
+    // registry's documented transport.
     const baseWire = registryTransportMatches ? registry?.adapter ?? provider.adapter : provider.adapter;
     let effectiveWire = resolveEffectiveWire(key, baseWire);
     const virtualWireModel = resolveOpenAiVirtualModel(providerName, key)?.wireModelId;

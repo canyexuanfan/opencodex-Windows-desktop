@@ -708,10 +708,13 @@ function preferConfiguredHostedTools(
     if (strippedTopLevelImageGenTool && Array.isArray(tools)) {
       tools = [...tools, { type: HOSTED_IMAGE_GENERATION_TOOL }];
     } else if (strippedAdditionalToolsIndices.size > 0 && Array.isArray(input)) {
-      // Restore in EVERY container we stripped, not just the first: a request carrying
-      // two `additional_tools` groups would otherwise leave the later ones with no image
-      // capability at all. Raised by the automated review on #924.
-      input = input.map((item, index) => strippedAdditionalToolsIndices.has(index)
+      // Restore into the FIRST stripped container only. Tool declarations are
+      // request-scoped, not container-scoped — the containers are separate carriers for
+      // one tool set, so a single hosted declaration covers the request. An earlier
+      // revision restored into every stripped container and put `image_generation` on
+      // the wire twice; review caught it.
+      const firstStripped = Math.min(...strippedAdditionalToolsIndices);
+      input = input.map((item, index) => index === firstStripped
         && isPlainObject(item)
         && Array.isArray(item.tools)
         ? { ...item, tools: [...item.tools, { type: HOSTED_IMAGE_GENERATION_TOOL }] }
