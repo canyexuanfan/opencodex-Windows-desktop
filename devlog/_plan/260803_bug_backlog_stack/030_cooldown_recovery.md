@@ -79,9 +79,39 @@ a finite `weeklyPercent`, and recovery additionally requires not-exhausted.
 
 `src/codex/auth-api.ts` — add `runCodexCooldownRecoveryProbes()`, coalesced by
 a module-level promise, bounded by the existing `mapWithConcurrency(..., 4,
-...)`, joining the existing per-account single-flight rather than opening a
-parallel one. Registered on the state sweeper's existing 60s tick
-(`src/lib/state-store-sweeper.ts:155-166`) — no new timer.
+...)`. Registered on the state sweeper's existing 60s tick
+(`src/lib/state-store-sweeper.ts:155-166`) — no new timer. Registration is
+explicit at startup, after config and migrations complete
+(`src/server/index.ts:290-333`); a module-load registration would not survive
+the test resets that clear registrations while leaving modules cached.
+
+### Audit correction: the main account has no single-flight
+
+The first draft said the worker "joins the existing per-account single-flight".
+That is true for pool accounts (`src/codex/auth-api.ts:646-660`, which matches
+a flight by live generation) and **false for the main account**:
+`fetchMainAccountInfo()` (`src/codex/auth-api.ts:366-369`) has no in-flight map
+at all. The worker-level promise coalesces worker passes only, so a sweeper
+probe of `__main__` could race a dashboard refresh or startup priming into two
+parallel WHAM requests.
+
+The main account is therefore **excluded from the first cut**. Pool accounts
+are where a multi-account pool starves a cooled account in the first place —
+the reported scenario needs at least two accounts. Adding main-account recovery
+requires giving main WHAM the same single-flight and admission semantics pool
+has, which is its own change with its own race tests.
+
+### Audit correction: fairness
+
+Bounded claims with stable config-order enumeration can starve. Probe
+eligibility recurs every five minutes (`src/codex/routing.ts:98`), so if more
+accounts are due than `limit` and the early ones keep failing, they become due
+again and consume the budget forever while later accounts are never reached.
+
+Claims are ordered by oldest `lastProbeAt ?? cooldownSince`, which rotates
+naturally: a probed account moves to the back of the queue whether it recovered
+or not. The test uses a pool larger than `limit` and asserts every cooled
+account is probed within a bounded number of ticks.
 
 The worker never pauses an account, changes the active account, clears
 affinity, or synthesizes an upstream outcome.
@@ -124,6 +154,22 @@ thread." Quota strategy deliberately rebinds an over-threshold bound thread
 affinity (`:1186-1188`). Asserting otherwise would encode a policy change this
 phase is not making — the maintainer scoped it out in
 `devlog/_plan/260803_cooldown_recovery_probe/000_plan.md:41-43`.
+
+## Line budget
+
+This phase spans routing, quota, auth-api, startup registration, and two test
+files, and the case matrix above is large enough to approach the 500-line PR
+guidance. Checkpoint before opening the PR: if the diff exceeds it, split the
+claim/settle primitives in `routing.ts` (with their unit tests) from the worker
+integration. The primitives are independently reviewable and the worker is
+meaningless without them, so that split is dependency-correct.
+
+## A note on the clear→429 cycle
+
+Clearing a cooldown can lead to selection, a fresh 429, and another cooldown.
+That is not a tight loop: the new 429 opens a new cooldown and the next probe
+cannot occur for five minutes. It is the same cost as the account having been
+eligible in the first place, which is the state we are trying to restore.
 
 ## PR #922 overlap
 

@@ -105,14 +105,33 @@ rate) and MiniMax M3 at `> 512,000`.
 Dependency order. The stack is built bottom-up so each layer's diff is readable
 on its own.
 
-| Phase | Doc | Unit | Depends on |
+| Phase | Doc | Unit | Outcome |
 |---|---|---|---|
-| 1 | `010` | Disposition sweep: labels + evidence comments | — |
-| 2 | `020` | #908 long-context pricing tiers | — |
-| 3 | `030` | #915 cooldown early-recovery probe | — |
-| 4 | `040` | #545 and #875 — code or evidenced disposition | research |
-| — | `050` | #907 blocker record (no code lands here) | — |
+| 1 | `010` | Disposition sweep: labels + evidence comments | applied |
+| 2 | `020` | #908 long-context pricing tiers | code |
+| 3 | `030` | #915 cooldown early-recovery probe | code |
+| 4 | `060` | #545 classifier thinking round-trip | code |
+| — | `040` | #875 residual — evidence, no code | comment |
+| — | `050` | #907 price staleness — evidence, no code | comment |
 
-#907 has no implementation phase on purpose. Its deliverable is the proof that
-the fix belongs in `lidge-jun/jawcode`, plus the regression test that becomes
-possible once the source moves.
+Two issues have no implementation phase on purpose, and each says why in its
+own doc rather than being quietly dropped: #875's reopen evidence tested a
+commit 115 before the fix, and #907's fix belongs in `lidge-jun/jawcode`.
+
+`#907` is not "unfixable". It is fixable — upstream. Under the current
+source-of-truth policy it should not be fixed locally, which is a different and
+more honest claim.
+
+## Stack shape
+
+#908, #915, and #545 touch disjoint files: `src/usage/`, `src/codex/`, and
+`src/claude/` + `src/adapters/` respectively. Stacking them creates an
+artificial ordering dependency where none exists in the code.
+
+They are stacked anyway, deliberately, because the user asked for a stack and
+because the chain gives a reviewer one entry point and a stated review order
+rather than three PRs landing on `dev` in arbitrary sequence. Each layer's
+"Files changed" view still shows only that layer's diff, which is the property
+the precedent was built for. If a maintainer prefers to take them
+independently, any layer can be retargeted to `dev` without a rebase conflict —
+that is worth saying in the stack-navigation comment.

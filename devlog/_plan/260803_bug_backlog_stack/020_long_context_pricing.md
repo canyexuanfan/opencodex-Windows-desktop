@@ -50,6 +50,52 @@ Provider scoping matters for the same reason: `cursor` and `openrouter` routes
 resell these models under their own terms and must not be charged first-party
 tier rules.
 
+## Audit correction: long context and Fast are mutually exclusive
+
+The first draft of this phase composed the two multipliers — long context,
+then Fast — and produced a $7.80 figure for a long Fast request. That request
+cannot exist. OpenAI's Fast mode guide states plainly: "Long context,
+fine-tuned models, and embeddings are not supported"
+([fast-mode guide](https://developers.openai.com/api/docs/guides/fast-mode),
+`verdict=strong_ok`, retrieved 2026-08-03).
+
+They are two regimes, not two factors. The correct model is an
+either/or driven by the confirmed service tier:
+
+```text
+base price → (Fast multiplier) OR (context multiplier) → calculateCost
+```
+
+A request marked `priority` never takes the context tier. The composition test
+is replaced by an **exclusivity** test: a `priority` request above 272k gets the
+Fast rate and `contextTier` stays undefined.
+
+### A second coupling this exposed
+
+`PRIORITY_MULTIPLIERS` (`src/usage/expected-prices.ts:152-156`) carries Terra
+`1.6` and Luna `0.4`. Those are *ratios calibrated against the stale bases*.
+Once #907 corrects Terra to 2/12, the 1.6 multiplier yields 3.2/19.2 while
+OpenAI publishes Fast Terra at 4/24. Luna is worse: 0.4 × 0.20 = 0.08 against a
+published 0.40.
+
+So #907 landing would silently break Fast estimates for two models. The
+multipliers must move to verified absolute rates, or be recomputed against the
+corrected bases, in the same change that corrects the bases. This is recorded
+in `050` as part of the upstream follow-through — it is not this phase's work,
+but it must not be discovered afterwards.
+
+## The `-pro` alias gap
+
+`gpt-5.6-sol-pro`, `-terra-pro`, `-luna-pro` are real selectable ids
+(`src/providers/registry.ts:284-287`). The virtual-model resolver keeps the
+*selected* id in `logCtx.model` and puts the wire id in `logCtx.resolvedModel`
+(`src/providers/openai-virtual-models.ts:61-62`), and cost resolution
+deliberately does not fall back through `resolvedModel`.
+
+So a tier registry keyed only on base ids would silently skip every `-pro`
+request — and those are exactly the large ones. The registry carries explicit
+provider-scoped rows for all three aliases, and each gets a test.
+
 ## Design
 
 `src/usage/expected-prices.ts` — add beside `Cost4`:
@@ -70,11 +116,8 @@ plus an exactly-keyed `CONTEXT_TIERS` registry (`${provider}\0${modelId}`) and
 `findContextTier()` / `isLongContext()`. No fuzzy matching, no case folding, no
 model-level fallback. Every row records its official URL and `verifiedAt`.
 
-`src/usage/cost.ts` — add `applyContextTier()` and insert one stage:
-
-```text
-base price → context multiplier → Fast multiplier → calculateCost
-```
+`src/usage/cost.ts` — add `applyContextTier()`, applied only when the Fast
+multiplier did not apply.
 
 `resolveMatchedPrice()` stays token-independent; it is memoized by
 provider/model (`src/usage/cost.ts:153-162`) and passing a token count would
@@ -92,7 +135,8 @@ Sol, 300,000 input + 20,000 output, no cache:
 
 - short: `300000/1e6 × 5 + 20000/1e6 × 30` = `1.50 + 0.60` = **$2.10**
 - long: `300000/1e6 × 10 + 20000/1e6 × 45` = `3.00 + 0.90` = **$3.90**
-- long + Fast: **$7.80**
+
+There is no long-Fast figure. That was the audit's first blocker.
 
 ## Tests
 
@@ -107,8 +151,10 @@ resolution, attempts, combos, and Fast composition.
 5. `cursor/gpt-5.6-sol` and `openrouter/openai/gpt-5.6-sol` stay untiered.
 6. An untiered model is unchanged above every threshold.
 7. The $2.10 / $3.90 worked example.
-8. Fast composition → $7.80.
+8. **Exclusivity**: a `priority` request above 272k takes the Fast rate and
+   leaves `contextTier` undefined.
 9. Combo propagation: one long attempt + one standard attempt.
+10. All three `-pro` aliases tier correctly at 272,001.
 
 The existing Fast fixture at `tests/usage-cost.test.ts:408` uses 1M input,
 which now crosses the threshold. It must move below 272k or its expected totals

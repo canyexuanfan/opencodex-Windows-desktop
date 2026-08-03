@@ -3,6 +3,14 @@
 Outcome: **no code in this repository**. The fix belongs in
 `lidge-jun/jawcode`.
 
+Precisely: this is not unfixable, and not blocked in the sense of "nothing can
+be done". It is fixable upstream, and under the current source-of-truth policy
+it should not be fixed locally. A new narrowly-scoped "verified corrections"
+layer would be a technically legitimate design — `expected-prices.ts` is
+precedent for exactly that shape — but it would deliberately diverge the
+bundle from its canonical source to route around a one-line upstream edit.
+Upstream-first is the cheaper and more honest order.
+
 ## Why this is not a regeneration
 
 The obvious move is `bun run generate:jawcode-metadata` and commit the result.
@@ -91,3 +99,18 @@ That test is the durable part. The existing sync test proves the bundle matches
 its source; it cannot prove the source matches the vendor. This one pins the
 actual published numbers, so the next price cut fails a test instead of
 silently overcharging users.
+
+## The coupled change nobody would have looked for
+
+`PRIORITY_MULTIPLIERS` (`src/usage/expected-prices.ts:152-156`) stores Fast
+pricing as *ratios against the base rates* — Terra `1.6`, Luna `0.4`. Those
+ratios were calibrated when the bases were stale.
+
+Correcting the bases therefore breaks Fast estimates for the same two models:
+1.6 × 2 = 3.2 against a published Fast Terra of 4, and 0.4 × 0.20 = 0.08
+against a published 0.40. The regeneration that fixes #907 must recompute or
+replace those multipliers in the same change, or it will fix an overcharge on
+standard requests while introducing an undercharge on Fast ones.
+
+This is the kind of coupling a ratio-based design hides: the numbers stay
+syntactically valid and no test fails.

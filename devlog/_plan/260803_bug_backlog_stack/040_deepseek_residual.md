@@ -94,3 +94,17 @@ item's `type`/`call_id`/`name`/`arguments`, and whether a second inbound
 `response.create` reached ocx at all. That last one splits the remaining space
 cleanly: if it arrives, the defect is downstream of the handoff; if not, it is
 the client's move that never came.
+
+## One test worth adding regardless
+
+`tests/ws-endpoint.test.ts:220-233` covers the JSON-to-WebSocket bridge with a
+**message** item only. Nothing pins the function-call case — the exact shape
+this issue turns on.
+
+A regression asserting that a `function_call` item in `output[]` is forwarded
+as `response.output_item.done` with `call_id`, `name`, and `arguments` intact
+would make the disposition above provable by test rather than by reading the
+loop. It rides along with the #545 layer since neither touches the other's
+files, and it is cheap insurance: the current behavior is correct by virtue of
+an untyped `forEach`, which is exactly the kind of correctness that a future
+refactor breaks silently.
