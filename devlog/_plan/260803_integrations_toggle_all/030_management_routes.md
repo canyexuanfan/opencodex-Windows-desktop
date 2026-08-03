@@ -227,3 +227,22 @@ advice — unlike `orphaned_marker`, where retrying is exactly what cannot help.
       about replacing its flight map to be false.
 - [ ] `GET` reports `installed: false` for an absent client rather than erroring.
 - [ ] `bun run privacy:scan` clean — no config content or key in any response.
+
+## wp3-cycle A-gate folds (reviewer: PASS-WITH-NITS, 0 blockers)
+
+All accepted, none rebutted:
+
+1. The real-lock test's retry half must use a FRESH config object: the route
+   mutates the in-memory config before persistence, so a refused toggle leaves
+   the in-memory flag already flipped and a same-object retry short-circuits
+   at the idempotent guard without ever re-acquiring the lock. (Side note,
+   recorded as a known residual: that ordering also leaves live config
+   diverged from disk after a refused toggle until restart — pre-existing wp1
+   behavior, out of this unit's scope.)
+2. The test restores `OPENCODEX_HOME` in afterEach and puts the holder
+   connection's ROLLBACK/close in `finally` (the grok file's pattern).
+3. Three acceptance-coverage gaps in the shipped tests, folded into wp3:
+   Claude's enable-WITH-CHANGE direction (`enabled:false` → PUT `true` → 200 /
+   `changed:true` / `current`); the refusal envelope's `code` field asserted
+   alongside status and reason (`native_integration_refused` vs
+   `native_integration_failed`); Claude's GET row asserting `installed: true`.

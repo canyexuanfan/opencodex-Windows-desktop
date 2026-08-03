@@ -47,9 +47,11 @@ test("an absent claudeCode block reads as ON", async () => {
   // Only an explicit `false` means off — all six read sites agree, so the
   // status must not report a config that has never been touched as disabled.
   const { response } = dispatch(baseConfig(), "/api/native-integrations");
-  const body = await (await response)!.json() as { clients: { clientId: string; state: string }[] };
+  const body = await (await response)!.json() as { clients: { clientId: string; state: string; installed: boolean }[] };
   const claude = body.clients.find(c => c.clientId === "claude");
   expect(claude?.state).toBe("current");
+  // The surface exists wherever the proxy does; there is no separate install.
+  expect(claude?.installed).toBe(true);
 });
 
 test("disabling sets the flag and reports absent", async () => {
@@ -127,9 +129,9 @@ test("genuine lock contention refuses 409 config_busy, a broken lock is a 500", 
     { code: "CONFIG_MUTATION_LOCK_UNAVAILABLE", cause: causeCode ? { code: causeCode } : undefined },
   );
 
-  for (const [causeCode, expectedStatus, expectedReason] of [
-    ["SQLITE_BUSY", 409, "config_busy"],
-    [undefined, 500, "write_failed"],
+  for (const [causeCode, expectedStatus, expectedReason, expectedCode] of [
+    ["SQLITE_BUSY", 409, "config_busy", "native_integration_refused"],
+    [undefined, 500, "write_failed", "native_integration_failed"],
   ] as const) {
     const config = baseConfig({ claudeCode: { enabled: true } });
     const url = new URL("http://127.0.0.1:10100/api/native-integrations/claude");
@@ -144,6 +146,85 @@ test("genuine lock contention refuses 409 config_busy, a broken lock is a 500", 
       { saveConfigPreservingClaudeCode: () => { throw lockError(causeCode); } },
     );
     expect(res!.status).toBe(expectedStatus);
-    expect((await res!.json() as { reason: string }).reason).toBe(expectedReason);
+    const body = await res!.json() as { reason: string; code: string };
+    expect(body.reason).toBe(expectedReason);
+    // The envelope's `code` is part of the contract (030 acceptance row 2):
+    // refused below 500, failed at 500 — a silent swap would mislead the GUI.
+    expect(body.code).toBe(expectedCode);
+  }
+});
+
+test("enabling WITH a change flips the flag and reports current", async () => {
+  // The other direction of acceptance row 1 (wp3 A-gate): every sibling test
+  // toggles off or toggles-to-current; this is the one that proves ON works.
+  const config = baseConfig({ claudeCode: { enabled: false } });
+  const { status, body, saved } = await put(config, true);
+  expect(status).toBe(200);
+  expect(body.changed).toBe(true);
+  expect(body.state).toBe("current");
+  expect(config.claudeCode?.enabled).toBe(true);
+  expect(saved).toHaveLength(1);
+  // The block was persisted, so the migration sentinel rode along (011).
+  expect(typeof saved[0]!.claudeCode?.authModeMigratedAt).toBe("string");
+});
+
+test("a held REAL config transaction refuses 409 config_busy, and release lets a retry through", async () => {
+  /*
+   * Acceptance (audit r7 #2): a real second connection holding the lock, not
+   * a mocked throw. The holder runs the same `PRAGMA busy_timeout = 0;
+   * BEGIN IMMEDIATE` the lock itself uses (src/config.ts:1771), so the route's
+   * own acquisition fails with SQLITE_BUSY exactly as cross-process contention
+   * would. The route runs the REAL saveConfigPreservingClaudeCode — no seam —
+   * against a fixture OPENCODEX_HOME.
+   */
+  const { Database } = await import("bun:sqlite");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "ocx-lock-"));
+  const previousHome = process.env.OPENCODEX_HOME;
+  process.env.OPENCODEX_HOME = fixtureRoot;
+  const holder = new Database(join(fixtureRoot, "config-mutation.sqlite"), { create: true });
+  try {
+    holder.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+    const putReal = (config: OcxConfig) => {
+      const url = new URL("http://127.0.0.1:10100/api/native-integrations/claude");
+      return handleManagementAPI(
+        new Request(url, {
+          method: "PUT",
+          headers: { Host: url.host, "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        }),
+        url,
+        config,
+        // NO persistence seam: the real saveConfigPreservingClaudeCode runs.
+        {},
+      );
+    };
+    const refused = await putReal(baseConfig({ claudeCode: { enabled: true } }));
+    expect(refused!.status).toBe(409);
+    const refusedBody = await refused!.json() as { code: string; reason: string };
+    expect(refusedBody.code).toBe("native_integration_refused");
+    expect(refusedBody.reason).toBe("config_busy");
+
+    holder.exec("ROLLBACK");
+    holder.close();
+    /*
+     * A FRESH config object, not the refused one (wp3 A-gate): the route
+     * mutates the in-memory config before persistence, so the refused object
+     * already reads disabled and would short-circuit at the idempotent guard
+     * without ever re-acquiring the lock.
+     */
+    const retry = await putReal(baseConfig({ claudeCode: { enabled: true } }));
+    expect(retry!.status).toBe(200);
+    const retryBody = await retry!.json() as { changed: boolean; state: string };
+    expect(retryBody.changed).toBe(true);
+    expect(retryBody.state).toBe("absent");
+  } finally {
+    try { holder.exec("ROLLBACK"); } catch { /* already closed */ }
+    try { holder.close(); } catch { /* already closed */ }
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });

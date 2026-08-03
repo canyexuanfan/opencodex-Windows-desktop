@@ -218,6 +218,7 @@ test("an orphaned marker refuses BOTH directions and no writer runs", async () =
   const disable = await put(baseConfig(), false, deps);
   expect(disable.status).toBe(409);
   expect(disable.body.reason).toBe("orphaned_marker");
+  expect(disable.body.code).toBe("native_integration_refused");
   const enable = await put(baseConfig(), true, deps);
   expect(enable.status).toBe(409);
   expect(enable.body.reason).toBe("orphaned_marker");
@@ -230,6 +231,7 @@ test("a missing GROK_HOME refuses not_installed", async () => {
   const enable = await put(baseConfig(), true);
   expect(enable.status).toBe(404);
   expect(enable.body.reason).toBe("not_installed");
+  expect(enable.body.code).toBe("native_integration_refused");
   const disable = await put(baseConfig(), false);
   expect(disable.status).toBe(404);
   expect(disable.body.reason).toBe("not_installed");
@@ -326,6 +328,7 @@ test("a catalog failure refuses and writes nothing", async () => {
   const { status, body } = await put(baseConfig(), true, deps);
   expect(status).toBe(500);
   expect(body.reason).toBe("write_failed");
+  expect(body.code).toBe("native_integration_failed");
   expect(readConfig()).toBe(original);
 });
 
