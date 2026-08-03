@@ -23,6 +23,7 @@ import { compileGoogleWireBody } from "./google-wire-compiler";
 import { identifyRoutedModel } from "./identity";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 import { resolveAntigravityEffortWireModel } from "../providers/antigravity-models";
+import { googleVertexLocationConfigError } from "../providers/google-vertex-location";
 import {
   isTranslatorBudgetExceededError,
   retainTranslatedEventBatch,
@@ -404,6 +405,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         if (!project) throw new Error("Vertex AI requires a project id (provider.project or GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT).");
         const location = provider.location || process.env.GOOGLE_CLOUD_LOCATION;
         if (!location) throw new Error("Vertex AI requires a location (provider.location or GOOGLE_CLOUD_LOCATION).");
+        const locationError = googleVertexLocationConfigError(location);
+        if (locationError) throw new Error(locationError);
         const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
         const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${parsed.modelId}:${method}${streamParam}`;
         const token = await getVertexAccessToken();
