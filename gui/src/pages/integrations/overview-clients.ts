@@ -357,6 +357,8 @@ function fileRow(status: IntegrationStatus): OverviewRow {
 export function buildOverviewRows(sources: OverviewSources): OverviewRow[] {
   const nativeClaude = sources.native?.find(status => status.clientId === "claude");
   const nativeGrok = sources.native?.find(status => status.clientId === "grok");
+  // One lookup table, not a find per client (react-doctor js-index-maps).
+  const statusByClient = new Map(sources.clients.map(status => [status.clientId, status]));
   const rows: OverviewRow[] = [
     codexRow(sources.codex),
     keysRow(sources.keyCount),
@@ -365,7 +367,7 @@ export function buildOverviewRows(sources: OverviewSources): OverviewRow[] {
     grokRow(sources.grok, nativeGrok, sources.nativeSettled),
   ];
   for (const clientId of FILE_INTEGRATION_CLIENTS) {
-    const status = sources.clients.find(candidate => candidate.clientId === clientId);
+    const status = statusByClient.get(clientId);
     if (status) {
       rows.push(fileRow(status));
       continue;
