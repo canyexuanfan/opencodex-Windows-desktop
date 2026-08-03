@@ -481,6 +481,25 @@ describe("fetchProviderQuotaReports", () => {
     expect(throttledRefresh.reports).toEqual(valid.reports);
   });
 
+  test("A6API quota treats a timed-out 408 refresh as transient and keeps the last-good row", async () => {
+    let timedOut = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (timedOut) return new Response("request timeout", { status: 408 });
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    const validUpdatedAt = valid.reports[0]?.quota.updatedAt;
+    timedOut = true;
+    const timedOutRefresh = await fetchProviderQuotaReports(config, true);
+
+    expect(timedOutRefresh.reports).toEqual(valid.reports);
+    expect(timedOutRefresh.reports[0]?.quota.updatedAt).toBe(validUpdatedAt);
+  });
+
   test("A6API quota drops the last-good row after a credential 401 refresh", async () => {
     let rejected = false;
     globalThis.fetch = (async (input: RequestInfo | URL) => {

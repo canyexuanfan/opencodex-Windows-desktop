@@ -273,9 +273,10 @@ async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Pro
   ]);
   if (!subscriptionResponse.ok || !tokenResponse.ok) {
     const statuses = [subscriptionResponse.status, tokenResponse.status];
-    // 429 is a throttle, not an invalid-account signal: keep the last-good row like 5xx/network
-    // failures. 401/403 (bad key) and 404 (contract change) stay terminal.
-    return statuses.some(status => status >= 400 && status < 500 && status !== 429)
+    // 408/429 are transient (timeout/throttle), not invalid-account signals: keep the
+    // last-good row like 5xx/network failures. 401/403 (bad key) and 404 (contract change)
+    // stay terminal.
+    return statuses.some(status => status >= 400 && status < 500 && status !== 429 && status !== 408)
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
