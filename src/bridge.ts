@@ -115,23 +115,22 @@ function adapterFailureFromEvent(event: Extract<AdapterEvent, { type: "error" }>
 export { adapterFailureFromMessage } from "./lib/errors";
 
 /**
- * Build the native `WebSearchAction::Search` payload from the queries that ran. codex-rs prefers a
- * non-empty `query` over `queries` for the cell label, and only renders "<first> ..." when `query`
- * is absent and `queries.len() > 1`. So a single query → `{ query }`; multiple → `{ queries }` with
- * no singular `query`, so Codex shows the native plural ellipsis. Empty → `{ query: "" }`.
- */
-/**
- * Single query carries BOTH keys; a batch carries only `queries`.
+ * Build the native `WebSearchAction::Search` payload from the queries that ran.
  *
- * codex-rs reads singular `query`, and renders the batch form as "<first> ..." only when
- * `query` is ABSENT and `queries.len() > 1` — so adding `query` to a batch would collapse
- * that display. The plural case stays clean for exactly that reason.
+ * Single query → `{ query, queries: [query] }`. Batch → `{ queries }` with NO singular
+ * `query`. Empty → `{ query: "", queries: [""] }`.
  *
- * The single case is different. DeepSeek's native Responses parser makes `queries` a
- * required field, so a replayed one-term `web_search_call` — carried in the history of
- * every subsequent turn — fails deserialization with `missing field 'queries'` and 400s
- * the rest of the conversation (#930). Adding `queries: [query]` satisfies the strict
- * parser while leaving `query` in place, so native single-query rendering is unchanged.
+ * The asymmetry is load-bearing in both directions. codex-rs prefers a non-empty `query`
+ * for the cell label and renders "<first> ..." only when `query` is ABSENT and
+ * `queries.len() > 1`, so adding `query` to a batch would collapse the plural ellipsis.
+ * Meanwhile DeepSeek's native Responses parser makes `queries` a required field, so a
+ * replayed one-term `web_search_call` — carried in the history of every subsequent turn
+ * — fails deserialization with `missing field 'queries'` and 400s the rest of the
+ * conversation (#930). Carrying both keys in the single case satisfies the strict parser
+ * without changing what codex-rs displays.
+ *
+ * This fixes items created from here on. History recorded before it is repaired at the
+ * replay boundary by `backfillWebSearchQueries()` in the Responses adapter.
  */
 function webSearchAction(queries: string[]): Record<string, unknown> {
   if (queries.length <= 1) {
