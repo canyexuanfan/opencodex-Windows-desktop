@@ -76,6 +76,18 @@ export function isCodexQuotaExhausted(
     && value >= CODEX_EXHAUSTED_USAGE_PERCENT);
 }
 
+export function isCompleteCodexQuotaRecoverySnapshot(
+  quota: Pick<StoredAccountQuota, "weeklyPercent" | "monthlyPercent"> | null,
+  plan?: string | null,
+): boolean {
+  if (!quota || isCodexQuotaExhausted(quota, plan)) return false;
+  const normalizedPlan = plan?.trim().toLowerCase();
+  const required = normalizedPlan === "go" || normalizedPlan === "free"
+    ? quota.monthlyPercent
+    : quota.weeklyPercent;
+  return typeof required === "number" && Number.isFinite(required);
+}
+
 export function normalizeUsagePercent(value: unknown): number | undefined {
   const numeric = typeof value === "number"
     ? value
