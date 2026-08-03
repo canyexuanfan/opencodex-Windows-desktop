@@ -57,6 +57,12 @@
 
 .integration-restore-dialog .integration-path { margin: 10px 0; }
 
+/* Consequence facts are read in a fixed order; spacing separates the four
+   questions without turning them into decorative cards. */
+.integration-consequence-body { display: flex; flex-direction: column; gap: 12px; }
+.integration-consequence-body p { margin: 0; font-size: var(--text-caption); line-height: var(--leading-body); }
+.integration-consequence-body code { font-family: var(--font-code); font-size: inherit; overflow-wrap: anywhere; }
+
 /* The Claude Code connection switch, relocated out of the sidebar. */
 .claudecode-connection-head { display: flex; align-items: center; gap: 10px; padding: 10px 0; }
 .claudecode-connection-head .switch { margin-left: auto; }

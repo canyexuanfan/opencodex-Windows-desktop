@@ -1,9 +1,10 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDataSurface } from "../../data-surface";
 import { navigateHash } from "../../hash-routing";
 import { useT, type TKey } from "../../i18n/shared";
 import { Notice, Switch } from "../../ui";
 import IntegrationStateBadge from "./IntegrationStateBadge";
+import ConsequenceDialog, { type ConsequenceCopy } from "./ConsequenceDialog";
 import RestoreDialog from "./RestoreDialog";
 import { describeRefusal } from "./refusal-copy";
 import {
@@ -20,10 +21,23 @@ import {
   loadIntegrationJournal,
   loadIntegrationStates,
   toggleIntegration,
-  type FileIntegrationClientId,
   type IntegrationJournalRow,
   type IntegrationStatus,
 } from "./integration-api";
+import {
+  loadNativeIntegrations,
+  NativeApiError,
+  toggleNativeIntegration,
+  type NativeStatus,
+} from "./native-api";
+
+const GROK_DISABLE_COPY: ConsequenceCopy = {
+  titleKey: "integrations.dialog.grok.title",
+  changesKey: "integrations.dialog.grok.changes",
+  breakageKey: "integrations.dialog.grok.breakage",
+  undoKey: "integrations.dialog.grok.undo",
+  confirmKey: "integrations.dialog.grok.confirm",
+};
 
 const KIND_KEY: Record<IntegrationJournalRow["kind"], TKey> = {
   apply: "integrations.kind.apply",
@@ -52,18 +66,29 @@ function isApplied(status: IntegrationStatus): boolean {
 function OverviewCard({
   row,
   pending,
+  result,
   onOpen,
   onToggle,
 }: {
   row: OverviewRow;
   pending: boolean;
+  result: { tone: "ok" | "err"; text: string } | null;
   onOpen: () => void;
   onToggle: (() => void) | null;
 }) {
   const t = useT();
-  const status = row.status;
-  const applied = status ? isApplied(status) : false;
   const detail = row.detail ?? (row.detailKey ? t(row.detailKey, row.detailVars ?? undefined) : null);
+  const toggleBlocked = row.toggleBlocked !== null
+    && (row.applied || row.toggleBlocked.reason === "orphaned_marker");
+  const blockedText = toggleBlocked && row.toggleBlocked && (row.toggle === "claude" || row.toggle === "grok")
+    ? describeRefusal(t, new NativeApiError(409, {
+        error: "native integration change refused",
+        code: "native_integration_refused",
+        clientId: row.toggle,
+        reason: row.toggleBlocked.reason,
+        message: row.toggleBlocked.message,
+      }), undefined, row.togglePath ?? undefined)
+    : null;
   return (
     <li className="integration-card" data-client={row.id}>
       <div className="integration-card-head">
@@ -82,21 +107,28 @@ function OverviewCard({
       {detail && (
         <p className={row.detail ? "integration-path" : "integration-meta"}>{detail}</p>
       )}
+      {result?.tone === "err" && <Notice tone="err">{result.text}</Notice>}
+      {result?.tone === "ok" && <Notice tone="ok">{result.text}</Notice>}
       <div className="integration-card-actions">
-        {status && onToggle && (
-          <Switch
-            on={applied}
-            onClick={onToggle}
-            // Conflict and unsafe are never resolved from a card: the
-            // client page is where the reason is explained.
-            disabled={!status.installed
-              || status.state === "conflict"
-              || status.state === "unsafe"
-              || pending}
-            label={applied
-              ? t("integrations.action.disable")
-              : t("integrations.action.apply")}
-          />
+        {row.toggle && onToggle && (
+          <div className="integration-toggle-control">
+            <Switch
+              on={row.applied}
+              onClick={onToggle}
+              // Unknown is an unsettled native read; conflict/unsafe and an
+              // advisory refusal must all be resolved before mutation.
+              disabled={row.state === "unknown"
+                || !row.installed
+                || row.state === "conflict"
+                || row.state === "unsafe"
+                || toggleBlocked
+                || pending}
+              label={row.applied
+                ? t("integrations.action.disable")
+                : t("integrations.action.apply")}
+            />
+            {blockedText && <p className="integration-toggle-blocked">{blockedText}</p>}
+          </div>
         )}
         <button type="button" className="btn btn-ghost" onClick={onOpen} tabIndex={-1}>
           {t("integrations.action.settings")}
@@ -117,6 +149,17 @@ export default function IntegrationsOverview({
   const [bulkPending, setBulkPending] = useState(false);
   const [bulkResult, setBulkResult] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const [restoring, setRestoring] = useState<IntegrationJournalRow | null>(null);
+  const [cardResults, setCardResults] = useState<Partial<Record<OverviewRow["id"], { tone: "ok" | "err"; text: string }>>>({});
+  const [pendingToggle, setPendingToggle] = useState<OverviewRow | null>(null);
+  const restoreFocusRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (pendingToggle !== null) return;
+    const trigger = restoreFocusRef.current;
+    if (!trigger) return;
+    restoreFocusRef.current = null;
+    if (trigger.isConnected) trigger.focus();
+  }, [pendingToggle]);
 
   const fetchStates = useCallback(
     async (signal: AbortSignal) => (await loadIntegrationStates(apiBase, signal)).clients,
@@ -151,6 +194,10 @@ export default function IntegrationsOverview({
   );
   const fetchGrok = useCallback(
     (signal: AbortSignal) => loadGrokFenceStatus(apiBase, signal),
+    [apiBase],
+  );
+  const fetchNative = useCallback(
+    async (signal: AbortSignal) => (await loadNativeIntegrations(apiBase, signal))?.clients ?? null,
     [apiBase],
   );
 
@@ -196,6 +243,12 @@ export default function IntegrationsOverview({
     fetchGrok,
     { isEmpty: value => value === null, enabled: active },
   );
+  const nativeResource = useDataSurface<NativeStatus[] | null>(
+    `integration-native:${apiBase}`,
+    [apiBase],
+    fetchNative,
+    { isEmpty: value => value === null, enabled: active },
+  );
 
   const clients = statesResource.state.data ?? [];
   const history = historyResource.state.data ?? [];
@@ -208,6 +261,10 @@ export default function IntegrationsOverview({
    */
   const clientsSettled = statesResource.state.kind !== "cold"
     && statesResource.state.kind !== "retrying-cold";
+  const native = nativeResource.state.data ?? null;
+  // `readOptional` returns null for a failed probe. Only an actual array is a
+  // settled contract; an empty array is meaningful and removes both switches.
+  const nativeSettled = native !== null;
   const rows = buildOverviewRows({
     clients,
     clientsSettled,
@@ -216,6 +273,8 @@ export default function IntegrationsOverview({
     claude: claudeResource.state.data ?? null,
     claudeDesktop: claudeDesktopResource.state.data ?? null,
     grok: grokResource.state.data ?? null,
+    native,
+    nativeSettled,
   });
   const counts = countOverviewRows(rows);
 
@@ -233,6 +292,7 @@ export default function IntegrationsOverview({
     claudeResource.refresh();
     claudeDesktopResource.refresh();
     grokResource.refresh();
+    nativeResource.refresh();
   };
 
   /*
@@ -261,6 +321,7 @@ export default function IntegrationsOverview({
      *
      * Six loopback requests are cheap; a lost ownership record is not.
      */
+    // Bulk disable remains file-clients-only; Grok must keep its consequence gate.
     for (const client of appliedClients) {
       try {
         // react-doctor-disable-next-line react-doctor/async-await-in-loop -- serial on purpose; see the block comment above
@@ -305,21 +366,68 @@ export default function IntegrationsOverview({
    * one client turns the overview into a directory of links, and the summary
    * counts right above it exist precisely so a user can act on what they see.
    */
-  const [cardPending, setCardPending] = useState<FileIntegrationClientId | null>(null);
-  const toggleCard = async (client: IntegrationStatus) => {
+  const [cardPending, setCardPending] = useState<OverviewRow["id"] | null>(null);
+
+  const refreshNativeDetails = () => {
+    nativeResource.refresh();
+    claudeResource.refresh();
+    grokResource.refresh();
+  };
+
+  const setCardResult = (id: OverviewRow["id"], result: { tone: "ok" | "err"; text: string } | null) => {
+    setCardResults(current => {
+      const next = { ...current };
+      if (result) next[id] = result;
+      else delete next[id];
+      return next;
+    });
+  };
+
+  const toggleCard = async (row: OverviewRow, next: boolean) => {
     if (cardPending) return;
-    setCardPending(client.clientId);
-    setBulkResult(null);
+    if (!row.toggle) return;
+    setCardPending(row.id);
+    setCardResult(row.id, null);
     try {
-      // Same rule as the client page: turning it off means disable, for
-      // `stale` as much as for `current`.
-      await toggleIntegration(apiBase, client.clientId, !isApplied(client));
-      refresh();
+      if (row.status) {
+        await toggleIntegration(apiBase, row.status.clientId, next);
+        refresh();
+      } else if (row.toggle === "claude" || row.toggle === "grok") {
+        const result = await toggleNativeIntegration(apiBase, row.toggle, next);
+        if (result.reason === "non_loopback_removed") {
+          setCardResult(row.id, {
+            tone: "ok",
+            text: t(result.changed
+              ? "integrations.native.msg.nonLoopbackRemoved"
+              : "integrations.native.msg.nonLoopbackRemovedNoop"),
+          });
+        } else if (result.reason === "non_loopback_superseded") {
+          setCardResult(row.id, { tone: "ok", text: t("integrations.native.msg.nonLoopbackSuperseded") });
+        }
+        refreshNativeDetails();
+      }
     } catch (error) {
-      setBulkResult({ tone: "err", text: `${client.clientId}: ${describeRefusal(t, error)}` });
+      setCardResult(row.id, {
+        tone: "err",
+        text: describeRefusal(t, error, undefined, row.togglePath ?? undefined),
+      });
+      if (row.toggle === "claude" || row.toggle === "grok") refreshNativeDetails();
     } finally {
       setCardPending(null);
     }
+  };
+
+  const requestToggle = (row: OverviewRow, next: boolean) => {
+    if (row.status || next || row.id === "claude" || row.toggle === null) {
+      void toggleCard(row, next);
+      return;
+    }
+    // Grok disable is the only native action that edits another program's file.
+    const activeElement = document.activeElement;
+    restoreFocusRef.current = activeElement?.tagName === "BUTTON"
+      ? activeElement as HTMLButtonElement
+      : null;
+    setPendingToggle(row);
   };
 
   return (
@@ -393,8 +501,9 @@ export default function IntegrationsOverview({
               key={row.id}
               row={row}
               pending={cardPending !== null}
+              result={cardResults[row.id] ?? null}
               onOpen={() => navigateHash(row.hash)}
-              onToggle={row.status ? () => void toggleCard(row.status!) : null}
+              onToggle={row.toggle ? () => requestToggle(row, !row.applied) : null}
             />
           ))}
         </ul>
@@ -444,6 +553,16 @@ export default function IntegrationsOverview({
           row={restoring}
           onClose={() => setRestoring(null)}
           onRestored={refresh}
+        />
+      )}
+      {pendingToggle && (
+        <ConsequenceDialog
+          copy={{ ...GROK_DISABLE_COPY, vars: { path: pendingToggle.togglePath ?? "" } }}
+          onClose={() => setPendingToggle(null)}
+          onConfirm={async () => {
+            await toggleCard(pendingToggle, false);
+            setPendingToggle(null);
+          }}
         />
       )}
     </section>

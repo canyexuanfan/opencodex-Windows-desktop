@@ -34,10 +34,13 @@ Direction and copy: `002_consequence_dialog_ux.md`. This doc is the wiring.
    Claude Code and Grok; dialog gating for Grok only.
 4. `gui/src/pages/integrations/overview-clients.ts` — MODIFY: `toggle` is no
    longer file-clients-only.
-5. `gui/src/i18n/*.ts` — six locales.
-6. `gui/src/styles-integrations.css` — dialog styles.
-7. `gui/tests/consequence-dialog.test.tsx` — NEW.
-8. `gui/tests/overview-state-merge.test.ts` — NEW: the precedence rules below.
+5. `gui/src/pages/integrations/refusal-copy.ts` — MODIFY: the native branch
+   (Rev 5 B1). `integration-api.ts` stays untouched: the native guard lives in
+   `native-api.ts`, and `FILE_INTEGRATION_CLIENTS` is NOT widened.
+6. `gui/src/i18n/*.ts` — six locales.
+7. `gui/src/styles-integrations.css` — dialog styles.
+8. `gui/tests/consequence-dialog.test.tsx` — NEW.
+9. `gui/tests/overview-state-merge.test.ts` — NEW: the precedence rules below.
 
 ## One state authority
 
@@ -67,18 +70,85 @@ Precedence, in one pure function beside `buildOverviewRows`:
 `OverviewCard` changes to read `row.applied` rather than `row.status`, which
 also removes the file-client-only assumption baked into the card this morning.
 
+## Rev 5 — wp4-cycle A-gate (verdict FAIL, 2 blockers; all accepted, none rebutted)
+
+**B1 — the native refusal never reaches `describeRefusal`.** 030's "same
+shape, no second code path" is false as shipped: `isIntegrationRefusalEnvelope`
+rejects the native envelope on all three checks — `code` not in
+`REFUSAL_CODES` (`integration_*` only), `clientId` not in
+`FILE_INTEGRATION_CLIENTS`, and no `state` field at all
+(integration-api.ts:119-144). A native refusal would surface as the raw
+English `error` string in all six locales. The widening, as recommended by the
+reviewer: `isIntegrationRefusalEnvelope` stays untouched; `native-api.ts`
+defines its OWN guard for `NativeRefusalEnvelope` plus a `NativeApiError`, and
+`refusal-copy.ts` gains a native branch keyed on the four reasons with
+localized copy REPLACING the English server message. `"claude"|"grok"` must
+NOT be added to `FILE_INTEGRATION_CLIENTS` — `toggleIntegration` would then
+type-accept them and target the wrong route. IN list gains
+`gui/src/pages/integrations/refusal-copy.ts`.
+
+**B2 — the dialog's stated model does not solve focus.** RestoreDialog renders
+`<dialog open>` — no `showModal()`, no top layer, no focus trap, no backdrop
+dismiss, no focus restoration; only escape. The component that actually solved
+all four is `ClientConfigDialog.tsx` (`showModal()` at :44, `cancel` +
+`.modal-backdrop-dismiss` at :58-59) with focus restoration via the
+`restoreFocusRef` pattern in ClientConfigPanel.tsx:42-58. ConsequenceDialog is
+modelled on THAT. happy-dom has no top layer, so "focus-trapped" evidence is
+assigned to the real-browser loop (already mandated); escape and backdrop are
+happy-dom-tested per client-config-panel.test.tsx:244-262,285+.
+
+**M3 — the card DOES need structural change.** Delete "no structural change":
+the switch currently renders only when `row.status` is set and `applied` comes
+from `status` (IntegrationsOverview.tsx:65,86,397). The card reads `row.applied`
+and the row's own state/installed. Also built here, because they do not exist:
+the card's refusal notice area and its normal message slot (today a card
+refusal lands in the page-level `bulkResult` Notice).
+
+**M4 — the Grok undo sentence is hedged for the non-loopback case** (002 is
+internally inconsistent otherwise): the dialog's undo slot becomes conditional
+copy, and the enable-time message owns the caveat.
+
+**M5 — `home_mismatch` keeps the server's message after the Korean lead**, the
+conflict/unsafe pattern (refusal-copy.ts:72-73): the two homes exist only
+inside that string and 002 says they are load-bearing.
+
+**M6 — `non_loopback_removed` copy branches on `changed`**: `true` names the
+removed block, `false` says there was nothing to remove. The rendering keys on
+`reason` AND `changed`, not `reason` alone.
+
+**L7 — `installed` follows the native payload too** (the precedence list
+previously assigned only applied/badge/detail): an installed-but-unfenced Grok
+counts as detected.
+
+**L8 — bulk disable stays file-clients-only**, stated so no one "fixes" the
+asymmetry by sweeping Grok past its dialog gate.
+
+**L9 — the six-locale gate is the GUI build** (`tsc -b`, locales are
+`Record<TKey, string>`), not the root typecheck.
+
+**Nits:** this unit's only confirm button is "해제" ("복원" belongs to the
+sibling unit); "client absent from the native payload renders no switch" is a
+forward-contract with no live trigger today.
+
 ## Dialog component
 
-Modelled on `RestoreDialog.tsx`, which already solved focus, escape and
-backdrop for this surface. Differences: it takes structured content rather than
-one body string, and its confirm button is named by the caller.
+Modelled on `ClientConfigDialog.tsx`, the component that actually solved the
+modal contract here: `showModal()` for the top layer (which is what makes the
+focus trap real), a `cancel` handler for escape, a `.modal-backdrop-dismiss`
+button for backdrop dismissal, and the `restoreFocusRef` pattern from
+ClientConfigPanel.tsx:42-58 so focus returns to the switch that opened it
+(Rev 5 B2 — RestoreDialog's `<dialog open>` solves only escape). Differences:
+it takes structured content rather than one body string, and its confirm
+button is named by the caller.
 
 ```tsx
 export interface ConsequenceCopy {
   titleKey: TKey;
   changesKey: TKey;       // what is written or removed, and where
   breakageKey: TKey;      // what stops working
-  undoKey: TKey;          // honest, including what cannot be restored
+  undoKey: TKey;          // ONE hedged key — the hedge lives INSIDE the string
+                          // because NativeStatus carries no bind field to
+                          // branch on (Rev 5 M4; the server is committed)
   sideEffectKey?: TKey;   // rendered only when present
   confirmKey: TKey;       // names the action, never "확인"
   vars?: Record<string, string>;  // the literal path
@@ -96,9 +166,12 @@ with `GROK_HOME` set must see THEIR path or the dialog is lying.
 ## Card wiring
 
 `OverviewRow.toggle` widens from `FileIntegrationClientId | null` to
-`OverviewClientId | null`. `OverviewCard` already renders a switch whenever
-`toggle` and `onToggle` are set, so the card component needs no structural
-change — only the row builders stop returning `null` for Claude Code and Grok.
+`OverviewClientId | null`. The card changes structurally (Rev 5 M3): it reads
+`row.applied` and the row's own state/installed instead of `row.status`, the
+switch renders whenever `toggle` and `onToggle` are set (not only for file
+clients), and the card gains the two slots that do not exist today — a refusal
+notice area and a normal message slot. The row builders stop returning `null`
+for Claude Code and Grok.
 Codex and Claude Desktop keep `toggle: null` and render as they do today.
 
 Gating lives in the overview, not the card:
@@ -161,7 +234,8 @@ A dialog is a render artifact, so C runs the render-grounding loop
 2. Screenshot, and READ the screenshot back — a captured-but-unread screenshot
    is not observation.
 3. Assert the rendered Korean text names the real path from the live payload and
-   says re-enabling regenerates the fence.
+   carries the HEDGED undo sentence (002: regenerates the fence when opencodex
+   is on a loopback address), not the unconditional promise of earlier revisions.
 4. Drive a full disable→enable round trip for BOTH clients and confirm the card
    state and the server state agree afterwards.
 
@@ -180,7 +254,8 @@ A dialog is a render artifact, so C runs the render-grounding loop
       `non_loopback_superseded` says the block was not written by this request
       and that the card reads 연결됨 (audit r10).
 - [ ] Neither success reason is styled as an error.
-- [ ] Confirm buttons read "해제"/"복원", never "확인".
+- [ ] The confirm button reads "해제", never "확인" ("복원" belongs to the
+      sibling unit; this unit ships one dialog).
 - [ ] A refusal renders in the card notice with its localized explanation.
 - [ ] `home_mismatch` copy does not tell the user to stop a service.
 - [ ] Badge and switch never disagree: a test drives every combination of
@@ -191,4 +266,5 @@ A dialog is a render artifact, so C runs the render-grounding loop
 - [ ] Six locales carry every new key.
 - [ ] Dialog is keyboard-reachable, escape-dismissible, focus-trapped.
 - [ ] The Grok dialog's browser screenshot is read back, not just captured.
-- [ ] gui test, gui lint, typecheck green.
+- [ ] gui test, gui lint, and the GUI build (`tsc -b` — the six-locale
+      `Record<TKey, string>` gate) green.

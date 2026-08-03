@@ -101,15 +101,20 @@ skims the buttons should still know what they pressed.
 > 해제하면 Grok Build에서 opencodex 모델 별칭이 사라집니다. xAI 계정으로 쓰던
 > 모델은 그대로입니다.
 >
-> 다시 켜면 지금 쓸 수 있는 모델 목록으로 블록을 새로 씁니다.
+> opencodex가 loopback 주소로 실행 중이면, 다시 켤 때 지금 쓸 수 있는 모델
+> 목록으로 블록을 새로 씁니다.
 
 No side-effect line: nothing else depends on the fence.
 
-The undo sentence describes what the writer does. Earlier revisions promised a
-file restored from a snapshot; `012` established that Grok's undo is the enable
-path, which regenerates the block from the current catalog — a better outcome
-than replaying an hour-old snapshot, but a different promise, and the copy has
-to make the one that is true.
+The undo sentence describes what the writer does, and the hedge is INSIDE the
+string on purpose (wp4 A-gate M4): under a non-loopback bind enable never
+writes a block — it strips a stale one or reports superseded — and
+`NativeStatus` carries no bind field for the GUI to branch on, so the
+conditional lives in the copy. Earlier revisions promised a file restored from
+a snapshot; `012` established that Grok's undo is the enable path, which
+regenerates the block from the current catalog — a better outcome than
+replaying an hour-old snapshot, but a different promise, and the copy has to
+make the one that is true.
 
 ### Claude Code — no dialog
 
@@ -148,10 +153,19 @@ enabling Grok under a non-loopback bind, and which one fires is decided by
 reading the file after the write (`012` §The fix), never by what the request
 intended.
 
-**`non_loopback_removed`** — the normal case. The block is gone.
+**`non_loopback_removed`** — the normal case. The block is gone. The copy
+branches on `changed` (wp4 A-gate M6): the payload's `changed` comes from the
+strip itself, so with no prior block the "removed" sentence would be a lie.
+
+`changed: true`:
 
 > Grok Build은 opencodex가 loopback 주소로 실행 중일 때만 자동 등록할 수
 > 있습니다. loopback 주소를 가리키던 이전 블록은 제거했습니다.
+
+`changed: false`:
+
+> Grok Build은 opencodex가 loopback 주소로 실행 중일 때만 자동 등록할 수
+> 있습니다. 제거할 이전 블록은 없었습니다.
 
 **`non_loopback_superseded`** — rare. Between our removal and our read, something
 else wrote a well-formed block into the file: `ocx ensure`, a second proxy, or

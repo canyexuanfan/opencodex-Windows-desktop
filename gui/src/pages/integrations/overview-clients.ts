@@ -19,6 +19,7 @@ import {
   type FileIntegrationClientId,
   type IntegrationStatus,
 } from "./integration-api";
+import type { NativeStatus } from "./native-api";
 
 export type OverviewClientId =
   | "codex"
@@ -47,8 +48,12 @@ export interface OverviewRow {
   detail: string | null;
   detailKey: TKey | null;
   detailVars: Record<string, string> | null;
-  /** Only file clients carry an inline switch; the rest are navigation only. */
-  toggle: FileIntegrationClientId | null;
+  /** The client toggled by the inline switch; null means navigation only. */
+  toggle: OverviewClientId | null;
+  /** A read-time refusal that disables the switch before a doomed mutation. */
+  toggleBlocked: NativeStatus["disableBlocked"];
+  /** Live native path used by the consequence dialog and localized refusals. */
+  togglePath: string | null;
   /** Set only for a file client whose live status is still needed by the card. */
   status: IntegrationStatus | null;
 }
@@ -83,6 +88,8 @@ export interface OverviewSources {
   claude: ClaudeCodePayload | null;
   claudeDesktop: ClaudeDesktopPayload | null;
   grok: GrokPayload | null;
+  native: NativeStatus[] | null;
+  nativeSettled: boolean;
 }
 
 const FILE_LABEL_KEY: Record<FileIntegrationClientId, TKey> = {
@@ -114,6 +121,8 @@ function codexRow(payload: CodexRoutingPayload | null): OverviewRow {
     hash: "integrations/codex",
     labelKey: "integrations.tab.codex" as TKey,
     toggle: null,
+    toggleBlocked: null,
+    togglePath: null,
     status: null,
     detail: null,
     detailVars: null,
@@ -148,6 +157,8 @@ function keysRow(count: number | null): OverviewRow {
     hash: "integrations/keys",
     labelKey: "integrations.tab.keys" as TKey,
     toggle: null,
+    toggleBlocked: null,
+    togglePath: null,
     status: null,
     detail: null,
   };
@@ -165,33 +176,54 @@ function keysRow(count: number | null): OverviewRow {
 }
 
 /** `enabled` is the connection switch that used to live in the sidebar. */
-function claudeRow(payload: ClaudeCodePayload | null): OverviewRow {
-  const base = {
-    id: "claude" as const,
-    hash: "integrations/claude",
-    labelKey: "integrations.tab.claude" as TKey,
-    toggle: null,
-    status: null,
-    detail: null,
-    detailVars: null,
-  };
-  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detailKey: null };
-  const enabled = payload.enabled === true;
-  // The resolved auth mode is the fact a user checks before wondering why a
-  // request was refused, so it earns the line over a restated badge.
-  const authKey: TKey | null = payload.authMode === "subscription"
+function claudeDetailKey(payload: ClaudeCodePayload | null): TKey | null {
+  if (!payload) return null;
+  if (payload.enabled !== true) return "integrations.detail.claudeOff";
+  return payload.authMode === "subscription"
     ? "claude.authModeSubscription"
     : payload.authMode === "proxy"
       ? "claude.authModeProxy"
       : payload.authMode === "auto"
         ? "claude.authModeAuto"
         : null;
+}
+
+function claudeRow(
+  payload: ClaudeCodePayload | null,
+  native: NativeStatus | undefined,
+  nativeSettled: boolean | undefined,
+): OverviewRow {
+  const base = {
+    id: "claude" as const,
+    hash: "integrations/claude",
+    labelKey: "integrations.tab.claude" as TKey,
+    toggle: "claude" as const,
+    toggleBlocked: native?.disableBlocked ?? null,
+    togglePath: native?.configPath ?? null,
+    status: null,
+    detail: null,
+    detailVars: null,
+  };
+  const detailKey = claudeDetailKey(payload);
+  // Compatibility for non-overview callers written before the native source
+  // existed. The live page always passes nativeSettled explicitly.
+  if (nativeSettled === undefined) {
+    if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detailKey };
+    const enabled = payload.enabled === true;
+    return { ...base, state: enabled ? "current" : "absent", installed: true, applied: enabled, detailKey };
+  }
+  if (!nativeSettled) {
+    return { ...base, state: "unknown", installed: false, applied: false, detailKey };
+  }
+  if (!native) {
+    return { ...base, toggle: null, state: "unknown", installed: false, applied: false, detailKey };
+  }
   return {
     ...base,
-    state: enabled ? "current" : "absent",
-    installed: true,
-    applied: enabled,
-    detailKey: enabled ? authKey : "integrations.detail.claudeOff",
+    state: native.state,
+    installed: native.installed,
+    applied: native.state === "current",
+    detailKey,
   };
 }
 
@@ -212,6 +244,8 @@ function claudeDesktopRow(payload: ClaudeDesktopPayload | null): OverviewRow {
     // "Desktop" alone is ambiguous next to ten other client names.
     labelKey: "claudeDesktop.title" as TKey,
     toggle: null,
+    toggleBlocked: null,
+    togglePath: null,
     status: null,
     detail: null,
     detailVars: null,
@@ -250,26 +284,48 @@ function claudeDesktopRow(payload: ClaudeDesktopPayload | null): OverviewRow {
  * Reporting "not installed" for an unfenced install is the safer error: the
  * card still navigates and the Grok tab tells the true story.
  */
-function grokRow(payload: GrokPayload | null): OverviewRow {
+function grokDetail(payload: GrokPayload | null): Pick<OverviewRow, "detailKey" | "detailVars"> {
+  if (!payload) return { detailKey: null, detailVars: null };
+  const present = payload.present === true;
+  return {
+    detailKey: present ? "integrations.detail.grokModels" : "integrations.detail.grokAbsent",
+    detailVars: present ? { count: String(payload.models?.length ?? 0) } : null,
+  };
+}
+
+function grokRow(
+  payload: GrokPayload | null,
+  native: NativeStatus | undefined,
+  nativeSettled: boolean | undefined,
+): OverviewRow {
   const base = {
     id: "grok" as const,
     hash: "integrations/grok",
     labelKey: "integrations.tab.grok" as TKey,
-    toggle: null,
+    toggle: "grok" as const,
+    toggleBlocked: native?.disableBlocked ?? null,
+    togglePath: native?.configPath ?? null,
     status: null,
     detail: null,
   };
-  if (!payload) {
-    return { ...base, state: "unknown", installed: false, applied: false, detailKey: null, detailVars: null };
+  const detail = grokDetail(payload);
+  if (nativeSettled === undefined) {
+    if (!payload) return { ...base, state: "unknown", installed: false, applied: false, ...detail };
+    const present = payload.present === true;
+    return { ...base, state: present ? "current" : "absent", installed: present, applied: present, ...detail };
   }
-  const present = payload.present === true;
+  if (!nativeSettled) {
+    return { ...base, state: "unknown", installed: false, applied: false, ...detail };
+  }
+  if (!native) {
+    return { ...base, toggle: null, state: "unknown", installed: false, applied: false, ...detail };
+  }
   return {
     ...base,
-    state: present ? "current" : "absent",
-    installed: present,
-    applied: present,
-    detailKey: present ? "integrations.detail.grokModels" : "integrations.detail.grokAbsent",
-    detailVars: present ? { count: String(payload.models?.length ?? 0) } : null,
+    state: native.state,
+    installed: native.installed,
+    applied: native.state === "current",
+    ...detail,
   };
 }
 
@@ -287,6 +343,8 @@ function fileRow(status: IntegrationStatus): OverviewRow {
     detailKey: null,
     detailVars: null,
     toggle: status.clientId,
+    toggleBlocked: null,
+    togglePath: status.configPath,
     status,
   };
 }
@@ -297,12 +355,14 @@ function fileRow(status: IntegrationStatus): OverviewRow {
  * strip above the grid, so the eye moves the same way in both.
  */
 export function buildOverviewRows(sources: OverviewSources): OverviewRow[] {
+  const nativeClaude = sources.native?.find(status => status.clientId === "claude");
+  const nativeGrok = sources.native?.find(status => status.clientId === "grok");
   const rows: OverviewRow[] = [
     codexRow(sources.codex),
     keysRow(sources.keyCount),
-    claudeRow(sources.claude),
+    claudeRow(sources.claude, nativeClaude, sources.nativeSettled),
     claudeDesktopRow(sources.claudeDesktop),
-    grokRow(sources.grok),
+    grokRow(sources.grok, nativeGrok, sources.nativeSettled),
   ];
   for (const clientId of FILE_INTEGRATION_CLIENTS) {
     const status = sources.clients.find(candidate => candidate.clientId === clientId);
@@ -325,6 +385,8 @@ export function buildOverviewRows(sources: OverviewSources): OverviewRow[] {
         detailKey: null,
         detailVars: null,
         toggle: null,
+        toggleBlocked: null,
+        togglePath: null,
         status: null,
       });
     }
