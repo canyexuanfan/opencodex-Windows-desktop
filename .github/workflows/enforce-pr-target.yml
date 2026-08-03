@@ -236,6 +236,20 @@ jobs:
                 );
               }
 
+              if (
+                failures.some(
+                  failure => failure.code === "missing_ui_screenshot"
+                )
+              ) {
+                sections.push(
+                  "⚠️ **UI screenshot required**",
+                  "",
+                  `This pull request mentions ${inlineCode("gui")} in its title or description, so it is treated as a GUI change.`,
+                  "",
+                  `@${pr.user.login} Please add a screenshot of the UI change to the description — drag and drop the image into the description editor, or paste a markdown image such as ${inlineCode("![Screenshot](https://example.com/after.png)")}. The check re-runs automatically once the description is edited.`
+                );
+              }
+
               return sections;
             }
 
@@ -250,6 +264,9 @@ jobs:
                   }
                   if (failure.code === "bad_description") {
                     return `bad description (${failure.reason})`;
+                  }
+                  if (failure.code === "missing_ui_screenshot") {
+                    return "missing UI screenshot";
                   }
                   return failure.code;
                 })
@@ -344,6 +361,7 @@ jobs:
             const failures = collectPrQualityFailures({
               baseRef: pr.base.ref,
               allowedBases: ALLOWED_BASES,
+              title: pr.title,
               body: pr.body,
               behindMain,
               behindBase,
@@ -368,7 +386,8 @@ jobs:
                     autoDraftedByBot: false,
                     titlePrefixedByBot: false,
                     ancestryFailed: false,
-                    descriptionFailed: false
+                    descriptionFailed: false,
+                    screenshotFailed: false
                   };
 
               state.ancestryFailed = failures.some(
@@ -376,6 +395,9 @@ jobs:
               );
               state.descriptionFailed = failures.some(
                 failure => failure.code === "bad_description"
+              );
+              state.screenshotFailed = failures.some(
+                failure => failure.code === "missing_ui_screenshot"
               );
 
               const shouldStripTitlePrefix =
@@ -537,7 +559,8 @@ jobs:
                   autoDraftedByBot: true,
                   titlePrefixedByBot: false,
                   ancestryFailed: false,
-                  descriptionFailed: false
+                  descriptionFailed: false,
+                  screenshotFailed: false
                 }
               : {
                   version: 1,
@@ -545,7 +568,8 @@ jobs:
                   autoDraftedByBot: false,
                   titlePrefixedByBot: false,
                   ancestryFailed: false,
-                  descriptionFailed: false
+                  descriptionFailed: false,
+                  screenshotFailed: false
                 };
 
             const titleResult = storedState.titlePrefixedByBot
@@ -565,7 +589,7 @@ jobs:
                 "",
                 "✅ **PR quality gates passed**",
                 "",
-                `This pull request now targets ${inlineCode(pr.base.ref)} with acceptable ancestry and description.`,
+                `This pull request now targets ${inlineCode(pr.base.ref)} with acceptable ancestry, description, and UI screenshot coverage.`,
                 "",
                 `${titleResult} ${draftResult}`
               ].join("\n")
