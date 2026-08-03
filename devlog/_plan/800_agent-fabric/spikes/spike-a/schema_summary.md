@@ -1,4 +1,4 @@
-﻿Codex app-server generate-ts schema summary (codex-cli 0.133.0)
+Codex app-server generate-ts schema summary (codex-cli 0.133.0)
 Generated 2026-08-03. Version-pinned to this Codex version.
 
 Thread primitives:

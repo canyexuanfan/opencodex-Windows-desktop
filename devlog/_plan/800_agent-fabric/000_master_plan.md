@@ -243,32 +243,32 @@ Decision: useful later as a task-source adapter, but not the initial product.
 # 6. System architecture
 
 ```text
-┌──────────────────────────────────────────────────────────┐
-│ User surfaces                                            │
-│ CLI · OpenCodex dashboard · future ACP clients           │
-└───────────────────────────┬──────────────────────────────┘
-                            │
++----------------------------------------------------------+
+| User surfaces                                            |
+| CLI * OpenCodex dashboard * future ACP clients           |
++---------------------------+------------------------------+
+                            |
                      Agent-control API
-                            │
-┌───────────────────────────▼──────────────────────────────┐
-│ OpenCodex Fabric Supervisor                              │
-│                                                          │
-│ Task kernel        Ownership/leases     Handoff engine   │
-│ Event store        Policy engine        Artifact store   │
-│ Projections        Workspace manager    Compatibility DB │
-│ Runtime registry   Recovery manager     Security stream  │
-└──────────────┬───────────────────┬───────────────────────┘
-               │                   │
+                            |
++---------------------------?------------------------------+
+| OpenCodex Fabric Supervisor                              |
+|                                                          |
+| Task kernel        Ownership/leases     Handoff engine   |
+| Event store        Policy engine        Artifact store   |
+| Projections        Workspace manager    Compatibility DB |
+| Runtime registry   Recovery manager     Security stream  |
++--------------+-------------------+-----------------------+
+               |                   |
        Runtime adapter API   Existing OpenCodex data plane
-               │                   │
-      ┌────────┼────────┐     Providers, accounts, quotas,
-      │        │        │     adapters, routing, usage
+               |                   |
+      +--------?--------+     Providers, accounts, quotas,
+      |        |        |     adapters, routing, usage
  Codex App  Claude   Generic ACP
  Server     adapter    adapter
-      │        │        │
-┌─────▼────────▼────────▼──────────────────────────────────┐
-│ Managed native harness processes and Git worktrees       │
-└──────────────────────────────────────────────────────────┘
+      |        |        |
++-----?--------?--------?----------------------------------+
+| Managed native harness processes and Git worktrees       |
++----------------------------------------------------------+
 ```
 
 ## 6.1 Process boundary
@@ -393,47 +393,47 @@ archived
 
 ```text
 Task
-├─ identity
-│  ├─ task_id
-│  ├─ schema_version
-│  ├─ created_at
-│  ├─ created_by
-│  └─ parent_task_id / fork_point
-├─ objective
-│  ├─ title
-│  ├─ goal
-│  ├─ acceptance_criteria[]
-│  ├─ constraints[]
-│  └─ unresolved_questions[]
-├─ repository
-│  ├─ canonical_remote
-│  ├─ repository_id
-│  ├─ base_commit
-│  ├─ target_branch
-│  └─ workspace_policy
-├─ policy_snapshot
-│  ├─ sandbox
-│  ├─ network
-│  ├─ command_approval
-│  ├─ file_approval
-│  ├─ secrets_policy
-│  └─ allowed_runtimes/providers
-├─ execution
-│  ├─ current_owner
-│  ├─ active_run
-│  ├─ runtime_sessions[]
-│  ├─ workspaces[]
-│  └─ handoffs[]
-├─ evidence
-│  ├─ artifacts[]
-│  ├─ verification_runs[]
-│  ├─ decisions[]
-│  └─ claims[]
-└─ provenance
-   ├─ events[]
-   ├─ capability_manifests
-   ├─ semantic_loss_ledgers
-   └─ security_observations
++- identity
+|  +- task_id
+|  +- schema_version
+|  +- created_at
+|  +- created_by
+|  +- parent_task_id / fork_point
++- objective
+|  +- title
+|  +- goal
+|  +- acceptance_criteria[]
+|  +- constraints[]
+|  +- unresolved_questions[]
++- repository
+|  +- canonical_remote
+|  +- repository_id
+|  +- base_commit
+|  +- target_branch
+|  +- workspace_policy
++- policy_snapshot
+|  +- sandbox
+|  +- network
+|  +- command_approval
+|  +- file_approval
+|  +- secrets_policy
+|  +- allowed_runtimes/providers
++- execution
+|  +- current_owner
+|  +- active_run
+|  +- runtime_sessions[]
+|  +- workspaces[]
+|  +- handoffs[]
++- evidence
+|  +- artifacts[]
+|  +- verification_runs[]
+|  +- decisions[]
+|  +- claims[]
++- provenance
+   +- events[]
+   +- capability_manifests
+   +- semantic_loss_ledgers
+   +- security_observations
 ```
 
 ## 8.3 Runtime Session
@@ -494,10 +494,10 @@ A claim records:
 
 Examples:
 
-- “Unit tests pass.”
-- “The target accepted the handoff.”
-- “The source worktree is unchanged.”
-- “No actionable security issue remains.”
+- "Unit tests pass."
+- "The target accepted the handoff."
+- "The source worktree is unchanged."
+- "No actionable security issue remains."
 
 ---
 
@@ -511,13 +511,13 @@ Event-source Fabric task state only. Do not migrate unrelated OpenCodex configur
 
 ```text
 ~/.opencodex/fabric/
-├─ fabric.sqlite
-├─ artifacts/
-│  └─ sha256/<prefix>/<hash>
-├─ runtime-state/
-├─ exports/
-├─ backups/
-└─ logs/
++- fabric.sqlite
++- artifacts/
+|  +- sha256/<prefix>/<hash>
++- runtime-state/
++- exports/
++- backups/
++- logs/
 ```
 
 Never share SQLite files or transactions with native Codex storage.
@@ -821,11 +821,11 @@ Structure:
 
 ```text
 base repository
-└─ task branch
-   ├─ primary worktree
-   ├─ reviewer worktree
-   ├─ verifier worktree
-   └─ quarantined worktrees
++- task branch
+   +- primary worktree
+   +- reviewer worktree
+   +- verifier worktree
+   +- quarantined worktrees
 ```
 
 Rules:
@@ -1098,26 +1098,26 @@ Attempt to disprove the programme before production implementation.
 
 ```text
 devlog/_plan/800_agent-fabric/
-├─ 000_master_plan.md
-├─ 010_live_repository_assessment.md
-├─ 020_research_landscape.md
-├─ 030_alternatives_and_decisions.md
-├─ 040_task_domain_model.md
-├─ 050_state_machines.md
-├─ 060_event_and_artifact_contracts.md
-├─ 070_runtime_adapter_contract.md
-├─ 080_handoff_transaction.md
-├─ 090_workspace_and_lease_model.md
-├─ 100_security_threat_model.md
-├─ 110_protocol_boundaries.md
-├─ 120_ts_go_runtime_authority.md
-├─ 130_conformance_strategy.md
-├─ 140_spike_plan.md
-├─ 150_spike_results.md
-├─ 160_fab00_decision_record.md
-├─ 170_fab01_authority_or_block.md
-└─ handoffs/
-   └─ FAB-00.md
++- 000_master_plan.md
++- 010_live_repository_assessment.md
++- 020_research_landscape.md
++- 030_alternatives_and_decisions.md
++- 040_task_domain_model.md
++- 050_state_machines.md
++- 060_event_and_artifact_contracts.md
++- 070_runtime_adapter_contract.md
++- 080_handoff_transaction.md
++- 090_workspace_and_lease_model.md
++- 100_security_threat_model.md
++- 110_protocol_boundaries.md
++- 120_ts_go_runtime_authority.md
++- 130_conformance_strategy.md
++- 140_spike_plan.md
++- 150_spike_results.md
++- 160_fab00_decision_record.md
++- 170_fab01_authority_or_block.md
++- handoffs/
+   +- FAB-00.md
 ```
 
 ### Spike A: Codex App Server

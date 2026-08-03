@@ -143,7 +143,7 @@ func TestOnePrimaryOwnerAndRollback(t *testing.T) {
 	ls := &Leases{Path: filepath.Join(d, "lease.json")}
 	ls.AcquireWriteLease("rs_a")
 	_ = log.Append(mkEvent(1, "RunStarted", "rs_a", nil))
-	// proposed handoff that is rolled back (pre-commit failure) — ownership unchanged
+	// proposed handoff that is rolled back (pre-commit failure) -- ownership unchanged
 	_ = log.Append(mkEvent(2, "HandoffRolledBack", "rs_a", nil))
 	p, _ := log.Rebuild()
 	if p.CurrentOwner != "rs_a" {
