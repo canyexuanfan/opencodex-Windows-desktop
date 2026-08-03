@@ -28,7 +28,7 @@ Task
 
 `runtime_session_id` (ULID), `task_id`, `adapter` + `adapter_version`, `harness` + `harness_version`, `native_session_id` (opaque, adapter-resolved), `native_state_ref` (opaque blob path, never inlined), `workspace_id`, `role` (primary|reviewer|verifier|observer), `capabilities_at_start` (manifest id), `policy_at_start` (snapshot id), `status`, `terminal_reason`.
 
-**Decision (honesty invariant, ?3.2):** `native_session_id` and `native_state_ref` are **opaque** to the Fabric -- adapters resolve them; the Fabric never fabricates native state. A runtime session records native references it can verify, nothing more.
+**Decision (honesty invariant, sec.3.2):** `native_session_id` and `native_state_ref` are **opaque** to the Fabric -- adapters resolve them; the Fabric never fabricates native state. A runtime session records native references it can verify, nothing more.
 
 ## 3. Artifact (types + metadata)
 
@@ -44,6 +44,6 @@ Required metadata per artifact: `content_hash` (sha256, content-addressed), `pro
 
 **Decision (evidence-based completion gate):** task completion requires at least one `validated` claim per `acceptance_criterion` (claims bound to criteria by hash).
 
-## 5. Deviation from plan ?8
+## 5. Deviation from plan sec.8
 
 None material. Concretized: `task_id`=ULID; content-addressed artifacts; binding claims->acceptance criteria; opaque native refs. Added `trust_label` and `redaction_state` to artifacts (security/privacy, `100`).

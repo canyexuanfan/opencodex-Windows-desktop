@@ -25,7 +25,7 @@ IPC socket/pipe; CLI (`ocx task ...`); management `/api/*`; handoff import; nati
 
 ## 5. Credential classes
 
-Agent-control token (scoped, dedicated); provider API keys + OAuth tokens (owned by opencodex, **never** reused for agent control); Codex/ChatGPT account-pool identities; model API keys. Rule: agent-control cred never equals a data-plane or management-plane secret (`090` ?4).
+Agent-control token (scoped, dedicated); provider API keys + OAuth tokens (owned by opencodex, **never** reused for agent control); Codex/ChatGPT account-pool identities; model API keys. Rule: agent-control cred never equals a data-plane or management-plane secret (`090` sec.4).
 
 ## 6. Threats
 
@@ -40,11 +40,11 @@ Agent-control token (scoped, dedicated); provider API keys + OAuth tokens (owned
 | Permission escalation | widened effective policy | Tier-3 block on handoff widening (`080`/`090`); permissions never widen without approval event |
 | Symlink / path escape | worktree symlinks pointing outside | canonicalize all paths (opencodex already does, `structure/02`); sandbox confines; reject escaped paths |
 | Stale owner / zombie process | old writer after lease loss | fencing token monotonic; reject stale mutation; mark `lost`; quarantine (`050`/`090`) |
-| Forged acknowledgement | target fakes the ack hash | ack is machine-readable structured (not NL); verified against expected hashes before commit (`080` ?3) |
+| Forged acknowledgement | target fakes the ack hash | ack is machine-readable structured (not NL); verified against expected hashes before commit (`080` sec.3) |
 | Poisoned capability manifest | false capabilities claimed | only `verified`/accepted-`degraded` satisfy mandatory; probed at runtime (`070`/`130`) |
 | Artifact tampering | altered artifact bytes | content-addressed sha256; hash chain; missing artifact = projection fault |
 | Multi-run malicious change | two runs collide on a worktree | one writer per worktree; no auto-merge; quarantine on conflict |
-| Sensitive-content retention | secrets leaked into artifacts/events | redaction default; secret-pattern exclusion; privacy defaults (`090` ?6) |
+| Sensitive-content retention | secrets leaked into artifacts/events | redaction default; secret-pattern exclusion; privacy defaults (`090` sec.6) |
 
 ## 7. Deferred remote-worker risks (FAB-08)
 
@@ -67,7 +67,7 @@ A2A is opaque and remote; a remote worker can be a hostile principal. Risks: exf
 ## 10. Security acceptance gates
 
 - Fencing token never decreases across any ownership transition (property test, `130`).
-- One primary owner invariant holds through every crash point (`090` ?3).
+- One primary owner invariant holds through every crash point (`090` sec.3).
 - No handoff commits with both source and target holding write authority.
 - No credential/private content persisted (privacy scan passes -- repo already has `bun run privacy:scan`).
 - Acknowledgement hash verified before ownership commit.

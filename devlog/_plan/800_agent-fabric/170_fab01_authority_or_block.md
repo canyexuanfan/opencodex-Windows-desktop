@@ -7,21 +7,21 @@ date: 2026-08-03
 
 # 170 -- FAB-01 Authority or Block
 
-## FAB-01 authority status: NOT AUTHORISED
+## FAB-01 authority status: NOT YET GRANTED (blockers resolved)
 
-FAB-01 (read-only Task Inspector) is **not** authorised by this handoff.
+FAB-01 (read-only Task Inspector) is **not** yet authorised. The two maintainer-authority blockers are now **resolved** (`120`/`030` on 2026-08-03): language authority = TS-native Supervisor; product placement = opencodex subsystem.
 
-## Prerequisites for FAB-01 authority (all required)
+## Remaining prerequisites for FAB-01 authority (all required)
 
 1. Independent FAB-00 acceptance (`PASS`) per the acceptance model (`160`).
-2. Maintainer decision on language authority (`120` ?4): (A) TS-native or (B) a Go migration line.
-3. Maintainer decision on product placement (`030` ?2): Fabric as a new opencodex subsystem vs. a sibling project.
-4. If (A): a new branch off `dev` (not `main`) for the Fabric subsystem; create `AGENTS.md`/`CONTRIBUTING.md` governance (gap in `010` ?4).
-5. Update master plan ?7 to remove the false "Go migration line" premise and record the chosen authority.
+2. ~~Maintainer decision on language authority~~ **DONE** -- TS-native Supervisor (`120`).
+3. ~~Maintainer decision on product placement~~ **DONE** -- opencodex subsystem (`030` sec.2).
+4. Create `AGENTS.md`/`CONTRIBUTING.md` governance for the new subsystem (gap in `010` sec.4).
+5. Update master plan sec.7 to record the decided authority (see the FAB-00 correction in `000`).
 
-## NEEDS_HUMAN flag
+## Explicit FAB-01 execution authority
 
-Items 2-3 are maintainer-authority decisions FAB-00 cannot make. Until resolved, FAB-01 has no written authority.
+Still required from the maintainer before any FAB-01 production code. The FAB-01 branch base is `dev` (not `main`), per the repo integration line and `120` sec.6.
 
 ## Exact FAB-01 scope (when authorised)
 

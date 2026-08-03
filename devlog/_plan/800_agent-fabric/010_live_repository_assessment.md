@@ -40,7 +40,7 @@ base_branch: fab/00-agent-fabric (from origin/main @ f9b9440, v2.10.0)
 
 - OpenCodex-owned: `~/.opencodex/{config.json, auth.json (multiauth OAuth), catalog-backup.json, usage.jsonl (0o600, no prompts)}`.
 - Codex-owned, edited by OpenCodex: `$CODEX_HOME/{config.toml, opencodex.config.toml, opencodex-catalog.json, models_cache.json}`. `CODEX_HOME` resolved via `src/codex/paths.ts` (set+valid dir else `~/.codex`).
-- **DIRECTION (critical)**: OpenCodex is **DOWNSTREAM** -- Codex calls OpenCodex as a *provider* (`http://127.0.0.1:<port>/v1/responses`). OpenCodex does **not** drive Codex sessions. The master plan ?12 premise ("Use Codex App Server for managed execution") is the **opposite** direction (UPSTREAM controller). This is a NEW role for OpenCodex, not an extension of an existing seam. See `030` ?3.
+- **DIRECTION (critical)**: OpenCodex is **DOWNSTREAM** -- Codex calls OpenCodex as a *provider* (`http://127.0.0.1:<port>/v1/responses`). OpenCodex does **not** drive Codex sessions. The master plan sec.12 premise ("Use Codex App Server for managed execution") is the **opposite** direction (UPSTREAM controller). This is a NEW role for OpenCodex, not an extension of an existing seam. See `030` sec.3.
 
 ## 7. Dependencies
 
@@ -49,7 +49,7 @@ base_branch: fab/00-agent-fabric (from origin/main @ f9b9440, v2.10.0)
 ## 8. Go migration line -- ABSENT (critical stale assumption)
 
 - No `go.mod`, no `*.go` anywhere in the repo (only vendored `node_modules/flatted/golang` and, after the spike, the disposable `spikes/spike-c-kernel/`). Repo is 100% TypeScript/Bun. Re-verified against current `origin/main` (`f9b9440`, v2.10.0) via `git ls-tree -r origin/main` -- **no `go.mod`, no `*.go` on current main either**.
-- Master plan ?7 premise ("a parallel Go migration line ... applicable behaviour must eventually exist in the Go runtime") is **not grounded in current repo state**. OpenAI Codex itself is Rust (`codex-rs`), not Go.
+- Master plan sec.7 premise ("a parallel Go migration line ... applicable behaviour must eventually exist in the Go runtime") is **not grounded in current repo state**. OpenAI Codex itself is Rust (`codex-rs`), not Go.
 - System-wide Go **is** installed (`go1.26.4 windows/amd64`) but the project does not use it. See `120`.
 
 ## 9. Architecture entrypoints (for adapter/workspace design)
@@ -66,4 +66,4 @@ Inspected open issues/PRs. Visible items are provider-preset additions (PR #923 
 
 ## 12. Working-tree state (start of FAB-00)
 
-Worktree `fab/00-agent-fabric` clean at `f9b9440` (origin/main, v2.10.0) -- rebased from the initial stale `bbb630e` ref after a fetch revealed current main. No native Codex storage mutated. No credentials committed. The canonical master plan (`000_master_plan.md`) was placed at `devlog/_plan/800_agent-fabric/000_master_plan.md` from the provided source file (35,085 bytes) -- this is the master plan's own ?0 instruction and required-output file #1; it was **copied**, not reconstructed from the launch prompt.
+Worktree `fab/00-agent-fabric` clean at `f9b9440` (origin/main, v2.10.0) -- rebased from the initial stale `bbb630e` ref after a fetch revealed current main. No native Codex storage mutated. No credentials committed. The canonical master plan (`000_master_plan.md`) was placed at `devlog/_plan/800_agent-fabric/000_master_plan.md` from the provided source file (35,085 bytes) -- this is the master plan's own sec.0 instruction and required-output file #1; it was **copied**, not reconstructed from the launch prompt.

@@ -39,7 +39,7 @@ awaiting_approval -> (decline | tier-3 loss) -> rolled_back
 starting_target | committing -> (failure pre-commit) -> rolled_back
 committing -> (failure post-commit) -> failed   # target-runtime failure; rescue/reversal path
 ```
-**Invariant (?16):** a handoff never leaves both source and target with write authority. Pre-commit failure -> source retains ownership. Post-commit failure -> target owns; rescue/reversal path.
+**Invariant (sec.16):** a handoff never leaves both source and target with write authority. Pre-commit failure -> source retains ownership. Post-commit failure -> target owns; rescue/reversal path.
 
 ## Workspace
 
@@ -51,9 +51,9 @@ owned -> (dirty checkpoint before handoff) -> dirty -> ready
 owned -> (failure / suspicious) -> quarantined
 owned -> (release) -> released -> archived
 ```
-**Decision:** `read_only` and `quarantine` are enforced via OS/process sandbox, **not** git (?17 / `020` D). One writer per worktree.
+**Decision:** `read_only` and `quarantine` are enforced via OS/process sandbox, **not** git (sec.17 / `020` D). One writer per worktree.
 
-## Cross-machine invariants (property-tested, ?24 / `130`)
+## Cross-machine invariants (property-tested, sec.24 / `130`)
 
 - One primary owner per task at all times.
 - Fencing token strictly monotonic across ownership changes.

@@ -252,7 +252,7 @@ Decision: useful later as a task-source adapter, but not the initial product.
                             |
                      Agent-control API
                             |
-+---------------------------?------------------------------+
++---------------------------+------------------------------+
 | OpenCodex Fabric Supervisor                              |
 |                                                          |
 | Task kernel        Ownership/leases     Handoff engine   |
@@ -263,12 +263,12 @@ Decision: useful later as a task-source adapter, but not the initial product.
                |                   |
        Runtime adapter API   Existing OpenCodex data plane
                |                   |
-      +--------?--------+     Providers, accounts, quotas,
+      +--------+--------+     Providers, accounts, quotas,
       |        |        |     adapters, routing, usage
  Codex App  Claude   Generic ACP
  Server     adapter    adapter
       |        |        |
-+-----?--------?--------?----------------------------------+
++-----+--------+--------+----------------------------------+
 | Managed native harness processes and Git worktrees       |
 +----------------------------------------------------------+
 ```
@@ -301,7 +301,7 @@ Use a dedicated agent-control credential. Do not reuse data-plane or management-
 
 OpenCodex currently uses `dev` for normal integration and a parallel Go migration line. Applicable behaviour must eventually exist in the Go runtime.
 
-> FAB-00 correction (2026-08-03): the "parallel Go migration line" premise is INVALIDATED by FAB-00 evidence: current `origin/main` (v2.10.0) has no `go.mod` and no `*.go`; OpenCodex is 100% TypeScript/Bun; OpenAI Codex is Rust, not Go (`010` #8, `020` F). The preferred `GO_FIRST_AUTHORISED` outcome is therefore not valid against current repo state. `120` records the decision as `IMPLEMENTATION_BLOCKED_PENDING_GO_AUTHORITY` and recommends re-scoping to a TS-native Supervisor (or an explicit maintainer-authored Go migration line). FAB-01 depends on this authority decision.
+> FAB-00 correction (2026-08-03): the "parallel Go migration line" premise is INVALIDATED by FAB-00 evidence: current `origin/main` (v2.10.0) has no `go.mod` and no `*.go`; OpenCodex is 100% TypeScript/Bun; OpenAI Codex is Rust, not Go (`010` #8, `020` F). The preferred `GO_FIRST_AUTHORISED` outcome is therefore not valid against current repo state. **Maintainer decision (2026-08-03): the Fabric is a TS-native Supervisor within opencodex as a subsystem** (see `120`). The plan's "no dual complete implementations" rule is satisfied trivially (one runtime, TypeScript/Bun).
 
 The programme must not build a full TypeScript Fabric and later port it.
 

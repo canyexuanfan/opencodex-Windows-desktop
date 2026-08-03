@@ -17,12 +17,12 @@ date: 2026-08-03
 
 ## 3. Normalised events
 
-As `060` ?2. Unknown native events -> `RawRuntimeEvent`; adapters **must not guess**.
+As `060` sec.2. Unknown native events -> `RawRuntimeEvent`; adapters **must not guess**.
 
 ## 4. Native resume vs semantic continuation
 
 - **Native resume:** the harness restores its own session (`resumeSession`). Adapter reports the capability as `probed|verified|degraded|blocked`.
-- **Semantic continuation:** a NEW target session receives the Task Core + workspace + git state + decisions + evidence refs + outstanding work + bounded brief + effective policy + Semantic Loss Ledger. Distinct in the event model: `SessionStarted.cause = semantic_continuation` vs `SessionResumed`. The UI/event model names these differently (?13).
+- **Semantic continuation:** a NEW target session receives the Task Core + workspace + git state + decisions + evidence refs + outstanding work + bounded brief + effective policy + Semantic Loss Ledger. Distinct in the event model: `SessionStarted.cause = semantic_continuation` vs `SessionResumed`. The UI/event model names these differently (sec.13).
 
 ## 5. Adapter bindings (grounded in `020`)
 
