@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { atomicWriteFile, expandUserPath, getConfigDir, websocketsEnabled } from "../../config";
+import { atomicWriteFile, expandUserPath, getConfigDir, readConfigDiagnostics, websocketsEnabled } from "../../config";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "../paths";
 import { clearModelCache, DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, isModelsFetchCoolingDown, markModelsFetchFailure, setCached } from "../model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "../../oauth";
@@ -32,7 +32,7 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 
 import { activeCodexModelsCachePath, applyJawcodeCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, catalogModelSlug, ensureCatalogBackup, ensureStrictCatalogFields, findNativeTemplate, isRoutedModelCompatibilityExcluded, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readNativeBaseline } from "./parsing";
 import type { CatalogModel, MultiAgentMode, RawEntry } from "./parsing";
-import { applyNativeVisibility, disabledNativeSlugs, isUnsupportedOpenAiNativeSlug, nativeOpenAiSlugs, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
+import { applyNativeVisibility, disabledNativeSlugs, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
 import { loadCatalogForSync, resetBundledCatalogCacheForTests } from "./bundled";
 import { isMultiAgentV2Enabled } from "../features";
 import { applyCatalogModelMetadata, applyReasoningLevels, catalogEntryEfforts, clampCatalogModelsToCodexSupport, ensureGpt56ReasoningLevels, ensureUltraReasoningLevel, isGpt56NativeSlug } from "./effort";
@@ -127,6 +127,7 @@ export function effectiveSubagentRoster(
       return leftPriority - rightPriority || left.index - right.index;
     })
     .slice(0, MAX_SPAWN_AGENT_MODEL_OVERRIDES);
+  const orderedEntries = new Set(ordered.map(({ entry }) => entry));
 
   const candidates = ordered.map(({ entry }) => ({
     model: entry.slug as string,
@@ -139,8 +140,8 @@ export function effectiveSubagentRoster(
       efforts: catalogEntryEfforts(entry),
     }));
   const excluded = configured.flatMap((model): SubagentRosterExclusion[] => {
-    if (ordered.some(({ entry }) => configuredSubagentModelMatchesEntry(model, entry))) return [];
     const matchingEntries = entries.filter(entry => configuredSubagentModelMatchesEntry(model, entry));
+    if (matchingEntries.some(entry => orderedEntries.has(entry))) return [];
     if (matchingEntries.length === 0) return [{ configured: model, reason: "missing_catalog_entry" }];
     const visibleCompatible = matchingEntries.find(entry =>
       entry.visibility === "list"
@@ -627,7 +628,10 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{
   const exactComboSlugs = exactComboCatalogSlugs(config);
   const hasPhysicalComboProvider = Object.hasOwn(config.providers, COMBO_NAMESPACE);
   const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
-  const accountSelectors = includeNativeOpenAi ? visibleCodexAccountSelectors(config) : [];
+  const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
+  const accountSelectors = includeAccountBoundNativeOpenAi
+    ? visibleCodexAccountSelectors(config)
+    : [];
   const wsEnabled = websocketsEnabled(config);
   const goEntries = buildCatalogEntries(
     template ? JSON.parse(JSON.stringify(template)) : null,
@@ -655,10 +659,10 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{
   // #636: when the user only configured non-OpenAI providers (e.g. kimi), do not advertise
   // bare gpt-* rows that hard-404 via NoEnabledOpenAiProviderError. Keep natives when no
   // providers are configured yet (fresh install / catalog bootstrap tests).
-  const accountBoundEntries = includeNativeOpenAi && accountSelectors.length > 0
+  const accountBoundEntries = includeAccountBoundNativeOpenAi && accountSelectors.length > 0
     ? buildCatalogEntries(
       template ? JSON.parse(JSON.stringify(template)) : null,
-      nativeOpenAiSlugs(),
+      NATIVE_OPENAI_MODELS,
       [],
       featured,
       wsEnabled,
@@ -694,16 +698,64 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{
   };
 }
 
+function visibleAccountReplacementNatives(models: readonly RawEntry[]): Map<string, boolean> {
+  const replacements = new Map<string, boolean>();
+  for (const entry of models) {
+    const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry);
+    if (nativeSlug === undefined || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(nativeSlug)) continue;
+    const visible = entry.visibility === "list";
+    replacements.set(nativeSlug, (replacements.get(nativeSlug) ?? true) && visible);
+  }
+  return replacements;
+}
+
+function restoreAccountHiddenBareNatives(
+  entries: readonly RawEntry[],
+  replacementVisibility: ReadonlyMap<string, boolean>,
+  disabledNative: ReadonlySet<string> | null,
+): RawEntry[] {
+  return entries.map(entry => {
+    const slug = typeof entry.slug === "string" ? entry.slug : "";
+    if (
+      entry.visibility !== "hide"
+      || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)
+      || replacementVisibility.get(slug) !== true
+      || disabledNative === null
+      || disabledNative.has(slug)
+    ) {
+      return entry;
+    }
+    return { ...entry, visibility: "list" };
+  });
+}
+
+function currentDisabledNativeSlugsForRestore(): Set<string> | null {
+  try {
+    const diagnostics = readConfigDiagnostics();
+    if (diagnostics.source === "fallback" || diagnostics.error !== null) return null;
+    return disabledNativeSlugs(diagnostics.config);
+  } catch {
+    // An unreadable config cannot safely authorize a visibility change during restore.
+    return null;
+  }
+}
+
 export function restoreCodexCatalog(): { removed: number; kept: number; path: string } {
   const catalogPath = readCodexCatalogPath();
   const catalog = readCatalog(catalogPath);
   if (!catalog || !Array.isArray(catalog.models)) return { removed: 0, kept: 0, path: catalogPath };
+  const replacementVisibility = visibleAccountReplacementNatives(catalog.models);
+  const disabledNative = currentDisabledNativeSlugsForRestore();
   const backup = readCatalogBackup(catalogPath);
   if (backup && Array.isArray(backup.models)) {
     const removed = (catalog.models ?? []).filter(m => typeof m.slug === "string" && m.slug.includes("/")).length;
     const backupSlugs = new Set(backup.models.flatMap(m => typeof m.slug === "string" ? [m.slug] : []));
-    const userNativeAdditions = (catalog.models ?? []).filter(m =>
-      typeof m.slug === "string" && !m.slug.includes("/") && !backupSlugs.has(m.slug)
+    const userNativeAdditions = restoreAccountHiddenBareNatives(
+      (catalog.models ?? []).filter(m =>
+        typeof m.slug === "string" && !m.slug.includes("/") && !backupSlugs.has(m.slug)
+      ),
+      replacementVisibility,
+      disabledNative,
     );
     const restored = {
       ...backup,
@@ -713,7 +765,11 @@ export function restoreCodexCatalog(): { removed: number; kept: number; path: st
     return { removed, kept: restored.models.length, path: catalogPath };
   }
   const before = catalog.models.length;
-  const native = catalog.models.filter(m => !(typeof m.slug === "string" && m.slug.includes("/")));
+  const native = restoreAccountHiddenBareNatives(
+    catalog.models.filter(m => !(typeof m.slug === "string" && m.slug.includes("/"))),
+    replacementVisibility,
+    disabledNative,
+  );
   const removed = before - native.length;
   if (removed > 0) {
     catalog.models = native;

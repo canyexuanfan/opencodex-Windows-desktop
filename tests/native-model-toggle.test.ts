@@ -9,6 +9,7 @@ import {
   mergeCatalogEntriesForSync,
   NATIVE_OPENAI_MODELS,
   nativeModelRows,
+  shouldIncludeAccountBoundNativeOpenAi,
   shouldIncludeNativeOpenAi,
   trustedAccountBoundNativeCatalogSlug,
   visibleCodexAccountSelectors,
@@ -211,6 +212,14 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(shouldIncludeNativeOpenAi({
       providers: { openai: { ...canonical, disabled: true } },
     })).toBe(true);
+    expect(shouldIncludeAccountBoundNativeOpenAi({ providers: {} })).toBe(false);
+    expect(shouldIncludeAccountBoundNativeOpenAi({ providers: { openai: canonical } })).toBe(true);
+    expect(shouldIncludeAccountBoundNativeOpenAi({
+      providers: { openai: { ...canonical, disabled: true } },
+    })).toBe(false);
+    expect(shouldIncludeAccountBoundNativeOpenAi({
+      providers: { openai: { ...canonical, authMode: "key" } },
+    })).toBe(false);
   });
 
   test("case-distinct routing selectors remain distinguishable in picker labels", () => {

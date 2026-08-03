@@ -31,7 +31,6 @@ import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 
 
-import { filterSupportedNativeSlugs } from "./parsing";
 import type { RawEntry } from "./parsing";
 import { readCurrentCatalogOrCache, unique } from "./bundled";
 import { trustedAccountBoundNativeCatalogSlug } from "./account-models";
@@ -122,18 +121,26 @@ export function visibleNativeSlugs(config: Pick<OcxConfig, "disabledModels">): s
   return nativeOpenAiSlugs().filter(slug => !disabled.has(slug));
 }
 
-/** Whether native ChatGPT/Codex routes are valid for this provider configuration. */
+/** Whether an enabled canonical OpenAI provider can serve exact account-qualified routes. */
+export function shouldIncludeAccountBoundNativeOpenAi(
+  config: Pick<OcxConfig, "providers">,
+): boolean {
+  const provider = config.providers[OPENAI_CODEX_PROVIDER_ID];
+  if (!provider || provider.disabled === true) return false;
+  // Registry routing defaults an omitted authMode on the built-in OpenAI row to forward.
+  const canonical = provider.authMode === undefined
+    ? { ...provider, authMode: "forward" as const }
+    : provider;
+  return isCanonicalOpenAiForwardProvider(canonical);
+}
+
+/** Whether native ChatGPT/Codex rows belong in this provider configuration. */
 export function shouldIncludeNativeOpenAi(config: Pick<OcxConfig, "providers">): boolean {
-  const enabledProviders = Object.entries(config.providers)
-    .filter(([, provider]) => provider.disabled !== true);
-  return enabledProviders.length === 0 || enabledProviders.some(([name, provider]) => {
-    if (name !== OPENAI_CODEX_PROVIDER_ID) return false;
-    // Registry routing defaults an omitted authMode on the built-in OpenAI row to forward.
-    const canonical = provider.authMode === undefined
-      ? { ...provider, authMode: "forward" as const }
-      : provider;
-    return isCanonicalOpenAiForwardProvider(canonical);
-  });
+  const hasEnabledProvider = Object.values(config.providers)
+    .some(provider => provider.disabled !== true);
+  // Preserve the existing no-enabled-provider catalog bootstrap, but do not use that bootstrap
+  // exception for account-qualified rows: exact-account routing requires a live OpenAI provider.
+  return !hasEnabledProvider || shouldIncludeAccountBoundNativeOpenAi(config);
 }
 
 /** Native slugs exposed to Claude Desktop show/export/apply (opt-out via claudeCode.desktopNativeModels). */
@@ -199,11 +206,17 @@ export function nativeOpenAiSlugs(): string[] {
 export function listCatalogNativeSlugs(): string[] {
   const cat = readCurrentCatalogOrCache();
   const models = cat?.models ?? [];
-  const live = filterSupportedNativeSlugs(models);
+  const live = models.flatMap(entry => {
+    const slug = typeof entry.slug === "string" ? entry.slug : "";
+    return !slug.includes("/") && SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug) ? [slug] : [];
+  });
   const accountBound = models.flatMap(entry => {
     const slug = trustedAccountBoundNativeCatalogSlug(entry);
     return slug !== undefined && SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug) ? [slug] : [];
   });
+  // Deliberately ignore `visibility`: it is a rendered projection of disabledModels and account
+  // selectors, so treating it as fresh availability would shrink the supported set between syncs.
+  // visibleNativeSlugs applies the current disabledModels source of truth for public consumers.
   // Ensure documented additions (e.g. gpt-5.3-codex-spark) appear even when the bundled catalog
   // predates the slug — mirrors nativeOpenAiSlugs() which already merges them for /v1/models.
   return unique([...live, ...accountBound, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]);

@@ -291,15 +291,17 @@ export async function multiAgentGuidanceText(
       .filter(allowedForCurrentRoute);
     const roster = subagentRosterText(rosterModels);
     const preferredCandidates = (preferredEffective?.advertised ?? []).filter(withinCandidateWindow);
+    const soleBarePreferred = preferredCandidates.length === 1
+      && !preferredCandidates[0]!.model.includes("/")
+      ? preferredCandidates[0]
+      : undefined;
     const preferred = injectionModel?.includes("/")
       ? preferredCandidates[0]
       : activeAccountNamespace
         ? preferredCandidates.find(candidate =>
           candidate.model.startsWith(`${activeAccountNamespace}/`)
-        )
-        : preferredCandidates.length === 1 && !preferredCandidates[0]!.model.includes("/")
-          ? preferredCandidates[0]
-          : undefined;
+        ) ?? soleBarePreferred
+        : soleBarePreferred;
 
     if (isInjectionDebugEnabled() && effective.excluded.length > 0) {
       injectionDebugLog(`[opencodex] multi-agent guidance excluded: ${effective.excluded
@@ -309,7 +311,7 @@ export async function multiAgentGuidanceText(
     const fallbackGuidance = subagentFallbackGuidanceText({ subagentModelFallback } as OcxConfig);
     if (!injectionModel && roster === "" && fallbackGuidance === "") return null;
     if (injectionPrompt) {
-      return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, injectionModel, injectionEffort, roster, fallbackGuidance)}</multi_agent_mode>`;
+      return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, preferred?.model ?? injectionModel, injectionEffort, roster, fallbackGuidance)}</multi_agent_mode>`;
     }
     if (!preferred && roster === "" && fallbackGuidance === "") return null;
     let text = "When the active spawn_agent tool supports optional \"model\" or \"reasoning_effort\" overrides, "

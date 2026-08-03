@@ -30,6 +30,7 @@ import { PROVIDER_REGISTRY } from "../providers/registry";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { routeModel, type RouteResult } from "../router";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
+import { codexAccountNamespaceForModel } from "./account-namespace-match";
 export const DEFAULT_SUBAGENT_MODEL_FALLBACK_POLL_MS = 60_000;
 
 type SubagentQuotaPrimeFn = (config: OcxConfig, reason: string) => Promise<void>;
@@ -71,6 +72,13 @@ function isDisabledFallbackModel(model: string, config: OcxConfig): boolean {
   const slash = model.indexOf("/");
   const provider = model.slice(0, slash);
   const modelId = model.slice(slash + 1);
+  if (codexAccountNamespaceForModel(config.codexAccountNamespaces, model)) {
+    return disabled.some(stored =>
+      stored === model
+      || stored === modelId
+      || slugEquals(stored, "openai", modelId)
+    );
+  }
   return disabled.some(stored => stored === model || slugEquals(stored, provider, modelId));
 }
 
@@ -130,9 +138,18 @@ function resolvePoolFallbackAccountId(
   return activeCodexAccountId(config);
 }
 
+function resolveRouteFallbackAccountId(
+  route: RouteResult | null,
+  config: OcxConfig,
+  accountId?: string | null,
+): string | null {
+  return route?.codexAccountId ?? resolvePoolFallbackAccountId(config, accountId);
+}
+
 function isRoutableFallbackModel(model: string, config: OcxConfig): boolean {
   const slash = model.indexOf("/");
   if (slash > 0) {
+    if (codexAccountNamespaceForModel(config.codexAccountNamespaces, model)) return true;
     const providerName = model.slice(0, slash);
     if (!hasOwnProvider(config.providers, providerName)) {
       // Allow well-known "vendor/model" ids (e.g. anthropic/claude-*) to flow as
@@ -153,7 +170,7 @@ export function isNativeModelQuotaExhausted(
 ): boolean {
   const route = tryRouteFallbackModel(config, model);
   if (!route || !isPoolCodexRoute(route)) return false;
-  const resolvedAccountId = resolvePoolFallbackAccountId(config, accountId);
+  const resolvedAccountId = resolveRouteFallbackAccountId(route, config, accountId);
   if (!resolvedAccountId) return false;
   const quota = getAccountQuota(resolvedAccountId);
   const usage = computeCodexUsageScore(quota, getPoolAccountPlan(config, resolvedAccountId));
@@ -170,7 +187,11 @@ export function isModelHealthBlocked(
   const route = tryRouteFallbackModel(config, model);
   const poolScoped = !!route && isPoolCodexRoute(route);
   const health = modelHealth.get(
-    healthKey(model, resolvePoolFallbackAccountId(config, accountId), poolScoped),
+    healthKey(
+      model,
+      resolveRouteFallbackAccountId(route, config, accountId),
+      poolScoped,
+    ),
   );
   return !!health && health.unavailableUntil > now;
 }
@@ -191,7 +212,7 @@ export function isSubagentModelUnavailable(
 
   // Pool candidates need a usable account. Derive requirement from the resolved
   // route (canonical openai defaults to pool even when codexAccountMode is omitted).
-  const resolvedAccountId = resolvePoolFallbackAccountId(config, accountId);
+  const resolvedAccountId = resolveRouteFallbackAccountId(route, config, accountId);
   if (!resolvedAccountId) return true;
   if (isCodexAccountPaused(config, resolvedAccountId)) return true;
   if (!isCodexAccountUsable(config, resolvedAccountId, accountUsabilityOptions)) return true;
@@ -245,7 +266,11 @@ export function noteSubagentModelFailure(
   const route = tryRouteFallbackModel(config, model);
   const poolScoped = !!route && isPoolCodexRoute(route);
   modelHealth.set(
-    healthKey(model, resolvePoolFallbackAccountId(config, accountId), poolScoped),
+    healthKey(
+      model,
+      resolveRouteFallbackAccountId(route, config, accountId),
+      poolScoped,
+    ),
     {
       unavailableUntil: now + interval,
       reason: "quota_exhausted",

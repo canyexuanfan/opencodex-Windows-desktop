@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
@@ -202,7 +202,103 @@ test("configured account selectors appear in OpenAI and Codex discovery without 
       expect(JSON.stringify(plain)).not.toContain(privateValue);
     }
   } finally {
-    server.stop(true);
+    await server.stop(true);
+  }
+});
+
+test("Codex discovery restores account rows for supported natives hidden on disk", async () => {
+  const config = configWithStaticModels();
+  config.providers.openai = {
+    adapter: "openai-responses",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    liveModels: false,
+  };
+  saveConfig(config);
+
+  const catalogPath = join(isolatedCodexHome!.path, "hidden-native-catalog.json");
+  writeFileSync(
+    join(isolatedCodexHome!.path, "config.toml"),
+    'model_catalog_json = "hidden-native-catalog.json"\n',
+    "utf8",
+  );
+  writeFileSync(catalogPath, JSON.stringify({
+    models: [
+      { slug: "gpt-5.5", visibility: "hide" },
+      { slug: "gpt-5.4", visibility: "list" },
+      { slug: "gpt-99-internal", visibility: "hide" },
+      { slug: "provider/gpt-5.5", visibility: "hide" },
+    ],
+  }), "utf8");
+  const {
+    listCatalogNativeSlugs,
+    resetCatalogRuntimeStateForTests,
+    visibleNativeSlugs,
+  } = await import("../src/codex/catalog");
+  resetCatalogRuntimeStateForTests();
+  expect(listCatalogNativeSlugs()).toContain("gpt-5.5");
+  expect(listCatalogNativeSlugs()).not.toContain("gpt-99-internal");
+  expect(listCatalogNativeSlugs()).not.toContain("provider/gpt-5.5");
+  expect(visibleNativeSlugs(config)).toContain("gpt-5.5");
+  expect(visibleNativeSlugs({ ...config, disabledModels: ["gpt-5.5"] })).not.toContain("gpt-5.5");
+
+  let server = startServer(0);
+  try {
+    const plain = await fetch(new URL("/v1/models", server.url))
+      .then(response => response.json()) as { data: Array<{ id: string }> };
+    expect(plain.data.some(model => model.id === "gpt-5.4-mini")).toBe(false);
+
+    const catalog = await fetch(new URL("/v1/models?client_version=1.0.0", server.url))
+      .then(response => response.json()) as {
+        models: Array<{ slug: string; visibility?: string }>;
+      };
+    expect(catalog.models.find(model => model.slug === "gpt-5.5")?.visibility).toBe("list");
+  } finally {
+    await server.stop(true);
+  }
+
+  config.codexAccountNamespaces = { team: "@main" };
+  config.disabledModels = ["gpt-5.4"];
+  saveConfig(config);
+  resetCatalogRuntimeStateForTests();
+  expect(visibleNativeSlugs(config)).toContain("gpt-5.5");
+  expect(visibleNativeSlugs(config)).not.toContain("gpt-5.4");
+  server = startServer(0);
+  try {
+    const plain = await fetch(new URL("/v1/models", server.url))
+      .then(response => response.json()) as {
+        data: Array<{ id: string; reasoning_efforts?: unknown[] }>;
+      };
+    expect(plain.data.find(model => model.id === "gpt-5.5")?.reasoning_efforts).toBeArray();
+    expect(plain.data.find(model => model.id === "team/gpt-5.5")?.reasoning_efforts)
+      .toEqual(plain.data.find(model => model.id === "gpt-5.5")?.reasoning_efforts);
+    expect(plain.data.some(model => model.id === "gpt-5.4")).toBe(false);
+    expect(plain.data.some(model => model.id === "team/gpt-5.4")).toBe(false);
+    // Activating account selectors makes both bare and qualified discovery mirror the complete
+    // enabled supported set, even when a partial custom catalog omitted this native.
+    expect(plain.data.find(model => model.id === "gpt-5.4-mini")?.reasoning_efforts)
+      .toBeArray();
+    expect(plain.data.find(model => model.id === "team/gpt-5.4-mini")?.reasoning_efforts)
+      .toEqual(plain.data.find(model => model.id === "gpt-5.4-mini")?.reasoning_efforts);
+
+    const catalog = await fetch(new URL("/v1/models?client_version=1.0.0", server.url))
+      .then(response => response.json()) as {
+        models: Array<{
+          slug: string;
+          visibility?: string;
+          opencodex_catalog_kind?: string;
+        }>;
+      };
+    expect(catalog.models.find(model => model.slug === "gpt-5.5")?.visibility).toBe("hide");
+    expect(catalog.models.find(model => model.slug === "team/gpt-5.5")).toMatchObject({
+      visibility: "list",
+      opencodex_catalog_kind: "account-selector-v1",
+    });
+    expect(catalog.models.find(model => model.slug === "team/gpt-5.4")?.visibility)
+      .toBe("hide");
+    expect(catalog.models.find(model => model.slug === "team/gpt-5.4-mini")?.visibility)
+      .toBe("list");
+  } finally {
+    await server.stop(true);
   }
 });
 
@@ -223,6 +319,40 @@ test("account selectors stay out of discovery when no canonical OpenAI provider 
     expect(catalog.models.some(model => model.slug.startsWith("desktop/"))).toBe(false);
     expect(catalog.models.some(model => model.slug.startsWith("gpt-"))).toBe(false);
   } finally {
-    server.stop(true);
+    await server.stop(true);
+  }
+});
+
+test("disabled canonical OpenAI preserves bare bootstrap rows without advertising account routes", async () => {
+  const config = {
+    port: 0,
+    defaultProvider: "openai",
+    openaiProviderTierVersion: 2,
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        disabled: true,
+        liveModels: false,
+      },
+    },
+    codexAccounts: [{ id: "stored-side-account", isMain: false }],
+    codexAccountNamespaces: { team: "stored-side-account" },
+  } as OcxConfig;
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const plain = await fetch(new URL("/v1/models", server.url)).then(response => response.json()) as {
+      data: Array<{ id: string }>;
+    };
+    expect(plain.data.some(model => model.id.startsWith("gpt-"))).toBe(true);
+    expect(plain.data.some(model => model.id.startsWith("team/"))).toBe(false);
+
+    const catalog = await fetch(new URL("/v1/models?client_version=1.0.0", server.url))
+      .then(response => response.json()) as { models: Array<{ slug: string }> };
+    expect(catalog.models.some(model => model.slug.startsWith("gpt-"))).toBe(true);
+    expect(catalog.models.some(model => model.slug.startsWith("team/"))).toBe(false);
+  } finally {
+    await server.stop(true);
   }
 });

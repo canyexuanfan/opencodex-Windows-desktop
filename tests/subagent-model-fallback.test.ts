@@ -45,7 +45,10 @@ function cfg(overrides: Partial<OcxConfig> = {}): OcxConfig {
     port: 10100,
     providers: {
       // Omitted codexAccountMode — canonical openai defaults to pool via routeModel.
-      openai: { adapter: "openai-responses" },
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      },
       "alibaba-token-plan": { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
       kimi: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
       xai: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://api.x.ai/v1" },
@@ -167,6 +170,49 @@ describe("subagent model fallback chain", () => {
       rewritten: true,
       skipped: ["gpt-5.6-sol", "missing-provider/does-not-exist"],
     });
+  });
+
+  test("selectAvailableSubagentModel admits account selectors and checks their fixed account", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/gpt-5.5", "kimi/k3"],
+    });
+
+    expect(isSubagentModelUnavailable("team/gpt-5.5", config, "pool-a")).toBe(false);
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a")).toEqual({
+      model: "team/gpt-5.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("account selector fallbacks still reject invalid or disabled native models", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/claude-opus-4-6", "kimi/k3"],
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a")).toEqual({
+      model: "kimi/k3",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol", "team/claude-opus-4-6"],
+    });
+    expect(isSubagentModelUnavailable(
+      "team/gpt-5.5",
+      { ...config, disabledModels: ["gpt-5.5"] },
+      "pool-a",
+    )).toBe(true);
+    expect(isSubagentModelUnavailable(
+      "team/gpt-5.5",
+      { ...config, disabledModels: ["openai/gpt-5.5"] },
+      "pool-a",
+    )).toBe(true);
   });
 
   test("noteSubagentModelFailure treats numeric 429 as quota-like", () => {

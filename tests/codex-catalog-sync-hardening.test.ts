@@ -374,6 +374,79 @@ describe("Codex catalog sync hardening", () => {
     expect(rows.some(row => row.slug === "desktop/gpt-5.5")).toBe(false);
   });
 
+  test("disabled canonical OpenAI keeps bare bootstrap rows but omits unrouteable account rows", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [nativeEntry("gpt-5.5", 0)],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            disabled: true,
+            liveModels: false
+          }
+        },
+        codexAccounts: [{ id: "stored-side-account", isMain: false }],
+        codexAccountNamespaces: { team: "stored-side-account" }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
+      slug: string;
+      visibility?: string;
+    }>;
+    expect(rows.find(row => row.slug === "gpt-5.5")?.visibility).toBe("list");
+    expect(rows.some(row => row.slug.startsWith("team/"))).toBe(false);
+  });
+
+  test("account sync recovers supported natives that were hidden before selectors existed", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        { ...nativeEntry("gpt-5.5", 0), visibility: "hide" },
+        nativeEntry("gpt-5.4", 1),
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            liveModels: false
+          }
+        },
+        disabledModels: ["gpt-5.4"],
+        codexAccounts: [{ id: "stored-side-account", isMain: false }],
+        codexAccountNamespaces: { team: "stored-side-account" }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
+      slug: string;
+      visibility?: string;
+      opencodex_catalog_kind?: string;
+    }>;
+    expect(rows.find(row => row.slug === "gpt-5.5")?.visibility).toBe("hide");
+    // Generated rows recover from stale bare visibility, but still honor explicit native disables.
+    expect(rows.find(row => row.slug === "team/gpt-5.5")).toMatchObject({
+      visibility: "list",
+      opencodex_catalog_kind: "account-selector-v1",
+    });
+    expect(rows.find(row => row.slug === "team/gpt-5.4")?.visibility).toBe("hide");
+  });
+
   test("default catalog path merges from disk instead of replacing it with bundled rows", () => {
     const catalogPath = join(codexHome, "opencodex-catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'openai_base_url = "http://127.0.0.1:10100/v1"\n', "utf8");

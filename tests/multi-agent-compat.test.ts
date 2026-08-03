@@ -222,6 +222,7 @@ describe("multiAgentGuidanceText", () => {
         priority: 3,
         accountBound: true,
       },
+      { slug: "local-fast", efforts: ["high"], priority: 4 },
     ]);
 
     const projected = effectiveSubagentRoster(["gpt-5.6-sol"], "v2");
@@ -246,6 +247,25 @@ describe("multiAgentGuidanceText", () => {
     expect(text).not.toContain('"desktop/gpt-5.6-sol"');
     expect(text).not.toContain('"vendor/gpt-5.6-sol"');
     expect(text).toContain("kimi/k3");
+
+    const custom = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      {
+        injectionModel: "gpt-5.6-sol",
+        codexAccountNamespace: "team",
+        injectionPrompt: "Use {{model}}.",
+      },
+    );
+    expect(custom).toBe('<multi_agent_mode>Use team/gpt-5.6-sol.</multi_agent_mode>');
+
+    const exactBare = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      {
+        injectionModel: "local-fast",
+        codexAccountNamespace: "team",
+      },
+    );
+    expect(exactBare).toContain('Preferred sub-agent: model "local-fast"');
 
     const bareParent = await multiAgentGuidanceText(
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
