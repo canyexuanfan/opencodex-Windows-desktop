@@ -139,6 +139,7 @@ export default function ProviderSettings({
 
   const save = async (): Promise<boolean> => {
     if (!onUpdateProvider) { setMsg({ ok: false, text: t("pws.updatesUnavailable") }); return false; }
+    if (modeSaving) return false;
     const nextBaseUrl = hasEndpointPicker
       ? resolvedBaseUrlForChoice(baseUrlChoices, endpointChoice, baseUrl)
       : baseUrl.trim();
@@ -171,7 +172,7 @@ export default function ProviderSettings({
   }, [onRegisterSave]);
 
   const applyAccountMode = async (next: "pool" | "direct") => {
-    if (modeSaving || next === accountMode) return;
+    if (modeSaving || saving || next === accountMode) return;
     if (!onUpdateProvider) { setModeMsg({ ok: false, text: t("pws.updatesUnavailable") }); return; }
     setModeSaving(true);
     setModeMsg(null);
@@ -184,6 +185,8 @@ export default function ProviderSettings({
       } else {
         setModeMsg({ ok: false, text: res.error || t("pws.accountModeFailed") });
       }
+    } catch {
+      setModeMsg({ ok: false, text: t("pws.accountModeFailed") });
     } finally {
       setModeSaving(false);
     }
@@ -325,7 +328,7 @@ export default function ProviderSettings({
           <span className="muted">{t("pws.settingsUnsavedBar")}</span>
           <div className="pwi-settings-sticky-bar-actions">
             <button type="button" className="btn btn-ghost btn-sm" onClick={discard} disabled={saving}>{t("pws.discardSettings")}</button>
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => void save()} disabled={saving}>{saving ? t("pws.saving") : t("pws.saveSettings")}</button>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => void save()} disabled={saving || modeSaving}>{saving ? t("pws.saving") : t("pws.saveSettings")}</button>
           </div>
         </div>
       )}
