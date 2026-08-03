@@ -1,22 +1,26 @@
-import { execFileSync } from "node:child_process";
-import { basename, win32 } from "node:path";
+import { execFile } from "node:child_process";
+import { basename } from "node:path";
+import { resolveTrustedWindowsPowerShellExe } from "../lib/windows-elevation";
 
-const DEFAULT_WINDOWS_SYSTEM_ROOT = "C:\\Windows";
 const PROCESS_LIST_MAX_BUFFER = 16 * 1024 * 1024;
 
 export interface NativeProcessExecOptions {
   encoding: "utf8";
-  stdio: ["ignore", "pipe", "ignore"];
   timeout: number;
   maxBuffer: number;
   windowsHide?: boolean;
+  shell: false;
+  killSignal: "SIGKILL";
 }
 
-export type NativeProcessExecutor = (file: string, args: string[], options: NativeProcessExecOptions) => string;
+export type NativeProcessExecutor = (
+  file: string,
+  args: string[],
+  options: NativeProcessExecOptions,
+) => Promise<string>;
 
 export interface NativeCodexProcessProbeOptions {
   platform?: NodeJS.Platform;
-  systemRoot?: string;
   execFile?: NativeProcessExecutor;
   pid?: number;
 }
@@ -26,52 +30,53 @@ export type NativeCodexProcessProbe =
   | { status: "busy"; count: number }
   | { status: "unknown"; count: 0 };
 
-const executeProcess: NativeProcessExecutor = (file, args, options) => execFileSync(file, args, options);
+/** Async, shell-free child execution with runtime-enforced timeout and output bounds. */
+export const executeNativeProcess: NativeProcessExecutor = (file, args, options) => new Promise((resolve, reject) => {
+  execFile(file, args, {
+    encoding: options.encoding,
+    timeout: options.timeout,
+    maxBuffer: options.maxBuffer,
+    windowsHide: options.windowsHide,
+    shell: false,
+    killSignal: options.killSignal,
+  }, (error, stdout) => {
+    if (error) {
+      reject(error);
+      return;
+    }
+    resolve(stdout);
+  });
+});
 
-export function resolveWindowsSystemRoot(value: string | undefined): string {
-  if (!value?.trim()) return DEFAULT_WINDOWS_SYSTEM_ROOT;
-  const normalized = win32.normalize(value.trim());
-  const parsed = win32.parse(normalized);
-  const driveRoot = /^[A-Za-z]:\\$/.test(parsed.root);
-  const directWindowsDirectory = win32.dirname(normalized).toLowerCase() === parsed.root.toLowerCase()
-    && win32.basename(normalized).toLowerCase() === "windows";
-  return driveRoot && directWindowsDirectory
-    ? `${parsed.root[0]!.toUpperCase()}:\\Windows`
-    : DEFAULT_WINDOWS_SYSTEM_ROOT;
-}
-
-function windowsProcessCount(execFile: NativeProcessExecutor, systemRoot: string | undefined): number {
-  const powershell = win32.join(
-    resolveWindowsSystemRoot(systemRoot),
-    "System32",
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  );
+async function windowsProcessCount(run: NativeProcessExecutor): Promise<number> {
+  const powershell = resolveTrustedWindowsPowerShellExe();
   const script = [
     "$ErrorActionPreference='Stop';",
     "$self=$PID;",
     "$items=Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and ($_.Name -match '^(?i:codex)(?:\\.exe)?$' -or $_.CommandLine -match '(?i)(?:^|[\\\\/\"\\s])codex(?:\\.exe|\\.cmd)?(?:[\"\\s]|$)') };",
     "@($items).Count",
   ].join(" ");
-  const output = execFile(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
+  const output = (await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
     timeout: 12_000,
     maxBuffer: PROCESS_LIST_MAX_BUFFER,
     windowsHide: true,
-  }).trim();
+    shell: false,
+    killSignal: "SIGKILL",
+  })).trim();
+  if (!/^\d+$/.test(output)) throw new Error("invalid process count");
   const count = Number(output);
-  if (!Number.isInteger(count) || count < 0) throw new Error("invalid process count");
+  if (!Number.isSafeInteger(count)) throw new Error("invalid process count");
   return count;
 }
 
-function unixProcessCount(execFile: NativeProcessExecutor, pid: number): number {
-  const output = execFile("ps", ["-eo", "pid=,comm=,args="], {
+async function unixProcessCount(run: NativeProcessExecutor, pid: number): Promise<number> {
+  const output = await run("ps", ["-eo", "pid=,comm=,args="], {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
     timeout: 5_000,
     maxBuffer: PROCESS_LIST_MAX_BUFFER,
+    shell: false,
+    killSignal: "SIGKILL",
   });
   let count = 0;
   for (const line of output.split("\n")) {
@@ -87,14 +92,13 @@ function unixProcessCount(execFile: NativeProcessExecutor, pid: number): number 
 /** Best-effort, read-only process probe. It never terminates a user process. */
 export async function probeNativeCodexProcesses({
   platform = process.platform,
-  systemRoot = process.env.SystemRoot,
-  execFile = executeProcess,
+  execFile: run = executeNativeProcess,
   pid = process.pid,
 }: NativeCodexProcessProbeOptions = {}): Promise<NativeCodexProcessProbe> {
   try {
-    const count = platform === "win32"
-      ? windowsProcessCount(execFile, systemRoot)
-      : unixProcessCount(execFile, pid);
+    const count = await (platform === "win32"
+      ? windowsProcessCount(run)
+      : unixProcessCount(run, pid));
     return count > 0 ? { status: "busy", count } : { status: "clear", count: 0 };
   } catch {
     return { status: "unknown", count: 0 };
