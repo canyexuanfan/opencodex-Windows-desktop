@@ -15,7 +15,9 @@ import {
   clearCodexUpstreamHealth,
   getCodexUpstreamHealth,
   recordCodexUpstreamOutcome,
+  resolveCodexAccountForThread,
 } from "../src/codex/routing";
+import { updateAccountQuota } from "../src/codex/auth-api";
 import {
   releaseCodexAuthContextProbeLease,
   resolveCodexAuthContext,
@@ -75,10 +77,14 @@ function twoAccountPoolConfig(): OcxConfig {
   return config;
 }
 
-function compactionRequest(body: Record<string, unknown>, signal?: AbortSignal): Request {
+function compactionRequest(
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+  extraHeaders: Record<string, string> = {},
+): Request {
   return new Request("http://localhost/v1/responses", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extraHeaders },
     body: JSON.stringify(body),
     signal,
   });
@@ -611,6 +617,34 @@ describe("compact alternate-account attempt (#913)", () => {
       });
     });
   }
+
+  test("a bound thread at 100% local quota still sends once, with no alternate attempt", async () => {
+    // The scope guard. The alternate path must trigger on an actual upstream 429/402,
+    // never on a local quota reading: a cached 100% is what the affined account looked
+    // like last time, not a rejection. If the gate ever widened to consult quota, this
+    // request would resolve an alternate and send twice.
+    await withPoolEnv("ocx-compact-quota-100-", async config => {
+      const affined = resolveCodexAccountForThread("compact-quota-thread", config);
+      updateAccountQuota(affined, 100);
+      const bearers: string[] = [];
+      globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+        bearers.push(new Headers(init?.headers).get("authorization") ?? "");
+        return jsonResponse(completedPayload("compact response at full quota"));
+      }) as typeof fetch;
+
+      const res = await handleResponsesCompact(
+        compactionRequest(baseCompactionBody({}), undefined, {
+          "x-codex-parent-thread-id": "compact-quota-thread",
+        }),
+        config,
+        { model: "", provider: "" },
+      );
+
+      // Exactly one send, and the upstream succeeded, so nothing rotated.
+      expect(bearers).toHaveLength(1);
+      expect(res.status).toBe(200);
+    });
+  });
 
   test("with no eligible alternate the first rejection is returned with its backoff headers", async () => {
     await withPoolEnv("ocx-compact-alt-none-", async config => {
