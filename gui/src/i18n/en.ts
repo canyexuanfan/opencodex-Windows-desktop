@@ -1040,6 +1040,8 @@ export const en = {
   "pws.saveSettings": "Save",
   "pws.saving": "Saving…",
   "pws.settingsSaved": "Settings saved.",
+  "pws.accountModeSaved": "Account mode saved.",
+  "pws.accountModeFailed": "Could not switch the account mode.",
   "pws.settingsUnsavedBar": "You have unsaved changes.",
   "pws.unsavedLeaveBody": "You have unsaved changes. Save them before leaving?",
   "pws.unsavedLeaveTitle": "Unsaved changes",

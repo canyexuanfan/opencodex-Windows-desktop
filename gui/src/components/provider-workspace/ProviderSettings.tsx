@@ -13,6 +13,7 @@ import { readJsonIfOk } from "../../fetch-json";
 import { useT } from "../../i18n/shared";
 import { IconLock } from "../../icons";
 import { isCatalogProviderId } from "../../provider-icons";
+import { openAiAccountProviderState } from "../../provider-payload";
 import type { CatalogPreset } from "../provider-catalog/provider-presets";
 import { authModeLabel } from "./ProviderRail";
 import type { WorkspaceItem, ProviderUpdatePatch } from "./types";
@@ -46,6 +47,9 @@ export default function ProviderSettings({
   const [liveModels, setLiveModels] = useState(item.liveModels !== false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [accountMode, setAccountMode] = useState<"pool" | "direct">(item.codexAccountMode ?? "pool");
+  const [modeSaving, setModeSaving] = useState(false);
+  const [modeMsg, setModeMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [baseUrlChoices, setBaseUrlChoices] = useState<CatalogPreset["baseUrlChoices"]>();
   const [choicesStatus, setChoicesStatus] = useState<ChoicesStatus>(apiBase ? "loading" : "idle");
   const [endpointChoice, setEndpointChoice] = useState(() => "custom");
@@ -60,9 +64,10 @@ export default function ProviderSettings({
     setNote(item.note ?? "");
     setAllowPrivateNetwork(item.allowPrivateNetwork ?? false);
     setLiveModels(item.liveModels !== false);
+    setAccountMode(item.codexAccountMode ?? "pool");
     setMsg(null);
     queueMicrotask(() => setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl)));
-  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, item.liveModels, baseUrlChoices]);
+  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, item.liveModels, item.codexAccountMode, baseUrlChoices]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -122,6 +127,8 @@ export default function ProviderSettings({
   const isPreset = isCatalogProviderId(item.name);
   const hasEndpointPicker = choicesStatus === "ready" && !!(baseUrlChoices && baseUrlChoices.length > 0);
   const supportsApiKeyTransport = adapter.trim() === "anthropic" && authMode === "key";
+  const openAiState = item.name === "openai" ? openAiAccountProviderState(item) : "invalid";
+  const isCanonicalOpenAi = openAiState === "ready" || openAiState === "disabled";
   // Lock plain baseUrl for presets while loading or when there is no picker.
   // On fetch error, keep it editable so allowBaseUrlOverride providers are not trapped.
   const plainBaseUrlLocked = isPreset && choicesStatus !== "error";
@@ -158,6 +165,19 @@ export default function ProviderSettings({
     onRegisterSave(() => saveRef.current());
     return () => onRegisterSave(null);
   }, [onRegisterSave]);
+
+  const applyAccountMode = async (next: "pool" | "direct") => {
+    if (modeSaving || next === accountMode) return;
+    if (!onUpdateProvider) { setModeMsg({ ok: false, text: t("pws.updatesUnavailable") }); return; }
+    setModeSaving(true);
+    setModeMsg(null);
+    try {
+      const res = await onUpdateProvider("openai", { codexAccountMode: next });
+      setModeMsg(res.ok ? { ok: true, text: t("pws.accountModeSaved") } : { ok: false, text: res.error || t("pws.accountModeFailed") });
+    } finally {
+      setModeSaving(false);
+    }
+  };
 
   const discard = () => {
     setAdapter(item.adapter); setBaseUrl(item.baseUrl);
@@ -243,6 +263,29 @@ export default function ProviderSettings({
           </select>
         )}
       </label>
+      {isCanonicalOpenAi && (
+        <label className="pwi-settings-field">
+          <span className="pwi-settings-label">{t("codexAuth.accountModeTitle")}</span>
+          <select
+            className="input"
+            value={accountMode}
+            disabled={modeSaving}
+            onChange={e => void applyAccountMode(e.target.value as "pool" | "direct")}
+          >
+            <option value="pool">{t("codexAuth.accountModePool")}</option>
+            <option value="direct">{t("codexAuth.accountModeDirect")}</option>
+          </select>
+          <span className="pwi-settings-hint">
+            {accountMode === "direct" ? t("codexAuth.accountModeDirectDesc") : t("codexAuth.accountModePoolDesc")}
+          </span>
+          {modeSaving && <span className="muted text-label">{t("pws.accountSwitching")}</span>}
+          {modeMsg && (
+            <span className={modeMsg.ok ? "pwi-settings-mode-msg pwi-settings-mode-msg--ok" : "pwi-settings-mode-msg pwi-settings-mode-msg--err"}>
+              {modeMsg.text}
+            </span>
+          )}
+        </label>
+      )}
       {supportsApiKeyTransport && (
         <label className="pwi-settings-field">
           <span className="pwi-settings-label">{t("modal.apiKeyTransport")}</span>

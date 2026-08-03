@@ -1464,6 +1464,8 @@ export const de: Record<TKey, string> = {
   "pws.saveSettings": "Speichern",
   "pws.saving": "Wird gespeichert…",
   "pws.settingsSaved": "Einstellungen gespeichert.",
+  "pws.accountModeSaved": "Kontomodus gespeichert.",
+  "pws.accountModeFailed": "Kontomodus konnte nicht gewechselt werden.",
   "pws.settingsUnsavedBar": "Es gibt ungespeicherte Änderungen.",
   "pws.unsavedLeaveBody": "Es gibt ungespeicherte Änderungen. Vor dem Verlassen speichern?",
   "pws.unsavedLeaveTitle": "Ungespeicherte Änderungen",

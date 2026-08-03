@@ -1484,6 +1484,8 @@ export const zh: Record<TKey, string> = {
   "pws.saveSettings": "保存",
   "pws.saving": "保存中…",
   "pws.settingsSaved": "设置已保存。",
+  "pws.accountModeSaved": "账户模式已保存。",
+  "pws.accountModeFailed": "无法切换账户模式。",
   "pws.settingsUnsavedBar": "有未保存的更改。",
   "pws.unsavedLeaveBody": "有未保存的更改。离开前保存吗？",
   "pws.unsavedLeaveTitle": "未保存的更改",

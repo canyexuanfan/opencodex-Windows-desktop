@@ -990,6 +990,8 @@ export const ja: Record<TKey, string> = {
   "pws.saveSettings": "保存",
   "pws.saving": "保存中…",
   "pws.settingsSaved": "設定を保存しました。",
+  "pws.accountModeSaved": "アカウントモードを保存しました。",
+  "pws.accountModeFailed": "アカウントモードを切り替えられませんでした。",
   "pws.settingsUnsavedBar": "未保存の変更があります。",
   "pws.unsavedLeaveBody": "未保存の変更があります。保存してから移動しますか?",
   "pws.unsavedLeaveTitle": "未保存の変更",

@@ -1032,6 +1032,8 @@ export const ru: Record<TKey, string> = {
   "pws.saveSettings": "Сохранить",
   "pws.saving": "Сохранение…",
   "pws.settingsSaved": "Настройки сохранены.",
+  "pws.accountModeSaved": "Режим аккаунта сохранён.",
+  "pws.accountModeFailed": "Не удалось переключить режим аккаунта.",
   "pws.settingsUnsavedBar": "Есть несохранённые изменения.",
   "pws.unsavedLeaveBody": "Есть несохранённые изменения. Сохранить их перед переходом?",
   "pws.unsavedLeaveTitle": "Несохранённые изменения",

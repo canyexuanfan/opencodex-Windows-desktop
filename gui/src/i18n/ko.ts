@@ -1491,6 +1491,8 @@ export const ko: Record<TKey, string> = {
   "pws.saveSettings": "저장",
   "pws.saving": "저장 중…",
   "pws.settingsSaved": "설정이 저장되었습니다.",
+  "pws.accountModeSaved": "계정 모드가 저장되었습니다.",
+  "pws.accountModeFailed": "계정 모드를 전환할 수 없습니다.",
   "pws.settingsUnsavedBar": "저장하지 않은 변경사항이 있습니다.",
   "pws.unsavedLeaveBody": "저장하지 않은 변경사항이 있습니다. 나가기 전에 저장하시겠습니까?",
   "pws.unsavedLeaveTitle": "미저장 변경사항",
