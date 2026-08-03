@@ -163,7 +163,14 @@ all.” Below preserves aggregate → individual → client catalog hierarchy.
 +        <h4>{t(row.labelKey)}</h4>
 +        {detail && <p className="integration-meta">{detail}</p>}
 +      </div>
-+      <IntegrationStateBadge state={row.state} installed />
++      {/*
++        NOT IntegrationStateBadge. It renders `current` as "Applied" and
++        `absent` as "Not applied" in all six locales (LABEL_KEYS in
++        IntegrationStateBadge.tsx:12), which is exactly the claim this phase
++        argues is false — the live zero-key card says `미적용` today. The
++        detail line above already carries the honest state (checking, none
++        issued, N issued), so a badge here could only re-say it wrongly.
++      */}
 +      <button
 +        type="button"
 +        className="btn btn-ghost"
@@ -254,8 +261,33 @@ its input is now client rows only.
 
 This changes current totals by at most one. That is not a regression hidden by
 the layout move; it corrects what the labels already claim to measure. The
-“Disable all” button remains file-client-only (`IntegrationsOverview.tsx:293-350`)
+“Disable all” button remains file-client-only (`IntegrationsOverview.tsx:303-360`)
 and is unaffected.
+
+### The labels have to say what they now count
+
+Audit finding #2: “at most one” is still a number the user watches change with
+no explanation. On the live zero-key machine, **Detected goes 5 → 4** the moment
+this ships, and Applied drops by one once a key exists. The current labels are
+bare “Detected” and “Applied”, which never disclose that the scope is clients.
+
+So the labels move with the scope. MODIFY all six locales:
+
+| Key | en | ko |
+|---|---|---|
+| `integrations.summary.detected` | `Clients detected` | `감지된 클라이언트` |
+| `integrations.summary.applied` | `Clients applied` | `적용된 클라이언트` |
+
+ja `検出されたクライアント` / `適用中のクライアント`, zh `已检测客户端` /
+`已应用客户端`, de `Clients erkannt` / `Clients aktiv`, ru
+`Клиентов найдено` / `Клиентов применено`.
+
+`integrations.summary.stale` and `lastChange` are unchanged: keys were never
+counted in either.
+
+Existing test `gui/tests/integrations-overview-rows.test.ts:128` pins the old
+`applied` at 6 and must be updated to the new expected value, not deleted — a
+pinned number that changes is the reason to pin it.
 
 ## i18n
 
@@ -272,8 +304,27 @@ locale; hardcoding “Manage keys” in JSX is forbidden by `gui/AGENTS.md`.
 | `integrations.action.manageKeys` | `gui/src/i18n/ru.ts` | `Управлять ключами` |
 
 Reused in all six locales: `integrations.tab.keys`,
-`integrations.detail.keyCount`, `integrations.detail.keyNone`, and the three
-state labels selected by `IntegrationStateBadge`.
+`integrations.detail.keyCount`, and `integrations.detail.keyNone`.
+
+**No state-badge label is reused.** The row does not render
+`IntegrationStateBadge`, because its `current`/`absent` labels are “Applied” and
+“Not applied” (`IntegrationStateBadge.tsx:12`) — the exact wording this phase
+argues is wrong for a credential. The detail line IS the state.
+
+That leaves the unsettled read needing its own words, since it can no longer
+borrow the badge “Unknown”. Add one more key to every locale:
+
+| Key | en | ko |
+|---|---|---|
+| `integrations.detail.keyChecking` | `Checking…` | `확인 중…` |
+
+ja `確認中…`, zh `检查中…`, de `Wird geprüft…`, ru `Проверка…`.
+
+Honest about what `null` means: `loadApiKeyCount` collapses an in-flight read, a
+failed request, and a malformed body into one `null`
+(`integration-api.ts:283-287`). “Checking…” fits the first and is tolerable for
+the rest. What matters is that none of them may render as “no keys”, which is a
+claim about the account of the user that a failed read cannot support.
 
 ## Test plan
 
@@ -287,19 +338,40 @@ MODIFY `gui/tests/integrations-overview-rows.test.ts`:
 3. Update settled lengths from 5 to 4 and unsettled lengths from 11 to 10;
    assert no member of `rows` has id `keys`.
 4. Keep every existing Codex/Desktop/file-client mapping case against `rows`.
+5. Update the pinned `applied` at `:128` to its new value and leave it pinned.
 
 MODIFY `gui/tests/overview-state-merge.test.ts`: its `row()` helper reads the
 `.rows` member. No assertion changes.
 
-MODIFY `gui/tests/integrations-surfaces.test.tsx` with a mounted overview case:
+MODIFY `gui/tests/integrations-surfaces.test.tsx` with a mounted overview case.
+
+**First, the fixture needs work the audit found missing.** `failExtraSources`
+fails Codex, keys, Claude, Desktop and Grok together
+(`integrations-surfaces.test.tsx:56`), so it cannot show that an API-key failure
+ALONE leaves the client totals alone — the assertion would pass or fail for
+unrelated unknown rows. The mock also has no `/api/native-integrations`
+response, leaving native state permanently unsettled in mounted tests, which
+makes every count assertion mushy.
+
+So add an independent `keyResponse` / `failKeys` control and a settled native
+response, then hold every other source constant while driving `/api/keys`
+through its three outcomes.
 
 1. `[data-client="keys"]` exists, but
    `.integration-cards [data-client="keys"]` is null.
 2. DOM order is `.integration-summary` → keys row → `.integration-cards`.
-3. The row renders issued/none/unknown copy from `/api/keys`; an API-key failure
-   does not change the client summary's unknown total.
-4. Exactly one button exists inside the row, has `tabIndex === 0`, shows the
-   localized action, and clicking it navigates to `#integrations/keys`.
+3. Drive `/api/keys` through `[]`, two keys, and failure with everything else
+   settled and constant. Assert the row copy each time AND assert the client
+   summary totals are **exact and identical** across all three. A relative
+   "text is present" check would not catch the leak this phase exists to close.
+4. **Tabbability, not button-counting.** Query every tabbable descendant of the
+   row and assert the single result is the Manage keys button. "Exactly one
+   button with tabIndex 0" still passes if the row later gains `tabIndex={0}`,
+   an anchor, or another naturally focusable control — which is precisely the
+   regression the assertion is supposed to prevent.
+5. Focus that button and activate with **Enter and Space**, asserting each
+   navigates to `#integrations/keys`. A click test proves the handler runs, not
+   that the control is operable from the keyboard.
 
 ## Verification
 
@@ -314,6 +386,8 @@ MODIFY `gui/tests/integrations-surfaces.test.tsx` with a mounted overview case:
 5. Keyboard-tab to “Manage keys”; observe a visible focus ring, activate with
    Enter and Space, and confirm `#integrations/keys` opens. Repeat with zero
    keys and a failed keys read to observe absent and unknown states.
+6. Confirm the summary reads “Clients detected / Clients applied” in the active
+   locale and that its numbers no longer move when a key is issued or revoked.
 
 Step 4 is **C-RENDER-GROUNDING-01**. The change is not verified by typecheck,
 DOM assertions, or a produced-but-unread screenshot: it must be OBSERVED
