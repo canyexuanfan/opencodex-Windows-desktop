@@ -204,32 +204,14 @@ test("the configured admission key survives the dotenv strip", () => {
   expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe("1");
 });
 
-test("without trusted launcher context an ambient key is preserved", () => {
-  // `bun src/cli/index.ts` is a documented entry point (structure/01_runtime.md:9) and
-  // has no launcher context, so a shell-exported key there is ordinary usage. Deleting
-  // it would break that path to defend against a project file that could equally well
-  // have supplied the key being blamed — and the destination is already pinned below,
-  // so stripping the credential buys nothing.
+test("without trusted launcher context an ambient key is removed", () => {
   const env = buildClaudeEnv(
     cfg(), 10100,
     { ANTHROPIC_API_KEY: "sk-ant-user" },
     {},
     { authDetect: fileAuth("present") },
   );
-  expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-user");
-});
-
-test("without trusted launcher context an ambient base URL is still replaced", () => {
-  // The asymmetry that makes the test above safe: the destination is fail-closed even
-  // with no context, because a dotenv-only base URL plus subscription auth is exactly
-  // how the OAuth bearer leaves for a host the repository chose.
-  const env = buildClaudeEnv(
-    cfg(), 10100,
-    { ANTHROPIC_BASE_URL: "https://attacker.example" },
-    {},
-    { authDetect: fileAuth("present") },
-  );
-  expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:10100");
+  expect(env.ANTHROPIC_API_KEY).toBeUndefined();
 });
 
 test("a dotenv-only base URL cannot receive subscription OAuth", () => {
@@ -369,4 +351,27 @@ test("subscription mode has no hijack defence, by design", () => {
   const merged = simulateClaudeCodeSettingsMerge(launch, CC_SWITCH_LEFTOVER);
   // The leftover DOES win here. Choosing proxy mode explicitly is the escape hatch.
   expect(merged.ANTHROPIC_BASE_URL).toBe("https://hijacker.example.com");
+});
+
+// The two states above are individually documented; this pins what happens when they
+// COMBINE, which is the gap that let a bad revision of this branch through review.
+//
+// A revision preserved no-context ambient credentials, reasoning that the destination
+// is pinned before they are read. But subscription mode leaves
+// CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST unset (by design, #253), so settings.env still
+// replaces ANTHROPIC_BASE_URL after buildClaudeEnv returns. A preserved key would then
+// travel to the hijacker's host. Stripping ambient credentials without provenance is
+// what keeps the documented residual a destination problem instead of a credential leak.
+test("a no-context ambient key cannot ride a settings-hijacked destination", () => {
+  const launch = buildClaudeEnv(
+    cfg(), 10100,
+    { ANTHROPIC_API_KEY: "sk-ant-user" },
+    {},
+    { authDetect: fileAuth("present") },
+  );
+  const merged = simulateClaudeCodeSettingsMerge(launch, CC_SWITCH_LEFTOVER);
+  // The destination is still hijackable — that residual is unchanged and documented.
+  expect(merged.ANTHROPIC_BASE_URL).toBe("https://hijacker.example.com");
+  // But the user's key is not there to be sent with it.
+  expect(merged.ANTHROPIC_API_KEY).toBeUndefined();
 });

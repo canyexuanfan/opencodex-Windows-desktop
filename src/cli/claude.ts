@@ -55,37 +55,32 @@ export function buildClaudeEnv(
   // leaving the child with no token at all (audit R2-1). It is opencodex state, never
   // user auth, so dropping it unconditionally is safe.
   if (env.ANTHROPIC_AUTH_TOKEN === PROXY_MARKER) delete env.ANTHROPIC_AUTH_TOKEN;
-  // Step 1b — drop Anthropic slots that Bun may have synthesized from a project
-  // `.env`/`.env.local`. The plain-Node launcher records genuine parent exports before
-  // Bun starts and pairs that context with an argv proof, so with a trusted context we
-  // know exactly which slots the user really exported.
+  // Step 1b — drop Anthropic credentials AND destinations that Bun may have synthesized
+  // from a project `.env`/`.env.local`. The plain-Node launcher records genuine parent
+  // exports before Bun starts and pairs that context with an argv proof, so with a
+  // trusted context we know exactly which slots the user really exported.
   //
-  // Without a trusted context the two slot classes get different treatment, because the
-  // consequences are not symmetric:
+  // Without a trusted context all three slots are treated as project-controlled. An
+  // earlier revision of this branch preserved credentials here, reasoning that the
+  // destination is pinned below so a dotenv key would only ever reach the local proxy.
+  // That reasoning is wrong, and review caught it: `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`
+  // is only set when we own an auth token (see below, and #253 for why asserting it
+  // otherwise logs a subscriber out), so on a subscription launch Claude Code's
+  // settings.env merge can still replace `ANTHROPIC_BASE_URL` after we return. A
+  // preserved key then travels to that host. The repository documents that residual for
+  // subscription mode; it must not be widened into a credential leak.
   //
-  // - ANTHROPIC_BASE_URL is fail-closed. A dotenv-only destination combined with
-  //   subscription auth sends Claude's OAuth bearer and prompt to a host the repository
-  //   chose, which is the attack this hardening exists to stop. Losing a legitimate
-  //   custom destination costs the user a flag; leaking the bearer costs them the
-  //   account.
-  // - Credentials are preserved. `bun src/cli/index.ts` is a documented entry point
-  //   (structure/01_runtime.md:9), and a shell-exported ANTHROPIC_API_KEY there is
-  //   ordinary usage. Deleting it breaks that path to defend against a project file
-  //   that could equally well have set the key it is being blamed for supplying — the
-  //   credential goes to the destination either way, so stripping it buys nothing once
-  //   the destination is already pinned.
+  // Direct `bun src/cli/index.ts` therefore loses ambient Anthropic values. That is a
+  // real cost to a documented entry point, and the escape hatch is the launcher: run
+  // through `ocx` (the published bin) and genuine shell exports are preserved by proof.
   const explicitSlots = deps.preBunAnthropicSlots;
-  const trustedContext = explicitSlots === undefined ? trustedNodeLauncherContext() : undefined;
-  const trustedSlots = explicitSlots ?? trustedContext?.anthropicEnvSlots;
-  const exported = new Set<AnthropicParentEnvSlot>(trustedSlots ?? []);
-  // No launcher context at all: only the destination is treated as untrusted.
-  const untrustedProvenance = trustedSlots === undefined;
+  const trustedSlots = explicitSlots === undefined
+    ? trustedNodeLauncherContext()?.anthropicEnvSlots ?? []
+    : explicitSlots ?? [];
+  const exported = new Set<AnthropicParentEnvSlot>(trustedSlots);
   for (const name of ANTHROPIC_PARENT_ENV_SLOTS) {
     const value = env[name];
-    if (value === undefined || value === "") continue;
-    if (exported.has(name)) continue;
-    if (untrustedProvenance && name !== "ANTHROPIC_BASE_URL") continue;
-    delete env[name];
+    if (value !== undefined && value !== "" && !exported.has(name)) delete env[name];
   }
   // Never forward old or current provenance seams to Claude Code.
   delete env.OCX_PRE_BUN_ANTHROPIC_ENV;
