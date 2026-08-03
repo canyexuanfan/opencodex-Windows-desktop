@@ -288,6 +288,10 @@ const ESTIMATE_REASON_KEYS = {
   expected_price_overlay: "logs.detail.estimate.expected_price_overlay",
 } as const satisfies Record<CostEstimateReason, string>;
 
+/**
+ * i18n keys for every {@link AttemptRecoveryKind}, so the logs detail dialog renders a
+ * localized label instead of the raw wire value (e.g. `rate-limit-429`).
+ */
 const RECOVERY_KIND_KEYS = {
   "transient-5xx": "logs.detail.attempt.recovery.transient5xx",
   "connection-reset": "logs.detail.attempt.recovery.connectionReset",
@@ -306,6 +310,9 @@ function estimateReasonKey(reason: CostEstimateReason) {
   return ESTIMATE_REASON_KEYS[reason];
 }
 
+/**
+ * Map one attempt recovery kind to its i18n key for the logs detail dialog.
+ */
 function recoveryKindKey(kind: AttemptRecoveryKind) {
   return RECOVERY_KIND_KEYS[kind];
 }

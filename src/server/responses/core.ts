@@ -2450,9 +2450,11 @@ async function handleResponsesInner(
   let sameTargetParsed: OcxParsedRequest | undefined = parsed;
   let sameTargetToken = 0;
   let transportToken = 0;
-  // Invalidate the same-target request cache. Every credential/adapter/parsed mutation MUST
-  // go through here: the cache keys on `parsed` REFERENCE identity, so an in-place mutation
-  // is invisible to it and a missed bump would replay a request built with a stale key.
+  /**
+   * Invalidate the same-target request cache. Every credential/adapter/parsed mutation MUST
+   * go through here: the cache keys on `parsed` REFERENCE identity, so an in-place mutation
+   * is invisible to it and a missed bump would replay a request built with a stale key.
+   */
   const invalidateSameTargetRequest = (): void => { transportToken += 1; };
   let upstreamResponse: Response;
   try {
