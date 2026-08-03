@@ -2,27 +2,35 @@ import { randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
 import {
   chmodSync,
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
+  ftruncateSync,
+  linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
   renameSync,
   rmSync,
   statSync,
-  truncateSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { atomicWriteFileAsync } from "../config";
-import { hardenSecretPathAsync } from "../lib/windows-secret-acl";
+import { hardenSecretDirAsync, hardenSecretPathAsync } from "../lib/windows-secret-acl";
 import { applyConfirmedMainCodexAccountTransition } from "./account-lifecycle";
 import { decideNativeProfileRecovery } from "./native-profile-recovery";
 import { probeNativeCodexProcesses, type NativeCodexProcessProbe } from "./native-profile-processes";
 import {
   assertUniqueNativeProfileLabel,
+  assertNativeProfileLockPath,
+  assertNativeProfileMetadataLayout,
+  assertNoLegacyNativeProfileState,
   decryptNativeEnvelope,
   encryptNativeEnvelope,
   inspectNativeProfileJournal,
@@ -57,6 +65,11 @@ import {
 const LOCK_WAIT_MS = 5_000;
 const STAGE_MAX_AGE_MS = 30 * 60_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+interface PathIdentity {
+  dev: bigint;
+  ino: bigint;
+}
 
 type AtomicWriter = (path: string, content: string) => Promise<void>;
 type TransitionApplier = (fromAccountId: string, toAccountId: string) => void;
@@ -99,10 +112,49 @@ export interface NativeProfileListResult {
 }
 
 async function hardenNativeProfilePath(path: string): Promise<void> {
-  const mode = statSync(path).isDirectory() ? 0o700 : 0o600;
+  const entry = lstatSync(path);
+  if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
+    throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "A native-profile path is not a private file or directory.", 409);
+  }
+  const directory = entry.isDirectory();
+  const mode = directory ? 0o700 : 0o600;
   try { chmodSync(path, mode); } catch { /* Windows ACL below is authoritative there. */ }
   if (process.platform === "win32") {
-    await hardenSecretPathAsync(path, { required: true, timeoutMemoKey: path });
+    if (directory) await hardenSecretDirAsync(path, { required: true, timeoutMemoKey: path });
+    else await hardenSecretPathAsync(path, { required: true, timeoutMemoKey: path });
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  return resolve(left) === resolve(right);
+}
+
+function pathIdentity(path: string): PathIdentity {
+  const entry = lstatSync(path, { bigint: true });
+  return { dev: entry.dev, ino: entry.ino };
+}
+
+function sameIdentity(left: PathIdentity, right: PathIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function assertPathIdentity(path: string, expected: PathIdentity, label: string): void {
+  try {
+    if (!sameIdentity(pathIdentity(path), expected)) throw new Error("identity changed");
+  } catch {
+    throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", `${label} was replaced during the native-profile operation.`, 409);
+  }
+}
+
+function assertSafeDirectory(path: string, label: string): string {
+  try {
+    const entry = lstatSync(path);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("entry type");
+    const canonical = realpathSync.native(path);
+    if (!samePath(canonical, path)) throw new Error("path substitution");
+    return canonical;
+  } catch {
+    throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", `${label} is not a private canonical directory.`, 409);
   }
 }
 
@@ -127,6 +179,8 @@ export class NativeProfileManager {
   private readonly readEnvelope: EnvelopeReader;
   private readonly readVault: VaultReader;
   private readonly readEnvelopeResult: EnvelopeResultReader;
+  private activeRootIdentity: PathIdentity | null = null;
+  private activeLockIdentity: PathIdentity | null = null;
 
   constructor(options: NativeProfileManagerOptions = {}) {
     this.context = resolveNativeProfileContext(options);
@@ -147,26 +201,25 @@ export class NativeProfileManager {
     this.readEnvelopeResult = options.readEnvelopeResult ?? readNativeEnvelopeResult;
   }
 
-  private async ensureRoot(): Promise<void> {
-    if (!existsSync(this.context.rootDir)) mkdirSync(this.context.rootDir, { recursive: true, mode: 0o700 });
+  private async ensureRoot(): Promise<PathIdentity> {
+    assertNativeProfileMetadataLayout(this.context);
+    if (!existsSync(this.context.rootDir)) {
+      try { mkdirSync(this.context.rootDir, { mode: 0o700 }); }
+      catch (error) { if (errorCode(error) !== "EEXIST") throw error; }
+    }
+    const identity = pathIdentity(this.context.rootDir);
+    assertPathIdentity(this.context.rootDir, identity, "The native-profile metadata root");
     await this.hardenPath(this.context.rootDir);
-  }
-
-  private async ensureLockDatabase(): Promise<void> {
-    let database: Database | undefined;
-    try {
-      database = new Database(this.context.lockPath, { create: true });
-    } catch {
-      throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock is unavailable.", 503, true);
-    } finally {
-      try { database?.close(); } catch { /* acquisition already failed */ }
+    assertPathIdentity(this.context.rootDir, identity, "The native-profile metadata root");
+    assertNativeProfileMetadataLayout(this.context);
+    for (const name of readdirSync(this.context.rootDir)) {
+      assertPathIdentity(this.context.rootDir, identity, "The native-profile metadata root");
+      await this.hardenPath(join(this.context.rootDir, name));
+      assertPathIdentity(this.context.rootDir, identity, "The native-profile metadata root");
     }
-    try {
-      try { chmodSync(this.context.lockPath, 0o600); } catch { /* Windows ACL below is authoritative there. */ }
-      await this.hardenPath(this.context.lockPath);
-    } catch {
-      throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock could not be permission-hardened.", 503, true);
-    }
+    assertNativeProfileMetadataLayout(this.context);
+    assertPathIdentity(this.context.rootDir, identity, "The native-profile metadata root");
+    return identity;
   }
 
   private isLockBusy(error: unknown): boolean {
@@ -176,18 +229,69 @@ export class NativeProfileManager {
   }
 
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
-    await this.ensureRoot();
-    await this.ensureLockDatabase();
+    assertNoLegacyNativeProfileState(this.context);
+    assertNativeProfileLockPath(this.context);
     const deadline = this.now() + this.lockWaitMs;
     let database: Database | undefined;
+    let lockHandle: number | undefined;
+    let acquiredLockIdentity: PathIdentity | undefined;
     while (!database) {
       let candidate: Database | undefined;
+      let candidateHandle: number | undefined;
       try {
+        const flags = process.platform === "win32"
+          ? fsConstants.O_RDWR | fsConstants.O_CREAT
+          : fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW;
+        candidateHandle = openSync(this.context.lockPath, flags, 0o600);
+        const opened = fstatSync(candidateHandle, { bigint: true });
+        const pathEntry = lstatSync(this.context.lockPath, { bigint: true });
+        if (
+          !opened.isFile()
+          || !pathEntry.isFile()
+          || pathEntry.isSymbolicLink()
+          || opened.dev !== pathEntry.dev
+          || opened.ino !== pathEntry.ino
+        ) throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-profile transaction lock was replaced.", 409);
+        const candidateIdentity = { dev: opened.dev, ino: opened.ino };
         candidate = new Database(this.context.lockPath, { create: true });
+        const claim = this.uuid();
         candidate.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+        candidate.exec("CREATE TABLE IF NOT EXISTS ocx_native_profile_lock (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), claim TEXT NOT NULL)");
+        candidate.query("INSERT INTO ocx_native_profile_lock (singleton, claim) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET claim = excluded.claim").run(claim);
+        candidate.exec("COMMIT");
+        candidate.exec("BEGIN IMMEDIATE");
+        const candidateClaim = candidate.query("SELECT claim FROM ocx_native_profile_lock WHERE singleton = 1").get() as { claim?: unknown } | null;
+        let verifier: Database | undefined;
+        let verificationPath: string | undefined;
+        let pathClaim: { claim?: unknown } | null = null;
+        try {
+          verificationPath = `${this.context.lockPath}.verify.${process.pid}.${this.uuid()}`;
+          linkSync(this.context.lockPath, verificationPath);
+          const verificationIdentity = pathIdentity(verificationPath);
+          if (!sameIdentity(verificationIdentity, candidateIdentity)) {
+            throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-profile transaction lock changed during acquisition.", 409);
+          }
+          verifier = new Database(verificationPath, { readonly: true });
+          pathClaim = verifier.query("SELECT claim FROM ocx_native_profile_lock WHERE singleton = 1").get() as { claim?: unknown } | null;
+          assertPathIdentity(verificationPath, verificationIdentity, "The native-profile transaction lock verification link");
+        } finally {
+          try { verifier?.close(); } catch { /* mismatch below is authoritative */ }
+          try { if (verificationPath !== undefined) unlinkSync(verificationPath); } catch { /* acquisition fails below if verification was incomplete */ }
+        }
+        if (candidateClaim?.claim !== claim || pathClaim?.claim !== claim) {
+          throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-profile transaction lock changed during acquisition.", 409);
+        }
+        try { chmodSync(this.context.lockPath, 0o600); } catch { /* Windows ACL below is authoritative there. */ }
+        await this.hardenPath(this.context.lockPath);
+        assertNativeProfileLockPath(this.context);
+        assertPathIdentity(this.context.lockPath, candidateIdentity, "The native-profile transaction lock");
         database = candidate;
+        lockHandle = candidateHandle;
+        acquiredLockIdentity = candidateIdentity;
       } catch (error) {
         try { candidate?.close(); } catch { /* acquisition already failed */ }
+        try { if (candidateHandle !== undefined) closeSync(candidateHandle); } catch { /* acquisition already failed */ }
+        if (error instanceof NativeProfileError) throw error;
         if (!this.isLockBusy(error)) {
           throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock is unavailable.", 503, true);
         }
@@ -198,12 +302,29 @@ export class NativeProfileManager {
       }
     }
     try {
+      this.activeLockIdentity = acquiredLockIdentity!;
+      this.activeRootIdentity = await this.ensureRoot();
       await this.onLockAcquired();
-      return await operation();
+      this.assertOperationStorageStable();
+      const result = await operation();
+      this.assertOperationStorageStable();
+      return result;
     } finally {
       try { database.exec("ROLLBACK"); } catch { /* close still releases the OS-backed lock */ }
       try { database.close(); } catch { /* transaction is already ending */ }
+      try { if (lockHandle !== undefined) closeSync(lockHandle); } catch { /* SQLite handle already released the transaction */ }
+      this.activeRootIdentity = null;
+      this.activeLockIdentity = null;
     }
+  }
+
+  private assertOperationStorageStable(): void {
+    if (!this.activeRootIdentity || !this.activeLockIdentity) {
+      throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "Native-profile storage ownership is not active.", 409);
+    }
+    assertPathIdentity(this.context.lockPath, this.activeLockIdentity, "The native-profile transaction lock");
+    assertPathIdentity(this.context.rootDir, this.activeRootIdentity, "The native-profile metadata root");
+    assertNativeProfileMetadataLayout(this.context);
   }
 
   private async assertNativeCodexStopped(confirmedStopped: boolean): Promise<void> {
@@ -226,18 +347,24 @@ export class NativeProfileManager {
   }
 
   private async writeVault(vault: NativeMainProfileVaultV1): Promise<void> {
+    this.assertOperationStorageStable();
     await this.atomicWrite(this.context.vaultPath, serializeNativeProfileMetadata(vault));
+    this.assertOperationStorageStable();
   }
 
   private async writeJournal(journal: NativeProfileSwitchJournalV1): Promise<void> {
+    this.assertOperationStorageStable();
     await this.atomicWrite(this.context.journalPath, serializeNativeProfileJournal(journal));
+    this.assertOperationStorageStable();
   }
 
   private removeJournal(): void {
+    this.assertOperationStorageStable();
     try { unlinkSync(this.context.journalPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
   }
 
   private removeRecoveryBlock(): void {
+    this.assertOperationStorageStable();
     try { unlinkSync(this.context.recoveryBlockPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
   }
 
@@ -281,6 +408,7 @@ export class NativeProfileManager {
   private async quarantineInvalidJournalLocked(): Promise<Record<string, unknown>> {
     const quarantineFile = this.context.homeId + ".journal.quarantine-" + this.uuid() + ".json";
     const quarantinePath = join(this.context.rootDir, quarantineFile);
+    this.assertOperationStorageStable();
     await this.atomicWrite(this.context.recoveryBlockPath, serializeNativeProfileMetadata({
       version: 1,
       homeId: this.context.homeId,
@@ -288,8 +416,11 @@ export class NativeProfileManager {
       quarantineFile,
       createdAt: new Date(this.now()).toISOString(),
     }));
+    this.assertOperationStorageStable();
     try {
       renameSync(this.context.journalPath, quarantinePath);
+      await this.hardenPath(quarantinePath);
+      this.assertOperationStorageStable();
     } catch {
       throw new NativeProfileError(
         "RECOVERY_REQUIRED",
@@ -470,37 +601,137 @@ export class NativeProfileManager {
     return join(this.context.stagingRoot, stageId);
   }
 
-  private verifiedStagePath(stageId: string, requireFresh = true): string {
+  private assertStagingLayout(requireRoot = false): void {
+    if (!existsSync(this.context.configDir)) {
+      if (requireRoot) throw new NativeProfileError("STAGING_NOT_FOUND", "The native-login staging root is missing.", 404);
+      return;
+    }
+    const configDir = assertSafeDirectory(this.context.configDir, "The OpenCodex configuration root");
+    const stagingBase = dirname(this.context.stagingRoot);
+    if (!samePath(stagingBase, join(configDir, "native-main-profile-staging"))) {
+      throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-login staging root escaped OPENCODEX_HOME.", 409);
+    }
+    if (!existsSync(stagingBase)) {
+      if (requireRoot) throw new NativeProfileError("STAGING_NOT_FOUND", "The native-login staging root is missing.", 404);
+      return;
+    }
+    const canonicalBase = assertSafeDirectory(stagingBase, "The native-login staging namespace");
+    if (!samePath(dirname(this.context.stagingRoot), canonicalBase)) {
+      throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-login staging root is not contained by OPENCODEX_HOME.", 409);
+    }
+    if (!existsSync(this.context.stagingRoot)) {
+      if (requireRoot) throw new NativeProfileError("STAGING_NOT_FOUND", "The native-login staging root is missing.", 404);
+      return;
+    }
+    assertSafeDirectory(this.context.stagingRoot, "The native-login staging root");
+  }
+
+  private async ensureStagingRoot(): Promise<void> {
+    if (!existsSync(this.context.configDir)) mkdirSync(this.context.configDir, { recursive: true, mode: 0o700 });
+    this.assertStagingLayout(false);
+    const stagingBase = dirname(this.context.stagingRoot);
+    if (!existsSync(stagingBase)) mkdirSync(stagingBase, { mode: 0o700 });
+    assertSafeDirectory(stagingBase, "The native-login staging namespace");
+    await this.hardenPath(stagingBase);
+    if (!existsSync(this.context.stagingRoot)) mkdirSync(this.context.stagingRoot, { mode: 0o700 });
+    assertSafeDirectory(this.context.stagingRoot, "The native-login staging root");
+    await this.hardenPath(this.context.stagingRoot);
+    this.assertStagingLayout(true);
+  }
+
+  private verifiedStagePath(stageId: string, requireFresh = true): { path: string; identity: PathIdentity } {
+    this.assertStagingLayout(true);
     const expected = resolve(this.stagePath(stageId));
     try {
-      if (lstatSync(expected).isSymbolicLink() || !lstatSync(expected).isDirectory()) throw new Error("stage type");
+      const entry = lstatSync(expected);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("stage type");
+      const identity = pathIdentity(expected);
       const canonicalRoot = resolve(realpathSync.native(this.context.stagingRoot));
       const canonicalExpected = resolve(realpathSync.native(expected));
       const rel = relative(canonicalRoot, canonicalExpected);
       if (!rel || rel.startsWith("..") || rel.includes(sep)) throw new Error("stage root");
       const metadata = JSON.parse(readFileSync(join(canonicalExpected, "stage.json"), "utf8")) as Record<string, unknown>;
-      if (metadata.version !== 1 || metadata.stageId !== stageId || metadata.homeId !== this.context.homeId) throw new Error("stage metadata");
+      if (
+        metadata.version !== 1
+        || metadata.stageId !== stageId
+        || metadata.homeId !== this.context.homeId
+        || metadata.instanceId !== this.context.instanceId
+      ) throw new Error("stage metadata");
       if (typeof metadata.createdAt !== "number") throw new Error("stage age");
       if (requireFresh && this.now() - metadata.createdAt > STAGE_MAX_AGE_MS) throw new Error("stage age");
-      return canonicalExpected;
+      assertPathIdentity(canonicalExpected, identity, "The native-login staging directory");
+      return { path: canonicalExpected, identity };
     } catch {
       throw new NativeProfileError("STAGING_NOT_FOUND", "The native-login staging session is missing, expired, or invalid.", 404);
     }
   }
 
-  private deleteStage(path: string): void {
+  private deleteStage(path: string, identity?: PathIdentity): void {
+    if (identity) assertPathIdentity(path, identity, "The native-login staging directory");
     const authPath = join(path, "auth.json");
+    let authFd: number | undefined;
     try {
-      const authStat = lstatSync(authPath);
-      if (authStat.isFile() && !authStat.isSymbolicLink()) truncateSync(authPath, 0);
-    } catch { /* removal below is authoritative */ }
+      const flags = process.platform === "win32"
+        ? fsConstants.O_RDWR
+        : fsConstants.O_RDWR | fsConstants.O_NOFOLLOW;
+      authFd = openSync(authPath, flags);
+      const opened = fstatSync(authFd, { bigint: true });
+      const pathEntry = lstatSync(authPath, { bigint: true });
+      if (
+        !opened.isFile()
+        || !pathEntry.isFile()
+        || pathEntry.isSymbolicLink()
+        || opened.dev !== pathEntry.dev
+        || opened.ino !== pathEntry.ino
+        || opened.nlink !== 1n
+      ) throw new NativeProfileError(
+        "STAGING_CLEANUP_REQUIRED",
+        "The staged credential file is not privately owned; plaintext may remain and requires manual cleanup.",
+        500,
+        false,
+        true,
+      );
+      unlinkSync(authPath);
+      const unlinked = fstatSync(authFd, { bigint: true });
+      if (unlinked.dev !== opened.dev || unlinked.ino !== opened.ino || unlinked.nlink !== 0n) {
+        throw new NativeProfileError(
+          "STAGING_CLEANUP_REQUIRED",
+          "The staged credential file could not be exclusively unlinked; plaintext may remain and requires manual cleanup.",
+          500,
+          false,
+          true,
+        );
+      }
+      ftruncateSync(authFd, 0);
+    } catch (error) {
+      if (error instanceof NativeProfileError) throw error;
+      if (errorCode(error) !== "ENOENT") {
+        throw new NativeProfileError(
+          "STAGING_CLEANUP_REQUIRED",
+          "The staged credential file could not be securely scrubbed; plaintext may remain and requires manual cleanup.",
+          500,
+          false,
+          true,
+        );
+      }
+    } finally {
+      try { if (authFd !== undefined) closeSync(authFd); } catch { /* removal below remains required */ }
+    }
+    if (identity) assertPathIdentity(path, identity, "The native-login staging directory");
     this.removeStageTree(path);
   }
 
-  private deleteStageById(stageId: string): void {
+  private deleteStageById(stageId: string, requirePresent = false): void {
+    this.assertStagingLayout(true);
     const expected = resolve(this.stagePath(stageId));
     let stageStat: ReturnType<typeof lstatSync>;
-    try { stageStat = lstatSync(expected); } catch (error) { if (errorCode(error) === "ENOENT") return; throw error; }
+    try { stageStat = lstatSync(expected); } catch (error) {
+      if (errorCode(error) === "ENOENT") {
+        if (requirePresent) throw new NativeProfileError("STAGING_NOT_FOUND", "The native-login staging session is missing.", 404);
+        return;
+      }
+      throw error;
+    }
     if (stageStat.isSymbolicLink() || !stageStat.isDirectory()) {
       unlinkSync(expected);
       return;
@@ -511,11 +742,12 @@ export class NativeProfileManager {
     if (!rel || rel.startsWith("..") || rel.includes(sep)) {
       throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "The staging path could not be safely removed.", 500);
     }
-    this.deleteStage(canonicalExpected);
+    this.deleteStage(canonicalExpected, pathIdentity(canonicalExpected));
   }
 
   private sweepStaleStages(): number {
     if (!existsSync(this.context.stagingRoot)) return 0;
+    this.assertStagingLayout(true);
     let removed = 0;
     for (const name of readdirSync(this.context.stagingRoot)) {
       if (!UUID_RE.test(name)) continue;
@@ -527,7 +759,13 @@ export class NativeProfileManager {
         if (stageStat.isDirectory() && !stageStat.isSymbolicLink()) {
           try {
             const metadata = JSON.parse(readFileSync(join(path, "stage.json"), "utf8")) as Record<string, unknown>;
-            if (metadata.version === 1 && metadata.stageId === name && metadata.homeId === this.context.homeId && typeof metadata.createdAt === "number") {
+            if (
+              metadata.version === 1
+              && metadata.stageId === name
+              && metadata.homeId === this.context.homeId
+              && metadata.instanceId === this.context.instanceId
+              && typeof metadata.createdAt === "number"
+            ) {
               createdAt = metadata.createdAt;
             }
           } catch { /* mtime bounds malformed crash residue */ }
@@ -559,9 +797,7 @@ export class NativeProfileManager {
         key = await this.keyForVault(vault);
         current = this.readEnvelope(this.context.authPath);
         this.assertCurrentIdentity(vault, current, key);
-        if (!existsSync(this.context.stagingRoot)) mkdirSync(this.context.stagingRoot, { recursive: true, mode: 0o700 });
-        await this.hardenPath(dirname(this.context.stagingRoot));
-        await this.hardenPath(this.context.stagingRoot);
+        await this.ensureStagingRoot();
         const stageId = this.uuid();
         const path = this.stagePath(stageId);
         mkdirSync(path, { mode: 0o700 });
@@ -569,7 +805,13 @@ export class NativeProfileManager {
           await this.hardenPath(path);
           writeFileSync(join(path, "config.toml"), 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
           await this.hardenPath(join(path, "config.toml"));
-          writeFileSync(join(path, "stage.json"), serializeNativeProfileMetadata({ version: 1, stageId, homeId: this.context.homeId, createdAt: this.now() }), { mode: 0o600 });
+          writeFileSync(join(path, "stage.json"), serializeNativeProfileMetadata({
+            version: 1,
+            stageId,
+            homeId: this.context.homeId,
+            instanceId: this.context.instanceId,
+            createdAt: this.now(),
+          }), { mode: 0o600 });
           await this.hardenPath(join(path, "stage.json"));
         } catch (error) {
           try { rmSync(path, { recursive: true, force: true }); } catch { /* original error wins */ }
@@ -590,7 +832,7 @@ export class NativeProfileManager {
       // claiming cleanup ownership. Freshness and every later failure are then
       // server-authoritatively cleaned, while lock/ownership failures leave a
       // stage that another valid operation may own untouched.
-      const ownedStagePath = this.verifiedStagePath(stageId, false);
+      const ownedStage = this.verifiedStagePath(stageId, false);
       let target: NativeEnvelopeSnapshot | null = null;
       let current: NativeEnvelopeSnapshot | null = null;
       let key: NativeProfileKey | null = null;
@@ -599,11 +841,12 @@ export class NativeProfileManager {
       let importCommitted = false;
       let result: { effectiveCodexHome: string; profile: NativeProfilePublic } | undefined;
       try {
-        this.verifiedStagePath(stageId);
+        const verifiedStage = this.verifiedStagePath(stageId);
         this.assertNoPendingRecovery();
         requireFileCredentialStore(this.context);
         const label = validateNativeProfileLabel(labelInput);
-        target = readNativeEnvelope(join(ownedStagePath, "auth.json"));
+        target = readNativeEnvelope(join(verifiedStage.path, "auth.json"));
+        assertPathIdentity(verifiedStage.path, verifiedStage.identity, "The native-login staging directory");
         current = readNativeEnvelope(this.context.authPath);
         const vault = this.requireVault();
         if (vault.profiles.length >= MAX_NATIVE_PROFILES) {
@@ -667,7 +910,7 @@ export class NativeProfileManager {
       }
       let cleanupFailed = false;
       try {
-        this.deleteStage(ownedStagePath);
+        this.deleteStage(ownedStage.path, ownedStage.identity);
       } catch {
         cleanupFailed = true;
       }
@@ -707,7 +950,9 @@ export class NativeProfileManager {
 
   async cancelStage(stageId: string): Promise<void> {
     await this.withLock(async () => {
-      try { this.deleteStageById(stageId); } catch (error) {
+      try {
+        this.deleteStageById(stageId, true);
+      } catch (error) {
         if (error instanceof NativeProfileError) throw error;
         throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "The native-login staging session could not be securely removed.", 500);
       }
@@ -793,6 +1038,7 @@ export class NativeProfileManager {
         await this.writeJournal(journal);
         journalPrepared = true;
         await this.onSwitchBoundary("journal-prepared");
+        this.assertOperationStorageStable();
         await this.atomicWrite(this.context.authPath, target.text);
         const observedTarget = this.verifyWrittenEnvelope(target.digest, targetProfile.identityHash, key);
         observedTarget.raw.fill(0);
@@ -820,6 +1066,7 @@ export class NativeProfileManager {
           throw new NativeProfileError("RECOVERY_REQUIRED", "The login changed, but final transaction cleanup requires recovery.", 409);
         }
         try {
+          this.assertOperationStorageStable();
           await this.atomicWrite(this.context.authPath, source!.text);
           const restored = this.verifyWrittenEnvelope(source!.digest, nativeIdentityHash(key!.key, source!.accountId), key!);
           restored.raw.fill(0);
@@ -933,6 +1180,7 @@ export class NativeProfileManager {
           await this.writeVault(rollbackVault);
           rollbackVaultPublished = true;
         }
+        this.assertOperationStorageStable();
         await this.atomicWrite(this.context.authPath, sourceEnvelope.text);
         const restored = this.verifyWrittenEnvelope(sourceEnvelope.digest, journal.sourceIdentityHash, key);
         restored.raw.fill(0);

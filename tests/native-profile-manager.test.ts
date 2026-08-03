@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NativeProfileManager } from "../src/codex/native-profile-manager";
@@ -217,7 +217,13 @@ describe("native main profile transactions", () => {
     try {
       await waitForPath(ready);
       const contender = new NativeProfileManager({ ...f.options, configDir: secondConfigDir, lockWaitMs: 100 });
-      expect(contender.context.lockPath).toBe(new NativeProfileManager(f.options).context.lockPath);
+      const owner = new NativeProfileManager(f.options);
+      expect(contender.context.rootDir).toBe(owner.context.rootDir);
+      expect(contender.context.vaultPath).toBe(owner.context.vaultPath);
+      expect(contender.context.journalPath).toBe(owner.context.journalPath);
+      expect(contender.context.recoveryBlockPath).toBe(owner.context.recoveryBlockPath);
+      expect(contender.context.lockPath).toBe(owner.context.lockPath);
+      expect(contender.context.stagingRoot).not.toBe(owner.context.stagingRoot);
       let caught: unknown;
       try { await contender.recover(false); } catch (error) { caught = error; }
       expect(caught).toBeInstanceOf(NativeProfileError);
@@ -227,6 +233,157 @@ describe("native main profile transactions", () => {
       await first.exited;
     }
   }, 15_000);
+
+  test("shares one vault while preventing another OPENCODEX_HOME from finishing or cancelling a stage", async () => {
+    const f = fixture();
+    const first = new NativeProfileManager(f.options);
+    await first.register("personal");
+    const stage = await first.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target, { mode: 0o600 });
+    const secondConfigDir = join(f.root, "opencodex-second");
+    mkdirSync(secondConfigDir, { mode: 0o700 });
+    const second = new NativeProfileManager({ ...f.options, configDir: secondConfigDir });
+
+    expect((await second.list()).profiles.map(profile => profile.label)).toEqual(["personal"]);
+    let finishError: unknown;
+    try { await second.finishStage(stage.stageId, "work"); } catch (error) { finishError = error; }
+    expect(finishError).toBeInstanceOf(NativeProfileError);
+    expect((finishError as NativeProfileError).code).toBe("STAGING_NOT_FOUND");
+    let cancelError: unknown;
+    try { await second.cancelStage(stage.stageId); } catch (error) { cancelError = error; }
+    expect(cancelError).toBeInstanceOf(NativeProfileError);
+    expect((cancelError as NativeProfileError).code).toBe("STAGING_NOT_FOUND");
+    expect(existsSync(stage.stagingCodexHome)).toBe(true);
+
+    await first.finishStage(stage.stageId, "work");
+    expect((await second.list()).profiles.map(profile => profile.label).sort()).toEqual(["personal", "work"]);
+  });
+
+  test("shares journal quarantine and manual recovery state across OPENCODEX_HOME roots", async () => {
+    const f = await enrolledFixture();
+    const secondConfigDir = join(f.root, "opencodex-second");
+    mkdirSync(secondConfigDir, { mode: 0o700 });
+    const second = new NativeProfileManager({ ...f.options, configDir: secondConfigDir });
+    const originalAuth = readFileSync(f.manager.context.authPath, "utf8");
+    const originalVault = readFileSync(f.manager.context.vaultPath, "utf8");
+    const malformed = "{cross-instance-malformed-journal\n";
+    writeFileSync(f.manager.context.journalPath, malformed, { mode: 0o600 });
+    writeFileSync(f.manager.context.authPath, envelope("account-third", "third"), { mode: 0o600 });
+
+    expect(probeNativeProfileRecoveryState(second.context)).toBe("journal");
+    let caught: unknown;
+    try { await second.recover(true, true); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");
+    expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("manual");
+    expect(f.manager.context.recoveryBlockPath).toBe(second.context.recoveryBlockPath);
+    expect(readFileSync(f.manager.context.vaultPath, "utf8")).toBe(originalVault);
+    const quarantine = readdirSync(f.manager.context.rootDir).filter(name => name.includes(".journal.quarantine-"));
+    expect(quarantine).toHaveLength(1);
+    expect(readFileSync(join(f.manager.context.rootDir, quarantine[0]!), "utf8")).toBe(malformed);
+
+    writeFileSync(f.manager.context.authPath, originalAuth, { mode: 0o600 });
+    expect(await f.manager.recover(false)).toMatchObject({ recovered: true, action: "confirm-current-owner" });
+    expect(probeNativeProfileRecoveryState(second.context)).toBe("none");
+  });
+
+  test("fails closed when the shared metadata root is replaced before vault publication", async () => {
+    const f = fixture();
+    const attacker = join(f.root, "attacker");
+    const displaced = join(f.root, "displaced-metadata");
+    mkdirSync(attacker, { mode: 0o700 });
+    let manager!: NativeProfileManager;
+    manager = new NativeProfileManager({
+      ...f.options,
+      onLockAcquired: () => {
+        renameSync(manager.context.rootDir, displaced);
+        mkdirSync(manager.context.rootDir, { mode: 0o700 });
+      },
+    });
+    const authBefore = readFileSync(join(f.codexHome, "auth.json"), "utf8");
+    let caught: unknown;
+    try { await manager.register("personal"); } catch (error) { caught = error; }
+    finally {
+      try { rmSync(manager.context.rootDir, { recursive: true, force: true }); } catch { /* fixture cleanup */ }
+      if (existsSync(displaced) && !existsSync(manager.context.rootDir)) renameSync(displaced, manager.context.rootDir);
+    }
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("PROFILE_STORAGE_UNSAFE");
+    expect(readFileSync(join(f.codexHome, "auth.json"), "utf8")).toBe(authBefore);
+    expect(readdirSync(attacker)).toEqual([]);
+  });
+
+  test("cancels a malformed stage without trusting its metadata", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    await manager.register("personal");
+    const stage = await manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target, { mode: 0o600 });
+    writeFileSync(join(stage.stagingCodexHome, "stage.json"), "{malformed\n", { mode: 0o600 });
+
+    await manager.cancelStage(stage.stageId);
+
+    expect(existsSync(stage.stagingCodexHome)).toBe(false);
+  });
+
+  test("refuses to truncate a hard-linked staged credential during cancellation", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    await manager.register("personal");
+    const stage = await manager.prepareStage();
+    const external = join(f.root, "external-auth.json");
+    writeFileSync(external, f.target, { mode: 0o600 });
+    linkSync(external, join(stage.stagingCodexHome, "auth.json"));
+    writeFileSync(join(stage.stagingCodexHome, "stage.json"), "{malformed\n", { mode: 0o600 });
+
+    let caught: unknown;
+    try { await manager.cancelStage(stage.stageId); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("STAGING_CLEANUP_REQUIRED");
+    expect((caught as NativeProfileError).cleanupRequired).toBe(true);
+    expect(readFileSync(external, "utf8")).toBe(f.target);
+  });
+
+  test("rejects legacy config-root metadata before creating shared state", async () => {
+    const f = fixture();
+    const manager = new NativeProfileManager(f.options);
+    mkdirSync(manager.context.legacyRootDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(manager.context.legacyRootDir, `${manager.context.homeId}.vault.json`), "{}\n", { mode: 0o600 });
+    const authBefore = readFileSync(manager.context.authPath, "utf8");
+
+    let caught: unknown;
+    try { await manager.register("personal"); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("LEGACY_PROFILE_STATE");
+    expect(existsSync(manager.context.rootDir)).toBe(false);
+    expect(existsSync(manager.context.lockPath)).toBe(false);
+    expect(readFileSync(manager.context.authPath, "utf8")).toBe(authBefore);
+  });
+
+  test("creates owner-only shared metadata and instance-local staging on POSIX", async () => {
+    if (process.platform === "win32") return;
+    const f = fixture();
+    const manager = new NativeProfileManager({
+      codexHome: f.codexHome,
+      configDir: f.configDir,
+      keyProvider: f.keyProvider,
+      processProbe: f.options.processProbe,
+      applyTransition: f.options.applyTransition,
+    });
+    await manager.register("personal");
+    const stage = await manager.prepareStage();
+    const mode = (path: string): number => statSync(path).mode & 0o777;
+
+    expect(mode(manager.context.rootDir)).toBe(0o700);
+    expect(mode(manager.context.vaultPath)).toBe(0o600);
+    expect(mode(dirname(manager.context.stagingRoot))).toBe(0o700);
+    expect(mode(manager.context.stagingRoot)).toBe(0o700);
+    expect(mode(stage.stagingCodexHome)).toBe(0o700);
+    expect(mode(join(stage.stagingCodexHome, "config.toml"))).toBe(0o600);
+    expect(mode(join(stage.stagingCodexHome, "stage.json"))).toBe(0o600);
+  });
 
   test("finish removes staging after auth validation failure", async () => {
     const f = fixture();

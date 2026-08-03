@@ -13,11 +13,12 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readdirSync,
   readSync,
   realpathSync,
   statSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { getConfigDir } from "../config";
 import { extractAccountId } from "../oauth/chatgpt";
 import { getCodexHome, readRootTomlString } from "./paths";
@@ -34,8 +35,12 @@ import {
 } from "./native-profile-types";
 
 const DOMAIN_HOME = "opencodex-native-profile-home-v1\0";
+const DOMAIN_INSTANCE = "opencodex-native-profile-instance-v1\0";
 const DOMAIN_IDENTITY = "opencodex-native-profile-identity-v1\0";
 const KEYRING_SERVICE = "opencodex.native-main-profile.v1";
+const SHARED_METADATA_DIR = ".opencodex-native-main-profiles";
+const INSTANCE_STAGING_DIR = "native-main-profile-staging";
+const LEGACY_METADATA_DIR = "native-main-profiles";
 const MAX_AUTH_BYTES = 4 * 1024 * 1024;
 export const MAX_NATIVE_PROFILE_METADATA_BYTES = 4 * 1024 * 1024;
 export const MAX_NATIVE_PROFILE_JOURNAL_BYTES = 17 * 1024 * 1024;
@@ -47,8 +52,11 @@ const BOUNDED_READ_TEST_SEAM = Symbol.for("opencodex.native-profile-store.bounde
 export interface NativeProfileContext {
   codexHome: string;
   configDir: string;
+  instanceId: string;
+  legacyHomeId: string | null;
   rootDir: string;
   stagingRoot: string;
+  legacyRootDir: string;
   homeId: string;
   authPath: string;
   vaultPath: string;
@@ -58,6 +66,7 @@ export interface NativeProfileContext {
 }
 
 interface BoundedReadTestSeam {
+  beforeOpen?: (path: string) => void;
   afterValidatedOpen?: (path: string, fd: number) => void;
   onBufferAllocated?: (byteLength: number) => void;
   onRead?: (requestedBytes: number, bytesRead: number, totalBytesRead: number) => void;
@@ -189,17 +198,173 @@ function canonicalExistingDirectory(path: string, label: string): string {
   }
 }
 
+function normalizedPath(path: string): string {
+  return resolve(path);
+}
+
+function canonicalizeDirectoryPath(path: string): string {
+  const unresolved: string[] = [];
+  let cursor = resolve(path);
+  for (;;) {
+    try {
+      if (!statSync(cursor).isDirectory()) throw new Error("not a directory");
+      return join(realpathSync.native(cursor), ...unresolved.reverse());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The OpenCodex configuration root is not safely accessible.", 409);
+      }
+      const parent = dirname(cursor);
+      if (parent === cursor) {
+        throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The OpenCodex configuration root is not safely accessible.", 409);
+      }
+      unresolved.push(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+/** Bind keyring and encrypted AAD identity to the case-preserving canonical path. */
+export function nativeProfileHomeId(canonicalCodexHome: string): string {
+  return createHash("sha256").update(DOMAIN_HOME).update(canonicalCodexHome).digest("hex");
+}
+
+export function legacyWindowsNativeProfileHomeId(canonicalCodexHome: string): string {
+  return createHash("sha256").update(DOMAIN_HOME).update(canonicalCodexHome.toLowerCase()).digest("hex");
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalizedPath(left) === normalizedPath(right);
+}
+
+function storageUnsafe(message: string): never {
+  throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", message, 409);
+}
+
+function assertCanonicalDirectory(path: string, label: string): string {
+  try {
+    const entry = lstatSync(path);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) storageUnsafe(`${label} is not a private directory.`);
+    const canonical = realpathSync.native(path);
+    if (!samePath(canonical, path)) storageUnsafe(`${label} contains a link or reparse-point substitution.`);
+    return canonical;
+  } catch (error) {
+    if (error instanceof NativeProfileError) throw error;
+    storageUnsafe(`${label} is not safely accessible.`);
+  }
+}
+
+function assertCanonicalFile(path: string, parent: string, label: string): void {
+  try {
+    const entry = lstatSync(path);
+    if (!entry.isFile() || entry.isSymbolicLink()) storageUnsafe(`${label} is not a private regular file.`);
+    const canonical = realpathSync.native(path);
+    if (!samePath(canonical, path) || !samePath(dirname(canonical), parent)) {
+      storageUnsafe(`${label} escaped its private metadata root.`);
+    }
+  } catch (error) {
+    if (error instanceof NativeProfileError) throw error;
+    storageUnsafe(`${label} is not safely accessible.`);
+  }
+}
+
+function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    storageUnsafe("Native-profile storage could not be inspected safely.");
+  }
+}
+
+function rootHasNativeProfileState(root: string, homeIds: readonly string[], includeStaging: boolean): boolean {
+  if (!pathExists(root)) return false;
+  let names: string[];
+  try {
+    const entry = lstatSync(root);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) return true;
+    const canonical = realpathSync.native(root);
+    if (!samePath(canonical, root)) return true;
+    names = readdirSync(root);
+  } catch {
+    return true;
+  }
+  for (const homeId of homeIds) {
+    const exact = new Set([
+      `${homeId}.vault.json`,
+      `${homeId}.journal.json`,
+      `${homeId}.recovery-block.json`,
+    ]);
+    if (names.some(name => exact.has(name) || name.startsWith(`${homeId}.journal.quarantine-`))) return true;
+    if (includeStaging && pathExists(join(root, "staging", homeId))) return true;
+  }
+  return false;
+}
+
+function hasLegacyNativeProfileState(context: NativeProfileContext): boolean {
+  const oldIds = context.legacyHomeId && context.legacyHomeId !== context.homeId
+    ? [context.homeId, context.legacyHomeId]
+    : [context.homeId];
+  if (rootHasNativeProfileState(context.legacyRootDir, oldIds, true)) return true;
+  return context.legacyHomeId !== null
+    && context.legacyHomeId !== context.homeId
+    && rootHasNativeProfileState(context.rootDir, [context.legacyHomeId], false);
+}
+
+export function assertNoLegacyNativeProfileState(context: NativeProfileContext): void {
+  if (!hasLegacyNativeProfileState(context)) return;
+  throw new NativeProfileError(
+    "LEGACY_PROFILE_STATE",
+    "Legacy native-profile state exists under OPENCODEX_HOME. Stop every OpenCodex proxy sharing this CODEX_HOME, then migrate or reset the preview state as documented.",
+    409,
+  );
+}
+
+/**
+ * Validate the one authoritative metadata root without following links. On Windows,
+ * Node reports symlinks and junctions through lstat; the realpath equality check also
+ * rejects other path-resolving reparse-point substitutions.
+ */
+export function assertNativeProfileMetadataLayout(context: NativeProfileContext): void {
+  assertNoLegacyNativeProfileState(context);
+  const canonicalHome = assertCanonicalDirectory(context.codexHome, "The effective CODEX_HOME");
+  const expectedRoot = join(canonicalHome, SHARED_METADATA_DIR);
+  if (!samePath(context.rootDir, expectedRoot)) storageUnsafe("The native-profile metadata root is not owned by CODEX_HOME.");
+  if (!pathExists(context.rootDir)) return;
+  const canonicalRoot = assertCanonicalDirectory(context.rootDir, "The native-profile metadata root");
+  let names: string[];
+  try {
+    names = readdirSync(canonicalRoot);
+  } catch {
+    storageUnsafe("The native-profile metadata root is not safely readable.");
+  }
+  for (const name of names) {
+    assertCanonicalFile(join(canonicalRoot, name), canonicalRoot, "A native-profile metadata entry");
+  }
+}
+
+export function assertNativeProfileLockPath(context: NativeProfileContext): void {
+  const canonicalHome = assertCanonicalDirectory(context.codexHome, "The effective CODEX_HOME");
+  const expected = join(canonicalHome, ".opencodex-native-profile.lock.sqlite");
+  if (!samePath(context.lockPath, expected)) storageUnsafe("The native-profile transaction lock is outside CODEX_HOME.");
+  if (pathExists(context.lockPath)) assertCanonicalFile(context.lockPath, canonicalHome, "The native-profile transaction lock");
+}
+
 export function resolveNativeProfileContext(options: { codexHome?: string; configDir?: string } = {}): NativeProfileContext {
   const codexHome = canonicalExistingDirectory(options.codexHome ?? getCodexHome(), "The effective CODEX_HOME");
-  const configDir = resolve(options.configDir ?? getConfigDir());
-  const homeBytes = process.platform === "win32" ? codexHome.toLowerCase() : codexHome;
-  const homeId = createHash("sha256").update(DOMAIN_HOME).update(homeBytes).digest("hex");
-  const rootDir = join(configDir, "native-main-profiles");
+  const configDir = canonicalizeDirectoryPath(options.configDir ?? getConfigDir());
+  const homeId = nativeProfileHomeId(codexHome);
+  const foldedHomeId = process.platform === "win32" ? legacyWindowsNativeProfileHomeId(codexHome) : homeId;
+  const instanceId = createHash("sha256").update(DOMAIN_INSTANCE).update(configDir).digest("hex");
+  const rootDir = join(codexHome, SHARED_METADATA_DIR);
   return {
     codexHome,
     configDir,
+    instanceId,
+    legacyHomeId: foldedHomeId === homeId ? null : foldedHomeId,
     rootDir,
-    stagingRoot: join(rootDir, "staging", homeId),
+    stagingRoot: join(configDir, INSTANCE_STAGING_DIR, homeId),
+    legacyRootDir: join(configDir, LEGACY_METADATA_DIR),
     homeId,
     authPath: join(codexHome, "auth.json"),
     vaultPath: join(rootDir, `${homeId}.vault.json`),
@@ -213,6 +378,7 @@ function readBounded(path: string, limit: number, testSeam?: BoundedReadTestSeam
   let fd: number | undefined;
   let failed = false;
   try {
+    testSeam?.beforeOpen?.(path);
     const flags = process.platform === "win32"
       ? fsConstants.O_RDONLY
       : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
@@ -530,16 +696,16 @@ function hasValidJournalSwitchInvariant(journal: NativeProfileSwitchJournalV1): 
 }
 
 export function readNativeProfileVault(context: NativeProfileContext): NativeMainProfileVaultV1 | null {
-  if (!existsSync(context.vaultPath)) return null;
+  assertNativeProfileMetadataLayout(context);
+  let raw: Buffer;
   try {
-    return parseVaultObject(
-      JSON.parse(readBounded(
-        context.vaultPath,
-        MAX_NATIVE_PROFILE_METADATA_BYTES,
-        boundedReadTestSeam(context),
-      ).toString("utf8")),
-      context.homeId,
-    );
+    raw = readBounded(context.vaultPath, MAX_NATIVE_PROFILE_METADATA_BYTES, boundedReadTestSeam(context));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new NativeProfileError("VAULT_INVALID", "The encrypted native-profile vault is unreadable.", 409);
+  }
+  try {
+    return parseVaultObject(JSON.parse(raw.toString("utf8")), context.homeId);
   } catch {
     throw new NativeProfileError("VAULT_INVALID", "The encrypted native-profile vault is invalid.", 409);
   }
@@ -559,6 +725,7 @@ function privateFileState(path: string): PrivateFileState {
 export type NativeProfileRecoveryState = "none" | "journal" | "manual" | "unreadable";
 
 export function probeNativeProfileRecoveryState(context: NativeProfileContext): NativeProfileRecoveryState {
+  try { assertNativeProfileMetadataLayout(context); } catch { return "unreadable"; }
   const block = privateFileState(context.recoveryBlockPath);
   if (block === "unreadable") return "unreadable";
   if (block === "present") return "manual";
@@ -573,6 +740,7 @@ export type NativeProfileJournalInspection =
   | { status: "invalid" };
 
 export function inspectNativeProfileJournal(context: NativeProfileContext): NativeProfileJournalInspection {
+  try { assertNativeProfileMetadataLayout(context); } catch { return { status: "invalid" }; }
   const state = privateFileState(context.journalPath);
   if (state === "missing") return { status: "missing" };
   if (state === "unreadable") return { status: "invalid" };

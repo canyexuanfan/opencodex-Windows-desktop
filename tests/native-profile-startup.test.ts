@@ -405,13 +405,18 @@ describe("native-main startup journal gate", () => {
       homeId: f.manager.context.homeId,
     });
 
+    const otherConfigDir = join(f.root, "opencodex-other");
+    mkdirSync(otherConfigDir, { mode: 0o700 });
     const otherManager = new NativeProfileManager({
       codexHome: f.codexHome,
-      configDir: f.configDir,
+      configDir: otherConfigDir,
       keyProvider: new MemoryKeyProvider(f.key),
       hardenPath: async () => {},
       processProbe: async () => ({ status: "clear", count: 0 }),
     });
+    expect(otherManager.context.journalPath).toBe(f.manager.context.journalPath);
+    expect(otherManager.context.recoveryBlockPath).toBe(f.manager.context.recoveryBlockPath);
+    expect(otherManager.context.stagingRoot).not.toBe(f.manager.context.stagingRoot);
     expect(await otherManager.recover(false)).toMatchObject({ recovered: true });
     expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("none");
     expect(isNativeMainTrafficBlocked()).toBe(true);

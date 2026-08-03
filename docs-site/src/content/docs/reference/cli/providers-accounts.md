@@ -230,6 +230,20 @@ successful switch preserves local tasks and history, then requires Codex to be r
 `doctor` to inspect profile state and `recover` to finish or roll back an interrupted transition.
 `switch` accepts either the profile ID or its label.
 
+The encrypted vault, switch journal, recovery marker, and journal quarantine live in the canonical
+`<real CODEX_HOME>/.opencodex-native-main-profiles` directory, so every OpenCodex instance sharing
+that Codex home observes one owner and one recovery state. Plaintext login staging remains isolated
+under each `<OPENCODEX_HOME>/native-main-profile-staging` directory.
+
+Preview builds used `<OPENCODEX_HOME>/native-main-profiles`. That layout is never imported silently.
+If `doctor` reports legacy profile state, stop every OpenCodex proxy sharing the same `CODEX_HOME`.
+Then either back up and move the matching `*.vault.json`, `*.journal.json`, recovery marker, and any
+referenced journal-quarantine file together into the canonical directory while preserving owner-only
+permissions, or remove the old preview set and run `ocx account main register` again. Do not choose
+between multiple old roots or run both layouts while any sharing proxy is active.
+On Windows, preview state keyed by the former case-folded home identity must be reset rather than
+moved because its encrypted AAD and operating-system keyring identity are intentionally not reused.
+
 ## Models
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`

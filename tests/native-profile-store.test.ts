@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   inspectNativeProfileJournal,
+  assertNoLegacyNativeProfileState,
+  legacyWindowsNativeProfileHomeId,
   MAX_NATIVE_PROFILE_JOURNAL_BYTES,
   MAX_NATIVE_PROFILE_METADATA_BYTES,
+  nativeProfileHomeId,
   OsNativeProfileKeyProvider,
   readNativeProfileVault,
+  resolveNativeProfileContext,
   serializeNativeProfileJournal,
   type NativeProfileContext,
 } from "../src/codex/native-profile-store";
@@ -31,6 +35,7 @@ const REPLACEMENT_TRANSACTION_ID = "44444444-4444-4444-8444-444444444444";
 const BOUNDED_READ_TEST_SEAM = Symbol.for("opencodex.native-profile-store.bounded-read-test-seam");
 
 interface BoundedReadTestSeam {
+  beforeOpen?: (path: string) => void;
   afterValidatedOpen?: (path: string, fd: number) => void;
   onBufferAllocated?: (byteLength: number) => void;
   onRead?: (requestedBytes: number, bytesRead: number, totalBytesRead: number) => void;
@@ -41,21 +46,76 @@ afterEach(() => {
 });
 
 function context(): NativeProfileContext {
-  const rootDir = mkdtempSync(join(tmpdir(), "ocx-native-profile-store-"));
-  roots.push(rootDir);
+  const base = mkdtempSync(join(tmpdir(), "ocx-native-profile-store-"));
+  roots.push(base);
+  const requestedCodexHome = join(base, "codex");
+  const configDir = join(base, "opencodex");
+  mkdirSync(requestedCodexHome, { mode: 0o700 });
+  const codexHome = realpathSync.native(requestedCodexHome);
+  const rootDir = join(codexHome, ".opencodex-native-main-profiles");
+  mkdirSync(rootDir, { mode: 0o700 });
+  mkdirSync(configDir, { mode: 0o700 });
   return {
-    codexHome: rootDir,
-    configDir: rootDir,
+    codexHome,
+    configDir,
+    instanceId: "d".repeat(64),
+    legacyHomeId: null,
     rootDir,
-    stagingRoot: join(rootDir, "staging"),
+    stagingRoot: join(configDir, "native-main-profile-staging", HOME_ID),
+    legacyRootDir: join(configDir, "native-main-profiles"),
     homeId: HOME_ID,
-    authPath: join(rootDir, "auth.json"),
+    authPath: join(codexHome, "auth.json"),
     vaultPath: join(rootDir, "profiles.vault.json"),
     journalPath: join(rootDir, "profiles.journal.json"),
     recoveryBlockPath: join(rootDir, "recovery-block.json"),
     lockPath: join(rootDir, "profiles.lock.sqlite"),
   };
 }
+
+describe("native-profile path ownership", () => {
+  test("shares authoritative metadata by canonical CODEX_HOME but isolates staging by OPENCODEX_HOME", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-native-profile-layout-"));
+    roots.push(root);
+    const codexHome = join(root, "codex");
+    const configA = join(root, "opencodex-a");
+    const configB = join(root, "opencodex-b");
+    mkdirSync(codexHome);
+    mkdirSync(configA);
+    mkdirSync(configB);
+
+    const a = resolveNativeProfileContext({ codexHome, configDir: configA });
+    const b = resolveNativeProfileContext({ codexHome, configDir: configB });
+
+    expect(a.homeId).toBe(b.homeId);
+    expect(a.rootDir).toBe(b.rootDir);
+    expect(a.vaultPath).toBe(b.vaultPath);
+    expect(a.journalPath).toBe(b.journalPath);
+    expect(a.recoveryBlockPath).toBe(b.recoveryBlockPath);
+    expect(a.lockPath).toBe(b.lockPath);
+    expect(a.stagingRoot).not.toBe(b.stagingRoot);
+    expect(a.instanceId).not.toBe(b.instanceId);
+    expect(a.rootDir).toBe(join(a.codexHome, ".opencodex-native-main-profiles"));
+    expect(a.stagingRoot).toBe(join(a.configDir, "native-main-profile-staging", a.homeId));
+    expect(nativeProfileHomeId("C:\\Users\\CaseSensitive\\.codex"))
+      .not.toBe(nativeProfileHomeId("C:\\Users\\casesensitive\\.codex"));
+    expect(legacyWindowsNativeProfileHomeId("C:\\Users\\CaseSensitive\\.codex"))
+      .toBe(legacyWindowsNativeProfileHomeId("C:\\Users\\casesensitive\\.codex"));
+
+    const requestedMissing = join(root, "missing-parent", "opencodex");
+    const beforeCreate = resolveNativeProfileContext({ codexHome, configDir: requestedMissing });
+    mkdirSync(requestedMissing, { recursive: true });
+    const afterCreate = resolveNativeProfileContext({ codexHome, configDir: requestedMissing });
+    expect(afterCreate.configDir).toBe(beforeCreate.configDir);
+    expect(afterCreate.instanceId).toBe(beforeCreate.instanceId);
+    expect(afterCreate.stagingRoot).toBe(beforeCreate.stagingRoot);
+
+    const previousWindowsId = legacyWindowsNativeProfileHomeId(a.codexHome);
+    const legacyContext = { ...a, legacyHomeId: previousWindowsId };
+    mkdirSync(legacyContext.legacyRootDir, { recursive: true });
+    writeFileSync(join(legacyContext.legacyRootDir, `${previousWindowsId}.vault.json`), "{}\n", { mode: 0o600 });
+    expect(() => assertNoLegacyNativeProfileState(legacyContext)).toThrow(NativeProfileError);
+  });
+});
 
 function installBoundedReadTestSeam(store: NativeProfileContext, seam: BoundedReadTestSeam): void {
   (store as NativeProfileContext & { [key: symbol]: unknown })[BOUNDED_READ_TEST_SEAM] = seam;
@@ -307,6 +367,19 @@ describe("native-profile recovery journal storage", () => {
     expect((caught as NativeProfileError).code).toBe("VAULT_INVALID");
     expect(allocations).toEqual([MAX_NATIVE_PROFILE_METADATA_BYTES + 1]);
     expect(totalBytesRead).toBe(MAX_NATIVE_PROFILE_METADATA_BYTES + 1);
+  });
+
+  test("treats vault EACCES as unreadable instead of an absent vault", () => {
+    const store = context();
+    installBoundedReadTestSeam(store, {
+      beforeOpen: () => { throw Object.assign(new Error("injected access denial"), { code: "EACCES" }); },
+    });
+
+    let caught: unknown;
+    try { readNativeProfileVault(store); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("VAULT_INVALID");
   });
 
   test("reads at most journal cap plus one when the opened journal grows after fstat", () => {
