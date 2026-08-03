@@ -111,6 +111,28 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 describe("relaySseEagerBounded — inline payload rewrite (#864)", () => {
+  test("a terminal frame settling in the same tick as abort is still recorded", async () => {
+    // Post-cancel drain: the terminal arrives, and the drain deadline aborts
+    // upstream in the same tick. Honoring the signal before examining the settled
+    // read discarded that frame, so the turn was accounted as a cancel instead of
+    // the completion it actually reached.
+    const up = controlledUpstream();
+    const { hooks, rec } = makeHooks();
+    const upstream = new AbortController();
+    const relayed = relaySseEagerBounded(up.stream, upstream, hooks);
+    const reading = readAll(relayed);
+
+    up.push(sse(DELTA));
+    await settle();
+    // Enqueue the terminal and abort without yielding in between.
+    up.push(enc.encode(`event: response.completed\ndata: ${COMPLETED}\n\n`));
+    upstream.abort(new Error("drain window expired"));
+    up.close();
+    await reading;
+
+    expect(rec.terminals.map(t => t.status)).toContain("completed");
+  });
+
   test("rewrites complete blocks across fragmented chunks and flushes the tail at EOF", async () => {
     const up = controlledUpstream();
     const { hooks } = makeHooks();

@@ -9,20 +9,22 @@
  * this surface only learns the yes/no answer. `gh` writes the authenticated account
  * name to stderr, so that output is discarded at the source rather than forwarded.
  *
- * The star POST additionally refuses agent-driven programmatic callers. Management
- * auth proves the caller reached the admin token, not that a person chose to star:
- * a coding agent runs on the user's machine and can read that token from disk, so
- * the CLI's "ask the user" deferral would be bypassable with one `curl` here.
+ * The star POST additionally requires a dashboard session. Management auth proves
+ * the caller reached the admin token, not that a person chose to star: a coding
+ * agent runs on the user's machine and can read that token from disk, so the CLI's
+ * "ask the user" deferral would be bypassable with one `curl` here.
  *
- * The dashboard button must keep working even when the proxy itself was started by
- * an agent, which is the common case — the person is at the browser, not at the
- * spawning shell. A GUI click is therefore distinguished by the CREDENTIAL that
- * authorized the request — a GUI session this process minted for a browser, which
- * the auth gate only accepts after matching origin and the per-session CSRF token —
- * rather than by the proxy's own env or by request headers.
+ * The requirement is unconditional, and that is the point. It used to apply only
+ * when `isAgentDriven()` was true — but that function reads the SERVER's
+ * environment, not the caller's, so a proxy already running as a service (no agent
+ * markers, the normal remote setup) accepted a raw-token star from anyone who could
+ * read the token, which includes every agent on the machine. The provenance of the
+ * HTTP caller is not knowable from the server's env; only the credential is. So the
+ * mutation asks for a GUI session this process minted for a browser, which the auth
+ * gate accepts only after matching origin and the per-session CSRF token.
  */
 import { jsonResponse } from "../auth-cors";
-import { agentDrivenMarkers, isAgentDriven } from "../../cli/agent-driven";
+import { agentDrivenMarkers } from "../../cli/agent-driven";
 import type { ManagementContext } from "./context";
 
 /**
@@ -40,12 +42,11 @@ function hasBrowserSessionEvidence(ctx: ManagementContext): boolean {
   return ctx.principal === "gui-session";
 }
 
-// Known edge, deliberately fail-closed: a non-loopback operator dashboard signs in
-// with the raw admin token instead of a minted GUI session, so its clicks carry no
-// CSRF header. If that proxy was *also* started from an agent shell, the button is
-// refused and the response names the one-line `gh` command to run by hand. A
-// service-run proxy (`OCX_SERVICE`, the usual remote setup) is not agent-driven and
-// is unaffected.
+// Known edge, deliberately fail-closed: a non-loopback operator dashboard that signs
+// in with the raw admin token instead of a minted GUI session gets its click refused,
+// and the response names the one-line `gh` command to run by hand. That is the
+// correct trade — an endpoint reachable with a readable token cannot establish that
+// a human chose to spend their own GitHub identity.
 
 export async function handleSidebarRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url } = ctx;
@@ -58,10 +59,11 @@ export async function handleSidebarRoutes(ctx: ManagementContext): Promise<Respo
   if (url.pathname === "/api/github/star" && req.method === "POST") {
     const { STAR_REPO, STAR_REPO_URL, starRepository } = await import("../../github/star-state");
     // Starring uses the user's GitHub identity, so consent must come from the
-    // account owner. An agent-driven caller without browser-session evidence
-    // cannot have obtained it, and must relay the question instead of answering
-    // it with an HTTP call.
-    if (isAgentDriven() && !hasBrowserSessionEvidence(ctx)) {
+    // account owner. Only a minted dashboard session evidences that; a caller
+    // holding the admin token must relay the question instead of answering it
+    // with an HTTP call.
+    if (!hasBrowserSessionEvidence(ctx)) {
+      const markers = agentDrivenMarkers().slice(0, 3);
       return jsonResponse({
         ok: false,
         state: "not-starred",
@@ -69,8 +71,9 @@ export async function handleSidebarRoutes(ctx: ManagementContext): Promise<Respo
         url: STAR_REPO_URL,
         code: "agent_consent_required",
         message:
-          `Refused: agent session detected (${agentDrivenMarkers().slice(0, 3).join(", ")}) and this request `
-          + `carries no dashboard session. Starring writes to the user's own GitHub account, so ask the user `
+          `Refused: this request carries no dashboard session`
+          + `${markers.length ? ` (agent session detected: ${markers.join(", ")})` : ""}. `
+          + `Starring writes to the user's own GitHub account, so ask the user `
           + `directly as a required Yes/No choice — not a soft aside, and no answer is not a No, so re-ask `
           + `it unchanged while it is open — and only if they say yes run: `
           + `gh api -X PUT /user/starred/${STAR_REPO}`,

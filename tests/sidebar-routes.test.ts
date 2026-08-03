@@ -240,14 +240,34 @@ describe("route surface", () => {
     expect(calls).toEqual([]);
   });
 
-  test("a hand-typed run is not blocked by the agent guard", async () => {
+  test("a clean-environment server still refuses a raw-token star", async () => {
+    // The guard used to fire only when isAgentDriven() was true — but that reads
+    // the SERVER's environment, not the caller's. A proxy running as a service has
+    // no agent markers, so this exact request (raw admin token, no dashboard
+    // session) starred the repository for anyone who could read the token, which
+    // is every agent on the machine. Caller provenance is not knowable here; the
+    // credential is, so the dashboard session is required unconditionally.
     const calls: string[][] = [];
     await withEnv(NO_AGENT_ENV, () => withStarDeps({
       nowMs: () => 0,
       async runGh(args) { calls.push(args); return { status: 0 }; },
     }, async () => {
       invalidateStarStatusCache();
-      const { status } = await call("POST", "/api/github/star");
+      const { status, body } = await call("POST", "/api/github/star", {}, "admin-token");
+      expect(status).toBe(403);
+      expect((body as Record<string, unknown>).code).toBe("agent_consent_required");
+    }));
+    expect(calls).toEqual([]);
+  });
+
+  test("a dashboard click on a clean-environment server still stars", async () => {
+    const calls: string[][] = [];
+    await withEnv(NO_AGENT_ENV, () => withStarDeps({
+      nowMs: () => 0,
+      async runGh(args) { calls.push(args); return { status: 0 }; },
+    }, async () => {
+      invalidateStarStatusCache();
+      const { status } = await call("POST", "/api/github/star", {}, "gui-session");
       expect(status).toBe(200);
     }));
     expect(calls.some(args => args.includes("PUT"))).toBe(true);

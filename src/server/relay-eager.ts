@@ -206,8 +206,14 @@ export function relaySseEagerBounded(
     try {
       for (;;) {
         const result = await reader.read();
-        if (upstream.signal.aborted) break;
         const { done: upstreamDone, value } = result;
+        // A chunk that already settled is INSPECTED before abort is honored. A read
+        // can settle with a real chunk in the same tick the signal fires (post-cancel
+        // drain: the terminal frame arrives, then the drain timer aborts upstream).
+        // Checking the signal first discarded that frame, so the terminal was never
+        // recorded and the turn was accounted as a plain cancel.
+        if (!upstreamDone && value !== undefined) hooks.inspectChunk(value);
+        if (upstream.signal.aborted) break;
         if (upstreamDone) {
           hooks.finishInspection();
           if (rewrite) {
@@ -222,7 +228,6 @@ export function relaySseEagerBounded(
           }
           break;
         }
-        hooks.inspectChunk(value);
         if (cancelled) {
           // Discard-drain: inspection only, nothing queued. Stop at terminal
           // or when the bounded window expires.
