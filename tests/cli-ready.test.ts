@@ -313,8 +313,8 @@ describe("runReady --wait (single bounded loop, deterministic)", () => {
 
   test("uses the configured --timeout value as the single deadline", async () => {
     const { io } = captureIo();
-    let t = 0;
     const seenNow: number[] = [];
+    let t = -1000; // so the first read (which establishes the deadline) is 0
     await runReady(
       { json: false, wait: true, timeoutSeconds: 7 },
       {
@@ -325,10 +325,11 @@ describe("runReady --wait (single bounded loop, deterministic)", () => {
         sleep: async () => {},
       },
     );
-    // The deadline is 7000ms; the loop stops once now() >= 7000.
-    const firstOverDeadline = seenNow.find(n => n >= 7000);
-    expect(firstOverDeadline).toBeGreaterThanOrEqual(7000);
-    expect(firstOverDeadline).toBeLessThan(7000 + 1000);
+    // First read is 0, so the deadline is exactly 0 + 7*1000 = 7000. The loop
+    // must stop on the FIRST reading at/after it, i.e. the last value read is
+    // 7000 — proving timeoutSeconds actually controls the deadline.
+    expect(seenNow.at(-1)).toBe(7000);
+    expect(seenNow.filter(n => n >= 7000)).toEqual([7000]);
   });
 });
 
@@ -755,24 +756,24 @@ describe("invalid ready matrices never invoke findLive/probe (P1 counters)", () 
 // sequential candidate probes inside findLiveProxy are bounded by the single
 // wait deadline. It must NOT use the injected logical now: AbortSignal time is
 // real wall-clock time, so Date.now is authoritative for the network deadline.
-// The non-wait path keeps findLiveProxy's built-in default (no deadlineMs).
+// The non-wait path keeps findLiveProxy's built-in default (no deadlineAt).
 describe("runReady production findLiveProxy deadline wiring (source-level)", () => {
   const readySource = readFileSync(join(import.meta.dir, "../src/cli/ready.ts"), "utf8");
 
-  test("the --wait path derives deadlineMs from Date.now() + remainingMs (not the injected now)", () => {
+  test("the --wait path derives deadlineAt from Date.now() + remainingMs (not the injected now)", () => {
     // Date.now (real wall clock) is authoritative for the AbortSignal deadline;
     // the injected logical now must not govern the network timeout.
-    expect(readySource).toContain("deadlineMs: Date.now() + remainingMs");
+    expect(readySource).toContain("deadlineAt: Date.now() + remainingMs");
     // The per-probe cap is forwarded alongside the absolute deadline.
     expect(readySource).toContain("timeoutMs: IO_TIMEOUT_CAP_MS");
   });
 
-  test("the non-wait path keeps findLiveProxy's built-in default (no deadlineMs)", () => {
+  test("the non-wait path keeps findLiveProxy's built-in default (no deadlineAt)", () => {
     // The default find forwards {} when remainingMs is undefined so the
     // built-in per-probe timeout (no deadline) is preserved for the single probe.
     expect(readySource).toContain("remainingMs === undefined ? {}");
-    // deadlineMs is only ever passed conditionally (in the wait branch), never
-    // as an unconditional findLiveProxy({ deadlineMs: ... }).
-    expect(readySource).not.toContain("findLiveProxy({ deadlineMs");
+    // deadlineAt is only ever passed conditionally (in the wait branch), never
+    // as an unconditional findLiveProxy({ deadlineAt: ... }).
+    expect(readySource).not.toContain("findLiveProxy({ deadlineAt");
   });
 });

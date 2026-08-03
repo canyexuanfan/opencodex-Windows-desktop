@@ -610,9 +610,13 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       // back off BEFORE knowing the admission token), but stricter than liveness. The
       // body carries only sanitized identity + the fixed status enum; the sync message,
       // warning text, catalog path, provider output, and account data are never exposed.
-      // POST or "/readyz/" must NOT match (exact pathname + GET method) so they fall
-      // through to the JSON 404 guard rather than being silently accepted.
-      if (url.pathname === "/readyz" && req.method === "GET") {
+      // POST or "/readyz/" must NOT match (exact pathname + GET method): answer them
+      // with a JSON 404 here so they can never be silently accepted by the GUI SPA
+      // fallback (which would serve index.html with HTTP 200 once gui/dist exists).
+      if (url.pathname === "/readyz" || url.pathname === "/readyz/") {
+        if (url.pathname !== "/readyz" || req.method !== "GET") {
+          return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
+        }
         const status = readinessGate.getStatus();
         const body = {
           service: "opencodex",

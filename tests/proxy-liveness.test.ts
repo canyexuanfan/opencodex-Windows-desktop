@@ -271,17 +271,17 @@ describe("findLiveProxy", () => {
 });
 
 // ── findLiveProxy single-deadline candidate gating ───────────────────────────
-// The absolute deadlineMs must gate EVERY internal candidate probe, not just
-// the first. Before each proxyIdentityAt the budget is recomputed against the
-// injected nowFn: a non-positive remaining terminates discovery (returns null)
-// so no later candidate fetch starts, and each probe's timeoutMs is capped to
-// min(existing per-probe cap, positive remaining). Existing no-deadline callers
-// keep their current semantics (no deadlineMs → unbounded per-probe default).
+// The absolute deadlineAt must gate EVERY internal candidate probe, not just
+// the first. proxyIdentityAt recomputes the remaining budget against the
+// injected nowFn before each attempt: a non-positive remaining aborts without
+// fetching, and each probe's timeoutMs is capped to min(existing per-probe cap,
+// positive remaining). Existing no-deadline callers keep their current
+// semantics (no deadlineAt → unbounded per-probe default).
 describe("findLiveProxy single-deadline candidate gating", () => {
   test("deadline already expired before the first probe → no fetch, returns null", async () => {
     let fetchCalls = 0;
     const live = await findLiveProxy({
-      deadlineMs: 1000,
+      deadlineAt: 1000,
       nowFn: () => 2000, // already past the deadline before any probe
       readPidFn: () => 4242,
       readRuntimeFn: pid => (pid === 4242 ? { port: 58195 } : null),
@@ -296,7 +296,7 @@ describe("findLiveProxy single-deadline candidate gating", () => {
     let clock = 1000;
     const urls: string[] = [];
     const live = await findLiveProxy({
-      deadlineMs: 2000,
+      deadlineAt: 2000,
       nowFn: () => clock,
       // Two sequential candidates wired: pid path → port 58195; config fallback → 10100.
       readPidFn: () => 4242,
@@ -311,7 +311,7 @@ describe("findLiveProxy single-deadline candidate gating", () => {
         expect(sig?.aborted).toBe(false);
         // Advance the clock PAST the deadline inside the first fetch so the
         // next candidate's budget check terminates discovery.
-        clock = 3000; // > deadlineMs (2000)
+        clock = 3000; // > deadlineAt (2000)
         // Foreign body → identity null → would normally fall through to config.
         return healthz({ status: "ok" });
       }) as typeof fetch,
@@ -328,13 +328,14 @@ describe("findLiveProxy single-deadline candidate gating", () => {
     const calls: number[] = [];
     const originalTimeout = AbortSignal.timeout;
     AbortSignal.timeout = ((ms: number) => {
-      calls.push(ms);
-      return originalTimeout(ms);
+      const signal = originalTimeout(ms);
+      calls.push(ms); // record only after the signal was actually constructed
+      return signal;
     }) as typeof AbortSignal.timeout;
     try {
       let clock = 1000;
       await findLiveProxy({
-        deadlineMs: 1300, // remaining = 300 at the first probe (< 750 cap)
+        deadlineAt: 1300, // remaining = 300 at the first probe (< 750 cap)
         nowFn: () => clock,
         readPidFn: () => 4242,
         readRuntimeFn: () => ({ port: 58195 }),
@@ -355,13 +356,14 @@ describe("findLiveProxy single-deadline candidate gating", () => {
     const calls: number[] = [];
     const originalTimeout = AbortSignal.timeout;
     AbortSignal.timeout = ((ms: number) => {
-      calls.push(ms);
-      return originalTimeout(ms);
+      const signal = originalTimeout(ms);
+      calls.push(ms); // record only after the signal was actually constructed
+      return signal;
     }) as typeof AbortSignal.timeout;
     try {
       let clock = 1000;
       await findLiveProxy({
-        deadlineMs: 100000, // remaining ≈ 99000 ≫ 750 cap
+        deadlineAt: 100000, // remaining ≈ 99000 ≫ 750 cap
         timeoutMs: 750, // explicit per-probe cap, mirroring the production wiring
         nowFn: () => clock,
         readPidFn: () => 4242,
@@ -379,12 +381,13 @@ describe("findLiveProxy single-deadline candidate gating", () => {
     expect(calls).toEqual([750]);
   });
 
-  test("no deadlineMs retains the existing multi-candidate fallback behavior (two fetches)", async () => {
-    // Without deadlineMs the pid path failing falls through to config, which
-    // succeeds — proving the deadline gate is inert when deadlineMs is unset.
+  test("no deadlineAt retains the existing multi-candidate fallback behavior (two fetches)", async () => {
+    // Without deadlineAt the pid path failing falls through to config, which
+    // succeeds — proving the deadline gate is inert when deadlineAt is unset.
     const urls: string[] = [];
     const live = await findLiveProxy({
       readPidFn: () => 4242,
+      verifyPidFn: candidate => candidate,
       readRuntimeFn: pid => (pid === 4242 ? { port: 58195 } : null),
       configFn: () => ({ port: 10100 }),
       fetchFn: (async (url: string | URL | Request) => {
@@ -396,7 +399,7 @@ describe("findLiveProxy single-deadline candidate gating", () => {
     });
     expect(urls).toEqual(["http://127.0.0.1:58195/healthz", "http://127.0.0.1:10100/healthz"]);
     expect(urls).toHaveLength(2);
-    expect(live).toEqual({ pid: 4242, port: 10100, hostname: undefined });
+    expect(live).toEqual({ pid: 4242, port: 10100, hostname: undefined, source: "config" });
   });
 });
 

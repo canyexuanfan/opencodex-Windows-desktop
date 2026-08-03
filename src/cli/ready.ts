@@ -182,9 +182,10 @@ export async function runReady(args: ReadyArgs, io: ReadyIo = {}): Promise<numbe
     // In the --wait path, forward an ABSOLUTE deadline derived from the real
     // wall clock (Date.now, NOT the injected logical now) plus the remaining
     // budget: the per-probe AbortSignal timeout is real wall-clock time, so the
-    // injected test clock must not govern the network deadline. findLiveProxy
-    // recomputes remaining before each candidate probe and bounds each fetch by
-    // it (plus the per-probe cap below). Non-wait path keeps the built-in default.
+    // injected test clock must not govern the network deadline. findLiveProxy's
+    // deadlineAt budget recomputes remaining before each candidate probe and
+    // bounds each fetch by it (plus the per-probe cap below). Non-wait path
+    // keeps the built-in default.
     const live = await findLiveProxy(
       remainingMs === undefined ? {} : { deadlineAt: Date.now() + remainingMs, timeoutMs: IO_TIMEOUT_CAP_MS },
     );
