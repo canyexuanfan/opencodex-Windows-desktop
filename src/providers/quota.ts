@@ -1102,10 +1102,10 @@ async function maybeFetchProviderQuota(
 }
 
 export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh = false): Promise<ProviderQuotaResponse> {
-  // A forced Pool refresh must share one account-list probe between the pre-signature and
-  // provider fetch. The commit-time signature still re-reads current state to reject races.
-  const prefetchedCodexSnapshot = forceRefresh && hasCodexPoolProvider(config)
-    ? listCodexAuthAccountsSnapshot(config, true)
+  // A Pool report's cache signature and provider fetch must share one account snapshot.
+  // Preserve force semantics when deciding whether that snapshot refreshes upstream data.
+  const prefetchedCodexSnapshot = hasCodexPoolProvider(config)
+    ? listCodexAuthAccountsSnapshot(config, forceRefresh)
     : undefined;
   const keyCandidate = cacheKeyWithAggregationState(config, prefetchedCodexSnapshot);
   const key = typeof keyCandidate === "string" ? keyCandidate : await keyCandidate;

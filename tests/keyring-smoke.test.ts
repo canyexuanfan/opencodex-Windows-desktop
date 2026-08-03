@@ -58,15 +58,17 @@ describe("runKeyringSmoke", () => {
   test("zeros the buffer returned by the keyring", async () => {
     const entry = new MemoryKeyringEntry();
     const readback = Buffer.alloc(32, 0x5a);
+    const generated = Buffer.alloc(32, 0x5a);
     entry.getSecret = async () => readback;
 
     await runKeyringSmoke({
       createEntry: async () => entry,
-      createRandomBytes: (size) => Buffer.alloc(size, 0x5a),
+      createRandomBytes: () => generated,
       createId: () => "test-id",
     });
 
     expect(readback.equals(Buffer.alloc(32))).toBe(true);
+    expect(generated.equals(Buffer.alloc(32))).toBe(true);
   });
 
   test("preserves a readback error when deletion returns false", async () => {
@@ -88,7 +90,8 @@ describe("runKeyringSmoke", () => {
     expect((error as Error).message).toContain("readback did not match");
     expect((error as Error & { cleanupError?: unknown }).cleanupError).toBeInstanceOf(Error);
     expect(Object.keys(error as Error)).toContain("cleanupError");
-    expect(Bun.inspect(error)).toContain("could not delete the temporary entry");
+    expect((error as Error & { cleanupError: Error }).cleanupError.message)
+      .toContain("could not delete the temporary entry");
     expect(entry.deletes).toBe(1);
     expect(generated.equals(Buffer.alloc(32))).toBe(true);
   });

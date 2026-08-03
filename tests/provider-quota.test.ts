@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as authApi from "../src/codex/auth-api";
 import { clearAccountNeedsReauth, markAccountNeedsReauth } from "../src/codex/account-runtime-state";
 import { clearMainAccountInfoCache } from "../src/codex/main-account-cache";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
@@ -542,6 +543,35 @@ describe("fetchProviderQuotaReports", () => {
     await fetchProviderQuotaReports(config, true);
 
     expect(calls).toEqual(new Map([["chatgpt-main-account", 1], ["added-chatgpt-id", 1]]));
+  });
+
+  test("one non-forced Pool refresh shares its probe snapshot before the commit recheck", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const accountId = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"];
+      return new Response(JSON.stringify({
+        plan_type: accountId === "added-chatgpt-id" ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: 25, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const snapshotSpy = spyOn(authApi, "listCodexAuthAccountsSnapshot");
+    try {
+      await fetchProviderQuotaReports(config);
+
+      // The cache-key and provider phases share call 1; call 2 is the intentional
+      // post-probe commit-key recheck. Before the fix there were 3 calls.
+      expect(snapshotSpy).toHaveBeenCalledTimes(2);
+      expect(snapshotSpy.mock.calls.map(call => call[1] ?? false)).toEqual([false, false]);
+    } finally {
+      snapshotSpy.mockRestore();
+    }
   });
 
   test("all-excluded pool still returns a coverage-only OpenAI report", async () => {
