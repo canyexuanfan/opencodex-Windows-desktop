@@ -1,21 +1,29 @@
 # WP3 — the routes the cards call
 
-> **Rev 5** after audit round 4 and the re-scope (`007`). The unit is now Claude
+> **Rev 6** after audit round 5 (`008_audit_synthesis_r5.md`). The unit is Claude
 > Code and Grok only, and neither writes a journal row or a snapshot — so the
 > journal route, the restore route, the `partial` response and every
-> snapshot-shaped field are GONE. What survives is the status read, the two
-> PUTs, the refusal envelopes and the coordinator. This is WP3.
+> snapshot-shaped field are gone. Rev 6 also drops the shared **coordinator**:
+> with no shared bookkeeping left it protected nothing, and replacing the file
+> clients' flight map would have changed their join semantics. What survives is
+> the status read, the refusal envelopes and a per-client guard. This is WP3.
 
 ## IN
 
-1. `src/server/management/native-integration-routes.ts` — NEW.
-2. `src/server/management-api.ts` — MODIFY: mount it.
-3. `tests/native-integration-routes.test.ts` — NEW.
-4. `src/integrations/mutation-lock.ts` — NEW: the coordinator.
-5. `src/server/management/integration-routes.ts` — MODIFY: its existing
-   per-client flight map is replaced by the coordinator, preserving the same
-   busy-409 behavior.
-6. `tests/integration-mutation-lock.test.ts` — NEW.
+1. `src/server/management/native-integration-routes.ts` — MODIFY: the module
+   WP1 creates. This phase adds `GET /api/native-integrations` and the shared
+   refusal envelopes; the two PUTs belong to WP1 and WP2.
+2. `tests/native-integration-routes.test.ts` — NEW: the `GET` contract and every
+   refusal row.
+
+OUT: `src/server/management/integration-routes.ts` and
+`src/integrations/**` — the file clients' routes and flight map are NOT touched
+by this unit (audit r5 #2). `src/integrations/mutation-lock.ts` moves to the
+sibling unit with the coordinator.
+
+**Route-module ownership, stated once:** WP1 CREATES
+`native-integration-routes.ts` with Claude Code's PUT. WP2 and WP3 MODIFY it.
+Three docs previously each claimed to create it (audit r5 #4).
 
 OUT: `/api/client-integrations/*` — the six file clients keep their routes
 unchanged. `/api/claude-code` and `/api/claude-desktop/*` stay for the pages that
@@ -56,24 +64,21 @@ interface NativeStatus {
 }
 ```
 
-`GET` composes the four reads the overview already makes separately today
-(`/api/startup-health`, `/api/claude-code`, `/api/claude-desktop/status`,
-`/api/grok`) into one payload shaped like the file clients':
+`GET` composes the two reads the overview already makes for these clients
+(`/api/claude-code`, `/api/grok`) into one payload shaped like the file
+clients'. The GUI keeps its per-client reads for the DETAIL lines it already
+renders — auth mode, model count — and uses this one for the switch state, so
+WP4 does not have to rewrite the row model already shipped.
 
-```ts
-interface NativeStatus {
-  clientId: NativeIntegrationClientId;
-  state: "absent" | "current" | "stale" | "unsafe";
-  installed: boolean;
-  configPath: string;
-  appliedAt?: string;
-  snapshotCount: number;
-}
-```
+Field meanings, which differ per client and must not be guessed:
 
-The GUI keeps its five separate reads for the DETAIL lines it already renders
-(auth mode, model count) and uses this one for the switch state, so WP4 is not
-forced to rewrite the row model shipped this morning.
+| Field | Claude Code | Grok |
+|---|---|---|
+| `installed` | always true — the surface exists wherever the proxy does | `GROK_HOME` exists |
+| `state` | `current` when the flag is on, `absent` when off | `current` when our fence is present, `absent` when not, `unsafe` on an orphaned marker |
+| `configPath` | opencodex's own `config.json` | the resolved `~/.grok/config.toml` |
+| `disableBlocked` | always null — nothing can refuse this disable | set for `home_mismatch` or `orphaned_marker` |
+
 
 ## Refusal envelopes
 
@@ -98,101 +103,49 @@ neither client has a half-applied state to report. The `partial` outcome earlier
 revisions carried belongs to the sibling unit, where Codex and Desktop can
 genuinely produce one.
 
-## Concurrency: one coordinator, not two flight maps
+## Concurrency: a per-client guard, not a coordinator
 
-Rev 1 said "different clients may proceed concurrently: they write different
-files". That is false for the shared bookkeeping (audit #6). `journal.jsonl`,
-`maintenance.json` and opencodex's own `config.json` are read-modify-written by
-BOTH the existing file-client routes and these new ones — and the GUI already
-serializes its bulk disable for exactly this reason
-(`IntegrationsOverview.tsx:238-267`, which documents a lost ownership record).
+Earlier revisions introduced one resource-keyed coordinator shared with the file
+clients, to protect journal bookkeeping both route families touched. **After the
+re-scope there is no shared bookkeeping left**: neither native toggle writes a
+journal row or an ownership record. The coordinator moves to
+`../260803_codex_desktop_toggle/`, which has real cross-client state to
+coordinate.
 
-Adding a second independent per-client map would leave the two route families
-unaware of each other, which is worse than today.
+Round 5 also found the claim that replacing `integration-routes.ts`'s flight map
+would "preserve the same busy-409 behavior" to be false. That map JOINS an
+identical in-flight operation rather than refusing it, and expires stale flights
+after ten minutes (`integration-routes.ts:146`). A plain mutex refuses the second
+caller — a behavior change I asserted away instead of declaring. Rewriting a
+contract the file clients already implement correctly, for no remaining benefit,
+is risk without payoff. **The file-client routes are not touched by this unit.**
 
-So: one coordinator in `src/integrations/mutation-lock.ts`, used by
-`integration-routes.ts` AND the native routes, keyed by resource rather than by
-client.
+What is left is small and per-client:
 
-### The API makes ordering unbypassable
-
-```ts
-export type LockKey =
-  | `client:${string}`
-  | "store:journal"
-  | "store:records"
-  | "config:ocx";
-
-/**
- * The ONLY way to take locks. Callers pass an unordered set; this sorts it.
- *
- * A "fixed order" that callers are trusted to follow is a convention, and the
- * next caller breaks it. Sorting inside the primitive makes a hold-and-wait
- * cycle unconstructible: every holder acquires in the same total order, so
- * there is no pair that can each hold what the other wants.
- */
-export async function withLocks<T>(keys: readonly LockKey[], fn: () => Promise<T>): Promise<T>;
-```
-
-Canonical total order: resource class first — `store:journal` < `store:records`
-< `config:ocx` < `client:*` — then lexical within `client:*`. There is no
-single-key `acquire`, so no caller can take one lock and then discover it needs
-another.
-
-### What each operation holds
-
-| Operation | Keys |
+| Operation | Guard |
 |---|---|
-| File client apply/disable/restore | `store:journal`, `store:records`, `client:<id>` |
-| Grok toggle | `client:grok` |
-| Claude Code toggle | `config:ocx`, `client:claude` |
+| Grok toggle | a single-flight promise keyed `grok`; a second concurrent PUT gets 409 busy |
+| Claude Code toggle | the existing config mutation lock inside `saveConfigPreservingClaudeCode` |
 
-Neither native toggle takes `store:journal` any more — they write no rows. Grok
-keeps `client:grok` so two disables cannot race the same file; Claude Code takes
-`config:ocx` so it serializes against other integration-owned config writes.
+Claude Code needs no route-level guard: two concurrent flips of one boolean are
+serialized by `withConfigMutationLockSync` and the last writer wins, which is
+the correct answer for a switch. Grok needs one because two overlapping strips
+of the same file would race on bytes.
 
-### Duplicates and reentrancy
-
-`withLocks` sorts AND deduplicates (audit r3 #8) — sorting alone does not stop a
-caller passing the same key twice and self-deadlocking on a non-reentrant mutex.
-Nested `withLocks` calls with overlapping sets throw deterministically rather
-than hanging; every operation above is flat, so no legitimate caller nests.
-
-Two different file clients still write their own files in parallel and serialize
-only where they share state. A Desktop disable and a Claude Code disable
-serialize on `config:ocx`. Each lock is held until bookkeeping completes, not
-just until the file write returns.
-
-### Scope of the `config:ocx` claim
-
-Rev 2 said `config:ocx` is held by "any route saving config". That was not true
-and not achievable in this unit: `agent-settings-routes.ts` alone calls
-`saveConfigPreservingClaudeCode` at roughly nine sites (149, 247, 456, 491, 593,
-635, 692, 737, 758), none of which this unit touches.
-
-Narrowed honestly: **`config:ocx` serializes integration-owned config writes** —
-the native toggles and nothing else. Racing an unrelated settings save remains
-possible and is pre-existing behavior this unit neither creates nor fixes.
-Migrating the other writers is recorded as follow-up in `000` rather than
-claimed here.
-
-The file-client route's existing behavior is preserved: it keeps its per-client
-busy 409, now expressed through the coordinator.
 ## Acceptance
 
 - [ ] `PUT` both directions for each of the two returns its outcome status.
 - [ ] Each refusal row above returns its exact status, `code` and `reason`.
+- [ ] Enabling Grok under a non-loopback bind returns 200 with
+      `non_loopback_removed`, not a refusal (audit r5 #1).
 - [ ] No route in this module appends a journal row or writes a snapshot.
-- [ ] `GET` carries `disableBlocked` when a disable would be refused, so the GUI
-      never opens a dialog for an action that cannot succeed (audit r4 #8).
-- [ ] Concurrent PUTs to the SAME client: the second gets 409 busy.
-- [ ] A Claude Code PUT and a file-client PUT running together do not lose each
-      other's config write.
-- [ ] `withLocks` sorts its input: a test passes the same keys in two different
-      orders and asserts identical acquisition sequences.
-- [ ] `withLocks` deduplicates: a duplicate key does not self-deadlock.
-- [ ] A nested overlapping acquisition throws rather than hanging.
-- [ ] There is no exported single-key acquire.
-- [ ] `home_mismatch` is produced by a real foreign-home install-state fixture.
+- [ ] `GET` carries `disableBlocked` from the read-only inspector, and the doc
+      says plainly that it is advisory — PUT re-checks and its refusal wins.
+- [ ] `GET` field meanings match the per-client table: Claude Code is always
+      `installed`, Grok's `unsafe` means an orphaned marker.
+- [ ] Concurrent PUTs to the SAME client: Grok's second gets 409 busy.
+- [ ] `src/server/management/integration-routes.ts` is unchanged by this unit —
+      asserted by the diff, since round 5 found the "preserves behavior" claim
+      about replacing its flight map to be false.
 - [ ] `GET` reports `installed: false` for an absent client rather than erroring.
 - [ ] `bun run privacy:scan` clean — no config content or key in any response.

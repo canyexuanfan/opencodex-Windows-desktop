@@ -1,4 +1,4 @@
-# WP4 — the dialog, and four more switches
+# WP4 — one dialog, two more switches
 
 > **Rev 4** after audit round 4 and the re-scope (`007`). Two switches, not
 > four: Codex and Desktop moved to the sibling unit and render exactly as they
@@ -31,7 +31,7 @@ Direction and copy: `002_consequence_dialog_ux.md`. This doc is the wiring.
 1. `gui/src/pages/integrations/ConsequenceDialog.tsx` — NEW.
 2. `gui/src/pages/integrations/native-api.ts` — NEW: client for `030`.
 3. `gui/src/pages/integrations/IntegrationsOverview.tsx` — MODIFY: switches for
-   the four, dialog gating for three.
+   Claude Code and Grok; dialog gating for Grok only.
 4. `gui/src/pages/integrations/overview-clients.ts` — MODIFY: `toggle` is no
    longer file-clients-only.
 5. `gui/src/i18n/*.ts` — six locales.
@@ -86,20 +86,20 @@ export interface ConsequenceCopy {
 ```
 
 Four slots in fixed order (`002` §Structure). `sideEffectKey` is optional and
-its paragraph is omitted entirely when absent — an always-present empty row
-teaches the eye to skip that position, which is where the Codex restart warning
-lives.
+its paragraph is omitted entirely when absent. Grok has no side effect, so its
+dialog renders four slots and no fifth; the slot exists because the sibling
+unit's Codex dialog needs it for the restart warning.
 
 The path is interpolated from the live status payload, never hardcoded: a user
-with `CODEX_HOME` or `GROK_HOME` set must see THEIR path or the dialog is
-lying.
+with `GROK_HOME` set must see THEIR path or the dialog is lying.
 
 ## Card wiring
 
 `OverviewRow.toggle` widens from `FileIntegrationClientId | null` to
 `OverviewClientId | null`. `OverviewCard` already renders a switch whenever
 `toggle` and `onToggle` are set, so the card component needs no structural
-change — only the row builders stop returning `null` for the four.
+change — only the row builders stop returning `null` for Claude Code and Grok.
+Codex and Claude Desktop keep `toggle: null` and render as they do today.
 
 Gating lives in the overview, not the card:
 
@@ -108,7 +108,7 @@ const requestToggle = (row: OverviewRow, next: boolean) => {
   // Claude Code flips one boolean in our own config and moves nothing on disk,
   // so a confirmation there is friction with no payload (UX-LAZY-01, 002 §gate).
   if (next || row.id === "claude" || row.toggle === null) return void commit(row, next);
-  setPendingToggle(row);   // Codex, Desktop, Grok: confirm first
+  setPendingToggle(row);   // Grok: confirm first
 };
 ```
 
@@ -138,15 +138,17 @@ two clients that can.
 A dialog is a render artifact, so C runs the render-grounding loop
 (C-RENDER-GROUNDING-01), not just a mounted-component assertion:
 
-1. Open each of the three dialogs in the real browser.
-2. Screenshot, and READ the screenshot back.
-3. Assert the rendered Korean text names the real path from the live payload.
-4. Drive one full disable→enable round trip per client and confirm the card
+1. Open Grok's dialog in the real browser.
+2. Screenshot, and READ the screenshot back — a captured-but-unread screenshot
+   is not observation.
+3. Assert the rendered Korean text names the real path from the live payload and
+   says re-enabling regenerates the fence.
+4. Drive a full disable→enable round trip for BOTH clients and confirm the card
    state and the server state agree afterwards.
 
 ## Acceptance
 
-- [ ] All four switches toggle both directions from the overview.
+- [ ] Claude Code and Grok both toggle both directions from the overview.
 - [ ] Grok's toggle-off opens a dialog; Claude Code's does not.
 - [ ] Codex and Desktop render NO switch — badge and settings link only.
 - [ ] Enabling never opens a dialog.

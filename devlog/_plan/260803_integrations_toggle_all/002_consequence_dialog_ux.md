@@ -58,18 +58,21 @@ decision point this gate exists to delete:
 
 1. **Do nothing** — can a default remove the decision? No. The user is asking to
    change state on their own machine; there is no default that does it for them.
-2. **Delete** — does it earn its cost? For three of the four, yes: they mutate
-   files outside opencodex that other programs read. For **Claude Code, no** —
-   it flips one boolean in our own config, breaks nothing on disk, and is undone
-   by flipping it back. A confirmation there is pure friction.
-3. **Absorb** — can the system take the complexity? Partly: the snapshot IS the
-   absorption. It is what lets the dialog say "undoable" instead of "careful".
+2. **Delete** — does it earn its cost? For **Grok, yes**: it edits a file
+   another program reads. For **Claude Code, no** — it flips one boolean in our
+   own config, breaks nothing on disk, and is undone by flipping it back. A
+   confirmation there is pure friction.
+3. **Absorb** — can the system take the complexity? Yes, and this is what
+   changed after five audits: Grok's undo is the enable path regenerating the
+   fence, so the dialog can say what re-enabling does instead of warning the
+   user to be careful.
 4. **Demote** — the path and the technical detail are the second line, not the
    headline.
 
-**Decision: three dialogs, not four.** Claude Code toggles immediately. This is
-a deliberate asymmetry and the reason is on-disk blast radius, not caution
-level.
+**Decision: one dialog, not two.** Claude Code toggles immediately. The
+asymmetry is deliberate and the reason is on-disk blast radius, not caution
+level. (The sibling unit's Codex and Desktop dialogs follow the same rule and
+both earn one.)
 
 ## Structure
 
@@ -86,6 +89,79 @@ Confirm button names the action ("해제", "복원") — never "확인". A user 
 skims the buttons should still know what they pressed.
 
 ## The copy (Korean source; other five locales translate from this)
+
+### Grok Build
+
+> **Grok Build 연동을 해제할까요?**
+>
+> `~/.grok/config.toml`에서 opencodex가 표시해 둔 블록만 제거합니다. 블록
+> 바깥에 직접 쓴 내용은 그대로 둡니다.
+>
+> 해제하면 Grok Build에서 opencodex 모델 별칭이 사라집니다. xAI 계정으로 쓰던
+> 모델은 그대로입니다.
+>
+> 다시 켜면 지금 쓸 수 있는 모델 목록으로 블록을 새로 씁니다.
+
+No side-effect line: nothing else depends on the fence.
+
+The undo sentence describes what the writer does. Earlier revisions promised a
+file restored from a snapshot; `012` established that Grok's undo is the enable
+path, which regenerates the block from the current catalog — a better outcome
+than replaying an hour-old snapshot, but a different promise, and the copy has
+to make the one that is true.
+
+### Claude Code — no dialog
+
+Toggles immediately, per the lazy-user gate. If a user turns it off by accident
+they turn it back on; nothing on disk moved.
+
+## Refusals are not dialogs
+
+A refusal arrives AFTER the user already confirmed, so it belongs in the card's
+notice area, next to the switch that failed — not in a second modal. This unit
+produces three, each stating the state and the one thing that would change it:
+
+- **Grok `orphaned-marker`** — "`~/.grok/config.toml`에 opencodex 시작 표시는
+  있는데 끝 표시가 없습니다. 어디까지가 우리 블록인지 확신할 수 없어 파일을
+  건드리지 않았습니다." No "try again": retrying is exactly what will not help.
+- **Home mismatch** — names both recorded and current homes. Do NOT say "stop
+  the service": the trigger is a home mismatch, not a running service (`001`
+  §The guard I described wrong).
+- **`not_installed`** — Grok is not installed; the card reads not-installed and
+  the switch does not offer an action there is nothing to perform.
+
+Two more belong to the sibling unit and are specified in the appendix:
+`no_safe_desktop_fallback`, `unowned_profile`, and Codex's foreign-provider
+refusal. There is no `partial` here — neither of this unit's clients can
+half-apply.
+
+One outcome is NOT a refusal and must not be styled as one:
+**`non_loopback_removed`**. Enabling Grok under a non-loopback bind removes any
+stale generated block and reports success with `changed: true`
+(`012` §non-loopback is not a refusal). The copy says what happened —
+"loopback 주소를 가리키던 이전 블록을 제거했습니다" — rather than implying the
+request was declined.
+
+## Verification
+
+A dialog is a render artifact, so C runs the render-grounding loop
+(C-RENDER-GROUNDING-01): open Grok's dialog in the real browser, screenshot,
+read the screenshot back, and assert the rendered text — not just that a modal
+with the right test id mounted.
+
+
+---
+
+## Appendix — Codex and Claude Desktop copy (NOT this unit)
+
+These two clients moved to `../260803_codex_desktop_toggle/` (`007`). The copy
+below is their design of record and is **not implemented here** — WP4 ships one
+dialog, Grok's. It lives in this file because the direction, the four-slot
+structure and the refusal vocabulary are shared, and splitting the copy from the
+design that produced it is how the two drift apart.
+
+Audit round 5 flagged the previous arrangement: these sections read as
+executable contracts for this unit. The heading above is the fix.
 
 ### Codex
 
@@ -145,60 +221,3 @@ preflight, before the user is asked to confirm anything.
 The last paragraph is the honest cost of a gap in the original design: apply
 overwrote `appliedId` without recording what was there. We say so rather than
 silently picking one and letting the user discover it.
-
-### Grok Build
-
-> **Grok Build 연동을 해제할까요?**
->
-> `~/.grok/config.toml`에서 opencodex가 표시해 둔 블록만 제거합니다. 블록
-> 바깥에 직접 쓴 내용은 그대로 둡니다.
->
-> 해제하면 Grok Build에서 opencodex 모델 별칭이 사라집니다. xAI 계정으로 쓰던
-> 모델은 그대로입니다.
->
-> 다시 켜면 지금 쓸 수 있는 모델 목록으로 블록을 새로 씁니다.
-
-No side-effect line: nothing else depends on the fence.
-
-The undo sentence describes what the writer does. Earlier revisions promised a
-file restored from a snapshot; `012` established that Grok's undo is the enable
-path, which regenerates the block from the current catalog — a better outcome
-than replaying an hour-old snapshot, but a different promise, and the copy has
-to make the one that is true.
-
-### Claude Code — no dialog
-
-Toggles immediately, per the lazy-user gate. If a user turns it off by accident
-they turn it back on; nothing on disk moved.
-
-## Refusals are not dialogs
-
-A refusal arrives AFTER the user already confirmed, so it belongs in the card's
-notice area, next to the switch that failed — not in a second modal. Three
-specific ones, each stating the state and the one thing that would change it:
-
-- **Grok `orphaned-marker`** — "`~/.grok/config.toml`에 opencodex 시작 표시는
-  있는데 끝 표시가 없습니다. 어디까지가 우리 블록인지 확신할 수 없어 파일을
-  건드리지 않았습니다." No "try again": retrying is exactly what will not help.
-- **Home mismatch** — names both recorded and current homes. Do NOT say "stop
-  the service": the trigger is a home mismatch, not a running service (`001`
-  §The guard I described wrong).
-- **`no_safe_desktop_fallback`** — "opencodex 프로필이 Claude Desktop의 유일한
-  프로필입니다. 이것만 지우면 Desktop이 쓸 프로필이 없어져, 아무것도 바꾸지
-  않았습니다. Desktop에서 다른 프로필을 만든 뒤 다시 시도해 주세요."
-- **`unowned_profile`** — "opencodex라는 이름의 Desktop 프로필이 있지만 이
-  설치가 만든 것이라고 확인할 수 없어 건드리지 않았습니다."
-- **`partial`** — the one case that is not a refusal: some state changed and
-  could not be put back. It names every residual item and points at the Rollback
-  Centre entry, because a half-changed state with no handle is the worst outcome
-  this unit can produce. For Codex the residual is usually the history tag, with
-  the file state already correct.
-- **Codex owned by another provider** — "Codex가 opencodex가 아닌 다른 제공자로
-  설정돼 있습니다. 그쪽 설정은 건드리지 않았습니다."
-
-## Verification
-
-A dialog is a render artifact, so C runs the render-grounding loop
-(C-RENDER-GROUNDING-01): open each of the three in the real browser, screenshot,
-read the screenshot back, and assert the rendered text — not just that a modal
-with the right test id mounted.

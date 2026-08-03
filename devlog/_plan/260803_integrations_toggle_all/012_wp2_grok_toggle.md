@@ -31,7 +31,39 @@ So this phase carries no journal row and no snapshot either.
    WP1): add `PUT /api/native-integrations/grok` and Grok's `GET` row.
 2. `src/integrations/native/ownership-preflight.ts` — NEW: the service-home
    check that makes `home_mismatch` reachable (audit r1 #5).
-3. `tests/native-grok-toggle.test.ts` — NEW.
+3. `src/grok/inspect.ts` — NEW: the non-mutating inspector (below).
+4. `tests/native-grok-toggle.test.ts` — NEW.
+
+## A read-only inspector, because GET must not mutate
+
+`030`'s `disableBlocked` needs to know whether a disable would hit
+`orphaned_marker` — but the only code that can answer that today is
+`stripGrokConfig`, which writes, and its boundary parser `findManagedRegion` is
+private (`src/grok/inject.ts:49`). An implementer would have had to invent the
+contract (audit r5 #3).
+
+```ts
+// src/grok/inspect.ts — NEW
+
+export type GrokInspection =
+  | { kind: "absent" }            // no fence, or no config file
+  | { kind: "present" }           // a well-formed fence we own
+  | { kind: "not_installed" }     // no GROK_HOME
+  | { kind: "orphaned_marker" };  // begin without end — a disable would refuse
+
+/** Reads. Never writes. Shares `findManagedRegion` with the writer so the two
+ *  can never disagree about where our block starts and stops. */
+export function inspectGrokConfig(opts?: { grokHome?: string }): GrokInspection;
+```
+
+`findManagedRegion` becomes module-internal-shared rather than duplicated: two
+parsers for one fence is how a strip eventually removes the wrong bytes.
+
+**GET is advisory.** The reviewer is right that a file can change between the
+GET and the PUT, so `disableBlocked` cannot promise the PUT will succeed. PUT
+re-runs every preflight while holding `client:grok`, and its refusal is
+authoritative. `disableBlocked` exists to avoid offering an action we already
+know is blocked — not to replace the check.
 
 OUT: `src/integrations/journal.ts`, `store.ts`, `ownership.ts`, `registry.ts` —
 all untouched. No id widening, which also retires audit r4 #7 entirely: there is
@@ -59,18 +91,45 @@ running from another `CODEX_HOME`/`OPENCODEX_HOME`. The refusal names both
 homes and does NOT tell the user to stop a service — the trigger is a home
 mismatch, not a running service (`001` §The guard I described wrong).
 
-Every `skippedReason` maps to its own refusal (`001` §Grok):
+Every `skippedReason` maps to its own outcome (`001` §Grok):
 
-| `skippedReason` | `ok` | Refusal |
-|---|---|---|
-| `no-grok-home` | true | `not_installed` |
-| `orphaned-marker` | **false** | `orphaned_marker` |
-| `non-loopback` | true | `non_loopback` |
-| none, `ok:false` | false | `write_failed` |
+| `skippedReason` | `ok` | Outcome | Changed the file? |
+|---|---|---|---|
+| `no-grok-home` | true | refusal `not_installed` | no |
+| `orphaned-marker` | **false** | refusal `orphaned_marker` | no |
+| `non-loopback` | true | **`non_loopback_removed` — an OUTCOME, not a refusal** | **possibly yes** |
+| none, `ok:false` | false | refusal `write_failed` | no |
 
 `orphaned_marker` must never become `write_failed`. Nothing failed: a begin
 marker without an end marker means we cannot tell where our block stops, so we
 decline to guess. Telling the user to retry would be advice that cannot work.
+
+### `non-loopback` is not a refusal (audit r5 #1)
+
+I had this wrong and the reviewer caught it against the source. Enabling under a
+non-loopback bind does NOT decline and leave the file alone. `injectGrokConfig`
+calls `stripGrokConfig` first, removes any previously generated block, and only
+then returns `ok: true, changed: true, skippedReason: "non-loopback"`
+(`src/grok/inject.ts:352-362`).
+
+The strip is correct and the comment above it explains why: a regenerated block
+cannot carry the admission token a non-loopback bind needs without either
+writing the user's secret into their own file or opening grok's credential
+fallthrough, so a stale loopback block must go. But it means the operation
+CHANGED the user's file, and reporting a 409 refusal — which `030` defines as
+"nothing happened" — would be exactly the lie this unit exists to avoid.
+
+So it is a 200 outcome:
+
+```json
+{ "ok": true, "clientId": "grok", "changed": true, "state": "absent",
+  "reason": "non_loopback_removed",
+  "message": "opencodex is bound to a non-loopback address, so Grok cannot be auto-registered. The previously generated block was removed because it pointed at a loopback address that no longer serves." }
+```
+
+`changed` reflects what `stripGrokConfig` actually reported: `true` when a stale
+block was removed, `false` when there was nothing to remove. The card lands on
+`absent` either way, which is the truth — Grok is not wired up.
 
 ## What the dialog must therefore say
 
@@ -89,6 +148,11 @@ be a promise the writer does not make.
       non-fenced content each time.
 - [ ] `orphaned-marker` refuses as `orphaned_marker` and writes nothing.
 - [ ] `no-grok-home` refuses `not_installed`; the card reads not-installed.
+- [ ] Enabling under a non-loopback bind WITH an existing fence returns 200
+      `non_loopback_removed` with `changed: true`, and the fence is gone. It must
+      NOT return a refusal claiming nothing changed (audit r5 #1).
+- [ ] Enabling under a non-loopback bind with NO fence returns the same outcome
+      with `changed: false`.
 - [ ] A foreign-home install-state fixture makes disable refuse `home_mismatch`
       and write nothing — the branch is reachable, not declared (audit r1 #5).
 - [ ] Enabling is NOT gated by the ownership preflight.

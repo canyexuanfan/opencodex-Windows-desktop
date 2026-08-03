@@ -50,7 +50,7 @@ depend on both.
 |---|---|---|
 | WP1 | `011_wp1_claude_code_toggle.md` | The route module + Claude Code's toggle |
 | WP2 | `012_wp2_grok_toggle.md` | Grok's toggle + the ownership preflight |
-| WP3 | `030_management_routes.md` | `GET` status, the coordinator, refusal envelopes |
+| WP3 | `030_management_routes.md` | `GET` status, refusal envelopes, per-client guard |
 | WP4 | `040_dialog_and_cards.md` | Consequence dialog, six-locale copy, two switches |
 
 The GUI is last because its copy must name what the writers actually do. A
@@ -61,7 +61,7 @@ writer never performed.
 ## Scope boundary
 
 IN: `src/server/management/native-integration-routes.ts` (new),
-`src/server/management-api.ts`, `src/integrations/mutation-lock.ts` (new),
+`src/server/management-api.ts`, `src/grok/inspect.ts` (new),
 `src/integrations/native/ownership-preflight.ts` (new),
 `gui/src/pages/integrations/`, `gui/src/i18n/*.ts`,
 `gui/src/styles-integrations.css`, `tests/`, `gui/tests/`.
@@ -95,15 +95,16 @@ to the sibling unit. The release pipeline, `docs-site`, any push.
 | Grok disable strips something the user owns | Delegate to `stripGrokConfig`, which is fence-scoped and preserves outside bytes verbatim; never reimplement stripping (`012`) |
 | Shared teardown runs under a foreign-home service | Ownership preflight before Grok disable — the refusal names both homes and does NOT tell the user to stop a service (`012`) |
 | An ambiguous fence boundary gets guessed | `orphaned-marker` refuses and writes nothing; retrying cannot help, so the copy does not suggest it (`012`) |
-| Concurrent config writes lose each other | `config:ocx` serializes integration-owned writes (`030`); broader config concurrency is pre-existing and explicitly out of scope |
+| Concurrent config writes lose each other | Claude Code rides the existing `withConfigMutationLockSync`; Grok gets a per-client single-flight. Broader config concurrency is pre-existing and explicitly out of scope (`030`) |
 | The GUI promises an undo the writer does not make | Grok's dialog says re-enabling regenerates the fence from the current model list, not that it restores old bytes (`012`, `002`) |
 
 ## Recorded follow-up, not in scope
 
-- `config:ocx` serializes integration-owned config writes only. Roughly nine
-  other `saveConfigPreservingClaudeCode` callers in `agent-settings-routes.ts`
-  remain outside the coordinator; racing one of them is pre-existing behavior
-  this unit neither creates nor fixes.
+- Roughly nine other `saveConfigPreservingClaudeCode` callers in
+  `agent-settings-routes.ts` race each other today; this unit neither creates
+  nor fixes that. The shared coordinator that would have addressed it moved to
+  the sibling unit, which has cross-client bookkeeping that genuinely needs one
+  (audit r5 #2).
 - A field-scoped config writer would fix that AND the stale-subtree case audit
   r4 #3 found, where a caller's whole `claudeCode` subtree wins over a
   concurrent disk edit. It belongs to `../260803_codex_desktop_toggle/` WP1,
