@@ -3,6 +3,15 @@ import { basename } from "node:path";
 import { resolveTrustedWindowsPowerShellExe } from "../lib/windows-elevation";
 
 const PROCESS_LIST_MAX_BUFFER = 16 * 1024 * 1024;
+const DIRECT_CODEX_BASENAMES = new Set(["codex", "codex.exe"]);
+const CODEX_INTERPRETER_BASENAMES = new Set(["node", "nodejs", "bun"]);
+const CODEX_ENTRYPOINT_BASENAMES = new Set([
+  "codex",
+  "codex.js",
+  "codex.mjs",
+  "codex.cjs",
+  "codex.ts",
+]);
 
 export interface NativeProcessExecOptions {
   encoding: "utf8";
@@ -83,8 +92,14 @@ async function unixProcessCount(run: NativeProcessExecutor, pid: number): Promis
     const match = line.trim().match(/^(\d+)\s+(\S+)\s*(.*)$/);
     if (!match || Number(match[1]) === pid) continue;
     const command = basename(match[2]!).toLowerCase();
-    const firstArg = basename(match[3]!.trim().split(/\s+/, 1)[0] ?? "").toLowerCase();
-    if (command === "codex" || command === "codex.exe" || firstArg === "codex" || firstArg === "codex.exe") count += 1;
+    const [rawArgv0 = "", rawEntrypoint = ""] = match[3]!.trim().split(/\s+/, 2);
+    const argv0 = basename(rawArgv0).toLowerCase();
+    const entrypoint = basename(rawEntrypoint).toLowerCase();
+    const isDirectCodex = DIRECT_CODEX_BASENAMES.has(command)
+      || DIRECT_CODEX_BASENAMES.has(argv0);
+    const isInterpreterWrappedCodex = CODEX_INTERPRETER_BASENAMES.has(argv0)
+      && CODEX_ENTRYPOINT_BASENAMES.has(entrypoint);
+    if (isDirectCodex || isInterpreterWrappedCodex) count += 1;
   }
   return count;
 }

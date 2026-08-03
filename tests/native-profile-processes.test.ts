@@ -63,7 +63,7 @@ describe("native profile process probe", () => {
       calls.push([file, args, options]);
       return [
         "41 codex /usr/local/bin/codex",
-        "42 codex /usr/local/bin/codex",
+        "42 MainThread bun /opt/tools/codex/bin/codex.js",
         "43 bun /opt/tools/codex --serve",
       ].join("\n");
     };
@@ -80,6 +80,41 @@ describe("native profile process probe", () => {
     expect(calls[0]![2].maxBuffer).toBe(16 * 1024 * 1024);
     expect(calls[0]![2].shell).toBe(false);
     expect(calls[0]![2].killSignal).toBe("SIGKILL");
+  });
+
+  test("detects Codex as the immediate entrypoint of known Unix interpreters", async () => {
+    const execFile: NativeProcessExecutor = async () => [
+      "43 node /usr/bin/node /usr/lib/node_modules/@openai/codex/bin/codex.js",
+      "44 MainThread /home/user/.bun/bin/bun /opt/codex/bin/codex",
+      "45 nodejs /usr/bin/nodejs /opt/codex/bin/codex.mjs",
+      "46 bun /usr/bin/bun /opt/codex/bin/codex.cjs",
+      "47 bun /usr/bin/bun /opt/codex/bin/codex.ts",
+    ].join("\n");
+
+    await expect(probeNativeCodexProcesses({
+      platform: "linux",
+      execFile,
+      pid: 42,
+    })).resolves.toEqual({ status: "busy", count: 5 });
+  });
+
+  test("does not scan beyond an exact immediate Unix interpreter entrypoint", async () => {
+    const execFile: NativeProcessExecutor = async () => [
+      "51 node /usr/bin/node /srv/app.js --label codex",
+      "52 bun /usr/bin/bun /srv/app.ts /opt/codex.js",
+      "53 node /usr/bin/node /srv/codex-helper.js",
+      "54 bash /bin/bash /opt/codex",
+      "55 node /usr/bin/node --require /opt/codex.js",
+      "56 worker /srv/app /opt/codex",
+      "57 node /usr/bin/node /srv/codex.js.backup",
+      "58 codex-helper /usr/local/bin/codex-helper",
+    ].join("\n");
+
+    await expect(probeNativeCodexProcesses({
+      platform: "linux",
+      execFile,
+      pid: 42,
+    })).resolves.toEqual({ status: "clear", count: 0 });
   });
 
   test("does not starve an unrelated timer while a probe is pending", async () => {

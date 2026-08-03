@@ -47,6 +47,9 @@ let nativeMainSelections = 0;
 let legacyDrainLease: AdmissionLease | null = null;
 let recyclingForExit = false;
 let _serverRef: ReturnType<typeof Bun.serve> | undefined;
+let serverStopFlights = new WeakMap<ReturnType<typeof Bun.serve>, Promise<void>>();
+let serverStartupReleaseFlights = new WeakMap<ReturnType<typeof Bun.serve>, Promise<void>>();
+let releaseServerStartupLifecycleImpl: typeof releaseNativeMainStartupLifecycle = releaseNativeMainStartupLifecycle;
 
 export function setServerRef(server: ReturnType<typeof Bun.serve> | undefined): void { _serverRef = server; }
 /**
@@ -148,6 +151,9 @@ export function resetLifecycleDrainStateForTests(): void {
   for (const resolve of temporaryDrainWaiters) resolve();
   temporaryDrainWaiters.clear();
   shutdownDraining = false;
+  serverStopFlights = new WeakMap<ReturnType<typeof Bun.serve>, Promise<void>>();
+  serverStartupReleaseFlights = new WeakMap<ReturnType<typeof Bun.serve>, Promise<void>>();
+  releaseServerStartupLifecycleImpl = releaseNativeMainStartupLifecycle;
 }
 export function tryAdmitTurn(): ActiveTurnLease | null {
   if (isDraining()) return null;
@@ -280,6 +286,44 @@ export function getServerListenPort(): number | undefined {
   const port = _serverRef?.port;
   return typeof port === "number" && port > 0 ? port : undefined;
 }
+
+/**
+ * Stop one concrete listener exactly once. Deadline restart handoff can race the
+ * ordinary drain's finally block; both callers must observe the same stop result
+ * before any replacement process is allowed to bind the port.
+ */
+export function stopServerListener(
+  server: ReturnType<typeof Bun.serve> | undefined = _serverRef,
+): Promise<void> {
+  if (!server) return Promise.resolve();
+  const existing = serverStopFlights.get(server);
+  if (existing) return existing;
+  // Bun's Server.stop returns Promise<void>; fire-and-forget races a
+  // follow-on listen and can leave the replacement seeing the old proxy.
+  const flight = Promise.resolve().then(() => server.stop(true));
+  serverStopFlights.set(server, flight);
+  return flight;
+}
+
+/** Native-main startup ownership cleanup, separate from the listen socket flight. */
+export function releaseServerStartupLifecycle(
+  server: ReturnType<typeof Bun.serve> | undefined = _serverRef,
+): Promise<void> {
+  if (!server) return Promise.resolve();
+  const existing = serverStartupReleaseFlights.get(server);
+  if (existing) return existing;
+  const flight = Promise.resolve().then(() => releaseServerStartupLifecycleImpl(server));
+  serverStartupReleaseFlights.set(server, flight);
+  return flight;
+}
+
+/** Test seam for a held/rejected startup lifecycle release. */
+export function setServerStartupLifecycleReleaseForTests(
+  release: typeof releaseNativeMainStartupLifecycle | undefined,
+): void {
+  releaseServerStartupLifecycleImpl = release ?? releaseNativeMainStartupLifecycle;
+  serverStartupReleaseFlights = new WeakMap<ReturnType<typeof Bun.serve>, Promise<void>>();
+}
 /**
  * Mark this process as a recycle (dashboard drain-and-restart). Exit cleanup
  * must keep Codex/Grok/system-env injection so the replacement process inherits
@@ -392,11 +436,9 @@ export async function drainAndShutdown(
     setStorageCleanupPolicyJobLiveApply(null);
   } finally {
     try {
-      // Bun's Server.stop returns Promise<void>; fire-and-forget races the next
-      // isolate reclaim / follow-on listen the same way unterminated Workers did.
-      if (s) await s.stop(true);
+      await stopServerListener(s);
     } finally {
-      if (s) await releaseNativeMainStartupLifecycle(s);
+      await releaseServerStartupLifecycle(s);
       // shutdownDraining is a process-lifetime latch. A stopped server must
       // never resume admission merely because shutdown cleanup returned.
     }

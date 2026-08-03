@@ -18,6 +18,13 @@ export interface StableLockFile {
   close(): void;
 }
 
+export class StableLockPathUnsafeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StableLockPathUnsafeError";
+  }
+}
+
 interface StableLockEntry {
   readonly fd: number;
   readonly dev: number;
@@ -49,7 +56,15 @@ function reference(path: string, entry: StableLockEntry): StableLockFile {
 }
 
 function assertRegular(stats: Stats, path: string): void {
-  if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`unsafe SQLite lock path: ${path}`);
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new StableLockPathUnsafeError(`unsafe SQLite lock path: ${path}`);
+  }
+}
+
+function errorCode(error: unknown): string | undefined {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
 }
 
 function matches(handle: StableLockFile, stats: Stats): boolean {
@@ -94,9 +109,19 @@ export function openStableLockFile(path: string, platform: NodeJS.Platform = pro
 }
 
 export function assertStableLockFile(path: string, handle: StableLockFile): void {
-  const pathStats = lstatSync(path);
+  let pathStats: Stats;
+  try {
+    pathStats = lstatSync(path);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") {
+      throw new StableLockPathUnsafeError(`SQLite lock path identity changed: ${path}`);
+    }
+    throw error;
+  }
   assertRegular(pathStats, path);
-  if (!matches(handle, pathStats)) throw new Error(`SQLite lock path identity changed: ${path}`);
+  if (!matches(handle, pathStats)) {
+    throw new StableLockPathUnsafeError(`SQLite lock path identity changed: ${path}`);
+  }
 }
 
 export async function hardenStableLockFile(path: string): Promise<void> {

@@ -30,21 +30,36 @@ import {
   isDraining,
   isShutdownDraining,
   markRecyclingForExit,
+  stopServerListener,
 } from "../lifecycle";
 import { isServiceViable } from "../../service";
 import { readRuntimePort } from "../../config";
 import { withProcessRuntimeProvenance } from "../../lib/bun-runtime";
+import { findLiveProxy } from "../proxy-liveness";
 
 /** Fixed v1 drain window for the memory-card action (not config-driven). */
 export const MEMORY_DRAIN_RESTART_MS = 60_000;
+// Ordinary pinned-port start can spend 60s reclaiming a Windows ghost listener
+// and another 5s settling it. Keep one polling/scheduler margin beyond that.
+export const REPLACEMENT_READY_TIMEOUT_MS = 70_000;
+export const DEADLINE_LISTENER_STOP_TIMEOUT_MS = 5_000;
+const REPLACEMENT_READY_POLL_MS = 150;
+
+export interface ReplacementReadinessIo {
+  findLive?: typeof findLiveProxy;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
 
 export interface SystemRestartIo {
   drainAndShutdown?: typeof drainAndShutdown;
   /** True when a background service can actually respawn this process after exit(1). */
   isServiceViable?: () => boolean;
   isSupervisedServiceChild?: () => boolean;
-  /** Must resolve only after the replacement process has actually started. */
-  spawnStart?: (port?: number) => void | Promise<void>;
+  /** Ordinary start; deadline handoff may defer health until parent exit releases OS locks. */
+  spawnStart?: (port?: number, waitForHealthBeforeParentExit?: boolean) => void | Promise<void>;
+  /** Idempotent listener close; must settle before an ordinary start is spawned. */
+  stopListener?: () => void | Promise<void>;
   markRecycling?: () => void;
   exitProcess?: (code: number) => void;
   schedule?: (fn: () => void | Promise<void>, ms: number) => void;
@@ -63,6 +78,7 @@ let restartIo: SystemRestartIo = {};
 let restartAccepted = false;
 
 type RestartDrainOutcome = "completed" | "rejected" | "deadline";
+type BoundedSettlementOutcome = "completed" | "rejected" | "deadline";
 
 function waitForRestartDrain(
   drainPromise: Promise<void>,
@@ -88,6 +104,29 @@ function waitForRestartDrain(
     cancelDeadline = scheduleDeadline(() => finish("deadline"), remainingMs);
     if (settled) cancelDeadline();
     void drainPromise.then(
+      () => finish("completed"),
+      () => finish("rejected"),
+    );
+  });
+}
+
+function waitForBoundedSettlement(
+  promise: Promise<void>,
+  timeoutMs: number,
+  scheduleDeadline: NonNullable<SystemRestartIo["scheduleDeadline"]>,
+): Promise<BoundedSettlementOutcome> {
+  return new Promise<BoundedSettlementOutcome>((resolve) => {
+    let settled = false;
+    let cancelDeadline: (() => void) | undefined;
+    const finish = (outcome: BoundedSettlementOutcome) => {
+      if (settled) return;
+      settled = true;
+      cancelDeadline?.();
+      resolve(outcome);
+    };
+    cancelDeadline = scheduleDeadline(() => finish("deadline"), timeoutMs);
+    if (settled) cancelDeadline();
+    void promise.then(
       () => finish("completed"),
       () => finish("rejected"),
     );
@@ -124,10 +163,62 @@ function spawnFailureCode(err: unknown): string {
   return "spawn_failed";
 }
 
-function spawnDetachedStart(port?: number): Promise<void> {
+function handoffError(code: string): NodeJS.ErrnoException {
+  const error = new Error(code) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
+export async function waitForReplacementReady(
+  expectedPid: number | undefined,
+  parentPid: number,
+  expectedPort: number | undefined,
+  io: ReplacementReadinessIo = {},
+): Promise<boolean> {
+  const findLive = io.findLive ?? findLiveProxy;
+  const now = io.now ?? Date.now;
+  const sleep = io.sleep ?? Bun.sleep;
+  const deadline = now() + REPLACEMENT_READY_TIMEOUT_MS;
+  while (now() < deadline) {
+    try {
+      const live = await findLive({
+        deadlineAt: deadline,
+        nowFn: now,
+        sleepFn: sleep,
+      });
+      // A probe that began within budget can still return after it. Never accept
+      // delayed health as proof once the shared absolute handoff budget expired.
+      if (now() >= deadline) return false;
+      if (
+        live
+        && live.pid !== null
+        && live.pid !== parentPid
+        && (expectedPid === undefined || live.pid === expectedPid)
+        && (expectedPort === undefined || live.port === expectedPort)
+      ) {
+        return true;
+      }
+    } catch {
+      // A not-yet-bound replacement is indistinguishable from a transient
+      // liveness failure here; keep polling inside the one bounded window.
+    }
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(REPLACEMENT_READY_POLL_MS, remainingMs));
+  }
+  return false;
+}
+
+function spawnDetachedStart(
+  port?: number,
+  waitForHealthBeforeParentExit = true,
+): Promise<void> {
   const args = [process.argv[1], "start"];
-  if (typeof port === "number" && Number.isFinite(port) && port > 0 && port <= 65535) {
-    args.push("--port", String(Math.trunc(port)));
+  const expectedPort = typeof port === "number" && Number.isFinite(port) && port > 0 && port <= 65535
+    ? Math.trunc(port)
+    : undefined;
+  if (expectedPort !== undefined) {
+    args.push("--port", String(expectedPort));
   }
   return new Promise<void>((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
@@ -143,26 +234,80 @@ function spawnDetachedStart(port?: number): Promise<void> {
       return;
     }
     let settled = false;
-    const finish = (fn: () => void) => {
+    const cleanup = () => {
+      child.off("error", onError);
+      child.off("exit", onExit);
+      child.off("spawn", onSpawn);
+    };
+    const finish = (error?: unknown) => {
       if (settled) return;
       settled = true;
-      fn();
+      cleanup();
+      if (error !== undefined) {
+        if (child.exitCode === null && child.signalCode === null) {
+          try { child.kill(); } catch { /* best-effort failed-start cleanup */ }
+        }
+        try { child.unref(); } catch { /* best-effort */ }
+        reject(error);
+        return;
+      }
+      child.unref();
+      resolve();
     };
-    child.once("error", (err) => {
-      finish(() => reject(err));
-    });
-    child.once("spawn", () => {
-      finish(() => {
-        child.unref();
-        resolve();
-      });
-    });
+    const onError = (err: Error) => { finish(err); };
+    const onExit = () => { finish(handoffError("child_exit")); };
+    const onSpawn = () => {
+      if (!waitForHealthBeforeParentExit) {
+        // A deadline may have been caused by native-main ownership cleanup.
+        // Let the ordinary child survive parent exit, which releases those OS locks.
+        finish();
+        return;
+      }
+      void waitForReplacementReady(child.pid, process.pid, expectedPort).then(
+        ready => {
+          if (!ready) {
+            console.warn(
+              "Drain-and-restart replacement is still alive after the readiness window; allowing it to continue after parent exit",
+            );
+          }
+          // Never kill a live ordinary start at its valid reclaim boundary. Parent
+          // exit is the final resource release the child may still be waiting for.
+          finish();
+        },
+        err => finish(err),
+      );
+    };
+    child.once("error", onError);
+    child.once("exit", onExit);
+    child.once("spawn", onSpawn);
   });
+}
+
+async function completeDeferredParentExitHandoff(
+  io: SystemRestartIo,
+  exitProcess: (code: number) => void,
+  port: number | undefined,
+  phase: "deadline" | "listener-stop fallback",
+): Promise<void> {
+  try {
+    await (io.spawnStart ?? spawnDetachedStart)(port, false);
+  } catch (err) {
+    console.warn(
+      `Drain-and-restart ${phase} spawn failed (${spawnFailureCode(err)}); exiting without replacement`,
+    );
+    delete process.env.OCX_SERVICE;
+    exitProcess(1);
+    return;
+  }
+  (io.markRecycling ?? markRecyclingForExit)();
+  exitProcess(0);
 }
 
 async function completeDeadlineRestartHandoff(
   io: SystemRestartIo,
   exitProcess: (code: number) => void,
+  port: number | undefined,
+  scheduleDeadline: NonNullable<SystemRestartIo["scheduleDeadline"]>,
 ): Promise<void> {
   const supervised = (io.isSupervisedServiceChild ?? (() => isSupervisedServiceChild(io)))();
   if (supervised) {
@@ -171,21 +316,22 @@ async function completeDeadlineRestartHandoff(
     return;
   }
 
-  const port = (io.listenPort ?? resolveListenPort)();
-  try {
-    // The pinned child has its own bounded port reclaim, so it can launch before this
-    // process exits without binding the old listener or extending the drain deadline.
-    await (io.spawnStart ?? spawnDetachedStart)(port);
-  } catch (err) {
-    console.warn(
-      `Drain-and-restart deadline spawn failed (${spawnFailureCode(err)}); exiting without replacement`,
-    );
-    delete process.env.OCX_SERVICE;
-    exitProcess(1);
-    return;
+  const stopPromise = Promise.resolve().then(
+    () => (io.stopListener ?? (() => stopServerListener()))(),
+  );
+  const stopOutcome = await waitForBoundedSettlement(
+    stopPromise,
+    DEADLINE_LISTENER_STOP_TIMEOUT_MS,
+    scheduleDeadline,
+  );
+  if (stopOutcome === "rejected") {
+    console.warn("Drain-and-restart deadline listener stop failed; continuing parent-exit handoff");
+  } else if (stopOutcome === "deadline") {
+    console.warn("Drain-and-restart deadline listener stop timed out; continuing parent-exit handoff");
   }
-  (io.markRecycling ?? markRecyclingForExit)();
-  exitProcess(0);
+  // The ordinary child must survive parent exit: a failed/pending socket close
+  // or overdue cleanup is completed by process teardown, without a hidden mode.
+  await completeDeferredParentExitHandoff(io, exitProcess, port, "deadline");
 }
 
 /**
@@ -215,6 +361,9 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
     else if (io.setDraining) io.setDraining(true);
     else beginShutdownDrain();
     schedule(async () => {
+      // Preserve the live binding before drainAndShutdown (or its deadline race)
+      // closes the listener and makes both the server ref and runtime metadata stale.
+      const restartPort = (io.listenPort ?? resolveListenPort)();
       const drain = io.drainAndShutdown ?? drainAndShutdown;
       const remainingMs = Math.max(0, restartDeadlineMs - now());
       const drainPromise = Promise.resolve().then(() => drain(undefined, remainingMs));
@@ -226,7 +375,7 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
       const exitProcess = io.exitProcess ?? ((code: number) => { process.exit(code); });
       if (drainOutcome === "deadline") {
         console.warn("Drain-and-restart deadline expired; forcing terminal restart handoff");
-        await completeDeadlineRestartHandoff(io, exitProcess);
+        await completeDeadlineRestartHandoff(io, exitProcess, restartPort, scheduleDeadline);
         return;
       }
       if (drainOutcome === "rejected") {
@@ -240,9 +389,23 @@ export function acceptSystemRestart(io: SystemRestartIo = restartIo): {
         (io.exitProcess ?? ((code: number) => { process.exit(code); }))(1);
         return;
       }
-      const port = (io.listenPort ?? resolveListenPort)();
       try {
-        await (io.spawnStart ?? spawnDetachedStart)(port);
+        await (io.stopListener ?? (() => stopServerListener()))();
+      } catch {
+        console.warn("Drain-and-restart listener stop failed; continuing parent-exit handoff");
+        await completeDeferredParentExitHandoff(
+          io,
+          exitProcess,
+          restartPort,
+          "listener-stop fallback",
+        );
+        return;
+      }
+      try {
+        // A rejected drain has uncertain cleanup ownership, so it uses the same
+        // parent-exit handoff as a deadline. Only a fully completed drain waits
+        // for replacement health in the old process.
+        await (io.spawnStart ?? spawnDetachedStart)(restartPort, drainOutcome === "completed");
       } catch (err) {
         console.warn(
           `⚠️  Drain-and-restart spawn failed (${spawnFailureCode(err)}); exiting without replacement`,

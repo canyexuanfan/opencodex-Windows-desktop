@@ -141,13 +141,15 @@ async function resolveAlternateCompactContext(args: {
   route: { provider: OcxProviderConfig; codexAccountMode?: CodexAccountMode };
   selectedModelId: string | undefined;
   excludeAccountId: string | null;
+  turnAdmissionLease?: AdmissionLease;
 }): Promise<{ authCtx: CodexAuthContext; provider: OcxProviderConfig; headers: Headers } | null> {
-  const { req, config, route, selectedModelId, excludeAccountId } = args;
+  const { req, config, route, selectedModelId, excludeAccountId, turnAdmissionLease } = args;
   if (!route.codexAccountMode || !excludeAccountId) return null;
   try {
     const authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
       ...(selectedModelId ? { modelId: selectedModelId } : {}),
       excludeAccountId,
+      beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
     });
     if (!authCtx.accountId || authCtx.accountId === excludeAccountId) return null;
     const provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
@@ -164,7 +166,13 @@ async function resolveAlternateCompactContext(args: {
     }
     if (provider.apiKey) headers.set("authorization", `Bearer ${resolveEnvValue(provider.apiKey)}`);
     return { authCtx, provider, headers };
-  } catch {
+  } catch (err) {
+    if (err instanceof CodexMainProfileDrainingError) {
+      // The native-main fence can start after account A has already rejected the
+      // request. Treat the now-fenced main profile as no alternate and preserve A's
+      // real rejection instead of replacing it with a synthetic drain response.
+      return null;
+    }
     // No eligible alternate (all cooled, affinity expired, reauth needed) — the caller
     // returns the first account's rejection unchanged, which is today's behavior.
     return null;
@@ -431,6 +439,7 @@ export async function handleResponsesCompact(
         route,
         selectedModelId,
         excludeAccountId: authCtx.accountId,
+        turnAdmissionLease,
       });
       // Resolution can await a credential refresh, so the client may have gone away
       // while we were choosing B. Re-check before spending anything: recording A,

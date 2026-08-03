@@ -18,7 +18,10 @@ import {
   acquireNativeMainProfileDrain,
   activeRegistryMetrics,
   beginShutdownDrain,
+  releaseServerStartupLifecycle,
   resetLifecycleDrainStateForTests,
+  setServerStartupLifecycleReleaseForTests,
+  stopServerListener,
   tryAdmitTurn,
   codexAccountSelectionForTurn,
   getNativeMainProfileRequestCount,
@@ -60,13 +63,94 @@ function installShutdownShell() {
   return child;
 }
 
-function fakeServer() {
+function fakeServer(stopImpl?: (closeActiveConnections?: boolean) => void | Promise<void>) {
   let stops = 0;
+  const stopArgs: Array<boolean | undefined> = [];
   return {
-    server: { stop() { stops++; } } as unknown as ReturnType<typeof Bun.serve>,
+    server: {
+      stop(closeActiveConnections?: boolean) {
+        stops++;
+        stopArgs.push(closeActiveConnections);
+        return stopImpl?.(closeActiveConnections);
+      },
+    } as unknown as ReturnType<typeof Bun.serve>,
     stops: () => stops,
+    stopArgs: () => stopArgs,
   };
 }
+
+describe("server listener shutdown", () => {
+  test("single-flights stop(true) and keeps every waiter pending until close completes", async () => {
+    let resolveStop!: () => void;
+    const fake = fakeServer(() => new Promise<void>(resolve => { resolveStop = resolve; }));
+    let firstSettled = false;
+    let secondSettled = false;
+
+    const first = stopServerListener(fake.server).then(() => { firstSettled = true; });
+    const second = stopServerListener(fake.server).then(() => { secondSettled = true; });
+    await Promise.resolve();
+
+    expect(fake.stops()).toBe(1);
+    expect(fake.stopArgs()).toEqual([true]);
+    expect(firstSettled).toBe(false);
+    expect(secondSettled).toBe(false);
+
+    resolveStop();
+    await Promise.all([first, second]);
+    expect(firstSettled).toBe(true);
+    expect(secondSettled).toBe(true);
+    expect(fake.stops()).toBe(1);
+  });
+
+  test("retains a rejected stop flight instead of retrying an uncertain listener", async () => {
+    const failure = new Error("fixture listener stop rejection");
+    const fake = fakeServer(async () => { throw failure; });
+
+    const first = stopServerListener(fake.server);
+    const second = stopServerListener(fake.server);
+    await expect(first).rejects.toBe(failure);
+    await expect(second).rejects.toBe(failure);
+    await expect(stopServerListener(fake.server)).rejects.toBe(failure);
+    expect(fake.stops()).toBe(1);
+    expect(fake.stopArgs()).toEqual([true]);
+  });
+
+  test("keeps socket close available while normal drain waits on held startup cleanup", async () => {
+    let signalReleaseStarted!: () => void;
+    const releaseStarted = new Promise<void>(resolve => { signalReleaseStarted = resolve; });
+    let allowRelease!: () => void;
+    const releaseGate = new Promise<void>(resolve => { allowRelease = resolve; });
+    let releases = 0;
+    setServerStartupLifecycleReleaseForTests(async () => {
+      releases += 1;
+      signalReleaseStarted();
+      await releaseGate;
+    });
+    const fake = fakeServer();
+    let drainSettled = false;
+    const draining = drainAndShutdown(fake.server, 0).then(() => { drainSettled = true; });
+
+    await releaseStarted;
+    expect(fake.stops()).toBe(1);
+    expect(fake.stopArgs()).toEqual([true]);
+    await stopServerListener(fake.server);
+    expect(drainSettled).toBe(false);
+
+    let secondReleaseSettled = false;
+    const secondRelease = releaseServerStartupLifecycle(fake.server).then(() => {
+      secondReleaseSettled = true;
+    });
+    await Promise.resolve();
+    expect(releases).toBe(1);
+    expect(secondReleaseSettled).toBe(false);
+
+    allowRelease();
+    await Promise.all([draining, secondRelease]);
+    expect(drainSettled).toBe(true);
+    expect(secondReleaseSettled).toBe(true);
+    expect(releases).toBe(1);
+  });
+});
 
 describe("active turn tracking", () => {
   test("admit/bind/unregister tracks active turns through the boundary lease", () => {
@@ -141,6 +225,7 @@ describe("active turn tracking", () => {
     await drainAndShutdown(fake.server, 0);
 
     expect(fake.stops()).toBe(1);
+    expect(fake.stopArgs()).toEqual([true]);
     expect(isDraining()).toBe(true);
     profileLease?.release();
     expect(isDraining()).toBe(true);

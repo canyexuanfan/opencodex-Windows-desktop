@@ -7,7 +7,6 @@ import {
   existsSync,
   fstatSync,
   ftruncateSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -24,6 +23,12 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { atomicWriteFileAsync } from "../config";
 import { hardenSecretDirAsync, hardenSecretPathAsync } from "../lib/windows-secret-acl";
 import { applyConfirmedMainCodexAccountTransition } from "./account-lifecycle";
+import {
+  assertStableLockFile,
+  openStableLockFile,
+  StableLockPathUnsafeError,
+  type StableLockFile,
+} from "./native-main-lock-file";
 import { decideNativeProfileRecovery } from "./native-profile-recovery";
 import { probeNativeCodexProcesses, type NativeCodexProcessProbe } from "./native-profile-processes";
 import {
@@ -83,6 +88,8 @@ type TransitionApplier = (fromAccountId: string, toAccountId: string) => void;
 type EnvelopeReader = (path: string) => NativeEnvelopeSnapshot;
 type VaultReader = () => NativeMainProfileVaultV1 | null;
 type EnvelopeResultReader = (path: string) => ReturnType<typeof readNativeEnvelopeResult>;
+type StableLockOpener = (path: string) => StableLockFile;
+type StableLockAsserter = (path: string, file: StableLockFile) => void;
 export type NativeProfileSwitchBoundary =
   | "journal-prepared"
   | "auth-replaced"
@@ -111,6 +118,9 @@ export interface NativeProfileManagerOptions {
   readEnvelope?: EnvelopeReader;
   readVault?: VaultReader;
   readEnvelopeResult?: EnvelopeResultReader;
+  /** Test-only stable-path seams; production uses the native stable-lock helpers directly. */
+  stableLockOpen?: StableLockOpener;
+  stableLockAssert?: StableLockAsserter;
 }
 
 export interface NativeProfileListResult {
@@ -199,9 +209,11 @@ export class NativeProfileManager {
   private readonly readEnvelope: EnvelopeReader;
   private readonly readVault: VaultReader;
   private readonly readEnvelopeResult: EnvelopeResultReader;
+  private readonly stableLockOpen: StableLockOpener;
+  private readonly stableLockAssert: StableLockAsserter;
   private readonly stageStore: NativeProfileStageStore;
   private activeRootIdentity: PathIdentity | null = null;
-  private activeLockIdentity: PathIdentity | null = null;
+  private activeLockFile: StableLockFile | null = null;
 
   constructor(options: NativeProfileManagerOptions = {}) {
     this.context = resolveNativeProfileContext(options);
@@ -220,6 +232,8 @@ export class NativeProfileManager {
     this.readEnvelope = options.readEnvelope ?? readNativeEnvelope;
     this.readVault = options.readVault ?? (() => readNativeProfileVault(this.context));
     this.readEnvelopeResult = options.readEnvelopeResult ?? readNativeEnvelopeResult;
+    this.stableLockOpen = options.stableLockOpen ?? openStableLockFile;
+    this.stableLockAssert = options.stableLockAssert ?? assertStableLockFile;
     this.stageStore = new NativeProfileStageStore({
       context: this.context,
       now: this.now,
@@ -257,31 +271,57 @@ export class NativeProfileManager {
     return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED" || /database (?:is|table is) locked/i.test(message);
   }
 
+  private profileLockStorageUnsafe(): NativeProfileError {
+    return new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-profile transaction lock was replaced.", 409);
+  }
+
+  private profileLockUnavailable(): NativeProfileError {
+    return new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock is unavailable.", 503, true);
+  }
+
+  private isExplicitProfileLockStorageUnsafe(error: unknown): boolean {
+    const code = errorCode(error);
+    const message = error instanceof Error ? error.message : String(error);
+    return error instanceof StableLockPathUnsafeError
+      || code === "ELOOP"
+      || code === "EISDIR"
+      || code === "ENOTDIR"
+      || message.startsWith("unsafe SQLite lock path:")
+      || message.startsWith("SQLite lock path identity changed:");
+  }
+
+  private openStableProfileLockFile(): StableLockFile {
+    try {
+      return this.stableLockOpen(this.context.lockPath);
+    } catch (error) {
+      if (this.isExplicitProfileLockStorageUnsafe(error)) throw this.profileLockStorageUnsafe();
+      throw this.profileLockUnavailable();
+    }
+  }
+
+  private assertStableProfileLockFile(file: StableLockFile): void {
+    try {
+      this.stableLockAssert(this.context.lockPath, file);
+    } catch (error) {
+      if (errorCode(error) === "ENOENT" || this.isExplicitProfileLockStorageUnsafe(error)) {
+        throw this.profileLockStorageUnsafe();
+      }
+      throw this.profileLockUnavailable();
+    }
+  }
+
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
     assertNoLegacyNativeProfileState(this.context);
     assertNativeProfileLockPath(this.context);
     const deadline = this.now() + this.lockWaitMs;
     let database: Database | undefined;
-    let lockHandle: number | undefined;
-    let acquiredLockIdentity: PathIdentity | undefined;
+    let lockFile: StableLockFile | undefined;
     while (!database) {
       let candidate: Database | undefined;
-      let candidateHandle: number | undefined;
+      let candidateFile: StableLockFile | undefined;
       try {
-        const flags = process.platform === "win32"
-          ? fsConstants.O_RDWR | fsConstants.O_CREAT
-          : fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW;
-        candidateHandle = openSync(this.context.lockPath, flags, 0o600);
-        const opened = fstatSync(candidateHandle, { bigint: true });
-        const pathEntry = lstatSync(this.context.lockPath, { bigint: true });
-        if (
-          !opened.isFile()
-          || !pathEntry.isFile()
-          || pathEntry.isSymbolicLink()
-          || opened.dev !== pathEntry.dev
-          || opened.ino !== pathEntry.ino
-        ) throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-profile transaction lock was replaced.", 409);
-        const candidateIdentity = { dev: opened.dev, ino: opened.ino };
+        candidateFile = this.openStableProfileLockFile();
+        this.assertStableProfileLockFile(candidateFile);
         candidate = new Database(this.context.lockPath, { create: true });
         const claim = this.uuid();
         candidate.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
@@ -291,38 +331,38 @@ export class NativeProfileManager {
         candidate.exec("BEGIN IMMEDIATE");
         const candidateClaim = candidate.query("SELECT claim FROM ocx_native_profile_lock WHERE singleton = 1").get() as { claim?: unknown } | null;
         let verifier: Database | undefined;
-        let verificationPath: string | undefined;
         let pathClaim: { claim?: unknown } | null = null;
         try {
-          verificationPath = `${this.context.lockPath}.verify.${process.pid}.${this.uuid()}`;
-          linkSync(this.context.lockPath, verificationPath);
-          const verificationIdentity = pathIdentity(verificationPath);
-          if (!sameIdentity(verificationIdentity, candidateIdentity)) {
-            throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-profile transaction lock changed during acquisition.", 409);
-          }
-          verifier = new Database(verificationPath, { readonly: true });
+          this.assertStableProfileLockFile(candidateFile);
+          verifier = new Database(this.context.lockPath, { readonly: true });
           pathClaim = verifier.query("SELECT claim FROM ocx_native_profile_lock WHERE singleton = 1").get() as { claim?: unknown } | null;
-          assertPathIdentity(verificationPath, verificationIdentity, "The native-profile transaction lock verification link");
         } finally {
           try { verifier?.close(); } catch { /* mismatch below is authoritative */ }
-          try { if (verificationPath !== undefined) unlinkSync(verificationPath); } catch { /* acquisition fails below if verification was incomplete */ }
         }
+        this.assertStableProfileLockFile(candidateFile);
         if (candidateClaim?.claim !== claim || pathClaim?.claim !== claim) {
           throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "The native-profile transaction lock changed during acquisition.", 409);
         }
         try { chmodSync(this.context.lockPath, 0o600); } catch { /* Windows ACL below is authoritative there. */ }
         await this.hardenPath(this.context.lockPath);
         assertNativeProfileLockPath(this.context);
-        assertPathIdentity(this.context.lockPath, candidateIdentity, "The native-profile transaction lock");
+        this.assertStableProfileLockFile(candidateFile);
         database = candidate;
-        lockHandle = candidateHandle;
-        acquiredLockIdentity = candidateIdentity;
+        candidate = undefined;
+        lockFile = candidateFile;
+        candidateFile = undefined;
       } catch (error) {
+        let mappedError = error;
+        if (!(mappedError instanceof NativeProfileError) && candidateFile) {
+          try { this.assertStableProfileLockFile(candidateFile); }
+          catch (storageError) { mappedError = storageError; }
+        }
+        try { candidate?.exec("ROLLBACK"); } catch { /* acquisition already failed */ }
         try { candidate?.close(); } catch { /* acquisition already failed */ }
-        try { if (candidateHandle !== undefined) closeSync(candidateHandle); } catch { /* acquisition already failed */ }
-        if (error instanceof NativeProfileError) throw error;
-        if (!this.isLockBusy(error)) {
-          throw new NativeProfileError("PROFILE_LOCK_UNAVAILABLE", "The native-profile lock is unavailable.", 503, true);
+        try { candidateFile?.close(); } catch { /* acquisition already failed */ }
+        if (mappedError instanceof NativeProfileError) throw mappedError;
+        if (!this.isLockBusy(mappedError)) {
+          throw this.profileLockUnavailable();
         }
         if (this.now() >= deadline) {
           throw new NativeProfileError("NATIVE_PROFILE_BUSY", "Another native-profile operation is still running.", 503, true);
@@ -331,7 +371,7 @@ export class NativeProfileManager {
       }
     }
     try {
-      this.activeLockIdentity = acquiredLockIdentity!;
+      this.activeLockFile = lockFile ?? null;
       this.activeRootIdentity = await this.ensureRoot();
       await this.onLockAcquired();
       this.assertOperationStorageStable();
@@ -341,17 +381,17 @@ export class NativeProfileManager {
     } finally {
       try { database.exec("ROLLBACK"); } catch { /* close still releases the OS-backed lock */ }
       try { database.close(); } catch { /* transaction is already ending */ }
-      try { if (lockHandle !== undefined) closeSync(lockHandle); } catch { /* SQLite handle already released the transaction */ }
+      try { lockFile?.close(); } catch { /* SQLite handle already released the transaction */ }
       this.activeRootIdentity = null;
-      this.activeLockIdentity = null;
+      this.activeLockFile = null;
     }
   }
 
   private assertOperationStorageStable(): void {
-    if (!this.activeRootIdentity || !this.activeLockIdentity) {
+    if (!this.activeRootIdentity || !this.activeLockFile) {
       throw new NativeProfileError("PROFILE_STORAGE_UNSAFE", "Native-profile storage ownership is not active.", 409);
     }
-    assertPathIdentity(this.context.lockPath, this.activeLockIdentity, "The native-profile transaction lock");
+    this.assertStableProfileLockFile(this.activeLockFile);
     assertPathIdentity(this.context.rootDir, this.activeRootIdentity, "The native-profile metadata root");
     assertNativeProfileMetadataLayout(this.context);
   }

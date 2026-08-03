@@ -156,6 +156,24 @@ function spawnLockHolder(
   });
 }
 
+function spawnLockProbe(
+  f: ReturnType<typeof fixture>,
+  resultPath: string,
+): ReturnType<typeof Bun.spawn> {
+  return Bun.spawn([process.execPath, join(import.meta.dir, "helpers", "native-profile-lock-child.ts")], {
+    cwd: join(import.meta.dir, ".."),
+    env: {
+      ...process.env,
+      NATIVE_PROFILE_TEST_CODEX_HOME: f.codexHome,
+      NATIVE_PROFILE_TEST_CONFIG_DIR: f.configDir,
+      NATIVE_PROFILE_TEST_PROBE_RESULT: resultPath,
+    },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
 describe("native main profile transactions", () => {
   test("an abruptly exited child releases the OS-backed profile transaction", async () => {
     const f = fixture();
@@ -166,6 +184,57 @@ describe("native main profile transactions", () => {
 
     const successor = new NativeProfileManager({ ...f.options, lockWaitMs: 250 });
     expect((await successor.recover(false)).recovered).toBe(false);
+  }, 15_000);
+
+  test("a losing same-process contender cannot release another transaction's POSIX lock", async () => {
+    if (process.platform === "win32") return;
+    const f = fixture();
+    let signalHeld!: () => void;
+    const held = new Promise<void>(resolve => { signalHeld = resolve; });
+    let releaseOwner!: () => void;
+    const released = new Promise<void>(resolve => { releaseOwner = resolve; });
+    let ownerReleased = false;
+    let busyProbe: ReturnType<typeof Bun.spawn> | undefined;
+    let acquiredProbe: ReturnType<typeof Bun.spawn> | undefined;
+    const owner = new NativeProfileManager({
+      ...f.options,
+      onLockAcquired: async () => {
+        signalHeld();
+        await released;
+      },
+    });
+    const holding = owner.doctor();
+    try {
+      await held;
+      const contender = new NativeProfileManager({ ...f.options, lockWaitMs: 0 });
+      let caught: unknown;
+      try { await contender.recover(false); } catch (error) { caught = error; }
+      expect(caught).toBeInstanceOf(NativeProfileError);
+      expect((caught as NativeProfileError).code).toBe("NATIVE_PROFILE_BUSY");
+
+      const busyResult = join(f.root, "third-pid-busy");
+      busyProbe = spawnLockProbe(f, busyResult);
+      expect(await busyProbe.exited).toBe(0);
+      expect(readFileSync(busyResult, "utf8")).toBe("busy");
+
+      releaseOwner();
+      ownerReleased = true;
+      await holding;
+
+      const acquiredResult = join(f.root, "third-pid-acquired");
+      acquiredProbe = spawnLockProbe(f, acquiredResult);
+      expect(await acquiredProbe.exited).toBe(0);
+      expect(readFileSync(acquiredResult, "utf8")).toBe("acquired");
+    } finally {
+      if (!ownerReleased) releaseOwner();
+      if (busyProbe?.exitCode === null) busyProbe.kill();
+      if (acquiredProbe?.exitCode === null) acquiredProbe.kill();
+      await Promise.allSettled([
+        holding,
+        ...(busyProbe ? [busyProbe.exited] : []),
+        ...(acquiredProbe ? [acquiredProbe.exited] : []),
+      ]);
+    }
   }, 15_000);
 
   test("two processes exclude each other and predecessor release cannot delete a successor lock", async () => {
@@ -311,6 +380,79 @@ describe("native main profile transactions", () => {
     expect((caught as NativeProfileError).code).toBe("PROFILE_STORAGE_UNSAFE");
     expect(readFileSync(join(f.codexHome, "auth.json"), "utf8")).toBe(authBefore);
     expect(readdirSync(attacker)).toEqual([]);
+  });
+
+  test("reports a replaced stable transaction lock as unsafe instead of retryable unavailable", async () => {
+    const f = fixture();
+    let assertions = 0;
+    const manager = new NativeProfileManager({
+      ...f.options,
+      stableLockAssert: path => {
+        assertions += 1;
+        if (assertions === 5) throw new Error(`SQLite lock path identity changed: ${path}`);
+      },
+    });
+
+    let caught: unknown;
+    try { await manager.recover(false); } catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(NativeProfileError);
+    expect((caught as NativeProfileError).code).toBe("PROFILE_STORAGE_UNSAFE");
+    expect((caught as NativeProfileError).retryable).not.toBe(true);
+    expect(assertions).toBe(5);
+  });
+
+  test("keeps transient stable-lock access failures retryable and unavailable", async () => {
+    for (const code of ["EIO", "EACCES", "ESTALE"]) {
+      const f = fixture();
+      const transient = Object.assign(new Error(`injected ${code} stable-lock access failure`), { code });
+      let assertions = 0;
+      const manager = new NativeProfileManager({
+        ...f.options,
+        stableLockAssert: () => {
+          assertions += 1;
+          if (assertions === 5) throw transient;
+        },
+      });
+
+      let caught: unknown;
+      try { await manager.recover(false); } catch (error) { caught = error; }
+
+      expect(caught).toBeInstanceOf(NativeProfileError);
+      expect((caught as NativeProfileError).code).toBe("PROFILE_LOCK_UNAVAILABLE");
+      expect((caught as NativeProfileError).retryable).toBe(true);
+      expect(assertions).toBe(5);
+    }
+  });
+
+  test("distinguishes initial ENOENT availability from post-open identity loss", async () => {
+    const f = fixture();
+    const initialMissing = Object.assign(new Error("injected initial lock open ENOENT"), { code: "ENOENT" });
+    const unavailable = new NativeProfileManager({
+      ...f.options,
+      stableLockOpen: () => { throw initialMissing; },
+    });
+    let unavailableError: unknown;
+    try { await unavailable.recover(false); } catch (error) { unavailableError = error; }
+    expect(unavailableError).toBeInstanceOf(NativeProfileError);
+    expect((unavailableError as NativeProfileError).code).toBe("PROFILE_LOCK_UNAVAILABLE");
+    expect((unavailableError as NativeProfileError).retryable).toBe(true);
+
+    let assertions = 0;
+    const identityLost = Object.assign(new Error("injected post-open lock ENOENT"), { code: "ENOENT" });
+    const unsafe = new NativeProfileManager({
+      ...f.options,
+      stableLockAssert: () => {
+        assertions += 1;
+        if (assertions === 5) throw identityLost;
+      },
+    });
+    let unsafeError: unknown;
+    try { await unsafe.recover(false); } catch (error) { unsafeError = error; }
+    expect(unsafeError).toBeInstanceOf(NativeProfileError);
+    expect((unsafeError as NativeProfileError).code).toBe("PROFILE_STORAGE_UNSAFE");
+    expect((unsafeError as NativeProfileError).retryable).not.toBe(true);
+    expect(assertions).toBe(5);
   });
 
   test("cancels a malformed stage without trusting its metadata", async () => {

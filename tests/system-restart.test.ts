@@ -5,9 +5,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { handleManagementAPI } from "../src/server/management-api";
 import { resetLifecycleDrainStateForTests, setDraining } from "../src/server/lifecycle";
 import {
+  DEADLINE_LISTENER_STOP_TIMEOUT_MS,
   MEMORY_DRAIN_RESTART_MS,
+  REPLACEMENT_READY_TIMEOUT_MS,
   acceptSystemRestart,
   setSystemRestartIoForTests,
+  waitForReplacementReady,
 } from "../src/server/management/system-restart";
 import type { OcxConfig } from "../src/types";
 
@@ -56,7 +59,8 @@ describe("acceptSystemRestart", () => {
       drainAndShutdown: async (_server, timeoutMs) => {
         calls.push(`drain:${timeoutMs}`);
       },
-      spawnStart: (port) => { calls.push(`start:${port}`); },
+      stopListener: () => { calls.push("stop"); },
+      spawnStart: (port, waitForHealth) => { calls.push(`start:${port}:${waitForHealth ? "ready" : "deferred"}`); },
       markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code) => { calls.push(`exit:${code}`); },
     });
@@ -73,17 +77,63 @@ describe("acceptSystemRestart", () => {
     expect(scheduled).not.toBeNull();
     now += 15_000;
     await scheduled!();
-    expect(calls).toEqual(["draining:true", "drain:45000", "start:10123", "recycle", "exit:0"]);
+    expect(calls).toEqual(["draining:true", "drain:45000", "stop", "start:10123:ready", "recycle", "exit:0"]);
     expect(deadlineDelay).toBe(45_000);
     expect(deadlineCancellations).toBe(1);
     deadlineCallback?.();
-    expect(calls).toEqual(["draining:true", "drain:45000", "start:10123", "recycle", "exit:0"]);
+    expect(calls).toEqual(["draining:true", "drain:45000", "stop", "start:10123:ready", "recycle", "exit:0"]);
+  });
+
+  test("snapshots the restart port before normal drain invalidates listener metadata", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+    let portAvailable = true;
+
+    acceptSystemRestart({
+      isDraining: () => false,
+      getActiveTurnCount: () => 0,
+      isSupervisedServiceChild: () => false,
+      listenPort: () => {
+        calls.push(`port:${portAvailable ? 10123 : "gone"}`);
+        return portAvailable ? 10123 : undefined;
+      },
+      schedule: (fn) => { scheduled = fn; },
+      scheduleDeadline: () => () => {},
+      setDraining: () => { calls.push("latched"); },
+      drainAndShutdown: async () => {
+        calls.push("drain");
+        portAvailable = false;
+      },
+      stopListener: () => {
+        calls.push("stop");
+        portAvailable = false;
+      },
+      spawnStart: (port) => { calls.push(`start:${port}`); },
+      markRecycling: () => { calls.push("recycle"); },
+      exitProcess: (code) => { calls.push(`exit:${code}`); },
+    });
+
+    await scheduled!();
+    expect(calls).toEqual([
+      "latched",
+      "port:10123",
+      "drain",
+      "stop",
+      "start:10123",
+      "recycle",
+      "exit:0",
+    ]);
   });
 
   test("never-settling unsupervised drain starts one replacement at the original deadline", async () => {
     const calls: string[] = [];
     let scheduled: (() => void | Promise<void>) | null = null;
     let fireDeadline: (() => void) | null = null;
+    let resolveStop!: () => void;
+    let resolveStart!: () => void;
+    let signalStartEntered!: () => void;
+    const startEntered = new Promise<void>(resolve => { signalStartEntered = resolve; });
+    let deadlineSchedules = 0;
     let now = 1_000;
 
     acceptSystemRestart({
@@ -93,8 +143,13 @@ describe("acceptSystemRestart", () => {
       listenPort: () => 10123,
       schedule: (fn) => { scheduled = fn; },
       scheduleDeadline: (fn, ms) => {
-        expect(ms).toBe(60_000);
-        fireDeadline = fn;
+        deadlineSchedules += 1;
+        if (deadlineSchedules === 1) {
+          expect(ms).toBe(60_000);
+          fireDeadline = fn;
+        } else {
+          expect(ms).toBe(DEADLINE_LISTENER_STOP_TIMEOUT_MS);
+        }
         return () => {};
       },
       now: () => now,
@@ -103,7 +158,15 @@ describe("acceptSystemRestart", () => {
         calls.push("drain");
         return new Promise<void>(() => {});
       },
-      spawnStart: (port) => { calls.push(`start:${port}`); },
+      stopListener: () => {
+        calls.push("stop");
+        return new Promise<void>(resolve => { resolveStop = resolve; });
+      },
+      spawnStart: (port, waitForHealth) => {
+        calls.push(`start:${port}:${waitForHealth ? "ready" : "deferred"}`);
+        signalStartEntered();
+        return new Promise<void>(resolve => { resolveStart = resolve; });
+      },
       markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code) => { calls.push(`exit:${code}`); },
     });
@@ -114,8 +177,15 @@ describe("acceptSystemRestart", () => {
     expect(calls).toEqual(["latched", "drain"]);
     now += 60_000;
     fireDeadline?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual(["latched", "drain", "stop"]);
+    resolveStop();
+    await startEntered;
+    expect(calls).toEqual(["latched", "drain", "stop", "start:10123:deferred"]);
+    resolveStart();
     await running;
-    expect(calls).toEqual(["latched", "drain", "start:10123", "recycle", "exit:0"]);
+    expect(calls).toEqual(["latched", "drain", "stop", "start:10123:deferred", "recycle", "exit:0"]);
   });
 
   test("exactly elapsed unsupervised deadline starts replacement without waiting for late drain resolution", async () => {
@@ -130,13 +200,17 @@ describe("acceptSystemRestart", () => {
       isSupervisedServiceChild: () => false,
       listenPort: () => 10123,
       schedule: (fn) => { scheduled = fn; },
-      scheduleDeadline: () => { throw new Error("exact deadline must not schedule another timer"); },
+      scheduleDeadline: (_fn, ms) => {
+        expect(ms).toBe(DEADLINE_LISTENER_STOP_TIMEOUT_MS);
+        return () => {};
+      },
       now: () => now,
       setDraining: () => { calls.push("latched"); },
       drainAndShutdown: (_server, timeoutMs) => {
         calls.push(`drain:${timeoutMs}`);
         return new Promise<void>(resolve => { resolveDrain = resolve; });
       },
+      stopListener: () => { calls.push("stop"); },
       spawnStart: (port) => { calls.push(`start:${port}`); },
       markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code) => { calls.push(`exit:${code}`); },
@@ -144,10 +218,10 @@ describe("acceptSystemRestart", () => {
 
     now += MEMORY_DRAIN_RESTART_MS;
     await scheduled!();
-    expect(calls).toEqual(["latched", "drain:0", "start:10123", "recycle", "exit:0"]);
+    expect(calls).toEqual(["latched", "drain:0", "stop", "start:10123", "recycle", "exit:0"]);
     resolveDrain();
     await Promise.resolve();
-    expect(calls).toEqual(["latched", "drain:0", "start:10123", "recycle", "exit:0"]);
+    expect(calls).toEqual(["latched", "drain:0", "stop", "start:10123", "recycle", "exit:0"]);
   });
 
   test("deadline leaves a supervised child to its failure-only supervisor", async () => {
@@ -166,6 +240,7 @@ describe("acceptSystemRestart", () => {
         calls.push("drain");
         return new Promise<void>(() => {});
       },
+      stopListener: () => { calls.push("stop"); },
       spawnStart: () => { calls.push("start"); },
       markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code) => { calls.push(`exit:${code}`); },
@@ -195,6 +270,7 @@ describe("acceptSystemRestart", () => {
         calls.push("drain");
         return new Promise<void>(() => {});
       },
+      stopListener: () => { calls.push("stop"); },
       spawnStart: async () => {
         calls.push("start");
         throw Object.assign(new Error("spawn error"), { code: "EACCES" });
@@ -208,7 +284,143 @@ describe("acceptSystemRestart", () => {
     await Promise.resolve();
     fireDeadline?.();
     await running;
-    expect(calls).toEqual(["latched", "drain", "start", "exit:1"]);
+    expect(calls).toEqual(["latched", "drain", "stop", "start", "exit:1"]);
+  });
+
+  test("deadline listener-stop failure still hands off to a deferred replacement", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+    let fireDeadline: (() => void) | null = null;
+
+    acceptSystemRestart({
+      isDraining: () => false,
+      getActiveTurnCount: () => 0,
+      isSupervisedServiceChild: () => false,
+      schedule: (fn) => { scheduled = fn; },
+      scheduleDeadline: (fn) => { fireDeadline = fn; return () => {}; },
+      setDraining: () => { calls.push("latched"); },
+      drainAndShutdown: () => {
+        calls.push("drain");
+        return new Promise<void>(() => {});
+      },
+      stopListener: async () => {
+        calls.push("stop");
+        throw new Error("fixture stop failure");
+      },
+      spawnStart: (_port, waitForHealth) => {
+        calls.push(`start:${waitForHealth ? "ready" : "deferred"}`);
+      },
+      markRecycling: () => { calls.push("recycle"); },
+      exitProcess: (code) => { calls.push(`exit:${code}`); },
+    });
+
+    const running = scheduled!();
+    await Promise.resolve();
+    await Promise.resolve();
+    fireDeadline?.();
+    await running;
+    expect(calls).toEqual(["latched", "drain", "stop", "start:deferred", "recycle", "exit:0"]);
+  });
+
+  test("deadline bounds a never-settling listener stop and ignores its late rejection", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+    const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+    let rejectStop!: (reason?: unknown) => void;
+
+    acceptSystemRestart({
+      isDraining: () => false,
+      getActiveTurnCount: () => 0,
+      isSupervisedServiceChild: () => false,
+      listenPort: () => 10123,
+      schedule: (fn) => { scheduled = fn; },
+      scheduleDeadline: (fn, ms) => {
+        const timer = { fn, ms, cancelled: false };
+        timers.push(timer);
+        return () => { timer.cancelled = true; };
+      },
+      setDraining: () => { calls.push("latched"); },
+      drainAndShutdown: () => {
+        calls.push("drain");
+        return new Promise<void>(() => {});
+      },
+      stopListener: () => {
+        calls.push("stop");
+        return new Promise<void>((_resolve, reject) => { rejectStop = reject; });
+      },
+      spawnStart: (port, waitForHealth) => {
+        calls.push(`start:${port}:${waitForHealth ? "ready" : "deferred"}`);
+      },
+      markRecycling: () => { calls.push("recycle"); },
+      exitProcess: (code) => { calls.push(`exit:${code}`); },
+    });
+
+    const running = scheduled!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(timers[0]?.ms).toBe(MEMORY_DRAIN_RESTART_MS);
+    timers[0]!.fn();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(timers[1]?.ms).toBe(DEADLINE_LISTENER_STOP_TIMEOUT_MS);
+    expect(calls).toEqual(["latched", "drain", "stop"]);
+
+    timers[1]!.fn();
+    await running;
+    expect(calls).toEqual([
+      "latched",
+      "drain",
+      "stop",
+      "start:10123:deferred",
+      "recycle",
+      "exit:0",
+    ]);
+
+    rejectStop(new Error("late fixture stop rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([
+      "latched",
+      "drain",
+      "stop",
+      "start:10123:deferred",
+      "recycle",
+      "exit:0",
+    ]);
+  });
+
+  test("normal unsupervised stop rejection also preserves a replacement", async () => {
+    const calls: string[] = [];
+    let scheduled: (() => void | Promise<void>) | null = null;
+
+    acceptSystemRestart({
+      isDraining: () => false,
+      getActiveTurnCount: () => 0,
+      isSupervisedServiceChild: () => false,
+      listenPort: () => 10123,
+      schedule: (fn) => { scheduled = fn; },
+      scheduleDeadline: () => () => {},
+      setDraining: () => {},
+      drainAndShutdown: async () => { calls.push("drain"); },
+      stopListener: async () => {
+        calls.push("stop");
+        throw new Error("fixture stop rejection");
+      },
+      spawnStart: (port, waitForHealth) => {
+        calls.push(`start:${port}:${waitForHealth ? "ready" : "deferred"}`);
+      },
+      markRecycling: () => { calls.push("recycle"); },
+      exitProcess: (code) => { calls.push(`exit:${code}`); },
+    });
+
+    await scheduled!();
+    expect(calls).toEqual([
+      "drain",
+      "stop",
+      "start:10123:deferred",
+      "recycle",
+      "exit:0",
+    ]);
   });
 
   test("late drain rejection after timeout is observed without a second terminal action", async () => {
@@ -227,6 +439,7 @@ describe("acceptSystemRestart", () => {
         calls.push("drain");
         return new Promise<void>((_resolve, reject) => { rejectDrain = reject; });
       },
+      stopListener: () => { calls.push("stop"); },
       spawnStart: () => { calls.push("start"); },
       markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code) => { calls.push(`exit:${code}`); },
@@ -237,11 +450,11 @@ describe("acceptSystemRestart", () => {
     await Promise.resolve();
     fireDeadline?.();
     await running;
-    expect(calls).toEqual(["latched", "drain", "start", "recycle", "exit:0"]);
+    expect(calls).toEqual(["latched", "drain", "stop", "start", "recycle", "exit:0"]);
     rejectDrain(new Error("late fixture rejection"));
     await Promise.resolve();
     await Promise.resolve();
-    expect(calls).toEqual(["latched", "drain", "start", "recycle", "exit:0"]);
+    expect(calls).toEqual(["latched", "drain", "stop", "start", "recycle", "exit:0"]);
   });
 
   test("supervised service child exits 1 so failure-only supervisors respawn", async () => {
@@ -254,6 +467,7 @@ describe("acceptSystemRestart", () => {
       isSupervisedServiceChild: () => true,
       schedule: (fn) => { scheduled = fn; },
       drainAndShutdown: async () => { calls.push("drain"); },
+      stopListener: () => { calls.push("stop"); },
       spawnStart: () => { calls.push("start"); },
       markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code) => { calls.push(`exit:${code}`); },
@@ -357,7 +571,7 @@ describe("acceptSystemRestart", () => {
     }
   });
 
-  test("spawn async rejection exits 1 without marking recycle", async () => {
+  test("replacement readiness rejection exits 1 without marking recycle", async () => {
     const calls: string[] = [];
     let scheduled: (() => void | Promise<void>) | null = null;
 
@@ -371,7 +585,7 @@ describe("acceptSystemRestart", () => {
       drainAndShutdown: async () => { calls.push("drain"); },
       spawnStart: async () => {
         calls.push("start");
-        throw new Error("spawn error before start");
+        throw Object.assign(new Error("replacement never became healthy"), { code: "readiness_timeout" });
       },
       markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code) => { calls.push(`exit:${code}`); },
@@ -396,13 +610,14 @@ describe("acceptSystemRestart", () => {
         calls.push("drain");
         throw new Error("fixture cleanup rejection");
       },
+      stopListener: () => { calls.push("stop"); },
       spawnStart: (port) => { calls.push(`start:${port}`); },
       markRecycling: () => { calls.push("recycle"); },
       exitProcess: (code) => { calls.push(`exit:${code}`); },
     });
 
     await scheduled!();
-    expect(calls).toEqual(["latched", "drain", "start:10123", "recycle", "exit:0"]);
+    expect(calls).toEqual(["latched", "drain", "stop", "start:10123", "recycle", "exit:0"]);
   });
 
   test("spawn failure clears OCX_SERVICE so exit cleanup can restore fences", async () => {
@@ -486,6 +701,59 @@ describe("acceptSystemRestart", () => {
     expect(scheduleCount).toBe(1);
     await scheduled!();
     expect(calls).toEqual(["shutdown-latched", "shutdown", "start", "recycle", "exit:0"]);
+  });
+});
+
+describe("replacement readiness budget", () => {
+  test("allows the ordinary 65s Windows reclaim boundary without wall-clock delay", async () => {
+    let now = 0;
+    const ready = await waitForReplacementReady(222, 111, 10123, {
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      findLive: async () => now >= 65_000
+        ? { pid: 222, port: 10123, source: "runtime" }
+        : null,
+    });
+
+    expect(REPLACEMENT_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(65_000);
+    expect(ready).toBe(true);
+    expect(now).toBeGreaterThanOrEqual(65_000);
+    expect(now).toBeLessThan(REPLACEMENT_READY_TIMEOUT_MS);
+  });
+
+  test("ends the readiness probe at its exact virtual deadline", async () => {
+    let now = 0;
+    const ready = await waitForReplacementReady(222, 111, 10123, {
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      findLive: async () => null,
+    });
+
+    expect(ready).toBe(false);
+    expect(now).toBe(REPLACEMENT_READY_TIMEOUT_MS);
+  });
+
+  test("passes the absolute readiness deadline into a delayed internal probe", async () => {
+    let now = 0;
+    let probes = 0;
+    let forwardedDeadline: number | undefined;
+    const ready = await waitForReplacementReady(222, 111, 10123, {
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      findLive: async (probeIo) => {
+        probes += 1;
+        forwardedDeadline = probeIo?.deadlineAt;
+        expect(probeIo?.nowFn?.()).toBe(now);
+        expect(typeof probeIo?.sleepFn).toBe("function");
+        now = probeIo!.deadlineAt! + 1;
+        return { pid: 222, port: 10123, source: "runtime" };
+      },
+    });
+
+    expect(ready).toBe(false);
+    expect(probes).toBe(1);
+    expect(forwardedDeadline).toBe(REPLACEMENT_READY_TIMEOUT_MS);
+    expect(now).toBe(REPLACEMENT_READY_TIMEOUT_MS + 1);
   });
 });
 

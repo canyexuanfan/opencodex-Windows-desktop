@@ -111,11 +111,15 @@ jobs:
           set -euo pipefail
           keyring_home="$(mktemp -d)"
           runtime_dir="$(mktemp -d)"
-          cleanup() { rm -rf "$keyring_home" "$runtime_dir"; }
+          cleanup() { rm -rf -- "$keyring_home" "$runtime_dir"; }
           trap cleanup EXIT
           chmod 700 "$keyring_home" "$runtime_dir"
           HOME="$keyring_home" XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session -- bash -euo pipefail -c '
-            eval "$(gnome-keyring-daemon --start --components=secrets)"
+            # Create and unlock the isolated login keyring without putting its
+            # ephemeral password in argv, the environment, or the job log.
+            od -An -N32 -tx1 /dev/urandom |
+              tr -d "[:space:]" |
+              gnome-keyring-daemon --unlock --components=secrets >/dev/null
             bun run scripts/keyring-smoke.ts
           '
 
