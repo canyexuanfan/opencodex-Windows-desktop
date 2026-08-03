@@ -111,6 +111,11 @@ export interface ProviderRegistryEntry {
   allowPrivateNetworkByDefault?: boolean;
   keyOptional?: boolean;
   /**
+   * Registry-only key-login policy for public model catalogs that cannot authenticate a key.
+   * The dashboard flow then reports the key as unverifiable instead of a false positive.
+   */
+  apiKeyValidation?: "unknown";
+  /**
    * Free-tier pricing (no paid subscription required). Distinct from `keyOptional`:
    * free tiers may still require an API key (e.g. NVIDIA NIM free credits).
    */
@@ -1167,6 +1172,27 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       maxModels: 256,
     },
     note: "Shared Model APIs only (personal API key, or team key with Call Model APIs access); dedicated Truss predict endpoints are outside this preset.",
+  },
+  {
+    id: "commandcode",
+    label: "Command Code",
+    adapter: "openai-chat",
+    baseUrl: "https://api.commandcode.ai/provider/v1",
+    authKind: "key",
+    dashboardUrl: "https://commandcode.ai/studio/",
+    liveModels: true,
+    preserveCustomDestination: true,
+    defaultModel: "deepseek/deepseek-v4-flash",
+    // The public model catalog is unauthenticated, so a Bearer probe cannot prove key validity.
+    apiKeyValidation: "unknown",
+    // The public catalog reports ids/context windows only; no trustworthy reasoning contract.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 256,
+    },
+    note: "Command Code Provider API (OpenAI-compatible); subscription holders without a Provider plan need the CLI auth bridge for API access.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },

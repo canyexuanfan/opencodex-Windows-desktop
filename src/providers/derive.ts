@@ -6,6 +6,7 @@ export interface DerivedKeyLoginProvider {
   baseUrl: string;
   responsesPath?: string;
   adapter: string;
+  apiKeyValidation?: "unknown";
   apiKeyTransport?: OcxProviderConfig["apiKeyTransport"];
   dashboardUrl: string;
   models?: string[];
@@ -161,6 +162,7 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       baseUrl: entry.baseUrl,
       ...(entry.responsesPath ? { responsesPath: entry.responsesPath } : {}),
       adapter: entry.adapter,
+      ...(entry.apiKeyValidation !== undefined ? { apiKeyValidation: entry.apiKeyValidation } : {}),
       ...(entry.apiKeyTransport !== undefined ? { apiKeyTransport: entry.apiKeyTransport } : {}),
       dashboardUrl: entry.dashboardUrl,
       ...(entry.models ? { models: [...entry.models] } : {}),

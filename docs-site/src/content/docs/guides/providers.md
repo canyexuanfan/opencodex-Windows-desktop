@@ -190,7 +190,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 68 built-in presets: 57 key-based, seven OAuth, three local, and the default
+opencodex ships 67 built-in presets: 59 key-based, four OAuth, three local, and the default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it. Notable entries:
 
@@ -225,6 +225,7 @@ free-experimentation model.
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
+| Command Code | `https://api.commandcode.ai/provider/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -272,6 +273,13 @@ rows. Create keys in [DeepInfra's dashboard](https://deepinfra.com/dash/api_keys
 slash-containing native model ids, and caps live discovery at 256 KiB and 256 raw rows. It covers
 serverless text and vision-language chat only; Hyperbolic's separate image, audio, and GPU endpoints
 are out of scope. Create keys at [Hyperbolic](https://app.hyperbolic.ai).
+
+**Command Code discovery.** The preset reads Command Code's public `/provider/v1/models` list from
+the fixed Provider API host, preserves provider-native ids, and caps discovery at 256 KiB and 256 raw
+rows. The model catalog is unauthenticated, so the CLI login flow reports the key as unverifiable
+instead of a false positive. Chat requests use the configured Bearer key; API access requires the
+Provider plan, while Go/Pro subscription holders can use the CLI auth bridge. Create keys at
+[Command Code Studio](https://commandcode.ai/studio/).
 
 > **Baseten scope:** The preset covers Baseten's shared [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > only. Use a personal [API key](https://docs.baseten.co/organization/api-keys) for local use, or a team key
