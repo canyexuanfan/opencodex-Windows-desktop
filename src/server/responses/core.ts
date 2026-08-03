@@ -1620,7 +1620,7 @@ export async function handleResponses(
       const eagerDecision = winNoClientRewrite ? decideEagerRelay(config.streamMode ?? "auto") : null;
       if (eagerDecision?.useEagerRelay) {
         const turnAc = new AbortController();
-        linkAbortSignal(upstream, turnAc.signal);
+        const cleanupTurnAbort = linkAbortSignal(upstream, turnAc.signal);
         registerTurn(turnAc);
         const reportNativeTerminal = recordTerminalOutcomes
           ? (status: ResponsesTerminalStatus, httpStatusOverride?: number) => {
@@ -1666,7 +1666,10 @@ export async function handleResponses(
             }
           },
           onClientCancel: () => options.onNativePassthroughCancel?.(),
-          onDone: () => unregisterTurn(turnAc),
+          onDone: () => {
+            cleanupTurnAbort();
+            unregisterTurn(turnAc);
+          },
         });
         // The eager branch is reachable only through winNoClientRewrite, so it must stay a pure
         // native relay without an image-gen or item-id JS pull wrapper on win32 (Bun#32111).
@@ -1678,7 +1681,7 @@ export async function handleResponses(
       }
       const [nativeBody, inspectBody] = upstreamResponse.body.tee();
       const turnAc = new AbortController();
-      linkAbortSignal(upstream, turnAc.signal);
+      const cleanupTurnAbort = linkAbortSignal(upstream, turnAc.signal);
       registerTurn(turnAc);
       if (recordTerminalOutcomes) {
         // A real terminal was parsed from the (teed) inspection stream — record it as the outcome
@@ -1709,7 +1712,10 @@ export async function handleResponses(
           inspectBody,
           reportNativeTerminal,
           turnAc.signal,
-          () => unregisterTurn(turnAc),
+          () => {
+            cleanupTurnAbort();
+            unregisterTurn(turnAc);
+          },
           logCtx,
           () => options.onNativePassthroughCancel?.(),
           rememberPassthroughResponse,
@@ -1720,7 +1726,10 @@ export async function handleResponses(
           inspectBody,
           logCtx,
           turnAc.signal,
-          () => unregisterTurn(turnAc),
+          () => {
+            cleanupTurnAbort();
+            unregisterTurn(turnAc);
+          },
           rememberPassthroughResponse,
           options.onFirstOutput,
         );
@@ -1961,7 +1970,7 @@ export async function handleResponses(
 
   if (adapter.runTurn) {
     const runTurnAbort = new AbortController();
-    linkAbortSignal(runTurnAbort, options.abortSignal);
+    const cleanupRunTurnAbort = linkAbortSignal(runTurnAbort, options.abortSignal);
     const queue = createAdapterEventQueue({
       onBacklogExceeded: () => runTurnAbort.abort(),
     });
@@ -2035,7 +2044,7 @@ export async function handleResponses(
         },
       );
       const bridgeTurnAc = new AbortController();
-      const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc);
+      const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc, cleanupRunTurnAbort);
       return new Response(trackedSse, {
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },
       });

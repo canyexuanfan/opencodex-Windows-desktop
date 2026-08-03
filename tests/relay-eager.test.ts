@@ -5,7 +5,7 @@
  * via the injectable clock/short drain windows.
  */
 import { describe, expect, test } from "bun:test";
-import { createSseInspector } from "../src/server/relay";
+import { createSseInspector, MAX_SSE_BUFFER_BYTES } from "../src/server/relay";
 import { relaySseEagerBounded, type EagerRelayHooks } from "../src/server/relay-eager";
 import type { RequestLogContext } from "../src/server/request-log";
 
@@ -407,6 +407,18 @@ describe("createSseInspector — extraction locks (h)", () => {
     inspector.feed(sse(COMPLETED));
     inspector.feed(sse(DELTA));
     inspector.finish();
+    expect(inspector.reported()).toBe(false);
+  });
+
+  test("bounds an unterminated SSE frame without retaining later chunks", () => {
+    const terminals: string[] = [];
+    const inspector = createSseInspector({
+      onTerminal: status => terminals.push(status),
+    });
+    inspector.feed(new Uint8Array(MAX_SSE_BUFFER_BYTES + 1));
+    inspector.feed(sse(COMPLETED));
+    inspector.finish();
+    expect(terminals).toEqual([]);
     expect(inspector.reported()).toBe(false);
   });
 });

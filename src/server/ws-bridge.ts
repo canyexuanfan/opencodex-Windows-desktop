@@ -3,6 +3,7 @@ import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import type { CodexAuthContext } from "../codex/auth-context";
 import { headersForCodexAuthContext } from "../codex/auth-context";
 import type { ResponsesTerminalStatus } from "../bridge";
+import { MAX_SSE_BUFFER_BYTES } from "./relay";
 
 const OPEN = 1;
 type ResponsesTerminalReporter = (status: ResponsesTerminalStatus) => void;
@@ -241,7 +242,15 @@ export async function pumpResponsesSseToWebSocket(
     while (!terminalSeen) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      const decoded = decoder.decode(value, { stream: true });
+      if (buffer.length + decoded.length > MAX_SSE_BUFFER_BYTES) {
+        reportTerminal("incomplete");
+        sendProtocolError(ws, 502, "Upstream SSE frame exceeds the proxy buffer limit");
+        terminalSeen = true;
+        void reader.cancel().catch(() => {});
+        break;
+      }
+      buffer += decoded;
       let next: { block: string; rest: string } | null;
       while ((next = nextSseBlock(buffer))) {
         buffer = next.rest;

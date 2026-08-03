@@ -11,6 +11,9 @@ import {
   type RequestLogEntry,
 } from "./request-log";
 
+/** Keep malformed or half-open SSE frames from growing the JS heap without bound. */
+export const MAX_SSE_BUFFER_BYTES = 16 * 1024 * 1024;
+
 const nativePassthroughSseResponses = new WeakSet<Response>();
 
 export function relayWithAbort(
@@ -443,6 +446,7 @@ export function createSseInspector(handlers: {
 }): SseInspector {
   const decoder = new TextDecoder();
   let buffer = "";
+  let bufferOverflowed = false;
   let reported = false;
   const reportFirstOutput = createFirstOutputReporter(handlers.onFirstOutput);
   // Allocate reconstruction state only for persistence-capable inspectors.
@@ -502,7 +506,17 @@ export function createSseInspector(handlers: {
 
   return {
     feed(chunk) {
-      buffer += decoder.decode(chunk, { stream: true });
+      if (bufferOverflowed) return;
+      const decoded = decoder.decode(chunk, { stream: true });
+      if (buffer.length + decoded.length > MAX_SSE_BUFFER_BYTES) {
+        // Drop the incomplete frame and keep consuming only when the caller needs
+        // terminal accounting. The important invariant is that a broken upstream
+        // cannot retain every subsequent chunk in one ever-growing string.
+        buffer = "";
+        bufferOverflowed = true;
+        return;
+      }
+      buffer += decoded;
       let next: { block: string; rest: string } | null;
       while ((next = nextSseBlock(buffer))) {
         buffer = next.rest;
@@ -511,6 +525,10 @@ export function createSseInspector(handlers: {
       }
     },
     finish() {
+      if (bufferOverflowed) {
+        buffer = "";
+        return;
+      }
       buffer += decoder.decode();
       if (buffer.trim() && !reported) {
         scanPayload(sseDataPayload(buffer));
@@ -534,6 +552,7 @@ export function consumeForInspection(
   const reader = body.getReader();
   const inspector = createSseInspector({ onTerminal, logCtx, onCompletedResponse, onFirstOutput });
   let cancelled = false;
+  let removeAbortListener: (() => void) | undefined;
   if (signal) {
     if (signal.aborted) {
       // Aborted before we could read anything (Codex disconnects the instant it finishes reading).
@@ -545,13 +564,15 @@ export function consumeForInspection(
       onDone?.();
       return;
     }
-    signal.addEventListener("abort", () => {
+    const onAbort = () => {
       // Mid-drain disconnect: record a client-cancel entry (idempotent downstream) instead of the
       // suppressed onTerminal path. onDone still fires via pump()'s finally after the read rejects.
       cancelled = true;
       reader.cancel(signal.reason).catch(() => {});
       onCancel?.();
-    }, { once: true });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
   }
   const pump = async () => {
     try {
@@ -579,6 +600,7 @@ export function consumeForInspection(
         onTerminal("failed", 502);
       }
     } finally {
+      removeAbortListener?.();
       onDone?.();
     }
   };
@@ -597,15 +619,18 @@ export function consumeForResponseLogMetadata(
   // No onTerminal → the inspector's `reported` gate stays permanently false,
   // reproducing this consumer's unconditional logCtx inspection.
   const inspector = createSseInspector({ logCtx, onCompletedResponse, onFirstOutput });
+  let removeAbortListener: (() => void) | undefined;
   if (signal) {
     if (signal.aborted) {
       reader.cancel(signal.reason).catch(() => {});
       onDone?.();
       return;
     }
-    signal.addEventListener("abort", () => {
+    const onAbort = () => {
       reader.cancel(signal.reason).catch(() => {});
-    }, { once: true });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
   }
   const pump = async () => {
     try {
@@ -620,6 +645,7 @@ export function consumeForResponseLogMetadata(
     } catch {
       /* metadata inspection must not affect the client-facing stream */
     } finally {
+      removeAbortListener?.();
       onDone?.();
     }
   };
