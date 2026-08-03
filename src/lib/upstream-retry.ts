@@ -98,6 +98,10 @@ export async function releaseResponseBodyBestEffort(
   }
   await new Promise<void>(resolve => {
     let timer: ReturnType<typeof setTimeout>;
+    /**
+     * Abort hook: clear the bounded-body release timer and settle the promise so a
+     * never-settling cancel() can never block the abort-aware backoff.
+     */
     const onAbort = () => {
       clearTimeout(timer);
       resolve();

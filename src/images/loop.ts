@@ -451,6 +451,10 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
        */
       let cachedRequest: AdapterRequest | undefined;
       let cachedAdapter: ProviderAdapter | undefined;
+      /**
+       * Build and fetch one image-bridge iteration on the given adapter, under the iteration
+       * header deadline. The caller owns same-target 429 replays and key rotation around it.
+       */
       const fetchOnce = async (requestAdapter: ProviderAdapter, recovery?: AttemptRecoveryKind): Promise<IterationResponse> => {
         let request: AdapterRequest;
         if (cachedRequest !== undefined && cachedAdapter === requestAdapter) {
