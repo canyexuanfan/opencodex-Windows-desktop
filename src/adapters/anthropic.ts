@@ -408,16 +408,43 @@ const ADAPTIVE_THINKING_FAMILY_MINIMUMS: Record<string, readonly [major: number,
   fable: [0, 0],
 };
 
-function usesAdaptiveThinking(modelId: string): boolean {
-  // Minor is 1-2 digits with a non-digit lookahead so date-pinned ids ("claude-opus-4-20250514")
-  // parse as minor 0 instead of minor 20250514; suffixed ids ("claude-opus-4-8[1m]") still match.
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
-  if (!match) return false;
-  const minimum = ADAPTIVE_THINKING_FAMILY_MINIMUMS[match[1]];
+/**
+ * Family/version parse for a Claude model id, tolerant of a routing prefix.
+ *
+ * `parsed.modelId` is not always bare: a `modelMap` entry may point at a routed
+ * destination such as `anthropic/claude-sonnet-5`, which custom-provider routing
+ * decodes back into a slash-carrying native id. Anchoring on `^claude-` alone
+ * would silently fail those, and a capability predicate that quietly returns
+ * false is worse than one that throws — the request just goes out wrong.
+ *
+ * Minor is 1-2 digits with a non-digit lookahead so date-pinned ids
+ * ("claude-opus-4-20250514") parse as minor 0 instead of minor 20250514;
+ * suffixed ids ("claude-opus-4-8[1m]") still match.
+ */
+function claudeFamilyVersion(modelId: string): { family: string; major: number; minor: number } | undefined {
+  const bare = modelId.slice(modelId.lastIndexOf("/") + 1);
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(bare);
+  if (!match) return undefined;
+  return {
+    family: match[1]!,
+    major: Number(match[2]),
+    minor: match[3] === undefined ? 0 : Number(match[3]),
+  };
+}
+
+function meetsFamilyMinimum(
+  modelId: string,
+  minimums: Record<string, readonly [major: number, minor: number]>,
+): boolean {
+  const parsed = claudeFamilyVersion(modelId);
+  if (!parsed) return false;
+  const minimum = minimums[parsed.family];
   if (!minimum) return false;
-  const major = Number(match[2]);
-  const minor = match[3] === undefined ? 0 : Number(match[3]);
-  return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
+  return parsed.major > minimum[0] || (parsed.major === minimum[0] && parsed.minor >= minimum[1]);
+}
+
+function usesAdaptiveThinking(modelId: string): boolean {
+  return meetsFamilyMinimum(modelId, ADAPTIVE_THINKING_FAMILY_MINIMUMS);
 }
 
 /**
@@ -437,13 +464,7 @@ const EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS: Record<string, readonly [major:
 };
 
 function supportsExplicitThinkingDisable(modelId: string): boolean {
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
-  if (!match) return false;
-  const minimum = EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS[match[1]];
-  if (!minimum) return false;
-  const major = Number(match[2]);
-  const minor = match[3] === undefined ? 0 : Number(match[3]);
-  return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
+  return meetsFamilyMinimum(modelId, EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS);
 }
 
 /** `output_config.effort` accepts low|medium|high|xhigh|max — "minimal" is rejected with a 400. */

@@ -48,6 +48,18 @@ describe("Cursor per-model reasoning-effort suffix", () => {
     expect(modelIdFor("cursor/claude-4.6-opus")).toBe("claude-4.6-opus-max");
   });
 
+  // #545 made Claude Desktop's `thinking:{type:"disabled"}` survive translation as the "none"
+  // sentinel instead of being dropped. For a modelMap that routes such a request to Cursor,
+  // that changes the selected tier — pin it so the cross-provider effect is deliberate.
+  //
+  // Cursor has no "off" for a reasoning model, so the lowest tier is the closest honest
+  // reading of "do not think". Dropping the instruction sent these to the model's TOP tier,
+  // which is the opposite of what the caller asked for.
+  test("an explicit 'none' picks the lowest tier, not the top one (#545)", () => {
+    expect(modelIdFor("cursor/claude-opus-4-8", "none")).toBe("claude-opus-4-8-low");
+    expect(modelIdFor("cursor/claude-opus-4-8")).toBe("claude-opus-4-8-max");
+  });
+
   test("single-tier models always use their one tier", () => {
     expect(modelIdFor("cursor/gpt-5.5-extra", "low")).toBe("gpt-5.5-extra-high");
     expect(modelIdFor("cursor/claude-4.6-sonnet", "high")).toBe("claude-4.6-sonnet-medium");

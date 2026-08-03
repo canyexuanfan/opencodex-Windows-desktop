@@ -148,8 +148,16 @@ describe("anthropic extended-thinking gate", () => {
   // max_tokens:64. Omitting the field lets a default-on model think anyway, and thinking
   // shares that 64-token budget — so generation stopped before the stop sequence and the
   // client retried. Say "disabled" out loud, but only where the vendor accepts it.
-  test("Sonnet 5 + reasoning 'none' sends an explicit thinking disable (#545)", async () => {
-    const b = await bodyOf(parsed("none", { maxOutputTokens: 64, stopSequences: ["</block>"] }, "claude-sonnet-5"));
+  test.each([
+    "claude-sonnet-5",
+    "claude-sonnet-5-20260101",
+    "claude-sonnet-5[1m]",
+    // A modelMap entry can point at a routed destination, which custom-provider routing
+    // decodes back into a slash-carrying native id. An id-shape miss here is silent: the
+    // request simply goes out without the disable and the model thinks anyway.
+    "anthropic/claude-sonnet-5",
+  ])("%s + reasoning 'none' sends an explicit thinking disable (#545)", async (modelId) => {
+    const b = await bodyOf(parsed("none", { maxOutputTokens: 64, stopSequences: ["</block>"] }, modelId));
     expect(b.thinking).toEqual({ type: "disabled" });
     expect(b.output_config).toBeUndefined();
     // The caller's own limits must survive untouched — they were never the defect.
@@ -169,6 +177,7 @@ describe("anthropic extended-thinking gate", () => {
     "claude-opus-4-8",
     "claude-haiku-4-5",
     "claude-sonnet-4-6",
+    "anthropic/claude-fable-5",
   ])("%s + 'none' sends NO explicit disable (#545 gate stays narrow)", async (modelId) => {
     // Fable always thinks and rejects an explicit disable; the Opus 4.7/4.8 adaptive wire
     // leaves thinking off when omitted. Widening the gate to every adaptive family would
