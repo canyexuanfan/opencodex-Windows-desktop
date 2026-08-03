@@ -17,7 +17,9 @@ IN: `gui/src/pages/integrations/overview-clients.ts` (MODIFY),
 `gui/src/i18n/de.ts` (MODIFY), `gui/src/i18n/ru.ts` (MODIFY),
 `gui/tests/integrations-overview-rows.test.ts` (MODIFY),
 `gui/tests/overview-state-merge.test.ts` (MODIFY), and
-`gui/tests/integrations-surfaces.test.tsx` (MODIFY). No implementation file is NEW.
+`gui/tests/integrations-surfaces.test.tsx` (MODIFY),
+`gui/tests/api-key-count-loader.test.ts` (NEW — the only new file; no
+implementation file is NEW).
 
 IN also: `gui/src/pages/integrations/integration-api.ts` (MODIFY) — see
 §Distinguishing a failed read.
@@ -489,6 +491,14 @@ behavior is not retested here — `client-resource` already owns it.
 MODIFY `gui/tests/overview-state-merge.test.ts`: its `row()` helper reads the
 `.rows` member. No assertion changes.
 
+**Both fixture builders need the new required field.** `keyPhase` is not
+optional on `OverviewSources`, and the `sources()` helpers in
+`overview-state-merge.test.ts:17` and `integrations-overview-rows.test.ts:28`
+both construct one today without it — so neither file compiles until each
+defaults `keyPhase: "settled"`, with per-case overrides in the four-state
+matrix above. Naming this explicitly because "no assertion changes" reads like
+"no edits needed", and it is not.
+
 MODIFY `gui/tests/integrations-surfaces.test.tsx` with a mounted overview case.
 
 **First, the fixture needs work the audit found missing.** `failExtraSources`
@@ -530,7 +540,7 @@ through its three outcomes.
 
 ## Verification
 
-1. `cd gui && bun test tests/integrations-overview-rows.test.ts tests/overview-state-merge.test.ts tests/integrations-surfaces.test.tsx`
+1. `cd gui && bun test tests/api-key-count-loader.test.ts tests/integrations-overview-rows.test.ts tests/overview-state-merge.test.ts tests/integrations-surfaces.test.tsx`
 2. `cd gui && bun test tests && bun run lint && bun run lint:i18n && bun run build`
 3. `bun run typecheck`, `bun run test`, `bun run privacy:scan`
 4. Start the real dashboard and open `http://localhost:10100/#integrations` at
