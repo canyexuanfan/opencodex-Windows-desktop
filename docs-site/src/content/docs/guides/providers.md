@@ -190,15 +190,30 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 66 built-in presets: 55 key-based, seven OAuth, three local, and the default
+opencodex ships 68 built-in presets: 57 key-based, seven OAuth, three local, and the default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it. Notable entries:
+
+**ClinePass** uses a Cline API key with the [official subscription catalog](https://docs.cline.bot/getting-started/clinepass)
+and [Chat Completions endpoint](https://docs.cline.bot/api/chat-completions), operated by Cline Bot Inc. under
+[Cline's terms](https://cline.bot/tos). A routed id such as `cline-pass/cline-pass/kimi-k3` is
+intentional: the first segment selects the opencodex provider, while `cline-pass/kimi-k3` is the
+full model slug sent upstream. ClinePass quota is shared by the account across rolling 5-hour,
+weekly, and monthly limits. opencodex currently advertises the live-verified `low` reasoning tier;
+higher requested tiers clamp to `low` until the gateway publishes or verifies a wider ladder.
+
+**Cline** is the same API key and endpoint on pay-as-you-go usage billing across 100+ models
+(OpenRouter-style ids like `anthropic/claude-sonnet-4-6`). Cline's promotional free models are only
+available in the Cline IDE/CLI, not through the API; `minimax/minimax-m2.5` is the documented API
+free-experimentation model.
 
 | Provider | Base URL |
 | --- | --- |
 | **OpenAI (API key)** | `https://api.openai.com/v1` |
 | **Anthropic (API key)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
+| **Cline** | `https://api.cline.bot/api/v1` |
+| **ClinePass** | `https://api.cline.bot/api/v1` |
 | **Ollama Cloud** | `https://ollama.com/v1` |
 | Google Gemini · Google Vertex AI | `https://generativelanguage.googleapis.com` · `https://aiplatform.googleapis.com` |
 | Azure OpenAI | `https://{resource}.openai.azure.com/openai` |

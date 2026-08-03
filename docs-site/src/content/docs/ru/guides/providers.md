@@ -126,15 +126,30 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 66 встроенными пресетами: 55 на основе ключей, семь OAuth, три локальных и
+opencodex поставляется с 68 встроенными пресетами: 57 на основе ключей, семь OAuth, три локальных и
 пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его. Наиболее заметные записи:
+
+**ClinePass** подключается с помощью Cline API key к [официальному каталогу подписки](https://docs.cline.bot/getting-started/clinepass)
+и [Chat Completions endpoint](https://docs.cline.bot/api/chat-completions). Оператор — Cline Bot Inc., указанный в
+[условиях Cline](https://cline.bot/tos). Маршрут вида `cline-pass/cline-pass/kimi-k3`
+намеренный: первая часть выбирает провайдера opencodex, а полный slug `cline-pass/kimi-k3`
+отправляется upstream. Использование учитывается в общих для аккаунта скользящем 5-часовом,
+недельном и месячном лимитах. Сейчас opencodex публикует только проверенный на живом API reasoning tier
+`low`; более высокие запросы ограничиваются до `low`, пока шлюз не опубликует или не подтвердит более широкий диапазон.
+
+**Cline** использует тот же ключ и эндпоинт с оплатой по мере использования и доступом к 100+ моделям
+(ID в формате OpenRouter, например `anthropic/claude-sonnet-4-6`). Промо-бесплатные модели Cline
+доступны только в IDE/CLI Cline, а не через API; `minimax/minimax-m2.5` документирован как
+бесплатная модель для экспериментов через API.
 
 | Провайдер | Базовый URL |
 | --- | --- |
 | **OpenAI (API key)** | `https://api.openai.com/v1` |
 | **Anthropic (API key)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
+| **Cline** | `https://api.cline.bot/api/v1` |
+| **ClinePass** | `https://api.cline.bot/api/v1` |
 | **Ollama Cloud** | `https://ollama.com/v1` |
 | Google Gemini · Google Vertex AI | `https://generativelanguage.googleapis.com` · `https://aiplatform.googleapis.com` |
 | Azure OpenAI | `https://{resource}.openai.azure.com/openai` |

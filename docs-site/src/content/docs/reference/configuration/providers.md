@@ -81,6 +81,7 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `modelAdapters?` | `Record<string, string>` | Per-model `openai-chat` or `openai-responses` wire override for mixed-wire gateways. Explicit entries beat registry defaults; DeepSeek's preset can select native Responses for `deepseek-v4-flash`, and GitHub Copilot declares Responses-only defaults for its GPT-5 family (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`) because those models reject `/chat/completions` for agent traffic. Models without a built-in default (for example `gpt-5.4-nano`) can be opted in here. Single-wire upstream pins and canonical ChatGPT forward reject overrides. |
 | `reasoningEffortMap?` | `Record<string, string>` | Provider-wide wire aliases for reasoning labels. |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | Per-model wire aliases for reasoning labels. |
+| `reasoningWireFormat?` | `"gateway-object"` | For OpenAI-compatible gateways that accept `reasoning: { enabled, effort }` instead of `reasoning_effort`. The ClinePass preset sets this automatically. |
 | `noReasoningModels?` | `string[]` | Models that reject reasoning/thinking parameters. |
 | `noTemperatureModels?` | `string[]` | Models that reject caller-specified `temperature`. |
 | `noTopPModels?` | `string[]` | Models that reject caller-specified `top_p`. |

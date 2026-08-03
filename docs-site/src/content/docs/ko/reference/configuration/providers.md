@@ -70,6 +70,7 @@ description: 공급자 항목, 인증, 엔드포인트, 모델 카탈로그, 할
 | `modelAdapters?` | `Record<string, string>` | 혼합 와이어 게이트웨이를 위한 모델별 `openai-chat` 또는 `openai-responses` 와이어 재정의입니다. 명시적 항목이 레지스트리 기본값보다 우선합니다. DeepSeek 프리셋은 `deepseek-v4-flash`에 네이티브 Responses를 선택할 수 있고, GitHub Copilot은 GPT-5 계열(`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`)을 Responses 전용 기본값으로 선언합니다. 이 모델들은 에이전트 트래픽에서 `/chat/completions`를 거부하기 때문입니다. `gpt-5.4-nano`처럼 기본값이 없는 모델은 여기서 직접 옵트인할 수 있습니다. 단일 와이어 상위 항목과 정식 ChatGPT forward는 재정의를 거부합니다. |
 | `reasoningEffortMap?` | `Record<string, string>` | reasoning 레이블의 공급자 전반 와이어 별칭입니다. |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | reasoning 레이블의 모델별 와이어 별칭입니다. |
+| `reasoningWireFormat?` | `"gateway-object"` | `reasoning_effort` 대신 `reasoning: { enabled, effort }`를 받는 OpenAI 호환 게이트웨이용입니다. ClinePass 프리셋이 자동 설정합니다. |
 | `noReasoningModels?` | `string[]` | reasoning/thinking 매개변수를 거부하는 모델입니다. |
 | `noTemperatureModels?` | `string[]` | 호출자가 지정한 `temperature`를 거부하는 모델입니다. |
 | `noTopPModels?` | `string[]` | 호출자가 지정한 `top_p`를 거부하는 모델입니다. |

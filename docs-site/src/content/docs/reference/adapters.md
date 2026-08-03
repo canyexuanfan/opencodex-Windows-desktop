@@ -38,6 +38,11 @@ provider — xAI, Kimi, DeepSeek, GLM, Groq, OpenRouter, Ollama (local & cloud),
   adapter **omits it entirely** for ids in `provider.noReasoningModels`.
 - Streams `delta.content` (text), `delta.reasoning_content` (thinking), and `delta.tool_calls[]`;
   collects `usage`.
+- ClinePass uses the live-verified gateway format `reasoning: { enabled: true, effort: "low" }`
+  (or `{ enabled: false }` when reasoning is disabled); its public API docs do not currently specify
+  this request shape. The adapter clamps other effort requests to the verified `low` tier, accepts
+  reasoning deltas from either `delta.reasoning_content` or `delta.reasoning`, requests streamed
+  usage with `stream_options.include_usage`, and reads usage from non-stream response envelopes.
 
 ## `openai-responses`
 

@@ -22,6 +22,7 @@ export interface DerivedKeyLoginProvider {
   modelDefaultReasoningEfforts?: Record<string, string>;
   reasoningEffortMap?: Record<string, string>;
   modelReasoningEffortMap?: Record<string, Record<string, string>>;
+  reasoningWireFormat?: OcxProviderConfig["reasoningWireFormat"];
   noVisionModels?: string[];
   noReasoningModels?: string[];
   noTemperatureModels?: string[];
@@ -128,6 +129,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts: { ...entry.modelDefaultReasoningEfforts } } : {}),
     ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
     ...(entry.modelReasoningEffortMap ? { modelReasoningEffortMap: cloneNestedRecord(entry.modelReasoningEffortMap) } : {}),
+    ...(entry.reasoningWireFormat ? { reasoningWireFormat: entry.reasoningWireFormat } : {}),
     ...(entry.noVisionModels ? { noVisionModels: [...entry.noVisionModels] } : {}),
     ...(entry.noReasoningModels ? { noReasoningModels: [...entry.noReasoningModels] } : {}),
     ...(entry.noTemperatureModels ? { noTemperatureModels: [...entry.noTemperatureModels] } : {}),
@@ -175,6 +177,7 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       ...(entry.modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts: { ...entry.modelDefaultReasoningEfforts } } : {}),
       ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
       ...(entry.modelReasoningEffortMap ? { modelReasoningEffortMap: cloneNestedRecord(entry.modelReasoningEffortMap) } : {}),
+      ...(entry.reasoningWireFormat ? { reasoningWireFormat: entry.reasoningWireFormat } : {}),
       ...(entry.noVisionModels ? { noVisionModels: [...entry.noVisionModels] } : {}),
       ...(entry.noReasoningModels ? { noReasoningModels: [...entry.noReasoningModels] } : {}),
       ...(entry.noTemperatureModels ? { noTemperatureModels: [...entry.noTemperatureModels] } : {}),
@@ -248,6 +251,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (!prov.modelDefaultReasoningEfforts && seed.modelDefaultReasoningEfforts) prov.modelDefaultReasoningEfforts = { ...seed.modelDefaultReasoningEfforts };
   if (!prov.reasoningEffortMap && seed.reasoningEffortMap) prov.reasoningEffortMap = { ...seed.reasoningEffortMap };
   if (!prov.modelReasoningEffortMap && seed.modelReasoningEffortMap) prov.modelReasoningEffortMap = cloneNestedRecord(seed.modelReasoningEffortMap);
+  if (prov.reasoningWireFormat === undefined && seed.reasoningWireFormat !== undefined) prov.reasoningWireFormat = seed.reasoningWireFormat;
   if (!prov.noVisionModels && seed.noVisionModels) prov.noVisionModels = [...seed.noVisionModels];
   if (!prov.noReasoningModels && seed.noReasoningModels) prov.noReasoningModels = [...seed.noReasoningModels];
   if (!prov.noTemperatureModels && seed.noTemperatureModels) prov.noTemperatureModels = [...seed.noTemperatureModels];
