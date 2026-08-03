@@ -90,39 +90,29 @@ MODIFY `integration-api.ts`:
 `loadApiKeyCount` has exactly one production consumer, `IntegrationsOverview`;
 the other API-key surfaces fetch `/api/keys` directly, so nothing else changes.
 
-MODIFY `IntegrationsOverview.tsx` to derive the phase from the resource, the way
-`clientsSettled` already does at `:261-262`:
+The component wiring for this lives in one place — §Render — so an implementer
+never has to reconcile two partial diffs of the same object.
+
+`overview-clients.ts` exports the phase type and `OverviewSources` carries it
+(`:82-93`):
 
 ```diff
-++  // The three phases the row distinguishes, read off the resource rather than
-++  // guessed from a null. Mirrors the clientsSettled idiom above.
-++  const keyPhase: ApiKeyReadPhase =
-++    keysResource.state.kind === "cold" || keysResource.state.kind === "retrying-cold"
-++      ? "checking"
-++      : keysResource.state.kind === "failed-cold" || keysResource.state.kind === "failed-with-stale"
-++        ? "unavailable"
-++        : "settled";
-   const rows = buildOverviewRows({
-     clients,
-     clientsSettled,
-     codex: codexResource.state.data ?? null,
-     keyCount: keysResource.state.data ?? null,
-++    keyPhase,
++/** How far the `/api/keys` read has got, since the count alone cannot say. */
++export type ApiKeyReadPhase = "checking" | "unavailable" | "settled";
++
+ export interface OverviewSources {
+   /** File-client rows; an empty array means the list has not settled. */
+   clients: readonly IntegrationStatus[];
+   clientsSettled: boolean;
+   codex: CodexRoutingPayload | null;
+   keyCount: number | null;
++  /**
++   * Read phase for `keyCount`. Separate because a settled zero and a failed
++   * read are both `null`-adjacent facts that must not render the same way.
++   */
++  keyPhase: ApiKeyReadPhase;
+   claude: ClaudeCodePayload | null;
 ```
-
-`OverviewSources` gains `keyPhase: ApiKeyReadPhase`, `buildOverviewRows` passes
-it through as `keysRow(sources.keyPhase, sources.keyCount)`, and the helper
-signature becomes:
-
-```ts
-export type ApiKeyReadPhase = "checking" | "unavailable" | "settled";
-
-function keysRow(phase: ApiKeyReadPhase, count: number | null): ApiKeysOverviewRow
-```
-
-Four output states from three input phases: `checking` and `unavailable` map
-straight through, and `settled` splits on the count into `issued` or
-`none-issued`. Every branch names a detail key.
 
 ## Row model — `overview-clients.ts`
 
@@ -238,6 +228,7 @@ all.” Below preserves aggregate → individual → client catalog hierarchy.
  import {
    buildOverviewRows,
    countOverviewRows,
++  type ApiKeyReadPhase,
 +  type ApiKeysOverviewRow,
    type OverviewRow,
  } from "./overview-clients";
@@ -283,12 +274,37 @@ all.” Below preserves aggregate → individual → client catalog hierarchy.
 +  );
 +}
 
+   const keysResource = useDataSurface(
+     `integration-keys:${apiBase}`,
+     [apiBase],
+     fetchKeyCount,
+-    { isEmpty: value => value === null, enabled: active },
++    // The loader now throws instead of resolving null, so null is no longer a
++    // value it can produce. Leaving the old predicate would classify nothing
++    // and quietly outlive the contract it was written for.
++    { isEmpty: () => false, enabled: active },
+   );
+...
++  /*
++   * The three phases the keys row distinguishes, read off the resource rather
++   * than guessed from a null — the same idiom as clientsSettled above. A
++   * failed read must never reach the count branch: `failed-with-stale` still
++   * carries the previous number, and rendering it as "N issued" would report a
++   * stale credential inventory as current.
++   */
++  const keyPhase: ApiKeyReadPhase =
++    keysResource.state.kind === "cold" || keysResource.state.kind === "retrying-cold"
++      ? "checking"
++      : keysResource.state.kind === "failed-cold" || keysResource.state.kind === "failed-with-stale"
++        ? "unavailable"
++        : "settled";
 -  const rows = buildOverviewRows({
 +  const { keysRow, rows } = buildOverviewRows({
      clients,
      clientsSettled,
      codex: codexResource.state.data ?? null,
      keyCount: keysResource.state.data ?? null,
++    keyPhase,
      claude: claudeResource.state.data ?? null,
      claudeDesktop: claudeDesktopResource.state.data ?? null,
      grok: grokResource.state.data ?? null,
@@ -455,6 +471,21 @@ MODIFY `gui/tests/integrations-overview-rows.test.ts`:
 4. Keep every existing Codex/Desktop/file-client mapping case against `rows`.
 5. Update the pinned `applied` at `:128` to its new value and leave it pinned.
 
+NEW `gui/tests/api-key-count-loader.test.ts`, because the loader's contract
+changed from "returns null on anything bad" to "throws on anything bad", and a
+mounted "failure" case only exercises one of the five ways it can now throw:
+
+1. a valid `{ keys: [] }` resolves `0` — zero is data, not a failure;
+2. a valid `{ keys: [a, b] }` resolves `2`;
+3. a non-ok status rejects;
+4. a malformed or empty body rejects;
+5. `{ keys: "not-an-array" }` rejects;
+6. a network rejection propagates rather than being swallowed.
+
+Case 5 is the one the old `readOptional` path silently turned into "no keys
+issued", which is the exact false claim this phase exists to stop. Abort
+behavior is not retested here — `client-resource` already owns it.
+
 MODIFY `gui/tests/overview-state-merge.test.ts`: its `row()` helper reads the
 `.rows` member. No assertion changes.
 
@@ -478,7 +509,7 @@ through its three outcomes.
 3. Drive `/api/keys` through a DEFERRED response (still in flight, asserting
    the "Checking…" copy before it settles), then `[]`, two keys, and a failure,
    with everything else settled and constant. Assert the row copy each time AND assert the client
-   summary totals are **exact and identical** across all three. A relative
+   summary totals are **exact and identical** across all four. A relative
    "text is present" check would not catch the leak this phase exists to close.
 4. **Tabbability, not button-counting.** Query every tabbable descendant of the
    row and assert the single result is the Manage keys button. "Exactly one
