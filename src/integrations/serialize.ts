@@ -124,7 +124,20 @@ function yamlLines(value: unknown, indent: number): string[] {
     return value.flatMap(item => {
       if (isYamlScalar(item)) return [`${padding}- ${yamlScalar(item)}`];
       if (isPlainRecord(item)) return yamlArrayMapLines(item, indent);
-      throw new Error(`unsupported YAML array item: ${String(item)}`);
+      /*
+       * A nested sequence is ordinary YAML (`matrix: [[1,2],[3,4]]`). This
+       * used to throw a plain Error carrying `String(item)` — untyped, so the
+       * writer could not turn it into a refusal and it surfaced as a 500, and
+       * carrying the value's CONTENTS into the message, which a config may
+       * not want repeated.
+       */
+      if (Array.isArray(item)) {
+        if (item.length === 0) return [`${padding}- []`];
+        return [`${padding}-`, ...yamlLines(item, indent + 2)];
+      }
+      throw new UnserializableValueError(
+        `YAML cannot represent this sequence item: ${describeValue(item)}`,
+      );
     });
   }
   if (isPlainRecord(value)) {
@@ -174,6 +187,16 @@ function tomlScalar(value: unknown): string {
    */
   if (Array.isArray(value)) {
     return `[${value.map(item => tomlScalar(item)).join(", ")}]`;
+  }
+  /*
+   * An inline table is valid TOML (`items = [{ x = 1 }]`), and rendering one
+   * inline is straightforward — but only where the whole array can be
+   * rendered, so this stays a scalar-position renderer rather than silently
+   * flattening a table into a string.
+   */
+  if (isPlainRecord(value)) {
+    const entries = Object.entries(value);
+    return `{ ${entries.map(([k, v]) => `${quoteTomlKey(k)} = ${tomlScalar(v)}`).join(", ")} }`;
   }
   throw new UnserializableValueError(`TOML cannot represent this value: ${describeValue(value)}`);
 }

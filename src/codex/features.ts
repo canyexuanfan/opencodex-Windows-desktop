@@ -33,7 +33,8 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
-import { atomicWriteFile, expandUserPath } from "../config";
+import { AtomicWriteResidualTempError, AtomicWriteSecretResidualError, atomicWriteFile, expandUserPath } from "../config";
+import { forgetEphemeralSecretPath } from "../lib/windows-secret-acl";
 import { CODEX_CONFIG_PATH } from "./paths";
 
 /** Upstream codex-rs feature key: allow `request_user_input` in Default mode. */
@@ -855,10 +856,20 @@ function activeThreadComment(content: string, v2Enabled: boolean): string | unde
 }
 
 let migrationEditSeq = 0;
+/** Both residual classes gate the memo release: a plain residual and a
+ * secret-bearing one alike keep their destination memo while the file
+ * remains on disk. Exported for the regression seam. */
+export function isAtomicResidualError(error: unknown): boolean {
+  return error instanceof AtomicWriteResidualTempError || error instanceof AtomicWriteSecretResidualError;
+}
+
 function applyConfigEditsAtomically(path: string, edit: (tempPath: string) => ConfigEditResult): ConfigEditResult {
   const content = readConfigText(path);
   if (content === null) return { ok: false, error: `config.toml not readable at ${path}` };
   const tempPath = `${path}.ocx-migration.${process.pid}.${++migrationEditSeq}`;
+  // An inner residual temp (AtomicWriteResidualTempError) keeps its
+  // destination-keyed memo: fail-closed while the residual exists.
+  let innerResidual = false;
   try {
     atomicWriteFile(tempPath, content);
     const result = edit(tempPath);
@@ -868,8 +879,19 @@ function applyConfigEditsAtomically(path: string, edit: (tempPath: string) => Co
     if (edited === content) return { ok: true, changed: false };
     atomicWriteFile(path, edited);
     return { ok: true, changed: true };
+  } catch (error) {
+    if (isAtomicResidualError(error)) innerResidual = true;
+    throw error;
   } finally {
-    try { unlinkSync(tempPath); } catch { /* already absent */ }
+    try {
+      unlinkSync(tempPath);
+      if (!innerResidual) forgetEphemeralSecretPath(tempPath);
+    } catch (error) {
+      // Already absent is also proven-absent; other failures keep the memo.
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        if (!innerResidual) forgetEphemeralSecretPath(tempPath);
+      }
+    }
   }
 }
 
