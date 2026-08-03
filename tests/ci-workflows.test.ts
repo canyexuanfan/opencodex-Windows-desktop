@@ -432,16 +432,16 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("main releases must use a stable semver version");
     expect(workflow).toContain("preview releases must use a preview prerelease version");
 
-    // Release notes must include PR categories and the full channel commit range
-    // (branch merges + direct commits). Preflight forbids an existing release, so
-    // only create (not edit) is wired. Stable releases also carry matching preview notes.
+    // Release notes must be OpenAI-Codex-style: PR categories with grouped summary
+    // bullets plus a full PR changelog (no raw commit dump). Preflight forbids an
+    // existing release, so only create (not edit) is wired. Stable releases also
+    // carry matching preview notes.
     expect(workflow).toContain("releases/generate-notes");
-    expect(workflow).toContain("git log --pretty=format:'- %s (%h)'");
-    expect(workflow).toContain('commit_range="${notes_range_start}..${GITHUB_SHA}"');
+    expect(workflow).not.toContain("git log --pretty=format");
     expect(workflow).toContain('previous_tag_name=${notes_range_start}');
-    expect(workflow).toContain("skipping generate-notes (commits-only notes)");
+    expect(workflow).toContain("skipping generate-notes (minimal notes)");
     expect(workflow).toContain("bun scripts/release-notes.ts strip-carried");
-    expect(workflow).toContain("bun scripts/release-notes.ts assemble");
+    expect(workflow).toContain("bun scripts/release-notes.ts render");
     expect(workflow).toContain("bun scripts/release-notes.ts matching-preview-tags");
     expect(workflow).toContain("bun scripts/release-notes.ts previous-release-tag");
     expect(workflow).toContain("bun scripts/release-notes.ts has-meaningful");
@@ -461,7 +461,8 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("not an ancestor");
     expect(workflow).toContain("newest_carried_preview_tag");
     expect(workflow).not.toMatch(/newest_preview_tag="\$preview_carry_tag"/);
-    expect(workflow).toContain("--commits");
+    expect(workflow).toContain('--carried "$carried_file"');
+    expect(workflow).toContain('--delta "$delta_file"');
     expect(workflow).toContain('git tag --list "v${RELEASE_VERSION}-preview.*"');
     expect(workflow).toContain("Carrying preview release notes from");
     // Every subcommand the workflow invokes must be dispatched by the CLI.

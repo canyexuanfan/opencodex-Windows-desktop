@@ -11,7 +11,8 @@
  *   bun scripts/release-notes.ts previous-release-tag <version>
  *   bun scripts/release-notes.ts has-meaningful [body-file]
  *   bun scripts/release-notes.ts credit-takeovers --repo <owner/name> --in <file> --out <file>
- *   bun scripts/release-notes.ts assemble --npm-metadata ... --out ...
+ *   bun scripts/release-notes.ts render --npm-metadata ... --out ... [--carried ...] [--delta ...] [--compare-from ...] [--compare-to ...] [--repository ...]
+ *   bun scripts/release-notes.ts polish --in <file> --out <file> [--model ...] [--base-url ...] [--api-key ...]
  */
 
 type ParsedReleaseTag = {
@@ -148,22 +149,13 @@ export function stripCarriedReleaseNotes(body: string): string {
   return kept.join("\n").replace(/^\n+/, "").replace(/\n+$/, "").trim();
 }
 
-/** Drop generate-notes trailing compare link (workflow re-appends its own). */
-export function stripGenerateNotesCompareLink(body: string): string {
-  return body
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .filter(line => !/^\*\*Full Changelog\*\*:/.test(line))
-    .join("\n")
-    .replace(/\n+$/, "")
-    .trim();
-}
-
 /** True when generate-notes returned only the config comment / blank lines. */
 export function isEmptyGeneratedNotes(body: string): boolean {
-  const withoutComment = stripGenerateNotesCompareLink(body)
+  const withoutComment = body
+    .replace(/\r\n/g, "\n")
     .split("\n")
     .filter(line => !/^<!--.*-->$/.test(line.trim()))
+    .filter(line => !/^\*\*Full Changelog\*\*:/.test(line))
     .join("\n");
   return !hasNonWhitespace(withoutComment);
 }
@@ -287,46 +279,319 @@ export async function rewriteTakeoverCredits(
   return out.join("\n");
 }
 
-export function assembleReleaseNotes(input: {
+export type ReleaseNotePr = {
+  number: number;
+  title: string;
+  author: string;
+};
+
+export type ReleaseNoteCategory = {
+  title: string;
+  prs: ReleaseNotePr[];
+};
+
+/**
+ * Parse GitHub generate-notes output (`* <title> by @<author> in …/pull/<N>`,
+ * including maintainer-takeover lines rewritten by `credit-takeovers`) into
+ * category sections. Also understands the renderer's own output (`## <Category>`
+ * sections with `- … (#N)` bullets and a `## Changelog` list of
+ * `- #N <title> @author` lines), so already-rendered preview bodies carry into
+ * stable notes losslessly. Scaffolding (`## What's Changed`, `## New
+ * Contributors`, `## Commits`) never reaches the renderer. Changelog lines
+ * supply the authoritative title/author for PRs first seen in bullets.
+ */
+const GENERATED_PR_LINE =
+  /^\*\s*(?<title>.+?)\s+by\s+@(?<author>[A-Za-z0-9-]+)(?:\s+\(takeover\s+by\s+@[A-Za-z0-9-]+\))?\s+in\s+https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(?<pr>\d+)\s*$/;
+const GENERATED_BULLET_LINE =
+  /^-\s+(?<text>.+?)\s+\((?<refs>#\d+(?:\s*,\s*#\d+)*)\)\s*$/;
+const CHANGELOG_PR_LINE =
+  /^-\s+#(?<pr>\d+)\s+(?<title>.+?)\s+@(?<author>[A-Za-z0-9-]+)\s*$/;
+const SCAFFOLD_HEADINGS = new Set(["What's Changed", "New Contributors", "Commits", "Changelog", "Since preview"]);
+
+export function parseGeneratedNotes(body: string): ReleaseNoteCategory[] {
+  const sections: ReleaseNoteCategory[] = [];
+  const globalPrs = new Map<number, ReleaseNotePr>();
+  let current: ReleaseNoteCategory | null = null;
+  for (const rawLine of body.replace(/\r\n/g, "\n").split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("<!--")) continue;
+    if (line.startsWith("### ")) {
+      const title = line.slice(4).trim();
+      current = { title, prs: [] };
+      sections.push(current);
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      const title = line.slice(3).trim();
+      if (SCAFFOLD_HEADINGS.has(title)) {
+        current = null;
+      } else {
+        current = { title, prs: [] };
+        sections.push(current);
+      }
+      continue;
+    }
+    const changelogLine = CHANGELOG_PR_LINE.exec(line);
+    if (changelogLine?.groups) {
+      globalPrs.set(Number(changelogLine.groups.pr), {
+        number: Number(changelogLine.groups.pr),
+        title: changelogLine.groups.title!,
+        author: changelogLine.groups.author!,
+      });
+      continue;
+    }
+    if (!current) continue;
+    const match = GENERATED_PR_LINE.exec(line);
+    if (match?.groups) {
+      current.prs.push({
+        number: Number(match.groups.pr),
+        title: match.groups.title!,
+        author: match.groups.author!,
+      });
+      continue;
+    }
+    const bullet = GENERATED_BULLET_LINE.exec(line);
+    if (bullet?.groups) {
+      const text = bullet.groups.text!;
+      for (const ref of bullet.groups.refs!.matchAll(/#(\d+)/g)) {
+        current.prs.push({ number: Number(ref[1]), title: text, author: "" });
+      }
+    }
+  }
+  for (const section of sections) {
+    section.prs = section.prs.map(pr => globalPrs.get(pr.number) ?? pr);
+  }
+  return sections;
+}
+
+/**
+ * Strip a conventional-commit prefix (`feat(scope): …`, `fix: …`, …) and a
+ * trailing `(#N)` that repeats the PR's own number, then sentence-case the
+ * remaining title for the curated section bullets.
+ */
+const CONVENTIONAL_COMMIT_PREFIX =
+  /^(?:feat|fix|docs|chore|refactor|perf|test|build|ci|style|revert|merge|release)(?:\(([^)]+)\))?:\s*(.+)$/i;
+
+export function cleanPrTitle(title: string, prNumber: number | null = null): { scope: string | null; text: string } {
+  let text = title.trim();
+  let scope: string | null = null;
+  const prefix = CONVENTIONAL_COMMIT_PREFIX.exec(text);
+  if (prefix) {
+    scope = prefix[1] ?? null;
+    text = prefix[2]!.trim();
+  }
+  if (prNumber !== null) {
+    text = text.replace(new RegExp(`\\s*\\(#${prNumber}\\)\\s*$`), "");
+  }
+  text = text.trim();
+  if (text.length > 0) {
+    text = text[0]!.toUpperCase() + text.slice(1);
+  }
+  return { scope, text };
+}
+
+/** "release-notes" → "Release-Notes" for group-bullet scope labels. */
+export function scopeLabel(scope: string): string {
+  return scope
+    .split("-")
+    .map(part => (part.length > 0 ? part[0]!.toUpperCase() + part.slice(1) : part))
+    .join("-");
+}
+
+/** Group PRs by conventional-commit scope, preserving first-appearance order. */
+export function groupPrsByScope(prs: ReleaseNotePr[]): Array<{ scope: string | null; prs: ReleaseNotePr[] }> {
+  const groups: Array<{ scope: string | null; prs: ReleaseNotePr[] }> = [];
+  for (const pr of prs) {
+    const { scope } = cleanPrTitle(pr.title, pr.number);
+    const group = groups.find(candidate => candidate.scope === scope);
+    if (group) {
+      group.prs.push(pr);
+    } else {
+      groups.push({ scope, prs: [pr] });
+    }
+  }
+  return groups;
+}
+
+const RENDER_CATEGORY_ORDER = ["New Features", "Bug Fixes", "Documentation", "Chores", "Other Changes"];
+
+/**
+ * Render OpenAI-Codex-style release notes from the generate-notes pieces:
+ * H2 category sections with scope-grouped, prefix-free summary bullets, then a
+ * `## Changelog` section with every PR (`- #N <title> @author`) and the compare
+ * link. Carried preview notes and the since-preview delta merge by category;
+ * duplicate PR numbers (defensive; ranges are normally disjoint) keep the
+ * first occurrence.
+ */
+export function renderReleaseNotes(input: {
   npmMetadata: string;
   carriedPreviewNotes?: string;
   deltaPrNotes?: string;
-  commits?: string;
   compareFrom?: string | null;
   compareTo?: string;
   repository?: string;
 }): string {
-  const parts: string[] = [];
-  parts.push(input.npmMetadata.trim());
-
-  const carried = (input.carriedPreviewNotes ?? "").trim();
-  if (hasNonWhitespace(carried)) {
-    parts.push(carried);
-  }
-
-  const deltaRaw = (input.deltaPrNotes ?? "").trim();
-  const delta = isEmptyGeneratedNotes(deltaRaw) ? "" : stripGenerateNotesCompareLink(deltaRaw);
-  if (hasNonWhitespace(delta)) {
-    if (hasNonWhitespace(carried)) {
-      parts.push("## Since preview\n\n" + delta);
-    } else {
-      parts.push(delta);
+  const categories = new Map<string, ReleaseNotePr[]>();
+  const order: string[] = [];
+  const add = (body: string): void => {
+    for (const section of parseGeneratedNotes(body)) {
+      const existing = categories.get(section.title);
+      if (!existing) {
+        categories.set(section.title, []);
+        order.push(section.title);
+      }
+      const seen = new Set(categories.get(section.title)!.map(pr => pr.number));
+      for (const pr of section.prs) {
+        if (seen.has(pr.number)) continue;
+        seen.add(pr.number);
+        categories.get(section.title)!.push(pr);
+      }
     }
+  };
+  add(input.carriedPreviewNotes ?? "");
+  add(input.deltaPrNotes ?? "");
+
+  const parts: string[] = [];
+  const npmMetadata = input.npmMetadata.trim();
+  if (npmMetadata) parts.push(npmMetadata);
+
+  const sortedOrder = [...order].sort((a, b) => {
+    const ia = RENDER_CATEGORY_ORDER.indexOf(a);
+    const ib = RENDER_CATEGORY_ORDER.indexOf(b);
+    const rankA = ia === -1 ? RENDER_CATEGORY_ORDER.length : ia;
+    const rankB = ib === -1 ? RENDER_CATEGORY_ORDER.length : ib;
+    if (rankA !== rankB) return rankA - rankB;
+    return order.indexOf(a) - order.indexOf(b);
+  });
+
+  for (const title of sortedOrder) {
+    const prs = categories.get(title)!;
+    if (prs.length === 0) continue;
+    const lines: string[] = [`## ${title}`, ""];
+    for (const group of groupPrsByScope(prs)) {
+      if (group.prs.length === 1) {
+        const pr = group.prs[0]!;
+        lines.push(`- ${cleanPrTitle(pr.title, pr.number).text} (#${pr.number})`);
+      } else {
+        const label = group.scope ? scopeLabel(group.scope) : null;
+        const texts = group.prs.map(pr => cleanPrTitle(pr.title, pr.number).text);
+        const refs = group.prs.map(pr => `#${pr.number}`).join(", ");
+        lines.push(`- ${label ? `${label}: ` : ""}${texts.join("; ")} (${refs})`);
+      }
+    }
+    parts.push(lines.join("\n"));
   }
 
-  const commits = (input.commits ?? "").trim();
-  if (commits) {
-    parts.push("## Commits\n\n" + commits);
+  const allPrs = [...categories.values()].flat().sort((a, b) => a.number - b.number);
+  if (allPrs.length > 0) {
+    const changelog: string[] = ["## Changelog", ""];
+    const from = input.compareFrom?.trim();
+    const to = input.compareTo?.trim();
+    const repo = input.repository?.trim();
+    if (from && to && repo) {
+      changelog.push(`Full Changelog: https://github.com/${repo}/compare/${from}...${to}`, "");
+    }
+    for (const pr of allPrs) {
+      changelog.push(`- #${pr.number} ${pr.title.trim()} @${pr.author}`);
+    }
+    parts.push(changelog.join("\n"));
   }
 
-  const from = input.compareFrom?.trim();
-  const to = input.compareTo?.trim();
-  const repo = input.repository?.trim();
-  if (from && to && repo) {
-    parts.push(`**Full Changelog**: https://github.com/${repo}/compare/${from}...${to}`);
-  }
-
+  if (parts.length === 0) return "";
   return parts.join("\n\n").replace(/\n+$/, "") + "\n";
+}
+
+/** Every `#N` reference in a text, deduplicated and ascending. */
+export function extractPrNumbers(text: string): number[] {
+  const numbers = new Set<number>();
+  for (const match of text.matchAll(/#(\d+)/g)) {
+    numbers.add(Number(match[1]));
+  }
+  return [...numbers].sort((a, b) => a - b);
+}
+
+/** H2 headings in a section, excluding the machine-rendered Changelog. */
+export function parseSectionHeadings(text: string): string[] {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map(line => /^##\s+(.+)$/.exec(line.trim())?.[1])
+    .filter((title): title is string => typeof title === "string" && title !== "Changelog");
+}
+
+/**
+ * Guard rails for the optional LLM polish step: the rewritten head must keep
+ * the exact PR set and the exact category headings. Any missing/invented PR or
+ * category is a hard failure so a summarizer can never silently corrupt notes.
+ */
+export function validatePolishedSections(head: string, expectedPrs: number[], expectedHeadings: string[]): string[] {
+  const errors: string[] = [];
+  const actualPrs = extractPrNumbers(head);
+  const missing = expectedPrs.filter(number => !actualPrs.includes(number));
+  const unexpected = actualPrs.filter(number => !expectedPrs.includes(number));
+  if (missing.length > 0) errors.push(`missing PR references: #${missing.join(", #")}`);
+  if (unexpected.length > 0) errors.push(`unexpected PR references: #${unexpected.join(", #")}`);
+
+  const headings = parseSectionHeadings(head);
+  const missingHeadings = expectedHeadings.filter(title => !headings.includes(title));
+  const extraHeadings = headings.filter(title => !expectedHeadings.includes(title));
+  if (missingHeadings.length > 0) errors.push(`missing headings: ${missingHeadings.join(", ")}`);
+  if (extraHeadings.length > 0) errors.push(`unexpected headings: ${extraHeadings.join(", ")}`);
+  return errors;
+}
+
+const POLISH_SYSTEM_PROMPT = `You are the release notes editor for opencodex, a universal provider proxy for OpenAI Codex and Claude Code.
+Rewrite the release-notes sections below (everything before "## Changelog") in the style of OpenAI Codex release notes:
+
+- Keep the exact same markdown headings and their order.
+- Keep the first line (npm metadata) verbatim.
+- Group related pull requests into single bullets: one human-readable sentence (or two) summarizing what changed, ending with the full PR reference list in parentheses, e.g. "- Honor configured proxies across authentication, plugin downloads, and redirects. (#123, #456)".
+- Every PR number must appear exactly once across the bullets; never invent PR numbers or features.
+- Do not add or remove categories. Omit a category only when it has no PRs.
+- Do not output the "## Changelog" section.
+Output only the rewritten markdown.`;
+
+async function callChatCompletion(apiKey: string, baseUrl: string, model: string, head: string): Promise<string> {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.3,
+      messages: [
+        { role: "system", content: POLISH_SYSTEM_PROMPT },
+        { role: "user", content: head },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error(`✗ polish LLM request failed (HTTP ${response.status}): ${detail.slice(0, 500)}`);
+    process.exit(1);
+  }
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+  const content = data.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !content.trim()) {
+    console.error("✗ polish LLM returned no content");
+    process.exit(1);
+  }
+  return content;
+}
+
+function splitPolishInput(body: string): { head: string; changelog: string } {
+  const lines = body.replace(/\r\n/g, "\n").split("\n");
+  const index = lines.findIndex(line => /^##\s+Changelog\s*$/.test(line.trim()));
+  if (index === -1) {
+    console.error("✗ polish input has no `## Changelog` section to validate against");
+    process.exit(1);
+  }
+  return {
+    head: lines.slice(0, index).join("\n").trim(),
+    changelog: lines.slice(index).join("\n").trim(),
+  };
 }
 
 async function readStdinOrFile(path: string | undefined): Promise<string> {
@@ -334,6 +599,22 @@ async function readStdinOrFile(path: string | undefined): Promise<string> {
     return await Bun.file(path).text();
   }
   return await new Response(Bun.stdin).text();
+}
+
+function parseFlagArgs(rest: string[]): Map<string, string> {
+  const args = new Map<string, string>();
+  for (let i = 0; i < rest.length; i += 1) {
+    const key = rest[i];
+    if (!key?.startsWith("--")) continue;
+    const value = rest[i + 1];
+    if (!value || value.startsWith("--")) {
+      console.error(`Missing value for ${key}`);
+      process.exit(1);
+    }
+    args.set(key.slice(2), value);
+    i += 1;
+  }
+  return args;
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -508,43 +789,66 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (cmd === "assemble") {
-    const args = new Map<string, string>();
-    for (let i = 0; i < rest.length; i += 1) {
-      const key = rest[i];
-      if (!key?.startsWith("--")) continue;
-      const value = rest[i + 1];
-      if (!value || value.startsWith("--")) {
-        console.error(`Missing value for ${key}`);
-        process.exit(1);
-      }
-      args.set(key.slice(2), value);
-      i += 1;
-    }
-
+  if (cmd === "render") {
+    const args = parseFlagArgs(rest);
     const npmMetadata = args.get("npm-metadata");
     const out = args.get("out");
     if (!npmMetadata || !out) {
-      console.error("Usage: bun scripts/release-notes.ts assemble --npm-metadata <text> --out <file> [--carried <file>] [--delta <file>] [--commits <file>] [--compare-from <tag>] [--compare-to <tag>] [--repository <owner/name>]");
+      console.error("Usage: bun scripts/release-notes.ts render --npm-metadata <text> --out <file> [--carried <file>] [--delta <file>] [--compare-from <tag>] [--compare-to <tag>] [--repository <owner/name>]");
       process.exit(1);
     }
-
     const readOptional = async (name: string): Promise<string> => {
       const path = args.get(name);
       if (!path) return "";
       return await Bun.file(path).text();
     };
 
-    const notes = assembleReleaseNotes({
+    const notes = renderReleaseNotes({
       npmMetadata,
       carriedPreviewNotes: await readOptional("carried"),
       deltaPrNotes: await readOptional("delta"),
-      commits: await readOptional("commits"),
       compareFrom: args.get("compare-from") ?? null,
       compareTo: args.get("compare-to"),
       repository: args.get("repository"),
     });
     await Bun.write(out, notes);
+    return;
+  }
+
+  if (cmd === "polish") {
+    const args = parseFlagArgs(rest);
+    const inputPath = args.get("in");
+    const outPath = args.get("out");
+    if (!inputPath || !outPath) {
+      console.error("Usage: bun scripts/release-notes.ts polish --in <file> --out <file> [--model <model>] [--base-url <url>] [--api-key <key>]");
+      process.exit(1);
+    }
+    const apiKey = args.get("api-key") ?? process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      console.error("✗ polish needs an OpenAI-compatible API key: set OPENAI_API_KEY or pass --api-key");
+      process.exit(1);
+    }
+    const baseUrl = (args.get("base-url") ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+    const model = args.get("model") ?? process.env.OPENAI_MODEL ?? "gpt-5.4";
+
+    const body = await Bun.file(inputPath).text();
+    const { head, changelog } = splitPolishInput(body);
+    const expectedPrs = extractPrNumbers(changelog);
+    const expectedHeadings = parseSectionHeadings(head);
+    if (expectedPrs.length === 0) {
+      console.error("✗ polish input Changelog contains no PR references");
+      process.exit(1);
+    }
+
+    const rewritten = await callChatCompletion(apiKey, baseUrl, model, head);
+    const errors = validatePolishedSections(rewritten, expectedPrs, expectedHeadings);
+    if (errors.length > 0) {
+      console.error("✗ polished notes failed validation:");
+      for (const error of errors) console.error(`  - ${error}`);
+      process.exit(1);
+    }
+    const out = `${rewritten.trimEnd()}\n\n${changelog}`;
+    await Bun.write(outPath, out.endsWith("\n") ? out : out + "\n");
     return;
   }
 
@@ -557,7 +861,8 @@ Usage:
   bun scripts/release-notes.ts matching-preview-tags <version>  # tags on stdin, oldest→newest
   bun scripts/release-notes.ts previous-release-tag <version>   # tags on stdin
   bun scripts/release-notes.ts credit-takeovers --repo <owner/name> --in <file> --out <file>
-  bun scripts/release-notes.ts assemble --npm-metadata ... --out ...`);
+  bun scripts/release-notes.ts render --npm-metadata ... --out ... [--carried ...] [--delta ...] [--compare-from ...] [--compare-to ...] [--repository ...]
+  bun scripts/release-notes.ts polish --in <file> --out <file> [--model ...] [--base-url ...] [--api-key ...]`);
   process.exit(1);
 }
 
