@@ -46,21 +46,40 @@ conclusion is now **superseded** by `001`-`003` here.
 
 ## Phases
 
-Dependency-ordered (PHASE-SPLIT-01): the schema is the foundation every switch
-consumes, so it goes first even though it ships no visible switch.
+**Re-sliced after audit round 2** (`006_audit_synthesis_r2.md`). The first map
+sliced along a schema — one ten-key `clientIntegrations` map — which forced every
+phase to touch every client's write path. Two audit rounds widened rather than
+narrowed. This map slices along **ownership boundaries**: one client family per
+phase, each independently auditable.
 
-| Phase | Doc | Deliverable |
-|---|---|---|
-| WP2 | `010_modality_boundary.md` | The client-dialect modality filter. Independent of everything else; fixes a live user-visible failure |
-| WP3 | `020_desired_state.md` | `OcxConfig.clientIntegrations`, default-ON, consulted by every automatic apply path — including the Grok regression |
-| WP4 | `030_api_keys_row.md` | API keys out of the card grid into their own row |
-| WP5 | `040_codex_toggle.md` | The Codex switch on top of WP3, with a structured restore result |
-| WP6 | `050_desktop_toggle.md` | The Desktop switch via documented standard mode |
+| Phase | Doc | Deliverable | Audit state |
+|---|---|---|---|
+| WP2 | `010_modality_boundary.md` | The client-dialect modality filter | **clean through two rounds** |
+| WP3 | `030_api_keys_row.md` | API keys out of the card grid into their own row | never blocking |
+| WP4 | `020_desired_state.md` → re-scoped | Desired state for **Codex only**, plus its gates, single-flight, ownership preflight and CLI semantics | re-scope pending |
+| WP5 | `040_codex_toggle.md` | The Codex switch on WP4's flag | rewrite pending |
+| WP6 | *(new doc)* | Grok's desired state, reusing the shape WP4 proved | not started |
+| WP7 | `050_desktop_toggle.md` | The Desktop switch via documented standard mode | deferred behind WP5 |
 
-WP1 was this cycle: the research above plus this roadmap.
+WP1 was the research cycle plus this roadmap, twice audited.
 
-WP2 and WP4 are independent of the rest and of each other. WP5 and WP6 are
-parallel siblings that both depend on WP3.
+WP2 and WP3 depend on nothing here and on each other not at all — they ship
+first, alone, because each changes one thing at one boundary. That property is
+the only thing that survived both audit rounds intact.
+
+Three deliberate exclusions, each an accepted audit finding rather than a
+convenience:
+
+- **Claude Code's ingress gates are not touched at all.** Round 1 #1 established
+  that `claudeCode.enabled` is the documented kill switch for `/v1/messages`;
+  the honest conclusion is not to route it through a new helper in this unit.
+- **The six file clients get no desired-state flag here.** Round 2 #4 (existing
+  explicit OFF choices are not migrated) and #5 (a mutating GET) both belong to a
+  phase that does not exist yet, and inventing it under audit pressure is what
+  produced round 2's new findings.
+- **Desktop is behind Codex, not beside it.** Round 2 #3 found no coherent rule
+  when a foreign profile is selected. The goal explicitly permits an evidenced
+  deferral; this is one.
 
 ## Scope boundary
 
@@ -80,18 +99,19 @@ recording the previous `appliedId` (deferred, `002` §Residual).
 
 - C1 — gjc loads our emitted config with no schema error, proven from the real
   file; Pi's identical exposure is closed in the same change.
-- C2 — a disabled client stays disabled across a proxy restart, an `ocx ensure`,
-  and a `POST /api/sync`.
+- C2 — Codex stays disabled across a proxy restart, an `ocx ensure`, and a
+  `POST /api/sync`.
 - C3 — an upgrading user with no `clientIntegrations` key sees no behavior change.
-- C4 — disabling any client never stops the proxy and never disables a shared
-  transport used by another client.
+- C4 — disabling Codex never stops the proxy and never closes `/v1/responses`.
 - C5 — Codex toggles both directions from the overview with the proxy running.
 - C6 — a Codex disable blocked by the held history DB is an explained refusal
   naming the cause, never a raw 500 and never a false green.
-- C7 — Desktop's disable points `appliedId` at a present, readable,
-  credential-free config and removes the credential-bearing `.bak`.
+- C7 — startup convergence never touches state owned by a service running from a
+  different `OPENCODEX_HOME` (round 2 #2, blocking).
 - C8 — API keys render as a row above the grid, observed rendered.
 - C9 — typecheck, full test, gui lint, gui test, privacy scan all green.
+- C10 — Desktop ships with a proven restore path OR is deferred with recorded
+  evidence. Both outcomes close this criterion.
 
 ## Risk register
 
@@ -102,3 +122,5 @@ recording the previous `appliedId` (deferred, `002` §Residual).
 | Desktop pointed at a missing file | Never delete `appliedId`, never leave it dangling, never pick an entry by the name `Default` — this machine's `Default` is already dangling (`002`) |
 | The modality fix erases valid internal metadata | Filter at the client-dialect boundary only; management and CLI keep carrying `audio` verbatim (`004`) |
 | A green suite hides the real failure | 91 tests pass today beside a config gjc refuses to load. Every criterion names a live artifact, not a unit test |
+| A repair introduces a worse defect than the one it fixes | Round 2 produced exactly this. One client family per phase, re-audited before the next starts — never a cross-client rewrite under audit pressure |
+| Convergence tears down a foreign home's state | Every native remover runs `assertNativeTeardownOwned` before removal, and reconciliation runs only after service-ownership resolution (round 2 #2) |
