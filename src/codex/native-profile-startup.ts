@@ -273,11 +273,15 @@ export function startNativeMainStartupLifecycle(
       entry!.sweepStopping = true;
       if (entry!.sweepTimer) clearTimeout(entry!.sweepTimer);
       entry!.sweepTimer = undefined;
-      if (entry!.sweepInFlight) await Promise.allSettled([entry!.sweepInFlight]);
       entry!.unsubscribe();
       startupEntries.delete(homeId);
       entry!.resolveAcquisition?.(snapshot);
       entry!.resolveAcquisition = undefined;
+      // Startup convergence can transition from the exclusive recovery claim
+      // into a stage sweep. Keep the owner registered until that entire chain
+      // settles so no cleanup transaction starts untracked after owner detach.
+      await Promise.allSettled([entry!.settled]);
+      if (entry!.sweepInFlight) await Promise.allSettled([entry!.sweepInFlight]);
       await entry!.owner.release();
     },
   };
