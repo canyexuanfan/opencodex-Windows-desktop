@@ -67,8 +67,7 @@ export function isCodexQuotaExhausted(
   plan?: string | null,
 ): boolean {
   if (!quota) return false;
-  const normalizedPlan = plan?.trim().toLowerCase();
-  const values = normalizedPlan === "go" || normalizedPlan === "free"
+  const values = codexQuotaWindowForPlan(plan) === "monthly"
     ? [quota.monthlyPercent]
     : [quota.weeklyPercent, quota.monthlyPercent];
   return values.some(value => typeof value === "number"
@@ -77,43 +76,36 @@ export function isCodexQuotaExhausted(
 }
 
 /**
- * Plans whose usage is reported in the 30-day window rather than the weekly one.
- * Mirrors the `thirtyDayOnly` branch in `parseUsageQuota()`.
- */
-const CODEX_MONTHLY_WINDOW_PLANS = new Set(["go", "free"]);
-/**
- * Plans known to report a weekly window. An ABSENT plan is treated as weekly too,
- * matching the parser's default — but an unfamiliar non-empty plan string is not,
- * because we cannot tell which window is authoritative for it.
+ * Which usage window a plan reports in. This is the SINGLE rule shared by quota
+ * parsing, exhaustion, and recovery — they must not diverge.
  *
- * This is the complement of the monthly set across the plans the upstream snapshot
- * actually enumerates (`src/codex/data/upstream-models.json`): plus, pro, prolite,
- * team, business, enterprise, edu. `prolite` was missed on the first pass, which
- * would have left a recovered account on that plan cooled — the exact defect this
- * change exists to fix, reintroduced through an incomplete hand-written list.
+ * An allowlist of "known" plans was tried here and was wrong: the upstream model
+ * snapshot alone carries 21 distinct plan strings (`edu_plus`, `finserv`, `k12`,
+ * `quorum`, `self_serve_business_usage_based`, ...), and `CodexAccount.plan` is an
+ * unrestricted string, so any list is a list of the plans someone remembered.
+ * Twelve real plans would have been refused recovery and stayed cooled forever —
+ * the very defect this unit exists to fix, reintroduced as a typo-shaped hole.
+ *
+ * The honest rule is the parser's own: Go and Free report a 30-day window,
+ * everything else (including an absent plan) reports weekly. Recovery reads the
+ * window the parser actually wrote rather than second-guessing it.
  */
-const CODEX_WEEKLY_WINDOW_PLANS = new Set([
-  "plus", "pro", "prolite", "team", "business", "enterprise", "edu",
-]);
+export function codexQuotaWindowForPlan(plan?: string | null): "monthly" | "weekly" {
+  const normalized = plan?.trim().toLowerCase();
+  return normalized === "go" || normalized === "free" ? "monthly" : "weekly";
+}
 
 export function isCompleteCodexQuotaRecoverySnapshot(
   quota: Pick<StoredAccountQuota, "weeklyPercent" | "monthlyPercent"> | null,
   plan?: string | null,
 ): boolean {
   if (!quota || isCodexQuotaExhausted(quota, plan)) return false;
-  const normalizedPlan = plan?.trim().toLowerCase();
-  // Fail CLOSED on an unrecognized plan. This predicate authorizes autonomously clearing a
-  // cooldown, and assuming weekly semantics for a plan we do not know could route traffic to an
-  // account that is still restricted in a window we never read. Retaining the cooldown only
-  // costs a delay: it expires on its own.
-  let required: number | undefined;
-  if (normalizedPlan !== undefined && CODEX_MONTHLY_WINDOW_PLANS.has(normalizedPlan)) {
-    required = quota.monthlyPercent;
-  } else if (normalizedPlan === undefined || normalizedPlan === "" || CODEX_WEEKLY_WINDOW_PLANS.has(normalizedPlan)) {
-    required = quota.weeklyPercent;
-  } else {
-    return false;
-  }
+  // Recovery still fails closed on MISSING EVIDENCE — a credits-only or windowless payload
+  // carries no usage reading at all and must never clear a cooldown. What it does not do is
+  // fail closed on an unfamiliar plan NAME, which only ever meant "cooled forever".
+  const required = codexQuotaWindowForPlan(plan) === "monthly"
+    ? quota.monthlyPercent
+    : quota.weeklyPercent;
   return typeof required === "number" && Number.isFinite(required);
 }
 
@@ -408,7 +400,7 @@ export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuot
   }
 
   const quota: Omit<StoredAccountQuota, "updatedAt"> = {};
-  const thirtyDayOnly = data.plan_type?.trim().toLowerCase() === "go" || data.plan_type?.trim().toLowerCase() === "free";
+  const thirtyDayOnly = codexQuotaWindowForPlan(data.plan_type) === "monthly";
   const primaryWindow = data.rate_limit.primary_window;
   const secondaryWindow = data.rate_limit.secondary_window;
   const tertiaryWindow = data.rate_limit.tertiary_window;

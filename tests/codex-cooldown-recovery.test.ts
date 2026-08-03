@@ -8,7 +8,8 @@ import {
   seedCodexAuthAdmissionForTests,
 } from "../src/codex/auth-api";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
-import { isCompleteCodexQuotaRecoverySnapshot } from "../src/codex/quota";
+import { codexQuotaWindowForPlan, isCompleteCodexQuotaRecoverySnapshot } from "../src/codex/quota";
+import upstreamModels from "../src/codex/data/upstream-models.json";
 import {
   CODEX_QUOTA_PROBE_INTERVAL_MS,
   clearCodexUpstreamHealth,
@@ -255,20 +256,36 @@ describe("Codex cooldown recovery worker", () => {
     expect(getCodexQuotaHealthSnapshot("a", "spark", due(START) + 1)).not.toBeNull();
   });
 
-  test("an unrecognized plan retains the cooldown (fails closed)", () => {
-    // This predicate authorizes autonomously clearing a cooldown. Assuming weekly semantics
-    // for a plan we do not know could route traffic to an account still restricted in a window
-    // we never read; retaining it only costs a delay, since the cooldown expires by itself.
-    // Every weekly plan the upstream snapshot enumerates must recover. `prolite` is the one an
-    // earlier hand-written list missed, which would have left those accounts cooled forever.
-    for (const plan of ["plus", "pro", "prolite", "team", "business", "enterprise", "edu"]) {
-      expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, plan)).toBe(true);
+  test("recovery reads the same window the parser wrote, for EVERY plan", () => {
+    // Derived from the upstream snapshot, not hand-listed. An allowlist was tried here and was
+    // wrong: 21 distinct plan strings appear in this file alone, and `CodexAccount.plan` is an
+    // unrestricted string, so any list is a list of the plans someone remembered — and every
+    // omission means an account cooled forever, which is the defect this unit exists to fix.
+    const snapshotPlans = new Set<string>();
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) { node.forEach(walk); return; }
+      if (!node || typeof node !== "object") return;
+      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+        if (key === "available_in_plans" && Array.isArray(value)) {
+          for (const plan of value) if (typeof plan === "string") snapshotPlans.add(plan);
+        } else walk(value);
+      }
+    };
+    walk(upstreamModels);
+    expect(snapshotPlans.size).toBeGreaterThan(9);
+
+    for (const plan of snapshotPlans) {
+      const monthly = codexQuotaWindowForPlan(plan) === "monthly";
+      const filled = monthly ? { monthlyPercent: 12 } : { weeklyPercent: 12 };
+      const empty = monthly ? { weeklyPercent: 12 } : { monthlyPercent: 12 };
+      expect(isCompleteCodexQuotaRecoverySnapshot(filled, plan)).toBe(true);
+      // The other window is not evidence for this plan, in either direction.
+      expect(isCompleteCodexQuotaRecoverySnapshot(empty, plan)).toBe(false);
     }
+
+    // Absent plan follows the parser's weekly default.
     expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, undefined)).toBe(true);
-    expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12 }, "go")).toBe(true);
-    expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, "some_new_tier")).toBe(false);
-    expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, "go")).toBe(false);
-    // Credits-only / windowless payloads carry no usage evidence at all.
+    // Missing EVIDENCE still fails closed — that is the guard that matters.
     expect(isCompleteCodexQuotaRecoverySnapshot({}, "plus")).toBe(false);
     expect(isCompleteCodexQuotaRecoverySnapshot(null, "plus")).toBe(false);
     // An exhausted snapshot is not a recovery no matter how complete it is.
