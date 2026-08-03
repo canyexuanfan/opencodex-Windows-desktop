@@ -46,6 +46,7 @@ import { formatErrorResponse, type ResponsesTerminalStatus } from "../bridge";
 import {
   drainAndShutdown,
   getActiveTurnCount,
+  getActiveTurnMetrics,
   isDraining,
   registerTurn,
   setServerRef,
@@ -56,6 +57,7 @@ import {
 export {
   drainAndShutdown,
   getActiveTurnCount,
+  getActiveTurnMetrics,
   isDraining,
   isRecyclingForExit,
   markRecyclingForExit,

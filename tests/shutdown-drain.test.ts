@@ -4,6 +4,7 @@ import {
   unregisterTurn,
   isDraining,
   getActiveTurnCount,
+  getActiveTurnMetrics,
   MAX_ACTIVE_TURNS,
   trackStreamLifetime,
   tryAdmitTurn,
@@ -27,6 +28,17 @@ describe("active turn tracking", () => {
 
   test("isDraining() is false by default", () => {
     expect(isDraining()).toBe(false);
+  });
+
+  test("active turn metrics expose only scalar age buckets", () => {
+    const ac = new AbortController();
+    registerTurn(ac);
+    const metrics = getActiveTurnMetrics();
+    expect(metrics.count).toBeGreaterThanOrEqual(1);
+    expect(metrics.oldestAgeMs).toBeGreaterThanOrEqual(0);
+    expect(metrics.ageBuckets.under1s + metrics.ageBuckets.under10s
+      + metrics.ageBuckets.under60s + metrics.ageBuckets.over60s).toBe(metrics.count);
+    unregisterTurn(ac);
   });
 
   test("admission lease bounds pending turns and releases the bound controller", () => {
