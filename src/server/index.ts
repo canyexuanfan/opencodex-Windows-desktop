@@ -600,20 +600,39 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
           logged = true;
           addFinalRequestLog(requestId, start, logCtx, status, meta);
         };
-        const response = await handleResponses(req, config, logCtx, {
-          abortSignal: req.signal,
-          onFirstOutput: () => recordFirstOutput(logCtx, start),
-          onNativePassthroughTerminal: status => {
-            finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
-              terminalStatus: status,
-              closeReason: "terminal",
-            });
-          },
-          onNativePassthroughCancel: () => {
-            finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
-          },
-        });
-        return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
+        const turnAdmissionLease = tryAdmitTurn();
+        if (!turnAdmissionLease) {
+          const busy = new Response(JSON.stringify({
+            error: {
+              type: "server_error",
+              code: "server_busy",
+              message: "active turns capacity reached",
+              retryable: true,
+            },
+          }), {
+            status: 503,
+            headers: { "Content-Type": "application/json", "Retry-After": "1" },
+          });
+          return withCors(busy, req, config);
+        }
+        try {
+          const response = await handleResponses(req, config, logCtx, {
+            abortSignal: req.signal,
+            onFirstOutput: () => recordFirstOutput(logCtx, start),
+            onNativePassthroughTerminal: status => {
+              finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
+                terminalStatus: status,
+                closeReason: "terminal",
+              });
+            },
+            onNativePassthroughCancel: () => {
+              finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
+            },
+          });
+          return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
+        } finally {
+          turnAdmissionLease.release();
+        }
       }
 
       // Anthropic Messages inbound (Claude Code). count_tokens FIRST (longer path).

@@ -63,6 +63,8 @@ Windows 任务管理器显示 `opencodex · proxy dashboard` / `Bun` 进程占�
 
 ## 更新记录
 
+- 2026-08-04：✅ `/v1/responses` HTTP fallback 也接入 admission lease；响应流内部仍由 `trackStreamLifetime` 保持 active turn，外层 slot 在 handler 返回后释放，不会截断正常长响应。类型检查通过；授权环境下 `server-auth` 57 个测试、0 失败。
+- 2026-08-04：❌ admission 改动后的 `bun test tests\\shutdown-drain.test.ts tests\\server-auth.test.ts` 在 `server-auth` 的临时目录初始化处被 Windows 沙箱拒绝（`C:\\Users\\wzm33\\AppData\\Local\\Temp\\...` 返回 `EPERM/EACCES`），随后清理失败造成连锁失败；`shutdown-drain` 的 admission 测试通过。该失败属于测试环境权限，需授权重跑确认。
 - 2026-08-04：✅ 引入 WebSocket active-turn admission lease：最多 128 个“已注册或待绑定”turn；超限返回可重试 503；lease 绑定 `AbortController` 后由统一 `release()` 移除 active turn，重复释放幂等。`bun run typecheck` 通过，相关 50 个测试通过。
 - 2026-08-04：❌ 第二次 admission 测试补丁仍把尚未应用的 `MAX_ACTIVE_TURNS` 导出当作既有上下文，导致多文件补丁整体拒绝；后续拆成最小补丁，先修改声明再补导出和测试。
 - 2026-08-04：❌ 为 admission lease 添加生命周期测试时，首次补丁假定了 `shutdown-drain.test.ts` 的 import 顺序，导致上下文校验失败且未修改文件；后续先读取实际 import 再应用。
