@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
-import { forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { forgetEphemeralSecretPath, forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxConfig } from "../types";
 import {
   isAllowedManagementOrigin,
@@ -95,12 +95,17 @@ function readExistingToken(path: string): string {
 export function removeManagementTokenPathBestEffort(
   path: string,
   remove: (path: string) => void = unlinkSync,
+  options?: { ephemeral?: boolean },
 ): void {
+  // Temps get the full ephemeral release (success + both timeout namespaces);
+  // stable token paths drop only the success memo — destination-keyed timeout
+  // memos are intentional anti-restall state.
+  const forget = options?.ephemeral ? forgetEphemeralSecretPath : forgetHardenedSecretPath;
   try {
     remove(path);
-    forgetHardenedSecretPath(path);
+    forget(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetHardenedSecretPath(path);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") forget(path);
     /* other failures retain fail-closed state for the caller */
   }
 }
@@ -120,7 +125,8 @@ function createTokenFile(path: string): string {
     chmodSync(temporary, 0o600);
     let temporaryHardened: { ok: boolean };
     try {
-      temporaryHardened = hardenSecretPath(temporary, { required: true });
+      // Destination-keyed timeout memo (the final token path), not the temp.
+      temporaryHardened = hardenSecretPath(temporary, { required: true, timeoutMemoKey: path });
     } catch {
       temporaryHardened = { ok: false };
     }
@@ -155,7 +161,7 @@ function createTokenFile(path: string): string {
     if (fd !== null) {
       try { closeSync(fd); } catch { /* best effort */ }
     }
-    removeManagementTokenPathBestEffort(temporary);
+    removeManagementTokenPathBestEffort(temporary, unlinkSync, { ephemeral: true });
   }
 }
 
@@ -229,6 +235,38 @@ export function issueGuiSession(
   };
   state.sessions.set(token, session);
   return { token, ...session };
+}
+
+/**
+ * Which credential actually authorized a management request.
+ *
+ * `admin-token` is the raw token from disk/env: anything running as the user can
+ * read it, including a coding agent. `gui-session` is a session token this process
+ * minted for a browser, and it only authorizes a mutation after the origin and the
+ * per-session CSRF token match. Consent-bearing routes must key off this value
+ * rather than off request headers, which the token holder can forge freely.
+ */
+export type ManagementPrincipal = "admin-token" | "gui-session";
+
+/**
+ * The principal for a request that already passed `requireManagementAuth`. Kept as a
+ * separate resolution (rather than a changed return type) so every existing caller
+ * keeps its `Response | null` contract; the value is derived from the same session
+ * table and the same CSRF comparison the gate uses, so the two cannot disagree.
+ */
+export function managementPrincipal(
+  req: Request,
+  state: ManagementAuthState,
+  config?: OcxConfig,
+): ManagementPrincipal | null {
+  if (!state.available) return null;
+  const actual = req.headers.get("x-opencodex-api-key")?.trim()
+    || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  if (!actual) return null;
+  if (equalSecret(actual, state.token)) return "admin-token";
+  if (!config) return null;
+  removeExpiredSessions(state);
+  return state.sessions.has(actual) ? "gui-session" : null;
 }
 
 export function requireManagementAuth(

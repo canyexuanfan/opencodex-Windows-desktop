@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -27,7 +27,7 @@ import {
 } from "../src/config";
 
 import * as windowsAcl from "../src/lib/windows-secret-acl";
-import { AtomicWriteResidualTempError, atomicWriteFile, hardenConfigDir, hardenExistingSecret, renameAtomicFile, saveConfig } from "../src/config";
+import { AtomicWriteResidualTempError, atomicWriteFile, atomicWriteFileAsync, hardenConfigDir, hardenExistingSecret, renameAtomicFile, saveConfig } from "../src/config";
 let testDir = "";
 
 beforeEach(() => {
@@ -870,6 +870,20 @@ describe("opencodex config defaults", () => {
     });
     expect(readConfigDiagnostics().error).toBeNull();
 
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.test/v1",
+          modelAdapters: { "provider-image-model": "openai-responses" },
+          modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().error).toBeNull();
+
     for (const provider of [
       { adapter: "openai-chat", baseUrl: "https://gateway.example/v1", authMode: "key", apiKeyTransport: "bearer" },
       { adapter: "anthropic", baseUrl: "https://gateway.example/v1", authMode: "oauth", apiKeyTransport: "bearer" },
@@ -1001,6 +1015,204 @@ describe("opencodex config defaults", () => {
     });
     expect(readConfigDiagnostics().source).toBe("fallback");
     expect(readConfigDiagnostics().error).toContain("conflicts with modelSupportsReasoningSummaries=false");
+  });
+
+  test("modelPreferHostedTools accepts only supported hosted-tool arrays", () => {
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().error).toBeNull();
+
+    // A registry `modelWireDefaults` entry that selects openai-responses for a
+    // Responses inbound must be honored by validation, exactly as the runtime
+    // honors it. DeepSeek's preset routes `deepseek-v4-flash` over native
+    // Responses for a Responses inbound while the provider-wide wire stays
+    // openai-chat; validating from `registry.adapter` alone rejected a
+    // preference the runtime would have accepted.
+    writeConfig({
+      port: 12345,
+      providers: {
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com/v1",
+          modelPreferHostedTools: { "deepseek-v4-flash": ["image_generation"] },
+        },
+      },
+      defaultProvider: "deepseek",
+    });
+    expect(readConfigDiagnostics().error).toBeNull();
+
+    // The mirror of the case above. `volcengine-agent-plan` is a Responses registry row
+    // with `preserveCustomDestination`, so a config reusing that id while pointing at a
+    // different endpoint keeps its own transport at runtime —
+    // `providerMatchesRegistryTransport()` returns false and `routedProviderConfig()`
+    // preserves the configured `openai-chat` adapter. Validating from `registry.adapter`
+    // unconditionally would accept a preference that the Responses adapter never sees.
+    writeConfig({
+      port: 12345,
+      providers: {
+        "volcengine-agent-plan": {
+          adapter: "openai-chat",
+          baseUrl: "https://custom.example.test/v1",
+          modelPreferHostedTools: { "some-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "volcengine-agent-plan",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("requires the openai-responses wire");
+
+    // The forward-auth half of the same effective-transport question. A
+    // `preserveCustomDestination` registry row reused under a different endpoint keeps
+    // its OWN auth at runtime, not the registry's, because `routedProviderConfig()`
+    // honors `providerMatchesRegistryTransport()`. Deciding forward-auth from
+    // `registry.authKind` alone accepted a preference the adapter never applies:
+    // `preferConfiguredHostedTools()` runs only on the non-forward branch.
+    writeConfig({
+      port: 12345,
+      providers: {
+        "volcengine-agent-plan": {
+          adapter: "openai-responses",
+          authMode: "forward",
+          baseUrl: "https://custom.example.test/v1",
+          modelPreferHostedTools: { "some-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "volcengine-agent-plan",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("not supported on forward-auth");
+
+    // Registry providers route through their registry wire, not this persisted adapter.
+    writeConfig({
+      port: 12345,
+      providers: {
+        "openai-apikey": {
+          adapter: "openai-chat",
+          baseUrl: "https://api.openai.com/v1",
+          modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "openai-apikey",
+    });
+    expect(readConfigDiagnostics().error).toBeNull();
+
+    writeConfig({
+      port: 12345,
+      providers: {
+        "openai-apikey": {
+          adapter: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          modelAdapters: { "gpt-5.6-sol": "openai-chat" },
+          modelPreferHostedTools: { "gpt-5.6-sol-pro": ["image_generation"] },
+        },
+      },
+      defaultProvider: "openai-apikey",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("requires the openai-responses wire");
+
+    for (const modelPreferHostedTools of [
+      [],
+      { "": ["image_generation"] },
+      { model: [] },
+      { model: "image_generation" },
+      { model: ["web_search"] },
+    ]) {
+      writeConfig({
+        port: 12345,
+        providers: {
+          custom: {
+            adapter: "openai-responses",
+            baseUrl: "https://example.test/v1",
+            modelPreferHostedTools,
+          },
+        },
+        defaultProvider: "custom",
+      });
+      expect(readConfigDiagnostics().source).toBe("fallback");
+      expect(readConfigDiagnostics().error).toContain("modelPreferHostedTools");
+    }
+
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.test/v1",
+          modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("requires the openai-responses wire");
+
+    writeConfig({
+      port: 12345,
+      providers: {
+        openrouter: {
+          adapter: "openai-responses",
+          baseUrl: "https://openrouter.ai/api/v1",
+          modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "openrouter",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("requires the openai-responses wire");
+
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          modelAdapters: { "provider-image-model": "openai-chat" },
+          modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("requires the openai-responses wire");
+
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          modelPreferHostedTools: { "gpt-5.3-codex-spark": ["image_generation"] },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("does not support");
+
+    writeConfig({
+      port: 12345,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          authMode: "forward",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "openai",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("not supported on forward-auth");
   });
 
   test("modelAdapters accepts only allowed wires on eligible providers (#404)", () => {
@@ -1698,5 +1910,157 @@ describe("config.ts – Windows ACL hardening integration", () => {
     expect(spy).not.toHaveBeenCalled();
     expect(existsSync(getConfigPath())).toBe(true);
     spy.mockRestore();
+  });
+});
+
+describe("config.ts – sync writer timeout keying (#840 refinement)", () => {
+  test("the production sync harden keys timeouts by destination", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "src", "config.ts"), "utf-8");
+    expect(source).toContain("hardenSecretPath(target, { required: true, timeoutMemoKey: path })");
+  });
+
+  test("timed-out write with a RESIDUAL temp retains both memos (fail-closed)", () => {
+    const destination = join(testDir, "residual-timeout.json");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    windowsAcl.resetHardenedStateForTests();
+    windowsAcl.setPlatformForTests("win32");
+    windowsAcl.setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    const io = {
+      write: (path: string, content: string) => writeFileSync(path, content, { mode: 0o600 }),
+      harden: (path: string) => {
+        chmodSync(path, 0o600);
+        windowsAcl.hardenSecretPath(path, { required: true, timeoutMemoKey: destination });
+      },
+      rename: renameSync,
+      truncate: (path: string) => truncateSync(path, 0),
+      unlink: () => {
+        throw Object.assign(new Error("denied"), { code: "EPERM" });
+      },
+    };
+    try {
+      expect(() => atomicWriteFile(destination, "secret", io)).toThrow();
+      // Destination timeout memo retained (anti-restall) while the residual
+      // temp remains on disk.
+      expect(windowsAcl.timedOutSecretPathCountForTests()).toBe(1);
+    } finally {
+      windowsAcl.setIcaclsRunnerForTests(null);
+      windowsAcl.setPlatformForTests(null);
+      windowsAcl.resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+});
+
+describe("config.ts – atomic writes preserve symlinked destinations", () => {
+  test("a symlinked destination survives the write and the real file receives it", () => {
+    // Dotfiles shape: ~/.codex/config.toml -> ~/dotfiles/.codex/config.toml
+    const repoDir = join(testDir, "dotfiles");
+    mkdirSync(repoDir, { recursive: true });
+    const realFile = join(repoDir, "config.toml");
+    writeFileSync(realFile, "original", "utf-8");
+    const link = join(testDir, "config.toml");
+    symlinkSync(realFile, link);
+
+    atomicWriteFile(link, "rewritten");
+
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe(realFile);
+    expect(readFileSync(realFile, "utf8")).toBe("rewritten");
+    expect(readFileSync(link, "utf8")).toBe("rewritten");
+  });
+
+  test("no temp file is left beside the link or its target", () => {
+    const repoDir = join(testDir, "dotfiles-clean");
+    mkdirSync(repoDir, { recursive: true });
+    const realFile = join(repoDir, "config.toml");
+    writeFileSync(realFile, "original", "utf-8");
+    const link = join(testDir, "config-clean.toml");
+    symlinkSync(realFile, link);
+
+    atomicWriteFile(link, "rewritten");
+
+    expect(readdirSync(repoDir).filter(name => name.includes(".ocx."))).toEqual([]);
+    expect(readdirSync(testDir).filter(name => name.includes(".ocx."))).toEqual([]);
+  });
+
+  test("a plain destination is unaffected", () => {
+    const destination = join(testDir, "plain.toml");
+    atomicWriteFile(destination, "first");
+    atomicWriteFile(destination, "second");
+
+    expect(lstatSync(destination).isSymbolicLink()).toBe(false);
+    expect(readFileSync(destination, "utf8")).toBe("second");
+  });
+
+  test("a destination that does not exist yet is created at the literal path", () => {
+    const destination = join(testDir, "created.toml");
+    expect(existsSync(destination)).toBe(false);
+
+    atomicWriteFile(destination, "fresh");
+
+    expect(readFileSync(destination, "utf8")).toBe("fresh");
+  });
+
+  test("a dangling symlink is preserved and the write is refused", () => {
+    const link = join(testDir, "dangling.toml");
+    symlinkSync(join(testDir, "gone", "config.toml"), link);
+
+    // The target volume may only be temporarily unavailable; replacing the link
+    // would recreate the dotfiles divergence this fix exists to prevent.
+    expect(() => atomicWriteFile(link, "recovered")).toThrow(/unresolvable symlinked write target/);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(testDir, "gone"))).toBe(false);
+  });
+});
+
+describe("config.ts – async atomic writes preserve symlinked destinations", () => {
+  test("a symlinked destination survives the write and the real file receives it", async () => {
+    const repoDir = join(testDir, "dotfiles-async");
+    mkdirSync(repoDir, { recursive: true });
+    const realFile = join(repoDir, "config.toml");
+    writeFileSync(realFile, "original", "utf-8");
+    const link = join(testDir, "config-async.toml");
+    symlinkSync(realFile, link);
+
+    await atomicWriteFileAsync(link, "rewritten");
+
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe(realFile);
+    expect(readFileSync(realFile, "utf8")).toBe("rewritten");
+    expect(readFileSync(link, "utf8")).toBe("rewritten");
+  });
+
+  test("no temp file is left beside the link or its target", async () => {
+    const repoDir = join(testDir, "dotfiles-async-clean");
+    mkdirSync(repoDir, { recursive: true });
+    const realFile = join(repoDir, "config.toml");
+    writeFileSync(realFile, "original", "utf-8");
+    const link = join(testDir, "config-async-clean.toml");
+    symlinkSync(realFile, link);
+
+    await atomicWriteFileAsync(link, "rewritten");
+
+    expect(readdirSync(repoDir).filter(name => name.includes(".ocx."))).toEqual([]);
+    expect(readdirSync(testDir).filter(name => name.includes(".ocx."))).toEqual([]);
+  });
+
+  test("a plain destination is unaffected", async () => {
+    const destination = join(testDir, "plain-async.toml");
+    await atomicWriteFileAsync(destination, "first");
+    await atomicWriteFileAsync(destination, "second");
+
+    expect(lstatSync(destination).isSymbolicLink()).toBe(false);
+    expect(readFileSync(destination, "utf8")).toBe("second");
+  });
+
+  test("a dangling symlink is preserved and the write is refused", async () => {
+    const link = join(testDir, "dangling-async.toml");
+    symlinkSync(join(testDir, "gone-async", "config.toml"), link);
+
+    await expect(atomicWriteFileAsync(link, "recovered")).rejects.toThrow(/unresolvable symlinked write target/);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(testDir, "gone-async"))).toBe(false);
   });
 });

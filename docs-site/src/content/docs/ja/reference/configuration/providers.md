@@ -41,6 +41,8 @@ description: プロバイダー エントリ、認証、エンドポイント、
 | `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`azure-openai` (または別名 `azure`) のいずれか。 |
 | `baseUrl` | `string` |アップストリーム API のベース URL。ほとんどの組み込み固定エンドポイントは不一致を無視します。衝突安全キー プリセットは、古い同じ名前のカスタム宛先を保持します。 |
 | `responsesPath?` | `string` |キー認証 `openai-responses` リクエストの相対リソース パス。 `/` で始まり、スキーム、クエリ、またはフラグメントが含まれていない必要があります。 |
+| `supportsServiceTier?` | `boolean` | `service_tier` ケイパビリティの 3 状態です。`true`: fast モードが注入でき、呼び出し元の値も保持されます。`false`: フィールドは削除され、注入もされません (非対応と文書化されたアップストリームには送りません)。未設定: 未分類 — 呼び出し元の値はそのまま保持され、fast モードは注入しません。レジストリは正規 OpenAI (`true`)、DeepSeek、Volcengine Ark (`false`) を分類します。実際にティアをサポートするカスタム ゲートウェイにのみ明示的に設定してください。 |
+| `preserveResponsesReasoningContent?` | `boolean` | リプレイされる Responses reasoning アイテムの平文 reasoning コンテンツを消去せずに保持します (消去は ChatGPT バックエンドのルールです)。DeepSeek のように reasoning リプレイを受け入れるアップストリームで有効にしてください。プロキシ生成の `ocxr1` エンベロープは常に削除されます。 |
 | `disabled?` | `boolean` |プロバイダーをディスク上に保持しますが、ルーティングおよびモデル/カタログのリストからは除外します。 |
 | `apiKey?` | `string` | API キー、またはリクエスト時に解決される `${ENV_VAR}` / `$ENV_VAR` 参照。 |
 | `apiKeyTransport?` | `"x-api-key" \| "bearer"` | Anthropic キーのヘッダー スタイル。デフォルトはネイティブ `x-api-key` です。キー認証 `anthropic` プロバイダーにのみ有効です。 |
@@ -65,9 +67,11 @@ description: プロバイダー エントリ、認証、エンドポイント、
 | `modelReasoningEfforts?` | `Record<string, string[]>` |モデルごとのラベル。空のリストは努力制御を非表示にします。 |
 | `modelSupportsReasoningSummaries?` | `Record<string, boolean>` |モデルを `false` に設定して、概要の広告を停止し、概要配信フィールドを削除します。 |
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` |モデルごとの応答配信列挙型。既存の配信フィールドを書き換えます。 |
-| `modelAdapters?` | `Record<string, string>` |混合配線ゲートウェイのモデルごとの `openai-chat` または `openai-responses` 配線オーバーライド。明示的なエントリはレジストリのデフォルトを破ります。 DeepSeek のプリセットは、`deepseek-v4-flash` のネイティブ レスポンスを選択できます。単線アップストリーム ピンと正規の ChatGPT 転送拒否オーバーライド。 |
+| `modelAdapters?` | `Record<string, string>` | 混合配線ゲートウェイのモデルごとの `openai-chat` または `openai-responses` 配線オーバーライド。明示的なエントリはレジストリのデフォルトを破ります。DeepSeek のプリセットは `deepseek-v4-flash` のネイティブ Responses を選択でき、GitHub Copilot は GPT-5 ファミリー (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`) を Responses 専用デフォルトとして宣言します。これらのモデルはエージェント トラフィックで `/chat/completions` を拒否するためです。`gpt-5.4-nano` のようなビルトイン デフォルトのないモデルはここでオプトインできます。単線アップストリーム ピンと正規の ChatGPT 転送はオーバーライドを拒否します。 |
+| `modelPreferHostedTools?` | `Record<string,string[]>` | hosted tool namespace を予約する非 forward Responses gateway 向けの完全一致モデル opt-in。現在は `["image_generation"]` のみを受け付けます。一致したモデルは `openai-responses` wire を使い、その hosted tool をサポートする必要があります。競合するクライアント `image_gen` 宣言を除去し、呼び出し元の tool choice を維持するため selector も書き換えます。OpenAI API の仮想 `-pro` モデルでは、まず選択した公開 ID に一致させ、解決後のベース wire-model ID をフォールバックとして使用します。`modelAdapters` は公開 ID、次にベース ID の順に解決し、後者の結果が最終 wire を決めます。未設定のモデルは通常の alias 動作を維持します。 |
 | `reasoningEffortMap?` | `Record<string, string>` |ラベルを推論するためのプロバイダー全体のワイヤ エイリアス。 |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` |推論ラベルのモデルごとのワイヤ エイリアス。 |
+| `reasoningWireFormat?` | `"gateway-object"` | `reasoning_effort` ではなく `reasoning: { enabled, effort }` を受け取る OpenAI 互換ゲートウェイ用です。ClinePass プリセットが自動設定します。 |
 | `noReasoningModels?` | `string[]` |推論/思考パラメーターを拒否するモデル。 |
 | `noTemperatureModels?` | `string[]` |発信者指定の`temperature`を拒否するモデル。 |
 | `noTopPModels?` | `string[]` |発信者指定の`top_p`を拒否するモデル。 |
@@ -80,6 +84,7 @@ description: プロバイダー エントリ、認証、エンドポイント、
 | `thinkingBudgetModels?` | `string[]` |整数 `thinking_budget` を使用したチャット モデル。労力は予算の一部にマッピングされます。 |
 | `noVisionModels?` | `string[]` |ビジョン サイドカーを通じて送信されるテキストのみのモデル。マッチングでは、Ollama `:size` タグが許容されます。 |
 | `escapeBuiltinToolNames?` | `boolean` | Anthropic 互換ゲートウェイの組み込みツール名をエスケープし、返された呼び出しで復元します。 |
+| `anthropicEofTolerance?` | `boolean` | `message_stop` 前にストリームが終了しても、可視テキストまたは完全な JSON オブジェクトのツール入力が受信済みの場合に限り完了を許可します（Anthropic 互換ゲートウェイ向け）。デフォルトはオフ。 |
 | `googleMode?` | `"ai-studio" \| "vertex" \| "cloud-code-assist"` | Google トランスポート/認証モード。デフォルトは`ai-studio`です。 |
 | `project?` | `string` | Vertex または Antigravity Cloud Code Assist プロジェクト ID。 |
 | `location?` | `string` |頂点の位置。環境フォールバックは `GOOGLE_CLOUD_LOCATION` です。 |
