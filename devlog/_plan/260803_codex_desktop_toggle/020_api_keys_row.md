@@ -30,6 +30,17 @@ this neither changes the management contract nor setup behavior.
 
 ## Why keys is not a card
 
+Every grid card represents a client that can be detected, applied, stale, or
+unsafe against client-owned configuration. Most carry a switch and a config
+path; the exceptions still describe routing or a profile that can drift.
+
+API keys have neither property. They cannot be installed as a client, toggled,
+or drift from a config file. Their entire overview state is the count returned
+by `loadApiKeyCount`: zero keys, N issued keys, or an unsettled read, plus a way
+to open the keys tab. Painting that credential inventory as one peer in the
+client grid is the asymmetry that caused both the orphaned card and the false
+summary totals. The type boundary should now say the same thing as the layout.
+
 ## Distinguishing a failed read from an in-flight one
 
 `loadApiKeyCount` returns `null` for an in-flight read, a network failure, a
@@ -43,7 +54,11 @@ audit is right that avoiding “No keys issued” is necessary but not sufficien
 indefinite progress copy is its own lie, and it is the more annoying one because
 it never resolves.
 
-Two branches, distinguished at the source. MODIFY `integration-api.ts`:
+A returned `null` cannot express failure, because the resource layer treats any
+successful return as data. So the loader **throws**, and the read phase comes
+from the resource state that already exists.
+
+MODIFY `integration-api.ts`:
 
 ```diff
 -export async function loadApiKeyCount(apiBase: string, signal?: AbortSignal): Promise<number | null> {
@@ -52,53 +67,62 @@ Two branches, distinguished at the source. MODIFY `integration-api.ts`:
 -  return body.keys.length;
 -}
 +/**
-+ * `null` means the read FAILED, not that it is pending.
++ * Throws on a failed or malformed read rather than returning null.
 + *
-+ * The overview renders the two differently — "Checking…" while the request is
-+ * in flight, "Key status unavailable" once it has settled badly — and the
-+ * caller can only tell them apart if this function stops swallowing failure
-+ * into the same value it uses for "no data yet". `readOptional` is kept for the
-+ * surfaces that genuinely do not care.
++ * `readOptional` is right for surfaces that treat "no answer" and "empty" the
++ * same. This one cannot: the overview must say "Checking..." while a read is in
++ * flight and "Key status unavailable" once it has settled badly, and a
++ * successfully-returned null collapses both into `ready-empty`
++ * (data-surface.ts:128) with no polling to ever correct it. Throwing is what
++ * produces `failed-cold` / `failed-with-stale`, which is the signal the row
++ * needs. Aborts never reach a state: client-resource.ts:230-244 discards an
++ * aborted generation before publishing either data or failure.
 + */
-+export async function loadApiKeyCount(apiBase: string, signal?: AbortSignal): Promise<number | null> {
-+  try {
-+    const response = await fetch(`${apiBase}/api/keys`, { signal });
-+    if (!response.ok) return null;
-+    const body = await readJsonIfOk<{ keys?: unknown }>(response);
-+    if (!body || !Array.isArray(body.keys)) return null;
-+    return body.keys.length;
-+  } catch {
-+    return null;
-+  }
++export async function loadApiKeyCount(apiBase: string, signal?: AbortSignal): Promise<number> {
++  const response = await fetch(`${apiBase}/api/keys`, { signal });
++  if (!response.ok) throw new Error(`/api/keys responded ${response.status}`);
++  const body = await readJsonIfOk<{ keys?: unknown }>(response);
++  if (!body || !Array.isArray(body.keys)) throw new Error("/api/keys returned an unexpected body");
++  return body.keys.length;
 +}
 ```
 
-The signature is unchanged; what changes is the row's reading of it. The
-in-flight case is already available to the overview as the data-surface state
-before the first settle, so `keysRow` takes the state rather than inferring it:
+`loadApiKeyCount` has exactly one production consumer, `IntegrationsOverview`;
+the other API-key surfaces fetch `/api/keys` directly, so nothing else changes.
 
-```ts
-keysRow(state: "checking" | "settled", count: number | null)
+MODIFY `IntegrationsOverview.tsx` to derive the phase from the resource, the way
+`clientsSettled` already does at `:261-262`:
+
+```diff
+++  // The three phases the row distinguishes, read off the resource rather than
+++  // guessed from a null. Mirrors the clientsSettled idiom above.
+++  const keyPhase: ApiKeyReadPhase =
+++    keysResource.state.kind === "cold" || keysResource.state.kind === "retrying-cold"
+++      ? "checking"
+++      : keysResource.state.kind === "failed-cold" || keysResource.state.kind === "failed-with-stale"
+++        ? "unavailable"
+++        : "settled";
+   const rows = buildOverviewRows({
+     clients,
+     clientsSettled,
+     codex: codexResource.state.data ?? null,
+     keyCount: keysResource.state.data ?? null,
+++    keyPhase,
 ```
 
-`checking` before the first settle; `unavailable` when settled with `null`;
-otherwise the count decides `issued` or `none-issued`. Four states, four detail
-strings, no branch without one.
+`OverviewSources` gains `keyPhase: ApiKeyReadPhase`, `buildOverviewRows` passes
+it through as `keysRow(sources.keyPhase, sources.keyCount)`, and the helper
+signature becomes:
 
-An abort is deliberately treated as `checking` rather than `unavailable`: the
-component is unmounting or re-requesting, and telling the user their key status
-is unavailable at that moment would be noise about our own lifecycle.
+```ts
+export type ApiKeyReadPhase = "checking" | "unavailable" | "settled";
 
-Every grid card represents a client that can be detected, applied, stale, or
-unsafe against client-owned configuration. Most carry a switch and a config
-path; the exceptions still describe routing or a profile that can drift.
+function keysRow(phase: ApiKeyReadPhase, count: number | null): ApiKeysOverviewRow
+```
 
-API keys have neither property. They cannot be installed as a client, toggled,
-or drift from a config file. Their entire overview state is the count returned
-by `loadApiKeyCount`: zero keys, N issued keys, or an unsettled read, plus a way
-to open the keys tab. Painting that credential inventory as one peer in the
-client grid is the asymmetry that caused both the orphaned card and the false
-summary totals. The type boundary should now say the same thing as the layout.
+Four output states from three input phases: `checking` and `unavailable` map
+straight through, and `settled` splits on the count into `issued` or
+`none-issued`. Every branch names a detail key.
 
 ## Row model — `overview-clients.ts`
 
@@ -147,7 +171,7 @@ row from client rows instead of returning one mixed array (`:24-59`, `:153-176`,
 -    status: null,
 -    detail: null,
 -  };
-+function keysRow(count: number | null): ApiKeysOverviewRow {
++function keysRow(phase: ApiKeyReadPhase, count: number | null): ApiKeysOverviewRow {
 +  const base = {
 +    hash: "integrations/keys" as const,
 +    labelKey: "integrations.tab.keys" as TKey,
@@ -156,11 +180,11 @@ row from client rows instead of returning one mixed array (`:24-59`, `:153-176`,
 +  // expression now that the badge is gone, so a null one renders a row with no
 +  // state at all — which is how the first draft of this phase managed to
 +  // declare a "Checking…" string and never show it.
-+  if (state === "checking") {
-+    return { ...base, state, detailKey: "integrations.detail.keyChecking", detailVars: null };
++  if (phase === "checking") {
++    return { ...base, state: "checking", detailKey: "integrations.detail.keyChecking", detailVars: null };
 +  }
-+  if (state === "unavailable") {
-+    return { ...base, state, detailKey: "integrations.detail.keyUnavailable", detailVars: null };
++  if (phase === "unavailable" || count === null) {
++    return { ...base, state: "unavailable", detailKey: "integrations.detail.keyUnavailable", detailVars: null };
 +  }
 +  return {
 +    ...base,
@@ -184,7 +208,7 @@ row from client rows instead of returning one mixed array (`:24-59`, `:153-176`,
    ];
    // Existing file-client loop stays byte-for-byte unchanged.
 -  return rows;
-+  return { keysRow: keysRow(sources.keyCount), rows };
++  return { keysRow: keysRow(sources.keyPhase, sources.keyCount), rows };
  }
 ```
 
@@ -230,7 +254,7 @@ all.” Below preserves aggregate → individual → client catalog hierarchy.
 +  const t = useT();
 +  const detail = row.detailKey ? t(row.detailKey, row.detailVars ?? undefined) : null;
 +  return (
-+    <div className="integration-api-keys-row" data-client="keys">
++    <div className="integration-api-keys-row" data-client="keys" data-key-state={row.state}>
 +      <div className="integration-api-keys-copy">
 +        <h4>{t(row.labelKey)}</h4>
 +        {detail && <p className="integration-meta">{detail}</p>}
@@ -240,8 +264,13 @@ all.” Below preserves aggregate → individual → client catalog hierarchy.
 +        `absent` as "Not applied" in all six locales (LABEL_KEYS in
 +        IntegrationStateBadge.tsx:12), which is exactly the claim this phase
 +        argues is false — the live zero-key card says `미적용` today. The
-+        detail line above already carries the honest state (checking, none
-+        issued, N issued), so a badge here could only re-say it wrongly.
++        detail line above already carries the honest state, so a badge here
++        could only re-say it wrongly.
++
++        `data-key-state` on the wrapper is how the four states stay testable
++        and stylable without a visible client-vocabulary badge. It is the one
++        consumer of `row.state`; without it the field would be dead weight and
++        the next author would reach for the badge again.
 +      */}
 +      <button
 +        type="button"
@@ -410,11 +439,17 @@ claim about the account of the user that a failed read cannot support.
 
 MODIFY `gui/tests/integrations-overview-rows.test.ts`:
 
-1. Destructure `{ keysRow, rows }`; assert null count gives a keys `unknown`
-   row while client `unknown` count is 4, not 5.
-2. Assert zero gives `absent` + `keyNone`, and two gives `current` +
-   `{ count: "2" }`. With Codex, Claude, Desktop, Grok, and one file client
-   applied, changing key count through null/zero/two leaves `applied === 5`.
+1. Destructure `{ keysRow, rows }` and assert all FOUR credential states:
+   `("checking", null)` → `checking` + `keyChecking`;
+   `("unavailable", null)` → `unavailable` + `keyUnavailable`;
+   `("settled", 0)` → `none-issued` + `keyNone`;
+   `("settled", 2)` → `issued` + `keyCount` with `{ count: "2" }`.
+   A `("settled", null)` fixture must also yield `unavailable`, never
+   `none-issued` — that is the branch that would otherwise tell a user they
+   have no keys because a read failed.
+2. Client `unknown` count is 4, not 5, in every one of those cases. With Codex,
+   Claude, Desktop, Grok, and one file client applied, walking the key phase
+   through all four leaves `applied === 5` unchanged.
 3. Update settled lengths from 5 to 4 and unsettled lengths from 11 to 10;
    assert no member of `rows` has id `keys`.
 4. Keep every existing Codex/Desktop/file-client mapping case against `rows`.
@@ -440,8 +475,9 @@ through its three outcomes.
 1. `[data-client="keys"]` exists, but
    `.integration-cards [data-client="keys"]` is null.
 2. DOM order is `.integration-summary` → keys row → `.integration-cards`.
-3. Drive `/api/keys` through `[]`, two keys, and failure with everything else
-   settled and constant. Assert the row copy each time AND assert the client
+3. Drive `/api/keys` through a DEFERRED response (still in flight, asserting
+   the "Checking…" copy before it settles), then `[]`, two keys, and a failure,
+   with everything else settled and constant. Assert the row copy each time AND assert the client
    summary totals are **exact and identical** across all three. A relative
    "text is present" check would not catch the leak this phase exists to close.
 4. **Tabbability, not button-counting.** Query every tabbable descendant of the
@@ -472,10 +508,13 @@ through its three outcomes.
    chrome, and the grid begins with Codex. At 390 px, switch through all six
    locales and confirm the action text wraps when needed rather than clipping.
 5. Keyboard-tab to “Manage keys”; observe a visible focus ring, activate with
-   Enter and Space, and confirm `#integrations/keys` opens. Repeat with zero
-   keys and a failed keys read to observe absent and unknown states.
-6. Confirm the summary reads “Clients detected / Clients applied” in the active
-   locale and that its numbers no longer move when a key is issued or revoked.
+   Enter and Space, and confirm `#integrations/keys` opens. This step is where
+   keyboard activation is actually proven, since happy-dom does not model it.
+   Repeat with zero keys and with a failed keys read to observe the
+   `none-issued` and `unavailable` states.
+6. Confirm the summary reads “Clients detected / Configured clients” in the
+   active locale and that its numbers no longer move when a key is issued or
+   revoked.
 
 Step 4 is **C-RENDER-GROUNDING-01**. The change is not verified by typecheck,
 DOM assertions, or a produced-but-unread screenshot: it must be OBSERVED
@@ -487,7 +526,8 @@ again.
 - C8 — API keys render as one full-width row above `.integration-cards`, below
   the aggregate summary, observed rendered at `localhost:10100`.
 - The keys row is absent from the card grid and from all client summary totals;
-  its own issued/none/unknown state remains visible.
+  its own state — checking, unavailable, none-issued, or issued — remains
+  visible, and a failed read never renders as "no keys".
 - One native button is the complete keyboard path to the keys tab; no stretched
   card overlay or duplicate tab stop is introduced.
 - C9's GUI tests, lint, i18n lint, build, repository typecheck/test, and privacy
