@@ -105,6 +105,65 @@ describe("readBoundedResponseBody", () => {
 		expect(cancelled).toBe(true);
 	});
 
+	/**
+	 * The `maxBytes` option exists so one caller — the non-streaming upstream JSON
+	 * read in responses/core.ts — can accept a whole completion (32 MiB ceiling)
+	 * while the other eight callers keep the 64 KiB error-body default. Without
+	 * these three tests the option was mutation-surviving: ignoring `maxBytes`
+	 * entirely left the suite green, because the only oversize test used a body
+	 * that exceeds BOTH ceilings.
+	 */
+	describe("an explicit maxBytes budget", () => {
+		const CUSTOM_CAP = BOUNDED_BODY_MAX_BYTES * 4;
+
+		test("accepts a body larger than the default but within the custom cap", async () => {
+			const size = BOUNDED_BODY_MAX_BYTES * 2;
+			const response = responseFromChunks(new Uint8Array(size).fill(0x61));
+
+			const result = await readBoundedResponseBody(response, { maxBytes: CUSTOM_CAP });
+
+			expect(result.text.length).toBe(size);
+			expect(result.oversized).toBe(false);
+			expect(result.truncated).toBe(false);
+			expect(result.displaySafe).toBe(true);
+		});
+
+		test("accepts exactly the custom cap", async () => {
+			const response = responseFromChunks(new Uint8Array(CUSTOM_CAP).fill(0x61));
+
+			const result = await readBoundedResponseBody(response, { maxBytes: CUSTOM_CAP });
+
+			expect(result.text.length).toBe(CUSTOM_CAP);
+			expect(result.oversized).toBe(false);
+		});
+
+		test("rejects one byte past the custom cap and discards the prefix", async () => {
+			const response = responseFromChunks(new Uint8Array(CUSTOM_CAP + 1).fill(0x61));
+
+			const result = await readBoundedResponseBody(response, { maxBytes: CUSTOM_CAP });
+
+			expect(result.text).toBe("");
+			expect(result.oversized).toBe(true);
+			expect(result.displaySafe).toBe(false);
+		});
+
+		test("a highly fragmented body under the cap is reassembled exactly", async () => {
+			// Guards the geometric single-buffer accumulation: the previous per-chunk
+			// array retained one object per transport chunk, which a peer can inflate
+			// far beyond the payload ceiling. Correctness here is the observable part —
+			// 20k one-byte chunks must still decode to exactly their content.
+			const chunkCount = 20_000;
+			const chunks = Array.from({ length: chunkCount }, () => new Uint8Array([0x61]));
+			const response = responseFromChunks(...chunks);
+
+			const result = await readBoundedResponseBody(response, { maxBytes: CUSTOM_CAP });
+
+			expect(result.text.length).toBe(chunkCount);
+			expect(result.text).toBe("a".repeat(chunkCount));
+			expect(result.oversized).toBe(false);
+		});
+	});
+
 	test("parent abort rejects with the exact reason object", async () => {
 		const controller = new AbortController();
 		const reason = { code: "parent-stopped" };
