@@ -120,7 +120,12 @@ describe("startup star prompt", () => {
     // A dashboard click must still work when an agent started the proxy, so the
     // refusal is conditioned on the absence of browser-session evidence.
     expect(routes).toContain("hasBrowserSessionEvidence");
-    expect(routes).toMatch(/isAgentDriven\(\)\s*&&\s*!hasBrowserSessionEvidence\(req\)/);
+    expect(routes).toMatch(/isAgentDriven\(\)\s*&&\s*!hasBrowserSessionEvidence\(ctx\)/);
+    // And that evidence must be the authenticating CREDENTIAL, never a request
+    // header: the admin token is readable by anything running as the user, so a
+    // header-shaped check is forgeable by the exact caller this guard refuses.
+    expect(routes).toMatch(/principal === "gui-session"/);
+    expect(routes).not.toMatch(/hasBrowserSessionEvidence[\s\S]*?headers\.get\("x-opencodex-csrf-token"\)/);
   });
 
   test("the consent rule is written down where agents and users read it", async () => {

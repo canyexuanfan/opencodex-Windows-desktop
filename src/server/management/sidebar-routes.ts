@@ -16,25 +16,28 @@
  *
  * The dashboard button must keep working even when the proxy itself was started by
  * an agent, which is the common case — the person is at the browser, not at the
- * spawning shell. A GUI click is therefore distinguished by its browser session
- * evidence (a same-origin `Origin` plus the minted CSRF header, both already
- * verified by the management auth gate) rather than by the proxy's own env.
+ * spawning shell. A GUI click is therefore distinguished by the CREDENTIAL that
+ * authorized the request — a GUI session this process minted for a browser, which
+ * the auth gate only accepts after matching origin and the per-session CSRF token —
+ * rather than by the proxy's own env or by request headers.
  */
 import { jsonResponse } from "../auth-cors";
 import { agentDrivenMarkers, isAgentDriven } from "../../cli/agent-driven";
 import type { ManagementContext } from "./context";
 
 /**
- * True when this request carries the browser-session evidence a dashboard click
- * always has: an `Origin` (only a browser sends one) plus the per-session CSRF
- * token, which `requireManagementAuth` has already matched against the minted
- * session before dispatch. A shell/HTTP caller holding only the admin token has
- * neither, which is exactly the case the agent guard is aimed at.
+ * True only when a minted GUI session authorized this request.
+ *
+ * The previous version of this check looked for an `Origin` plus the CSRF headers
+ * and reasoned that the auth gate had already validated them. It had not: the gate
+ * accepts a raw admin token BEFORE it ever consults the session table, so a caller
+ * holding that token (any process running as the user, a coding agent included)
+ * could add three nonempty headers of its choosing and satisfy this check without
+ * a browser ever being involved. The credential itself is the only part of the
+ * request an agent cannot fabricate, so that is what this now reads.
  */
-function hasBrowserSessionEvidence(req: Request): boolean {
-  return !!req.headers.get("Origin")?.trim()
-    && !!req.headers.get("x-opencodex-csrf-token")?.trim()
-    && !!req.headers.get("x-opencodex-gui-origin")?.trim();
+function hasBrowserSessionEvidence(ctx: ManagementContext): boolean {
+  return ctx.principal === "gui-session";
 }
 
 // Known edge, deliberately fail-closed: a non-loopback operator dashboard signs in
@@ -58,7 +61,7 @@ export async function handleSidebarRoutes(ctx: ManagementContext): Promise<Respo
     // account owner. An agent-driven caller without browser-session evidence
     // cannot have obtained it, and must relay the question instead of answering
     // it with an HTTP call.
-    if (isAgentDriven() && !hasBrowserSessionEvidence(req)) {
+    if (isAgentDriven() && !hasBrowserSessionEvidence(ctx)) {
       return jsonResponse({
         ok: false,
         state: "not-starred",
