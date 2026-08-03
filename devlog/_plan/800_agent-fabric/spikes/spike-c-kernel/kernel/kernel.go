@@ -1,9 +1,9 @@
-// Spike C — disposable task-kernel (stdlib only).
+﻿// Spike C â€” disposable task-kernel (stdlib only).
 // Demonstrates append-only events, expected-sequence concurrency, hash chain,
 // deterministic projection rebuild, schema-versioned events, content-addressed
 // artifacts, primary lease + monotonic fencing token, stale-writer rejection,
 // and crash-boundary recovery. Storage is a JSONL log + files; production uses
-// SQLite (master plan §9.2) — the invariants here are storage-independent.
+// SQLite (master plan Â§9.2) â€” the invariants here are storage-independent.
 package kernel
 
 import (
@@ -18,7 +18,7 @@ import (
 	"strings"
 )
 
-// Event is the append-only envelope (see 060 §1, simplified).
+// Event is the append-only envelope (see 060 Â§1, simplified).
 type Event struct {
 	TaskID            string          `json:"task_id"`
 	Sequence          uint64          `json:"sequence"`
@@ -312,4 +312,3 @@ func (l *Leases) CommitHandoff(newOwner string) int {
 	l.atomicWrite(s)
 	return s.FencingToken
 }
-

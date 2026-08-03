@@ -1,11 +1,11 @@
----
+﻿---
 title: FAB-00 Security Threat Model
 programme_id: OCAF
 phase: FAB-00
 date: 2026-08-03
 ---
 
-# 100 — Security Threat Model
+# 100 â€” Security Threat Model
 
 ## 1. Assets
 
@@ -17,15 +17,15 @@ Human operator; Fabric Supervisor; opencodex request proxy; runtime adapter; nat
 
 ## 3. Trust boundaries
 
-Operator ⇄ Supervisor (IPC, agent-control cred) | Supervisor ⇄ adapter (in-process or RPC) | adapter ⇄ native harness | harness ⇄ model/provider | Supervisor ⇄ MCP | Supervisor ⇄ repository content | imported task package ⇄ Fabric | deferred: remote worker ⇄ A2A.
+Operator â‡„ Supervisor (IPC, agent-control cred) | Supervisor â‡„ adapter (in-process or RPC) | adapter â‡„ native harness | harness â‡„ model/provider | Supervisor â‡„ MCP | Supervisor â‡„ repository content | imported task package â‡„ Fabric | deferred: remote worker â‡„ A2A.
 
 ## 4. Entry points
 
-IPC socket/pipe; CLI (`ocx task …`); management `/api/*`; handoff import; native event stream; MCP tool results; model/tool output; artifact import; worktree filesystem.
+IPC socket/pipe; CLI (`ocx task â€¦`); management `/api/*`; handoff import; native event stream; MCP tool results; model/tool output; artifact import; worktree filesystem.
 
 ## 5. Credential classes
 
-Agent-control token (scoped, dedicated); provider API keys + OAuth tokens (owned by opencodex, **never** reused for agent control); Codex/ChatGPT account-pool identities; model API keys. Rule: agent-control cred never equals a data-plane or management-plane secret (`090` §4).
+Agent-control token (scoped, dedicated); provider API keys + OAuth tokens (owned by opencodex, **never** reused for agent control); Codex/ChatGPT account-pool identities; model API keys. Rule: agent-control cred never equals a data-plane or management-plane secret (`090` Â§4).
 
 ## 6. Threats
 
@@ -40,11 +40,11 @@ Agent-control token (scoped, dedicated); provider API keys + OAuth tokens (owned
 | Permission escalation | widened effective policy | Tier-3 block on handoff widening (`080`/`090`); permissions never widen without approval event |
 | Symlink / path escape | worktree symlinks pointing outside | canonicalize all paths (opencodex already does, `structure/02`); sandbox confines; reject escaped paths |
 | Stale owner / zombie process | old writer after lease loss | fencing token monotonic; reject stale mutation; mark `lost`; quarantine (`050`/`090`) |
-| Forged acknowledgement | target fakes the ack hash | ack is machine-readable structured (not NL); verified against expected hashes before commit (`080` §3) |
+| Forged acknowledgement | target fakes the ack hash | ack is machine-readable structured (not NL); verified against expected hashes before commit (`080` Â§3) |
 | Poisoned capability manifest | false capabilities claimed | only `verified`/accepted-`degraded` satisfy mandatory; probed at runtime (`070`/`130`) |
 | Artifact tampering | altered artifact bytes | content-addressed sha256; hash chain; missing artifact = projection fault |
 | Multi-run malicious change | two runs collide on a worktree | one writer per worktree; no auto-merge; quarantine on conflict |
-| Sensitive-content retention | secrets leaked into artifacts/events | redaction default; secret-pattern exclusion; privacy defaults (`090` §6) |
+| Sensitive-content retention | secrets leaked into artifacts/events | redaction default; secret-pattern exclusion; privacy defaults (`090` Â§6) |
 
 ## 7. Deferred remote-worker risks (FAB-08)
 
@@ -52,28 +52,27 @@ A2A is opaque and remote; a remote worker can be a hostile principal. Risks: exf
 
 ## 8. Kill paths
 
-- Operator `ocx task` cancel → `interrupt` + `closeSession` + lease release + worktree quarantine.
-- Supervisor crash → on restart, reconcile from event log; fencing tokens from DB; `lost` runs quarantined.
-- Native harness hang → heartbeat/stall deadline (opencodex already has 5-min stall, `structure/01`) → interrupt + mark `failed`/`lost`.
-- Forged ack / Tier-3 loss → handoff blocked; source retains ownership; security observation emitted.
+- Operator `ocx task` cancel â†’ `interrupt` + `closeSession` + lease release + worktree quarantine.
+- Supervisor crash â†’ on restart, reconcile from event log; fencing tokens from DB; `lost` runs quarantined.
+- Native harness hang â†’ heartbeat/stall deadline (opencodex already has 5-min stall, `structure/01`) â†’ interrupt + mark `failed`/`lost`.
+- Forged ack / Tier-3 loss â†’ handoff blocked; source retains ownership; security observation emitted.
 
 ## 9. Recovery paths
 
-- `lost` run → quarantine ambiguous writes; require explicit reconciliation (no auto-discard).
-- Post-commit target failure → target owns; quarantine target worktree; rescue run or explicit reversal.
-- Corrupt hash chain → stop projection; require repair from a known-good snapshot + replay.
-- Disk full / DB busy / artifact failure / worktree failure / network loss / quota exhaustion → degrade gracefully (opencodex already degrades sidecars to markers, `structure/04`); Fabric emits `RunFailed` with bounded diagnostics, never silent.
+- `lost` run â†’ quarantine ambiguous writes; require explicit reconciliation (no auto-discard).
+- Post-commit target failure â†’ target owns; quarantine target worktree; rescue run or explicit reversal.
+- Corrupt hash chain â†’ stop projection; require repair from a known-good snapshot + replay.
+- Disk full / DB busy / artifact failure / worktree failure / network loss / quota exhaustion â†’ degrade gracefully (opencodex already degrades sidecars to markers, `structure/04`); Fabric emits `RunFailed` with bounded diagnostics, never silent.
 
 ## 10. Security acceptance gates
 
 - Fencing token never decreases across any ownership transition (property test, `130`).
-- One primary owner invariant holds through every crash point (`090` §3).
+- One primary owner invariant holds through every crash point (`090` Â§3).
 - No handoff commits with both source and target holding write authority.
-- No credential/private content persisted (privacy scan passes — repo already has `bun run privacy:scan`).
+- No credential/private content persisted (privacy scan passes â€” repo already has `bun run privacy:scan`).
 - Acknowledgement hash verified before ownership commit.
 - Read-only/quarantine enforcement verified per platform (Linux/macOS/Windows).
 
 ## 11. Unresolved high-severity boundaries
 
 None that require `NEEDS_HUMAN` to *complete FAB-00*. The maintainer-authority question (language + product placement, `120`/`170`) is a programme-authority decision, not a security boundary. All security boundaries above have a defined mitigation grounded in existing repo invariants or standard practice.
-
