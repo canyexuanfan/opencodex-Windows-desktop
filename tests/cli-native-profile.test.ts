@@ -7,10 +7,13 @@ import { nativeMainCodexLoginInvocation } from "../src/cli/account-main";
 
 const originalLog = console.log;
 const originalError = console.error;
+const originalCodexHome = process.env.CODEX_HOME;
 
 afterEach(() => {
   console.log = originalLog;
   console.error = originalError;
+  if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = originalCodexHome;
 });
 
 describe("ocx account main", () => {
@@ -48,8 +51,11 @@ describe("ocx account main", () => {
     expect(invocation.options).toEqual({ windowsVerbatimArguments: true });
   });
 
-  test("add keeps the auth envelope off HTTP and switch requires explicit stopped confirmation", async () => {
+  test("mutating human output uses the server's effective home while add keeps the auth envelope off HTTP", async () => {
     const stagingHome = join(tmpdir(), "ocx-native-profile-stage");
+    const effectiveHome = join(tmpdir(), "ocx-native-profile-effective-home");
+    const clientHome = join(tmpdir(), "ocx-native-profile-client-home");
+    process.env.CODEX_HOME = clientHome;
     const requests: Array<{ path: string; body?: Record<string, unknown> }> = [];
     const output: string[] = [];
     const errors: string[] = [];
@@ -60,14 +66,20 @@ describe("ocx account main", () => {
       const url = new URL(String(input));
       const requestBody = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined;
       requests.push({ path: url.pathname, body: requestBody });
+      if (url.pathname.endsWith("/register")) {
+        return Response.json({ effectiveCodexHome: effectiveHome, profile: { id: "p1", label: "personal", identityHint: "account-87654321", state: "active" } });
+      }
       if (url.pathname.endsWith("/stage") && !url.pathname.endsWith("/finish")) {
-        return Response.json({ stageId: "11111111-1111-4111-8111-111111111111", stagingCodexHome: stagingHome, effectiveCodexHome: join(tmpdir(), "codex-home") });
+        return Response.json({ stageId: "11111111-1111-4111-8111-111111111111", stagingCodexHome: stagingHome, effectiveCodexHome: effectiveHome });
       }
       if (url.pathname.endsWith("/stage/finish")) {
-        return Response.json({ effectiveCodexHome: join(tmpdir(), "codex-home"), profile: { id: "p2", label: "work", identityHint: "account-12345678", state: "inactive" } });
+        return Response.json({ effectiveCodexHome: effectiveHome, profile: { id: "p2", label: "work", identityHint: "account-12345678", state: "inactive" } });
       }
       if (url.pathname.endsWith("/switch")) {
-        return Response.json({ ok: true, activeProfile: { id: "p2", label: "work", identityHint: "account-12345678", state: "active" }, restartRequired: true });
+        return Response.json({ ok: true, effectiveCodexHome: effectiveHome, activeProfile: { id: "p2", label: "work", identityHint: "account-12345678", state: "active" }, restartRequired: true });
+      }
+      if (url.pathname.endsWith("/recover")) {
+        return Response.json({ ok: true, recovered: true, action: "rollback-source", effectiveCodexHome: effectiveHome, restartRequired: false });
       }
       return Response.json({ ok: true });
     };
@@ -77,6 +89,7 @@ describe("ocx account main", () => {
       runCodexLoginImpl: async (home: string) => { loginHome = home; return 0; },
     };
 
+    expect(await cmdAccount(["main", "register", "personal"], deps)).toBe(0);
     expect(await cmdAccount(["main", "add", "work"], deps)).toBe(0);
     expect(loginHome).toBe(stagingHome);
     expect(requests.find(request => request.path.endsWith("/stage/finish"))?.body).toEqual({
@@ -100,6 +113,41 @@ describe("ocx account main", () => {
     expect(requests).toHaveLength(recoveryBefore);
     expect(await cmdAccount(["main", "recover", "--rollback", "--yes"], deps)).toBe(0);
     expect(requests.at(-1)?.body).toEqual({ rollback: true, confirmedStopped: true });
+    expect(output).toContain(`Registered 'personal' for ${effectiveHome}.`);
+    expect(output).toContain(`Added encrypted native profile 'work' for ${effectiveHome}.`);
+    expect(output).toContain(`Native Codex login for ${effectiveHome} is now 'work'. Restart Codex App/CLI before continuing.`);
+    expect(output).toContain(`Recovery completed for ${effectiveHome}: rollback-source.`);
+    expect(errors).toContain(`Effective CODEX_HOME: ${effectiveHome}`);
+    expect([...output, ...errors].join("\n")).not.toContain(clientHome);
+  });
+
+  test("JSON mutating output preserves the server's canonical effective home", async () => {
+    const effectiveHome = join(tmpdir(), "ocx-native-profile-json-effective-home");
+    process.env.CODEX_HOME = join(tmpdir(), "ocx-native-profile-json-client-home");
+    const responses: Record<string, Record<string, unknown>> = {
+      register: { effectiveCodexHome: effectiveHome, profile: { id: "p1", label: "personal", identityHint: "account-87654321", state: "active" } },
+      switch: { ok: true, effectiveCodexHome: effectiveHome, activeProfile: { id: "p2", label: "work", identityHint: "account-12345678", state: "active" }, restartRequired: true },
+      recover: { ok: true, recovered: false, externallyRefreshed: false, effectiveCodexHome: effectiveHome },
+    };
+    const output: string[] = [];
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    const fetchImpl: typeof fetch = async input => {
+      const operation = new URL(String(input)).pathname.split("/").at(-1)!;
+      return Response.json(responses[operation]);
+    };
+    const deps = { baseUrl: "http://127.0.0.1:10100", fetchImpl };
+
+    const commands = [
+      { args: ["main", "register", "personal", "--json"], result: responses.register },
+      { args: ["main", "switch", "work", "--yes", "--json"], result: responses.switch },
+      { args: ["main", "recover", "--json"], result: responses.recover },
+    ];
+    for (const command of commands) {
+      output.length = 0;
+      expect(await cmdAccount(command.args, deps)).toBe(0);
+      expect(JSON.parse(output.join("\n"))).toEqual(command.result);
+      expect(JSON.parse(output.join("\n")).effectiveCodexHome).toBe(effectiveHome);
+    }
   });
 
   test("add sends an idempotent cancel fallback after a non-200 finish response", async () => {
@@ -160,12 +208,15 @@ describe("ocx account main", () => {
 
   test("add cancels server staging when official login aborts", async () => {
     const stagingHome = join(tmpdir(), "ocx-native-profile-stage-abort");
+    const effectiveHome = join(tmpdir(), "ocx-native-profile-effective-home-abort");
     const requests: string[] = [];
+    const errors: string[] = [];
+    console.error = (...values: unknown[]) => errors.push(values.join(" "));
     const fetchImpl: typeof fetch = async input => {
       const path = new URL(String(input)).pathname;
       requests.push(path);
       if (path.endsWith("/stage") && !path.endsWith("/finish")) {
-        return Response.json({ stageId: "33333333-3333-4333-8333-333333333333", stagingCodexHome: stagingHome });
+        return Response.json({ stageId: "33333333-3333-4333-8333-333333333333", stagingCodexHome: stagingHome, effectiveCodexHome: effectiveHome });
       }
       return Response.json({ ok: true });
     };
@@ -179,5 +230,6 @@ describe("ocx account main", () => {
       "/api/native-main-profiles/stage",
       "/api/native-main-profiles/stage/cancel",
     ]);
+    expect(errors).toContain(`Effective CODEX_HOME: ${effectiveHome}`);
   });
 });

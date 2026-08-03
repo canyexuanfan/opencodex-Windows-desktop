@@ -223,6 +223,10 @@ ocx account main switch <profile-id-or-label> --yes [--json]
 ocx account main recover [--rollback --yes] [--json]
 ```
 
+Each mutating command reports the canonical effective `CODEX_HOME` returned by the running proxy.
+This path can differ from the caller's `CODEX_HOME`; commands that support JSON expose the same
+value as `effectiveCodexHome`.
+
 Version 1 supports file-based Codex authentication, encrypts stored profiles with AES-256-GCM, and
 keeps the encryption key in the operating-system credential store. `add` stages the official Codex
 login flow before importing the resulting credential. Close Codex before switching profiles; a

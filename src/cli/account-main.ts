@@ -34,6 +34,12 @@ function reject(args: string[]): number {
   return 1;
 }
 
+function effectiveCodexHome(result: Record<string, unknown>): string {
+  return typeof result.effectiveCodexHome === "string" && result.effectiveCodexHome.length > 0
+    ? result.effectiveCodexHome
+    : "the effective CODEX_HOME";
+}
+
 function printProfiles(profiles: PublicProfile[]): void {
   if (profiles.length === 0) { console.log("No native main login profiles registered."); return; }
   const rows = profiles.map(profile => [profile.state === "active" ? "*" : " ", profile.label, profile.id, profile.identityHint]);
@@ -88,7 +94,7 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     if (result.status === 0) return proxyUnreachable();
     if (result.status !== 200) return apiError(result.json, "failed to register the current native login");
     if (wantsJson) console.log(JSON.stringify(result.json, null, 2));
-    else console.log(`Registered '${label}' for ${String(result.json.effectiveCodexHome ?? "the effective CODEX_HOME")}.`);
+    else console.log(`Registered '${label}' for ${effectiveCodexHome(result.json)}.`);
     return 0;
   }
 
@@ -100,10 +106,12 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     if (stage.status !== 200) return apiError(stage.json, "failed to prepare native login staging");
     const stageId = typeof stage.json.stageId === "string" ? stage.json.stageId : "";
     const stagingHome = typeof stage.json.stagingCodexHome === "string" ? stage.json.stagingCodexHome : "";
+    const stagedEffectiveHome = effectiveCodexHome(stage.json);
     let exitCode = 1;
     let finished = false;
     try {
       if (!stageId || !isAbsolute(stagingHome)) throw new Error("The proxy returned an invalid staging session.");
+      console.error(`Effective CODEX_HOME: ${stagedEffectiveHome}`);
       console.error(`Starting official Codex login in restricted staging home: ${stagingHome}`);
       exitCode = await (deps.runCodexLoginImpl ?? runOfficialCodexLogin)(stagingHome);
       if (exitCode !== 0) throw new Error("Official Codex login did not complete successfully.");
@@ -111,7 +119,7 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
       if (finish.status === 0) return proxyUnreachable();
       if (finish.status !== 200) return apiError(finish.json, "failed to encrypt the staged native login");
       finished = true;
-      console.log(`Added encrypted native profile '${label}'.`);
+      console.log(`Added encrypted native profile '${label}' for ${effectiveCodexHome(finish.json)}.`);
       return 0;
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : "Official Codex login failed."}`);
@@ -136,7 +144,7 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     if (wantsJson) console.log(JSON.stringify(result.json, null, 2));
     else {
       const profile = result.json.activeProfile as PublicProfile | undefined;
-      console.log(`Native Codex login is now '${profile?.label ?? target}'. Restart Codex App/CLI before continuing.`);
+      console.log(`Native Codex login for ${effectiveCodexHome(result.json)} is now '${profile?.label ?? target}'. Restart Codex App/CLI before continuing.`);
     }
     return 0;
   }
@@ -152,7 +160,12 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     if (result.status === 0) return proxyUnreachable();
     if (result.status !== 200) return apiError(result.json, "failed to recover the native-profile transaction");
     if (wantsJson) console.log(JSON.stringify(result.json, null, 2));
-    else console.log(result.json.recovered === true ? `Recovery completed: ${String(result.json.action ?? "converged")}.` : "No recovery journal is pending.");
+    else {
+      const home = effectiveCodexHome(result.json);
+      console.log(result.json.recovered === true
+        ? `Recovery completed for ${home}: ${String(result.json.action ?? "converged")}.`
+        : `No recovery journal is pending for ${home}.`);
+    }
     return 0;
   }
 

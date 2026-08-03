@@ -177,6 +177,10 @@ ocx account main switch <profile-id-or-label> --yes [--json]
 ocx account main recover [--rollback --yes] [--json]
 ```
 
+각 변경 명령은 실행 중인 프록시가 반환한 정규화된 유효 `CODEX_HOME`을 표시합니다. 이 경로는
+호출자의 `CODEX_HOME`과 다를 수 있으며, JSON을 지원하는 명령은 같은 값을
+`effectiveCodexHome`으로 반환합니다.
+
 버전 1은 파일 기반 Codex 인증을 지원하고 저장된 프로필을 AES-256-GCM으로 암호화하며 암호화 키를 운영 체제 자격 증명 저장소에 보관합니다. `add`는 생성된 자격 증명을 가져오기 전에 공식 Codex 로그인을 스테이징합니다. 프로필을 전환하기 전에 Codex를 종료하십시오. 전환에 성공하면 로컬 작업과 기록은 보존되지만 계속하기 전에 Codex를 다시 시작해야 합니다. `doctor`로 프로필 상태를 확인하고 `recover`로 중단된 전환을 완료하거나 롤백할 수 있습니다. `switch`에는 프로필 ID 또는 라벨을 지정할 수 있습니다.
 
 ## 모델

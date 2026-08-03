@@ -177,6 +177,10 @@ ocx account main switch <profile-id-or-label> --yes [--json]
 ocx account main recover [--rollback --yes] [--json]
 ```
 
+各変更コマンドは、実行中のプロキシが返す正規化済みの有効な `CODEX_HOME` を表示します。このパスは
+呼び出し元の `CODEX_HOME` と異なる場合があり、JSON 対応コマンドは同じ値を
+`effectiveCodexHome` として返します。
+
 バージョン 1 はファイルベースの Codex 認証をサポートし、保存したプロファイルを AES-256-GCM で暗号化し、暗号鍵を OS の資格情報ストアに保持します。`add` は、生成された資格情報を取り込む前に公式 Codex ログインをステージングします。プロファイルを切り替える前に Codex を終了してください。切り替えに成功するとローカルのタスクと履歴は保持されますが、続行する前に Codex の再起動が必要です。`doctor` でプロファイル状態を確認し、`recover` で中断した切り替えを完了またはロールバックできます。`switch` にはプロファイル ID またはラベルを指定できます。
 
 ## モデル
