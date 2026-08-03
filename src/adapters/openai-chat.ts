@@ -543,14 +543,6 @@ function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
   }
 }
 
-function isKimiSchemaTarget(provider: OcxProviderConfig): boolean {
-  try {
-    return new URL(provider.baseUrl).hostname === "api.kimi.com";
-  } catch {
-    return false;
-  }
-}
-
 // Volcengine Ark regional endpoints. Ark validates an assistant message's text field as a
 // REQUIRED parameter and treats "" as absent, so a tool-call-only assistant in history 400s with
 // `MissingParameter: input.content.text` (#796). Every other OpenAI-compatible provider accepts
@@ -589,11 +581,16 @@ function emptyAssistantContent(provider: OcxProviderConfig): string | { type: "t
 }
 
 /**
- * Kimi requires function.parameters.type to be exactly "object" at the root.
- * Codex tools with oneOf/anyOf schemas omit the root type, causing 400 errors.
- * Add type: "object" at the root while preserving oneOf, $defs, and other schema keys.
+ * Several providers (Kimi, DeepSeek) require function.parameters.type to be
+ * exactly "object" at the root and reject `type:null` or missing type. Codex
+ * tools with oneOf/anyOf schemas may omit the root type, causing 400 errors.
+ *
+ * Safe to apply unconditionally: JSON Schema for function parameters at the
+ * root MUST be an object — this is a no-op when type is already "object",
+ * and fixes every non-conforming case. Mirror of normalizeToolSchemas in
+ * openai-responses.ts.
  */
-function ensureKimiRootObjectType(parameters: unknown): Record<string, unknown> {
+function ensureRootObjectType(parameters: unknown): Record<string, unknown> {
   if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
     return { type: "object", properties: {} };
   }
@@ -644,13 +641,10 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
-  const kimiTarget = isKimiSchemaTarget(provider);
   const formatted = tools.flatMap(t => {
     const parameters = xaiTarget
       ? normalizeXaiToolParameters(t.parameters)
-      : kimiTarget
-        ? ensureKimiRootObjectType(t.parameters)
-        : t.parameters;
+      : ensureRootObjectType(t.parameters);
     if (parameters === undefined) return [];
     return [{
     type: "function",
