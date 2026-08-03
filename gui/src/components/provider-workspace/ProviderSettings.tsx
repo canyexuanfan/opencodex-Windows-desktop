@@ -50,8 +50,6 @@ export default function ProviderSettings({
   const [accountMode, setAccountMode] = useState<"pool" | "direct">(item.codexAccountMode ?? "pool");
   const [modeSaving, setModeSaving] = useState(false);
   const [modeMsg, setModeMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  /** Set while the reset effect must keep the just-applied account-mode message. */
-  const modeSavedRef = useRef(false);
   const [baseUrlChoices, setBaseUrlChoices] = useState<CatalogPreset["baseUrlChoices"]>();
   const [choicesStatus, setChoicesStatus] = useState<ChoicesStatus>(apiBase ? "loading" : "idle");
   const [endpointChoice, setEndpointChoice] = useState(() => "custom");
@@ -66,12 +64,18 @@ export default function ProviderSettings({
     setNote(item.note ?? "");
     setAllowPrivateNetwork(item.allowPrivateNetwork ?? false);
     setLiveModels(item.liveModels !== false);
-    setAccountMode(item.codexAccountMode ?? "pool");
     setMsg(null);
-    if (!modeSavedRef.current) setModeMsg(null);
-    modeSavedRef.current = false;
+    setModeMsg(null);
     queueMicrotask(() => setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl)));
-  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, item.liveModels, item.codexAccountMode, baseUrlChoices]);
+  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, item.liveModels, baseUrlChoices]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Account mode syncs on its own: a mode PATCH refresh must not reset an in-progress
+  // draft, so it is deliberately kept out of the form-reset effect above.
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional split from the form reset */
+  useEffect(() => {
+    setAccountMode(item.codexAccountMode ?? "pool");
+  }, [item.codexAccountMode]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -179,7 +183,6 @@ export default function ProviderSettings({
     try {
       const res = await onUpdateProvider("openai", { codexAccountMode: next });
       if (res.ok) {
-        modeSavedRef.current = true;
         setAccountMode(next);
         setModeMsg({ ok: true, text: t("pws.accountModeSaved") });
       } else {

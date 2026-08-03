@@ -53,27 +53,34 @@ async function mountSettings(
   root: Root;
   container: HTMLElement;
   patches: ProviderUpdatePatch[];
+  rerender: (item: WorkspaceItem) => Promise<void>;
 }> {
   const patches: ProviderUpdatePatch[] = [];
   const container = document.createElement("div");
   document.body.append(container);
   const { createRoot } = await import("react-dom/client");
   let root!: Root;
+  const renderItem = (it: WorkspaceItem) => (
+    <LanguageProvider>
+      <ProviderSettings
+        item={it}
+        onUpdateProvider={async (name, patch) => {
+          patches.push(patch);
+          return onUpdateProvider ? onUpdateProvider(name, patch) : { ok: true };
+        }}
+      />
+    </LanguageProvider>
+  );
   await act(async () => {
     root = createRoot(container);
-    root.render(
-      <LanguageProvider>
-        <ProviderSettings
-          item={item}
-          onUpdateProvider={async (name, patch) => {
-            patches.push(patch);
-            return onUpdateProvider ? onUpdateProvider(name, patch) : { ok: true };
-          }}
-        />
-      </LanguageProvider>,
-    );
+    root.render(renderItem(item));
   });
-  return { root, container, patches };
+  return {
+    root,
+    container,
+    patches,
+    rerender: (it: WorkspaceItem) => act(async () => { root.render(renderItem(it)); }),
+  };
 }
 
 function modeSelect(container: HTMLElement): HTMLSelectElement {
@@ -172,5 +179,25 @@ test("the mode select is disabled while an ordinary settings save is in flight",
     await pending;
   });
   expect(modeSelect(container).disabled).toBe(false);
+  await act(async () => { root.unmount(); });
+});
+
+test("a mode-change config refresh does not wipe an unsaved draft", async () => {
+  const { root, container, rerender } = await mountSettings(openAiItem("pool"));
+  const note = container.querySelector<HTMLTextAreaElement>(".pwi-settings-textarea")!;
+
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(testWindow.HTMLTextAreaElement.prototype, "value")!
+      .set!.call(note, "draft");
+    note.dispatchEvent(new testWindow.Event("input", { bubbles: true }));
+  });
+  expect(container.querySelector(".pwi-settings-sticky-bar")).toBeTruthy();
+
+  // Simulate the config refresh that follows a successful mode PATCH.
+  await rerender(openAiItem("direct"));
+
+  expect(container.querySelector<HTMLTextAreaElement>(".pwi-settings-textarea")!.value).toBe("draft");
+  expect(container.querySelector(".pwi-settings-sticky-bar")).toBeTruthy();
+  expect(modeSelect(container).value).toBe("direct");
   await act(async () => { root.unmount(); });
 });
