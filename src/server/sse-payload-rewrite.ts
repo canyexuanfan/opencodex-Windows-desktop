@@ -5,6 +5,8 @@
  * parse/stringify pass so a tee'd stream is not re-framed twice per event.
  */
 
+import { MAX_SSE_BUFFER_BYTES } from "./relay";
+
 export type SsePayloadRewrite = (payload: string) => string;
 
 /** Split one complete SSE event block while retaining its original blank-line delimiter. */
@@ -106,7 +108,14 @@ export function relaySseWithPayloadRewrite(
         controller.close();
         return;
       }
-      buffer += decoder.decode(value, { stream: true });
+      const decoded = decoder.decode(value, { stream: true });
+      if (buffer.length + decoded.length > MAX_SSE_BUFFER_BYTES) {
+        buffer = "";
+        await reader.cancel(new Error("upstream SSE frame exceeds the proxy buffer limit")).catch(() => {});
+        controller.error(new Error("Upstream SSE frame exceeds the proxy buffer limit"));
+        return;
+      }
+      buffer += decoded;
       emitProcessedBlocks(controller);
     },
     cancel(reason) {

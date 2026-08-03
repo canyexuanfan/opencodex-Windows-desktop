@@ -63,6 +63,20 @@ Windows 任务管理器显示 `opencodex · proxy dashboard` / `Bun` 进程占�
 
 ## 更新记录
 
+- 2026-08-04：❌ 复试 `git add` 仍无法创建 `.git/index.lock`；结合工作区权限说明确认是当前沙箱对 `.git` 目录只读，非残留锁。后续 Git 存档需申请最小范围的非沙箱授权执行 `git add/commit/tag`。
+- 2026-08-04：❌ 第二次并行只读检查仍因 PowerShell 对不存在进程名返回非零状态而中断，锁文件检查未被可靠展示；后续改用 `Get-Process | Where-Object` 过滤并单独读取锁状态。
+- 2026-08-04：❌ 并行检查 Git 进程、锁文件和 ACL 时，ACL 查询命令本身被系统拒绝，组合命令因此没有完整输出；后续拆成单项只读检查，避免一个权限错误遮蔽其他证据。
+
+- 2026-08-04：❌ 阶段存档首次执行 `git add --sparse` 时无法创建 `.git/index.lock`，Git 返回 `Permission denied`；暂存未发生。需先检查真实 Git 进程、锁文件属性和 `.git` 写权限，再重试，不能直接删除未知来源的锁。
+
+- 2026-08-04：✅ 本轮完成并验证 SSE 缓冲上限与 abort listener 清理：`relay.ts`、WebSocket bridge、payload rewrite 都限制未闭合 SSE 缓冲为 16 MiB；正常流仍原样转发，超限流会明确结束；inspection 完成后移除 abort listener；相关测试 63 个通过，`bun run typecheck` 通过。当前运行中的旧进程尚未重启，实际 RSS 下降需用户稍后重启应用后复测。
+
+- 2026-08-04：❌ 记录测试补丁失败后，首次用 PowerShell 组合查询测试上下文和失败记录时引号未闭合，命令未执行；改用分开的简单命令读取，避免复杂嵌套引号。
+
+- 2026-08-04：❌ 添加 SSE 缓冲上限回归测试时，首次 `apply_patch` 使用了不存在的文件尾部上下文，补丁未应用；后续必须先读取实际测试尾部再定位插入点。
+
+- 2026-08-04：❌ 第一版“清理 abort listener + SSE 缓冲上限”补丁在把匿名回调改成可移除回调时，误把 `addEventListener` 的 `{ once: true }` 选项留在了箭头函数声明后，导致语法错误；检查阶段发现后未进入测试，修正为先声明回调、再显式注册，避免把补丁应用误判为可验证成功。
+
 - 2026-08-04：创建排查指南，记录首次内存诊断结果与 WebSocket active turn 泄漏方向。
 - 2026-08-04：二次只读检测确认 Codex 仅有两个 active 任务（当前 opencodex 排查任务与 `019fa6b1-4a0b-7ff3-b078-44ab1f307200`），后者包含多 Agent 活动；但 `/api/system/memory` 显示 `activeTurnCount=227`，最近 200 条请求日志中主要 conversation 为 `cbf95a10...` 171 条、`715d4110...` 21 条，绝大多数已有 `terminal/completed` 终态。判断：多 Agent 能解释高请求量，不能解释 227 个 turn 长期不释放，WebSocket turn 释放链仍是首要嫌疑。
 - 2026-08-04：✅ 拉取并分析 `cockpit-tools` 与 `cc-switch` 代理源码。确认二者同样承担本地中转，但通过连接级 defer 清理、read/write deadline、heartbeat、pending request 删除、RAII active connection guard、流式首包/静默超时、usage collector finish/drop 清空等方式控制驻留内存。结论：OpenCodex 当前 1GB+ 占用更像应用层 WebSocket turn 未释放，不是中转站共性，也不应归咎于 Windows 桌面壳本身。
