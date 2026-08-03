@@ -70,9 +70,19 @@ other `claudeCode` writer already has. It is not better and not worse, and this
 unit does not fix it. A field-scoped config writer would — and belongs in the
 unit that needs it for Desktop's four fields, not here.
 
-`config:ocx` in the coordinator (`030`) still serializes this against other
-integration-owned config writes, which is what stops two toggles racing each
-other.
+Concurrency needs no route-level guard, and the reason is specific rather than
+optimistic. `saveConfigPreservingClaudeCode` runs inside
+`withConfigMutationLockSync`, which holds a SQLite `BEGIN IMMEDIATE` for the
+duration (`src/config.ts:1768-1786`) — so a second PROCESS cannot interleave.
+Within this process, the read-modify-save is synchronous and Bun's event loop
+cannot interleave two of them.
+
+One honest caveat: that lock uses `busy_timeout = 0`, so a contended acquisition
+fails immediately rather than waiting. A cross-process collision surfaces as an
+error, not as a silent lost write.
+
+The shared coordinator earlier revisions relied on here is gone (audit r5 #2):
+it existed to protect journal bookkeeping this toggle does not write.
 
 ## Acceptance
 

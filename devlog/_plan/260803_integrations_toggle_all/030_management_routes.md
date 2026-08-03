@@ -79,6 +79,12 @@ Field meanings, which differ per client and must not be guessed:
 | `configPath` | opencodex's own `config.json` | the resolved `~/.grok/config.toml` |
 | `disableBlocked` | always null — nothing can refuse this disable | set for `home_mismatch` or `orphaned_marker` |
 
+`disableBlocked` is advisory: it comes from `inspectGrokConfig` at read time and
+a file can change before the PUT. The same inspector runs again inside the PUT,
+in BOTH directions, and THAT result is authoritative (`012` §In PUT it is the
+authoritative preflight). An orphaned marker therefore blocks an enable too, not
+just a disable — the field name reflects the common case, not the whole gate.
+
 
 ## Refusal envelopes
 
@@ -90,13 +96,19 @@ means the dialog and the notice area need no second code path.
 |---|---|---|---|
 | 409 | `native_integration_refused` | `orphaned_marker` | Grok begin marker without an end marker |
 | 409 | `native_integration_refused` | `home_mismatch` | installed service's recorded home differs (raised by the WP1 preflight, not by the CLI path) |
-| 409 | `native_integration_refused` | `non_loopback` | Grok auto-registration outside loopback |
 | 404 | `native_integration_refused` | `not_installed` | client absent |
 | 500 | `native_integration_failed` | `write_failed` | genuine IO failure, nothing changed |
 
 `orphaned_marker` and `home_mismatch` are 409, not 500: nothing failed, we
 declined. A 500 would tell the GUI to say "try again", which is precisely the
 wrong advice for both.
+
+**`non_loopback` is deliberately NOT in this table.** Enabling Grok under a
+non-loopback bind removes any stale generated block, so it is a 200 outcome
+carrying `changed` and `reason: "non_loopback_removed"` — not a refusal
+claiming nothing happened (`012` §non-loopback is not a refusal). It sat here
+as a 409 through two revisions; round 6 caught the table still contradicting the
+prose below it.
 
 `stripGrokConfig` writes atomically and Claude Code writes one config field, so
 neither client has a half-applied state to report. The `partial` outcome earlier

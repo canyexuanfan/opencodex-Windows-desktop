@@ -130,10 +130,9 @@ produces three, each stating the state and the one thing that would change it:
 - **`not_installed`** — Grok is not installed; the card reads not-installed and
   the switch does not offer an action there is nothing to perform.
 
-Two more belong to the sibling unit and are specified in the appendix:
-`no_safe_desktop_fallback`, `unowned_profile`, and Codex's foreign-provider
-refusal. There is no `partial` here — neither of this unit's clients can
-half-apply.
+That is the complete list for this unit. The sibling unit's refusals are
+specified in the appendix and must not be added here. There is no `partial`
+either — neither of this unit's clients can half-apply.
 
 One outcome is NOT a refusal and must not be styled as one:
 **`non_loopback_removed`**. Enabling Grok under a non-loopback bind removes any

@@ -32,7 +32,11 @@ So this phase carries no journal row and no snapshot either.
 2. `src/integrations/native/ownership-preflight.ts` — NEW: the service-home
    check that makes `home_mismatch` reachable (audit r1 #5).
 3. `src/grok/inspect.ts` — NEW: the non-mutating inspector (below).
-4. `tests/native-grok-toggle.test.ts` — NEW.
+4. `src/grok/inject.ts` — MODIFY: export `findManagedRegion` as an internal API
+   so the inspector shares it (audit r6 #3). One exported parser, not a second
+   copy — two parsers for one fence is how a strip eventually removes the wrong
+   bytes. Nothing else in the writer changes.
+5. `tests/native-grok-toggle.test.ts` — NEW.
 
 ## A read-only inspector, because GET must not mutate
 
@@ -56,14 +60,48 @@ export type GrokInspection =
 export function inspectGrokConfig(opts?: { grokHome?: string }): GrokInspection;
 ```
 
-`findManagedRegion` becomes module-internal-shared rather than duplicated: two
-parsers for one fence is how a strip eventually removes the wrong bytes.
+`findManagedRegion` is currently private to `inject.ts` (`src/grok/inject.ts:49`)
+and ES modules cannot share an unexported symbol, so WP2 exports it. It stays an
+internal API — the inspector and the writer are its only callers.
 
-**GET is advisory.** The reviewer is right that a file can change between the
-GET and the PUT, so `disableBlocked` cannot promise the PUT will succeed. PUT
-re-runs every preflight while holding `client:grok`, and its refusal is
-authoritative. `disableBlocked` exists to avoid offering an action we already
-know is blocked — not to replace the check.
+**In GET it is advisory.** A file can change between the GET and the PUT, so
+`disableBlocked` cannot promise the PUT will succeed. It exists to avoid
+offering an action we already know is blocked, not to replace the check.
+
+### In PUT it is the authoritative preflight — for BOTH directions
+
+This is the fix for a defect round 6 found one branch below the one round 5
+found (audit r6 #4).
+
+Enabling under a non-loopback bind calls `stripGrokConfig` first. If the file
+holds a begin marker with no end marker, that strip returns
+`ok: false, skippedReason: "orphaned-marker"` and changes nothing
+(`inject.ts:474`) — but `injectGrokConfig` reads only `removed.changed` and
+discards the rest (`inject.ts:357-363`). It then reports non-loopback success
+with `changed: false`, and the fence is still sitting in the file.
+
+Landing the card on `absent` there would be a lie: the block exists, we just
+could not safely touch it.
+
+So PUT runs `inspectGrokConfig` BEFORE calling either delegate, in both
+directions, while holding the client guard:
+
+```ts
+const seen = inspectGrokConfig({ grokHome });
+if (seen.kind === "not_installed") return refusal(404, "not_installed", ...);
+if (seen.kind === "orphaned_marker") return refusal(409, "orphaned_marker", ...);
+// disable only: shared teardown must not run under a foreign-home service
+if (!enabled) { const owned = assertNativeTeardownOwned(); if (!owned.ok) return refusal(409, "home_mismatch", ...); }
+```
+
+An ambiguous fence therefore never reaches the code path that would misreport
+it, and the refusal is identical whichever direction the user was heading —
+which is right, because the reason is the same: we cannot tell where our block
+ends.
+
+The writer is NOT modified to propagate the orphan result. That would change
+`ocx start`/`ensure` behavior for a policy skip whose comment says it must never
+block startup, and this unit has no business making that call.
 
 OUT: `src/integrations/journal.ts`, `store.ts`, `ownership.ts`, `registry.ts` —
 all untouched. No id widening, which also retires audit r4 #7 entirely: there is
@@ -100,6 +138,10 @@ Every `skippedReason` maps to its own outcome (`001` §Grok):
 | `non-loopback` | true | **`non_loopback_removed` — an OUTCOME, not a refusal** | **possibly yes** |
 | none, `ok:false` | false | refusal `write_failed` | no |
 
+The first two are now produced by the inspector preflight, before any delegate
+runs, so the table describes what a delegate CAN return rather than what the
+route waits to discover.
+
 `orphaned_marker` must never become `write_failed`. Nothing failed: a begin
 marker without an end marker means we cannot tell where our block stops, so we
 decline to guess. Telling the user to retry would be advice that cannot work.
@@ -131,6 +173,11 @@ So it is a 200 outcome:
 block was removed, `false` when there was nothing to remove. The card lands on
 `absent` either way, which is the truth — Grok is not wired up.
 
+`absent` is only correct because the orphaned-marker case can no longer reach
+here: the preflight refuses it first. Without that gate, `changed: false` would
+also cover "a fence we could not touch is still in the file", and `absent` would
+be false (audit r6 #4).
+
 ## What the dialog must therefore say
 
 Undo regenerates the fence rather than restoring the old bytes, so the copy in
@@ -153,6 +200,13 @@ be a promise the writer does not make.
       NOT return a refusal claiming nothing changed (audit r5 #1).
 - [ ] Enabling under a non-loopback bind with NO fence returns the same outcome
       with `changed: false`.
+- [ ] Enabling under a non-loopback bind with an ORPHANED marker refuses
+      `orphaned_marker` and never reports `absent` — the fence is still there
+      (audit r6 #4).
+- [ ] The inspector runs before either delegate in BOTH directions; a test
+      asserts `injectGrokConfig` is not called when the marker is orphaned.
+- [ ] `findManagedRegion` has exactly one definition; the inspector imports it
+      rather than re-implementing the boundary scan.
 - [ ] A foreign-home install-state fixture makes disable refuse `home_mismatch`
       and write nothing — the branch is reachable, not declared (audit r1 #5).
 - [ ] Enabling is NOT gated by the ownership preflight.
