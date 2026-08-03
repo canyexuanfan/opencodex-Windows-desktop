@@ -239,6 +239,15 @@ The encrypted vault, switch journal, recovery marker, and journal quarantine liv
 that Codex home observes one owner and one recovery state. Plaintext login staging remains isolated
 under each `<OPENCODEX_HOME>/native-main-profile-staging` directory.
 
+Before native-main traffic or journal recovery is admitted, the lifetime owner takes the exclusive
+credential claim and removes only exact `auth.json.ocx.<pid>.<sequence>.tmp` crash residues. Each
+candidate must remain a single-linked regular file under the unchanged canonical `CODEX_HOME`; it is
+truncated, flushed, and then unlinked. Link/reparse substitutions, identity changes, and other
+ambiguity keep native-main traffic closed, while near-miss names are never removed automatically.
+This protects against cooperative OpenCodex crashes, not a malicious process already running as the
+same OS user. That user and the filesystem containing `CODEX_HOME` remain trusted, and truncation
+does not promise physical erasure from copy-on-write storage, snapshots, or SSD remanence.
+
 Preview builds used `<OPENCODEX_HOME>/native-main-profiles`. That layout is never imported silently.
 If `doctor` reports legacy profile state, stop every OpenCodex proxy sharing the same `CODEX_HOME`.
 Then either back up and move the matching `*.vault.json`, `*.journal.json`, recovery marker, and any

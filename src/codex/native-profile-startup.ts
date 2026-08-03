@@ -13,6 +13,7 @@ import {
   type NativeMainOwnerSnapshot,
 } from "./native-main-owner";
 import { withNativeMainExclusiveClaim } from "./native-main-claim";
+import { scrubNativeMainAuthTempResidues } from "./native-main-auth-temp";
 
 export type NativeMainStartupGateSnapshot =
   | { status: "ready"; homeId: string | null }
@@ -132,16 +133,20 @@ function convergeOwnedStartup(entry: StartupEntry): void {
   entry.settled = settled = (async () => {
     const probe = entry.deps.probeRecoveryState ?? probeNativeProfileRecoveryState;
     try {
-      let recoveryState = probe(entry.manager.context);
-      if (recoveryState === "journal") {
-        await entry.deps.beforeRecovery?.();
-        await withNativeMainOwnerOperation(entry.manager.context, () => withNativeMainExclusiveClaim(
-          entry.manager.context,
-          () => entry.manager.recover(false),
-          { waitMs: 10_000 },
-        ));
-        recoveryState = probe(entry.manager.context);
-      }
+      const recoveryState = await withNativeMainOwnerOperation(entry.manager.context, () => withNativeMainExclusiveClaim(
+        entry.manager.context,
+        async () => {
+          scrubNativeMainAuthTempResidues(entry.manager.context);
+          let state = probe(entry.manager.context);
+          if (state === "journal") {
+            await entry.deps.beforeRecovery?.();
+            await entry.manager.recover(false);
+            state = probe(entry.manager.context);
+          }
+          return state;
+        },
+        { waitMs: 10_000 },
+      ));
       if (startupEntries.get(entry.homeId) === entry && entry.epoch === currentEpoch && recoveryState === "none") {
         clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
         snapshot = ready(entry.homeId);

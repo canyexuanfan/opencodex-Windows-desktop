@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -383,6 +384,87 @@ describe("native-main process owner lease", () => {
     } finally {
       await owner.stop().catch(() => owner.hardKill());
       if (successor) await successor.stop().catch(() => successor!.hardKill());
+    }
+  }, 30_000);
+
+  test("a successor scrubs a hard-killed production auth write before recovery or main admission", async () => {
+    const f = fixture("temp-crash", false);
+    const source = await f.manager.register("source");
+    const stage = await f.manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), auth("account-target", "target"));
+    const target = await f.manager.finishStage(stage.stageId, "target");
+    expect(source.profile.state).toBe("active");
+
+    const owner = new ChildHarness(f, { NATIVE_OWNER_HOLD_AUTH_TEMP: "1" });
+    let successor: ChildHarness | undefined;
+    try {
+      const listening = await owner.waitFor(event => event.event === "listening");
+      await owner.snapshot(isHeldReady);
+      const switchRequest = fetch(`http://127.0.0.1:${Number(listening.port)}/api/native-main-profiles/switch`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-opencodex-api-key": "owner-test-admin" },
+        body: JSON.stringify({ target: target.profile.id, confirmedStopped: true }),
+      }).catch(() => null);
+      const written = await Promise.race([
+        owner.waitFor(event => event.event === "auth-temp-written"),
+        switchRequest.then(async response => {
+          if (response === null) throw new Error("switch connection closed before the auth temp write");
+          throw new Error(`switch returned before the auth temp write: ${response.status} ${await response.text()}`);
+        }),
+      ]);
+      const tempName = String(written.name);
+      expect(tempName).toMatch(/^auth\.json\.ocx\.[1-9]\d*\.[1-9]\d*\.tmp$/);
+      const tempPath = join(f.codexHome, tempName);
+      expect(readFileSync(tempPath, "utf8")).toContain("access-target");
+      expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("journal");
+
+      successor = new ChildHarness(f, { NATIVE_OWNER_HOLD_RECOVERY: "1" });
+      await successor.waitFor(event => event.event === "listening");
+      await successor.snapshot(isContended);
+      await owner.hardKill();
+      await switchRequest;
+
+      await successor.waitFor(event => event.event === "before-recovery");
+      expect(existsSync(tempPath)).toBe(false);
+      expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("journal");
+      const blockedSnapshot = await successor.command("snapshot");
+      const blockedMain = await successor.command("request", { kind: "main" });
+      expect(Number(blockedMain.status)).toBeGreaterThanOrEqual(400);
+      expect(blockedMain.upstreamCalls).toBe(blockedSnapshot.upstreamCalls);
+
+      expect((await successor.command("release-recovery")).ok).toBe(true);
+      await successor.snapshot(isHeldReady);
+      expect(probeNativeProfileRecoveryState(f.manager.context)).toBe("none");
+      const main = await successor.command("request", { kind: "main" });
+      expect(main.status).toBe(200);
+      expect((main.lastReceipt as { authorization?: string }).authorization).toBe("Bearer access-main");
+    } finally {
+      await owner.hardKill();
+      if (successor) await successor.hardKill();
+    }
+  }, 45_000);
+
+  test("an ambiguous exact residue keeps native-main startup fail closed", async () => {
+    const f = fixture("unsafe-residue", false);
+    const target = join(f.codexHome, "hardlink-target");
+    const residue = join(f.codexHome, "auth.json.ocx.123.1.tmp");
+    writeFileSync(target, "hardlink-private-value");
+    linkSync(target, residue);
+    const child = new ChildHarness(f);
+    try {
+      await child.waitFor(event => event.event === "listening");
+      const blocked = await child.snapshot(event => {
+        const owner = event.owner as { status?: string } | undefined;
+        const gate = event.gate as { status?: string; reason?: string } | undefined;
+        return owner?.status === "held" && gate?.status === "blocked" && gate.reason === "manual-recovery";
+      });
+      const main = await child.command("request", { kind: "main" });
+      expect(Number(main.status)).toBeGreaterThanOrEqual(400);
+      expect(main.upstreamCalls).toBe(blocked.upstreamCalls);
+      expect(readFileSync(target, "utf8")).toBe("hardlink-private-value");
+      expect(readFileSync(residue, "utf8")).toBe("hardlink-private-value");
+    } finally {
+      await child.stop().catch(() => child.hardKill());
     }
   }, 30_000);
 

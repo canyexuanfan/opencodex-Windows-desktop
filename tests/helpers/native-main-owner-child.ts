@@ -1,6 +1,8 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, realpathSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
+import { atomicWriteFileAsync } from "../../src/config";
 import { MAIN_CODEX_ACCOUNT_ID } from "../../src/codex/main-account";
 import { nativeMainOwnerSnapshot } from "../../src/codex/native-main-owner";
 import { NativeProfileManager } from "../../src/codex/native-profile-manager";
@@ -23,6 +25,7 @@ const keyBytes = Buffer.from(required("NATIVE_OWNER_KEY"), "base64");
 const keyRef = process.env.NATIVE_OWNER_KEY_REF ?? "memory:native-owner-test";
 const holdRecovery = process.env.NATIVE_OWNER_HOLD_RECOVERY === "1";
 const holdSwitchBoundary = process.env.NATIVE_OWNER_HOLD_SWITCH_BOUNDARY;
+const holdAuthTemp = process.env.NATIVE_OWNER_HOLD_AUTH_TEMP === "1";
 const receiptPath = process.env.NATIVE_OWNER_RECEIPTS;
 
 const emit = (value: Record<string, unknown>): void => {
@@ -38,14 +41,25 @@ let releaseRecovery!: () => void;
 const recoveryBarrier = new Promise<void>(resolve => { releaseRecovery = resolve; });
 let releaseSwitch!: () => void;
 const switchBarrier = new Promise<void>(resolve => { releaseSwitch = resolve; });
+const authTempBarrier = new Promise<void>(() => {});
 
 function managerFor(home = codexHome): NativeProfileManager {
+  const canonicalAuthPath = join(realpathSync.native(home), "auth.json");
   return new NativeProfileManager({
     codexHome: home,
     configDir,
     keyProvider: new EnvKeyProvider(),
     hardenPath: async () => {},
     processProbe: async () => ({ status: "clear", count: 0 }),
+    atomicWrite: holdAuthTemp
+      ? (path, content) => atomicWriteFileAsync(path, content, undefined, {
+          afterTempWrite: async tempPath => {
+            if (resolve(path) !== resolve(canonicalAuthPath)) return;
+            emit({ event: "auth-temp-written", name: basename(tempPath) });
+            await authTempBarrier;
+          },
+        })
+      : undefined,
     onSwitchBoundary: async boundary => {
       if (boundary !== holdSwitchBoundary) return;
       emit({ event: "switch-boundary", boundary });
