@@ -1349,6 +1349,7 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
     // Field checks derive from the shared policy schema so the bounds cannot drift
     // between the load-time sanitizer, the config schema, and the write boundary.
     const policyShape = retryOn429PolicySchema.shape;
+    const hadPolicyEntries = Object.keys(policyRecord).length > 0;
     const cleaned: Record<string, unknown> = {};
     for (const [key, fieldSchema] of Object.entries(policyShape)) {
       const value = policyRecord[key];
@@ -1367,7 +1368,16 @@ function sanitizeRetryOn429ForLoad(parsed: unknown): void {
         console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.${JSON.stringify(redactSecretString(key))} is not a recognized field — ignoring it`);
       }
     }
-    p.retryOn429 = cleaned;
+    if (hadPolicyEntries && Object.keys(cleaned).length === 0) {
+      // Every supplied field was invalid: drop the whole policy. Persisting `{}` here would
+      // opt IN to retries with defaults, which is the opposite of what a malformed
+      // disable-oriented edit (`retryOn429: { enabled: "false" }`, `attempts: 0`) asked for.
+      delete p.retryOn429;
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429 has no valid fields left — removing the policy (an empty policy would enable retries with defaults)`);
+    } else {
+      // Preserve an intentionally empty `retryOn429: {}` (presence = opt-in with defaults).
+      p.retryOn429 = cleaned;
+    }
   }
 }
 

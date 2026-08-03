@@ -14,6 +14,7 @@ import {
   retryOn429PolicyConfigError,
 } from "../config";
 import { providerDestinationConfigError } from "../lib/destination-policy";
+import { redactSecretString } from "../lib/redact";
 import { getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../providers/registry";
 import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
@@ -422,7 +423,11 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   const headersError = providerHeadersConfigError(typed.headers);
   if (headersError) return `provider ${name} ${headersError}`;
   const retryOn429Error = retryOn429PolicyConfigError(raw.retryOn429);
-  if (retryOn429Error) return `provider ${name} ${retryOn429Error}`;
+  if (retryOn429Error) {
+    // The provider name is caller-controlled and can be token-shaped; redact and JSON-escape
+    // it before it reaches the management API response.
+    return `provider ${JSON.stringify(redactSecretString(name))} ${retryOn429Error}`;
+  }
   const apiKeyTransportError = apiKeyTransportConfigError(typed);
   if (apiKeyTransportError) return `provider ${name} ${apiKeyTransportError}`;
   const maxInputError = positiveIntegerRecordConfigError(raw.modelMaxInputTokens, "modelMaxInputTokens");

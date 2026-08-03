@@ -226,6 +226,14 @@ describe("provider management validation", () => {
     expect(secretError).toContain("retryOn429 has unrecognized field");
     expect(secretError).not.toContain("sk-super-secret-9876");
     expect(secretError).toContain("[REDACTED]");
+    // A secret-shaped PROVIDER name must not be echoed by the retryOn429 error path either.
+    const secretNameError = providerManagementConfigError("sk-super-secret-9876", {
+      ...base,
+      retryOn429: { attempts: 0 },
+    })!;
+    expect(secretNameError).toContain("retryOn429.attempts is invalid");
+    expect(secretNameError).not.toContain("sk-super-secret-9876");
+    expect(secretNameError).toContain("[REDACTED]");
   });
 
   test("provider discovery status is additive and omitted before an attempt", async () => {

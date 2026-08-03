@@ -166,7 +166,7 @@ test("an invalid retryOn429 master switch discards the policy instead of enablin
   expect(live.providers.test.retryOn429).toBeUndefined();
 });
 
-test("a retryOn429 policy degraded to an empty object still resolves as enabled (presence = opt-in)", () => {
+test("a retryOn429 policy with every field invalid is dropped instead of enabling retries", () => {
   writeDiskConfig({
     providers: {
       test: {
@@ -174,15 +174,34 @@ test("a retryOn429 policy degraded to an empty object still resolves as enabled 
         baseUrl: "http://127.0.0.1:1/v1",
         apiKey: "k",
         allowPrivateNetwork: true,
-        // Every field invalid: the sanitizer drops them all and writes back {}.
+        // Every supplied field invalid: the sanitizer must NOT write back {} — presence
+        // would opt IN to retries with defaults, the opposite of a disable-oriented
+        // hand-edit like `attempts: 0`.
         retryOn429: { attempts: 0 },
       },
     },
   });
   const live = loadConfig();
+  expect(live.providers.test.retryOn429).toBeUndefined();
+  expect(rateLimitRetryPolicyFor(live.providers.test)).toBeNull();
+});
+
+test("an intentionally empty retryOn429 policy still resolves as enabled (presence = opt-in)", () => {
+  writeDiskConfig({
+    providers: {
+      test: {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "k",
+        allowPrivateNetwork: true,
+        retryOn429: {},
+      },
+    },
+  });
+  const live = loadConfig();
   expect(live.providers.test.retryOn429).toEqual({});
-  // Object presence is the opt-in contract: an emptied object resolves to the enabled defaults,
-  // exactly like an explicit `retryOn429: {}` in a hand-written config.
+  // Object presence is the opt-in contract: an explicit `retryOn429: {}` resolves to the
+  // enabled defaults, exactly like the documented hand-written config.
   expect(rateLimitRetryPolicyFor(live.providers.test)).toEqual({
     enabled: true,
     attempts: 3,

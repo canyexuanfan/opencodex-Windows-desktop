@@ -2442,15 +2442,23 @@ async function handleResponsesInner(
     const msg = err instanceof Error ? err.message : String(err);
     return formatErrorResponse(400, "invalid_request_error", redactSecretString(msg));
   }
-  let sameTargetRequest: AdapterRequest | undefined = initialRequest;
+  // The catch path above always returns, so the request is definitely assigned here.
+  // Capture it in a const so the fetch callbacks read a narrowed, immutable value
+  // (TypeScript drops narrowing for a `let` captured by a nested function).
+  const builtInitialRequest = initialRequest;
+  let sameTargetRequest: AdapterRequest | undefined = builtInitialRequest;
   let sameTargetParsed: OcxParsedRequest | undefined = parsed;
   let sameTargetToken = 0;
   let transportToken = 0;
+  // Invalidate the same-target request cache. Every credential/adapter/parsed mutation MUST
+  // go through here: the cache keys on `parsed` REFERENCE identity, so an in-place mutation
+  // is invisible to it and a missed bump would replay a request built with a stale key.
+  const invalidateSameTargetRequest = (): void => { transportToken += 1; };
   let upstreamResponse: Response;
   try {
     if (activeAdapter.fetchResponse) {
       noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate);
-      upstreamResponse = await activeAdapter.fetchResponse(initialRequest, {
+      upstreamResponse = await activeAdapter.fetchResponse(builtInitialRequest, {
         abortSignal: upstream.signal,
         timeoutMs: connectMs,
         stream: parsed.stream,
@@ -2459,13 +2467,13 @@ async function handleResponsesInner(
       upstreamResponse = await fetchWithResetRetry(
         recovery => {
           noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate, recovery);
-          return fetchWithHeaderTimeout(initialRequest.url, applyUpstreamRecoveryInit({
-            method: initialRequest.method,
-            headers: initialRequest.headers,
-            body: initialRequest.body,
+          return fetchWithHeaderTimeout(builtInitialRequest.url, applyUpstreamRecoveryInit({
+            method: builtInitialRequest.method,
+            headers: builtInitialRequest.headers,
+            body: builtInitialRequest.body,
           }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
         },
-        { abortSignal: upstream.signal, label: safeHostLabel(initialRequest.url) },
+        { abortSignal: upstream.signal, label: safeHostLabel(builtInitialRequest.url) },
       );
     }
   } catch (err) {
@@ -2475,7 +2483,7 @@ async function handleResponsesInner(
     const msg = describeUpstreamConnectFailure(err, connectMs);
     return formatErrorResponse(502, "upstream_error", msg);
   } finally {
-    initialRequest.releaseBodyObservation?.();
+    builtInitialRequest.releaseBodyObservation?.();
   }
 
   // Same-target 429 retry budget is per REQUEST: it lives OUTSIDE the recovery loop (so a 413/401
@@ -2581,7 +2589,7 @@ async function handleResponsesInner(
           route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
         );
         route.provider = refreshedProvider;
-        transportToken += 1;
+        invalidateSameTargetRequest();
         activeAdapter = resolveAdapter(
           resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider, inboundWire),
           config.cacheRetention,
@@ -2648,7 +2656,7 @@ async function handleResponsesInner(
         // until runtime cleanup (one per rotated key under a rate-limit storm).
         try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
         route.provider = rotated;
-        transportToken += 1;
+        invalidateSameTargetRequest();
         activeAdapter = resolveAdapter(
           resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
           config.cacheRetention,
@@ -2679,7 +2687,7 @@ async function handleResponsesInner(
           anthropicPoolAccountId = nextAccountId;
           anthropicPoolFailovers += 1;
           route.provider = { ...route.provider, apiKey: accessToken };
-          transportToken += 1;
+          invalidateSameTargetRequest();
           promoteAnthropicActiveAccount(nextAccountId);
           logCtx.provider = formatAnthropicProviderForLog("anthropic", nextAccountId, config);
           activeAdapter = resolveAdapter(
@@ -2704,7 +2712,7 @@ async function handleResponsesInner(
       })) {
         imageRetryAttempted = true;
         imageTierBias = 1;
-        transportToken += 1;
+        invalidateSameTargetRequest();
         try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
         const result = await rebuildAndRefetch("image-413");
         if ("failed" in result) return result.failed;
@@ -2788,14 +2796,18 @@ async function handleResponsesInner(
         sameTargetParsed = nextParsed;
         sameTargetToken = transportToken;
       }
-      const continuationEstimate = typeof continuationRequest.usageLog?.inputTokens === "number"
-        ? continuationRequest.usageLog.inputTokens
+      // Both branches assign the request (the build catch rethrows), so capture it in a
+      // const for the fetch callback and finally below — a `let` read inside a nested
+      // function keeps its undefined half, which would break the byte-identical replay.
+      const builtContinuationRequest = continuationRequest;
+      const continuationEstimate = typeof builtContinuationRequest.usageLog?.inputTokens === "number"
+        ? builtContinuationRequest.usageLog.inputTokens
         : undefined;
       if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
       try {
         if (activeAdapter.fetchResponse) {
           noteAttemptSend(logCtx.activeAttempt, continuationEstimate, replay ? "rate-limit-429" : undefined);
-          return await activeAdapter.fetchResponse(continuationRequest, {
+          return await activeAdapter.fetchResponse(builtContinuationRequest, {
             abortSignal: upstream.signal,
             timeoutMs: connectMs,
             stream: nextParsed.stream,
@@ -2805,11 +2817,11 @@ async function handleResponsesInner(
           recovery => {
             noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery ?? (replay ? "rate-limit-429" : undefined));
             return fetchWithHeaderTimeout(
-              continuationRequest.url,
+              builtContinuationRequest.url,
               applyUpstreamRecoveryInit({
-                method: continuationRequest.method,
-                headers: continuationRequest.headers,
-                body: continuationRequest.body,
+                method: builtContinuationRequest.method,
+                headers: builtContinuationRequest.headers,
+                body: builtContinuationRequest.body,
               }, recovery),
               upstream.signal,
               connectMs,
@@ -2817,10 +2829,10 @@ async function handleResponsesInner(
               providerFetch(route.provider),
             );
           },
-          { abortSignal: upstream.signal, label: safeHostLabel(continuationRequest.url) },
+          { abortSignal: upstream.signal, label: safeHostLabel(builtContinuationRequest.url) },
           );
       } finally {
-        continuationRequest.releaseBodyObservation?.();
+        builtContinuationRequest.releaseBodyObservation?.();
       }
     };
     while (true) {
@@ -2894,7 +2906,7 @@ async function handleResponsesInner(
         if (rotated) {
           try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
           route.provider = rotated;
-          transportToken += 1;
+          invalidateSameTargetRequest();
           activeAdapter = resolveAdapter(
             resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
             config.cacheRetention,
@@ -2921,7 +2933,7 @@ async function handleResponsesInner(
             anthropicPoolAccountId = nextAccountId;
             anthropicPoolFailovers += 1;
             route.provider = { ...route.provider, apiKey: accessToken };
-            transportToken += 1;
+            invalidateSameTargetRequest();
             promoteAnthropicActiveAccount(nextAccountId);
             logCtx.provider = formatAnthropicProviderForLog("anthropic", nextAccountId, config);
             activeAdapter = resolveAdapter(
@@ -2942,7 +2954,7 @@ async function handleResponsesInner(
         alreadyAttempted: imageTierBias > 0,
       })) {
         imageTierBias = 1;
-        transportToken += 1;
+        invalidateSameTargetRequest();
         try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
         continue;
       }
