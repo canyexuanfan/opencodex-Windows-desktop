@@ -349,10 +349,12 @@ test("the route's model list is byte-identical to syncGrokConfig's", async () =>
     { provider: "stub", id: "m2" },
   ];
   let routeModels: GrokInjectModel[] | null = null;
+  let routeExcluded: ReadonlySet<string> | null = null;
   const routeDeps = testDeps({
     fetchAllModels: (async () => catalog) as never,
     injectGrokConfig: ((port: number, models: GrokInjectModel[], opts: Parameters<typeof injectGrokConfig>[2]) => {
       routeModels = models;
+      routeExcluded = opts?.excluded ?? null;
       return injectGrokConfig(port, models, opts);
     }) as typeof injectGrokConfig,
   });
@@ -360,14 +362,52 @@ test("the route's model list is byte-identical to syncGrokConfig's", async () =>
   expect(status).toBe(200);
 
   let syncModels: GrokInjectModel[] | null = null;
+  let syncExcluded: ReadonlySet<string> | null = null;
   await syncGrokConfig(10100, config, { hostname: "127.0.0.1" }, {
     fetchAllModels: (async () => catalog) as never,
     injectGrokConfig: ((port: number, models: GrokInjectModel[], opts: Parameters<typeof injectGrokConfig>[2]) => {
       syncModels = models;
+      syncExcluded = opts?.excluded ?? null;
       return injectGrokConfig(port, models, opts);
     }) as typeof injectGrokConfig,
   });
   expect(JSON.stringify(routeModels)).toBe(JSON.stringify(syncModels));
+  /*
+   * The exclusion half of the clause (C-gate blocker): the FULL list goes to
+   * the writer together with the exclusion SET, never a pre-filtered list —
+   * dropping `excluded` here would leave the models arrays identical while
+   * excluded models silently leaked into the fence.
+   */
+  expect(routeExcluded && [...routeExcluded].sort()).toEqual(["stub/m2"]);
+  expect(syncExcluded && [...syncExcluded].sort()).toEqual(["stub/m2"]);
+  // And the exclusion actually reached the fence both times: each write went
+  // through the real writer into the fixture file, and m2 appears in neither.
+  const fence = readConfig();
+  expect(fence).toContain('model = "fast"');
+  expect(fence).not.toContain("stub/m2");
+  expect(fence).not.toContain("ocx-stub-m2");
+});
+
+test("a late orphan surfaced by the WRITER still maps to 409, never to absent", () => {
+  /*
+   * The inject-side mapping (C-gate nit): an orphan arriving between the
+   * recheck and the write is refused by the writer's own main-path check
+   * (inject.ts:393) and the route must report the refusal, not a success.
+   */
+  return (async () => {
+    writeConfig("# user only\n");
+    const deps = testDeps({
+      injectGrokConfig: (() => ({
+        ok: false, changed: false,
+        message: "Grok config contains an opencodex begin marker without its end marker; refusing to guess where the managed block ends.",
+        skippedReason: "orphaned-marker",
+      }) as const) as never,
+    });
+    const { status, body } = await put(baseConfig(), true, deps);
+    expect(status).toBe(409);
+    expect(body.reason).toBe("orphaned_marker");
+    expect(body.state).toBeUndefined();
+  })();
 });
 
 test("a foreign-home install state refuses disable and writes nothing (audit r1 #5)", async () => {

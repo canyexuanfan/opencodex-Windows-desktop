@@ -120,9 +120,21 @@ function grokStatus(): NativeStatus {
     const owned = assertNativeTeardownOwned();
     if (!owned.ok) disableBlocked = { reason: "home_mismatch", message: owned.message };
   }
+  // A switch with a `never` guard, not a ternary: a future fifth GrokInspection
+  // kind must fail to COMPILE here, not silently read as `absent` (C-gate nit).
+  let state: NativeStatus["state"];
+  switch (seen.kind) {
+    case "present": state = "current"; break;
+    case "orphaned_marker": state = "unsafe"; break;
+    case "absent": case "not_installed": state = "absent"; break;
+    default: {
+      const exhaustive: never = seen;
+      throw new Error(`unhandled Grok inspection kind: ${JSON.stringify(exhaustive)}`);
+    }
+  }
   return {
     clientId: "grok",
-    state: seen.kind === "present" ? "current" : seen.kind === "orphaned_marker" ? "unsafe" : "absent",
+    state,
     installed: seen.kind !== "not_installed",
     configPath: grokConfigPath(),
     disableBlocked,
@@ -325,6 +337,12 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
             state: "absent", reason: "non_loopback_removed",
             message: "opencodex is bound to a non-loopback address, so Grok cannot be auto-registered. The previously generated block was removed because it pointed at a loopback address that no longer serves.",
           } satisfies NativeToggleEnvelope);
+        default: {
+          // A future fifth GrokInspection kind must fail to COMPILE, not fall
+          // through to a success-looking answer (C-gate nit).
+          const exhaustive: never = after;
+          throw new Error(`unhandled Grok inspection kind: ${JSON.stringify(exhaustive)}`);
+        }
       }
     }
 
