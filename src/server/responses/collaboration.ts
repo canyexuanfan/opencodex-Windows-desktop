@@ -60,7 +60,6 @@ import { fetchWithResetRetry, fetchWithTransientRetry, applyUpstreamRecoveryInit
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
-import { slugsEquivalent } from "../../providers/slug-codec";
 import { subagentFallbackGuidanceText } from "../../codex/subagent-model-fallback";
 import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../../usage/debug";
@@ -96,7 +95,7 @@ import {
   sanitizePassthroughHeaders,
 } from "../relay";
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
-import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
+import type { EffectiveSubagentModel, EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 import type { TranslatorBudget } from "../../lib/translator-budget";
 
 
@@ -169,6 +168,7 @@ export function collabSurface(parsed: OcxParsedRequest): "v1" | "v2" | null {
 
 export interface MultiAgentGuidanceOptions {
   multiAgentGuidanceEnabled?: boolean;
+  codexAccountNamespace?: string;
   injectionModel?: string;
   injectionEffort?: string;
   subagentModels?: string[];
@@ -218,6 +218,7 @@ export async function multiAgentGuidanceText(
   const {
     injectionModel,
     injectionEffort,
+    codexAccountNamespace,
     subagentModels,
     subagentModelFallback,
     injectionPrompt,
@@ -244,13 +245,35 @@ export async function multiAgentGuidanceText(
     ];
     const resolveRoster = deps.resolveEffectiveSubagentRoster ?? resolveEffectiveSubagentRoster;
     const effective = await resolveRoster(configuredForGuidance, "v2");
-    const rosterModels = effective.advertised.filter(candidate =>
-      (subagentModels ?? []).some(model => slugsEquivalent(model, candidate.model))
-    );
-    const roster = subagentRosterText(rosterModels);
-    const preferred = injectionModel
-      ? effective.candidates.find(candidate => slugsEquivalent(injectionModel, candidate.model))
+    // Resolve the roster and preferred roles independently so a bare native can project onto its
+    // generated account rows without making an unrelated provider/gpt-* row look equivalent.
+    // The intersection keeps both projections inside Codex's one global five-model window.
+    const candidateModels = new Set(effective.candidates.map(candidate => candidate.model));
+    const withinCandidateWindow = (candidate: EffectiveSubagentModel): boolean =>
+      candidateModels.has(candidate.model);
+    const configuredSubagents = subagentModels ?? [];
+    const subagentEffective = configuredSubagents.length > 0
+      ? injectionModel
+        ? await resolveRoster(configuredSubagents, "v2")
+        : effective
       : undefined;
+    const preferredEffective = injectionModel
+      ? configuredSubagents.length > 0
+        ? await resolveRoster([injectionModel], "v2")
+        : effective
+      : undefined;
+    const rosterModels = (subagentEffective?.advertised ?? []).filter(withinCandidateWindow);
+    const roster = subagentRosterText(rosterModels);
+    const preferredCandidates = (preferredEffective?.advertised ?? []).filter(withinCandidateWindow);
+    const preferred = injectionModel?.includes("/")
+      ? preferredCandidates[0]
+      : codexAccountNamespace
+        ? preferredCandidates.find(candidate =>
+          candidate.model.startsWith(`${codexAccountNamespace}/`)
+        )
+        : preferredCandidates.length === 1 && !preferredCandidates[0]!.model.includes("/")
+          ? preferredCandidates[0]
+          : undefined;
 
     if (isInjectionDebugEnabled() && effective.excluded.length > 0) {
       injectionDebugLog(`[opencodex] multi-agent guidance excluded: ${effective.excluded

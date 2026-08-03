@@ -570,8 +570,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           }
           throw error;
         }
-        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const { accountBoundNativeModelSlugs, applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
         const nativeSlugs = nativeOpenAiSlugs();
+        const includeAccountRows = shouldIncludeNativeOpenAi(config);
+        const accountSelectors = includeAccountRows ? visibleCodexAccountSelectors(config) : [];
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
         // Claude Code / Claude Desktop gateway model discovery (GET /v1/models with
@@ -615,8 +617,14 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           // Disabled natives stay in the catalog shape with visibility "hide" (mirrors the
           // on-disk sync; codex-rs keeps them out of the picker itself).
           const maMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
-          const entries = buildCatalogEntries(loadCatalogTemplate(), nativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config));
-          return jsonResponse({ models: applyNativeVisibility(entries, disabledNativeSlugs(config)) }, 200, req, config);
+          const entries = buildCatalogEntries(loadCatalogTemplate(), nativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config), accountSelectors);
+          return jsonResponse({
+            models: applyNativeVisibility(
+              entries,
+              disabledNativeSlugs(config),
+              accountSelectors.length > 0,
+            ),
+          }, 200, req, config);
         }
         // OpenAI list shape: native gpt bare + routed models namespaced "<provider>/<id>"
         // (pure availability list — disabled natives are omitted entirely).
@@ -644,14 +652,22 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
             reasoning_efforts: efforts.map(effort => grokEffortOption(effort, effort === defaultEffort)),
           };
         };
-        const data = [
-          ...visibleNativeSlugs(config).map(id => ({
+        const nativeModelRow = (id: string, metadataId = id) => ({
             id,
             object: "model",
             created: 0,
             owned_by: "openai",
-            ...grokEffortFields(nativeReasoningEfforts(id), nativeDefaultReasoningEffort(id)),
-          })),
+            ...grokEffortFields(
+              nativeReasoningEfforts(metadataId),
+              nativeDefaultReasoningEffort(metadataId),
+            ),
+          });
+        const visibleNatives = visibleNativeSlugs(config);
+        const data = [
+          ...visibleNatives.map(id => nativeModelRow(id)),
+          ...(includeAccountRows ? accountBoundNativeModelSlugs(config, visibleNatives) : []).map(id =>
+            nativeModelRow(id, id.slice(id.indexOf("/") + 1))
+          ),
           ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => ({
             id: m.alias ?? `${m.provider}/${m.id}`,
             object: "model",

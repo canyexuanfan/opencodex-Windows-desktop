@@ -34,6 +34,7 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { filterSupportedNativeSlugs } from "./parsing";
 import type { RawEntry } from "./parsing";
 import { readCurrentCatalogOrCache, unique } from "./bundled";
+import { trustedAccountBoundNativeCatalogSlug } from "./account-models";
 
 export const NATIVE_OPENAI_MODELS = [
   "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
@@ -121,6 +122,15 @@ export function visibleNativeSlugs(config: Pick<OcxConfig, "disabledModels">): s
   return nativeOpenAiSlugs().filter(slug => !disabled.has(slug));
 }
 
+/** Whether native ChatGPT/Codex routes are valid for this provider configuration. */
+export function shouldIncludeNativeOpenAi(config: Pick<OcxConfig, "providers">): boolean {
+  const enabledProviders = Object.entries(config.providers)
+    .filter(([, provider]) => provider.disabled !== true);
+  return enabledProviders.length === 0 || enabledProviders.some(([name, provider]) =>
+    name === OPENAI_CODEX_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider)
+  );
+}
+
 /** Native slugs exposed to Claude Desktop show/export/apply (opt-out via claudeCode.desktopNativeModels). */
 export function desktopVisibleNativeSlugs(config: Pick<OcxConfig, "claudeCode" | "disabledModels">): string[] {
   if (config.claudeCode?.desktopNativeModels === false) return [];
@@ -135,11 +145,21 @@ export function nativeModelRows(config: Pick<OcxConfig, "disabledModels">): Arra
   });
 }
 
-export function applyNativeVisibility(entries: RawEntry[], disabledNative: Set<string>): RawEntry[] {
+export function applyNativeVisibility(
+  entries: RawEntry[],
+  disabledNative: Set<string>,
+  hideBareNative = false,
+): RawEntry[] {
   for (const entry of entries) {
     const slug = typeof entry.slug === "string" ? entry.slug : "";
-    if (!slug || slug.includes("/") || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)) continue;
-    entry.visibility = disabledNative.has(slug) ? "hide" : "list";
+    const accountBoundSlug = trustedAccountBoundNativeCatalogSlug(entry);
+    const nativeSlug = accountBoundSlug ?? slug;
+    if (!nativeSlug
+      || (!accountBoundSlug && slug.includes("/"))
+      || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(nativeSlug)) continue;
+    entry.visibility = disabledNative.has(nativeSlug) || (!accountBoundSlug && hideBareNative)
+      ? "hide"
+      : "list";
   }
   return entries;
 }

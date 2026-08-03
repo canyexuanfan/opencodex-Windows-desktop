@@ -155,3 +155,71 @@ test("OpenAI list shape and Codex catalog shape stay unchanged", async () => {
     await server.stop(true);
   }
 });
+
+test("configured account selectors appear in OpenAI and Codex discovery without private ids", async () => {
+  const config = configWithStaticModels();
+  config.providers.openai = {
+    adapter: "openai-responses",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    authMode: "forward",
+    codexAccountMode: "pool",
+  };
+  config.codexAccounts = [{
+    id: "stored-side-account",
+    email: "private@example.test",
+    alias: "Private Display Name",
+    isMain: false,
+  }];
+  config.codexAccountNamespaces = {
+    desktop: "@main",
+    team: "stored-side-account",
+    removed: "missing-account",
+  };
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const plain = await fetch(new URL("/v1/models", server.url)).then(response => response.json()) as {
+      data: Array<{ id: string; reasoning_efforts?: unknown[] }>;
+    };
+    const plainIds = plain.data.map(model => model.id);
+    expect(plainIds).toContain("gpt-5.5");
+    expect(plainIds).toContain("desktop/gpt-5.5");
+    expect(plainIds).toContain("team/gpt-5.5");
+    expect(plainIds.some(id => id.startsWith("removed/"))).toBe(false);
+    expect(plain.data.find(model => model.id === "team/gpt-5.5")?.reasoning_efforts)
+      .toEqual(plain.data.find(model => model.id === "gpt-5.5")?.reasoning_efforts);
+
+    const catalog = await fetch(new URL("/v1/models?client_version=1.0.0", server.url))
+      .then(response => response.json()) as {
+        models: Array<{ slug: string; display_name?: string; visibility?: string; priority?: number }>;
+      };
+    expect(catalog.models.find(model => model.slug === "gpt-5.5")?.visibility).toBe("hide");
+    expect(catalog.models.find(model => model.slug === "desktop/gpt-5.5"))
+      .toMatchObject({ display_name: "desktop / 5.5", visibility: "list" });
+    expect(catalog.models.find(model => model.slug === "team/gpt-5.5")?.visibility).toBe("list");
+    expect(catalog.models.some(model => model.slug.startsWith("removed/"))).toBe(false);
+    expect(JSON.stringify(catalog)).not.toContain("stored-side-account");
+    expect(JSON.stringify(catalog)).not.toContain("private@example.test");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("account selectors stay out of discovery when no canonical OpenAI provider is enabled", async () => {
+  const config = configWithStaticModels();
+  config.codexAccountNamespaces = { desktop: "@main" };
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const plain = await fetch(new URL("/v1/models", server.url)).then(response => response.json()) as {
+      data: Array<{ id: string }>;
+    };
+    expect(plain.data.some(model => model.id.startsWith("desktop/"))).toBe(false);
+
+    const catalog = await fetch(new URL("/v1/models?client_version=1.0.0", server.url))
+      .then(response => response.json()) as { models: Array<{ slug: string }> };
+    expect(catalog.models.some(model => model.slug.startsWith("desktop/"))).toBe(false);
+  } finally {
+    server.stop(true);
+  }
+});

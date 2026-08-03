@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { injectDeveloperMessage, multiAgentGuidanceText, sanitizeEncryptedContentInPlace } from "../src/server/responses";
 import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest } from "../src/types";
-import { effectiveSubagentRoster } from "../src/codex/catalog";
+import { CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION, CODEX_ACCOUNT_BOUND_CATALOG_KIND, effectiveSubagentRoster } from "../src/codex/catalog";
 import { clearDebugSettings, setDebugSettings } from "../src/lib/debug-settings";
 import {
   getInjectionDebugLogEntries,
@@ -51,6 +51,8 @@ type CatalogFixtureModel = {
   visibility?: "list" | "hide";
   priority?: number;
   multiAgentVersion?: "v1" | "v2" | null;
+  description?: string;
+  accountBound?: boolean;
 };
 
 /** Write an injected-catalog fixture into the active CODEX_HOME. */
@@ -65,6 +67,8 @@ function catalogFixture(dir: string, models: CatalogFixtureModel[]): void {
       // written (normalizeRoutedCatalogEntry deletes it). The production absent-key
       // path cannot be tested if the fixture rewrites it to "v2".
       ...(model.multiAgentVersion === undefined ? {} : { multi_agent_version: model.multiAgentVersion }),
+      ...(model.description ? { description: model.description } : {}),
+      ...(model.accountBound ? { opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND } : {}),
       supported_reasoning_levels: (model.efforts ?? [])
         .map(effort => ({ effort, description: effort })),
     })),
@@ -198,6 +202,114 @@ describe("multiAgentGuidanceText", () => {
     for (const advertised of effective.advertised) {
       expect(effective.candidates.map(model => model.model)).toContain(advertised.model);
     }
+  });
+
+  test("bare native roles project onto account rows without matching arbitrary provider rows", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [
+      { slug: "gpt-5.6-sol", visibility: "hide", priority: 0 },
+      {
+        slug: "vendor/gpt-5.6-sol",
+        priority: 1,
+        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
+      },
+      {
+        slug: "desktop/gpt-5.6-sol",
+        efforts: ["high", "max"],
+        priority: 2,
+        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
+        accountBound: true,
+      },
+      {
+        slug: "team/gpt-5.6-sol",
+        efforts: ["high", "max"],
+        priority: 3,
+        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
+        accountBound: true,
+      },
+    ]);
+
+    const projected = effectiveSubagentRoster(["gpt-5.6-sol"], "v2");
+    expect(projected.advertised.map(model => model.model)).toEqual([
+      "desktop/gpt-5.6-sol",
+      "team/gpt-5.6-sol",
+    ]);
+    expect(effectiveSubagentRoster(["team/gpt-5.6-sol"], "v2").advertised.map(m => m.model))
+      .toEqual(["team/gpt-5.6-sol"]);
+
+    const text = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      {
+        injectionModel: "gpt-5.6-sol",
+        codexAccountNamespace: "team",
+        subagentModels: ["gpt-5.6-sol"],
+        subagentModelFallback: ["kimi/k3"],
+      },
+    );
+    expect(text).toContain('Preferred sub-agent: model "team/gpt-5.6-sol"');
+    expect(text).toContain('"desktop/gpt-5.6-sol", "team/gpt-5.6-sol"');
+    expect(text).not.toContain('"vendor/gpt-5.6-sol"');
+    expect(text).toContain("kimi/k3");
+
+    const ambiguous = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      { injectionModel: "gpt-5.6-sol" },
+    );
+    expect(ambiguous).toBeNull();
+  });
+
+  test("account projection never widens the five-model spawn candidate window", () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [
+      ...Array.from({ length: 5 }, (_, index) => ({
+        slug: `filler-${index}`,
+        priority: index,
+      })),
+      { slug: "gpt-5.6-sol", visibility: "hide", priority: 5 },
+      {
+        slug: "desktop/gpt-5.6-sol",
+        priority: 6,
+        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
+        accountBound: true,
+      },
+    ]);
+
+    const effective = effectiveSubagentRoster(["gpt-5.6-sol"], "v2");
+    expect(effective.advertised).toEqual([]);
+    expect(effective.excluded).toEqual([{
+      configured: "gpt-5.6-sol",
+      catalogModel: "desktop/gpt-5.6-sol",
+      reason: "outside_display_limit",
+    }]);
+  });
+
+  test("bare preference never chooses an exact account from a truncated projection", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [
+      ...Array.from({ length: 4 }, (_, index) => ({
+        slug: `filler-${index}`,
+        priority: index,
+      })),
+      {
+        slug: "desktop/gpt-5.6-sol",
+        priority: 4,
+        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
+        accountBound: true,
+      },
+      {
+        slug: "team/gpt-5.6-sol",
+        priority: 5,
+        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
+        accountBound: true,
+      },
+    ]);
+
+    expect(effectiveSubagentRoster(["gpt-5.6-sol"], "v2").advertised.map(m => m.model))
+      .toEqual(["desktop/gpt-5.6-sol"]);
+    expect(await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      { injectionModel: "gpt-5.6-sol" },
+    )).toBeNull();
   });
 
   test("effective roster applies alias, visibility, v2 compatibility, stable priority, cap, and diagnostics", async () => {

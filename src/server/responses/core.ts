@@ -882,6 +882,7 @@ async function applyFinalRouteRequestNormalization(args: {
   {
     const guidance = await multiAgentGuidanceText(parsed, {
       multiAgentGuidanceEnabled: config.multiAgentGuidanceEnabled,
+      codexAccountNamespace: route.codexAccountNamespace,
       injectionModel: config.injectionModel,
       injectionEffort: config.injectionEffort,
       subagentModels: config.subagentModels,

@@ -163,6 +163,103 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).toContain("gpt-5.5");
   });
 
+  test("account rows reconcile independently from provider-outage preservation", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    const accountDescription = "OpenAI native model bound to a Codex account namespace.";
+    const accountMarker = "account-selector-v1";
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        { ...nativeEntry("gpt-5.5", 0), comp_hash: "native-compaction-hash" },
+        routedEntry("vendor/stable-model", 5),
+        { ...routedEntry("foreign/gpt-5.5", 6), description: accountDescription },
+        {
+          ...routedEntry("team/gpt-5.5", 7),
+          display_name: "Stale provider row with a colliding slug",
+        },
+        {
+          ...nativeEntry("removed/gpt-5.5", 8),
+          description: accountDescription,
+          opencodex_catalog_kind: accountMarker,
+        },
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {},
+        codexAccounts: [{
+          id: "stored-team-account",
+          email: "private@example.test",
+          alias: "Private Display Name",
+          isMain: false
+        }],
+        codexAccountNamespaces: {
+          desktop: "@main",
+          team: "stored-team-account",
+          removed: "missing-account"
+        }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain("routed model fetch returned empty; preserving 2 existing routed entries");
+
+    const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
+      slug: string;
+      display_name?: string;
+      description?: string;
+      visibility?: string;
+      comp_hash?: string;
+      opencodex_catalog_kind?: string;
+    }>;
+    expect(rows.some(row => row.slug === "vendor/stable-model")).toBe(true);
+    expect(rows.some(row => row.slug === "foreign/gpt-5.5")).toBe(true);
+    expect(rows.some(row => row.slug === "removed/gpt-5.5")).toBe(false);
+    expect(rows.find(row => row.slug === "gpt-5.5")?.visibility).toBe("hide");
+    expect(rows.find(row => row.slug === "desktop/gpt-5.5")?.visibility).toBe("list");
+    expect(rows.find(row => row.slug === "team/gpt-5.5")).toMatchObject({
+      display_name: "team / 5.5",
+      description: accountDescription,
+      opencodex_catalog_kind: accountMarker,
+      comp_hash: "native-compaction-hash",
+      visibility: "list",
+    });
+    expect(rows.filter(row => row.slug === "team/gpt-5.5")).toHaveLength(1);
+    expect(JSON.stringify(rows)).not.toContain("stored-team-account");
+    expect(JSON.stringify(rows)).not.toContain("private@example.test");
+  });
+
+  test("non-OpenAI-only sync omits account rows without reprioritizing routed models", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({ models: [nativeEntry("gpt-5.5", 0)] }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {
+          mock: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: ["static-model"]
+          }
+        },
+        codexAccountNamespaces: { desktop: "@main" }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
+      slug: string;
+      priority?: number;
+    }>;
+    expect(rows.find(row => row.slug === "mock/static-model")?.priority).toBe(5);
+    expect(rows.some(row => row.slug === "gpt-5.5")).toBe(false);
+    expect(rows.some(row => row.slug === "desktop/gpt-5.5")).toBe(false);
+  });
+
   test("default catalog path merges from disk instead of replacing it with bundled rows", () => {
     const catalogPath = join(codexHome, "opencodex-catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'openai_base_url = "http://127.0.0.1:10100/v1"\n', "utf8");
