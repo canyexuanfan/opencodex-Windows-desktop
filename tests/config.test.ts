@@ -1070,6 +1070,27 @@ describe("opencodex config defaults", () => {
     expect(readConfigDiagnostics().source).toBe("fallback");
     expect(readConfigDiagnostics().error).toContain("requires the openai-responses wire");
 
+    // The forward-auth half of the same effective-transport question. A
+    // `preserveCustomDestination` registry row reused under a different endpoint keeps
+    // its OWN auth at runtime, not the registry's, because `routedProviderConfig()`
+    // honors `providerMatchesRegistryTransport()`. Deciding forward-auth from
+    // `registry.authKind` alone accepted a preference the adapter never applies:
+    // `preferConfiguredHostedTools()` runs only on the non-forward branch.
+    writeConfig({
+      port: 12345,
+      providers: {
+        "volcengine-agent-plan": {
+          adapter: "openai-responses",
+          authMode: "forward",
+          baseUrl: "https://custom.example.test/v1",
+          modelPreferHostedTools: { "some-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "volcengine-agent-plan",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("not supported on forward-auth");
+
     // Registry providers route through their registry wire, not this persisted adapter.
     writeConfig({
       port: 12345,

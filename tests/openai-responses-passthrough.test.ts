@@ -1147,9 +1147,12 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
     }
   });
 
-  test("every stripped additional_tools container gets hosted image generation restored", () => {
-    // Stripping runs over all containers, but restoration originally targeted only the
-    // first stripped index, so a second container lost its image capability entirely.
+  test("multi-container stripping restores hosted image generation exactly once", () => {
+    // Stripping runs over every container. Restoration must not: tool declarations are
+    // request-scoped, and `hasHostedImageGenDeclaration` treats a declaration in any
+    // container as covering the request. #924 briefly restored into each stripped
+    // container and put `image_generation` on the wire twice; this asserts against both
+    // that and the original defect of losing the capability entirely.
     const adapter = createResponsesPassthroughAdapter({
       ...keyedProvider,
       modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
@@ -1181,9 +1184,12 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
     const containers = body.input.filter(item => item.type === "additional_tools");
 
     expect(containers).toHaveLength(2);
-    for (const container of containers) {
-      expect(container.tools).toContainEqual({ type: "image_generation" });
-    }
+    const hostedDeclarations = containers.flatMap(container =>
+      (container.tools ?? []).filter(tool => tool.type === "image_generation"));
+    // Exactly one hosted declaration on the wire, riding the first stripped container
+    // so the capability is neither lost nor duplicated.
+    expect(hostedDeclarations).toEqual([{ type: "image_generation" }]);
+    expect(containers[0].tools).toContainEqual({ type: "image_generation" });
   });
 
   test("configured model rewrites a custom image-gen selector", () => {
