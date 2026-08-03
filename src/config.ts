@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import * as z from "zod/v4";
 import {
@@ -14,7 +14,7 @@ import {
 } from "./codex/account-namespace-match";
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
 import {
-  forgetHardenedSecretPath,
+  forgetEphemeralSecretPath,
   hardenSecretDir,
   hardenSecretPath,
   hardenSecretPathAsync,
@@ -29,6 +29,7 @@ import {
   isWirePinnedModel,
   MODEL_ADAPTER_OVERRIDE_ALLOWED,
   OPENAI_PROVIDER_TIER_VERSION,
+  pinnedWireAdapter,
   REASONING_SUMMARY_DELIVERY_VALUES,
   type OcxClaudeCodeConfig,
   type OcxConfig,
@@ -36,6 +37,12 @@ import {
   type OcxProviderConfig,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
+import {
+  getProviderRegistryEntry,
+  providerMatchesRegistryTransport,
+  providerModelWireDefault,
+} from "./providers/registry";
+import { resolveOpenAiVirtualModel } from "./providers/openai-virtual-models";
 import { parseDesktopProfile } from "./claude/desktop-profile";
 import { isCodexReasoningEffort, modelRecordValue } from "./reasoning-effort";
 import {
@@ -43,6 +50,7 @@ import {
   MAX_APP_OWNED_MEMORY_BUDGET_MB,
   MIN_APP_OWNED_MEMORY_BUDGET_MB,
 } from "./lib/app-owned-memory";
+import { isHostedToolUnsupportedForModel } from "./responses/hosted-tool-policy";
 
 let _atomicSeq = 0;
 
@@ -105,25 +113,92 @@ function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
+/**
+ * Resolve a write target through any symlink before the temp+rename dance.
+ *
+ * rename(2) replaces a directory ENTRY. When the entry is itself a symlink
+ * (a dotfiles-managed `~/.codex/config.toml` -> `~/dotfiles/.codex/config.toml`,
+ * say), renaming a sibling temp file over it destroys the link and leaves a plain
+ * file behind — the repo silently stops receiving writes. Resolving first puts both
+ * the temp file and the rename target inside the link's real directory, so the entry
+ * being replaced is the real file and the symlink survives.
+ *
+ * Same-filesystem atomicity is preserved because the temp file stays beside its
+ * resolved target. A genuinely absent destination (not yet created) falls back to
+ * the literal path, which is the correct target for a first write.
+ *
+ * An EXISTING symlink that cannot be resolved — dangling because its target volume
+ * is unmounted, an ELOOP chain, an EACCES parent — is refused instead. Falling back
+ * to the literal path there would let the rename replace the link, recreating the
+ * exact dotfiles-divergence failure this helper exists to prevent (audit: wt4 wp2).
+ */
+export function resolveWriteTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (cause) {
+    let entry;
+    try {
+      entry = lstatSync(path);
+    } catch (error) {
+      if (isMissingPathError(error)) return path; // no entry at all — first write
+      throw error;
+    }
+    if (entry.isSymbolicLink()) {
+      throw new Error(`refusing to replace unresolvable symlinked write target: ${path}`, { cause });
+    }
+    return path;
+  }
+}
+
+/**
+ * Re-apply the real-home guard to a RESOLVED write target.
+ *
+ * Callers such as saveConfig check only their logical config dir, which passes when
+ * OPENCODEX_HOME points at a temp fixture. Following a symlink out of that fixture
+ * would land on the protected home the caller's own check just cleared, so the guard
+ * has to run again on wherever the write actually terminates. Inert in production,
+ * where the guard is disarmed.
+ */
+function assertResolvedTargetAllowed(path: string, target: string): void {
+  // The file itself may resolve literally while its PARENT is a symlink out
+  // of the fixture (a first write beneath a symlinked config dir). Guard the
+  // directory the write actually lands in either way.
+  if (target === path) {
+    let realParent: string;
+    try {
+      realParent = realpathSync(dirname(target));
+    } catch {
+      return; // unresolvable parent: resolveWriteTarget already owns that refusal
+    }
+    if (realParent !== dirname(target)) assertNotRealHomeUnderTest(realParent);
+    return;
+  }
+  assertNotRealHomeUnderTest(dirname(target));
+}
+
 export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO = {
   write: (target, value) => writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 }),
   harden: target => {
     try { chmodSync(target, 0o600); } catch { /* platform may ignore chmod */ }
-    if (process.platform === "win32") hardenSecretPath(target, { required: true });
+    // Timeout memo keyed by the stable destination (matches the async writer):
+    // a failed temp harden must not mint a new unique-temp key on every write.
+    if (process.platform === "win32") hardenSecretPath(target, { required: true, timeoutMemoKey: path });
   },
   rename: renameAtomicFile,
   truncate: target => truncateSync(target, 0),
   unlink: unlinkSync,
 }): void {
   recordOwnedConfigPath(resolveConfigDir(), path);
-  const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
+  const target = resolveWriteTarget(path);
+  assertResolvedTargetAllowed(path, target);
+  const tmp = `${target}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let hardened = false;
   try {
     io.write(tmp, content);
     io.harden(tmp);
     hardened = true;
-    io.rename(tmp, path);
-    forgetHardenedSecretPath(tmp);
+    io.rename(tmp, target);
+    forgetEphemeralSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -150,7 +225,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
     if (!removed && !hardened) {
       try { io.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
-    if (removed) forgetHardenedSecretPath(tmp);
+    if (removed) forgetEphemeralSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -202,14 +277,16 @@ export async function atomicWriteFileAsync(
     truncate: target => truncateSync(target, 0),
     unlink: unlinkSync,
   };
-  const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
+  const target = resolveWriteTarget(path);
+  assertResolvedTargetAllowed(path, target);
+  const tmp = `${target}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let hardened = false;
   try {
     await effective.write(tmp, content);
     await effective.harden(tmp);
     hardened = true;
-    await effective.rename(tmp, path);
-    forgetHardenedSecretPath(tmp);
+    await effective.rename(tmp, target);
+    forgetEphemeralSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -236,7 +313,7 @@ export async function atomicWriteFileAsync(
     if (!removed && !hardened) {
       try { await effective.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
-    if (removed) forgetHardenedSecretPath(tmp);
+    if (removed) forgetEphemeralSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -380,7 +457,7 @@ export function backupConfigBeforeOpenAiTierMigration(
         }
       }
     }
-    if (removed) forgetHardenedSecretPath(temp);
+    if (removed) forgetEphemeralSecretPath(temp);
     if (!removed && !scrubbed) throw new OpenAiTierBackupSecretResidualError(temp);
     if (!removed) throw new OpenAiTierBackupCleanupError();
   };
@@ -401,16 +478,16 @@ export function backupConfigBeforeOpenAiTierMigration(
     published = true;
     try {
       io.unlink(temp);
-      forgetHardenedSecretPath(temp);
+      forgetEphemeralSecretPath(temp);
     } catch (firstError) {
       if (isMissingPathError(firstError)) {
-        forgetHardenedSecretPath(temp);
+        forgetEphemeralSecretPath(temp);
       } else try {
         io.unlink(temp);
-        forgetHardenedSecretPath(temp);
+        forgetEphemeralSecretPath(temp);
       } catch (secondError) {
         if (isMissingPathError(secondError)) {
-          forgetHardenedSecretPath(temp);
+          forgetEphemeralSecretPath(temp);
           return "created";
         }
         // temp and backup are hard links to the same inode. Roll back the backup
@@ -483,6 +560,8 @@ const providerConfigSchema = z.object({
   apiKeyTransport: z.enum(["x-api-key", "bearer"]).optional(),
   responsesPath: z.string().min(1).optional(),
   statelessResponses: z.boolean().optional(),
+  supportsServiceTier: z.boolean().optional(),
+  preserveResponsesReasoningContent: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
   retryOn429: z.object({
     enabled: z.boolean().optional(),
@@ -636,6 +715,100 @@ export function reasoningSummaryDeliveryRecordConfigError(
     }
     if (modelRecordValue(supports, key) === false) {
       return `${field}.${key} conflicts with modelSupportsReasoningSummaries=false`;
+    }
+  }
+  return null;
+}
+
+const SUPPORTED_PREFERRED_HOSTED_TOOLS = new Set(["image_generation"]);
+
+export function modelPreferHostedToolsConfigError(
+  value: unknown,
+  field: string,
+  providerName: string,
+  provider: { adapter?: unknown; authMode?: unknown; modelAdapters?: unknown; baseUrl?: unknown },
+): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${field} must be a plain object`;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return `${field} must be a plain object with own properties`;
+  const entries = Object.entries(value);
+  const registry = getProviderRegistryEntry(providerName);
+  // Effective transport: a `preserveCustomDestination` registry row reused under a
+  // different endpoint keeps its own adapter AND its own auth at runtime, because
+  // `routedProviderConfig()` honors `providerMatchesRegistryTransport()`. Both the
+  // wire check below and the forward-auth check here have to start from the same
+  // decision, or validation accepts a preference the adapter never applies —
+  // `preferConfiguredHostedTools()` runs only on the non-forward branch.
+  const registryTransportMatches = typeof provider.baseUrl === "string"
+    && providerMatchesRegistryTransport(providerName, {
+      baseUrl: provider.baseUrl,
+      adapter: provider.adapter as OcxProviderConfig["adapter"],
+      ...(typeof provider.authMode === "string" ? { authMode: provider.authMode as OcxProviderConfig["authMode"] } : {}),
+    });
+  const effectiveForwardAuth = registryTransportMatches
+    ? registry?.authKind === "forward"
+    : provider.authMode === "forward";
+  if (entries.length > 0 && effectiveForwardAuth) {
+    return `${field} is not supported on forward-auth Responses providers`;
+  }
+  const requestedWireFor = (modelId: string): unknown => provider.modelAdapters
+    && typeof provider.modelAdapters === "object"
+    && !Array.isArray(provider.modelAdapters)
+    ? (provider.modelAdapters as Record<string, unknown>)[modelId]
+    : undefined;
+  const resolveEffectiveWire = (modelId: string, currentWire: unknown): unknown => {
+    const pinned = pinnedWireAdapter(providerName, modelId);
+    if (pinned) return pinned;
+    const requestedWire = requestedWireFor(modelId);
+    if (typeof requestedWire === "string" && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(requestedWire)) {
+      return requestedWire;
+    }
+    // No explicit override: fall back to the registry's per-model wire default before
+    // the provider-wide adapter, because that is the order `resolveModelAdapter()`
+    // uses at request time (src/server/adapter-resolve.ts:38-48). Skipping it rejected
+    // preferences the runtime would have honored — DeepSeek routes `deepseek-v4-flash`
+    // over native Responses for a Responses inbound while the provider-wide wire stays
+    // openai-chat. Hosted-tool preferences only apply to Responses traffic, so the
+    // inbound to ask about is "responses".
+    const registryDefault = typeof currentWire === "string" && typeof provider.baseUrl === "string"
+      ? providerModelWireDefault(
+        providerName,
+        {
+          baseUrl: provider.baseUrl,
+          adapter: currentWire,
+          ...(typeof provider.authMode === "string" ? { authMode: provider.authMode as OcxProviderConfig["authMode"] } : {}),
+        },
+        modelId,
+        MODEL_ADAPTER_OVERRIDE_ALLOWED,
+        "responses",
+      )
+      : undefined;
+    return registryDefault ?? currentWire;
+  };
+  for (const [key, entry] of entries) {
+    if (!key.trim()) return `${field} keys must be nonblank model ids`;
+    if (!Array.isArray(entry)) return `${field}.${key} must be an array`;
+    if (entry.length === 0) return `${field}.${key} must include image_generation`;
+    for (const tool of entry) {
+      if (typeof tool !== "string" || !SUPPORTED_PREFERRED_HOSTED_TOOLS.has(tool)) {
+        return `${field}.${key} supports only image_generation`;
+      }
+      if (isHostedToolUnsupportedForModel(key, tool)) {
+        return `${field}.${key} cannot prefer ${tool}: the model does not support it`;
+      }
+    }
+    // Same `registryTransportMatches` decision the forward-auth check above uses:
+    // start from the registry adapter only when this config still points at the
+    // registry's documented transport.
+    const baseWire = registryTransportMatches ? registry?.adapter ?? provider.adapter : provider.adapter;
+    let effectiveWire = resolveEffectiveWire(key, baseWire);
+    const virtualWireModel = resolveOpenAiVirtualModel(providerName, key)?.wireModelId;
+    if (virtualWireModel && virtualWireModel !== key) {
+      effectiveWire = resolveEffectiveWire(virtualWireModel, effectiveWire);
+    }
+    if (effectiveWire !== "openai-responses") {
+      return `${field}.${key} requires the openai-responses wire`;
     }
   }
   return null;
@@ -945,6 +1118,19 @@ const configSchema = z.object({
         message: modelAdaptersError,
       });
     }
+    const preferHostedToolsError = modelPreferHostedToolsConfigError(
+      (provider as { modelPreferHostedTools?: unknown }).modelPreferHostedTools,
+      "modelPreferHostedTools",
+      name,
+      provider,
+    );
+    if (preferHostedToolsError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "modelPreferHostedTools"],
+        message: preferHostedToolsError,
+      });
+    }
     const maxInputError = positiveIntegerRecordConfigError(
       (provider as { modelMaxInputTokens?: unknown }).modelMaxInputTokens,
       "modelMaxInputTokens",
@@ -1086,6 +1272,9 @@ export function getRuntimePortPath(): string {
 
 export function hardenConfigDir(): void {
   const dir = getConfigDir();
+  // The guard runs BEFORE any mutation: refusing the write after chmod/ACL
+  // would already have changed the protected directory (review round 2).
+  assertNotRealHomeUnderTest(dir);
   if (existsSync(dir)) {
     try { chmodSync(dir, 0o700); } catch { /* best-effort */ }
     if (process.platform === "win32") {
@@ -2135,6 +2324,8 @@ export function applyProxyEnv(config: OcxConfig): void {
 
 export function writePid(pid: number): void {
   const dir = getConfigDir();
+  // Guard before ANY directory mutation (mkdir or chmod), not just the write.
+  assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
@@ -2163,6 +2354,8 @@ function isValidRuntimePortState(value: unknown): value is RuntimePortState {
 
 export function writeRuntimePort(state: RuntimePortState): void {
   const dir = getConfigDir();
+  // Guard before ANY directory mutation (mkdir or chmod), not just the write.
+  assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {

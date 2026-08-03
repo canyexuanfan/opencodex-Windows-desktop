@@ -7,12 +7,20 @@ import { usageDisplayTotalTokens } from "./usage/totals";
 import {
   isTranslatorBudgetExceededError,
   releaseTranslatedEvent,
+  createTranslatorBudget,
   type TranslatorBudget,
   type TranslatorBufferKind,
 } from "./lib/translator-budget";
 
 function uuid(): string {
   return crypto.randomUUID().replace(/-/g, "");
+}
+
+/** Test-only: bound the abandoned-owned-budget watchdog delay (null restores). */
+let ownedBudgetAbandonedMs = 10 * 60 * 1000;
+const OWNED_BUDGET_ABANDONED_DEFAULT_MS = ownedBudgetAbandonedMs;
+export function setOwnedBudgetAbandonedMsForTests(ms: number | null): void {
+  ownedBudgetAbandonedMs = ms ?? OWNED_BUDGET_ABANDONED_DEFAULT_MS;
 }
 
 function sseEvent(name: string, data: Record<string, unknown>): string {
@@ -107,13 +115,28 @@ function adapterFailureFromEvent(event: Extract<AdapterEvent, { type: "error" }>
 export { adapterFailureFromMessage } from "./lib/errors";
 
 /**
- * Build the native `WebSearchAction::Search` payload from the queries that ran. codex-rs prefers a
- * non-empty `query` over `queries` for the cell label, and only renders "<first> ..." when `query`
- * is absent and `queries.len() > 1`. So a single query → `{ query }`; multiple → `{ queries }` with
- * no singular `query`, so Codex shows the native plural ellipsis. Empty → `{ query: "" }`.
+ * Build the native `WebSearchAction::Search` payload from the queries that ran.
+ *
+ * Single query → `{ query, queries: [query] }`. Batch → `{ queries }` with NO singular
+ * `query`. Empty → `{ query: "", queries: [""] }`.
+ *
+ * The asymmetry is load-bearing in both directions. codex-rs prefers a non-empty `query`
+ * for the cell label and renders "<first> ..." only when `query` is ABSENT and
+ * `queries.len() > 1`, so adding `query` to a batch would collapse the plural ellipsis.
+ * Meanwhile DeepSeek's native Responses parser makes `queries` a required field, so a
+ * replayed one-term `web_search_call` — carried in the history of every subsequent turn
+ * — fails deserialization with `missing field 'queries'` and 400s the rest of the
+ * conversation (#930). Carrying both keys in the single case satisfies the strict parser
+ * without changing what codex-rs displays.
+ *
+ * This fixes items created from here on. History recorded before it is repaired at the
+ * replay boundary by `backfillWebSearchQueries()` in the Responses adapter.
  */
 function webSearchAction(queries: string[]): Record<string, unknown> {
-  if (queries.length <= 1) return { type: "search", query: queries[0] ?? "" };
+  if (queries.length <= 1) {
+    const query = queries[0] ?? "";
+    return { type: "search", query, queries: [query] };
+  }
   return { type: "search", queries };
 }
 
@@ -208,7 +231,25 @@ export function bridgeToResponsesSSE(
     try { const o = JSON.parse(args); return o && typeof o === "object" ? o : {}; } catch { return {}; }
   };
   const encoder = new TextEncoder();
-  const budget = options?.translatorBudget;
+  // Default-budget safety net: omission is SAFE (default turn limits), never
+  // unbounded. Production callers always pass one; an owned default is disposed
+  // at terminal/cancel below.
+  const ownsBudget = !options?.translatorBudget;
+  const budget = options?.translatorBudget ?? createTranslatorBudget();
+  // Idempotent: safe to call at every stream-death path; disposal must come
+  // AFTER the final charges (emitDone), never inside reportTerminal.
+  const disposeOwnedBudget = () => { if (ownsBudget) budget.dispose(); };
+  // A dropped stream (never read, never cancelled) reaches no terminal path,
+  // so the owned budget would sit in liveBudgets for the process lifetime.
+  // One unref'd watchdog per owned budget bounds that to a timeout and clears
+  // itself on any settle (the delay is test-overridable).
+  const ownedWatchdog = ownsBudget
+    ? setTimeout(() => disposeOwnedBudget(), ownedBudgetAbandonedMs)
+    : undefined;
+  ownedWatchdog?.unref?.();
+  const clearOwnedWatchdog = () => {
+    if (ownedWatchdog !== undefined) clearTimeout(ownedWatchdog);
+  };
   const bytesOf = (value: string): number => Buffer.byteLength(value);
   const appendString = (
     previous: string,
@@ -219,7 +260,6 @@ export function bridgeToResponsesSSE(
   ): { value: string; bytes: number } => {
     const fragmentBytes = bytesOf(fragment);
     const nextBytes = previousBytes + fragmentBytes;
-    if (!budget) return { value: previous + fragment, bytes: nextBytes };
     const scope = { kind, ...(callId ? { callId } : {}) };
     const reservation = budget.reserveTransient(nextBytes, scope);
     try {
@@ -257,6 +297,7 @@ export function bridgeToResponsesSSE(
     if (terminalReported || clientCancelled || closed) return;
     terminalReported = true;
     try { options?.onTerminal?.(status); } catch { /* terminal metrics must not break the stream */ }
+    clearOwnedWatchdog();
   };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
   // eventsource_stream; ANY received event re-arms it, while an unknown type is ignored
@@ -289,6 +330,7 @@ export function bridgeToResponsesSSE(
             return;
           }
           closed = true;
+          disposeOwnedBudget();
         }
       };
       const emitDone = () => {
@@ -682,6 +724,7 @@ export function bridgeToResponsesSSE(
         beat = undefined;
         try { controller.close(); } catch { /* already closed */ }
         closed = true;
+        disposeOwnedBudget();
         gated = true;
         stepping = false;
       };
@@ -694,6 +737,15 @@ export function bridgeToResponsesSSE(
         while (!terminated && !closed && emittedFrames === emittedAtStart) {
           iteratorStarted = true;
           const next = await it.next();
+          // A cancel during this await disposes the owned budget; a late event
+          // must never be processed or charged against it. Exit step() outright:
+          // falling into EOF synthesis would let closeCurrentMessage() charge
+          // finished-item retention against the disposed budget.
+          if (closed || clientCancelled) {
+            gated = true;
+            stepping = false;
+            return;
+          }
           if (next.done) { upstreamDone = true; break; }
           const event = next.value;
           let terminalEvent = false;
@@ -1141,6 +1193,7 @@ export function bridgeToResponsesSSE(
         /* already closed (e.g. client cancelled) */
       }
       closed = true;
+      disposeOwnedBudget();
       gated = true;
       stepping = false;
       };
@@ -1176,6 +1229,7 @@ export function bridgeToResponsesSSE(
             beat = undefined;
             try { controller.close(); } catch { /* already closed */ }
             closed = true;
+            disposeOwnedBudget();
             return;
           }
           // Wire silence is independent of upstream adapter heartbeats.
@@ -1188,6 +1242,7 @@ export function bridgeToResponsesSSE(
             emittedFrames++;
           } catch {
             closed = true;
+            disposeOwnedBudget();
           }
         }, heartbeatMs);
       };
@@ -1205,13 +1260,31 @@ export function bridgeToResponsesSSE(
       // cancelled turn does not leak the upstream stream or keep draining tokens (RC2).
         clientCancelled = true;
         closed = true;
+        clearOwnedWatchdog();
         if (beat !== undefined) clearBeatInterval(beat);
         cancelUpstreamOnce();
+        disposeOwnedBudget();
       },
     });
   }
 
 export function buildResponseJSON(
+  events: AdapterEvent[],
+  modelId: string,
+  options?: Parameters<typeof buildResponseJSONWithBudget>[2],
+): Record<string, unknown> {
+  // Default-budget safety net: a caller that omits the budget gets a bounded
+  // default (disposed with the call), never the unbounded append path.
+  if (options?.translatorBudget) return buildResponseJSONWithBudget(events, modelId, options);
+  const budget = createTranslatorBudget();
+  try {
+    return buildResponseJSONWithBudget(events, modelId, { ...options, translatorBudget: budget });
+  } finally {
+    budget.dispose();
+  }
+}
+
+function buildResponseJSONWithBudget(
   events: AdapterEvent[],
   modelId: string,
   options?: {

@@ -48,23 +48,45 @@ describe("startup star prompt", () => {
     // The agent path relays the question rather than selecting a choice.
     expect(prompt).toContain("printAgentDeferral");
     expect(prompt).toContain("Do not answer this on their behalf");
-    expect(prompt).toContain("Ask the user, in your reply, whether to star");
+    expect(prompt).toContain("Ask the user once, in the reply that follows this start, whether to star");
     // The deferral must name the concrete command the agent may run only after a
     // yes, so relaying the question does not turn into guesswork.
     expect(prompt).toContain("gh api -X PUT /user/starred/");
     expect(prompt).not.toMatch(/isAgentDriven\(\)[\s\S]{0,80}starRepo\(\)/);
   });
 
-  test("the relayed question is a real choice that silence cannot settle", async () => {
+  test("the relayed question is a real choice asked once, never decided by silence", async () => {
     const prompt = await readText("src/cli/star-prompt.ts");
 
     // The failure this guards against is an agent softening the question into a
-    // throwaway aside, then treating the user's non-answer as a decline. Neither
-    // side may be decided for the user: no answer keeps the question open.
+    // throwaway aside, then treating the user's non-answer as a decision. A
+    // non-answer settles nothing: silence is deferred, never a Yes, never a No.
     expect(prompt).toContain(`"Star ${"${REPO}"}? Yes / No"`);
     expect(prompt).toMatch(/soft aside/);
-    expect(prompt).toContain("Silence is not an answer, and it is not a No");
-    expect(prompt).toMatch(/the choice is still open/);
+    expect(prompt).toContain("silence is deferred, never a");
+    expect(prompt).toContain("Yes and never a recorded No");
+    // Issue #879: the relay is bounded. The agent asks once; it is the CLI that
+    // re-arms on a later version, not the agent repeating every reply.
+    expect(prompt).toContain("Do NOT repeat the question in later");
+    expect(prompt).toContain("at most once per opencodex version");
+  });
+
+  test("the agent deferral is bounded by a .star-deferred record, never the marker", async () => {
+    const prompt = await readText("src/cli/star-prompt.ts");
+
+    // The agent branch must consult the deferral record before printing, and
+    // must still never write the one-time .star-prompted marker.
+    expect(prompt).toContain(`".star-deferred"`);
+    const checkIndex = prompt.indexOf("if (isDeferralCurrent(");
+    const printIndex = prompt.indexOf("printAgentDeferral();");
+    expect(checkIndex).toBeGreaterThan(-1);
+    expect(printIndex).toBeGreaterThan(checkIndex);
+    // hasStarPromptRun() (consumed by update/notify.ts's first-run yield) reads
+    // only the real marker; the deferral record must not leak into it.
+    const fnStart = prompt.indexOf("export function hasStarPromptRun");
+    const fnEnd = prompt.indexOf("}", prompt.indexOf("return existsSync", fnStart));
+    expect(prompt.slice(fnStart, fnEnd)).toContain("MARKER");
+    expect(prompt.slice(fnStart, fnEnd)).not.toContain("DEFERRAL");
   });
 
   test("the deferral is folded, because only the agent is reading it", async () => {
@@ -85,7 +107,7 @@ describe("startup star prompt", () => {
     const folded = prompt.slice(foldStart, foldEnd);
     expect(folded).toContain("Do not answer this on their behalf");
     expect(folded).toContain("gh api -X PUT /user/starred/");
-    expect(folded).toContain("Silence is not an answer");
+    expect(folded).toContain("silence is deferred");
   });
 
   test("the management star endpoint refuses agent callers too", async () => {
@@ -93,12 +115,18 @@ describe("startup star prompt", () => {
 
     // The CLI deferral is worthless if an agent can reach the same write over
     // HTTP: it runs on the user's machine and can read the admin token from disk.
-    expect(routes).toContain("isAgentDriven()");
     expect(routes).toContain("agent_consent_required");
-    // A dashboard click must still work when an agent started the proxy, so the
-    // refusal is conditioned on the absence of browser-session evidence.
     expect(routes).toContain("hasBrowserSessionEvidence");
-    expect(routes).toMatch(/isAgentDriven\(\)\s*&&\s*!hasBrowserSessionEvidence\(req\)/);
+    // The requirement is UNCONDITIONAL. Gating it on isAgentDriven() reads the
+    // server's environment, not the caller's, so a service-run proxy (no agent
+    // markers) accepted a raw-token star from any agent on the machine.
+    expect(routes).toMatch(/if\s*\(!hasBrowserSessionEvidence\(ctx\)\)/);
+    expect(routes).not.toMatch(/isAgentDriven\(\)\s*&&/);
+    // And that evidence must be the authenticating CREDENTIAL, never a request
+    // header: the admin token is readable by anything running as the user, so a
+    // header-shaped check is forgeable by the exact caller this guard refuses.
+    expect(routes).toMatch(/principal === "gui-session"/);
+    expect(routes).not.toMatch(/hasBrowserSessionEvidence[\s\S]*?headers\.get\("x-opencodex-csrf-token"\)/);
   });
 
   test("the consent rule is written down where agents and users read it", async () => {
@@ -120,7 +148,8 @@ describe("startup star prompt", () => {
     // shim), so assert the arguments and the resolver rather than the literal.
     expect(prompt).toContain('ghInvocation(["auth", "status"])');
     expect(prompt).toContain('commandInvocation("gh"');
-    expect(prompt).toContain("if (!ghAvailable()) return;");
+    // The gh check gates the prompt via the (test-seamable) ghOk result.
+    expect(prompt).toContain("if (!ghOk) return;");
   });
 
   test("declining the star prompt does not steer the agent afterwards", async () => {

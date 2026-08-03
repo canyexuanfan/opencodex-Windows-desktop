@@ -111,6 +111,11 @@ export interface ProviderRegistryEntry {
   allowPrivateNetworkByDefault?: boolean;
   keyOptional?: boolean;
   /**
+   * Registry-only key-login policy for public model catalogs that cannot authenticate a key.
+   * The dashboard flow then reports the key as unverifiable instead of a false positive.
+   */
+  apiKeyValidation?: "unknown";
+  /**
    * Free-tier pricing (no paid subscription required). Distinct from `keyOptional`:
    * free tiers may still require an API key (e.g. NVIDIA NIM free credits).
    */
@@ -149,6 +154,14 @@ export interface ProviderRegistryEntry {
    */
   modelWireDefaults?: Record<string, ModelWireDefault>;
   /**
+   * Registry-only per-model override for the upstream request shape used behind a
+   * Codex Responses WebSocket turn. `false` keeps the client-facing WebSocket but
+   * asks the upstream Responses endpoint for bounded JSON, which the bridge then
+   * reframes as Responses events. Use only for upstreams whose streaming response
+   * can omit or indefinitely delay the terminal event.
+   */
+  modelWebsocketUpstreamStreaming?: Record<string, boolean>;
+  /**
    * Responses-API resource path for providers whose route is not `/v1/responses`.
    * Unlike `modelWireDefaults` above, this IS seeded into saved config: it describes
    * the provider's fixed endpoint rather than a default a user might want to override
@@ -161,6 +174,16 @@ export interface ProviderRegistryEntry {
    * replay miss are repaired rather than forwarded.
    */
   statelessResponses?: boolean;
+  /**
+   * Registry default for the provider's Responses `service_tier` support; see
+   * `OcxProviderConfig.supportsServiceTier`. Registry-only: backfilled (never
+   * overriding) at enrich/route time and deliberately NOT seeded into saved
+   * config, so an explicit user value stays distinguishable from the default
+   * (and the canonical openai seed comparison keeps its exact key set).
+   */
+  supportsServiceTier?: boolean;
+  /** Registry default for plaintext reasoning replay; see `OcxProviderConfig.preserveResponsesReasoningContent`. Registry-only like `supportsServiceTier`. */
+  preserveResponsesReasoningContent?: boolean;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -172,6 +195,7 @@ export interface ProviderRegistryEntry {
   modelDefaultReasoningEfforts?: Record<string, string>;
   reasoningEffortMap?: Record<string, string>;
   modelReasoningEffortMap?: Record<string, Record<string, string>>;
+  reasoningWireFormat?: OcxProviderConfig["reasoningWireFormat"];
   noVisionModels?: string[];
   noReasoningModels?: string[];
   noTemperatureModels?: string[];
@@ -203,7 +227,7 @@ export type ProviderConfigSeed = Pick<
   "adapter" | "baseUrl" | "apiKeyTransport" | "responsesPath" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
-  | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
+  | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap" | "reasoningWireFormat"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "reasoningSplitModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
   | "googleMode" | "project" | "location" | "headers"
@@ -214,7 +238,7 @@ export type ProviderConfigSeed = Pick<
 // 260710 context refresh: Tier-2 evidence in
 // devlog/_plan/260710_provider_hardening/001_research_frontier.md.
 const ANTHROPIC_MODELS = ["claude-fable-5", "claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
-const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet-5": 1_000_000, "claude-fable-5": 1_000_000, "claude-opus-5": 1_000_000, "claude-opus-4-8": 1_000_000, "claude-haiku-4-5": 200_000 };
+const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet-5": 1_000_000, "claude-fable-5": 1_000_000, "claude-opus-5": 1_000_000, "claude-opus-4-8": 1_000_000, "claude-opus-4-7": 1_000_000, "claude-opus-4-6": 1_000_000, "claude-sonnet-4-6": 1_000_000, "claude-haiku-4-5": 200_000 };
 
 const ZAI_GLM_52_MODELS = ["glm-5.2", "glm-5.2[1m]"];
 const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
@@ -566,6 +590,44 @@ const UMANS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 const UMANS_MODEL_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntries(
   UMANS_MODELS.map(id => [id, UMANS_TEXT_ONLY_MODELS.includes(id) ? ["text"] : ["text", "image"]]),
 );
+const CLINE_PASS_MODELS = [
+  "cline-pass/glm-5.2",
+  "cline-pass/kimi-k3",
+  "cline-pass/kimi-k2.7-code",
+  "cline-pass/kimi-k2.6",
+  "cline-pass/deepseek-v4-pro",
+  "cline-pass/deepseek-v4-flash",
+  "cline-pass/mimo-v2.5",
+  "cline-pass/mimo-v2.5-pro",
+  "cline-pass/minimax-m3",
+  "cline-pass/qwen3.7-max",
+  "cline-pass/qwen3.7-plus",
+];
+const CLINE_PASS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "cline-pass/glm-5.2": 1_048_576,
+  "cline-pass/kimi-k3": 1_048_576,
+  "cline-pass/kimi-k2.7-code": 262_144,
+  "cline-pass/kimi-k2.6": 262_144,
+  "cline-pass/deepseek-v4-pro": 1_048_576,
+  "cline-pass/deepseek-v4-flash": 1_048_576,
+  "cline-pass/mimo-v2.5": 1_050_000,
+  "cline-pass/mimo-v2.5-pro": 1_050_000,
+  "cline-pass/minimax-m3": 1_048_576,
+  "cline-pass/qwen3.7-max": 1_000_000,
+  "cline-pass/qwen3.7-plus": 1_000_000,
+};
+const CLINE_PASS_IMAGE_MODELS = new Set([
+  "cline-pass/kimi-k3",
+  "cline-pass/kimi-k2.7-code",
+  "cline-pass/kimi-k2.6",
+  "cline-pass/mimo-v2.5",
+  "cline-pass/minimax-m3",
+  "cline-pass/qwen3.7-plus",
+]);
+const CLINE_PASS_TEXT_ONLY_MODELS = CLINE_PASS_MODELS.filter(id => !CLINE_PASS_IMAGE_MODELS.has(id));
+const CLINE_PASS_MODEL_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntries(
+  CLINE_PASS_MODELS.map(id => [id, CLINE_PASS_IMAGE_MODELS.has(id) ? ["text", "image"] : ["text"]]),
+);
 
 export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
@@ -575,6 +637,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://chatgpt.com/backend-api/codex",
     authKind: "forward",
     codexAccountMode: "pool",
+    supportsServiceTier: true,
     featured: true,
     note: "Codex login account pool (default) or Direct main-account mode via codexAccountMode",
   },
@@ -745,6 +808,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-responses",
     baseUrl: "https://api.openai.com/v1",
     authKind: "key",
+    supportsServiceTier: true,
     featured: true,
     dashboardUrl: "https://platform.openai.com/api-keys",
     defaultModel: "gpt-5.5",
@@ -870,6 +934,56 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   { id: "openrouter", label: "OpenRouter", adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", authKind: "key", featured: true, dashboardUrl: "https://openrouter.ai/keys", jawcodeBundle: "openrouter", models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS], modelContextWindows: { "anthropic/claude-sonnet-5": 1_000_000, ...OPENROUTER_GPT56_CONTEXT_WINDOWS } },
   {
+    // Primary sources checked 2026-08-02:
+    // - docs.cline.bot/getting-started/clinepass publishes this exact catalog and explicitly
+    //   authorizes using the full slugs through Cline's external API.
+    // - docs.cline.bot/api/chat-completions and /api/errors define the endpoint, reasoning delta,
+    //   and choice-scoped mid-stream error contract.
+    // - Cline's official catalog source resolves per-model capabilities through OpenRouter data;
+    //   the static context/modality snapshot below was cross-checked against that catalog.
+    // - cline.bot/tos identifies Cline Bot Inc. as the operator. Maintenance owner: @lidge-jun.
+    id: "cline-pass",
+    label: "ClinePass",
+    adapter: "openai-chat",
+    baseUrl: "https://api.cline.bot/api/v1",
+    authKind: "key",
+    dashboardUrl: "https://app.cline.bot",
+    defaultModel: "cline-pass/kimi-k3",
+    models: CLINE_PASS_MODELS,
+    modelContextWindows: CLINE_PASS_MODEL_CONTEXT_WINDOWS,
+    modelInputModalities: CLINE_PASS_MODEL_INPUT_MODALITIES,
+    noVisionModels: CLINE_PASS_TEXT_ONLY_MODELS,
+    // Only low and the `reasoning: { enabled, effort }` request shape have been accepted by a live
+    // ClinePass request. Neither wire detail is currently documented, so clamp higher Codex
+    // requests to the verified tier until the gateway documents or is live-probed more broadly.
+    reasoningEfforts: ["low"],
+    reasoningWireFormat: "gateway-object",
+    preserveCustomDestination: true,
+    note: "ClinePass subscription API. Uses a Cline API key and the full cline-pass/<model> upstream slug; quota is shared across the account's rolling 5-hour, weekly, and monthly limits.",
+  },
+  // Cline API (usage-billing): OpenAI-compatible Chat Completions. Model IDs follow the
+  // OpenRouter-style `provider/model` convention. Live /models discovery is key-gated (401
+  // without auth), so the static seed is the cold-start fallback. Evidence: docs.cline.bot/api/*.
+  {
+    id: "cline",
+    label: "Cline",
+    adapter: "openai-chat",
+    baseUrl: "https://api.cline.bot/api/v1",
+    authKind: "key",
+    dashboardUrl: "https://app.cline.bot",
+    liveModels: true,
+    defaultModel: "anthropic/claude-sonnet-4-6",
+    models: [
+      "anthropic/claude-sonnet-4-6",
+      "openai/gpt-4o",
+      "google/gemini-2.5-pro",
+      "deepseek/deepseek-chat",
+      "minimax/minimax-m2.5",
+    ],
+    preserveCustomDestination: true,
+    note: "Cline usage-billing API: one key, 100+ models, OpenRouter-style ids. Promotional free models are IDE/CLI-only per Cline docs; minimax/minimax-m2.5 is the documented API free experimentation model.",
+  },
+  {
     // OrcaRouter: OpenAI-compatible adaptive router (api.orcarouter.ai). Model ids are
     // vendor-namespaced (`<vendor>/<model>`) and pass through to the upstream as-is.
     // The default pins a tool-capable model; the adaptive `orcarouter/auto` router is also
@@ -960,11 +1074,25 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       // for no gain.
       "deepseek-v4-flash": { wire: "openai-responses", inbound: ["responses"] },
     },
+    // DeepSeek's Codex Responses stream can deliver output without closing on the
+    // terminal event. Keep Codex on WebSocket, but use the provider's bounded JSON
+    // response upstream so the bridge can synthesize a complete WS event sequence.
+    modelWebsocketUpstreamStreaming: { "deepseek-v4-flash": false },
     // DeepSeek's Responses route is `POST /responses` with no `/v1` segment. Without
     // this the passthrough adapter falls back to its legacy `/v1/responses`
     // construction and the wire above can never route.
     // Evidence: https://api-docs.deepseek.com/api/create-response/
     responsesPath: "/responses",
+    // DeepSeek's Responses reference does not list `service_tier`; unsupported
+    // parameters are documented as silently ignored, but the fail-closed policy
+    // strips the field rather than forwarding a knob the upstream never asked for.
+    supportsServiceTier: false,
+    // DeepSeek's Responses compatibility guide accepts plaintext reasoning items and
+    // merges them into the adjacent assistant message, so replayed reasoning must
+    // not be blanked the way the ChatGPT backend requires. (Whether the Responses
+    // route REQUIRES replay on tool-call continuations is an inference from the
+    // Chat Thinking-Mode docs, not a confirmed Responses contract.)
+    preserveResponsesReasoningContent: true,
     // "The API is stateless: responses and conversations are not stored on the
     // server." https://api-docs.deepseek.com/api/create-response/
     statelessResponses: true,
@@ -1044,6 +1172,32 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       maxModels: 256,
     },
     note: "Shared Model APIs only (personal API key, or team key with Call Model APIs access); dedicated Truss predict endpoints are outside this preset.",
+  },
+  {
+    id: "commandcode",
+    label: "Command Code",
+    adapter: "openai-chat",
+    baseUrl: "https://api.commandcode.ai/provider/v1",
+    authKind: "key",
+    dashboardUrl: "https://commandcode.ai/studio/",
+    liveModels: true,
+    preserveCustomDestination: true,
+    defaultModel: "deepseek/deepseek-v4-flash",
+    // The default is also the cold-start seed: live discovery failure must not empty the catalog
+    // for a freshly configured provider with no stale cache (issue #308 pattern).
+    models: ["deepseek/deepseek-v4-flash"],
+    // The public model catalog is unauthenticated, so a Bearer probe cannot prove key validity.
+    apiKeyValidation: "unknown",
+    // The public catalog reports ids/context windows only; no trustworthy reasoning contract.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 256,
+    },
+    // Verified 2026-08-03: public /provider/v1/models returns 51 rows; /chat/completions returns
+    // 401 UNAUTHORIZED without a Bearer key. Primary source: https://commandcode.ai/docs/provider.
+    note: "Command Code Provider API (OpenAI-compatible); API access requires the Provider plan. CLI auth bridging for Go/Pro subscriptions is not yet available. Docs: https://commandcode.ai/docs/provider.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
@@ -1245,6 +1399,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     responsesPath: "/responses",
     adapter: "openai-responses",
     authKind: "key",
+    // Ark's plan route does not document `service_tier`; fail closed like DeepSeek.
+    supportsServiceTier: false,
     preserveCustomDestination: true,
     dashboardUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/overview",
     defaultModel: "deepseek-v4-pro",
@@ -1476,8 +1632,23 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     featured: false,
     dashboardUrl: "https://github.com/settings/copilot",
     liveModels: true,
-    models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro"],
+    models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"],
     defaultModel: "gpt-4o",
+    // Copilot fronts a mixed-wire catalog: these models reject /chat/completions for
+    // real Codex-agent traffic (function tools + reasoning), so every inbound wire
+    // rides Responses. Evidence: issue #748 field runs, pi.dev/models/github-copilot/*
+    // wire declarations, BerriAI/litellm#23332 (gpt-5.4), JetBrains LLM-29711
+    // (gpt-5.6-sol). gpt-5.4-nano is deliberately absent — it has no field report; a
+    // user can opt it in with an explicit modelAdapters entry, which always wins.
+    modelWireDefaults: {
+      "gpt-5.3-codex": "openai-responses",
+      "gpt-5.4": "openai-responses",
+      "gpt-5.4-mini": "openai-responses",
+      "gpt-5.5": "openai-responses",
+      "gpt-5.6-luna": "openai-responses",
+      "gpt-5.6-sol": "openai-responses",
+      "gpt-5.6-terra": "openai-responses",
+    },
     note: "Experimental unofficial Copilot bridge. Logs in via GitHub device flow using the public VS Code OAuth client id, then exchanges for a short-lived Copilot API token (copilot_internal). Requires an active Copilot subscription. GitHub may tighten or revoke this path; do not send confidential material you would not paste into Copilot Chat.",
   },
   // FREEZE 2026-07-10: no public OpenAI-compatible endpoint is documented. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
@@ -1571,6 +1742,17 @@ export function providerModelWireDefault(
   if (typeof declared !== "string" && !declared.inbound.includes(inbound)) return undefined;
   const wire = typeof declared === "string" ? declared : declared.wire;
   return wire !== undefined && allowedWires.has(wire) ? wire : undefined;
+}
+
+/** Resolve a registry-only upstream-streaming compatibility hint for WS turns. */
+export function providerModelWebsocketUpstreamStreaming(
+  id: string,
+  provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
+  modelId: string,
+): boolean | undefined {
+  const entry = getProviderRegistryEntry(id);
+  if (!entry?.modelWebsocketUpstreamStreaming || !providerMatchesRegistryTransport(id, provider)) return undefined;
+  return entry.modelWebsocketUpstreamStreaming[modelId.trim().toLowerCase()];
 }
 
 /**

@@ -259,6 +259,12 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(provider.responsesPath === undefined && registryEntry.responsesPath !== undefined
       ? { responsesPath: registryEntry.responsesPath }
       : {}),
+    ...(provider.supportsServiceTier === undefined && registryEntry.supportsServiceTier !== undefined
+      ? { supportsServiceTier: registryEntry.supportsServiceTier }
+      : {}),
+    ...(provider.preserveResponsesReasoningContent === undefined && registryEntry.preserveResponsesReasoningContent !== undefined
+      ? { preserveResponsesReasoningContent: registryEntry.preserveResponsesReasoningContent }
+      : {}),
     authMode: canonicalAuthMode,
     apiKey: resolvedApiKey,
     // Backfill the Google wire mode + Vertex project/location from the registry when the user
@@ -276,6 +282,9 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     // opt-in, while an explicit user `false` keeps overriding registry `true`.
     ...(provider.parallelToolCalls === undefined && registryEntry.parallelToolCalls !== undefined ? { parallelToolCalls: registryEntry.parallelToolCalls } : {}),
     ...(provider.promptCacheKey === undefined && registryEntry.promptCacheKey !== undefined ? { promptCacheKey: registryEntry.promptCacheKey } : {}),
+    ...(provider.reasoningWireFormat === undefined && registryEntry.reasoningWireFormat !== undefined
+      ? { reasoningWireFormat: registryEntry.reasoningWireFormat }
+      : {}),
     ...(provider.defaultMaxOutputTokens === undefined && registryEntry.defaultMaxOutputTokens !== undefined
       ? { defaultMaxOutputTokens: registryEntry.defaultMaxOutputTokens }
       : {}),
