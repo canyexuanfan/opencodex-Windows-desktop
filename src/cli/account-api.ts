@@ -28,6 +28,11 @@ export type ClassifyResult = { type: AccountType } | { error: string };
 
 export type AccountStdin = NodeJS.ReadableStream & { isTTY?: boolean };
 
+export interface NativeMainLoginChild {
+  exited: Promise<number>;
+  kill(signal?: number | NodeJS.Signals): void;
+}
+
 export interface AccountDeps {
   /** Test injection: skip findLiveProxy and call the API at this base URL. */
   baseUrl?: string;
@@ -36,7 +41,11 @@ export interface AccountDeps {
   stdinImpl?: AccountStdin;
   stdinTimeoutMs?: number;
   /** Test/platform injection for the official Codex login in a restricted staging home. */
+  spawnCodexLoginImpl?: (codexHome: string) => NativeMainLoginChild;
+  /** Legacy test seam. Production always uses the spawned child handle above. */
   runCodexLoginImpl?: (codexHome: string) => Promise<number>;
+  /** Test-only heartbeat cadence floor. Production keeps the five-second floor. */
+  stageHeartbeatIntervalMinMs?: number;
 }
 
 export function classifyAccount(config: OcxConfig, name: string): ClassifyResult {
@@ -70,6 +79,7 @@ export async function apiJson(
   method: "GET" | "PUT" | "POST" | "DELETE",
   path: string,
   body?: unknown,
+  options: { signal?: AbortSignal } = {},
 ): Promise<ApiResult> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   try {
@@ -77,6 +87,7 @@ export async function apiJson(
       method,
       headers: runningProxyUpdateHeaders(),
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: options.signal,
     });
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     return { status: res.status, json };

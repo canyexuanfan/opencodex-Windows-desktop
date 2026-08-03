@@ -105,7 +105,7 @@ async function fixture(phase: Phase, observation: Observation, activePool = fals
   const registered = await manager.register("source");
   const stage = await manager.prepareStage();
   writeFileSync(join(stage.stagingCodexHome, "auth.json"), target);
-  const added = await manager.finishStage(stage.stageId, "target");
+  const added = await manager.finishStage(stage.stageId, stage.writerToken, "target");
 
   const beforeVault = readNativeProfileVault(manager.context)!;
   const sourceRecord = beforeVault.profiles.find(profile => profile.id === registered.profile.id)!;

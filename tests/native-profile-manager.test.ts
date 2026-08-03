@@ -98,7 +98,7 @@ async function enrolledFixture() {
   const sourceProfile = await manager.register("personal");
   const stage = await manager.prepareStage();
   writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
-  const targetProfile = await manager.finishStage(stage.stageId, "work");
+  const targetProfile = await manager.finishStage(stage.stageId, stage.writerToken, "work");
   return { ...f, manager, sourceProfile: sourceProfile.profile, targetProfile: targetProfile.profile, stage };
 }
 
@@ -246,16 +246,16 @@ describe("native main profile transactions", () => {
 
     expect((await second.list()).profiles.map(profile => profile.label)).toEqual(["personal"]);
     let finishError: unknown;
-    try { await second.finishStage(stage.stageId, "work"); } catch (error) { finishError = error; }
+    try { await second.finishStage(stage.stageId, stage.writerToken, "work"); } catch (error) { finishError = error; }
     expect(finishError).toBeInstanceOf(NativeProfileError);
     expect((finishError as NativeProfileError).code).toBe("STAGING_NOT_FOUND");
     let cancelError: unknown;
-    try { await second.cancelStage(stage.stageId); } catch (error) { cancelError = error; }
+    try { await second.cancelStage(stage.stageId, stage.writerToken); } catch (error) { cancelError = error; }
     expect(cancelError).toBeInstanceOf(NativeProfileError);
     expect((cancelError as NativeProfileError).code).toBe("STAGING_NOT_FOUND");
     expect(existsSync(stage.stagingCodexHome)).toBe(true);
 
-    await first.finishStage(stage.stageId, "work");
+    await first.finishStage(stage.stageId, stage.writerToken, "work");
     expect((await second.list()).profiles.map(profile => profile.label).sort()).toEqual(["personal", "work"]);
   });
 
@@ -321,7 +321,7 @@ describe("native main profile transactions", () => {
     writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target, { mode: 0o600 });
     writeFileSync(join(stage.stagingCodexHome, "stage.json"), "{malformed\n", { mode: 0o600 });
 
-    await manager.cancelStage(stage.stageId);
+    await manager.cancelStage(stage.stageId, stage.writerToken);
 
     expect(existsSync(stage.stagingCodexHome)).toBe(false);
   });
@@ -337,7 +337,7 @@ describe("native main profile transactions", () => {
     writeFileSync(join(stage.stagingCodexHome, "stage.json"), "{malformed\n", { mode: 0o600 });
 
     let caught: unknown;
-    try { await manager.cancelStage(stage.stageId); } catch (error) { caught = error; }
+    try { await manager.cancelStage(stage.stageId, stage.writerToken); } catch (error) { caught = error; }
 
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).code).toBe("STAGING_CLEANUP_REQUIRED");
@@ -393,7 +393,7 @@ describe("native main profile transactions", () => {
     writeFileSync(join(stage.stagingCodexHome, "auth.json"), "{}\n");
 
     let caught: unknown;
-    try { await manager.finishStage(stage.stageId, "invalid"); } catch (error) { caught = error; }
+    try { await manager.finishStage(stage.stageId, stage.writerToken, "invalid"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).cleanupRequired).toBeUndefined();
     expect(existsSync(stage.stagingCodexHome)).toBe(false);
@@ -414,7 +414,7 @@ describe("native main profile transactions", () => {
     });
 
     let caught: unknown;
-    try { await failing.finishStage(stage.stageId, "work"); } catch (error) { caught = error; }
+    try { await failing.finishStage(stage.stageId, stage.writerToken, "work"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(Error);
     expect(existsSync(stage.stagingCodexHome)).toBe(false);
   });
@@ -441,7 +441,7 @@ describe("native main profile transactions", () => {
     try {
       const contender = new NativeProfileManager({ ...f.options, lockWaitMs: 0 });
       let caught: unknown;
-      try { await contender.finishStage(stage.stageId, "work"); } catch (error) { caught = error; }
+      try { await contender.finishStage(stage.stageId, stage.writerToken, "work"); } catch (error) { caught = error; }
       expect(caught).toBeInstanceOf(NativeProfileError);
       expect((caught as NativeProfileError).code).toBe("NATIVE_PROFILE_BUSY");
       expect(readFileSync(join(stage.stagingCodexHome, "auth.json"), "utf8")).toBe(f.target);
@@ -449,7 +449,7 @@ describe("native main profile transactions", () => {
       releaseLock();
       await holding;
     }
-    await manager.cancelStage(stage.stageId);
+    await manager.cancelStage(stage.stageId, stage.writerToken);
   });
 
   test("finish rejects a near-cap current source before importing an unusable target", async () => {
@@ -479,7 +479,7 @@ describe("native main profile transactions", () => {
     writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
 
     let caught: unknown;
-    try { await manager.finishStage(stage.stageId, "work"); } catch (error) { caught = error; }
+    try { await manager.finishStage(stage.stageId, stage.writerToken, "work"); } catch (error) { caught = error; }
 
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).code).toBe("PROFILE_METADATA_TOO_LARGE");
@@ -505,11 +505,11 @@ describe("native main profile transactions", () => {
     const personal = await manager.register("personal");
     const workStage = await manager.prepareStage();
     writeFileSync(join(workStage.stagingCodexHome, "auth.json"), f.target);
-    const work = await manager.finishStage(workStage.stageId, "work");
+    const work = await manager.finishStage(workStage.stageId, workStage.writerToken, "work");
     const thirdStage = await manager.prepareStage();
     const thirdAuth = envelope("account-third", "third");
     writeFileSync(join(thirdStage.stagingCodexHome, "auth.json"), thirdAuth);
-    const third = await manager.finishStage(thirdStage.stageId, "third");
+    const third = await manager.finishStage(thirdStage.stageId, thirdStage.writerToken, "third");
     const expected = new Map([
       ["personal", { id: personal.profile.id, auth: f.source }],
       ["work", { id: work.profile.id, auth: f.target }],
@@ -539,7 +539,7 @@ describe("native main profile transactions", () => {
     const cancelled = await manager.prepareStage();
     writeFileSync(join(cancelled.stagingCodexHome, "auth.json"), f.target);
     now += 31 * 60_000;
-    await manager.cancelStage(cancelled.stageId);
+    await manager.cancelStage(cancelled.stageId, cancelled.writerToken);
     expect(existsSync(cancelled.stagingCodexHome)).toBe(false);
 
     const stale = await manager.prepareStage();
@@ -548,15 +548,15 @@ describe("native main profile transactions", () => {
     const fresh = await manager.prepareStage();
     expect(existsSync(stale.stagingCodexHome)).toBe(false);
     expect(existsSync(fresh.stagingCodexHome)).toBe(true);
-    await manager.cancelStage(fresh.stageId);
+    await manager.cancelStage(fresh.stageId, fresh.writerToken);
 
     const expiredFinish = await manager.prepareStage();
     writeFileSync(join(expiredFinish.stagingCodexHome, "auth.json"), f.target);
     now += 31 * 60_000;
     let caught: unknown;
-    try { await manager.finishStage(expiredFinish.stageId, "expired"); } catch (error) { caught = error; }
+    try { await manager.finishStage(expiredFinish.stageId, expiredFinish.writerToken, "expired"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(NativeProfileError);
-    expect((caught as NativeProfileError).code).toBe("STAGING_NOT_FOUND");
+    expect((caught as NativeProfileError).code).toBe("STAGING_EXPIRED");
     expect(existsSync(expiredFinish.stagingCodexHome)).toBe(false);
   });
 
@@ -572,7 +572,7 @@ describe("native main profile transactions", () => {
     });
 
     let caught: unknown;
-    try { await failing.finishStage(stage.stageId, "work"); } catch (error) { caught = error; }
+    try { await failing.finishStage(stage.stageId, stage.writerToken, "work"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).code).toBe("STAGING_CLEANUP_REQUIRED");
     expect((caught as NativeProfileError).message).toContain("was imported");
@@ -582,7 +582,7 @@ describe("native main profile transactions", () => {
     expect(existsSync(stage.stagingCodexHome)).toBe(true);
     const authPath = join(stage.stagingCodexHome, "auth.json");
     expect(!existsSync(authPath) || readFileSync(authPath, "utf8") === "").toBe(true);
-    await manager.cancelStage(stage.stageId);
+    await manager.cancelStage(stage.stageId, stage.writerToken);
   });
 
   test("finish preserves the primary validation error when cleanup also fails", async () => {
@@ -596,7 +596,7 @@ describe("native main profile transactions", () => {
       removeStageTree: () => { throw new Error("injected cleanup failure"); },
     });
     let caught: unknown;
-    try { await failing.finishStage(stage.stageId, "invalid"); } catch (error) { caught = error; }
+    try { await failing.finishStage(stage.stageId, stage.writerToken, "invalid"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).code).toBe("AUTH_INVALID");
     expect((caught as NativeProfileError).status).toBe(409);
@@ -605,7 +605,7 @@ describe("native main profile transactions", () => {
     expect(existsSync(stage.stagingCodexHome)).toBe(true);
     const authPath = join(stage.stagingCodexHome, "auth.json");
     expect(!existsSync(authPath) || readFileSync(authPath, "utf8") === "").toBe(true);
-    await manager.cancelStage(stage.stageId);
+    await manager.cancelStage(stage.stageId, stage.writerToken);
   });
 
   test("doctor degrades for corrupt vaults and stale-stage cleanup failures", async () => {
@@ -634,7 +634,7 @@ describe("native main profile transactions", () => {
     });
     const authPath = join(stage.stagingCodexHome, "auth.json");
     expect(!existsSync(authPath) || readFileSync(authPath, "utf8") === "").toBe(true);
-    await manager.cancelStage(stage.stageId);
+    await manager.cancelStage(stage.stageId, stage.writerToken);
     writeFileSync(manager.context.vaultPath, "{invalid-json\n");
     expect(await manager.doctor()).toMatchObject({
       vaultStatus: "invalid",
@@ -660,7 +660,7 @@ describe("native main profile transactions", () => {
     const stage = await manager.prepareStage();
     writeFileSync(join(stage.stagingCodexHome, "auth.json"), f.target);
     let duplicate: unknown;
-    try { await manager.finishStage(stage.stageId, "개인 Café"); } catch (error) { duplicate = error; }
+    try { await manager.finishStage(stage.stageId, stage.writerToken, "개인 Café"); } catch (error) { duplicate = error; }
     expect(duplicate).toBeInstanceOf(NativeProfileError);
     expect((duplicate as NativeProfileError).code).toBe("PROFILE_ALREADY_EXISTS");
   });
@@ -672,14 +672,14 @@ describe("native main profile transactions", () => {
     for (let index = 1; index < 32; index += 1) {
       const stage = await manager.prepareStage();
       writeFileSync(join(stage.stagingCodexHome, "auth.json"), envelope("account-" + index, "profile-" + index));
-      await manager.finishStage(stage.stageId, "profile-" + index);
+      await manager.finishStage(stage.stageId, stage.writerToken, "profile-" + index);
     }
     expect((await manager.list()).profiles).toHaveLength(32);
     const vaultBefore = readFileSync(manager.context.vaultPath, "utf8");
     const overflow = await manager.prepareStage();
     writeFileSync(join(overflow.stagingCodexHome, "auth.json"), envelope("account-overflow", "overflow"));
     let caught: unknown;
-    try { await manager.finishStage(overflow.stageId, "overflow"); } catch (error) { caught = error; }
+    try { await manager.finishStage(overflow.stageId, overflow.writerToken, "overflow"); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).code).toBe("INVALID_REQUEST");
     expect(readFileSync(manager.context.vaultPath, "utf8")).toBe(vaultBefore);
@@ -696,7 +696,7 @@ describe("native main profile transactions", () => {
     large.padding = "x".repeat(Math.floor(MAX_NATIVE_PROFILE_METADATA_BYTES * 0.42));
     const largeTarget = JSON.stringify(large, null, 2) + "\n";
     writeFileSync(join(stage.stagingCodexHome, "auth.json"), largeTarget);
-    const work = await manager.finishStage(stage.stageId, "work");
+    const work = await manager.finishStage(stage.stageId, stage.writerToken, "work");
     const switched = await manager.switch("work", true);
     expect(readFileSync(manager.context.authPath, "utf8")).toBe(largeTarget);
     expect((switched.activeProfile as { id: string }).id).toBe(work.profile.id);
@@ -1011,7 +1011,7 @@ describe("native main profile transactions", () => {
     const journalBefore = readFileSync(f.manager.context.journalPath, "utf8");
 
     let caught: unknown;
-    try { await f.manager.finishStage(stage.stageId, "third"); } catch (error) { caught = error; }
+    try { await f.manager.finishStage(stage.stageId, stage.writerToken, "third"); } catch (error) { caught = error; }
 
     expect(caught).toBeInstanceOf(NativeProfileError);
     expect((caught as NativeProfileError).code).toBe("RECOVERY_REQUIRED");

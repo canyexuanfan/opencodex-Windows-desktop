@@ -186,7 +186,7 @@ describe("native main profile management API", () => {
     } as unknown as NativeProfileManager;
     const request = new Request("http://localhost/api/native-main-profiles/stage/finish", {
       method: "POST",
-      body: JSON.stringify({ stageId: "11111111-1111-4111-8111-111111111111", label: "work" }),
+      body: JSON.stringify({ stageId: "11111111-1111-4111-8111-111111111111", writerToken: "writer-token", label: "work" }),
     });
 
     const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, { manager });
@@ -201,12 +201,12 @@ describe("native main profile management API", () => {
     const message = "The staged native login is invalid.";
     const manager = {
       finishStage: async () => {
-        throw new NativeProfileError("AUTH_INVALID", message, 422, true, true);
+        throw new NativeProfileError("AUTH_INVALID", message, 422, true, true, true);
       },
     } as unknown as NativeProfileManager;
     const request = new Request("http://localhost/api/native-main-profiles/stage/finish", {
       method: "POST",
-      body: JSON.stringify({ stageId: "11111111-1111-4111-8111-111111111111", label: "work" }),
+      body: JSON.stringify({ stageId: "11111111-1111-4111-8111-111111111111", writerToken: "writer-token", label: "work" }),
     });
 
     const response = await handleNativeProfileAPI(request, new URL(request.url), {} as OcxConfig, { manager });
@@ -217,6 +217,7 @@ describe("native main profile management API", () => {
       code: "AUTH_INVALID",
       retryable: true,
       cleanupRequired: true,
+      plaintextMayRemain: true,
     });
   });
 

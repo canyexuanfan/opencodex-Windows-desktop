@@ -151,23 +151,43 @@ export async function handleNativeProfileAPI(
       ), 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/stage" && req.method === "POST") {
-      return jsonResponse(await withNativeMainApiOperation(manager, () => manager.prepareStage()), 200, req, config);
+      return jsonResponse(await withNativeMainApiOperation(
+        manager,
+        () => manager.prepareStage(),
+        { mode: "shared" },
+      ), 200, req, config);
     }
-    if (url.pathname === "/api/native-main-profiles/stage/finish" && req.method === "POST") {
+    if (url.pathname === "/api/native-main-profiles/stage/heartbeat" && req.method === "POST") {
       const input = await body(req);
-      if (typeof input.stageId !== "string" || typeof input.label !== "string") {
-        throw new NativeProfileError("INVALID_REQUEST", "A staging identifier and profile label are required.", 400);
+      if (typeof input.stageId !== "string" || typeof input.writerToken !== "string") {
+        throw new NativeProfileError("INVALID_REQUEST", "A staging identifier and writer token are required.", 400);
       }
       return jsonResponse(await withNativeMainApiOperation(
         manager,
-        () => manager.finishStage(input.stageId as string, input.label as string),
+        () => manager.heartbeatStage(input.stageId as string, input.writerToken as string),
+      ), 200, req, config);
+    }
+    if (url.pathname === "/api/native-main-profiles/stage/finish" && req.method === "POST") {
+      const input = await body(req);
+      if (typeof input.stageId !== "string" || typeof input.writerToken !== "string" || typeof input.label !== "string") {
+        throw new NativeProfileError("INVALID_REQUEST", "A staging identifier, writer token, and profile label are required.", 400);
+      }
+      return jsonResponse(await withNativeMainApiOperation(
+        manager,
+        () => manager.finishStage(input.stageId as string, input.writerToken as string, input.label as string),
+        { mode: "shared" },
       ), 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/stage/cancel" && req.method === "POST") {
       const input = await body(req);
-      if (typeof input.stageId !== "string") throw new NativeProfileError("INVALID_REQUEST", "A staging identifier is required.", 400);
-      await withNativeMainApiOperation(manager, () => manager.cancelStage(input.stageId as string));
-      return jsonResponse({ ok: true }, 200, req, config);
+      if (typeof input.stageId !== "string" || typeof input.writerToken !== "string") {
+        throw new NativeProfileError("INVALID_REQUEST", "A staging identifier and writer token are required.", 400);
+      }
+      const cleanup = await withNativeMainApiOperation(
+        manager,
+        () => manager.cancelStage(input.stageId as string, input.writerToken as string),
+      );
+      return jsonResponse({ ok: true, ...cleanup }, 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/switch" && req.method === "POST") {
       const input = await body(req);
@@ -212,6 +232,7 @@ export async function handleNativeProfileAPI(
         code: error.code,
         retryable: error.retryable,
         ...(error.cleanupRequired === true ? { cleanupRequired: true } : {}),
+        ...(typeof error.plaintextMayRemain === "boolean" ? { plaintextMayRemain: error.plaintextMayRemain } : {}),
       }, error.status, req, config);
     }
     return jsonResponse({ error: "Native-profile operation failed.", code: "INTERNAL_ERROR" }, 500, req, config);

@@ -14,13 +14,14 @@ import {
 } from "./native-main-owner";
 import { withNativeMainExclusiveClaim } from "./native-main-claim";
 import { scrubNativeMainAuthTempResidues } from "./native-main-auth-temp";
+import { NATIVE_STAGE_SWEEP_INTERVAL_MS } from "./native-profile-stage-store";
 
 export type NativeMainStartupGateSnapshot =
   | { status: "ready"; homeId: string | null }
   | {
       status: "blocked";
       homeId: string;
-      reason: "recovery-pending" | "manual-recovery" | "owner-conflict" | "owner-unavailable";
+      reason: "recovery-pending" | "manual-recovery" | "owner-conflict" | "owner-unavailable" | "stage-cleanup-required";
     };
 
 export interface NativeMainStartupGateDeps {
@@ -29,6 +30,7 @@ export interface NativeMainStartupGateDeps {
   beforeRecovery?: () => void | Promise<void>;
   probeRecoveryState?: typeof probeNativeProfileRecoveryState;
   owner?: NativeMainOwnerOptions;
+  stageSweepIntervalMs?: number;
 }
 
 export interface NativeMainStartupLifecycle {
@@ -51,6 +53,9 @@ interface StartupEntry {
   resolveAcquisition?: (value: NativeMainStartupGateSnapshot) => void;
   deps: NativeMainStartupGateDeps;
   manager: NativeProfileManager;
+  sweepTimer?: ReturnType<typeof setTimeout>;
+  sweepInFlight?: Promise<void>;
+  sweepStopping: boolean;
 }
 const startupEntries = new Map<string, StartupEntry>();
 const serverLifecycles = new WeakMap<object, NativeMainStartupLifecycle>();
@@ -123,6 +128,37 @@ function ownerBlockedReason(owner: NativeMainOwnerSnapshot): "owner-conflict" | 
   return owner.status === "unavailable" ? "owner-unavailable" : "owner-conflict";
 }
 
+async function runOwnedStageSweep(entry: StartupEntry): Promise<boolean> {
+  if (typeof (entry.manager as Partial<NativeProfileManager>).sweepStages !== "function") return true;
+  try {
+    const result = await withNativeMainOwnerOperation(entry.manager.context, () => entry.manager.sweepStages());
+    return !result.plaintextMayRemain;
+  } catch {
+    return false;
+  }
+}
+
+function scheduleStageSweep(entry: StartupEntry): void {
+  if (entry.sweepStopping || entry.sweepTimer || startupEntries.get(entry.homeId) !== entry) return;
+  const intervalMs = Math.max(10, entry.deps.stageSweepIntervalMs ?? NATIVE_STAGE_SWEEP_INTERVAL_MS);
+  entry.sweepTimer = setTimeout(() => {
+    entry.sweepTimer = undefined;
+    if (entry.sweepStopping || startupEntries.get(entry.homeId) !== entry) return;
+    entry.sweepInFlight = (async () => {
+      const safe = await runOwnedStageSweep(entry);
+      if (entry.sweepStopping || startupEntries.get(entry.homeId) !== entry) return;
+      if (!safe) snapshot = { status: "blocked", homeId: entry.homeId, reason: "stage-cleanup-required" };
+      else if (snapshot.homeId === entry.homeId && snapshot.status === "blocked" && snapshot.reason === "stage-cleanup-required") {
+        snapshot = ready(entry.homeId);
+      }
+    })().finally(() => {
+      entry.sweepInFlight = undefined;
+      scheduleStageSweep(entry);
+    });
+  }, intervalMs);
+  entry.sweepTimer.unref?.();
+}
+
 function convergeOwnedStartup(entry: StartupEntry): void {
   if (entry.recoveryStarted) return;
   entry.recoveryStarted = true;
@@ -147,9 +183,12 @@ function convergeOwnedStartup(entry: StartupEntry): void {
         },
         { waitMs: 10_000 },
       ));
-      if (startupEntries.get(entry.homeId) === entry && entry.epoch === currentEpoch && recoveryState === "none") {
+      const stageSweepSafe = recoveryState === "none" ? await runOwnedStageSweep(entry) : false;
+      if (startupEntries.get(entry.homeId) === entry && entry.epoch === currentEpoch && recoveryState === "none" && stageSweepSafe) {
         clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
         snapshot = ready(entry.homeId);
+      } else if (startupEntries.get(entry.homeId) === entry && entry.epoch === currentEpoch && recoveryState === "none") {
+        snapshot = { status: "blocked", homeId: entry.homeId, reason: "stage-cleanup-required" };
       } else if (startupEntries.get(entry.homeId) === entry && entry.epoch === currentEpoch) {
         snapshot = { status: "blocked", homeId: entry.homeId, reason: "manual-recovery" };
       }
@@ -158,6 +197,7 @@ function convergeOwnedStartup(entry: StartupEntry): void {
         snapshot = { status: "blocked", homeId: entry.homeId, reason: "manual-recovery" };
       }
     }
+    if (startupEntries.get(entry.homeId) === entry && entry.epoch === currentEpoch) scheduleStageSweep(entry);
     return snapshot;
   })();
   if (acquisitionWaiter) void entry.settled.then(acquisitionWaiter);
@@ -214,6 +254,7 @@ export function startNativeMainStartupLifecycle(
       resolveAcquisition,
       deps,
       manager,
+      sweepStopping: false,
     };
     startupEntries.set(homeId, entry);
     entry.unsubscribe = owner.subscribe(ownerState => observeOwner(entry!, ownerState));
@@ -229,6 +270,10 @@ export function startNativeMainStartupLifecycle(
       entry!.refs = Math.max(0, entry!.refs - 1);
       if (entry!.refs !== 0) return;
       entry!.epoch += 1;
+      entry!.sweepStopping = true;
+      if (entry!.sweepTimer) clearTimeout(entry!.sweepTimer);
+      entry!.sweepTimer = undefined;
+      if (entry!.sweepInFlight) await Promise.allSettled([entry!.sweepInFlight]);
       entry!.unsubscribe();
       startupEntries.delete(homeId);
       entry!.resolveAcquisition?.(snapshot);

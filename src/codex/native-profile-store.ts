@@ -62,6 +62,7 @@ export interface NativeProfileContext {
   vaultPath: string;
   journalPath: string;
   recoveryBlockPath: string;
+  stageRegistryPath: string;
   lockPath: string;
 }
 
@@ -370,6 +371,7 @@ export function resolveNativeProfileContext(options: { codexHome?: string; confi
     vaultPath: join(rootDir, `${homeId}.vault.json`),
     journalPath: join(rootDir, `${homeId}.journal.json`),
     recoveryBlockPath: join(rootDir, `${homeId}.recovery-block.json`),
+    stageRegistryPath: join(rootDir, `${homeId}.stages.json`),
     lockPath: join(codexHome, ".opencodex-native-profile.lock.sqlite"),
   };
 }

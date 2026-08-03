@@ -25,6 +25,8 @@ export type NativeProfileErrorCode =
   | "AUTH_RESTORE_FAILED"
   | "SWITCH_ROLLED_BACK"
   | "STAGING_NOT_FOUND"
+  | "STAGING_EXPIRED"
+  | "STAGING_TERMINAL"
   | "STAGING_CLEANUP_REQUIRED"
   | "PROFILE_METADATA_TOO_LARGE"
   | "PROFILE_STORAGE_UNSAFE"
@@ -39,6 +41,7 @@ export class NativeProfileError extends Error {
     readonly status = 409,
     readonly retryable = false,
     readonly cleanupRequired?: true,
+    readonly plaintextMayRemain?: boolean,
   ) {
     super(message);
     this.name = "NativeProfileError";

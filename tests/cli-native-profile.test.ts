@@ -114,7 +114,7 @@ describe("ocx account main", () => {
         return Response.json({ effectiveCodexHome: effectiveHome, profile: { id: "p1", label: "personal", identityHint: "account-87654321", state: "active" } });
       }
       if (url.pathname.endsWith("/stage") && !url.pathname.endsWith("/finish")) {
-        return Response.json({ stageId: "11111111-1111-4111-8111-111111111111", stagingCodexHome: stagingHome, effectiveCodexHome: effectiveHome });
+        return Response.json({ stageId: "11111111-1111-4111-8111-111111111111", writerToken: "writer-token-11111111111111111111111111111111", stagingCodexHome: stagingHome, effectiveCodexHome: effectiveHome, leaseExpiresAt: Date.now() + 30 * 60_000, heartbeatIntervalMs: 5_000 });
       }
       if (url.pathname.endsWith("/stage/finish")) {
         return Response.json({ effectiveCodexHome: effectiveHome, profile: { id: "p2", label: "work", identityHint: "account-12345678", state: "inactive" } });
@@ -138,6 +138,7 @@ describe("ocx account main", () => {
     expect(loginHome).toBe(stagingHome);
     expect(requests.find(request => request.path.endsWith("/stage/finish"))?.body).toEqual({
       stageId: "11111111-1111-4111-8111-111111111111",
+      writerToken: "writer-token-11111111111111111111111111111111",
       label: "work",
     });
     expect(JSON.stringify(requests)).not.toContain("access_token");
@@ -203,7 +204,7 @@ describe("ocx account main", () => {
       const path = new URL(String(input)).pathname;
       requests.push(path);
       if (path.endsWith("/stage") && !path.endsWith("/finish")) {
-        return Response.json({ stageId: "22222222-2222-4222-8222-222222222222", stagingCodexHome: stagingHome });
+        return Response.json({ stageId: "22222222-2222-4222-8222-222222222222", writerToken: "writer-token-22222222222222222222222222222222", stagingCodexHome: stagingHome, leaseExpiresAt: Date.now() + 30 * 60_000, heartbeatIntervalMs: 5_000 });
       }
       if (path.endsWith("/stage/finish")) {
         return Response.json({ error: "validation failed", code: "AUTH_INVALID" }, { status: 409 });
@@ -218,6 +219,7 @@ describe("ocx account main", () => {
     })).toBe(1);
     expect(requests).toEqual([
       "/api/native-main-profiles/stage",
+      "/api/native-main-profiles/stage/heartbeat",
       "/api/native-main-profiles/stage/finish",
       "/api/native-main-profiles/stage/cancel",
     ]);
@@ -232,7 +234,7 @@ describe("ocx account main", () => {
       const path = new URL(String(input)).pathname;
       requests.push(path);
       if (path.endsWith("/stage") && !path.endsWith("/finish")) {
-        return Response.json({ stageId: "44444444-4444-4444-8444-444444444444", stagingCodexHome: stagingHome });
+        return Response.json({ stageId: "44444444-4444-4444-8444-444444444444", writerToken: "writer-token-44444444444444444444444444444444", stagingCodexHome: stagingHome, leaseExpiresAt: Date.now() + 30 * 60_000, heartbeatIntervalMs: 5_000 });
       }
       if (path.endsWith("/stage/finish")) throw new TypeError("connection closed before response");
       return Response.json({ ok: true });
@@ -245,6 +247,7 @@ describe("ocx account main", () => {
     })).toBe(1);
     expect(requests).toEqual([
       "/api/native-main-profiles/stage",
+      "/api/native-main-profiles/stage/heartbeat",
       "/api/native-main-profiles/stage/finish",
       "/api/native-main-profiles/stage/cancel",
     ]);
@@ -260,7 +263,7 @@ describe("ocx account main", () => {
       const path = new URL(String(input)).pathname;
       requests.push(path);
       if (path.endsWith("/stage") && !path.endsWith("/finish")) {
-        return Response.json({ stageId: "33333333-3333-4333-8333-333333333333", stagingCodexHome: stagingHome, effectiveCodexHome: effectiveHome });
+        return Response.json({ stageId: "33333333-3333-4333-8333-333333333333", writerToken: "writer-token-33333333333333333333333333333333", stagingCodexHome: stagingHome, effectiveCodexHome: effectiveHome, leaseExpiresAt: Date.now() + 30 * 60_000, heartbeatIntervalMs: 5_000 });
       }
       return Response.json({ ok: true });
     };
@@ -272,8 +275,57 @@ describe("ocx account main", () => {
     })).toBe(1);
     expect(requests).toEqual([
       "/api/native-main-profiles/stage",
+      "/api/native-main-profiles/stage/heartbeat",
       "/api/native-main-profiles/stage/cancel",
     ]);
     expect(errors).toContain(`Effective CODEX_HOME: ${effectiveHome}`);
+  });
+
+  test("heartbeats only while the configured Codex login child is alive", async () => {
+    const stagingHome = join(tmpdir(), "ocx-native-profile-stage-heartbeat-child");
+    const writerToken = "writer-token-child-lifetime-111111111111111111111111";
+    const requests: Array<{ path: string; body?: Record<string, unknown> }> = [];
+    let resolveExit!: (code: number) => void;
+    const exited = new Promise<number>(resolve => { resolveExit = resolve; });
+    let resolveTwoHeartbeats!: () => void;
+    const twoHeartbeats = new Promise<void>(resolve => { resolveTwoHeartbeats = resolve; });
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined;
+      requests.push({ path, body });
+      if (path.endsWith("/stage") && !path.endsWith("/finish")) {
+        return Response.json({
+          stageId: "55555555-5555-4555-8555-555555555555",
+          writerToken,
+          stagingCodexHome: stagingHome,
+          leaseExpiresAt: Date.now() + 30 * 60_000,
+          heartbeatIntervalMs: 10,
+        });
+      }
+      if (path.endsWith("/stage/heartbeat")) {
+        if (requests.filter(request => request.path.endsWith("/stage/heartbeat")).length >= 2) resolveTwoHeartbeats();
+        return Response.json({ ok: true, leaseExpiresAt: Date.now() + 30 * 60_000 });
+      }
+      if (path.endsWith("/stage/finish")) return Response.json({ effectiveCodexHome: "test-home", profile: {}, plaintextMayRemain: false });
+      return Response.json({ ok: true, removed: true, plaintextMayRemain: false });
+    };
+
+    const running = cmdAccount(["main", "add", "work"], {
+      baseUrl: "http://127.0.0.1:10100",
+      fetchImpl,
+      stageHeartbeatIntervalMinMs: 10,
+      spawnCodexLoginImpl: () => ({ exited, kill: () => {} }),
+    });
+    await twoHeartbeats;
+    resolveExit(0);
+    expect(await running).toBe(0);
+    const heartbeatCount = requests.filter(request => request.path.endsWith("/stage/heartbeat")).length;
+    await Bun.sleep(35);
+    expect(requests.filter(request => request.path.endsWith("/stage/heartbeat"))).toHaveLength(heartbeatCount);
+    expect(requests.find(request => request.path.endsWith("/stage/finish"))?.body).toEqual({
+      stageId: "55555555-5555-4555-8555-555555555555",
+      writerToken,
+      label: "work",
+    });
   });
 });

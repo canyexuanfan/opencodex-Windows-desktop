@@ -28,8 +28,9 @@ const operations: readonly NativeOperation[] = [
   { name: "doctor", path: "/api/native-main-profiles/doctor", method: "GET" },
   { name: "register", path: "/api/native-main-profiles/register", method: "POST", body: { label: "Test profile" } },
   { name: "stage", path: "/api/native-main-profiles/stage", method: "POST" },
-  { name: "stage finish", path: "/api/native-main-profiles/stage/finish", method: "POST", body: { stageId: "stage-1", label: "Test profile" } },
-  { name: "stage cancel", path: "/api/native-main-profiles/stage/cancel", method: "POST", body: { stageId: "stage-1" } },
+  { name: "stage heartbeat", path: "/api/native-main-profiles/stage/heartbeat", method: "POST", body: { stageId: "stage-1", writerToken: "writer-token" } },
+  { name: "stage finish", path: "/api/native-main-profiles/stage/finish", method: "POST", body: { stageId: "stage-1", writerToken: "writer-token", label: "Test profile" } },
+  { name: "stage cancel", path: "/api/native-main-profiles/stage/cancel", method: "POST", body: { stageId: "stage-1", writerToken: "writer-token" } },
   { name: "switch", path: "/api/native-main-profiles/switch", method: "POST", body: { target: "profile-1", confirmedStopped: true } },
   { name: "recover", path: "/api/native-main-profiles/recover", method: "POST", body: { rollback: true, confirmedStopped: true } },
 ];
@@ -59,8 +60,9 @@ function testManager(calls: string[]): NativeProfileManager {
     doctor: async () => dispatched("doctor"),
     register: async () => dispatched("register"),
     prepareStage: async () => dispatched("stage"),
+    heartbeatStage: async () => dispatched("stage heartbeat"),
     finishStage: async () => dispatched("stage finish"),
-    cancelStage: async () => { dispatched("stage cancel"); },
+    cancelStage: async () => { dispatched("stage cancel"); return { removed: true, plaintextMayRemain: false }; },
     switch: async () => dispatched("switch"),
     recover: async () => dispatched("recover"),
   } as unknown as NativeProfileManager;

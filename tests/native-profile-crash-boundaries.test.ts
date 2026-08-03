@@ -58,7 +58,7 @@ async function fixture() {
   const sourceProfile = (await manager.register("source")).profile;
   const stage = await manager.prepareStage();
   writeFileSync(join(stage.stagingCodexHome, "auth.json"), target);
-  const targetProfile = (await manager.finishStage(stage.stageId, "target")).profile;
+  const targetProfile = (await manager.finishStage(stage.stageId, stage.writerToken, "target")).profile;
   const initialRevision = readNativeProfileVault(manager.context)!.revision;
 
   process.env.OPENCODEX_HOME = configDir;

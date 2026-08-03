@@ -2,7 +2,14 @@ import { isAbsolute } from "node:path";
 import { codexExecInvocation } from "../codex/exec-invocation";
 import { resolveAndPersistCodexRuntime, type ResolveCodexRuntimeDeps } from "../codex/runtime";
 import type { ResolveDeps, SpawnInvocation } from "../lib/win-exec";
-import { apiError, apiJson, proxyUnreachable, resolveBaseUrl, type AccountDeps } from "./account-api";
+import {
+  apiError,
+  apiJson,
+  proxyUnreachable,
+  resolveBaseUrl,
+  type AccountDeps,
+  type NativeMainLoginChild,
+} from "./account-api";
 
 const USAGE = `Usage:
   ocx account main doctor [--json]
@@ -70,7 +77,7 @@ export function nativeMainCodexLoginInvocation(
   return codexExecInvocation(command, ["login"], platform, deps);
 }
 
-async function runOfficialCodexLogin(codexHome: string): Promise<number> {
+function spawnOfficialCodexLogin(codexHome: string): NativeMainLoginChild {
   const invocation = nativeMainCodexLoginInvocation();
   const child = Bun.spawn([invocation.file, ...invocation.args], {
     env: { ...process.env, CODEX_HOME: codexHome },
@@ -79,7 +86,57 @@ async function runOfficialCodexLogin(codexHome: string): Promise<number> {
     stderr: "inherit",
     ...(invocation.options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
-  return child.exited;
+  return child;
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise(resolve => {
+    const timer = setTimeout(done, ms);
+    timer.unref?.();
+    signal.addEventListener("abort", done, { once: true });
+    function done(): void {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+  });
+}
+
+async function maintainStageLease(
+  deps: AccountDeps,
+  baseUrl: string,
+  stageId: string,
+  writerToken: string,
+  initialLeaseExpiresAt: number,
+  heartbeatIntervalMs: number,
+  child: NativeMainLoginChild,
+  signal: AbortSignal,
+): Promise<{ lost: boolean }> {
+  let leaseExpiresAt = initialLeaseExpiresAt;
+  for (;;) {
+    if (signal.aborted) return { lost: false };
+    const heartbeat = await apiJson(
+      deps,
+      baseUrl,
+      "POST",
+      "/api/native-main-profiles/stage/heartbeat",
+      { stageId, writerToken },
+      { signal },
+    );
+    if (signal.aborted) return { lost: false };
+    if (heartbeat.status === 200 && typeof heartbeat.json.leaseExpiresAt === "number") {
+      leaseExpiresAt = heartbeat.json.leaseExpiresAt;
+      await abortableDelay(heartbeatIntervalMs, signal);
+      continue;
+    }
+    if (heartbeat.status === 0 && Date.now() < leaseExpiresAt - 30_000) {
+      await abortableDelay(Math.min(5_000, heartbeatIntervalMs), signal);
+      continue;
+    }
+    try { child.kill(); } catch { /* child exit below is authoritative */ }
+    return { lost: true };
+  }
 }
 
 export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): Promise<number> {
@@ -119,17 +176,47 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     if (stage.status === 0) return proxyUnreachable();
     if (stage.status !== 200) return apiError(stage.json, "failed to prepare native login staging");
     const stageId = typeof stage.json.stageId === "string" ? stage.json.stageId : "";
+    const writerToken = typeof stage.json.writerToken === "string" ? stage.json.writerToken : "";
     const stagingHome = typeof stage.json.stagingCodexHome === "string" ? stage.json.stagingCodexHome : "";
+    const leaseExpiresAt = typeof stage.json.leaseExpiresAt === "number" ? stage.json.leaseExpiresAt : 0;
+    const heartbeatIntervalMs = typeof stage.json.heartbeatIntervalMs === "number"
+      ? Math.min(5 * 60_000, Math.max(deps.stageHeartbeatIntervalMinMs ?? 5_000, stage.json.heartbeatIntervalMs))
+      : 60_000;
     const stagedEffectiveHome = effectiveCodexHome(stage.json);
     let exitCode = 1;
     let finished = false;
+    let leaseLost = false;
     try {
-      if (!stageId || !isAbsolute(stagingHome)) throw new Error("The proxy returned an invalid staging session.");
+      if (!stageId || !writerToken || !isAbsolute(stagingHome) || leaseExpiresAt <= Date.now()) {
+        throw new Error("The proxy returned an invalid staging session.");
+      }
       console.error(`Effective CODEX_HOME: ${stagedEffectiveHome}`);
       console.error(`Starting official Codex login in restricted staging home: ${stagingHome}`);
-      exitCode = await (deps.runCodexLoginImpl ?? runOfficialCodexLogin)(stagingHome);
+      const child = deps.spawnCodexLoginImpl
+        ? deps.spawnCodexLoginImpl(stagingHome)
+        : deps.runCodexLoginImpl
+          ? { exited: deps.runCodexLoginImpl(stagingHome), kill: () => {} }
+          : spawnOfficialCodexLogin(stagingHome);
+      const heartbeatAbort = new AbortController();
+      const heartbeat = maintainStageLease(
+        deps,
+        baseUrl,
+        stageId,
+        writerToken,
+        leaseExpiresAt,
+        heartbeatIntervalMs,
+        child,
+        heartbeatAbort.signal,
+      );
+      try {
+        exitCode = await child.exited;
+      } finally {
+        heartbeatAbort.abort();
+        leaseLost = (await heartbeat).lost;
+      }
+      if (leaseLost) throw new Error("The native-login staging lease was lost before login completed.");
       if (exitCode !== 0) throw new Error("Official Codex login did not complete successfully.");
-      const finish = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage/finish", { stageId, label });
+      const finish = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage/finish", { stageId, writerToken, label });
       if (finish.status === 0) return proxyUnreachable();
       if (finish.status !== 200) return apiError(finish.json, "failed to encrypt the staged native login");
       finished = true;
@@ -140,8 +227,10 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
       return exitCode === 0 ? 1 : exitCode;
     } finally {
       if (stageId && !finished) {
-        const cleanup = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage/cancel", { stageId });
-        if (cleanup.status !== 200) console.error("Error: the proxy could not confirm native-login staging cleanup; run account main doctor.");
+        const cleanup = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage/cancel", { stageId, writerToken });
+        if (cleanup.status !== 200 || cleanup.json.plaintextMayRemain === true) {
+          console.error("Error: the proxy could not confirm native-login staging cleanup; run account main doctor.");
+        }
       }
     }
   }

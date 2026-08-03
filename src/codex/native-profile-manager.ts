@@ -61,9 +61,15 @@ import {
   type NativeProfilePublic,
   type NativeProfileSwitchJournalV1,
 } from "./native-profile-types";
+import {
+  NATIVE_STAGE_HEARTBEAT_INTERVAL_MS,
+  NativeProfileStageStore,
+  type NativeStageProof,
+  type NativeStageTerminalOutcome,
+} from "./native-profile-stage-store";
 
 const LOCK_WAIT_MS = 5_000;
-const STAGE_MAX_AGE_MS = 30 * 60_000;
+const LEGACY_STAGE_MAX_AGE_MS = 30 * 60_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface PathIdentity {
@@ -97,6 +103,7 @@ export interface NativeProfileManagerOptions {
   lockWaitMs?: number;
   onLockAcquired?: () => void | Promise<void>;
   removeStageTree?: (path: string) => void;
+  stageLeaseMs?: number;
   /** Test-only crash seam; production never supplies this callback. */
   onSwitchBoundary?: (boundary: NativeProfileSwitchBoundary) => void | Promise<void>;
   /** Test-only reader seams; production uses the native profile store directly. */
@@ -109,6 +116,18 @@ export interface NativeProfileListResult {
   effectiveCodexHome: string;
   activeProfileId: string | null;
   profiles: NativeProfilePublic[];
+}
+
+export interface NativeStageCleanupResult {
+  removed: boolean;
+  plaintextMayRemain: boolean;
+}
+
+export interface NativeStageSweepResult {
+  removed: number;
+  live: number;
+  cleanupFailed: number;
+  plaintextMayRemain: boolean;
 }
 
 async function hardenNativeProfilePath(path: string): Promise<void> {
@@ -179,6 +198,7 @@ export class NativeProfileManager {
   private readonly readEnvelope: EnvelopeReader;
   private readonly readVault: VaultReader;
   private readonly readEnvelopeResult: EnvelopeResultReader;
+  private readonly stageStore: NativeProfileStageStore;
   private activeRootIdentity: PathIdentity | null = null;
   private activeLockIdentity: PathIdentity | null = null;
 
@@ -199,6 +219,14 @@ export class NativeProfileManager {
     this.readEnvelope = options.readEnvelope ?? readNativeEnvelope;
     this.readVault = options.readVault ?? (() => readNativeProfileVault(this.context));
     this.readEnvelopeResult = options.readEnvelopeResult ?? readNativeEnvelopeResult;
+    this.stageStore = new NativeProfileStageStore({
+      context: this.context,
+      now: this.now,
+      randomUUID: this.uuid,
+      atomicWrite: this.atomicWrite,
+      hardenPath: this.hardenPath,
+      leaseMs: options.stageLeaseMs,
+    });
   }
 
   private async ensureRoot(): Promise<PathIdentity> {
@@ -540,7 +568,8 @@ export class NativeProfileManager {
     return this.withLock(async () => {
     let stagingSweep: "ok" | "cleanup-required" | "unreadable" = "ok";
     try {
-      this.sweepStaleStages();
+      const sweep = await this.sweepStagesLocked();
+      if (sweep.cleanupFailed > 0) stagingSweep = "cleanup-required";
     } catch (error) {
       stagingSweep = error instanceof NativeProfileError && error.code === "STAGING_CLEANUP_REQUIRED"
         ? "cleanup-required"
@@ -569,9 +598,8 @@ export class NativeProfileManager {
       }
       let stagingCount: number | null = 0;
       try {
-        if (existsSync(this.context.stagingRoot)) {
-          stagingCount = Array.from(new Bun.Glob("*").scanSync({ cwd: this.context.stagingRoot, onlyFiles: false })).length;
-        }
+        stagingCount = this.stageStore.records().length;
+        if (existsSync(this.context.stagingRoot)) stagingCount += Array.from(new Bun.Glob("*").scanSync({ cwd: this.context.stagingRoot, onlyFiles: false })).filter(name => !UUID_RE.test(name) || !this.stageStore.recordForStage(name)).length;
       } catch {
         stagingSweep = "unreadable";
         stagingCount = null;
@@ -639,33 +667,6 @@ export class NativeProfileManager {
     this.assertStagingLayout(true);
   }
 
-  private verifiedStagePath(stageId: string, requireFresh = true): { path: string; identity: PathIdentity } {
-    this.assertStagingLayout(true);
-    const expected = resolve(this.stagePath(stageId));
-    try {
-      const entry = lstatSync(expected);
-      if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("stage type");
-      const identity = pathIdentity(expected);
-      const canonicalRoot = resolve(realpathSync.native(this.context.stagingRoot));
-      const canonicalExpected = resolve(realpathSync.native(expected));
-      const rel = relative(canonicalRoot, canonicalExpected);
-      if (!rel || rel.startsWith("..") || rel.includes(sep)) throw new Error("stage root");
-      const metadata = JSON.parse(readFileSync(join(canonicalExpected, "stage.json"), "utf8")) as Record<string, unknown>;
-      if (
-        metadata.version !== 1
-        || metadata.stageId !== stageId
-        || metadata.homeId !== this.context.homeId
-        || metadata.instanceId !== this.context.instanceId
-      ) throw new Error("stage metadata");
-      if (typeof metadata.createdAt !== "number") throw new Error("stage age");
-      if (requireFresh && this.now() - metadata.createdAt > STAGE_MAX_AGE_MS) throw new Error("stage age");
-      assertPathIdentity(canonicalExpected, identity, "The native-login staging directory");
-      return { path: canonicalExpected, identity };
-    } catch {
-      throw new NativeProfileError("STAGING_NOT_FOUND", "The native-login staging session is missing, expired, or invalid.", 404);
-    }
-  }
-
   private deleteStage(path: string, identity?: PathIdentity): void {
     if (identity) assertPathIdentity(path, identity, "The native-login staging directory");
     const authPath = join(path, "auth.json");
@@ -690,6 +691,7 @@ export class NativeProfileManager {
         500,
         false,
         true,
+        true,
       );
       unlinkSync(authPath);
       const unlinked = fstatSync(authFd, { bigint: true });
@@ -699,6 +701,7 @@ export class NativeProfileManager {
           "The staged credential file could not be exclusively unlinked; plaintext may remain and requires manual cleanup.",
           500,
           false,
+          true,
           true,
         );
       }
@@ -712,6 +715,7 @@ export class NativeProfileManager {
           500,
           false,
           true,
+          true,
         );
       }
     } finally {
@@ -721,7 +725,7 @@ export class NativeProfileManager {
     this.removeStageTree(path);
   }
 
-  private deleteStageById(stageId: string, requirePresent = false): void {
+  private deleteLegacyStageById(stageId: string, requirePresent = false): void {
     this.assertStagingLayout(true);
     const expected = resolve(this.stagePath(stageId));
     let stageStat: ReturnType<typeof lstatSync>;
@@ -733,91 +737,236 @@ export class NativeProfileManager {
       throw error;
     }
     if (stageStat.isSymbolicLink() || !stageStat.isDirectory()) {
-      unlinkSync(expected);
-      return;
+      throw new NativeProfileError(
+        "PROFILE_STORAGE_UNSAFE",
+        "The native-login staging path is not a private directory.",
+        409,
+        false,
+        true,
+        true,
+      );
     }
     const canonicalRoot = resolve(realpathSync.native(this.context.stagingRoot));
     const canonicalExpected = resolve(realpathSync.native(expected));
     const rel = relative(canonicalRoot, canonicalExpected);
     if (!rel || rel.startsWith("..") || rel.includes(sep)) {
-      throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "The staging path could not be safely removed.", 500);
+      throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "The staging path could not be safely removed.", 500, false, true, true);
     }
     this.deleteStage(canonicalExpected, pathIdentity(canonicalExpected));
   }
 
-  private sweepStaleStages(): number {
-    if (!existsSync(this.context.stagingRoot)) return 0;
-    this.assertStagingLayout(true);
-    let removed = 0;
-    for (const name of readdirSync(this.context.stagingRoot)) {
-      if (!UUID_RE.test(name)) continue;
-      const path = this.stagePath(name);
-      let createdAt: number;
+  private async cleanupRegisteredStage(
+    proof: NativeStageProof,
+    outcome: Exclude<NativeStageTerminalOutcome, null>,
+  ): Promise<NativeStageCleanupResult> {
+    let stageRemoved = false;
+    let plaintextMayRemain = true;
+    try {
+      this.deleteStage(proof.path, proof.identity);
+      stageRemoved = true;
+      plaintextMayRemain = false;
+    } catch (error) {
+      plaintextMayRemain = error instanceof NativeProfileError
+        ? error.plaintextMayRemain !== false
+        : false;
+    }
+    if (stageRemoved) {
       try {
-        const stageStat = lstatSync(path);
-        createdAt = stageStat.mtimeMs;
-        if (stageStat.isDirectory() && !stageStat.isSymbolicLink()) {
-          try {
-            const metadata = JSON.parse(readFileSync(join(path, "stage.json"), "utf8")) as Record<string, unknown>;
-            if (
-              metadata.version === 1
-              && metadata.stageId === name
-              && metadata.homeId === this.context.homeId
-              && metadata.instanceId === this.context.instanceId
-              && typeof metadata.createdAt === "number"
-            ) {
-              createdAt = metadata.createdAt;
-            }
-          } catch { /* mtime bounds malformed crash residue */ }
-        }
-      } catch (error) {
-        if (errorCode(error) === "ENOENT") continue;
-        throw error;
-      }
-      if (this.now() - createdAt <= STAGE_MAX_AGE_MS) continue;
-      try {
-        this.deleteStageById(name);
-        removed += 1;
+        await this.stageStore.remove(proof);
+        return { removed: true, plaintextMayRemain: false };
       } catch {
-        throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "An expired native-login staging session could not be securely removed.", 500);
+        try { await this.stageStore.markCleanupRequired(proof, outcome); } catch { /* the cleanup result remains authoritative */ }
+        return { removed: false, plaintextMayRemain: false };
       }
     }
-    return removed;
+    try { await this.stageStore.markCleanupRequired(proof, outcome); } catch { /* preserve the plaintext signal */ }
+    return { removed: false, plaintextMayRemain };
   }
 
-  async prepareStage(): Promise<{ stageId: string; stagingCodexHome: string; effectiveCodexHome: string }> {
+  private async sweepStagesLocked(): Promise<NativeStageSweepResult> {
+    let removed = 0;
+    let live = 0;
+    let cleanupFailed = 0;
+    let plaintextMayRemain = false;
+    const records = this.stageStore.records();
+    const registeredHere = new Set(
+      records
+        .filter(record => samePath(record.stagingRoot, this.context.stagingRoot))
+        .map(record => record.stageId),
+    );
+
+    for (const record of records) {
+      if (record.state === "open" && this.now() <= record.leaseExpiresAt) {
+        live += 1;
+        continue;
+      }
+      const outcome = record.terminalOutcome
+        ?? (record.state === "creating" ? "cancelled" : "expired");
+      let proof: NativeStageProof | null;
+      try {
+        proof = this.stageStore.proofForRecord(record, record.state === "creating");
+      } catch {
+        cleanupFailed += 1;
+        plaintextMayRemain = true;
+        try {
+          await this.stageStore.markCleanupRequired({ record }, outcome);
+        } catch { /* fail closed and report the unresolved plaintext boundary */ }
+        continue;
+      }
+      if (!proof) {
+        try {
+          await this.stageStore.remove({ record });
+          removed += 1;
+        } catch {
+          cleanupFailed += 1;
+        }
+        continue;
+      }
+      const cleanup = await this.cleanupRegisteredStage(proof, outcome);
+      if (cleanup.removed) removed += 1;
+      else cleanupFailed += 1;
+      plaintextMayRemain ||= cleanup.plaintextMayRemain;
+    }
+
+    if (existsSync(this.context.stagingRoot)) {
+      this.assertStagingLayout(true);
+      for (const name of readdirSync(this.context.stagingRoot)) {
+        if (!UUID_RE.test(name) || registeredHere.has(name)) continue;
+        const path = this.stagePath(name);
+        let createdAt: number;
+        try {
+          const entry = lstatSync(path);
+          if (!entry.isDirectory() || entry.isSymbolicLink()) {
+            cleanupFailed += 1;
+            plaintextMayRemain = true;
+            continue;
+          }
+          createdAt = entry.mtimeMs;
+          try {
+            const metadata = JSON.parse(readFileSync(join(path, "stage.json"), "utf8")) as Record<string, unknown>;
+            if (typeof metadata.createdAt === "number") createdAt = metadata.createdAt;
+          } catch { /* mtime bounds legacy crash residue */ }
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") continue;
+          cleanupFailed += 1;
+          plaintextMayRemain = true;
+          continue;
+        }
+        if (this.now() - createdAt <= LEGACY_STAGE_MAX_AGE_MS) {
+          live += 1;
+          continue;
+        }
+        try {
+          this.deleteLegacyStageById(name);
+          removed += 1;
+        } catch (error) {
+          cleanupFailed += 1;
+          plaintextMayRemain ||= error instanceof NativeProfileError
+            ? error.plaintextMayRemain !== false
+            : true;
+        }
+      }
+    }
+
+    return { removed, live, cleanupFailed, plaintextMayRemain };
+  }
+
+  async sweepStages(): Promise<NativeStageSweepResult> {
+    return this.withLock(() => this.sweepStagesLocked());
+  }
+
+  async prepareStage(): Promise<{
+    stageId: string;
+    writerToken: string;
+    stagingCodexHome: string;
+    effectiveCodexHome: string;
+    leaseExpiresAt: number;
+    heartbeatIntervalMs: number;
+  }> {
     return this.withLock(async () => {
       this.assertNoPendingRecovery();
-      this.sweepStaleStages();
+      const sweep = await this.sweepStagesLocked();
+      if (sweep.plaintextMayRemain) {
+        throw new NativeProfileError(
+          "STAGING_CLEANUP_REQUIRED",
+          "An expired native-login staging session could not be securely removed.",
+          500,
+          true,
+          true,
+          true,
+        );
+      }
       requireFileCredentialStore(this.context);
       const vault = this.requireVault();
       let key: NativeProfileKey | null = null;
       let current: NativeEnvelopeSnapshot | null = null;
+      let reservation: Awaited<ReturnType<NativeProfileStageStore["reserve"]>> | null = null;
       try {
         key = await this.keyForVault(vault);
         current = this.readEnvelope(this.context.authPath);
         this.assertCurrentIdentity(vault, current, key);
         await this.ensureStagingRoot();
-        const stageId = this.uuid();
-        const path = this.stagePath(stageId);
-        mkdirSync(path, { mode: 0o700 });
-        try {
-          await this.hardenPath(path);
-          writeFileSync(join(path, "config.toml"), 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
-          await this.hardenPath(join(path, "config.toml"));
-          writeFileSync(join(path, "stage.json"), serializeNativeProfileMetadata({
-            version: 1,
-            stageId,
-            homeId: this.context.homeId,
-            instanceId: this.context.instanceId,
-            createdAt: this.now(),
-          }), { mode: 0o600 });
-          await this.hardenPath(join(path, "stage.json"));
-        } catch (error) {
-          try { rmSync(path, { recursive: true, force: true }); } catch { /* original error wins */ }
-          throw error;
+        reservation = await this.stageStore.reserve(this.context.stagingRoot);
+        mkdirSync(reservation.stagingCodexHome, { mode: 0o700 });
+        await this.hardenPath(reservation.stagingCodexHome);
+        writeFileSync(join(reservation.stagingCodexHome, "config.toml"), 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
+        await this.hardenPath(join(reservation.stagingCodexHome, "config.toml"));
+        writeFileSync(join(reservation.stagingCodexHome, "stage.json"), `${JSON.stringify({
+          version: 2,
+          stageId: reservation.stageId,
+          leaseId: reservation.leaseId,
+          homeId: this.context.homeId,
+          createdAt: this.now(),
+        }, null, 2)}\n`, { mode: 0o600 });
+        await this.hardenPath(join(reservation.stagingCodexHome, "stage.json"));
+        await this.stageStore.activate(reservation);
+        return {
+          stageId: reservation.stageId,
+          writerToken: reservation.writerToken,
+          stagingCodexHome: reservation.stagingCodexHome,
+          effectiveCodexHome: this.context.codexHome,
+          leaseExpiresAt: reservation.leaseExpiresAt,
+          heartbeatIntervalMs: NATIVE_STAGE_HEARTBEAT_INTERVAL_MS,
+        };
+      } catch (error) {
+        let plaintextMayRemain = false;
+        if (reservation) {
+          const record = this.stageStore.recordForStage(reservation.stageId);
+          if (record) {
+            try {
+              const proof = this.stageStore.proofForRecord(record, true);
+              if (proof) {
+                const cleanup = await this.cleanupRegisteredStage(proof, "cancelled");
+                plaintextMayRemain = cleanup.plaintextMayRemain;
+              } else {
+                await this.stageStore.remove({ record });
+              }
+            } catch {
+              plaintextMayRemain = true;
+            }
+          }
         }
-        return { stageId, stagingCodexHome: path, effectiveCodexHome: this.context.codexHome };
+        if (error instanceof NativeProfileError) {
+          throw new NativeProfileError(
+            error.code,
+            error.message,
+            error.status,
+            error.retryable,
+            plaintextMayRemain || error.cleanupRequired === true ? true : undefined,
+            plaintextMayRemain || error.plaintextMayRemain === true,
+          );
+        }
+        if (plaintextMayRemain) {
+          throw new NativeProfileError(
+            "STAGING_CLEANUP_REQUIRED",
+            "Native-login staging failed and plaintext may remain.",
+            500,
+            false,
+            true,
+            true,
+          );
+        }
+        throw error;
       } finally {
         current?.raw.fill(0);
         key?.key.fill(0);
@@ -825,28 +974,56 @@ export class NativeProfileManager {
     });
   }
 
-  async finishStage(stageId: string, labelInput: string): Promise<{ effectiveCodexHome: string; profile: NativeProfilePublic }> {
+  async heartbeatStage(stageId: string, writerToken: string): Promise<{ ok: true; leaseExpiresAt: number }> {
     return this.withLock(async () => {
-      this.stagePath(stageId);
-      // Establish that this stage belongs to the locked native home before
-      // claiming cleanup ownership. Freshness and every later failure are then
-      // server-authoritatively cleaned, while lock/ownership failures leave a
-      // stage that another valid operation may own untouched.
-      const ownedStage = this.verifiedStagePath(stageId, false);
+      const proof = this.stageStore.verify(stageId, writerToken);
+      if (proof.expired) {
+        const cleanup = await this.cleanupRegisteredStage(proof, "expired");
+        throw new NativeProfileError(
+          "STAGING_EXPIRED",
+          "The native-login staging lease expired.",
+          410,
+          false,
+          cleanup.removed ? undefined : true,
+          cleanup.plaintextMayRemain,
+        );
+      }
+      const leaseExpiresAt = await this.stageStore.heartbeat(proof);
+      return { ok: true, leaseExpiresAt };
+    });
+  }
+
+  async finishStage(
+    stageId: string,
+    writerToken: string,
+    labelInput: string,
+  ): Promise<{ effectiveCodexHome: string; profile: NativeProfilePublic; plaintextMayRemain: false }> {
+    return this.withLock(async () => {
+      const ownedStage = this.stageStore.verify(stageId, writerToken);
+      if (ownedStage.expired) {
+        const cleanup = await this.cleanupRegisteredStage(ownedStage, "expired");
+        throw new NativeProfileError(
+          "STAGING_EXPIRED",
+          "The native-login staging lease expired.",
+          410,
+          false,
+          cleanup.removed ? undefined : true,
+          cleanup.plaintextMayRemain,
+        );
+      }
       let target: NativeEnvelopeSnapshot | null = null;
       let current: NativeEnvelopeSnapshot | null = null;
       let key: NativeProfileKey | null = null;
       let operationFailed = false;
       let operationError: unknown;
       let importCommitted = false;
-      let result: { effectiveCodexHome: string; profile: NativeProfilePublic } | undefined;
+      let result: { effectiveCodexHome: string; profile: NativeProfilePublic; plaintextMayRemain: false } | undefined;
       try {
-        const verifiedStage = this.verifiedStagePath(stageId);
         this.assertNoPendingRecovery();
         requireFileCredentialStore(this.context);
         const label = validateNativeProfileLabel(labelInput);
-        target = readNativeEnvelope(join(verifiedStage.path, "auth.json"));
-        assertPathIdentity(verifiedStage.path, verifiedStage.identity, "The native-login staging directory");
+        target = readNativeEnvelope(join(ownedStage.path, "auth.json"));
+        assertPathIdentity(ownedStage.path, ownedStage.identity, "The native-login staging directory");
         current = readNativeEnvelope(this.context.authPath);
         const vault = this.requireVault();
         if (vault.profiles.length >= MAX_NATIVE_PROFILES) {
@@ -899,7 +1076,11 @@ export class NativeProfileManager {
         }
         await this.writeVault(prospectiveVault);
         importCommitted = true;
-        result = { effectiveCodexHome: this.context.codexHome, profile: publicNativeProfile(profile) };
+        result = {
+          effectiveCodexHome: this.context.codexHome,
+          profile: publicNativeProfile(profile),
+          plaintextMayRemain: false,
+        };
       } catch (error) {
         operationFailed = true;
         operationError = error;
@@ -908,57 +1089,67 @@ export class NativeProfileManager {
         current?.raw.fill(0);
         key?.key.fill(0);
       }
-      let cleanupFailed = false;
-      try {
-        this.deleteStage(ownedStage.path, ownedStage.identity);
-      } catch {
-        cleanupFailed = true;
-      }
+
+      const cleanup = await this.cleanupRegisteredStage(
+        ownedStage,
+        importCommitted ? "imported" : "rejected",
+      );
       if (operationFailed) {
-        if (cleanupFailed) {
-          if (operationError instanceof NativeProfileError) {
-            throw new NativeProfileError(
-              operationError.code,
-              operationError.message,
-              operationError.status,
-              operationError.retryable,
-              true,
-            );
-          }
+        if (operationError instanceof NativeProfileError) {
           throw new NativeProfileError(
-            "INTERNAL_ERROR",
-            "The native profile import failed and its staging session could not be securely removed.",
-            500,
-            false,
-            true,
+            operationError.code,
+            operationError.message,
+            operationError.status,
+            operationError.retryable,
+            cleanup.removed ? operationError.cleanupRequired : true,
+            cleanup.plaintextMayRemain,
           );
         }
-        throw operationError;
+        throw new NativeProfileError(
+          "INTERNAL_ERROR",
+          cleanup.removed
+            ? "The native profile import failed."
+            : "The native profile import failed and its staging session could not be securely removed.",
+          500,
+          false,
+          cleanup.removed ? undefined : true,
+          cleanup.plaintextMayRemain,
+        );
       }
-      if (cleanupFailed) {
+      if (!cleanup.removed) {
         throw new NativeProfileError(
           "STAGING_CLEANUP_REQUIRED",
           importCommitted
-            ? "The native profile was imported, but its staging session could not be securely removed. Do not retry the import; fix filesystem permissions and cancel it explicitly."
-            : "The native-login staging session could not be securely removed; fix filesystem permissions and cancel it explicitly.",
+            ? "The native profile was imported, but its staging session could not be securely removed. Do not retry the import; cancel it explicitly."
+            : "The native-login staging session could not be securely removed; cancel it explicitly.",
           500,
+          false,
+          importCommitted ? undefined : true,
+          cleanup.plaintextMayRemain,
         );
       }
       return result!;
     });
   }
 
-  async cancelStage(stageId: string): Promise<void> {
-    await this.withLock(async () => {
-      try {
-        this.deleteStageById(stageId, true);
-      } catch (error) {
-        if (error instanceof NativeProfileError) throw error;
-        throw new NativeProfileError("STAGING_CLEANUP_REQUIRED", "The native-login staging session could not be securely removed.", 500);
+  async cancelStage(stageId: string, writerToken: string): Promise<NativeStageCleanupResult> {
+    return this.withLock(async () => {
+      const proof = this.stageStore.verify(stageId, writerToken, true, true);
+      const outcome = proof.record.terminalOutcome ?? "cancelled";
+      const cleanup = await this.cleanupRegisteredStage(proof, outcome);
+      if (!cleanup.removed) {
+        throw new NativeProfileError(
+          "STAGING_CLEANUP_REQUIRED",
+          "The native-login staging session could not be securely removed.",
+          500,
+          true,
+          true,
+          cleanup.plaintextMayRemain,
+        );
       }
+      return cleanup;
     });
   }
-
   private resolveTarget(vault: NativeMainProfileVaultV1, target: string): NativeMainProfileRecordV1 {
     const normalized = target.trim().toLowerCase();
     const profile = vault.profiles.find(item => item.id.toLowerCase() === normalized || item.label.toLowerCase() === normalized);
@@ -984,7 +1175,7 @@ export class NativeProfileManager {
 
   async switch(targetSelector: string, confirmedStopped = false): Promise<Record<string, unknown>> {
     return this.withLock(async () => {
-      this.sweepStaleStages();
+      await this.sweepStagesLocked();
       requireFileCredentialStore(this.context);
       await this.assertNativeCodexStopped(confirmedStopped);
       if (probeNativeProfileRecoveryState(this.context) !== "none") await this.recoverLocked(false);
