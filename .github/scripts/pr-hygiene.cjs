@@ -42,8 +42,14 @@ function assessHygiene({ files = [], labels = [] }) {
   const labelSet = new Set(labels);
   const failures = [];
   const filenames = files.map((file) => file.filename);
-  const behaviorChanged = filenames.some(isBehaviorPath);
-  const testsChanged = filenames.some(isTestPath);
+  // Renames are classified on both sides: moving a behavior or generated file
+  // to a documentation path must not bypass the hygiene gates.
+  const previousFilenames = files.flatMap((file) =>
+    file.previous_filename ? [file.previous_filename] : [],
+  );
+  const allPaths = [...new Set([...filenames, ...previousFilenames])];
+  const behaviorChanged = allPaths.some(isBehaviorPath);
+  const testsChanged = allPaths.some(isTestPath);
 
   if (
     behaviorChanged &&
@@ -53,7 +59,7 @@ function assessHygiene({ files = [], labels = [] }) {
     failures.push({ code: "missing_regression_test" });
   }
 
-  const generated = filenames.filter(isGeneratedPath);
+  const generated = allPaths.filter(isGeneratedPath);
   if (
     generated.length > 0 &&
     !labelSet.has("generated-change-approved")

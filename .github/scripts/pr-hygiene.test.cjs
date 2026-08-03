@@ -32,6 +32,27 @@ describe("assessHygiene", () => {
     }), []);
   });
 
+  it("classifies renamed behavior files on both sides", () => {
+    const failures = assessHygiene({ files: [
+      { filename: "docs/moved.md", previous_filename: "src/router.ts", patch: "" },
+    ] });
+    assert.equal(failures[0].code, "missing_regression_test");
+  });
+
+  it("accepts a renamed behavior file when tests are included", () => {
+    assert.deepEqual(assessHygiene({ files: [
+      { filename: "docs/moved.md", previous_filename: "src/router.ts", patch: "" },
+      { filename: "tests/moved.test.ts", patch: "+test" },
+    ] }), []);
+  });
+
+  it("classifies renamed generated files on both sides", () => {
+    const failures = assessHygiene({ files: [
+      { filename: "docs/notes.md", previous_filename: "gui/dist/index.js", patch: "" },
+    ] });
+    assert.equal(failures[0].code, "generated_output");
+  });
+
   it("blocks added suppressions", () => {
     const failures = assessHygiene({ files: [
       { filename: "tests/a.test.ts", patch: "+// @ts-ignore\n+value();" },
