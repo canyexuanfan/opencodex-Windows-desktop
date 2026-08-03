@@ -1965,7 +1965,7 @@ describe("server local API auth", () => {
     } finally {
       if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
     }
-  });
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("oversized 400 body never authorizes a pool retry", async () => {
     const body = `${unsupportedModelBody()}${"x".repeat(65_536)}`;
