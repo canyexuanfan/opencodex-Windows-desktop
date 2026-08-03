@@ -282,8 +282,19 @@ export default function ProviderSettings({
           <select
             className="input"
             value={accountMode}
-            disabled={modeSaving}
-            onChange={e => void applyAccountMode(e.target.value as "pool" | "direct")}
+            disabled={modeSaving || saving}
+            onChange={e => {
+              const next = e.target.value as "pool" | "direct";
+              if (next === accountMode) return;
+              // Flipping modes rebinds running threads and changes quota accounting,
+              // so the PATCH only fires after an explicit confirmation.
+              if (!window.confirm(t("pws.accountModeConfirm"))) {
+                // Keep the visible choice aligned with the applied mode.
+                e.target.value = accountMode;
+                return;
+              }
+              void applyAccountMode(next);
+            }}
           >
             <option value="pool">{t("codexAuth.accountModePool")}</option>
             <option value="direct">{t("codexAuth.accountModeDirect")}</option>
@@ -293,7 +304,10 @@ export default function ProviderSettings({
           </span>
           {modeSaving && <span className="muted text-label">{t("pws.accountSwitching")}</span>}
           {modeMsg && (
-            <span className={modeMsg.ok ? "pwi-settings-mode-msg pwi-settings-mode-msg--ok" : "pwi-settings-mode-msg pwi-settings-mode-msg--err"}>
+            <span
+              role={modeMsg.ok ? "status" : "alert"}
+              className={modeMsg.ok ? "pwi-settings-mode-msg pwi-settings-mode-msg--ok" : "pwi-settings-mode-msg pwi-settings-mode-msg--err"}
+            >
               {modeMsg.text}
             </span>
           )}
@@ -332,7 +346,11 @@ export default function ProviderSettings({
           </div>
         </div>
       )}
-      {msg && <div className={msg.ok ? "pwi-settings-msg pwi-settings-msg--ok" : "pwi-settings-msg pwi-settings-msg--err"}>{msg.text}</div>}
+      {msg && (
+        <div role={msg.ok ? "status" : "alert"} className={msg.ok ? "pwi-settings-msg pwi-settings-msg--ok" : "pwi-settings-msg pwi-settings-msg--err"}>
+          {msg.text}
+        </div>
+      )}
     </div>
   );
 }

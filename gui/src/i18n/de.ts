@@ -1466,6 +1466,7 @@ export const de: Record<TKey, string> = {
   "pws.settingsSaved": "Einstellungen gespeichert.",
   "pws.accountModeSaved": "Kontomodus gespeichert.",
   "pws.accountModeFailed": "Kontomodus konnte nicht gewechselt werden.",
+  "pws.accountModeConfirm": "OpenAI-Kontomodus wechseln? Laufende Unterhaltungen werden dem anderen Kontosatz zugeordnet und die Quotennutzung wird unter dem neuen Modus erfasst.",
   "pws.settingsUnsavedBar": "Es gibt ungespeicherte Änderungen.",
   "pws.unsavedLeaveBody": "Es gibt ungespeicherte Änderungen. Vor dem Verlassen speichern?",
   "pws.unsavedLeaveTitle": "Ungespeicherte Änderungen",

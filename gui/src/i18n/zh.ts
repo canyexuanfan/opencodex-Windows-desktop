@@ -1486,6 +1486,7 @@ export const zh: Record<TKey, string> = {
   "pws.settingsSaved": "设置已保存。",
   "pws.accountModeSaved": "账户模式已保存。",
   "pws.accountModeFailed": "无法切换账户模式。",
+  "pws.accountModeConfirm": "切换 OpenAI 账户模式？正在进行的对话将重新分配到另一种模式的账户集合，配额用量将按新模式计入。",
   "pws.settingsUnsavedBar": "有未保存的更改。",
   "pws.unsavedLeaveBody": "有未保存的更改。离开前保存吗？",
   "pws.unsavedLeaveTitle": "未保存的更改",

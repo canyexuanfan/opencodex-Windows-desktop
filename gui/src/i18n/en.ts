@@ -1042,6 +1042,7 @@ export const en = {
   "pws.settingsSaved": "Settings saved.",
   "pws.accountModeSaved": "Account mode saved.",
   "pws.accountModeFailed": "Could not switch the account mode.",
+  "pws.accountModeConfirm": "Switch the OpenAI account mode? Running conversations will be reassigned to the other mode's account set, and quota usage will be tracked against the new mode.",
   "pws.settingsUnsavedBar": "You have unsaved changes.",
   "pws.unsavedLeaveBody": "You have unsaved changes. Save them before leaving?",
   "pws.unsavedLeaveTitle": "Unsaved changes",

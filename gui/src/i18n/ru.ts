@@ -1034,6 +1034,7 @@ export const ru: Record<TKey, string> = {
   "pws.settingsSaved": "Настройки сохранены.",
   "pws.accountModeSaved": "Режим аккаунта сохранён.",
   "pws.accountModeFailed": "Не удалось переключить режим аккаунта.",
+  "pws.accountModeConfirm": "Переключить режим аккаунта OpenAI? Текущие беседы будут перенаправлены на другой набор аккаунтов, а использование квоты будет учитываться в новом режиме.",
   "pws.settingsUnsavedBar": "Есть несохранённые изменения.",
   "pws.unsavedLeaveBody": "Есть несохранённые изменения. Сохранить их перед переходом?",
   "pws.unsavedLeaveTitle": "Несохранённые изменения",
