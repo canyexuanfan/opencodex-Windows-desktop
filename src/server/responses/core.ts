@@ -256,8 +256,8 @@ async function shouldRetryCodexPoolAccountModel400(
 }
 
 /** Pre-stream quota/billing rejections that warrant one alternate-account attempt (#584). */
-function shouldRetryCodexPoolAccountQuota(response: Response): boolean {
-  return response.status === 429 || response.status === 402;
+export function shouldRetryCodexPoolAccountQuota(response: Response): boolean {
+  return response.status === 402 || response.status === 429;
 }
 
 interface CodexPoolAccountRetryArgs {
