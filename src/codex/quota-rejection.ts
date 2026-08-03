@@ -49,6 +49,93 @@ function hasOwnField(container: Record<string, unknown>, field: string): boolean
   return Object.prototype.hasOwnProperty.call(container, field);
 }
 
+type JsonScanResult = {
+  next: number;
+  duplicate: boolean;
+};
+
+function skipJsonWhitespace(text: string, index: number): number {
+  while (index < text.length && /[\t\n\r ]/.test(text[index] ?? "")) index += 1;
+  return index;
+}
+
+function scanJsonStringEnd(text: string, index: number): number {
+  if (text[index] !== '"') throw new SyntaxError("expected JSON string");
+  for (let cursor = index + 1; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (char === '"') return cursor + 1;
+    if (char === "\\") cursor += 1;
+  }
+  throw new SyntaxError("unterminated JSON string");
+}
+
+function scanJsonValue(text: string, index: number): JsonScanResult {
+  const start = skipJsonWhitespace(text, index);
+  if (text[start] === "{") return scanJsonObject(text, start);
+  if (text[start] === "[") return scanJsonArray(text, start);
+  if (text[start] === '"') return { next: scanJsonStringEnd(text, start), duplicate: false };
+
+  for (const literal of ["true", "false", "null"]) {
+    if (text.startsWith(literal, start)) {
+      return { next: start + literal.length, duplicate: false };
+    }
+  }
+  const number = text.slice(start).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+  if (!number) throw new SyntaxError("expected JSON value");
+  return { next: start + number[0].length, duplicate: false };
+}
+
+function scanJsonObject(text: string, index: number): JsonScanResult {
+  const keys = new Set<string>();
+  let duplicate = false;
+  let cursor = skipJsonWhitespace(text, index + 1);
+  if (text[cursor] === "}") return { next: cursor + 1, duplicate: false };
+
+  while (cursor < text.length) {
+    const keyEnd = scanJsonStringEnd(text, cursor);
+    const key = JSON.parse(text.slice(cursor, keyEnd)) as unknown;
+    if (typeof key !== "string") throw new SyntaxError("invalid JSON object key");
+    if (keys.has(key)) duplicate = true;
+    keys.add(key);
+
+    cursor = skipJsonWhitespace(text, keyEnd);
+    if (text[cursor] !== ":") throw new SyntaxError("expected JSON object colon");
+    const value = scanJsonValue(text, cursor + 1);
+    duplicate ||= value.duplicate;
+    cursor = skipJsonWhitespace(text, value.next);
+    if (text[cursor] === "}") return { next: cursor + 1, duplicate };
+    if (text[cursor] !== ",") throw new SyntaxError("expected JSON object separator");
+    cursor = skipJsonWhitespace(text, cursor + 1);
+  }
+  throw new SyntaxError("unterminated JSON object");
+}
+
+function scanJsonArray(text: string, index: number): JsonScanResult {
+  let duplicate = false;
+  let cursor = skipJsonWhitespace(text, index + 1);
+  if (text[cursor] === "]") return { next: cursor + 1, duplicate: false };
+
+  while (cursor < text.length) {
+    const value = scanJsonValue(text, cursor);
+    duplicate ||= value.duplicate;
+    cursor = skipJsonWhitespace(text, value.next);
+    if (text[cursor] === "]") return { next: cursor + 1, duplicate };
+    if (text[cursor] !== ",") throw new SyntaxError("expected JSON array separator");
+    cursor = skipJsonWhitespace(text, cursor + 1);
+  }
+  throw new SyntaxError("unterminated JSON array");
+}
+
+function hasDuplicateJsonObjectKeys(text: string): boolean {
+  try {
+    const result = scanJsonValue(text, 0);
+    return result.duplicate || skipJsonWhitespace(text, result.next) !== text.length;
+  } catch {
+    // Scanner disagreement is untrusted input, just like JSON.parse failure.
+    return true;
+  }
+}
+
 function exactResetEligibleCode(
   container: Record<string, unknown>,
 ): CodexResetEligibleExhaustionCode | undefined {
@@ -88,9 +175,13 @@ async function resetEligibleCodeFromResponse(
   signal?: AbortSignal,
 ): Promise<CodexResetEligibleExhaustionCode | undefined> {
   try {
-    const body = await readBoundedResponseBody(response.clone(), { signal });
+    const body = await readBoundedResponseBody(response.clone(), { signal, fatalUtf8: true });
     if (!body.displaySafe || body.truncated || !body.text.trim()) return undefined;
-    return structuredResetEligibleCode(JSON.parse(body.text) as unknown);
+    const payload = JSON.parse(body.text) as unknown;
+    // JSON.parse silently keeps the last duplicate key, making contradictory
+    // payloads order-dependent. Reject any duplicate at any object depth.
+    if (hasDuplicateJsonObjectKeys(body.text)) return undefined;
+    return structuredResetEligibleCode(payload);
   } catch {
     // Classification must fail closed. A malformed, oversized, consumed, or
     // cancelled body cannot authorize an irreversible reset-credit operation.

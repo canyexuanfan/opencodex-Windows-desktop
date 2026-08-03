@@ -89,6 +89,24 @@ describe("Codex pre-stream quota rejection classification", () => {
   });
 
   test.each([
+    ["root", '{"code":"rate_limit_error","code":"usage_limit_exceeded"}'],
+    ["nested", '{"error":{"code":"rate_limit_error","code":"usage_limit_exceeded"}}'],
+  ] as const)("fails closed for duplicate keys in a %s object", async (_case, body) => {
+    const response = new Response(body, {
+      status: 429,
+      headers: { "content-type": "application/json" },
+    });
+    const result = await classifyCodexPreStreamRejection(response);
+    expect(result).toMatchObject({
+      kind: "generic-rate-limit",
+      alternateRetryEligible: true,
+      resetCreditEligible: false,
+    });
+    expect(result).not.toHaveProperty("semanticCode");
+    expect(await response.text()).toBe(body);
+  });
+
+  test.each([
     ["nested unknown code and eligible type", {
       error: { code: "unknown", type: "insufficient_quota" },
     }],
@@ -137,6 +155,31 @@ describe("Codex pre-stream quota rejection classification", () => {
       alternateRetryEligible: true,
       resetCreditEligible: false,
     });
+  });
+
+  test("fails closed when malformed UTF-8 would otherwise be replaced", async () => {
+    const prefix = new TextEncoder().encode(
+      '{"error":{"code":"usage_limit_exceeded","message":"',
+    );
+    const suffix = new TextEncoder().encode('"}}');
+    const bytes = new Uint8Array(prefix.length + 1 + suffix.length);
+    bytes.set(prefix);
+    bytes[prefix.length] = 0xff;
+    bytes.set(suffix, prefix.length + 1);
+    const response = new Response(bytes, {
+      status: 429,
+      headers: { "content-type": "application/json" },
+    });
+
+    const result = await classifyCodexPreStreamRejection(response);
+
+    expect(result).toMatchObject({
+      kind: "generic-rate-limit",
+      alternateRetryEligible: true,
+      resetCreditEligible: false,
+    });
+    expect(result).not.toHaveProperty("semanticCode");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
   });
 
 	test("fails closed for malformed JSON while preserving broad 429 failover", async () => {
