@@ -45,11 +45,47 @@ if (current === body.enabled) {
   return jsonResponse({ ok: true, clientId: "claude", changed: false,
     state: body.enabled ? "current" : "absent", message: "no change" });
 }
-config.claudeCode = { ...(config.claudeCode ?? {}), enabled: body.enabled };
-saveConfigPreservingClaudeCode(config);
+const next = { ...(config.claudeCode ?? {}), enabled: body.enabled };
+// See §The migration sentinel — omitting this converts Auto into a sticky
+// manual subscription on the next startServer.
+if (!next.authModeMigratedAt) next.authModeMigratedAt = new Date().toISOString();
+config.claudeCode = next;
+(deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode)(config);
 return jsonResponse({ ok: true, clientId: "claude", changed: true,
   state: body.enabled ? "current" : "absent", message: ... });
 ```
+
+## The migration sentinel (A-phase finding)
+
+Auditing this phase against the route it mirrors turned up something the plan
+had missed. `PUT /api/claude-code` stamps `authModeMigratedAt` on EVERY persist
+of the `claudeCode` block (`agent-settings-routes.ts:1060-1069`), and its
+comment explains why in terms that apply exactly to this toggle:
+
+> The migration reads "a claudeCode block with no authMode" as a pre-upgrade
+> subscriber and pins it to literal subscription — correct for a config written
+> before `auto` existed, fatal for one written after. Without this, choosing
+> Auto (which DELETES authMode) or merely toggling Claude on (App.tsx PUTs
+> `{enabled}` alone and creates the block) would be converted into a sticky
+> manual subscription by the next startServer.
+
+"Merely toggling Claude on" is precisely what this route does. A card toggle
+that created the block without the sentinel would silently convert a user's Auto
+auth mode into a pinned subscription at the next restart — a failure that
+surfaces far from its cause, in a subsystem this unit never mentions.
+
+This is the concrete reason the plan says the two controls must not disagree
+about what "off" means: agreeing on the FLAG is not enough, they have to agree
+on the block's invariants.
+
+**The persistence seam is not optional** (P-phase stale check, discovered
+re-reading `context.ts` before building). `ManagementApiDeps` carries
+`saveConfigPreservingClaudeCode` specifically so route tests with an in-memory
+fixture config cannot overwrite the developer's real `OPENCODEX_HOME` — its
+docstring cites the incident that put it there (devlog 260730 §070). Every
+route that persists config goes through `deps.` first and falls back to the
+import. A direct call would make this unit's tests capable of eating a real
+config.
 
 This is the same write `PUT /api/claude-code` already performs for the switch on
 the Claude tab (`agent-settings-routes.ts:939-941`), so the two controls cannot
@@ -96,6 +132,9 @@ it existed to protect journal bookkeeping this toggle does not write.
       matching the six existing read sites.
 - [ ] `PUT {enabled:false}` sets the flag and `/v1/messages` answers 403.
 - [ ] `PUT` of the current value returns `changed: false` and writes nothing.
+- [ ] A toggle that CREATES the `claudeCode` block stamps `authModeMigratedAt`;
+      a test asserts a config with no block gains the sentinel, and that a
+      config already carrying one is not re-stamped.
 - [ ] The card switch and the Claude tab switch agree after either is used.
 - [ ] A contended config lock returns 409 `config_busy`, not a 500 and not a
       silent success (audit r7 #2).
