@@ -87,7 +87,9 @@ function toolResultImageChatParts(content: string | OcxContentPart[]): unknown[]
   if (typeof content === "string") return [];
   const parts: unknown[] = [];
   for (const p of content) {
-    if (p.type !== "image") continue;
+    // Skip parts without a usable URL (the tool-output parser accepts the empty file_id shape):
+    // a {"url":""} part would fail the whole request where the "[image]" marker degrades safely.
+    if (p.type !== "image" || !p.imageUrl) continue;
     parts.push({ type: "image_url", image_url: { url: p.imageUrl, ...(p.detail ? { detail: p.detail } : {}) } });
   }
   return parts;

@@ -85,11 +85,12 @@ test("tool-result images ride a follow-up user message; text, detail, and https 
       { type: "text", text: "1 match found" },
       { type: "image", imageUrl: IMAGE_URL, detail: "high" },
       { type: "image", imageUrl: "https://example.test/shot.png" },
+      { type: "image", imageUrl: "" }, // empty file_id shape: keeps its marker, never reaches the carrier
     ]),
   ]);
   assertRoundsUnbroken(messages);
   const tool = messages.find(m => m.role === "tool")!;
-  expect(tool.content).toBe("1 match found[image][image]");
+  expect(tool.content).toBe("1 match found[image][image][image]");
   const carrier = messages.find(isImageCarrier)!;
   expect(carrier).toBeDefined();
   expect(messages.indexOf(carrier)).toBe(messages.indexOf(tool) + 1);
