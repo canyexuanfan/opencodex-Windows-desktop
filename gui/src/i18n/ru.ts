@@ -1124,6 +1124,7 @@ export const ru: Record<TKey, string> = {
   "integrations.codex.body": "Подключением Codex управляет прокси-сервис. При запуске opencodex оно применяется, а при остановке сервиса восстанавливается нативная маршрутизация.",
   "integrations.codex.openService": "Открыть управление сервисом",
   "integrations.state.notInstalled": "Не установлен",
+  "integrations.state.unknown": "Проверка…",
   "integrations.state.absent": "Не применено",
   "integrations.state.current": "Применено",
   "integrations.state.stale": "Требуется обновление",

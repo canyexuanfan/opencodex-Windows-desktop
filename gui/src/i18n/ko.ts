@@ -714,6 +714,7 @@ export const ko: Record<TKey, string> = {
   "integrations.codex.body": "Codex 연결은 프록시 서비스가 관리합니다. opencodex를 시작하면 적용되고 서비스를 중지하면 기본 라우팅으로 복원됩니다.",
   "integrations.codex.openService": "서비스 제어 열기",
   "integrations.state.notInstalled": "미설치",
+  "integrations.state.unknown": "확인 중",
   "integrations.state.absent": "미적용",
   "integrations.state.current": "적용됨",
   "integrations.state.stale": "업데이트 필요",

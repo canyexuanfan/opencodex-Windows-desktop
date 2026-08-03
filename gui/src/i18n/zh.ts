@@ -707,6 +707,7 @@ export const zh: Record<TKey, string> = {
   "integrations.codex.body": "Codex 连接由代理服务管理。启动 opencodex 时应用该连接；停止服务时恢复原生路由。",
   "integrations.codex.openService": "打开服务控制",
   "integrations.state.notInstalled": "未安装",
+  "integrations.state.unknown": "检查中",
   "integrations.state.absent": "未应用",
   "integrations.state.current": "已应用",
   "integrations.state.stale": "需要更新",

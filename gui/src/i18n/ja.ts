@@ -1082,6 +1082,7 @@ export const ja: Record<TKey, string> = {
   "integrations.codex.body": "Codex の接続はプロキシサービスが管理します。opencodex を起動すると適用され、サービスを停止するとネイティブのルーティングに戻ります。",
   "integrations.codex.openService": "サービス制御を開く",
   "integrations.state.notInstalled": "未インストール",
+  "integrations.state.unknown": "確認中",
   "integrations.state.absent": "未適用",
   "integrations.state.current": "適用済み",
   "integrations.state.stale": "更新が必要",

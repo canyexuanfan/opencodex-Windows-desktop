@@ -1132,6 +1132,7 @@ export const en = {
   "integrations.codex.body": "Codex wiring is owned by the proxy service. Starting opencodex applies it; stopping the service restores native routing.",
   "integrations.codex.openService": "Open service controls",
   "integrations.state.notInstalled": "Not installed",
+  "integrations.state.unknown": "Checking…",
   "integrations.state.absent": "Not applied",
   "integrations.state.current": "Applied",
   "integrations.state.stale": "Update needed",

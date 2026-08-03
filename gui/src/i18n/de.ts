@@ -690,6 +690,7 @@ export const de: Record<TKey, string> = {
   "integrations.codex.body": "Die Codex-Anbindung wird vom Proxy-Dienst verwaltet. Beim Start von opencodex wird sie angewendet; beim Stoppen des Dienstes wird das native Routing wiederhergestellt.",
   "integrations.codex.openService": "Dienststeuerung öffnen",
   "integrations.state.notInstalled": "Nicht installiert",
+  "integrations.state.unknown": "Wird geprüft…",
   "integrations.state.absent": "Nicht angewendet",
   "integrations.state.current": "Angewendet",
   "integrations.state.stale": "Aktualisierung erforderlich",
