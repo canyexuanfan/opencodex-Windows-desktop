@@ -110,7 +110,7 @@ const helpEntries: Record<string, HelpEntry> = {
     ],
   },
   account: {
-    usage: "ocx account <list|current|use|refresh|auto-switch|login|reauth|code|cancel|remove|add-key|reset-credits> ...",
+    usage: "ocx account <list|current|use|refresh|auto-switch|login|reauth|code|cancel|remove|add-key|reset-credits|main> ...",
     summary: "List and switch provider accounts and API-key pools (GUI parity).",
     details: [
       "list [provider]     Codex account pool, OAuth accounts and API keys (identifiers shown masked as the API returns them).",
@@ -122,6 +122,7 @@ const helpEntries: Record<string, HelpEntry> = {
       "add-key <provider> [--label <label>]  Add a key read only from piped stdin.",
       "login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.",
       "reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.",
+      "main <subcommand>     Manage the physical native Codex login separately from Pool routing.",
       "Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.",
     ],
   },
