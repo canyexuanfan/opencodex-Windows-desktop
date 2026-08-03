@@ -1,17 +1,17 @@
----
+﻿---
 title: FAB-00 Spike Plan
 programme_id: OCAF
 phase: FAB-00
 date: 2026-08-03
 ---
 
-# 140 — Spike Plan
+# 140 â€” Spike Plan
 
 Written **before** any spike executes. Each spike is bounded and disposable unless explicitly retained (justified in the handoff). No spike mutates native Codex/Claude storage outside supported APIs; no spike widens sandbox/shell/network/elevation beyond its own stated requirement; no spike touches production code paths under `src/`.
 
-## Spike A — Codex App Server
+## Spike A â€” Codex App Server
 
-- **Question:** Can `codex app-server` be driven externally to start/resume a managed thread, observe approvals/plan/file-change events, and reconnect, with stable versioned identities — without native-storage mutation?
+- **Question:** Can `codex app-server` be driven externally to start/resume a managed thread, observe approvals/plan/file-change events, and reconnect, with stable versioned identities â€” without native-storage mutation?
 - **Hypothesis:** `thread/start` + `thread/resume` + versioned schema (`generate-ts`) provide a stable, machine-readable managed-execution surface.
 - **Scope:** spawn `codex app-server` (stdio JSON-RPC) in an isolated temp worktree; run `generate-ts`; send `thread/start` with a throwaway `cwd`; subscribe to events; attempt `thread/resume` of the returned `thread.id`; observe approval/plan/file events if reachable.
 - **Allowed files:** temp worktree + `devlog/_plan/800_agent-fabric/spikes/spike-a/` (evidence only). **Prohibited files:** `$CODEX_HOME` session SQLite/rollout files (read-only observation only); any `src/` path.
@@ -24,7 +24,7 @@ Written **before** any spike executes. Each spike is bounded and disposable unle
 - **Disposable vs retained:** schema + message captures **retained** as Spike A evidence; temp worktree **disposed**.
 - **Max production effect:** none (no `src/` changes; no native Codex storage writes).
 
-## Spike B — Claude Integration
+## Spike B â€” Claude Integration
 
 - **Question:** Can a Claude managed session start in an assigned worktree, emit permission/file events, be cancelled, and return a **machine-readable** structured acknowledgement (not natural language) carrying task/workspace/checkpoint/acceptance-hash/loss-ledger-hash?
 - **Hypothesis:** Claude Agent SDK / `claude -p --output-format json` supports structured output + permission hooks + working directory + cancellation.
@@ -39,28 +39,27 @@ Written **before** any spike executes. Each spike is bounded and disposable unle
 - **Disposable vs retained:** captured JSON **retained**; temp worktree **disposed**.
 - **Max production effect:** none.
 
-## Spike C — Task Kernel
+## Spike C â€” Task Kernel
 
 - **Question:** Can the smallest isolated kernel demonstrate append-only events with expected-sequence concurrency, hash chain, deterministic projection rebuild, event schema versions, content-addressed artifact hashes, a primary lease with monotonic fencing token, stale-writer rejection, and recovery at every crash boundary?
-- **Hypothesis:** A disposable Go program using only the standard library can demonstrate all invariants; production uses SQLite (§9.2), but the *protocol invariants* are storage-independent.
-- **Scope:** build `spikes/spike-c-kernel/` (Go, stdlib only): an append-only JSONL event log with `sequence`/`event_id`/`previous_event_hash`/`event_hash`; expected-sequence append rejection; projection rebuild from zero; schema-versioned events; content-addressed artifacts (sha256 files); a leases file with a monotonic fencing token; stale-writer rejection; a crash harness that simulates the 5 boundaries in `090` §3.
+- **Hypothesis:** A disposable Go program using only the standard library can demonstrate all invariants; production uses SQLite (Â§9.2), but the *protocol invariants* are storage-independent.
+- **Scope:** build `spikes/spike-c-kernel/` (Go, stdlib only): an append-only JSONL event log with `sequence`/`event_id`/`previous_event_hash`/`event_hash`; expected-sequence append rejection; projection rebuild from zero; schema-versioned events; content-addressed artifacts (sha256 files); a leases file with a monotonic fencing token; stale-writer rejection; a crash harness that simulates the 5 boundaries in `090` Â§3.
 - **Allowed files:** `devlog/_plan/800_agent-fabric/spikes/spike-c-kernel/` only (source + `go.mod` + test output). **Prohibited files:** `src/`; production config; native Codex/Claude storage. No external Go modules (stdlib only) to keep the spike self-contained and avoid network/module-proxy dependence.
 - **Environment:** `go` 1.26.4 windows/amd64; Windows.
 - **Commands:** `go test ./...` and a `go run` crash-harness entrypoint emitting per-boundary recovery results.
 - **Expected evidence:** test output (pass/fail per invariant) + crash-harness output documenting recovery result for each of: before append; after append before projection; before acknowledgement; after acknowledgement before ownership commit; after ownership commit before source shutdown.
-- **Success:** every invariant holds (sequence monotonic; one owner; fencing token never decreases; completed handoff ⇒ one target owner; rollback ⇒ ownership unchanged; permissions never widen without approval event; stale writer rejected); every crash boundary recovers correctly with no two-writer state.
+- **Success:** every invariant holds (sequence monotonic; one owner; fencing token never decreases; completed handoff â‡’ one target owner; rollback â‡’ ownership unchanged; permissions never widen without approval event; stale writer rejected); every crash boundary recovers correctly with no two-writer state.
 - **Failure:** any invariant violated; any crash boundary leaves two writers or corrupts the hash chain.
-- **Cleanup:** none required (source retained as evidence; no binaries committed — add `spikes/spike-c-kernel/.gitignore` for `*.exe`/build cache).
+- **Cleanup:** none required (source retained as evidence; no binaries committed â€” add `spikes/spike-c-kernel/.gitignore` for `*.exe`/build cache).
 - **Disposable vs retained:** source + test/crash output **retained** as the primary Spike C evidence (it also informs `120`: it proves the kernel mechanics are feasible in Go, while not establishing a repo Go line).
 - **Max production effect:** none.
 
 ## Execution order
 
-1. Spike C first (self-contained, no external auth) — validates the task-kernel invariants that A/B depend on.
-2. Spike A (Codex app-server) — schema generation is free/deterministic; live `thread/start` may require auth.
-3. Spike B (Claude) — structured output; may require the user's Claude auth.
+1. Spike C first (self-contained, no external auth) â€” validates the task-kernel invariants that A/B depend on.
+2. Spike A (Codex app-server) â€” schema generation is free/deterministic; live `thread/start` may require auth.
+3. Spike B (Claude) â€” structured output; may require the user's Claude auth.
 
 ## Disposable/retained policy
 
 Only Spike C source + test output, Spike A `generate-ts` schema + message captures, and Spike B captured JSON are retained, under `spikes/`. All temp worktrees and build binaries are disposed. This is justified in the handoff because the spike evidence is the basis for the verdict (`160`).
-
