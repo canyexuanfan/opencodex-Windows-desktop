@@ -464,6 +464,41 @@ describe("fetchProviderQuotaReports", () => {
     expect(transientFailure.reports).toEqual(valid.reports);
   });
 
+  test("A6API quota treats a throttled 429 refresh as transient and keeps the last-good row", async () => {
+    let throttled = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (throttled) return new Response("rate limited", { status: 429 });
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    throttled = true;
+    const throttledRefresh = await fetchProviderQuotaReports(config, true);
+
+    expect(throttledRefresh.reports).toEqual(valid.reports);
+  });
+
+  test("A6API quota drops the last-good row after a credential 401 refresh", async () => {
+    let rejected = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (rejected) return new Response("unauthorized", { status: 401 });
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    rejected = true;
+    const rejectedRefresh = await fetchProviderQuotaReports(config, true);
+
+    expect(valid.reports).toHaveLength(1);
+    expect(rejectedRefresh.reports).toEqual([]);
+  });
+
   test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
     await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
     const seen: string[] = [];
