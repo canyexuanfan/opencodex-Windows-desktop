@@ -173,6 +173,17 @@ function isContention(error: ConfigMutationLockError): boolean {
 }
 ```
 
+`cause.code` is verified present, not assumed. Two Bun connections holding
+`PRAGMA busy_timeout = 0; BEGIN IMMEDIATE` on the same file produce:
+
+```
+name: SQLiteError | code: "SQLITE_BUSY" | errno: 5 | msg: database is locked
+```
+
+`src/config.ts:1787-1790` already reads that same `code` off the cause to pick
+its message, so the discriminator this contract needs is the one the lock itself
+uses. Match on `code`, never on the message text.
+
 Mapping the whole class to 409 would tell a user to retry a lock file they
 cannot open — advice that fails identically forever. Contention is 409 and
 retryable; a broken lock is a 500 and is not.
