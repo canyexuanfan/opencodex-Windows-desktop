@@ -15,6 +15,7 @@ import {
   isKnownAdmissionKind,
   isKnownInboundProtocol,
   isKnownUsageSurface,
+  isValidReasoningWireValue,
   readRecentUsageEntries,
   usageForFinalLog,
   usageStatusForFinalLog,
@@ -403,12 +404,7 @@ export function recordAdapterReasoning(
         && reasoning.wireField !== "reasoning.effort"
         && reasoning.wireField !== "thinking_budget"
         && reasoning.wireField !== "thinking.type")
-      || (!(typeof reasoning.wireValue === "string" && reasoning.wireValue)
-        && !(typeof reasoning.wireValue === "number"
-          && Number.isFinite(reasoning.wireValue)
-          && reasoning.wireValue >= 0)
-        && !(reasoning.wireField === "reasoning.enabled"
-          && typeof reasoning.wireValue === "boolean"))) {
+      || !isValidReasoningWireValue(reasoning.wireField, reasoning.wireValue)) {
       return;
     }
 

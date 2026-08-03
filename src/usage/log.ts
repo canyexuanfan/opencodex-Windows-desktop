@@ -268,15 +268,27 @@ function normalizeUsageAttempt(raw: unknown): PersistedUsageAttempt | null {
     ...(typeof attempt.reasoningWireField === "string" && attempt.reasoningWireField
       ? { reasoningWireField: capMetadataString(attempt.reasoningWireField) }
       : {}),
-    ...(typeof attempt.reasoningWireValue === "string" && attempt.reasoningWireValue
-      ? { reasoningWireValue: capMetadataString(attempt.reasoningWireValue) }
-      : typeof attempt.reasoningWireValue === "boolean"
-          && attempt.reasoningWireField === "reasoning.enabled"
-        ? { reasoningWireValue: attempt.reasoningWireValue }
-        : isNonNegativeFiniteNumber(attempt.reasoningWireValue)
-        ? { reasoningWireValue: attempt.reasoningWireValue }
-        : {}),
+    ...(isValidReasoningWireValue(attempt.reasoningWireField, attempt.reasoningWireValue)
+      ? typeof attempt.reasoningWireValue === "string"
+        ? { reasoningWireValue: capMetadataString(attempt.reasoningWireValue) }
+        : { reasoningWireValue: attempt.reasoningWireValue }
+      : {}),
   };
+}
+
+/**
+ * Pairing rule for reasoning diagnostics, shared with the live request-log capture path:
+ * a non-empty string, a non-negative finite number, or a boolean only for
+ * `reasoning.enabled`. The field name itself is validated separately at capture time;
+ * persisted rows may carry legacy field names, so this checks only the value shape.
+ */
+export function isValidReasoningWireValue(
+  wireField: unknown,
+  wireValue: unknown,
+): wireValue is string | number | boolean {
+  return (typeof wireValue === "string" && wireValue.length > 0)
+    || (typeof wireValue === "number" && Number.isFinite(wireValue) && wireValue >= 0)
+    || (wireField === "reasoning.enabled" && typeof wireValue === "boolean");
 }
 
 function normalizedAttempts(raw: unknown): PersistedUsageAttempt[] {
@@ -326,14 +338,11 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
     ...(typeof entry.reasoningWireField === "string" && entry.reasoningWireField
       ? { reasoningWireField: capMetadataString(entry.reasoningWireField) }
       : {}),
-    ...(typeof entry.reasoningWireValue === "string" && entry.reasoningWireValue
-      ? { reasoningWireValue: capMetadataString(entry.reasoningWireValue) }
-      : typeof entry.reasoningWireValue === "boolean"
-          && entry.reasoningWireField === "reasoning.enabled"
-        ? { reasoningWireValue: entry.reasoningWireValue }
-        : isNonNegativeFiniteNumber(entry.reasoningWireValue)
-        ? { reasoningWireValue: entry.reasoningWireValue }
-        : {}),
+    ...(isValidReasoningWireValue(entry.reasoningWireField, entry.reasoningWireValue)
+      ? typeof entry.reasoningWireValue === "string"
+        ? { reasoningWireValue: capMetadataString(entry.reasoningWireValue) }
+        : { reasoningWireValue: entry.reasoningWireValue }
+      : {}),
     ...(typeof entry.requestedServiceTier === "string" && entry.requestedServiceTier
       ? { requestedServiceTier: capMetadataString(entry.requestedServiceTier) }
       : {}),
