@@ -908,6 +908,10 @@ export function clearCodexQuotaPrimeState(): void {
   primeInFlight = null;
 }
 
+export function effectiveCodexAuthAccountId(config: OcxConfig): string {
+  return getEffectiveActiveCodexAccountId(config) ?? MAIN_CODEX_ACCOUNT_ID;
+}
+
 export interface CodexAuthAccountsSnapshot {
   accounts: CodexAuthAccountDto[];
   mainIdentityGeneration: number;
@@ -1002,7 +1006,12 @@ export async function listCodexAuthAccountsSnapshot(
     paused: isCodexAccountPaused(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
     hasCredential: hasMainCredential,
     needsReauth: mainNeedsReauth,
-    quota: mainInfo.quota ? { ...quotaForPlan({ ...mainInfo.quota, updatedAt: Date.now() }, mainInfo.plan) } : null,
+    quota: mainInfo.quota ? {
+      ...quotaForPlan({
+        ...mainInfo.quota,
+        updatedAt: getAccountQuota(MAIN_CODEX_ACCOUNT_ID)?.updatedAt ?? Date.now(),
+      }, mainInfo.plan),
+    } : null,
     ...oauthAccountHealthFields("codex", MAIN_CODEX_ACCOUNT_ID, mainHealth),
   };
   return {
