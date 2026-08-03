@@ -104,11 +104,22 @@ declined. A 500 would tell the GUI to say "try again", which is precisely the
 wrong advice for both.
 
 **`non_loopback` is deliberately NOT in this table.** Enabling Grok under a
-non-loopback bind removes any stale generated block, so it is a 200 outcome
-carrying `changed` and `reason: "non_loopback_removed"` — not a refusal
-claiming nothing happened (`012` §non-loopback is not a refusal). It sat here
-as a 409 through two revisions; round 6 caught the table still contradicting the
-prose below it.
+non-loopback bind removes any stale generated block, so it is a 200 outcome, not
+a refusal claiming nothing happened (`012` §non-loopback is not a refusal). It
+sat here as a 409 through two revisions; round 6 caught the table still
+contradicting the prose below it.
+
+Two 200 outcomes, chosen by inspecting the file AFTER the write:
+
+| `state` | `reason` | Meaning |
+|---|---|---|
+| `absent` | `non_loopback_removed` | no fence remains — the normal case |
+| `current` | `non_loopback_superseded` | a well-formed fence arrived from elsewhere between our strip and our read |
+
+The second is rare and exists because the alternative is worse: reporting
+`absent` over a fence the route had just observed. **Every `state` this module
+returns is derived from the last read, never from what the operation intended**
+(audit r9).
 
 `stripGrokConfig` writes atomically and Claude Code writes one config field, so
 neither client has a half-applied state to report. The `partial` outcome earlier

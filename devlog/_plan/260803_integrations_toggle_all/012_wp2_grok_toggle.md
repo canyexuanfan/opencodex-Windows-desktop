@@ -152,13 +152,40 @@ const result = injectGrokConfig(port, models, { hostname, grokHome, excluded });
 // the result. Re-inspect to tell them apart — after the write, when the file
 // state is final.
 if (result.skippedReason === "non-loopback") {
+  // EXHAUSTIVE on purpose. An earlier draft checked only `orphaned_marker` and
+  // let everything else fall through to `absent` — which would report `absent`
+  // over a fence the inspection had just seen (audit r9). The reported state is
+  // whatever the LAST read observed; nothing here is inferred from what we
+  // intended to do.
   const after = inspectGrokConfig({ grokHome });
-  if (after.kind === "orphaned_marker") {
-    return refusal(409, "orphaned_marker", ...);   // the fence is still there
+  switch (after.kind) {
+    case "orphaned_marker":
+      // Our strip declined; the ambiguous fence is still in the file.
+      return refusal(409, "orphaned_marker", ...);
+    case "present":
+      // Someone re-installed a well-formed fence between the strip and this
+      // read — `ocx ensure`, another proxy, a hand edit. It is not ours to
+      // remove under a policy that just declined to write one, and calling it
+      // `absent` would contradict the read.
+      return ok({ changed: result.changed, state: "current",
+                  reason: "non_loopback_superseded" });
+    case "not_installed":
+      return refusal(404, "not_installed", ...);
+    case "absent":
+      return ok({ changed: result.changed, state: "absent",
+                  reason: "non_loopback_removed" });
   }
-  return ok({ changed: result.changed, state: "absent", reason: "non_loopback_removed" });
 }
 ```
+
+`non_loopback_superseded` is a rare, honest outcome rather than a refusal: the
+request did what policy allowed, and the file now holds a fence that arrived
+from elsewhere. The card shows `current` because that is what is on disk, and
+the message says the block was not written by this request.
+
+The rule generalises: **report the state the last read observed, never the state
+the operation intended.** Every branch above ends in a value derived from
+`after`, not from `result`.
 
 The post-write inspection is authoritative because it reads the file AFTER every
 write this operation performs. A later `ocx ensure` can still change things, but
@@ -249,7 +276,7 @@ Every `skippedReason` maps to its own outcome (`001` §Grok):
 |---|---|---|---|
 | `no-grok-home` | true | refusal `not_installed` | no |
 | `orphaned-marker` | **false** | refusal `orphaned_marker` | no |
-| `non-loopback` | true | **`non_loopback_removed` — an OUTCOME, not a refusal** | **possibly yes** |
+| `non-loopback` | true | **an OUTCOME, not a refusal — `non_loopback_removed` or `non_loopback_superseded`, decided by the post-write inspection** | **possibly yes** |
 | none, `ok:false` | false | refusal `write_failed` | no |
 
 The first two are now produced by the inspector preflight, before any delegate
@@ -284,13 +311,17 @@ So it is a 200 outcome:
 ```
 
 `changed` reflects what `stripGrokConfig` actually reported: `true` when a stale
-block was removed, `false` when there was nothing to remove. The card lands on
-`absent` either way, which is the truth — Grok is not wired up.
+block was removed, `false` when there was nothing to remove.
 
-`absent` is only correct because the orphaned-marker case can no longer reach
-here: the preflight refuses it first. Without that gate, `changed: false` would
-also cover "a fence we could not touch is still in the file", and `absent` would
-be false (audit r6 #4).
+The `state` does NOT follow from `changed` — it follows from the post-write
+inspection (§The fix). Normally that reads `absent` and the card says Grok is
+not wired up. If it reads `present`, something re-installed a fence in the
+meantime and the card says `current`, because that is what is on disk.
+
+`absent` is a READING, not an inference. The preflight keeps the orphaned case
+from reaching the write at all (r6 #4), and the post-write inspection decides
+what to report (r8 #1, r9). Without both, `changed: false` would also cover "a
+fence we could not touch is still in the file" and `absent` would be false.
 
 "Can no longer reach here" means through THIS route: the pre-write recheck
 closes the in-process window (r7 #1) and the post-write inspection closes the
@@ -333,6 +364,11 @@ be a promise the writer does not make.
       `orphaned_marker` when the fence survived — a test orphans the file
       between the recheck and the write and asserts the route does not report
       `absent` over a fence that is still there (audit r8 #1).
+- [ ] The post-inspection switch is EXHAUSTIVE over all four inspector states;
+      a test installs a well-formed fence between the strip and the read and
+      asserts `current`/`non_loopback_superseded`, never `absent` (audit r9).
+- [ ] Every reported `state` is derived from the post-inspection, not from the
+      writer's result.
 - [ ] WP2 calls `injectGrokConfig` directly, not `syncGrokConfig`; a test
       asserts the wrapper is not on this path.
 - [ ] The route's model list is byte-identical to `syncGrokConfig`'s for the

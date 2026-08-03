@@ -76,7 +76,8 @@ both earn one.)
 
 ## Structure
 
-Four slots, always in this order, because it is the order the questions occur:
+Four required slots plus one optional, always in this order, because it is the
+order the questions occur:
 
 1. **Title** — the action and its target. "Grok Build 연동을 해제할까요?"
 2. **What changes** — the literal path and the literal edit.
