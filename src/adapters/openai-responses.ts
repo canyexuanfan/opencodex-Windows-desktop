@@ -709,12 +709,12 @@ function preferConfiguredHostedTools(
       tools = [...tools, { type: HOSTED_IMAGE_GENERATION_TOOL }];
     } else if (strippedAdditionalToolsIndices.size > 0 && Array.isArray(input)) {
       // Restore into the FIRST stripped container only. Tool declarations are
-      // request-scoped, not container-scoped: `hasHostedImageGenDeclaration` above is
-      // satisfied by a declaration in ANY container, so the containers are separate
-      // carriers for one tool set. #924 briefly restored into every stripped container,
-      // which put `image_generation` on the wire twice.
-      const firstStrippedContainer = Math.min(...strippedAdditionalToolsIndices);
-      input = input.map((item, index) => index === firstStrippedContainer
+      // request-scoped, not container-scoped — the containers are separate carriers for
+      // one tool set, so a single hosted declaration covers the request. An earlier
+      // revision restored into every stripped container and put `image_generation` on
+      // the wire twice; review caught it.
+      const firstStripped = Math.min(...strippedAdditionalToolsIndices);
+      input = input.map((item, index) => index === firstStripped
         && isPlainObject(item)
         && Array.isArray(item.tools)
         ? { ...item, tools: [...item.tools, { type: HOSTED_IMAGE_GENERATION_TOOL }] }
