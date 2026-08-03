@@ -21,6 +21,28 @@ function addedLines(patch) {
     .map((line) => line.slice(1));
 }
 
+function hasDeletions(patch) {
+  if (typeof patch !== "string") return false;
+  return patch
+    .split("\n")
+    .some((line) => line.startsWith("-") && !line.startsWith("---"));
+}
+
+// Lines that survive in the result of a hunk: additions plus context. Used for
+// empty-catch detection when the hunk also deletes lines, so deleting a catch
+// body cannot bypass the check.
+function resultLines(patch) {
+  if (typeof patch !== "string") return [];
+  return patch
+    .split("\n")
+    .filter(
+      (line) =>
+        (line.startsWith("+") && !line.startsWith("+++")) ||
+        line.startsWith(" "),
+    )
+    .map((line) => line.slice(1));
+}
+
 function isGeneratedPath(path) {
   return GENERATED_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
@@ -42,6 +64,11 @@ function assessHygiene({ files = [], labels = [] }) {
   const labelSet = new Set(labels);
   const failures = [];
   const filenames = files.map((file) => file.filename);
+  const removedFilenames = new Set(
+    files
+      .filter((file) => file.status === "removed")
+      .map((file) => file.filename),
+  );
   // Renames are classified on both sides: moving a behavior or generated file
   // to a documentation path must not bypass the hygiene gates.
   const previousFilenames = files.flatMap((file) =>
@@ -49,7 +76,10 @@ function assessHygiene({ files = [], labels = [] }) {
   );
   const allPaths = [...new Set([...filenames, ...previousFilenames])];
   const behaviorChanged = allPaths.some(isBehaviorPath);
-  const testsChanged = allPaths.some(isTestPath);
+  // Deleted tests add no coverage and must not satisfy the regression gate.
+  const testsChanged = allPaths.some(
+    (path) => isTestPath(path) && !removedFilenames.has(path),
+  );
 
   if (
     behaviorChanged &&
@@ -59,7 +89,9 @@ function assessHygiene({ files = [], labels = [] }) {
     failures.push({ code: "missing_regression_test" });
   }
 
-  const generated = allPaths.filter(isGeneratedPath);
+  const generated = allPaths.filter(
+    (path) => isGeneratedPath(path) && !removedFilenames.has(path),
+  );
   if (
     generated.length > 0 &&
     !labelSet.has("generated-change-approved")
@@ -86,7 +118,8 @@ function assessHygiene({ files = [], labels = [] }) {
     if (lines.some((line) => FOCUSED_TEST_PATTERN.test(line))) {
       focusedTests.push(file.filename);
     }
-    if (hasEmptyCatch(lines)) emptyCatches.push(file.filename);
+    const catchLines = hasDeletions(file.patch) ? resultLines(file.patch) : lines;
+    if (hasEmptyCatch(catchLines)) emptyCatches.push(file.filename);
   }
 
   if (
@@ -112,7 +145,9 @@ module.exports = {
   addedLines,
   assessHygiene,
   hasEmptyCatch,
+  hasDeletions,
   isBehaviorPath,
   isGeneratedPath,
   isTestPath,
+  resultLines,
 };

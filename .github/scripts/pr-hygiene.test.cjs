@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { addedLines, assessHygiene, hasEmptyCatch } = require("./pr-hygiene.cjs");
+const { addedLines, assessHygiene, hasEmptyCatch, resultLines } = require("./pr-hygiene.cjs");
 
 describe("patch parsing", () => {
   it("returns added content without diff headers", () => {
@@ -12,6 +12,13 @@ describe("patch parsing", () => {
   it("detects empty catch blocks across added lines", () => {
     assert.equal(hasEmptyCatch(["try { work(); } catch (error) {", "}"]), true);
     assert.equal(hasEmptyCatch(["catch (error) {", "report(error);", "}"]), false);
+  });
+
+  it("keeps hunk context and added lines for result scanning", () => {
+    assert.deepEqual(
+      resultLines(" catch (e) {\n-  report(e);\n }"),
+      ["catch (e) {", "}"],
+    );
   });
 });
 
@@ -74,12 +81,40 @@ describe("assessHygiene", () => {
     assert.equal(failures[0].code, "empty_catch");
   });
 
+  it("detects a catch emptied by deletion", () => {
+    const failures = assessHygiene({ files: [
+      { filename: "docs/example.ts", patch: " catch (e) {\n-  report(e);\n }" },
+    ] });
+    assert.equal(failures[0].code, "empty_catch");
+  });
+
+  it("does not flag a nonempty catch in a hunk with unrelated deletions", () => {
+    const failures = assessHygiene({ files: [
+      { filename: "docs/example.ts", patch: " catch (e) {\n   report(e);\n-  old();\n }" },
+    ] });
+    assert.deepEqual(failures, []);
+  });
+
   it("blocks generated output and orphan lockfile churn", () => {
     const failures = assessHygiene({ files: [
       { filename: "gui/dist/index.js", patch: "+built" },
       { filename: "bun.lock", patch: "+package" },
     ] });
     assert.deepEqual(failures.map((failure) => failure.code), ["generated_output", "orphan_lockfile"]);
+  });
+
+  it("allows removal of generated output", () => {
+    assert.deepEqual(assessHygiene({ files: [
+      { filename: "gui/dist/index.js", status: "removed", patch: "-built" },
+    ] }), []);
+  });
+
+  it("does not count deleted tests as regression coverage", () => {
+    const failures = assessHygiene({ files: [
+      { filename: "src/router.ts", patch: "+change" },
+      { filename: "tests/old.test.ts", status: "removed", patch: "-test" },
+    ] });
+    assert.equal(failures[0].code, "missing_regression_test");
   });
 
   it("allows maintainer-approved narrow exceptions", () => {

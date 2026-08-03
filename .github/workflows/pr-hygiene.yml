@@ -71,6 +71,24 @@ jobs:
               owner, repo, pull_number, per_page: 100,
             });
             const labels = new Set(pr.labels.map((label) => label.name));
+            // Exception approvals are head-specific: a new commit invalidates
+            // them, so a contributor cannot obtain one narrow exception and
+            // then push unreviewed violations under the same label.
+            if (context.payload.action === "synchronize") {
+              for (const name of [
+                "test-exception-approved",
+                "suppression-approved",
+                "generated-change-approved",
+                "dependency-change-approved",
+              ]) {
+                if (labels.has(name)) {
+                  await github.rest.issues.removeLabel({
+                    owner, repo, issue_number: pull_number, name,
+                  });
+                  labels.delete(name);
+                }
+              }
+            }
             const failures = assessHygiene({ files, labels: [...labels] });
 
             async function setBlocked(blocked) {

@@ -16,3 +16,5 @@ Blocking checks:
 Narrow exception labels exist for cases that genuinely need maintainer judgment. Empty catches have no bypass because swallowing errors without behavior is not an acceptable implementation choice.
 
 The workflow reads PR patches through GitHub APIs using trusted default-branch code and never executes the PR head.
+
+Empty-catch detection scans hunk context as well as additions when a hunk deletes lines, so removing a catch body cannot bypass the rule. Removed generated files and removed test files are excluded from the generated-output and regression-coverage checks respectively. Exception labels are head-specific: a `synchronize` event revokes them so approvals cannot cover unreviewed new commits.
