@@ -10,6 +10,7 @@ import { resolveEnvValue } from "../config";
 import { getValidAccessToken, getValidAccessTokenForAccount } from "../oauth";
 import { getAccountCredential, getAccountSet, getCredential } from "../oauth/store";
 import { antigravityUserAgent } from "../adapters/client-fingerprint";
+import { apiKeyPoolEntryId } from "./api-keys";
 import { getProviderRegistryEntry, providerCodexAccountMode } from "./registry";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./openai-tiers";
@@ -32,6 +33,7 @@ const CACHE_TTL_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
 const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
+const A6API_BASE_URL = "https://api.a6api.com";
 /** Keep a failed probe's previous row at most this long before dropping it. */
 const LAST_GOOD_MAX_AGE_MS = CODEX_CAPACITY_MAX_QUOTA_AGE_MS;
 const nativeMainReportGenerations = new WeakMap<ProviderQuotaReport, number>();
@@ -43,6 +45,8 @@ export function setProviderQuotaBeforePublishForTests(
 ): void {
   providerQuotaBeforePublishForTests = hook;
 }
+const TERMINAL_QUOTA_FAILURE = Symbol("terminal-quota-failure");
+type ProviderQuotaProbeResult = ProviderQuotaReport | null | typeof TERMINAL_QUOTA_FAILURE;
 
 export interface ProviderQuotaWindow {
   label: string;
@@ -89,7 +93,13 @@ export function clearProviderQuotaCache(): void {
 
 function cacheKey(config: OcxConfig): string {
   const providers = Object.entries(config.providers)
-    .map(([name, provider]) => `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${providerCodexAccountMode(name, provider) ?? "none"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)
+    .map(([name, provider]) => {
+      const resolvedKey = typeof provider.apiKey === "string"
+        ? resolveEnvValue(provider.apiKey)?.trim()
+        : undefined;
+      const activeKeyId = resolvedKey ? apiKeyPoolEntryId(resolvedKey) : "none";
+      return `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${providerCodexAccountMode(name, provider) ?? "none"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}:${activeKeyId}`;
+    })
     .sort()
     .join("|");
   return `${config.defaultProvider}|${providers}`;
@@ -226,6 +236,77 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function isBuiltInChatGptForwardProvider(name: string, provider: OcxProviderConfig): boolean {
   return name === OPENAI_CODEX_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider);
+}
+
+function isCanonicalA6apiBaseUrl(baseUrl: string): boolean {
+  const normalized = normalizedBaseUrl(baseUrl);
+  return normalized === A6API_BASE_URL || normalized === `${A6API_BASE_URL}/v1`;
+}
+
+function a6apiPayload(value: unknown): Record<string, unknown> | null {
+  const body = asRecord(value);
+  return asRecord(body?.data) ?? body;
+}
+
+function firstFinite(record: Record<string, unknown> | null, names: string[]): number | undefined {
+  if (!record) return undefined;
+  for (const name of names) {
+    const value = toFiniteNumber(record[name]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  // Never send a configured API key to a lookalike host or through a redirect.
+  if (!isCanonicalA6apiBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const headers = { Accept: "application/json", Authorization: `Bearer ${apiKey}` } as const;
+  const [subscriptionResponse, tokenResponse] = await Promise.all([
+    fetch(`${A6API_BASE_URL}/dashboard/billing/subscription`, {
+      headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }),
+    fetch(`${A6API_BASE_URL}/api/usage/token/`, {
+      headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }),
+  ]);
+  if (!subscriptionResponse.ok || !tokenResponse.ok) {
+    const statuses = [subscriptionResponse.status, tokenResponse.status];
+    // 408/429 are transient (timeout/throttle), not invalid-account signals: keep the
+    // last-good row like 5xx/network failures. 401/403 (bad key) and 404 (contract change)
+    // stay terminal.
+    return statuses.some(status => status >= 400 && status < 500 && status !== 429 && status !== 408)
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const subscription = a6apiPayload(await subscriptionResponse.json().catch(() => null));
+  const token = a6apiPayload(await tokenResponse.json().catch(() => null));
+  const limitUsd = firstFinite(subscription, ["hard_limit_usd"]);
+  const grantedUnits = firstFinite(token, ["total_granted"]);
+  const usedUnits = firstFinite(token, ["total_used"]);
+  const availableUnits = firstFinite(token, ["total_available"]);
+  const reconciledUnits = usedUnits !== undefined && availableUnits !== undefined
+    ? usedUnits + availableUnits
+    : undefined;
+  const reconciliationTolerance = grantedUnits !== undefined
+    ? Math.abs(grantedUnits) * 1e-9
+    : 0;
+  if (limitUsd === undefined || grantedUnits === undefined || usedUnits === undefined
+    || availableUnits === undefined || limitUsd <= 0 || grantedUnits <= 0
+    || usedUnits < 0 || availableUnits < 0
+    || reconciledUnits === undefined
+    || Math.abs(reconciledUnits - grantedUnits) > reconciliationTolerance) return TERMINAL_QUOTA_FAILURE;
+  const usdPerUnit = limitUsd / grantedUnits;
+  const usedUsd = usedUnits * usdPerUnit;
+  const remainingUsd = Math.max(0, availableUnits * usdPerUnit);
+  const percent = normalizePercent((usedUsd / limitUsd) * 100);
+  if (percent === undefined) return TERMINAL_QUOTA_FAILURE;
+  const label = `API credits ($${remainingUsd.toFixed(2)} of $${limitUsd.toFixed(2)} remaining)`;
+  return report(provider, "a6api:billing", {
+    customWindows: [{ label, percent }],
+    updatedAt: Date.now(),
+  });
 }
 
 function report(
@@ -671,7 +752,7 @@ export async function fetchProviderAccountQuotas(
 function normalizedBaseUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    if (url.search || url.hash) return null;
+    if (url.username || url.password || url.search || url.hash) return null;
     return `${url.origin.toLowerCase()}${url.pathname.replace(/\/+$/, "")}`;
   } catch {
     return null;
@@ -1079,7 +1160,7 @@ async function maybeFetchProviderQuota(
   config: OcxConfig,
   forceRefresh: boolean,
   prefetchedCodexSnapshot?: CodexAuthAccountsSnapshotPromise,
-): Promise<ProviderQuotaReport | null> {
+): Promise<ProviderQuotaProbeResult> {
   if (provider.disabled === true) return null;
   try {
     if (isBuiltInChatGptForwardProvider(name, provider)) {
@@ -1094,6 +1175,9 @@ async function maybeFetchProviderQuota(
     if (provider.authMode === "oauth" && name === "kimi") return fetchKimiQuota(name, provider);
     if (provider.authMode === "key" && isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
       return fetchKimiQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && isCanonicalA6apiBaseUrl(provider.baseUrl)) {
+      return fetchA6apiQuota(name, provider);
     }
     return null;
   } catch {
@@ -1125,11 +1209,15 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
 
   const promise = (async (): Promise<ProviderQuotaResponse> => {
     const previous = cache && cache.key === key ? cache.response.reports : [];
-    const fresh = (await Promise.all(
+    const probeResults = await Promise.all(
       Object.entries(config.providers).map(([name, provider]) => (
-          maybeFetchProviderQuota(name, provider, config, forceRefresh, prefetchedCodexSnapshot)
-        )),
-      )).filter((item): item is ProviderQuotaReport => item !== null);
+        maybeFetchProviderQuota(name, provider, config, forceRefresh, prefetchedCodexSnapshot)
+      )),
+    );
+    const fresh = probeResults.filter((item): item is ProviderQuotaReport => item !== null && item !== TERMINAL_QUOTA_FAILURE);
+    const terminalFailures = new Set(
+      Object.keys(config.providers).filter((_, index) => probeResults[index] === TERMINAL_QUOTA_FAILURE),
+    );
     await providerQuotaBeforePublishForTests?.();
     let commitKey: string | null = null;
     if (epoch === invalidationEpoch) {
@@ -1137,8 +1225,8 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
       commitKey = typeof commitKeyCandidate === "string" ? commitKeyCandidate : await commitKeyCandidate;
     }
 
-    // Keep bounded last-good rows when a probe fails (e.g. transient upstream flake); never
-    // re-stamp their timestamps, and drop rows older than LAST_GOOD_MAX_AGE_MS.
+    // Keep bounded last-good rows when a probe fails transiently; terminal-invalid provider
+    // responses explicitly suppress their old row. Never re-stamp preserved timestamps.
     // Note: the cache key encodes the provider set (name/adapter/authMode/disabled/baseUrl),
     // so previous rows always correspond to currently configured, enabled providers — a
     // disabled or removed provider changes the key and starts from an empty previous set.
@@ -1158,6 +1246,11 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
         byProvider.delete(item.provider);
         generationMismatchedProviders.add(item.provider);
       }
+    }
+    // Terminal-invalid probes suppress their previous row (transient failures keep it).
+    for (const provider of terminalFailures) {
+      byProvider.delete(provider);
+      generationMismatchedProviders.delete(provider);
     }
 
     const response = { generatedAt: Date.now(), reports: [...byProvider.values()] };
