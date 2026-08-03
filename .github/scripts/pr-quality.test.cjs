@@ -161,6 +161,49 @@ describe("hasScreenshotEvidence", () => {
     );
   });
 
+  it("accepts reference-style images with a matching definition", () => {
+    assert.equal(
+      hasScreenshotEvidence(
+        "After:\n\n![after][shot]\n\n[shot]: https://example.com/after.png",
+      ),
+      true,
+    );
+    assert.equal(
+      hasScreenshotEvidence(
+        "![after][]\n\n[after]: https://example.com/after.png",
+      ),
+      true,
+    );
+  });
+
+  it("rejects image syntax inside fenced code and HTML comments", () => {
+    assert.equal(
+      hasScreenshotEvidence('```\n![after](https://example.com/after.png)\n```'),
+      false,
+    );
+    assert.equal(
+      hasScreenshotEvidence('```\n<img src="https://example.com/ui.png">\n```'),
+      false,
+    );
+    assert.equal(
+      hasScreenshotEvidence("<!-- ![after](https://example.com/after.png) -->"),
+      false,
+    );
+    assert.equal(
+      hasScreenshotEvidence('<!-- <img src="https://example.com/ui.png"> -->'),
+      false,
+    );
+  });
+
+  it("rejects img tags without a renderable src and references without a definition", () => {
+    assert.equal(hasScreenshotEvidence("<img>"), false);
+    assert.equal(hasScreenshotEvidence('<img src="">'), false);
+    assert.equal(
+      hasScreenshotEvidence("![after][shot]"),
+      false,
+    );
+  });
+
   it("rejects plain links, bare image URLs, and text-only bodies", () => {
     assert.equal(
       hasScreenshotEvidence("[Screenshot](https://example.com/ui.png)"),
@@ -395,6 +438,52 @@ describe("collectPrQualityFailures", () => {
       authorPermission: "read",
     });
     assert.ok(!failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("accepts a gui title when the screenshot uses reference-style markdown", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "GUI: fix provider list spacing",
+      body: [
+        "## Summary",
+        "This change fixes the provider list spacing in the dashboard.",
+        "",
+        "![after][shot]",
+        "",
+        "[shot]: https://example.com/after.png",
+        "",
+        "## Test plan",
+        "- Ran bun test tests/ci-workflows.test.ts",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+    });
+    assert.ok(!failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("still flags a gui title when image syntax is only inside a code fence", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "GUI: fix provider list spacing",
+      body: [
+        "## Summary",
+        "This change fixes the provider list spacing in the dashboard.",
+        "",
+        "```",
+        "![after](https://example.com/after.png)",
+        "```",
+        "",
+        "## Test plan",
+        "- Ran bun test tests/ci-workflows.test.ts",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+    });
+    assert.ok(failures.some((f) => f.code === "missing_ui_screenshot"));
   });
 
   it("ignores the template's own gui/screenshot instruction", () => {
