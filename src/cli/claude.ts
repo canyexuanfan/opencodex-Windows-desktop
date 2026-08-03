@@ -18,6 +18,7 @@ import { configuredAdminToken } from "../lib/admin-secrets";
 import { PROXY_MARKER, ownAdmissionTokens, defaultAuthDetectDeps, detectClaudeAuth, type AuthDetectDeps } from "../claude/auth-detect";
 import { resolveClaudeAuthMode } from "../claude/auth-mode";
 import { withProcessRuntimeProvenance } from "../lib/bun-runtime";
+import { ANTHROPIC_PARENT_ENV_SLOTS, trustedNodeLauncherContext, type AnthropicParentEnvSlot } from "./launcher-context";
 
 export interface ClaudeLaunchEnv {
   [key: string]: string | undefined;
@@ -27,13 +28,18 @@ export interface ClaudeLaunchEnv {
  * Injectable IO for tests. `env` is deliberately NOT injectable: it is bound to the
  * launch base so detection and the spawned process can never disagree (audit R3-3).
  */
-export type ClaudeEnvDeps = { authDetect?: Omit<Partial<AuthDetectDeps>, "env" | "ownTokens"> };
+export type ClaudeEnvDeps = {
+  authDetect?: Omit<Partial<AuthDetectDeps>, "env" | "ownTokens">;
+  /** Test seam; production uses the authenticated Node-launcher context. */
+  preBunAnthropicSlots?: readonly AnthropicParentEnvSlot[] | null;
+};
 
 /**
  * Pure env assembly (unit-tested): never sets ANTHROPIC_API_KEY (setting both
  * token vars triggers Claude Code's auth-conflict warning, 003 E1), and never
- * overrides variables the user already exported, apart from stale loopback
- * ANTHROPIC_BASE_URL values owned by a previous opencodex launch.
+ * preserves Anthropic variables proven to exist in the parent Node launcher,
+ * apart from stale loopback ANTHROPIC_BASE_URL values owned by a previous
+ * opencodex launch. Unproven ambient values fail closed as project dotenv.
  */
 export function buildClaudeEnv(
   config: OcxConfig,
@@ -49,27 +55,24 @@ export function buildClaudeEnv(
   // leaving the child with no token at all (audit R2-1). It is opencodex state, never
   // user auth, so dropping it unconditionally is safe.
   if (env.ANTHROPIC_AUTH_TOKEN === PROXY_MARKER) delete env.ANTHROPIC_AUTH_TOKEN;
-  // Step 1b — drop Anthropic credentials that the bundled Bun runtime synthesized from a
-  // project `.env`/`.env.local` (issue #701). Claude Code disables claude.ai connectors the
-  // moment either token slot is populated, so an ambient project file silently moved a
-  // subscriber onto API billing while their OAuth login stayed healthy. The npm launcher
-  // runs under Node, which does NOT auto-load dotenv, so it records the slots that existed
-  // before Bun started; anything populated now but absent then came from the working
-  // directory, not from the user. A genuine shell export is still honored, which keeps
-  // auto-mode API-key auth working. An ABSENT marker means provenance is unknowable
-  // (a direct `bun src/cli/index.ts` run, a test, or an older launcher), and then we
-  // change nothing rather than guess — an EMPTY marker is different: the launcher ran
-  // and saw no pre-existing slots.
-  const preBunSlots = base.OCX_PRE_BUN_ANTHROPIC_ENV;
-  if (preBunSlots !== undefined) {
-    const exported = new Set(preBunSlots.split(",").filter(name => name.length > 0));
-    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const) {
-      const value = env[name];
-      if (value !== undefined && value !== "" && !exported.has(name)) delete env[name];
-    }
+  // Step 1b — drop Anthropic credentials AND destinations that Bun synthesized from a
+  // project `.env`/`.env.local`. Preserving a dotenv-only ANTHROPIC_BASE_URL while
+  // selecting subscription auth sends Claude's OAuth bearer and prompt to that host.
+  // The plain-Node launcher records genuine parent exports before Bun starts and pairs
+  // that context with an argv proof. Without a trusted context (direct Bun or an older
+  // launcher) we fail closed and treat all three ambient slots as project-controlled.
+  const explicitSlots = deps.preBunAnthropicSlots;
+  const trustedSlots = explicitSlots === undefined
+    ? trustedNodeLauncherContext()?.anthropicEnvSlots ?? []
+    : explicitSlots ?? [];
+  const exported = new Set<AnthropicParentEnvSlot>(trustedSlots);
+  for (const name of ANTHROPIC_PARENT_ENV_SLOTS) {
+    const value = env[name];
+    if (value !== undefined && value !== "" && !exported.has(name)) delete env[name];
   }
-  // Never forward the seam itself to Claude Code.
+  // Never forward old or current provenance seams to Claude Code.
   delete env.OCX_PRE_BUN_ANTHROPIC_ENV;
+  delete env.OCX_NODE_LAUNCH_CONTEXT;
   const setDefault = (name: string, value: string | undefined) => {
     if (value === undefined || value.length === 0) return;
     if (env[name] !== undefined && env[name] !== "") return; // user wins

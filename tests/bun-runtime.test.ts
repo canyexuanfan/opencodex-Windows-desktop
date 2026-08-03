@@ -1,16 +1,24 @@
-import { describe, it, expect, afterAll } from "bun:test";
+import { describe, it, expect, afterAll, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, overrideBunPath, reportedBunRuntimeSource, withProcessRuntimeProvenance } from "../src/lib/bun-runtime";
+import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, isRealBunBinary, bundledBunPath, durableBunPath, durableBunRuntime, reportedBunRuntimeSource, withProcessRuntimeProvenance } from "../src/lib/bun-runtime";
 
 // realpath the temp root: on macOS /var is a symlink to /private/var, so a path built
 // from mkdtemp compares unequal to the same path resolved through process.cwd().
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), "ocx-bun-runtime-")));
 const previousOverride = process.env.OPENCODEX_BUN_PATH;
-afterAll(() => {
+const previousRuntimeSource = process.env[BUN_RUNTIME_SOURCE_ENV];
+const previousRuntimePath = process.env[BUN_RUNTIME_PATH_ENV];
+afterEach(() => {
   if (previousOverride === undefined) delete process.env.OPENCODEX_BUN_PATH;
   else process.env.OPENCODEX_BUN_PATH = previousOverride;
+  if (previousRuntimeSource === undefined) delete process.env[BUN_RUNTIME_SOURCE_ENV];
+  else process.env[BUN_RUNTIME_SOURCE_ENV] = previousRuntimeSource;
+  if (previousRuntimePath === undefined) delete process.env[BUN_RUNTIME_PATH_ENV];
+  else process.env[BUN_RUNTIME_PATH_ENV] = previousRuntimePath;
+});
+afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -40,29 +48,25 @@ describe("isRealBunBinary (size gate vs placeholder stub)", () => {
 });
 
 describe("bundledBunPath / durableBunPath", () => {
-  it("uses OPENCODEX_BUN_PATH only when it points to a real Bun binary", () => {
+  it("does not reselect a dotenv Bun override after the runtime has started", () => {
     const real = join(tmp, "override-bun.exe");
     const stub = join(tmp, "override-stub.exe");
     writeFileSync(real, Buffer.alloc(1_000_000));
     writeFileSync(stub, "stub");
 
     process.env.OPENCODEX_BUN_PATH = stub;
-    expect(overrideBunPath()).toBeNull();
     expect(durableBunRuntime().source).not.toBe("override");
 
     process.env.OPENCODEX_BUN_PATH = real;
-    expect(overrideBunPath()).toBe(real);
-    expect(durableBunRuntime()).toEqual({
-      path: real,
-      source: "override",
-      overrideEnv: "OPENCODEX_BUN_PATH",
-    });
-    expect(durableBunPath()).toBe(real);
+    delete process.env[BUN_RUNTIME_SOURCE_ENV];
+    delete process.env[BUN_RUNTIME_PATH_ENV];
+    expect(durableBunRuntime().path).not.toBe(real);
+    expect(durableBunRuntime().source).not.toBe("override");
     if (previousOverride === undefined) delete process.env.OPENCODEX_BUN_PATH;
     else process.env.OPENCODEX_BUN_PATH = previousOverride;
   });
 
-  it("resolves a relative override against the launcher cwd", () => {
+  it("preserves a launcher-selected runtime and ignores a later relative override", () => {
     const launcherCwd = join(tmp, "launcher-cwd");
     const real = join(launcherCwd, "relative-bun.exe");
     const previousCwd = process.cwd();
@@ -73,15 +77,20 @@ describe("bundledBunPath / durableBunPath", () => {
     try {
       process.chdir(launcherCwd);
       process.env.OPENCODEX_BUN_PATH = "  relative-bun.exe  ";
-      expect(overrideBunPath()).toBe(real);
+      process.env[BUN_RUNTIME_SOURCE_ENV] = "override";
+      process.env[BUN_RUNTIME_PATH_ENV] = process.execPath;
       expect(durableBunRuntime()).toEqual({
-        path: real,
+        path: process.execPath,
         source: "override",
         overrideEnv: "OPENCODEX_BUN_PATH",
       });
-      expect(durableBunPath()).toBe(real);
+      expect(durableBunPath()).toBe(process.execPath);
     } finally {
       process.chdir(previousCwd);
+      if (previousRuntimeSource === undefined) delete process.env[BUN_RUNTIME_SOURCE_ENV];
+      else process.env[BUN_RUNTIME_SOURCE_ENV] = previousRuntimeSource;
+      if (previousRuntimePath === undefined) delete process.env[BUN_RUNTIME_PATH_ENV];
+      else process.env[BUN_RUNTIME_PATH_ENV] = previousRuntimePath;
       if (inheritedOverride === undefined) delete process.env.OPENCODEX_BUN_PATH;
       else process.env.OPENCODEX_BUN_PATH = inheritedOverride;
     }
@@ -152,8 +161,11 @@ describe("reportedBunRuntimeSource (#848 launch-time provenance)", () => {
     writeFileSync(real, "x".repeat(2 * 1024 * 1024));
     process.env.OPENCODEX_BUN_PATH = real;
     try {
-      // durableBunRuntime would say "override" here; the reporter must still say unknown.
-      expect(durableBunRuntime().source).toBe("override");
+      // The durable selector ignores this late value, and the reporter must also
+      // stay unknown without a source/path pair naming the running executable.
+      delete process.env[BUN_RUNTIME_SOURCE_ENV];
+      delete process.env[BUN_RUNTIME_PATH_ENV];
+      expect(durableBunRuntime().source).not.toBe("override");
       expect(reportedBunRuntimeSource({})).toBeUndefined();
     } finally {
       if (inherited === undefined) delete process.env.OPENCODEX_BUN_PATH;

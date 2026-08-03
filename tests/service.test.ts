@@ -577,37 +577,47 @@ describe("Windows service task", () => {
 
 describe("launchd service plist", () => {
   test("every durable launcher stamps the Bun provenance paired with the binary it baked (#848)", () => {
-    const inherited = process.env.OPENCODEX_BUN_PATH;
+    const inheritedOverride = process.env.OPENCODEX_BUN_PATH;
+    const inheritedSource = process.env.OCX_BUN_RUNTIME_SOURCE;
+    const inheritedPath = process.env.OCX_BUN_RUNTIME_PATH;
     const overrideBun = join(TEST_DIR, "provenance-override-bun.exe");
     mkdirSync(TEST_DIR, { recursive: true });
     writeFileSync(overrideBun, "x".repeat(2 * 1024 * 1024));
     try {
-      // With a valid override active, every launcher must bake THAT binary and
-      // label it `override` — a marker that disagreed with the baked path would be
-      // worse than no marker at all.
+      // OPENCODEX_BUN_PATH is consumed by the Node launcher before Bun can load a
+      // project dotenv. Once Bun is running, an unpaired value is untrusted and
+      // must never be persisted into a durable launcher.
+      delete process.env.OCX_BUN_RUNTIME_SOURCE;
+      delete process.env.OCX_BUN_RUNTIME_PATH;
       process.env.OPENCODEX_BUN_PATH = overrideBun;
       const plist = buildPlist();
-      expect(plist).toContain("<key>OCX_BUN_RUNTIME_SOURCE</key><string>override</string>");
-      expectTextToContainPath(plist, overrideBun);
+      expect(plist).not.toContain("<key>OCX_BUN_RUNTIME_SOURCE</key><string>override</string>");
+      expect(plist).not.toContain(overrideBun);
 
       const unit = buildUnit();
-      expect(unit).toContain('Environment="OCX_BUN_RUNTIME_SOURCE=override"');
-      expectTextToContainPath(unit, overrideBun);
+      expect(unit).not.toContain('Environment="OCX_BUN_RUNTIME_SOURCE=override"');
+      expect(unit).not.toContain(overrideBun);
 
       const script = buildWindowsServiceScript();
-      expect(script).toContain('set "OCX_BUN_RUNTIME_SOURCE=override"');
-      expect(script).toContain('echo bun_source="override"');
+      expect(script).not.toContain('set "OCX_BUN_RUNTIME_SOURCE=override"');
+      expect(script).not.toContain(overrideBun);
 
-      // No override: the same three fall back to the bundled/process runtime and say so.
-      delete process.env.OPENCODEX_BUN_PATH;
-      const bundledPlist = buildPlist();
-      expect(bundledPlist).toMatch(/<key>OCX_BUN_RUNTIME_SOURCE<\/key><string>(bundled|process)<\/string>/);
-      expect(bundledPlist).not.toContain(">override<");
-      expect(buildUnit()).toMatch(/Environment="OCX_BUN_RUNTIME_SOURCE=(bundled|process)"/);
-      expect(buildWindowsServiceScript()).toMatch(/set "OCX_BUN_RUNTIME_SOURCE=(bundled|process)"/);
+      // A source/path pair stamped by the Node launcher is accepted only when it
+      // names the Bun executable that is actually running this process.
+      process.env.OCX_BUN_RUNTIME_SOURCE = "override";
+      process.env.OCX_BUN_RUNTIME_PATH = process.execPath;
+      const trustedPlist = buildPlist();
+      expect(trustedPlist).toContain("<key>OCX_BUN_RUNTIME_SOURCE</key><string>override</string>");
+      expectTextToContainPath(trustedPlist, process.execPath);
+      expect(buildUnit()).toContain('Environment="OCX_BUN_RUNTIME_SOURCE=override"');
+      expect(buildWindowsServiceScript()).toContain('set "OCX_BUN_RUNTIME_SOURCE=override"');
     } finally {
-      if (inherited === undefined) delete process.env.OPENCODEX_BUN_PATH;
-      else process.env.OPENCODEX_BUN_PATH = inherited;
+      if (inheritedOverride === undefined) delete process.env.OPENCODEX_BUN_PATH;
+      else process.env.OPENCODEX_BUN_PATH = inheritedOverride;
+      if (inheritedSource === undefined) delete process.env.OCX_BUN_RUNTIME_SOURCE;
+      else process.env.OCX_BUN_RUNTIME_SOURCE = inheritedSource;
+      if (inheritedPath === undefined) delete process.env.OCX_BUN_RUNTIME_PATH;
+      else process.env.OCX_BUN_RUNTIME_PATH = inheritedPath;
     }
   });
 

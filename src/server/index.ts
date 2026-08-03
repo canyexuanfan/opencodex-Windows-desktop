@@ -158,6 +158,12 @@ import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveS
 import { handleSearch } from "./search";
 import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
 import { initializeManagementAuthState, issueGuiSession, managementPrincipal, requireManagementAuth } from "./management-auth";
+import {
+  LOCAL_ATTESTATION_CHALLENGE_HEADER,
+  LOCAL_ATTESTATION_PROOF_HEADER,
+  createLocalAttestationProof,
+  createLocalAttestationSecret,
+} from "../lib/local-management-attestation";
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -271,7 +277,10 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
 // trackSseForRequestLog(
 // export function relaySseWithHeartbeat
 
-export function startServer(port?: number) {
+export function startServer(
+  port?: number,
+  localAttestationSecret = createLocalAttestationSecret(),
+) {
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   setLiveStateStoreConfig(config);
   applyProxyEnv(config);
@@ -442,7 +451,14 @@ export function startServer(port?: number) {
 
       if (url.pathname === "/healthz" && req.method === "GET") {
         // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
-        return jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: listenPort }, 200, req, config);
+        const healthPort = server.port ?? listenPort;
+        const response = jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: healthPort }, 200, req, config);
+        const challenge = req.headers.get(LOCAL_ATTESTATION_CHALLENGE_HEADER);
+        if (challenge) {
+          const proof = createLocalAttestationProof(localAttestationSecret, challenge, process.pid, healthPort);
+          if (proof) response.headers.set(LOCAL_ATTESTATION_PROOF_HEADER, proof);
+        }
+        return response;
       }
 
       if (url.pathname.startsWith("/api/")) {

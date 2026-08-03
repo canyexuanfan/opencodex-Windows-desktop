@@ -23,6 +23,11 @@ import {
   timedOutSecretPathCountForTests,
   hardenSecretDir,
 } from "../src/lib/windows-secret-acl";
+import {
+  LOCAL_ATTESTATION_CHALLENGE_HEADER,
+  LOCAL_ATTESTATION_PROOF_HEADER,
+  verifyLocalAttestationProof,
+} from "../src/lib/local-management-attestation";
 
 const previousHome = process.env.OPENCODEX_HOME;
 const previousDataToken = process.env.OPENCODEX_API_AUTH_TOKEN;
@@ -89,6 +94,21 @@ afterEach(() => {
 });
 
 describe("management and data-plane credential separation", () => {
+  test("healthz proves the listener owns the protected runtime secret", async () => {
+    const secret = "A".repeat(43);
+    const challenge = "B".repeat(43);
+    const server = startServer(0, secret);
+    try {
+      const health = await fetch(new URL("/healthz", server.url), {
+        headers: { [LOCAL_ATTESTATION_CHALLENGE_HEADER]: challenge },
+      });
+      const proof = health.headers.get(LOCAL_ATTESTATION_PROOF_HEADER);
+      expect(verifyLocalAttestationProof(secret, challenge, process.pid, server.port, proof)).toBe(true);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("management-token temp cleanup forgets successful ACL memos and retains failed removals", () => {
     const temporary = join(testHome, ".admin-token.tmp");
     const previousUsername = process.env.USERNAME;

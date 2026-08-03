@@ -45,7 +45,10 @@ import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 import { removeOwnedConfigState } from "../lib/config-ownership";
 import { withProcessRuntimeProvenance } from "../lib/bun-runtime";
+import { initializeNodeLauncherContext } from "./launcher-context";
+import { createLocalAttestationSecret } from "../lib/local-management-attestation";
 
+initializeNodeLauncherContext();
 const args = process.argv.slice(2);
 const command = args[0];
 
@@ -194,9 +197,10 @@ async function handleStart(options: { block?: boolean } = {}) {
   // the same port only (never hop — that was the remaining PR #152 gap).
   let port = await chooseListenPort(requestedPort);
   let server: ReturnType<typeof startServer>;
+  const localAttestationSecret = createLocalAttestationSecret();
   for (let attempt = 0; ; attempt++) {
     try {
-      server = startServer(port);
+      server = startServer(port, localAttestationSecret);
       // Prewarm the live provider model cache as soon as the port is bound so the
       // first GUI /v1/models (and syncModelsToCodex below) share one discovery flight
       // instead of racing duplicate upstream /models fetches.
@@ -224,7 +228,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   writePid(process.pid);
 
   const config = loadConfig();
-  writeRuntimePort({ pid: process.pid, port, hostname: config.hostname });
+  writeRuntimePort({ pid: process.pid, port, hostname: config.hostname, attestationSecret: localAttestationSecret });
   // No pre-emptive snapshot here. `injectCodexConfig` journals the exact bytes it
   // is about to transform; snapshotting earlier only captured a baseline that could
   // already be stale by the time injection ran (#477).

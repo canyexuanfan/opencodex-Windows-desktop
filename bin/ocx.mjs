@@ -9,6 +9,7 @@
  * src/cli/index.ts — only the published npm `bin` routes through here.)
  */
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -22,6 +23,8 @@ const PKG = "@bitkyc08/opencodex";
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(here, "..", "src", "cli", "index.ts");
+const NODE_LAUNCH_CONTEXT_ENV = "OCX_NODE_LAUNCH_CONTEXT";
+const NODE_LAUNCH_PROOF_PREFIX = "--ocx-internal-launch-proof=";
 
 function isNodeModulesInstall() {
   return here.split(/[\\/]/).includes("node_modules");
@@ -407,22 +410,28 @@ const bun = bunRuntime.path;
 // Provenance seam for issue #701: THIS launcher runs under Node, which does not
 // auto-load a project `.env`/`.env.local`; the Bun child does, before any opencodex
 // code evaluates. So this is the last point that can still tell a real shell export
-// from a working-directory dotenv value, and we record which Anthropic credential
-// slots already existed. `src/cli/claude.ts` then treats anything present in the Bun
-// child but missing from this list as ambient project pollution rather than user auth,
+// from a working-directory dotenv value, and we record which Anthropic credential or
+// destination slots already existed. The context is paired with a random proof carried
+// in argv, which project dotenv cannot modify during an ordinary `ocx` invocation.
+// `src/cli/claude.ts` treats anything present in the Bun child but missing from this
+// list as ambient project pollution rather than user auth or destination,
 // which stopped a project dotenv from silently moving a claude.ai subscriber onto API
-// billing. An EMPTY value is meaningful (the launcher ran and saw no slots) and is
-// distinct from the variable being absent (no launcher at all — change nothing), so
-// this must stay a plain assignment and never be collapsed to a falsy check.
+// billing and prevents it from redirecting the subscriber's OAuth bearer.
 // Disabling Bun's dotenv wholesale with --no-env-file is NOT an option: config
 // interpolation and provider settings legitimately read the project environment.
-const preBunAnthropicSlots = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
+const preBunAnthropicSlots = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]
   .filter(name => typeof process.env[name] === "string" && process.env[name] !== "");
-const child = spawn(bun, [cliPath, ...process.argv.slice(2)], {
+const launchProof = randomBytes(32).toString("base64url");
+const launchContext = JSON.stringify({
+  version: 1,
+  proof: launchProof,
+  anthropicEnvSlots: preBunAnthropicSlots,
+});
+const child = spawn(bun, [cliPath, `${NODE_LAUNCH_PROOF_PREFIX}${launchProof}`, ...process.argv.slice(2)], {
   stdio: "inherit",
   env: {
     ...process.env,
-    OCX_PRE_BUN_ANTHROPIC_ENV: preBunAnthropicSlots.join(","),
+    [NODE_LAUNCH_CONTEXT_ENV]: launchContext,
     [BUN_RUNTIME_SOURCE_ENV]: bunRuntime.source,
     [BUN_RUNTIME_PATH_ENV]: bunRuntime.path,
   },

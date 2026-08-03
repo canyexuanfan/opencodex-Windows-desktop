@@ -72,8 +72,9 @@ jobs:
   # only one available here. GitHub's own guidance is to avoid self-hosted
   # runners on public repositories for this reason.
   #
-  # So read the routing below as a COST control that keeps honest pull requests
-  # on GitHub-hosted runners, not as a guarantee about hostile ones.
+  # So read the routing below as a STABILITY/OPERATIONS control that keeps
+  # honest pull requests on GitHub-hosted runners and lets trusted branch runs
+  # avoid the hosted-Windows Bun crashes. It is not the security boundary.
   #
   # `push` on dev/main/preview requires the push permission, and
   # `workflow_dispatch` requires write access, so both carry a trusted author.
