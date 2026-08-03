@@ -420,6 +420,32 @@ function usesAdaptiveThinking(modelId: string): boolean {
   return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
 }
 
+/**
+ * Claude families that (a) think by DEFAULT when the request omits `thinking`,
+ * and (b) accept an explicit `thinking: {type: "disabled"}` to turn it off.
+ *
+ * Deliberately NOT `usesAdaptiveThinking()`, which answers a different question
+ * (which wire shape a family accepts). The two sets differ in both directions:
+ * Fable always thinks and REJECTS an explicit disable, while Opus 4.7/4.8 use
+ * the adaptive wire but leave thinking off when the field is omitted, so they
+ * need no disable at all. Seeded with the family where the defect reproduces
+ * (#545); widen only with vendor evidence, since a wrong entry here turns a
+ * silent truncation into a 400.
+ */
+const EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS: Record<string, readonly [major: number, minor: number]> = {
+  sonnet: [5, 0],
+};
+
+function supportsExplicitThinkingDisable(modelId: string): boolean {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
+  if (!match) return false;
+  const minimum = EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS[match[1]];
+  if (!minimum) return false;
+  const major = Number(match[2]);
+  const minor = match[3] === undefined ? 0 : Number(match[3]);
+  return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
+}
+
 /** `output_config.effort` accepts low|medium|high|xhigh|max — "minimal" is rejected with a 400. */
 function adaptiveEffort(effort: string): string {
   return effort === "minimal" ? "low" : effort;
@@ -766,7 +792,14 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       // `reasoning` is a Codex effort string; "none" is the disable sentinel (see parser.ts
       // REASONING_EFFORTS). A bare truthy check would treat "none" as truthy and wrongly enable
       // extended thinking (and strip temperature/top_p), so gate on a real, non-disable effort.
-      if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
+      //
+      // "none" is not the same as absent. Omitting `thinking` lets a default-on model think
+      // anyway, and thinking shares the caller's `max_tokens` — which truncates a small-budget
+      // request before it can emit its stop sequence (#545). Say "disabled" out loud where the
+      // model both defaults to thinking and accepts being told not to.
+      if (parsed.options.reasoning === "none" && supportsExplicitThinkingDisable(parsed.modelId)) {
+        body.thinking = { type: "disabled" };
+      } else if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
         if (usesAdaptiveThinking(parsed.modelId)) {
           // Adaptive-thinking models replace the token budget with an effort knob and reject
           // `thinking.type: "enabled"` outright. `max_tokens` still caps thinking plus visible
