@@ -63,6 +63,9 @@ Windows 任务管理器显示 `opencodex · proxy dashboard` / `Bun` 进程占�
 
 ## 更新记录
 
+- 2026-08-04：✅ 仅终止本次全量测试留下的 Bun PID `51492`；复核进程列表后仅剩用户当前运行的 OpenCodex PID `9220`，没有重启、关闭或干扰当前桌面会话。
+- 2026-08-04：❌ 超时后尝试读取测试 Bun 的父子进程关系时，Windows WMI 查询返回“拒绝访问”；无法用 WMI 取父子树，改用已知的本次测试 PID 做精确收尾，避免触碰正在运行的 OpenCodex PID。
+- 2026-08-04：❌ 授权环境运行完整 `bun test` 达到 600 秒上限并返回 124，没有失败堆栈；测试 Bun 进程期间工作集约 242–247 MB、保持响应。定向生命周期/relay/WS/server-auth 测试均已通过，完整套件耗时/挂起点需单独拆分定位，不能宣称全量通过。
 - 2026-08-04：✅ `/v1/responses` HTTP fallback 也接入 admission lease；响应流内部仍由 `trackStreamLifetime` 保持 active turn，外层 slot 在 handler 返回后释放，不会截断正常长响应。类型检查通过；授权环境下 `server-auth` 57 个测试、0 失败。
 - 2026-08-04：❌ admission 改动后的 `bun test tests\\shutdown-drain.test.ts tests\\server-auth.test.ts` 在 `server-auth` 的临时目录初始化处被 Windows 沙箱拒绝（`C:\\Users\\wzm33\\AppData\\Local\\Temp\\...` 返回 `EPERM/EACCES`），随后清理失败造成连锁失败；`shutdown-drain` 的 admission 测试通过。该失败属于测试环境权限，需授权重跑确认。
 - 2026-08-04：✅ 引入 WebSocket active-turn admission lease：最多 128 个“已注册或待绑定”turn；超限返回可重试 503；lease 绑定 `AbortController` 后由统一 `release()` 移除 active turn，重复释放幂等。`bun run typecheck` 通过，相关 50 个测试通过。
