@@ -39,6 +39,30 @@ describe("assessHygiene", () => {
     }), []);
   });
 
+  it("does not demand a test for a comment-only source change", () => {
+    // This repository asks for dense explanatory comments in source. A PR that
+    // only sharpens one changed no behavior, and forcing it through the label
+    // escape would teach contributors to request the label instead of writing
+    // tests — weakening the gate exactly where it matters.
+    assert.deepEqual(assessHygiene({ files: [
+      { filename: "src/router.ts", patch: "@@\n+// clarify why this fails closed\n-// old wording" },
+    ] }), []);
+    assert.deepEqual(assessHygiene({ files: [
+      { filename: "src/router.ts", patch: "@@\n+/**\n+ * why this is bounded\n+ */" },
+    ] }), []);
+  });
+
+  it("still demands a test when a comment change carries any code", () => {
+    for (const patch of [
+      "@@\n+// note\n+const y = 2;",
+      "@@\n+// looks harmless\n+runUntrusted(payload);",
+      "@@\n-const y = 2;\n+// removed the line",
+    ]) {
+      const failures = assessHygiene({ files: [{ filename: "src/router.ts", patch }] });
+      assert.equal(failures[0].code, "missing_regression_test", patch);
+    }
+  });
+
   it("classifies renamed behavior files on both sides", () => {
     const failures = assessHygiene({ files: [
       { filename: "docs/moved.md", previous_filename: "src/router.ts", patch: "" },

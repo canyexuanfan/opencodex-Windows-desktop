@@ -55,6 +55,39 @@ function isTestPath(path) {
   return TEST_PREFIXES.some((prefix) => path.startsWith(prefix)) || TEST_FILE_PATTERN.test(path);
 }
 
+// A hunk whose surviving and removed lines are all comments or blank changed no
+// behavior, so it cannot owe a regression test. This matters because the review
+// standard here asks for dense explanatory comments in the source: a PR that
+// only sharpens a comment about WHY something fails closed would otherwise be
+// told to add a test for a change it did not make, and the only escape would be
+// a maintainer label — which trains contributors to ask for the label instead of
+// writing tests, weakening the gate everywhere it actually matters.
+//
+// Deliberately narrow: a single non-comment line anywhere in the file's patch
+// makes the whole file count as behavior again. Block-comment CONTINUATION
+// lines are recognized only in the common leading-asterisk form; anything more
+// clever than that reads as code and keeps the requirement.
+function isCommentOnlyChange(patch) {
+  if (typeof patch !== "string") return false;
+  const changed = patch
+    .split("\n")
+    .filter(
+      (line) =>
+        (line.startsWith("+") && !line.startsWith("+++")) ||
+        (line.startsWith("-") && !line.startsWith("---")),
+    )
+    .map((line) => line.slice(1).trim());
+  if (changed.length === 0) return false;
+  return changed.every(
+    (line) =>
+      line === "" ||
+      line.startsWith("//") ||
+      line.startsWith("/*") ||
+      line.startsWith("*") ||
+      line.startsWith("#"),
+  );
+}
+
 function hasEmptyCatch(lines) {
   const text = lines.join("\n");
   return /catch\s*(?:\([^)]*\))?\s*\{\s*\}/m.test(text);
@@ -75,7 +108,21 @@ function assessHygiene({ files = [], labels = [] }) {
     file.previous_filename ? [file.previous_filename] : [],
   );
   const allPaths = [...new Set([...filenames, ...previousFilenames])];
-  const behaviorChanged = allPaths.some(isBehaviorPath);
+  // A file whose patch is entirely comments changed no behavior. Renamed-from
+  // paths carry no patch of their own, so they are judged by the file that
+  // carries them.
+  const commentOnlyPaths = new Set(
+    files
+      .filter((file) => isCommentOnlyChange(file.patch))
+      .flatMap((file) =>
+        file.previous_filename
+          ? [file.filename, file.previous_filename]
+          : [file.filename],
+      ),
+  );
+  const behaviorChanged = allPaths.some(
+    (path) => isBehaviorPath(path) && !commentOnlyPaths.has(path),
+  );
   // Deleted tests add no coverage and must not satisfy the regression gate.
   const testsChanged = allPaths.some(
     (path) => isTestPath(path) && !removedFilenames.has(path),
