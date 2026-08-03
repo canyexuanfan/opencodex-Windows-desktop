@@ -21,6 +21,7 @@ import {
   terminateAllBackgroundShells,
 } from "../adapters/cursor/native-exec-shell";
 import type { CodexAccountSelectionAdmission } from "../codex/auth-context";
+import { releaseNativeMainStartupLifecycle } from "../codex/native-profile-startup";
 
 // ---------------------------------------------------------------------------
 // Active turn tracking + graceful shutdown drain
@@ -395,6 +396,7 @@ export async function drainAndShutdown(
       // isolate reclaim / follow-on listen the same way unterminated Workers did.
       if (s) await s.stop(true);
     } finally {
+      if (s) await releaseNativeMainStartupLifecycle(s);
       // shutdownDraining is a process-lifetime latch. A stopped server must
       // never resume admission merely because shutdown cleanup returned.
     }

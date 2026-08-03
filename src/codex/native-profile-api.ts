@@ -10,6 +10,8 @@ import { NativeProfileManager } from "./native-profile-manager";
 import { NativeProfileError } from "./native-profile-types";
 import { blockNativeMainRecovery, completeNativeMainRecovery } from "./native-profile-startup";
 import { probeNativeProfileRecoveryState } from "./native-profile-store";
+import { nativeMainOwnerSnapshot, withNativeMainOwnerOperation } from "./native-main-owner";
+import { withNativeMainExclusiveClaim, withNativeMainSharedClaim } from "./native-main-claim";
 
 export interface NativeProfileApiDeps {
   manager?: NativeProfileManager;
@@ -18,6 +20,28 @@ export interface NativeProfileApiDeps {
   probeRecoveryState?: typeof probeNativeProfileRecoveryState;
   blockRecovery?: typeof blockNativeMainRecovery;
   completeRecovery?: typeof completeNativeMainRecovery;
+}
+
+type NativeMainApiClaim =
+  | { mode: "none" }
+  | { mode: "shared" }
+  | { mode: "exclusive"; waitMs: number };
+
+async function withNativeMainApiOperation<T>(
+  manager: NativeProfileManager,
+  operation: () => Promise<T>,
+  claim: NativeMainApiClaim = { mode: "none" },
+): Promise<T> {
+  // Direct handler unit tests and library callers may inject a partial manager.
+  // A live server always constructs a real manager and registers an owner entry
+  // before listen, so only that path needs the additional cross-process claim.
+  const context = (manager as Partial<NativeProfileManager>).context;
+  if (!context) return operation();
+  return withNativeMainOwnerOperation(context, () => {
+    if (!nativeMainOwnerSnapshot(context) || claim.mode === "none") return operation();
+    if (claim.mode === "shared") return withNativeMainSharedClaim(context, operation);
+    return withNativeMainExclusiveClaim(context, operation, { waitMs: claim.waitMs });
+  });
 }
 
 async function body(req: Request): Promise<Record<string, unknown>> {
@@ -115,27 +139,34 @@ export async function handleNativeProfileAPI(
       return jsonResponse(await manager.list(), 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/doctor" && req.method === "GET") {
-      return jsonResponse(await manager.doctor(), 200, req, config);
+      return jsonResponse(await withNativeMainApiOperation(manager, () => manager.doctor(), { mode: "shared" }), 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/register" && req.method === "POST") {
       const input = await body(req);
       if (typeof input.label !== "string") throw new NativeProfileError("INVALID_REQUEST", "A profile label is required.", 400);
-      return jsonResponse(await manager.register(input.label), 200, req, config);
+      return jsonResponse(await withNativeMainApiOperation(
+        manager,
+        () => manager.register(input.label as string),
+        { mode: "shared" },
+      ), 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/stage" && req.method === "POST") {
-      return jsonResponse(await manager.prepareStage(), 200, req, config);
+      return jsonResponse(await withNativeMainApiOperation(manager, () => manager.prepareStage()), 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/stage/finish" && req.method === "POST") {
       const input = await body(req);
       if (typeof input.stageId !== "string" || typeof input.label !== "string") {
         throw new NativeProfileError("INVALID_REQUEST", "A staging identifier and profile label are required.", 400);
       }
-      return jsonResponse(await manager.finishStage(input.stageId, input.label), 200, req, config);
+      return jsonResponse(await withNativeMainApiOperation(
+        manager,
+        () => manager.finishStage(input.stageId as string, input.label as string),
+      ), 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/stage/cancel" && req.method === "POST") {
       const input = await body(req);
       if (typeof input.stageId !== "string") throw new NativeProfileError("INVALID_REQUEST", "A staging identifier is required.", 400);
-      await manager.cancelStage(input.stageId);
+      await withNativeMainApiOperation(manager, () => manager.cancelStage(input.stageId as string));
       return jsonResponse({ ok: true }, 200, req, config);
     }
     if (url.pathname === "/api/native-main-profiles/switch" && req.method === "POST") {
@@ -144,7 +175,11 @@ export async function handleNativeProfileAPI(
       const switched = await withMainRequestDrain(deps, () => withRecoveryGateTransition(
         manager,
         deps,
-        () => manager.switch(input.target as string, input.confirmedStopped === true),
+        () => withNativeMainApiOperation(
+          manager,
+          () => manager.switch(input.target as string, input.confirmedStopped === true),
+          { mode: "exclusive", waitMs: deps.drainTimeoutMs ?? 10_000 },
+        ),
       ));
       return jsonResponse(
         switched,
@@ -158,7 +193,11 @@ export async function handleNativeProfileAPI(
       const recovered = await withMainRequestDrain(deps, () => withRecoveryGateTransition(
         manager,
         deps,
-        () => manager.recover(input.rollback === true, input.confirmedStopped === true),
+        () => withNativeMainApiOperation(
+          manager,
+          () => manager.recover(input.rollback === true, input.confirmedStopped === true),
+          { mode: "exclusive", waitMs: deps.drainTimeoutMs ?? 10_000 },
+        ),
         true,
       ));
       return jsonResponse(recovered, 200, req, config);

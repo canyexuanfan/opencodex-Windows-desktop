@@ -12,6 +12,7 @@ import { clearThreadAccountMap } from "../src/codex/routing";
 import { saveConfig } from "../src/config";
 import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
 import type { NativeProfileManager } from "../src/codex/native-profile-manager";
+import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
 import { startServer } from "../src/server";
 import {
   acquireNativeMainProfileDrain,
@@ -269,6 +270,7 @@ describe("native main profile scoped server admission", () => {
       saveMode("pool", MAIN_CODEX_ACCOUNT_ID);
       updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 1, 1);
       server = startServer(0);
+      await waitForNativeMainStartupGate();
       client = await connectEcho(server, "/v1/live/main-pre-fence");
       expect(getNativeMainProfileRequestCount()).toBe(1);
       const blocked = await handleNativeProfileAPI(

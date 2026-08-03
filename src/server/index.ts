@@ -153,7 +153,12 @@ import { handleChatCompletions } from "./chat-completions";
 import { anthropicErrorResponse } from "../claude/outbound";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
-import { initializeNativeMainStartupGate, type NativeMainStartupGateDeps } from "../codex/native-profile-startup";
+import {
+  bindNativeMainStartupLifecycle,
+  releaseNativeMainStartupLifecycle,
+  startNativeMainStartupLifecycle,
+  type NativeMainStartupGateDeps,
+} from "../codex/native-profile-startup";
 import { handleImages } from "./images";
 import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
 import { handleSearch } from "./search";
@@ -340,7 +345,6 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
   const managementAuth = deps.managementAuthState ?? initializeManagementAuthState(config);
   // Arm synchronously before listen. A pending journal therefore makes __main__ unusable
   // before any request can resolve its physical credential, while health/management/Pool stay live.
-  void initializeNativeMainStartupGate(deps.nativeMainStartup);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
@@ -452,7 +456,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
     return response;
   }
 
-  const server: Server<WsData> = Bun.serve<WsData>({
+  const nativeMainLifecycle = startNativeMainStartupLifecycle(deps.nativeMainStartup);
+  let server: Server<WsData>;
+  try {
+    server = Bun.serve<WsData>({
     port: listenPort,
     hostname: bindHost,
     idleTimeout: 255,
@@ -1174,8 +1181,24 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
         ws.data.cancel?.(); // RC2: abort the upstream when the client disconnects
       },
     },
-  });
+    });
+  } catch (error) {
+    void nativeMainLifecycle.release();
+    throw error;
+  }
 
+  bindNativeMainStartupLifecycle(server, nativeMainLifecycle);
+  const nativeStop = server.stop.bind(server);
+  Object.defineProperty(server, "stop", {
+    configurable: true,
+    value: async (closeActiveConnections?: boolean): Promise<void> => {
+      try {
+        await nativeStop(closeActiveConnections);
+      } finally {
+        await releaseNativeMainStartupLifecycle(server);
+      }
+    },
+  });
   setServerRef(server);
   const actualPort = server.port ?? listenPort;
   setCorsOrigin(actualPort);
