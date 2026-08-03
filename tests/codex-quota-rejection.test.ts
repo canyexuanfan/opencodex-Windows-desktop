@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { classifyCodexPreStreamRejection } from "../src/codex/quota-rejection";
+import { BOUNDED_BODY_MAX_BYTES } from "../src/lib/bounded-body";
 import { shouldRetryCodexPoolAccountQuota } from "../src/server/responses/core";
 
 function jsonRejection(status: number, error: Record<string, unknown>): Response {
@@ -138,10 +139,10 @@ describe("Codex pre-stream quota rejection classification", () => {
     });
   });
 
-  test("fails closed for malformed JSON while preserving broad 429 failover", async () => {
-    const response = new Response('{"error":', {
-      status: 429,
-      headers: { "content-type": "application/json" },
+	test("fails closed for malformed JSON while preserving broad 429 failover", async () => {
+		const response = new Response('{"error":', {
+			status: 429,
+			headers: { "content-type": "application/json" },
     });
     const result = await classifyCodexPreStreamRejection(response);
     expect(result).toMatchObject({
@@ -149,10 +150,61 @@ describe("Codex pre-stream quota rejection classification", () => {
       alternateRetryEligible: true,
       resetCreditEligible: false,
     });
-    expect(await response.text()).toBe('{"error":');
-  });
+		expect(await response.text()).toBe('{"error":');
+	});
 
-  test.each([
+	test("fails closed for an oversized structured body", async () => {
+		const response = jsonRejection(429, {
+			code: "usage_limit_exceeded",
+			padding: "x".repeat(BOUNDED_BODY_MAX_BYTES),
+		});
+
+		const result = await classifyCodexPreStreamRejection(response);
+
+		expect(result).toMatchObject({
+			kind: "generic-rate-limit",
+			alternateRetryEligible: true,
+			resetCreditEligible: false,
+		});
+		expect(result).not.toHaveProperty("semanticCode");
+	});
+
+	test("fails closed when a structured body is truncated by a transport error", async () => {
+		const response = new Response(new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('{"error":{"code":"usage_limit_exceeded"'));
+				controller.error(new TypeError("transport truncated"));
+			},
+		}), {
+			status: 429,
+			headers: { "content-type": "application/json" },
+		});
+
+		const result = await classifyCodexPreStreamRejection(response);
+
+		expect(result).toMatchObject({
+			kind: "generic-rate-limit",
+			alternateRetryEligible: true,
+			resetCreditEligible: false,
+		});
+		expect(result).not.toHaveProperty("semanticCode");
+	});
+
+	test("fails closed when the structured body was already consumed", async () => {
+		const response = jsonRejection(429, { code: "usage_limit_exceeded" });
+		await response.text();
+
+		const result = await classifyCodexPreStreamRejection(response);
+
+		expect(result).toMatchObject({
+			kind: "generic-rate-limit",
+			alternateRetryEligible: true,
+			resetCreditEligible: false,
+		});
+		expect(result).not.toHaveProperty("semanticCode");
+	});
+
+	test.each([
     [503, "transient-server-error"],
     [401, "authentication-error"],
     [403, "permission-error"],
