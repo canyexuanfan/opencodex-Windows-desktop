@@ -4,6 +4,7 @@ import {
   extractChangelogPrNumbers,
   extractPrNumbers,
   hasMeaningfulCarriedNotes,
+  isPolishBaseUrlAllowed,
   joinCarriedPreviewNotes,
   matchingPreviewTag,
   matchingPreviewTags,
@@ -620,6 +621,16 @@ describe("polish validation", () => {
       head: ["## Bug Fixes", "", "- Keep Antigravity catalog static (#744)"].join("\n"),
       changelog: ["## Changelog", "", "- #744 fix(providers): keep Antigravity catalog static @luvs01"].join("\n"),
     });
+  });
+
+  test("isPolishBaseUrlAllowed accepts https and loopback http, rejects plaintext remote hosts", () => {
+    expect(isPolishBaseUrlAllowed("https://api.openai.com/v1")).toBe(true);
+    expect(isPolishBaseUrlAllowed("http://127.0.0.1:8080/v1")).toBe(true);
+    expect(isPolishBaseUrlAllowed("http://localhost:8080/v1")).toBe(true);
+    expect(isPolishBaseUrlAllowed("http://[::1]:8080/v1")).toBe(true);
+    expect(isPolishBaseUrlAllowed("http://my.localhost:8080/v1")).toBe(true);
+    expect(isPolishBaseUrlAllowed("http://example.com/v1")).toBe(false);
+    expect(isPolishBaseUrlAllowed("not a url")).toBe(false);
   });
 
   test("parseSectionHeadings excludes the machine-rendered Changelog", () => {

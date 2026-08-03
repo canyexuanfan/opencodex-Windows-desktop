@@ -607,7 +607,6 @@ async function callChatCompletion(apiKey: string, baseUrl: string, model: string
       },
       body: JSON.stringify({
         model,
-        temperature: 0.3,
         messages: [
           { role: "system", content: POLISH_SYSTEM_PROMPT },
           { role: "user", content: head },
@@ -659,6 +658,28 @@ export function splitPolishInput(body: string): { metadata: string; head: string
     head: (isMetadata ? headLines.slice(firstContent + 1) : headLines).join("\n").trim(),
     changelog: lines.slice(index).join("\n").trim(),
   };
+}
+
+/**
+ * The polish API key must never travel in plaintext: https is always allowed,
+ * plain http only for loopback hosts (IPv4, IPv6 bracket form, `localhost`,
+ * and `.localhost` names).
+ */
+export function isPolishBaseUrlAllowed(baseUrl: string): boolean {
+  try {
+    const parsed = new URL(baseUrl);
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+    return (
+      parsed.protocol === "https:" ||
+      (parsed.protocol === "http:" &&
+        (hostname === "localhost" ||
+          hostname === "127.0.0.1" ||
+          hostname === "::1" ||
+          hostname.endsWith(".localhost")))
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function readStdinOrFile(path: string | undefined): Promise<string> {
@@ -902,20 +923,7 @@ async function main(argv: string[]): Promise<void> {
       process.exit(1);
     }
     const baseUrl = (args.get("base-url") ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
-    let baseUrlAllowed = false;
-    try {
-      const parsed = new URL(baseUrl);
-      baseUrlAllowed =
-        parsed.protocol === "https:" ||
-        (parsed.protocol === "http:" &&
-          (parsed.hostname === "localhost" ||
-            parsed.hostname === "127.0.0.1" ||
-            parsed.hostname === "::1" ||
-            parsed.hostname.endsWith(".localhost")));
-    } catch {
-      baseUrlAllowed = false;
-    }
-    if (!baseUrlAllowed) {
+    if (!isPolishBaseUrlAllowed(baseUrl)) {
       console.error("✗ polish --base-url must be https: or a loopback http: host (the API key must not travel in plaintext)");
       process.exit(1);
     }
@@ -927,6 +935,10 @@ async function main(argv: string[]): Promise<void> {
     }
     const body = await Bun.file(inputPath).text();
     const { metadata, head, changelog } = splitPolishInput(body);
+    if (!metadata) {
+      console.error("✗ polish input has no recognizable npm metadata line; refusing to send it to the model");
+      process.exit(1);
+    }
     const expectedPrs = extractChangelogPrNumbers(changelog);
     const allowedExtraPrs = extractPrNumbers(changelog).filter(number => !expectedPrs.includes(number));
     const expectedHeadings = parseSectionHeadings(head);

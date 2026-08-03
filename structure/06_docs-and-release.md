@@ -148,7 +148,7 @@ Release workflow dispatch. Docs publishing is separate from npm release publishi
 Release notes are rendered OpenAI-Codex-style by `scripts/release-notes.ts render` inside
 `.github/workflows/release.yml`: `## New Features` / `## Bug Fixes` / `## Documentation` /
 `## Chores` / `## Other Changes` sections with prefix-free, scope-grouped summary bullets
-(`- Providers: add X; add Y (#1, #2)`), followed by a `## Changelog` section listing every PR
+(`- Providers: Add X; Add Y (#1, #2)`), followed by a `## Changelog` section listing every PR
 as `- #N <title> @author`; when a comparison baseline exists, that section also includes a
 compare link. Carried preview changelogs and the since-preview delta feed the same renderer,
 so stable notes are the aggregate of their preview train. The raw commit dump is
