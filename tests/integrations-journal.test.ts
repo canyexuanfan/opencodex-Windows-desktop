@@ -101,6 +101,23 @@ describe("snapshots", () => {
     expect(readdirSync(join(root, "snapshots", "pi"))).toHaveLength(SNAPSHOT_RETENTION);
   });
 
+  test("ten BACKUPS are kept, not ten operations", () => {
+    /*
+     * An apply to an absent file records `snapshot: none` — a real row with
+     * nothing stored. Retention used to take the newest ten ROWS and then
+     * filter, so a history alternating stored and none kept only five backups
+     * while the docs promised ten. Interleave them and count the files.
+     */
+    for (let index = 0; index < SNAPSHOT_RETENTION * 2; index += 1) {
+      const opId = `op-${String(index).padStart(3, "0")}`;
+      const snapshot = index % 2 === 0
+        ? store.captureSnapshot("pi", opId, `bytes ${index}\n`)
+        : { kind: "none" as const };
+      store.appendJournal(entry({ opId, snapshot }));
+    }
+    expect(store.countSnapshots("pi")).toBe(SNAPSHOT_RETENTION);
+  });
+
   test("counting distinguishes a genuine zero from an uninspectable directory", () => {
     // An absent directory is a real zero.
     expect(store.countSnapshots("pi")).toBe(0);

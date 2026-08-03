@@ -43,6 +43,16 @@ export interface OwnershipRecord {
   blockFingerprint: string;
   /** The exact paths we own. Removal touches these and nothing else. */
   fragmentPaths: readonly (readonly string[])[];
+  /**
+   * Containers this apply had to CREATE, `\0`-joined.
+   *
+   * Kimi's `models` map exists only because our aliases need somewhere to
+   * live. Without this, disable left it behind as an empty container in a file
+   * the user never asked us to restructure — while a `providers: {}` the user
+   * wrote themselves must survive. Optional because records written before
+   * this field existed simply prune nothing, which is the old behavior.
+   */
+  createdContainers?: readonly string[];
   appliedAt: string;
   opId: string;
 }

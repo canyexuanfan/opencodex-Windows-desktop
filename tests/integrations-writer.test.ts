@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExportModel } from "../src/clients/config-export";
 import { fileIO, type IntegrationIO } from "../src/integrations/config-io";
+import { INTEGRATION_CLIENTS } from "../src/integrations/registry";
 import { createIntegrationStateStore, type IntegrationStateStore } from "../src/integrations/store";
 import {
   applyIntegration,
@@ -23,6 +24,13 @@ import type { OcxConfig } from "../src/types";
 let home: string;
 let storeRoot: string;
 let store: IntegrationStateStore;
+
+/**
+ * The environment every path resolution in this file goes through. Empty on
+ * purpose: no `HERMES_HOME`/`LOCALAPPDATA` override, so the registry picks the
+ * platform default and the fixture follows it instead of assuming one.
+ */
+const TEST_ENV = {} as NodeJS.ProcessEnv;
 
 const MODELS: ExportModel[] = [
   { namespaced: "anthropic/claude-opus-4-8", provider: "anthropic", id: "claude-opus-4-8", contextWindow: 200_000 },
@@ -48,10 +56,20 @@ afterEach(() => {
   rmSync(dirname(home), { recursive: true, force: true });
 });
 
-/** Hermes: YAML, installed by creating its home directory. */
+/**
+ * Hermes: YAML, installed by creating its home directory.
+ *
+ * The directory is resolved through the registry rather than hardcoded to
+ * `~/.hermes`: on Windows Hermes lives under `%LOCALAPPDATA%\hermes`, so a
+ * hardcoded POSIX layout created a directory the detector never looks at and
+ * every apply in this file refused with `not_installed`.
+ */
 function installHermes(): string {
-  mkdirSync(join(home, ".hermes"), { recursive: true });
-  return join(home, ".hermes", "config.yaml");
+  const spec = INTEGRATION_CLIENTS.hermes;
+  mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+  const configPath = spec.configPath(TEST_ENV, home);
+  mkdirSync(dirname(configPath), { recursive: true });
+  return configPath;
 }
 
 function input(overrides: Partial<IntegrationWriteInput> = {}): IntegrationWriteInput {
@@ -60,7 +78,7 @@ function input(overrides: Partial<IntegrationWriteInput> = {}): IntegrationWrite
     models: MODELS,
     config: CONFIG,
     port: 10100,
-    env: {} as NodeJS.ProcessEnv,
+    env: TEST_ENV,
     home,
     store,
     ...overrides,
@@ -361,12 +379,23 @@ describe("nothing leaks", () => {
     expect(applyIntegration(input()).ok).toBe(true);
     const appliedBytes = readFileSync(configA, "utf8");
 
+    /*
+     * Home B is built through the registry, not by hand. Hermes resolves to
+     * `%LOCALAPPDATA%\hermes` on Windows and ignores the `home` argument
+     * entirely there, so a hand-built `<home-b>/.hermes` left both homes
+     * pointing at the SAME file — the record legitimately matched and the
+     * refusal this test exists for never fired. `HERMES_HOME` is honored on
+     * every platform, so it is what actually separates the two.
+     */
     const otherHome = join(dirname(home), "home-b");
-    mkdirSync(join(otherHome, ".hermes"), { recursive: true });
-    const configB = join(otherHome, ".hermes", "config.yaml");
+    const otherEnv = { HERMES_HOME: join(otherHome, ".hermes") } as NodeJS.ProcessEnv;
+    const spec = INTEGRATION_CLIENTS.hermes;
+    mkdirSync(spec.detectDir(otherEnv, otherHome), { recursive: true });
+    const configB = spec.configPath(otherEnv, otherHome);
+    expect(configB).not.toBe(configA);
     writeFileSync(configB, appliedBytes);
 
-    const result = disableIntegration(input({ home: otherHome }));
+    const result = disableIntegration(input({ home: otherHome, env: otherEnv }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("conflict");
     expect(readFileSync(configB, "utf8")).toBe(appliedBytes);
@@ -377,12 +406,17 @@ describe("nothing leaks", () => {
     expect(applyIntegration(input()).ok).toBe(true);
     const opId = store.listOperations("hermes")[0]!.opId;
 
+    // Same reason as the test above: only `HERMES_HOME` separates two homes on
+    // every platform. A hand-built `<home-c>/.hermes` collapses onto the same
+    // file as home A under Windows' `%LOCALAPPDATA%` resolution.
     const otherHome = join(dirname(home), "home-c");
-    mkdirSync(join(otherHome, ".hermes"), { recursive: true });
-    const configC = join(otherHome, ".hermes", "config.yaml");
+    const otherEnv = { HERMES_HOME: join(otherHome, ".hermes") } as NodeJS.ProcessEnv;
+    const spec = INTEGRATION_CLIENTS.hermes;
+    mkdirSync(spec.detectDir(otherEnv, otherHome), { recursive: true });
+    const configC = spec.configPath(otherEnv, otherHome);
     writeFileSync(configC, "providers:\n  mine:\n    api: http://keep\n");
 
-    const result = restoreIntegration({ ...input({ home: otherHome }), opId });
+    const result = restoreIntegration({ ...input({ home: otherHome, env: otherEnv }), opId });
     expect(result.ok).toBe(false);
     expect(readFileSync(configC, "utf8")).toContain("mine");
   });

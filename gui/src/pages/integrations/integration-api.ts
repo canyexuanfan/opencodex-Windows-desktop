@@ -16,7 +16,9 @@ export type IntegrationReason =
   | "unparseable"
   | "not-regular-file"
   | "foreign-edit"
-  | "unowned-key";
+  | "unowned-key"
+  | "blocked-container"
+  | "unresolvable-path";
 
 export type IntegrationRefusalReason =
   | "not_installed"

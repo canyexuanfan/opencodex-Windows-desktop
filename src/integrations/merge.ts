@@ -35,11 +35,23 @@ export function setPath(doc: unknown, path: readonly string[], value: unknown): 
 }
 
 /**
- * Delete `path`. Prunes containers this deletion emptied, but never the
- * document root: a client that legitimately keeps an empty `providers: {}`
- * should still have it afterwards.
+ * Delete `path`, optionally pruning containers that WE created.
+ *
+ * Two properties have to hold at once, and they pull in opposite directions.
+ * A user who wrote `providers: {}` before we existed still has it after a
+ * disable — pruning it because our entry left it empty would delete their
+ * line. But a container we conjured ourselves (Kimi's `models` map exists only
+ * because our aliases need somewhere to live) must not survive as empty
+ * residue in a file the user never asked us to restructure.
+ *
+ * `createdContainers` is the difference: paths recorded at apply time as
+ * absent beforehand. Anything not in that set is treated as the user's.
  */
-export function deletePath(doc: unknown, path: readonly string[]): { doc: unknown; removed: boolean } {
+export function deletePath(
+  doc: unknown,
+  path: readonly string[],
+  createdContainers: ReadonlySet<string> = new Set(),
+): { doc: unknown; removed: boolean } {
   if (!isPlainRecord(doc) || path.length === 0) return { doc, removed: false };
   const root = clone(doc) as Record<string, unknown>;
   const chain: Record<string, unknown>[] = [root];
@@ -53,10 +65,17 @@ export function deletePath(doc: unknown, path: readonly string[]): { doc: unknow
   const leaf = path[path.length - 1]!;
   if (!(leaf in cursor)) return { doc: root, removed: false };
   delete cursor[leaf];
-  // Parent containers are NOT pruned. We own the leaf we recorded, not the map
-  // that holds it: a user who wrote `providers: {}` before we existed still has
-  // it afterwards. Removing a now-empty parent looked tidy and quietly deleted
-  // a line the user had written.
+  /*
+   * Walk back up, pruning only containers this deletion emptied AND that we
+   * created. The root is never pruned.
+   */
+  for (let index = chain.length - 1; index >= 1; index -= 1) {
+    const container = chain[index]!;
+    if (Object.keys(container).length > 0) break;
+    const containerPath = path.slice(0, index).join("\u0000");
+    if (!createdContainers.has(containerPath)) break;
+    delete chain[index - 1]![path[index - 1]!];
+  }
   return { doc: root, removed: true };
 }
 
@@ -75,13 +94,42 @@ export function mergeContribution(doc: unknown, contribution: ManagedContributio
 export function removeFragments(
   doc: unknown,
   paths: readonly (readonly string[])[],
+  createdContainers: ReadonlySet<string> = new Set(),
 ): { doc: unknown; removed: boolean } {
   let next = doc;
   let removed = false;
   for (const path of paths) {
-    const result = deletePath(next, path);
+    const result = deletePath(next, path, createdContainers);
     next = result.doc;
     removed = removed || result.removed;
   }
   return { doc: next, removed };
+}
+
+/**
+ * Container paths a contribution would have to CREATE in `doc`.
+ *
+ * Computed before the merge, because afterwards every container exists and the
+ * question is unanswerable. Recorded on the ownership record so a later
+ * disable can tell its own scaffolding from the user's structure.
+ */
+export function createdContainerPaths(
+  doc: unknown,
+  contribution: ManagedContribution,
+): string[] {
+  const created = new Set<string>();
+  for (const fragment of contribution.fragments) {
+    let cursor: unknown = doc;
+    for (let depth = 0; depth < fragment.path.length - 1; depth += 1) {
+      const key = fragment.path[depth]!;
+      const next = isPlainRecord(cursor) ? cursor[key] : undefined;
+      if (!isPlainRecord(next)) {
+        created.add(fragment.path.slice(0, depth + 1).join("\u0000"));
+        cursor = undefined;
+        continue;
+      }
+      cursor = next;
+    }
+  }
+  return [...created];
 }

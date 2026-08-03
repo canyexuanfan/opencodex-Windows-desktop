@@ -27,7 +27,7 @@
  * can point fixtures via env or an explicit path.
  */
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { expandUserPath } from "../config";
 import { CODEX_CONFIG_PATH } from "./paths";
@@ -925,7 +925,10 @@ export function previewSalvage(opts?: Paths): SalvagePreview {
   const body = ownership.state === "owned" ? decodeBasicString(ownership.literal) : null;
   return {
     body,
-    backupDir: storePath.slice(0, storePath.lastIndexOf("/") + 1) || ".",
+    // `dirname`, not a hand-rolled `lastIndexOf("/")`: a Windows store path is
+    // `D:\...\store.toml`, which contains no forward slash at all, so the
+    // slice returned `"."` and the preview named the wrong directory.
+    backupDir: dirname(storePath),
     unrecoverable: UNRECOVERABLE,
     reason: body !== null && body.length > 0 ? "ok" : "nothing_to_salvage",
   };
