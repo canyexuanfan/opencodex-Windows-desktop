@@ -580,7 +580,8 @@ describe("native main profile transactions", () => {
     expect((caught as NativeProfileError).cleanupRequired).toBeUndefined();
     expect((await manager.list()).profiles.some(profile => profile.label === "work")).toBe(true);
     expect(existsSync(stage.stagingCodexHome)).toBe(true);
-    expect(readFileSync(join(stage.stagingCodexHome, "auth.json"), "utf8")).toBe("");
+    const authPath = join(stage.stagingCodexHome, "auth.json");
+    expect(!existsSync(authPath) || readFileSync(authPath, "utf8") === "").toBe(true);
     await manager.cancelStage(stage.stageId);
   });
 
@@ -602,7 +603,8 @@ describe("native main profile transactions", () => {
     expect((caught as NativeProfileError).retryable).toBe(false);
     expect((caught as NativeProfileError).cleanupRequired).toBe(true);
     expect(existsSync(stage.stagingCodexHome)).toBe(true);
-    expect(readFileSync(join(stage.stagingCodexHome, "auth.json"), "utf8")).toBe("");
+    const authPath = join(stage.stagingCodexHome, "auth.json");
+    expect(!existsSync(authPath) || readFileSync(authPath, "utf8") === "").toBe(true);
     await manager.cancelStage(stage.stageId);
   });
 
@@ -630,7 +632,8 @@ describe("native main profile transactions", () => {
       stagingSweep: "cleanup-required",
       stagingCount: 1,
     });
-    expect(readFileSync(join(stage.stagingCodexHome, "auth.json"), "utf8")).toBe("");
+    const authPath = join(stage.stagingCodexHome, "auth.json");
+    expect(!existsSync(authPath) || readFileSync(authPath, "utf8") === "").toBe(true);
     await manager.cancelStage(stage.stageId);
     writeFileSync(manager.context.vaultPath, "{invalid-json\n");
     expect(await manager.doctor()).toMatchObject({
