@@ -532,3 +532,25 @@ jobs:
             echo "::error::needed job(s) did not pass: $bad"
             exit 1
           fi
+
+      # `skipped` passing is right for a job that is SUPPOSED to be skipped, and
+      # wrong everywhere else. The windows leg is the whole reason this workflow
+      # can be trusted at the shipping boundary, so on the events that ARE that
+      # boundary it has to have actually run. Without this, a one-character slip
+      # in its `if:` would silently skip it, the gate would go green, and the
+      # release helper — which only checks that this workflow succeeded — would
+      # publish a tip no Windows machine ever executed.
+      - name: Assert the windows leg ran where it is mandatory
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' &&
+           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'))
+        shell: bash
+        env:
+          WINDOWS_RESULT: ${{ needs.platform-windows.result }}
+        run: |
+          set -euo pipefail
+          if [ "$WINDOWS_RESULT" != "success" ]; then
+            echo "::error::the windows leg is mandatory on ${GITHUB_REF#refs/heads/} / workflow_dispatch but reported '${WINDOWS_RESULT}'. A skipped windows leg must never reach the release gate."
+            exit 1
+          fi
