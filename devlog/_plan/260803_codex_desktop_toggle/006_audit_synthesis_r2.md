@@ -77,14 +77,33 @@ instead of along ownership boundaries.
 
 ## Carried-forward findings for the re-scoped phases
 
-Every open and new finding stays on the ledger, attached to whichever
-single-client phase inherits it:
+Round 3 found my first version of this table incomplete — findings were missing,
+two were assigned to one phase when three inherit them, and two pointed at a
+"file-client phase" the roadmap does not contain. A ledger that quietly drops an
+obligation is worse than no ledger, because the next author reads absence as
+closure. Complete version, every finding from both rounds:
 
-| Finding | Inherits |
-|---|---|
-| r1 #5 GUI contract, r2 #1 auth sentinel | the Codex phase |
-| r2 #2 ownership preflight in reconciliation | the Codex phase — **blocking** |
-| r1 #6/#7 flight + convergence, incl. teardown callers | the Codex phase |
-| r2 #4 existing-disabled migration, r2 #5 mutating GET | the file-client phase |
-| r1 #8, r2 #3, r2 #6 | the Desktop phase |
-| r1 #11 stale citations in `001`/`002` | fix now, in this commit |
+| Finding | Status | Inherits |
+|---|---|---|
+| r1 #1 Claude ingress gates | **scope-eliminated** — this unit no longer touches them | — |
+| r1 #2 unsafe persistence | open | WP4 (Codex), then reused by WP6/WP7 |
+| r1 #3 file clients have no writer | **deferred** — no file-client flag in this unit; tracked as `FOLLOWUP-FILECLIENT-01` | a future unit |
+| r1 #4 false-green CLI | open | WP4 |
+| r1 #5 GUI contract ownership | open | WP4 defines it; **WP5 and WP7 both extend it** |
+| r1 #6 in-flight writers | open | WP4 for Codex, WP6 for Grok, WP7 for Desktop — each must prove its OWN callers |
+| r1 #7 restart reconciliation | open | same three, per client |
+| r1 #8 Desktop status from stale bookkeeping | open | WP7 |
+| r1 #9 Desktop status can create files | closed in r2 | WP7 keeps the test |
+| r1 #10 test adequacy | open | **every** phase — each lands the test that would catch its own absence |
+| r1 #11 stale citations | fixed | `001`, `002`, and `010` in this cycle |
+| r2 #1 auth-mode sentinel dropped | open | WP4 |
+| r2 #2 reconciliation can tear down a foreign home | open — **blocking** | WP4, and every native remover after it |
+| r2 #3 Desktop foreign-selected profile has no rule | open | WP7 — the reason Desktop is deferred |
+| r2 #4 existing-disabled clients not migrated | **deferred** with r1 #3 | `FOLLOWUP-FILECLIENT-01` |
+| r2 #5 mutating GET | open | WP4 — status GETs stay inspection-only |
+| r2 #6 Desktop marker cleanup failure ignored | open | WP7 |
+
+`FOLLOWUP-FILECLIENT-01` is a named placeholder, not a phase: the six file
+clients get no desired-state flag in this unit, so r1 #3 and r2 #4 are recorded
+as owed work rather than silently dropped. Inventing that phase under audit
+pressure is what produced round 2's new findings.

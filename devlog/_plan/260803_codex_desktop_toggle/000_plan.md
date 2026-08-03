@@ -55,11 +55,15 @@ phase, each independently auditable.
 | Phase | Doc | Deliverable | Audit state |
 |---|---|---|---|
 | WP2 | `010_modality_boundary.md` | The client-dialect modality filter | **clean through two rounds** |
-| WP3 | `030_api_keys_row.md` | API keys out of the card grid into their own row | never blocking |
-| WP4 | `020_desired_state.md` → re-scoped | Desired state for **Codex only**, plus its gates, single-flight, ownership preflight and CLI semantics | re-scope pending |
+| WP3 | `020_api_keys_row.md` | API keys out of the card grid into their own row | never blocking |
+| WP4 | `030_desired_state.md` → re-scoped | Desired state for **Codex only**, plus its gates, single-flight, ownership preflight and CLI semantics | re-scope pending |
 | WP5 | `040_codex_toggle.md` | The Codex switch on WP4's flag | rewrite pending |
 | WP6 | *(new doc)* | Grok's desired state, reusing the shape WP4 proved | not started |
 | WP7 | `050_desktop_toggle.md` | The Desktop switch via documented standard mode | deferred behind WP5 |
+
+The two pending docs were renamed so the decade order matches the phase order:
+reading the unit lexicographically now gives the build order, which is the whole
+point of the numbering convention.
 
 WP1 was the research cycle plus this roadmap, twice audited.
 

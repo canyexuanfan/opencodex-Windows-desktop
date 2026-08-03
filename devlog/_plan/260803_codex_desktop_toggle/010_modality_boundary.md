@@ -33,75 +33,124 @@ MODIFY `src/clients/config-export.ts`, immediately after `outputBudgetFor`
  *
  * This is the same defect the Codex catalog had with `video`, where the app
  * showed zero apps (tests/catalog-input-modality-enum.test.ts). The fix is the
- * same shape: filter to what the destination accepts, and fall back to `text`
- * rather than an empty list — a modality-less entry would leave the client
- * unable to tell the model takes prompts at all.
+ * same shape — filter to what the destination accepts — with one deliberate
+ * difference, below.
  *
- * Deliberately NOT applied in ExportModel construction: the management and CLI
- * boundaries carry catalog modalities verbatim on purpose, and stripping `audio`
- * globally would destroy valid metadata before the destination is known.
- */
+ * UNKNOWN and INCOMPATIBLE are not the same input, and the Codex fix could
+ * conflate them safely only because its enum is wider. A model with no declared
+ * modalities is unknown, and `text` is the honest floor: every routed model
+ * takes prompts. A model that declares `["audio"]` and nothing else is
+ * INCOMPATIBLE with a text|image client, and rewriting it to `["text"]` would
+ * advertise a capability the model does not have. That input is reachable:
+ * `ocx models add --modalities audio` accepts it (src/cli/models.ts:139-146),
+ * `/api/custom-models` accepts it (model-routes.ts:13), and provider discovery
+ * can return an audio-only list (src/codex/catalog/provider-fetch.ts:341).
+ *
+ * So unknown falls back to text, and incompatible omits the model. Omitting one
+ * model costs the user that row in a picker; fabricating `text` costs them a
+ * model that fails at call time with no explanation.
+  *
+  * Deliberately NOT applied in ExportModel construction: the management and CLI
+  * boundaries carry catalog modalities verbatim on purpose, and stripping `audio`
+  * globally would destroy valid metadata before the destination is known.
+  */
 const CLIENT_INPUT_MODALITIES: Record<"pi" | "gajae", ReadonlySet<string>> = {
   pi: new Set(["text", "image"]),
   gajae: new Set(["text", "image"]),
 };
 
+/**
+ * `null` means "this model cannot be represented for this client" — the caller
+ * drops the row. Deliberately not an empty array, which a caller could spread
+ * into a config without noticing.
+ */
 function inputModalitiesForClient(
   client: "pi" | "gajae",
   modalities: readonly string[] | undefined,
-): string[] {
+): string[] | null {
+  const declared = modalities ?? [];
+  // Nothing declared is unknown, not incompatible.
+  if (declared.length === 0) return ["text"];
   const accepted = CLIENT_INPUT_MODALITIES[client];
   const kept: string[] = [];
-  for (const value of modalities ?? []) {
+  for (const value of declared) {
     if (accepted.has(value) && !kept.includes(value)) kept.push(value);
   }
-  return kept.length > 0 ? kept : ["text"];
+  return kept.length > 0 ? kept : null;
 }
 ```
 
-Order-preserving and deduping, so `[text, image, audio]` becomes `[text, image]`
-and the existing byte-exact golden is unaffected for models that never carried
-`audio`.
+Order-preserving and deduping, so `[text, image, audio]` becomes `[text, image]`.
+The existing byte-exact golden is unaffected: its fixture declares no modalities,
+which still emits `["text"]` through the unknown branch.
 
 ## Call site 1 — Pi
 
-`buildPiClientConfig`, currently line 659:
+`buildPiClientConfig`, currently line 653. The `map` becomes a `for` because the
+helper now filters as well as transforms, and a `null` sentinel inside a `map`
+would need a second pass:
 
 ```diff
-     const entry: PiModelEntry = {
-       id: model.namespaced,
-       name: exportModelLabel(model),
+-  const models: PiModelEntry[] = normalizeExportModels(ctx.models).map(model => {
+-    const entry: PiModelEntry = {
+-      id: model.namespaced,
+-      name: exportModelLabel(model),
 -      // Text is the one modality every routed model supports; anything richer must come
 -      // from the catalog rather than an assumption.
 -      input: model.inputModalities && model.inputModalities.length > 0 ? [...model.inputModalities] : ["text"],
-+      // Text is the one modality every routed model supports; anything richer must come
-+      // from the catalog rather than an assumption — and must still be inside the
-+      // enum Pi accepts, because Pi returns an EMPTY model config on a schema
-+      // failure rather than dropping the offending entry.
-+      input: inputModalitiesForClient("pi", model.inputModalities),
-     };
+-    };
++  const models: PiModelEntry[] = [];
++  for (const model of normalizeExportModels(ctx.models)) {
++    // Pi returns an EMPTY model config on a schema failure rather than dropping
++    // the offending entry, so one out-of-enum value costs every routed model.
++    const input = inputModalitiesForClient("pi", model.inputModalities);
++    // An audio-only model has no honest representation here; claiming `text`
++    // would fail at call time instead, so the row is dropped.
++    if (input === null) continue;
++    const entry: PiModelEntry = { id: model.namespaced, name: exportModelLabel(model), input };
+     const context = authoritativeContextWindow(model.contextWindow);
+     if (context !== undefined) {
+       entry.contextWindow = context;
+       entry.maxTokens = outputBudgetFor(context);
+     }
+-    return entry;
+-  });
++    models.push(entry);
++  }
 ```
 
 Also MODIFY the stale docstring above `buildPiClientConfig` (line 649), which
-still says Pi's schema is UNVERIFIED. It is verified now — upstream
-`packages/coding-agent/src/core/model-config.ts:156-169` pins `text|image`, and
-`:267-274` is the whole-file rejection. Replace the "UNVERIFIED" sentence with
-that citation.
+still says Pi's schema is UNVERIFIED. It is verified now. Cite the *stable* doc
+rather than a line range that has already drifted between audit rounds
+(`packages/coding-agent/docs/models.md` states the accepted values), and name the
+behavior rather than the line: Pi returns an empty model config when validation
+fails. A line-pinned citation into a moving upstream file is a comment that rots.
 
 ## Call site 2 — Gajae
 
-`buildGajaeClientConfig`, currently line 765:
+`buildGajaeClientConfig`, currently line 761, takes the identical shape:
 
 ```diff
-     const entry: GajaeModelEntry = {
-       id: model.namespaced,
-       name: exportModelLabel(model),
+-  const models: GajaeModelEntry[] = normalizeExportModels(ctx.models).map(model => {
+-    const entry: GajaeModelEntry = {
+-      id: model.namespaced,
+-      name: exportModelLabel(model),
 -      input: model.inputModalities && model.inputModalities.length > 0
 -        ? [...model.inputModalities]
 -        : ["text"],
-+      input: inputModalitiesForClient("gajae", model.inputModalities),
-     };
-```
+-    };
++  const models: GajaeModelEntry[] = [];
++  for (const model of normalizeExportModels(ctx.models)) {
++    const input = inputModalitiesForClient("gajae", model.inputModalities);
++    if (input === null) continue;
++    const entry: GajaeModelEntry = { id: model.namespaced, name: exportModelLabel(model), input };
+ ```
+
+with the same `return entry;` → `models.push(entry);` change at the loop tail.
+
+Gajae's enum is at `models-config-schema.ts:141` in the installed
+`@gajae-code/coding-agent` — line 119, which `004` cited, only opens the model
+schema object. Cite the installed version alongside the line.
 
 ## Test — `tests/client-export-modality-enum.test.ts` (NEW)
 
@@ -112,13 +161,19 @@ repeats. Cases:
    `zenmux/meta-muse-spark-1.1` with `[text, image, audio]`, asserting
    `[text, image]`.
 2. The same for Pi, so the latent half is pinned too.
-3. A model whose only modality is rejected falls back to `["text"]`, never `[]`.
-4. `[text, image]` survives untouched in both.
-5. Order and dedupe: `[image, text, image]` yields `[image, text]`.
-6. A whole-catalog assertion: no emitted Pi or Gajae `input` value is outside
-   `text|image`, given a catalog containing `audio`. This is the one that would
-   have caught the bug, since the per-entry tests all passed while the file was
-   broken.
+3. **An audio-only model is OMITTED from both exports, not rewritten to
+   `["text"]`.** Assert its id is absent from `models` entirely. The fixture
+   builds it the way a user reaches it — `ocx models add --modalities audio`
+   accepts exactly this (`src/cli/models.ts:139-146`).
+4. A model with NO declared modalities still emits `["text"]`. Unknown is not
+   incompatible, and this branch is what keeps the byte-exact golden stable.
+5. `[text, image]` survives untouched in both.
+6. Order and dedupe: `[image, text, image]` yields `[image, text]`.
+7. A whole-catalog assertion over a catalog carrying BOTH a mixed
+   `[text, image, audio]` model and an audio-ONLY model: every emitted Pi and
+   Gajae `input` value is inside `text|image`, and no emitted model claims a
+   modality its catalog entry did not have. This is the case that would have
+   caught the live bug — every per-entry test passed while the file was broken.
 
 ## Verification
 
@@ -127,7 +182,11 @@ refuses to load.
 
 1. `bun run typecheck`, `bun run test`
 2. Re-apply the gajae integration through the running proxy
-3. `grep -c audio ~/.gjc/agent/models.yml` → 0 inside the opencodex block
+3. **Parse** the emitted YAML and assert every
+   `providers.opencodex.models[*].input` value is in `text|image`. A `grep` for
+   `audio` is the wrong check: the string also appears in model ids, display
+   names, and other providers' preserved blocks, so it can fail while our output
+   is correct. Same structural check against Pi's JSON.
 4. Launch gjc and confirm the model list loads with no schema error
 
 Step 4 is the criterion. Steps 1-3 are necessary and insufficient.
@@ -138,5 +197,7 @@ Step 4 is the criterion. Steps 1-3 are necessary and insufficient.
   file, and Pi's identical exposure is closed in the same change.
 - No emitted Pi/Gajae `input` value outside the client's enum, asserted over a
   whole catalog rather than one entry.
+- No model is advertised to a client with a modality it does not have: an
+  incompatible model is omitted, never rewritten to `text`.
 - The byte-exact export goldens still pass, changing only where `audio` was
   previously emitted.
