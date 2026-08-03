@@ -9,6 +9,11 @@
  * assistant message is about to serialize without thinking parts (compacted
  * history, lost assistant turn, orphan-repaired tool results).
  *
+ * Entries are scoped by an optional conversation identity in addition to the
+ * call id: provider-generated ids like `call_1` are not globally unique, so a
+ * process-wide key would let one conversation's reasoning bleed into another
+ * when ids collide (CodeRabbit P1 on #971).
+ *
  * Privacy: entries hold reasoning text in memory only — never logged,
  * serialized, or exported. Bounded by entry count, total bytes, and TTL, so a
  * long-lived proxy cannot grow without limit.
@@ -29,27 +34,43 @@ let totalBytes = 0;
 let clockForTests: (() => number) | null = null;
 
 const now = (): number => clockForTests?.() ?? Date.now();
+const keyFor = (callId: string, scope: string | undefined): string =>
+  `${scope ?? "global"}\u0000${callId}`;
 
-/** Record the raw reasoning text that preceded the given tool call. */
-export function rememberReasoningForCall(callId: string, text: string): void {
+/**
+ * Record the raw reasoning text that preceded the given tool call.
+ *
+ * Expired entries are swept on insert so the TTL bound holds even when a call
+ * id is never read again.
+ */
+export function rememberReasoningForCall(callId: string, text: string, scope?: string): void {
   if (!callId || typeof text !== "string" || text.length === 0) return;
   const bytes = Buffer.byteLength(text, "utf8");
   // A single entry larger than the whole budget would immediately evict itself.
   if (bytes > MAX_TOTAL_BYTES) return;
   const at = now();
-  const previous = entries.get(callId);
+  // Delete every due entry first so expired reasoning cannot linger until a
+  // later peek or capacity eviction.
+  for (const [key, entry] of entries) {
+    if (at - entry.at >= TTL_MS) {
+      entries.delete(key);
+      totalBytes -= entry.bytes;
+    }
+  }
+  const key = keyFor(callId, scope);
+  const previous = entries.get(key);
   if (previous) totalBytes -= previous.bytes;
-  entries.set(callId, { text, bytes, at });
+  entries.set(key, { text, bytes, at });
   totalBytes += bytes;
   // Evict oldest-first until both caps hold (never evict the entry just written
   // while it is the only one — the loop guards on size > 1).
   while ((totalBytes > MAX_TOTAL_BYTES || entries.size > MAX_ENTRIES) && entries.size > 1) {
     let oldestKey: string | undefined;
     let oldestAt = Infinity;
-    for (const [key, entry] of entries) {
+    for (const [candidateKey, entry] of entries) {
       if (entry.at < oldestAt) {
         oldestAt = entry.at;
-        oldestKey = key;
+        oldestKey = candidateKey;
       }
     }
     if (oldestKey === undefined) break;
@@ -63,12 +84,13 @@ export function rememberReasoningForCall(callId: string, text: string): void {
  * Read the recorded reasoning for a call id without removing it: retries after
  * a failed continuation reuse the same fallback.
  */
-export function peekReasoningForCall(callId: string): string | undefined {
+export function peekReasoningForCall(callId: string, scope?: string): string | undefined {
   if (!callId) return undefined;
-  const entry = entries.get(callId);
+  const key = keyFor(callId, scope);
+  const entry = entries.get(key);
   if (!entry) return undefined;
-  if (now() - entry.at > TTL_MS) {
-    entries.delete(callId);
+  if (now() - entry.at >= TTL_MS) {
+    entries.delete(key);
     totalBytes -= entry.bytes;
     return undefined;
   }

@@ -182,6 +182,12 @@ export function bridgeToResponsesSSE(
     onUsage?: (usage: OcxUsage | undefined) => void;
     translatorBudget?: TranslatorBudget;
     /**
+     * Conversation identity for the reasoning replay cache (issue #950).
+     * Provider call ids are not globally unique; scoping by thread keeps one
+     * conversation's reasoning out of another's continuations.
+     */
+    replayCacheScope?: string;
+    /**
      * Test seam for the wire/stall beat loop. Production omits this and uses the
      * global timers; injecting here must not change scheduling semantics.
      */
@@ -191,6 +197,7 @@ export function bridgeToResponsesSSE(
     };
   },
 ): ReadableStream<Uint8Array> {
+  const replayCacheScope = options?.replayCacheScope ?? "global";
   const setBeatInterval = options?.timers?.setInterval ?? ((handler: () => void, ms: number) => setInterval(handler, ms));
   const clearBeatInterval = options?.timers?.clearInterval ?? ((id: unknown) => clearInterval(id as ReturnType<typeof setInterval>));
   // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
@@ -919,7 +926,7 @@ export function bridgeToResponsesSSE(
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
               if (rawReasoningForNextToolCall) {
-                rememberReasoningForCall(event.id, rawReasoningForNextToolCall);
+                rememberReasoningForCall(event.id, rawReasoningForNextToolCall, replayCacheScope);
               }
               if (currentToolCall) closeCurrentToolCall();
               const mapped = toolNsMap?.get(event.name);
@@ -1314,9 +1321,12 @@ function buildResponseJSONWithBudget(
     /** Raw adapter-reported usage before wire normalization (see bridgeToResponsesSSE onUsage). */
     onUsage?: (usage: OcxUsage | undefined) => void;
     translatorBudget?: TranslatorBudget;
+    /** Conversation identity for the reasoning replay cache (issue #950). */
+    replayCacheScope?: string;
   },
 ): Record<string, unknown> {
   const responseId = `resp_${uuid()}`;
+  const replayCacheScope = options?.replayCacheScope ?? "global";
   const output: OutputItem[] = [];
   const budget = options?.translatorBudget;
   const encoder = new TextEncoder();
@@ -1566,7 +1576,7 @@ function buildResponseJSONWithBudget(
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
         if (rawReasoningForNextToolCall) {
-          rememberReasoningForCall(e.id, rawReasoningForNextToolCall);
+          rememberReasoningForCall(e.id, rawReasoningForNextToolCall, replayCacheScope);
         }
         flushToolCall();
         currentToolCallId = e.id;

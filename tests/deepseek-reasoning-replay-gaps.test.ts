@@ -124,12 +124,15 @@ describe("issue #950 — tool-call reasoning replay invariant (openai-chat wire)
   test("GAP C: orphan tool result (lost assistant turn) is repaired WITH the recorded reasoning", () => {
     // When previous_response_id expansion misses or history loses the assistant
     // turn, the adapter's orphan repair synthesizes an assistant tool_call; it
-    // must carry the reasoning recorded for that call id.
+    // must carry the reasoning recorded for that call id — and keep carrying it
+    // on a retry of the same continuation (peek is non-destructive).
     rememberReasoningForCall("call_1", REASONING);
-    const { messages } = wireFor([userMessage(), functionCallOutputItem()]);
-    const assistant = toolCallAssistant(messages);
-    expect(assistant).toBeDefined();
-    expect(assistant!["reasoning_content"]).toBe(REASONING);
+    const first = toolCallAssistant(wireFor([userMessage(), functionCallOutputItem()]).messages);
+    const retry = toolCallAssistant(wireFor([userMessage(), functionCallOutputItem()]).messages);
+    expect(first).toBeDefined();
+    expect(first!["reasoning_content"]).toBe(REASONING);
+    expect(retry).toBeDefined();
+    expect(retry!["reasoning_content"]).toBe(REASONING);
   });
 
   test("documented non-bug: opaque encrypted-only reasoning is intentionally not replayed", () => {
@@ -164,6 +167,15 @@ describe("issue #950 — reasoning replay cache bounds", () => {
     expect(peekReasoningForCall("call_c")).toBeUndefined();
   });
 
+  test("conversation scopes isolate entries with the same call id", () => {
+    rememberReasoningForCall("call_1", "thread alpha reasoning", "thread-a");
+    rememberReasoningForCall("call_1", "thread beta reasoning", "thread-b");
+    expect(peekReasoningForCall("call_1", "thread-a")).toBe("thread alpha reasoning");
+    expect(peekReasoningForCall("call_1", "thread-b")).toBe("thread beta reasoning");
+    // An unscoped read must not see either scoped entry.
+    expect(peekReasoningForCall("call_1")).toBeUndefined();
+  });
+
   test("entries expire after the TTL", () => {
     let clock = 1_000;
     clearReasoningReplayCacheForTests(() => clock);
@@ -174,14 +186,36 @@ describe("issue #950 — reasoning replay cache bounds", () => {
     clearReasoningReplayCacheForTests();
   });
 
+  test("expired entries are swept on the next remember without a peek", () => {
+    let clock = 1_000;
+    clearReasoningReplayCacheForTests(() => clock);
+    rememberReasoningForCall("call_stale", "old reasoning");
+    clock += 60 * 60 * 1000 + 1;
+    rememberReasoningForCall("call_fresh", "new reasoning");
+    expect(peekReasoningForCall("call_stale")).toBeUndefined();
+    expect(peekReasoningForCall("call_fresh")).toBe("new reasoning");
+    clearReasoningReplayCacheForTests();
+  });
+
   test("older entries are evicted when the entry cap is exceeded", () => {
     for (let i = 0; i < 70; i++) rememberReasoningForCall(`call_${i}`, `reasoning ${i}`);
     const oldest = peekReasoningForCall("call_0");
-    // The first six entries (0..5) must have been evicted to make room for
-    // calls 64..69 under MAX_ENTRIES = 64.
+    // Exactly 70 - 64 = 6 entries must be evicted: call_5 is the last evicted
+    // entry and call_6 must survive — proving MAX_ENTRIES is 64, not larger.
     expect(oldest).toBeUndefined();
+    expect(peekReasoningForCall("call_5")).toBeUndefined();
+    expect(peekReasoningForCall("call_6")).toBe("reasoning 6");
     expect(peekReasoningForCall("call_63")).toBe("reasoning 63");
     expect(peekReasoningForCall("call_69")).toBe("reasoning 69");
+  });
+
+  test("oldest valid entries are evicted when their combined size exceeds 256 KiB", () => {
+    const chunk = "x".repeat(65 * 1024);
+    for (let i = 0; i < 4; i++) rememberReasoningForCall(`call_bytes_${i}`, chunk);
+    // 4 x 65 KiB = 260 KiB > 256 KiB: exactly the oldest entry is evicted.
+    expect(peekReasoningForCall("call_bytes_0")).toBeUndefined();
+    expect(peekReasoningForCall("call_bytes_1")).toBe(chunk);
+    expect(peekReasoningForCall("call_bytes_3")).toBe(chunk);
   });
 
   test("empty and oversized entries are ignored", () => {

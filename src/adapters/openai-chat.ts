@@ -196,6 +196,9 @@ function toolResultImageChatParts(content: string | OcxContentPart[]): unknown[]
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
   const out: unknown[] = [];
   const { context, options } = parsed;
+  // Mirror the bridge's replay-cache scope (issue #950): provider call ids are
+  // not globally unique, so reasoning must not cross conversation boundaries.
+  const replayCacheScope = parsed._clientThreadId ?? "global";
 
   // 260718 dangling tool_calls hardening (devlog/_plan/260718_dangling_toolcall_hardening):
   // strict chat providers (Kimi/Moonshot) 400 when an assistant tool_call is not answered
@@ -337,7 +340,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           && modelInList(provider.preserveReasoningContentModels, parsed.modelId)
         ) {
           const cached = toolCalls
-            .map(tc => (tc.id ? peekReasoningForCall(tc.id) : undefined))
+            .map(tc => (tc.id ? peekReasoningForCall(tc.id, replayCacheScope) : undefined))
             .filter((text): text is string => typeof text === "string" && text.length > 0);
           // Parallel calls share one preceding reasoning block, which is
           // recorded under every call id — join unique texts only.
@@ -405,7 +408,10 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           // The orphan repair synthesizes an assistant tool call for a result
           // whose assistant turn was lost; carry the recorded reasoning so the
           // replayed round stays valid for thinking-mode providers (#950).
-          const cachedReasoning = toolCallId ? peekReasoningForCall(toolCallId) : undefined;
+          const cachedReasoning =
+            toolCallId && modelInList(provider.preserveReasoningContentModels, parsed.modelId)
+              ? peekReasoningForCall(toolCallId, replayCacheScope)
+              : undefined;
           out.push({
             role: "assistant",
             content: emptyAssistantContent(provider),
