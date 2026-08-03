@@ -149,10 +149,11 @@ Release notes are rendered OpenAI-Codex-style by `scripts/release-notes.ts rende
 `.github/workflows/release.yml`: `## New Features` / `## Bug Fixes` / `## Documentation` /
 `## Chores` / `## Other Changes` sections with prefix-free, scope-grouped summary bullets
 (`- Providers: add X; add Y (#1, #2)`), followed by a `## Changelog` section listing every PR
-as `- #N <title> @author` plus the compare link. Carried preview changelogs and the
-since-preview delta feed the same renderer, so stable notes are the aggregate of their
-preview train. The raw commit dump is intentionally gone — non-PR commits stay reachable via
-the Full Changelog compare link.
+as `- #N <title> @author`; when a comparison baseline exists, that section also includes a
+compare link. Carried preview changelogs and the since-preview delta feed the same renderer,
+so stable notes are the aggregate of their preview train. The raw commit dump is
+intentionally gone — non-PR commits stay reachable via the Full Changelog compare link when
+that link is available.
 
 The deterministic renderer produces the structure but not curated prose. Maintainers who want
 the OpenAI-style grouped summaries can run the optional local polish step against the rendered

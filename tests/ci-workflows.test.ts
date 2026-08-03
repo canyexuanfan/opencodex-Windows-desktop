@@ -523,6 +523,9 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("skipping generate-notes (minimal notes)");
     expect(workflow).toContain("bun scripts/release-notes.ts strip-carried");
     expect(workflow).toContain("bun scripts/release-notes.ts render");
+    expect(workflow).not.toContain("bun scripts/release-notes.ts assemble");
+    expect(workflow).not.toContain("--commits");
+    expect(workflow).not.toContain("commits_file");
     expect(workflow).toContain("bun scripts/release-notes.ts matching-preview-tags");
     expect(workflow).toContain("bun scripts/release-notes.ts previous-release-tag");
     expect(workflow).toContain("bun scripts/release-notes.ts has-meaningful");

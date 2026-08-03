@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   cleanPrTitle,
+  extractChangelogPrNumbers,
   extractPrNumbers,
   hasMeaningfulCarriedNotes,
   joinCarriedPreviewNotes,
@@ -13,6 +14,7 @@ import {
   renderReleaseNotes,
   rewriteTakeoverCredits,
   selectNewestCarriedPreviewTag,
+  splitPolishInput,
   stripCarriedReleaseNotes,
   validatePolishedSections,
 } from "../scripts/release-notes";
@@ -308,6 +310,13 @@ describe("cleanPrTitle", () => {
     });
   });
 
+  test("strips a conventional prefix that has no scope", () => {
+    expect(cleanPrTitle("fix: drop the stale retry timer", 11)).toEqual({
+      scope: null,
+      text: "Drop the stale retry timer",
+    });
+  });
+
   test("strips a trailing reference to the PR's own number", () => {
     expect(cleanPrTitle("fix(codex): sentinel on all owner-verification failures (#857)", 857).text).toBe(
       "Sentinel on all owner-verification failures",
@@ -398,6 +407,68 @@ describe("renderReleaseNotes", () => {
     expect(notes).toContain("- #3 feat(gui): dark mode @c");
   });
 
+  test("merges scope-less PRs into one bullet without a label prefix", () => {
+    const notes = renderReleaseNotes({
+      npmMetadata: "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
+      carriedPreviewNotes: [
+        "## What's Changed",
+        "### Bug Fixes",
+        "* fix: drop the stale retry timer by @a in https://github.com/o/r/pull/11",
+        "* fix: close the idle socket by @b in https://github.com/o/r/pull/12",
+      ].join("\n"),
+    });
+
+    expect(notes).toContain("- Drop the stale retry timer; Close the idle socket (#11, #12)");
+  });
+
+  test("parses bot-authored PRs in generated and rendered notes", () => {
+    const notes = renderReleaseNotes({
+      npmMetadata: "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
+      carriedPreviewNotes: [
+        "## What's Changed",
+        "### Chores",
+        "* chore(deps): bump bun by @dependabot[bot] in https://github.com/o/r/pull/20",
+      ].join("\n"),
+    });
+
+    expect(notes).toContain("- Bump bun (#20)");
+    expect(notes).toContain("- #20 chore(deps): bump bun @dependabot[bot]");
+  });
+
+  test("deduplicates a PR whose category changed between preview and delta", () => {
+    const notes = renderReleaseNotes({
+      npmMetadata: "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
+      carriedPreviewNotes: [
+        "## What's Changed",
+        "### Bug Fixes",
+        "* fix(x): y by @a in https://github.com/o/r/pull/9",
+      ].join("\n"),
+      deltaPrNotes: [
+        "## What's Changed",
+        "### New Features",
+        "* feat(x): y by @a in https://github.com/o/r/pull/9",
+      ].join("\n"),
+    });
+
+    expect(notes.match(/- #9 /g)).toHaveLength(1);
+    expect(notes).toContain("## Bug Fixes");
+    expect(notes).not.toContain("## New Features");
+  });
+
+  test("emits the compare link even when no PRs were parsed", () => {
+    const notes = renderReleaseNotes({
+      npmMetadata: "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
+      deltaPrNotes:
+        "<!-- Release notes generated using configuration in .github/release.yml at abc -->\n\n\n**Full Changelog**: https://example/compare/a...b\n",
+      compareFrom: "v1.0.0",
+      compareTo: "v1.0.1",
+      repository: "o/r",
+    });
+
+    expect(notes).toContain("## Changelog");
+    expect(notes).toContain("Full Changelog: https://github.com/o/r/compare/v1.0.0...v1.0.1");
+  });
+
   test("omits empty categories and the compare link when no range is available", () => {
     const notes = renderReleaseNotes({
       npmMetadata: "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
@@ -485,8 +556,20 @@ describe("renderReleaseNotes", () => {
 
     expect(stable).toContain("- Add Baseten Model APIs preset (#653)");
     expect(stable).toContain("- #653 feat(providers): add Baseten Model APIs preset @olddonkey");
+    expect(stable).toContain("- #744 fix(providers): keep Antigravity catalog static @luvs01");
+    expect(stable).toContain("- #853 feat(server): advertise reasoning-effort ladders on the raw /v1/models list @n3wr1ch");
     expect(stable).toContain("- #862 docs(codex): clarify pool routing and account continuity @luvs01");
     expect(stable).toContain("Full Changelog: https://github.com/lidge-jun/opencodex/compare/v2.9.1...v2.10.0");
+
+    // The preview's own metadata and compare link must not survive the carry.
+    expect(stable).not.toContain("2.10.0-preview.1");
+    expect(stable).not.toContain("dist-tag `preview`");
+    expect(stable.match(/Full Changelog:/g)).toHaveLength(1);
+
+    // Every PR appears exactly once in the changelog.
+    for (const pr of [653, 744, 853, 862]) {
+      expect(stable.match(new RegExp(`^- #${pr} `, "gm"))).toHaveLength(1);
+    }
   });
 });
 
@@ -506,6 +589,37 @@ describe("polish validation", () => {
 
   test("extractPrNumbers deduplicates and sorts", () => {
     expect(extractPrNumbers("(#853, #744, #653, #653)")).toEqual([653, 744, 853]);
+  });
+
+  test("extractChangelogPrNumbers reads only leading entry identifiers", () => {
+    const changelog = [
+      "## Changelog",
+      "",
+      "- #577 feat(images): Grok image bridge (maintainer takeover of #424) @tizerluo",
+      "- #653 feat(providers): add Baseten Model APIs preset @olddonkey",
+    ].join("\n");
+    expect(extractChangelogPrNumbers(changelog)).toEqual([577, 653]);
+  });
+
+  test("splitPolishInput peels metadata, splits at the first Changelog heading, and normalizes CRLF", () => {
+    const body = [
+      "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
+      "",
+      "## Bug Fixes",
+      "",
+      "- Keep Antigravity catalog static (#744)",
+      "",
+      "## Changelog",
+      "",
+      "- #744 fix(providers): keep Antigravity catalog static @luvs01",
+      "",
+    ].join("\r\n");
+
+    expect(splitPolishInput(body)).toEqual({
+      metadata: "Published to npm as `@pkg@1.0.0` with dist-tag `latest`.",
+      head: ["## Bug Fixes", "", "- Keep Antigravity catalog static (#744)"].join("\n"),
+      changelog: ["## Changelog", "", "- #744 fix(providers): keep Antigravity catalog static @luvs01"].join("\n"),
+    });
   });
 
   test("parseSectionHeadings excludes the machine-rendered Changelog", () => {
@@ -530,6 +644,24 @@ describe("polish validation", () => {
     const out = head.replace("(#653)", "(#653, #424242)");
     expect(validatePolishedSections(out, [653, 744, 853], ["New Features", "Bug Fixes"])).toContain(
       "unexpected PR references: #424242",
+    );
+  });
+
+  test("accepts a rewrite that drops a foreign PR reference carried inside a title", () => {
+    const sections = [
+      "## New Features",
+      "",
+      "- Grok image bridge (maintainer takeover of #424) (#577)",
+    ].join("\n");
+    const rewritten = sections.replace("(maintainer takeover of #424) ", "");
+
+    expect(validatePolishedSections(rewritten, [577], ["New Features"], [424])).toEqual([]);
+  });
+
+  test("rejects repeated PR references", () => {
+    const out = head.replace("(#653)", "(#653, #653)");
+    expect(validatePolishedSections(out, [653, 744, 853], ["New Features", "Bug Fixes"])).toContain(
+      "repeated PR references: #653",
     );
   });
 

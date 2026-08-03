@@ -12,7 +12,7 @@
  *   bun scripts/release-notes.ts has-meaningful [body-file]
  *   bun scripts/release-notes.ts credit-takeovers --repo <owner/name> --in <file> --out <file>
  *   bun scripts/release-notes.ts render --npm-metadata ... --out ... [--carried ...] [--delta ...] [--compare-from ...] [--compare-to ...] [--repository ...]
- *   bun scripts/release-notes.ts polish --in <file> --out <file> [--model ...] [--base-url ...] [--api-key ...]
+ *   bun scripts/release-notes.ts polish --in <file> --out <file> [--model ...] [--base-url ...]
  */
 
 type ParsedReleaseTag = {
@@ -214,7 +214,7 @@ export function parseTakeoverSourcePr(title: string, body = ""): number | null {
 }
 
 const GENERATE_NOTES_PR_LINE =
-  /^(?<prefix>\* .+? by @)(?<author>[A-Za-z0-9-]+)(?<mid> in https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/)(?<pr>\d+)(?<suffix>\s*)$/;
+  /^(?<prefix>\* .+? by @)(?<author>[A-Za-z0-9-]+(?:\[bot\])?)(?<mid> in https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/)(?<pr>\d+)(?<suffix>\s*)$/;
 
 export type TakeoverCreditLookup = {
   title: string;
@@ -301,11 +301,11 @@ export type ReleaseNoteCategory = {
  * supply the authoritative title/author for PRs first seen in bullets.
  */
 const GENERATED_PR_LINE =
-  /^\*\s*(?<title>.+?)\s+by\s+@(?<author>[A-Za-z0-9-]+)(?:\s+\(takeover\s+by\s+@[A-Za-z0-9-]+\))?\s+in\s+https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(?<pr>\d+)\s*$/;
+  /^\*\s*(?<title>.+?)\s+by\s+@(?<author>[A-Za-z0-9-]+(?:\[bot\])?)(?:\s+\(takeover\s+by\s+@[A-Za-z0-9-]+(?:\[bot\])?\))?\s+in\s+https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(?<pr>\d+)\s*$/;
 const GENERATED_BULLET_LINE =
   /^-\s+(?<text>.+?)\s+\((?<refs>#\d+(?:\s*,\s*#\d+)*)\)\s*$/;
 const CHANGELOG_PR_LINE =
-  /^-\s+#(?<pr>\d+)\s+(?<title>.+?)\s+@(?<author>[A-Za-z0-9-]+)\s*$/;
+  /^-\s+#(?<pr>\d+)\s+(?<title>.+?)\s+@(?<author>[A-Za-z0-9-]+(?:\[bot\])?)\s*$/;
 const SCAFFOLD_HEADINGS = new Set(["What's Changed", "New Contributors", "Commits", "Changelog", "Since preview"]);
 
 export function parseGeneratedNotes(body: string): ReleaseNoteCategory[] {
@@ -381,7 +381,11 @@ export function cleanPrTitle(title: string, prNumber: number | null = null): { s
     text = prefix[2]!.trim();
   }
   if (prNumber !== null) {
-    text = text.replace(new RegExp(`\\s*\\(#${prNumber}\\)\\s*$`), "");
+    const selfRef = `(#${prNumber})`;
+    const trimmed = text.trimEnd();
+    if (trimmed.endsWith(selfRef)) {
+      text = trimmed.slice(0, -selfRef.length);
+    }
   }
   text = text.trim();
   if (text.length > 0) {
@@ -433,6 +437,7 @@ export function renderReleaseNotes(input: {
 }): string {
   const categories = new Map<string, ReleaseNotePr[]>();
   const order: string[] = [];
+  const claimed = new Set<number>();
   const add = (body: string): void => {
     for (const section of parseGeneratedNotes(body)) {
       const existing = categories.get(section.title);
@@ -440,10 +445,9 @@ export function renderReleaseNotes(input: {
         categories.set(section.title, []);
         order.push(section.title);
       }
-      const seen = new Set(categories.get(section.title)!.map(pr => pr.number));
       for (const pr of section.prs) {
-        if (seen.has(pr.number)) continue;
-        seen.add(pr.number);
+        if (claimed.has(pr.number)) continue;
+        claimed.add(pr.number);
         categories.get(section.title)!.push(pr);
       }
     }
@@ -483,12 +487,13 @@ export function renderReleaseNotes(input: {
   }
 
   const allPrs = [...categories.values()].flat().sort((a, b) => a.number - b.number);
-  if (allPrs.length > 0) {
+  const from = input.compareFrom?.trim();
+  const to = input.compareTo?.trim();
+  const repo = input.repository?.trim();
+  const hasCompare = Boolean(from && to && repo);
+  if (allPrs.length > 0 || hasCompare) {
     const changelog: string[] = ["## Changelog", ""];
-    const from = input.compareFrom?.trim();
-    const to = input.compareTo?.trim();
-    const repo = input.repository?.trim();
-    if (from && to && repo) {
+    if (hasCompare) {
       changelog.push(`Full Changelog: https://github.com/${repo}/compare/${from}...${to}`, "");
     }
     for (const pr of allPrs) {
@@ -510,6 +515,30 @@ export function extractPrNumbers(text: string): number[] {
   return [...numbers].sort((a, b) => a - b);
 }
 
+/**
+ * The leading `#N` identifier of every `- #N <title> @author` changelog entry.
+ * Used as the polish validation baseline so incidental PR references inside
+ * titles (e.g. a takeover line mentioning `#424`) never become mandatory.
+ */
+export function extractChangelogPrNumbers(changelog: string): number[] {
+  const numbers = new Set<number>();
+  for (const rawLine of changelog.replace(/\r\n/g, "\n").split("\n")) {
+    const match = /^-\s+#(\d+)\s+/.exec(rawLine.trim());
+    if (match) numbers.add(Number(match[1]));
+  }
+  return [...numbers].sort((a, b) => a - b);
+}
+
+/** Occurrence counts of every `#N` reference in a text. */
+function countPrNumbers(text: string): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (const match of text.matchAll(/#(\d+)/g)) {
+    const number = Number(match[1]);
+    counts.set(number, (counts.get(number) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /** H2 headings in a section, excluding the machine-rendered Changelog. */
 export function parseSectionHeadings(text: string): string[] {
   return text
@@ -523,14 +552,27 @@ export function parseSectionHeadings(text: string): string[] {
  * Guard rails for the optional LLM polish step: the rewritten head must keep
  * the exact PR set and the exact category headings. Any missing/invented PR or
  * category is a hard failure so a summarizer can never silently corrupt notes.
+ * `allowedExtraPrs` tolerates incidental references the original head carried
+ * inside titles (they may legitimately be dropped or kept by the rewrite).
  */
-export function validatePolishedSections(head: string, expectedPrs: number[], expectedHeadings: string[]): string[] {
+export function validatePolishedSections(
+  head: string,
+  expectedPrs: number[],
+  expectedHeadings: string[],
+  allowedExtraPrs: number[] = [],
+): string[] {
   const errors: string[] = [];
   const actualPrs = extractPrNumbers(head);
   const missing = expectedPrs.filter(number => !actualPrs.includes(number));
-  const unexpected = actualPrs.filter(number => !expectedPrs.includes(number));
+  const unexpected = actualPrs.filter(
+    number => !expectedPrs.includes(number) && !allowedExtraPrs.includes(number),
+  );
   if (missing.length > 0) errors.push(`missing PR references: #${missing.join(", #")}`);
   if (unexpected.length > 0) errors.push(`unexpected PR references: #${unexpected.join(", #")}`);
+
+  const counts = countPrNumbers(head);
+  const repeated = expectedPrs.filter(number => (counts.get(number) ?? 0) > 1);
+  if (repeated.length > 0) errors.push(`repeated PR references: #${repeated.join(", #")}`);
 
   const headings = parseSectionHeadings(head);
   const missingHeadings = expectedHeadings.filter(title => !headings.includes(title));
@@ -544,35 +586,51 @@ const POLISH_SYSTEM_PROMPT = `You are the release notes editor for opencodex, a 
 Rewrite the release-notes sections below (everything before "## Changelog") in the style of OpenAI Codex release notes:
 
 - Keep the exact same markdown headings and their order.
-- Keep the first line (npm metadata) verbatim.
 - Group related pull requests into single bullets: one human-readable sentence (or two) summarizing what changed, ending with the full PR reference list in parentheses, e.g. "- Honor configured proxies across authentication, plugin downloads, and redirects. (#123, #456)".
 - Every PR number must appear exactly once across the bullets; never invent PR numbers or features.
 - Do not add or remove categories. Omit a category only when it has no PRs.
+- The npm metadata line is handled outside this rewrite; do not include it.
 - Do not output the "## Changelog" section.
 Output only the rewritten markdown.`;
 
+const POLISH_REQUEST_TIMEOUT_MS = 120_000;
+
 async function callChatCompletion(apiKey: string, baseUrl: string, model: string, head: string): Promise<string> {
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.3,
-      messages: [
-        { role: "system", content: POLISH_SYSTEM_PROMPT },
-        { role: "user", content: head },
-      ],
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      signal: AbortSignal.timeout(POLISH_REQUEST_TIMEOUT_MS),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: POLISH_SYSTEM_PROMPT },
+          { role: "user", content: head },
+        ],
+      }),
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(`✗ polish LLM request did not complete: ${reason}`);
+    process.exit(1);
+  }
   if (!response.ok) {
     const detail = await response.text();
     console.error(`✗ polish LLM request failed (HTTP ${response.status}): ${detail.slice(0, 500)}`);
     process.exit(1);
   }
-  const data = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+  let data: { choices?: Array<{ message?: { content?: unknown } }> };
+  try {
+    data = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+  } catch {
+    console.error("✗ polish LLM returned a non-JSON response body");
+    process.exit(1);
+  }
   const content = data.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim()) {
     console.error("✗ polish LLM returned no content");
@@ -581,15 +639,24 @@ async function callChatCompletion(apiKey: string, baseUrl: string, model: string
   return content;
 }
 
-function splitPolishInput(body: string): { head: string; changelog: string } {
+/**
+ * Split a rendered body into the npm metadata line (held out of the model
+ * rewrite and re-attached deterministically), the category head, and the
+ * machine-rendered changelog tail.
+ */
+export function splitPolishInput(body: string): { metadata: string; head: string; changelog: string } {
   const lines = body.replace(/\r\n/g, "\n").split("\n");
   const index = lines.findIndex(line => /^##\s+Changelog\s*$/.test(line.trim()));
   if (index === -1) {
     console.error("✗ polish input has no `## Changelog` section to validate against");
     process.exit(1);
   }
+  const headLines = lines.slice(0, index);
+  const firstContent = headLines.findIndex(line => line.trim().length > 0);
+  const isMetadata = firstContent !== -1 && /^Published to npm as /.test(headLines[firstContent]!);
   return {
-    head: lines.slice(0, index).join("\n").trim(),
+    metadata: isMetadata ? headLines[firstContent]!.trim() : "",
+    head: (isMetadata ? headLines.slice(firstContent + 1) : headLines).join("\n").trim(),
     changelog: lines.slice(index).join("\n").trim(),
   };
 }
@@ -601,17 +668,25 @@ async function readStdinOrFile(path: string | undefined): Promise<string> {
   return await new Response(Bun.stdin).text();
 }
 
-function parseFlagArgs(rest: string[]): Map<string, string> {
+function parseFlagArgs(rest: string[], known?: readonly string[]): Map<string, string> {
   const args = new Map<string, string>();
   for (let i = 0; i < rest.length; i += 1) {
     const key = rest[i];
-    if (!key?.startsWith("--")) continue;
+    if (!key?.startsWith("--")) {
+      console.error(`Unexpected argument: ${key}`);
+      process.exit(1);
+    }
+    const name = key.slice(2);
+    if (known && !known.includes(name)) {
+      console.error(`Unknown flag: ${key}`);
+      process.exit(1);
+    }
     const value = rest[i + 1];
     if (!value || value.startsWith("--")) {
       console.error(`Missing value for ${key}`);
       process.exit(1);
     }
-    args.set(key.slice(2), value);
+    args.set(name, value);
     i += 1;
   }
   return args;
@@ -686,18 +761,7 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (cmd === "credit-takeovers") {
-    const args = new Map<string, string>();
-    for (let i = 0; i < rest.length; i += 1) {
-      const key = rest[i];
-      if (!key?.startsWith("--")) continue;
-      const value = rest[i + 1];
-      if (!value || value.startsWith("--")) {
-        console.error(`Missing value for ${key}`);
-        process.exit(1);
-      }
-      args.set(key.slice(2), value);
-      i += 1;
-    }
+    const args = parseFlagArgs(rest, ["repo", "in", "out"]);
     const repo = args.get("repo");
     const inputPath = args.get("in");
     const outPath = args.get("out");
@@ -790,7 +854,15 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (cmd === "render") {
-    const args = parseFlagArgs(rest);
+    const args = parseFlagArgs(rest, [
+      "npm-metadata",
+      "out",
+      "carried",
+      "delta",
+      "compare-from",
+      "compare-to",
+      "repository",
+    ]);
     const npmMetadata = args.get("npm-metadata");
     const out = args.get("out");
     if (!npmMetadata || !out) {
@@ -800,6 +872,7 @@ async function main(argv: string[]): Promise<void> {
     const readOptional = async (name: string): Promise<string> => {
       const path = args.get(name);
       if (!path) return "";
+      if (!(await Bun.file(path).exists())) return "";
       return await Bun.file(path).text();
     };
 
@@ -816,24 +889,46 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (cmd === "polish") {
-    const args = parseFlagArgs(rest);
+    const args = parseFlagArgs(rest, ["in", "out", "model", "base-url"]);
     const inputPath = args.get("in");
     const outPath = args.get("out");
     if (!inputPath || !outPath) {
-      console.error("Usage: bun scripts/release-notes.ts polish --in <file> --out <file> [--model <model>] [--base-url <url>] [--api-key <key>]");
+      console.error("Usage: bun scripts/release-notes.ts polish --in <file> --out <file> [--model <model>] [--base-url <url>]");
       process.exit(1);
     }
-    const apiKey = args.get("api-key") ?? process.env.OPENAI_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      console.error("✗ polish needs an OpenAI-compatible API key: set OPENAI_API_KEY or pass --api-key");
+      console.error("✗ polish needs an OpenAI-compatible API key: set OPENAI_API_KEY");
       process.exit(1);
     }
     const baseUrl = (args.get("base-url") ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+    let baseUrlAllowed = false;
+    try {
+      const parsed = new URL(baseUrl);
+      baseUrlAllowed =
+        parsed.protocol === "https:" ||
+        (parsed.protocol === "http:" &&
+          (parsed.hostname === "localhost" ||
+            parsed.hostname === "127.0.0.1" ||
+            parsed.hostname === "::1" ||
+            parsed.hostname.endsWith(".localhost")));
+    } catch {
+      baseUrlAllowed = false;
+    }
+    if (!baseUrlAllowed) {
+      console.error("✗ polish --base-url must be https: or a loopback http: host (the API key must not travel in plaintext)");
+      process.exit(1);
+    }
     const model = args.get("model") ?? process.env.OPENAI_MODEL ?? "gpt-5.4";
 
+    if (!(await Bun.file(inputPath).exists())) {
+      console.error(`✗ polish input not found: ${inputPath}`);
+      process.exit(1);
+    }
     const body = await Bun.file(inputPath).text();
-    const { head, changelog } = splitPolishInput(body);
-    const expectedPrs = extractPrNumbers(changelog);
+    const { metadata, head, changelog } = splitPolishInput(body);
+    const expectedPrs = extractChangelogPrNumbers(changelog);
+    const allowedExtraPrs = extractPrNumbers(changelog).filter(number => !expectedPrs.includes(number));
     const expectedHeadings = parseSectionHeadings(head);
     if (expectedPrs.length === 0) {
       console.error("✗ polish input Changelog contains no PR references");
@@ -841,13 +936,14 @@ async function main(argv: string[]): Promise<void> {
     }
 
     const rewritten = await callChatCompletion(apiKey, baseUrl, model, head);
-    const errors = validatePolishedSections(rewritten, expectedPrs, expectedHeadings);
+    const errors = validatePolishedSections(rewritten, expectedPrs, expectedHeadings, allowedExtraPrs);
     if (errors.length > 0) {
       console.error("✗ polished notes failed validation:");
       for (const error of errors) console.error(`  - ${error}`);
       process.exit(1);
     }
-    const out = `${rewritten.trimEnd()}\n\n${changelog}`;
+    const sections = [metadata, rewritten.trimEnd(), changelog].filter(part => part.length > 0);
+    const out = sections.join("\n\n");
     await Bun.write(outPath, out.endsWith("\n") ? out : out + "\n");
     return;
   }
@@ -862,7 +958,7 @@ Usage:
   bun scripts/release-notes.ts previous-release-tag <version>   # tags on stdin
   bun scripts/release-notes.ts credit-takeovers --repo <owner/name> --in <file> --out <file>
   bun scripts/release-notes.ts render --npm-metadata ... --out ... [--carried ...] [--delta ...] [--compare-from ...] [--compare-to ...] [--repository ...]
-  bun scripts/release-notes.ts polish --in <file> --out <file> [--model ...] [--base-url ...] [--api-key ...]`);
+  bun scripts/release-notes.ts polish --in <file> --out <file> [--model ...] [--base-url ...]`);
   process.exit(1);
 }
 
