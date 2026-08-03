@@ -571,9 +571,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           throw error;
         }
         const { accountBoundNativeModelSlugs, applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
-        const nativeSlugs = nativeOpenAiSlugs();
-        const includeAccountRows = shouldIncludeNativeOpenAi(config);
-        const accountSelectors = includeAccountRows ? visibleCodexAccountSelectors(config) : [];
+        const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
+        const nativeSlugs = includeNativeOpenAi ? nativeOpenAiSlugs() : [];
+        const accountSelectors = includeNativeOpenAi ? visibleCodexAccountSelectors(config) : [];
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
         // Claude Code / Claude Desktop gateway model discovery (GET /v1/models with
@@ -662,10 +662,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
               nativeDefaultReasoningEffort(metadataId),
             ),
           });
-        const visibleNatives = visibleNativeSlugs(config);
+        const visibleNatives = includeNativeOpenAi ? visibleNativeSlugs(config) : [];
         const data = [
           ...visibleNatives.map(id => nativeModelRow(id)),
-          ...(includeAccountRows ? accountBoundNativeModelSlugs(config, visibleNatives) : []).map(id =>
+          ...(includeNativeOpenAi ? accountBoundNativeModelSlugs(config, visibleNatives) : []).map(id =>
             nativeModelRow(id, id.slice(id.indexOf("/") + 1))
           ),
           ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => ({

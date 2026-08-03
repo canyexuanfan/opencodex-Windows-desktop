@@ -208,6 +208,16 @@ export async function resolveEffectiveSubagentRoster(
   return effectiveSubagentRoster(configuredModels, surface);
 }
 
+/** Reuse one parsed catalog snapshot across every roster projection for this request. */
+async function createRequestScopedSubagentRosterResolver(): Promise<NonNullable<
+  MultiAgentGuidanceDeps["resolveEffectiveSubagentRoster"]
+>> {
+  const { effectiveSubagentRoster, readCatalog, readCodexCatalogPath } = await import("../../codex/catalog");
+  const catalogEntries = readCatalog(readCodexCatalogPath())?.models ?? [];
+  return (configuredModels, surface) =>
+    effectiveSubagentRoster(configuredModels, surface, catalogEntries);
+}
+
 
 
 export async function multiAgentGuidanceText(
@@ -224,6 +234,9 @@ export async function multiAgentGuidanceText(
     subagentModelFallback,
     injectionPrompt,
   } = options;
+  const activeAccountNamespace = codexAccountNamespace?.length
+    ? codexAccountNamespace
+    : undefined;
   const surface = collabSurface(parsed);
   if (surface === null) return null;
 
@@ -244,7 +257,8 @@ export async function multiAgentGuidanceText(
       ...(subagentModels ?? []),
       ...(injectionModel ? [injectionModel] : []),
     ];
-    const resolveRoster = deps.resolveEffectiveSubagentRoster ?? resolveEffectiveSubagentRoster;
+    const resolveRoster = deps.resolveEffectiveSubagentRoster
+      ?? await createRequestScopedSubagentRosterResolver();
     const effective = await resolveRoster(configuredForGuidance, "v2");
     // Resolve the roster and preferred roles independently so a bare native can project onto its
     // generated account rows without making an unrelated provider/gpt-* row look equivalent.
@@ -270,8 +284,8 @@ export async function multiAgentGuidanceText(
     const allowedForCurrentRoute = (candidate: EffectiveSubagentModel): boolean =>
       explicitlyConfigured(candidate)
       || !candidate.model.includes("/")
-      || (codexAccountNamespace !== undefined
-        && candidate.model.startsWith(`${codexAccountNamespace}/`));
+      || (activeAccountNamespace !== undefined
+        && candidate.model.startsWith(`${activeAccountNamespace}/`));
     const rosterModels = (subagentEffective?.advertised ?? [])
       .filter(withinCandidateWindow)
       .filter(allowedForCurrentRoute);
@@ -279,9 +293,9 @@ export async function multiAgentGuidanceText(
     const preferredCandidates = (preferredEffective?.advertised ?? []).filter(withinCandidateWindow);
     const preferred = injectionModel?.includes("/")
       ? preferredCandidates[0]
-      : codexAccountNamespace
+      : activeAccountNamespace
         ? preferredCandidates.find(candidate =>
-          candidate.model.startsWith(`${codexAccountNamespace}/`)
+          candidate.model.startsWith(`${activeAccountNamespace}/`)
         )
         : preferredCandidates.length === 1 && !preferredCandidates[0]!.model.includes("/")
           ? preferredCandidates[0]

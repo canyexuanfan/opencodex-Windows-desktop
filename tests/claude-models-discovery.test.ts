@@ -197,8 +197,10 @@ test("configured account selectors appear in OpenAI and Codex discovery without 
       .toMatchObject({ display_name: "desktop / 5.5", visibility: "list" });
     expect(catalog.models.find(model => model.slug === "team/gpt-5.5")?.visibility).toBe("list");
     expect(catalog.models.some(model => model.slug.startsWith("removed/"))).toBe(false);
-    expect(JSON.stringify(catalog)).not.toContain("stored-side-account");
-    expect(JSON.stringify(catalog)).not.toContain("private@example.test");
+    for (const privateValue of ["stored-side-account", "private@example.test", "Private Display Name"]) {
+      expect(JSON.stringify(catalog)).not.toContain(privateValue);
+      expect(JSON.stringify(plain)).not.toContain(privateValue);
+    }
   } finally {
     server.stop(true);
   }
@@ -214,10 +216,12 @@ test("account selectors stay out of discovery when no canonical OpenAI provider 
       data: Array<{ id: string }>;
     };
     expect(plain.data.some(model => model.id.startsWith("desktop/"))).toBe(false);
+    expect(plain.data.some(model => model.id.startsWith("gpt-"))).toBe(false);
 
     const catalog = await fetch(new URL("/v1/models?client_version=1.0.0", server.url))
       .then(response => response.json()) as { models: Array<{ slug: string }> };
     expect(catalog.models.some(model => model.slug.startsWith("desktop/"))).toBe(false);
+    expect(catalog.models.some(model => model.slug.startsWith("gpt-"))).toBe(false);
   } finally {
     server.stop(true);
   }

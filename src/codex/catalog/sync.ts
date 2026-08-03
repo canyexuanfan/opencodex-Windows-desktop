@@ -37,7 +37,7 @@ import { loadCatalogForSync, resetBundledCatalogCacheForTests } from "./bundled"
 import { isMultiAgentV2Enabled } from "../features";
 import { applyCatalogModelMetadata, applyReasoningLevels, catalogEntryEfforts, clampCatalogModelsToCodexSupport, ensureGpt56ReasoningLevels, ensureUltraReasoningLevel, isGpt56NativeSlug } from "./effort";
 import { clearGatherRoutedModelsInflight, filterCatalogVisibleModels, gatherRoutedModels, lastDropWarnSignature } from "./provider-fetch";
-import { clearLastComboCatalogOmissions, comboCatalogWarningSignatures, comboMasqueradeCollisionWarnings, exactComboCatalogSlugs, openAiApiCollisionWarnings, resolveSlugAliasCollisions, slugAliasCollisionWarnings, warnComboMasqueradeCollisionOnce } from "./aggregation";
+import { accountSelectorShadowCollisionWarnings, clearLastComboCatalogOmissions, comboCatalogWarningSignatures, comboMasqueradeCollisionWarnings, exactComboCatalogSlugs, openAiApiCollisionWarnings, resolveSlugAliasCollisions, slugAliasCollisionWarnings, warnAccountSelectorShadowedProviderOnce, warnComboMasqueradeCollisionOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 import { accountBoundNativeDisplayName, CODEX_ACCOUNT_BOUND_CATALOG_KIND, trustedAccountBoundNativeCatalogSlug, visibleCodexAccountSelectors } from "./account-models";
 
@@ -88,7 +88,7 @@ export interface EffectiveSubagentRoster {
   excluded: SubagentRosterExclusion[];
 }
 
-export function configuredCatalogEntry(entries: RawEntry[], configured: string): RawEntry | undefined {
+export function configuredCatalogEntry(entries: readonly RawEntry[], configured: string): RawEntry | undefined {
   return entries.find(entry => entry.slug === configured)
     ?? entries.find(entry => typeof entry.slug === "string" && slugsEquivalent(configured, entry.slug));
 }
@@ -106,13 +106,14 @@ function configuredSubagentModelMatchesEntry(configured: string, entry: RawEntry
 export function effectiveSubagentRoster(
   configuredModels: readonly string[],
   surface: SpawnAgentSurface,
+  catalogEntries?: readonly RawEntry[],
 ): EffectiveSubagentRoster {
   const configured = configuredModels
     .filter(model => model.trim().length > 0)
     .filter((model, index, all) =>
       !all.slice(0, index).some(previous => slugsEquivalent(previous, model))
     );
-  const entries = readCatalog(readCodexCatalogPath())?.models ?? [];
+  const entries = catalogEntries ?? readCatalog(readCodexCatalogPath())?.models ?? [];
   const ordered = entries
     .map((entry, index) => ({ entry, index }))
     .filter(({ entry }) => typeof entry.slug === "string")
@@ -363,6 +364,7 @@ export function resetCatalogRuntimeStateForTests(): void {
   comboCatalogWarningSignatures.clear();
   slugAliasCollisionWarnings.clear();
   comboMasqueradeCollisionWarnings.clear();
+  accountSelectorShadowCollisionWarnings.clear();
   clearLastComboCatalogOmissions();
   clearModelCache();
   clearGatherRoutedModelsInflight();
@@ -542,9 +544,11 @@ export function mergeCatalogEntriesForSync(
   const accountBoundSlugs = new Set(alignedAccountBoundEntries.flatMap(entry =>
     typeof entry.slug === "string" ? [entry.slug] : []
   ));
-  finalRoutedEntries = finalRoutedEntries.filter(entry =>
-    typeof entry.slug !== "string" || !accountBoundSlugs.has(entry.slug)
-  );
+  finalRoutedEntries = finalRoutedEntries.filter(entry => {
+    if (typeof entry.slug !== "string" || !accountBoundSlugs.has(entry.slug)) return true;
+    if (freshSlugs.has(entry.slug)) warnAccountSelectorShadowedProviderOnce(entry.slug);
+    return false;
+  });
   if (preservingExistingRouted) {
     console.warn(`[opencodex] catalog sync: routed model fetch returned empty; preserving ${finalRoutedEntries.length} existing routed entr${finalRoutedEntries.length === 1 ? "y" : "ies"} on disk.`);
   }

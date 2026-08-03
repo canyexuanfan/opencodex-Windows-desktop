@@ -15,6 +15,7 @@ import {
   visibleNativeSlugs,
 } from "../src/codex/catalog";
 import { handleManagementAPI } from "../src/server/management-api";
+import { applyMultiAgentMode, applyNativeOpenAiContextOverride } from "../src/codex/catalog/parsing";
 import type { OcxConfig } from "../src/types";
 
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
@@ -130,6 +131,14 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     })).toBe("gpt-5.6-sol");
     expect(trustedAccountBoundNativeCatalogSlug({ slug: "side/gpt-5.6-sol" })).toBeUndefined();
     expect(trustedAccountBoundNativeCatalogSlug({
+      slug: "/gpt-5.6-sol",
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+    })).toBeUndefined();
+    expect(trustedAccountBoundNativeCatalogSlug({
+      slug: "side/",
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+    })).toBeUndefined();
+    expect(trustedAccountBoundNativeCatalogSlug({
       slug: "gpt-5.6-sol",
       opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
     })).toBeUndefined();
@@ -137,6 +146,50 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       slug: "side/nested/gpt-5.6-sol",
       opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
     })).toBeUndefined();
+  });
+
+  test("native metadata helpers trust only marked, well-shaped account rows", () => {
+    const trusted = {
+      slug: "side/gpt-5.6-luna",
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+      context_window: 128_000,
+      max_context_window: 128_000,
+      auto_compact_token_limit: 115_200,
+      multi_agent_version: "v2",
+    };
+    const malformed = {
+      ...trusted,
+      slug: "side/nested/gpt-5.6-luna",
+    };
+    const unmarked = {
+      ...trusted,
+      slug: "provider/gpt-5.6-luna",
+      opencodex_catalog_kind: undefined,
+    };
+
+    applyNativeOpenAiContextOverride(trusted);
+    applyNativeOpenAiContextOverride(malformed);
+    applyNativeOpenAiContextOverride(unmarked);
+    expect(trusted).toMatchObject({
+      context_window: 372_000,
+      max_context_window: 372_000,
+      auto_compact_token_limit: 334_800,
+    });
+    expect(malformed).toMatchObject({
+      context_window: 128_000,
+      max_context_window: 128_000,
+      auto_compact_token_limit: 115_200,
+    });
+    expect(unmarked).toMatchObject({
+      context_window: 128_000,
+      max_context_window: 128_000,
+      auto_compact_token_limit: 115_200,
+    });
+
+    applyMultiAgentMode([trusted, malformed, unmarked], "default");
+    expect(trusted.multi_agent_version).toBe("v1");
+    expect(malformed.multi_agent_version).toBeUndefined();
+    expect(unmarked.multi_agent_version).toBeUndefined();
   });
 
   test("native availability mirrors the built-in OpenAI auth-mode default", () => {

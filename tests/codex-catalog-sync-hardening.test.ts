@@ -234,6 +234,7 @@ describe("Codex catalog sync hardening", () => {
     `);
     expect(r.status).toBe(0);
     expect(r.stderr).toContain("routed model fetch returned empty; preserving 2 existing routed entries");
+    expect(r.stderr).not.toContain("account selector collision");
 
     const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
       slug: string;
@@ -250,6 +251,7 @@ describe("Codex catalog sync hardening", () => {
       auto_compact_token_limit?: number;
     }>;
     const firstRows = (JSON.parse(r.stdout) as { firstRows: typeof rows }).firstRows;
+    expect(rows).toEqual(firstRows);
     const firstBare = firstRows.find(row => row.slug === "gpt-5.5");
     const firstTeam = firstRows.find(row => row.slug === "team/gpt-5.5");
     expect(firstBare).toMatchObject({
@@ -293,6 +295,53 @@ describe("Codex catalog sync hardening", () => {
     }
     expect(JSON.stringify(rows)).not.toContain("stored-team-account");
     expect(JSON.stringify(rows)).not.toContain("private@example.test");
+    expect(JSON.stringify(rows)).not.toContain("Private Display Name");
+  });
+
+  test("a live provider row shadowed by an account selector warns once per runtime generation", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [nativeEntry("gpt-5.5", 0)],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { resetCatalogRuntimeStateForTests, syncCatalogModels } = require("./src/codex/catalog");
+      const config = {
+        providers: {
+          openai: {
+            adapter: "openai-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            liveModels: false
+          },
+          team: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: ["gpt-5.5"]
+          }
+        },
+        codexAccounts: [{ id: "stored-team-account", isMain: false }],
+        codexAccountNamespaces: { team: "stored-team-account" }
+      };
+      syncCatalogModels(config)
+        .then(() => syncCatalogModels(config))
+        .then(() => {
+          resetCatalogRuntimeStateForTests();
+          return syncCatalogModels(config);
+        })
+        .then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+    expect((r.stderr.match(/account selector collision on "team\/gpt-5\.5"/g) ?? []).length).toBe(2);
+
+    const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
+      slug: string;
+      opencodex_catalog_kind?: string;
+    }>;
+    expect(rows.filter(row => row.slug === "team/gpt-5.5")).toEqual([
+      expect.objectContaining({ opencodex_catalog_kind: "account-selector-v1" }),
+    ]);
   });
 
   test("non-OpenAI-only sync omits account rows without reprioritizing routed models", () => {

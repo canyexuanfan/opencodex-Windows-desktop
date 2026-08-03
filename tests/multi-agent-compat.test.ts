@@ -253,6 +253,22 @@ describe("multiAgentGuidanceText", () => {
     );
     expect(bareParent).toBeNull();
 
+    const emptyNamespace = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      {
+        codexAccountNamespace: "",
+        subagentModels: ["gpt-5.6-sol"],
+      },
+      {
+        resolveEffectiveSubagentRoster: () => ({
+          candidates: [{ model: "/gpt-5.6-sol", efforts: ["high"] }],
+          advertised: [{ model: "/gpt-5.6-sol", efforts: ["high"] }],
+          excluded: [],
+        }),
+      },
+    );
+    expect(emptyNamespace).toBeNull();
+
     const explicitCrossAccount = await multiAgentGuidanceText(
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
       {

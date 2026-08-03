@@ -10,7 +10,8 @@ export const CODEX_ACCOUNT_BOUND_CATALOG_KIND = "account-selector-v1";
  *
  * Stale mappings stay in config so exact routing keeps failing closed, but they must not advertise
  * a deleted account. Credential health, pause, and reauthentication state intentionally do not
- * churn catalog identity. Only selector keys leave this boundary; private account ids do not.
+ * churn catalog identity. Selector keys have already passed config's nonempty, single-segment
+ * namespace validation. Only those public keys leave this boundary; private account ids do not.
  */
 export function visibleCodexAccountSelectors(
   config: Pick<OcxConfig, "codexAccounts" | "codexAccountNamespaces">,
