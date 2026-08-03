@@ -64,6 +64,16 @@ function nativePoolConfig(): OcxConfig {
   } as OcxConfig;
 }
 
+/** Two-account pool: the alternate-attempt tests need somewhere for the retry to go. */
+function twoAccountPoolConfig(): OcxConfig {
+  const config = nativePoolConfig();
+  config.codexAccounts = [
+    { id: "pool-a", email: "a@example.test", isMain: false, chatgptAccountId: "pool_acc_a" },
+    { id: "pool-b", email: "b@example.test", isMain: false, chatgptAccountId: "pool_acc_b" },
+  ] as OcxConfig["codexAccounts"];
+  return config;
+}
+
 function compactionRequest(body: Record<string, unknown>, signal?: AbortSignal): Request {
   return new Request("http://localhost/v1/responses", {
     method: "POST",
@@ -504,5 +514,164 @@ describe("compaction terminal handling (#422)", () => {
     );
 
     expect(await res.text()).toContain("\"type\":\"compaction\"");
+  });
+});
+
+/**
+ * #913: `/v1/responses` already tries one eligible alternate account inside the same
+ * logical request after a pre-stream 429/402. Compact did not, so a pool rejection
+ * reached the client, which retried the compact task OUTSIDE the logical request and
+ * could report exhausted retries while another account sat idle.
+ *
+ * The send count is the activation proof throughout: one send means the branch never
+ * fired, three means it recursed.
+ */
+describe("compact alternate-account attempt (#913)", () => {
+  function withPoolEnv<T>(name: string, run: (config: OcxConfig) => Promise<T>): Promise<T> {
+    const testDir = mkdtempSync(join(tmpdir(), name));
+    const previousOpencodexHome = process.env.OPENCODEX_HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.OPENCODEX_HOME = testDir;
+    process.env.CODEX_HOME = testDir;
+    clearCodexUpstreamHealth();
+    for (const id of ["pool-a", "pool-b"]) {
+      saveCodexAccountCredential(id, {
+        accessToken: `${id}-access-token`,
+        refreshToken: `${id}-refresh-token`,
+        expiresAt: Date.now() + 300_000,
+        chatgptAccountId: id === "pool-a" ? "pool_acc_a" : "pool_acc_b",
+      });
+    }
+    return run(twoAccountPoolConfig()).finally(() => {
+      globalThis.fetch = originalFetch;
+      clearCodexUpstreamHealth();
+      rmSync(testDir, { recursive: true, force: true });
+      if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousOpencodexHome;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+    });
+  }
+
+  for (const rejection of [429, 402] as const) {
+    test(`a pre-body ${rejection} tries exactly one alternate account`, async () => {
+      await withPoolEnv(`ocx-compact-alt-${rejection}-`, async config => {
+        const bearers: string[] = [];
+        globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+          const auth = new Headers(init?.headers).get("authorization") ?? "";
+          bearers.push(auth);
+          if (bearers.length === 1) {
+            return Response.json({ error: { message: "pool exhausted" } }, {
+              status: rejection,
+              headers: { "retry-after": "42" },
+            });
+          }
+          return jsonResponse(completedPayload("alternate compact response"));
+        }) as typeof fetch;
+
+        const res = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({})),
+          config,
+          { model: "", provider: "" },
+        );
+
+        // Two sends, not one and not three: the alternate ran once and did not recurse.
+        expect(bearers).toHaveLength(2);
+        expect(bearers[0]).not.toBe(bearers[1]);
+        expect(res.status).toBe(200);
+      });
+    });
+  }
+
+  test("with no eligible alternate the first rejection is returned with its backoff headers", async () => {
+    await withPoolEnv("ocx-compact-alt-none-", async config => {
+      // Single-account pool: nothing to fail over to.
+      config.codexAccounts = [config.codexAccounts![0]];
+      let sends = 0;
+      globalThis.fetch = (async () => {
+        sends += 1;
+        return Response.json({ error: { message: "pool exhausted" } }, {
+          status: 429,
+          headers: { "retry-after": "77", "x-codex-primary-reset-at": "1900000000" },
+        });
+      }) as typeof fetch;
+
+      const res = await handleResponsesCompact(
+        compactionRequest(baseCompactionBody({})),
+        config,
+        { model: "", provider: "" },
+      );
+
+      expect(sends).toBe(1);
+      expect(res.status).toBe(429);
+      // The buffered response is rebuilt from scratch, so these have to be carried
+      // deliberately. Dropping them left the client with no basis to back off.
+      expect(res.headers.get("retry-after")).toBe("77");
+      expect(res.headers.get("x-codex-primary-reset-at")).toBe("1900000000");
+    });
+  });
+
+  test("when the alternate also rejects, both sends happen and its rejection is returned", async () => {
+    await withPoolEnv("ocx-compact-alt-both-", async config => {
+      let sends = 0;
+      globalThis.fetch = (async () => {
+        sends += 1;
+        return Response.json({ error: { message: `rejection ${sends}` } }, {
+          status: 429,
+          headers: { "retry-after": String(sends) },
+        });
+      }) as typeof fetch;
+
+      const res = await handleResponsesCompact(
+        compactionRequest(baseCompactionBody({})),
+        config,
+        { model: "", provider: "" },
+      );
+
+      expect(sends).toBe(2);
+      expect(res.status).toBe(429);
+      // The SECOND rejection is what the client sees, headers included.
+      expect(res.headers.get("retry-after")).toBe("2");
+    });
+  });
+
+  test("a non-quota rejection does not trigger an alternate", async () => {
+    await withPoolEnv("ocx-compact-alt-400-", async config => {
+      let sends = 0;
+      globalThis.fetch = (async () => {
+        sends += 1;
+        return Response.json({ error: { message: "bad request" } }, { status: 400 });
+      }) as typeof fetch;
+
+      const res = await handleResponsesCompact(
+        compactionRequest(baseCompactionBody({})),
+        config,
+        { model: "", provider: "" },
+      );
+
+      // Recognition is 429/402 only, matching the regular path's deliberate narrowness.
+      expect(sends).toBe(1);
+      expect(res.status).toBe(400);
+    });
+  });
+
+  test("an abort between attempts prevents the alternate send", async () => {
+    await withPoolEnv("ocx-compact-alt-abort-", async config => {
+      const abort = new AbortController();
+      let sends = 0;
+      globalThis.fetch = (async () => {
+        sends += 1;
+        abort.abort();
+        return Response.json({ error: { message: "pool exhausted" } }, { status: 429 });
+      }) as typeof fetch;
+
+      await handleResponsesCompact(
+        compactionRequest(baseCompactionBody({}), abort.signal),
+        config,
+        { model: "", provider: "" },
+      );
+
+      expect(sends).toBe(1);
+    });
   });
 });
