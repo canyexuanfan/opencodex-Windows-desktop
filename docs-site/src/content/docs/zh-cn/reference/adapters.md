@@ -30,6 +30,8 @@ interface ProviderAdapter {
 
 - 把内部消息转换成 OpenAI role；工具映射为 `{type:"function", function:{…}}` 和
   `tool_choice`（`auto`/`none`/`required` 或具名函数）。
+- **工具结果中的图片**会在工具轮次结束后，作为后续 user vision 消息（`image_url` 部分）发送，
+  因为 `role:"tool"` 的内容只能是文本；`[image]` 标记仍保留在工具消息中作为锚点。
 - **重写 Codex 的 GPT-5 身份提示词**，改成与模型无关的介绍，避免路由模型自称 OpenAI。
 - 精确层级不可用时，**把 `reasoning_effort` 限制到模型公布的子集**。除非 provider 显式配置
   alias，`xhigh` 与 `max` 保持为不同标签。对于 `provider.noReasoningModels` 中的 id，则**完全
