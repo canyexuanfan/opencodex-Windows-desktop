@@ -12,6 +12,7 @@ import {
 import {
   EXPECTED_PRICE_OVERLAYS,
   PRIORITY_MULTIPLIERS,
+  CONTEXT_TIERS,
   findExpectedPriceOverlay,
   resolvePriorityMultiplier,
   type ExpectedPriceOverlay,
@@ -229,8 +230,8 @@ describe("resolveMatchedPrice", () => {
     expect(resolveMatchedPrice("openrouter", "anthropic-claude-3.5-sonnet")).toBeNull();
   });
 
-  test("16. shipped overlay membership: 48 keys, including Opus 5 and compatibility prices", () => {
-    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(48);
+  test("16. shipped overlay membership: 51 keys, including Opus 5 and compatibility prices", () => {
+    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(51);
     expect(EXPECTED_PRICE_OVERLAYS.some(row => row.status === "unverified")).toBe(false);
     const keys = new Set(EXPECTED_PRICE_OVERLAYS.map(row => `${row.provider}/${row.modelId}`));
     for (const expected of [
@@ -405,17 +406,19 @@ describe("priority (Fast) service tier multiplier", () => {
     { provider: "openai", modelId: "gpt-5.5", cost4: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 }, source: "test", verifiedAt: "2026-07-24", status: "verified" },
     { provider: "openai", modelId: "gpt-5.3-codex-spark", cost4: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 }, source: "test", verifiedAt: "2026-07-24", status: "verified" },
   ];
-  const usage = { inputTokens: 1_000_000, outputTokens: 100_000 };
+  // Below OpenAI's 272k long-context boundary on purpose: these cases isolate the Fast
+  // multiplier, and a 1M-token prompt would silently also trip the context tier (#908).
+  const usage = { inputTokens: 200_000, outputTokens: 20_000 };
 
   test("P1. priority tier applies 2x multiplier for gpt-5.6-sol", () => {
     const base = estimateRequestCost({ provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage }, overlays);
     const fast = estimateRequestCost({ provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage, serviceTier: "priority" }, overlays);
     expect(base).not.toBeNull();
     expect(fast).not.toBeNull();
-    // base: 5*1 + 30*0.1 = 8.0
-    expect(base!.cost.total).toBeCloseTo(8.0, 9);
-    // fast: 2x => 16.0
-    expect(fast!.cost.total).toBeCloseTo(16.0, 9);
+    // base: 5*0.2 + 30*0.02 = 1.6
+    expect(base!.cost.total).toBeCloseTo(1.6, 9);
+    // fast: 2x => 3.2
+    expect(fast!.cost.total).toBeCloseTo(3.2, 9);
     expect(fast!.priorityMultiplier).toBe(2);
     expect(base!.priorityMultiplier).toBeUndefined();
   });
@@ -425,32 +428,32 @@ describe("priority (Fast) service tier multiplier", () => {
     const fast = estimateRequestCost({ provider: "openai", model: "gpt-5.6-luna", usageStatus: "reported", usage, serviceTier: "priority" });
     expect(base).not.toBeNull();
     expect(fast).not.toBeNull();
-    // Standard: $1 input + $0.60 output = $1.60. Fast: $0.40 + $0.24 = $0.64.
-    expect(base!.cost.total).toBeCloseTo(1.6, 9);
-    expect(fast!.cost.total).toBeCloseTo(0.64, 9);
+    // Standard: $0.20 input + $0.12 output = $0.32. Fast (0.4x): $0.128.
+    expect(base!.cost.total).toBeCloseTo(0.32, 9);
+    expect(fast!.cost.total).toBeCloseTo(0.128, 9);
     expect(fast!.priorityMultiplier).toBe(0.4);
   });
 
   test("P2. priority tier applies 2.5x multiplier for gpt-5.5", () => {
     const base = estimateRequestCost({ provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage }, overlays);
     const fast = estimateRequestCost({ provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage, serviceTier: "priority" }, overlays);
-    expect(base!.cost.total).toBeCloseTo(8.0, 9);
-    // 2.5x => 20.0
-    expect(fast!.cost.total).toBeCloseTo(20.0, 9);
+    expect(base!.cost.total).toBeCloseTo(1.6, 9);
+    // 2.5x => 4.0
+    expect(fast!.cost.total).toBeCloseTo(4.0, 9);
     expect(fast!.priorityMultiplier).toBe(2.5);
   });
 
   test("P3. no service tier => base price unchanged (regression)", () => {
     const est = estimateRequestCost({ provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage }, overlays);
-    expect(est!.cost.total).toBeCloseTo(8.0, 9);
+    expect(est!.cost.total).toBeCloseTo(1.6, 9);
     expect(est!.priorityMultiplier).toBeUndefined();
   });
 
   test("P4. unknown model + priority => multiplier 1 (fallback)", () => {
     const est = estimateRequestCost({ provider: "openai", model: "gpt-5.3-codex-spark", usageStatus: "reported", usage, serviceTier: "priority" }, overlays);
     expect(est).not.toBeNull();
-    // base: 1.75*1 + 14*0.1 = 3.15; no multiplier listed => stays 3.15
-    expect(est!.cost.total).toBeCloseTo(3.15, 9);
+    // base: 1.75*0.2 + 14*0.02 = 0.63; no multiplier listed => stays 0.63
+    expect(est!.cost.total).toBeCloseTo(0.63, 9);
     expect(est!.priorityMultiplier).toBeUndefined();
   });
 
@@ -461,7 +464,7 @@ describe("priority (Fast) service tier multiplier", () => {
     const est = estimateRequestCost({ provider: "openrouter", model: "gpt-5.6-sol", usageStatus: "reported", usage, serviceTier: "priority" }, customOverlays);
     expect(est).not.toBeNull();
     // provider gate: openrouter is not openai => no multiplier
-    expect(est!.cost.total).toBeCloseTo(8.0, 9);
+    expect(est!.cost.total).toBeCloseTo(1.6, 9);
     expect(est!.priorityMultiplier).toBeUndefined();
   });
 
@@ -470,7 +473,7 @@ describe("priority (Fast) service tier multiplier", () => {
       { ordinal: 1, provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage },
     ], overlays, "priority");
     expect(combo).not.toBeNull();
-    expect(combo!.cost.total).toBeCloseTo(16.0, 9);
+    expect(combo!.cost.total).toBeCloseTo(3.2, 9);
     expect(combo!.priorityMultiplier).toBe(2);
   });
 
@@ -506,8 +509,136 @@ describe("priority (Fast) service tier multiplier", () => {
   test("P10. attempt cost with priority tier", () => {
     const base = estimateAttemptCost({ ordinal: 1, provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage }, overlays);
     const fast = estimateAttemptCost({ ordinal: 1, provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage }, overlays, "priority");
-    expect(base!.cost.total).toBeCloseTo(8.0, 9);
-    expect(fast!.cost.total).toBeCloseTo(16.0, 9);
+    expect(base!.cost.total).toBeCloseTo(1.6, 9);
+    expect(fast!.cost.total).toBeCloseTo(3.2, 9);
     expect(fast!.priorityMultiplier).toBe(2);
+  });
+});
+
+describe("long-context pricing tiers (#908)", () => {
+  const SOL: ExpectedPriceOverlay[] = [
+    { provider: "openai", modelId: "gpt-5.6-sol", cost4: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }, source: "test", verifiedAt: "2026-08-03", status: "verified" },
+    { provider: "openai", modelId: "gpt-5.3-codex-spark", cost4: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 }, source: "test", verifiedAt: "2026-08-03", status: "verified" },
+  ];
+  const sol = (usage: Record<string, number>, serviceTier?: Parameters<typeof estimateRequestCost>[0]["serviceTier"]) =>
+    estimateRequestCost({ provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage, serviceTier }, SOL);
+
+  test("L1. OpenAI boundary is exclusive: 272,000 is standard, 272,001 is long", () => {
+    const at = sol({ inputTokens: 272_000, outputTokens: 10_000 });
+    const over = sol({ inputTokens: 272_001, outputTokens: 10_000 });
+    expect(at!.contextTier).toBeUndefined();
+    expect(over!.contextTier).toBe("long");
+    // 2x input, 1.5x output — not a uniform doubling. Compare at equal token
+    // counts so the one-token difference across the boundary does not skew it.
+    const overSameTokens = sol({ inputTokens: 272_001, outputTokens: 10_000 })!;
+    expect(overSameTokens.cost.output).toBeCloseTo(at!.cost.output * 1.5, 9);
+    expect(overSameTokens.cost.input / (272_001 / 1e6)).toBeCloseTo(10, 9);
+    expect(at!.cost.input / (272_000 / 1e6)).toBeCloseTo(5, 9);
+  });
+
+  test("L2. worked example: 300k in + 20k out is $2.10 standard, $3.90 long", () => {
+    // The tier is what makes this $3.90; without it the estimator reports $2.10.
+    const est = sol({ inputTokens: 300_000, outputTokens: 20_000 });
+    expect(est!.contextTier).toBe("long");
+    expect(est!.cost.total).toBeCloseTo(3.9, 9);
+    const short = 300_000 / 1e6 * 5 + 20_000 / 1e6 * 30;
+    expect(short).toBeCloseTo(2.1, 9);
+  });
+
+  test("L3. threshold reads RAW input, not cache-normalized billable input", () => {
+    // 280k prompt with a 200k cache read: 80k billable input, but the vendor
+    // threshold is measured on the whole prompt. Deciding after normalization
+    // would under-bill exactly the cache-heavy long requests.
+    const est = sol({ inputTokens: 280_000, outputTokens: 1_000, cachedInputTokens: 200_000 });
+    expect(est!.tokens.input).toBe(80_000);
+    expect(est!.contextTier).toBe("long");
+    expect(est!.cost.cacheRead).toBeCloseTo(200_000 / 1e6 * 0.5 * 2, 9);
+  });
+
+  test("L4. xAI boundary is inclusive: 199,999 standard, 200,000 long", () => {
+    const overlays: ExpectedPriceOverlay[] = [
+      { provider: "xai", modelId: "grok-4.5", cost4: { input: 2, output: 6, cacheRead: 0.3, cacheWrite: 0 }, source: "test", verifiedAt: "2026-08-03", status: "verified" },
+    ];
+    const at = (n: number) => estimateRequestCost({ provider: "xai", model: "grok-4.5", usageStatus: "reported", usage: { inputTokens: n, outputTokens: 1_000 } }, overlays);
+    expect(at(199_999)!.contextTier).toBeUndefined();
+    expect(at(200_000)!.contextTier).toBe("long");
+  });
+
+  test("L5. MiniMax casing is exact: MiniMax-M3 tiers, minimax-m3 does not", () => {
+    const overlays: ExpectedPriceOverlay[] = [
+      { provider: "minimax", modelId: "MiniMax-M3", cost4: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0 }, source: "test", verifiedAt: "2026-08-03", status: "verified" },
+      { provider: "minimax", modelId: "minimax-m3", cost4: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0 }, source: "test", verifiedAt: "2026-08-03", status: "verified" },
+    ];
+    const at = (model: string, n: number) => estimateRequestCost({ provider: "minimax", model, usageStatus: "reported", usage: { inputTokens: n, outputTokens: 1_000 } }, overlays);
+    expect(at("MiniMax-M3", 512_000)!.contextTier).toBeUndefined();
+    expect(at("MiniMax-M3", 512_001)!.contextTier).toBe("long");
+    // The bundle carries both ids at different rates; case-folding would pick the wrong row.
+    expect(at("minimax-m3", 512_001)!.contextTier).toBeUndefined();
+  });
+
+  test("L6. routed resellers price independently: cursor/openrouter never tier", () => {
+    const overlays: ExpectedPriceOverlay[] = [
+      { provider: "cursor", modelId: "gpt-5.6-sol", cost4: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }, source: "test", verifiedAt: "2026-08-03", status: "verified" },
+      { provider: "openrouter", modelId: "gpt-5.6-sol", cost4: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }, source: "test", verifiedAt: "2026-08-03", status: "verified" },
+    ];
+    for (const provider of ["cursor", "openrouter"]) {
+      const est = estimateRequestCost({ provider, model: "gpt-5.6-sol", usageStatus: "reported", usage: { inputTokens: 1_000_000, outputTokens: 10_000 } }, overlays);
+      expect(est!.contextTier).toBeUndefined();
+    }
+  });
+
+  test("L7. a model with no published tier is unaffected at any size", () => {
+    const est = estimateRequestCost({ provider: "openai", model: "gpt-5.3-codex-spark", usageStatus: "reported", usage: { inputTokens: 5_000_000, outputTokens: 10_000 } }, SOL);
+    expect(est!.contextTier).toBeUndefined();
+    expect(est!.cost.total).toBeCloseTo(5_000_000 / 1e6 * 1.75 + 10_000 / 1e6 * 14, 9);
+  });
+
+  test("L8. Fast and long context are mutually exclusive, by PROVENANCE", () => {
+    const usage = { inputTokens: 300_000, outputTokens: 20_000 };
+    // Response-confirmed Fast: OpenAI does not serve long context in Fast mode,
+    // so the request really was Fast and the context tier must not apply.
+    const confirmed = sol(usage, { responseServiceTier: "priority" });
+    expect(confirmed!.contextTier).toBeUndefined();
+    expect(confirmed!.priorityMultiplier).toBe(2);
+    expect(confirmed!.cost.total).toBeCloseTo(4.2, 9);
+
+    // Requested/configured only, with no response confirmation: a >272k request
+    // cannot have been served as Fast, so it was downgraded and bills long.
+    // Suppressing the tier here would under-bill exactly the downgraded request.
+    for (const tier of [{ requestedServiceTier: "priority" }, { configuredServiceTier: "priority" }]) {
+      const downgraded = sol(usage, tier);
+      expect(downgraded!.contextTier).toBe("long");
+      expect(downgraded!.cost.total).toBeCloseTo(3.9, 9);
+    }
+  });
+
+  test("L9. combo carries the tier when any attempt is long", () => {
+    const combo = estimateComboCost([
+      { ordinal: 1, provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage: { inputTokens: 300_000, outputTokens: 10_000 } },
+      { ordinal: 2, provider: "openai", model: "gpt-5.6-sol", usageStatus: "reported", usage: { inputTokens: 1_000, outputTokens: 10_000 } },
+    ], SOL);
+    expect(combo!.attempts![0]!.contextTier).toBe("long");
+    expect(combo!.attempts![1]!.contextTier).toBeUndefined();
+    expect(combo!.contextTier).toBe("long");
+  });
+
+  test("L10. -pro virtual aliases are priceable AND tier (regression: returned null)", () => {
+    for (const model of ["gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"]) {
+      // Shipped overlays on purpose: these ids had no base price at all, so the
+      // estimator returned null and the dashboard showed no cost for them.
+      const priced = estimateRequestCost({ provider: "openai-apikey", model, usageStatus: "reported", usage: { inputTokens: 1_000, outputTokens: 1_000 } });
+      expect(priced).not.toBeNull();
+      const long = estimateRequestCost({ provider: "openai-apikey", model, usageStatus: "reported", usage: { inputTokens: 272_001, outputTokens: 1_000 } });
+      expect(long!.contextTier).toBe("long");
+    }
+  });
+
+  test("L11. every tier rule records a source and a verification date", () => {
+    expect(CONTEXT_TIERS.length).toBeGreaterThan(0);
+    for (const tier of CONTEXT_TIERS) {
+      expect(tier.source).toMatch(/^https:\/\//);
+      expect(tier.verifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(tier.thresholdInputTokens).toBeGreaterThan(0);
+    }
   });
 });
