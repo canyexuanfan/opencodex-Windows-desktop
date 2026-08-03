@@ -16,18 +16,34 @@ Routing turns the model id sent by a client into one concrete provider and upstr
 
 opencodex resolves the requested model in this order:
 
-1. A canonical `combo/<id>` or configured combo alias. Canonical ids win before alias matching.
-2. An explicit `<provider>/<model>` namespace whose prefix names a configured provider.
-3. A bare native OpenAI-family id such as `gpt-*`, `o1-*`, `o3-*`, or `o4-*`, routed through the
+1. A configured `<account-selector>/<native-openai-model>` namespace, routed through exactly the
+   mapped stored Codex account. An invalid or unavailable exact target fails closed.
+2. A canonical `combo/<id>` or configured combo alias. Canonical ids win before alias matching.
+3. An explicit `<provider>/<model>` namespace whose prefix names a configured provider.
+4. A bare native OpenAI-family id such as `gpt-*`, `o1-*`, `o3-*`, or `o4-*`, routed through the
    canonical enabled `openai` provider.
-4. An exact match for a provider's `defaultModel`.
-5. A known provider-family model prefix.
-6. An exact model in a provider's configured `models` list.
-7. `defaultProvider`, preserving the requested model id.
+5. An exact match for a provider's `defaultModel`.
+6. A known provider-family model prefix.
+7. An exact model in a provider's configured `models` list.
+8. `defaultProvider`, preserving the requested model id.
 
 Disabled providers are excluded. An explicit namespace for a disabled provider fails instead of
 falling through. Provider entries are checked in their JSON insertion order for rules that can match
 more than one provider, so use explicit namespaces when a bare model could be ambiguous.
+
+## Exact Codex account selectors
+
+`codexAccountNamespaces` maps a public selector such as `side` to one stored Codex account. A
+request for `side/gpt-5.6-sol` uses only that account, even when the canonical `openai` provider is
+in Direct mode, and sends the bare `gpt-5.6-sol` model id upstream. Only bare native OpenAI-family
+ids are valid after the selector.
+
+Exact selection bypasses Pool assignment strategy and ordinary thread affinity. If the mapped
+account is missing, paused, cooling down, unusable, or requires reauthentication, the request fails
+closed instead of switching accounts and does not change the active Pool account. Bare native model
+ids retain normal Pool/Direct routing. The namespace map itself does not create model-picker rows.
+Selector validation, collision rules, and privacy guidance are documented in
+[Provider Configuration](/reference/configuration/providers/).
 
 ## Combos (`config.combos`)
 

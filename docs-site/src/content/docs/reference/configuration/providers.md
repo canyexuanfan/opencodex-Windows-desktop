@@ -17,7 +17,7 @@ authenticated.
 | `contextCapValue?` | `number` | `350000` | Value used by the dashboard context-cap controls; changing it updates every enabled `providerContextCaps` entry. |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | ChatGPT/Codex pool account metadata managed by Codex Auth. Secrets live separately in `codex-accounts.json`. |
 | `pausedCodexAccountIds?` | `string[]` | `[]` | Accounts excluded from Pool selection until resumed, including the main `__main__` account when paused. |
-| `codexAccountNamespaces?` | `Record<string, string>` | — | Public model-selector namespace to stored Codex account target. This validates and persists mappings but does not itself add picker rows or change routing. |
+| `codexAccountNamespaces?` | `Record<string, string>` | — | Optional public model-selector namespace to stored Codex account target. `<selector>/<native-openai-model>` routes using exactly the mapped account; this setting does not add model-picker rows. |
 | `activeCodexAccountId?` | `string` | — | Manually selected Pool account for the next request. Selection clears thread affinity; in-flight requests keep captured credentials. |
 | `autoSwitchThreshold?` | `number` | `80` | Usage threshold for proactive switching. `quota` can re-evaluate both bound and unbound tasks on their next request; `fill-first` uses it only as the drain point for unbound assignment; normal `round-robin` selection does not use it. The score uses the hottest known 5h, weekly, or 30d quota window. `0` disables usage-based proactive switching only, not unbound assignment or failure recovery. |
 | `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | Assignment strategy for new/unbound Codex requests. A request is unbound when it has no live (parent thread id, quota scope) affinity; a visible existing task can become unbound after proxy restart or affinity reset. `quota` picks the lowest-usage eligible account when no active account exists, keeps an eligible active account below `autoSwitchThreshold`, and after the threshold may move an unbound request or proactively rebind a bound task to a lower-usage eligible account. `round-robin` distributes unbound requests evenly; `fill-first` keeps assigning unbound requests to the active account until cooldown, unavailability, or the configured drain threshold. |
@@ -31,7 +31,10 @@ authenticated.
 ASCII letter or number, with letters, numbers, `.`, `_`, or `-` inside. Reserved JavaScript object
 names are rejected. Each value is a valid pool-account id (never internal `__main__`) or `"@main"`
 for the Codex Desktop account. Provider and reserved `openai` / `combo` collisions are checked
-case-insensitively. Keep raw account ids and emails private; the selector is the public name.
+case-insensitively; a namespaced combo alias cannot reuse a selector as its namespace prefix, and
+configured pool ids or selector targets also cannot reuse a selector. Keep raw account ids and
+emails private; the selector is the public name. See [Routing Configuration](/reference/configuration/routing/)
+for exact-selection behavior and precedence.
 
 ## Reserved OpenAI providers
 

@@ -260,7 +260,9 @@ export async function handleResponsesCompact(
   const selectedModelId = route.modelId;
   logCtx.requestedModel = raw.model;
   logCtx.model = selectedModelId;
-  logCtx.provider = route.providerName;
+  logCtx.provider = route.codexAccountNamespace
+    ? `${route.providerName}-${route.codexAccountNamespace}`
+    : route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
   const virtual = resolveOpenAiCompactModel(route.providerName, selectedModelId);
   if (virtual) {
@@ -292,7 +294,10 @@ export async function handleResponsesCompact(
     const headers = new Headers({ "content-type": "application/json" });
     try {
       if (route.codexAccountMode) {
-        authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, { modelId: selectedModelId });
+        authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
+          accountId: route.codexAccountId,
+          modelId: selectedModelId,
+        });
         const selected = headersForCodexAuthContext(req.headers, authCtx);
         compactProvider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
         for (const name of FORWARD_HEADERS) {
@@ -307,7 +312,7 @@ export async function handleResponsesCompact(
       }
     } catch (err) {
       if (err instanceof CodexAccountCooldownError) {
-        return cooldownErrorResponse(err);
+        return cooldownErrorResponse(err, Date.now(), route.codexAccountNamespace);
       }
       if (err instanceof CodexThreadAffinityExpiredError) {
         return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
@@ -321,7 +326,9 @@ export async function handleResponsesCompact(
       throw err;
     }
     const base = (compactProvider.baseUrl ?? "").replace(/\/$/, "");
-    if (compactProvider.apiKey) headers.set("authorization", `Bearer ${resolveEnvValue(compactProvider.apiKey)}`);
+    if (compactProvider.authMode !== "forward" && compactProvider.apiKey) {
+      headers.set("authorization", `Bearer ${resolveEnvValue(compactProvider.apiKey)}`);
+    }
     const { reasoning: _reasoning, ...compactBodyRaw } = raw as typeof raw & { reasoning?: unknown };
     // The regular /v1/responses path applies sanitizeReasoningInputContent via the adapter's
     // buildRequest, but the compact endpoint forwards directly. Apply the same sanitizer here
@@ -346,6 +353,7 @@ export async function handleResponsesCompact(
       recordCodexUpstreamOutcome(config, ctx.accountId, outcome, {
         ...meta,
         threadId: compactThreadId,
+        fixedAccount: ctx.fixedAccount,
         modelId: selectedModelId,
         probeLeaseId: codexProbeLeaseId(ctx),
         probeQuotaScope: codexProbeQuotaScope(ctx),
@@ -406,6 +414,7 @@ export async function handleResponsesCompact(
     if (
       (upstream.status === 429 || upstream.status === 402)
       && usesCodexForwardPoolAuth(authCtx, route.provider)
+      && !authCtx.fixedAccount
       && route.codexAccountMode
       && !req.signal.aborted
     ) {

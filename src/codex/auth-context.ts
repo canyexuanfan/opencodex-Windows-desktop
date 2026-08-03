@@ -6,8 +6,9 @@ import {
   getValidCodexToken,
   isCodexAccountGenerationLive,
 } from "./account-store";
+import { isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
+import { isCodexAccountPaused } from "./account-pause";
 import { ConfigMutationLockError } from "../config";
-import { markAccountNeedsReauth } from "./account-runtime-state";
 import { isCodexAccountUsable } from "./account-usability";
 import { reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
 import { MAIN_CODEX_ACCOUNT_ID, getMainAccountToken } from "./main-account";
@@ -38,6 +39,8 @@ export type CodexAuthContext =
       generation: number;
       accessToken: string;
       chatgptAccountId: string;
+      /** Bypass Pool selection and suppress quota/transient failover for an exact selector. */
+      fixedAccount?: boolean;
       /**
        * Set when this request was admitted through an active quota cooldown as
        * the account's single probe. Must be echoed into the upstream outcome so
@@ -57,6 +60,8 @@ export type CodexAuthContext =
       writerGeneration: number;
       accessToken: string;
       chatgptAccountId: string;
+      /** Bypass Pool selection and suppress quota/transient failover for an exact selector. */
+      fixedAccount?: boolean;
       /** See `pool.probeLeaseId`. */
       probeLeaseId?: string;
       quotaScope?: CodexQuotaScope;
@@ -100,8 +105,8 @@ export class CodexAuthContextError extends Error {
 }
 
 export class CodexPoolAuthenticationError extends Error {
-  constructor() {
-    super("OpenAI account pool has no usable account credential");
+  constructor(message = "OpenAI account pool has no usable account credential") {
+    super(message);
     this.name = "CodexPoolAuthenticationError";
   }
 }
@@ -154,22 +159,31 @@ export function cooldownAccountLabel(accountId: string): string {
  * as HTTP. The bare "cooling down" string left users with no route but commenting out the
  * injected `openai_base_url` in config.toml.
  */
-export function cooldownErrorMessage(err: CodexAccountCooldownError): string {
+export function cooldownErrorMessage(err: CodexAccountCooldownError, accountSelector?: string): string {
   const until = new Date(err.cooldownUntil).toISOString();
   const scope = err.quotaScope === "spark"
     ? "Spark quota"
     : err.quotaScope === "shared"
       ? "shared native quota"
       : null;
-  return `Selected Codex account (${cooldownAccountLabel(err.accountId)})${scope ? ` ${scope} is` : " is"} cooling down until ${until}`
-    + ` (source: ${err.cooldownSource ?? "default"}).`
-    + ` Run 'ocx account list openai' to find the id, then`
-    + ` 'ocx account clear-cooldown openai <id>' to lift it, or switch accounts with 'ocx account use openai <id>'.`;
+  const selected = accountSelector
+    ? `Selected Codex account selector (${accountSelector})`
+    : `Selected Codex account (${cooldownAccountLabel(err.accountId)})`;
+  const recovery = accountSelector
+    ? " This request is pinned to that selector and will not switch accounts; choose another account-qualified model or retry later."
+    : " Run 'ocx account list openai' to find the id, then"
+      + " 'ocx account clear-cooldown openai <id>' to lift it, or switch accounts with 'ocx account use openai <id>'.";
+  return `${selected}${scope ? ` ${scope} is` : " is"} cooling down until ${until}`
+    + ` (source: ${err.cooldownSource ?? "default"}).${recovery}`;
 }
 
 /** HTTP form of {@link cooldownErrorMessage}, carrying Retry-After for well-behaved clients. */
-export function cooldownErrorResponse(err: CodexAccountCooldownError, now = Date.now()): Response {
-  const res = formatErrorResponse(429, "rate_limit_error", cooldownErrorMessage(err));
+export function cooldownErrorResponse(
+  err: CodexAccountCooldownError,
+  now = Date.now(),
+  accountSelector?: string,
+): Response {
+  const res = formatErrorResponse(429, "rate_limit_error", cooldownErrorMessage(err, accountSelector));
   const headers = new Headers(res.headers);
   headers.set("Retry-After", String(Math.max(1, Math.ceil((err.cooldownUntil - now) / 1000))));
   return new Response(res.body, { status: res.status, headers });
@@ -195,6 +209,8 @@ export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown):
 
 export interface ResolveCodexAuthContextOptions {
   excludeAccountId?: string;
+  /** Resolve exactly this account without consulting or mutating Pool selection. */
+  accountId?: string;
   /** Final native model selected for this request, used to select its quota group. */
   modelId?: string;
 }
@@ -206,14 +222,22 @@ export async function resolveCodexAuthContext(
   options: ResolveCodexAuthContextOptions = {},
 ): Promise<CodexAuthContext> {
   const writerGeneration = captureConfigGeneration();
-  if (mode === "direct") {
+  const fixedAccountId = options.accountId;
+  if (fixedAccountId !== undefined && options.excludeAccountId !== undefined) {
+    throw new Error("Codex auth context cannot select and exclude an account simultaneously");
+  }
+  // An explicit namespace binding is stronger than the provider's default mode. It must use the
+  // selected stored credential even while the canonical OpenAI provider is globally Direct.
+  if (mode === "direct" && fixedAccountId === undefined) {
     if (!hasCallerCodexBearer(headers)) throw new CodexDirectAuthenticationError();
     return { kind: "main", accountId: null };
   }
   reconcileMainCodexAccountRuntimeState();
   const threadId = headers.get("x-codex-parent-thread-id");
   const quotaScope = codexQuotaScopeForModel(options.modelId);
-  const resolution = options.excludeAccountId
+  const resolution = fixedAccountId !== undefined
+    ? { status: "selected" as const, accountId: fixedAccountId }
+    : options.excludeAccountId
     ? (() => {
         const accountId = pickAlternateCodexAccount(config, options.excludeAccountId!, Date.now(), quotaScope);
         return accountId
@@ -223,13 +247,28 @@ export async function resolveCodexAuthContext(
     : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope);
   if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
   let accountId = resolution.status === "selected" ? resolution.accountId : null;
-  if (!accountId) throw new CodexPoolAuthenticationError();
+  if (!accountId) {
+    throw new CodexPoolAuthenticationError(
+      fixedAccountId !== undefined ? "Selected Codex account is unavailable" : undefined,
+    );
+  }
+  if (fixedAccountId !== undefined) {
+    if (isCodexAccountPaused(config, accountId)) {
+      throw new CodexPoolAuthenticationError("Selected Codex account is unavailable");
+    }
+    if (isAccountNeedsReauth(accountId)) {
+      throw new CodexPoolAuthenticationError("Selected Codex account needs reauthentication");
+    }
+    if (!isCodexAccountUsable(config, accountId)) {
+      throw new CodexPoolAuthenticationError("Selected Codex account is unavailable");
+    }
+  }
   // Lazy prime: if the selected account has no quota yet, the pool is likely
   // unprimed (dashboard never opened, or startup prime was blocked). Kick a
   // best-effort prime so the NEXT routing decision has real scores. This never
   // blocks the current request, and the helper's single-flight guard collapses
   // repeated triggers into one pass.
-  if (!getAccountQuota(accountId)) {
+  if (fixedAccountId === undefined && !getAccountQuota(accountId)) {
     import("./auth-api")
       .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "pre-route"))
       .catch(() => {});
@@ -244,6 +283,11 @@ export async function resolveCodexAuthContext(
   let probeLeaseId: string | undefined;
   let probeQuotaScope: CodexQuotaScope | undefined;
   if (cooldownUntil) {
+    // Exact bindings are not Pool recovery traffic. Fail closed instead of consuming the Pool's
+    // one probe lease or selecting another account.
+    if (fixedAccountId !== undefined) {
+      throw new CodexAccountCooldownError(accountId, cooldownUntil, cooldown?.cooldownSource, cooldown?.quotaScope);
+    }
     probeQuotaScope = cooldown?.quotaScope;
     probeLeaseId = probeQuotaScope
       ? tryAcquireCodexQuotaScopeProbeLease(accountId, probeQuotaScope) ?? undefined
@@ -260,7 +304,9 @@ export async function resolveCodexAuthContext(
       // Nothing will reach upstream, so give the probe back instead of burning it.
       if (probeLeaseId && probeQuotaScope) releaseCodexQuotaScopeProbeLease(accountId, probeQuotaScope, probeLeaseId);
       else if (probeLeaseId) releaseCodexQuotaProbeLease(accountId, probeLeaseId);
-      throw new CodexPoolAuthenticationError();
+      throw new CodexPoolAuthenticationError(
+        fixedAccountId !== undefined ? "Selected Codex account is unavailable" : undefined,
+      );
     }
     return {
       kind: "main-pool",
@@ -268,6 +314,7 @@ export async function resolveCodexAuthContext(
       writerGeneration,
       accessToken: token.accessToken,
       chatgptAccountId: token.chatgptAccountId,
+      ...(fixedAccountId !== undefined ? { fixedAccount: true } : {}),
       ...(quotaScope ? { quotaScope } : {}),
       ...(probeLeaseId ? { probeLeaseId } : {}),
       ...(probeQuotaScope ? { probeQuotaScope } : {}),
@@ -283,6 +330,7 @@ export async function resolveCodexAuthContext(
       generation: token.generation,
       accessToken: token.accessToken,
       chatgptAccountId: token.chatgptAccountId,
+      ...(fixedAccountId !== undefined ? { fixedAccount: true } : {}),
       ...(quotaScope ? { quotaScope } : {}),
       ...(probeLeaseId ? { probeLeaseId } : {}),
       ...(probeQuotaScope ? { probeQuotaScope } : {}),
