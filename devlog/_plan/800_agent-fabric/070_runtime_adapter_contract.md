@@ -5,7 +5,7 @@ phase: FAB-00
 date: 2026-08-03
 ---
 
-# 070 — Runtime Adapter Contract
+# 070 -- Runtime Adapter Contract
 
 ## 1. Mandatory operations
 
@@ -17,17 +17,17 @@ date: 2026-08-03
 
 ## 3. Normalised events
 
-As `060` §2. Unknown native events → `RawRuntimeEvent`; adapters **must not guess**.
+As `060` ?2. Unknown native events -> `RawRuntimeEvent`; adapters **must not guess**.
 
 ## 4. Native resume vs semantic continuation
 
 - **Native resume:** the harness restores its own session (`resumeSession`). Adapter reports the capability as `probed|verified|degraded|blocked`.
-- **Semantic continuation:** a NEW target session receives the Task Core + workspace + git state + decisions + evidence refs + outstanding work + bounded brief + effective policy + Semantic Loss Ledger. Distinct in the event model: `SessionStarted.cause = semantic_continuation` vs `SessionResumed`. The UI/event model names these differently (§13).
+- **Semantic continuation:** a NEW target session receives the Task Core + workspace + git state + decisions + evidence refs + outstanding work + bounded brief + effective policy + Semantic Loss Ledger. Distinct in the event model: `SessionStarted.cause = semantic_continuation` vs `SessionResumed`. The UI/event model names these differently (?13).
 
 ## 5. Adapter bindings (grounded in `020`)
 
 - **Codex adapter:** `codex app-server` JSON-RPC (stdio or unix socket). `thread/start` + `thread/resume` map to `startSession` / `resumeSession`. Approvals / plan / file-change events map to the normalised set. `cwd` = worktree path; `approvalPolicy` / `sandbox` / `permissions` translated from `policy_snapshot`. Versioned schema via `generate-ts`. **No native-storage mutation.**
-- **Claude adapter:** Claude Agent SDK (TypeScript, in-process). Sessions resume/fork; Hooks → approval/permission events; structured output for acknowledgement; reviewer = read-only permission profile. Other-language hosts use `claude -p --output-format json` as a subprocess adapter.
+- **Claude adapter:** Claude Agent SDK (TypeScript, in-process). Sessions resume/fork; Hooks -> approval/permission events; structured output for acknowledgement; reviewer = read-only permission profile. Other-language hosts use `claude -p --output-format json` as a subprocess adapter.
 
 ## 6. Capability status
 

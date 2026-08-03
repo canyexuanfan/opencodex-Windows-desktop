@@ -1,4 +1,4 @@
-// Crash harness for Spike C: simulates the 5 crash boundaries in 090 §3 and
+// Crash harness for Spike C: simulates the 5 crash boundaries in 090 ?3 and
 // prints the recovery result for each. Run: go run .
 package main
 
