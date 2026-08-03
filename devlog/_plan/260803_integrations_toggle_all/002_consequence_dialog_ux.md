@@ -1,9 +1,10 @@
 # The consequence dialog: design read and exact copy
 
-> **Rev 3** after the replan (`006`). The copy is written against the
-> per-client mechanisms in `011`-`014`, not the retired byte substrate. Rev 2's
-> Codex paragraph promised a catalog restore in the wrong terms and its Desktop
-> paragraph credited a "compound snapshot" that no longer exists.
+> **Rev 4** after audit round 4 and the re-scope (`007`). This unit ships ONE
+> dialog — Grok's. The Codex and Claude Desktop copy below stays as the design
+> of record for `../260803_codex_desktop_toggle/`, which owns those two clients;
+> it is not implemented here. Grok's undo paragraph is corrected: re-enabling
+> regenerates the fence, it does not restore old bytes.
 
 Design spec. Implementation lives in `040`; this doc owns the direction and the
 strings.
@@ -155,10 +156,15 @@ silently picking one and letting the user discover it.
 > 해제하면 Grok Build에서 opencodex 모델 별칭이 사라집니다. xAI 계정으로 쓰던
 > 모델은 그대로입니다.
 >
-> 되돌릴 수 있습니다. 제거 전 파일 전체를 보관하며, 복원 센터에서 되살릴 수
-> 있습니다.
+> 다시 켜면 지금 쓸 수 있는 모델 목록으로 블록을 새로 씁니다.
 
 No side-effect line: nothing else depends on the fence.
+
+The undo sentence describes what the writer does. Earlier revisions promised a
+file restored from a snapshot; `012` established that Grok's undo is the enable
+path, which regenerates the block from the current catalog — a better outcome
+than replaying an hour-old snapshot, but a different promise, and the copy has
+to make the one that is true.
 
 ### Claude Code — no dialog
 

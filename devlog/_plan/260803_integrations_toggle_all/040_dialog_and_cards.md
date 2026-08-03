@@ -1,17 +1,28 @@
 # WP4 — the dialog, and four more switches
 
-> **Rev 3** after the replan (`006`). The single state authority and the
-> `partial` surface survive unchanged. This is WP6, the last phase — but the
-> switches arrive incrementally: Claude Code and Grok can ship as soon as WP1,
-> WP2 and WP5 land, with Codex and Desktop following.
+> **Rev 4** after audit round 4 and the re-scope (`007`). Two switches, not
+> four: Codex and Desktop moved to the sibling unit and render exactly as they
+> do today — badge and settings link, no switch. The `partial` surface is gone
+> with them. This is WP4, the last phase of this unit.
 
-## Shipping order
+## Only Grok gets a dialog
 
-The card reads its switch state from the native payload, which reports only the
-clients that exist yet. A client without an implementation renders exactly as it
-does today — a badge and a settings link, no switch — so this phase does not
-block on all four being ready. Two working toggles beat four that wait for the
-riskiest one.
+One confirmation, not two (UX-LAZY-01, `002` §gate). Grok's disable edits a file
+another program reads, so it confirms. Claude Code flips a field in our own
+config, breaks nothing on disk, and is undone by the same switch — a
+confirmation there is friction with no payload.
+
+Grok's copy says re-enabling REGENERATES the fence from the current model list.
+It must not promise a byte-for-byte restore: that was an earlier revision's
+design and the writer never made that promise (`012` §Undo is the enable path).
+
+## A refused disable never opens a dialog
+
+`GET` carries `disableBlocked` (`030`), so a switch whose disable would be
+refused — a foreign-home service, an orphaned fence marker — renders disabled
+with the reason beside it. Opening a consequence dialog for an action that
+cannot succeed asks the user to confirm a decision we have already made for
+them (audit r4 #8).
 
 Direction and copy: `002_consequence_dialog_ux.md`. This doc is the wiring.
 
@@ -50,6 +61,8 @@ Precedence, in one pure function beside `buildOverviewRows`:
   switch at all. Distinct from unsettled: one is "wait a moment", the other is
   "this cannot be toggled here yet", and rendering a disabled switch for the
   second would promise a control that is not coming this release.
+  Codex and Claude Desktop are in exactly this state until the sibling unit
+  lands.
 
 `OverviewCard` changes to read `row.applied` rather than `row.status`, which
 also removes the file-client-only assumption baked into the card this morning.
@@ -106,18 +119,19 @@ the product ships in.
 ## Refusals
 
 Rendered in the card's notice area, not a second modal (`002` §Refusals are not
-dialogs). `describeRefusal` gains the four native reasons; its existing
-`snapshotPath`/`residual` handling carries over unchanged.
+dialogs). `describeRefusal` gains the three reasons these two clients can
+produce — `orphaned_marker`, `home_mismatch`, `not_installed`. Its existing
+`snapshotPath`/`residual` handling is NOT exercised here: neither toggle writes
+a snapshot, so no refusal from this module carries one. That code stays for the
+six file clients, untouched.
 
 The `home_mismatch` copy must NOT say "stop the service" — the trigger is a home
 mismatch, not a running service (`001` §The guard I described wrong). It names
 both homes and leaves the resolution to the user.
 
-`partial` is not a refusal and must not be styled as one. It renders as a
-persistent error notice naming every residual item plus a direct link to the
-Rollback Centre entry for its `opId` — the user's handle on a half-changed
-state. For Codex the residual is usually the resume-history tag with the file
-state already correct, so the copy says which half succeeded.
+There is no `partial` surface in this unit: `stripGrokConfig` writes atomically
+and Claude Code writes one field, so neither can half-apply. It returns with the
+two clients that can.
 
 ## Verification
 
@@ -133,9 +147,14 @@ A dialog is a render artifact, so C runs the render-grounding loop
 ## Acceptance
 
 - [ ] All four switches toggle both directions from the overview.
-- [ ] Codex, Desktop and Grok toggle-off open a dialog; Claude Code does not.
+- [ ] Grok's toggle-off opens a dialog; Claude Code's does not.
+- [ ] Codex and Desktop render NO switch — badge and settings link only.
 - [ ] Enabling never opens a dialog.
-- [ ] Each dialog names the live path from the payload, not a constant.
+- [ ] The dialog names the live path from the payload, not a constant.
+- [ ] Grok's dialog says re-enabling regenerates the fence; it does NOT promise
+      a byte-for-byte restore.
+- [ ] A `disableBlocked` client renders a disabled switch with its reason, and
+      clicking it opens no dialog.
 - [ ] Confirm buttons read "해제"/"복원", never "확인".
 - [ ] A refusal renders in the card notice with its localized explanation.
 - [ ] `home_mismatch` copy does not tell the user to stop a service.
@@ -144,8 +163,7 @@ A dialog is a render artifact, so C runs the render-grounding loop
 - [ ] An unsettled native payload disables the switch rather than guessing.
 - [ ] A client absent from the native payload renders NO switch, not a disabled
       one.
-- [ ] `partial` renders residual paths and links its Rollback Centre entry.
 - [ ] Six locales carry every new key.
 - [ ] Dialog is keyboard-reachable, escape-dismissible, focus-trapped.
-- [ ] Browser screenshots read back for all three dialogs.
+- [ ] The Grok dialog's browser screenshot is read back, not just captured.
 - [ ] gui test, gui lint, typecheck green.

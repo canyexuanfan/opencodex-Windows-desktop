@@ -1,10 +1,10 @@
 # WP3 — the routes the cards call
 
-> **Rev 4** after the replan (`006`). The coordinator, the reachable
-> `home_mismatch` and the `partial` response all survive; what changed is that
-> the routes now drive per-client `NativeClient` implementations (`011`-`014`)
-> rather than one substrate, and undo is a re-apply rather than a file restore.
-> This is WP5: it lands after at least WP1 and WP2 exist.
+> **Rev 5** after audit round 4 and the re-scope (`007`). The unit is now Claude
+> Code and Grok only, and neither writes a journal row or a snapshot — so the
+> journal route, the restore route, the `partial` response and every
+> snapshot-shaped field are GONE. What survives is the status read, the two
+> PUTs, the refusal envelopes and the coordinator. This is WP3.
 
 ## IN
 
@@ -31,21 +31,30 @@ disable a native integration — and its tests can say so.
 ## Surface
 
 ```
-GET  /api/native-integrations              → { clients: NativeStatus[] }
-PUT  /api/native-integrations/:client      { enabled: boolean }
-GET  /api/native-integrations/journal      ?client=<id>
-POST /api/native-integrations/restore      { opId, confirmDrift? }
+GET  /api/native-integrations          → { clients: NativeStatus[] }
+PUT  /api/native-integrations/:client  { enabled: boolean }   // claude | grok
 ```
 
-`restore` re-applies the captured pre-state through `NativeClient.apply` — the
-same method the toggle uses. One code path means an undo cannot drift from the
-operation it reverses, and it is idempotent, which is why a crash mid-toggle
-does not leave restore guessing whether the mutation ran.
+**There is no restore route.** Undo for both clients is the PUT in the other
+direction: Claude Code flips its flag back, Grok regenerates its fence. A
+`/restore` endpoint would imply an operation record neither client keeps, and
+four audit rounds went into establishing they do not need one. The Rollback
+Centre continues to serve the six file clients only.
 
-`confirmDrift` is answered by `NativeClient.drift`, which reports per FIELD, so
-the confirmation names exactly which fields would be overwritten (audit r3 #5)
-rather than asking about a whole file the user may have touched for unrelated
-reasons.
+`GET` also carries each client's non-mutating preflight result, so the GUI can
+disable a switch that would be refused instead of opening a dialog and then
+failing (audit r4 #8):
+
+```ts
+interface NativeStatus {
+  clientId: "claude" | "grok";
+  state: "absent" | "current" | "unsafe";
+  installed: boolean;
+  configPath: string;
+  /** Non-null when a disable would be refused right now, with the reason. */
+  disableBlocked: { reason: NativeRefusalReason; message: string } | null;
+}
+```
 
 `GET` composes the four reads the overview already makes separately today
 (`/api/startup-health`, `/api/claude-code`, `/api/claude-desktop/status`,
@@ -76,22 +85,18 @@ means the dialog and the notice area need no second code path.
 |---|---|---|---|
 | 409 | `native_integration_refused` | `orphaned_marker` | Grok begin marker without an end marker |
 | 409 | `native_integration_refused` | `home_mismatch` | installed service's recorded home differs (raised by the WP1 preflight, not by the CLI path) |
-| 409 | `native_integration_refused` | `foreign_owner` | Codex routed through a non-opencodex provider |
 | 409 | `native_integration_refused` | `non_loopback` | Grok auto-registration outside loopback |
-| 409 | `native_integration_refused` | `no_safe_desktop_fallback` | ours is Desktop's only usable profile |
-| 409 | `native_integration_refused` | `unowned_profile` | a Desktop row named opencodex we cannot prove we wrote |
 | 404 | `native_integration_refused` | `not_installed` | client absent |
 | 500 | `native_integration_failed` | `write_failed` | genuine IO failure, nothing changed |
-| 500 | `native_integration_partial` | `write_failed` | **some artifacts changed and compensation did not restore them** — body carries `residualPaths`, `snapshotPath` and `opId` |
 
 `orphaned_marker` and `home_mismatch` are 409, not 500: nothing failed, we
 declined. A 500 would tell the GUI to say "try again", which is precisely the
 wrong advice for both.
 
-`native_integration_partial` is separate from `native_integration_failed` because
-the user's next action differs: a failure means retry, a partial means look at
-the residual paths and consider a restore. Collapsing them would send the user
-to retry an operation that already half-happened.
+`stripGrokConfig` writes atomically and Claude Code writes one config field, so
+neither client has a half-applied state to report. The `partial` outcome earlier
+revisions carried belongs to the sibling unit, where Codex and Desktop can
+genuinely produce one.
 
 ## Concurrency: one coordinator, not two flight maps
 
@@ -113,7 +118,7 @@ client.
 
 ```ts
 export type LockKey =
-  | `client:${JournalClientId}`
+  | `client:${string}`
   | "store:journal"
   | "store:records"
   | "config:ocx";
@@ -139,13 +144,12 @@ another.
 | Operation | Keys |
 |---|---|
 | File client apply/disable/restore | `store:journal`, `store:records`, `client:<id>` |
-| Grok toggle | `store:journal`, `client:grok` |
-| Codex toggle | `store:journal`, `config:ocx`, `client:codex` |
+| Grok toggle | `client:grok` |
 | Claude Code toggle | `config:ocx`, `client:claude` |
-| Desktop toggle | `store:journal`, `config:ocx`, `client:claudeDesktop` |
 
-Claude Code takes no journal lock: it writes no snapshot, because its pre-state
-is one boolean carried in the operation record itself.
+Neither native toggle takes `store:journal` any more — they write no rows. Grok
+keeps `client:grok` so two disables cannot race the same file; Claude Code takes
+`config:ocx` so it serializes against other integration-owned config writes.
 
 ### Duplicates and reentrancy
 
@@ -174,32 +178,21 @@ claimed here.
 
 The file-client route's existing behavior is preserved: it keeps its per-client
 busy 409, now expressed through the coordinator.
-
 ## Acceptance
 
-- [ ] `PUT` both directions for each of the four returns its outcome status.
+- [ ] `PUT` both directions for each of the two returns its outcome status.
 - [ ] Each refusal row above returns its exact status, `code` and `reason`.
-- [ ] A refusal appends no journal row; a `partial` returns 500
-      `native_integration_partial` WITH `opId`, `snapshotPath` and
-      `residualPaths`.
+- [ ] No route in this module appends a journal row or writes a snapshot.
+- [ ] `GET` carries `disableBlocked` when a disable would be refused, so the GUI
+      never opens a dialog for an action that cannot succeed (audit r4 #8).
 - [ ] Concurrent PUTs to the SAME client: the second gets 409 busy.
-- [ ] A native PUT and a FILE-client PUT running together do not lose a journal
-      row or a records entry — asserted by replaying the log, not by timing.
-- [ ] Desktop and Claude Code disables running together both persist their
-      config changes; neither overwrites the other.
+- [ ] A Claude Code PUT and a file-client PUT running together do not lose each
+      other's config write.
 - [ ] `withLocks` sorts its input: a test passes the same keys in two different
       orders and asserts identical acquisition sequences.
 - [ ] `withLocks` deduplicates: a duplicate key does not self-deadlock.
 - [ ] A nested overlapping acquisition throws rather than hanging.
 - [ ] There is no exported single-key acquire.
-- [ ] A corrupt `_meta.json` returns `unsafe`/500, NOT `unowned_profile`/409.
-- [ ] `restore` goes through `NativeClient.apply`, proven by a test that a
-      toggle and an undo produce identical end state.
-- [ ] A drift confirmation names the changed FIELDS, not a file.
 - [ ] `home_mismatch` is produced by a real foreign-home install-state fixture.
 - [ ] `GET` reports `installed: false` for an absent client rather than erroring.
-- [ ] Restore replays a COMPOUND snapshot and every member matches.
-- [ ] `bun run privacy:scan` clean — no config content or key in any response,
-      including `residualPaths`.
-| 409 | `native_integration_refused` | `legacy_profile_unverified` | Desktop profile predates ownership tracking (audit r2 #5) |
-| 500 | `native_integration_failed` | `unsafe` | `_meta.json` unreadable or unparseable — a corrupt file, not an ownership question (audit r2 #10) |
+- [ ] `bun run privacy:scan` clean — no config content or key in any response.
