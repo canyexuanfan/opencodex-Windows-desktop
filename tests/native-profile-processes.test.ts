@@ -30,21 +30,30 @@ describe("native profile process probe", () => {
       calls.push([file, args, options]);
       return "2\n";
     };
+    const script = [
+      "$ErrorActionPreference='Stop';",
+      "$self=$PID;",
+      "$items=Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and ($_.Name -match '^(?i:codex)(?:\\.exe)?$' -or $_.CommandLine -match '(?i)(?:^|[\\\\/\"\\s])codex(?:\\.exe|\\.cmd)?(?:[\"\\s]|$)') };",
+      "@($items).Count",
+    ].join(" ");
     await withTrustedWindowsPowerShell(async powershell => {
       await expect(probeNativeCodexProcesses({
         platform: "win32",
         execFile,
       })).resolves.toEqual({ status: "busy", count: 2 });
 
-      expect(calls).toHaveLength(1);
-      expect(calls[0]![0]).toBe(powershell);
-      expect(calls[0]![1].slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
-      expect(calls[0]![1][4]).toContain("Get-CimInstance Win32_Process");
-      expect(calls[0]![2].timeout).toBe(12_000);
-      expect(calls[0]![2].maxBuffer).toBe(16 * 1024 * 1024);
-      expect(calls[0]![2].windowsHide).toBe(true);
-      expect(calls[0]![2].shell).toBe(false);
-      expect(calls[0]![2].killSignal).toBe("SIGKILL");
+      expect(calls).toEqual([[
+        powershell,
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        {
+          encoding: "utf8",
+          timeout: 12_000,
+          maxBuffer: 16 * 1024 * 1024,
+          windowsHide: true,
+          shell: false,
+          killSignal: "SIGKILL",
+        },
+      ]]);
     });
   });
 
