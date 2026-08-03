@@ -13,6 +13,7 @@ import { saveCodexAccountCredential } from "../src/codex/account-store";
 import {
   CODEX_QUOTA_PROBE_INTERVAL_MS,
   clearCodexUpstreamHealth,
+  getCodexUpstreamHealth,
   recordCodexUpstreamOutcome,
 } from "../src/codex/routing";
 import {
@@ -581,6 +582,34 @@ describe("compact alternate-account attempt (#913)", () => {
         expect(res.status).toBe(200);
       });
     });
+
+    test(`the alternate after a ${rejection} gets one send even when it returns a transient 5xx`, async () => {
+      // Activation proof for the two recovery modes. The first account keeps
+      // fetchWithTransientRetry (up to three status attempts); the alternate must run
+      // as a single direct send. Without `recovery: "single"` the 503 below would be
+      // retried and the alternate's share of the send count would be three.
+      await withPoolEnv(`ocx-compact-alt-${rejection}-5xx-`, async config => {
+        const bearers: string[] = [];
+        globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+          const auth = new Headers(init?.headers).get("authorization") ?? "";
+          bearers.push(auth);
+          if (bearers.length === 1) {
+            return Response.json({ error: { message: "pool exhausted" } }, { status: rejection });
+          }
+          return Response.json({ error: { message: "upstream busy" } }, { status: 503 });
+        }) as typeof fetch;
+
+        const res = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({})),
+          config,
+          { model: "", provider: "" },
+        );
+
+        expect(bearers).toHaveLength(2);
+        expect(bearers[0]).not.toBe(bearers[1]);
+        expect(res.status).toBe(503);
+      });
+    });
   }
 
   test("with no eligible alternate the first rejection is returned with its backoff headers", async () => {
@@ -672,6 +701,80 @@ describe("compact alternate-account attempt (#913)", () => {
       );
 
       expect(sends).toBe(1);
+    });
+  });
+
+  test("the alternate sends once even against a transient 5xx", async () => {
+    // The two-mode crux. Compact's normal send wraps fetchWithTransientRetry, which
+    // retries a 5xx up to three times. The alternate must NOT inherit that ladder:
+    // it is a last bounded try, not a second retry stack. Without the mode split this
+    // reads four sends (one from A, three from B's ladder).
+    await withPoolEnv("ocx-compact-alt-single-", async config => {
+      let sends = 0;
+      globalThis.fetch = (async () => {
+        sends += 1;
+        if (sends === 1) {
+          return Response.json({ error: { message: "pool exhausted" } }, { status: 429 });
+        }
+        return Response.json({ error: { message: "upstream flaked" } }, { status: 503 });
+      }) as typeof fetch;
+
+      const res = await handleResponsesCompact(
+        compactionRequest(baseCompactionBody({})),
+        config,
+        { model: "", provider: "" },
+      );
+
+      expect(sends).toBe(2);
+      expect(res.status).toBe(503);
+    });
+  });
+
+  test("the first account keeps its transient-retry ladder", async () => {
+    // The control for the test above: A's recovery is unchanged, so a transient 5xx
+    // on A is still retried in place rather than treated as a reason to fail over.
+    await withPoolEnv("ocx-compact-alt-ladder-", async config => {
+      let sends = 0;
+      globalThis.fetch = (async () => {
+        sends += 1;
+        if (sends === 1) return Response.json({ error: { message: "flake" } }, { status: 503 });
+        return jsonResponse(completedPayload("recovered on retry"));
+      }) as typeof fetch;
+
+      const res = await handleResponsesCompact(
+        compactionRequest(baseCompactionBody({})),
+        config,
+        { model: "", provider: "" },
+      );
+
+      // Two sends, both to A — a 503 is not 429/402, so no alternate is involved.
+      expect(sends).toBe(2);
+      expect(res.status).toBe(200);
+    });
+  });
+
+  test("each account's health records its own outcome", async () => {
+    // Attribution: A's rejection belongs to A and B's belongs to B. Recording B's
+    // outcome against A would soft-avoid the wrong account and defeat the failover.
+    await withPoolEnv("ocx-compact-alt-attrib-", async config => {
+      let sends = 0;
+      globalThis.fetch = (async () => {
+        sends += 1;
+        return sends === 1
+          ? Response.json({ error: { message: "a exhausted" } }, { status: 429 })
+          : Response.json({ error: { message: "b rejected" } }, { status: 402 });
+      }) as typeof fetch;
+
+      await handleResponsesCompact(
+        compactionRequest(baseCompactionBody({})),
+        config,
+        { model: "", provider: "" },
+      );
+
+      const health = (id: string) => getCodexUpstreamHealth(id) as { lastFailureStatus?: number } | null;
+      // Whichever account routing picked first carries the 429; the other carries B's 402.
+      const statuses = ["pool-a", "pool-b"].map(id => health(id)?.lastFailureStatus).sort();
+      expect(statuses).toEqual([402, 429]);
     });
   });
 });
