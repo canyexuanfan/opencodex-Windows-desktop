@@ -411,19 +411,24 @@ const ADAPTIVE_THINKING_FAMILY_MINIMUMS: Record<string, readonly [major: number,
 /**
  * Family/version parse for a Claude model id, tolerant of a routing prefix.
  *
- * `parsed.modelId` is not always bare: a `modelMap` entry may point at a routed
- * destination such as `anthropic/claude-sonnet-5`, which custom-provider routing
- * decodes back into a slash-carrying native id. Anchoring on `^claude-` alone
- * would silently fail those, and a capability predicate that quietly returns
- * false is worse than one that throws — the request just goes out wrong.
+ * `parsed.modelId` is not always bare, and the slash can fall on either side.
+ * A `modelMap` entry may point at a routed destination such as
+ * `anthropic/claude-sonnet-5` (prefix), while a custom provider may expose a
+ * native id such as `claude-sonnet-5/variant` (suffix); both survive routing's
+ * known-id decoding. So this matches the segment that actually begins with
+ * `claude-` rather than assuming it is the first or the last one. A capability
+ * predicate that quietly returns false is worse than one that throws — the
+ * request just goes out wrong.
  *
  * Minor is 1-2 digits with a non-digit lookahead so date-pinned ids
  * ("claude-opus-4-20250514") parse as minor 0 instead of minor 20250514;
  * suffixed ids ("claude-opus-4-8[1m]") still match.
  */
 function claudeFamilyVersion(modelId: string): { family: string; major: number; minor: number } | undefined {
-  const bare = modelId.slice(modelId.lastIndexOf("/") + 1);
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(bare);
+  // Find the segment that actually starts with `claude-`, rather than assuming it is either
+  // the first (breaks `anthropic/claude-sonnet-5`) or the last (breaks `claude-sonnet-5/variant`,
+  // where the slash carries a vendor suffix rather than a routing prefix).
+  const match = /(?:^|\/)claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
   if (!match) return undefined;
   return {
     family: match[1]!,

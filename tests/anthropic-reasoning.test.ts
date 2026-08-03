@@ -137,6 +137,19 @@ describe("anthropic extended-thinking gate", () => {
     expect(b.output_config).toBeUndefined();
   });
 
+  // The adaptive-wire predicate shares the id parse with the #545 disable gate, so a
+  // slash-carrying id must still pick the ADAPTIVE shape. Getting this wrong sends obsolete
+  // manual `thinking.enabled` to a model that rejects it — a 400, not a silent truncation.
+  test.each([
+    "anthropic/claude-sonnet-5",
+    "claude-sonnet-5/variant",
+    "claude-opus-4-8/vendor-suffix",
+  ])("adaptive-thinking model %s keeps the adaptive wire shape", async (modelId) => {
+    const b = await bodyOf(parsed("high", {}, modelId));
+    expect(b.thinking).toEqual({ type: "adaptive" });
+    expect(b.output_config).toEqual({ effort: "high" });
+  });
+
   test("adaptive-thinking model with reasoning 'none' sends no thinking config", async () => {
     const b = await bodyOf(parsed("none", { temperature: 0.3 }, "claude-fable-5"));
     expect(b.thinking).toBeUndefined();
@@ -156,6 +169,10 @@ describe("anthropic extended-thinking gate", () => {
     // decodes back into a slash-carrying native id. An id-shape miss here is silent: the
     // request simply goes out without the disable and the model thinks anyway.
     "anthropic/claude-sonnet-5",
+    "openrouter/anthropic/claude-sonnet-5",
+    // The slash can also carry a vendor SUFFIX rather than a routing prefix, so the family
+    // segment is not reliably first or last. Both directions are real routed shapes.
+    "claude-sonnet-5/variant",
   ])("%s + reasoning 'none' sends an explicit thinking disable (#545)", async (modelId) => {
     const b = await bodyOf(parsed("none", { maxOutputTokens: 64, stopSequences: ["</block>"] }, modelId));
     expect(b.thinking).toEqual({ type: "disabled" });
@@ -178,6 +195,8 @@ describe("anthropic extended-thinking gate", () => {
     "claude-haiku-4-5",
     "claude-sonnet-4-6",
     "anthropic/claude-fable-5",
+    "claude-fable-5/foo",
+    "not-a-claude-model",
   ])("%s + 'none' sends NO explicit disable (#545 gate stays narrow)", async (modelId) => {
     // Fable always thinks and rejects an explicit disable; the Opus 4.7/4.8 adaptive wire
     // leaves thinking off when omitted. Widening the gate to every adaptive family would
