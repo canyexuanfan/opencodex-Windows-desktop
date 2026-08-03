@@ -8,6 +8,7 @@ import {
   seedCodexAuthAdmissionForTests,
 } from "../src/codex/auth-api";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
+import { isCompleteCodexQuotaRecoverySnapshot } from "../src/codex/quota";
 import {
   CODEX_QUOTA_PROBE_INTERVAL_MS,
   clearCodexUpstreamHealth,
@@ -136,6 +137,14 @@ describe("Codex cooldown recovery worker", () => {
     globalThis.fetch = async () => { throw new DOMException("timed out", "TimeoutError"); };
     await runCodexCooldownRecoveryProbes(config, due());
     expect(getCodexQuotaHealthSnapshot("a", "shared", due() + 1)).not.toBeNull();
+    // Same reasoning as the admission case: prove the timed-out claim released its lease by
+    // requiring a later pass to succeed.
+    let calls = 0;
+    globalThis.fetch = async () => { calls += 1; return usageResponse(); };
+    const later = due() + CODEX_QUOTA_PROBE_INTERVAL_MS + 1;
+    await runCodexCooldownRecoveryProbes(config, later);
+    expect(calls).toBe(1);
+    expect(getCodexQuotaHealthSnapshot("a", "shared", later + 1)).toBeNull();
   });
 
   test("retains and releases a claim when quota admission is busy", async () => {
@@ -152,6 +161,15 @@ describe("Codex cooldown recovery worker", () => {
     }
     expect(calls).toBe(0);
     expect(getCodexQuotaHealthSnapshot("a", "shared", due() + 1)).not.toBeNull();
+
+    // "Releases" has to be proven, not asserted by the test name. A stranded lease is worse
+    // than the bug being fixed: that account would never be probed again. So lift the admission
+    // pressure, advance past the probe interval, and require the NEXT pass to reach WHAM and
+    // actually clear the cooldown — which is only possible if the failed claim released.
+    const later = due() + CODEX_QUOTA_PROBE_INTERVAL_MS + 1;
+    await runCodexCooldownRecoveryProbes(config, later);
+    expect(calls).toBe(1);
+    expect(getCodexQuotaHealthSnapshot("a", "shared", later + 1)).toBeNull();
   });
 
   test("credential replacement during WHAM cannot clear the old cooldown", async () => {
@@ -237,6 +255,22 @@ describe("Codex cooldown recovery worker", () => {
     expect(getCodexQuotaHealthSnapshot("a", "spark", due(START) + 1)).not.toBeNull();
   });
 
+  test("an unrecognized plan retains the cooldown (fails closed)", () => {
+    // This predicate authorizes autonomously clearing a cooldown. Assuming weekly semantics
+    // for a plan we do not know could route traffic to an account still restricted in a window
+    // we never read; retaining it only costs a delay, since the cooldown expires by itself.
+    expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, "plus")).toBe(true);
+    expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, undefined)).toBe(true);
+    expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12 }, "go")).toBe(true);
+    expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, "some_new_tier")).toBe(false);
+    expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, "go")).toBe(false);
+    // Credits-only / windowless payloads carry no usage evidence at all.
+    expect(isCompleteCodexQuotaRecoverySnapshot({}, "plus")).toBe(false);
+    expect(isCompleteCodexQuotaRecoverySnapshot(null, "plus")).toBe(false);
+    // An exhausted snapshot is not a recovery no matter how complete it is.
+    expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 100 }, "plus")).toBe(false);
+  });
+
   test.each([
     ["retry-after", { retryAfter: "900" }],
     ["default", {}],
@@ -262,8 +296,8 @@ describe("Codex cooldown recovery worker", () => {
     expect(getCodexQuotaHealthSnapshot("a", "shared", due() + 1)).not.toBeNull();
   });
 
-  test("oldest-first fairness probes every account beyond the per-pass limit", async () => {
-    const ids = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+  test("oldest-first fairness: an already-probed account never jumps the queue", async () => {
+    const ids = ["a", "b", "c", "d", "e", "f"];
     const config = makeConfig(ids);
     for (const id of ids) {
       saveCredential(id);
@@ -274,9 +308,22 @@ describe("Codex cooldown recovery worker", () => {
       seen.push(new Headers(init?.headers).get("Authorization")?.replace("Bearer access-", "") ?? "");
       return new Response("busy", { status: 503 });
     };
+    // Six accounts, four claims per pass. Pass one takes four; the second pass is spaced PAST
+    // the probe interval so those four are eligible again and genuinely compete with the two
+    // that were never reached. That competition is the whole test: under stable config-order
+    // claims the same four would win again and the tail would starve. Tighter spacing would
+    // pass on any ordering, because a just-probed account is ineligible for five minutes and
+    // drops out without the sort doing any work.
     await runCodexCooldownRecoveryProbes(config, due());
-    await runCodexCooldownRecoveryProbes(config, due() + 60_000);
-    await runCodexCooldownRecoveryProbes(config, due() + 120_000);
+    const firstPass = [...seen];
+    expect(firstPass).toHaveLength(4);
+
+    await runCodexCooldownRecoveryProbes(config, due() + CODEX_QUOTA_PROBE_INTERVAL_MS + 1);
+    const secondPass = seen.slice(4);
+    const starved = ids.filter(id => !firstPass.includes(id));
+    expect(starved).toHaveLength(2);
+    // The two that waited must be served before any account gets a second turn.
+    expect(secondPass.slice(0, 2).sort()).toEqual(starved.sort());
     expect(new Set(seen)).toEqual(new Set(ids));
   });
 });

@@ -76,15 +76,38 @@ export function isCodexQuotaExhausted(
     && value >= CODEX_EXHAUSTED_USAGE_PERCENT);
 }
 
+/**
+ * Plans whose usage is reported in the 30-day window rather than the weekly one.
+ * Mirrors the `thirtyDayOnly` branch in `parseUsageQuota()`.
+ */
+const CODEX_MONTHLY_WINDOW_PLANS = new Set(["go", "free"]);
+/**
+ * Plans known to report a weekly window. An ABSENT plan is treated as weekly too,
+ * matching the parser's default — but an unfamiliar non-empty plan string is not,
+ * because we cannot tell which window is authoritative for it.
+ */
+const CODEX_WEEKLY_WINDOW_PLANS = new Set([
+  "plus", "pro", "team", "business", "enterprise", "edu",
+]);
+
 export function isCompleteCodexQuotaRecoverySnapshot(
   quota: Pick<StoredAccountQuota, "weeklyPercent" | "monthlyPercent"> | null,
   plan?: string | null,
 ): boolean {
   if (!quota || isCodexQuotaExhausted(quota, plan)) return false;
   const normalizedPlan = plan?.trim().toLowerCase();
-  const required = normalizedPlan === "go" || normalizedPlan === "free"
-    ? quota.monthlyPercent
-    : quota.weeklyPercent;
+  // Fail CLOSED on an unrecognized plan. This predicate authorizes autonomously clearing a
+  // cooldown, and assuming weekly semantics for a plan we do not know could route traffic to an
+  // account that is still restricted in a window we never read. Retaining the cooldown only
+  // costs a delay: it expires on its own.
+  let required: number | undefined;
+  if (normalizedPlan !== undefined && CODEX_MONTHLY_WINDOW_PLANS.has(normalizedPlan)) {
+    required = quota.monthlyPercent;
+  } else if (normalizedPlan === undefined || normalizedPlan === "" || CODEX_WEEKLY_WINDOW_PLANS.has(normalizedPlan)) {
+    required = quota.weeklyPercent;
+  } else {
+    return false;
+  }
   return typeof required === "number" && Number.isFinite(required);
 }
 
