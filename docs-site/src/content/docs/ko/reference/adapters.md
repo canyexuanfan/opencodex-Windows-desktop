@@ -31,6 +31,9 @@ interface ProviderAdapter {
 
 - 내부 메시지를 OpenAI role로 변환하고, 툴은 `{type:"function", function:{…}}`과
   `tool_choice`(`auto`/`none`/`required` 또는 지정 함수)로 매핑합니다.
+- **툴 결과에 든 이미지**는 `role:"tool"`이 텍스트 전용이므로, 툴 라운드가 닫힌 뒤 후속
+  user vision 메시지(`image_url` 파트)로 전달됩니다. 툴 메시지에는 `[image]` 마커가 앵커로
+  남습니다.
 - **Codex의 GPT-5 정체성 프롬프트를 다시 작성**해 모델 중립적인 소개로 바꿉니다. 따라서 라우팅된
   모델이 자신을 OpenAI라고 주장하지 않습니다.
 - 정확한 단계가 없으면 **`reasoning_effort`를 모델이 알린 하위 집합에 맞춰 조정**합니다.

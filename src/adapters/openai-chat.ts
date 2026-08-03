@@ -174,6 +174,24 @@ function developerSystemText(message: OcxMessage): string | undefined {
   return message.content.map(part => (part as OcxTextContent).text).join("");
 }
 
+/**
+ * Chat-completions image_url parts for images carried inside a tool result (issue #888). role:"tool"
+ * content is text-only on every chat provider, so these ride in a follow-up user message instead of
+ * being flattened to the "[image]" marker the model can't actually see. Data URLs and remote https
+ * URLs are both valid in image_url.url, unlike Gemini inline_data which needs base64.
+ */
+function toolResultImageChatParts(content: string | OcxContentPart[]): unknown[] {
+  if (typeof content === "string") return [];
+  const parts: unknown[] = [];
+  for (const p of content) {
+    // Skip parts without a usable URL (the tool-output parser accepts the empty file_id shape):
+    // a {"url":""} part would fail the whole request where the "[image]" marker degrades safely.
+    if (p.type !== "image" || !p.imageUrl) continue;
+    parts.push({ type: "image_url", image_url: { url: p.imageUrl, ...(p.detail ? { detail: p.detail } : {}) } });
+  }
+  return parts;
+}
+
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
   const out: unknown[] = [];
   const { context, options } = parsed;
@@ -188,6 +206,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
   interface PendingToolCall { id: string; name: string }
   let pendingToolCalls: PendingToolCall[] = [];
   let deferredBarrierMessages: unknown[] = [];
+  let pendingToolResultImageParts: unknown[] = [];
   let mintedIdSeq = 0;
   const seenWireCallIds = new Set<string>();
 
@@ -206,6 +225,22 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
     deferredBarrierMessages = [];
   };
 
+  // Tool-result images collected during the open round land in ONE user vision message once the
+  // round closes — never inside it, where strict providers (Kimi/Moonshot) 400 on interleaved
+  // user messages. Released before deferred barriers so the images stay adjacent to the results
+  // they came from (mirrors google.ts sibling inline_data parts and the Kiro carrier images).
+  const flushToolResultImages = (): void => {
+    if (pendingToolResultImageParts.length === 0) return;
+    out.push({
+      role: "user",
+      content: [
+        { type: "text", text: "[ocx] image output from the preceding tool result(s):" },
+        ...pendingToolResultImageParts,
+      ],
+    });
+    pendingToolResultImageParts = [];
+  };
+
   // Close an unresolved tool round with explicit unavailable-result messages. The wording
   // must not claim interruption, success, failure, or user intent: execution status is
   // UNKNOWN, and for user-input tools this must not read as an answer.
@@ -219,6 +254,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
       });
     }
     pendingToolCalls = [];
+    flushToolResultImages();
     releaseDeferredBarriers();
   };
 
@@ -332,8 +368,12 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
             tool_call_id: toolCallId,
             content: contentPartsToText(msg.content),
           });
+          pendingToolResultImageParts.push(...toolResultImageChatParts(msg.content));
           pendingToolCalls.splice(matchIdx, 1);
-          if (pendingToolCalls.length === 0) releaseDeferredBarriers();
+          if (pendingToolCalls.length === 0) {
+            flushToolResultImages();
+            releaseDeferredBarriers();
+          }
         } else {
           if (!toolCallId) toolCallId = `call_orphan_${out.length}`;
           // No matching call in the open round. Close any unresolved round first so the
@@ -357,6 +397,8 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
             tool_call_id: toolCallId,
             content: contentPartsToText(msg.content),
           });
+          pendingToolResultImageParts.push(...toolResultImageChatParts(msg.content));
+          flushToolResultImages();
         }
         break;
       }

@@ -31,6 +31,9 @@ provider — xAI, Kimi, DeepSeek, GLM, Groq, OpenRouter, Ollama (local & cloud),
 
 - Converts internal messages to OpenAI roles; maps tools to `{type:"function", function:{…}}` and
   `tool_choice` (`auto`/`none`/`required` or a named function).
+- **Tool-result images** ride in a follow-up user vision message (`image_url` parts) released once
+  the tool round closes, since `role:"tool"` content is text-only; the `[image]` marker stays in the
+  tool message as the anchor.
 - **Rewrites Codex's GPT-5 identity prompt** to a model-agnostic intro so routed models don't claim to
   be OpenAI.
 - **Clamps `reasoning_effort`** to the model's advertised subset when an exact tier is unavailable;
