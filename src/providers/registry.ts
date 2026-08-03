@@ -1183,6 +1183,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     liveModels: true,
     preserveCustomDestination: true,
     defaultModel: "deepseek/deepseek-v4-flash",
+    // The default is also the cold-start seed: live discovery failure must not empty the catalog
+    // for a freshly configured provider with no stale cache (issue #308 pattern).
+    models: ["deepseek/deepseek-v4-flash"],
     // The public model catalog is unauthenticated, so a Bearer probe cannot prove key validity.
     apiKeyValidation: "unknown",
     // The public catalog reports ids/context windows only; no trustworthy reasoning contract.
@@ -1192,7 +1195,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       maxResponseBytes: 256 * 1024,
       maxModels: 256,
     },
-    note: "Command Code Provider API (OpenAI-compatible); subscription holders without a Provider plan need the CLI auth bridge for API access.",
+    // Verified 2026-08-03: public /provider/v1/models returns 51 rows; /chat/completions returns
+    // 401 UNAUTHORIZED without a Bearer key. Primary source: https://commandcode.ai/docs/provider.
+    note: "Command Code Provider API (OpenAI-compatible); API access requires the Provider plan. CLI auth bridging for Go/Pro subscriptions is not yet available. Docs: https://commandcode.ai/docs/provider.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },

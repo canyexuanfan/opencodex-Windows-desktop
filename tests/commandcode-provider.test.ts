@@ -75,8 +75,9 @@ describe("Command Code provider", () => {
       },
     });
     expect(providerModelDiscoverySpecError(entry.modelDiscovery!)).toBeNull();
-    // The public catalog lists ids/context windows only; no static per-model claims are seeded.
-    expect(entry.models).toBeUndefined();
+    // The public catalog lists ids/context windows only, so the only static seed is the default
+    // model itself — it stays callable when live discovery fails on a fresh config (no cache).
+    expect(entry.models).toEqual(["deepseek/deepseek-v4-flash"]);
   });
 
   test("derives key-login, init, and dashboard presets without persisting trust policy", () => {
@@ -88,6 +89,7 @@ describe("Command Code provider", () => {
       liveModels: true,
       defaultModel: "deepseek/deepseek-v4-flash",
       apiKeyValidation: "unknown",
+      models: ["deepseek/deepseek-v4-flash"],
     });
     expect(buildInitProviders()).toEqual(deriveInitProviders());
     expect(buildInitProviders().find(row => row.id === "commandcode")).toMatchObject({
@@ -110,6 +112,7 @@ describe("Command Code provider", () => {
       liveModels: true,
       reasoningEfforts: [],
       defaultModel: "deepseek/deepseek-v4-flash",
+      models: ["deepseek/deepseek-v4-flash"],
     });
     expect(seed).not.toHaveProperty("modelDiscovery");
     expect(seed).not.toHaveProperty("preserveCustomDestination");
@@ -202,6 +205,21 @@ describe("Command Code provider", () => {
     expect(routeModel(config, "commandcode/deepseek/deepseek-v4-flash").modelId)
       .toBe("deepseek/deepseek-v4-flash");
     expect(routeModel(config, "commandcode/deepseek-deepseek-v4-flash").modelId)
+      .toBe("deepseek/deepseek-v4-flash");
+  });
+
+  test("keeps the default model callable when live discovery fails on a fresh config", async () => {
+    globalThis.fetch = (async () => new Response("upstream down", {
+      status: 500,
+      headers: { "content-type": "text/plain" },
+    })) as typeof fetch;
+
+    const config = withStubbedProviderFetch(commandcodeConfig());
+    const models = (await gatherRoutedModels(config)).filter(row => row.provider === "commandcode");
+
+    // No stale cache exists on a fresh config, so the seeded default must survive the failure.
+    expect(models.map(row => row.id)).toEqual(["deepseek/deepseek-v4-flash"]);
+    expect(routeModel(config, "commandcode/deepseek/deepseek-v4-flash").modelId)
       .toBe("deepseek/deepseek-v4-flash");
   });
 });

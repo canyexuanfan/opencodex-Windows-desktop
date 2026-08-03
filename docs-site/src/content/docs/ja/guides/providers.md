@@ -119,9 +119,10 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 67 個含まれています。キー方式 59、OAuth 4、ローカル 3、
+opencodex には組み込みプリセットが 69 個含まれています。キー方式 58、OAuth 7、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
-入力したキーを検証した後保存します。主な項目は以下のとおりです:
+入力したキーを検証した後保存します(検証はプロバイダー固有で、Command Code の公開カタログはキーを
+検証不能として報告します)。主な項目は以下のとおりです:
 
 **ClinePass** は Cline API キーで[公式サブスクリプションカタログ](https://docs.cline.bot/getting-started/clinepass)と
 [Chat Completions エンドポイント](https://docs.cline.bot/api/chat-completions)に接続します。運営主体は
@@ -201,7 +202,7 @@ vision-language chat のみを対象とし、別系統の image、audio、GPU en
 Provider API ホストから読み、スラッシュを含むネイティブモデル ID を保持し、live discovery を
 256 KiB と raw 256 行に制限します。モデルカタログは未認証のため、CLI ログインフローはキーを
 誤って有効と報告せず、検証不能として報告します。チャットリクエストは設定済みの bearer キーを使います。
-API アクセスには Provider プランが必要です(Go/Pro サブスクリプション利用者は CLI 認証ブリッジを使用できます)。
+API アクセスには Provider プランが必要で、Go/Pro サブスクリプション向けの CLI 認証ブリッジはまだ利用できません。
 キーは [Command Code Studio](https://commandcode.ai/studio/) で作成します。
 
 > **Baseten の対象範囲:** このプリセットは Baseten の共有 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
