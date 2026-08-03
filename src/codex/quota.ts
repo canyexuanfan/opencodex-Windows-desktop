@@ -85,9 +85,15 @@ const CODEX_MONTHLY_WINDOW_PLANS = new Set(["go", "free"]);
  * Plans known to report a weekly window. An ABSENT plan is treated as weekly too,
  * matching the parser's default — but an unfamiliar non-empty plan string is not,
  * because we cannot tell which window is authoritative for it.
+ *
+ * This is the complement of the monthly set across the plans the upstream snapshot
+ * actually enumerates (`src/codex/data/upstream-models.json`): plus, pro, prolite,
+ * team, business, enterprise, edu. `prolite` was missed on the first pass, which
+ * would have left a recovered account on that plan cooled — the exact defect this
+ * change exists to fix, reintroduced through an incomplete hand-written list.
  */
 const CODEX_WEEKLY_WINDOW_PLANS = new Set([
-  "plus", "pro", "team", "business", "enterprise", "edu",
+  "plus", "pro", "prolite", "team", "business", "enterprise", "edu",
 ]);
 
 export function isCompleteCodexQuotaRecoverySnapshot(

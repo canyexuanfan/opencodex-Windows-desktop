@@ -259,7 +259,11 @@ describe("Codex cooldown recovery worker", () => {
     // This predicate authorizes autonomously clearing a cooldown. Assuming weekly semantics
     // for a plan we do not know could route traffic to an account still restricted in a window
     // we never read; retaining it only costs a delay, since the cooldown expires by itself.
-    expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, "plus")).toBe(true);
+    // Every weekly plan the upstream snapshot enumerates must recover. `prolite` is the one an
+    // earlier hand-written list missed, which would have left those accounts cooled forever.
+    for (const plan of ["plus", "pro", "prolite", "team", "business", "enterprise", "edu"]) {
+      expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, plan)).toBe(true);
+    }
     expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, undefined)).toBe(true);
     expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12 }, "go")).toBe(true);
     expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, "some_new_tier")).toBe(false);
