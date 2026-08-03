@@ -37,6 +37,7 @@ import {
   MAX_NATIVE_PROFILES,
   nativeIdentityHash,
   nativeIdentityHint,
+  nativeProfileSelectorKey,
   OsNativeProfileKeyProvider,
   publicNativeProfile,
   readNativeEnvelope,
@@ -523,6 +524,7 @@ export class NativeProfileManager {
         const timestamp = new Date(this.now()).toISOString();
         if (!vault) {
           const id = this.uuid();
+          assertUniqueNativeProfileLabel({ profiles: [] }, label, undefined, [id]);
           vault = {
             version: 1,
             revision: 1,
@@ -1031,13 +1033,13 @@ export class NativeProfileManager {
         }
         key = await this.keyForVault(vault);
         this.assertCurrentIdentity(vault, current, key);
-        assertUniqueNativeProfileLabel(vault, label);
+        const id = this.uuid();
+        assertUniqueNativeProfileLabel(vault, label, undefined, [id]);
         const identityHash = nativeIdentityHash(key.key, target.accountId);
         if (vault.profiles.some(profile => profile.identityHash === identityHash)) {
           throw new NativeProfileError("PROFILE_ALREADY_EXISTS", "That native identity is already registered.", 409);
         }
         const timestamp = new Date(this.now()).toISOString();
-        const id = this.uuid();
         const currentProfile = this.currentProfile(vault);
         const currentSourcePayload = encryptNativeEnvelope(
           this.context,
@@ -1151,8 +1153,21 @@ export class NativeProfileManager {
     });
   }
   private resolveTarget(vault: NativeMainProfileVaultV1, target: string): NativeMainProfileRecordV1 {
-    const normalized = target.trim().toLowerCase();
-    const profile = vault.profiles.find(item => item.id.toLowerCase() === normalized || item.label.toLowerCase() === normalized);
+    const selectors = new Map<string, NativeMainProfileRecordV1>();
+    for (const item of vault.profiles) {
+      for (const selector of [item.id, item.label]) {
+        const key = nativeProfileSelectorKey(selector);
+        if (selectors.has(key)) {
+          throw new NativeProfileError(
+            "VAULT_INVALID",
+            "The native-profile vault contains an ambiguous ID or label selector.",
+            409,
+          );
+        }
+        selectors.set(key, item);
+      }
+    }
+    const profile = selectors.get(nativeProfileSelectorKey(target));
     if (!profile) throw new NativeProfileError("PROFILE_NOT_FOUND", "The requested native profile does not exist.", 404);
     if (profile.state !== "inactive" || !profile.payload) {
       throw new NativeProfileError("INVALID_REQUEST", "The requested native profile is already active.", 400);

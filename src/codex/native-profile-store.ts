@@ -597,12 +597,15 @@ function parseVaultObject(value: unknown, homeId: string): NativeMainProfileVaul
   const identities = new Set<string>();
   let activeCount = 0;
   for (const profile of vault.profiles) {
-    if (!profile || typeof profile !== "object" || !UUID_RE.test(profile.id) || ids.has(profile.id)) throw new Error("id");
+    if (!profile || typeof profile !== "object" || !UUID_RE.test(profile.id)) throw new Error("id");
+    const normalizedId = nativeProfileSelectorKey(profile.id);
+    if (ids.has(normalizedId) || labels.has(normalizedId)) throw new Error("id selector");
     const label = normalizedNativeProfileLabel(profile.label);
     if (!label) throw new Error("label");
     profile.label = label;
-    const normalizedLabel = label.toLowerCase();
-    if (labels.has(normalizedLabel) || !HASH_RE.test(profile.identityHash) || identities.has(profile.identityHash)) throw new Error("identity");
+    const normalizedLabel = nativeProfileSelectorKey(label);
+    if (labels.has(normalizedLabel) || ids.has(normalizedLabel)) throw new Error("label selector");
+    if (!HASH_RE.test(profile.identityHash) || identities.has(profile.identityHash)) throw new Error("identity");
     if (profile.identityHint !== nativeIdentityHint(profile.identityHash)) throw new Error("hint");
     if (profile.state === "active") {
       activeCount += 1;
@@ -610,7 +613,7 @@ function parseVaultObject(value: unknown, homeId: string): NativeMainProfileVaul
     } else if (profile.state === "inactive") {
       if (!isEncryptedPayload(profile.payload)) throw new Error("inactive payload");
     } else throw new Error("state");
-    ids.add(profile.id);
+    ids.add(normalizedId);
     labels.add(normalizedLabel);
     identities.add(profile.identityHash);
   }
@@ -807,6 +810,11 @@ export function serializeNativeProfileJournal(journal: NativeProfileSwitchJourna
 
 const FORBIDDEN_PROFILE_LABEL_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
+/** Canonical key shared by persisted ID/label collision checks and switch selectors. */
+export function nativeProfileSelectorKey(value: string): string {
+  return value.normalize("NFC").trim().toLowerCase();
+}
+
 function normalizedNativeProfileLabel(value: unknown): string | null {
   if (typeof value !== "string" || FORBIDDEN_PROFILE_LABEL_RE.test(value)) return null;
   const normalized = value.normalize("NFC").trim();
@@ -823,12 +831,22 @@ export function validateNativeProfileLabel(label: string): string {
 }
 
 export function assertUniqueNativeProfileLabel(
-  vault: NativeMainProfileVaultV1,
+  vault: Pick<NativeMainProfileVaultV1, "profiles">,
   label: string,
   excludeId?: string,
+  additionalIds: readonly string[] = [],
 ): void {
-  if (vault.profiles.some(profile => profile.id !== excludeId && profile.label.toLowerCase() === label.toLowerCase())) {
+  const selector = nativeProfileSelectorKey(label);
+  if (vault.profiles.some(
+    profile => profile.id !== excludeId && nativeProfileSelectorKey(profile.label) === selector,
+  )) {
     throw new NativeProfileError("PROFILE_ALREADY_EXISTS", "A native profile already uses that label.", 409);
+  }
+  if (
+    vault.profiles.some(profile => nativeProfileSelectorKey(profile.id) === selector)
+    || additionalIds.some(id => nativeProfileSelectorKey(id) === selector)
+  ) {
+    throw new NativeProfileError("PROFILE_ALREADY_EXISTS", "A native profile ID already uses that selector.", 409);
   }
 }
 

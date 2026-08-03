@@ -665,6 +665,78 @@ describe("native main profile transactions", () => {
     expect((duplicate as NativeProfileError).code).toBe("PROFILE_ALREADY_EXISTS");
   });
 
+  test("rejects case- and whitespace-normalized labels that collide with any profile ID", async () => {
+    const generatedId = "11111111-1111-4111-8111-111111111111";
+    const createFixture = fixture();
+    const creating = new NativeProfileManager({
+      ...createFixture.options,
+      randomUUID: () => generatedId,
+    });
+    let createError: unknown;
+    try { await creating.register(`  ${generatedId.toUpperCase()}  `); } catch (error) { createError = error; }
+    expect(createError).toBeInstanceOf(NativeProfileError);
+    expect((createError as NativeProfileError).code).toBe("PROFILE_ALREADY_EXISTS");
+    expect(existsSync(creating.context.vaultPath)).toBe(false);
+
+    const enrolled = await enrolledFixture();
+    const beforeRename = readFileSync(enrolled.manager.context.vaultPath, "utf8");
+    let renameError: unknown;
+    try {
+      await enrolled.manager.register(`  ${enrolled.targetProfile.id.toUpperCase()}  `);
+    } catch (error) {
+      renameError = error;
+    }
+    expect(renameError).toBeInstanceOf(NativeProfileError);
+    expect((renameError as NativeProfileError).code).toBe("PROFILE_ALREADY_EXISTS");
+    expect(readFileSync(enrolled.manager.context.vaultPath, "utf8")).toBe(beforeRename);
+
+    const stage = await enrolled.manager.prepareStage();
+    writeFileSync(join(stage.stagingCodexHome, "auth.json"), envelope("account-third", "third"));
+    let importError: unknown;
+    try {
+      await enrolled.manager.finishStage(stage.stageId, `  ${enrolled.sourceProfile.id.toUpperCase()}  `);
+    } catch (error) {
+      importError = error;
+    }
+    expect(importError).toBeInstanceOf(NativeProfileError);
+    expect((importError as NativeProfileError).code).toBe("PROFILE_ALREADY_EXISTS");
+    expect(readFileSync(enrolled.manager.context.vaultPath, "utf8")).toBe(beforeRename);
+    expect(existsSync(stage.stagingCodexHome)).toBe(false);
+  });
+
+  test("resolves normalized labels and exact IDs but fails closed for a legacy ambiguous selector", async () => {
+    const f = await enrolledFixture();
+    await f.manager.register("Personal Caf\u00e9");
+
+    await f.manager.switch(`  ${f.targetProfile.id.toUpperCase()}  `, true);
+    expect((await f.manager.list()).activeProfileId).toBe(f.targetProfile.id);
+    await f.manager.switch("  PERSONAL CAFE\u0301  ", true);
+    expect((await f.manager.list()).activeProfileId).toBe(f.sourceProfile.id);
+
+    const corruptVault = readNativeProfileVault(f.manager.context)!;
+    const active = corruptVault.profiles.find(profile => profile.id === f.sourceProfile.id)!;
+    active.label = f.targetProfile.id.toUpperCase();
+    const authBefore = readFileSync(f.manager.context.authPath, "utf8");
+    const vaultBefore = readFileSync(f.manager.context.vaultPath, "utf8");
+    const injected = new NativeProfileManager({
+      ...f.options,
+      readVault: () => structuredClone(corruptVault),
+    });
+    let ambiguityError: unknown;
+    try { await injected.switch(f.targetProfile.id, true); } catch (error) { ambiguityError = error; }
+    expect(ambiguityError).toBeInstanceOf(NativeProfileError);
+    expect((ambiguityError as NativeProfileError).code).toBe("VAULT_INVALID");
+    expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(authBefore);
+    expect(readFileSync(f.manager.context.vaultPath, "utf8")).toBe(vaultBefore);
+    expect(existsSync(f.manager.context.journalPath)).toBe(false);
+
+    writeFileSync(f.manager.context.vaultPath, JSON.stringify(corruptVault, null, 2) + "\n");
+    let persistedError: unknown;
+    try { readNativeProfileVault(f.manager.context); } catch (error) { persistedError = error; }
+    expect(persistedError).toBeInstanceOf(NativeProfileError);
+    expect((persistedError as NativeProfileError).code).toBe("VAULT_INVALID");
+  });
+
   test("allows 32 profiles and rejects profile 33 without changing the vault", async () => {
     const f = fixture();
     const manager = new NativeProfileManager(f.options);
