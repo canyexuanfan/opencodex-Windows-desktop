@@ -143,6 +143,30 @@ function upstreamErrorEvent(
   };
 }
 
+function stopReasonFor(finishReason: unknown): "max_tokens" | "content_filter" | undefined {
+  return finishReason === "length"
+    ? "max_tokens"
+    : finishReason === "content_filter"
+      ? "content_filter"
+      : undefined;
+}
+
+function reasoningTextFrom(record: Record<string, unknown>): string | undefined {
+  return typeof record.reasoning_content === "string" && record.reasoning_content.length > 0
+    ? record.reasoning_content
+    : typeof record.reasoning === "string" && record.reasoning.length > 0
+      ? record.reasoning
+      : undefined;
+}
+
+function invalidChoicesEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "error" }> {
+  return {
+    type: "error",
+    message: "upstream response contained invalid choices",
+    ...(usage !== undefined ? { usage } : {}),
+  };
+}
+
 function developerSystemText(message: OcxMessage): string | undefined {
   if (message.role !== "developer") return undefined;
   if (typeof message.content === "string") return message.content;
@@ -797,21 +821,28 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       interface PendingToolCall { key: string; id: string; name: string; args: string; argsBytes: number }
       const pendingToolCalls: PendingToolCall[] = [];
       let toolCallSeq = 0;
+      const closeToolCalls = (): PendingToolCall[] => {
+        const calls = [...pendingToolCalls];
+        for (const call of calls) budget.closeCall(call.key);
+        pendingToolCalls.length = 0;
+        return calls;
+      };
       const flushToolCalls = function* (): Generator<AdapterEvent> {
         // Do not treat flushed tool calls as user-facing output for the finish-less EOF
         // fallback — incomplete tool args must stay on the truncation path.
-        for (const call of pendingToolCalls) {
+        for (const call of closeToolCalls()) {
           if (!call.id) call.id = `call_${++toolCallSeq}`;
           yield { type: "tool_call_start", id: call.id, name: call.name };
           if (call.args.length > 0) yield { type: "tool_call_delta", arguments: call.args };
           yield { type: "tool_call_end" };
-          budget.closeCall(call.key);
         }
-        pendingToolCalls.length = 0;
       };
-      const discardToolCalls = (): void => {
-        for (const call of pendingToolCalls) budget.closeCall(call.key);
-        pendingToolCalls.length = 0;
+      const terminateWithError = function* (
+        event: Extract<AdapterEvent, { type: "error" }>,
+      ): Generator<AdapterEvent, "terminate"> {
+        closeToolCalls();
+        yield event;
+        return "terminate";
       };
       let pendingUsage: OcxUsage | undefined;
       // Track terminal signals so a socket EOF without any terminator can fail closed instead of
@@ -832,11 +863,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         const payload = line.slice(6).trim();
         if (payload === "[DONE]") {
           yield* flushToolCalls();
-          const stopReason = finishReason === "length"
-            ? "max_tokens"
-            : finishReason === "content_filter"
-              ? "content_filter"
-              : undefined;
+          const stopReason = stopReasonFor(finishReason);
           yield { type: "done", usage: pendingUsage, ...(stopReason ? { stopReason } : {}) };
           return "terminate";
         }
@@ -855,9 +882,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (chunk.error !== undefined && chunk.error !== null) {
           const event = upstreamErrorEvent(chunk.error, pendingUsage);
           debugProviderDiagnostic("openai-chat", "stream-error", { message: event.message });
-          discardToolCalls();
-          yield event;
-          return "terminate";
+          return yield* terminateWithError(event);
         }
 
         if (chunk.usage) {
@@ -870,24 +895,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         const choices = chunk.choices;
         if (choices === undefined) return "continue";
         if (!Array.isArray(choices)) {
-          discardToolCalls();
-          yield {
-            type: "error",
-            message: "upstream response contained invalid choices",
-            ...(pendingUsage ? { usage: pendingUsage } : {}),
-          };
-          return "terminate";
+          return yield* terminateWithError(invalidChoicesEvent(pendingUsage));
         }
         if (choices.length === 0) return "continue";
         const rawChoice = choices[0];
         if (rawChoice === null || typeof rawChoice !== "object" || Array.isArray(rawChoice)) {
-          discardToolCalls();
-          yield {
-            type: "error",
-            message: "upstream response contained invalid choices",
-            ...(pendingUsage ? { usage: pendingUsage } : {}),
-          };
-          return "terminate";
+          return yield* terminateWithError(invalidChoicesEvent(pendingUsage));
         }
         const choice = rawChoice as {
           delta?: Record<string, unknown>;
@@ -897,9 +910,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (choice.finish_reason === "error") {
           const event = upstreamErrorEvent(choice.error, pendingUsage);
           debugProviderDiagnostic("openai-chat", "stream-error", { message: event.message });
-          discardToolCalls();
-          yield event;
-          return "terminate";
+          return yield* terminateWithError(event);
         }
         // Observe the terminator BEFORE the delta guard: a finish-only chunk (finish_reason set,
         // no delta) is a graceful close and must record finishReason even though we skip it below.
@@ -908,11 +919,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         const delta = choice.delta;
         if (delta) {
-          const reasoningText = typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0
-            ? delta.reasoning_content
-            : typeof delta.reasoning === "string" && delta.reasoning.length > 0
-              ? delta.reasoning
-              : undefined;
+          const reasoningText = reasoningTextFrom(delta);
           if (reasoningText !== undefined) {
             yield { type: "reasoning_raw_delta", text: reasoningText };
           }
@@ -1041,11 +1048,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         yield* flushToolCalls();
         // Graceful close that omitted [DONE] but delivered finish_reason and/or answer text.
-        const stopReason = finishReason === "length"
-          ? "max_tokens"
-          : finishReason === "content_filter"
-            ? "content_filter"
-            : undefined;
+        const stopReason = stopReasonFor(finishReason);
         yield { type: "done", usage: pendingUsage, ...(stopReason ? { stopReason } : {}) };
       } catch (error) {
         if (isTranslatorBudgetExceededError(error)
@@ -1063,7 +1066,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         throw error;
       } finally {
         budget.releaseRetained(bufferBytes, { kind: "live_transient" });
-        for (const call of pendingToolCalls) budget.closeCall(call.key);
+        closeToolCalls();
         reader.releaseLock();
       }
     },
@@ -1097,18 +1100,14 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
       const rawChoice = choices[0];
       if (rawChoice === null || typeof rawChoice !== "object" || Array.isArray(rawChoice)) {
-        return [{ type: "error", message: "upstream response contained invalid choices", ...(usage ? { usage } : {}) }];
+        return [invalidChoicesEvent(usage)];
       }
       const choice = rawChoice;
       if (choice.finish_reason === "error") return [upstreamErrorEvent(choice.error, usage)];
       if (!choice.message) return [{ type: "error", message: "upstream response contained no choices", ...(usage ? { usage } : {}) }];
 
       const msg = choice.message;
-      const reasoningText = typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0
-        ? msg.reasoning_content
-        : typeof msg.reasoning === "string" && msg.reasoning.length > 0
-          ? msg.reasoning
-          : undefined;
+      const reasoningText = reasoningTextFrom(msg);
       if (reasoningText !== undefined) {
         events.push({ type: "reasoning_raw_delta", text: reasoningText });
       }
@@ -1123,11 +1122,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           events.push({ type: "tool_call_end" });
         }
       }
-      const stopReason = choice.finish_reason === "length"
-        ? "max_tokens"
-        : choice.finish_reason === "content_filter"
-          ? "content_filter"
-          : undefined;
+      const stopReason = stopReasonFor(choice.finish_reason);
       events.push({
         type: "done",
         usage,
