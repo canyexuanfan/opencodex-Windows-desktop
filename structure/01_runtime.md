@@ -76,7 +76,7 @@ The server exposes `POST /api/stop` which restores native Codex config, stops an
 - 검토한 주요 대안: Reject only relative Bun paths; disable Bun dotenv; trust a plain environment marker; capture provenance in the Node launcher and bind it to an argv proof.
 - 선택한 방식: The Node launcher selects Bun and snapshots Anthropic credential/destination slots before Bun starts. Durable runtime selection uses only the stamped current executable, while Claude accepts the snapshot only when its random argv proof matches.
 - 다른 대안 대신 이 방식을 선택한 이유: Absolute dotenv expansion bypasses a relative-path check, global dotenv removal breaks supported configuration, and an environment-only marker can itself come from dotenv.
-- 장점, 단점 및 영향: Normal npm launches preserve genuine shell overrides; direct Bun or legacy launches fail closed for ambient Anthropic auth/destination values and use the running or bundled Bun for durable artifacts.
+- 장점, 단점 및 영향: Normal npm launches preserve genuine shell overrides. Direct Bun or legacy launches have no provenance signal, so the two slot classes diverge: `ANTHROPIC_BASE_URL` fails closed (a dotenv-only destination plus subscription auth is how the OAuth bearer leaves for a repository-chosen host), while ambient credentials are preserved because `bun src/cli/index.ts` is a documented entry point and the destination is already pinned. Durable artifacts use the running or bundled Bun.
 
 ## Providers and adapters
 

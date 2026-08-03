@@ -40,7 +40,7 @@ bun run build
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | `pull_request` to `main`/`dev`, `push` to `main`/`preview`/`dev`, or manual dispatch when runtime/package paths change | Cross-platform runtime/package quality gate on Linux, Windows, and macOS. The Bun `test` job keeps pull requests on GitHub-hosted Windows while trusted `push`/manual runs may use the `ocx-home` self-hosted Windows runner when the repository switch is enabled; this preserves the hosted-Windows Bun crash workaround. `npm-global-smoke` always remains GitHub-hosted because it mutates the global package prefix. |
+| `.github/workflows/ci.yml` | `pull_request` to `main`/`dev`, `push` to `main`/`preview`/`dev`, or manual dispatch when runtime/package paths change | Cross-platform runtime/package quality gate. Linux runs the suite as four parallel shards (`test 1/4`–`4/4`) plus a consolidated `gates` job; macOS runs the full suite. Windows runs the full suite only on a `push` to `main`/`preview` or a manual dispatch — it is the shipping boundary, not the pull-request lane, because it was last to finish in every sampled run at roughly three times the Linux median. The aggregate `ci` job asserts `platform-windows` actually succeeded on those boundary events rather than accepting a skip. `npm-global-smoke` always remains GitHub-hosted because it mutates the global package prefix. |
 | `.github/workflows/release.yml` | Manual dispatch only | npm publish/dry-run workflow. It requires the exact `GITHUB_SHA` to have a successful Cross-platform CI run before publish or dry-run. |
 | `.github/workflows/deploy-docs.yml` | `push` to `main` touching `docs-site/**` or the workflow, or manual dispatch | Build and publish the Astro/Starlight docs site to GitHub Pages. |
 | `.github/workflows/service-lifecycle.yml` | `pull_request` to `main`/`dev` and `push`, both filtered on the service path set (`src/service.ts`, `src/cli.ts`, `src/cli/index.ts`, `src/lib/bun-runtime.ts`, `package.json`, `bun.lock`, the workflow), or manual dispatch | Service-lifecycle smoke on three platforms: Linux systemd, macOS launchd, and Windows Scheduled Tasks. Each installs, verifies, stops via `ocx stop`, and uninstalls. The path list is kept in sync with the `release.yml` service-gate regex. |
@@ -187,8 +187,9 @@ version through `scripts/release.ts`.
 
 ## Cross-platform CI
 
-`.github/workflows/ci.yml` is the ordinary quality gate for runtime/package changes. It runs on
-Linux, Windows, and macOS with two job families:
+`.github/workflows/ci.yml` is the ordinary quality gate for runtime/package changes. Linux runs
+the suite in four shards with a separate `gates` job, macOS runs it whole, and Windows runs whole
+but only at the shipping boundary (`push` to `main`/`preview`, or manual dispatch). Each lane runs:
 
 ```bash
 bun install --frozen-lockfile

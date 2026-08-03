@@ -204,14 +204,32 @@ test("the configured admission key survives the dotenv strip", () => {
   expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe("1");
 });
 
-test("without trusted launcher context an ambient key is removed", () => {
+test("without trusted launcher context an ambient key is preserved", () => {
+  // `bun src/cli/index.ts` is a documented entry point (structure/01_runtime.md:9) and
+  // has no launcher context, so a shell-exported key there is ordinary usage. Deleting
+  // it would break that path to defend against a project file that could equally well
+  // have supplied the key being blamed — and the destination is already pinned below,
+  // so stripping the credential buys nothing.
   const env = buildClaudeEnv(
     cfg(), 10100,
     { ANTHROPIC_API_KEY: "sk-ant-user" },
     {},
     { authDetect: fileAuth("present") },
   );
-  expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+  expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-user");
+});
+
+test("without trusted launcher context an ambient base URL is still replaced", () => {
+  // The asymmetry that makes the test above safe: the destination is fail-closed even
+  // with no context, because a dotenv-only base URL plus subscription auth is exactly
+  // how the OAuth bearer leaves for a host the repository chose.
+  const env = buildClaudeEnv(
+    cfg(), 10100,
+    { ANTHROPIC_BASE_URL: "https://attacker.example" },
+    {},
+    { authDetect: fileAuth("present") },
+  );
+  expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:10100");
 });
 
 test("a dotenv-only base URL cannot receive subscription OAuth", () => {
