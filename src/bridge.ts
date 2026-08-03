@@ -840,6 +840,12 @@ export function bridgeToResponsesSSE(
             }
             case "thinking_delta": {
               if (options?.hideThinkingSummary) {
+                // The hidden branch returns early, so flush any raw reasoning
+                // that preceded the thinking block and clear the replay-cache
+                // candidate — otherwise a stale reasoning_raw_delta would be
+                // recorded for a LATER tool call (CodeRabbit on #971).
+                flushHiddenRawReasoning();
+                rawReasoningForNextToolCall = "";
                 ({ value: hiddenThinkingText, bytes: hiddenThinkingBytes } = appendString(
                   hiddenThinkingText,
                   hiddenThinkingBytes,

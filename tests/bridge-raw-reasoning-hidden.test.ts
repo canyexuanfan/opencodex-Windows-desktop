@@ -177,4 +177,16 @@ describe("hidden raw reasoning (hideThinkingSummary parity for reasoning_raw_del
     ]), "routed/model", undefined, undefined, undefined, undefined, undefined, sseOpts(true)));
     expect(peekReasoningForCall("call_later")).toBeUndefined();
   });
+
+  test("hidden thinking_delta clears raw reasoning pending for a later tool call", async () => {
+    await collectSse(bridgeToResponsesSSE(replay([
+      { type: "reasoning_raw_delta", text: "stale raw" },
+      { type: "thinking_delta", thinking: "signed thinking follows" },
+      { type: "tool_call_start", id: "call_after_thinking", name: "read_file" },
+      { type: "tool_call_delta", arguments: "{}" },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ]), "routed/model", undefined, undefined, undefined, undefined, undefined, sseOpts(true)));
+    expect(peekReasoningForCall("call_after_thinking")).toBeUndefined();
+  });
 });
