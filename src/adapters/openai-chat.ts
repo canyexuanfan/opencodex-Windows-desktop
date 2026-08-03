@@ -581,22 +581,60 @@ function emptyAssistantContent(provider: OcxProviderConfig): string | { type: "t
 }
 
 /**
- * Several providers (Kimi, DeepSeek) require function.parameters.type to be
- * exactly "object" at the root and reject `type:null` or missing type. Codex
- * tools with oneOf/anyOf schemas may omit the root type, causing 400 errors.
+ * Deep-recursive schema fix: replaces `type:null` (JS null, JSON-Schema
+ * "null" string type, or missing type) at every level of the schema tree.
  *
- * Safe to apply unconditionally: JSON Schema for function parameters at the
- * root MUST be an object — this is a no-op when type is already "object",
- * and fixes every non-conforming case. Mirror of normalizeToolSchemas in
- * openai-responses.ts.
+ * Several providers (Kimi, DeepSeek) reject JSON Schema `type:"null"` even
+ * inside `anyOf`/`oneOf` composition arrays.  Codex tools like
+ * `codex_app__automation_update` ship nullable fields such as
+ * `localEnvironmentConfigPath: {anyOf:[{type:"string"},{type:"null"}]}`,
+ * causing 400 errors at the provider.
+ *
+ * This function recursively removes every `{type:"null"}` from arrays and
+ * replaces standalone `type:null` with `type:"string"`, mirroring
+ * `normalizeToolSchemas` in openai-responses.ts (but at all depths).
  */
+function fixNullTypes(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === "type" && (value === null || value === undefined || value === "null")) {
+      // DeepSeek rejects `type:null` (JS null and the JSON-Schema `"null"` type)
+      // at any level.  Replace with `"string"` — safe for all LLM tool-call schemas.
+      out[key] = value === "null" ? "string" : "object";
+    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      out[key] = fixNullTypes(value as Record<string, unknown>);
+    } else if (Array.isArray(value)) {
+      // Filter out `{type:"null"}` entries from anyOf/oneOf/allOf arrays — nullable
+      // is fine for JSON Schema but not for DeepSeek's stricter validator.
+      const filtered = value.filter(v => {
+        if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+          const t = (v as Record<string,unknown>).type;
+          return t !== "null";
+        }
+        return true;
+      });
+      out[key] = filtered.map(v =>
+        v !== null && typeof v === "object" && !Array.isArray(v)
+          ? fixNullTypes(v as Record<string, unknown>)
+          : v
+      );
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function ensureRootObjectType(parameters: unknown): Record<string, unknown> {
   if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
     return { type: "object", properties: {} };
   }
   const obj = parameters as Record<string, unknown>;
-  if (obj.type === "object") return obj;
-  return { ...obj, type: "object" };
+  if (obj.type === "object") {
+    // Deep-fix: even if root type is correct, nested null types break DeepSeek
+    return fixNullTypes(obj) as Record<string, unknown>;
+  }
+  return fixNullTypes({ ...obj, type: "object" }) as Record<string, unknown>;
 }
 
 function expandXaiRootObjectSchemas(schema: unknown): Record<string, unknown>[] | undefined {
@@ -645,6 +683,7 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
     const parameters = xaiTarget
       ? normalizeXaiToolParameters(t.parameters)
       : ensureRootObjectType(t.parameters);
+
     if (parameters === undefined) return [];
     return [{
     type: "function",
