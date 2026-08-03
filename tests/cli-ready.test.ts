@@ -764,8 +764,8 @@ describe("runReady production findLiveProxy deadline wiring (source-level)", () 
     // Date.now (real wall clock) is authoritative for the AbortSignal deadline;
     // the injected logical now must not govern the network timeout.
     expect(readySource).toContain("deadlineAt: Date.now() + remainingMs");
-    // The per-probe cap is forwarded alongside the absolute deadline.
-    expect(readySource).toContain("timeoutMs: IO_TIMEOUT_CAP_MS");
+    // The shared per-probe cap is forwarded alongside the absolute deadline.
+    expect(readySource).toContain("timeoutMs: DEFAULT_PROBE_TIMEOUT_MS");
   });
 
   test("the non-wait path keeps findLiveProxy's built-in default (no deadlineAt)", () => {

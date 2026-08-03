@@ -15,7 +15,7 @@
  *    vocabulary, plus pid/port; never carries sync message, warning, path,
  *    provider, account, or error data.
  */
-import { findLiveProxy, probeReadiness } from "../server/proxy-liveness";
+import { DEFAULT_PROBE_TIMEOUT_MS, findLiveProxy, probeReadiness } from "../server/proxy-liveness";
 
 /** Default --wait deadline (45s). */
 export const DEFAULT_READY_WAIT_TIMEOUT_SECONDS = 45;
@@ -23,21 +23,14 @@ export const DEFAULT_READY_WAIT_TIMEOUT_SECONDS = 45;
 export const MAX_READY_WAIT_TIMEOUT_SECONDS = 300;
 const POLL_INTERVAL_MS = 500;
 /**
- * Per-call fetch ceiling for the production discovery/probe defaults. Each
- * find/probe fetch is bounded both by the single wait deadline (so no single
- * fetch outlives it) and by this ceiling (so a nearly-full 45s deadline does
- * not become a 45-second hang on one request). Matches the underlying
- * findLiveProxy/probeReadiness default of 750ms for the non-wait path.
- */
-const IO_TIMEOUT_CAP_MS = 750;
-/**
  * Cap a remaining deadline budget to a positive per-call IO timeout. Stays
  * positive (>= 1ms) and never exceeds the logical remaining time nor the
- * per-call ceiling. Passed by the production defaults to findLiveProxy's /
- * probeReadiness's timeoutMs so their fetch waits are bounded by the deadline.
+ * shared per-call ceiling (DEFAULT_PROBE_TIMEOUT_MS). Passed by the production
+ * defaults to findLiveProxy's / probeReadiness's timeoutMs so their fetch waits
+ * are bounded by the deadline.
  */
 function capIoTimeout(remainingMs: number): number {
-  return Math.max(1, Math.min(remainingMs, IO_TIMEOUT_CAP_MS));
+  return Math.max(1, Math.min(remainingMs, DEFAULT_PROBE_TIMEOUT_MS));
 }
 
 /** Fixed sanitized CLI status vocabulary. */
@@ -187,7 +180,7 @@ export async function runReady(args: ReadyArgs, io: ReadyIo = {}): Promise<numbe
     // bounds each fetch by it (plus the per-probe cap below). Non-wait path
     // keeps the built-in default.
     const live = await findLiveProxy(
-      remainingMs === undefined ? {} : { deadlineAt: Date.now() + remainingMs, timeoutMs: IO_TIMEOUT_CAP_MS },
+      remainingMs === undefined ? {} : { deadlineAt: Date.now() + remainingMs, timeoutMs: DEFAULT_PROBE_TIMEOUT_MS },
     );
     return live ? { pid: live.pid, port: live.port, hostname: live.hostname } : null;
   });

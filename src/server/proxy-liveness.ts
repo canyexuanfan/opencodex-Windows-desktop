@@ -47,6 +47,9 @@ export interface LivenessIo {
   nowFn?: () => number;
 }
 
+/** Default per-probe fetch ceiling shared by liveness and readiness probes. */
+export const DEFAULT_PROBE_TIMEOUT_MS = 750;
+
 /** Default probe options for service stop / orphan cleanup — a just-bound proxy can miss a single 750ms probe. */
 export const SERVICE_STOP_LIVENESS: Pick<LivenessIo, "timeoutMs" | "attempts"> = {
   timeoutMs: 1500,
@@ -95,7 +98,7 @@ export async function proxyIdentityAt(
   const fetchFn = io.fetchFn ?? fetch;
   const sleepFn = io.sleepFn ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   const nowFn = io.nowFn ?? Date.now;
-  const baseTimeoutMs = io.timeoutMs ?? 750;
+  const baseTimeoutMs = io.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const requestedAttempts = Math.trunc(io.attempts ?? 1);
   const attempts = Number.isNaN(requestedAttempts)
     ? 1
@@ -304,7 +307,7 @@ export async function probeReadiness(
   const fetchFn = io.fetchFn ?? fetch;
   try {
     const res = await fetchFn(`http://${probeHostname(opts.hostname)}:${port}/readyz`, {
-      signal: AbortSignal.timeout(io.timeoutMs ?? 750),
+      signal: AbortSignal.timeout(io.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS),
     });
     // Parse even on 503: /readyz returns JSON with a sanitized status while pending.
     const body = (await res.json().catch(() => null)) as unknown;
