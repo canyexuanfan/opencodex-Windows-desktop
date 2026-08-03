@@ -81,9 +81,23 @@ was necessarily *not* served as Fast.
 Suppressing the context tier on a merely *requested* priority would therefore
 under-bill exactly the request that provoked the downgrade. Exclusivity keys on
 `responseServiceTier === "priority"`; a requested-or-configured priority with
-no response confirmation takes the context tier. That needs tier provenance
-preserved into the estimator rather than the collapsed scalar — a small
-signature change at the three call sites in `shared.ts` and `summary.ts`.
+no response confirmation takes the context tier.
+
+That needs tier provenance preserved into the estimator rather than the
+collapsed scalar, at **four** call sites — not three, which is what the first
+amendment said:
+
+| Site | Surface |
+|---|---|
+| `src/server/management/shared.ts:129-130` | `/api/logs` per-entry cost |
+| `src/usage/summary.ts:291-292` | `/api/usage` totals |
+| `src/usage/summary.ts:420-421` | per-model breakdown |
+| `src/usage/summary.ts:529-530` | per-provider breakdown |
+
+All four currently pass the collapsed `tier`. Updating three of them would
+leave one cost surface still under-billing downgraded requests — and it would
+be the kind of miss where the dashboard total disagrees with its own
+per-provider breakdown for reasons nobody can reproduce.
 
 ### A second coupling this exposed
 
@@ -185,8 +199,13 @@ resolution, attempts, combos, and Fast composition.
 5. `cursor/gpt-5.6-sol` and `openrouter/openai/gpt-5.6-sol` stay untiered.
 6. An untiered model is unchanged above every threshold.
 7. The $2.10 / $3.90 worked example.
-8. **Exclusivity**: a `priority` request above 272k takes the Fast rate and
-   leaves `contextTier` undefined.
+8. **Exclusivity, by provenance**: an entry above 272k with
+   `responseServiceTier: "priority"` takes the Fast rate and leaves
+   `contextTier` undefined. An entry above 272k with priority only in
+   `requestedServiceTier` or `configuredServiceTier` — no response confirmation
+   — takes the **context tier**, because Fast does not serve long context, so
+   that request was downgraded. Both cases get a test; asserting only the first
+   would silently reinstate the bug this correction removes.
 9. Combo propagation: one long attempt + one standard attempt.
 10. All three `-pro` aliases tier correctly at 272,001.
 
