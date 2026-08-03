@@ -66,9 +66,24 @@ either/or driven by the confirmed service tier:
 base price → (Fast multiplier) OR (context multiplier) → calculateCost
 ```
 
-A request marked `priority` never takes the context tier. The composition test
-is replaced by an **exclusivity** test: a `priority` request above 272k gets the
-Fast rate and `contextTier` stays undefined.
+A request **confirmed** as Fast never takes the context tier. The composition
+test is replaced by an **exclusivity** test.
+
+"Confirmed" is load-bearing. `effectiveServiceTier()`
+(`src/usage/cost.ts:249-258`) collapses three sources into one scalar with the
+precedence `responseServiceTier ?? requestedServiceTier ??
+configuredServiceTier`, and the estimator only ever sees the result. OpenAI
+documents that a Fast request may be served as `default`, and that the
+response's `service_tier` is what identifies the tier actually used — and Fast
+does not support long context at all, so a >272k request tagged `priority`
+was necessarily *not* served as Fast.
+
+Suppressing the context tier on a merely *requested* priority would therefore
+under-bill exactly the request that provoked the downgrade. Exclusivity keys on
+`responseServiceTier === "priority"`; a requested-or-configured priority with
+no response confirmation takes the context tier. That needs tier provenance
+preserved into the estimator rather than the collapsed scalar — a small
+signature change at the three call sites in `shared.ts` and `summary.ts`.
 
 ### A second coupling this exposed
 
@@ -93,8 +108,27 @@ but it must not be discovered afterwards.
 deliberately does not fall back through `resolvedModel`.
 
 So a tier registry keyed only on base ids would silently skip every `-pro`
-request — and those are exactly the large ones. The registry carries explicit
-provider-scoped rows for all three aliases, and each gets a test.
+request — and those are exactly the large ones.
+
+But tier rows alone are not enough, and the audit proved why by running it:
+
+```console
+$ bun run .tmp/probe_pro.ts
+gpt-5.6-sol   -> {"input":5,"output":30,"cacheRead":0.5,"cacheWrite":6.25}
+gpt-5.6-sol-pro   -> NULL (unpriceable)
+gpt-5.6-terra-pro -> NULL (unpriceable)
+gpt-5.6-luna-pro  -> NULL (unpriceable)
+```
+
+The aliases have no base price at all today, and `estimateRequestCost()`
+returns `null` the moment base-price resolution fails
+(`src/usage/cost.ts:352`). Since the tier is applied *after* price resolution,
+a `-pro` request could never reach `applyContextTier()` — the proposed alias
+test would have failed against the real estimator.
+
+This phase therefore adds provider-scoped base-price rows for the three
+aliases alongside their tier rows. That is a real bug of its own surfaced by
+this work: `-pro` usage currently shows no cost estimate whatsoever.
 
 ## Design
 
