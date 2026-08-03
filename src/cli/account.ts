@@ -29,6 +29,7 @@ const ACCOUNT_USAGE = `Usage:
   ocx account code <provider> [--flow <flow-id>] [--json]   (reads the code from stdin)
   ocx account cancel <provider> [--flow <flow-id>] [--json]
   ocx account reset-credits <account-id|main> [--consume --yes] [--json]
+  ocx account main <doctor|list|register|add|switch|recover> ...
 
 List and switch provider accounts and API-key pools (masked output only).
 'main' selects the Codex App login for the openai account pool.`;
@@ -262,6 +263,10 @@ export async function cmdAccount(args: string[], deps: AccountDeps = {}): Promis
     if (sub === "remove") return await cmdRemove(rest, deps);
     if (sub === "clear-cooldown") return await cmdClearCooldown(rest, deps);
     if (sub === "add-key") return await cmdAddKey(rest, deps);
+    if (sub === "main") {
+      const { cmdNativeMainAccount } = await import("./account-main");
+      return await cmdNativeMainAccount(rest, deps);
+    }
     if (["login", "reauth", "code", "cancel", "reset-credits"].includes(sub ?? "")) {
       const { handleAccountAuthCommand } = await import("./account-auth");
       return await handleAccountAuthCommand(sub!, rest, deps) ?? 1;

@@ -27,10 +27,32 @@ function count(text: string, fragment: string): number {
   return text.split(fragment).length - 1;
 }
 
+function expectSecureLinuxKeyringBootstrap(workflow: string): void {
+  const smokeStep = workflow
+    .split("- name: OS keyring create/read/delete smoke")[1]
+    ?.split(/\n(?: {6}- name:| {2}[A-Za-z0-9_-]+:)/)[0];
+
+  expect(smokeStep).toBeDefined();
+  expect(smokeStep).toContain('keyring_home="$(mktemp -d)"');
+  expect(smokeStep).toContain('runtime_dir="$(mktemp -d)"');
+  expect(smokeStep).toContain('cleanup() { rm -rf -- "$keyring_home" "$runtime_dir"; }');
+  expect(smokeStep).toContain("trap cleanup EXIT");
+  expect(smokeStep).toContain('chmod 700 "$keyring_home" "$runtime_dir"');
+  expect(smokeStep).toContain(
+    'HOME="$keyring_home" XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session',
+  );
+  expect(smokeStep).toMatch(
+    /od -An -N32 -tx1 \/dev\/urandom \|\s+tr -d "\[:space:\]" \|\s+gnome-keyring-daemon --unlock --components=secrets >\/dev\/null/,
+  );
+  expect(smokeStep).not.toContain("eval ");
+  expect(smokeStep).not.toContain("gnome-keyring-daemon --start");
+}
+
 describe("GitHub Actions hardening", () => {
   test("cross-platform CI keeps bounded jobs and immutable action references", async () => {
     const workflow = await readText(".github/workflows/ci.yml");
     const ci = Bun.YAML.parse(workflow) as {
+      permissions?: Record<string, string>;
       jobs?: Record<string, { "timeout-minutes"?: number } | undefined>;
     };
 
@@ -44,8 +66,26 @@ describe("GitHub Actions hardening", () => {
     expect(ci.jobs?.gates?.["timeout-minutes"]).toBe(15);
     expect(ci.jobs?.["platform-macos"]?.["timeout-minutes"]).toBe(30);
     expect(ci.jobs?.["platform-windows"]?.["timeout-minutes"]).toBe(30);
+    expect(ci.jobs?.["keyring-smoke"]?.["timeout-minutes"]).toBe(8);
     expect(ci.jobs?.["npm-global-smoke"]?.["timeout-minutes"]).toBe(8);
     expect(ci.jobs?.ci?.["timeout-minutes"]).toBe(5);
+    expect(ci.permissions).toEqual({ contents: "read" });
+
+    const keyringJob = ci.jobs?.["keyring-smoke"] as {
+      "runs-on"?: string;
+      strategy?: {
+        matrix?: {
+          include?: Array<{ name: string; runner: string }>;
+        };
+      };
+    } | undefined;
+    expect(keyringJob?.["runs-on"]).toBe("${{ matrix.runner }}");
+    expect(keyringJob?.strategy?.matrix?.include).toEqual([
+      { name: "ubuntu", runner: "ubuntu-latest" },
+      { name: "windows", runner: "windows-latest" },
+      { name: "macos", runner: "macos-latest" },
+    ]);
+    expectSecureLinuxKeyringBootstrap(workflow);
     // Every job must stay bounded — an unbounded job can hang a queue for hours.
     // Asserted structurally rather than by counting the string: a count passes if
     // a job is added while another loses its bound in the same edit. Iterating the
@@ -362,13 +402,54 @@ describe("GitHub Actions hardening", () => {
 
   test("release workflow gates the exact SHA, channel, and service surface without injection", async () => {
     const workflow = await readText(".github/workflows/release.yml");
+    const release = Bun.YAML.parse(workflow) as {
+      permissions?: Record<string, string>;
+      jobs?: { publish?: { "runs-on"?: string } };
+    };
 
     // Least privilege + never cancel a publish mid-flight.
+    expect(release.permissions).toEqual({
+      contents: "write",
+      actions: "read",
+      "pull-requests": "read",
+      "id-token": "write",
+    });
+    expect(release.jobs?.publish?.["runs-on"]).toBe("ubuntu-latest");
     expect(workflow).toContain("actions: read");
     expect(workflow).toContain("pull-requests: read");
     expect(workflow).toContain("id-token: write");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("timeout-minutes: 15");
+
+    // The exact-SHA CI gate already includes the three hosted keyring legs. The
+    // release workflow must not duplicate the Linux bootstrap and drift from CI.
+    expect(workflow).not.toContain("- name: OS keyring create/read/delete smoke");
+    expect(workflow).not.toContain("gnome-keyring-daemon");
+
+    // Root and GUI dependency trees share one audit definition across local and
+    // workflow release paths.
+    const packageJson = JSON.parse(await readText("package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    expect(packageJson.scripts?.["audit:high"]).toBe(
+      "bun audit --audit-level=high && cd gui && bun audit --audit-level=high",
+    );
+    expect(workflow).toContain("run: bun run audit:high");
+    expect(workflow).not.toContain("run: bun audit --audit-level=high");
+
+    // gh embeds a jq expression but does not expose jq's --arg flag. Keep the
+    // branch and event filters on gh's native, documented flag surface.
+    const ciLookup = workflow.split('ci_url="$(')[1]?.split('\n          )"')[0];
+    expect(ciLookup).toBeDefined();
+    expect(ciLookup).toContain("--workflow ci.yml");
+    expect(ciLookup).toContain('--branch "${GITHUB_REF#refs/heads/}"');
+    expect(ciLookup).toContain('--commit "$GITHUB_SHA"');
+    expect(ciLookup).toContain("--event push");
+    expect(ciLookup).toContain("--status success");
+    expect(ciLookup).toContain("--json url");
+    expect(ciLookup).toContain("--jq '.[0].url // \"\"'");
+    expect(ciLookup).not.toContain("--arg");
+    expect(ciLookup).not.toContain("$branch");
 
     // Dry-run first by default; tokenless trusted publishing only.
     expect(workflow).toMatch(/dry-run:[\s\S]*?default: true/);

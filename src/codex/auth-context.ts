@@ -12,6 +12,7 @@ import { ConfigMutationLockError } from "../config";
 import { isCodexAccountUsable } from "./account-usability";
 import { reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
 import { MAIN_CODEX_ACCOUNT_ID, getMainAccountToken } from "./main-account";
+import { isNativeMainTrafficBlocked } from "./native-profile-startup";
 import {
   codexQuotaScopeForModel,
   getCodexQuotaHealthSnapshot,
@@ -109,6 +110,20 @@ export class CodexPoolAuthenticationError extends Error {
     super(message);
     this.name = "CodexPoolAuthenticationError";
   }
+}
+
+export class CodexMainProfileDrainingError extends Error {
+  constructor() {
+    super("Native Codex main profile is switching; retry this request");
+    this.name = "CodexMainProfileDrainingError";
+  }
+}
+
+export function codexMainProfileDrainingResponse(): Response {
+  const response = formatErrorResponse(503, "server_busy", "Native Codex main profile is switching; retry this request");
+  const headers = new Headers(response.headers);
+  headers.set("Retry-After", "1");
+  return new Response(response.body, { status: response.status, headers });
 }
 
 export class CodexDirectAuthenticationError extends Error {
@@ -213,6 +228,18 @@ export interface ResolveCodexAuthContextOptions {
   accountId?: string;
   /** Final native model selected for this request, used to select its quota group. */
   modelId?: string;
+  /** Short reservation converted to turn ownership before native `__main__` token materialization. */
+  beginCodexAccountSelection?: () => CodexAccountSelectionAdmission | undefined;
+  /** Test-only native credential read seams. */
+  isMainAccountTokenLive?: () => boolean;
+  getMainAccountToken?: typeof getMainAccountToken;
+  primeCodexPoolQuotas?: (config: OcxConfig, reason: string) => Promise<void>;
+}
+
+export interface CodexAccountSelectionAdmission {
+  readonly mainProfileDraining: boolean;
+  claimMainProfile(): boolean;
+  release(): void;
 }
 
 export async function resolveCodexAuthContext(
@@ -232,46 +259,96 @@ export async function resolveCodexAuthContext(
     if (!hasCallerCodexBearer(headers)) throw new CodexDirectAuthenticationError();
     return { kind: "main", accountId: null };
   }
-  reconcileMainCodexAccountRuntimeState();
-  const threadId = headers.get("x-codex-parent-thread-id");
+  // Retained startup recovery makes the physical main identity ineligible. Routing
+  // can still preserve service by selecting a healthy configured pool account.
+  const nativeMainTrafficBlocked = isNativeMainTrafficBlocked();
+  const selectionAdmission = options.beginCodexAccountSelection?.();
+  const nativeMainReadsForbidden = nativeMainTrafficBlocked || selectionAdmission?.mainProfileDraining === true;
+  const selectionOptions = {
+    // Temporary switch drain keeps the candidate until the atomic claim rejects
+    // it. Retained recovery makes main wholly ineligible so pool routing continues.
+    nativeMainSelectionOnly: !nativeMainTrafficBlocked
+      && selectionAdmission?.mainProfileDraining === true,
+    isMainAccountTokenLive: options.isMainAccountTokenLive,
+  };
+  let accountId: string;
   const quotaScope = codexQuotaScopeForModel(options.modelId);
-  const resolution = fixedAccountId !== undefined
-    ? { status: "selected" as const, accountId: fixedAccountId }
-    : options.excludeAccountId
-    ? (() => {
-        const accountId = pickAlternateCodexAccount(config, options.excludeAccountId!, Date.now(), quotaScope);
-        return accountId
-          ? { status: "selected" as const, accountId }
-          : { status: "none" as const };
-      })()
-    : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope);
-  if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
-  let accountId = resolution.status === "selected" ? resolution.accountId : null;
-  if (!accountId) {
-    throw new CodexPoolAuthenticationError(
-      fixedAccountId !== undefined ? "Selected Codex account is unavailable" : undefined,
-    );
-  }
-  if (fixedAccountId !== undefined) {
-    if (isCodexAccountPaused(config, accountId)) {
-      throw new CodexPoolAuthenticationError("Selected Codex account is unavailable");
+  try {
+    // A pre-drain selector reserves the native identity while reconciliation and
+    // routing inspect it. Selectors arriving after the fence skip reconciliation
+    // and may still route to non-main pool accounts without touching switch state.
+    if (!nativeMainReadsForbidden) reconcileMainCodexAccountRuntimeState();
+    const threadId = headers.get("x-codex-parent-thread-id");
+    const resolution = fixedAccountId !== undefined
+      ? { status: "selected" as const, accountId: fixedAccountId }
+      : options.excludeAccountId
+      ? (() => {
+          const selected = pickAlternateCodexAccount(
+            config,
+            options.excludeAccountId!,
+            Date.now(),
+            quotaScope,
+            selectionOptions,
+          );
+          return selected
+            ? { status: "selected" as const, accountId: selected }
+            : { status: "none" as const };
+        })()
+      : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope, selectionOptions);
+    if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
+    const selected = resolution.status === "selected" ? resolution.accountId : null;
+    if (!selected) {
+      if (fixedAccountId !== undefined) {
+        throw new CodexPoolAuthenticationError("Selected Codex account is unavailable");
+      }
+      // Recovery deliberately makes physical main ineligible. If no healthy
+      // pool route is configured and main is the intended route, report the
+      // temporary fence rather than misclassifying that credential as invalid.
+      // A configured pool retry/exclusion that finds no alternate preserves its
+      // ordinary pool-auth failure instead of being mislabeled as a main fence.
+      if (nativeMainTrafficBlocked && !options.excludeAccountId) {
+        throw new CodexMainProfileDrainingError();
+      }
+      throw new CodexPoolAuthenticationError();
     }
-    if (isAccountNeedsReauth(accountId)) {
-      throw new CodexPoolAuthenticationError("Selected Codex account needs reauthentication");
+    accountId = selected;
+    if (accountId === MAIN_CODEX_ACCOUNT_ID && nativeMainTrafficBlocked) {
+      throw new CodexMainProfileDrainingError();
     }
-    if (!isCodexAccountUsable(config, accountId)) {
-      throw new CodexPoolAuthenticationError("Selected Codex account is unavailable");
+    if (
+      accountId === MAIN_CODEX_ACCOUNT_ID
+      && selectionAdmission
+      && !selectionAdmission.claimMainProfile()
+    ) {
+      throw new CodexMainProfileDrainingError();
     }
+    if (fixedAccountId !== undefined) {
+      if (isCodexAccountPaused(config, accountId)) {
+        throw new CodexPoolAuthenticationError("Selected Codex account is unavailable");
+      }
+      if (isAccountNeedsReauth(accountId)) {
+        throw new CodexPoolAuthenticationError("Selected Codex account needs reauthentication");
+      }
+      if (!isCodexAccountUsable(config, accountId, selectionOptions)) {
+        throw new CodexPoolAuthenticationError("Selected Codex account is unavailable");
+      }
+    }
+  } finally {
+    selectionAdmission?.release();
   }
   // Lazy prime: if the selected account has no quota yet, the pool is likely
   // unprimed (dashboard never opened, or startup prime was blocked). Kick a
   // best-effort prime so the NEXT routing decision has real scores. This never
   // blocks the current request, and the helper's single-flight guard collapses
   // repeated triggers into one pass.
-  if (fixedAccountId === undefined && !getAccountQuota(accountId)) {
-    import("./auth-api")
-      .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "pre-route"))
-      .catch(() => {});
+  if (fixedAccountId === undefined && !nativeMainReadsForbidden && !getAccountQuota(accountId)) {
+    if (options.primeCodexPoolQuotas) {
+      void options.primeCodexPoolQuotas(config, "pre-route").catch(() => {});
+    } else {
+      import("./auth-api")
+        .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "pre-route"))
+        .catch(() => {});
+    }
   }
   // Snapshot (not just the deadline) so a refused request can report WHY it is cooled:
   // a literal Retry-After reads very differently to a user than a reset-derived guess.
@@ -299,7 +376,7 @@ export async function resolveCodexAuthContext(
 
   if (accountId === MAIN_CODEX_ACCOUNT_ID) {
     // Main account in rotation: inject the read-only auth.json token and fail closed if it vanished.
-    const token = getMainAccountToken();
+    const token = (options.getMainAccountToken ?? getMainAccountToken)();
     if (!token) {
       // Nothing will reach upstream, so give the probe back instead of burning it.
       if (probeLeaseId && probeQuotaScope) releaseCodexQuotaScopeProbeLease(accountId, probeQuotaScope, probeLeaseId);

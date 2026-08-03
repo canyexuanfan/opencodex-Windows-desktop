@@ -60,7 +60,7 @@ jobs:
             exit 1
           fi
 
-      # opencodex is bun-native (the prepublishOnly GUI build + typecheck run under bun).
+      # opencodex is bun-native (the prepublishOnly audit, GUI build, and typecheck run under bun).
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -92,6 +92,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Dependency audit (high severity)
+        run: bun run audit:high
+
       - name: Verify version matches package.json
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -103,6 +106,8 @@ jobs:
             exit 1;
           }
 
+      # The exact-SHA CI gate includes the hosted Linux, Windows, and macOS
+      # keyring smoke matrix. Do not duplicate its Linux bootstrap here.
       - name: Require successful Cross-platform CI for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -138,17 +143,15 @@ jobs:
           fi
 
           ci_url="$(
-            # shellcheck disable=SC2016
-            # `$branch` is a jq variable bound by --arg, not a shell variable, so
-            # the filter must stay single-quoted.
             gh run list \
               --workflow ci.yml \
+              --branch "${GITHUB_REF#refs/heads/}" \
               --commit "$GITHUB_SHA" \
+              --event push \
               --status success \
               --limit 10 \
-              --json conclusion,headSha,url,workflowName,event,headBranch \
-              --jq --arg branch "${GITHUB_REF#refs/heads/}" \
-                'map(select(.event == "push" and .headBranch == $branch)) | .[0].url // ""'
+              --json url \
+              --jq '.[0].url // ""'
           )"
 
           if [ -z "$ci_url" ]; then
