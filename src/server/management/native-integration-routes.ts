@@ -17,7 +17,13 @@
  * Design of record: devlog/_plan/260803_integrations_toggle_all/030 (routes),
  * 011 (Claude Code), 012 (Grok).
  */
-import { saveConfigPreservingClaudeCode } from "../../config";
+import { readRuntimePort, saveConfigPreservingClaudeCode } from "../../config";
+import { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } from "../../codex/catalog";
+import { injectGrokConfig, stripGrokConfig, type GrokInjectModel } from "../../grok/inject";
+import { inspectGrokConfig } from "../../grok/inspect";
+import { grokConfigPath } from "../../grok/status";
+import { assertNativeTeardownOwned } from "../../integrations/native/ownership-preflight";
+import type { OcxConfig } from "../../types";
 import { jsonResponse } from "../auth-cors";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import type { ManagementContext } from "./context";
@@ -98,6 +104,32 @@ function claudeStatus(config: ManagementContext["config"], configPath: string): 
 }
 
 /**
+ * Grok's GET row (030 §field table). `disableBlocked` is ADVISORY — the file
+ * can change before the PUT, which re-checks with the same inspector and whose
+ * answer is authoritative.
+ */
+function grokStatus(): NativeStatus {
+  const seen = inspectGrokConfig();
+  let disableBlocked: NativeStatus["disableBlocked"] = null;
+  if (seen.kind === "orphaned_marker") {
+    disableBlocked = {
+      reason: "orphaned_marker",
+      message: "The managed block in the Grok config is ambiguous (a begin marker with no end marker), so opencodex cannot tell where it ends and will not touch it. Remove the opencodex markers by hand, then retry.",
+    };
+  } else {
+    const owned = assertNativeTeardownOwned();
+    if (!owned.ok) disableBlocked = { reason: "home_mismatch", message: owned.message };
+  }
+  return {
+    clientId: "grok",
+    state: seen.kind === "present" ? "current" : seen.kind === "orphaned_marker" ? "unsafe" : "absent",
+    installed: seen.kind !== "not_installed",
+    configPath: grokConfigPath(),
+    disableBlocked,
+  };
+}
+
+/**
  * Genuine lock contention, as opposed to a lock we could not open at all.
  *
  * `ConfigMutationLockError` carries a constant `code` and wraps EVERY
@@ -117,13 +149,214 @@ function isConfigLockError(error: unknown): boolean {
     && (error as { code?: unknown }).code === "CONFIG_MUTATION_LOCK_UNAVAILABLE";
 }
 
+/*
+ * Single-flight for the Grok toggle (030 §Concurrency): two overlapping strips
+ * of the same file would race on bytes, so a second concurrent PUT is REFUSED
+ * with 409 config_busy — nothing was written, and retrying is correct advice.
+ * This deliberately does not share runGrokApplyFlight's JOIN semantics
+ * (/api/grok/apply joins an identical in-flight operation); toggle-vs-apply
+ * interleaving is covered not by exclusion but by the post-write inspection:
+ * whatever the file holds afterwards, the reported state is the last read
+ * (012 Rev 3 N3).
+ */
+let grokToggleFlight: Promise<Response> | null = null;
+
+/**
+ * Dynamic import, never static: management-api.ts statically imports THIS
+ * module, so a static import of fetchAllModels back from it would close a
+ * cycle. sync.ts:18-21 dodges the same cycle the same way.
+ */
+async function defaultFetchAllModels(config: OcxConfig) {
+  const { fetchAllModels } = await import("../management-api");
+  return fetchAllModels(config);
+}
+
+const ORPHANED_MARKER_MESSAGE =
+  "The managed block in the Grok config is ambiguous (a begin marker with no end marker), "
+  + "so opencodex cannot tell where it ends and will not touch it. "
+  + "Remove the opencodex markers by hand, then retry.";
+
+const NOT_INSTALLED_MESSAGE =
+  "Grok home was not found, so there is nothing to change. Install Grok Build first.";
+
+async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
+  const { req, config, deps } = ctx;
+  /*
+   * The guard stands BEFORE the first await, or two concurrent PUTs could both
+   * pass it while their bodies are still parsing — the race the guard exists
+   * to close.
+   */
+  if (grokToggleFlight) {
+    return refusal(409, "grok", "config_busy",
+      "Another Grok change is already in flight. Nothing was written — try again in a moment.");
+  }
+  grokToggleFlight = (async (): Promise<Response> => {
+    let body: { enabled?: unknown };
+    try {
+      body = await readManagementJsonBody(req);
+    } catch (error) {
+      rethrowManagementBodyTooLarge(error);
+      return jsonResponse({ error: "invalid JSON body" }, 400);
+    }
+    if (typeof body.enabled !== "boolean") {
+      return jsonResponse({ error: "enabled must be a boolean" }, 400);
+    }
+    const enabled = body.enabled;
+
+    /*
+     * The inspector runs BEFORE either delegate, in BOTH directions (012 §In
+     * PUT it is the authoritative preflight): an ambiguous fence never reaches
+     * the code path that would misreport it, and the refusal is identical
+     * whichever direction the user was heading, because the reason is the same.
+     */
+    const seen = inspectGrokConfig();
+    if (seen.kind === "not_installed") return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
+    if (seen.kind === "orphaned_marker") return refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE);
+
+    if (!enabled) {
+      /*
+       * Disable only: a strip is a SHARED teardown — it must not run under a
+       * service installed from another home (audit r1 #5). Enable is not
+       * gated: writing our own fence tears nothing down.
+       */
+      const owned = assertNativeTeardownOwned();
+      if (!owned.ok) return refusal(409, "grok", "home_mismatch", owned.message);
+
+      const result = stripGrokConfig();
+      if (result.skippedReason === "no-grok-home") {
+        return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
+      }
+      if (result.skippedReason === "orphaned-marker" || !result.ok) {
+        // Orphaned can still arrive between the preflight and the strip; the
+        // writer refuses it correctly and we map the refusal, never a retry lie.
+        return result.skippedReason === "orphaned-marker"
+          ? refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE)
+          : refusal(500, "grok", "write_failed", result.message);
+      }
+      // The writer's own read IS the last read within this synchronous
+      // operation (012 Rev 3 N4): strip removed the fence, so absent.
+      return jsonResponse({
+        ok: true, clientId: "grok", changed: result.changed,
+        state: "absent",
+        message: result.changed
+          ? "Grok integration disabled — the opencodex block was removed. Re-enabling regenerates it from the current model list."
+          : "Grok integration is already off",
+      } satisfies NativeToggleEnvelope);
+    }
+
+    /*
+     * Enable. The fence must name the host/port the RUNNING process bound, not
+     * what config.json last recorded (Rev 3 N1; runGrokApplyFlight pattern):
+     * a stale config.hostname picks the wrong loopback policy branch entirely.
+     */
+    const runtime = (deps.readRuntimePort ?? readRuntimePort)(process.pid);
+    const port = runtime?.port ?? (Number(ctx.url.port) || config.port);
+    const hostname = runtime?.hostname ?? config.hostname;
+
+    /*
+     * The catalog fetch is the ONLY await between check and write. Whatever
+     * the file looked like before it means nothing after it — so the recheck
+     * below runs after the fetch and immediately before the writer, which is
+     * synchronous from entry (012 §One preflight is not enough).
+     */
+    const fetchModels = deps.fetchAllModels ?? defaultFetchAllModels;
+    let models: GrokInjectModel[];
+    try {
+      const routed = filterCatalogVisibleModels(await fetchModels(config), config);
+      models = [
+        // Native slugs carry their context window: without it Grok falls back
+        // to its own 200k default and understates a 372k model.
+        ...visibleNativeSlugs(config).map(id => {
+          const contextWindow = nativeOpenAiContextWindow(id);
+          return { id, ...(contextWindow !== undefined ? { contextWindow } : {}) };
+        }),
+        ...routed.map(m => ({
+          id: m.alias ?? `${m.provider}/${m.id}`,
+          ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+        })),
+      ];
+    } catch (error) {
+      // A catalog failure must never write an empty fence (syncGrokConfig
+      // guards this; the route inherits the rule). Nothing was written.
+      return refusal(500, "grok", "write_failed",
+        `The model catalog is unavailable, so nothing was written (${error instanceof Error ? error.message : String(error)}). Try again once provider discovery recovers.`);
+    }
+
+    const recheck = inspectGrokConfig();
+    if (recheck.kind === "not_installed") return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
+    if (recheck.kind === "orphaned_marker") return refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE);
+
+    const inject = deps.injectGrokConfig ?? injectGrokConfig;
+    const result = inject(port, models, {
+      ...(hostname !== undefined ? { hostname } : {}),
+      // The FULL list plus the exclusion set, never a pre-filtered list: the
+      // writer allocates aliases over everything, so a model's alias never
+      // depends on its neighbours' switches.
+      excluded: new Set(config.grokExcludedModels ?? []),
+    });
+
+    if (result.skippedReason === "non-loopback") {
+      /*
+       * The non-loopback branch reports its own strip only through `changed`,
+       * so a strip that REFUSED and a strip that found nothing are
+       * indistinguishable in the result. EXHAUSTIVE post-inspection decides —
+       * the reported state is whatever the LAST read observed, never what the
+       * operation intended (audit r9).
+       */
+      const after = inspectGrokConfig();
+      switch (after.kind) {
+        case "orphaned_marker":
+          return refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE);
+        case "present":
+          // A well-formed fence arrived from elsewhere between the strip and
+          // this read (`ocx ensure`, another proxy, a hand edit). It is not
+          // ours to remove under a policy that just declined to write one,
+          // and calling it `absent` would contradict the read.
+          return jsonResponse({
+            ok: true, clientId: "grok", changed: result.changed,
+            state: "current", reason: "non_loopback_superseded",
+            message: "opencodex is bound to a non-loopback address, so this request did not write a block — but a well-formed opencodex block is present in the Grok config, written by something else. The card shows what is on disk.",
+          } satisfies NativeToggleEnvelope);
+        case "not_installed":
+          return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
+        case "absent":
+          return jsonResponse({
+            ok: true, clientId: "grok", changed: result.changed,
+            state: "absent", reason: "non_loopback_removed",
+            message: "opencodex is bound to a non-loopback address, so Grok cannot be auto-registered. The previously generated block was removed because it pointed at a loopback address that no longer serves.",
+          } satisfies NativeToggleEnvelope);
+      }
+    }
+
+    if (result.skippedReason === "no-grok-home") {
+      return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
+    }
+    if (result.skippedReason === "orphaned-marker") {
+      return refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE);
+    }
+    if (!result.ok) {
+      return refusal(500, "grok", "write_failed", result.message);
+    }
+    return jsonResponse({
+      ok: true, clientId: "grok", changed: result.changed,
+      state: "current",
+      message: result.changed ? "Grok integration enabled — the opencodex block was regenerated from the current model list." : "Grok integration is already on",
+    } satisfies NativeToggleEnvelope);
+  })();
+  try {
+    return await grokToggleFlight;
+  } finally {
+    grokToggleFlight = null;
+  }
+}
+
 export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config, deps } = ctx;
 
   if (url.pathname === "/api/native-integrations" && req.method === "GET") {
     const { getConfigPath } = await import("../../config");
     return jsonResponse({
-      clients: [claudeStatus(config, getConfigPath())],
+      clients: [claudeStatus(config, getConfigPath()), grokStatus()],
     } satisfies NativeStatusListEnvelope);
   }
 
@@ -185,6 +418,10 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
       state: enabled ? "current" : "absent",
       message: enabled ? "Claude inbound enabled" : "Claude inbound disabled",
     } satisfies NativeToggleEnvelope);
+  }
+
+  if (url.pathname === "/api/native-integrations/grok" && req.method === "PUT") {
+    return handleGrokToggle(ctx);
   }
 
   return null;

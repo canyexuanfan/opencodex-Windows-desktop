@@ -345,7 +345,8 @@ be a promise the writer does not make.
 - [ ] Disable → enable → disable is stable: the file returns to the same
       non-fenced content each time.
 - [ ] `orphaned-marker` refuses as `orphaned_marker` and writes nothing.
-- [ ] `no-grok-home` refuses `not_installed`; the card reads not-installed.
+- [ ] `no-grok-home` refuses `not_installed`; the GET row carries
+      `installed: false` (the card rendering belongs to WP4 — Rev 3 N4).
 - [ ] Enabling under a non-loopback bind WITH an existing fence returns 200
       `non_loopback_removed` with `changed: true`, and the fence is gone. It must
       NOT return a refusal claiming nothing changed (audit r5 #1).
@@ -367,8 +368,10 @@ be a promise the writer does not make.
 - [ ] The post-inspection switch is EXHAUSTIVE over all four inspector states;
       a test installs a well-formed fence between the strip and the read and
       asserts `current`/`non_loopback_superseded`, never `absent` (audit r9).
-- [ ] Every reported `state` is derived from the post-inspection, not from the
-      writer's result.
+- [ ] In the NON-LOOPBACK outcome every reported `state` is derived from the
+      post-inspection, not from the writer's result; loopback enable and
+      disable report the writer's result, whose own read IS the last read
+      within one synchronous operation (Rev 3 N4).
 - [ ] WP2 calls `injectGrokConfig` directly, not `syncGrokConfig`; a test
       asserts the wrapper is not on this path.
 - [ ] The route's model list is byte-identical to `syncGrokConfig`'s for the
@@ -383,3 +386,68 @@ be a promise the writer does not make.
 - [ ] Enabling is NOT gated by the ownership preflight.
 - [ ] No journal row and no snapshot are written by this toggle.
 - [ ] `bun run typecheck`, the existing Grok tests, and `privacy:scan` green.
+
+## Rev 3 — wp2-cycle A-gate nits folded (reviewer: PASS-WITH-NITS, 0 blockers)
+
+A fresh adversarial pass at this work-phase's own A gate verified every
+load-bearing claim above against the live tree and found five spec gaps.
+All five are accepted; none rebutted.
+
+**N1 — port/hostname resolution is now specified.** The route mirrors
+`runGrokApplyFlight` (agent-settings-routes.ts:99-103): the fence must name the
+host and port the RUNNING process actually bound, not what config.json last
+recorded — `sync.ts:24-27` warns a stale `config.hostname` picks the wrong
+loopback policy branch entirely, and a port-collision auto-increment would
+point the fence's `base_url` at a dead port.
+
+```ts
+const runtime = (deps.readRuntimePort ?? readRuntimePort)(process.pid);
+const port = runtime?.port ?? Number(ctx.url.port) || ctx.config.port;
+const hostname = runtime?.hostname ?? ctx.config.hostname;
+```
+
+`readRuntimePort` goes behind a deps seam for the same reason the catalog fetch
+does: a route test cannot be allowed to depend on the developer's real runtime
+state file.
+
+**N2 — the seams and the import cycle.** `management-api.ts` statically
+imports this module, so the route must NOT statically import `fetchAllModels`
+back from it — `sync.ts:18-21` already dodges that exact cycle with a dynamic
+import, and this route copies the dodge. `ManagementApiDeps` gains three seams,
+all defaulting to the real implementations in production:
+
+```ts
+fetchAllModels?: (config: OcxConfig) => Promise<CatalogModel[]>;
+injectGrokConfig?: typeof import("../../grok/inject").injectGrokConfig;
+readRuntimePort?: (pid: number) => RuntimePortState | null;
+```
+
+The first two are what make the r7/r8 acceptance tests possible (orphaning the
+file inside a stubbed fetch, and between the recheck and the write). A catalog
+fetch failure is a 500 refusal with reason `write_failed`: nothing was written,
+and retrying is correct advice once the provider blip passes.
+
+**N3 — two guards over one file, said out loud.** The single-flight keyed
+`grok` refuses a second concurrent TOGGLE with 409 `config_busy`. It does not
+join, and it does not coordinate with `runGrokApplyFlight` (`/api/grok/apply`
+JOINS an identical in-flight operation rather than refusing — 030 records why
+rewriting that contract is not this unit's business). Toggle-vs-apply
+interleaving is therefore possible and is covered not by exclusion but by the
+post-write inspection: whatever the file holds after both operations, the
+reported state is the last read. Reusing `config_busy` for an in-process flight
+is a deliberate widening of a reason 030 introduced for `SQLITE_BUSY`
+contention — both mean "try again in a moment, nothing was written", which is
+the only thing the GUI does with it.
+
+**N4 — two acceptance items rescoped to what a test can assert:**
+
+- "Every reported `state` is derived from the post-inspection" applies to the
+  NON-LOOPBACK outcome, where the writer's result is genuinely ambiguous. The
+  loopback enable and the disable report the writer's result, which is
+  equivalent within one synchronous operation — the writer's own read IS the
+  last read. Item reworded accordingly.
+- "`no-grok-home` refuses `not_installed`; the card reads not-installed" splits
+  into its wp2-testable half: the GET row carries `installed: false`. The card
+  belongs to WP4.
+
+**N5 — citation corrected:** the strip orphan refusal is inject.ts:473, not 474.
