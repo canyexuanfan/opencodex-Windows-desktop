@@ -248,6 +248,276 @@ describe("fetchProviderQuotaReports", () => {
     } as OcxConfig;
   }
 
+  function a6apiOnlyConfig(baseUrl = "https://api.a6api.com/v1"): OcxConfig {
+    return {
+      defaultProvider: "a6api",
+      providers: {
+        a6api: { adapter: "openai-chat", authMode: "key", baseUrl, apiKey: "a6api-secret" },
+      },
+    } as OcxConfig;
+  }
+
+  test("A6API quota converts provider units to USD and exposes a displayable credit window", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      if (url.endsWith("/dashboard/billing/subscription")) {
+        return new Response(JSON.stringify({ data: { hard_limit_usd: "20" } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: {
+        total_granted: "20000000",
+        total_used: "5000000",
+        total_available: "15000000",
+        expires_at: "2026-08-01T00:00:00Z",
+      } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("a6api:billing");
+    expect(result.reports[0]?.quota.customWindows).toEqual([{
+      label: "API credits ($15.00 of $20.00 remaining)",
+      percent: 25,
+    }]);
+    expect(seen.map(row => row.url).sort()).toEqual([
+      "https://api.a6api.com/api/usage/token/",
+      "https://api.a6api.com/dashboard/billing/subscription",
+    ]);
+    expect(seen.every(row => row.authorization === "Bearer a6api-secret")).toBe(true);
+    expect(seen.every(row => row.redirect === "error")).toBe(true);
+  });
+
+  test("A6API quota never sends API keys to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig("https://attacker.example/v1"), true);
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("A6API quota drops incomplete or zero-limit billing payloads", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return new Response(JSON.stringify(url.includes("subscription")
+        ? { data: { hard_limit_usd: 0 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test.each([
+    { total_used: -1, total_available: 101 },
+    { total_used: 1, total_available: -1 },
+    { total_used: 80, total_available: 80 },
+    { total_used: 20, total_available: 70 },
+  ])("A6API quota drops malformed usage totals", async usage => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return new Response(JSON.stringify(url.includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, ...usage } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test("A6API quota applies reconciliation tolerance relative to sub-unit grants", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 0.1, total_used: 0.05, total_available: 0.0500000005 } },
+    ), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test("A6API quota accepts equivalent canonical HTTPS URLs only", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 25, total_available: 75 } }), { status: 200 });
+    }) as typeof fetch;
+
+    const canonicalUrls = [
+      "https://api.a6api.com",
+      "https://api.a6api.com/v1",
+      "https://API.A6API.COM:443/v1/",
+    ];
+    for (const baseUrl of canonicalUrls) {
+      const result = await fetchProviderQuotaReports(a6apiOnlyConfig(baseUrl), true);
+      expect(result.reports).toHaveLength(1);
+    }
+    const credentialedUrl = "https://user" + "@api.a6api.com/v1";
+    const credentialed = await fetchProviderQuotaReports(a6apiOnlyConfig(credentialedUrl), true);
+
+    expect(credentialed.reports).toEqual([]);
+    expect(seen).toHaveLength(canonicalUrls.length * 2);
+  });
+
+  test("malformed API-key fields do not break unrelated quota reports", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 25, total_available: 75 } },
+    ), { status: 200 })) as typeof fetch;
+    const config = a6apiOnlyConfig();
+    config.providers.broken = {
+      adapter: "openai-chat",
+      authMode: "key",
+      baseUrl: "https://example.com/v1",
+      apiKey: 42,
+    } as unknown as OcxConfig["providers"][string];
+
+    const result = await fetchProviderQuotaReports(config, true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.provider).toBe("a6api");
+  });
+
+  test("A6API quota is detected by canonical base URL for custom provider names", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 25, total_available: 75 } },
+    ), { status: 200 })) as typeof fetch;
+    const config = a6apiOnlyConfig();
+    config.defaultProvider = "my-a6";
+    config.providers = { "my-a6": config.providers.a6api! };
+
+    const result = await fetchProviderQuotaReports(config, true);
+
+    expect(result.reports[0]?.provider).toBe("my-a6");
+    expect(result.reports[0]?.quota.customWindows?.[0]?.percent).toBe(25);
+  });
+
+  test("A6API quota cache follows the active API key", async () => {
+    const authorizations: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      authorizations.push(headers?.Authorization ?? "");
+      const secondAccount = headers?.Authorization === "Bearer second-account-key";
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: secondAccount ? 30 : 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const first = await fetchProviderQuotaReports(config);
+    config.providers.a6api!.apiKey = "second-account-key";
+    const second = await fetchProviderQuotaReports(config);
+
+    expect(first.reports[0]?.quota.customWindows?.[0]?.label).toContain("of $10.00 remaining");
+    expect(second.reports[0]?.quota.customWindows?.[0]?.label).toContain("of $30.00 remaining");
+    expect(authorizations).toContain("Bearer second-account-key");
+  });
+
+  test("A6API quota drops a last-good row after a terminal-invalid refresh", async () => {
+    let malformed = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: malformed
+          ? { total_granted: 100, total_used: 20, total_available: 70 }
+          : { total_granted: 100, total_used: 20, total_available: 80 } },
+    ), { status: 200 })) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    malformed = true;
+    const invalid = await fetchProviderQuotaReports(config, true);
+
+    expect(valid.reports).toHaveLength(1);
+    expect(invalid.reports).toEqual([]);
+  });
+
+  test("A6API quota preserves a last-good row after a transient server failure", async () => {
+    let unavailable = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (unavailable) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    unavailable = true;
+    const transientFailure = await fetchProviderQuotaReports(config, true);
+
+    expect(transientFailure.reports).toEqual(valid.reports);
+  });
+
+  test("A6API quota treats a throttled 429 refresh as transient and keeps the last-good row", async () => {
+    let throttled = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (throttled) return new Response("rate limited", { status: 429 });
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    throttled = true;
+    const throttledRefresh = await fetchProviderQuotaReports(config, true);
+
+    expect(throttledRefresh.reports).toEqual(valid.reports);
+  });
+
+  test("A6API quota treats a timed-out 408 refresh as transient and keeps the last-good row", async () => {
+    let timedOut = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (timedOut) return new Response("request timeout", { status: 408 });
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    const validUpdatedAt = valid.reports[0]?.quota.updatedAt;
+    timedOut = true;
+    const timedOutRefresh = await fetchProviderQuotaReports(config, true);
+
+    expect(timedOutRefresh.reports).toEqual(valid.reports);
+    expect(timedOutRefresh.reports[0]?.quota.updatedAt).toBe(validUpdatedAt);
+  });
+
+  test("A6API quota drops the last-good row after a credential 401 refresh", async () => {
+    let rejected = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (rejected) return new Response("unauthorized", { status: 401 });
+      return new Response(JSON.stringify(String(input).includes("subscription")
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 100, total_used: 20, total_available: 80 } }), { status: 200 });
+    }) as typeof fetch;
+    const config = a6apiOnlyConfig();
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    rejected = true;
+    const rejectedRefresh = await fetchProviderQuotaReports(config, true);
+
+    expect(valid.reports).toHaveLength(1);
+    expect(rejectedRefresh.reports).toEqual([]);
+  });
+
   test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
     await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
     const seen: string[] = [];
