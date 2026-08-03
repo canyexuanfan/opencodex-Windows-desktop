@@ -750,6 +750,10 @@ export function clearCodexQuotaPrimeState(): void {
   primeInFlight = null;
 }
 
+export function effectiveCodexAuthAccountId(config: OcxConfig): string {
+  return getEffectiveActiveCodexAccountId(config) ?? MAIN_CODEX_ACCOUNT_ID;
+}
+
 export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = false): Promise<CodexAuthAccountDto[]> {
   const runtimeConfig = getRuntimeConfig(config);
   const poolAccounts = (runtimeConfig.codexAccounts ?? []).filter(isSelectableCodexPoolAccount);
@@ -830,7 +834,12 @@ export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = fa
     paused: isCodexAccountPaused(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
     hasCredential: hasMainCredential,
     needsReauth: mainNeedsReauth,
-    quota: mainInfo.quota ? { ...quotaForPlan({ ...mainInfo.quota, updatedAt: Date.now() }, mainInfo.plan) } : null,
+    quota: mainInfo.quota ? {
+      ...quotaForPlan({
+        ...mainInfo.quota,
+        updatedAt: getAccountQuota(MAIN_CODEX_ACCOUNT_ID)?.updatedAt ?? Date.now(),
+      }, mainInfo.plan),
+    } : null,
     ...oauthAccountHealthFields("codex", MAIN_CODEX_ACCOUNT_ID, mainHealth),
   };
   return [main, ...withQuota];

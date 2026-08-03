@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clearAccountQuota } from "../src/codex/quota";
+import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
+import { clearAccountNeedsReauth, markAccountNeedsReauth } from "../src/codex/account-runtime-state";
+import { clearMainAccountInfoCache } from "../src/codex/auth-api";
+import { clearCodexUpstreamHealth } from "../src/codex/routing";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { saveCredential } from "../src/oauth/store";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../src/providers/quota";
@@ -70,6 +73,7 @@ beforeEach(() => {
     tokens: { access_token: "chatgpt-main-access", account_id: "chatgpt-main-account" },
   }));
   clearAccountQuota();
+  clearCodexUpstreamHealth();
   clearProviderQuotaCache();
 });
 
@@ -480,7 +484,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(expired.reports).toEqual([]);
   });
 
-  test("pool mode reports the active added account", async () => {
+  test("pool mode reports a weighted estimate while preserving the effective account raw quota", async () => {
     saveCodexAccountCredential("added", {
       accessToken: "added-access",
       refreshToken: "added-refresh",
@@ -488,18 +492,214 @@ describe("fetchProviderQuotaReports", () => {
       chatgptAccountId: "added-chatgpt-id",
     });
     const config = testConfig();
-    config.codexAccounts = [{ id: "added", email: "a@example.test", isMain: false }];
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
     config.activeCodexAccountId = "added";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = init?.headers as Record<string, string> | undefined;
       const percent = headers?.["ChatGPT-Account-Id"] === "added-chatgpt-id" ? 77 : 11;
       return new Response(JSON.stringify({
+        plan_type: headers?.["ChatGPT-Account-Id"] === "added-chatgpt-id" ? "prolite" : "plus",
         rate_limit: { secondary_window: { used_percent: percent, reset_at: 1_789_000_000 } },
       }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(config, true);
-    expect(result.reports.find(row => row.provider === "openai")?.quota.weeklyPercent).toBe(77);
+    const openai = result.reports.find(row => row.provider === "openai");
+    expect(openai?.quota.weeklyPercent).toBe(66);
+    expect(openai?.aggregation).toMatchObject({
+      includedAccounts: 2,
+      excludedAccounts: 0,
+      incomplete: false,
+      currentAccount: { plan: "prolite", quota: { weeklyPercent: 77 } },
+    });
+    expect(JSON.stringify(openai?.aggregation)).not.toMatch(/(?:total|consumed|remaining)Weight|projectedUsedPercent/i);
+  });
+
+  test("one forced Pool refresh probes each account once", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    const calls = new Map<string, number>();
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const accountId = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] ?? "main";
+      calls.set(accountId, (calls.get(accountId) ?? 0) + 1);
+      return new Response(JSON.stringify({
+        plan_type: accountId === "added-chatgpt-id" ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: 25, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await fetchProviderQuotaReports(config, true);
+
+    expect(calls).toEqual(new Map([["chatgpt-main-account", 1], ["added-chatgpt-id", 1]]));
+  });
+
+  test("all-excluded pool still returns a coverage-only OpenAI report", async () => {
+    rmSync(join(codexHome, "auth.json"), { force: true });
+    clearMainAccountInfoCache();
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "missing", email: "missing@example.test", plan: "plus", isMain: false }];
+
+    const result = await fetchProviderQuotaReports(config);
+    const openai = result.reports.find(row => row.provider === "openai");
+    expect(openai).toBeDefined();
+    expect(openai?.quota).toEqual({ updatedAt: openai?.updatedAt });
+    expect(openai?.aggregation).toMatchObject({
+      presentation: "coverage-only",
+      includedAccounts: 0,
+      excludedAccounts: 2,
+      reauthAccounts: 2,
+      incomplete: true,
+    });
+  });
+
+  test("stale effective-account quota becomes coverage-only and is never restamped as numeric fallback", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    config.activeCodexAccountId = "added";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    await fetchProviderQuotaReports(config, true);
+    clearProviderQuotaCache();
+
+    const realDateNow = Date.now;
+    const future = realDateNow() + 31 * 60_000;
+    try {
+      Date.now = () => future;
+      globalThis.fetch = (async () => new Response("unavailable", { status: 500 })) as typeof fetch;
+      const expired = await fetchProviderQuotaReports(config);
+      const openai = expired.reports.find(row => row.provider === "openai");
+      expect(openai?.aggregation).toMatchObject({
+        presentation: "coverage-only",
+        includedAccounts: 0,
+        staleQuotaAccounts: 1,
+        missingQuotaAccounts: 1,
+        unknownPlanAccounts: 1,
+        incomplete: true,
+        currentAccount: { plan: "prolite", quota: null },
+      });
+      expect(openai?.quota).toEqual({ updatedAt: future });
+      expect(openai?.quota).not.toHaveProperty("weeklyPercent");
+      const cached = await fetchProviderQuotaReports(config);
+      expect(cached.reports[0]?.quota).not.toHaveProperty("weeklyPercent");
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  test("ordinary fetch reflects pausing a non-active pool account", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    expect((await fetchProviderQuotaReports(config, true)).reports[0]?.quota.weeklyPercent).toBe(66);
+    config.pausedCodexAccountIds = ["added"];
+    const paused = (await fetchProviderQuotaReports(config)).reports[0];
+    expect(paused?.quota.weeklyPercent).toBe(11);
+    expect(paused?.aggregation).toMatchObject({ includedAccounts: 1, excludedAccounts: 1, incomplete: true });
+  });
+
+  test("ordinary fetch separates plan, quota, and effective-account cache states", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await fetchProviderQuotaReports(config, true);
+    config.codexAccounts[0]!.plan = "pro";
+    expect((await fetchProviderQuotaReports(config)).reports[0]?.aggregation?.weekly?.usedPercent).toBeCloseTo((20 * 77 + 11) / 21, 8);
+    config.activeCodexAccountId = "added";
+    expect((await fetchProviderQuotaReports(config)).reports[0]?.aggregation?.currentAccount).toMatchObject({ plan: "pro", quota: { weeklyPercent: 77 } });
+    updateAccountQuota("added", 20, 1_999_000_000);
+    expect((await fetchProviderQuotaReports(config)).reports[0]?.aggregation?.weekly?.usedPercent).toBeCloseTo((20 * 20 + 11) / 21, 8);
+  });
+
+  test("ordinary fetch reflects runtime reauthentication state", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await fetchProviderQuotaReports(config, true);
+    markAccountNeedsReauth("added");
+    const reauth = (await fetchProviderQuotaReports(config)).reports[0];
+    expect(reauth?.aggregation).toMatchObject({ includedAccounts: 1, reauthAccounts: 1, incomplete: true });
+    clearAccountNeedsReauth("added");
+  });
+
+  test("ordinary fetch reflects pool account add and remove", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const id = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"];
+      const plan = id === "added-chatgpt-id" ? "prolite" : id === "second-chatgpt-id" ? "business" : "plus";
+      const percent = id === "added-chatgpt-id" ? 77 : id === "second-chatgpt-id" ? 33 : 11;
+      return new Response(JSON.stringify({
+        plan_type: plan,
+        rate_limit: { secondary_window: { used_percent: percent, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    expect((await fetchProviderQuotaReports(config, true)).reports[0]?.aggregation?.includedAccounts).toBe(2);
+    saveCodexAccountCredential("second", {
+      accessToken: "second-access", refreshToken: "second-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "second-chatgpt-id",
+    });
+    config.codexAccounts.push({ id: "second", email: "b@example.test", plan: "business", isMain: false });
+    expect((await fetchProviderQuotaReports(config)).reports[0]?.aggregation?.includedAccounts).toBe(3);
+    config.codexAccounts = config.codexAccounts.filter(account => account.id !== "second");
+    expect((await fetchProviderQuotaReports(config)).reports[0]?.aggregation?.includedAccounts).toBe(2);
   });
 
   test("direct mode reports main without reading or repairing the added-account store", async () => {
@@ -745,6 +945,49 @@ describe("fetchProviderQuotaReports", () => {
 
     const cached = await fetchProviderQuotaReports(config, false);
     expect(cached.reports[0]?.quota.monthlyPercent).toBe(90);
+  });
+
+  test("effective-account change during a pool probe cannot cache under the new signature", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access", refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000, chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{ id: "added", email: "a@example.test", plan: "prolite", isMain: false }];
+    const responseFor = (init?: RequestInit) => {
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? "prolite" : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => responseFor(init)) as typeof fetch;
+    await fetchProviderQuotaReports(config, true);
+    clearProviderQuotaCache();
+
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let startedResolve!: () => void;
+    const started = new Promise<void>(resolve => { startedResolve = resolve; });
+    let startedProbe = false;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!startedProbe) {
+        startedProbe = true;
+        startedResolve();
+      }
+      await gate;
+      return responseFor(init);
+    }) as typeof fetch;
+
+    const racing = fetchProviderQuotaReports(config, true);
+    await started;
+    config.activeCodexAccountId = "added";
+    release();
+    const racedResponse = await racing;
+    const next = await fetchProviderQuotaReports(config);
+    expect(next).not.toBe(racedResponse);
+    expect(next.reports[0]?.aggregation?.currentAccount).toMatchObject({ plan: "prolite", quota: { weeklyPercent: 77 } });
   });
 
   test("last-good rows survive a transient failure with original timestamps, are replaced by fresh rows, expire past the cap, and a disabled provider yields no rows", async () => {
