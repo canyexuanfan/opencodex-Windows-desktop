@@ -270,7 +270,7 @@ Copilot は混在 wire カタログを提供します。GPT-5 系モデル（`gp
 通信の `/chat/completions` を拒否するため、opencodex はこれらのモデルを組み込みデフォルトで
 Responses API 経由にルーティングし、他の Copilot モデルはすべて chat completions のままです。
 優先順位は次のとおりです: ハード wire ピン → 明示的な
-[`modelAdapters`](/reference/configuration/providers/) エントリ → レジストリのデフォルト →
+[`modelAdapters`](/ja/reference/configuration/providers/) エントリ → レジストリのデフォルト →
 プロバイダー全体の adapter。組み込みデフォルトのないモデル（例: `gpt-5.4-nano`）を Responses
 に移すには、`"modelAdapters": { "gpt-5.4-nano": "openai-responses" }` を設定してください。
 

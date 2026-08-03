@@ -283,7 +283,7 @@ Copilot предоставляет каталог со смешанными пр
 отклоняет `/chat/completions` для агентного трафика, поэтому opencodex по умолчанию
 маршрутизирует эти модели через Responses API, а все остальные модели Copilot остаются на
 chat completions. Приоритет: жёсткий wire-пин → явная запись
-[`modelAdapters`](/reference/configuration/providers/) → дефолт реестра → adapter всего
+[`modelAdapters`](/ru/reference/configuration/providers/) → дефолт реестра → adapter всего
 провайдера. Чтобы перевести модель без встроенного дефолта (например, `gpt-5.4-nano`) на
 Responses, задайте `"modelAdapters": { "gpt-5.4-nano": "openai-responses" }`.
 
