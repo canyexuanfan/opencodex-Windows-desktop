@@ -38,6 +38,9 @@ jobs:
             const { assessHygiene } = require(
               path.join(process.cwd(), ".github", "scripts", "pr-hygiene.cjs"),
             );
+            const { assessSponsoredSurface } = require(
+              path.join(process.cwd(), ".github", "scripts", "pr-sponsored-surface.cjs"),
+            );
 
             const { owner, repo } = context.repo;
             const pull_number = context.payload.pull_request.number;
@@ -49,6 +52,7 @@ jobs:
               "suppression-approved": ["5319e7", "Maintainer approved a new type or lint suppression"],
               "generated-change-approved": ["5319e7", "Maintainer approved committed generated output"],
               "dependency-change-approved": ["5319e7", "Maintainer approved exceptional dependency or lockfile handling"],
+              "maintainer-sponsored": ["5319e7", "Maintainer sponsors this change to an auth, workflow, release, or dependency surface"],
             };
 
             async function ensureLabel(name) {
@@ -89,7 +93,19 @@ jobs:
                 }
               }
             }
-            const failures = assessHygiene({ files, labels: [...labels] });
+            // Sponsorship is head-independent: it is about which surfaces the
+            // change touches, not about the state of a particular revision, so
+            // it is NOT cleared by the synchronize sweep above.
+            const failures = [
+              ...assessHygiene({ files, labels: [...labels] }),
+              ...assessSponsoredSurface({
+                authorHasPushPermission: ["OWNER", "MEMBER", "COLLABORATOR"].includes(
+                  pr.author_association,
+                ),
+                changedFiles: files.map((file) => file.filename),
+                labels: [...labels],
+              }),
+            ];
 
             async function setBlocked(blocked) {
               if (blocked && !labels.has(blockedLabel)) {
@@ -130,6 +146,7 @@ jobs:
               new_suppression: "A new TypeScript, lint, formatter, or similar suppression was added. Fix the underlying issue or obtain `suppression-approved`.",
               focused_or_skipped_test: "A focused or skipped test was added. Restore the complete suite or obtain `test-exception-approved`.",
               empty_catch: "An empty catch block was added. Handle, report, or deliberately propagate the error.",
+              unsponsored_surface: "This changes an authentication, workflow, release-automation, or dependency surface. `MAINTAINERS.md` requires security review for these; ask a maintainer to apply `maintainer-sponsored` once they have reviewed it.",
             };
             const lines = failures.map((failure) => {
               const paths = failure.paths?.length
