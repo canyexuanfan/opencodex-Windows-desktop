@@ -192,10 +192,17 @@ export async function pumpResponsesSseToWebSocket(
     terminalReported = true;
     options.onTerminal?.(status);
   };
-  const cancel = () => {
-    clientCancelled = true;
-    void reader.cancel().catch(() => {});
-  };
+  const cancel = (() => {
+    const upstreamCancel = ws.data.cancel;
+    let cancelCalled = false;
+    return () => {
+      if (cancelCalled) return;
+      cancelCalled = true;
+      clientCancelled = true;
+      try { upstreamCancel?.(); } catch { /* cancellation must continue */ }
+      void reader.cancel().catch(() => {});
+    };
+  })();
   ws.data.cancel = cancel;
 
   const decoder = new TextDecoder();
