@@ -15,6 +15,22 @@ const MIN_RICH_SECTIONS = 2;
 const UNSTRUCTURED_MIN_LEN = 120;
 const UNSTRUCTURED_MIN_BLOCKS = 2;
 
+/** HTML markers bounding the bot-managed review-readiness checklist in the PR body. */
+const REVIEW_READINESS_START = "<!-- pr-quality-readiness-checklist:start -->";
+const REVIEW_READINESS_END = "<!-- pr-quality-readiness-checklist:end -->";
+
+/**
+ * The four self-attestation boxes a non-maintainer author must tick before the
+ * gate lifts the draft. The final box is intentionally set off by a blank line
+ * so the "ready" claim reads as the closing confirmation, not a fourth task.
+ */
+const REVIEW_READINESS_ITEMS = [
+  "All CI tests are green on my local testing.",
+  "I pushed my PR to the latest dev commit.",
+  "I fixed all correct Codex and CodeRabbit findings.",
+  "My PR is ready for review.",
+];
+
 /**
  * Exact instruction / checklist lines from `.github/PULL_REQUEST_TEMPLATE.md`.
  * Untouched templates must not count as substance.
@@ -191,6 +207,69 @@ function hasScreenshotEvidence(body) {
   return hasRenderableReferenceImage(visible);
 }
 
+/**
+ * The tickable checklist section injected into the PR description. It lives in
+ * the body (the author can tick it) and is bounded by HTML markers so the gate
+ * can find exactly this section and ignore any other task list in the body.
+ */
+function buildReviewReadinessSection() {
+  const items = REVIEW_READINESS_ITEMS.flatMap((item, index) =>
+    index === REVIEW_READINESS_ITEMS.length - 1
+      ? ["", `- [ ] ${item}`]
+      : [`- [ ] ${item}`],
+  );
+  return [
+    REVIEW_READINESS_START,
+    "## Review readiness checklist",
+    "",
+    "This PR stays in draft until every box below is ticked. Tick all four boxes once the requirements are met:",
+    "",
+    ...items,
+    REVIEW_READINESS_END,
+  ].join("\n");
+}
+
+/**
+ * Read the checklist section the bot manages. `present` means the marker pair
+ * exists; `complete` means the section contains exactly the four boxes and all
+ * of them are checked. Anything else (missing markers, fewer or extra boxes,
+ * unchecked boxes) keeps the gate closed. The author can reword an item, but
+ * the box count and the checked state are the contract.
+ */
+function extractReviewReadiness(body) {
+  if (typeof body !== "string") {
+    return { present: false, complete: false, checked: 0, total: 0 };
+  }
+  const start = body.indexOf(REVIEW_READINESS_START);
+  const end = body.indexOf(REVIEW_READINESS_END);
+  if (start === -1 || end === -1 || end <= start) {
+    return { present: false, complete: false, checked: 0, total: 0 };
+  }
+  const section = body.slice(start + REVIEW_READINESS_START.length, end);
+  const boxes = [...section.matchAll(/^\s*[-*]\s+\[([ xX])\]\s+/gm)];
+  const checked = boxes.filter((match) => match[1] !== " ").length;
+  const total = boxes.length;
+  return {
+    present: true,
+    complete:
+      total === REVIEW_READINESS_ITEMS.length && checked === total,
+    checked,
+    total,
+  };
+}
+
+/**
+ * Append the checklist section to a PR body. Idempotent: a body that already
+ * carries the marker pair is returned unchanged, so a re-run can never stack a
+ * second checklist (or feed the `edited` event endless body churn).
+ */
+function appendReviewReadinessSection(body) {
+  if (extractReviewReadiness(body).present) return body;
+  const section = buildReviewReadinessSection();
+  if (typeof body !== "string" || !body.trim()) return `${section}\n`;
+  return `${body.trimEnd()}\n\n${section}\n`;
+}
+
 function collectPrQualityFailures({
   baseRef,
   allowedBases,
@@ -248,11 +327,17 @@ function collectPrQualityFailures({
 module.exports = {
   ANCESTRY_BEHIND_THRESHOLD,
   ANCESTRY_AHEAD_MAIN_MAX,
+  REVIEW_READINESS_ITEMS,
+  REVIEW_READINESS_START,
+  REVIEW_READINESS_END,
   isWrongAncestry,
   authorHasPushPermission,
   assessPrDescription,
   hasGuiCue,
   hasScreenshotEvidence,
+  buildReviewReadinessSection,
+  extractReviewReadiness,
+  appendReviewReadinessSection,
   collectPrQualityFailures,
   hasEscapedNewlines,
   stripPrTemplateBoilerplate,

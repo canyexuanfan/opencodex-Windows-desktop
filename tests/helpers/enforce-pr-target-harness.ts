@@ -526,7 +526,7 @@ export async function runEnforcePrTarget(
   const nodeRequire = createRequire(path.join(process.cwd(), "package.json"));
   const scriptsRoot = path.resolve(process.cwd(), ".github", "scripts");
   /** Bare modules the workflow script may load (see enforce-pr-target.yml). */
-  const ALLOWED_MODULES = new Set(["path", "node:path"]);
+  const ALLOWED_MODULES = new Set(["path", "node:path", "node:fs"]);
 
   function scopedRequire(id: string) {
     calls.push({ method: "require", args: [id] });

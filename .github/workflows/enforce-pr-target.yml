@@ -31,14 +31,23 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            MAINTAINERS.md
 
       - name: Enforce PR target, ancestry, and description
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const path = require("path");
-            const { collectPrQualityFailures } = require(
+            const fs = require("node:fs");
+            const {
+              collectPrQualityFailures,
+              authorHasPushPermission,
+              extractReviewReadiness,
+              appendReviewReadinessSection,
+              REVIEW_READINESS_ITEMS
+            } = require(
               path.join(process.cwd(), ".github", "scripts", "pr-quality.cjs"),
             );
 
@@ -49,6 +58,11 @@ jobs:
             const LEGACY_COMMENT_MARKER = "<!-- wrong-branch-enforcer -->";
             const STATE_PATTERN =
               /<!-- (?:wrong-branch-enforcer|pr-quality-enforcer)-state:([\s\S]*?) -->/;
+            const READINESS_MARKER = "<!-- pr-quality-readiness -->";
+            const READINESS_STATE_PATTERN =
+              /<!-- pr-quality-readiness-state:([\s\S]*?) -->/;
+            const READINESS_STATE_VERSION = 1;
+            const MAINTAINERS_FILE = "MAINTAINERS.md";
 
             const { owner, repo } = context.repo;
             const pull_number = context.payload.pull_request.number;
@@ -77,6 +91,16 @@ jobs:
             );
             let botCommentId = botComment?.id ?? null;
 
+            const readinessComment = comments.find(
+              comment =>
+                comment.user?.login === "github-actions[bot]" &&
+                comment.body?.includes(READINESS_MARKER)
+            );
+            let readinessCommentId = readinessComment?.id ?? null;
+            const storedReadinessState = parseReadinessState(
+              readinessComment?.body
+            );
+
             function parseState(body) {
               const match = body?.match(STATE_PATTERN);
 
@@ -101,6 +125,105 @@ jobs:
                 JSON.stringify(state) +
                 " -->"
               );
+            }
+
+            function parseReadinessState(body) {
+              const match = body?.match(READINESS_STATE_PATTERN);
+
+              if (!match) {
+                return null;
+              }
+
+              try {
+                return JSON.parse(match[1]);
+              } catch (error) {
+                core.warning(
+                  `Could not parse stored readiness state: ${error.message}`
+                );
+
+                return null;
+              }
+            }
+
+            function readinessStateMarker(state) {
+              return (
+                "<!-- pr-quality-readiness-state:" +
+                JSON.stringify(state) +
+                " -->"
+              );
+            }
+
+            /**
+             * Maintainers from `MAINTAINERS.md` on the trusted default branch
+             * (checked out sparse by the step above). The file is the canonical
+             * list; mentioning these logins on the PR notifies them.
+             */
+            function readMaintainerLogins() {
+              try {
+                const text = fs.readFileSync(
+                  path.join(process.cwd(), MAINTAINERS_FILE),
+                  "utf8"
+                );
+                const logins = [
+                  ...text.matchAll(
+                    /\[\@([A-Za-z0-9_-]+)\]\(https:\/\/github\.com\/[^)]*\)/g
+                  )
+                ].map(match => match[1]);
+
+                return [...new Set(logins)];
+              } catch (error) {
+                core.warning(
+                  `Could not read ${MAINTAINERS_FILE}: ${error.message}`
+                );
+
+                return [];
+              }
+            }
+
+            function readinessChecklistLines(readiness) {
+              return REVIEW_READINESS_ITEMS.map(
+                (item, index) =>
+                  `- ${index < readiness.checked ? "✅" : "⬜"} ${item}`
+              );
+            }
+
+            async function upsertReadinessComment(state, readiness, extra) {
+              const complete = readiness.present && readiness.complete;
+              const lines = [
+                READINESS_MARKER,
+                readinessStateMarker(state),
+                "",
+                "## Review readiness checklist",
+                "",
+                "This PR is kept in **draft** until every requirement below is fulfilled. The tickable checklist has been added to your PR description — tick all four boxes there.",
+                "",
+                ...readinessChecklistLines(readiness),
+                "",
+                complete
+                  ? "✅ **4/4** boxes ticked."
+                  : `**${readiness.checked}/${readiness.total}** boxes ticked.`,
+                "",
+                ...extra
+              ];
+
+              if (readinessCommentId) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: readinessCommentId,
+                  body: lines.join("\n")
+                });
+
+                return;
+              }
+
+              const created = await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pull_number,
+                body: lines.join("\n")
+              });
+              readinessCommentId = created.data.id;
             }
 
             function inlineCode(value) {
@@ -372,12 +495,45 @@ jobs:
               stackedBase
             });
 
-            if (failures.length > 0) {
-              const hasWrongBase = failures.some(
-                failure => failure.code === "wrong_base"
-              );
-              const willPrefixTitle =
-                hasWrongBase && !pr.title.startsWith(TITLE_PREFIX);
+            // The readiness gate applies to contributors (no push permission).
+            // Maintainers keep the failure-only contract: draft while quality
+            // gates fail, ready again once they clear. A failed permission
+            // lookup fails closed — the PR is treated as a contributor PR.
+            const authorIsMaintainer =
+              !permissionLookupFailed && authorHasPushPermission(authorPermission);
+            const checklistRequired = !authorIsMaintainer;
+
+            // The tickable checklist lives in the PR body, because only the PR
+            // author can edit it. Inject it once; the HTML markers make the
+            // injection idempotent, so the `edited` event this write triggers
+            // cannot churn the body on every run.
+            let readiness = extractReviewReadiness(pr.body);
+            if (checklistRequired && !readiness.present) {
+              const injectedBody = appendReviewReadinessSection(pr.body ?? "");
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number,
+                body: injectedBody
+              });
+              readiness = extractReviewReadiness(injectedBody);
+            }
+            const checklistComplete = readiness.present && readiness.complete;
+
+            // A contributor PR stays a draft while the checklist is open, even
+            // when every quality gate already passes.
+            const mustDraft =
+              failures.length > 0 || (checklistRequired && !checklistComplete);
+
+            if (mustDraft) {
+              let draftConverted = false;
+              const readinessState = storedReadinessState
+                ? { ...storedReadinessState }
+                : {
+                    version: READINESS_STATE_VERSION,
+                    autoDraftedByBot: false,
+                    maintainersPinged: false
+                  };
               const state = storedState?.active
                 ? { ...storedState }
                 : {
@@ -389,17 +545,11 @@ jobs:
                     descriptionFailed: false,
                     screenshotFailed: false
                   };
-
-              state.ancestryFailed = failures.some(
-                failure => failure.code === "wrong_ancestry"
+              const hasWrongBase = failures.some(
+                failure => failure.code === "wrong_base"
               );
-              state.descriptionFailed = failures.some(
-                failure => failure.code === "bad_description"
-              );
-              state.screenshotFailed = failures.some(
-                failure => failure.code === "missing_ui_screenshot"
-              );
-
+              const willPrefixTitle =
+                hasWrongBase && !pr.title.startsWith(TITLE_PREFIX);
               const shouldStripTitlePrefix =
                 !hasWrongBase &&
                 state.titlePrefixedByBot &&
@@ -411,8 +561,56 @@ jobs:
                 state.titlePrefixedByBot = true;
               }
 
+              // A stale bot-owned prefix comes off once, whichever path owns
+              // the draft: the branch is fixed even when the checklist is not.
+              if (shouldStripTitlePrefix) {
+                await github.rest.pulls.update({
+                  owner,
+                  repo,
+                  pull_number,
+                  title: pr.title.slice(TITLE_PREFIX.length)
+                });
+                state.titlePrefixedByBot = false;
+              }
+
+              if (checklistRequired) {
+                const conversionPending =
+                  !pr.draft && !checklistComplete;
+                if (conversionPending) {
+                  await upsertReadinessComment(
+                    readinessState,
+                    readiness,
+                    [
+                      "This PR stays in draft until every box above is ticked."
+                    ]
+                  );
+                }
+              }
+
+              if (failures.length > 0) {
+              state.ancestryFailed = failures.some(
+                failure => failure.code === "wrong_ancestry"
+              );
+              state.descriptionFailed = failures.some(
+                failure => failure.code === "bad_description"
+              );
+              state.screenshotFailed = failures.some(
+                failure => failure.code === "missing_ui_screenshot"
+              );
+
               let draftConversionFailed = false;
               const failureSections = buildFailureSections(failures);
+
+              if (checklistRequired && !checklistComplete) {
+                failureSections.push(
+                  "",
+                  "⏳ **Review readiness checklist**",
+                  "",
+                  `This pull request stays in draft until all four boxes of the readiness checklist in the description are ticked (currently ${readiness.checked}/${readiness.total}).`,
+                  "",
+                  `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is fixed.`
+                );
+              }
 
               await upsertComment(
                 [
@@ -432,24 +630,6 @@ jobs:
                   pull_number,
                   title: `${TITLE_PREFIX}${pr.title}`
                 });
-              } else if (shouldStripTitlePrefix) {
-                await github.rest.pulls.update({
-                  owner,
-                  repo,
-                  pull_number,
-                  title: pr.title.slice(TITLE_PREFIX.length)
-                });
-                state.titlePrefixedByBot = false;
-                await upsertComment(
-                  [
-                    COMMENT_MARKER,
-                    stateMarker(state),
-                    "",
-                    ...failureSections,
-                    "",
-                    "Stale title prefix removed; continuing…"
-                  ].join("\n")
-                );
               }
 
               if (!pr.draft) {
@@ -468,6 +648,8 @@ jobs:
                 );
                 try {
                   await convertToDraft();
+                  draftConverted = true;
+                  readinessState.autoDraftedByBot = true;
                   await upsertComment(
                     [
                       COMMENT_MARKER,
@@ -513,11 +695,78 @@ jobs:
                 ].join("\n")
               );
 
+              if (checklistRequired) {
+                await upsertReadinessComment(
+                  readinessState,
+                  readiness,
+                  [
+                    checklistComplete
+                      ? "✅ **All four boxes are ticked.** This PR still stays in draft until the issues above are resolved."
+                      : pr.draft || draftConverted
+                        ? "This PR stays in draft until every box above is ticked."
+                        : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
+                  ]
+                );
+              }
+
               core.setFailed(`PR quality gate failed: ${failureSummary(failures)}`);
+              return;
+              }
+
+              // No quality failure; the draft is owed by the open checklist.
+              // Prior enforcer history (title prefix, earlier failures) gets a
+              // closing confirmation; the readiness comment owns the draft now.
+              if (storedState?.active || botComment) {
+                const prefixResult = shouldStripTitlePrefix
+                  ? `The ${inlineCode(TITLE_PREFIX.trim())} title prefix has been removed.`
+                  : "The title was left unchanged.";
+                await upsertComment(
+                  [
+                    COMMENT_MARKER,
+                    stateMarker({
+                      version: 1,
+                      active: false,
+                      autoDraftedByBot: false,
+                      titlePrefixedByBot: false,
+                      ancestryFailed: false,
+                      descriptionFailed: false,
+                      screenshotFailed: false
+                    }),
+                    "",
+                    "✅ **PR quality gates passed**",
+                    "",
+                    `This pull request now targets ${inlineCode(pr.base.ref)} with acceptable ancestry, description, and UI screenshot coverage. It stays in draft until the review readiness checklist is complete.`,
+                    "",
+                    `${prefixResult} The draft is owned by the checklist message below.`
+                  ].join("\n")
+                );
+              }
+
+              if (!pr.draft && !draftConverted) {
+                try {
+                  await convertToDraft();
+                  draftConverted = true;
+                  readinessState.autoDraftedByBot = true;
+                } catch (error) {
+                  core.warning(
+                    `Could not convert pull request to draft: ${error.message}`
+                  );
+                }
+              }
+
+              await upsertReadinessComment(
+                readinessState,
+                readiness,
+                [
+                  pr.draft || draftConverted
+                    ? "This PR stays in draft until every box above is ticked."
+                    : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
+                ]
+              );
               return;
             }
 
-            if (!storedState?.active) {
+            if (!storedState?.active && !checklistRequired) {
               core.info(
                 "All PR quality gates passed and there is no active bot state."
               );
@@ -526,7 +775,7 @@ jobs:
             }
 
             if (
-              storedState.titlePrefixedByBot &&
+              storedState?.titlePrefixedByBot &&
               pr.title.startsWith(TITLE_PREFIX)
             ) {
               await github.rest.pulls.update({
@@ -538,12 +787,14 @@ jobs:
             }
 
             let readyConversionFailed = false;
-            if (
-              storedState.autoDraftedByBot &&
-              pr.draft
-            ) {
+            let readyConverted = false;
+            const shouldMarkReady =
+              (storedState?.active && storedState.autoDraftedByBot) ||
+              (checklistRequired && checklistComplete);
+            if (shouldMarkReady && pr.draft) {
               try {
                 await markReadyForReview();
+                readyConverted = true;
               } catch (error) {
                 readyConversionFailed = true;
                 core.warning(
@@ -552,45 +803,95 @@ jobs:
               }
             }
 
-            const completedState = readyConversionFailed
-              ? {
-                  version: 1,
-                  active: true,
-                  autoDraftedByBot: true,
-                  titlePrefixedByBot: false,
-                  ancestryFailed: false,
-                  descriptionFailed: false,
-                  screenshotFailed: false
-                }
-              : {
-                  version: 1,
-                  active: false,
-                  autoDraftedByBot: false,
-                  titlePrefixedByBot: false,
-                  ancestryFailed: false,
-                  descriptionFailed: false,
-                  screenshotFailed: false
-                };
+            // The enforcer comment only exists when there was something to say;
+            // a clean contributor PR that never failed a quality gate has none.
+            if (storedState?.active || botComment) {
+              const completedState = readyConversionFailed
+                ? {
+                    version: 1,
+                    active: true,
+                    autoDraftedByBot: true,
+                    titlePrefixedByBot: false,
+                    ancestryFailed: false,
+                    descriptionFailed: false,
+                    screenshotFailed: false
+                  }
+                : {
+                    version: 1,
+                    active: false,
+                    autoDraftedByBot: false,
+                    titlePrefixedByBot: false,
+                    ancestryFailed: false,
+                    descriptionFailed: false,
+                    screenshotFailed: false
+                  };
 
-            const titleResult = storedState.titlePrefixedByBot
-              ? `The ${inlineCode(TITLE_PREFIX.trim())} title prefix has been removed.`
-              : "The title was left unchanged.";
+              const titleResult = storedState.titlePrefixedByBot
+                ? `The ${inlineCode(TITLE_PREFIX.trim())} title prefix has been removed.`
+                : "The title was left unchanged.";
 
-            const draftResult = readyConversionFailed
-              ? "Automatic ready-for-review conversion failed; please mark the pull request ready manually if it is still a draft."
-              : storedState.autoDraftedByBot
-                ? "The pull request has been marked ready for review again."
-                : "Its existing draft status has been preserved.";
+              const draftResult = readyConversionFailed
+                ? "Automatic ready-for-review conversion failed; please mark the pull request ready manually if it is still a draft."
+                : storedState.autoDraftedByBot
+                  ? "The pull request has been marked ready for review again."
+                  : "Its existing draft status has been preserved.";
 
-            await upsertComment(
-              [
-                COMMENT_MARKER,
-                stateMarker(completedState),
-                "",
-                "✅ **PR quality gates passed**",
-                "",
-                `This pull request now targets ${inlineCode(pr.base.ref)} with acceptable ancestry, description, and UI screenshot coverage.`,
-                "",
-                `${titleResult} ${draftResult}`
-              ].join("\n")
-            );
+              await upsertComment(
+                [
+                  COMMENT_MARKER,
+                  stateMarker(completedState),
+                  "",
+                  "✅ **PR quality gates passed**",
+                  "",
+                  `This pull request now targets ${inlineCode(pr.base.ref)} with acceptable ancestry, description, and UI screenshot coverage.${
+                    checklistRequired
+                      ? " The review readiness checklist is complete."
+                      : ""
+                  }`,
+                  "",
+                  `${titleResult} ${draftResult}`
+                ].join("\n")
+              );
+            }
+
+            // Checklist completion lifts the contributor draft and pings the
+            // maintainers from `MAINTAINERS.md` (minus the PR author).
+            if (checklistRequired && checklistComplete) {
+              const readinessState = storedReadinessState
+                ? { ...storedReadinessState }
+                : {
+                    version: READINESS_STATE_VERSION,
+                    autoDraftedByBot: false,
+                    maintainersPinged: false
+                  };
+              let notified = false;
+              if (!readinessState.maintainersPinged) {
+                readinessState.maintainersPinged = true;
+                notified = true;
+              }
+              const maintainers = readMaintainerLogins().filter(
+                login => login !== pr.user.login
+              );
+
+              await upsertReadinessComment(
+                readinessState,
+                readiness,
+                [
+                  "✅ **All four boxes are ticked.**",
+                  readyConverted
+                    ? "This pull request has been marked Ready for Review."
+                    : pr.draft
+                      ? "Automatic ready-for-review conversion failed; please mark the pull request ready manually."
+                      : "This pull request is already Ready for Review.",
+                  notified && maintainers.length > 0
+                    ? `Maintainers notified: ${maintainers
+                        .map(login => `@${login}`)
+                        .join(" ")}`
+                    : maintainers.length > 0
+                      ? `Maintainers: ${maintainers
+                          .map(login => `@${login}`)
+                          .join(" ")}`
+                      : "Maintainers will be notified."
+                ]
+              );
+            }

@@ -178,6 +178,11 @@ The **`enforce-target`** CI check rejects pull requests whose head
 ancestry sits on the **`main`** tip while far behind **`dev`**, and rejects
 empty, thin, or malformed descriptions; PRs whose title or description
 mentions `gui` must include a screenshot of the UI change in the description.
+Contributor PRs (authors without repository push permission) open in draft and
+stay there until a four-box review-readiness checklist in the description is
+complete: local CI green, branch on the latest `dev` commit, all correct Codex
+and CodeRabbit findings fixed, and the ready-for-review confirmation. When all
+four boxes are ticked the gate marks the PR ready and notifies the maintainers.
 Authors with repository push permission skip the ancestry heuristic only. As with approval requirements in
 [`MAINTAINERS.md`](./MAINTAINERS.md), this is enforced by convention until
 branch protection is configured.
