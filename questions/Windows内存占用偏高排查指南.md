@@ -106,3 +106,5 @@ Windows 任务管理器显示 `opencodex · proxy dashboard` / `Bun` 进程占�
 - 2026-08-04：❌ 准备构造隔离压力回归时，组合读取命令假设存在 `tests/helpers/test-config.ts`，该路径不存在，导致整组命令提前退出；没有改动测试或运行实例。后续先用 `rg --files tests` 定位真实夹具，再拆分读取，避免一个不存在的路径遮蔽其他有效输出。
 - 2026-08-04：❌ 第二次组合读取压力测试材料时使用了不存在的 `tests/responses*` 通配路径，PowerShell 使整组命令提前退出；已有的 `chat-completions-endpoint.test.ts` 匹配信息仍显示真实端到端夹具位置。后续不再使用未确认的通配路径，改为逐个读取已存在文件。
 - 2026-08-04：✅ 对旧安装 PID `9220` 做 30 秒只读趋势采样：`activeTurnCount` 从 `96` 增至 `99`，RSS 在 `686–870 MB` 间波动，JSC heap `486–593 MB`，而 `responseState.totalBytes` 基本稳定在 `63 MB`。该现场证据把主要增长面进一步收敛到活动 turn/流生命周期，不能归因于 continuation 状态缓存；当前进程仍未被重启或干扰。
+- 2026-08-04：❌ 继续审计常驻缓存时，组合查询引用不存在的 `src/observability` 目录，PowerShell 返回非零并中断该组输出；此前已成功确认 `src/responses/state.ts` 有 64 MiB 内存上限，未修改任何代码。后续仅基于已存在的实际文件定位 request-log 实现。
+- 2026-08-04：❌ 定位 request-log 常驻结构时，`rg` 命令使用了 Windows 不支持的 `src/server/*.ts` / `src/server/**/*.ts` 参数，返回路径语法错误；未修改代码。后续改用 `rg --glob '*.ts'`。
