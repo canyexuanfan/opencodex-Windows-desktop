@@ -175,6 +175,26 @@ describe("WS endpoint re-framer (120/132)", () => {
     expect(cancelled).toBe(true);
   });
 
+  test("preserves the outer turn abort hook when wiring the pump cancel hook", async () => {
+    const { ws } = mockWs();
+    let outerCancels = 0;
+    let streamCancels = 0;
+    ws.data.cancel = () => { outerCancels += 1; };
+    const stream = new ReadableStream<Uint8Array>({
+      start() { /* never enqueues or closes until cancelled */ },
+      cancel() { streamCancels += 1; },
+    });
+
+    const pump = pumpResponsesSseToWebSocket(ws, stream);
+    expect(typeof ws.data.cancel).toBe("function");
+    ws.data.cancel!();
+    ws.data.cancel!();
+    await pump;
+
+    expect(outerCancels).toBe(1);
+    expect(streamCancels).toBe(1);
+  });
+
   test("does not emit stale frames after a replacement turn invalidates the pump", async () => {
     const { ws, sent } = mockWs();
     let current = true;
