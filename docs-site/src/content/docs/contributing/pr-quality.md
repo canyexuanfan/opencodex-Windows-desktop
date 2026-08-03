@@ -32,8 +32,14 @@ on your behalf.
 
 ## Automated gates
 
-Two checks run before human review, and both are deterministic — the failure
-message tells you exactly what to change:
+Three deterministic checks run before human review, and each failure message
+tells you exactly what to change:
+
+- **PR quality (`enforce-target`).** Pull requests must target `dev` and carry
+  a real description: a **Summary** of what changed and why, plus a **Test
+  plan** (or equivalent substance). When the title or description mentions
+  `gui`, the description must include a screenshot of the UI change; the check
+  keeps the PR a draft and comments until the screenshot is present.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a

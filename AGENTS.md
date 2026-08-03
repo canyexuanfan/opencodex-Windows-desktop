@@ -176,8 +176,9 @@ commits in the description.
 
 The **`enforce-target`** CI check rejects pull requests whose head
 ancestry sits on the **`main`** tip while far behind **`dev`**, and rejects
-empty, thin, or malformed descriptions; authors with repository push permission
-skip the ancestry heuristic only. As with approval requirements in
+empty, thin, or malformed descriptions; PRs whose title or description
+mentions `gui` must include a screenshot of the UI change in the description.
+Authors with repository push permission skip the ancestry heuristic only. As with approval requirements in
 [`MAINTAINERS.md`](./MAINTAINERS.md), this is enforced by convention until
 branch protection is configured.
 

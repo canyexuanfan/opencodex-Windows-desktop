@@ -23,10 +23,11 @@ see [The retired `dev2-go` line](#the-retired-dev2-go-line).
   `main` happens only from `dev`. The target-branch check accepts `dev` alone.
 - The **`enforce-target`** CI check rejects pull requests whose head
   ancestry sits on the **`main`** tip while far behind **`dev`**, and rejects
-  empty, thin, or malformed descriptions; authors with repository push
-  permission skip the ancestry heuristic only. As with the approval requirement
-  above, this is enforced by convention until branch protection is configured
-  (see the note under the change log).
+  empty, thin, or malformed descriptions; PRs whose title or description
+  mentions `gui` must include a screenshot of the UI change in the description.
+  Authors with repository push permission skip the ancestry heuristic only. As
+  with the approval requirement above, this is enforced by convention until
+  branch protection is configured (see the note under the change log).
 - A pull request requires approval from at least one maintainer and successful required CI checks
   before merge.
 - Authors do not approve their own pull requests.
