@@ -6,7 +6,7 @@ Branch: `experiment/656-native-profile-design`
 
 ## Validated artifact
 
-The executable part of this spike is intentionally limited to the pure crash-recovery decision model in:
+The executable part of this spike is intentionally limited to the pure interrupted-switch recovery decision model in:
 
 - `src/codex/native-profile-recovery.ts`
 - `tests/native-profile-recovery.test.ts`
@@ -52,24 +52,32 @@ The tests prove these pure decisions:
 - A third identity requires manual recovery and publishes no runtime transition.
 - A changed digest with the expected identity follows the identity-safe recovery branch rather than overwriting an external refresh blindly.
 
-## Explicitly not validated yet
+## Recovery and durability scope
 
-This spike does not claim that production native-profile switching is ready. The following work remains behind the design gates in `000_design.md`:
+The hard-exit matrix covers an OpenCodex process exiting after each transaction file has been
+published by rename. Version 1 does not claim durability across an OS or kernel crash or sudden
+power loss. In particular, `atomicWriteFileAsync()` does not `fsync` either the file or its parent
+directory. The validated claim is deterministic recovery from the published transaction phase
+that a subsequent OpenCodex process can observe.
 
-- Cross-platform OS-protected key provider selection and security review.
-- Full-fidelity encrypted envelope implementation.
-- Effective Codex credential-store mode resolution.
-- Staged official Codex login.
-- Home-scoped interprocess locking.
-- Atomic auth replacement and exact-byte restoration.
-- Encrypted crash-journal persistence and idempotent I/O recovery.
-- Native Codex process quiescence and restart behavior.
-- OpenCodex `__main__` request drain and confirmed runtime-state transition.
-- Failure injection for ACL, rename, read-back, vault commit, and restoration failures.
-- Verification that task/history and unrelated credential stores remain byte-identical.
+## Implemented validation surface
 
-No production code in this spike reads or writes a user's `auth.json`, vault, task, history, Pool, OAuth, provider, or API-key data.
+This document began as a pure decision-model spike. The implementation branch now includes and
+exercises:
 
-## PR readiness
+- A fail-closed native OS-keyring provider and full-fidelity encrypted profile envelopes.
+- Effective credential-store mode resolution and restricted official Codex login staging.
+- Home-scoped interprocess locking, exact-byte auth replacement, read-back, and restoration.
+- Encrypted switch-journal persistence and idempotent recovery after an OpenCodex process exit.
+- Native Codex process quiescence, `__main__` request drain, and confirmed runtime transition.
+- Failure injection for ACL, rename, read-back, vault commit, restoration, and journal corruption.
+- Byte-preservation checks for task/history and unrelated credential stores.
 
-The design and pure state model are suitable for maintainer discussion. A behavior-changing upstream PR is not suitable until maintainers choose the OS key-provider approach and confirm the file-only v1 boundary.
+The focused suites cover these paths with mocked failure seams and real subprocess exits. They do
+not widen the recovery and durability scope documented above.
+
+## Remaining publication evidence
+
+- Hosted cross-platform CI and live keyring smoke where each platform credential store is available.
+- Manual end-to-end staged login, account switch, and required Codex client restart on supported desktops.
+- Final integration with current `dev` and resolution of maintainer review feedback before ready-for-review status.

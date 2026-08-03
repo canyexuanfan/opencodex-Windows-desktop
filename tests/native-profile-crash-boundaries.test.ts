@@ -141,8 +141,8 @@ const boundaries: Array<{
   { boundary: "journal-deleted", auth: "target", owner: "target", phase: null },
 ];
 
-describe("native profile subprocess crash boundaries", () => {
-  test("hard process exit at every durable boundary converges exact auth, vault, journal, gate, and runtime bearer", async () => {
+describe("native profile OpenCodex process-exit phases", () => {
+  test("hard OpenCodex process exit after each published transaction phase converges exact auth, vault, journal, gate, and runtime bearer", async () => {
     for (const scenario of boundaries) {
       const f = await fixture();
       const marker = join(f.root, `crash-${scenario.boundary}`);

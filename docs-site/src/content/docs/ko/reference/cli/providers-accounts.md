@@ -183,6 +183,8 @@ ocx account main recover [--rollback --yes] [--json]
 
 버전 1은 파일 기반 Codex 인증을 지원하고 저장된 프로필을 AES-256-GCM으로 암호화하며 암호화 키를 운영 체제 자격 증명 저장소에 보관합니다. `add`는 생성된 자격 증명을 가져오기 전에 공식 Codex 로그인을 스테이징합니다. 프로필을 전환하기 전에 Codex를 종료하십시오. 전환에 성공하면 로컬 작업과 기록은 보존되지만 계속하기 전에 Codex를 다시 시작해야 합니다. `doctor`로 프로필 상태를 확인하고 `recover`로 중단된 전환을 완료하거나 롤백할 수 있습니다. `switch`에는 프로필 ID 또는 라벨을 지정할 수 있습니다.
 
+v1 복구 매트릭스는 트랜잭션 파일이 rename으로 게시된 뒤 OpenCodex 프로세스가 종료되는 경우를 다룹니다. 운영 체제 또는 커널 충돌이나 갑작스러운 전원 손실에 대한 내구성은 보장하지 않습니다. `atomicWriteFileAsync()`는 파일이나 부모 디렉터리에 `fsync`를 수행하지 않습니다.
+
 ## 모델
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`

@@ -968,7 +968,7 @@ describe("native main profile transactions", () => {
     expect(journal).not.toContain("opaque-refresh-target");
   });
 
-  test("normal switch rejects a busy native Codex process before any durable write", async () => {
+  test("normal switch rejects a busy native Codex process before publishing any transaction file", async () => {
     const f = await enrolledFixture();
     const blocked = new NativeProfileManager({
       ...f.options,

@@ -216,6 +216,8 @@ ocx account main recover [--rollback --yes] [--json]
 
 版本 1 支持基于文件的 Codex 身份验证，使用 AES-256-GCM 加密保存的配置文件，并将加密密钥保存在操作系统凭据存储中。`add` 会先在受限暂存环境中启动官方 Codex 登录，再导入生成的凭据。切换配置文件前请关闭 Codex。切换成功后会保留本地任务和历史记录，但继续使用前必须重启 Codex。使用 `doctor` 检查配置文件状态，使用 `recover` 完成或回滚中断的切换。`switch` 可接受配置文件 ID 或标签。
 
+v1 恢复矩阵覆盖的是事务文件通过重命名发布后 OpenCodex 进程退出的情况。它不声明能够在操作系统或内核崩溃、突然断电后持久保存：`atomicWriteFileAsync()` 不会对文件或父目录执行 `fsync`。
+
 ## 模型
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`

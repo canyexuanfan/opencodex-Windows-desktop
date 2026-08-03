@@ -176,7 +176,7 @@ type EncryptedEnvelopeV1 = {
 format_version || home_id || profile_id || identity_hash || envelope_sha256
 ```
 
-The vault and journal use `atomicWriteFileAsync()` so Windows ACL application remains asynchronous and happens before publication by rename.
+The vault and journal use `atomicWriteFileAsync()` so Windows ACL application remains asynchronous and happens before publication by rename. In this design, "published" means that the rename completed and a later OpenCodex process can observe the transaction file. `atomicWriteFileAsync()` does not `fsync` either the file or its parent directory. Version 1 therefore covers recovery after an OpenCodex process exit at a published transaction phase; it does not claim durability across an OS or kernel crash or sudden power loss.
 
 ## Key custody
 
@@ -237,7 +237,7 @@ Two enrollment paths are needed.
 
 This keeps the current active login untouched and delegates login creation to official Codex. OpenCodex does not synthesize a native envelope from Pool credentials.
 
-A crash can leave an ACL-restricted staging directory. The next `doctor`, `add`, or `switch` command must detect it and offer deterministic cleanup without printing its contents.
+An OpenCodex process exit can leave an ACL-restricted staging directory. The next `doctor`, `add`, or `switch` command must detect it and offer deterministic cleanup without printing its contents.
 
 ## Switch transaction
 
@@ -276,9 +276,9 @@ The first implementation does not expose a force-live option.
 
 If source restoration fails, the command must retain the encrypted journal, stop all further writes, and return a manual-recovery error. It must never claim that the old login was restored.
 
-## Crash recovery state machine
+## OpenCodex process-exit recovery state machine
 
-The journal is encrypted where it carries auth bytes. Recovery compares current auth digest and identity rather than trusting the last recorded phase.
+The journal is encrypted where it carries auth bytes. Recovery after an interrupted OpenCodex process compares current auth digest and identity rather than trusting the last recorded phase. The phase names below describe transaction files already published by rename, not an OS- or power-loss durability boundary.
 
 | Journal phase | Current auth observation | Recovery action |
 | --- | --- | --- |
@@ -360,12 +360,12 @@ This is stricter than allowing existing work to continue, but it closes the rota
 Proposed first-version commands:
 
 ```text
-ocx account main doctor
-ocx account main register <label>
+ocx account main doctor [--json]
+ocx account main register <label> [--json]
 ocx account main add <label>
 ocx account main list [--json]
-ocx account main switch <profile-id-or-label>
-ocx account main recover [--rollback]
+ocx account main switch <profile-id-or-label> --yes [--json]
+ocx account main recover [--rollback --yes] [--json]
 ```
 
 Output rules:
@@ -413,7 +413,7 @@ All focused tests run once with the repository's bundled Bun and once with Bun 1
 - Rename/read-back mismatch restores the exact source bytes.
 - Restore verification failure retains the encrypted journal and reports `AUTH_RESTORE_FAILED`.
 - Vault commit failure after auth replacement is recovered deterministically.
-- Every crash phase converges correctly when recovery is repeated.
+- Every injected OpenCodex hard-exit point after a published transaction phase converges correctly when recovery is repeated.
 - A third identity or unreadable auth during recovery causes no write.
 
 ### Refresh ownership and concurrency
@@ -444,8 +444,8 @@ The first behavior-changing PR should include:
 - Full-fidelity opaque envelope handling.
 - OS-protected key-provider implementation with no plaintext fallback.
 - Encrypted inactive-profile vault.
-- Home-scoped lock and encrypted crash journal.
-- Atomic switch, exact read-back, exact restore, and recovery.
+- Home-scoped lock and encrypted switch journal for OpenCodex process-exit recovery.
+- Rename-published switch phases, exact read-back, exact restore, and recovery within the documented v1 scope.
 - Confirmed `__main__` runtime transition integration.
 - Failure-injection tests proving original-login restoration.
 - Bundled Bun and Bun 1.4 canary focused test results.

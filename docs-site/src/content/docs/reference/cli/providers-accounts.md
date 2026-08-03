@@ -234,6 +234,10 @@ successful switch preserves local tasks and history, then requires Codex to be r
 `doctor` to inspect profile state and `recover` to finish or roll back an interrupted transition.
 `switch` accepts either the profile ID or its label.
 
+The v1 recovery matrix covers an OpenCodex process exiting after a transaction file has been
+published by rename. It does not claim durability across an OS or kernel crash or sudden power
+loss: `atomicWriteFileAsync()` does not `fsync` either the file or its parent directory.
+
 The encrypted vault, switch journal, recovery marker, and journal quarantine live in the canonical
 `<real CODEX_HOME>/.opencodex-native-main-profiles` directory, so every OpenCodex instance sharing
 that Codex home observes one owner and one recovery state. Plaintext login staging remains isolated
