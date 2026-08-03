@@ -52,6 +52,10 @@ import {
   setLiveStateStoreConfig,
   STATE_STORE_REGISTRATIONS,
 } from "../src/lib/state-store-registrations";
+import {
+  listOpenAiForwardSidecarCandidates,
+  resolveFirstUsableOpenAiSidecar,
+} from "../src/providers/openai-sidecar";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -2524,6 +2528,14 @@ describe("codex-auth API", () => {
     const config = makeConfig({
       activeCodexAccountId: "pool-delete",
       codexAccounts: [{ id: "pool-delete", email: "pool-delete@example.test", isMain: false }],
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+      },
     });
     saveCodexAccountCredential("pool-delete", {
       accessToken: "access-delete",
@@ -2535,6 +2547,17 @@ describe("codex-auth API", () => {
     setLiveStateStoreConfig(config);
     reconcileLiveStateStores();
     const preDeletionWriterGeneration = captureConfigGeneration();
+    const exactSidecar = await resolveFirstUsableOpenAiSidecar(
+      listOpenAiForwardSidecarCandidates(config),
+      new Headers(),
+      config,
+      { accountId: "pool-delete", modelId: "gpt-5.6-sol" },
+    );
+    expect(exactSidecar?.authContext).toMatchObject({
+      accountId: "pool-delete",
+      fixedAccount: true,
+      writerGeneration: preDeletionWriterGeneration,
+    });
     updateAccountQuota("pool-delete", 70);
     expect(resolveCodexAccountForThread("delete-thread", config)).toBe("pool-delete");
     recordCodexUpstreamOutcome(config, "pool-delete", 500);
@@ -2579,6 +2602,12 @@ describe("codex-auth API", () => {
     expect(cancelled).toBe(true);
     expect(closed).toEqual([{ code: 4001, reason: "Codex account invalidated" }]);
     expect(getTrackedCodexWebSocketCountForAccount("pool-delete")).toBe(0);
+
+    // An exact sidecar can finish after its selected account was deleted. Its
+    // captured writer generation must keep that late outcome from recreating
+    // routing health for an owner that no longer exists.
+    exactSidecar?.recordOutcome?.(429);
+    expect(getCodexUpstreamHealth("pool-delete")).toBeNull();
 
     updateAccountQuota(
       "pool-delete",

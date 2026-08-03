@@ -16,7 +16,7 @@ description: 提供者条目、身份验证、端点、模型目录、配额、�
 | `contextCapValue?` | `number` | `350000` | 仪表板上下文上限控件使用的值；修改它会更新所有已启用的 `providerContextCaps` 条目。 |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | 由 Codex Auth 管理的 ChatGPT/Codex 池账户元数据。密钥单独存放在 `codex-accounts.json` 中。 |
 | `pausedCodexAccountIds?` | `string[]` | `[]` | 在恢复之前从 Pool 选择中排除的账户，包括被暂停时的主 `__main__` 账户。 |
-| `codexAccountNamespaces?` | `Record<string, string>` | — | 公共模型选择器命名空间到已存储 Codex 账户目标的映射。此项会校验并持久化映射，但不会自行添加选择器行或改变路由。 |
+| `codexAccountNamespaces?` | `Record<string, string>` | — | 可选的公开 model selector namespace 到已保存 Codex account target 的映射。`<selector>/<native OpenAI model>` 只会路由到映射账号；此设置本身不会添加 model picker row。 |
 | `activeCodexAccountId?` | `string` | — | 为下一次请求手动选定的 Pool 账户。选择会清除线程亲和性；进行中的请求会保留捕获到的凭据。 |
 | `autoSwitchThreshold?` | `number` | `80` | 基于用量的主动切换阈值。`quota` 可在下一次请求中重新评估已绑定和未绑定任务；`fill-first` 仅把它用作未绑定分配的耗尽点；正常 `round-robin` 不使用它。分数取已知 5 小时、周或 30 天 quota window 的最高值。`0` 只关闭基于用量的主动切换，不关闭未绑定任务分配或故障恢复。 |
 | `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | 新建/未绑定 Codex 请求的分配策略。没有 live `(parent thread id, quota scope)` affinity 的请求属于未绑定；代理重启或 affinity 重置后，已有可见任务也可能未绑定。`quota` 在没有活跃账号时选择已知 usage 最低的合格账号；活跃账号合格且低于 `autoSwitchThreshold` 时继续使用；达到阈值后，可把未绑定请求或已绑定任务的下一次请求切换到 usage 更低的合格账号。`round-robin` 均匀分配未绑定请求；`fill-first` 在 cooldown、不可用或耗尽阈值前持续分配给活跃账号。 |
@@ -26,7 +26,13 @@ description: 提供者条目、身份验证、端点、模型目录、配额、�
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic 提示缓存策略：禁用、5 分钟临时缓存，或 1 小时扩展缓存。 |
 | `tokenGuardian?` | `OcxTokenGuardianConfig` | 关闭 | 可选的主动 OAuth 刷新与 Codex 账户预热策略。 |
 
-`codexAccountNamespaces` 的键是公共选择器：长度 1–64 个字符，以 ASCII 字母或数字开头和结尾，中间可包含字母、数字、`.`、`_` 或 `-`。会拒绝保留的 JavaScript 对象名称。每个值都必须是有效的池账户 id（永远不能是内部 `__main__`）或用于 Codex Desktop 账户的 `"@main"`。会对提供者名以及保留的 `openai` / `combo` 冲突进行不区分大小写的检查。请保持原始账户 id 和邮箱私密；选择器才是公开名称。
+`codexAccountNamespaces` 的 key 是公开 selector：长度为 1–64 个字符，首尾必须是 ASCII 字母或数字，
+中间可使用字母、数字、`.`、`_` 或 `-`；保留的 JavaScript object 名称会被拒绝。value 必须是有效的
+pool account id（不能是内部 `__main__`），或用 `"@main"` 表示 Codex Desktop 账号。与 provider 及
+保留的 `openai` / `combo` 冲突时不区分大小写；带 namespace 的 combo alias 不能把 selector 复用为
+其 namespace prefix，已配置的 pool id 和其他 selector target 也不能复用为 selector。raw account id
+与 email 应保持私密，selector 才是公开名称。明确选择的行为和优先级见
+[路由配置](/reference/configuration/routing/)。
 
 ## 保留的 OpenAI 提供者
 

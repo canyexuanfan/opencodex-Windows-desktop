@@ -16,18 +16,31 @@ description: 默认提供方选择、模型解析顺序、组合别名、目标�
 
 opencodex 按以下顺序解析请求的模型：
 
-1. 规范化的 `combo/<id>` 或已配置的 combo 别名。规范化 id 会优先于别名匹配。
-2. 显式的 `<provider>/<model>` 命名空间，其前缀名称对应一个已配置的提供方。
-3. 诸如 `gpt-*`、`o1-*`、`o3-*` 或 `o4-*` 之类未带前缀的原生 OpenAI 系列 id，会通过
+1. 已配置的 `<account-selector>/<native-openai-model>` 命名空间，只会路由到映射的已存储 Codex
+   账户。无效或不可用的精确目标会以 fail closed 方式失败。
+2. 规范化的 `combo/<id>` 或已配置的 combo 别名。规范化 id 会优先于别名匹配。
+3. 显式的 `<provider>/<model>` 命名空间，其前缀名称对应一个已配置的提供方。
+4. 诸如 `gpt-*`、`o1-*`、`o3-*` 或 `o4-*` 之类未带前缀的原生 OpenAI 系列 id，会通过
    规范化且已启用的 `openai` 提供方进行路由。
-4. 与某个提供方的 `defaultModel` 完全匹配。
-5. 已知的提供方系列模型前缀。
-6. 与某个提供方配置的 `models` 列表中的模型完全匹配。
-7. `defaultProvider`，同时保留请求的 model id。
+5. 与某个提供方的 `defaultModel` 完全匹配。
+6. 已知的提供方系列模型前缀。
+7. 与某个提供方配置的 `models` 列表中的模型完全匹配。
+8. `defaultProvider`，同时保留请求的 model id。
 
 已禁用的提供方会被排除在外。对已禁用提供方的显式命名空间会直接失败，而不会继续
 向后回退。对于可能匹配多个提供方的规则，提供方条目会按照其 JSON 插入顺序进行检查，
 因此当一个裸模型可能存在歧义时，请使用显式命名空间。
+
+## 精确 Codex 账户选择器
+
+`codexAccountNamespaces` 会把 `side` 这样的公开 selector 映射到一个已存储 Codex 账户。
+`side/gpt-5.6-sol` 请求即使在规范 `openai` 提供方处于 Direct mode 时也只使用该账户，并向
+upstream 发送裸 `gpt-5.6-sol` model id。selector 后只能使用裸原生 OpenAI-family id。
+
+精确选择会绕过 Pool 分配策略和普通 thread affinity。若映射账户不存在、已暂停、处于 cooldown、
+不可用或需要重新认证，请求会 fail closed，不会切换到其他账户，也不会改变 active Pool account。
+裸原生 model id 保持正常 Pool / Direct routing。namespace map 本身不会创建 model picker row。
+selector 校验、冲突规则和隐私说明见[提供方配置](/reference/configuration/providers/)。
 
 ## Combos (`config.combos`)
 

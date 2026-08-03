@@ -30,6 +30,7 @@ import {
   safeConfigDTO,
   startServer,
 } from "../src/server";
+import { clearRequestLogsForTests, getRequestLogEntries } from "../src/server/request-log";
 import { handleManagementAPI } from "../src/server/management-api";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
@@ -145,7 +146,13 @@ function unsupportedModelBody(model = POOL_RETRY_MODEL): string {
 type PoolRetryHarness = {
   config: OcxConfig;
   dispatches: string[];
-  request: (init?: { stream?: boolean; signal?: AbortSignal }) => Promise<Response>;
+  request: (init?: {
+    stream?: boolean;
+    signal?: AbortSignal;
+    model?: string;
+    path?: "/v1/responses" | "/v1/responses/compact";
+    callerBearer?: boolean;
+  }) => Promise<Response>;
   restoreFetch: () => void;
   server: ReturnType<typeof startServer>;
   upstream: ReturnType<typeof Bun.serve>;
@@ -170,7 +177,20 @@ async function removeTestDirBestEffort(dir: string): Promise<void> {
 
 async function startPoolRetryHarness(
   reply: (accountId: string, request: Request) => Response | Promise<Response>,
-  options: { secondAccount?: boolean; streamMode?: "legacy-tee" | "eager-relay" } = {},
+  options: {
+    secondAccount?: boolean;
+    streamMode?: "legacy-tee" | "eager-relay";
+    accountMode?: "direct" | "pool";
+    activeAccountId?: string;
+    accountNamespaces?: Record<string, string>;
+    noVisionModels?: string[];
+    visionSidecarModel?: string;
+    websockets?: boolean;
+    forwardApiKey?: string;
+    pausedAccountIds?: string[];
+    reauthAccountIds?: string[];
+    omitCredentialAccountIds?: string[];
+  } = {},
 ): Promise<PoolRetryHarness> {
   await removeTestDirBestEffort(TEST_DIR);
   mkdirSync(TEST_DIR, { recursive: true });
@@ -178,6 +198,7 @@ async function startPoolRetryHarness(
   clearCodexUpstreamHealth();
   clearThreadAccountMap();
   clearAccountQuota();
+  clearRequestLogsForTests();
   clearAccountNeedsReauth("pool-a");
   clearAccountNeedsReauth("pool-b");
   // The registry is process-global and survives a harness teardown. WS-REBIND-01
@@ -204,7 +225,14 @@ async function startPoolRetryHarness(
     port: 0,
     defaultProvider: "openai",
     openaiProviderTierVersion: 2,
-    providers: poolProviders(),
+    providers: {
+      openai: {
+        ...canonicalDirect,
+        codexAccountMode: options.accountMode ?? "pool",
+        ...(options.noVisionModels ? { noVisionModels: options.noVisionModels } : {}),
+        ...(options.forwardApiKey ? { apiKey: options.forwardApiKey } : {}),
+      },
+    },
     codexAccounts: [
       { id: "main", email: "main@example.test", isMain: true },
       { id: "pool-a", email: "pool-a@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
@@ -212,26 +240,35 @@ async function startPoolRetryHarness(
         ? [{ id: "pool-b", email: "pool-b@example.test", isMain: false, chatgptAccountId: "acct-pool-b" }]
         : []),
     ],
-    activeCodexAccountId: "pool-a",
+    activeCodexAccountId: options.activeAccountId ?? "pool-a",
+    ...(options.accountNamespaces ? { codexAccountNamespaces: options.accountNamespaces } : {}),
+    ...(options.pausedAccountIds ? { pausedCodexAccountIds: options.pausedAccountIds } : {}),
+    ...(options.visionSidecarModel ? { visionSidecar: { model: options.visionSidecarModel } } : {}),
+    ...(options.websockets ? { websockets: true } : {}),
     ...(options.streamMode ? { streamMode: options.streamMode } : {}),
   } as OcxConfig;
   saveConfig(config);
-  saveCodexAccountCredential("pool-a", {
-    accessToken: "pool-a-token",
-    refreshToken: "pool-a-refresh",
-    expiresAt: Date.now() + 10 * 60_000,
-    chatgptAccountId: "acct-pool-a",
-  });
+  if (!options.omitCredentialAccountIds?.includes("pool-a")) {
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-a-token",
+      refreshToken: "pool-a-refresh",
+      expiresAt: Date.now() + 10 * 60_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+  }
   updateAccountQuota("pool-a", 10);
   if (secondAccount) {
-    saveCodexAccountCredential("pool-b", {
-      accessToken: "pool-b-token",
-      refreshToken: "pool-b-refresh",
-      expiresAt: Date.now() + 10 * 60_000,
-      chatgptAccountId: "acct-pool-b",
-    });
+    if (!options.omitCredentialAccountIds?.includes("pool-b")) {
+      saveCodexAccountCredential("pool-b", {
+        accessToken: "pool-b-token",
+        refreshToken: "pool-b-refresh",
+        expiresAt: Date.now() + 10 * 60_000,
+        chatgptAccountId: "acct-pool-b",
+      });
+    }
     updateAccountQuota("pool-b", 20);
   }
+  for (const accountId of options.reauthAccountIds ?? []) markAccountNeedsReauth(accountId);
 
   const server = startServer(0);
   return {
@@ -242,15 +279,21 @@ async function startPoolRetryHarness(
     },
     server,
     upstream,
-    request: ({ stream = false, signal } = {}) => originalGlobalFetch(
-      new URL("/v1/responses", server.url),
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: "Bearer inbound-token" },
-        body: JSON.stringify({ model: POOL_RETRY_MODEL, input: "hello", stream }),
-        signal,
+    request: ({
+      stream = false,
+      signal,
+      model = POOL_RETRY_MODEL,
+      path = "/v1/responses",
+      callerBearer = true,
+    } = {}) => originalGlobalFetch(new URL(path, server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(callerBearer ? { authorization: "Bearer inbound-token" } : {}),
       },
-    ),
+      body: JSON.stringify({ model, input: path.endsWith("/compact") ? [] : "hello", stream }),
+      signal,
+    }),
   };
 }
 
@@ -1818,6 +1861,388 @@ describe("server local API auth", () => {
       await stopPoolRetryHarness(harness);
     }
   });
+
+  test.each([400, 402, 429])("exact account selector preserves the original %d without switching accounts", async status => {
+    const body = status === 400
+      ? unsupportedModelBody()
+      : JSON.stringify({ error: { message: "rate limited" } });
+    const harness = await startPoolRetryHarness(() => new Response(body, {
+      status,
+      headers: {
+        "content-type": "application/json",
+        "x-exact-response": "original",
+        ...(status === 400 ? {} : { "retry-after": "60" }),
+      },
+    }), {
+      accountMode: "direct",
+      activeAccountId: "pool-b",
+      accountNamespaces: { side: "pool-a" },
+    });
+    try {
+      const response = await harness.request({ model: `side/${POOL_RETRY_MODEL}`, callerBearer: false });
+      expect(response.status).toBe(status);
+      expect(response.headers.get("x-exact-response")).toBe("original");
+      expect(await response.text()).toBe(body);
+      expect(harness.dispatches).toEqual(["acct-pool-a"]);
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+      if (status !== 400) {
+        const cooldown = await (await harness.request({ model: `side/${POOL_RETRY_MODEL}`, callerBearer: false })).text();
+        expect(cooldown).toContain("selector (side)");
+        expect(cooldown).not.toContain("pool-a");
+        expect(harness.dispatches).toEqual(["acct-pool-a"]);
+      }
+
+      const entry = getRequestLogEntries().findLast(log => log.requestedModel === `side/${POOL_RETRY_MODEL}`);
+      expect(entry?.provider).toBe("openai-side");
+      const serialized = JSON.stringify(entry);
+      for (const privateValue of ["pool-a", "acct-pool-a", "pool-a-token", "pool-a-refresh"]) {
+        expect(serialized).not.toContain(privateValue);
+      }
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  });
+
+  test("inline vision sidecar preserves an exact account binding", async () => {
+    const caption = "caption from the exact account";
+    const imageBytes = "ZXhhY3QtYWNjb3VudC1pbWFnZQ==";
+    const upstreamBodies: string[] = [];
+    const authorizationHeaders: Array<string | null> = [];
+    const harness = await startPoolRetryHarness(async (_accountId, request) => {
+      authorizationHeaders.push(request.headers.get("authorization"));
+      upstreamBodies.push(await request.text());
+      if (upstreamBodies.length === 1) {
+        return new Response([
+          `data: ${JSON.stringify({ type: "response.output_text.delta", delta: caption })}`,
+          "",
+          "data: [DONE]",
+          "",
+          "",
+        ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+      }
+      return Response.json({ id: "exact-vision", status: "completed", output: [] });
+    }, {
+      activeAccountId: "pool-b",
+      accountNamespaces: { side: "pool-a" },
+      noVisionModels: [POOL_RETRY_MODEL],
+    });
+    try {
+      const response = await originalGlobalFetch(new URL("/v1/responses", harness.server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: `side/${POOL_RETRY_MODEL}`,
+          stream: false,
+          input: [{
+            type: "message",
+            role: "user",
+            content: [{ type: "input_image", image_url: `data:image/png;base64,${imageBytes}` }],
+          }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-a"]);
+      expect(authorizationHeaders).toEqual(["Bearer pool-a-token", "Bearer pool-a-token"]);
+      expect(upstreamBodies).toHaveLength(2);
+      expect(upstreamBodies[0]).toContain(imageBytes);
+      expect(JSON.parse(upstreamBodies[0]) as { model?: string }).not.toMatchObject({ model: POOL_RETRY_MODEL });
+      expect(JSON.parse(upstreamBodies[1]) as { model?: string }).toMatchObject({ model: POOL_RETRY_MODEL });
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  });
+
+  test("inline vision sidecar checks exact-account cooldown using the helper model", async () => {
+    const sidecarModel = "gpt-5.3-codex-spark";
+    const upstreamModels: string[] = [];
+    const harness = await startPoolRetryHarness(async (_accountId, request) => {
+      const body = await request.json() as { model?: string };
+      upstreamModels.push(body.model ?? "missing");
+      if (body.model === sidecarModel) {
+        return new Response([
+          `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "unexpected sidecar dispatch" })}`,
+          "",
+          "data: [DONE]",
+          "",
+          "",
+        ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+      }
+      return Response.json({ id: "exact-vision-cooldown", status: "completed", output: [] });
+    }, {
+      activeAccountId: "pool-b",
+      accountNamespaces: { side: "pool-a" },
+      noVisionModels: [POOL_RETRY_MODEL],
+      visionSidecarModel: sidecarModel,
+    });
+    try {
+      const now = Date.now();
+      recordCodexUpstreamOutcome(harness.config, "pool-a", 429, {
+        now,
+        resetAt: now + 60_000,
+        modelId: sidecarModel,
+        fixedAccount: true,
+      });
+
+      const response = await originalGlobalFetch(new URL("/v1/responses", harness.server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: `side/${POOL_RETRY_MODEL}`,
+          stream: false,
+          input: [{
+            type: "message",
+            role: "user",
+            content: [{ type: "input_image", image_url: "data:image/png;base64,Y29vbGRvd24=" }],
+          }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(harness.dispatches).toEqual(["acct-pool-a"]);
+      expect(upstreamModels).toEqual([POOL_RETRY_MODEL]);
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  });
+
+  test("compact and WebSocket transports preserve an exact account binding", async () => {
+    const wireModels: string[] = [];
+    const authorizationHeaders: string[] = [];
+    const harness = await startPoolRetryHarness(async (_accountId, request) => {
+      const body = await request.json() as { model?: string };
+      wireModels.push(body.model ?? "missing");
+      authorizationHeaders.push(request.headers.get("authorization") ?? "missing");
+      if (request.url.endsWith("/responses/compact")) {
+        return Response.json({ output: [] });
+      }
+      return new Response(
+        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"exact-ws","status":"completed","output":[]}}\n\n',
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }, {
+      accountMode: "direct",
+      activeAccountId: "pool-b",
+      accountNamespaces: { side: "pool-a" },
+      websockets: true,
+      forwardApiKey: "configured-forward-key",
+    });
+    let ws: WebSocket | undefined;
+    try {
+      const compact = await harness.request({
+        model: `side/${POOL_RETRY_MODEL}`,
+        path: "/v1/responses/compact",
+        callerBearer: false,
+      });
+      expect(compact.status).toBe(200);
+      expect(authorizationHeaders).toEqual(["Bearer pool-a-token"]);
+
+      const wsUrl = new URL("/v1/responses", harness.server.url);
+      wsUrl.protocol = "ws:";
+      ws = new WebSocket(wsUrl);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("exact websocket timed out")),
+          INTERNAL_DEADLINE_MS,
+        );
+        ws.addEventListener("open", () => {
+          ws.send(JSON.stringify({ type: "response.create", model: `side/${POOL_RETRY_MODEL}`, input: "hello" }));
+        }, { once: true });
+        ws.addEventListener("message", event => {
+          if (!String(event.data).includes("response.completed")) return;
+          clearTimeout(timer);
+          resolve();
+        });
+        ws.addEventListener("error", () => reject(new Error("exact websocket failed")), { once: true });
+      });
+
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-a"]);
+      expect(authorizationHeaders).toEqual(["Bearer pool-a-token", "Bearer pool-a-token"]);
+      expect(wireModels).toEqual([POOL_RETRY_MODEL, POOL_RETRY_MODEL]);
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+    } finally {
+      ws?.close();
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("translated Chat Completions and Claude Messages preserve an exact account binding", async () => {
+    const wireModels: string[] = [];
+    const authorizationHeaders: string[] = [];
+    const harness = await startPoolRetryHarness(async (_accountId, request) => {
+      const body = await request.json() as { model?: string };
+      wireModels.push(body.model ?? "missing");
+      authorizationHeaders.push(request.headers.get("authorization") ?? "missing");
+      return Response.json({
+        id: "resp_exact_translated",
+        object: "response",
+        status: "completed",
+        model: POOL_RETRY_MODEL,
+        output: [{
+          id: "msg_exact_translated",
+          type: "message",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: "ok", annotations: [] }],
+        }],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }, {
+      accountMode: "direct",
+      activeAccountId: "pool-b",
+      accountNamespaces: { side: "pool-a" },
+    });
+    try {
+      const cases = [
+        {
+          path: "/v1/chat/completions",
+          headers: {},
+          body: {
+            model: `side/${POOL_RETRY_MODEL}`,
+            messages: [{ role: "user", content: "hello" }],
+          },
+        },
+        {
+          path: "/v1/messages",
+          headers: { "anthropic-version": "2023-06-01" },
+          body: {
+            model: `side/${POOL_RETRY_MODEL}`,
+            max_tokens: 32,
+            messages: [{ role: "user", content: "hello" }],
+          },
+        },
+      ] as const;
+
+      for (const { path, headers, body } of cases) {
+        const response = await originalGlobalFetch(new URL(path, harness.server.url), {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(200);
+        await response.arrayBuffer();
+      }
+
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-a"]);
+      expect(authorizationHeaders).toEqual(["Bearer pool-a-token", "Bearer pool-a-token"]);
+      expect(wireModels).toEqual([POOL_RETRY_MODEL, POOL_RETRY_MODEL]);
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test.each([
+    ["paused", { pausedAccountIds: ["pool-a"] }, "Selected Codex account is unavailable"],
+    ["reauth", { reauthAccountIds: ["pool-a"] }, "Selected Codex account needs reauthentication"],
+    ["missing credential", { omitCredentialAccountIds: ["pool-a"] }, "Selected Codex account is unavailable"],
+  ] as const)("WebSocket exact-account %s failures stay 401 and never fall back", async (_state, options, expectedMessage) => {
+    const harness = await startPoolRetryHarness(
+      () => Response.json({ id: "unexpected-dispatch", status: "completed", output: [] }),
+      {
+        accountMode: "direct",
+        activeAccountId: "pool-b",
+        accountNamespaces: { side: "pool-a" },
+        websockets: true,
+        ...options,
+      },
+    );
+    const wsUrl = new URL("/v1/responses", harness.server.url);
+    wsUrl.protocol = "ws:";
+    const ws = new WebSocket(wsUrl);
+    try {
+      const frame = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("exact websocket auth failure timed out")),
+          INTERNAL_DEADLINE_MS,
+        );
+        ws.addEventListener("open", () => {
+          ws.send(JSON.stringify({ type: "response.create", model: `side/${POOL_RETRY_MODEL}`, input: "hello" }));
+        }, { once: true });
+        ws.addEventListener("message", event => {
+          const candidate = JSON.parse(String(event.data)) as Record<string, unknown>;
+          if (candidate.type !== "error") return;
+          clearTimeout(timer);
+          resolve(candidate);
+        });
+        ws.addEventListener("error", () => reject(new Error("exact websocket auth failure failed")), { once: true });
+      });
+
+      expect(frame).toMatchObject({
+        type: "error",
+        status: 401,
+        error: { type: "authentication_error", message: expectedMessage },
+      });
+      const serialized = JSON.stringify(frame);
+      for (const privateValue of ["pool-a", "acct-pool-a", "pool-a-token", "pool-a@example.test"]) {
+        expect(serialized).not.toContain(privateValue);
+      }
+      expect(harness.dispatches).toEqual([]);
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+      expect(getCodexUpstreamHealth("pool-a")).toBeNull();
+      expect(getCodexUpstreamHealth("pool-b")).toBeNull();
+    } finally {
+      ws.close();
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("WebSocket exact-account cooldown errors expose only the public selector and never dispatch another account", async () => {
+    const harness = await startPoolRetryHarness(
+      () => Response.json({ id: "unexpected-dispatch", status: "completed", output: [] }),
+      {
+        accountMode: "direct",
+        activeAccountId: "pool-b",
+        accountNamespaces: { side: "pool-a" },
+        websockets: true,
+      },
+    );
+    recordCodexUpstreamOutcome(harness.config, "pool-a", 429, {
+      retryAfter: "60",
+      fixedAccount: true,
+    });
+    const wsUrl = new URL("/v1/responses", harness.server.url);
+    wsUrl.protocol = "ws:";
+    const ws = new WebSocket(wsUrl);
+    try {
+      const frame = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("exact websocket cooldown timed out")),
+          INTERNAL_DEADLINE_MS,
+        );
+        ws.addEventListener("open", () => {
+          ws.send(JSON.stringify({ type: "response.create", model: `side/${POOL_RETRY_MODEL}`, input: "hello" }));
+        }, { once: true });
+        ws.addEventListener("message", event => {
+          const candidate = JSON.parse(String(event.data)) as Record<string, unknown>;
+          if (candidate.type !== "error") return;
+          clearTimeout(timer);
+          resolve(candidate);
+        });
+        ws.addEventListener("error", () => reject(new Error("exact websocket cooldown failed")), { once: true });
+      });
+
+      expect(frame).toMatchObject({
+        type: "error",
+        status: 429,
+        error: { type: "rate_limit_error" },
+      });
+      const message = String((frame.error as { message?: unknown }).message);
+      expect(message).toContain("selector (side)");
+      expect(message).toContain("pinned to that selector");
+      for (const privateValue of ["pool-a", "acct-pool-a", "pool-a-token", "pool-a@example.test"]) {
+        expect(message).not.toContain(privateValue);
+      }
+      expect(harness.dispatches).toEqual([]);
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+      expect(getCodexUpstreamHealth("pool-b")).toBeNull();
+    } finally {
+      ws.close();
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("#584: pre-stream 429 retries once on another eligible pool account", async () => {
     const harness = await startPoolRetryHarness(accountId => accountId === "acct-pool-a"
