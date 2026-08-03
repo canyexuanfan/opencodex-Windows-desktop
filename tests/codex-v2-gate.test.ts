@@ -901,6 +901,64 @@ describe("management API default_mode_request_user_input toggle", () => {
     });
   });
 
+  test("PUT rejects null, array, and non-object bodies with 400", async () => {
+    await requestUserInputEnv(async () => {
+      const url = new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input");
+      for (const rawBody of ["null", "[]", "\"yes\"", "42"]) {
+        const response = await handleManagementAPI(
+          new Request("http://localhost/api/codex-auth/features/default-mode-request-user-input", {
+            method: "PUT", headers: { "content-type": "application/json" }, body: rawBody,
+          }),
+          url,
+          { providers: [] } as never,
+          { toggleDefaultModeRequestUserInput: () => { throw new Error("must not toggle"); }, refreshCodexCatalog: async () => {} },
+        );
+        expect(response?.status).toBe(400);
+      }
+    });
+  });
+
+  test("PUT rejects an oversized chunked body with 413", async () => {
+    await requestUserInputEnv(async () => {
+      const payload = JSON.stringify({ enabled: true, pad: "x".repeat(5 * 1024 * 1024) });
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(payload));
+          controller.close();
+        },
+      });
+      const response = await handleManagementAPI(
+        new Request("http://localhost/api/codex-auth/features/default-mode-request-user-input", {
+          method: "PUT", headers: { "content-type": "application/json" }, body: stream,
+        }),
+        new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input"),
+        { providers: [] } as never,
+        { toggleDefaultModeRequestUserInput: () => { throw new Error("must not toggle"); }, refreshCodexCatalog: async () => {} },
+      );
+      expect(response?.status).toBe(413);
+    });
+  });
+
+  test("PUT surfaces the CLI diagnostic in the 502 when the toggle throws", async () => {
+    await requestUserInputEnv(async () => {
+      const toggle = () => {
+        throw Object.assign(new Error("Command failed: codex features enable"), {
+          stderr: Buffer.from("unknown feature flag: default_mode_request_user_input"),
+        });
+      };
+      const response = await handleManagementAPI(
+        putRequest(true),
+        new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input"),
+        { providers: [] } as never,
+        { toggleDefaultModeRequestUserInput: toggle, refreshCodexCatalog: async () => {} },
+      );
+      expect(response?.status).toBe(502);
+      const body = await response?.json();
+      expect(body.error).toContain("unknown feature flag: default_mode_request_user_input");
+    });
+  });
+
   test("PUT fails with 502 when the toggle does not land (unknown flag / old Codex)", async () => {
     await requestUserInputEnv(async () => {
       const response = await handleManagementAPI(

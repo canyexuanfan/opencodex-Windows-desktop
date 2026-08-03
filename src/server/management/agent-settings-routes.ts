@@ -305,8 +305,17 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     });
   }
   if (url.pathname === "/api/codex-auth/features/default-mode-request-user-input" && req.method === "PUT") {
-    let body: { enabled?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    let parsedBody: unknown;
+    try {
+      parsedBody = await readManagementJsonBody(req);
+    } catch (error) {
+      rethrowManagementBodyTooLarge(error);
+      return jsonResponse({ error: "invalid JSON body" }, 400);
+    }
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      return jsonResponse({ error: "body must be a JSON object" }, 400);
+    }
+    const body = parsedBody as { enabled?: unknown };
     if (typeof body.enabled !== "boolean") return jsonResponse({ error: "body.enabled must be a boolean" }, 400);
     const { isDefaultModeRequestUserInputEnabled, DEFAULT_MODE_REQUEST_USER_INPUT_FEATURE_KEY } = await import("../../codex/features");
     const before = isDefaultModeRequestUserInputEnabled();
@@ -320,9 +329,11 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       toggle(body.enabled);
     } catch (error) {
       const err = error as { stderr?: unknown; message?: string };
-      toggleError = typeof err.stderr === "string" && err.stderr.trim()
-        ? err.stderr.trim()
-        : (err.message ?? String(error));
+      const raw = err.stderr;
+      const stderrText = typeof raw === "string"
+        ? raw.trim()
+        : raw instanceof Uint8Array ? new TextDecoder().decode(raw).trim() : "";
+      toggleError = stderrText || (err.message ?? String(error));
     }
     const enabled = isDefaultModeRequestUserInputEnabled();
     if (toggleError !== null || enabled !== body.enabled) {

@@ -1,11 +1,14 @@
 /**
  * features.ts — codex feature-flag view for $CODEX_HOME/config.toml.
  *
- * Scope boundary: this module mirrors ONLY `multi_agent_v2`, because opencodex has
- * to migrate its concurrency value across the v1/v2 boundary and expose the
- * multi-agent config surface. Every other upstream feature flag is delegated to
- * the native `codex features` command (see src/cli/v2.ts) and must not be
- * hardcoded here.
+ * Scope boundary: this module mirrors only the flags opencodex has to READ
+ * directly from config.toml:
+ *   - `multi_agent_v2`, because opencodex migrates its concurrency value across
+ *     the v1/v2 boundary and exposes the multi-agent config surface;
+ *   - `default_mode_request_user_input` (Codex Auth page toggle), because the
+ *     management API needs a live reader for the flag it manages.
+ * Every other upstream feature flag is delegated to the native `codex features`
+ * command (see src/cli/v2.ts) and must not be hardcoded here.
  *
  * Upstream reshapes flags freely: in the 1f0566d3f..5a1097ed2 range alone,
  * `code_mode_host` changed from a boolean to a table (it is Stage::Stable and
@@ -58,7 +61,7 @@ function mergeTrailingComments(existing?: string, migrated?: string): string {
   return `${existing}; ${migratedText}`;
 }
 
-function activeCodexConfigPath(): string {
+export function activeCodexConfigPath(): string {
   const raw = process.env.CODEX_HOME?.trim();
   if (!raw) return CODEX_CONFIG_PATH;
   const path = resolve(expandUserPath(raw));
