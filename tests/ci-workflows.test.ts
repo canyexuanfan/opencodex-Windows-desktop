@@ -415,12 +415,41 @@ describe("GitHub Actions hardening", () => {
       "id-token": "write",
     });
     expect(release.jobs?.publish?.["runs-on"]).toBe("ubuntu-latest");
-    expectSecureLinuxKeyringBootstrap(workflow);
     expect(workflow).toContain("actions: read");
     expect(workflow).toContain("pull-requests: read");
     expect(workflow).toContain("id-token: write");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("timeout-minutes: 15");
+
+    // The exact-SHA CI gate already includes the three hosted keyring legs. The
+    // release workflow must not duplicate the Linux bootstrap and drift from CI.
+    expect(workflow).not.toContain("- name: OS keyring create/read/delete smoke");
+    expect(workflow).not.toContain("gnome-keyring-daemon");
+
+    // Root and GUI dependency trees share one audit definition across local and
+    // workflow release paths.
+    const packageJson = JSON.parse(await readText("package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    expect(packageJson.scripts?.["audit:high"]).toBe(
+      "bun audit --audit-level=high && cd gui && bun audit --audit-level=high",
+    );
+    expect(workflow).toContain("run: bun run audit:high");
+    expect(workflow).not.toContain("run: bun audit --audit-level=high");
+
+    // gh embeds a jq expression but does not expose jq's --arg flag. Keep the
+    // branch and event filters on gh's native, documented flag surface.
+    const ciLookup = workflow.split('ci_url="$(')[1]?.split('\n          )"')[0];
+    expect(ciLookup).toBeDefined();
+    expect(ciLookup).toContain("--workflow ci.yml");
+    expect(ciLookup).toContain('--branch "${GITHUB_REF#refs/heads/}"');
+    expect(ciLookup).toContain('--commit "$GITHUB_SHA"');
+    expect(ciLookup).toContain("--event push");
+    expect(ciLookup).toContain("--status success");
+    expect(ciLookup).toContain("--json url");
+    expect(ciLookup).toContain("--jq '.[0].url // \"\"'");
+    expect(ciLookup).not.toContain("--arg");
+    expect(ciLookup).not.toContain("$branch");
 
     // Dry-run first by default; tokenless trusted publishing only.
     expect(workflow).toMatch(/dry-run:[\s\S]*?default: true/);

@@ -185,6 +185,12 @@ ocx account main recover [--rollback --yes] [--json]
 
 v1 복구 매트릭스는 트랜잭션 파일이 rename으로 게시된 뒤 OpenCodex 프로세스가 종료되는 경우를 다룹니다. 운영 체제 또는 커널 충돌이나 갑작스러운 전원 손실에 대한 내구성은 보장하지 않습니다. `atomicWriteFileAsync()`는 파일이나 부모 디렉터리에 `fsync`를 수행하지 않습니다.
 
+암호화된 볼트, 전환 저널, 복구 마커 및 저널 격리 파일은 정규 `<real CODEX_HOME>/.opencodex-native-main-profiles` 디렉터리에 저장됩니다. 따라서 해당 Codex 홈을 공유하는 모든 OpenCodex 인스턴스는 동일한 단일 소유자와 단일 복구 상태를 관찰합니다. 평문 로그인 스테이징은 각 `<OPENCODEX_HOME>/native-main-profile-staging` 디렉터리 아래에 서로 분리된 채 유지됩니다.
+
+native-main 트래픽이나 저널 복구를 허용하기 전에 수명 주기 소유자가 자격 증명에 대한 배타적 점유권을 획득하고, 이름이 정확히 `auth.json.ocx.<pid>.<sequence>.tmp`인 충돌 잔여 파일만 제거합니다. 각 후보는 변경되지 않은 정규 `CODEX_HOME` 아래에서 하드 링크 수가 1인 일반 파일로 유지되어야 하며, 내용을 잘라내고 flush한 다음 unlink합니다. 링크나 재분석 지점(reparse point)으로의 바꿔치기, 파일 식별 정보 변경 또는 그 밖의 모호성이 있으면 native-main 트래픽은 계속 차단되며, 이름이 비슷할 뿐 정확히 일치하지 않는 파일은 자동으로 제거하지 않습니다. 이는 정상적으로 협력하는 OpenCodex 프로세스의 충돌을 방어하지만, 이미 같은 운영 체제 사용자로 실행 중인 악의적 프로세스까지 방어하지는 않습니다. 해당 사용자와 `CODEX_HOME`이 있는 파일 시스템은 계속 신뢰 대상으로 간주되며, 내용을 잘라내더라도 copy-on-write 저장소, 스냅샷 또는 SSD 잔류 데이터에서 물리적으로 지워진다고 보장할 수 없습니다.
+
+프리뷰 빌드는 `<OPENCODEX_HOME>/native-main-profiles`를 사용했습니다. 이 레이아웃은 절대로 자동으로 가져오지 않습니다. `doctor`가 레거시 프로필 상태를 보고하면 동일한 `CODEX_HOME`을 공유하는 모든 OpenCodex 프록시를 중지하십시오. 그런 다음 해당하는 `*.vault.json`, `*.journal.json`, 복구 마커 및 참조된 journal-quarantine 파일을 백업하고, 소유자 전용 권한을 유지한 채 모두 함께 정규 디렉터리로 옮기십시오. 또는 이전 프리뷰 파일 세트를 제거하고 `ocx account main register`를 다시 실행하십시오. 동일한 `CODEX_HOME`을 공유하는 프록시가 하나라도 실행 중인 동안에는 여러 이전 루트 중 하나를 선택하거나 두 레이아웃을 동시에 사용하지 마십시오. Windows에서는 이전의 대소문자를 구분하지 않는 홈 식별자를 키로 사용한 프리뷰 상태를 옮기지 말고 재설정해야 합니다. 암호화된 AAD와 운영 체제 키링 식별자는 의도적으로 재사용하지 않기 때문입니다.
+
 ## 모델
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`

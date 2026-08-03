@@ -328,4 +328,83 @@ describe("ocx account main", () => {
       label: "work",
     });
   });
+
+  test("a stalled heartbeat is aborted before lease expiry, kills login, and cancels staging", async () => {
+    const stagingHome = join(tmpdir(), "ocx-native-profile-stage-heartbeat-deadline");
+    const requests: string[] = [];
+    let now = 10_000;
+    const leaseExpiresAt = now + 60_000;
+    let deadlineCallback!: () => void;
+    let scheduledDeadlineMs = -1;
+    let deadlineCleared = false;
+    const timerHandle = {} as ReturnType<typeof setTimeout>;
+    const stageLeaseClock = {
+      now: () => now,
+      setTimeout: (callback: () => void, ms: number) => {
+        deadlineCallback = callback;
+        scheduledDeadlineMs = ms;
+        return timerHandle;
+      },
+      clearTimeout: (timer: ReturnType<typeof setTimeout>) => {
+        expect(timer).toBe(timerHandle);
+        deadlineCleared = true;
+      },
+    };
+    let heartbeatSignal: AbortSignal | undefined;
+    let resolveHeartbeatStarted!: () => void;
+    const heartbeatStarted = new Promise<void>(resolve => { resolveHeartbeatStarted = resolve; });
+    let resolveExit!: (code: number) => void;
+    const exited = new Promise<number>(resolve => { resolveExit = resolve; });
+    let killCount = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      requests.push(path);
+      if (path.endsWith("/stage") && !path.endsWith("/finish")) {
+        return Response.json({
+          stageId: "66666666-6666-4666-8666-666666666666",
+          writerToken: "writer-token-heartbeat-deadline-11111111111111111111",
+          stagingCodexHome: stagingHome,
+          leaseExpiresAt,
+          heartbeatIntervalMs: 10,
+        });
+      }
+      if (path.endsWith("/stage/heartbeat")) {
+        heartbeatSignal = init?.signal ?? undefined;
+        resolveHeartbeatStarted();
+        return new Promise<Response>(() => {});
+      }
+      if (path.endsWith("/stage/cancel")) {
+        return Response.json({ ok: true, removed: true, plaintextMayRemain: false });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    };
+
+    const running = cmdAccount(["main", "add", "work"], {
+      baseUrl: "http://127.0.0.1:10100",
+      fetchImpl,
+      stageHeartbeatIntervalMinMs: 10,
+      stageLeaseClock,
+      spawnCodexLoginImpl: () => ({
+        exited,
+        kill: () => {
+          killCount += 1;
+          resolveExit(1);
+        },
+      }),
+    });
+    await heartbeatStarted;
+    expect(scheduledDeadlineMs).toBe(30_000);
+    now = leaseExpiresAt - 30_000;
+    deadlineCallback();
+
+    expect(await running).toBe(1);
+    expect(deadlineCleared).toBeTrue();
+    expect(killCount).toBe(1);
+    expect(heartbeatSignal?.aborted).toBeTrue();
+    expect(requests).toEqual([
+      "/api/native-main-profiles/stage",
+      "/api/native-main-profiles/stage/heartbeat",
+      "/api/native-main-profiles/stage/cancel",
+    ]);
+  });
 });

@@ -39,7 +39,7 @@
     "start": "bun run src/cli/index.ts start",
     "test": "bun scripts/test.ts",
     "typecheck": "bun x tsc --noEmit",
-    "audit:high": "bun audit --audit-level=high",
+    "audit:high": "bun audit --audit-level=high && cd gui && bun audit --audit-level=high",
     "privacy:scan": "bun scripts/privacy-scan.ts",
     "generate:jawcode-metadata": "bun scripts/generate-jawcode-metadata.ts",
     "build:gui": "cd gui && bun install --frozen-lockfile && bun run build && cd .. && bun run prepare:package",

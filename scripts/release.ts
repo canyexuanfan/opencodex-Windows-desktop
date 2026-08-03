@@ -299,7 +299,7 @@ const packageName = await readPackageName();
 console.log(`→ release metadata preflight (${packageName}@${version})`);
 await assertUnusedReleaseVersion(packageName, version);
 console.log("→ dependency audit");
-await runLoud(["bun", "audit", "--audit-level=high"]);
+await runLoud(["bun", "run", "audit:high"]);
 console.log("→ typecheck");
 await runLoud(["bun", "x", "tsc", "--noEmit"]);
 console.log("→ test suite");

@@ -432,9 +432,9 @@ jobs:
       - name: CLI help smoke
         run: bun run src/cli/index.ts help
 
-  # Keep OS credential-store checks on disposable GitHub-hosted machines. The
-  # Windows platform leg may use the persistent ocx-home runner for trusted push
-  # events; a force-cancelled process cannot run its in-process finally cleanup.
+  # Keep every OS credential-store check on a disposable GitHub-hosted machine.
+  # A force-cancelled process cannot run its in-process finally cleanup, so no
+  # keyring matrix leg may use the persistent self-hosted Windows runner.
   keyring-smoke:
     name: keyring ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}

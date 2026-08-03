@@ -9,6 +9,7 @@ import {
   resolveBaseUrl,
   type AccountDeps,
   type NativeMainLoginChild,
+  type StageLeaseClock,
 } from "./account-api";
 
 const USAGE = `Usage:
@@ -21,6 +22,14 @@ const USAGE = `Usage:
 
 Native main login profiles change the physical Codex App/CLI login in the effective CODEX_HOME.
 They are independent from the OpenCodex Pool selected by 'ocx account use openai'.`;
+
+const STAGE_LEASE_SAFETY_MARGIN_MS = 30_000;
+
+const systemStageLeaseClock: StageLeaseClock = {
+  now: Date.now,
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: timer => clearTimeout(timer),
+};
 
 interface PublicProfile {
   id: string;
@@ -89,13 +98,13 @@ function spawnOfficialCodexLogin(codexHome: string): NativeMainLoginChild {
   return child;
 }
 
-function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+function abortableDelay(ms: number, signal: AbortSignal, clock: StageLeaseClock): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise(resolve => {
-    const timer = setTimeout(done, ms);
+    const timer = clock.setTimeout(done, ms);
     signal.addEventListener("abort", done, { once: true });
     function done(): void {
-      clearTimeout(timer);
+      clock.clearTimeout(timer);
       signal.removeEventListener("abort", done);
       resolve();
     }
@@ -111,26 +120,57 @@ async function maintainStageLease(
   heartbeatIntervalMs: number,
   child: NativeMainLoginChild,
   signal: AbortSignal,
+  clock: StageLeaseClock,
 ): Promise<{ lost: boolean }> {
   let leaseExpiresAt = initialLeaseExpiresAt;
   for (;;) {
     if (signal.aborted) return { lost: false };
-    const heartbeat = await apiJson(
+    const deadlineAt = leaseExpiresAt - STAGE_LEASE_SAFETY_MARGIN_MS;
+    if (clock.now() >= deadlineAt) {
+      try { child.kill(); } catch { /* child exit below is authoritative */ }
+      return { lost: true };
+    }
+
+    const heartbeatAbort = new AbortController();
+    const deadlineReached = Symbol("heartbeat-deadline");
+    const parentCancelled = Symbol("heartbeat-parent-cancelled");
+    let resolveInterruption!: (result: typeof deadlineReached | typeof parentCancelled) => void;
+    const interruption = new Promise<typeof deadlineReached | typeof parentCancelled>(resolve => {
+      resolveInterruption = resolve;
+    });
+    const cancelHeartbeat = () => {
+      heartbeatAbort.abort();
+      resolveInterruption(parentCancelled);
+    };
+    signal.addEventListener("abort", cancelHeartbeat, { once: true });
+    const deadlineTimer = clock.setTimeout(() => {
+      heartbeatAbort.abort();
+      resolveInterruption(deadlineReached);
+    }, Math.max(0, deadlineAt - clock.now()));
+    const heartbeatRequest = apiJson(
       deps,
       baseUrl,
       "POST",
       "/api/native-main-profiles/stage/heartbeat",
       { stageId, writerToken },
-      { signal },
+      { signal: heartbeatAbort.signal },
     );
+    const heartbeat = await Promise.race([heartbeatRequest, interruption]);
+    clock.clearTimeout(deadlineTimer);
+    signal.removeEventListener("abort", cancelHeartbeat);
     if (signal.aborted) return { lost: false };
+    if (heartbeat === parentCancelled) return { lost: false };
+    if (heartbeat === deadlineReached) {
+      try { child.kill(); } catch { /* child exit below is authoritative */ }
+      return { lost: true };
+    }
     if (heartbeat.status === 200 && typeof heartbeat.json.leaseExpiresAt === "number") {
       leaseExpiresAt = heartbeat.json.leaseExpiresAt;
-      await abortableDelay(heartbeatIntervalMs, signal);
+      await abortableDelay(Math.min(heartbeatIntervalMs, Math.max(0, leaseExpiresAt - STAGE_LEASE_SAFETY_MARGIN_MS - clock.now())), signal, clock);
       continue;
     }
-    if (heartbeat.status === 0 && Date.now() < leaseExpiresAt - 30_000) {
-      await abortableDelay(Math.min(5_000, heartbeatIntervalMs), signal);
+    if (heartbeat.status === 0 && clock.now() < leaseExpiresAt - STAGE_LEASE_SAFETY_MARGIN_MS) {
+      await abortableDelay(Math.min(5_000, heartbeatIntervalMs, leaseExpiresAt - STAGE_LEASE_SAFETY_MARGIN_MS - clock.now()), signal, clock);
       continue;
     }
     try { child.kill(); } catch { /* child exit below is authoritative */ }
@@ -181,12 +221,13 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     const heartbeatIntervalMs = typeof stage.json.heartbeatIntervalMs === "number"
       ? Math.min(5 * 60_000, Math.max(deps.stageHeartbeatIntervalMinMs ?? 5_000, stage.json.heartbeatIntervalMs))
       : 60_000;
+    const stageLeaseClock = deps.stageLeaseClock ?? systemStageLeaseClock;
     const stagedEffectiveHome = effectiveCodexHome(stage.json);
     let exitCode = 1;
     let finished = false;
     let leaseLost = false;
     try {
-      if (!stageId || !writerToken || !isAbsolute(stagingHome) || leaseExpiresAt <= Date.now()) {
+      if (!stageId || !writerToken || !isAbsolute(stagingHome) || leaseExpiresAt <= stageLeaseClock.now()) {
         throw new Error("The proxy returned an invalid staging session.");
       }
       console.error(`Effective CODEX_HOME: ${stagedEffectiveHome}`);
@@ -206,6 +247,7 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
         heartbeatIntervalMs,
         child,
         heartbeatAbort.signal,
+        stageLeaseClock,
       );
       try {
         exitCode = await child.exited;

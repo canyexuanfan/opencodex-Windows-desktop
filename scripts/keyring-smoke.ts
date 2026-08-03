@@ -29,6 +29,7 @@ export async function runKeyringSmoke({
   const account = `ci-${createId()}`;
   const secret = createRandomBytes(32);
   let entry: KeyringSmokeEntry | null = null;
+  let readback: Uint8Array | null = null;
   let stored: Buffer | null = null;
   let operationFailed = false;
   let operationError: unknown;
@@ -36,7 +37,7 @@ export async function runKeyringSmoke({
   try {
     entry = await createEntry(service, account);
     await entry.setSecret(secret, AbortSignal.timeout(timeoutMs));
-    const readback = await entry.getSecret(AbortSignal.timeout(timeoutMs));
+    readback = await entry.getSecret(AbortSignal.timeout(timeoutMs));
     stored = readback ? Buffer.from(readback) : null;
     if (!stored || stored.byteLength !== secret.byteLength || !timingSafeEqual(stored, secret)) {
       throw new Error("OS keyring smoke readback did not match the stored value.");
@@ -59,6 +60,7 @@ export async function runKeyringSmoke({
     }
   }
 
+  readback?.fill(0);
   stored?.fill(0);
   secret.fill(0);
 
@@ -66,6 +68,7 @@ export async function runKeyringSmoke({
     if (cleanupFailed && operationError instanceof Error) {
       Object.defineProperty(operationError, "cleanupError", {
         configurable: true,
+        enumerable: true,
         value: cleanupError,
       });
     }

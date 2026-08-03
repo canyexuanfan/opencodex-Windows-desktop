@@ -33,6 +33,12 @@ export interface NativeMainLoginChild {
   kill(signal?: number | NodeJS.Signals): void;
 }
 
+export interface StageLeaseClock {
+  now(): number;
+  setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
+  clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+}
+
 export interface AccountDeps {
   /** Test injection: skip findLiveProxy and call the API at this base URL. */
   baseUrl?: string;
@@ -46,6 +52,8 @@ export interface AccountDeps {
   runCodexLoginImpl?: (codexHome: string) => Promise<number>;
   /** Test-only heartbeat cadence floor. Production keeps the five-second floor. */
   stageHeartbeatIntervalMinMs?: number;
+  /** Test-only clock for deterministic native-profile lease deadline coverage. */
+  stageLeaseClock?: StageLeaseClock;
 }
 
 export function classifyAccount(config: OcxConfig, name: string): ClassifyResult {
