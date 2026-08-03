@@ -119,7 +119,7 @@ they turn it back on; nothing on disk moved.
 
 A refusal arrives AFTER the user already confirmed, so it belongs in the card's
 notice area, next to the switch that failed — not in a second modal. This unit
-produces three, each stating the state and the one thing that would change it:
+produces four, each stating the state and the one thing that would change it:
 
 - **Grok `orphaned-marker`** — "`~/.grok/config.toml`에 opencodex 시작 표시는
   있는데 끝 표시가 없습니다. 어디까지가 우리 블록인지 확신할 수 없어 파일을
@@ -129,6 +129,10 @@ produces three, each stating the state and the one thing that would change it:
   §The guard I described wrong).
 - **`not_installed`** — Grok is not installed; the card reads not-installed and
   the switch does not offer an action there is nothing to perform.
+- **`config_busy`** — "다른 곳에서 설정을 저장하는 중이라 변경하지 못했습니다.
+  잠시 후 다시 시도해 주세요." The ONLY refusal here where retrying is the right
+  advice, because the lock is held right now and will be released. Every other
+  one describes a condition retrying cannot change.
 
 That is the complete list for this unit. The sibling unit's refusals are
 specified in the appendix and must not be added here. There is no `partial`

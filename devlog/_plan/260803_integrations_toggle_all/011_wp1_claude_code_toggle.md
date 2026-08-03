@@ -78,8 +78,11 @@ Within this process, the read-modify-save is synchronous and Bun's event loop
 cannot interleave two of them.
 
 One honest caveat: that lock uses `busy_timeout = 0`, so a contended acquisition
-fails immediately rather than waiting. A cross-process collision surfaces as an
-error, not as a silent lost write.
+fails immediately rather than waiting — it throws `ConfigMutationLockError`
+(`src/config.ts:1786-1793`). A cross-process collision surfaces as an error, not
+as a silent lost write, and the route turns it into a `config_busy` refusal
+(`030` §Lock contention). "Last writer wins" would have been the wrong summary:
+the second writer does not win, it fails.
 
 The shared coordinator earlier revisions relied on here is gone (audit r5 #2):
 it existed to protect journal bookkeeping this toggle does not write.
@@ -91,5 +94,7 @@ it existed to protect journal bookkeeping this toggle does not write.
 - [ ] `PUT {enabled:false}` sets the flag and `/v1/messages` answers 403.
 - [ ] `PUT` of the current value returns `changed: false` and writes nothing.
 - [ ] The card switch and the Claude tab switch agree after either is used.
+- [ ] A contended config lock returns 409 `config_busy`, not a 500 and not a
+      silent success (audit r7 #2).
 - [ ] No journal row and no snapshot are written by this toggle.
 - [ ] `bun run typecheck` clean; the existing Claude tests stay green.

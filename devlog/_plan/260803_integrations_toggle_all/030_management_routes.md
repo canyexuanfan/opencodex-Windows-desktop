@@ -95,7 +95,7 @@ means the dialog and the notice area need no second code path.
 | HTTP | `code` | `reason` | Trigger |
 |---|---|---|---|
 | 409 | `native_integration_refused` | `orphaned_marker` | Grok begin marker without an end marker |
-| 409 | `native_integration_refused` | `home_mismatch` | installed service's recorded home differs (raised by the WP1 preflight, not by the CLI path) |
+| 409 | `native_integration_refused` | `home_mismatch` | installed service's recorded home differs (raised by the WP2 preflight, not by the CLI path) |
 | 404 | `native_integration_refused` | `not_installed` | client absent |
 | 500 | `native_integration_failed` | `write_failed` | genuine IO failure, nothing changed |
 
@@ -139,10 +139,29 @@ What is left is small and per-client:
 | Grok toggle | a single-flight promise keyed `grok`; a second concurrent PUT gets 409 busy |
 | Claude Code toggle | the existing config mutation lock inside `saveConfigPreservingClaudeCode` |
 
-Claude Code needs no route-level guard: two concurrent flips of one boolean are
-serialized by `withConfigMutationLockSync` and the last writer wins, which is
-the correct answer for a switch. Grok needs one because two overlapping strips
+Claude Code needs no route-level guard. Within this process the read-modify-save
+is synchronous and Bun's event loop cannot interleave two of them; across
+processes `withConfigMutationLockSync` holds a SQLite `BEGIN IMMEDIATE`
+(`src/config.ts:1768-1786`). Grok needs a guard because two overlapping strips
 of the same file would race on bytes.
+
+### Lock contention is an outcome, not last-writer-wins
+
+Earlier revisions said contention resolves as "last writer wins". That is wrong
+and round 7 caught it: the lock runs with `busy_timeout = 0`, so a contended
+acquisition does not wait — it throws `ConfigMutationLockError`
+(`src/config.ts:1786-1793`). Nobody wins; the second writer fails.
+
+That failure needs its own envelope, or an implementer has to invent one:
+
+| HTTP | `code` | `reason` | Trigger |
+|---|---|---|---|
+| 409 | `native_integration_refused` | `config_busy` | `ConfigMutationLockError` — another process holds the config transaction |
+
+409 because nothing failed and nothing changed: another writer holds the lock
+right now. This is the one refusal in this unit where "try again" IS the correct
+advice, and the copy says so — unlike `orphaned_marker`, where retrying is
+exactly what cannot help.
 
 ## Acceptance
 
@@ -156,6 +175,11 @@ of the same file would race on bytes.
 - [ ] `GET` field meanings match the per-client table: Claude Code is always
       `installed`, Grok's `unsafe` means an orphaned marker.
 - [ ] Concurrent PUTs to the SAME client: Grok's second gets 409 busy.
+- [ ] A held config transaction makes Claude Code's PUT return 409
+      `config_busy` — asserted with a real second connection holding the lock,
+      not a mocked throw (audit r7 #2).
+- [ ] Grok's enable re-inspects after the catalog fetch: a test orphans the file
+      inside a stubbed fetch and asserts a refusal, not `absent` (audit r7 #1).
 - [ ] `src/server/management/integration-routes.ts` is unchanged by this unit —
       asserted by the diff, since round 5 found the "preserves behavior" claim
       about replacing its flight map to be false.

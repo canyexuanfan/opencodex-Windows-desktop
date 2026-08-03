@@ -119,8 +119,8 @@ the product ships in.
 ## Refusals
 
 Rendered in the card's notice area, not a second modal (`002` §Refusals are not
-dialogs). `describeRefusal` gains the three reasons these two clients can
-produce — `orphaned_marker`, `home_mismatch`, `not_installed`. Its existing
+dialogs). `describeRefusal` gains the four reasons these two clients can
+produce — `orphaned_marker`, `home_mismatch`, `not_installed`, `config_busy`. Its
 `snapshotPath`/`residual` handling is NOT exercised here: neither toggle writes
 a snapshot, so no refusal from this module carries one. That code stays for the
 six file clients, untouched.

@@ -6,8 +6,9 @@
 
 ## Undo is the enable path
 
-Turning Grok back on runs `syncGrokConfig(port, config)`, which regenerates the
-fence from the current catalog. That is the undo. It is also strictly better
+Turning Grok back on regenerates the fence from the current catalog — the same
+work `syncGrokConfig` does, though the route calls `injectGrokConfig` directly
+for a reason given below (§One preflight is not enough). That is the undo. It is also strictly better
 than replaying a snapshot: a snapshot from an hour ago carries a stale model
 list, while the enable path writes what the proxy serves right now.
 
@@ -99,9 +100,41 @@ it, and the refusal is identical whichever direction the user was heading —
 which is right, because the reason is the same: we cannot tell where our block
 ends.
 
-The writer is NOT modified to propagate the orphan result. That would change
-`ocx start`/`ensure` behavior for a policy skip whose comment says it must never
-block startup, and this unit has no business making that call.
+### One preflight is not enough — `syncGrokConfig` yields
+
+Round 7 found the hole my round-6 fix left. `syncGrokConfig` awaits
+`fetchAllModels` before it ever calls `injectGrokConfig`
+(`src/grok/sync.ts:37`), so the file can become orphaned in that window — by
+`ocx ensure`, by `/api/grok/apply`, by a hand edit — and the route would again
+report `absent` over a fence it could not touch.
+
+A check before an `await` is a check, not a guarantee.
+
+So the enable path re-inspects **after** the catalog resolves and immediately
+before the write:
+
+```ts
+const models = await fetchCatalogForGrok(ctx);   // the awaiting part, done first
+const recheck = inspectGrokConfig({ grokHome }); // authoritative: no await follows
+if (recheck.kind === "orphaned_marker") return refusal(409, "orphaned_marker", ...);
+return injectGrokConfig(models, ...);            // synchronous from here
+```
+
+That means WP2 calls `injectGrokConfig` directly rather than `syncGrokConfig`,
+and does the catalog fetch itself — `syncGrokConfig` is precisely the wrapper
+that interleaves an await between the check and the write. The catalog-building
+code is small and already exported; duplicating the fence logic is what we
+refuse to do, and this duplicates none of it.
+
+`injectGrokConfig` is synchronous once entered, so nothing can slip between the
+recheck and the write.
+
+The writer is still NOT modified to propagate the orphan result. That would
+change `ocx start`/`ensure` behavior for a policy skip whose own comment says it
+must never block startup, and this unit has no business making that call. Other
+writers — startup, `ocx ensure`, `/api/grok/apply` — keep their existing
+best-effort semantics; this route is stricter than them on purpose, because a
+user who clicked a switch is owed a true answer and a background sync is not.
 
 OUT: `src/integrations/journal.ts`, `store.ts`, `ownership.ts`, `registry.ts` —
 all untouched. No id widening, which also retires audit r4 #7 entirely: there is
@@ -109,8 +142,10 @@ no journal surface to widen unsafely.
 
 ## The route delegates
 
-`stripGrokConfig()` for off, `syncGrokConfig(port, config)` for on. Neither is
-reimplemented: the guards that matter — the orphaned-marker refusal, alias
+`stripGrokConfig()` for off, and for on the catalog build plus
+`injectGrokConfig()` — the two halves `syncGrokConfig` wraps, called separately
+so the orphan recheck can sit between them (§One preflight is not enough).
+Neither writer is reimplemented: the guards that matter — the orphaned-marker refusal, alias
 reservation, byte-for-byte preservation outside the fence, the one-time
 `.bak-opencodex` — all live there and a second copy would rot.
 
@@ -178,6 +213,11 @@ here: the preflight refuses it first. Without that gate, `changed: false` would
 also cover "a fence we could not touch is still in the file", and `absent` would
 be false (audit r6 #4).
 
+"Can no longer reach here" means through THIS route, and only because the
+recheck sits after the last await (audit r7 #1). A concurrent `ocx ensure` can
+still orphan the file a millisecond later; no route-local check can prevent
+that, and the next `GET` reports `unsafe` when it does.
+
 ## What the dialog must therefore say
 
 Undo regenerates the fence rather than restoring the old bytes, so the copy in
@@ -205,6 +245,12 @@ be a promise the writer does not make.
       (audit r6 #4).
 - [ ] The inspector runs before either delegate in BOTH directions; a test
       asserts `injectGrokConfig` is not called when the marker is orphaned.
+- [ ] The enable path re-inspects AFTER the catalog fetch and immediately before
+      the write, with no await in between — a test orphans the file inside a
+      stubbed `fetchAllModels` and asserts the route refuses rather than
+      reporting `absent` (audit r7 #1).
+- [ ] WP2 calls `injectGrokConfig` directly, not `syncGrokConfig`; a test
+      asserts the wrapper is not on this path.
 - [ ] `findManagedRegion` has exactly one definition; the inspector imports it
       rather than re-implementing the boundary scan.
 - [ ] A foreign-home install-state fixture makes disable refuse `home_mismatch`
