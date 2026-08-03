@@ -36,7 +36,7 @@ import {
   type OcxProviderConfig,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
-import { getProviderRegistryEntry } from "./providers/registry";
+import { getProviderRegistryEntry, providerModelWireDefault } from "./providers/registry";
 import { resolveOpenAiVirtualModel } from "./providers/openai-virtual-models";
 import { parseDesktopProfile } from "./claude/desktop-profile";
 import { isCodexReasoningEffort, modelRecordValue } from "./reasoning-effort";
@@ -712,7 +712,7 @@ export function modelPreferHostedToolsConfigError(
   value: unknown,
   field: string,
   providerName: string,
-  provider: { adapter?: unknown; authMode?: unknown; modelAdapters?: unknown },
+  provider: { adapter?: unknown; authMode?: unknown; modelAdapters?: unknown; baseUrl?: unknown },
 ): string | null {
   if (value === undefined) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) return `${field} must be a plain object`;
@@ -732,9 +732,30 @@ export function modelPreferHostedToolsConfigError(
     const pinned = pinnedWireAdapter(providerName, modelId);
     if (pinned) return pinned;
     const requestedWire = requestedWireFor(modelId);
-    return typeof requestedWire === "string" && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(requestedWire)
-      ? requestedWire
-      : currentWire;
+    if (typeof requestedWire === "string" && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(requestedWire)) {
+      return requestedWire;
+    }
+    // No explicit override: fall back to the registry's per-model wire default before
+    // the provider-wide adapter, because that is the order `resolveModelAdapter()`
+    // uses at request time (src/server/adapter-resolve.ts:38-48). Skipping it rejected
+    // preferences the runtime would have honored — DeepSeek routes `deepseek-v4-flash`
+    // over native Responses for a Responses inbound while the provider-wide wire stays
+    // openai-chat. Hosted-tool preferences only apply to Responses traffic, so the
+    // inbound to ask about is "responses".
+    const registryDefault = typeof currentWire === "string" && typeof provider.baseUrl === "string"
+      ? providerModelWireDefault(
+        providerName,
+        {
+          baseUrl: provider.baseUrl,
+          adapter: currentWire,
+          ...(typeof provider.authMode === "string" ? { authMode: provider.authMode as OcxProviderConfig["authMode"] } : {}),
+        },
+        modelId,
+        MODEL_ADAPTER_OVERRIDE_ALLOWED,
+        "responses",
+      )
+      : undefined;
+    return registryDefault ?? currentWire;
   };
   for (const [key, entry] of entries) {
     if (!key.trim()) return `${field} keys must be nonblank model ids`;

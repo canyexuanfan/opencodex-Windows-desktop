@@ -1031,6 +1031,25 @@ describe("opencodex config defaults", () => {
     });
     expect(readConfigDiagnostics().error).toBeNull();
 
+    // A registry `modelWireDefaults` entry that selects openai-responses for a
+    // Responses inbound must be honored by validation, exactly as the runtime
+    // honors it. DeepSeek's preset routes `deepseek-v4-flash` over native
+    // Responses for a Responses inbound while the provider-wide wire stays
+    // openai-chat; validating from `registry.adapter` alone rejected a
+    // preference the runtime would have accepted.
+    writeConfig({
+      port: 12345,
+      providers: {
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com/v1",
+          modelPreferHostedTools: { "deepseek-v4-flash": ["image_generation"] },
+        },
+      },
+      defaultProvider: "deepseek",
+    });
+    expect(readConfigDiagnostics().error).toBeNull();
+
     // Registry providers route through their registry wire, not this persisted adapter.
     writeConfig({
       port: 12345,

@@ -1121,6 +1121,32 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
     expect(body.tool_choice).toEqual({ type: "image_generation" });
   });
 
+  test("an inherited Object.prototype key is not read as a preference", () => {
+    // `provider.modelPreferHostedTools?.[modelId]` walks the prototype chain, so a
+    // routed model literally named `constructor` or `toString` yielded a function
+    // and threw on `.includes` before the request was ever dispatched.
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    for (const inheritedKey of ["constructor", "toString", "hasOwnProperty"]) {
+      const request = adapter.buildRequest({
+        modelId: inheritedKey,
+        context: { messages: [] },
+        stream: true,
+        options: {},
+        _rawBody: {
+          model: inheritedKey,
+          tools: [{ type: "image_generation" }],
+          tool_choice: { type: "function", name: "image_gen.imagegen" },
+        },
+      }, meta);
+      const body = JSON.parse(request.body) as { tool_choice: unknown };
+      // Unconfigured model: ordinary normalization applies, the hosted preference does not.
+      expect(body.tool_choice).toEqual({ type: "function", name: "image_gen.imagegen" });
+    }
+  });
+
   test("configured model rewrites a custom image-gen selector", () => {
     const adapter = createResponsesPassthroughAdapter({
       ...keyedProvider,

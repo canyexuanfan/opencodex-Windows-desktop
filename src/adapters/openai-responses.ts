@@ -651,8 +651,16 @@ function preferConfiguredHostedTools(
   selectedModelId?: string,
 ): unknown {
   // A virtual model's advertised id takes precedence over its resolved wire-model id.
-  const preferredTools = (selectedModelId ? provider.modelPreferHostedTools?.[selectedModelId] : undefined)
-    ?? provider.modelPreferHostedTools?.[modelId];
+  // Read own properties only: a routed model id of `constructor`/`toString` would
+  // otherwise resolve to an inherited Object.prototype function and throw on the
+  // membership test below, failing the request before it is dispatched.
+  const preferenceMap = provider.modelPreferHostedTools;
+  const ownPreference = (key: string | undefined): string[] | undefined => {
+    if (!key || !preferenceMap || !Object.prototype.hasOwnProperty.call(preferenceMap, key)) return undefined;
+    const entry = preferenceMap[key];
+    return Array.isArray(entry) ? entry : undefined;
+  };
+  const preferredTools = ownPreference(selectedModelId) ?? ownPreference(modelId);
   if (!preferredTools?.includes(HOSTED_IMAGE_GENERATION_TOOL) || !isPlainObject(body)) return body;
 
   const stripGroup = (tools: unknown[]): unknown[] => {
