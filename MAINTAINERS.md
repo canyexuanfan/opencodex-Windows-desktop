@@ -30,7 +30,7 @@ see [The retired `dev2-go` line](#the-retired-dev2-go-line).
   description is complete: local CI green, branch on the latest `dev` commit,
   all correct Codex and CodeRabbit findings fixed, and the ready-for-review
   confirmation. When all four boxes are ticked the gate marks the PR ready and
-  notifies the maintainers.
+  notifies the maintainers listed in `MAINTAINERS.md` (excluding the author).
   Authors with repository push permission skip the ancestry heuristic only. As
   with the approval requirement above, this is enforced by convention until
   branch protection is configured (see the note under the change log).

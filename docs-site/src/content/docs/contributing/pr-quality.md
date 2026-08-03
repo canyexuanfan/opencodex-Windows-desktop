@@ -45,9 +45,10 @@ tells you exactly what to change:
   description is complete: local CI green, the branch on the latest `dev`
   commit, all correct Codex and CodeRabbit findings fixed, and the
   ready-for-review confirmation. Once every box is ticked the check marks the
-  PR ready for review and notifies the maintainers. A retarget to `dev` clears
-  the wrong-branch message automatically and is remembered by the gate; the
-  draft stays until the checklist is complete.
+  PR ready for review and notifies the maintainers listed in `MAINTAINERS.md`
+  (excluding the author). A retarget to `dev` clears the wrong-branch message
+  automatically and is remembered by the gate; the draft stays until the
+  checklist is complete.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a

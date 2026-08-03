@@ -238,23 +238,40 @@ function buildReviewReadinessSection() {
  */
 function extractReviewReadiness(body) {
   if (typeof body !== "string") {
-    return { present: false, complete: false, checked: 0, total: 0 };
+    return {
+      present: false,
+      complete: false,
+      checked: 0,
+      total: 0,
+      items: [],
+    };
   }
   const start = body.indexOf(REVIEW_READINESS_START);
   const end = body.indexOf(REVIEW_READINESS_END);
+  // Any marker presence counts as present: an author-edited section that is
+  // inverted or partial must never trigger another append, or every `edited`
+  // event would stack a second checklist (and a second body write).
   if (start === -1 || end === -1 || end <= start) {
-    return { present: false, complete: false, checked: 0, total: 0 };
+    return {
+      present: start !== -1 || end !== -1,
+      complete: false,
+      checked: 0,
+      total: 0,
+      items: [],
+    };
   }
   const section = body.slice(start + REVIEW_READINESS_START.length, end);
   const boxes = [...section.matchAll(/^\s*[-*]\s+\[([ xX])\]\s+/gm)];
-  const checked = boxes.filter((match) => match[1] !== " ").length;
   const total = boxes.length;
+  const items = boxes.map((match) => ({ checked: match[1] !== " " }));
+  const checked = items.filter((item) => item.checked).length;
   return {
     present: true,
     complete:
       total === REVIEW_READINESS_ITEMS.length && checked === total,
     checked,
     total,
+    items,
   };
 }
 

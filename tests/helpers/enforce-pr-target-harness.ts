@@ -22,6 +22,13 @@ export type RecordedCall = { method: string; args: unknown };
 
 export type HarnessResult = {
   calls: RecordedCall[];
+  /**
+   * Paths the script read through its `node:fs` stub. Kept separate from
+   * `calls` so exact method-sequence assertions stay stable while the fs
+   * capability stays recorded (round: the harness must not hand a write-capable
+   * process module to a script that holds a write token).
+   */
+  fsReads: string[];
   logs: string[];
   warnings: string[];
   /**
@@ -85,6 +92,11 @@ export type RunOptions = {
   failStatus?: number;
   /** Collaborator permission returned by `getCollaboratorPermissionLevel`. */
   authorPermission?: string;
+  /**
+   * Fixture content for `MAINTAINERS.md`, so readiness-ping scenarios do not
+   * depend on the live repository file. Defaults to reading the real file.
+   */
+  maintainersFile?: string;
   /** When true, permission lookup rejects like a transient API failure. */
   failPermissionLookup?: boolean;
   /** Overrides for `compareCommitsWithBasehead` keyed by `basehead`. */
@@ -411,6 +423,7 @@ export async function runEnforcePrTarget(
   options: RunOptions,
 ): Promise<HarnessResult> {
   const calls: RecordedCall[] = [];
+  const fsReads: string[] = [];
   const logs: string[] = [];
   const warnings: string[] = [];
   const outputs: { name: string; value: unknown }[] = [];
@@ -534,6 +547,26 @@ export async function runEnforcePrTarget(
     if (!isPathLike) {
       if (!ALLOWED_MODULES.has(id)) {
         throw new Error(`the script must not require ${id}`);
+      }
+      if (id === "node:fs") {
+        // The script may read exactly one file: the trusted default-branch
+        // MAINTAINERS.md. Everything else about `fs` (writes, directory
+        // listing, arbitrary reads) is a capability the harness must not hand
+        // over, and the read itself has to be recorded like every other call.
+        const nodeFs = nodeRequire("node:fs");
+        return {
+          readFileSync: (pathLike: unknown) => {
+            const resolved = path.resolve(String(pathLike));
+            fsReads.push(resolved);
+            if (resolved !== path.resolve(process.cwd(), "MAINTAINERS.md")) {
+              throw new Error(`the script must not read ${pathLike}`);
+            }
+            return (
+              options.maintainersFile ??
+              nodeFs.readFileSync(resolved, "utf8")
+            );
+          },
+        };
       }
       return nodeRequire(id);
     }
@@ -864,7 +897,14 @@ export async function runEnforcePrTarget(
     await callback();
   }
 
-  return { calls, logs, warnings, returnValue, coreSurface: Object.keys(core).sort() };
+  return {
+    calls,
+    fsReads,
+    logs,
+    warnings,
+    returnValue,
+    coreSurface: Object.keys(core).sort(),
+  };
 }
 
 /** Just the method names, in order — the usual thing to assert on. */

@@ -245,12 +245,14 @@ describe("review readiness checklist", () => {
       complete: false,
       checked: 0,
       total: 0,
+      items: [],
     });
     assert.deepEqual(extractReviewReadiness(null), {
       present: false,
       complete: false,
       checked: 0,
       total: 0,
+      items: [],
     });
   });
 
@@ -265,6 +267,12 @@ describe("review readiness checklist", () => {
       complete: true,
       checked: 4,
       total: 4,
+      items: [
+        { checked: true },
+        { checked: true },
+        { checked: true },
+        { checked: true },
+      ],
     });
 
     const partial = body.replace("- [x] My PR is ready for review.", "- [ ] My PR is ready for review.");
@@ -273,7 +281,28 @@ describe("review readiness checklist", () => {
       complete: false,
       checked: 3,
       total: 4,
+      items: [
+        { checked: true },
+        { checked: true },
+        { checked: true },
+        { checked: false },
+      ],
     });
+  });
+
+  it("reports per-item state so the mirror marks the right boxes", () => {
+    const body = SECTION.replace(
+      "- [ ] My PR is ready for review.",
+      "- [x] My PR is ready for review.",
+    );
+    const result = extractReviewReadiness(body);
+    assert.equal(result.checked, 1);
+    assert.deepEqual(result.items, [
+      { checked: false },
+      { checked: false },
+      { checked: false },
+      { checked: true },
+    ]);
   });
 
   it("treats a reworded but complete section as complete", () => {
@@ -290,6 +319,7 @@ describe("review readiness checklist", () => {
     const fewer = SECTION.replace("- [ ] My PR is ready for review.", "");
     assert.equal(extractReviewReadiness(fewer).complete, false);
     assert.equal(extractReviewReadiness(fewer).total, 3);
+    assert.equal(extractReviewReadiness(fewer).items.length, 3);
 
     const extra = SECTION.replace(
       "<!-- pr-quality-readiness-checklist:end -->",
@@ -298,6 +328,31 @@ describe("review readiness checklist", () => {
     const result = extractReviewReadiness(extra);
     assert.equal(result.complete, false);
     assert.equal(result.total, 5);
+    assert.equal(result.items.length, 5);
+  });
+
+  it("treats inverted or partial markers as present-but-incomplete, never appends again", () => {
+    const inverted = [
+      "## Summary",
+      "Body.",
+      "<!-- pr-quality-readiness-checklist:end -->",
+      "residue",
+      "<!-- pr-quality-readiness-checklist:start -->",
+      "- [x] orphan box",
+    ].join("\n");
+    const extracted = extractReviewReadiness(inverted);
+    assert.equal(extracted.present, true);
+    assert.equal(extracted.complete, false);
+    assert.equal(appendReviewReadinessSection(inverted), inverted);
+
+    const orphanEnd = "body\n<!-- pr-quality-readiness-checklist:end -->";
+    assert.equal(extractReviewReadiness(orphanEnd).present, true);
+    assert.equal(extractReviewReadiness(orphanEnd).complete, false);
+    assert.equal(appendReviewReadinessSection(orphanEnd), orphanEnd);
+
+    const duplicate = SECTION + SECTION;
+    assert.equal(extractReviewReadiness(duplicate).present, true);
+    assert.equal(appendReviewReadinessSection(duplicate), duplicate);
   });
 
   it("appends once and is idempotent", () => {

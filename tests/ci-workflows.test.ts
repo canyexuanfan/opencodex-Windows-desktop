@@ -19,9 +19,11 @@ function lastEnforcerCommentBody(result: HarnessResult): string {
   const enforcerCreates = creates.filter(
     call => call.body.includes(marker) || call.body.includes(legacyMarker),
   );
-  return (enforcerCreates.length > 0 ? enforcerCreates : creates)[
-    enforcerCreates.length > 0 ? enforcerCreates.length - 1 : creates.length - 1
-  ]!.body;
+  const chosen = enforcerCreates.length > 0 ? enforcerCreates : creates;
+  if (chosen.length === 0) {
+    throw new Error("scenario recorded no enforcer comment");
+  }
+  return chosen[chosen.length - 1]!.body;
 }
 
 /** Final review-readiness comment body (the checklist message). */
@@ -32,6 +34,9 @@ function lastReadinessCommentBody(result: HarnessResult): string {
   if (updates.length > 0) return updates[updates.length - 1]!.body;
   const creates = callsTo(result, "issues.createComment") as Array<{ body: string }>;
   const readinessCreates = creates.filter(call => call.body.includes(marker));
+  if (readinessCreates.length === 0) {
+    throw new Error("scenario recorded no readiness comment");
+  }
   return readinessCreates[readinessCreates.length - 1]!.body;
 }
 
@@ -1073,6 +1078,24 @@ describe("GitHub Actions hardening", () => {
       "",
       "- Run `bun test tests/ci-workflows.test.ts`",
     ].join("\n");
+    /**
+     * Fixture for the trusted `MAINTAINERS.md`: the current-maintainers table
+     * plus a change-log mention, so the section scoping of the ping is proven
+     * and the scenario does not depend on the live repository file.
+     */
+    const MAINTAINERS_FIXTURE = [
+      "## Current maintainers",
+      "",
+      "| GitHub account | Project role | Responsibilities |",
+      "| --- | --- | --- |",
+      "| [@lidge-jun](https://github.com/lidge-jun) | Project owner | x |",
+      "| [@Ingwannu](https://github.com/Ingwannu) | Maintainer | x |",
+      "| [@Wibias](https://github.com/Wibias) | Maintainer | x |",
+      "",
+      "## Change log",
+      "",
+      "- [@Wibias](https://github.com/Wibias) was added as a maintainer.",
+    ].join("\n");
 
     /** A PR body whose readiness checklist has exactly `checked` boxes ticked. */
     function readinessChecklistBody(checked: number, base = CONTRIBUTOR_BODY): string {
@@ -1211,6 +1234,7 @@ describe("GitHub Actions hardening", () => {
           draft: true,
           body: readinessChecklistBody(4),
         },
+        maintainersFile: MAINTAINERS_FIXTURE,
       });
 
       // No prior enforcer history: the checklist completion alone lifts the
@@ -1226,6 +1250,79 @@ describe("GitHub Actions hardening", () => {
       expect(readinessBody).toContain("Maintainers notified: @lidge-jun @Ingwannu @Wibias");
       expect(readinessBody).toContain('"maintainersPinged":true');
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a maintainer PR drafted during a permission-lookup failure is restored once the lookup recovers", async () => {
+      // The permission lookup fails closed: a clean maintainer PR is treated
+      // as a contributor PR, gets the checklist and a draft. When the lookup
+      // recovers, the early return must not leave that PR drafted forever —
+      // the readiness state records the bot's draft, and the recovery path
+      // undoes it.
+      const { script } = await readEnforcePrTarget();
+      const duringFailure = await runEnforcePrTarget(script, {
+        pr: { base: { ref: "dev" }, draft: false },
+        failPermissionLookup: true,
+      });
+      expect(methodsOf(duringFailure)).toEqual(readsAllowedBase([
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      expect(lastReadinessCommentBody(duringFailure)).toContain('"autoDraftedByBot":true');
+
+      const recovered = await runEnforcePrTarget(script, {
+        pr: { base: { ref: "dev" }, draft: true },
+        authorPermission: "write",
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [readinessComment({
+          version: 1,
+          autoDraftedByBot: true,
+          maintainersPinged: false,
+        })],
+      });
+      expect(methodsOf(recovered)).toEqual(readsAllowedBase([
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const [ready] = callsTo(recovered, "graphql") as [{ query: string }];
+      expect(ready.query).toContain("markPullRequestReadyForReview");
+      expect(lastReadinessCommentBody(recovered)).toContain(
+        "not required for this author",
+      );
+      expect(lastReadinessCommentBody(recovered)).toContain('"autoDraftedByBot":false');
+      expect(recovered.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a contributor completing the checklist with a corrupted enforcer comment still completes", async () => {
+      // `parseState` returns null for malformed state, but the bot comment
+      // still exists — the restore path must not dereference `storedState`
+      // unguarded (CodeRabbit critical + Codex review P2).
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [{
+          id: 7,
+          user: { login: BOT },
+          body: `${MARKER}\n<!-- wrong-branch-enforcer-state:{not json} -->`,
+        }],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "graphql",
+        "issues.updateComment",
+        "issues.createComment",
+      ]));
+      const [ready] = callsTo(result, "graphql") as [{ query: string }];
+      expect(ready.query).toContain("markPullRequestReadyForReview");
+      const [updated] = callsTo(result, "issues.updateComment") as [{ body: string }];
+      expect(updated.body).toContain('"active":false');
+      expect(updated.body).toContain("The title was left unchanged.");
+      expect(result.warnings.join(" ")).toContain("Could not parse stored workflow state");
     });
 
     test("a complete checklist does not lift the draft while the base is wrong", async () => {
@@ -1464,6 +1561,7 @@ describe("GitHub Actions hardening", () => {
           draft: true,
           body: readinessChecklistBody(4),
         },
+        maintainersFile: MAINTAINERS_FIXTURE,
         comments: [botComment({
           version: 1,
           active: true,
@@ -1489,6 +1587,9 @@ describe("GitHub Actions hardening", () => {
       expect(readinessBody).toContain("**4/4** boxes ticked");
       expect(readinessBody).toContain("Maintainers notified: @lidge-jun @Ingwannu @Wibias");
       expect(readinessBody).toContain('"maintainersPinged":true');
+      // The ping list is read through the recorded fs stub, and the change-log
+      // duplicate of @Wibias is not re-added.
+      expect(result.fsReads.some(read => read.endsWith("MAINTAINERS.md"))).toBe(true);
     });
 
     test("every base outside the allow-list is still blocked", async () => {
@@ -2744,8 +2845,8 @@ describe("GitHub Actions hardening", () => {
     // that the `[WRONG BRANCH] ` prefix is never removed.
     expect(script).toMatch(/state\.autoDraftedByBot\s*=\s*true/);
     expect(script).toMatch(/state\.titlePrefixedByBot\s*=\s*true/);
-    expect(script).toMatch(/storedState\.autoDraftedByBot/);
-    expect(script).toMatch(/storedState\.titlePrefixedByBot/);
+    expect(script).toMatch(/storedState\?\.autoDraftedByBot/);
+    expect(script).toMatch(/storedState\?\.titlePrefixedByBot/);
     expect(script).toMatch(/await\s+convertToDraft\(\)/);
     expect(script).toMatch(/await\s+markReadyForReview\(\)/);
     expect(script).toMatch(/core\.setFailed\(/);
