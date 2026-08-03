@@ -6,6 +6,7 @@ import {
   armClaudeCodeBaseline,
   getConfigPath,
   loadConfig,
+  readConfigDiagnostics,
   reconcileLiveConfigFromDisk,
   saveConfig,
   saveConfigPreservingClaudeCode,
@@ -209,6 +210,26 @@ test("an intentionally empty retryOn429 policy still resolves as enabled (presen
     maxIntervalMs: 60_000,
     respectRetryAfter: true,
   });
+});
+
+test("config diagnostics sanitize invalid retryOn429 before schema validation", () => {
+  writeDiskConfig({
+    providers: {
+      test: {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "k",
+        allowPrivateNetwork: true,
+        retryOn429: { attempts: 0 },
+      },
+    },
+  });
+  const diagnostics = readConfigDiagnostics();
+  // Without sanitization the schema rejects the config and the diagnostics path returns a
+  // default fallback, which the config command could persist over the user's providers.
+  expect(diagnostics.source).not.toBe("fallback");
+  expect(diagnostics.config.providers.test).toBeDefined();
+  expect(diagnostics.config.providers.test.retryOn429).toBeUndefined();
 });
 
 test("invalid retryOn429 values never log the raw value", () => {

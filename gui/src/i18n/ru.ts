@@ -576,6 +576,7 @@ export const ru: Record<TKey, string> = {
   "logs.detail.attempt.recovery.rateLimit429": "Ограничение частоты запросов (429)",
   "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth ограничен (429)",
   "logs.detail.attempt.recovery.image413": "Слишком большой размер изображения (413)",
+  "logs.detail.attempt.recovery.unknown": "Неизвестная причина восстановления",
   "logs.detail.reason.usage_missing": "Данные об использовании не были сообщены.",
   "logs.detail.reason.usage_unsupported": "Этот провайдер не сообщает данные об использовании.",
   "logs.detail.reason.output_missing": "Положительное число выходных токенов не было сообщено.",

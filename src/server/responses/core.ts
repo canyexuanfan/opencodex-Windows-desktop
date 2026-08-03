@@ -2494,13 +2494,15 @@ async function handleResponsesInner(
   // `attempts` same-key replays in total (bounded per request).
   const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
   let rateLimitRetries = 0;
+  // Shared with the terminal-guard continuation below: an image-tier reduction that let the
+  // main request clear a 413 must not be forgotten on the very next continuation build.
+  let imageTierBias = 0;
   if (!upstreamResponse.ok) {
     // Recovery loop: multi-key 429 failover + at most ONE anthropic 413 tightened retry
     // (devlog/260714_image_normalization_pipeline/030). One mutable activeAdapter serves
     // both paths so a 429→413 sequence never rebuilds against a stale pre-rotation
     // adapter, and imageTierBias — once armed — rides EVERY subsequent rebuild so a
     // 413→429 rotation cannot silently undo the tightening.
-    let imageTierBias = 0;
     let imageRetryAttempted = false;
     let oauth401ReplayAttempted = false;
     /**
@@ -2767,7 +2769,6 @@ async function handleResponsesInner(
    * never sees a second hidden HTTP response or an unbounded retry loop.
    */
   const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
-    let imageTierBias = 0;
     let response: Response | undefined;
     /**
      * Build and fetch one terminal-guard continuation. `replay` marks a same-target 429
@@ -2806,9 +2807,11 @@ async function handleResponsesInner(
         ? builtContinuationRequest.usageLog.inputTokens
         : undefined;
       if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
+      // One label rule for continuation replays, shared by both send paths below.
+      const replayKind: AttemptRecoveryKind | undefined = replay ? "rate-limit-429" : undefined;
       try {
         if (activeAdapter.fetchResponse) {
-          noteAttemptSend(logCtx.activeAttempt, continuationEstimate, replay ? "rate-limit-429" : undefined);
+          noteAttemptSend(logCtx.activeAttempt, continuationEstimate, replayKind);
           return await activeAdapter.fetchResponse(builtContinuationRequest, {
             abortSignal: upstream.signal,
             timeoutMs: connectMs,
@@ -2817,7 +2820,7 @@ async function handleResponsesInner(
         }
         return await fetchWithResetRetry(
           recovery => {
-            noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery ?? (replay ? "rate-limit-429" : undefined));
+            noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery ?? replayKind);
             return fetchWithHeaderTimeout(
               builtContinuationRequest.url,
               applyUpstreamRecoveryInit({

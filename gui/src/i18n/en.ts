@@ -586,6 +586,7 @@ export const en = {
   "logs.detail.attempt.recovery.rateLimit429": "Rate-limited (429)",
   "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth rate-limited (429)",
   "logs.detail.attempt.recovery.image413": "Image payload too large (413)",
+  "logs.detail.attempt.recovery.unknown": "Unknown recovery reason",
   "logs.detail.reason.usage_missing": "Usage was not reported.",
   "logs.detail.reason.usage_unsupported": "This provider does not report usage.",
   "logs.detail.reason.output_missing": "No positive output token count was reported.",

@@ -571,6 +571,7 @@ export const zh: Record<TKey, string> = {
   "logs.detail.attempt.recovery.rateLimit429": "被限流 (429)",
   "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth 被限流 (429)",
   "logs.detail.attempt.recovery.image413": "图片载荷过大 (413)",
+  "logs.detail.attempt.recovery.unknown": "未知的恢复原因",
   "logs.detail.reason.usage_missing": "未上报 usage。",
   "logs.detail.reason.usage_unsupported": "该提供方不支持上报 usage。",
   "logs.detail.reason.output_missing": "未上报正数输出 token。",

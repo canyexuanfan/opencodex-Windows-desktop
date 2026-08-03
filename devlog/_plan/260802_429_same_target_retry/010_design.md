@@ -51,6 +51,9 @@ existing multi-key failover runs. Default off → zero behavior change for exist
   - image/video bridge and web-search sidecar loops (`src/images/loop.ts`,
     `src/web-search/loop.ts`) — before their `on429` key rotation;
   - Anthropic terminal-guard continuations — before key/account failover.
+  Bridge retries apply to HTTP adapters only: a custom transport that enters the
+  `adapter.runTurn` branch (`src/images/loop.ts`) returns before the HTTP 429 retry loop and
+  therefore does not receive the wait-and-replay policy.
   Every surface releases (and awaits the cancellation of) the unread 429 body BEFORE the
   backoff, records the `rate-limit-429` recovery kind on replay sends, and (bridges) clears the
   old response-header deadline before the wait and starts a fresh one afterward, re-checking

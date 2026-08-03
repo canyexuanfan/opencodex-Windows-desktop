@@ -246,6 +246,14 @@ GPT-5.6 Sol/Terra/Luna 会预置在提供商的回退列表中，因此即使实
 使用 Bearer **订阅令牌**（而非普通 API 密钥）进行认证。
 **Cloudflare AI Gateway** 需要将 account 和 gateway id 填入 URL。
 
+Copilot 提供混合 wire 目录：其 GPT-5 系列模型（`gpt-5.3-codex`、`gpt-5.4`、
+`gpt-5.4-mini`、`gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`）会拒绝面向
+agent 流量的 `/chat/completions`，因此 opencodex 默认将这些模型路由到 Responses API，而其他
+Copilot 模型仍走 chat completions。优先级为：硬 wire 固定 → 显式
+[`modelAdapters`](/reference/configuration/providers/) 条目 → 注册表默认值 → 提供商级
+adapter。若要将没有内置默认值的模型（例如 `gpt-5.4-nano`）接入 Responses，请设置
+`"modelAdapters": { "gpt-5.4-nano": "openai-responses" }`。
+
 Cursor 作为单独的实验性 adapter 进行跟踪。`adapter: "cursor"` 会作为实验性本地配置出现在
 `ocx init` 和 dashboard Add Provider picker 中，并保存 Cursor 的静态回退模型目录 metadata。配置
 Cursor access token 后，opencodex 会使用 Cursor live HTTP/2 transport。内置回退列表包含上下文为

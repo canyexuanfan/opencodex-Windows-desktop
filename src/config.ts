@@ -1786,6 +1786,10 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
 function configDiagnosticsFromRaw(raw: string): ConfigDiagnostics {
   try {
     const parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
+    // Same degradation as loadConfig: a hand-edited invalid retryOn429 must not trip the
+    // schema and send the caller a default-config fallback (the config command could then
+    // persist that fallback over the user's providers/keys).
+    sanitizeRetryOn429ForLoad(parsed);
     const result = configSchema.safeParse(parsed);
     if (result.success) {
       return validFileConfigDiagnostics(normalizeApiKeyIds(result.data as OcxConfig), parsed);

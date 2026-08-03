@@ -318,7 +318,9 @@ function estimateReasonKey(reason: CostEstimateReason) {
  * Map one attempt recovery kind to its i18n key for the logs detail dialog.
  */
 function recoveryKindKey(kind: AttemptRecoveryKind) {
-  return RECOVERY_KIND_KEYS[kind];
+  // A stale/malformed cached row can carry a kind outside the known set; fall back to a
+  // localized label instead of handing `t()` an undefined key.
+  return RECOVERY_KIND_KEYS[kind] ?? "logs.detail.attempt.recovery.unknown";
 }
 
 function verificationKey(status: MatchedPriceInfo["status"]): "logs.detail.verification.verified" | "logs.detail.verification.derived" {
