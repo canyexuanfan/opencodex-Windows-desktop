@@ -1176,6 +1176,34 @@ describe("GitHub Actions hardening", () => {
       expect(readinessBody).toContain('"maintainersPinged":false');
     });
 
+    test("a failed checklist draft conversion fails the check closed", async () => {
+      // The enforcer path soft-fails a failed draft conversion with a red
+      // check. The readiness path must fail closed the same way: a contributor
+      // PR that stays ready with an open checklist is exactly the state the
+      // gate exists to prevent.
+      const { script } = await readEnforcePrTarget();
+      const result = await runEnforcePrTarget(script, {
+        pr: { base: { ref: "dev" }, draft: false },
+        failOn: ["graphql"],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      expect(lastReadinessCommentBody(result)).toContain(
+        "Automatic draft conversion failed",
+      );
+      expect(
+        result.warnings.some(w =>
+          w.includes("could not convert the pull request to draft while the review readiness checklist is open"),
+        ),
+      ).toBe(true);
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(true);
+    });
+
     test("ticking every checklist box marks the contributor PR ready and pings maintainers", async () => {
       const result = await run({
         pr: {

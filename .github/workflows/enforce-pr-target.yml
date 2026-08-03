@@ -751,6 +751,9 @@ jobs:
                   core.warning(
                     `Could not convert pull request to draft: ${error.message}`
                   );
+                  core.setFailed(
+                    "PR quality gate failed: could not convert the pull request to draft while the review readiness checklist is open."
+                  );
                 }
               }
 

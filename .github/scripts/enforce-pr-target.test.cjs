@@ -51,7 +51,8 @@ describe("enforce-pr-target workflow", () => {
   it("checks out trusted default-branch scripts only (never PR head)", () => {
     assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
     assert.match(workflow, /ref:\s*\$\{\{\s*github\.event\.repository\.default_branch\s*\}\}/);
-    assert.match(workflow, /sparse-checkout:\s*\.github\/scripts/);
+    // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
+    assert.match(workflow, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(workflow, /persist-credentials:\s*false/);
     assert.doesNotMatch(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.head/);
   });
@@ -75,9 +76,9 @@ describe("enforce-pr-target workflow", () => {
 
   it("strips stale WRONG BRANCH prefix on failure when base is corrected", () => {
     const failureBlock = workflow.match(
-      /if \(failures\.length > 0\) \{([\s\S]*?)core\.setFailed\(/,
+      /if \(mustDraft\) \{([\s\S]*?)core\.setFailed\(/,
     );
-    assert.ok(failureBlock, "workflow must have a failure path");
+    assert.ok(failureBlock, "workflow must have a draft path");
     const failurePath = failureBlock[1];
     assert.match(failurePath, /shouldStripTitlePrefix/);
     assert.match(failurePath, /!hasWrongBase/);
