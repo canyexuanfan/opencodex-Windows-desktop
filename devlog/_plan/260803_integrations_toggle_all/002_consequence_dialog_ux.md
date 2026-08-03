@@ -143,9 +143,35 @@ a 500 failure envelope with the server's own message (`030`). The sibling unit's
 refusals are specified in the appendix and must not be added here. There is no
 `partial` either — neither of this unit's clients can half-apply.
 
-One outcome is NOT a refusal and must not be styled as one:
-**`non_loopback_removed`**. Enabling Grok under a non-loopback bind removes any
-stale generated block and reports success with `changed: true`
+TWO outcomes are NOT refusals and must not be styled as ones. Both come from
+enabling Grok under a non-loopback bind, and which one fires is decided by
+reading the file after the write (`012` §The fix), never by what the request
+intended.
+
+**`non_loopback_removed`** — the normal case. The block is gone.
+
+> Grok Build은 opencodex가 loopback 주소로 실행 중일 때만 자동 등록할 수
+> 있습니다. loopback 주소를 가리키던 이전 블록은 제거했습니다.
+
+**`non_loopback_superseded`** — rare. Between our removal and our read, something
+else wrote a well-formed block into the file: `ocx ensure`, a second proxy, or
+the user's own edit.
+
+> Grok Build은 opencodex가 loopback 주소로 실행 중일 때만 자동 등록할 수
+> 있습니다. 그 사이 다른 곳에서 설정에 블록이 새로 쓰여, 지금 파일에 있는
+> 블록은 이 요청이 만든 것이 아닙니다.
+
+The second sentence is the whole point: the card will show 연결됨 for a block
+this request did not write, and a user who is not told that would reasonably
+conclude the toggle worked as asked. Saying so costs one sentence and prevents a
+wrong mental model of who owns that file.
+
+Neither is a refusal, so neither goes in the notice area's error styling — they
+are success messages with a caveat, rendered in the card's normal message slot.
+
+The older wording below describes `non_loopback_removed` only and is kept for
+its rationale: enabling Grok under a non-loopback bind removes any stale
+generated block and reports success with `changed: true`
 (`012` §non-loopback is not a refusal). The copy says what happened —
 "loopback 주소를 가리키던 이전 블록을 제거했습니다" — rather than implying the
 request was declined.

@@ -129,6 +129,25 @@ The `home_mismatch` copy must NOT say "stop the service" — the trigger is a ho
 mismatch, not a running service (`001` §The guard I described wrong). It names
 both homes and leaves the resolution to the user.
 
+### Success messages, not just refusals
+
+Two PUT responses are successes that still need to say something. Both come from
+enabling Grok under a non-loopback bind (`002` §TWO outcomes):
+
+| `reason` | Card state after | Rendering |
+|---|---|---|
+| `non_loopback_removed` | 미적용 | the card's normal message slot, not error styling |
+| `non_loopback_superseded` | 연결됨 | same slot, and the copy says the block was not written by this request |
+
+The second matters more than its rarity suggests: the card flips to 연결됨 for a
+block this request did not write. Rendering it silently would leave the user
+believing their toggle produced that state. It is a success with a caveat, so it
+is styled as a message rather than an error — a refusal notice would imply the
+policy action failed, and it did not.
+
+Both are driven by `reason` on a 200 response; the switch position follows
+`state` from the same payload, as everywhere else.
+
 There is no `partial` surface in this unit: `stripGrokConfig` writes atomically
 and Claude Code writes one field, so neither can half-apply. It returns with the
 two clients that can.
@@ -157,6 +176,10 @@ A dialog is a render artifact, so C runs the render-grounding loop
       a byte-for-byte restore.
 - [ ] A `disableBlocked` client renders a disabled switch with its reason, and
       clicking it opens no dialog.
+- [ ] Both non-loopback success reasons render their own message; a test asserts
+      `non_loopback_superseded` says the block was not written by this request
+      and that the card reads 연결됨 (audit r10).
+- [ ] Neither success reason is styled as an error.
 - [ ] Confirm buttons read "해제"/"복원", never "확인".
 - [ ] A refusal renders in the card notice with its localized explanation.
 - [ ] `home_mismatch` copy does not tell the user to stop a service.
