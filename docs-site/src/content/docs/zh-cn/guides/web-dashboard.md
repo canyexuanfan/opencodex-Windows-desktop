@@ -93,6 +93,10 @@ Dashboard 的 **Sub-agent delegation** 选择器会保存 `injectionModel`，以
 - **Refresh quotas** 会立即重新读取账号 usage，使路由逻辑与页面上的账号卡片使用同一份数据。
 - 池账号的请求日志使用 `p3fa91c` 这类不透明标签，不会记录账号邮箱。
 
+Providers 概览会单独汇总 Pool 模式的显示专用加权容量估算，并同时显示当前有效账户的原始配额和
+下一次容量恢复。可见字段、覆盖不完整的含义以及路由边界，请参阅
+[提供商概览中的账户池容量](/zh-cn/guides/providers/#提供商概览中的账户池容量)。
+
 ## 仪表盘如何与代理通信
 
 GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括：
