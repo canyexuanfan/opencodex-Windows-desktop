@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cmdAccount } from "../src/cli/account";
@@ -8,12 +9,20 @@ import { nativeMainCodexLoginInvocation } from "../src/cli/account-main";
 const originalLog = console.log;
 const originalError = console.error;
 const originalCodexHome = process.env.CODEX_HOME;
+const tempRoots: string[] = [];
+
+function tempConfigDir(prefix: string): string {
+  const path = mkdtempSync(join(tmpdir(), prefix));
+  tempRoots.push(path);
+  return path;
+}
 
 afterEach(() => {
   console.log = originalLog;
   console.error = originalError;
   if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = originalCodexHome;
+  while (tempRoots.length > 0) rmSync(tempRoots.pop()!, { recursive: true, force: true });
 });
 
 describe("ocx account main", () => {
@@ -32,23 +41,58 @@ describe("ocx account main", () => {
     expect(errors.at(-1)).toBe("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
   });
 
-  test("official login resolves a Windows npm shim through ComSpec", () => {
-    const npmBin = "C:\\Users\\tester\\AppData\\Roaming\\npm";
-    const codexShim = `${npmBin}\\codex.cmd`;
+  test("official login honors an explicit Windows runtime outside PATH through ComSpec", () => {
+    const codexShim = "C:\\Portable Codex\\codex.cmd";
+    const comSpec = "C:\\Windows\\System32\\cmd.exe";
+    const env = {
+      CODEX_CLI_PATH: codexShim,
+      PATH: "",
+      PATHEXT: ".CMD",
+      ComSpec: comSpec,
+    };
     const invocation = nativeMainCodexLoginInvocation("win32", {
-      env: {
-        PATH: npmBin,
-        PATHEXT: ".CMD",
-        ComSpec: "C:\\Windows\\System32\\cmd.exe",
-      },
+      env,
       exists: path => path.toLowerCase() === codexShim.toLowerCase(),
+      existsSync: path => path.toLowerCase() === codexShim.toLowerCase(),
+      execFileSync: (file, args) => {
+        expect(file).toBe(comSpec);
+        expect(args.at(-1)).toContain("codex.cmd");
+        return "codex-cli 9.9.9";
+      },
+      configDir: tempConfigDir("ocx-native-profile-explicit-runtime-"),
     });
 
-    expect(invocation.file).toBe("C:\\Windows\\System32\\cmd.exe");
+    expect(invocation.file).toBe(comSpec);
     expect(invocation.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
     expect(invocation.args[3]).toContain("codex.cmd");
     expect(invocation.args[3]).toContain('^"login^"');
     expect(invocation.options).toEqual({ windowsVerbatimArguments: true });
+  });
+
+  test("official login honors a persisted runtime outside PATH", () => {
+    const runtime = "C:\\Portable Codex\\codex.exe";
+    const configDir = tempConfigDir("ocx-native-profile-persisted-runtime-");
+    writeFileSync(join(configDir, "codex-runtime.json"), `${JSON.stringify({
+      version: 1,
+      command: runtime,
+      source: "configured",
+      selectedVersion: "8.8.8",
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    })}\n`);
+
+    const invocation = nativeMainCodexLoginInvocation("win32", {
+      env: { PATH: "", PATHEXT: ".EXE" },
+      exists: path => path.toLowerCase() === runtime.toLowerCase(),
+      existsSync: path => path.toLowerCase() === runtime.toLowerCase(),
+      execFileSync: (file, args) => {
+        expect(file).toBe(runtime);
+        expect(args).toEqual(["--version"]);
+        return "codex-cli 8.8.8";
+      },
+      configDir,
+    });
+
+    expect(invocation).toEqual({ file: runtime, args: ["login"], options: {} });
   });
 
   test("mutating human output uses the server's effective home while add keeps the auth envelope off HTTP", async () => {

@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { codexExecInvocation } from "../codex/exec-invocation";
+import { resolveAndPersistCodexRuntime, type ResolveCodexRuntimeDeps } from "../codex/runtime";
 import type { ResolveDeps, SpawnInvocation } from "../lib/win-exec";
 import { apiError, apiJson, proxyUnreachable, resolveBaseUrl, type AccountDeps } from "./account-api";
 
@@ -20,6 +21,10 @@ interface PublicProfile {
   identityHint: string;
   state: "active" | "inactive";
 }
+
+export type NativeMainCodexLoginInvocationDeps =
+  & ResolveDeps
+  & Pick<ResolveCodexRuntimeDeps, "existsSync" | "execFileSync" | "configDir" | "readFileSync">;
 
 function flag(args: string[], name: string): boolean {
   const index = args.indexOf(name);
@@ -51,9 +56,18 @@ function printProfiles(profiles: PublicProfile[]): void {
 
 export function nativeMainCodexLoginInvocation(
   platform: NodeJS.Platform = process.platform,
-  deps: ResolveDeps = {},
+  deps: NativeMainCodexLoginInvocationDeps = {},
 ): SpawnInvocation {
-  return codexExecInvocation("codex", ["login"], platform, deps);
+  const command = resolveAndPersistCodexRuntime({
+    env: deps.env ?? process.env,
+    platform,
+    existsSync: deps.existsSync,
+    execFileSync: deps.execFileSync,
+    configDir: deps.configDir,
+    readFileSync: deps.readFileSync,
+    discoverAlternatives: false,
+  }).runtime.command || "codex";
+  return codexExecInvocation(command, ["login"], platform, deps);
 }
 
 async function runOfficialCodexLogin(codexHome: string): Promise<number> {
