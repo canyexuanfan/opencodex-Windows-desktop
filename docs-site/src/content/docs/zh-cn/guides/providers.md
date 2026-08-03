@@ -132,7 +132,7 @@ Kiro 登录需要 Kiro CLI：Unix 使用 `curl -fsSL https://cli.kiro.dev/instal
 
 ## 3. API 密钥目录
 
-opencodex 内置 74 个预设：62 个密钥预设、8 个 OAuth 预设、3 个本地预设，以及 1 个默认的
+opencodex 内置 76 个预设：64 个密钥预设、8 个 OAuth 预设、3 个本地预设，以及 1 个默认的
 ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提供商的控制台，验证并保存密钥。
 验证因提供商而异。主要条目包括：
 
@@ -166,6 +166,8 @@ Cline IDE/CLI 中提供，不能通过 API 使用；`minimax/minimax-m2.5` 是�
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
+| Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
+| Vultr Serverless Inference | `https://api.vultrinference.com/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
@@ -209,6 +211,13 @@ OpenAI Chat Completions 提供商。registry 固定的 DeepInfra 模型列表 UR
 **Hyperbolic 发现：**该预设会使用已配置的 bearer 密钥读取 `/v1/models`，保留含 `/` 的原生模型 id，
 并将实时发现限制为 256 KiB 和 256 条原始记录。它仅覆盖 serverless text 与 vision-language chat；独立的
 image、audio 和 GPU 端点不在范围内。密钥可在 [Hyperbolic](https://app.hyperbolic.ai) 创建。
+
+**Nscale 与 Vultr 发现：**两个预设都会读取需要认证的 `/v1/models` 目录、保留原生模型 id，并将发现限制为
+256 KiB 和 256 条原始记录。Nscale 的目录没有 modality 字段，却混合了 chat、image 与 embedding 模型，
+所以预设仅允许其官方工具调用 API 示例使用的 `meta-llama/Llama-3.1-8B-Instruct`。Vultr 目前只明确
+`kimi-k2-instruct` 支持工具调用，因此其预设仅暴露这一模型。其他记录会保持隐藏，直到提供商发布同等的
+agent-tool 证据。Nscale service token 可在 [Nscale Console](https://console.nscale.com) 创建；Vultr
+inference key 可从 [Vultr Console](https://my.vultr.com) 的订阅概览复制。
 
 **Command Code 发现：**该预设从固定的 Provider API 主机读取 Command Code 的
 `/provider/v1/models` 列表，保留含 `/` 的原生模型 id，并将实时发现限制为 256 KiB 和 256 条原始记录。

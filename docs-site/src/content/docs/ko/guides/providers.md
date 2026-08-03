@@ -143,7 +143,7 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL http
 
 ## 3. API 키 카탈로그
 
-opencodex에는 빌트인 프리셋이 74개 들어 있습니다. 키 방식 62개, OAuth 8개, 로컬 3개,
+opencodex에는 빌트인 프리셋이 76개 들어 있습니다. 키 방식 64개, OAuth 8개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
 입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다릅니다). 주요 항목은 다음과 같습니다:
 
@@ -178,6 +178,8 @@ Cline IDE/CLI에서만 제공되며 API로는 사용할 수 없습니다. `minim
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
+| Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
+| Vultr Serverless Inference | `https://api.vultrinference.com/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
@@ -224,6 +226,14 @@ Bearer API 키를 사용합니다. registry가 소유하는 DeepInfra 모델 목
 보존하며 live discovery를 256 KiB와 raw 행 256개로 제한합니다. serverless text 및 vision-language chat만
 대상으로 하며 별도 image, audio, GPU 엔드포인트는 범위에서 제외합니다. 키는
 [Hyperbolic](https://app.hyperbolic.ai)에서 생성합니다.
+
+**Nscale 및 Vultr 검색:** 두 프리셋 모두 인증된 `/v1/models` 카탈로그를 읽고 네이티브 ID를 보존하며,
+검색을 256 KiB와 원시 행 256개로 제한합니다. Nscale 카탈로그는 modality 필드 없이 chat, image,
+embedding 모델을 함께 반환하므로 공식 도구 호출 API 예제에 사용된
+`meta-llama/Llama-3.1-8B-Instruct`만 허용합니다. Vultr는 현재 `kimi-k2-instruct`에만 도구 호출을
+문서화하므로 해당 모델만 노출합니다. 다른 행은 동등한 agent-tool 근거가 공개될 때까지 숨깁니다.
+Nscale service token은 [Nscale Console](https://console.nscale.com)에서 만들고, Vultr inference key는
+[Vultr Console](https://my.vultr.com)의 구독 overview에서 복사합니다.
 
 **Command Code 검색:** 프리셋은 Command Code의 `/provider/v1/models` 목록을 고정된 Provider API
 호스트에서 읽고, 슬래시가 포함된 네이티브 모델 ID를 보존하며 live discovery를 256 KiB와 raw 행

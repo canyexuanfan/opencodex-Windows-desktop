@@ -154,7 +154,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 74 встроенными пресетами: 62 на основе ключей, восемь OAuth, три локальных и
+opencodex поставляется с 76 встроенными пресетами: 64 на основе ключей, восемь OAuth, три локальных и
 один пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его; проверка зависит от провайдера.
 Наиболее заметные записи:
@@ -189,6 +189,8 @@ opencodex поставляется с 74 встроенными пресетам
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
+| Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
+| Vultr Serverless Inference | `https://api.vultrinference.com/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
@@ -238,6 +240,15 @@ Volcengine Agent Plan использует нативную конечную т�
 нативные id моделей со знаком `/` и ограничивает live discovery размером 256 KiB и 256 исходными
 строками. Он охватывает только serverless text и vision-language chat; отдельные image, audio и GPU
 endpoint в него не входят. Ключи создаются в [Hyperbolic](https://app.hyperbolic.ai).
+
+**Discovery для Nscale и Vultr.** Оба пресета читают аутентифицированный каталог `/v1/models`,
+сохраняют нативные id и ограничивают discovery размером 256 KiB и 256 исходными строками. Каталог
+Nscale смешивает chat-, image- и embedding-модели без поля modality, поэтому пресет допускает только
+`meta-llama/Llama-3.1-8B-Instruct` — модель из официального примера API с вызовом инструментов.
+Vultr сейчас документирует tool calling только для `kimi-k2-instruct`, поэтому его пресет показывает
+только эту модель. Остальные строки скрыты до появления равноценного подтверждения agent-tool.
+Service token Nscale создаётся в [Nscale Console](https://console.nscale.com), а inference key Vultr
+копируется со страницы подписки в [Vultr Console](https://my.vultr.com).
 
 **Discovery для Command Code.** Пресет читает список `/provider/v1/models` с фиксированного
 хоста Provider API, сохраняет нативные id моделей со знаком `/` и ограничивает live discovery размером

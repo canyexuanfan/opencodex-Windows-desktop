@@ -134,7 +134,7 @@ const CONNECTABLE: Record<string, ConnectableOverride> = {
   monsterapi: openAi("https://api.monsterapi.ai/v1", "https://monsterapi.ai", { verification: "official" }),
   nebius: openAi("https://api.tokenfactory.nebius.com/v1", "https://tokenfactory.nebius.com", { supportLevel: "supported", verification: "official", documentationUrl: "https://docs.tokenfactory.nebius.com/quickstart", modelsUrl: "https://api.tokenfactory.nebius.com/v1/models?verbose=true", lastVerified: "2026-08-02" }),
   novita: openAi("https://api.novita.ai/openai/v1", "https://novita.ai/settings/key-management", { supportLevel: "supported", verification: "official", modelsUrl: "https://api.novita.ai/openai/v1/models" }),
-  nscale: openAi("https://inference.api.nscale.com/v1", "https://console.nscale.com", { verification: "official" }),
+  nscale: openAi("https://inference.api.nscale.com/v1", "https://console.nscale.com", { supportLevel: "supported", verification: "official", documentationUrl: "https://docs.nscale.com/docs/use-cases/chat", modelsUrl: "https://inference.api.nscale.com/v1/models", lastVerified: "2026-08-03" }),
   nvidia: openAi("https://integrate.api.nvidia.com/v1", "https://build.nvidia.com", { supportLevel: "supported", verification: "official", documentationUrl: "https://docs.api.nvidia.com/nim/reference/llm-apis" }),
   publicai: openAi("https://api.publicai.co/v1", "https://publicai.co"),
   scaleway: openAi("https://api.scaleway.ai/v1", "https://console.scaleway.com/generative-api", { supportLevel: "supported", verification: "official", documentationUrl: "https://www.scaleway.com/en/docs/generative-apis/api-cli/using-generative-apis/", modelsUrl: "https://api.scaleway.ai/v1/models", lastVerified: "2026-08-01" }),

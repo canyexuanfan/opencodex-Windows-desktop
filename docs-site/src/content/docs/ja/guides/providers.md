@@ -144,7 +144,7 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 74 個含まれています。キー方式 62、OAuth 8、ローカル 3、
+opencodex には組み込みプリセットが 76 個含まれています。キー方式 64、OAuth 8、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します(検証はプロバイダー固有です)。主な項目は以下のとおりです:
 
@@ -178,6 +178,8 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
+| Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
+| Vultr Serverless Inference | `https://api.vultrinference.com/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
@@ -225,6 +227,14 @@ Volcengine Agent Plan は `openai-responses` アダプターでネイティブ R
 ネイティブモデル ID を保持し、live discovery を 256 KiB と raw 256 行に制限します。serverless text /
 vision-language chat のみを対象とし、別系統の image、audio、GPU endpoint は対象外です。キーは
 [Hyperbolic](https://app.hyperbolic.ai) で作成します。
+
+**Nscale と Vultr の discovery:** どちらの preset も認証付き `/v1/models` カタログを読み、ネイティブ ID を
+保持し、discovery を 256 KiB と raw 256 行に制限します。Nscale のカタログには modality フィールドなしで
+chat、image、embedding が混在するため、公式の tool-calling API 例で使われる
+`meta-llama/Llama-3.1-8B-Instruct` のみを許可します。Vultr は現在 `kimi-k2-instruct` だけに tool calling を
+明記しているため、そのモデルのみを公開します。ほかの行は同等の agent-tool 証拠が公開されるまで非表示です。
+Nscale の service token は [Nscale Console](https://console.nscale.com) で作成し、Vultr の inference key は
+[Vultr Console](https://my.vultr.com) の subscription overview から取得します。
 
 **Command Code の discovery:** preset は Command Code の `/provider/v1/models` リストを固定の
 Provider API ホストから読み、スラッシュを含むネイティブモデル ID を保持し、live discovery を
