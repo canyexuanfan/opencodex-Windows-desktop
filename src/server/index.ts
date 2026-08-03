@@ -50,6 +50,7 @@ import {
   registerTurn,
   setServerRef,
   trackStreamLifetime,
+  tryAdmitTurn,
   unregisterTurn,
 } from "./lifecycle";
 export {
@@ -58,8 +59,10 @@ export {
   isDraining,
   isRecyclingForExit,
   markRecyclingForExit,
+  MAX_ACTIVE_TURNS,
   registerTurn,
   trackStreamLifetime,
+  tryAdmitTurn,
   unregisterTurn,
 } from "./lifecycle";
 import {
@@ -832,9 +835,21 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
           return;
         }
 
+        const turnAdmissionLease = tryAdmitTurn();
+        if (!turnAdmissionLease) {
+          sendJsonFrame(ws, buildWsErrorFrame(503, {
+            type: "server_error",
+            code: "server_busy",
+            message: "active turns capacity reached",
+            retryable: true,
+          }, new Headers({ "Retry-After": "1" })));
+          if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
+          return;
+        }
+
         const payload: Record<string, unknown> = { ...frame };
         delete payload.type;
-        registerTurn(turnAbort);
+        turnAdmissionLease.bindAbortController(turnAbort);
         void (async () => {
           const start = Date.now();
           const requestId = nextRequestLogId(start);
@@ -901,7 +916,7 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
               /* socket already gone or send dropped */
             }
           } finally {
-            unregisterTurn(turnAbort);
+            turnAdmissionLease.release();
             if (!logged && turnAbort.signal.aborted) finalizeLog(499);
             if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
           }
