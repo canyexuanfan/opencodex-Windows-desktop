@@ -1,8 +1,12 @@
 import { readBoundedResponseBody } from "../lib/bounded-body";
 
+const RESET_ELIGIBLE_CODE_VALUES = [
+  "usage_limit_exceeded",
+  "insufficient_quota",
+] as const;
+
 export type CodexResetEligibleExhaustionCode =
-  | "usage_limit_exceeded"
-  | "insufficient_quota";
+  (typeof RESET_ELIGIBLE_CODE_VALUES)[number];
 
 export type CodexPreStreamRejectionKind =
   | "reset-eligible-exhaustion"
@@ -21,12 +25,10 @@ export interface CodexPreStreamRejection {
   semanticCode?: CodexResetEligibleExhaustionCode;
 }
 
-const RESET_ELIGIBLE_CODES = new Set<CodexResetEligibleExhaustionCode>([
-  "usage_limit_exceeded",
-  "insufficient_quota",
-]);
+const RESET_ELIGIBLE_CODES: ReadonlySet<string> = new Set(RESET_ELIGIBLE_CODE_VALUES);
 
 const TRANSIENT_SERVER_STATUSES = new Set([500, 502, 503, 504, 520, 521, 522]);
+const JSON_NUMBER_PATTERN = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
 
 function rejection(
   status: number,
@@ -80,7 +82,8 @@ function scanJsonValue(text: string, index: number): JsonScanResult {
       return { next: start + literal.length, duplicate: false };
     }
   }
-  const number = text.slice(start).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+  JSON_NUMBER_PATTERN.lastIndex = start;
+  const number = JSON_NUMBER_PATTERN.exec(text);
   if (!number) throw new SyntaxError("expected JSON value");
   return { next: start + number[0].length, duplicate: false };
 }
@@ -126,7 +129,7 @@ function scanJsonArray(text: string, index: number): JsonScanResult {
   throw new SyntaxError("unterminated JSON array");
 }
 
-function hasDuplicateJsonObjectKeys(text: string): boolean {
+function isUnsafeJsonDocument(text: string): boolean {
   try {
     const result = scanJsonValue(text, 0);
     return result.duplicate || skipJsonWhitespace(text, result.next) !== text.length;
@@ -180,7 +183,7 @@ async function resetEligibleCodeFromResponse(
     const payload = JSON.parse(body.text) as unknown;
     // JSON.parse silently keeps the last duplicate key, making contradictory
     // payloads order-dependent. Reject any duplicate at any object depth.
-    if (hasDuplicateJsonObjectKeys(body.text)) return undefined;
+    if (isUnsafeJsonDocument(body.text)) return undefined;
     return structuredResetEligibleCode(payload);
   } catch {
     // Classification must fail closed. A malformed, oversized, consumed, or

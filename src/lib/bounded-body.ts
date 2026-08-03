@@ -7,7 +7,7 @@ export const BOUNDED_BODY_TIMEOUT_MS = 5_000;
 export interface BoundedBodyOptions {
 	/** Abort the read with this signal. Its reason is rethrown by identity. */
 	signal?: AbortSignal;
-	/** Reject malformed UTF-8 instead of replacing it. Defaults to false. */
+	/** Reject the read on malformed UTF-8 instead of replacing invalid bytes. Defaults to false. */
 	fatalUtf8?: boolean;
 	/**
 	 * Byte ceiling for retained body data. Defaults to BOUNDED_BODY_MAX_BYTES (64 KiB),

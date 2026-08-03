@@ -196,6 +196,17 @@ describe("Codex pre-stream quota rejection classification", () => {
 		expect(await response.text()).toBe('{"error":');
 	});
 
+	test("fails closed for an empty response body", async () => {
+		const result = await classifyCodexPreStreamRejection(new Response(null, { status: 429 }));
+
+		expect(result).toMatchObject({
+			kind: "generic-rate-limit",
+			alternateRetryEligible: true,
+			resetCreditEligible: false,
+		});
+		expect(result).not.toHaveProperty("semanticCode");
+	});
+
 	test("fails closed for an oversized structured body", async () => {
 		const response = jsonRejection(429, {
 			code: "usage_limit_exceeded",
