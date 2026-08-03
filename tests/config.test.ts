@@ -1050,6 +1050,26 @@ describe("opencodex config defaults", () => {
     });
     expect(readConfigDiagnostics().error).toBeNull();
 
+    // The mirror of the case above. `volcengine-agent-plan` is a Responses registry row
+    // with `preserveCustomDestination`, so a config reusing that id while pointing at a
+    // different endpoint keeps its own transport at runtime —
+    // `providerMatchesRegistryTransport()` returns false and `routedProviderConfig()`
+    // preserves the configured `openai-chat` adapter. Validating from `registry.adapter`
+    // unconditionally would accept a preference that the Responses adapter never sees.
+    writeConfig({
+      port: 12345,
+      providers: {
+        "volcengine-agent-plan": {
+          adapter: "openai-chat",
+          baseUrl: "https://custom.example.test/v1",
+          modelPreferHostedTools: { "some-model": ["image_generation"] },
+        },
+      },
+      defaultProvider: "volcengine-agent-plan",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("requires the openai-responses wire");
+
     // Registry providers route through their registry wire, not this persisted adapter.
     writeConfig({
       port: 12345,
