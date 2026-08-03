@@ -19,13 +19,75 @@ IN: `gui/src/pages/integrations/overview-clients.ts` (MODIFY),
 `gui/tests/overview-state-merge.test.ts` (MODIFY), and
 `gui/tests/integrations-surfaces.test.tsx` (MODIFY). No implementation file is NEW.
 
-OUT: `gui/src/pages/integrations/integration-api.ts` — `loadApiKeyCount`
-already reduces `/api/keys` to `number | null` (`:283-287`); API and polling
-semantics do not change. `gui/src/pages/integrations/IntegrationStateBadge.tsx`
-— reuse its `unknown/current/absent` vocabulary. `src/`, `tests/`, and
-`docs-site/` — this neither changes the management contract nor setup behavior.
+IN also: `gui/src/pages/integrations/integration-api.ts` (MODIFY) — see
+§Distinguishing a failed read.
+
+OUT: `gui/src/pages/integrations/IntegrationStateBadge.tsx` — **not reused at
+all**, neither the component nor its `unknown/current/absent` vocabulary. Its
+labels are “Applied”/“Not applied” (`:12`), which is the claim this phase
+exists to stop making about a credential. `src/`, `tests/`, and `docs-site/` —
+this neither changes the management contract nor setup behavior.
 
 ## Why keys is not a card
+
+## Distinguishing a failed read from an in-flight one
+
+`loadApiKeyCount` returns `null` for an in-flight read, a network failure, a
+non-ok response, and a malformed body alike, because `readOptional` catches
+everything (`integration-api.ts:259-265`). `useDataSurface` then sees a
+SUCCESSFUL result carrying `null` (`data-surface.ts:127`), and there is no
+polling on this surface.
+
+So a “Checking…” string on that `null` would be permanent after a failure. The
+audit is right that avoiding “No keys issued” is necessary but not sufficient:
+indefinite progress copy is its own lie, and it is the more annoying one because
+it never resolves.
+
+Two branches, distinguished at the source. MODIFY `integration-api.ts`:
+
+```diff
+-export async function loadApiKeyCount(apiBase: string, signal?: AbortSignal): Promise<number | null> {
+-  const body = await readOptional<{ keys?: unknown }>(fetch(`${apiBase}/api/keys`, { signal }));
+-  if (!body || !Array.isArray(body.keys)) return null;
+-  return body.keys.length;
+-}
++/**
++ * `null` means the read FAILED, not that it is pending.
++ *
++ * The overview renders the two differently — "Checking…" while the request is
++ * in flight, "Key status unavailable" once it has settled badly — and the
++ * caller can only tell them apart if this function stops swallowing failure
++ * into the same value it uses for "no data yet". `readOptional` is kept for the
++ * surfaces that genuinely do not care.
++ */
++export async function loadApiKeyCount(apiBase: string, signal?: AbortSignal): Promise<number | null> {
++  try {
++    const response = await fetch(`${apiBase}/api/keys`, { signal });
++    if (!response.ok) return null;
++    const body = await readJsonIfOk<{ keys?: unknown }>(response);
++    if (!body || !Array.isArray(body.keys)) return null;
++    return body.keys.length;
++  } catch {
++    return null;
++  }
++}
+```
+
+The signature is unchanged; what changes is the row's reading of it. The
+in-flight case is already available to the overview as the data-surface state
+before the first settle, so `keysRow` takes the state rather than inferring it:
+
+```ts
+keysRow(state: "checking" | "settled", count: number | null)
+```
+
+`checking` before the first settle; `unavailable` when settled with `null`;
+otherwise the count decides `issued` or `none-issued`. Four states, four detail
+strings, no branch without one.
+
+An abort is deliberately treated as `checking` rather than `unavailable`: the
+component is unmounting or re-requesting, and telling the user their key status
+is unavailable at that moment would be noise about our own lifecycle.
 
 Every grid card represents a client that can be detected, applied, stale, or
 unsafe against client-owned configuration. Most carry a switch and a config
@@ -57,7 +119,13 @@ row from client rows instead of returning one mixed array (`:24-59`, `:153-176`,
 +export interface ApiKeysOverviewRow {
 +  hash: "integrations/keys";
 +  labelKey: TKey;
-+  state: "unknown" | "absent" | "current";
++  /**
++   * Credential vocabulary, deliberately NOT the client `unknown|absent|current`
++   * triple. Those words carry "applied", which is the claim this row must never
++   * make. Keeping the client values here — even unrendered — would be an open
++   * invitation to reconnect IntegrationStateBadge and undo the whole phase.
++   */
++  state: "checking" | "unavailable" | "none-issued" | "issued";
 +  detailKey: TKey | null;
 +  detailVars: Record<string, string> | null;
 +}
@@ -84,17 +152,21 @@ row from client rows instead of returning one mixed array (`:24-59`, `:153-176`,
 +    hash: "integrations/keys" as const,
 +    labelKey: "integrations.tab.keys" as TKey,
 +  };
-   if (count === null) {
--    return { ...base, state: "unknown", installed: false, applied: false, detailKey: null, detailVars: null };
-+    return { ...base, state: "unknown", detailKey: null, detailVars: null };
-   }
-   return {
-     ...base,
-     state: count > 0 ? "current" : "absent",
--    installed: true,
--    applied: count > 0,
-     detailKey: count > 0 ? "integrations.detail.keyCount" : "integrations.detail.keyNone",
-     detailVars: count > 0 ? { count: String(count) } : null,
++  // Every branch names a detail key. The detail line is the ONLY state
++  // expression now that the badge is gone, so a null one renders a row with no
++  // state at all — which is how the first draft of this phase managed to
++  // declare a "Checking…" string and never show it.
++  if (state === "checking") {
++    return { ...base, state, detailKey: "integrations.detail.keyChecking", detailVars: null };
++  }
++  if (state === "unavailable") {
++    return { ...base, state, detailKey: "integrations.detail.keyUnavailable", detailVars: null };
++  }
++  return {
++    ...base,
++    state: count > 0 ? "issued" : "none-issued",
++    detailKey: count > 0 ? "integrations.detail.keyCount" : "integrations.detail.keyNone",
++    detailVars: count > 0 ? { count: String(count) } : null,
    };
  }
 
@@ -214,7 +286,7 @@ all.” Below preserves aggregate → individual → client catalog hierarchy.
 ```
 
 The row itself has no click handler and no `tabIndex`. Its heading, count, and
-badge remain readable in document order; only the native action button enters
+state text remain readable in document order; only the native action button enters
 the tab sequence, once, at the same visual position. This does not copy the
 card's `::after` overlay, does not add a second `tabIndex={-1}` action, and
 cannot swallow a future control through stacking order.
@@ -239,9 +311,9 @@ it has no raised background, surrounding border, radius, or card hover state.
 ```
 
 `flex-wrap` is intentional: at 320-390 px, long German/Russian action copy may
-move beside or below the badge instead of clipping. It remains one credential
+move below the state text instead of clipping. It remains one credential
 row surface. At normal widths, `flex: 1 1 220px` keeps title/count together on
-the left and badge/action on the right. The existing global `:focus-visible`
+the left and the action on the right. The existing global `:focus-visible`
 rule owns the button ring; the rendered keyboard check below proves it.
 
 ## Counts
@@ -255,8 +327,8 @@ its input is now client rows only.
   keys are inventory, not two applied integrations — and the old code counted
   either number as exactly one anyway.
 - `stale`: keys have no config file and cannot enter this state.
-- `unknown`: a failed `/api/keys` read remains visible as the row's Checking
-  badge, but must not inflate the number of client integrations whose state is
+- `unknown`: a failed `/api/keys` read stays visible in the row's own state
+  text, but must not inflate the number of client integrations whose state is
   unknown.
 
 This changes current totals by at most one. That is not a regression hidden by
@@ -276,11 +348,18 @@ So the labels move with the scope. MODIFY all six locales:
 | Key | en | ko |
 |---|---|---|
 | `integrations.summary.detected` | `Clients detected` | `감지된 클라이언트` |
-| `integrations.summary.applied` | `Clients applied` | `적용된 클라이언트` |
+| `integrations.summary.applied` | `Configured clients` | `설정된 클라이언트` |
 
-ja `検出されたクライアント` / `適用中のクライアント`, zh `已检测客户端` /
-`已应用客户端`, de `Clients erkannt` / `Clients aktiv`, ru
-`Клиентов найдено` / `Клиентов применено`.
+ja `検出されたクライアント` / `設定済みクライアント`, zh `已检测客户端` /
+`已配置客户端`, de `Clients erkannt` / `Konfigurierte Clients`, ru
+`Клиентов найдено` / `Настроено клиентов`.
+
+“Configured” rather than “applied” across the board, on the reviewer's reading
+of each locale: `Clients applied` is awkward in English because configuration is
+what gets applied, `適用中` reads as in-progress, `Clients aktiv` changes the
+metric outright since a `stale` row still counts as applied while not being
+active, and `Клиентов применено` is not a collocation. Configuration is the
+thing all six can name accurately.
 
 `integrations.summary.stale` and `lastChange` are unchanged: keys were never
 counted in either.
@@ -311,19 +390,20 @@ Reused in all six locales: `integrations.tab.keys`,
 “Not applied” (`IntegrationStateBadge.tsx:12`) — the exact wording this phase
 argues is wrong for a credential. The detail line IS the state.
 
-That leaves the unsettled read needing its own words, since it can no longer
-borrow the badge “Unknown”. Add one more key to every locale:
+That leaves the two non-count states needing their own words, since neither can
+borrow the badge “Unknown”. Add two keys to every locale:
 
 | Key | en | ko |
 |---|---|---|
 | `integrations.detail.keyChecking` | `Checking…` | `확인 중…` |
+| `integrations.detail.keyUnavailable` | `Key status unavailable` | `키 상태를 확인할 수 없음` |
 
-ja `確認中…`, zh `检查中…`, de `Wird geprüft…`, ru `Проверка…`.
+ja `確認中…` / `キーの状態を取得できません`, zh `检查中…` / `无法获取密钥状态`,
+de `Wird geprüft…` / `Schlüsselstatus nicht verfügbar`, ru `Проверка…` /
+`Статус ключей недоступен`.
 
-Honest about what `null` means: `loadApiKeyCount` collapses an in-flight read, a
-failed request, and a malformed body into one `null`
-(`integration-api.ts:283-287`). “Checking…” fits the first and is tolerable for
-the rest. What matters is that none of them may render as “no keys”, which is a
+Two strings rather than one because they are two different facts, per
+§Distinguishing a failed read. Neither may render as “No keys issued”: that is a
 claim about the account of the user that a failed read cannot support.
 
 ## Test plan
@@ -369,9 +449,17 @@ through its three outcomes.
    button with tabIndex 0" still passes if the row later gains `tabIndex={0}`,
    an anchor, or another naturally focusable control — which is precisely the
    regression the assertion is supposed to prevent.
-5. Focus that button and activate with **Enter and Space**, asserting each
-   navigates to `#integrations/keys`. A click test proves the handler runs, not
-   that the control is operable from the keyboard.
+5. Assert the control is a native `<button type="button">` — that is what earns
+   Enter/Space behavior from the platform — and that clicking it navigates to
+   `#integrations/keys`.
+
+   **Enter/Space activation is NOT asserted here.** The reviewer probed this
+   repository's `happy-dom@20.11.1` and native default activation is not
+   modeled: dispatching keydown/keyup on a focused button produces zero click
+   events. A test written as specified would either fail for a reason unrelated
+   to our code, or be "fixed" by calling `.click()`, which proves nothing about
+   the keyboard. Keyboard activation is verified in the real browser at step 5
+   of Verification instead, where the platform is the platform.
 
 ## Verification
 
