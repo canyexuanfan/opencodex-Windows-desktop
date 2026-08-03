@@ -47,6 +47,16 @@ function hasBrowserSessionEvidence(ctx: ManagementContext): boolean {
 // and the response names the one-line `gh` command to run by hand. That is the
 // correct trade — an endpoint reachable with a readable token cannot establish that
 // a human chose to spend their own GitHub identity.
+//
+// The honest limit of this guard: a local process running AS THE USER can mint its
+// own GUI session (the dashboard bootstrap is served to any loopback GET) and can
+// equally just run `gh api -X PUT /user/starred/...` itself, which needs no proxy at
+// all. No check inside this process can distinguish that caller from the browser,
+// because both hold every local credential. So this endpoint is not a technical
+// barrier against a determined local agent — it removes the CASUAL path (an agent
+// that would have POSTed here because the endpoint existed) and makes the refusal
+// legible. The actual boundary is normative and lives in AGENTS.md: an agent must
+// not spend the user's identity, whichever mechanism is at hand.
 
 export async function handleSidebarRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url } = ctx;

@@ -165,11 +165,10 @@ describe("readBoundedResponseBody", () => {
 		});
 
 		test("retention is logarithmic in the body, not linear in the chunk count", async () => {
-			// The accumulator is the security property, and correctness cannot see it:
-			// a per-chunk array reassembles identically while retaining one object per
-			// transport chunk, which a fragmenting peer inflates far past the payload
-			// ceiling. Growth count is the observable that separates the two — a single
-			// geometric buffer doubles a handful of times regardless of fragmentation.
+			// Growth accounting for the single buffer: it doubles a handful of times no
+			// matter how the peer fragments the body. This catches an exact-fit
+			// reallocation mutation; the per-chunk ARRAY shape is caught structurally in
+			// the test below, because that implementation never touches this counter.
 			const fine = Array.from({ length: 20_000 }, () => new Uint8Array([0x61]));
 			await readBoundedResponseBody(responseFromChunks(...fine), { maxBytes: CUSTOM_CAP });
 			const fineGrowths = boundedBodyBufferGrowthsForTests();
@@ -188,6 +187,25 @@ describe("readBoundedResponseBody", () => {
 			const big = Array.from({ length: 256 }, () => new Uint8Array(1024).fill(0x61));
 			await readBoundedResponseBody(responseFromChunks(...big), { maxBytes: CUSTOM_CAP });
 			expect(boundedBodyBufferGrowthsForTests()).toBeLessThanOrEqual(4);
+		});
+
+		test("the accumulator never retains one object per transport chunk", async () => {
+			// The retained-object shape is the actual security property and no behavioral
+			// assertion can see it: a `Uint8Array[]` of chunks reassembles byte-identically
+			// while holding one reference per chunk, which a fragmenting peer inflates far
+			// past the payload ceiling. It also never increments the growth counter above,
+			// so that test alone cannot catch it. Pin the shape, the same instrument this
+			// repository uses for the relay retention rule and the star-consent guard.
+			const source = (await Bun.file(new URL("../src/lib/bounded-body.ts", import.meta.url)).text())
+				.replace(/\/\*[\s\S]*?\*\//g, "")
+				.replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+			// No per-chunk collection: the reader must accumulate into one buffer.
+			expect(source).not.toMatch(/chunks\s*\.\s*push\s*\(/);
+			expect(source).not.toMatch(/const\s+chunks\s*:\s*Uint8Array\[\]/);
+			// And that buffer must be the geometric one this module documents.
+			expect(source).toMatch(/let\s+retained\s*=\s*new\s+Uint8Array\(/);
+			expect(source).toMatch(/retained\.set\(value,\s*retainedBytes\)/);
 		});
 	});
 
