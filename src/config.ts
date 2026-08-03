@@ -36,7 +36,11 @@ import {
   type OcxProviderConfig,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
-import { getProviderRegistryEntry, providerModelWireDefault } from "./providers/registry";
+import {
+  getProviderRegistryEntry,
+  providerMatchesRegistryTransport,
+  providerModelWireDefault,
+} from "./providers/registry";
 import { resolveOpenAiVirtualModel } from "./providers/openai-virtual-models";
 import { parseDesktopProfile } from "./claude/desktop-profile";
 import { isCodexReasoningEffort, modelRecordValue } from "./reasoning-effort";
@@ -769,7 +773,20 @@ export function modelPreferHostedToolsConfigError(
         return `${field}.${key} cannot prefer ${tool}: the model does not support it`;
       }
     }
-    let effectiveWire = resolveEffectiveWire(key, registry?.adapter ?? provider.adapter);
+    // Start from the registry adapter only when this config still points at the registry's
+    // documented transport. A `preserveCustomDestination` row reused under a different
+    // endpoint keeps its own adapter at runtime (`routedProviderConfig()` honors
+    // `providerMatchesRegistryTransport()`), so trusting `registry.adapter` there would
+    // accept a preference the Responses adapter never sees. Raised by the automated
+    // review on #924.
+    const registryTransportMatches = typeof provider.baseUrl === "string"
+      && providerMatchesRegistryTransport(providerName, {
+        baseUrl: provider.baseUrl,
+        adapter: provider.adapter as OcxProviderConfig["adapter"],
+        ...(typeof provider.authMode === "string" ? { authMode: provider.authMode as OcxProviderConfig["authMode"] } : {}),
+      });
+    const baseWire = registryTransportMatches ? registry?.adapter ?? provider.adapter : provider.adapter;
+    let effectiveWire = resolveEffectiveWire(key, baseWire);
     const virtualWireModel = resolveOpenAiVirtualModel(providerName, key)?.wireModelId;
     if (virtualWireModel && virtualWireModel !== key) {
       effectiveWire = resolveEffectiveWire(virtualWireModel, effectiveWire);
