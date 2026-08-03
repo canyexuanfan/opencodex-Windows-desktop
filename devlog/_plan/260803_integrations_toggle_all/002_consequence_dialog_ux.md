@@ -132,11 +132,15 @@ produces four, each stating the state and the one thing that would change it:
 - **`config_busy`** — "다른 곳에서 설정을 저장하는 중이라 변경하지 못했습니다.
   잠시 후 다시 시도해 주세요." The ONLY refusal here where retrying is the right
   advice, because the lock is held right now and will be released. Every other
-  one describes a condition retrying cannot change.
+  one describes a condition retrying cannot change. It fires only for genuine
+  contention (`cause.code === "SQLITE_BUSY"`); a lock that cannot be opened at
+  all is a `write_failed` failure, not a wait (`030` §Lock contention).
 
-That is the complete list for this unit. The sibling unit's refusals are
-specified in the appendix and must not be added here. There is no `partial`
-either — neither of this unit's clients can half-apply.
+That is the complete list of REFUSALS the user is shown as an explained state.
+It is not the complete list of ways a request can fail: `write_failed` remains
+a 500 failure envelope with the server's own message (`030`). The sibling unit's
+refusals are specified in the appendix and must not be added here. There is no
+`partial` either — neither of this unit's clients can half-apply.
 
 One outcome is NOT a refusal and must not be styled as one:
 **`non_loopback_removed`**. Enabling Grok under a non-loopback bind removes any

@@ -80,9 +80,12 @@ cannot interleave two of them.
 One honest caveat: that lock uses `busy_timeout = 0`, so a contended acquisition
 fails immediately rather than waiting — it throws `ConfigMutationLockError`
 (`src/config.ts:1786-1793`). A cross-process collision surfaces as an error, not
-as a silent lost write, and the route turns it into a `config_busy` refusal
-(`030` §Lock contention). "Last writer wins" would have been the wrong summary:
-the second writer does not win, it fails.
+as a silent lost write. The route turns GENUINE contention — the wrapped cause
+carrying `SQLITE_BUSY` — into a `config_busy` refusal, and any other acquisition
+failure into `write_failed`, because `ConfigMutationLockError` also covers a
+lock file that cannot be opened at all (`030` §Lock contention). "Last writer
+wins" would have been the wrong summary either way: the second writer does not
+win, it fails.
 
 The shared coordinator earlier revisions relied on here is gone (audit r5 #2):
 it existed to protect journal bookkeeping this toggle does not write.
@@ -96,5 +99,8 @@ it existed to protect journal bookkeeping this toggle does not write.
 - [ ] The card switch and the Claude tab switch agree after either is used.
 - [ ] A contended config lock returns 409 `config_busy`, not a 500 and not a
       silent success (audit r7 #2).
+- [ ] A lock that cannot be ACQUIRED for a non-contention reason returns 500
+      `write_failed`, not `config_busy` — retrying an unopenable lock file
+      fails identically forever (audit r8 #2).
 - [ ] No journal row and no snapshot are written by this toggle.
 - [ ] `bun run typecheck` clean; the existing Claude tests stay green.

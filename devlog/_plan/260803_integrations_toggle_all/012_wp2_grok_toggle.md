@@ -120,14 +120,93 @@ if (recheck.kind === "orphaned_marker") return refusal(409, "orphaned_marker", .
 return injectGrokConfig(models, ...);            // synchronous from here
 ```
 
+`injectGrokConfig` is declared `function`, not `async`, and its body does only
+synchronous fs work (`src/grok/inject.ts:333`). So once entered nothing yields.
+
+**That closes the in-process gap and not the cross-process one** (audit r8 #1).
+Bun's event loop cannot interleave another request between the recheck and the
+write, but `ocx ensure`, a second proxy, or a hand edit can still orphan the
+file in that window. Synchronicity is not exclusion.
+
+### Where the hole actually is: one branch, not the whole writer
+
+`injectGrokConfig` already refuses an orphaned marker correctly on its main
+path — `if (originalRegion?.orphaned) return orphanedMarkerResult("injection")`
+(`src/grok/inject.ts:382`). The swallowed refusal exists only in the
+**non-loopback** branch above it, which calls `stripGrokConfig` and reads back
+`removed.changed` while discarding `removed.ok` (`inject.ts:356-369`).
+
+So the loopback enable — the overwhelmingly common case, and the only one that
+writes a fence — is already race-safe: whatever the file looks like when the
+writer reads it, that read decides.
+
+### The fix: check the result we already have
+
+The route does not need cross-process locking, a modified writer, or a new
+delegate. It needs to stop discarding a value that is already returned:
+
+```ts
+const result = injectGrokConfig(port, models, { hostname, grokHome, excluded });
+// The non-loopback branch reports its own strip only through `changed`, so a
+// strip that REFUSED and a strip that found nothing are indistinguishable in
+// the result. Re-inspect to tell them apart — after the write, when the file
+// state is final.
+if (result.skippedReason === "non-loopback") {
+  const after = inspectGrokConfig({ grokHome });
+  if (after.kind === "orphaned_marker") {
+    return refusal(409, "orphaned_marker", ...);   // the fence is still there
+  }
+  return ok({ changed: result.changed, state: "absent", reason: "non_loopback_removed" });
+}
+```
+
+The post-write inspection is authoritative because it reads the file AFTER every
+write this operation performs. A later `ocx ensure` can still change things, but
+that is true of any answer we give and is not a race — it is time passing.
+
+This is deliberately the narrowest fix that is actually correct. The
+alternatives the audit offered — propagating the orphan result out of
+`injectGrokConfig`, or a cross-process lock over every Grok writer — both change
+behavior for `ocx start`/`ensure`, whose policy skip must never block startup.
+Neither belongs to a unit that adds a GUI switch.
+
+### What the route must rebuild, exactly
+
+Bypassing the wrapper means rebuilding what it passed. It is a short, closed
+list — verified against `src/grok/sync.ts:36-66`, and if it grows, this route
+has to grow with it:
+
+```ts
+// 1. Native slugs, each with its context window — without it Grok falls back to
+//    its own 200k default and understates a 372k model.
+const native = visibleNativeSlugs(config).map(id => ({
+  id, ...(nativeOpenAiContextWindow(id) !== undefined ? { contextWindow: nativeOpenAiContextWindow(id) } : {}),
+}));
+// 2. Routed models, filtered by catalog visibility, keyed by alias when present.
+const routed = filterCatalogVisibleModels(await fetchAllModels(config), config)
+  .map(m => ({ id: m.alias ?? `${m.provider}/${m.id}`,
+    ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}) }));
+// 3. The FULL list plus the exclusion set — never a pre-filtered list. The writer
+//    allocates aliases over everything and emits only what is switched on, so a
+//    model's alias never depends on its neighbours' switches.
+injectGrokConfig(port, [...native, ...routed], {
+  hostname, grokHome, excluded: new Set(config.grokExcludedModels ?? []),
+});
+```
+
+Point 3 is the one that would silently break: passing an already-filtered list
+would make every alias depend on which models happen to be enabled, so toggling
+one model would rename the others. The wrapper's own comment says so, and this
+route inherits the rule rather than rediscovering it.
+
+A test asserts the route and `syncGrokConfig` produce an identical
+`GrokInjectModel[]` for the same config, so the two cannot drift.
+
 That means WP2 calls `injectGrokConfig` directly rather than `syncGrokConfig`,
 and does the catalog fetch itself — `syncGrokConfig` is precisely the wrapper
 that interleaves an await between the check and the write. The catalog-building
 code is small and already exported; duplicating the fence logic is what we
 refuse to do, and this duplicates none of it.
-
-`injectGrokConfig` is synchronous once entered, so nothing can slip between the
-recheck and the write.
 
 The writer is still NOT modified to propagate the orphan result. That would
 change `ocx start`/`ensure` behavior for a policy skip whose own comment says it
@@ -213,10 +292,11 @@ here: the preflight refuses it first. Without that gate, `changed: false` would
 also cover "a fence we could not touch is still in the file", and `absent` would
 be false (audit r6 #4).
 
-"Can no longer reach here" means through THIS route, and only because the
-recheck sits after the last await (audit r7 #1). A concurrent `ocx ensure` can
-still orphan the file a millisecond later; no route-local check can prevent
-that, and the next `GET` reports `unsafe` when it does.
+"Can no longer reach here" means through THIS route: the pre-write recheck
+closes the in-process window (r7 #1) and the post-write inspection closes the
+cross-process one (r8 #1). A concurrent `ocx ensure` can still orphan the file a
+millisecond after we answer; no check can prevent that, and the next `GET`
+reports `unsafe` when it happens.
 
 ## What the dialog must therefore say
 
@@ -249,8 +329,17 @@ be a promise the writer does not make.
       the write, with no await in between — a test orphans the file inside a
       stubbed `fetchAllModels` and asserts the route refuses rather than
       reporting `absent` (audit r7 #1).
+- [ ] The enable path ALSO inspects after a `non-loopback` result and refuses
+      `orphaned_marker` when the fence survived — a test orphans the file
+      between the recheck and the write and asserts the route does not report
+      `absent` over a fence that is still there (audit r8 #1).
 - [ ] WP2 calls `injectGrokConfig` directly, not `syncGrokConfig`; a test
       asserts the wrapper is not on this path.
+- [ ] The route's model list is byte-identical to `syncGrokConfig`'s for the
+      same config — native slugs with context windows, routed models by alias,
+      the FULL list plus the exclusion set (not a pre-filtered list).
+- [ ] A catalog-fetch failure returns a refusal rather than writing an empty
+      fence: `syncGrokConfig` guards this and the route must too.
 - [ ] `findManagedRegion` has exactly one definition; the inspector imports it
       rather than re-implementing the boundary scan.
 - [ ] A foreign-home install-state fixture makes disable refuse `home_mismatch`

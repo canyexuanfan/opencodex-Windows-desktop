@@ -156,12 +156,32 @@ That failure needs its own envelope, or an implementer has to invent one:
 
 | HTTP | `code` | `reason` | Trigger |
 |---|---|---|---|
-| 409 | `native_integration_refused` | `config_busy` | `ConfigMutationLockError` — another process holds the config transaction |
+| 409 | `native_integration_refused` | `config_busy` | `ConfigMutationLockError` whose `cause.code === "SQLITE_BUSY"` |
+| 500 | `native_integration_failed` | `write_failed` | any other `ConfigMutationLockError` — the lock itself is broken |
 
-409 because nothing failed and nothing changed: another writer holds the lock
-right now. This is the one refusal in this unit where "try again" IS the correct
-advice, and the copy says so — unlike `orphaned_marker`, where retrying is
-exactly what cannot help.
+**The class alone does not mean contention** (audit r8 #2).
+`ConfigMutationLockError` carries a constant `code`
+(`CONFIG_MUTATION_LOCK_UNAVAILABLE`, `src/config.ts:1716`) and wraps EVERY
+acquisition failure: a database that cannot be opened, a path that cannot be
+created, an ACL that cannot be set, as well as real contention. Only the
+`cause` distinguishes them:
+
+```ts
+function isContention(error: ConfigMutationLockError): boolean {
+  const cause = error.cause as { code?: unknown } | undefined;
+  return cause?.code === "SQLITE_BUSY";
+}
+```
+
+Mapping the whole class to 409 would tell a user to retry a lock file they
+cannot open — advice that fails identically forever. Contention is 409 and
+retryable; a broken lock is a 500 and is not.
+
+In both cases the target mutation has NOT run: acquisition happens before the
+callback (`src/config.ts:1768-1798`), so "nothing was written" holds either way.
+
+`config_busy` is the one refusal in this unit where "try again" is correct
+advice — unlike `orphaned_marker`, where retrying is exactly what cannot help.
 
 ## Acceptance
 
