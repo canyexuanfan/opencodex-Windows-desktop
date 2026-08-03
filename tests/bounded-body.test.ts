@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	BOUNDED_BODY_MAX_BYTES,
+	boundedBodyBufferGrowthsForTests,
 	readBoundedResponseBody,
 } from "../src/lib/bounded-body";
 
@@ -161,6 +162,32 @@ describe("readBoundedResponseBody", () => {
 			expect(result.text.length).toBe(chunkCount);
 			expect(result.text).toBe("a".repeat(chunkCount));
 			expect(result.oversized).toBe(false);
+		});
+
+		test("retention is logarithmic in the body, not linear in the chunk count", async () => {
+			// The accumulator is the security property, and correctness cannot see it:
+			// a per-chunk array reassembles identically while retaining one object per
+			// transport chunk, which a fragmenting peer inflates far past the payload
+			// ceiling. Growth count is the observable that separates the two — a single
+			// geometric buffer doubles a handful of times regardless of fragmentation.
+			const fine = Array.from({ length: 20_000 }, () => new Uint8Array([0x61]));
+			await readBoundedResponseBody(responseFromChunks(...fine), { maxBytes: CUSTOM_CAP });
+			const fineGrowths = boundedBodyBufferGrowthsForTests();
+
+			const coarse = [new Uint8Array(20_000).fill(0x61)];
+			await readBoundedResponseBody(responseFromChunks(...coarse), { maxBytes: CUSTOM_CAP });
+			const coarseGrowths = boundedBodyBufferGrowthsForTests();
+
+			// 20k one-byte chunks fit inside the 64 KiB seed: no growth at all, and the
+			// same body delivered as one chunk behaves identically.
+			expect(fineGrowths).toBe(coarseGrowths);
+			expect(fineGrowths).toBeLessThanOrEqual(2);
+
+			// Past the seed, growth stays logarithmic: doubling from 64 KiB to 256 KiB is
+			// two reallocations no matter how the peer fragments it.
+			const big = Array.from({ length: 256 }, () => new Uint8Array(1024).fill(0x61));
+			await readBoundedResponseBody(responseFromChunks(...big), { maxBytes: CUSTOM_CAP });
+			expect(boundedBodyBufferGrowthsForTests()).toBeLessThanOrEqual(4);
 		});
 	});
 
