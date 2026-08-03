@@ -181,6 +181,9 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const { removeProvider, confirmRemoveProvider, setProviderDisabled, setDefaultProvider, updateProvider } = useProvidersCrud({
     apiBase, t, removeBusyRef, workspaceSelected, setWorkspaceSelected, setRemoveConfirmName,
     notify, fetchConfig, fetchOauth, fetchProviderQuotas,
+    // Mode PATCHes clear quota caches and thread affinity; the shared controller
+    // must re-read /active (with quota) so both tabs show the post-switch state.
+    refreshCodexAccount: () => codexPool.load(true),
   });
 
   const requestLoginOAuth = (provider: string, addAccount = false) => {
