@@ -13,6 +13,8 @@ on:
       - ".github/scripts/enforce-pr-target.test.cjs"
       - ".github/scripts/pr-hygiene.cjs"
       - ".github/scripts/pr-hygiene.test.cjs"
+      - ".github/scripts/pr-sponsored-surface.cjs"
+      - ".github/scripts/pr-sponsored-surface.test.cjs"
       - ".github/scripts/issue-translation.cjs"
       - ".github/scripts/issue-translation.test.cjs"
       - ".github/scripts/issue-triage.cjs"
@@ -37,6 +39,8 @@ on:
       - ".github/scripts/enforce-pr-target.test.cjs"
       - ".github/scripts/pr-hygiene.cjs"
       - ".github/scripts/pr-hygiene.test.cjs"
+      - ".github/scripts/pr-sponsored-surface.cjs"
+      - ".github/scripts/pr-sponsored-surface.test.cjs"
       - ".github/scripts/issue-translation.cjs"
       - ".github/scripts/issue-translation.test.cjs"
       - ".github/scripts/issue-triage.cjs"
@@ -70,6 +74,7 @@ jobs:
           node --test .github/scripts/pr-labeler.test.cjs
           node --test .github/scripts/enforce-pr-target.test.cjs
           node --test .github/scripts/pr-hygiene.test.cjs
+          node --test .github/scripts/pr-sponsored-surface.test.cjs
           node --test .github/scripts/issue-translation.test.cjs
           node --test .github/scripts/issue-triage.test.cjs
           node --test .github/scripts/parse-issue-translation-response.test.cjs
