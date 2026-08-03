@@ -120,8 +120,24 @@ export { adapterFailureFromMessage } from "./lib/errors";
  * is absent and `queries.len() > 1`. So a single query → `{ query }`; multiple → `{ queries }` with
  * no singular `query`, so Codex shows the native plural ellipsis. Empty → `{ query: "" }`.
  */
+/**
+ * Single query carries BOTH keys; a batch carries only `queries`.
+ *
+ * codex-rs reads singular `query`, and renders the batch form as "<first> ..." only when
+ * `query` is ABSENT and `queries.len() > 1` — so adding `query` to a batch would collapse
+ * that display. The plural case stays clean for exactly that reason.
+ *
+ * The single case is different. DeepSeek's native Responses parser makes `queries` a
+ * required field, so a replayed one-term `web_search_call` — carried in the history of
+ * every subsequent turn — fails deserialization with `missing field 'queries'` and 400s
+ * the rest of the conversation (#930). Adding `queries: [query]` satisfies the strict
+ * parser while leaving `query` in place, so native single-query rendering is unchanged.
+ */
 function webSearchAction(queries: string[]): Record<string, unknown> {
-  if (queries.length <= 1) return { type: "search", query: queries[0] ?? "" };
+  if (queries.length <= 1) {
+    const query = queries[0] ?? "";
+    return { type: "search", query, queries: [query] };
+  }
   return { type: "search", queries };
 }
 
