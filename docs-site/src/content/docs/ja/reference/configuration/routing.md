@@ -16,16 +16,31 @@ description: デフォルトのプロバイダーの選択、モデルの解決�
 
 opencodex は、要求されたモデルを次の順序で解決します。
 
-1. 正規の `combo/<id>` または構成されたコンボ エイリアス。正規 ID は、エイリアスが一致する前に優先されます。
-2. 構成されたプロバイダーを示すプレフィックスを持つ明示的な `<provider>/<model>` 名前空間。
-3. `gpt-*`、`o1-*`、`o3-*`、`o4-*` などのベア ネイティブ OpenAI ファミリ ID。
+1. 設定済みの `<account-selector>/<native-openai-model>` namespace。対応する保存済み Codex アカウントだけに routing され、無効または利用不能な exact target は fail closed します。
+2. 正規の `combo/<id>` または構成されたコンボ エイリアス。正規 ID は、エイリアスが一致する前に優先されます。
+3. 構成されたプロバイダーを示すプレフィックスを持つ明示的な `<provider>/<model>` 名前空間。
+4. `gpt-*`、`o1-*`、`o3-*`、`o4-*` などのベア ネイティブ OpenAI ファミリ ID。
 正規対応の `openai` プロバイダー。
-4. プロバイダーの `defaultModel` と完全に一致します。
-5. 既知のプロバイダー ファミリ モデル プレフィックス。
-6. プロバイダーの構成された `models` リスト内の正確なモデル。
-7. `defaultProvider`、要求されたモデル ID を保持します。
+5. プロバイダーの `defaultModel` と完全に一致します。
+6. 既知のプロバイダー ファミリ モデル プレフィックス。
+7. プロバイダーの構成された `models` リスト内の正確なモデル。
+8. `defaultProvider`、要求されたモデル ID を保持します。
 
 無効なプロバイダーは除外されます。無効なプロバイダーの明示的な名前空間は、フォールスルーではなく失敗します。プロバイダー エントリは、複数のプロバイダーに一致する可能性のあるルールの JSON 挿入順序でチェックされるため、ベア モデルがあいまいな可能性がある場合は明示的な名前空間を使用します。
+
+## Codex アカウントの明示的な selector
+
+`codexAccountNamespaces` は `side` のような公開 selector を保存済み Codex アカウント 1 つに
+対応付けます。`side/gpt-5.6-sol` のような request は、canonical `openai` provider が Direct mode
+の場合でもそのアカウントだけを使用し、上流には bare な `gpt-5.6-sol` model id を送信します。
+selector の後には bare native OpenAI-family id だけを指定できます。
+
+明示的な選択は Pool assignment strategy と通常の thread affinity を迂回します。対応する account が
+存在しない、一時停止中、cooldown 中、利用不能、または再認証が必要な場合、request は別の account
+へ切り替えず fail closed し、active Pool account も変更しません。bare native model id は通常の
+Pool / Direct routing を維持します。namespace map 自体は model picker row を作成しません。
+selector の検証、衝突規則、privacy guidance は
+[プロバイダーの構成](/reference/configuration/providers/)を参照してください。
 
 ## コンボ (`config.combos`)
 
