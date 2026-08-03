@@ -1,55 +1,69 @@
-# WP3 — durable per-client desired state
+# WP3 — durable desired state, admission, and convergence
 
-Research: `003_durable_desired_state.md`. Read it first; this doc is the diff.
+Research: `003_durable_desired_state.md`. Audit disposition:
+`005_audit_synthesis.md`. Read both first; this doc is the amended diff.
 
 The shipped Grok switch removes its fence but records no intent. The next
 `ocx start` calls `syncGrokConfig` and writes the fence back
-(`src/cli/index.ts:334-341`, `src/grok/sync.ts:29-65`). WP3 gives that OFF a
-durable owner before WP5 and WP6 add two more switches with the same failure
-mode.
+(`src/cli/index.ts:334-350`, `src/grok/sync.ts:29-65`). The failed first draft
+added a boolean but omitted the writers, ordering, and restart work that make the
+boolean govern the system. It also proposed removing Claude's shipped ingress
+kill switch. That decision is reversed here, plainly: the audit was right. An
+upgrading user with legacy `claudeCode.enabled=false` must not silently regain
+Claude ingress.
+
+WP3 therefore owns more than a flag. It owns the shared desired-state contract,
+field-scoped persistence, the per-client operation boundary, the six file-client
+writer, startup reconciliation, and the response grammar WP5 and WP6 consume.
 
 ## IN / OUT
 
 | Path | Change | Why it is in WP3 |
 |---|---|---|
-| `src/types.ts` | MODIFY | Defines the persisted client-id vocabulary and `OcxConfig.clientIntegrations`. |
-| `src/config.ts` | MODIFY | Parses the map without turning one malformed value into an all-clients reset; owns effective-state reads and transition writes. |
-| `src/codex/sync.ts` | MODIFY | Stops every Codex catalog/injection sync while Codex is desired OFF. |
-| `src/server/management-api.ts` | MODIFY | Gates the direct catalog refresher that provider/model routes call, and moves Claude agent sync to the compatibility helper. |
-| `src/grok/sync.ts` | MODIFY | Closes every start/ensure/restart path at the shared sync owner. |
-| `src/server/management/native-integration-routes.ts` | MODIFY | Persists Grok intent before touching its file and mirrors Claude Code's old/new keys. |
-| `src/server/management/agent-settings-routes.ts` | MODIFY | Requires both Desktop desired ON and `desktopAutoApply`, and mirrors Claude Code's settings route. |
-| `src/cli/opencode.ts` | MODIFY | Stops the inline provider layer from bypassing an OpenCode OFF. |
+| `src/types.ts` | MODIFY | Defines the complete ten-client desired-state vocabulary and `OcxConfig.clientIntegrations`. |
+| `src/config.ts` | MODIFY | Parses the map, resolves legacy Claude intent, and mutates one selected key through the existing `mutatePersistedConfig` primitive. |
+| `src/integrations/desired-state.ts` | NEW | Owns per-client single-flight, last-moment persisted-state checks, and reconciliation result types. |
+| `src/integrations/reconcile.ts` | NEW | Converges desired OFF to observed absent for the six file clients and the native handlers registered by WP3/WP5/WP6. |
+| `src/integrations/state.ts` | MODIFY | Adds required `desiredEnabled` to the six-client status helper. |
+| `src/integrations/writer.ts` | MODIFY | Re-reads persisted intent immediately before apply/disable/restore commits. |
+| `src/server/management/integration-routes.ts` | MODIFY | Persists the six-client desired state before applying/removing files; GET/status also reconciles stale OFF. |
+| `src/codex/sync.ts` | MODIFY | Stops Codex catalog/injection while OFF, joins the per-client flight, and re-checks before each artifact write. |
+| `src/grok/sync.ts` | MODIFY | Stops Grok fetch/write while OFF, joins the same Grok flight as every other caller, and re-checks before injection. |
+| `src/server/management-api.ts` | MODIFY | Gates the direct Codex catalog refresher and moves Claude agent sync to the compatibility helper. |
+| `src/server/management/native-integration-routes.ts` | MODIFY | Owns the complete four-client native contract, field-scoped Claude/Grok persistence, status helpers, and native reconciliation entry points. |
+| `src/server/management/agent-settings-routes.ts` | MODIFY | Routes Grok/Desktop background writes through the shared flight and mutation contract. |
+| `src/cli/index.ts` | MODIFY | Runs OFF reconciliation on start and both ensure branches before any automatic apply. |
+| `src/cli/opencode.ts` | MODIFY | Refuses the inline provider writer after a real OpenCode OFF and re-checks before spawn. |
 | `src/cli/claude.ts` | MODIFY | Reads Claude Code desired state through the compatibility helper. |
 | `src/claude/agents-inject.ts` | MODIFY | Reads Claude Code desired state through the compatibility helper. |
 | `src/server/system-env.ts` | MODIFY | Reads Claude Code desired state through the compatibility helper. |
-| `src/server/claude-messages.ts` | MODIFY | Removes the existing Claude-Code-only gate from the shared Messages transport. |
-| `src/server/index.ts` | MODIFY | Removes the existing Claude-Code-only gate from shared Anthropic model discovery. |
-| `tests/client-integration-desired-state.test.ts` | NEW | Pins schema defaulting, malformed-key salvage, compatibility, and mirroring. |
-| `tests/client-integration-auto-gates.test.ts` | NEW | Drives every automatic gate and proves its writer is not called. |
-| `tests/client-integration-transport-isolation.test.ts` | NEW | Proves one disabled client cannot shut down another client's transport. |
-| `tests/native-grok-toggle.test.ts` | MODIFY | Pins persist-before-mutate and desired/observed conflict reporting. |
-| `tests/native-claude-code-toggle.test.ts` | MODIFY | Pins both-key mirroring, including the old-value idempotent case. |
-| `tests/claude-management-api.test.ts` | MODIFY | Pins mirroring through the older `/api/claude-code` route. |
-| `tests/claude-messages-endpoint.test.ts` | MODIFY | Replaces the shipped transport-403 assertion with the shared-transport invariant. |
+| `src/server/claude-messages.ts` | MODIFY | Keeps both shipped Claude ingress gates and changes only their reader to `clientIntegrationEnabled`. |
+| `src/server/index.ts` | MODIFY | Keeps Anthropic discovery gated and changes only its reader to `clientIntegrationEnabled`. |
+| `tests/client-integration-desired-state.test.ts` | NEW | Pins migration, per-field mutation, contention/retry, and preservation. |
+| `tests/client-integration-auto-gates.test.ts` | NEW | Pins automatic gates, shared flights, last-moment re-checks, and OpenCode activation. |
+| `tests/client-integration-reconciliation.test.ts` | NEW | Pins persist/mutate crash points and startup/ensure/status convergence. |
+| `tests/management-integration-routes.test.ts` | MODIFY | Pins the six-client persist-before-mutate route and desired/observed responses. |
+| `tests/native-grok-toggle.test.ts` | MODIFY | Pins field-scoped persistence, conflict reporting, and retry after lock refusal. |
+| `tests/native-claude-code-toggle.test.ts` | MODIFY | Replaces the pinned live-object mutation bug with no-mutation-before-commit coverage. |
+| `tests/claude-management-api.test.ts` | MODIFY | Pins compatibility mirroring through the older Claude route. |
+| `tests/claude-messages-endpoint.test.ts` | MODIFY | Keeps the legacy OFF => 403 contract through the new reader. |
 
 OUT:
 
 | Path / surface | Reason |
 |---|---|
-| `gui/` | WP3 has no new switch. WP5 and WP6 consume this contract. |
-| `src/integrations/writer.ts` and the six-client ownership store | Observed provenance is deleted on disable (`writer.ts:373-384`); it cannot own durable OFF intent. |
-| `src/codex/journal.ts` | Crash reconciliation repairs our stale write and must run regardless of desired state. |
-| `src/service.ts` stop/uninstall teardown | Teardown removes dead proxy pointers; it must neither consult nor rewrite desired state. |
-| `src/grok/inject.ts` non-loopback cleanup | Credential-safety cleanup remains unconditional. |
-| `/v1/responses`, `/v1/messages`, `/v1/messages/count_tokens` | They are shared transports, not client installation state. No desired-state check belongs in them. |
-| Codex/Desktop mutation implementations | WP5 and WP6 own those operations. WP3 supplies only the state contract and automatic-path gates. |
-| releases, publishing, deploys, tags, repository starring | No delivery or user-identity action belongs in a foundation phase. |
+| `gui/` | WP3 adds the contract, not a new card. WP5 and WP6 consume it. |
+| `src/codex/journal.ts` | Crash reconciliation repairs a half-applied Codex write regardless of desired state (`src/codex/journal.ts:148-162`). |
+| `src/service.ts` stop/uninstall teardown | Teardown removes dead proxy pointers; it neither consults nor rewrites desired state (`src/service.ts:2587-2594`). |
+| `src/grok/inject.ts` non-loopback cleanup | Credential-safety cleanup remains unconditional (`src/grok/inject.ts:359-380`). |
+| `/v1/responses` | No client-specific gate guards it today. Codex OFF must not close the transport used by other clients. |
+| Codex/Desktop remover implementations | WP5 and WP6 implement those two removers against this contract. Their shared-file work is sequential, not parallel. |
+| releases, publishing, deploys, tags, repository starring | No delivery or user-identity action belongs in this phase. |
 
-## The schema and its one reader
+## The schema and effective-state reader
 
-MODIFY `src/types.ts` immediately before `OcxConfig` (currently line 533), then
-put the field beside `claudeCode` (currently line 544):
+MODIFY `src/types.ts` immediately before `OcxConfig` (`src/types.ts:521-533`),
+then put the field beside `claudeCode` (`src/types.ts:541-545`):
 
 ```diff
  export interface OcxApiKeyEntry {
@@ -72,32 +86,19 @@ put the field beside `claudeCode` (currently line 544):
 +  | "gajae";
 +
  export interface OcxConfig {
-   port: number;
 ```
 
 ```diff
-   /** One-time migration marker for Antigravity's static catalog default. */
-   googleAntigravityStaticCatalogVersion?: 1;
    /** Claude Code inbound + launcher settings. */
    claudeCode?: OcxClaudeCodeConfig;
-+  /**
-+   * The user's durable ON/OFF intent for each client integration, separate from
-+   * whatever config happens to be present on disk right now.
-+   *
-+   * Missing entries deliberately mean ON. Existing installations pre-date this
-+   * map, and treating absence as OFF would silently unplug working clients on the
-+   * first upgraded start — the same restart path that currently resurrects a Grok
-+   * fence after its shipped switch removed it.
-+   */
++  /** Durable user intent. Missing map/key means ON for upgrade compatibility. */
 +  clientIntegrations?: Partial<Record<ClientIntegrationId, boolean>>;
-   /**
-    * Up to 5 routed model ids ("<provider>/<model>") to feature FIRST in the injected Codex catalog.
 ```
 
 MODIFY `src/config.ts`. The parser salvages each known key independently. A
-single hand-edited `"codex": "false"` becomes absent/ON, but it cannot discard a
-valid `"grok": false` next to it; unknown future keys pass through so an older
-binary does not erase a newer client's intent on save.
+hand-edited `"codex": "false"` becomes absent/ON without discarding a valid
+`"grok": false` beside it. The object stays `.passthrough()` so an older binary
+does not erase a newer client's key on its next field-scoped mutation.
 
 ```diff
  import {
@@ -114,8 +115,6 @@ binary does not erase a newer client's intent on save.
 ```diff
  const apiKeyEntrySchema = z.object({
    key: z.string().refine(isUsableApiKeySecret),
-   // Degrades to "" here; every schema consumer then runs `normalizeApiKeyIds`,
-   // which fills it deterministically so the id is stable across loads.
    id: z.string().catch(""),
    name: z.string().catch(""),
    createdAt: z.string().catch(""),
@@ -133,33 +132,23 @@ binary does not erase a newer client's intent on save.
 +  kimi: z.boolean().optional().catch(undefined),
 +  gajae: z.boolean().optional().catch(undefined),
 +}).passthrough();
-+
- const configSchema = z.object({
-   port: z.number().int().min(0).max(65535).default(10100),
 ```
 
 ```diff
    googleAntigravityStaticCatalogVersion: z.literal(1).optional().catch(undefined),
-+  // Per-key catches preserve every valid OFF beside one malformed hand edit. A
-+  // malformed whole map degrades to absent, which is the upgrade-safe ON default.
 +  clientIntegrations: clientIntegrationsSchema.optional().catch(undefined),
    providerContextCaps: z.record(z.string(), z.number().int().positive()).optional(),
 ```
 
-Add the only effective-state reader beside the existing config feature gates
-(`websocketsEnabled`, currently line 1909). No caller may open-code
-`?.[client] ?? true`: Claude Code's old field is the transition exception.
+Add the only effective-state reader beside `websocketsEnabled`
+(`src/config.ts:1909-1911`). No caller may open-code `?.[client] ?? true` because
+Claude Code's old field is the migration exception.
 
 ```diff
  export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolean {
    return config.websockets === true;
  }
 
-+/**
-+ * Resolve durable client intent without mistaking an absent upgrade-era key for
-+ * an opt-out. Claude Code alone predates the shared map, so its old explicit OFF
-+ * remains authoritative until a route has mirrored both representations.
-+ */
 +export function clientIntegrationEnabled(
 +  config: Pick<OcxConfig, "clientIntegrations" | "claudeCode">,
 +  client: ClientIntegrationId,
@@ -169,21 +158,6 @@ Add the only effective-state reader beside the existing config feature gates
 +  if (client === "claude-code") return config.claudeCode?.enabled !== false;
 +  return true;
 +}
-+
-+/** Write the transition representation in one place so Claude OFF cannot split-brain. */
-+export function setClientIntegrationEnabled(
-+  config: OcxConfig,
-+  client: ClientIntegrationId,
-+  enabled: boolean,
-+): void {
-+  config.clientIntegrations = { ...config.clientIntegrations, [client]: enabled };
-+  if (client === "claude-code") {
-+    config.claudeCode = { ...(config.claudeCode ?? {}), enabled };
-+  }
-+}
-+
- // ---------------------------------------------------------------------------
- // Hand-edit protection for the `claudeCode` subtree (devlog 260726_claude_auth_auto/040 H1).
 ```
 
 Truth table:
@@ -195,243 +169,152 @@ Truth table:
 | `true` | any | ON |
 | `false` | any | OFF |
 
-The new key wins once present. Both Claude mutation routes write both, so the
-legacy fallback can never migrate an existing Claude OFF back to ON.
+## A2 — field-scoped persistence uses the primitive that already exists
 
-## Gate 1 — Codex's shared sync owner
+The failed draft invented `saveConfigPreservingClaudeCode` as the desired-state
+writer and mutated the request's live `config` before saving it. The shipped
+Claude route still demonstrates the bug: it assigns `config.claudeCode = next`
+at `src/server/management/native-integration-routes.ts:402-415`, then persistence
+can refuse at `:420-431`. The regression test explains why a retry needs a fresh
+object (`tests/native-claude-code-toggle.test.ts:213-218`).
 
-MODIFY `src/codex/sync.ts`. The return is a successful no-op because desired OFF
-is policy, not a failed catalog refresh. The gate precedes the external-provider
-branch too; that branch still calls `injectCodexConfig` (`sync.ts:56-70`).
+Do not add that writer. `mutatePersistedConfig` already has the required real
+contract (`src/config.ts:1825-1832,1854-1906`):
 
-```diff
--import { applyProxyEnv, loadConfig } from "../config";
-+import { applyProxyEnv, clientIntegrationEnabled, loadConfig } from "../config";
+```ts
+export function mutatePersistedConfig<T>(
+  mutate: (config: OcxConfig) => { changed: boolean; value: T },
+):
+  | { status: "committed" | "unchanged"; value: T }
+  | { status: "unavailable"; reason: "missing" | "invalid" | "conflict" };
 ```
 
+It reads the current disk bytes, clones before invoking the callback, re-runs the
+callback against the latest snapshot, and commits the confirmed clone under the
+shared SQLite mutation lock. Build the one-key mutation on top of that signature:
+
 ```diff
- export async function syncModelsToCodex(
-   port?: number,
-   config: OcxConfig = loadConfig(),
-   log: Pick<Console, "log" | "error"> | null = console,
-   deps: CodexSyncDeps = defaultDeps,
- ): Promise<CodexSyncResult> {
-+  if (!clientIntegrationEnabled(config, "codex")) {
-+    return {
-+      ok: true,
-+      added: 0,
-+      catalogPath: null,
-+      catalogExists: false,
-+      catalogWritten: false,
-+      cacheSynced: false,
-+      message: "Codex integration sync skipped: desired state is OFF.",
-+    };
-+  }
-   const p = port ?? config.port ?? 10100;
++export interface ClientIntegrationMutationValue {
++  config: OcxConfig;
++  desiredEnabled: boolean;
++}
++
++export function mutateClientIntegrationEnabled(
++  client: ClientIntegrationId,
++  enabled: boolean,
++): PersistedConfigMutationOutcome<ClientIntegrationMutationValue> {
++  return mutatePersistedConfig(config => {
++    const mapAlreadyMatches = config.clientIntegrations?.[client] === enabled;
++    const legacyAlreadyMatches = client !== "claude-code"
++      || config.claudeCode?.enabled === enabled;
++    if (mapAlreadyMatches && legacyAlreadyMatches) {
++      return { changed: false, value: { config, desiredEnabled: enabled } };
++    }
++    config.clientIntegrations = { ...config.clientIntegrations, [client]: enabled };
++    if (client === "claude-code") {
++      config.claudeCode = { ...(config.claudeCode ?? {}), enabled };
++    }
++    return { changed: true, value: { config, desiredEnabled: enabled } };
++  });
++}
 ```
 
-This one gate covers `ocx start`, both `ocx ensure` branches, `POST /api/sync`,
-`ocx sync`, `ocx restore back`, custom-model edits, and the direct CLI provider
-sync caller (`src/cli/index.ts:318-341,365-411,756-829`,
-`src/cli/models.ts:102-206`, `src/cli/provider.ts:235`).
+Only the callback-local clone is mutated. A route uses `outcome.value.config` for
+the following file operation; it does not patch `ctx.config` before or after the
+commit. A later status read loads persisted state. This prevents one long-lived
+request object from overwriting a newer disk edit and makes lock refusal retryable
+with the same object.
 
-## Gate 2 — provider/model catalog refreshes that bypass sync
+The helper touches only `clientIntegrations[client]`, plus
+`claudeCode.enabled` for the one compatibility client. It preserves all other
+client keys, providers, API settings, and unrelated `claudeCode` fields.
 
-MODIFY `src/server/management-api.ts`. `refreshCodexCatalogBestEffort` directly
-calls `refreshCodexModelCatalog` today (`management-api.ts:105-112`), so putting
-the check only in `syncModelsToCodex` leaves every provider/model/combo mutation
-able to rewrite Codex artifacts.
+Required persistence tests:
 
-```diff
- import {
-   DEFAULT_SUBAGENT_MODELS,
-+  clientIntegrationEnabled,
-   codexAutoStartEnabled,
-```
+1. Two writers toggling different clients from the same stale starting object
+   both survive in the final file.
+2. Simultaneous toggles of different clients preserve both keys; simultaneous
+   opposing toggles of one client serialize to one whole outcome, never a split
+   legacy/new representation.
+3. A held mutation lock refuses without changing the live object; retry with the
+   same object succeeds after release.
+4. Claude mirroring preserves `authMode`, `injectAgents`, `desktopProfile`,
+   `desktopAutoApply`, and unknown hand-edited Claude fields.
 
-```diff
-   async function refreshCodexCatalogBestEffort(): Promise<void> {
-+    if (!clientIntegrationEnabled(config, "codex")) return;
-     if (deps.refreshCodexCatalog) return deps.refreshCodexCatalog();
-     try {
-       const { refreshCodexModelCatalog } = await import("../codex/refresh");
-       await refreshCodexModelCatalog(config);
-```
+## A1 reversal — keep client-specific Claude ingress admission
 
-The gate comes before the injected dependency. Otherwise tests can pass while a
-production caller bypasses policy through a configured seam.
+The earlier invariant was over-broad. Client installation state must not stop the
+proxy or a different client, but ingress admission is itself a client contract.
+`claudeCode.enabled` is the documented, shipped kill switch used before body work
+for `/v1/messages` and `/v1/messages/count_tokens`
+(`src/server/claude-messages.ts:65-69,543-548,868-872`) and before Anthropic model
+discovery (`src/server/index.ts:493-502`). Removing those checks would turn a
+legacy OFF into ON during upgrade.
 
-## Gate 3 — every Grok startup/ensure caller
-
-MODIFY `src/grok/sync.ts`, before catalog fetch and before the writer. Do not add
-`"disabled"` to `GrokInjectResult.skippedReason`: those values are writer policy
-outcomes from `injectGrokConfig`; desired OFF never reaches that writer.
+KEEP every gate and change only the reader:
 
 ```diff
- import { visibleNativeSlugs, filterCatalogVisibleModels, nativeOpenAiContextWindow, type CatalogModel } from "../codex/catalog";
 +import { clientIntegrationEnabled } from "../config";
- import type { OcxConfig } from "../types";
-```
-
-```diff
- export async function syncGrokConfig(
-   port: number,
-   config: OcxConfig,
-   opts: { hostname?: string; grokHome?: string } = {},
-   deps: GrokSyncDeps = { fetchAllModels: defaultFetchAllModels, injectGrokConfig },
- ): Promise<GrokInjectResult> {
-+  if (!clientIntegrationEnabled(config, "grok")) {
-+    return {
-+      ok: true,
-+      changed: false,
-+      message: "Grok config sync skipped: desired state is OFF.",
-+    };
-+  }
-   let models: GrokInjectModel[];
-```
-
-This closes all three real callers: start and both ensure branches
-(`src/cli/index.ts:334-341,372-379,398-404`) plus `/api/grok/apply`, whose flight
-loads fresh persisted config before calling this helper
-(`src/server/management/agent-settings-routes.ts:94-107,639-652`).
-
-## Gate 4 — Desktop auto-apply is two policies, not one
-
-MODIFY `src/server/management/agent-settings-routes.ts`. Desktop desired state
-and `desktopAutoApply` answer different questions: “may opencodex manage Desktop?”
-and “may provider changes rewrite the saved managed profile?” Both must allow the
-write.
-
-```diff
- import {
-   DEFAULT_SUBAGENT_MODELS,
-+  clientIntegrationEnabled,
-   codexAutoStartEnabled,
-```
-
-```diff
-   /** Best-effort Desktop 3P config auto-reconcile when providers change. */
-   async function autoApplyDesktopBestEffort(): Promise<void> {
-     try {
-+      if (!clientIntegrationEnabled(config, "claude-desktop")) return;
-       if (config.claudeCode?.desktopAutoApply === false) return;
-       if (!config.claudeCode?.desktopProfile) return;
-```
-
-An absent desired key and absent `desktopAutoApply` both preserve the current
-auto-apply behavior. `desktopAutoApply: false` must never be migrated into
-Desktop desired OFF (`003_durable_desired_state.md:106-115`).
-
-## Gate 5 — `ocx opencode` cannot inject around disk state
-
-MODIFY `src/cli/opencode.ts`. The command builds `OPENCODE_CONFIG_CONTENT`, whose
-provider block outranks global, project, and custom disk config
-(`opencode.ts:461-477`). INFERRED decision: an explicit invocation while desired
-OFF refuses with exit 1, matching `ocx claude`; launching an unwired OpenCode from
-a command whose contract says “wired to the local proxy” would be a false green.
-
-```diff
--import { loadConfig } from "../config";
-+import { clientIntegrationEnabled, loadConfig } from "../config";
-```
-
-```diff
- export async function cmdOpencode(args: string[]): Promise<number> {
-   const config = loadConfig();
-+  if (!clientIntegrationEnabled(config, "opencode")) {
-+    console.error("OpenCode integration is disabled (config.clientIntegrations.opencode=false — turn it ON before using `ocx opencode`).");
-+    return 1;
-+  }
-   const live = await ensureProxyForOpencode(config);
-```
-
-The gate precedes `ensureProxyForOpencode`; a disabled client command must not
-start the proxy merely to refuse later.
-
-## Claude Code transition consumers
-
-The new map is authoritative when present; mirroring is compatibility, not a
-license for old consumers to open-code the legacy field forever. Replace the
-three Claude-Code-specific automatic gates and the management agent-sync gate.
-
-MODIFY `src/cli/claude.ts`:
-
-```diff
--import { loadConfig } from "../config";
-+import { clientIntegrationEnabled, loadConfig } from "../config";
-```
-
-```diff
- export async function cmdClaude(args: string[]): Promise<number> {
-   const config = loadConfig();
+@@
+ function claudeInboundDisabled(config: OcxConfig): Response | null {
 -  if (config.claudeCode?.enabled === false) {
--    console.error("Claude inbound is disabled (config.claudeCode.enabled=false — flip the Claude ON toggle in the GUI or edit config).");
 +  if (!clientIntegrationEnabled(config, "claude-code")) {
-+    console.error("Claude Code integration is disabled — turn it ON before using `ocx claude`.");
-     return 1;
+     return anthropicErrorResponse(403, "Claude inbound is disabled (GUI: Claude ON toggle / config.claudeCode.enabled)", "permission_error");
    }
-```
-
-MODIFY `src/claude/agents-inject.ts`:
-
-```diff
--import { DEFAULT_SUBAGENT_MODELS, hasOwnProvider } from "../config";
-+import { clientIntegrationEnabled, DEFAULT_SUBAGENT_MODELS, hasOwnProvider } from "../config";
+   return null;
+ }
 ```
 
 ```diff
- export function injectClaudeAgentDefs(config: OcxConfig, windows: Record<string, number>, configDir?: string): string[] | null {
--  if (config.claudeCode?.enabled === false || config.claudeCode?.injectAgents === false) {
-+  if (!clientIntegrationEnabled(config, "claude-code") || config.claudeCode?.injectAgents === false) {
+         const wantsAnthropicList = req.headers.get("anthropic-version") !== null
+           || url.searchParams.get("flavor") === "anthropic";
+         if (wantsAnthropicList && !url.searchParams.has("client_version")) {
+-          if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, config);
++          if (!clientIntegrationEnabled(config, "claude-code")) {
++            return jsonResponse({ data: [] }, 200, req, config);
++          }
 ```
 
-MODIFY `src/server/system-env.ts`:
+The corrected invariant is precise:
+
+| Surface | Desired OFF behavior |
+|---|---|
+| Codex `/v1/responses` | Remains admitted. No Codex client gate guarded this transport. |
+| Claude Code `/v1/messages` and `/count_tokens` | Returns the shipped 403 because this is Claude Code ingress admission. |
+| Anthropic-flavored model discovery | Returns an empty list while Claude Code is OFF, preserving the shipped kill switch. |
+| Proxy lifecycle | Remains running. No toggle calls stop/restart/uninstall. |
+| A different client's writer/transport | Remains available unless that different client's own desired key is OFF. |
+
+Compatibility activation: load a legacy file containing only
+`claudeCode.enabled=false`, run the migration/load path with no new key, then hit
+both Messages handlers and Anthropic discovery. Both handlers still return 403
+and discovery still returns `{ data: [] }`. This test must fail if either old
+gate is removed.
+
+## A6 — the complete shared native contract, consumed rather than redefined
+
+The first roadmap dispatched WP5 and WP6 in parallel even though both edit
+`native-integration-routes.ts` and its client union. Their proposed unions do not
+compose: one adds Codex and the other adds Desktop. WP3 defines the final contract
+once. WP5 runs first where shared files overlap; WP6 rebases on WP5 and runs
+second. They may proceed independently only on disjoint files.
+
+MODIFY `src/server/management/native-integration-routes.ts:31-74`:
 
 ```diff
--import { getConfigDir } from "../config";
-+import { clientIntegrationEnabled, getConfigDir } from "../config";
-```
-
-```diff
- export async function injectSystemEnv(port: number, config: OcxConfig): Promise<SystemEnvResult> {
-   if (process.platform !== "darwin") return { injected: false, reason: "not macOS" };
--  if (config.claudeCode?.enabled === false) return { injected: false, reason: "claude disabled" };
-+  if (!clientIntegrationEnabled(config, "claude-code")) return { injected: false, reason: "claude disabled" };
-```
-
-MODIFY the already-open `src/server/management-api.ts` import above, then:
-
-```diff
-   async function syncClaudeAgentDefsBestEffort(): Promise<void> {
-     try {
-       const { injectClaudeAgentDefs } = await import("../claude/agents-inject");
--      if (config.claudeCode?.enabled === false || config.claudeCode?.injectAgents === false) {
-+      if (!clientIntegrationEnabled(config, "claude-code") || config.claudeCode?.injectAgents === false) {
-```
-
-## Persist desired intent before the Grok mutation
-
-MODIFY `src/server/management/native-integration-routes.ts`. The config write is
-the intent commit; fence inspection/removal/injection is observation and may
-refuse. Never roll the committed flag back because the file conflicted.
-
-```diff
--import { readRuntimePort, saveConfigPreservingClaudeCode } from "../../config";
-+import { clientIntegrationEnabled, readRuntimePort, saveConfigPreservingClaudeCode, setClientIntegrationEnabled } from "../../config";
-```
-
-The response must keep the two states separate. `state` remains observed disk
-state for compatibility; `desiredEnabled` is the persisted intent.
-
-```diff
+-export type NativeIntegrationClientId = "claude" | "grok";
++export type NativeIntegrationClientId =
++  | "codex"
++  | "claude"
++  | "claude-desktop"
++  | "grok";
+@@
  export interface NativeStatus {
    clientId: NativeIntegrationClientId;
    state: "absent" | "current" | "unsafe";
 +  desiredEnabled: boolean;
    installed: boolean;
-```
-
-```diff
+@@
  export interface NativeToggleEnvelope {
    ok: true;
    clientId: NativeIntegrationClientId;
@@ -439,227 +322,375 @@ state for compatibility; `desiredEnabled` is the persisted intent.
    state: NativeStatus["state"];
 +  desiredEnabled: boolean;
    message: string;
-```
-
-```diff
+@@
  export interface NativeRefusalEnvelope {
    error: string;
    code: "native_integration_refused" | "native_integration_failed";
    clientId: NativeIntegrationClientId;
    reason: NativeRefusalReason;
    message: string;
-+  desiredEnabled?: boolean;
++  desiredEnabled: boolean;
 +  observedState?: NativeStatus["state"];
++  residualPaths?: string[];
  }
 ```
 
-Change `claudeCodeEnabled` into a compatibility alias and report desired state
-from both GET rows:
+The status helpers own the native-id mapping and make omission a type error:
 
 ```diff
- /** Absent means ON: the six read sites all treat only an explicit `false` as off. */
- export function claudeCodeEnabled(config: ManagementContext["config"]): boolean {
--  return config.claudeCode?.enabled !== false;
-+  return clientIntegrationEnabled(config, "claude-code");
- }
++function desiredClientId(clientId: NativeIntegrationClientId): ClientIntegrationId {
++  return clientId === "claude" ? "claude-code" : clientId;
++}
++
++function desiredEnabledForNative(
++  config: Pick<OcxConfig, "clientIntegrations" | "claudeCode">,
++  clientId: NativeIntegrationClientId,
++): boolean {
++  return clientIntegrationEnabled(config, desiredClientId(clientId));
++}
++
++function withDesiredState(
++  config: Pick<OcxConfig, "clientIntegrations" | "claudeCode">,
++  observed: Omit<NativeStatus, "desiredEnabled">,
++): NativeStatus {
++  return {
++    ...observed,
++    desiredEnabled: desiredEnabledForNative(config, observed.clientId),
++  };
++}
+```
+
+`claudeStatus`, `grokStatus`, and later `codexStatus`/`desktopStatus` return through
+`withDesiredState`. Every success literal supplies `desiredEnabled`; every refusal
+uses a single serializer that supplies the persisted intent and, after persistence,
+the last observed state. WP5 and WP6 delete their local union/schema diffs and use
+these helpers.
+
+The six file-client schema follows the same two-state rule. MODIFY
+`src/integrations/state.ts:30-42` and the route envelopes at
+`src/server/management/integration-routes.ts:44-55`:
+
+```diff
+ export interface IntegrationStatus {
+   clientId: IntegrationClientId;
+   state: IntegrationState;
++  desiredEnabled: boolean;
+   installed: boolean;
 ```
 
 ```diff
-   return {
-     clientId: "claude",
-     state: claudeCodeEnabled(config) ? "current" : "absent",
-+    desiredEnabled: claudeCodeEnabled(config),
+-export type IntegrationToggleEnvelope =
+-  | ({ clientId: IntegrationClientId } & ApplyResult)
+-  | ({ clientId: IntegrationClientId } & DisableResult);
++export type IntegrationToggleEnvelope = (
++  | ({ clientId: IntegrationClientId } & ApplyResult)
++  | ({ clientId: IntegrationClientId } & DisableResult)
++) & { desiredEnabled: boolean };
 ```
 
-```diff
--function grokStatus(): NativeStatus {
-+function grokStatus(config: ManagementContext["config"]): NativeStatus {
-   const seen = inspectGrokConfig();
-```
+`readIntegrationState` is the status helper every surface already uses
+(`src/integrations/state.ts:225-289`); add
+`desiredEnabled: clientIntegrationEnabled(input.config, input.clientId)` to all
+three return sites, including unsafe path-resolution and unreadable-file returns.
+
+## A3 — six file clients persist intent before touching their files
+
+The failed draft put `ocx opencode` behind a desired-state guard but gave
+OpenCode, Pi, Hermes, OpenClaw, Kimi, and Gajae no writer for that state. The
+real switch is `PUT /api/client-integrations/:clientId`, which currently goes
+straight from body validation to `applyIntegration`/`disableIntegration`
+(`src/server/management/integration-routes.ts:507-527`). Route it through the same
+field-scoped mutation first:
 
 ```diff
-   return {
-     clientId: "grok",
-     state,
-+    desiredEnabled: clientIntegrationEnabled(config, "grok"),
-     installed: seen.kind !== "not_installed",
-```
-
-```diff
-   if (url.pathname === "/api/native-integrations" && req.method === "GET") {
-     const { getConfigPath } = await import("../../config");
-     return jsonResponse({
--      clients: [claudeStatus(config, getConfigPath()), grokStatus()],
-+      clients: [claudeStatus(config, getConfigPath()), grokStatus(config)],
-```
-
-In `handleGrokToggle`, persist immediately after body validation and before the
-first inspector. If config persistence fails, do not touch the Grok file; that is
-the only failure allowed to prevent the desired-state commit.
-
-```diff
-     }
-     const enabled = body.enabled;
-+    if (config.clientIntegrations?.grok !== enabled) {
-+      const previousClientIntegrations = config.clientIntegrations;
-+      setClientIntegrationEnabled(config, "grok", enabled);
-+      const persist = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
-+      try {
-+        persist(config);
-+      } catch (error) {
-+        if (previousClientIntegrations === undefined) delete config.clientIntegrations;
-+        else config.clientIntegrations = previousClientIntegrations;
-+        if (isConfigLockError(error)) {
-+          return isLockContention(error)
-+            ? refusal(409, "grok", "config_busy",
-+                "Another process is saving the configuration right now. Desired state was not changed; try again in a moment.")
-+            : refusal(500, "grok", "write_failed",
-+                `Desired state could not be saved: ${error instanceof Error ? error.message : String(error)}`);
-+        }
-+        throw error;
-+      }
-+    }
-
-     /*
-      * The inspector runs BEFORE either delegate, in BOTH directions (012 §In
-```
-
-Every success envelope in this function adds `desiredEnabled: enabled`. Every
-post-persist refusal adds `desiredEnabled: enabled` and the last observed state.
-The ownership refusal is the regression case:
-
-```diff
-       const owned = assertNativeTeardownOwned();
--      if (!owned.ok) return refusal(409, "grok", "home_mismatch", owned.message);
-+      if (!owned.ok) {
-+        return jsonResponse({
-+          error: "native integration change refused",
-+          code: "native_integration_refused",
-+          clientId: "grok",
-+          reason: "home_mismatch",
-+          desiredEnabled: false,
-+          observedState: "current",
-+          message: `${owned.message} Desired OFF was saved; the observed Grok block is still present.`,
-+        } satisfies NativeRefusalEnvelope, 409);
-+      }
-```
-
-Apply the same shape to orphaned-marker, late writer refusal, and catalog failure:
-desired remains what was saved; `observedState` comes from the inspector rather
-than from the requested direction. The route may say “desired OFF, observed
-conflict”; it must never answer “still ON” as though the request disappeared.
-
-## Mirror Claude Code during transition
-
-The native route currently skips persistence when legacy effective state already
-matches (`native-integration-routes.ts:393-400`). That is no longer enough: an
-old `{ claudeCode: { enabled: false } }` must acquire the new false key even
-though its effective state is already OFF.
-
-```diff
-     const enabled = body.enabled;
--    if (claudeCodeEnabled(config) === enabled) {
-+    const alreadyMirrored = config.clientIntegrations?.["claude-code"] === enabled
-+      && config.claudeCode?.enabled === enabled;
-+    if (alreadyMirrored) {
-       return jsonResponse({
-         ok: true, clientId: "claude", changed: false,
-         state: enabled ? "current" : "absent",
-+        desiredEnabled: enabled,
-```
-
-```diff
--    const next = { ...(config.claudeCode ?? {}), enabled };
-+    setClientIntegrationEnabled(config, "claude-code", enabled);
-+    const next = config.claudeCode!;
-```
-
-All native Claude success envelopes add `desiredEnabled: enabled`.
-
-The older `/api/claude-code` route in
-`src/server/management/agent-settings-routes.ts` already persists the legacy
-field (`agent-settings-routes.ts:941,1060-1070`); mirror the map before that same
-save rather than introducing a second write:
-
-```diff
-     }
-     config.claudeCode = next;
-     // Stamp the migration sentinel on EVERY persist of this block. The migration reads
+   const parsed = await readJsonBody(ctx);
+   if (parsed instanceof Response) return parsed;
 @@
-     // would be converted into a sticky manual subscription by the next startServer, and
-     // auto would survive exactly one proxy lifetime with no way back.
-     if (!next.authModeMigratedAt) next.authModeMigratedAt = new Date().toISOString();
-+    if (body.enabled !== undefined) {
-+      setClientIntegrationEnabled(config, "claude-code", next.enabled !== false);
+   try {
++    const persisted = mutateClientIntegrationEnabled(requestedClient, parsed.enabled);
++    if (persisted.status === "unavailable") {
++      return desiredStatePersistenceFailure(requestedClient, persisted.reason, ctx);
 +    }
-     const { saveConfigPreservingClaudeCode: save } = await import("../../config");
++    const operationConfig = persisted.value.config;
+-    const input = await buildIntegrationWriteInput(requestedClient, ctx, integrationStore());
++    const input = await buildIntegrationWriteInput(
++      requestedClient,
++      ctx,
++      integrationStore(),
++      operationConfig,
++    );
+     const result = await runClientIntegrationFlight(
+       requestedClient,
+       parsed.enabled ? "apply" : "disable",
+-      input.io?.now ?? Date.now,
+       () => Promise.resolve(parsed.enabled
+         ? applyIntegration(input)
+         : disableIntegration(input)),
+     );
+-    if (!result.ok) return writerFailureResponse(requestedClient, result, ctx);
+-    return jsonResponse(result satisfies IntegrationToggleEnvelope, 200, req, ctx.config);
++    if (!result.ok) {
++      return writerFailureResponse(requestedClient, result, ctx, {
++        desiredEnabled: parsed.enabled,
++        observedState: readIntegrationState(input).state,
++      });
++    }
++    return jsonResponse({
++      ...result,
++      desiredEnabled: parsed.enabled,
++    } satisfies IntegrationToggleEnvelope, 200, req, operationConfig);
 ```
 
-Import `setClientIntegrationEnabled` from `../../config` in the existing import
-block. The setter runs after the migration sentinel because it reassigns
-`config.claudeCode`; this order guarantees the mirrored object is the stamped
-object that the existing save persists.
+The helper takes the committed snapshot explicitly so model export and the writer
+cannot fall back to the stale request object:
 
-## What must NOT be gated
+```diff
+ async function buildIntegrationWriteInput(
+   clientId: IntegrationClientId,
+   ctx: ManagementContext,
+   store: IntegrationStateStore,
++  config: OcxConfig = ctx.config,
+ ): Promise<IntegrationWriteInput> {
+   return {
+     clientId,
+-    models: await loadExportModels(ctx.config),
+-    config: ctx.config,
+-    port: Number(ctx.url.port) || ctx.config.port,
++    models: await loadExportModels(config),
++    config,
++    port: Number(ctx.url.port) || config.port,
+```
 
-| Surface | Required invariant |
+Ordering and failure behavior are fixed:
+
+1. Invalid body: no intent and no file change.
+2. Missing/invalid/conflicted config or lock refusal: no intent and no file change;
+   return retryable `config_busy` only for real contention.
+3. Intent committed, file mutation succeeds: return desired and observed state.
+4. Intent committed, file mutation refuses/fails: never roll intent back. Return
+   `desiredEnabled` plus freshly inspected `observedState` and the writer's recovery
+   fields. Startup/ensure/status retries convergence.
+
+Activation test: create a real temporary OpenCode config, disable OpenCode through
+the real management route, then invoke `cmdOpencode`. The command must refuse before
+proxy ensure/spawn, and the OpenCode file bytes must remain unchanged. This proves
+the CLI guard is reachable from the state the real switch writes.
+
+## A4 — per-client single-flight and the last-moment write check
+
+Entry checks alone are racy. Codex awaits catalog work at
+`src/codex/sync.ts:83-108` and then injects at `:110`; Grok awaits model discovery
+at `src/grok/sync.ts:35-57` and then injects at `:61-65`. Either can start ON,
+pause, persist OFF in another request, and write after OFF.
+
+NEW `src/integrations/desired-state.ts` owns one operation boundary for all ten
+ids. It replaces route-local Grok/apply and six-client flight maps. The boundary
+has two layers:
+
+- an in-process promise map joins an identical operation and refuses a competing
+  direction;
+- an OS-backed SQLite transaction in a per-client coordinator file prevents a
+  CLI/startup process and the server's GUI/background process from writing the
+  same client concurrently. Separate files preserve concurrency between different
+  clients. Process exit releases the transaction; there is no stale lease row.
+
+Every GUI route, CLI writer, startup sync, ensure sync, Desktop auto-apply, Grok
+apply, Codex refresh, and WP5/WP6 native mutation reaches
+`runClientIntegrationFlight(clientId, operationKey, operation)`. It enters exactly
+once at the lowest shared owner of the irreversible write: a route that delegates
+to `syncGrokConfig` or `syncModelsToCodex` does not acquire an outer flight and
+deadlock the same client. Direct strip/restore routes acquire it themselves. No
+surface keeps its own map.
+
+The flight is necessary but not sufficient. Every irreversible write calls this
+immediately before commit:
+
+```ts
+export function requirePersistedClientIntent(
+  client: ClientIntegrationId,
+  expectedEnabled: boolean,
+): { ok: true; config: OcxConfig } | {
+  ok: false;
+  reason: "desired_state_changed" | "desired_state_unavailable";
+};
+```
+
+The helper reads a fresh valid disk snapshot. Missing or invalid state fails
+closed; it never falls back to a stale request object. Apply/inject/spawn requires
+ON. Disable/removal requires OFF. The check is placed after async catalog/model
+work and after compare-before-write, directly before each of these boundaries:
+
+| Writer | Last-moment check |
 |---|---|
-| `src/codex/journal.ts:148-162` | `reconcileJournal` always repairs a dead process's stale Codex state. Desired OFF is not permission to leave a half-applied journal. |
-| `src/integrations/writer.ts:171-223` | Path resolution, ownership, parse, drift, and compare-before-write checks always run when a mutation is requested. |
-| `src/service.ts:2587-2594` | Stop restores native Codex and strips Grok's dead proxy pointer. It does not write `clientIntegrations`; stopping is not opting out. |
-| `src/grok/inject.ts:359-380` | A non-loopback bind always strips the unsafe loopback fence, even when desired Grok state is ON. |
-| `/v1/responses` | Codex desired OFF stops Codex config/catalog writes, not the Responses transport used by OpenCode, Pi, Hermes, OpenClaw, Kimi, and Gajae. |
-| `/v1/messages` and `/v1/messages/count_tokens` | Claude Code/Desktop desired state stops client-specific wiring, not the Anthropic transport shared by both clients and external callers. |
+| Codex catalog refresh | before catalog atomic replace |
+| `injectCodexConfig` | after model resolution, before config/journal mutation |
+| `injectGrokConfig` | after catalog resolution, before fenced-file write |
+| six-client `commit` | after the existing byte recheck (`src/integrations/writer.ts:292-317,367-384`), before snapshot/file/record commit |
+| Desktop profile/meta writers | before each selected-profile or metadata write |
+| `cmdOpencode` | once at entry and again immediately before spawning with `OPENCODE_CONFIG_CONTENT` |
 
-The last invariant exposes an already-shipped contradiction. Today
-`claudeCode.enabled=false` returns 403 from both Messages handlers
-(`src/server/claude-messages.ts:65-69,536-548,868-872`) and empties shared
-Anthropic model discovery (`src/server/index.ts:493-502`). Remove those gates;
-do not replace them with `clientIntegrationEnabled`.
+If the expected intent changed, the writer returns a typed skip/refusal and writes
+nothing. A caller may retry under the new direction; it may not continue with the
+old snapshot.
 
-MODIFY `src/server/claude-messages.ts`:
+Deterministic race test: pause Codex and Grok model resolution on a controlled
+promise, persist that client OFF through the real mutation helper, release the
+promise, and assert catalog/inject spies remain zero. Repeat one file client with
+its commit hook. The observable proof is unchanged target bytes, not only a skip
+message.
+
+## Automatic gates use the same owner
+
+The entry gates remain useful because they avoid needless catalog work, but each
+one enters the shared flight and still performs the last-moment check above.
+
+### Codex
+
+MODIFY `src/codex/sync.ts:49-55`:
 
 ```diff
--function claudeInboundDisabled(config: OcxConfig): Response | null {
--  if (config.claudeCode?.enabled === false) {
--    return anthropicErrorResponse(403, "Claude inbound is disabled (GUI: Claude ON toggle / config.claudeCode.enabled)", "permission_error");
--  }
--  return null;
--}
--
- async function readAnthropicBody(req: Request, budget: TranslatorBudget): Promise<unknown> {
+-import { applyProxyEnv, loadConfig } from "../config";
++import { applyProxyEnv, clientIntegrationEnabled, loadConfig } from "../config";
+@@
+ ): Promise<CodexSyncResult> {
++  if (!clientIntegrationEnabled(loadConfig(), "codex")) {
++    return codexDesiredStateSkip();
++  }
++  return runClientIntegrationFlight("codex", "sync", async () => {
+   const p = port ?? config.port ?? 10100;
+```
+
+Close the flight after the existing result return. `refreshCodexCatalogBestEffort`
+at `src/server/management-api.ts:105-112` uses the same flight/reader rather than
+a separate boolean check, so provider/model routes cannot bypass ordering.
+
+### Grok
+
+MODIFY `src/grok/sync.ts:29-35`:
+
+```diff
++import { clientIntegrationEnabled, loadConfig } from "../config";
++import { runClientIntegrationFlight } from "../integrations/desired-state";
+@@
+ ): Promise<GrokInjectResult> {
++  if (!clientIntegrationEnabled(loadConfig(), "grok")) {
++    return { ok: true, changed: false, message: "Grok config sync skipped: desired state is OFF." };
++  }
++  return runClientIntegrationFlight("grok", "sync", async () => {
+   let models: GrokInjectModel[];
+```
+
+Close the flight after injection. `/api/grok/apply` at
+`src/server/management/agent-settings-routes.ts:639-657` deletes its local
+`grokApplyFlight`; the shared owner covers start, both ensure branches, GUI apply,
+toggle, and background work.
+
+### Desktop and Claude consumers
+
+Desktop auto-apply at `src/server/management/agent-settings-routes.ts:130-150`
+requires both policies and enters the Desktop flight:
+
+```diff
+   async function autoApplyDesktopBestEffort(): Promise<void> {
+     try {
++      if (!clientIntegrationEnabled(loadConfig(), "claude-desktop")) return;
+       if (config.claudeCode?.desktopAutoApply === false) return;
+```
+
+`desktopAutoApply:false` is not migrated into Desktop OFF. Claude launcher,
+agent injection, and system-env replace direct legacy reads with
+`clientIntegrationEnabled(config, "claude-code")` as in the first draft. Claude
+ingress and discovery retain their gates as specified in A1.
+
+### OpenCode
+
+MODIFY `src/cli/opencode.ts:531-533`:
+
+```diff
+ export async function cmdOpencode(args: string[]): Promise<number> {
+   const config = loadConfig();
++  if (!clientIntegrationEnabled(config, "opencode")) {
++    console.error("OpenCode integration is disabled — turn it ON before using `ocx opencode`.");
++    return 1;
++  }
+   const live = await ensureProxyForOpencode(config);
+```
+
+The command enters the OpenCode flight and repeats
+`requirePersistedClientIntent("opencode", true)` immediately before spawn. OFF
+must not start the proxy merely to refuse later.
+
+## A5 — startup reconciliation: OFF means converge, not skip
+
+Persist OFF, crash before the remover, restart: the first draft would skip future
+apply and leave desired OFF / observed ON forever. Desired OFF is therefore a
+converge instruction.
+
+NEW `src/integrations/reconcile.ts` exposes:
+
+```ts
+export interface ClientReconcileResult {
+  clientId: ClientIntegrationId;
+  desiredEnabled: boolean;
+  observedState: "absent" | "current" | "stale" | "conflict" | "unsafe";
+  resolved: boolean;
+  message: string;
+}
+
+export async function reconcileDisabledClientIntegrations(
+  trigger: "startup" | "ensure" | "status",
+  options?: { only?: readonly ClientIntegrationId[] },
+): Promise<ClientReconcileResult[]>;
+```
+
+For every client whose fresh persisted intent is OFF:
+
+1. Inspect observed state.
+2. If absent, report resolved without writing.
+3. If applied/current/stale, enter that client's shared flight, re-read OFF, and
+   run the existing idempotent remover.
+4. Re-inspect. Report `resolved:true` only when observed state is absent.
+5. Preserve OFF and return an unresolved conflict for ownership, drift, unsafe
+   metadata, history lock, or write failure. Never report desired OFF as observed
+   OFF merely because the remover was attempted.
+
+The six file clients use `disableIntegration`; Grok uses `stripGrokConfig`; Claude
+Code has no external artifact and resolves from the persisted admission flag. WP5
+registers Codex's `restoreNativeCodex` remover, then WP6 registers Desktop's
+standard-mode remover. Registration is exhaustive over `ClientIntegrationId`, so
+the final WP6 build cannot compile with either new native client omitted.
+
+Invoke reconciliation at these real boundaries:
+
+```diff
+ // src/cli/index.ts:169-177
+ async function handleStart(options: { block?: boolean } = {}) {
+@@
+   const requestedPort = parsePortOption();
++  await reconcileDisabledClientIntegrations("startup");
+   if (!currentExternalCodexModelProvider()) reconcileJournal();
 ```
 
 ```diff
- ): Promise<Response> {
-   logCtx.surface = "claude";
--  const disabled = claudeInboundDisabled(config);
--  if (disabled) {
--    if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 403, { closeReason: "non_stream" });
--    return disabled;
--  }
-
-   let anthropicBody: unknown;
+ // src/cli/index.ts:358-365
+ async function handleEnsure() {
+   if (!currentExternalCodexModelProvider()) reconcileJournal();
++  await reconcileDisabledClientIntegrations("ensure");
+   const config = loadConfig();
 ```
 
-```diff
- /** Documented approximation: serialize system+messages+tools, run the char estimator. */
- export async function handleClaudeCountTokens(req: Request, config: OcxConfig): Promise<Response> {
--  const disabled = claudeInboundDisabled(config);
--  if (disabled) return disabled;
--
-   let body: unknown;
-```
+Both collection and per-client GET routes call status reconciliation for the ids
+being read before `readIntegrationState`/native status helpers run. Status returns
+the unresolved result in `disableBlocked` or response diagnostics; it does not
+hide a conflict and does not flip desired state back ON.
 
-MODIFY `src/server/index.ts`:
-
-```diff
-         const wantsAnthropicList = req.headers.get("anthropic-version") !== null
-           || url.searchParams.get("flavor") === "anthropic";
-         if (wantsAnthropicList && !url.searchParams.has("client_version")) {
--          if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, config);
-           // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
-```
+Crash-point tests use a hook immediately after `mutateClientIntegrationEnabled`
+returns and before the remover begins. Terminate the simulated request there,
+then invoke each of startup, ensure, and status reconciliation. For OpenCode and
+Grok, assert the previously applied bytes are removed. For a drift/ownership
+fixture, assert bytes remain, desired stays false, and the unresolved conflict is
+reported. WP5 and WP6 add the same crash point for Codex and Desktop when their
+removers land.
 
 ## Test plan
 
@@ -667,113 +698,89 @@ MODIFY `src/server/index.ts`:
 
 | Case | Activation and assertion |
 |---|---|
-| Absent-config upgrade | Load a config with no `clientIntegrations`; every id is effective ON. This is C3's upgrade case, not merely a helper call with a fabricated object. |
-| Missing key / explicit true / explicit false | For every id: absent and true are ON; only false is OFF. |
-| Claude legacy fallback | New key absent + `claudeCode.enabled=false` is OFF; absent/true is ON. |
-| New Claude key wins | New true overrides legacy false, and new false overrides legacy true. |
-| Per-key malformed salvage | Persist `{ codex: "false", grok: false }`; load yields Codex ON and Grok OFF, without falling back to a default config or losing providers. |
-| Future-key preservation | An unknown boolean key survives load/save so an older binary does not erase a newer client's intent. |
-| Setter mirroring | `setClientIntegrationEnabled(..., "claude-code", value)` writes both keys and preserves every unrelated Claude field. Other ids touch only the map. |
+| Absent-config upgrade | Load a file with no map; all ten ids are ON. |
+| Claude legacy fallback | New key absent + legacy false is OFF; new key wins once present. |
+| Per-key malformed salvage | `{ codex: "false", grok: false }` yields Codex ON and Grok OFF without losing providers. |
+| Two stale writers | Different client toggles both survive because each callback rebases on latest disk. |
+| Simultaneous toggles | Different client keys both commit; neither whole-object snapshot wins. |
+| Lock refusal and retry | Refusal changes neither disk nor live object; retry with that same object succeeds. |
+| Claude field preservation | Mirroring changes only the new key and legacy `enabled`; every unrelated Claude field survives. |
 
 ### `tests/client-integration-auto-gates.test.ts` (NEW)
 
-| Gate | Activation and observable proof |
+| Case | Activation and assertion |
 |---|---|
-| Codex sync OFF | Inject spies for catalog refresh and `injectCodexConfig`; both remain at zero, including the external-provider branch. Result is the explicit successful skip. |
-| Codex absent/ON | The same spies fire, pinning upgrade behavior. |
-| Direct management refresh OFF | Trigger a provider and a custom-model route with `refreshCodexCatalog` injected; count stays zero. This proves the bypass gate, not `syncModelsToCodex`. |
-| Grok sync OFF | Inject fetch and writer spies; neither fires. Repeat with no map and prove both fire. |
-| Desktop two-key gate | Exercise provider mutation with a saved Desktop profile for all four combinations of desired ON/OFF and `desktopAutoApply` true/false; write occurs only when both policies allow it. |
-| OpenCode OFF | Invoke the command through injectable launch seams; proxy ensure, catalog fetch, env build, and spawn remain uncalled, exit is 1. |
-| Claude compatibility consumers | New-map false with legacy field absent blocks launcher/system-env/agent writes; absent new key + legacy false does the same. |
+| Codex/Grok OFF at entry | Catalog and writer spies stay zero. |
+| Codex/Grok OFF during fetch | Pause resolution, persist OFF, release; target bytes and writer counts remain unchanged. |
+| Six-client last-moment check | Flip direction at the commit hook; no file/snapshot/record is written. |
+| Desktop two-policy gate | Write occurs only when desired ON and `desktopAutoApply` permits it. |
+| Real OpenCode activation | Disable through real PUT, invoke `cmdOpencode`; ensure/spawn stay zero and config bytes are unchanged. |
+| Shared-flight coverage | GUI, CLI, startup, ensure, and background callers for one client cannot overlap; a different client can proceed. |
 
-### Route regressions
+### Route and compatibility regressions
 
-MODIFY `tests/native-grok-toggle.test.ts`:
+- `tests/management-integration-routes.test.ts`: all six PUTs persist intent before
+  file work; post-persist refusal returns required desired plus observed state.
+- `tests/native-grok-toggle.test.ts`: same ordering, lock refusal/retry, and no
+  rollback of intent after ownership/catalog/write failure.
+- `tests/native-claude-code-toggle.test.ts`: legacy OFF mirrors even when effective
+  state already matches; a failed persist leaves the supplied config object
+  untouched and the same object can retry.
+- `tests/claude-management-api.test.ts`: the older route uses the same field-scoped
+  mutation and preserves migration sentinels/other Claude fields.
+- `tests/claude-messages-endpoint.test.ts`: legacy `enabled:false` still returns
+  403 from Messages and count-tokens; Anthropic discovery remains empty.
 
-1. Disable persists `clientIntegrations.grok=false` before `stripGrokConfig`.
-2. Ownership refusal leaves that persisted false and returns
-   `desiredEnabled:false`, `observedState:"current"`.
-3. Orphaned fence, late writer refusal, and catalog failure keep the requested
-   intent and report observed state; none rolls the flag back.
-4. A config-lock failure calls neither strip nor inject and says desired state was
-   not saved.
-5. The next `syncGrokConfig` with the saved config calls neither catalog nor
-   writer — the exact `ocx start` regression.
+### `tests/client-integration-reconciliation.test.ts` (NEW)
 
-MODIFY `tests/native-claude-code-toggle.test.ts` and
-`tests/claude-management-api.test.ts`: both routes mirror old/new values; an old
-legacy OFF plus absent new key is not treated as a no-op; unrelated Claude fields
-and the auth-mode migration sentinel survive.
-
-### `tests/client-integration-transport-isolation.test.ts` (NEW)
-
-Start the real Bun proxy with `clientIntegrations.codex=false` and
-`clientIntegrations["claude-code"]=false`. Assert `/healthz` stays healthy;
-an invalid `/v1/responses` request reaches its normal validation response rather
-than an integration-disabled response; invalid `/v1/messages` and
-`/v1/messages/count_tokens` requests return their normal 400 contract, never the
-old 403. Fetch Anthropic model discovery and assert it is not emptied by Claude
-Code OFF. This is the case proving a disabled client does not break another
-client's transport.
-
-MODIFY `tests/claude-messages-endpoint.test.ts:786-803` to remove the old test
-that requires 403. Keeping it would encode the C4 violation as a regression.
+For each current remover, persist OFF and stop at the post-persist/pre-mutate hook.
+Run startup, ensure, and status reconciliation independently and prove observed
+state becomes absent. Fault fixtures prove drift/ownership/unsafe removals remain
+unresolved and visible without changing desired OFF. WP5/WP6 append Codex/Desktop
+cases sequentially when those removers exist.
 
 ## Verification
-
-Static and suite gates:
 
 ```bash
 bun test tests/client-integration-desired-state.test.ts
 bun test tests/client-integration-auto-gates.test.ts
-bun test tests/native-grok-toggle.test.ts tests/native-claude-code-toggle.test.ts tests/claude-management-api.test.ts
-bun test tests/client-integration-transport-isolation.test.ts tests/claude-messages-endpoint.test.ts
+bun test tests/client-integration-reconciliation.test.ts
+bun test tests/management-integration-routes.test.ts tests/native-grok-toggle.test.ts
+bun test tests/native-claude-code-toggle.test.ts tests/claude-management-api.test.ts
+bun test tests/claude-messages-endpoint.test.ts
 bun run typecheck
 bun run test
 bun run privacy:scan
 ```
 
-Live proof uses the already-running proxy at `localhost:10100`; a green suite is
-not restart persistence:
+Live activation proof:
 
-1. Record `curl -fsS http://localhost:10100/healthz` and its `pid`.
-2. Through the authenticated dashboard/API, turn Grok OFF. Confirm
-   `GET /api/native-integrations` reports `desiredEnabled:false` and observed
-   `absent`, or the explicit observed conflict if ownership/drift refused removal.
-3. Run `ocx ensure`, then re-read both the status and `~/.grok/config.toml`.
-   Desired remains false and no managed fence reappears. Repeat after a real
-   proxy restart; `/healthz` returns with a new PID and Grok remains OFF.
-4. Turn Codex OFF in the WP5 surface, run `POST /api/sync` and one provider edit,
-   then prove neither Codex config nor catalog artifact changed. `/healthz` remains
-   healthy.
-5. With Claude Code desired OFF, send an invalid body to both shared paths:
-
-   ```bash
-   curl -sS -o /tmp/ocx-messages-proof.json -w '%{http_code}\n' \
-     -H 'content-type: application/json' -d '{}' \
-     http://localhost:10100/v1/messages
-   curl -sS -o /tmp/ocx-count-proof.json -w '%{http_code}\n' \
-     -H 'content-type: application/json' -d '{}' \
-     http://localhost:10100/v1/messages/count_tokens
-   ```
-
-   Both reach normal request validation (400), not integration policy (403).
-   Read the bodies back; a status code without the response body is not proof of
-   which branch ran.
-6. Re-read `/healthz`; the proxy stayed serving throughout. Compare the PID with
-   step 1 for the no-stop toggle operations and with the post-restart PID for the
-   restart persistence case.
+1. Record `/healthz` and PID.
+2. Disable Grok and OpenCode through their real management routes. Confirm each
+   status has `desiredEnabled:false` and honest observed state.
+3. Run `ocx ensure`, restart the proxy, and read the target files. Neither managed
+   contribution reappears; `/healthz` returns with the proxy still serving.
+4. Disable OpenCode, run `ocx opencode`, and observe refusal before ensure/spawn.
+5. With a legacy-only `claudeCode.enabled=false`, call Messages, count-tokens, and
+   Anthropic discovery. Observe 403, 403, and an empty model list. Then call an
+   invalid `/v1/responses` request and observe its normal validation response,
+   never a client-disabled response.
+6. Inject a post-persist crash for one file client, restart, and observe the
+   remover converge it to absent. Repeat with drift and observe the unresolved
+   conflict while desired remains OFF.
 
 ## Accept criteria
 
 | Roadmap criterion | WP3 closure |
 |---|---|
-| C2 — disabled survives restart, ensure, and `/api/sync` | Grok OFF is persisted before mutation; the shared Grok sync and Codex sync/direct-refresh owners are gated. Tests activate each path, and live proof checks the real fence after ensure and restart. |
-| C3 — absent config changes nothing on upgrade | The absent-map load test proves every integration effective ON; missing keys and explicit true remain ON. Claude's absent-key fallback preserves a legacy explicit OFF. |
-| C4 — disable never stops proxy or another transport | No lifecycle path is touched. Journal, teardown, credential cleanup, `/v1/responses`, and `/v1/messages` remain unconditional; the existing Claude transport/model-discovery gates are removed and the real proxy isolation test proves reachability. |
+| C2 — disabled survives restart, ensure, and `/api/sync` | Every real switch writes intent; every automatic writer reads it; startup/ensure/status converge residual applied state. |
+| C3 — absent config changes nothing on upgrade | Missing map/key is ON for all ten clients, except legacy Claude explicit OFF remains OFF. |
+| C4 — disable never stops proxy or another client | No lifecycle operation is added; `/v1/responses` stays ungated; Claude's own ingress admission remains gated; every other client is governed only by its own key. |
+| Coordination | `mutatePersistedConfig` prevents stale whole-object saves, the per-client flight orders every surface, and each writer re-reads intent immediately before commit. |
+| Shared contract | Native union is `codex | claude | claude-desktop | grok`; status/success always include `desiredEnabled`; WP5 then WP6 consume it sequentially. |
 
-WP3 is complete only when desired and observed state can disagree honestly. A
-successful file removal with no persisted flag is still the shipped Grok bug; a
-persisted OFF reported as observed OFF when the file is still present is a new
-lie, not a fix.
+WP3 is complete only when desired and observed state can disagree honestly and
+the system keeps trying to reconcile that disagreement. A removed file with no
+persisted intent is still the shipped Grok bug. A persisted OFF reported as
+observed OFF while bytes remain is a new lie. A legacy Claude OFF that accepts
+traffic again is a compatibility regression.
