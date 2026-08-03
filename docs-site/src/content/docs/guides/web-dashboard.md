@@ -105,11 +105,6 @@ catalog entry.
 
 The **Codex Auth** page manages the native ChatGPT/Codex route:
 
-The Providers overview separately summarizes Pool-mode usage as a display-only weighted capacity
-estimate, alongside the effective account's raw quota and the next capacity recovery. See
-[Providers overview pool capacity](/guides/providers/#providers-overview-pool-capacity) for the
-visible fields, incomplete-coverage meaning, and routing boundary.
-
 - Manually choosing an account changes the next new Codex session; an already-bound thread keeps its
   current account for that manual switch.
 - Thread affinity prevents per-request flapping. With quota auto-switch enabled, a long-running
@@ -123,6 +118,11 @@ visible fields, incomplete-coverage meaning, and routing boundary.
 - **Refresh quotas** re-reads account usage immediately so routing and the account cards use the same
   values.
 - Pool request logs use opaque labels such as `p3fa91c`, never account emails.
+
+The Providers overview separately summarizes Pool-mode usage as a display-only weighted capacity
+estimate, alongside the effective account's raw quota and the next capacity recovery. See
+[Providers overview pool capacity](/guides/providers/#providers-overview-pool-capacity) for the
+visible fields, incomplete-coverage meaning, and routing boundary.
 
 ## Starring is yours to decide, not an agent's
 

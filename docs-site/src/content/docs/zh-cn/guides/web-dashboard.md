@@ -77,6 +77,8 @@ Dashboard 的 **Sub-agent delegation** 选择器会保存 `injectionModel`，以
 选择器会列出已启用的原生与路由模型，以及全局 Codex reasoning 阶梯。API 会先验证所选强度是否
 属于全局阶梯；Codex 仍会根据目标目录条目再次校验该 spawn 强度。
 
+<a id="codex-auth-and-account-pools"></a>
+
 ## Codex Auth 与账号池
 
 **Codex Auth** 页面用于管理原生 ChatGPT/Codex 路由：

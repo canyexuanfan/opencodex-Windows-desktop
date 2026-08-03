@@ -258,7 +258,8 @@ async function fetchChatGptForwardQuota(
       publicCapacityAggregation(capacity.aggregation, "aggregate"),
     );
   }
-  const quota = active?.quota
+  const activeUsable = !!active && !active.paused && active.needsReauth !== true;
+  const quota = activeUsable && active?.quota
     ? { ...active.quota, updatedAt: active.quota.updatedAt ?? Date.now() } as CodexCapacityQuota
     : null;
   const quotaFresh = !!quota
@@ -504,6 +505,13 @@ export function reconcileProviderAccountQuotaRows(context: GenerationContext): n
   liveProviderQuotaKeys = new Set(context.providerNames);
   lastReconciledGeneration = context.generation;
   return removed;
+}
+
+/** Test-only reset so a direct reconcile call in one file cannot leak across files. */
+export function resetProviderQuotaReconcileStateForTests(): void {
+  lastReconciledGeneration = 0;
+  liveAccountQuotaKeys = new Set();
+  liveProviderQuotaKeys = new Set();
 }
 
 /** Drop cached per-account rows (all, or just one provider's). */

@@ -83,6 +83,8 @@ Dashboard의 **Sub-agent delegation** 선택기는 `injectionModel`과 선택적
 선택한 강도가 전역 단계에 있는지 검사하고, Codex는 다시 대상 카탈로그 항목이 그 강도를 지원하는지
 검사합니다.
 
+<a id="codex-auth-and-account-pools"></a>
+
 ## Codex Auth와 계정 풀
 
 **Codex Auth** 페이지는 네이티브 ChatGPT/Codex 라우트를 관리합니다.

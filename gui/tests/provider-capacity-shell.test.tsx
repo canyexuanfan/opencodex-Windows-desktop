@@ -384,6 +384,7 @@ test("only the monthly aggregate window receives a localized partial marker", as
   const markers = [...host.querySelectorAll<HTMLElement>(".quota-window-partial")];
   expect(markers).toHaveLength(1);
   expect(markers[0]?.textContent).toBe("Partial");
+  expect(markers[0]?.getAttribute("role")).toBe("note");
   expect(markers[0]?.getAttribute("aria-label")).toBe("30-day limit: incomplete account coverage");
 });
 

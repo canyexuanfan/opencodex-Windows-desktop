@@ -312,6 +312,7 @@ function StackedQuotaRow({ row, threshold, t, locale, incomplete }: {
           {incomplete && (
             <span
               className="quota-window-partial"
+              role="note"
               aria-label={t("pws.capacity.windowPartialA11y", { window: row.limitLabel })}
               title={t("pws.capacity.windowPartialA11y", { window: row.limitLabel })}
             >
