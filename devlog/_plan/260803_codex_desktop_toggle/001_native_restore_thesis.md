@@ -22,10 +22,10 @@ For Codex the counter-thesis is correct, and the evidence is not subtle.
 > Restore native Codex config without stopping the proxy; `restore back`
 > re-points codex at the running proxy.
 
-That is the toggle, both directions, with the proxy up. `src/cli/index.ts:745`
+That is the toggle, both directions, with the proxy up. `src/cli/index.ts:770`
 calls `restoreNativeCodex()` with no lifecycle operation anywhere near it, and
-`src/cli/index.ts:757` implements the enable direction as `syncModelsToCodex(live.port)`
-against a proxy it first proves is live via `findLiveProxy()`.
+`src/cli/index.ts:756` implements the enable direction as `syncModelsToCodex(live.port)`
+against a proxy it first proves is live via `findLiveProxy()` (`:751`).
 
 Stronger still: `POST /api/stop` (`src/server/management-api.ts:181`) calls
 `restoreNativeCodex()` FIRST and only then schedules the drain and exit. The

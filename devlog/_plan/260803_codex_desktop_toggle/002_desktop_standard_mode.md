@@ -16,7 +16,7 @@ Right, and re-confirmed here:
 - `/status.applied` is derived from the saved fingerprint, not from actual
   selection (`src/server/management/agent-settings-routes.ts:797`), so a disable
   that forgets to clear the markers keeps reporting `applied: true`.
-- `desktopAutoApply` is enabled by ABSENCE (`src/types.ts:456`); its guard
+- `desktopAutoApply` is enabled by ABSENCE (`src/types.ts:458-459`); its guard
   suppresses only an explicit `false`, and the subagent-model update route can
   re-create a removed profile (`agent-settings-routes.ts:130,518`).
 
@@ -26,14 +26,16 @@ first one is blocked.
 
 ## The official semantics that make disable safe
 
-Primary Anthropic documentation, opened and read (not inferred from our devlog):
+Primary Anthropic documentation, opened and read (not inferred from our devlog).
+Dates are deliberately omitted: the sitemap `lastmod` values originally recorded
+here are not visible on the pages themselves, and an independent reviewer could
+not confirm them. The semantic claims below WERE independently re-verified by
+that reviewer, twice.
 
-| Source | lastmod |
-|---|---|
-| [Configuration reference](https://claude.com/docs/third-party/claude-desktop/configuration) | 2026-07-24 |
-| [In-app configuration](https://claude.com/docs/third-party/claude-desktop/in-app-configuration) | 2026-07-17 |
-| [Claude API provider](https://claude.com/docs/third-party/claude-desktop/claude-api) | 2026-07-17 |
-| [Gateway provider](https://claude.com/docs/third-party/claude-desktop/gateway) | 2026-07-29 |
+- [Configuration reference](https://claude.com/docs/third-party/claude-desktop/configuration)
+- [In-app configuration](https://claude.com/docs/third-party/claude-desktop/in-app-configuration)
+- [Claude API provider](https://claude.com/docs/third-party/claude-desktop/claude-api)
+- [Gateway provider](https://claude.com/docs/third-party/claude-desktop/gateway)
 
 The load-bearing sentence: third-party mode activates **only** when
 `inferenceProvider` and that provider's required credentials are valid;
