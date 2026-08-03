@@ -38,8 +38,15 @@ export interface OverviewRow {
   installed: boolean;
   /** Drives the "applied" summary count. */
   applied: boolean;
-  /** Config path for file clients, a short fact for the rest. */
+  /**
+   * The one line under the title. File clients show their config path — the
+   * thing a user copies when a refusal tells them to finish by hand. The other
+   * five have no path, so they carry the single fact that explains their badge;
+   * `detailKey` is translated by the card, `detail` is already-literal text.
+   */
   detail: string | null;
+  detailKey: TKey | null;
+  detailVars: Record<string, string> | null;
   /** Only file clients carry an inline switch; the rest are navigation only. */
   toggle: FileIntegrationClientId | null;
   /** Set only for a file client whose live status is still needed by the card. */
@@ -108,8 +115,10 @@ function codexRow(payload: CodexRoutingPayload | null): OverviewRow {
     labelKey: "integrations.tab.codex" as TKey,
     toggle: null,
     status: null,
+    detail: null,
+    detailVars: null,
   };
-  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detail: null };
+  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detailKey: null };
   // The proxy answering at all means Codex CLI is present: it is the client
   // this product exists for, and there is no separate detection probe.
   if (payload.routingInjected !== true) {
@@ -118,7 +127,9 @@ function codexRow(payload: CodexRoutingPayload | null): OverviewRow {
       state: "absent",
       installed: true,
       applied: false,
+      // The command that would fix it beats a restatement of the badge.
       detail: payload.recommendedCommand ?? null,
+      detailKey: payload.recommendedCommand ? null : "integrations.detail.codexAbsent",
     };
   }
   return {
@@ -126,7 +137,7 @@ function codexRow(payload: CodexRoutingPayload | null): OverviewRow {
     state: payload.status === "error" ? "stale" : "current",
     installed: true,
     applied: true,
-    detail: null,
+    detailKey: "integrations.detail.codexRouted",
   };
 }
 
@@ -138,14 +149,18 @@ function keysRow(count: number | null): OverviewRow {
     labelKey: "integrations.tab.keys" as TKey,
     toggle: null,
     status: null,
+    detail: null,
   };
-  if (count === null) return { ...base, state: "unknown", installed: false, applied: false, detail: null };
+  if (count === null) {
+    return { ...base, state: "unknown", installed: false, applied: false, detailKey: null, detailVars: null };
+  }
   return {
     ...base,
     state: count > 0 ? "current" : "absent",
     installed: true,
     applied: count > 0,
-    detail: null,
+    detailKey: count > 0 ? "integrations.detail.keyCount" : "integrations.detail.keyNone",
+    detailVars: count > 0 ? { count: String(count) } : null,
   };
 }
 
@@ -157,15 +172,26 @@ function claudeRow(payload: ClaudeCodePayload | null): OverviewRow {
     labelKey: "integrations.tab.claude" as TKey,
     toggle: null,
     status: null,
+    detail: null,
+    detailVars: null,
   };
-  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detail: null };
+  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detailKey: null };
   const enabled = payload.enabled === true;
+  // The resolved auth mode is the fact a user checks before wondering why a
+  // request was refused, so it earns the line over a restated badge.
+  const authKey: TKey | null = payload.authMode === "subscription"
+    ? "claude.authModeSubscription"
+    : payload.authMode === "proxy"
+      ? "claude.authModeProxy"
+      : payload.authMode === "auto"
+        ? "claude.authModeAuto"
+        : null;
   return {
     ...base,
     state: enabled ? "current" : "absent",
     installed: true,
     applied: enabled,
-    detail: null,
+    detailKey: enabled ? authKey : "integrations.detail.claudeOff",
   };
 }
 
@@ -183,13 +209,22 @@ function claudeDesktopRow(payload: ClaudeDesktopPayload | null): OverviewRow {
   const base = {
     id: "claudeDesktop" as const,
     hash: "integrations/claude/desktop",
-    labelKey: "claude.tabDesktop" as TKey,
+    // "Desktop" alone is ambiguous next to ten other client names.
+    labelKey: "claudeDesktop.title" as TKey,
     toggle: null,
     status: null,
+    detail: null,
+    detailVars: null,
   };
-  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detail: null };
+  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detailKey: null };
   if (payload.applied !== true) {
-    return { ...base, state: "absent", installed: true, applied: false, detail: null };
+    return {
+      ...base,
+      state: "absent",
+      installed: true,
+      applied: false,
+      detailKey: "integrations.detail.desktopAbsent",
+    };
   }
   const drifted = payload.stale === true || payload.activeProfile === false;
   return {
@@ -197,7 +232,13 @@ function claudeDesktopRow(payload: ClaudeDesktopPayload | null): OverviewRow {
     state: drifted ? "stale" : "current",
     installed: true,
     applied: true,
-    detail: null,
+    // Separate sentences: a drifted file and a profile Desktop is not serving
+    // are different problems with different fixes.
+    detailKey: payload.activeProfile === false
+      ? "integrations.detail.desktopNotServed"
+      : drifted
+        ? "integrations.detail.desktopStale"
+        : "integrations.detail.desktopCurrent",
   };
 }
 
@@ -216,15 +257,19 @@ function grokRow(payload: GrokPayload | null): OverviewRow {
     labelKey: "integrations.tab.grok" as TKey,
     toggle: null,
     status: null,
+    detail: null,
   };
-  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detail: null };
+  if (!payload) {
+    return { ...base, state: "unknown", installed: false, applied: false, detailKey: null, detailVars: null };
+  }
   const present = payload.present === true;
   return {
     ...base,
     state: present ? "current" : "absent",
     installed: present,
     applied: present,
-    detail: null,
+    detailKey: present ? "integrations.detail.grokModels" : "integrations.detail.grokAbsent",
+    detailVars: present ? { count: String(payload.models?.length ?? 0) } : null,
   };
 }
 
@@ -239,6 +284,8 @@ function fileRow(status: IntegrationStatus): OverviewRow {
     installed: status.installed,
     applied: status.installed && isAppliedState(status.state),
     detail: status.configPath,
+    detailKey: null,
+    detailVars: null,
     toggle: status.clientId,
     status,
   };
@@ -275,6 +322,8 @@ export function buildOverviewRows(sources: OverviewSources): OverviewRow[] {
         installed: false,
         applied: false,
         detail: null,
+        detailKey: null,
+        detailVars: null,
         toggle: null,
         status: null,
       });
