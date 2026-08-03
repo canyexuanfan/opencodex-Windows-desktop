@@ -1,3 +1,4 @@
+import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { logsFromApiBody } from "./helpers/logs-api";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -1186,12 +1187,13 @@ describe("server local API auth", () => {
         clearCodexUpstreamHealth();
         const cfg = mainOnlyConfig();
         writeMainToken(state === "expired" ? `header.${expiredPayload}.signature` : "opaque-live-main-token");
-        if (state === "reauth") markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
-        if (state === "cooldown") recordCodexUpstreamOutcome(cfg, MAIN_CODEX_ACCOUNT_ID, 429, { retryAfter: "60" });
         saveConfig(cfg);
         const before = seen.length;
         const unusableMain = startServer(0);
         try {
+          await waitForNativeMainStartupGate();
+          if (state === "reauth") markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+          if (state === "cooldown") recordCodexUpstreamOutcome(cfg, MAIN_CODEX_ACCOUNT_ID, 429, { retryAfter: "60" });
           expect((await request(unusableMain)).status).toBe(401);
           expect((await compact(unusableMain)).status).toBe(401);
           expect(await wsTurn(unusableMain)).toContain("401");

@@ -1,3 +1,4 @@
+import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { managementFetch as fetch } from "./helpers/management-auth";
 import { logsFromApiBody } from "./helpers/logs-api";
@@ -145,7 +146,7 @@ test("POST /v1/messages?beta=true streams an Anthropic-shaped turn end to end", 
     expect(codexUsage.surface).toBe("codex");
     expect(codexUsage.summary.requests).toBe(0);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 }, { timeout: SERVER_BUDGET_MS });
@@ -174,7 +175,7 @@ test("non-streaming /v1/messages returns an Anthropic message JSON", async () =>
     expect(json.content[0].text).toContain("Hello");
     expect(typeof json.usage.input_tokens).toBe("number");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -225,7 +226,7 @@ test("native generated-agent passthrough preserves legacy thinking", async () =>
     });
     expect(captured).not.toHaveProperty("output_config");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -267,7 +268,7 @@ test("native Anthropic passthrough clears the header deadline before streaming t
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("message_stop");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -347,7 +348,7 @@ test("native Anthropic passthrough returns 502 when the upstream connection is r
     expect(json.error?.type).toBe("api_error");
     expect(String(json.error?.message)).toContain("anthropic passthrough failed");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -551,7 +552,7 @@ test("endpoint wiring: configured bodyStallSec bounds a stalled native passthrou
     expect(text).toContain("event: error");
     expect(text).toContain("timeout_error");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -607,7 +608,7 @@ test("native openai-responses route carries prompt_cache_key + synthesized sessi
     expect(capture.body?.reasoning?.effort).toBe("high");
     expect(capture.headers?.["session_id"]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -643,6 +644,7 @@ test("Claude main-token replay owns native main through the stream and rejects p
   const server = startServer(0);
   let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
   try {
+    await waitForNativeMainStartupGate();
     const pending = postMessages(server.url.toString(), {
       model: "mock/test-model",
       max_tokens: 64,
@@ -671,7 +673,7 @@ test("Claude main-token replay owns native main through the stream and rejects p
   } finally {
     drain?.release();
     finishUpstream?.();
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     resetLifecycleDrainStateForTests();
   }
@@ -774,6 +776,7 @@ test("routed Claude requests give OpenAI sidecars main auth without leaking it t
     }],
   };
   try {
+    await waitForNativeMainStartupGate();
     const authenticated = await postMessages(server.url.toString(), requestBody);
     expect(authenticated.status).toBe(200);
     await authenticated.text();
@@ -804,7 +807,7 @@ test("routed Claude requests give OpenAI sidecars main auth without leaking it t
     expect(noLoginBody).toContain("[image omitted: this model is text-only and the vision sidecar is unavailable (no ChatGPT login)]");
     expect(noLoginBody).not.toContain(imageBytes);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     forward.stop(true);
     routed.stop(true);
   }
@@ -826,7 +829,7 @@ test("bad body -> Anthropic-shaped 400; unknown /v1 path guard intact", async ()
     const unknown = await fetch(new URL("/v1/does-not-exist", server.url), { method: "POST" });
     expect(unknown.status).toBe(404);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -849,7 +852,7 @@ test("count_tokens returns a positive estimate in the exact contract shape", asy
     expect(Object.keys(json)).toEqual(["input_tokens"]);
     expect(json.input_tokens as number).toBeGreaterThan(0);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -868,7 +871,7 @@ test("claudeCode.enabled=false -> 403 permission_error on both routes", async ()
       expect(json.error.type).toBe("permission_error");
     }
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -901,7 +904,7 @@ test("effort safety valve: routes with a definitive no-effort ladder get reasoni
     expect(captured.length).toBe(1);
     expect(captured[0]!.reasoning_effort).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -931,7 +934,7 @@ test("generated agent effort directive restores exact xhigh and max after Claude
       { model: "test-model", effort: "max" },
     ]);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -954,7 +957,7 @@ test("unknown-ladder routes keep the requested effort (no false stripping)", asy
     expect(captured.length).toBe(1);
     expect(captured[0]!.reasoning_effort).toBe("low");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -975,7 +978,7 @@ test("defensive [1m] strip: a leaked context-variant marker still routes to the 
     expect(captured.length).toBe(1);
     expect(captured[0]!.model).toBe("test-model");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -997,6 +1000,6 @@ test("count_tokens is CJK-aware: Korean body counts more tokens than equal-lengt
     expect(korean.length).toBe(english.length);
     expect(await count(korean)).toBeGreaterThan(await count(english));
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });

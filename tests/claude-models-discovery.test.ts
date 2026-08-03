@@ -78,7 +78,7 @@ test("anthropic-version header flips /v1/models to the discovery contract", asyn
     // Contract shape only: no OpenAI list fields on the top level.
     expect((json as Record<string, unknown>).object).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -91,7 +91,7 @@ test("?flavor=anthropic works without the header; disabled -> empty data", async
     const { desktop3pAlias } = await import("../src/claude/desktop-3p");
     expect(json.data.some(m => m.id === desktop3pAlias("mock", "other-model"))).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 
   saveConfig(configWithStaticModels({ enabled: false }));
@@ -101,7 +101,7 @@ test("?flavor=anthropic works without the header; disabled -> empty data", async
     const json = await response.json() as { data: unknown[] };
     expect(json.data).toEqual([]);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -130,7 +130,7 @@ test("per-surface id style: ?ids= wins, claude-code UA gets readable, unknown UA
     }).then(r => r.json()) as { data: { id: string }[] };
     expect(json.data.some(m => m.id === readable)).toBe(false);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -152,6 +152,6 @@ test("OpenAI list shape and Codex catalog shape stay unchanged", async () => {
     expect(Array.isArray(codexJson.models)).toBe(true);
     expect(codexJson.data).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });

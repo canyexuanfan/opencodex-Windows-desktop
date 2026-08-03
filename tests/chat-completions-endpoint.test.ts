@@ -1,3 +1,4 @@
+import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -298,7 +299,7 @@ test("POST /v1/chat/completions streams OpenAI-shaped chunks end to end", async 
     expect(text).toContain("data: [DONE]");
     expect(text).toContain("\"finish_reason\":\"stop\"");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -329,7 +330,7 @@ test("non-streaming /v1/chat/completions returns chat.completion JSON", async ()
     expect(json.choices[0]?.message.content).toContain("Hello");
     expect(json.choices[0]?.finish_reason).toBe("stop");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -347,7 +348,7 @@ test("GET /v1/models returns OpenAI list shape for Copilot App discovery", async
     // Routed mock model may or may not appear depending on liveModels; list shape is the contract.
     expect(json.data.every(m => m.object === "model" && typeof m.id === "string")).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -367,7 +368,7 @@ test("invalid chat completions body returns OpenAI-style 400", async () => {
     expect(json.error.message).toContain("model");
     expect(json.error.type).toBe("invalid_request_error");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -480,7 +481,7 @@ test("POST /v1/chat/completions rejects response_format for routed openai-chat",
     expect(json.error.message).toContain("response_format");
     expect(json.error.type).toBe("invalid_request_error");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -538,7 +539,7 @@ test("POST /v1/chat/completions direct mode forwards caller Authorization", asyn
     expect(response.status).toBe(200);
     expect(seen.some(hit => hit.authorization === ["Bear" + "er", "caller-direct-token"].join(" "))).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }
@@ -584,6 +585,7 @@ test("Chat main-token replay owns native main through the stream and rejects pos
   });
   let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
   try {
+    await waitForNativeMainStartupGate();
     const pending = request();
     await started;
     const response = await pending;
@@ -602,7 +604,7 @@ test("Chat main-token replay owns native main through the stream and rejects pos
   } finally {
     drain?.release();
     finishUpstream?.();
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     resetLifecycleDrainStateForTests();
   }
@@ -667,7 +669,7 @@ test("POST /v1/chat/completions finalizes native passthrough request logs", asyn
     expect(entry).toBeTruthy();
     expect(entry?.status).toBe(200);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
     clearRequestLogsForTests();
@@ -968,7 +970,7 @@ test("non-streaming /v1/chat/completions returns error status on upstream failur
     expect(json.error?.message ?? "").toContain("provider blew up");
     expect(json.choices).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }
@@ -1029,7 +1031,7 @@ test("streaming /v1/chat/completions does not clean-DONE after response.failed",
     expect(text).not.toContain("[error]");
     expect(text).not.toContain("data: [DONE]");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }
@@ -1357,7 +1359,7 @@ test("an overridden model reaches the responses wire with its hosted tool intact
     // And the hosted tool survived — the chat translation would have dropped it.
     expect(JSON.stringify(captured[0]!.body)).toContain("web_search");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -1382,7 +1384,7 @@ test("a sibling model on the same provider still takes the chat wire (#404)", as
     expect(captured.length).toBe(1);
     expect(captured[0]!.pathname).toContain("/chat/completions");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -1409,7 +1411,7 @@ test("inbound chat-completions honors the override when stripping sampling (#404
     // The inbound path must read the effective adapter, not the provider default.
     expect(captured[0]!.pathname).toContain("/responses");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -1471,7 +1473,7 @@ test("/v1/chat/completions non-OK upstream preserves structured model_not_found"
       message: "Request failed",
     });
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }
@@ -1598,7 +1600,7 @@ test("/v1/chat/completions status:failed replay preserves structured model_not_f
       message: "Request failed",
     });
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }

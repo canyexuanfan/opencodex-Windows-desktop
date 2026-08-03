@@ -132,6 +132,7 @@ describe("native main profile scoped server admission", () => {
       saveMode("pool");
       updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 1, 1);
       server = startServer(0);
+      await waitForNativeMainStartupGate();
       const mainHttp = await fetch(new URL("/v1/responses", server.url), {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer caller-token" },
