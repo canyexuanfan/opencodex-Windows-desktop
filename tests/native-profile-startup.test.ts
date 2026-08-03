@@ -34,6 +34,15 @@ import {
   isNativeMainTrafficBlocked,
   nativeMainStartupGateSnapshot,
 } from "../src/codex/native-profile-startup";
+import {
+  tryAcquireNativeMainProfileClaim,
+  tryClaimNativeMainProfileForTurn,
+} from "../src/codex/native-main-admission";
+import {
+  getNativeMainProfileRequestCount,
+  resetLifecycleDrainStateForTests,
+  tryAdmitTurn,
+} from "../src/server/lifecycle";
 
 const roots: string[] = [];
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -259,6 +268,47 @@ const recoverable: Array<{ phase: Phase; observation: Observation; active: "sour
 ];
 
 describe("native-main startup journal gate", () => {
+  test("combined turn and standalone claims reject retained recovery before native-main reads", async () => {
+    const homeId = "home-combined-admission";
+    resetLifecycleDrainStateForTests();
+    await initializeNativeMainStartupGate({
+      manager: { context: { homeId }, recover: async () => ({}) } as unknown as NativeProfileManager,
+      probeRecoveryState: () => "manual",
+    });
+    const turn = tryAdmitTurn();
+    expect(turn).not.toBeNull();
+    try {
+      expect(tryClaimNativeMainProfileForTurn(turn ?? undefined)).toBe(false);
+      expect(tryAcquireNativeMainProfileClaim()).toBeNull();
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+    } finally {
+      turn?.release();
+      await initializeNativeMainStartupGate({
+        manager: { context: { homeId }, recover: async () => ({}) } as unknown as NativeProfileManager,
+        probeRecoveryState: () => "none",
+      });
+      resetLifecycleDrainStateForTests();
+    }
+
+    const allowed = tryAcquireNativeMainProfileClaim();
+    expect(allowed).not.toBeNull();
+    allowed?.release();
+  });
+
+  test("post-claim recovery race keeps the caller-owned turn alive while skipping native reads", () => {
+    let checks = 0;
+    let releases = 0;
+    const lease = { release: () => { releases += 1; } };
+    const claimed = tryClaimNativeMainProfileForTurn(lease, {
+      isTrafficBlocked: () => checks++ > 0,
+      claimTurn: () => true,
+    });
+
+    expect(claimed).toBe(false);
+    expect(checks).toBe(2);
+    expect(releases).toBe(0);
+  });
+
   test("manual and unreadable recovery states close the main gate without automatic recovery", async () => {
     let recoverCalls = 0;
     for (const state of ["manual", "unreadable"] as const) {

@@ -5,7 +5,7 @@ import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { clearAccountQuota } from "./quota";
 import { clearCodexUpstreamHealthForAccount, clearThreadAccountMapForAccount } from "./routing";
 import { invalidateCodexWebSocketsForAccount } from "./websocket-registry";
-import { clearMainAccountInfoCache } from "./main-account-cache";
+import { clearMainAccountCredentialPresence, clearMainAccountInfoCache } from "./main-account-cache";
 import { forgetCodexAccountPause } from "./account-pause";
 import type { OcxConfig } from "../types";
 
@@ -16,7 +16,10 @@ export function purgeCodexAccountRuntimeState(accountId: string): void {
   clearAccountQuota(accountId);
   clearThreadAccountMapForAccount(accountId);
   clearCodexUpstreamHealthForAccount(accountId);
-  if (accountId === MAIN_CODEX_ACCOUNT_ID) clearMainAccountInfoCache();
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) {
+    clearMainAccountInfoCache();
+    clearMainAccountCredentialPresence();
+  }
 }
 
 function purgeMainCodexAccountRuntimeState(): void {
@@ -63,6 +66,7 @@ export function applyConfirmedMainCodexAccountTransition(
 
 export function resetMainCodexAccountIdentityTrackingForTests(): void {
   observedMainChatgptAccountId = undefined;
+  clearMainAccountCredentialPresence();
 }
 
 export function deleteCodexAccount(runtimeConfig: OcxConfig, accountId: string): void {

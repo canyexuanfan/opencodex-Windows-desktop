@@ -140,7 +140,9 @@ function guardianConfig(): OcxConfig {
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 1_000; attempt += 1) {
     if (predicate()) return;
-    await Promise.resolve();
+    // SQLite-backed native-main claims may need an actual event-loop turn;
+    // a microtask-only spin can starve the operation this helper is observing.
+    await Bun.sleep(1);
   }
   throw new Error("condition did not become true");
 }
@@ -273,6 +275,14 @@ describe("Codex auth context", () => {
         })).rejects.toBeInstanceOf(CodexPoolAuthenticationError);
         expect(cfg.activeCodexAccountId).toBe("pool-a");
       }
+      cfg.pausedCodexAccountIds = ["pool-a"];
+      cfg.activeCodexAccountId = "pool-a";
+      await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", readOptions))
+        .rejects.toBeInstanceOf(CodexMainProfileDrainingError);
+      await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", {
+        ...readOptions,
+        excludeAccountId: "pool-a",
+      })).rejects.toBeInstanceOf(CodexPoolAuthenticationError);
       expect(nativeReads).toBe(0);
       expect(primes).toBe(0);
     } finally {

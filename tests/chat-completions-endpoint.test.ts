@@ -16,6 +16,12 @@ import {
   getNativeMainProfileRequestCount,
   resetLifecycleDrainStateForTests,
 } from "../src/server/lifecycle";
+import {
+  blockNativeMainRecovery,
+  completeNativeMainRecovery,
+  nativeMainStartupGateSnapshot,
+  waitForNativeMainStartupGate,
+} from "../src/codex/native-profile-startup";
 
 function budgetedChatOutbound(module: typeof import("../src/chat/outbound")) {
   const translatorBudget = createTestTranslatorBudget();
@@ -545,7 +551,7 @@ test("POST /v1/chat/completions direct mode forwards caller Authorization", asyn
   }
 });
 
-test("Chat main-token replay owns native main through the stream and rejects post-fence work", async () => {
+test("Chat replay owns optional main enrichment while routed work survives drain and recovery", async () => {
   resetLifecycleDrainStateForTests();
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
     tokens: { access_token: "chat-main-access", account_id: "chat-main-account" },
@@ -559,6 +565,11 @@ test("Chat main-token replay owns native main through the stream and rejects pos
     port: 0,
     fetch() {
       upstreamCalls += 1;
+      if (upstreamCalls > 1) {
+        return new Response('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
       return new Response(new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"held"}}]}\n\n'));
@@ -573,7 +584,8 @@ test("Chat main-token replay owns native main through the stream and rejects pos
     },
   });
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
-  const server = startServer(0);
+  let server = startServer(0);
+  await waitForNativeMainStartupGate();
   const request = () => fetch(new URL("/v1/chat/completions", server.url), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -584,6 +596,7 @@ test("Chat main-token replay owns native main through the stream and rejects pos
     }),
   });
   let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
+  let recoveryHomeId: string | null = null;
   try {
     await waitForNativeMainStartupGate();
     const pending = request();
@@ -593,15 +606,60 @@ test("Chat main-token replay owns native main through the stream and rejects pos
     expect(getNativeMainProfileRequestCount()).toBe(1);
     drain = acquireNativeMainProfileDrain("chat-overlap");
     expect(drain).not.toBeNull();
-    const blocked = await request();
-    expect(blocked.status).toBe(503);
-    expect(blocked.headers.get("Retry-After")).toBe("1");
-    expect(upstreamCalls).toBe(1);
+    const routedDuringDrain = await request();
+    expect(routedDuringDrain.status).toBe(200);
+    await routedDuringDrain.text();
+    expect(upstreamCalls).toBe(2);
 
     finishUpstream?.();
     await response.text();
     expect(getNativeMainProfileRequestCount()).toBe(0);
+    drain?.release();
+    drain = null;
+
+    recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "chat-recovery-home";
+    expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);
+    const routedDuringRecovery = await request();
+    expect(routedDuringRecovery.status).toBe(200);
+    await routedDuringRecovery.text();
+    expect(upstreamCalls).toBe(3);
+
+    completeNativeMainRecovery(recoveryHomeId);
+    recoveryHomeId = null;
+    await server.stop(true);
+    saveConfig({
+      port: 0,
+      openaiProviderTierVersion: 2,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+      },
+      codexAccounts: [],
+      activeCodexAccountId: "__main__",
+      autoSwitchThreshold: 0,
+    } as OcxConfig);
+    server = startServer(0);
+    await waitForNativeMainStartupGate();
+    recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "chat-main-recovery-home";
+    expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);
+    const mainBlocked = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "openai/gpt-test",
+        stream: false,
+        messages: [{ role: "user", content: "main blocked" }],
+      }),
+    });
+    expect(mainBlocked.status).toBe(503);
+    expect(upstreamCalls).toBe(3);
   } finally {
+    if (recoveryHomeId) completeNativeMainRecovery(recoveryHomeId);
     drain?.release();
     finishUpstream?.();
     await server.stop(true);
@@ -1535,7 +1593,7 @@ test("/v1/chat/completions status:failed replay normalizes translation_buffer_li
     const json = await response.json() as { error?: { code?: string; type?: string } };
     expect(json.error).toMatchObject({ code: "translation_buffer_limit", type: "upstream_error" });
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }

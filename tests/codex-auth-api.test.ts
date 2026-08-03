@@ -39,6 +39,8 @@ import {
 } from "../src/codex/websocket-registry";
 import type { OcxConfig } from "../src/types";
 import type { WsData } from "../src/server/ws-bridge";
+import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
+import type { NativeProfileManager } from "../src/codex/native-profile-manager";
 import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "../src/codex/main-account";
 import {
   deleteCodexAccount,
@@ -258,6 +260,258 @@ afterEach(() => {
 });
 
 describe("codex-auth API", () => {
+  test("account polling owns native main through publication so switch and rollback wait", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-poll-owned", account_id: "acct-main-poll-owned" },
+    }));
+
+    for (const scenario of [
+      { path: "/api/native-main-profiles/switch", body: { target: "target", confirmedStopped: true }, method: "switch" as const },
+      { path: "/api/native-main-profiles/recover", body: { rollback: true, confirmedStopped: true }, method: "recover" as const },
+    ]) {
+      clearMainAccountInfoCache();
+      clearAccountQuota();
+      setMainAccountPlan(null);
+      let releaseUsage!: () => void;
+      const usageGate = new Promise<void>(resolve => { releaseUsage = resolve; });
+      let markUsageStarted!: () => void;
+      const usageStarted = new Promise<void>(resolve => { markUsageStarted = resolve; });
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "https://chatgpt.com/backend-api/wham/usage") {
+          markUsageStarted();
+          await usageGate;
+          return Response.json({
+            email: "owned@example.test",
+            plan_type: "plus",
+            rate_limit: { primary_window: { used_percent: 37 } },
+          });
+        }
+        return previousFetch(input, init);
+      }) as typeof fetch;
+
+      const pollRequest = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+      const polling = handleCodexAuthAPI(pollRequest, new URL(pollRequest.url), makeConfig());
+      await usageStarted;
+      expect(getNativeMainProfileRequestCount()).toBe(1);
+
+      let operations = 0;
+      const manager = {
+        context: undefined,
+        switch: async () => { operations += 1; return { switched: true }; },
+        recover: async () => { operations += 1; return { recovered: true }; },
+      } as unknown as NativeProfileManager;
+      const profileRequest = () => new Request(`http://localhost${scenario.path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(scenario.body),
+      });
+      const blockedRequest = profileRequest();
+      const blocked = await handleNativeProfileAPI(
+        blockedRequest,
+        new URL(blockedRequest.url),
+        makeConfig(),
+        { manager, drainTimeoutMs: 0 },
+      );
+      expect(blocked?.status).toBe(409);
+      expect(operations).toBe(0);
+
+      releaseUsage();
+      const pollResponse = await polling;
+      expect(pollResponse?.status).toBe(200);
+      const body = await pollResponse?.json() as { accounts: CodexAuthAccountDto[] };
+      expect(body.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)).toMatchObject({
+        plan: "plus",
+        hasCredential: true,
+        quota: { weeklyPercent: 37 },
+      });
+      expect(getAccountQuota(MAIN_CODEX_ACCOUNT_ID)).toMatchObject({ weeklyPercent: 37 });
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+
+      const allowedRequest = profileRequest();
+      const allowed = await handleNativeProfileAPI(
+        allowedRequest,
+        new URL(allowedRequest.url),
+        makeConfig(),
+        { manager, drainTimeoutMs: 0 },
+      );
+      expect(allowed?.status).toBe(200);
+      expect(operations).toBe(1);
+    }
+  });
+
+  test("account list discards a main snapshot invalidated while pool publication is pending", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-generation", account_id: "acct-main-generation" },
+    }));
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "publication-pool",
+      email: "publication-pool@example.test",
+      plan: "plus",
+      chatgptAccountId: "acct-publication-pool",
+    });
+    let releasePool!: () => void;
+    const poolGate = new Promise<void>(resolve => { releasePool = resolve; });
+    let markPoolStarted!: () => void;
+    const poolStarted = new Promise<void>(resolve => { markPoolStarted = resolve; });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== "https://chatgpt.com/backend-api/wham/usage") {
+        return previousFetch(input, init);
+      }
+      const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
+      if (accountId === "acct-main-generation") {
+        return Response.json({
+          email: "stale-main@example.test",
+          plan_type: "plus",
+          rate_limit: { primary_window: { used_percent: 44 } },
+        });
+      }
+      markPoolStarted();
+      await poolGate;
+      return Response.json({
+        plan_type: "plus",
+        rate_limit: { primary_window: { used_percent: 12 } },
+      });
+    }) as typeof fetch;
+
+    try {
+      const request = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+      const pending = handleCodexAuthAPI(request, new URL(request.url), config);
+      await poolStarted;
+      clearMainAccountInfoCache();
+      releasePool();
+      const response = await pending;
+      const body = await response?.json() as { accounts: CodexAuthAccountDto[] };
+      expect(body.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)).toMatchObject({
+        email: "Codex App login",
+        plan: null,
+        quota: null,
+      });
+    } finally {
+      releasePool();
+    }
+  });
+
+  test("account list preserves only the last claim-owned credential snapshot while main is fenced", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-snapshot", account_id: "acct-main-snapshot" },
+    }));
+    globalThis.fetch = (async () => Response.json({
+      email: "snapshot@example.test",
+      plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+    const listMain = async () => {
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+      const response = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      const body = await response?.json() as { accounts: CodexAuthAccountDto[] };
+      return body.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)!;
+    };
+
+    expect((await listMain()).hasCredential).toBe(true);
+    clearMainAccountInfoCache();
+    let drain = acquireNativeMainProfileDrain("credential-snapshot-cold-cache");
+    try {
+      expect((await listMain()).hasCredential).toBe(true);
+    } finally {
+      drain?.release();
+    }
+
+    await listMain();
+    rmSync(join(TEST_CODEX_HOME, "auth.json"));
+    expect((await listMain()).hasCredential).toBe(false);
+    drain = acquireNativeMainProfileDrain("credential-snapshot-warm-cache");
+    try {
+      expect((await listMain()).hasCredential).toBe(false);
+    } finally {
+      drain?.release();
+    }
+  });
+
+  test("bulk pause retains native-main ownership through pool settlement and persisted publication", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-pause-owned", account_id: "acct-main-pause-owned" },
+    }));
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pause-pool", email: "pool@example.test", plan: "plus" });
+    let releasePool!: () => void;
+    const poolGate = new Promise<void>(resolve => { releasePool = resolve; });
+    let markMainDone!: () => void;
+    const mainDone = new Promise<void>(resolve => { markMainDone = resolve; });
+    let markPoolStarted!: () => void;
+    const poolStarted = new Promise<void>(resolve => { markPoolStarted = resolve; });
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
+      if (accountId === "acct-main-pause-owned") {
+        markMainDone();
+        return Response.json({
+          plan_type: "plus",
+          rate_limit: { primary_window: { used_percent: 100 } },
+        });
+      }
+      markPoolStarted();
+      await poolGate;
+      return Response.json({
+        plan_type: "plus",
+        rate_limit: { primary_window: { used_percent: 10 } },
+      });
+    }) as typeof fetch;
+
+    const pauseReq = new Request("http://localhost/api/codex-auth/accounts/pause-exhausted", { method: "PUT" });
+    const pending = handleCodexAuthAPI(pauseReq, new URL(pauseReq.url), config);
+    await Promise.all([mainDone, poolStarted]);
+    expect(getNativeMainProfileRequestCount()).toBe(1);
+    const manager = {
+      context: undefined,
+      switch: async () => ({ switched: true }),
+    } as unknown as NativeProfileManager;
+    const switchReq = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+    const blocked = await handleNativeProfileAPI(switchReq, new URL(switchReq.url), makeConfig(), {
+      manager,
+      drainTimeoutMs: 0,
+    });
+    expect(blocked?.status).toBe(409);
+
+    releasePool();
+    const response = await pending;
+    expect(response?.status).toBe(200);
+    expect((await response?.json() as { pausedAccountIds: string[] }).pausedAccountIds).toContain(MAIN_CODEX_ACCOUNT_ID);
+    expect(loadConfig().pausedCodexAccountIds).toContain(MAIN_CODEX_ACCOUNT_ID);
+    expect(getNativeMainProfileRequestCount()).toBe(0);
+  });
+
+  test("bulk pause settles a rejected pool probe before atomically publishing main pause", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-pause-settled", account_id: "acct-main-pause-settled" },
+    }));
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "busy-pool", email: "busy@example.test", plan: "plus" });
+    const clearAdmission = seedCodexAuthAdmissionForTests({ quotaFlights: 16 });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 100 } },
+    })) as typeof fetch;
+    try {
+      const request = new Request("http://localhost/api/codex-auth/accounts/pause-exhausted", { method: "PUT" });
+      const response = await handleCodexAuthAPI(request, new URL(request.url), config);
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toMatchObject({
+        pausedAccountIds: [MAIN_CODEX_ACCOUNT_ID],
+        checkedAccountCount: 1,
+        failedAccountCount: 1,
+        complete: false,
+      });
+      expect(loadConfig().pausedCodexAccountIds).toContain(MAIN_CODEX_ACCOUNT_ID);
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+    } finally {
+      clearAdmission();
+    }
+  });
+
   test("main reset-credit consume owns native main through destructive upstream work and rejects post-fence work", async () => {
     writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
       tokens: { access_token: "main-reset-owned", account_id: "acct-main-reset-owned" },

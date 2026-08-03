@@ -1,4 +1,5 @@
-import { fetchMainAccountInfo, listCodexAuthAccounts } from "../codex/auth-api";
+import { fetchMainAccountInfoSnapshot, listCodexAuthAccountsSnapshot } from "../codex/auth-api";
+import { isMainAccountIdentityGenerationLive } from "../codex/main-account-cache";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
 import { resolveEnvValue } from "../config";
 import { getValidAccessToken, getValidAccessTokenForAccount } from "../oauth";
@@ -22,6 +23,15 @@ const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
 const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
 /** Keep a failed probe's previous row at most this long before dropping it. */
 const LAST_GOOD_MAX_AGE_MS = 30 * 60_000;
+const nativeMainReportGenerations = new WeakMap<ProviderQuotaReport, number>();
+let providerQuotaBeforePublishForTests: (() => void | Promise<void>) | null = null;
+
+/** Test-only seam for identity/config invalidation after probes but before publication. */
+export function setProviderQuotaBeforePublishForTests(
+  hook: (() => void | Promise<void>) | null,
+): void {
+  providerQuotaBeforePublishForTests = hook;
+}
 
 export interface ProviderQuotaWindow {
   label: string;
@@ -134,6 +144,19 @@ function report(provider: string, source: string, quota: ProviderQuota): Provide
   };
 }
 
+function tagNativeMainReport(
+  value: ProviderQuotaReport | null,
+  generation: number,
+): ProviderQuotaReport | null {
+  if (value) nativeMainReportGenerations.set(value, generation);
+  return value;
+}
+
+function isProviderQuotaReportCurrent(value: ProviderQuotaReport): boolean {
+  const generation = nativeMainReportGenerations.get(value);
+  return generation === undefined || isMainAccountIdentityGenerationLive(generation);
+}
+
 async function fetchChatGptForwardQuota(
   config: OcxConfig,
   provider: string,
@@ -141,17 +164,25 @@ async function fetchChatGptForwardQuota(
   forceRefresh: boolean,
 ): Promise<ProviderQuotaReport | null> {
   if (providerCodexAccountMode(provider, providerConfig) === "direct") {
-    const main = await fetchMainAccountInfo(forceRefresh);
-    const quota = main.quota ? { ...main.quota, updatedAt: Date.now() } as ProviderQuota : null;
-    return quota ? report(provider, "chatgpt:wham", quota) : null;
+    const snapshot = await fetchMainAccountInfoSnapshot(forceRefresh);
+    const quota = snapshot.info.quota
+      ? { ...snapshot.info.quota, updatedAt: Date.now() } as ProviderQuota
+      : null;
+    return quota
+      ? tagNativeMainReport(report(provider, "chatgpt:wham", quota), snapshot.mainIdentityGeneration)
+      : null;
   }
-  const accounts = await listCodexAuthAccounts(config, forceRefresh);
+  const snapshot = await listCodexAuthAccountsSnapshot(config, forceRefresh);
+  const accounts = snapshot.accounts;
   const activeId = config.activeCodexAccountId || MAIN_CODEX_ACCOUNT_ID;
   const active = accounts.find(account => account.id === activeId)
     ?? accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)
     ?? accounts[0];
   const quota = active?.quota ? { ...active.quota, updatedAt: active.quota.updatedAt ?? Date.now() } as ProviderQuota : null;
-  return quota ? report(provider, "chatgpt:wham", quota) : null;
+  const value = quota ? report(provider, "chatgpt:wham", quota) : null;
+  return active?.id === MAIN_CODEX_ACCOUNT_ID
+    ? tagNativeMainReport(value, snapshot.mainIdentityGeneration)
+    : value;
 }
 
 function centsValue(value: unknown): number | undefined {
@@ -923,7 +954,8 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
   // The cache fast path must not extend a preserved last-good row past its 30-minute bound:
   // a row preserved at age 29:59 plus a full 5-minute TTL would otherwise serve until ~35min.
   const cacheFresh = cache && cache.key === key && now - cache.ts < CACHE_TTL_MS
-    && cache.response.reports.every(item => now - item.updatedAt < LAST_GOOD_MAX_AGE_MS);
+    && cache.response.reports.every(item =>
+      now - item.updatedAt < LAST_GOOD_MAX_AGE_MS && isProviderQuotaReportCurrent(item));
   if (!forceRefresh && cacheFresh) return cache!.response;
   const joinable = inflight.get(key);
   if (!forceRefresh && joinable && joinable.epoch === invalidationEpoch) return joinable.promise;
@@ -936,6 +968,7 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
     const fresh = (await Promise.all(
       Object.entries(config.providers).map(([name, provider]) => maybeFetchProviderQuota(name, provider, config, forceRefresh)),
     )).filter((item): item is ProviderQuotaReport => item !== null);
+    await providerQuotaBeforePublishForTests?.();
 
     // Keep bounded last-good rows when a probe fails (e.g. transient upstream flake); never
     // re-stamp their timestamps, and drop rows older than LAST_GOOD_MAX_AGE_MS.
@@ -944,14 +977,25 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
     // disabled or removed provider changes the key and starts from an empty previous set.
     const cutoff = Date.now() - LAST_GOOD_MAX_AGE_MS;
     const byProvider = new Map<string, ProviderQuotaReport>();
+    const generationMismatchedProviders = new Set<string>();
     for (const item of previous) {
-      if (item.updatedAt >= cutoff) byProvider.set(item.provider, item);
+      if (item.updatedAt < cutoff) continue;
+      if (isProviderQuotaReportCurrent(item)) byProvider.set(item.provider, item);
+      else generationMismatchedProviders.add(item.provider);
     }
-    for (const item of fresh) byProvider.set(item.provider, item);
+    for (const item of fresh) {
+      if (isProviderQuotaReportCurrent(item)) {
+        byProvider.set(item.provider, item);
+        generationMismatchedProviders.delete(item.provider);
+      } else {
+        byProvider.delete(item.provider);
+        generationMismatchedProviders.add(item.provider);
+      }
+    }
 
     const response = { generatedAt: Date.now(), reports: [...byProvider.values()] };
     // Commit only when this probe still holds authority (no clear/force superseded it).
-    if (epoch === invalidationEpoch) {
+    if (epoch === invalidationEpoch && generationMismatchedProviders.size === 0) {
       const reports = response.reports.filter(item => mayCommitProviderQuotaKey(item.provider, writerGeneration));
       cache = { key, ts: Date.now(), response: { ...response, reports } };
     }

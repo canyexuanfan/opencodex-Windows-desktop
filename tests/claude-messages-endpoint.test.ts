@@ -25,6 +25,12 @@ import {
   getNativeMainProfileRequestCount,
   resetLifecycleDrainStateForTests,
 } from "../src/server/lifecycle";
+import {
+  blockNativeMainRecovery,
+  completeNativeMainRecovery,
+  nativeMainStartupGateSnapshot,
+  waitForNativeMainStartupGate,
+} from "../src/codex/native-profile-startup";
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -613,7 +619,7 @@ test("native openai-responses route carries prompt_cache_key + synthesized sessi
   }
 });
 
-test("Claude main-token replay owns native main through the stream and rejects post-fence work", async () => {
+test("Claude replay owns optional main enrichment while routed work survives drain and recovery", async () => {
   resetLifecycleDrainStateForTests();
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
     tokens: { access_token: "claude-main-access", account_id: "claude-main-account" },
@@ -627,6 +633,11 @@ test("Claude main-token replay owns native main through the stream and rejects p
     port: 0,
     fetch() {
       upstreamCalls += 1;
+      if (upstreamCalls > 1) {
+        return new Response('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
       return new Response(new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"held"}}]}\n\n'));
@@ -641,8 +652,10 @@ test("Claude main-token replay owns native main through the stream and rejects p
     },
   });
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
-  const server = startServer(0);
+  let server = startServer(0);
+  await waitForNativeMainStartupGate();
   let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
+  let recoveryHomeId: string | null = null;
   try {
     await waitForNativeMainStartupGate();
     const pending = postMessages(server.url.toString(), {
@@ -657,20 +670,66 @@ test("Claude main-token replay owns native main through the stream and rejects p
     expect(getNativeMainProfileRequestCount()).toBe(1);
     drain = acquireNativeMainProfileDrain("claude-overlap");
     expect(drain).not.toBeNull();
-    const blocked = await postMessages(server.url.toString(), {
+    const routedDuringDrain = await postMessages(server.url.toString(), {
       model: "mock/test-model",
       max_tokens: 64,
       stream: true,
-      messages: [{ role: "user", content: "blocked" }],
+      messages: [{ role: "user", content: "routed during drain" }],
     });
-    expect(blocked.status).toBe(503);
-    expect(blocked.headers.get("Retry-After")).toBe("1");
-    expect(upstreamCalls).toBe(1);
+    expect(routedDuringDrain.status).toBe(200);
+    await routedDuringDrain.text();
+    expect(upstreamCalls).toBe(2);
 
     finishUpstream?.();
     await response.text();
     expect(getNativeMainProfileRequestCount()).toBe(0);
+    drain?.release();
+    drain = null;
+
+    recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "claude-recovery-home";
+    expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);
+    const routedDuringRecovery = await postMessages(server.url.toString(), {
+      model: "mock/test-model",
+      max_tokens: 64,
+      stream: false,
+      messages: [{ role: "user", content: "routed during recovery" }],
+    });
+    expect(routedDuringRecovery.status).toBe(200);
+    expect(upstreamCalls).toBe(3);
+
+    completeNativeMainRecovery(recoveryHomeId);
+    recoveryHomeId = null;
+    await server.stop(true);
+    saveConfig({
+      port: 0,
+      openaiProviderTierVersion: 2,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+      },
+      codexAccounts: [],
+      activeCodexAccountId: "__main__",
+      autoSwitchThreshold: 0,
+    } as OcxConfig);
+    server = startServer(0);
+    await waitForNativeMainStartupGate();
+    recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "claude-main-recovery-home";
+    expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);
+    const mainBlocked = await postMessages(server.url.toString(), {
+      model: "openai/gpt-test",
+      max_tokens: 64,
+      stream: false,
+      messages: [{ role: "user", content: "main blocked" }],
+    });
+    expect(mainBlocked.status).toBe(503);
+    expect(upstreamCalls).toBe(3);
   } finally {
+    if (recoveryHomeId) completeNativeMainRecovery(recoveryHomeId);
     drain?.release();
     finishUpstream?.();
     await server.stop(true);
@@ -762,6 +821,7 @@ test("routed Claude requests give OpenAI sidecars main auth without leaking it t
     tokens: { access_token: mainAccessToken, account_id: mainAccountId },
   }));
   const server = startServer(0);
+  await waitForNativeMainStartupGate();
   const requestBody = {
     model: "routed/text-model",
     max_tokens: 128,

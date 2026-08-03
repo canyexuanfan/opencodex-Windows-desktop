@@ -30,7 +30,7 @@ import { getMainAccountToken, MAIN_CODEX_ACCOUNT_ID } from "../codex/main-accoun
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 import { providerCodexAccountMode } from "../providers/registry";
 import { captureConfigGeneration, type GenerationContext } from "../lib/state-store-sweeper";
-import { tryAcquireNativeMainProfileClaim } from "../server/lifecycle";
+import { tryAcquireNativeMainProfileClaim } from "../codex/native-main-admission";
 
 export interface TokenGuardianHandle {
   stop(): void;

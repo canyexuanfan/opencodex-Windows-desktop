@@ -273,10 +273,20 @@ export async function resolveCodexAuthContext(
       : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope, selectionOptions);
     if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
     const selected = resolution.status === "selected" ? resolution.accountId : null;
-    if (!selected) throw new CodexPoolAuthenticationError();
+    if (!selected) {
+      // Recovery deliberately makes physical main ineligible. If no healthy
+      // pool route is configured and main is the intended route, report the
+      // temporary fence rather than misclassifying that credential as invalid.
+      // A configured pool retry/exclusion that finds no alternate preserves its
+      // ordinary pool-auth failure instead of being mislabeled as a main fence.
+      if (nativeMainTrafficBlocked && !options.excludeAccountId) {
+        throw new CodexMainProfileDrainingError();
+      }
+      throw new CodexPoolAuthenticationError();
+    }
     accountId = selected;
     if (accountId === MAIN_CODEX_ACCOUNT_ID && nativeMainTrafficBlocked) {
-      throw new CodexPoolAuthenticationError();
+      throw new CodexMainProfileDrainingError();
     }
     if (
       accountId === MAIN_CODEX_ACCOUNT_ID

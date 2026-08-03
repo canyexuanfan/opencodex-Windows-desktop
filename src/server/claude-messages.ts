@@ -34,7 +34,7 @@ import { conversationIdFromClaudeMetadata } from "./request-log-conversation";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 import type { AdmissionLease } from "../lib/admission";
-import { tryClaimNativeMainProfileForTurn } from "./lifecycle";
+import { tryClaimNativeMainProfileForTurn } from "../codex/native-main-admission";
 import {
   createTranslatorBudget,
   finalizeTranslatorBudgetResponse,
@@ -672,24 +672,17 @@ async function handleClaudeMessagesWithBudget(
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
-  if (!tryClaimNativeMainProfileForTurn(logIds?.turnAdmissionLease)) {
-    const response = anthropicErrorResponse(
-      503,
-      "Native Codex main profile is switching; retry this request",
-      "overloaded_error",
-    );
-    response.headers.set("Retry-After", "1");
-    if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 503, { closeReason: "non_stream" });
-    return response;
-  }
   // Routed replays need main ChatGPT auth so OpenAI-backed sidecars remain reachable;
-  // native replays have no caller ChatGPT credential. The turn claim above keeps any
-  // materialized main token owned through the complete translated response lifetime.
-  const { getMainAccountToken } = await import("../codex/main-account");
-  const token = getMainAccountToken();
-  if (token) {
-    headers.set("authorization", `Bearer ${token.accessToken}`);
-    headers.set("chatgpt-account-id", token.chatgptAccountId);
+  // native replays have no caller ChatGPT credential. This enrichment is optional:
+  // auth-context later rejects a real physical-main selection, while routed/pool
+  // traffic continues without reading native credentials during a fence/recovery.
+  if (tryClaimNativeMainProfileForTurn(logIds?.turnAdmissionLease)) {
+    const { getMainAccountToken } = await import("../codex/main-account");
+    const token = getMainAccountToken();
+    if (token) {
+      headers.set("authorization", `Bearer ${token.accessToken}`);
+      headers.set("chatgpt-account-id", token.chatgptAccountId);
+    }
   }
   if (nativeRoute) {
     // ChatGPT-backend prompt-cache affinity rides the session_id HEADER (codex
@@ -766,8 +759,11 @@ async function handleClaudeMessagesWithBudget(
     // rewrite): log = upstream truth, client = retry signal.
     // Retryable 429s also get Retry-After (#507) so Codex-shaped clients and Claude Code
     // share a backoff hint when the upstream omitted the header.
-    const transient = isTransientUpstreamStatus(response.status);
-    const outStatus = transient ? 529 : response.status;
+    const nativeMainFence = response.status === 503
+      && upstreamRetryAfter?.trim() === "1"
+      && message === "Native Codex main profile is switching; retry this request";
+    const transient = !nativeMainFence && isTransientUpstreamStatus(response.status);
+    const outStatus = nativeMainFence ? 503 : transient ? 529 : response.status;
     const out = new Response(JSON.stringify(anthropicErrorBody(outStatus, message)), {
       status: outStatus,
       headers: {

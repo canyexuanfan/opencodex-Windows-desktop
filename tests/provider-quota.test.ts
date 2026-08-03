@@ -3,9 +3,14 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearAccountQuota } from "../src/codex/quota";
+import { clearMainAccountInfoCache } from "../src/codex/main-account-cache";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { saveCredential } from "../src/oauth/store";
-import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../src/providers/quota";
+import {
+  clearProviderQuotaCache,
+  fetchProviderQuotaReports,
+  setProviderQuotaBeforePublishForTests,
+} from "../src/providers/quota";
 import type { OcxConfig } from "../src/types";
 
 const originalFetch = globalThis.fetch;
@@ -71,12 +76,14 @@ beforeEach(() => {
   }));
   clearAccountQuota();
   clearProviderQuotaCache();
+  setProviderQuotaBeforePublishForTests(null);
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   clearAccountQuota();
   clearProviderQuotaCache();
+  setProviderQuotaBeforePublishForTests(null);
   if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -631,6 +638,30 @@ describe("fetchProviderQuotaReports", () => {
     expect(result.reports[0]?.source).toBe("cursor:auth-usage");
     expect(result.reports[0]?.quota.monthlyPercent).toBe(30);
     expect(result.reports[0]?.quota.monthlyResetAt).toBe(Date.UTC(2027, 0, 31));
+  });
+
+  test("main identity invalidation drops the stale report without negative-caching the new identity", async () => {
+    const full = testConfig();
+    const config = {
+      ...full,
+      providers: {
+        openai: full.providers.openai!,
+      },
+    } as OcxConfig;
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "plus",
+      rate_limit: { secondary_window: { used_percent: 61 } },
+    })) as typeof fetch;
+    setProviderQuotaBeforePublishForTests(() => {
+      clearMainAccountInfoCache();
+      setProviderQuotaBeforePublishForTests(null);
+    });
+
+    const response = await fetchProviderQuotaReports(config, true);
+    expect(response.reports.some(item => item.provider === "openai")).toBe(false);
+
+    const retried = await fetchProviderQuotaReports(config, false);
+    expect(retried.reports.some(item => item.provider === "openai")).toBe(true);
   });
 
   test("clearing the cache mid-flight revokes commit authority", async () => {
