@@ -769,11 +769,19 @@ describe("runReady production findLiveProxy deadline wiring (source-level)", () 
   });
 
   test("the non-wait path keeps findLiveProxy's built-in default (no deadlineAt)", () => {
-    // The default find forwards {} when remainingMs is undefined so the
-    // built-in per-probe timeout (no deadline) is preserved for the single probe.
-    expect(readySource).toContain("remainingMs === undefined ? {}");
+    // The default find forwards only verifyPidFn: () => null when remainingMs is
+    // undefined so the built-in per-probe timeout (no deadline) is preserved for
+    // the single probe and no OS pid verification runs outside a deadline.
+    expect(readySource).toContain("remainingMs === undefined\n        ? { verifyPidFn: () => null }");
     // deadlineAt is only ever passed conditionally (in the wait branch), never
     // as an unconditional findLiveProxy({ deadlineAt: ... }).
     expect(readySource).not.toContain("findLiveProxy({ deadlineAt");
+  });
+
+  test("readiness discovery never runs killable-pid OS verification (deadline-bounded, non-destructive)", () => {
+    // verifyPidIdentity spawns WMIC/PowerShell (up to seconds on Windows) and is
+    // only needed for kill targets. Readiness must not run it: the check would
+    // be unbounded by the wait deadline.
+    expect(readySource).toContain("verifyPidFn: () => null");
   });
 });

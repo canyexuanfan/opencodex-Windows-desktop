@@ -179,8 +179,14 @@ export async function runReady(args: ReadyArgs, io: ReadyIo = {}): Promise<numbe
     // deadlineAt budget recomputes remaining before each candidate probe and
     // bounds each fetch by it (plus the per-probe cap below). Non-wait path
     // keeps the built-in default.
+    // verifyPidFn is disabled: readiness is non-destructive, so the killable-pid
+    // OS command-line verification (WMIC/PowerShell, seconds on Windows) would
+    // run OUTSIDE the deadline budget for no readiness value. The /healthz
+    // identity marker and the strict /readyz contract validation remain.
     const live = await findLiveProxy(
-      remainingMs === undefined ? {} : { deadlineAt: Date.now() + remainingMs, timeoutMs: DEFAULT_PROBE_TIMEOUT_MS },
+      remainingMs === undefined
+        ? { verifyPidFn: () => null }
+        : { deadlineAt: Date.now() + remainingMs, timeoutMs: DEFAULT_PROBE_TIMEOUT_MS, verifyPidFn: () => null },
     );
     return live ? { pid: live.pid, port: live.port, hostname: live.hostname } : null;
   });
