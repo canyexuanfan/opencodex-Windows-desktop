@@ -566,7 +566,11 @@ test("every reachable client gets a card, not just the file six", async () => {
   const clientIds = Array.from(container.querySelectorAll(".integration-card"))
     .map(card => (card as unknown as HTMLElement).getAttribute("data-client"));
   expect(clientIds).toContain("codex");
-  expect(clientIds).toContain("keys");
+  // Keys deliberately absent: a credential is not a client card. It renders as
+  // its own row above the grid instead.
+  expect(clientIds).not.toContain("keys");
+  expect(container.querySelector(".integration-cards [data-client='keys']")).toBeNull();
+  expect(container.querySelector(".integration-api-keys-row")).not.toBeNull();
   expect(clientIds).toContain("claude");
   expect(clientIds).toContain("claudeDesktop");
   expect(clientIds).toContain("grok");
@@ -594,12 +598,16 @@ test("a source that cannot be read is unknown, never 'not applied'", async () =>
   failExtraSources = true;
   await mountOverview();
 
-  for (const id of ["codex", "keys", "claude", "claudeDesktop", "grok"]) {
+  for (const id of ["codex", "claude", "claudeDesktop", "grok"]) {
     const badge = container.querySelector(
       `.integration-card[data-client='${id}'] .badge`,
     ) as unknown as HTMLElement | null;
     expect(badge?.getAttribute("data-integration-state")).toBe("unknown");
   }
+  // The keys row says the same thing in credential words: a failed read is
+  // "unavailable", never "no keys issued".
+  const keysRow = container.querySelector(".integration-api-keys-row") as unknown as HTMLElement | null;
+  expect(keysRow?.getAttribute("data-key-state")).toBe("unavailable");
   // The file client still reports its real state.
   const hermes = container.querySelector(
     ".integration-card[data-client='hermes'] .badge",
