@@ -153,6 +153,28 @@ jobs:
               );
             }
 
+            /** The enforcer comment state after every quality gate clears. */
+            function clearedEnforcerState() {
+              return {
+                version: 1,
+                active: false,
+                autoDraftedByBot: false,
+                titlePrefixedByBot: false,
+                ancestryFailed: false,
+                descriptionFailed: false,
+                screenshotFailed: false
+              };
+            }
+
+            /** Fresh checklist-message state for a contributor PR. */
+            function defaultReadinessState() {
+              return {
+                version: READINESS_STATE_VERSION,
+                autoDraftedByBot: false,
+                maintainersPinged: false
+              };
+            }
+
             /**
              * Maintainers from `MAINTAINERS.md` on the trusted default branch
              * (checked out sparse by the step above). The file is the canonical
@@ -529,11 +551,7 @@ jobs:
               let draftConverted = false;
               const readinessState = storedReadinessState
                 ? { ...storedReadinessState }
-                : {
-                    version: READINESS_STATE_VERSION,
-                    autoDraftedByBot: false,
-                    maintainersPinged: false
-                  };
+                : defaultReadinessState();
               const state = storedState?.active
                 ? { ...storedState }
                 : {
@@ -573,69 +591,41 @@ jobs:
                 state.titlePrefixedByBot = false;
               }
 
-              if (checklistRequired) {
-                const conversionPending =
-                  !pr.draft && !checklistComplete;
-                if (conversionPending) {
-                  await upsertReadinessComment(
-                    readinessState,
-                    readiness,
-                    [
-                      "This PR stays in draft until every box above is ticked."
-                    ]
-                  );
-                }
-              }
-
-              if (failures.length > 0) {
-              state.ancestryFailed = failures.some(
-                failure => failure.code === "wrong_ancestry"
-              );
-              state.descriptionFailed = failures.some(
-                failure => failure.code === "bad_description"
-              );
-              state.screenshotFailed = failures.some(
-                failure => failure.code === "missing_ui_screenshot"
-              );
-
-              let draftConversionFailed = false;
-              const failureSections = buildFailureSections(failures);
-
-              if (checklistRequired && !checklistComplete) {
-                failureSections.push(
-                  "",
-                  "⏳ **Review readiness checklist**",
-                  "",
-                  `This pull request stays in draft until all four boxes of the readiness checklist in the description are ticked (currently ${readiness.checked}/${readiness.total}).`,
-                  "",
-                  `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is fixed.`
+              if (checklistRequired && !pr.draft && !checklistComplete) {
+                await upsertReadinessComment(
+                  readinessState,
+                  readiness,
+                  [
+                    "This PR stays in draft until every box above is ticked."
+                  ]
                 );
               }
 
-              await upsertComment(
-                [
-                  COMMENT_MARKER,
-                  stateMarker(state),
-                  "",
-                  ...failureSections,
-                  "",
-                  "Recording ownership state before applying title/draft changes…"
-                ].join("\n")
-              );
-
-              if (willPrefixTitle) {
-                await github.rest.pulls.update({
-                  owner,
-                  repo,
-                  pull_number,
-                  title: `${TITLE_PREFIX}${pr.title}`
-                });
-              }
-
-              if (!pr.draft) {
-                // Claim draft ownership before the mutation so a successful
-                // convert followed by a failed comment still restores later.
-                state.autoDraftedByBot = true;
+              if (failures.length > 0) {
+                state.ancestryFailed = failures.some(
+                  failure => failure.code === "wrong_ancestry"
+                );
+                state.descriptionFailed = failures.some(
+                  failure => failure.code === "bad_description"
+                );
+                state.screenshotFailed = failures.some(
+                  failure => failure.code === "missing_ui_screenshot"
+                );
+  
+                let draftConversionFailed = false;
+                const failureSections = buildFailureSections(failures);
+  
+                if (checklistRequired && !checklistComplete) {
+                  failureSections.push(
+                    "",
+                    "⏳ **Review readiness checklist**",
+                    "",
+                    `This pull request stays in draft until all four boxes of the readiness checklist in the description are ticked (currently ${readiness.checked}/${readiness.total}).`,
+                    "",
+                    `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is fixed.`
+                  );
+                }
+  
                 await upsertComment(
                   [
                     COMMENT_MARKER,
@@ -643,13 +633,23 @@ jobs:
                     "",
                     ...failureSections,
                     "",
-                    "Draft conversion pending…"
+                    "Recording ownership state before applying title/draft changes…"
                   ].join("\n")
                 );
-                try {
-                  await convertToDraft();
-                  draftConverted = true;
-                  readinessState.autoDraftedByBot = true;
+  
+                if (willPrefixTitle) {
+                  await github.rest.pulls.update({
+                    owner,
+                    repo,
+                    pull_number,
+                    title: `${TITLE_PREFIX}${pr.title}`
+                  });
+                }
+  
+                if (!pr.draft) {
+                  // Claim draft ownership before the mutation so a successful
+                  // convert followed by a failed comment still restores later.
+                  state.autoDraftedByBot = true;
                   await upsertComment(
                     [
                       COMMENT_MARKER,
@@ -657,60 +657,74 @@ jobs:
                       "",
                       ...failureSections,
                       "",
-                      "Draft conversion succeeded; finalising explanation…"
+                      "Draft conversion pending…"
                     ].join("\n")
                   );
-                } catch (error) {
-                  draftConversionFailed = true;
-                  state.autoDraftedByBot = false;
-                  core.warning(
-                    `Could not convert pull request to draft: ${error.message}`
+                  try {
+                    await convertToDraft();
+                    draftConverted = true;
+                    readinessState.autoDraftedByBot = true;
+                    await upsertComment(
+                      [
+                        COMMENT_MARKER,
+                        stateMarker(state),
+                        "",
+                        ...failureSections,
+                        "",
+                        "Draft conversion succeeded; finalising explanation…"
+                      ].join("\n")
+                    );
+                  } catch (error) {
+                    draftConversionFailed = true;
+                    state.autoDraftedByBot = false;
+                    core.warning(
+                      `Could not convert pull request to draft: ${error.message}`
+                    );
+                  }
+                }
+  
+                const draftExplanation = draftConversionFailed
+                  ? "Automatic draft conversion failed (token cannot change draft status). Please convert this pull request to a draft manually. The required `enforce-target` check will keep failing until every issue above is resolved."
+                  : state.autoDraftedByBot
+                    ? "This pull request is being kept as a draft automatically. Once every issue above is resolved, it will be marked ready for review again."
+                    : "This pull request was already a draft. Its draft status will be preserved after every issue above is resolved.";
+  
+                const finalSections = [...failureSections];
+  
+                if (hasWrongBase && state.titlePrefixedByBot) {
+                  finalSections.push(
+                    "",
+                    `Its title has been prefixed with ${inlineCode(TITLE_PREFIX.trim())}.`
                   );
                 }
-              }
-
-              const draftExplanation = draftConversionFailed
-                ? "Automatic draft conversion failed (token cannot change draft status). Please convert this pull request to a draft manually. The required `enforce-target` check will keep failing until every issue above is resolved."
-                : state.autoDraftedByBot
-                  ? "This pull request is being kept as a draft automatically. Once every issue above is resolved, it will be marked ready for review again."
-                  : "This pull request was already a draft. Its draft status will be preserved after every issue above is resolved.";
-
-              const finalSections = [...failureSections];
-
-              if (hasWrongBase && state.titlePrefixedByBot) {
-                finalSections.push(
-                  "",
-                  `Its title has been prefixed with ${inlineCode(TITLE_PREFIX.trim())}.`
-                );
-              }
-
-              await upsertComment(
-                [
-                  COMMENT_MARKER,
-                  stateMarker(state),
-                  "",
-                  ...finalSections,
-                  "",
-                  draftExplanation
-                ].join("\n")
-              );
-
-              if (checklistRequired) {
-                await upsertReadinessComment(
-                  readinessState,
-                  readiness,
+  
+                await upsertComment(
                   [
-                    checklistComplete
-                      ? "✅ **All four boxes are ticked.** This PR still stays in draft until the issues above are resolved."
-                      : pr.draft || draftConverted
-                        ? "This PR stays in draft until every box above is ticked."
-                        : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
-                  ]
+                    COMMENT_MARKER,
+                    stateMarker(state),
+                    "",
+                    ...finalSections,
+                    "",
+                    draftExplanation
+                  ].join("\n")
                 );
-              }
-
-              core.setFailed(`PR quality gate failed: ${failureSummary(failures)}`);
-              return;
+  
+                if (checklistRequired) {
+                  await upsertReadinessComment(
+                    readinessState,
+                    readiness,
+                    [
+                      checklistComplete
+                        ? "✅ **All four boxes are ticked.** This PR still stays in draft until the issues above are resolved."
+                        : pr.draft || draftConverted
+                          ? "This PR stays in draft until every box above is ticked."
+                          : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
+                    ]
+                  );
+                }
+  
+                core.setFailed(`PR quality gate failed: ${failureSummary(failures)}`);
+                return;
               }
 
               // No quality failure; the draft is owed by the open checklist.
@@ -723,15 +737,7 @@ jobs:
                 await upsertComment(
                   [
                     COMMENT_MARKER,
-                    stateMarker({
-                      version: 1,
-                      active: false,
-                      autoDraftedByBot: false,
-                      titlePrefixedByBot: false,
-                      ancestryFailed: false,
-                      descriptionFailed: false,
-                      screenshotFailed: false
-                    }),
+                    stateMarker(clearedEnforcerState()),
                     "",
                     "✅ **PR quality gates passed**",
                     "",
@@ -810,24 +816,8 @@ jobs:
             // a clean contributor PR that never failed a quality gate has none.
             if (storedState?.active || botComment) {
               const completedState = readyConversionFailed
-                ? {
-                    version: 1,
-                    active: true,
-                    autoDraftedByBot: true,
-                    titlePrefixedByBot: false,
-                    ancestryFailed: false,
-                    descriptionFailed: false,
-                    screenshotFailed: false
-                  }
-                : {
-                    version: 1,
-                    active: false,
-                    autoDraftedByBot: false,
-                    titlePrefixedByBot: false,
-                    ancestryFailed: false,
-                    descriptionFailed: false,
-                    screenshotFailed: false
-                  };
+                ? { ...clearedEnforcerState(), active: true, autoDraftedByBot: true }
+                : clearedEnforcerState();
 
               const titleResult = storedState.titlePrefixedByBot
                 ? `The ${inlineCode(TITLE_PREFIX.trim())} title prefix has been removed.`
@@ -862,11 +852,7 @@ jobs:
             if (checklistRequired && checklistComplete) {
               const readinessState = storedReadinessState
                 ? { ...storedReadinessState }
-                : {
-                    version: READINESS_STATE_VERSION,
-                    autoDraftedByBot: false,
-                    maintainersPinged: false
-                  };
+                : defaultReadinessState();
               let notified = false;
               if (!readinessState.maintainersPinged) {
                 readinessState.maintainersPinged = true;
