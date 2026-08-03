@@ -108,3 +108,6 @@ Windows 任务管理器显示 `opencodex · proxy dashboard` / `Bun` 进程占�
 - 2026-08-04：✅ 对旧安装 PID `9220` 做 30 秒只读趋势采样：`activeTurnCount` 从 `96` 增至 `99`，RSS 在 `686–870 MB` 间波动，JSC heap `486–593 MB`，而 `responseState.totalBytes` 基本稳定在 `63 MB`。该现场证据把主要增长面进一步收敛到活动 turn/流生命周期，不能归因于 continuation 状态缓存；当前进程仍未被重启或干扰。
 - 2026-08-04：❌ 继续审计常驻缓存时，组合查询引用不存在的 `src/observability` 目录，PowerShell 返回非零并中断该组输出；此前已成功确认 `src/responses/state.ts` 有 64 MiB 内存上限，未修改任何代码。后续仅基于已存在的实际文件定位 request-log 实现。
 - 2026-08-04：❌ 定位 request-log 常驻结构时，`rg` 命令使用了 Windows 不支持的 `src/server/*.ts` / `src/server/**/*.ts` 参数，返回路径语法错误；未修改代码。后续改用 `rg --glob '*.ts'`。
+- 2026-08-04：❌ 隔离 WebSocket 中断压力 sidecar 首次启动时，在管理 token 文件初始化的 Windows ACL 加固阶段返回 `EICACLS`，原因是本轮临时配置文件由沙箱创建后被子进程以不同权限访问；sidecar 未监听、旧 PID `9220` 未受影响。后续用一次性环境管理 token 绕开临时 token 文件加固路径，继续使用同一隔离配置做压力验证。
+- 2026-08-04：❌ 使用一次性环境管理 token 重试后仍在启动阶段返回同一 `EICACLS`，日志显示 sidecar 未监听且无残留进程，说明失败点是临时配置目录/文件的 ACL，而非管理 token 文件。后续需在授权环境重新创建隔离目录并复制无敏感配置，再继续压力验证。
+- 2026-08-04：✅ 在授权环境重新创建正常继承 ACL 的隔离目录后，最新解包包以版本 `2.8.0` 启动于临时端口 `38067`。本机假上游保持 SSE 不结束，客户端连续 3 轮、每轮 40 个 WebSocket `response.create` turn，在收到首帧后主动断开，共 120 次中断。压力后连续 4 次（间隔 2 秒）采样均为 `activeTurns.count=0`、`oldestAgeMs=0`、`responseState.totalBytes=0`；RSS `171.6→170.6 MB`，JSC heap 约 `29–30 MB`，external `16.1→16.7 MB`。证明取消链与生命周期释放在中断压力下没有累积 turn；假上游和测试进程均为本地临时资源。
