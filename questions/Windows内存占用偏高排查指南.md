@@ -63,6 +63,9 @@ Windows 任务管理器显示 `opencodex · proxy dashboard` / `Bun` 进程占�
 
 ## 更新记录
 
+- 2026-08-04：✅ 引入 WebSocket active-turn admission lease：最多 128 个“已注册或待绑定”turn；超限返回可重试 503；lease 绑定 `AbortController` 后由统一 `release()` 移除 active turn，重复释放幂等。`bun run typecheck` 通过，相关 50 个测试通过。
+- 2026-08-04：❌ 第二次 admission 测试补丁仍把尚未应用的 `MAX_ACTIVE_TURNS` 导出当作既有上下文，导致多文件补丁整体拒绝；后续拆成最小补丁，先修改声明再补导出和测试。
+- 2026-08-04：❌ 为 admission lease 添加生命周期测试时，首次补丁假定了 `shutdown-drain.test.ts` 的 import 顺序，导致上下文校验失败且未修改文件；后续先读取实际 import 再应用。
 - 2026-08-04：❌ 复试 `git add` 仍无法创建 `.git/index.lock`；结合工作区权限说明确认是当前沙箱对 `.git` 目录只读，非残留锁。后续 Git 存档需申请最小范围的非沙箱授权执行 `git add/commit/tag`。
 - 2026-08-04：❌ 第二次并行只读检查仍因 PowerShell 对不存在进程名返回非零状态而中断，锁文件检查未被可靠展示；后续改用 `Get-Process | Where-Object` 过滤并单独读取锁状态。
 - 2026-08-04：❌ 并行检查 Git 进程、锁文件和 ACL 时，ACL 查询命令本身被系统拒绝，组合命令因此没有完整输出；后续拆成单项只读检查，避免一个权限错误遮蔽其他证据。

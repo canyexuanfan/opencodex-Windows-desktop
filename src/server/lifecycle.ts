@@ -11,6 +11,8 @@ import { stopStorageCleanupScheduler } from "../storage/policy-scheduler";
 // ---------------------------------------------------------------------------
 
 const activeTurns = new Set<AbortController>();
+export const MAX_ACTIVE_TURNS = 128;
+let reservedTurnSlots = 0;
 let draining = false;
 let recyclingForExit = false;
 let _serverRef: ReturnType<typeof Bun.serve> | undefined;
@@ -21,6 +23,46 @@ export function registerTurn(ac: AbortController): void { activeTurns.add(ac); }
 export function unregisterTurn(ac: AbortController): void { activeTurns.delete(ac); }
 export function isDraining(): boolean { return draining; }
 export function getActiveTurnCount(): number { return activeTurns.size; }
+
+export interface ActiveTurnLease {
+  /** Bind the lease to the controller that must be aborted when the turn is released. */
+  bindAbortController(ac: AbortController): void;
+  /** Release the admission slot and any bound active-turn registration exactly once. */
+  release(): void;
+  /** Reserved for response-body transfers; current WebSocket leases always release inline. */
+  isTransferred(): boolean;
+}
+
+/**
+ * Reserve a bounded turn slot before allocating the request pipeline. A stale or bursty client
+ * can therefore receive a retryable 503 instead of creating an unbounded number of readers,
+ * AbortControllers, and request contexts while earlier cancellations are still unwinding.
+ */
+export function tryAdmitTurn(): ActiveTurnLease | null {
+  if (activeTurns.size + reservedTurnSlots >= MAX_ACTIVE_TURNS) return null;
+  reservedTurnSlots += 1;
+  let released = false;
+  let bound: AbortController | undefined;
+  let transferred = false;
+  return {
+    bindAbortController(ac) {
+      if (released || bound) return;
+      bound = ac;
+      reservedTurnSlots -= 1;
+      registerTurn(ac);
+    },
+    release() {
+      if (released) return;
+      released = true;
+      if (bound) {
+        unregisterTurn(bound);
+      } else {
+        reservedTurnSlots -= 1;
+      }
+    },
+    isTransferred: () => transferred,
+  };
+}
 /** Live listen port of the Bun server, when started. */
 export function getServerListenPort(): number | undefined {
   const port = _serverRef?.port;
