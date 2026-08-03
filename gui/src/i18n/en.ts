@@ -1262,8 +1262,8 @@ export const en = {
   "codexAuth.autoSwitchUpdateFailed": "The usage-based switching update could not be confirmed. The last confirmed value is shown.",
   "codexAuth.requestUserInput": "Ask for input in Default mode",
   "codexAuth.requestUserInputDesc": "Lets Codex pause a Default-mode session and ask you questions with the request_user_input tool.",
-  "codexAuth.requestUserInputConfig": "config.toml: [features] default_mode_request_user_input = true",
   "codexAuth.requestUserInputUpdated": "Feature flag updated - applies to new sessions.",
+  "codexAuth.requestUserInputUpdatedRestart": "Feature flag updated - applies to new sessions. Restart the Codex app to pick it up.",
   "codexAuth.requestUserInputUpdateFailed": "Could not update the feature flag. Nothing was changed.",
   "codexAuth.requestUserInputLoadFailed": "Could not read the feature flag from config.toml.",
 

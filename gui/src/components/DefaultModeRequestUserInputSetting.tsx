@@ -20,21 +20,25 @@ export default function DefaultModeRequestUserInputSetting({ apiBase }: { apiBas
   const [feedback, setFeedback] = useState<Feedback>(null);
   const savingRef = useRef(false);
   const enabledRef = useRef(false);
+  const loadGenerationRef = useRef(0);
 
   const load = useCallback(async () => {
     // A poll landing between the optimistic flip and the PUT response must not
-    // revert the UI to the server's pre-save value.
+    // revert the UI to the server's pre-save value. The generation also drops
+    // GETs that were already in flight when a save started.
     if (savingRef.current) return;
+    const generation = ++loadGenerationRef.current;
     try {
       const res = await fetch(`${apiBase}${FEATURE_ENDPOINT}`);
       if (!res.ok) throw new Error("load");
       const payload = await res.json() as { enabled?: unknown };
+      if (savingRef.current || generation !== loadGenerationRef.current) return;
       enabledRef.current = payload.enabled === true;
       setEnabled(enabledRef.current);
       setHydrated(true);
       setLoadError(false);
     } catch {
-      if (!savingRef.current) setLoadError(true);
+      if (!savingRef.current && generation === loadGenerationRef.current) setLoadError(true);
     }
   }, [apiBase]);
 
@@ -56,22 +60,29 @@ export default function DefaultModeRequestUserInputSetting({ apiBase }: { apiBas
     savingRef.current = true;
     setSaving(true);
     setFeedback(null);
+    loadGenerationRef.current++;
     try {
       const res = await fetch(`${apiBase}${FEATURE_ENDPOINT}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ enabled: next }),
       });
-      const payload = (await readJsonOrThrow<{ ok?: boolean; enabled?: unknown }>(res)) ?? {};
+      const payload = (await readJsonOrThrow<{ ok?: boolean; enabled?: unknown; changed?: unknown }>(res)) ?? {};
       if (payload.ok !== true) throw new Error(String(res.status));
       enabledRef.current = payload.enabled === true;
       setEnabled(enabledRef.current);
       setHydrated(true);
-      setFeedback({ tone: "ok", message: t("codexAuth.requestUserInputUpdated") });
-    } catch {
+      setFeedback({
+        tone: "ok",
+        message: t(payload.changed === true ? "codexAuth.requestUserInputUpdatedRestart" : "codexAuth.requestUserInputUpdated"),
+      });
+    } catch (error) {
       enabledRef.current = previous;
       setEnabled(previous);
-      setFeedback({ tone: "err", message: t("codexAuth.requestUserInputUpdateFailed") });
+      const reason = error instanceof Error && error.message && !/^HTTP \d{3}$/.test(error.message)
+        ? error.message
+        : t("codexAuth.requestUserInputUpdateFailed");
+      setFeedback({ tone: "err", message: reason });
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -92,7 +103,7 @@ export default function DefaultModeRequestUserInputSetting({ apiBase }: { apiBas
           {loadError ? t("codexAuth.requestUserInputLoadFailed") : t("codexAuth.requestUserInputDesc")}
         </div>
         <code className="mono codex-request-user-input-config">
-          {t("codexAuth.requestUserInputConfig")}
+          {`[features]\ndefault_mode_request_user_input = true`}
         </code>
       </div>
       <div className="codex-request-user-input-controls">

@@ -115,7 +115,7 @@ describe("DefaultModeRequestUserInputSetting", () => {
     }) as typeof fetch);
 
     expect(host.textContent).toContain("Ask for input in Default mode");
-    expect(host.textContent).toContain("config.toml: [features] default_mode_request_user_input = true");
+    expect(host.textContent).toContain("[features]\ndefault_mode_request_user_input = true");
     expect(toggleButton(host).disabled).toBe(true);
 
     await act(async () => {
@@ -143,7 +143,23 @@ describe("DefaultModeRequestUserInputSetting", () => {
     });
     expect(puts).toEqual([{ enabled: true }]);
     expect(toggleButton(host).getAttribute("aria-pressed")).toBe("true");
+    expect(host.textContent).toContain("Restart the Codex app to pick it up.");
+  });
+
+  test("an unchanged PUT keeps the base success copy without the restart hint", async () => {
+    const host = await mount((async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({ ok: true, enabled: true, changed: false, warnings: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ enabled: false, key: "default_mode_request_user_input" }), { status: 200 });
+    }) as typeof fetch);
+
+    await act(async () => {
+      toggleButton(host).click();
+      await flush();
+    });
     expect(host.textContent).toContain("Feature flag updated - applies to new sessions.");
+    expect(host.textContent).not.toContain("Restart the Codex app");
   });
 
   test("failed PUT reverts the toggle and reports the error", async () => {
@@ -159,6 +175,67 @@ describe("DefaultModeRequestUserInputSetting", () => {
       await flush();
     });
     expect(toggleButton(host).getAttribute("aria-pressed")).toBe("false");
-    expect(host.textContent).toContain("Could not update the feature flag. Nothing was changed.");
+    expect(host.textContent).toContain("toggle failed");
+  });
+
+  test("a poll GET in flight during a toggle cannot revert the optimistic state", async () => {
+    const firstGet = deferred<Response>();
+    const secondGet = deferred<Response>();
+    const put = deferred<Response>();
+    let getCount = 0;
+    let putStarted = false;
+    let pollCallback: (() => void) | null = null;
+    const originalSetInterval = testWindow.setInterval.bind(testWindow);
+    testWindow.setInterval = ((_cb: TimerHandler, _ms?: number, ..._args: unknown[]) => {
+      // Hold the 30s poll so the test can fire it at the exact overlap point.
+      if (typeof _cb === "function") pollCallback = _cb as () => void;
+      return originalSetInterval(_cb, _ms, ..._args) as number;
+    }) as typeof testWindow.setInterval;
+
+    const host = await mount((async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/codex-auth/features/default-mode-request-user-input") && init?.method === "PUT") {
+        putStarted = true;
+        return put.promise;
+      }
+      if (url.endsWith("/api/codex-auth/features/default-mode-request-user-input")) {
+        getCount++;
+        return getCount === 1 ? firstGet.promise : secondGet.promise;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch);
+
+    await act(async () => {
+      firstGet.resolve(new Response(JSON.stringify({ enabled: false, key: "default_mode_request_user_input" }), { status: 200 }));
+      await flush();
+    });
+    expect(toggleButton(host).disabled).toBe(false);
+    expect(toggleButton(host).getAttribute("aria-pressed")).toBe("false");
+
+    // Start the poll GET that will still be in flight when the user toggles.
+    await act(async () => {
+      pollCallback?.();
+      await flush();
+    });
+
+    await act(async () => {
+      toggleButton(host).click();
+      await flush();
+    });
+    expect(toggleButton(host).getAttribute("aria-pressed")).toBe("true");
+
+    // The stale pre-toggle GET resolves mid-PUT and must be ignored.
+    await act(async () => {
+      secondGet.resolve(new Response(JSON.stringify({ enabled: false, key: "default_mode_request_user_input" }), { status: 200 }));
+      await flush();
+    });
+    expect(toggleButton(host).getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => {
+      put.resolve(new Response(JSON.stringify({ ok: true, enabled: true, changed: true, warnings: [] }), { status: 200 }));
+      await flush();
+    });
+    expect(toggleButton(host).getAttribute("aria-pressed")).toBe("true");
+    expect(host.textContent).toContain("Restart the Codex app to pick it up.");
   });
 });
