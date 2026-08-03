@@ -288,12 +288,26 @@ const ESTIMATE_REASON_KEYS = {
   expected_price_overlay: "logs.detail.estimate.expected_price_overlay",
 } as const satisfies Record<CostEstimateReason, string>;
 
+const RECOVERY_KIND_KEYS = {
+  "transient-5xx": "logs.detail.attempt.recovery.transient5xx",
+  "connection-reset": "logs.detail.attempt.recovery.connectionReset",
+  "oauth-401": "logs.detail.attempt.recovery.oauth401",
+  "key-429": "logs.detail.attempt.recovery.key429",
+  "rate-limit-429": "logs.detail.attempt.recovery.rateLimit429",
+  "anthropic-oauth-429": "logs.detail.attempt.recovery.anthropicOauth429",
+  "image-413": "logs.detail.attempt.recovery.image413",
+} as const satisfies Record<AttemptRecoveryKind, string>;
+
 function metricReasonKey(reason: MetricUnavailableReason) {
   return METRIC_REASON_KEYS[reason];
 }
 
 function estimateReasonKey(reason: CostEstimateReason) {
   return ESTIMATE_REASON_KEYS[reason];
+}
+
+function recoveryKindKey(kind: AttemptRecoveryKind) {
+  return RECOVERY_KIND_KEYS[kind];
 }
 
 function verificationKey(status: MatchedPriceInfo["status"]): "logs.detail.verification.verified" | "logs.detail.verification.derived" {
@@ -962,7 +976,9 @@ function LogDetailDialog({
                   const attemptReasoningWire = reasoningWireLabel(attempt);
                   const matched = attemptCost?.kind === "value" ? attemptCost.estimate.price : undefined;
                   const reason = attempt.errorCode
-                    ?? (attempt.recoveryKinds.length ? attempt.recoveryKinds.join(", ") : undefined)
+                    ?? (attempt.recoveryKinds.length
+                      ? attempt.recoveryKinds.map(kind => t(recoveryKindKey(kind))).join(", ")
+                      : undefined)
                     ?? (attemptCost?.kind === "unavailable" ? t(metricReasonKey(attemptCost.reason)) : t("logs.detail.attempt.completed"));
                   return (
                     <tr key={`${attempt.ordinal}-${attempt.provider}-${attempt.model}`}>
