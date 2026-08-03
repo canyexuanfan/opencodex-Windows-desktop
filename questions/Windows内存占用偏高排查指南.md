@@ -102,3 +102,7 @@ Windows 任务管理器显示 `opencodex · proxy dashboard` / `Bun` 进程占�
 - 2026-08-04：❌ 改用 `ProcessStartInfo`/`cmd.exe` 注入隔离环境后，Bun sidecar 进程确实启动，但在读取 `F:\workbuddy\opencodex\.tmp\isolated-sidecar\opencodex` 时立即报 `EPERM: operation not permitted, scandir` 并退出；当前尝试无法区分是沙箱对子进程临时目录的访问限制，还是目录权限继承问题。下一步改用项目内普通目录并检查 ACL/具体扫描调用，仍不触碰真实用户配置。
 - 2026-08-04：✅ 在沙箱外用同一套隔离配置成功启动最新解包包，监听临时端口 `64419`，ready 消息确认版本 `2.8.0`、PID `16836`。连续三次 `/api/system/memory` 空闲采样：RSS `174.5–175.5 MB`、JSC heap `16.3–17.0 MB`、external `3.1–3.8 MB`、`activeTurnCount=0`、`activeTurns.count=0`、`responseState.totalBytes=0`。说明新包启动后没有凭空保留 turn 或 continuation；该结论是空闲基线，不等同于多 Agent 压力下的最终峰值。
 - 2026-08-04：❌ 第一次为本轮排查记录建档时直接执行 `git add -- questions/Windows内存占用偏高排查指南.md`，被仓库 sparse-checkout 拒绝，提示该路径位于稀疏定义之外；未暂存其他文件。后续按 Git 提示使用 `git add --sparse`，继续保持单文件存档范围。
+- 2026-08-04：❌ 新一轮复核直接从沙箱读取真实运行实例的 `C:\Users\wzm33\.opencodex\runtime-port.json` 与 `admin-api-token` 时被 Windows 沙箱拒绝访问，随后请求落到空端口；没有修改任何配置或进程。后续只读采样需使用授权环境，并继续避免接触当前 PID `9220` 的生命周期。
+- 2026-08-04：❌ 准备构造隔离压力回归时，组合读取命令假设存在 `tests/helpers/test-config.ts`，该路径不存在，导致整组命令提前退出；没有改动测试或运行实例。后续先用 `rg --files tests` 定位真实夹具，再拆分读取，避免一个不存在的路径遮蔽其他有效输出。
+- 2026-08-04：❌ 第二次组合读取压力测试材料时使用了不存在的 `tests/responses*` 通配路径，PowerShell 使整组命令提前退出；已有的 `chat-completions-endpoint.test.ts` 匹配信息仍显示真实端到端夹具位置。后续不再使用未确认的通配路径，改为逐个读取已存在文件。
+- 2026-08-04：✅ 对旧安装 PID `9220` 做 30 秒只读趋势采样：`activeTurnCount` 从 `96` 增至 `99`，RSS 在 `686–870 MB` 间波动，JSC heap `486–593 MB`，而 `responseState.totalBytes` 基本稳定在 `63 MB`。该现场证据把主要增长面进一步收敛到活动 turn/流生命周期，不能归因于 continuation 状态缓存；当前进程仍未被重启或干扰。
