@@ -161,8 +161,7 @@ test("configured account selectors appear in OpenAI and Codex discovery without 
   config.providers.openai = {
     adapter: "openai-responses",
     baseUrl: "https://chatgpt.com/backend-api/codex",
-    authMode: "forward",
-    codexAccountMode: "pool",
+    liveModels: false,
   };
   config.codexAccounts = [{
     id: "stored-side-account",

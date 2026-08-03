@@ -245,8 +245,10 @@ export function isNativeOpenAiEntry(entry: RawEntry): boolean {
 }
 
 export function applyNativeOpenAiContextOverride(entry: RawEntry): void {
-  if (!isNativeOpenAiEntry(entry)) return;
-  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[entry.slug as string];
+  const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry)
+    ?? (isNativeOpenAiEntry(entry) ? entry.slug as string : undefined);
+  if (!nativeSlug) return;
+  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[nativeSlug];
   if (!override) return;
   if (typeof override.contextWindow === "number") {
     entry.context_window = override.contextWindow;

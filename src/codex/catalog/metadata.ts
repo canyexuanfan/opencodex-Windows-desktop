@@ -126,9 +126,14 @@ export function visibleNativeSlugs(config: Pick<OcxConfig, "disabledModels">): s
 export function shouldIncludeNativeOpenAi(config: Pick<OcxConfig, "providers">): boolean {
   const enabledProviders = Object.entries(config.providers)
     .filter(([, provider]) => provider.disabled !== true);
-  return enabledProviders.length === 0 || enabledProviders.some(([name, provider]) =>
-    name === OPENAI_CODEX_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider)
-  );
+  return enabledProviders.length === 0 || enabledProviders.some(([name, provider]) => {
+    if (name !== OPENAI_CODEX_PROVIDER_ID) return false;
+    // Registry routing defaults an omitted authMode on the built-in OpenAI row to forward.
+    const canonical = provider.authMode === undefined
+      ? { ...provider, authMode: "forward" as const }
+      : provider;
+    return isCanonicalOpenAiForwardProvider(canonical);
+  });
 }
 
 /** Native slugs exposed to Claude Desktop show/export/apply (opt-out via claudeCode.desktopNativeModels). */
@@ -193,8 +198,13 @@ export function nativeOpenAiSlugs(): string[] {
 
 export function listCatalogNativeSlugs(): string[] {
   const cat = readCurrentCatalogOrCache();
-  const live = filterSupportedNativeSlugs(cat?.models ?? []);
+  const models = cat?.models ?? [];
+  const live = filterSupportedNativeSlugs(models);
+  const accountBound = models.flatMap(entry => {
+    const slug = trustedAccountBoundNativeCatalogSlug(entry);
+    return slug !== undefined && SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug) ? [slug] : [];
+  });
   // Ensure documented additions (e.g. gpt-5.3-codex-spark) appear even when the bundled catalog
   // predates the slug — mirrors nativeOpenAiSlugs() which already merges them for /v1/models.
-  return unique([...live, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]);
+  return unique([...live, ...accountBound, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]);
 }

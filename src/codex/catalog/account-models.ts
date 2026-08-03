@@ -2,9 +2,7 @@ import type { OcxConfig } from "../../types";
 import { isMainCodexAccountTarget } from "../account-namespaces";
 import type { RawEntry } from "./parsing";
 
-/** Stable marker used to distinguish generated account rows from provider-owned catalog rows. */
-export const CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION =
-  "OpenAI native model bound to a Codex account namespace.";
+/** Stable nonsemantic marker used to distinguish generated rows from provider-owned rows. */
 export const CODEX_ACCOUNT_BOUND_CATALOG_KIND = "account-selector-v1";
 
 /**
@@ -42,18 +40,15 @@ export function accountBoundNativeDisplayName(selector: string, native: RawEntry
   return `${selector} / ${model}`;
 }
 
-function accountBoundNativeCatalogSlug(entry: RawEntry): string | undefined {
-  if (entry.description !== CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION
-    || typeof entry.slug !== "string") return undefined;
-  const slash = entry.slug.indexOf("/");
-  return slash > 0 ? entry.slug.slice(slash + 1) : undefined;
-}
-
 /** Identify current generated rows without changing Codex's semantic model fields. */
 export function trustedAccountBoundNativeCatalogSlug(entry: RawEntry): string | undefined {
-  return entry.opencodex_catalog_kind === CODEX_ACCOUNT_BOUND_CATALOG_KIND
-    ? accountBoundNativeCatalogSlug(entry)
-    : undefined;
+  if (entry.opencodex_catalog_kind !== CODEX_ACCOUNT_BOUND_CATALOG_KIND
+    || typeof entry.slug !== "string") return undefined;
+  const slash = entry.slug.indexOf("/");
+  if (slash <= 0 || slash !== entry.slug.lastIndexOf("/") || slash === entry.slug.length - 1) {
+    return undefined;
+  }
+  return entry.slug.slice(slash + 1);
 }
 
 export function accountBoundNativeModelSlugs(

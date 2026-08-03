@@ -4,12 +4,13 @@ import {
   accountBoundNativeModelSlugs,
   applyNativeVisibility,
   buildCatalogEntries,
-  CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
   CODEX_ACCOUNT_BOUND_CATALOG_KIND,
   disabledNativeSlugs,
   mergeCatalogEntriesForSync,
   NATIVE_OPENAI_MODELS,
   nativeModelRows,
+  shouldIncludeNativeOpenAi,
+  trustedAccountBoundNativeCatalogSlug,
   visibleCodexAccountSelectors,
   visibleNativeSlugs,
 } from "../src/codex/catalog";
@@ -84,17 +85,79 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(bare?.visibility).toBe("hide");
     expect(main).toMatchObject({
       display_name: "main-account / 5.5",
-      description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
       opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
       comp_hash: "native-compaction-hash",
       visibility: "list",
       priority: 0,
     });
+    expect(main?.description).toBe(bare?.description);
     expect(side?.display_name).toBe("side.account / 5.5");
     expect(side?.priority).toBe(1);
     expect(side?.model_messages).toEqual(bare?.model_messages);
     expect(routed?.priority).toBeGreaterThan(side?.priority as number);
     expect(entries.every(entry => Number.isInteger(entry.priority))).toBe(true);
+  });
+
+  test("featured routed rows follow complete account-qualified priority groups", () => {
+    const entries = buildCatalogEntries(
+      nativeTemplate(),
+      ["gpt-5.5"],
+      [{ provider: "vendor", id: "model" }],
+      ["gpt-5.5", "vendor/model"],
+      false,
+      "default",
+      new Set(),
+      ["one", "two", "three"],
+    );
+    applyNativeVisibility(entries, new Set(), true);
+
+    const visible = entries
+      .filter(entry => entry.visibility === "list")
+      .sort((left, right) => Number(left.priority) - Number(right.priority));
+    expect(visible.slice(0, 4).map(entry => entry.slug)).toEqual([
+      "one/gpt-5.5",
+      "two/gpt-5.5",
+      "three/gpt-5.5",
+      "vendor/model",
+    ]);
+    expect(visible.slice(0, 4).map(entry => entry.priority)).toEqual([0, 1, 2, 3]);
+  });
+
+  test("generated-row ownership uses only the nonsemantic marker and qualified slug shape", () => {
+    expect(trustedAccountBoundNativeCatalogSlug({
+      slug: "side/gpt-5.6-sol",
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+    })).toBe("gpt-5.6-sol");
+    expect(trustedAccountBoundNativeCatalogSlug({ slug: "side/gpt-5.6-sol" })).toBeUndefined();
+    expect(trustedAccountBoundNativeCatalogSlug({
+      slug: "gpt-5.6-sol",
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+    })).toBeUndefined();
+    expect(trustedAccountBoundNativeCatalogSlug({
+      slug: "side/nested/gpt-5.6-sol",
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+    })).toBeUndefined();
+  });
+
+  test("native availability mirrors the built-in OpenAI auth-mode default", () => {
+    const canonical = {
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+    } as const;
+    expect(shouldIncludeNativeOpenAi({ providers: {} })).toBe(true);
+    expect(shouldIncludeNativeOpenAi({ providers: { openai: canonical } })).toBe(true);
+    expect(shouldIncludeNativeOpenAi({
+      providers: { openai: { ...canonical, authMode: "forward" } },
+    })).toBe(true);
+    expect(shouldIncludeNativeOpenAi({
+      providers: { openai: { ...canonical, authMode: "key" } },
+    })).toBe(false);
+    expect(shouldIncludeNativeOpenAi({
+      providers: { openai: { ...canonical, baseUrl: "https://api.example.test/v1" } },
+    })).toBe(false);
+    expect(shouldIncludeNativeOpenAi({
+      providers: { openai: { ...canonical, disabled: true } },
+    })).toBe(true);
   });
 
   test("case-distinct routing selectors remain distinguishable in picker labels", () => {
@@ -180,7 +243,6 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
   test("disabled native state is mirrored onto its account-qualified clones", () => {
     const entries = [{
       slug: "side/gpt-5.6-sol",
-      description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
       opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
       visibility: "list",
     }];

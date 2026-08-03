@@ -60,6 +60,7 @@ import { fetchWithResetRetry, fetchWithTransientRetry, applyUpstreamRecoveryInit
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { slugsEquivalent } from "../../providers/slug-codec";
 import { subagentFallbackGuidanceText } from "../../codex/subagent-model-fallback";
 import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../../usage/debug";
@@ -262,7 +263,18 @@ export async function multiAgentGuidanceText(
         ? await resolveRoster([injectionModel], "v2")
         : effective
       : undefined;
-    const rosterModels = (subagentEffective?.advertised ?? []).filter(withinCandidateWindow);
+    const explicitlyConfigured = (candidate: EffectiveSubagentModel): boolean =>
+      configuredSubagents.some(model =>
+        model.includes("/") && slugsEquivalent(model, candidate.model)
+      );
+    const allowedForCurrentRoute = (candidate: EffectiveSubagentModel): boolean =>
+      explicitlyConfigured(candidate)
+      || !candidate.model.includes("/")
+      || (codexAccountNamespace !== undefined
+        && candidate.model.startsWith(`${codexAccountNamespace}/`));
+    const rosterModels = (subagentEffective?.advertised ?? [])
+      .filter(withinCandidateWindow)
+      .filter(allowedForCurrentRoute);
     const roster = subagentRosterText(rosterModels);
     const preferredCandidates = (preferredEffective?.advertised ?? []).filter(withinCandidateWindow);
     const preferred = injectionModel?.includes("/")

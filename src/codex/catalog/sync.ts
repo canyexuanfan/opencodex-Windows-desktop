@@ -39,7 +39,7 @@ import { applyCatalogModelMetadata, applyReasoningLevels, catalogEntryEfforts, c
 import { clearGatherRoutedModelsInflight, filterCatalogVisibleModels, gatherRoutedModels, lastDropWarnSignature } from "./provider-fetch";
 import { clearLastComboCatalogOmissions, comboCatalogWarningSignatures, comboMasqueradeCollisionWarnings, exactComboCatalogSlugs, openAiApiCollisionWarnings, resolveSlugAliasCollisions, slugAliasCollisionWarnings, warnComboMasqueradeCollisionOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
-import { accountBoundNativeDisplayName, CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION, CODEX_ACCOUNT_BOUND_CATALOG_KIND, trustedAccountBoundNativeCatalogSlug, visibleCodexAccountSelectors } from "./account-models";
+import { accountBoundNativeDisplayName, CODEX_ACCOUNT_BOUND_CATALOG_KIND, trustedAccountBoundNativeCatalogSlug, visibleCodexAccountSelectors } from "./account-models";
 
 export const MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5;
 
@@ -283,6 +283,7 @@ export function buildCatalogEntries(
   // ARRAY order is discarded — so "featuring" a model = giving it the LOWEST priority (0..N-1) so
   // it sorts to the front. This works for native gpt slugs AND routed slugs alike.
   const rank = new Map((featured ?? []).map((slug, i) => [slug, i] as const));
+  const priorityStride = Math.max(accountSelectors.length, 1);
   const out: RawEntry[] = [];
   const nativeEntries: RawEntry[] = [];
   const collisionSkipped = resolveSlugAliasCollisions(goModels);
@@ -302,14 +303,13 @@ export function buildCatalogEntries(
       const catalogSlug = `${selector}/${nativeSlug}`;
       e.slug = catalogSlug;
       e.display_name = accountBoundNativeDisplayName(selector, native);
-      e.description = CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION;
       // Codex ignores this OpenCodex extension; preserve the native comp_hash unchanged.
       e.opencodex_catalog_kind = CODEX_ACCOUNT_BOUND_CATALOG_KIND;
       const exactRank = rank.get(catalogSlug);
       const inheritedRank = rank.get(nativeSlug);
       const featuredRank = exactRank ?? inheritedRank;
       e.priority = featuredRank !== undefined
-        ? featuredRank * accountSelectors.length + selectorIndex
+        ? featuredRank * priorityStride + selectorIndex
         : ((featured?.length ?? 0) + nativeIndex) * accountSelectors.length + selectorIndex;
       e.visibility = "list";
       out.push(e);
@@ -334,7 +334,7 @@ export function buildCatalogEntries(
     );
     // Featured picks may be stored raw (legacy) or encoded — honor both.
     const rankHit = rank.get(slug) ?? rank.get(`${m.provider}/${m.id}`);
-    if (rankHit !== undefined) e.priority = rankHit;
+    if (rankHit !== undefined) e.priority = rankHit * priorityStride;
     else if (accountSelectors.length > 0) {
       // Keep the generated account rows together in Codex's priority-sorted flat picker.
       e.priority = 1_000 + (typeof e.priority === "number" ? e.priority : 5);
@@ -475,6 +475,22 @@ export function mergeCatalogEntriesForSync(
   }
   }
 
+  const nativeBySlug = new Map(native.flatMap(entry =>
+    typeof entry.slug === "string" ? [[entry.slug, entry] as const] : []
+  ));
+  const alignedAccountBoundEntries = accountBoundEntries.map(entry => {
+    const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry);
+    const source = nativeSlug === undefined ? undefined : nativeBySlug.get(nativeSlug);
+    if (!source) return entry;
+    const aligned = JSON.parse(JSON.stringify(source)) as RawEntry;
+    aligned.slug = entry.slug;
+    aligned.display_name = entry.display_name;
+    aligned.priority = entry.priority;
+    aligned.visibility = "list";
+    aligned.opencodex_catalog_kind = CODEX_ACCOUNT_BOUND_CATALOG_KIND;
+    return aligned;
+  });
+
   const freshSlugs = new Set(
     routedEntries.flatMap(entry => typeof entry.slug === "string" ? [entry.slug] : []),
   );
@@ -523,7 +539,7 @@ export function mergeCatalogEntriesForSync(
   finalRoutedEntries = finalRoutedEntries.filter(entry =>
     typeof entry.slug !== "string" || !isRoutedModelCompatibilityExcluded(entry.slug)
   );
-  const accountBoundSlugs = new Set(accountBoundEntries.flatMap(entry =>
+  const accountBoundSlugs = new Set(alignedAccountBoundEntries.flatMap(entry =>
     typeof entry.slug === "string" ? [entry.slug] : []
   ));
   finalRoutedEntries = finalRoutedEntries.filter(entry =>
@@ -533,14 +549,14 @@ export function mergeCatalogEntriesForSync(
     console.warn(`[opencodex] catalog sync: routed model fetch returned empty; preserving ${finalRoutedEntries.length} existing routed entr${finalRoutedEntries.length === 1 ? "y" : "ies"} on disk.`);
   }
 
-  const managedEntries = [...finalRoutedEntries, ...accountBoundEntries];
+  const managedEntries = [...finalRoutedEntries, ...alignedAccountBoundEntries];
   const mergedEntries = [...native, ...managedEntries].map(m => {
     const normalized = normalizeServiceTiers(m);
     applyNativeOpenAiContextOverride(normalized);
     const exactCombo = typeof m.slug === "string" && exactComboSlugs.has(m.slug);
     const e = ensureStrictCatalogFields(normalized, {
       preserveExactInputModalities: exactCombo,
-      isRouted: managedEntries.includes(m),
+      isRouted: finalRoutedEntries.includes(m),
     });
     // Mock-max universality (260709): preserved routed entries from disk may predate
     // the max rung — ensure it here so subagent max spawns validate on every
@@ -566,7 +582,7 @@ export function mergeCatalogEntriesForSync(
   // Native enable/disable (single choke point: bare slugs in `disabledModels`). Runs as the
   // LAST pass so the upstream-upgrade branch above can never clobber a hide flag back to list.
   return applyMultiAgentMode(
-    applyNativeVisibility(mergedEntries, disabledNative, accountBoundEntries.length > 0),
+    applyNativeVisibility(mergedEntries, disabledNative, alignedAccountBoundEntries.length > 0),
     multiAgentMode,
     isMultiAgentV2Enabled(),
   );

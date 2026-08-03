@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { injectDeveloperMessage, multiAgentGuidanceText, sanitizeEncryptedContentInPlace } from "../src/server/responses";
 import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest } from "../src/types";
-import { CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION, CODEX_ACCOUNT_BOUND_CATALOG_KIND, effectiveSubagentRoster } from "../src/codex/catalog";
+import { CODEX_ACCOUNT_BOUND_CATALOG_KIND, effectiveSubagentRoster } from "../src/codex/catalog";
 import { clearDebugSettings, setDebugSettings } from "../src/lib/debug-settings";
 import {
   getInjectionDebugLogEntries,
@@ -51,7 +51,6 @@ type CatalogFixtureModel = {
   visibility?: "list" | "hide";
   priority?: number;
   multiAgentVersion?: "v1" | "v2" | null;
-  description?: string;
   accountBound?: boolean;
 };
 
@@ -67,7 +66,6 @@ function catalogFixture(dir: string, models: CatalogFixtureModel[]): void {
       // written (normalizeRoutedCatalogEntry deletes it). The production absent-key
       // path cannot be tested if the fixture rewrites it to "v2".
       ...(model.multiAgentVersion === undefined ? {} : { multi_agent_version: model.multiAgentVersion }),
-      ...(model.description ? { description: model.description } : {}),
       ...(model.accountBound ? { opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND } : {}),
       supported_reasoning_levels: (model.efforts ?? [])
         .map(effort => ({ effort, description: effort })),
@@ -211,20 +209,17 @@ describe("multiAgentGuidanceText", () => {
       {
         slug: "vendor/gpt-5.6-sol",
         priority: 1,
-        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
       },
       {
         slug: "desktop/gpt-5.6-sol",
         efforts: ["high", "max"],
         priority: 2,
-        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
         accountBound: true,
       },
       {
         slug: "team/gpt-5.6-sol",
         efforts: ["high", "max"],
         priority: 3,
-        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
         accountBound: true,
       },
     ]);
@@ -247,9 +242,25 @@ describe("multiAgentGuidanceText", () => {
       },
     );
     expect(text).toContain('Preferred sub-agent: model "team/gpt-5.6-sol"');
-    expect(text).toContain('"desktop/gpt-5.6-sol", "team/gpt-5.6-sol"');
+    expect(text).toContain('"team/gpt-5.6-sol"');
+    expect(text).not.toContain('"desktop/gpt-5.6-sol"');
     expect(text).not.toContain('"vendor/gpt-5.6-sol"');
     expect(text).toContain("kimi/k3");
+
+    const bareParent = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      { subagentModels: ["gpt-5.6-sol"] },
+    );
+    expect(bareParent).toBeNull();
+
+    const explicitCrossAccount = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      {
+        codexAccountNamespace: "team",
+        subagentModels: ["desktop/gpt-5.6-sol"],
+      },
+    );
+    expect(explicitCrossAccount).toContain('"desktop/gpt-5.6-sol"');
 
     const ambiguous = await multiAgentGuidanceText(
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
@@ -269,7 +280,6 @@ describe("multiAgentGuidanceText", () => {
       {
         slug: "desktop/gpt-5.6-sol",
         priority: 6,
-        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
         accountBound: true,
       },
     ]);
@@ -293,13 +303,11 @@ describe("multiAgentGuidanceText", () => {
       {
         slug: "desktop/gpt-5.6-sol",
         priority: 4,
-        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
         accountBound: true,
       },
       {
         slug: "team/gpt-5.6-sol",
         priority: 5,
-        description: CODEX_ACCOUNT_BOUND_CATALOG_DESCRIPTION,
         accountBound: true,
       },
     ]);
