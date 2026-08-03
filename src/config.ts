@@ -568,6 +568,10 @@ const retryOn429PolicySchema = z.object({
   respectRetryAfter: z.boolean().optional(),
 }).strict();
 
+/**
+ * Zod schema for one provider entry: known fields are validated strictly while unknown
+ * fields pass through (preserved for runtime extensions).
+ */
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),

@@ -1,5 +1,8 @@
 import type { TKey } from "./en";
 
+/**
+ * Korean i18n catalog; must match the `TKey` set (compile-checked).
+ */
 export const ko: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "대시보드",

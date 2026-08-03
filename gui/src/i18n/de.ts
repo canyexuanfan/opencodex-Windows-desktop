@@ -1,6 +1,9 @@
 // German — generated from en.ts. Must match TKey set (compile-checked).
 import type { TKey } from "./en";
 
+/**
+ * German i18n catalog, generated from en.ts. Must match the `TKey` set (compile-checked).
+ */
 export const de: Record<TKey, string> = {
   "nav.dashboard": "Übersicht",
   "nav.startup": "Startsicherheit",

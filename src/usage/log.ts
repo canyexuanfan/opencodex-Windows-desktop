@@ -7,6 +7,10 @@ import type { OcxUsage } from "../types";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
 
+/**
+ * Recovery kinds recorded per attempt in the usage log; the GUI renders localized labels
+ * for these wire values.
+ */
 export type AttemptRecoveryKind =
   | "transient-5xx"
   | "connection-reset"

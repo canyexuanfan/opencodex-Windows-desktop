@@ -204,6 +204,10 @@ class LoopError extends Error {
   }
 }
 
+/**
+ * Dependencies for one image-bridge iteration: parsed request, active adapter, incoming
+ * metadata, and the optional image/video bridge plans.
+ */
 export interface ImageBridgeDeps {
   parsed: OcxParsedRequest;
   adapter: ProviderAdapter;

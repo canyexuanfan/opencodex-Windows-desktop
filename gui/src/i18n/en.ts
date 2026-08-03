@@ -1,5 +1,10 @@
 // English — source of truth. Its keys define the TKey type; ko/zh/ja must match (compile-checked).
 // Strings with {cmd} render a <code> chip via <Trans>; {var} are plain interpolations.
+/**
+ * English i18n catalog — source of truth. Its keys define the compile-checked `TKey` set;
+ * other locales must match (compile-checked). `{cmd}` renders a <code> chip via <Trans>;
+ * `{var}` are plain interpolations.
+ */
 export const en = {
   // sidebar / nav / common
   "nav.dashboard": "Dashboard",

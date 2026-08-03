@@ -208,6 +208,10 @@ class LoopError extends Error {
   }
 }
 
+/**
+ * Dependencies for one web-search loop iteration: parsed request, active adapter,
+ * incoming metadata, and the configured search executor.
+ */
 export interface WebSearchLoopDeps {
   parsed: OcxParsedRequest;
   adapter: ProviderAdapter;

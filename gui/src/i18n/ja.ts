@@ -1,5 +1,8 @@
 import type { TKey } from "./en";
 
+/**
+ * Japanese i18n catalog; must match the `TKey` set (compile-checked).
+ */
 export const ja: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "ダッシュボード",

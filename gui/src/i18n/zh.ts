@@ -1,5 +1,8 @@
 import type { TKey } from "./en";
 
+/**
+ * Chinese i18n catalog; must match the `TKey` set (compile-checked).
+ */
 export const zh: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "仪表盘",

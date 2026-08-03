@@ -76,6 +76,10 @@ interface LogDisplayMetrics {
   cost: CostResult;
 }
 
+/**
+ * Recovery kinds recorded on a log attempt; rendered as localized labels in the logs
+ * detail dialog instead of raw wire values.
+ */
 type AttemptRecoveryKind =
   | "transient-5xx"
   | "connection-reset"

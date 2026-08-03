@@ -391,6 +391,11 @@ function sameCanonicalProviderSeed(actual: Record<string, unknown>, expected: Oc
   return actualKeys.every(key => JSON.stringify(actual[key]) === JSON.stringify((expected as unknown as Record<string, unknown>)[key]));
 }
 
+/**
+ * Validate a provider object arriving at the management write boundary. Returns an error
+ * string, or null when the provider may be persisted. Caller-controlled names/fields are
+ * redacted and JSON-escaped so secrets never reach the response.
+ */
 export function providerManagementConfigError(name: unknown, provider: unknown): string | null {
   if (typeof name !== "string" || !provider || typeof provider !== "object" || Array.isArray(provider)) {
     return "provider must be a plain object";

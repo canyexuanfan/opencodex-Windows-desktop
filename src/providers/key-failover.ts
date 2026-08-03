@@ -22,6 +22,10 @@ interface KeyCooldown {
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 10 * 60_000; // cap at 10 min for api-key rotation
 
+/**
+ * Default same-target 429 retry policy used when a provider opts in via a bare
+ * `retryOn429: {}` (presence = opt-in with these defaults).
+ */
 const DEFAULT_RATE_LIMIT_RETRY = {
   enabled: true,
   attempts: 3,
