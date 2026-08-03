@@ -7,15 +7,13 @@ date: 2026-08-03
 
 # 120 -- TypeScript/Go Runtime Authority
 
-## 1. Decision
+## 1. Decision (maintainer-confirmed 2026-08-03)
 
-**`IMPLEMENTATION_BLOCKED_PENDING_GO_AUTHORITY`**
-
-Contracts, fixtures, the spike kernel, and all FAB-00 documents may stand. Production implementation waits for explicit maintainer authority on the language question (below).
+**`TS_NATIVE_SUPERVISOR`** -- the maintainer has chosen option (A): the Fabric Supervisor is **TypeScript/Bun**, matching the existing opencodex repo and its `@bufbuild/protobuf` / MCP / zod stack. No Go migration line is introduced. This supersedes the earlier `IMPLEMENTATION_BLOCKED_PENDING_GO_AUTHORITY` fallback and the plan's `GO_FIRST_AUTHORISED` (which was not valid against current repo state). Contracts + fixtures + spike kernel + all FAB-00 documents stand; production implementation proceeds in TS.
 
 ## 2. Why not `GO_FIRST_AUTHORISED`
 
-The master plan ?7 asserts "a parallel Go migration line ... applicable behaviour must eventually exist in the Go runtime." FAB-00 evidence (`010` ?8) **invalidates** this premise:
+The master plan sec.7 asserts "a parallel Go migration line ... applicable behaviour must eventually exist in the Go runtime." FAB-00 evidence (`010` sec.8) **invalidates** this premise:
 
 - No `go.mod`, no `*.go` in the repo. OpenCodex is 100% TypeScript/Bun.
 - OpenAI Codex itself is Rust (`codex-rs`), not Go. There is no upstream Go line to inherit.
@@ -27,15 +25,13 @@ So `GO_FIRST_AUTHORISED` is not a valid decision against current repo state -- t
 
 The programme direction (durable cross-harness task continuity) is **sound** (`030`/`150`): Codex and Claude are both externally manageable; the task kernel is feasible; the continuity layer is a real gap. Only the *means* (language) is wrong, not the *end*. Rejection is disproportionate.
 
-## 4. Correction required (the recommendation FAB-01 authority depends on)
+## 4. Decision (maintainer-confirmed 2026-08-03)
 
-The maintainer must choose exactly one:
+The maintainer has chosen **(A) TS-native Supervisor**. Product placement: the Fabric is a **new opencodex subsystem** (not a sibling project), per `030` sec.2. This decision is RECORDED, not pending:
 
-**(A) Re-scope to TS-native Supervisor (recommended).** The Supervisor is TypeScript/Bun, matching the existing repo and its `@bufbuild/protobuf` / MCP / zod stack. Contracts are protobuf (cross-language anyway). This is the lowest-friction path and avoids building/maintaining a second runtime. Under (A), the plan's ?7 "no dual complete implementations" rule is satisfied trivially (one runtime).
+- **(A) selected:** the Supervisor is TypeScript/Bun. Contracts (protobuf envelope + JSON Schema fixtures) are language-neutral and shared. `GO_FIRST_AUTHORISED` and a Go migration line are not pursued.
 
-**(B) Author a Go migration line.** The maintainer explicitly commits to migrating OpenCodex to Go, after which the Supervisor is Go-native and TypeScript receives only launcher/dashboard/shims. Under (B), contracts/docs may land on `dev` now, but no production Fabric code until the Go line exists and has maintainer/branch approval.
-
-A full TypeScript kernel "ported later to Go" is **not** a passing decision without explicit maintainer override and recorded cost (?7 rejected option).
+A full TypeScript kernel "ported later to Go" is **not** a passing decision without explicit maintainer override and recorded cost (sec.7 rejected option).
 
 ## 5. Duplicate-kernel prevention (regardless of A or B)
 
@@ -51,4 +47,4 @@ A full TypeScript kernel "ported later to Go" is **not** a passing decision with
 
 ## 7. Evidence locations
 
-`010` ?8 (no Go), `010` ?11 (go1.26.4 installed), `150` Spike C (disposable Go kernel demonstrates Go feasibility but does not establish a repo Go line), `020` F (invalidated assumption).
+`010` sec.8 (no Go), `010` sec.11 (go1.26.4 installed), `150` Spike C (disposable Go kernel demonstrates Go feasibility but does not establish a repo Go line), `020` F (invalidated assumption).

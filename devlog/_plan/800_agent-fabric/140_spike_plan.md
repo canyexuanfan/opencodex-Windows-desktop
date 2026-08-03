@@ -42,8 +42,8 @@ Written **before** any spike executes. Each spike is bounded and disposable unle
 ## Spike C -- Task Kernel
 
 - **Question:** Can the smallest isolated kernel demonstrate append-only events with expected-sequence concurrency, hash chain, deterministic projection rebuild, event schema versions, content-addressed artifact hashes, a primary lease with monotonic fencing token, stale-writer rejection, and recovery at every crash boundary?
-- **Hypothesis:** A disposable Go program using only the standard library can demonstrate all invariants; production uses SQLite (?9.2), but the *protocol invariants* are storage-independent.
-- **Scope:** build `spikes/spike-c-kernel/` (Go, stdlib only): an append-only JSONL event log with `sequence`/`event_id`/`previous_event_hash`/`event_hash`; expected-sequence append rejection; projection rebuild from zero; schema-versioned events; content-addressed artifacts (sha256 files); a leases file with a monotonic fencing token; stale-writer rejection; a crash harness that simulates the 5 boundaries in `090` ?3.
+- **Hypothesis:** A disposable Go program using only the standard library can demonstrate all invariants; production uses SQLite (sec.9.2), but the *protocol invariants* are storage-independent.
+- **Scope:** build `spikes/spike-c-kernel/` (Go, stdlib only): an append-only JSONL event log with `sequence`/`event_id`/`previous_event_hash`/`event_hash`; expected-sequence append rejection; projection rebuild from zero; schema-versioned events; content-addressed artifacts (sha256 files); a leases file with a monotonic fencing token; stale-writer rejection; a crash harness that simulates the 5 boundaries in `090` sec.3.
 - **Allowed files:** `devlog/_plan/800_agent-fabric/spikes/spike-c-kernel/` only (source + `go.mod` + test output). **Prohibited files:** `src/`; production config; native Codex/Claude storage. No external Go modules (stdlib only) to keep the spike self-contained and avoid network/module-proxy dependence.
 - **Environment:** `go` 1.26.4 windows/amd64; Windows.
 - **Commands:** `go test ./...` and a `go run` crash-harness entrypoint emitting per-boundary recovery results.

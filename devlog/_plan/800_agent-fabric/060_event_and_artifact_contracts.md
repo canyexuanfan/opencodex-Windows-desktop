@@ -29,8 +29,8 @@ message EventEnvelope {
 
 **Decisions:**
 - **Hash chain:** `event_hash = sha256(canonical_encoding(envelope minus event_hash))`; `previous_event_hash` links events -> tamper-evident. Append order enforced by expected `sequence` (reject if `sequence != max+1`).
-- **Unknown `event_type`:** becomes `RawRuntimeEvent` -- adapters **must not guess** (?11 / `070`).
-- **Schema evolution:** `schema_version` per event; readers tolerate unknown fields (protobuf default). Breaking changes bump major; new optional fields bump minor. Snapshots optimize projection without replacing event authority (?9.3).
+- **Unknown `event_type`:** becomes `RawRuntimeEvent` -- adapters **must not guess** (sec.11 / `070`).
+- **Schema evolution:** `schema_version` per event; readers tolerate unknown fields (protobuf default). Breaking changes bump major; new optional fields bump minor. Snapshots optimize projection without replacing event authority (sec.9.3).
 
 ## 2. Normalised event types
 
@@ -42,6 +42,6 @@ Each carries `native_type`, `native_id`, `adapter_version`, `task`, `workspace`,
 
 - `content_hash` = sha256, content-addressed storage (`040`).
 - `trust_label` progression: `untrusted` (model/harness output) -> `sandbox` (ran in sandbox) -> `reviewed` (reviewer claim validated) -> `trusted`.
-- **Redaction:** secret-pattern files excluded by default (?9.4); `redaction_state` recorded per artifact.
-- **Retention:** bounded log excerpts auto-trimmed; never persisted by default: hidden reasoning, full terminal streams, provider secrets, OAuth tokens, env vars, raw prompts unrelated to continuity (?9.4).
+- **Redaction:** secret-pattern files excluded by default (sec.9.4); `redaction_state` recorded per artifact.
+- **Retention:** bounded log excerpts auto-trimmed; never persisted by default: hidden reasoning, full terminal streams, provider secrets, OAuth tokens, env vars, raw prompts unrelated to continuity (sec.9.4).
 - Missing artifact -> projection **fault**, not silent zero (mirrors opencodex `usage` invariant, `structure/05`).

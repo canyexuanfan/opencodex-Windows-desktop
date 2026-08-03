@@ -16,10 +16,10 @@ date: 2026-08-03
 | MCP (already a runtime dep) | Tools + external context; already integrated in opencodex | ongoing |
 | OpenCodex Task Core (this programme) | Internal source of truth -- the only durable task + ownership + loss ledger | FAB-01+ |
 
-## Sequencing decision (?14)
+## Sequencing decision (sec.14)
 
 Do **not** begin with A2A or AG-UI. Internal task semantics must work locally first (FAB-01->FAB-04). A2A/AG-UI are projections/remotes layered on a working local Task Core.
 
 ## Key finding (grounded in `020`)
 
-ACP merged into A2A. The plan's "ACP adapter" framing (?13/?14) is **stale**; the maintained generic-harness integration path is now A2A-aligned and is **remote/opaque**, not a local managed-execution surface. Local managed execution for Codex and Claude uses their native SDKs (app-server, Agent SDK), **not** ACP/A2A. This sharpens, not weakens, the design: the Task Core is the local source of truth, and A2A is purely the FAB-08 remote boundary.
+ACP merged into A2A. The plan's "ACP adapter" framing (sec.13/sec.14) is **stale**; the maintained generic-harness integration path is now A2A-aligned and is **remote/opaque**, not a local managed-execution surface. Local managed execution for Codex and Claude uses their native SDKs (app-server, Agent SDK), **not** ACP/A2A. This sharpens, not weakens, the design: the Task Core is the local source of truth, and A2A is purely the FAB-08 remote boundary.
