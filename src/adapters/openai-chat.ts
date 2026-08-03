@@ -8,6 +8,7 @@ import { isCyberPolicyCode } from "../lib/errors";
 import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { identifyRoutedModel } from "./identity";
+import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
 import {
@@ -324,7 +325,26 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
         if (textParts.length > 0) {
           chatMsg.content = textParts.map(p => p.text).join("");
         }
-        const reasoningContent = thinkingParts.map(p => p.thinking).join("");
+        let reasoningContent = thinkingParts.map(p => p.thinking).join("");
+        // History transformations (compaction, lost assistant turn, resumed
+        // threads) can strip the reasoning item while the tool round survives.
+        // Re-attach the reasoning the bridge recorded for these call ids so
+        // preserveReasoningContentModels providers (DeepSeek thinking mode)
+        // never receive a bare tool-call continuation (issue #950).
+        if (
+          reasoningContent.length === 0
+          && toolCalls.length > 0
+          && modelInList(provider.preserveReasoningContentModels, parsed.modelId)
+        ) {
+          const cached = toolCalls
+            .map(tc => (tc.id ? peekReasoningForCall(tc.id) : undefined))
+            .filter((text): text is string => typeof text === "string" && text.length > 0);
+          // Parallel calls share one preceding reasoning block, which is
+          // recorded under every call id — join unique texts only.
+          if (cached.length > 0) {
+            reasoningContent = [...new Set(cached)].join("\n");
+          }
+        }
         if (reasoningContent.length > 0 && modelInList(provider.preserveReasoningContentModels, parsed.modelId)) {
           chatMsg.reasoning_content = reasoningContent;
         }
@@ -382,9 +402,14 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           // role:"tool" message unless an assistant tool_call with the same id immediately precedes it.
           flushPendingToolCalls();
           const name = safeToolName(msg.toolName);
+          // The orphan repair synthesizes an assistant tool call for a result
+          // whose assistant turn was lost; carry the recorded reasoning so the
+          // replayed round stays valid for thinking-mode providers (#950).
+          const cachedReasoning = toolCallId ? peekReasoningForCall(toolCallId) : undefined;
           out.push({
             role: "assistant",
             content: emptyAssistantContent(provider),
+            ...(cachedReasoning ? { reasoning_content: cachedReasoning } : {}),
             tool_calls: [{
               id: toolCallId,
               type: "function",
