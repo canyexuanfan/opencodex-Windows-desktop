@@ -1,4 +1,3 @@
-import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { managementFetch as fetch } from "./helpers/management-auth";
 import { logsFromApiBody } from "./helpers/logs-api";
@@ -12,6 +11,7 @@ import type { RequestLogContext } from "../src/server/request-log";
 import { startServer } from "../src/server";
 import {
   fetchWithHeaderDeadline,
+  handleClaudeMessages,
   readBoundedPassthroughBody,
   resolvePassthroughBodyGuard,
   tapAnthropicSseForLog,
@@ -24,6 +24,7 @@ import {
   acquireNativeMainProfileDrain,
   getNativeMainProfileRequestCount,
   resetLifecycleDrainStateForTests,
+  tryAdmitTurn,
 } from "../src/server/lifecycle";
 import {
   blockNativeMainRecovery,
@@ -820,8 +821,7 @@ test("routed Claude requests give OpenAI sidecars main auth without leaking it t
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
     tokens: { access_token: mainAccessToken, account_id: mainAccountId },
   }));
-  const server = startServer(0);
-  await waitForNativeMainStartupGate();
+  let requestSequence = 0;
   const requestBody = {
     model: "routed/text-model",
     max_tokens: 128,
@@ -835,11 +835,33 @@ test("routed Claude requests give OpenAI sidecars main auth without leaking it t
       ],
     }],
   };
+  const invokeMessages = async (): Promise<number> => {
+    const turnAdmissionLease = tryAdmitTurn();
+    if (!turnAdmissionLease) throw new Error("test turn admission unavailable");
+    const start = Date.now();
+    try {
+      const response = await handleClaudeMessages(
+        new Request("http://localhost/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": "placeholder",
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify(requestBody),
+        }),
+        config,
+        { model: "unknown", provider: "unknown", inboundProtocol: "messages" } as RequestLogContext,
+        { requestId: `claude-sidecar-test-${++requestSequence}`, start, turnAdmissionLease },
+      );
+      await response.text();
+      return response.status;
+    } finally {
+      turnAdmissionLease.release();
+    }
+  };
   try {
-    await waitForNativeMainStartupGate();
-    const authenticated = await postMessages(server.url.toString(), requestBody);
-    expect(authenticated.status).toBe(200);
-    await authenticated.text();
+    expect(await invokeMessages()).toBe(200);
 
     expect(sidecarCalls.map(call => call.kind).sort()).toEqual(["vision", "web-search"]);
     for (const call of sidecarCalls) {
@@ -857,9 +879,7 @@ test("routed Claude requests give OpenAI sidecars main auth without leaking it t
 
     rmSync(join(isolatedCodexHome!.path, "auth.json"));
     const sidecarCountBeforeNoLogin = sidecarCalls.length;
-    const noLogin = await postMessages(server.url.toString(), requestBody);
-    expect(noLogin.status).toBe(200);
-    await noLogin.text();
+    expect(await invokeMessages()).toBe(200);
 
     expect(sidecarCalls.length).toBe(sidecarCountBeforeNoLogin);
     expect(routedCalls.at(-1)?.authorization).toBe("Bearer routed-provider-key");
@@ -867,9 +887,8 @@ test("routed Claude requests give OpenAI sidecars main auth without leaking it t
     expect(noLoginBody).toContain("[image omitted: this model is text-only and the vision sidecar is unavailable (no ChatGPT login)]");
     expect(noLoginBody).not.toContain(imageBytes);
   } finally {
-    await server.stop(true);
-    forward.stop(true);
-    routed.stop(true);
+    await forward.stop(true);
+    await routed.stop(true);
   }
 });
 

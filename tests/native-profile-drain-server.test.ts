@@ -400,6 +400,7 @@ describe("native main profile scoped server admission", () => {
         return upstream as unknown as WebSocket;
       },
     });
+    await waitForNativeMainStartupGate();
     const url = new URL("/v1/live/uncooperative", server.url);
     url.protocol = "ws:";
     const client = new WebSocket(url);
