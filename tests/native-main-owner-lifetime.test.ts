@@ -392,7 +392,7 @@ describe("native-main process owner lease", () => {
     const source = await f.manager.register("source");
     const stage = await f.manager.prepareStage();
     writeFileSync(join(stage.stagingCodexHome, "auth.json"), auth("account-target", "target"));
-    const target = await f.manager.finishStage(stage.stageId, "target");
+    const target = await f.manager.finishStage(stage.stageId, stage.writerToken, "target");
     expect(source.profile.state).toBe("active");
 
     const owner = new ChildHarness(f, { NATIVE_OWNER_HOLD_AUTH_TEMP: "1" });
