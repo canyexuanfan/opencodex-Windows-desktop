@@ -17,7 +17,7 @@ import {
   recordCodexUpstreamOutcome,
   resolveCodexAccountForThread,
 } from "../src/codex/routing";
-import { updateAccountQuota } from "../src/codex/auth-api";
+import { clearAccountQuota, updateAccountQuota } from "../src/codex/auth-api";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import {
   releaseCodexAuthContextProbeLease,
@@ -543,6 +543,7 @@ describe("compact alternate-account attempt (#913)", () => {
     process.env.OPENCODEX_HOME = testDir;
     process.env.CODEX_HOME = testDir;
     clearCodexUpstreamHealth();
+    clearAccountQuota();
     for (const id of ["pool-a", "pool-b"]) {
       saveCodexAccountCredential(id, {
         accessToken: `${id}-access-token`,
@@ -550,10 +551,12 @@ describe("compact alternate-account attempt (#913)", () => {
         expiresAt: Date.now() + 300_000,
         chatgptAccountId: id === "pool-a" ? "pool_acc_a" : "pool_acc_b",
       });
+      updateAccountQuota(id, id === "pool-a" ? 10 : 20);
     }
     return run(twoAccountPoolConfig()).finally(() => {
       globalThis.fetch = originalFetch;
       clearCodexUpstreamHealth();
+      clearAccountQuota();
       rmSync(testDir, { recursive: true, force: true });
       if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousOpencodexHome;
@@ -585,8 +588,7 @@ describe("compact alternate-account attempt (#913)", () => {
         );
 
         // Two sends, not one and not three: the alternate ran once and did not recurse.
-        expect(bearers).toHaveLength(2);
-        expect(bearers[0]).not.toBe(bearers[1]);
+        expect(bearers).toEqual(["Bearer pool-a-access-token", "Bearer pool-b-access-token"]);
         expect(res.status).toBe(200);
       });
     });
@@ -616,6 +618,43 @@ describe("compact alternate-account attempt (#913)", () => {
         expect(bearers).toHaveLength(2);
         expect(bearers[0]).not.toBe(bearers[1]);
         expect(res.status).toBe(503);
+      });
+    });
+
+    test(`an exact account selector preserves the original ${rejection} without an alternate send`, async () => {
+      await withPoolEnv(`ocx-compact-exact-${rejection}-`, async config => {
+        config.codexAccountNamespaces = { side: "pool-a" };
+        const bearers: string[] = [];
+        const accountIds: string[] = [];
+        const body = JSON.stringify({ error: { message: "selected account exhausted" } });
+        globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+          const headers = new Headers(init?.headers);
+          bearers.push(headers.get("authorization") ?? "");
+          accountIds.push(headers.get("chatgpt-account-id") ?? "");
+          return new Response(body, {
+            status: rejection,
+            headers: {
+              "content-type": "application/json",
+              "retry-after": "42",
+              "x-codex-primary-reset-at": "1900000000",
+            },
+          });
+        }) as typeof fetch;
+
+        const res = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({ model: "side/gpt-5.6-sol" })),
+          config,
+          { model: "", provider: "" },
+        );
+
+        expect(bearers).toEqual(["Bearer pool-a-access-token"]);
+        expect(accountIds).toEqual(["pool_acc_a"]);
+        expect(res.status).toBe(rejection);
+        expect(res.headers.get("retry-after")).toBe("42");
+        expect(res.headers.get("x-codex-primary-reset-at")).toBe("1900000000");
+        expect(await res.text()).toBe(body);
+        expect(config.activeCodexAccountId).toBe("pool-a");
+        expect(getCodexUpstreamHealth("pool-b")).toBeNull();
       });
     });
   }

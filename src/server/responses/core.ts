@@ -59,7 +59,7 @@ import {
 } from "../../oauth/anthropic-routing";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../../web-search";
 import { buildImageTool, buildVideoTool, planImageBridge, planVideoBridge, runWithImageBridge, clampImageMaxRounds, IMAGE_GEN_TOOL_NAME, VIDEO_GEN_TOOL_NAME } from "../../images";
-import { describeImagesInPlace, planVisionSidecar, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../../vision";
+import { describeImagesInPlace, planVisionSidecar, resolveOpenAiVisionModel, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../../vision";
 import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/run-turn-queue";
 import {
   applyCodexAuthContextToProvider,
@@ -181,7 +181,9 @@ export function sidecarOutcomeRecorder(
   return authCtx.kind === "pool" || authCtx.kind === "main-pool"
     ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
       threadId,
+      fixedAccount: authCtx.fixedAccount,
       probeLeaseId: authCtx.probeLeaseId,
+      probeQuotaScope: authCtx.probeQuotaScope,
       writerGeneration: authCtx.writerGeneration,
     })
     : undefined;
@@ -197,6 +199,11 @@ export { DEFAULT_SHADOW_SOURCE_MODELS, isShadowSourceModel, shadowSourceModels }
 
 export function codexLogAccountId(authCtx: CodexAuthContext): string | null {
   return authCtx.kind === "pool" || authCtx.kind === "main-pool" ? authCtx.accountId : null;
+}
+
+function isFixedCodexAccount(authCtx: CodexAuthContext): boolean {
+  return (authCtx.kind === "pool" || authCtx.kind === "main-pool")
+    && authCtx.fixedAccount === true;
 }
 
 
@@ -330,6 +337,9 @@ async function retryCodexPoolOnAlternateAccount(
     req, config, route, parsed, logCtx, options, firstAuthCtx, firstResponse,
     outcomeStatus, upstream, connectMs, passthroughEstimate, stream,
   } = args;
+  // Defense in depth: exact account selectors must never reach alternate-account resolution,
+  // even if a future caller forgets to guard this helper.
+  if (firstAuthCtx.fixedAccount) return { kind: "no-alternate" };
   const inboundWire = options.inboundWire ?? "responses";
   let retryAuthCtx: CodexAuthContext | undefined;
   try {
@@ -449,6 +459,7 @@ export function codexForwardTerminalOutcomeRecorder(
       // prior soft-avoid so a healthy account isn't stuck avoided.
       recordCodexUpstreamOutcome(config, authCtx.accountId, 200, {
         threadId,
+        fixedAccount: authCtx.fixedAccount,
         modelId,
         probeLeaseId: codexProbeLeaseId(authCtx),
         probeQuotaScope: codexProbeQuotaScope(authCtx),
@@ -470,6 +481,7 @@ export function codexForwardTerminalOutcomeRecorder(
       : (httpStatusOverride ?? logCtx?.terminalHttpStatus ?? 502);
     recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
       threadId,
+      fixedAccount: authCtx.fixedAccount,
       modelId,
       probeLeaseId: codexProbeLeaseId(authCtx),
       probeQuotaScope: codexProbeQuotaScope(authCtx),
@@ -737,6 +749,7 @@ async function resolveResponsesCodexAuth(
     let authCtx: CodexAuthContext;
     if (route.codexAccountMode) {
       authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
+        accountId: route.codexAccountId,
         modelId: route.modelId,
         beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
       });
@@ -759,7 +772,7 @@ async function resolveResponsesCodexAuth(
     };
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
-      return { ok: false, response: cooldownErrorResponse(err) };
+      return { ok: false, response: cooldownErrorResponse(err, Date.now(), route.codexAccountNamespace) };
     }
     if (err instanceof CodexMainProfileDrainingError) {
       return { ok: false, response: codexMainProfileDrainingResponse() };
@@ -771,7 +784,9 @@ async function resolveResponsesCodexAuth(
       };
     }
     if (err instanceof CodexAuthContextError) {
-      const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
+      const safeAccountLabel = route.codexAccountNamespace
+        ? `${route.providerName}-${route.codexAccountNamespace}`
+        : formatCodexProviderForLog(route.providerName, err.accountId, config);
       console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
       return {
         ok: false,
@@ -1342,10 +1357,11 @@ async function handleResponsesInner(
 
   const hasUnexpandedPreviousResponse = !!parsed.previousResponseId
     && parsed._previousResponseInputExpanded !== true;
-  // A canonical replay miss must not poll quota upstream before the final fail-closed decision.
-  // Cached fallback state can still select a provider with native continuation support below.
+  // Exact account selectors are isolated from Pool-wide quota work. A canonical replay miss must
+  // also fail closed without polling quota upstream. Cached fallback state can still select a
+  // provider with native continuation support below.
   const threadSpawn = isThreadSpawnRequest(req.headers);
-  const previewSelectionAdmission = threadSpawn
+  const previewSelectionAdmission = threadSpawn && route.codexAccountId === undefined
     ? codexAccountSelectionForTurn(options.turnAdmissionLease)?.()
     : undefined;
   const nativeMainRecoveryBlocked = isNativeMainTrafficBlocked();
@@ -1363,6 +1379,7 @@ async function handleResponsesInner(
   try {
     if (
       threadSpawn
+      && route.codexAccountId === undefined
       && !(hasUnexpandedPreviousResponse && isCanonicalOpenAiForwardProvider(route.provider))
     ) {
       await maybePrimeSubagentQuota(config, Date.now(), { nativeMainReadsForbidden });
@@ -1372,7 +1389,7 @@ async function handleResponsesInner(
   // normalization (virtual models, effort caps, service tier, wire protocol).
   // Preview the preferred Codex account without acquiring a probe lease or refreshing
   // tokens — auth is resolved only after the final route is selected.
-  if (threadSpawn && !options.comboAttempt) {
+  if (threadSpawn && !options.comboAttempt && route.codexAccountId === undefined) {
     const threadId = req.headers.get("x-codex-parent-thread-id");
     const previewAccountId = previewCodexAccountForRequest(
       threadId,
@@ -1444,6 +1461,11 @@ async function handleResponsesInner(
     inboundWire,
     inboundTransport: options.inboundTransport,
   });
+  // Attribute local auth/cooldown failures to the public selector too; exact auth may fail before
+  // the normal post-resolution provider label is assigned.
+  if (route.codexAccountNamespace) {
+    logCtx.provider = `${route.providerName}-${route.codexAccountNamespace}`;
+  }
 
   {
     const finalAuth = await resolveResponsesCodexAuth(req, config, route, options);
@@ -1453,7 +1475,9 @@ async function handleResponsesInner(
   }
 
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
-  logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
+  logCtx.provider = route.codexAccountNamespace
+    ? `${route.providerName}-${route.codexAccountNamespace}`
+    : formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
   // Prefer Codex pool account as the Cursor thread namespace when present. Cursor routes without
   // codexAccountMode still get a credential-derived scope inside the Cursor adapter.
   const identityScope = codexLogAccountId(authCtx);
@@ -1556,7 +1580,14 @@ async function handleResponsesInner(
         listOpenAiForwardSidecarCandidates(config),
         req.headers,
         config,
-        { beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease) },
+        {
+          // Account-qualified native routes are passthrough, so their in-turn helper is vision.
+          // Scope its cooldown and outcome to the helper model, not the routed text model.
+          ...(route.codexAccountId !== undefined
+            ? { exactAccount: { accountId: route.codexAccountId, modelId: resolveOpenAiVisionModel(config) } }
+            : {}),
+          beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
+        },
       );
     } catch (err) {
       // Sidecars are optional helpers for an otherwise independent routed turn.
@@ -1683,6 +1714,7 @@ async function handleResponsesInner(
       if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
+          fixedAccount: authCtx.fixedAccount,
           modelId: route.modelId,
           probeLeaseId: codexProbeLeaseId(authCtx),
           probeQuotaScope: codexProbeQuotaScope(authCtx),
@@ -1715,7 +1747,7 @@ async function handleResponsesInner(
       request.releaseBodyObservation?.();
     }
 
-    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
+    if (usesCodexForwardPoolAuth(authCtx, route.provider) && !authCtx.fixedAccount) {
       let poolRetryOutcome: number | undefined;
       if (await shouldRetryCodexPoolAccountModel400(
         upstreamResponse,
@@ -1799,7 +1831,7 @@ async function handleResponsesInner(
               || logCtx.terminalHttpStatus === 402
               ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
               : undefined;
-            if (quotaFailureMessage !== undefined) {
+            if (!isFixedCodexAccount(authCtx) && quotaFailureMessage !== undefined) {
               recordSubagentQuotaFailureForThreadSpawn(
                 req.headers,
                 subagentQuotaFailureModel,
@@ -1818,6 +1850,7 @@ async function handleResponsesInner(
         recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
           ...quotaMeta,
           threadId: req.headers.get("x-codex-parent-thread-id"),
+          fixedAccount: authCtx.fixedAccount,
           modelId: route.modelId,
           probeLeaseId: codexProbeLeaseId(authCtx),
           probeQuotaScope: codexProbeQuotaScope(authCtx),
@@ -1886,7 +1919,7 @@ async function handleResponsesInner(
                 || logCtx.terminalHttpStatus === 402
                 ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
                 : undefined;
-              if (quotaFailureMessage !== undefined) {
+              if (!isFixedCodexAccount(authCtx) && quotaFailureMessage !== undefined) {
                 recordSubagentQuotaFailureForThreadSpawn(
                   req.headers,
                   subagentQuotaFailureModel,
@@ -1961,7 +1994,7 @@ async function handleResponsesInner(
               || logCtx.terminalHttpStatus === 402
               ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
               : undefined;
-            if (quotaFailureMessage !== undefined) {
+            if (!isFixedCodexAccount(authCtx) && quotaFailureMessage !== undefined) {
               recordSubagentQuotaFailureForThreadSpawn(
                 req.headers,
                 subagentQuotaFailureModel,
@@ -2574,15 +2607,17 @@ async function handleResponsesInner(
       }
       const errorText = await upstreamResponse.text().catch(() => "unknown error");
       cleanupUpstreamAbort();
-      recordSubagentQuotaFailureForThreadSpawn(
-        req.headers,
-        subagentQuotaFailureModel,
-        upstreamResponse.status === 429 || upstreamResponse.status === 402
-          ? upstreamResponse.status
-          : `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
-        config,
-        subagentFallbackAccountId,
-      );
+      if (!isFixedCodexAccount(authCtx)) {
+        recordSubagentQuotaFailureForThreadSpawn(
+          req.headers,
+          subagentQuotaFailureModel,
+          upstreamResponse.status === 429 || upstreamResponse.status === 402
+            ? upstreamResponse.status
+            : `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
+          config,
+          subagentFallbackAccountId,
+        );
+      }
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
       const message = `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`;
