@@ -31,16 +31,36 @@ function hasDeletions(patch) {
 // Lines that survive in the result of a hunk: additions plus context. Used for
 // empty-catch detection when the hunk also deletes lines, so deleting a catch
 // body cannot bypass the check.
-function resultLines(patch) {
+//
+// Returned per hunk, never as one flat list. Hunks are disjoint windows onto the
+// file, so concatenating them puts unrelated lines next to each other: a hunk
+// ending at `} catch (e) {` followed by one starting at `}` reads as an empty
+// catch that does not exist anywhere in the file.
+function resultLinesByHunk(patch) {
   if (typeof patch !== "string") return [];
-  return patch
-    .split("\n")
-    .filter(
-      (line) =>
-        (line.startsWith("+") && !line.startsWith("+++")) ||
-        line.startsWith(" "),
-    )
-    .map((line) => line.slice(1));
+  const hunks = [];
+  let current = null;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@")) {
+      current = [];
+      hunks.push(current);
+      continue;
+    }
+    if (current === null) {
+      // A patch without a hunk header (some API shapes omit it) is one window.
+      current = [];
+      hunks.push(current);
+    }
+    if ((line.startsWith("+") && !line.startsWith("+++")) || line.startsWith(" ")) {
+      current.push(line.slice(1));
+    }
+  }
+  return hunks;
+}
+
+// Flat form, kept for callers that only need the surviving text of a patch.
+function resultLines(patch) {
+  return resultLinesByHunk(patch).flat();
 }
 
 function isGeneratedPath(path) {
@@ -146,9 +166,14 @@ function assessHygiene({ files = [], labels = [] }) {
     failures.push({ code: "generated_output", paths: generated });
   }
 
+  // A lockfile that MOVED with no manifest beside it is still orphaned, so both
+  // sides of a rename count. A lockfile that was DELETED is not: dropping
+  // `bun.lock` adds no dependency, which is why the generated-output and
+  // regression-test checks above exclude removals the same way.
   if (
-    filenames.includes("bun.lock") &&
-    !filenames.includes("package.json") &&
+    allPaths.includes("bun.lock") &&
+    !removedFilenames.has("bun.lock") &&
+    !allPaths.includes("package.json") &&
     !labelSet.has("dependency-change-approved")
   ) {
     failures.push({ code: "orphan_lockfile" });
@@ -165,8 +190,13 @@ function assessHygiene({ files = [], labels = [] }) {
     if (lines.some((line) => FOCUSED_TEST_PATTERN.test(line))) {
       focusedTests.push(file.filename);
     }
-    const catchLines = hasDeletions(file.patch) ? resultLines(file.patch) : lines;
-    if (hasEmptyCatch(catchLines)) emptyCatches.push(file.filename);
+    // Scan hunk by hunk: an empty catch has to be empty within one window.
+    const catchWindows = hasDeletions(file.patch)
+      ? resultLinesByHunk(file.patch)
+      : [lines];
+    if (catchWindows.some((window) => hasEmptyCatch(window))) {
+      emptyCatches.push(file.filename);
+    }
   }
 
   if (
@@ -197,4 +227,5 @@ module.exports = {
   isGeneratedPath,
   isTestPath,
   resultLines,
+  resultLinesByHunk,
 };

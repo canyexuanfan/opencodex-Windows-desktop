@@ -2,7 +2,13 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { addedLines, assessHygiene, hasEmptyCatch, resultLines } = require("./pr-hygiene.cjs");
+const {
+  addedLines,
+  assessHygiene,
+  hasEmptyCatch,
+  resultLines,
+  resultLinesByHunk,
+} = require("./pr-hygiene.cjs");
 
 describe("patch parsing", () => {
   it("returns added content without diff headers", () => {
@@ -37,6 +43,45 @@ describe("assessHygiene", () => {
       files: [{ filename: "src/router.ts", patch: "+change" }],
       labels: ["test-exception-approved"],
     }), []);
+  });
+
+  it("does not read an empty catch across a hunk boundary", () => {
+    // Hunks are disjoint windows onto the file. Concatenating them puts unrelated
+    // lines next to each other: a hunk ending at `} catch (e) {` followed by one
+    // starting at `}` reads as an empty catch that exists nowhere in the file.
+    const crossHunk = [
+      "@@ -10,2 +10,3 @@",
+      "+  const a = 1;",
+      "   } catch (e) {",
+      "@@ -90,2 +90,3 @@",
+      "   }",
+      "+  const b = 2;",
+    ].join("\n");
+    assert.equal(resultLinesByHunk(crossHunk).some((w) => hasEmptyCatch(w)), false);
+
+    // A catch emptied within one window is still caught.
+    const realEmpty = ["@@ -10,3 +10,3 @@", "-  report(e);", "   } catch (e) {", "   }"].join("\n");
+    assert.equal(resultLinesByHunk(realEmpty).some((w) => hasEmptyCatch(w)), true);
+  });
+
+  it("treats a deleted lockfile as no dependency change", () => {
+    // Removing bun.lock adds no dependency. The generated-output and
+    // regression-test checks already exclude removals; this one did not.
+    assert.deepEqual(
+      assessHygiene({ files: [{ filename: "bun.lock", status: "removed", patch: "@@\n-x" }] }),
+      [],
+    );
+    // A modified or MOVED lockfile with no manifest beside it is still orphaned.
+    assert.equal(
+      assessHygiene({ files: [{ filename: "bun.lock", status: "modified", patch: "@@\n+x" }] })[0].code,
+      "orphan_lockfile",
+    );
+    assert.equal(
+      assessHygiene({ files: [
+        { filename: "lock/bun.lock", previous_filename: "bun.lock", status: "renamed", patch: "@@\n+x" },
+      ] })[0].code,
+      "orphan_lockfile",
+    );
   });
 
   it("does not demand a test for a comment-only source change", () => {
