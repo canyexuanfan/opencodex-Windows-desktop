@@ -1122,7 +1122,7 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
   });
 
   test("an inherited Object.prototype key is not read as a preference", () => {
-    // `provider.modelPreferHostedTools?.[modelId]` walks the prototype chain, so a
+    // `provider.modelPreferHostedTools?.[modelId]` walked the prototype chain, so a
     // routed model literally named `constructor` or `toString` yielded a function
     // and threw on `.includes` before the request was ever dispatched.
     const adapter = createResponsesPassthroughAdapter({
@@ -1144,6 +1144,45 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
       const body = JSON.parse(request.body) as { tool_choice: unknown };
       // Unconfigured model: ordinary normalization applies, the hosted preference does not.
       expect(body.tool_choice).toEqual({ type: "function", name: "image_gen.imagegen" });
+    }
+  });
+
+  test("every stripped additional_tools container gets hosted image generation restored", () => {
+    // Stripping runs over all containers, but restoration originally targeted only the
+    // first stripped index, so a second container lost its image capability entirely.
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        input: [
+          {
+            type: "additional_tools",
+            role: "developer",
+            tools: [{ type: "namespace", name: "image_gen", tools: [] }, { type: "web_search" }],
+          },
+          {
+            type: "additional_tools",
+            role: "developer",
+            tools: [{ type: "namespace", name: "image_gen", tools: [] }],
+          },
+        ],
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      input: Array<{ type: string; tools?: Array<{ type: string }> }>;
+    };
+    const containers = body.input.filter(item => item.type === "additional_tools");
+
+    expect(containers).toHaveLength(2);
+    for (const container of containers) {
+      expect(container.tools).toContainEqual({ type: "image_generation" });
     }
   });
 

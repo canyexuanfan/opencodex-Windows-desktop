@@ -678,14 +678,14 @@ function preferConfiguredHostedTools(
   }
 
   let input = body.input;
-  let strippedAdditionalToolsIndex = -1;
+  const strippedAdditionalToolsIndices = new Set<number>();
   if (Array.isArray(body.input)) {
     let nestedChanged = false;
     const mappedInput = body.input.map((item, index) => {
       if (!isPlainObject(item) || item.type !== "additional_tools" || !Array.isArray(item.tools)) return item;
       const nestedTools = stripGroup(item.tools);
       if (nestedTools === item.tools) return item;
-      if (strippedAdditionalToolsIndex === -1) strippedAdditionalToolsIndex = index;
+      strippedAdditionalToolsIndices.add(index);
       nestedChanged = true;
       return { ...item, tools: nestedTools };
     });
@@ -704,11 +704,14 @@ function preferConfiguredHostedTools(
     || (Array.isArray(input) && input.some(item => isPlainObject(item)
       && item.type === "additional_tools"
       && hasHostedImageGenTool(item.tools)));
-  if ((strippedTopLevelImageGenTool || strippedAdditionalToolsIndex >= 0) && !hasHostedImageGenDeclaration) {
+  if ((strippedTopLevelImageGenTool || strippedAdditionalToolsIndices.size > 0) && !hasHostedImageGenDeclaration) {
     if (strippedTopLevelImageGenTool && Array.isArray(tools)) {
       tools = [...tools, { type: HOSTED_IMAGE_GENERATION_TOOL }];
-    } else if (strippedAdditionalToolsIndex >= 0 && Array.isArray(input)) {
-      input = input.map((item, index) => index === strippedAdditionalToolsIndex
+    } else if (strippedAdditionalToolsIndices.size > 0 && Array.isArray(input)) {
+      // Restore in EVERY container we stripped, not just the first: a request carrying
+      // two `additional_tools` groups would otherwise leave the later ones with no image
+      // capability at all. Raised by the automated review on #924.
+      input = input.map((item, index) => strippedAdditionalToolsIndices.has(index)
         && isPlainObject(item)
         && Array.isArray(item.tools)
         ? { ...item, tools: [...item.tools, { type: HOSTED_IMAGE_GENERATION_TOOL }] }
