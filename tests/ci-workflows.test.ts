@@ -869,6 +869,8 @@ describe("GitHub Actions hardening", () => {
     // The verdict is a live PR read plus ancestry/description checks.
     expect(script).toContain("github.rest.pulls.get");
     expect(script).toContain("collectPrQualityFailures");
+    // The GUI screenshot gate reads the title as well as the body.
+    expect(script).toContain("title: pr.title");
     expect(script).toContain("github.rest.repos.getCollaboratorPermissionLevel");
     expect(script).toContain("github.rest.repos.compareCommitsWithBasehead");
     // The allow-list is the gate's whole policy, so it is pinned by value and
@@ -1094,6 +1096,114 @@ describe("GitHub Actions hardening", () => {
       expect(lastEnforcerCommentBody(result)).toContain("Pull request description");
       expect(lastEnforcerCommentBody(result)).toContain("body is empty");
       expect(callsTo(result, "graphql")).toHaveLength(1);
+    });
+
+    test("gui in the title without a screenshot fails and drafts", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" }, title: "GUI: fix provider list spacing" },
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot required");
+      expect(lastEnforcerCommentBody(result)).toContain(
+        "screenshot of the UI change",
+      );
+      expect(callsTo(result, "graphql")).toHaveLength(1);
+    });
+
+    test("gui in the body without a screenshot fails", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "Fix dashboard spacing",
+          body: [
+            "## Summary",
+            "This change adjusts gui/ spacing tokens used by the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot required");
+    });
+
+    test("gui with an embedded screenshot passes", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "![after](https://example.com/after.png)",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase());
+      expect(result.logs.join(" ")).toContain("All PR quality gates passed");
+    });
+
+    test("gui with a reference-style screenshot passes", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "![after][shot]",
+            "",
+            "[shot]: https://example.com/after.png",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase());
+      expect(result.logs.join(" ")).toContain("All PR quality gates passed");
+    });
+
+    test("gui with image syntax only inside a code fence still fails", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "```",
+            "![after](https://example.com/after.png)",
+            "```",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot required");
+    });
+
+    test("guidance in the title does not demand a screenshot", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" }, title: "Add contributor guidance docs" },
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase());
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(false);
     });
 
     test("literal backslash-n in the body fails the description gate", async () => {

@@ -7,6 +7,8 @@ const {
   isWrongAncestry,
   authorHasPushPermission,
   assessPrDescription,
+  hasGuiCue,
+  hasScreenshotEvidence,
   collectPrQualityFailures,
 } = require("./pr-quality.cjs");
 
@@ -81,6 +83,7 @@ describe("assessPrDescription", () => {
       "## Verification",
       "",
       "- List the commands or checks you ran.",
+      "- If this PR changes the GUI, include a screenshot of the UI change in the description.",
       "",
       "## Checklist",
       "",
@@ -114,8 +117,114 @@ describe("assessPrDescription", () => {
   });
 });
 
+describe("hasGuiCue", () => {
+  it("matches gui as a whole word, case-insensitively, in title or body", () => {
+    assert.equal(hasGuiCue("Fix GUI spacing", ""), true);
+    assert.equal(hasGuiCue("fix gui spacing", ""), true);
+    assert.equal(hasGuiCue("", "This changes gui/src/App.tsx"), true);
+    assert.equal(
+      hasGuiCue("", "## Summary\nGUI button is misaligned in the dashboard"),
+      true,
+    );
+  });
+
+  it("does not match gui inside other words", () => {
+    assert.equal(hasGuiCue("Add contributor guidance", ""), false);
+    assert.equal(hasGuiCue("", "Fix the guild invitation bug"), false);
+    assert.equal(hasGuiCue("", "Remove guillotine dead code"), false);
+  });
+
+  it("does not match missing or non-string inputs", () => {
+    assert.equal(hasGuiCue(undefined, undefined), false);
+    assert.equal(hasGuiCue(null, null), false);
+  });
+});
+
+describe("hasScreenshotEvidence", () => {
+  it("accepts embedded markdown images", () => {
+    assert.equal(
+      hasScreenshotEvidence("![after](https://example.com/after.png)"),
+      true,
+    );
+    assert.equal(
+      hasScreenshotEvidence(
+        "Before:\n\n![Screenshot 2026-08-03 at 14.22](https://user-images.githubusercontent.com/1/2.png)",
+      ),
+      true,
+    );
+  });
+
+  it("accepts HTML img tags", () => {
+    assert.equal(
+      hasScreenshotEvidence('<img src="https://example.com/ui.png" width="600">'),
+      true,
+    );
+  });
+
+  it("accepts reference-style images with a matching definition", () => {
+    assert.equal(
+      hasScreenshotEvidence(
+        "After:\n\n![after][shot]\n\n[shot]: https://example.com/after.png",
+      ),
+      true,
+    );
+    assert.equal(
+      hasScreenshotEvidence(
+        "![after][]\n\n[after]: https://example.com/after.png",
+      ),
+      true,
+    );
+  });
+
+  it("rejects image syntax inside fenced code and HTML comments", () => {
+    assert.equal(
+      hasScreenshotEvidence('```\n![after](https://example.com/after.png)\n```'),
+      false,
+    );
+    assert.equal(
+      hasScreenshotEvidence('```\n<img src="https://example.com/ui.png">\n```'),
+      false,
+    );
+    assert.equal(
+      hasScreenshotEvidence("<!-- ![after](https://example.com/after.png) -->"),
+      false,
+    );
+    assert.equal(
+      hasScreenshotEvidence('<!-- <img src="https://example.com/ui.png"> -->'),
+      false,
+    );
+  });
+
+  it("rejects img tags without a renderable src and references without a definition", () => {
+    assert.equal(hasScreenshotEvidence("<img>"), false);
+    assert.equal(hasScreenshotEvidence('<img src="">'), false);
+    assert.equal(
+      hasScreenshotEvidence("![after][shot]"),
+      false,
+    );
+  });
+
+  it("rejects plain links, bare image URLs, and text-only bodies", () => {
+    assert.equal(
+      hasScreenshotEvidence("[Screenshot](https://example.com/ui.png)"),
+      false,
+    );
+    assert.equal(hasScreenshotEvidence("https://example.com/ui.png"), false);
+    assert.equal(hasScreenshotEvidence("No screenshot here."), false);
+    assert.equal(hasScreenshotEvidence(undefined), false);
+  });
+});
+
 describe("collectPrQualityFailures", () => {
   const allowed = ["dev"];
+
+  const richBody = [
+    "## Summary",
+    "This change fixes the provider list spacing in the dashboard.",
+    "",
+    "## Test plan",
+    "- Ran bun test tests/ci-workflows.test.ts",
+  ].join("\n");
 
   it("reports wrong_base without requiring ancestry inputs", () => {
     const failures = collectPrQualityFailures({
@@ -276,5 +385,129 @@ describe("collectPrQualityFailures", () => {
       stackedBase: false,
     });
     assert.ok(failures.some((f) => f.code === "wrong_base"));
+  });
+
+  it("flags a gui title without a screenshot", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "GUI: fix provider list spacing",
+      body: richBody,
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+    });
+    assert.ok(failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("flags a gui mention in the body without a screenshot", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "Fix dashboard spacing",
+      body: [
+        "## Summary",
+        "This change adjusts gui/ spacing tokens used by the dashboard.",
+        "",
+        "## Test plan",
+        "- Ran bun test tests/ci-workflows.test.ts",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+    });
+    assert.ok(failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("accepts a gui title when a screenshot image is embedded", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "GUI: fix provider list spacing",
+      body: [
+        "## Summary",
+        "This change fixes the provider list spacing in the dashboard.",
+        "",
+        "![after](https://example.com/after.png)",
+        "",
+        "## Test plan",
+        "- Ran bun test tests/ci-workflows.test.ts",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+    });
+    assert.ok(!failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("accepts a gui title when the screenshot uses reference-style markdown", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "GUI: fix provider list spacing",
+      body: [
+        "## Summary",
+        "This change fixes the provider list spacing in the dashboard.",
+        "",
+        "![after][shot]",
+        "",
+        "[shot]: https://example.com/after.png",
+        "",
+        "## Test plan",
+        "- Ran bun test tests/ci-workflows.test.ts",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+    });
+    assert.ok(!failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("still flags a gui title when image syntax is only inside a code fence", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "GUI: fix provider list spacing",
+      body: [
+        "## Summary",
+        "This change fixes the provider list spacing in the dashboard.",
+        "",
+        "```",
+        "![after](https://example.com/after.png)",
+        "```",
+        "",
+        "## Test plan",
+        "- Ran bun test tests/ci-workflows.test.ts",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+    });
+    assert.ok(failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("ignores the template's own gui/screenshot instruction", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "Add a thing",
+      body: [
+        "## Summary",
+        "This change touches the proxy only; no UI surface changed.",
+        "",
+        "## Verification",
+        "- List the commands or checks you ran.",
+        "- If this PR changes the GUI, include a screenshot of the UI change in the description.",
+        "",
+        "## Checklist",
+        "- [ ] Scope stays focused and avoids unrelated cleanup.",
+        "- [ ] Docs or release notes were updated when needed.",
+        "- [ ] Security-sensitive changes were reviewed for secrets, auth, and unsafe defaults.",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+    });
+    assert.ok(!failures.some((f) => f.code === "missing_ui_screenshot"));
   });
 });
