@@ -63,6 +63,9 @@ Windows 任务管理器显示 `opencodex · proxy dashboard` / `Bun` 进程占�
 
 ## 更新记录
 
+- 2026-08-04：✅ 已重新生成桌面端最新构建：`desktop/resources/staging/opencodex` 4260 个文件、Electron TypeScript 编译通过、`desktop/out/win-unpacked` 与 `OpenCodex-Setup-2.8.0-x64.exe` 生成成功；解包资源核验包含 `git-v0.71` 的 active-turn 年龄诊断和 128 admission。当前运行 PID `9220` 仍来自 `E:\Program` 旧安装，未被重启或覆盖。
+- 2026-08-04：✅ 根据 Bun 官方 PR #32120 的复现说明，Bun `1.3.14` 在 async-pull 流客户端中止/背压场景仍可能在不到 1 秒内崩溃，因此 `streamMode=auto` 继续保持 legacy tee；eager relay 不在未验证运行时上默认启用。
+- 2026-08-04：❌ 读取桌面打包上下文时把不存在的 `desktop/README.md` 与状态查询放进组合命令，导致整组命令提前返回非零；已获取 `desktop/package.json`，后续拆开读取打包资源状态。
 - 2026-08-04：✅ `/api/system/memory` 增加无隐私 active-turn 年龄诊断：总数、最老年龄、`<1s/<10s/<60s/>=60s` 分桶；admission 在 draining 状态拒绝新 turn。`bun run typecheck` 与 16 个生命周期/内存诊断测试通过。
 - 2026-08-04：❌ 使用项目规定入口 `bun run test` 并捕获输出，仍在 424 秒上限返回 124，未产生测试摘要；测试主进程工作集约 936 MB→1.0 GB。该结果确认完整套件自身存在长耗时/高峰值，不能作为业务代理内存结论。
 - 2026-08-04：❌ 按项目规定运行 `bun run test` 时约 76 秒返回退出码 1，但执行工具没有带回测试摘要；尚不能判断为代码回归，下一步需捕获末尾输出或单独运行失败分组。
