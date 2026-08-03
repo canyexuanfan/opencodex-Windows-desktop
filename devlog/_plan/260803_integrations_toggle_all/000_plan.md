@@ -17,25 +17,28 @@ Research: `001_removal_path_inventory.md`. Dialog direction and copy:
 `002_consequence_dialog_ux.md`. Audit fold-backs: `003`, `004`, `005`. Current
 direction: `006`. Read `001`, `002`, `005` and `006` before any phase work.
 
-## What the research changed about the shape
+## What the research and the audits changed about the shape
 
-Three findings moved the plan away from the obvious "add four disable routes":
-
-1. **The snapshot substrate already exists and is nearly client-agnostic.**
-   `journal.ts` + `ownership.ts` give snapshots, retention, path-escape guards
-   and hardened writes; only the `IntegrationClientId` type ties them to the six
-   file clients. `writer.ts` is NOT reusable — it is parse/merge/serialize, which
-   means nothing to a TOML fence or a base64 journal. So: widen the substrate,
-   write four small native writers on top.
+1. **The four clients do not share a mechanism.** The first three revisions put
+   them all on one byte-snapshot substrate; three audit rounds took it apart.
+   Undo is now a per-client STATE that gets re-applied through the same path
+   that established it, and byte snapshots survive only where a file genuinely
+   is the whole integration — Grok's `config.toml` and Desktop's library
+   (`006`).
 2. **Claude Desktop has no ownership record and no removal path.** Apply
    overwrites `appliedId` without recording what was there, and identifies its
-   own row by a display name any user could also choose. Both gaps have to be
-   closed before a removal is safe: the compound snapshot restores the previous
-   selection, and a persisted `appliedProfileId` plus a payload marker proves
-   which row is ours.
+   own row by a display name any user could also choose. Removal needs both
+   gaps closed: the library bytes restore the previous selection, and a
+   persisted `appliedProfileId` plus a payload marker proves which row is ours
+   (`014`).
 3. **`desktopAutoApply` would undo the disable.** It defaults ON whenever a
-   stored `desktopProfile` exists, so a later provider change recreates the file.
-   Disable is not complete without neutralizing it.
+   stored `desktopProfile` exists, so the subagent-model route recreates the
+   file. Disable is not complete without neutralizing it.
+4. **Restoring a whole config file is not undo.** opencodex's `config.json`
+   holds every other setting, so a byte restore would revert provider and
+   account changes made after the disable. The four Desktop bookkeeping fields
+   go back individually through `saveConfigPreservingClaudeCode`, which merges
+   the `claudeCode` subtree rather than replacing the file.
 
 ## Dependency order
 
@@ -68,8 +71,11 @@ routing beyond what enable/disable implies.
 ## Criteria
 
 - C1 — all four toggle both directions from the overview cards.
-- C2 — every native write captures a COMPOUND snapshot of every artifact it may
-  change, proven by a per-client round-trip test that checks every member.
+- C2 — every native toggle can be undone: a captured pre-state (Claude Code,
+  Codex) or captured bytes (Grok, Desktop's library) re-establish the previous
+  arrangement, proven by a per-client round-trip test.
+- C2b — an unrelated config edit made between a disable and its undo SURVIVES
+  the undo.
 - C3 — Desktop disable leaves `_meta.json` internally consistent: no dangling
   `appliedId`, no orphaned `.bak`, markers cleared, auto-apply neutralized; and
   no restore ever produces an `appliedId` naming a missing file.
@@ -88,15 +94,15 @@ routing beyond what enable/disable implies.
 
 | Risk | Mitigation |
 |---|---|
-| Desktop removal corrupts `_meta.json` for a real user | Never delete blind: prove ownership by persisted id AND payload marker, repair `appliedId` to a surviving entry whose file exists, refuse when none does, snapshot all three artifacts (`020`) |
-| Codex disable strips something the user owns | Delegate to `restoreNativeCodex`, which is already marker-ownership-aware; do not reimplement stripping (`010`) |
-| Restore reconstructs a broken state | The snapshot is compound and restores in dependency order — files before the metadata that references them (`010`, `020`) |
-| A half-failed removal reports success or "no change" | `partial` outcome with residual paths and a journal row (`010`, `030`) |
+| Desktop removal corrupts `_meta.json` for a real user | Never delete blind: prove ownership by persisted id AND payload marker, repair `appliedId` to a surviving entry whose file exists, refuse when none does (`014`) |
+| Codex disable strips something the user owns | Delegate to `restoreNativeCodex`, which is already marker-ownership-aware; do not reimplement stripping (`013`) |
+| Restore reconstructs a broken state | Desktop's library restores in dependency order — files before the metadata that references them — so `_meta.json` never names a missing profile (`014`) |
+| A half-failed removal reports success or "no change" | `partial` outcome with residual items and a journal row (`011` §NativeApplyResult, `030`) |
 | Auto-apply resurrects a disabled Desktop profile | WP2 neutralizes it as part of disable, and a test proves a provider change does not recreate the file |
-| Shared teardown runs under a foreign-home service | Ownership preflight before Codex and Grok disable (`010`) |
+| Shared teardown runs under a foreign-home service | Ownership preflight before Codex and Grok disable (`012`, `013`) |
 | Concurrent mutations lose bookkeeping | One resource-keyed coordinator shared with the file-client routes (`030`) |
-| A corrupted snapshot names a write destination | Members are keyed; only the spec resolves paths (`010`) |
-| A journal failure strands a committed mutation | Prepare/commit journal protocol (`010`) |
+| A corrupted snapshot names a write destination | Pre-states hold values, never paths; every path is resolved fresh at apply time (`006`) |
+| Undo reverts unrelated settings | Semantic restore of named fields through the merging config writer (`014`) |
 
 ## Recorded follow-up, not in scope
 

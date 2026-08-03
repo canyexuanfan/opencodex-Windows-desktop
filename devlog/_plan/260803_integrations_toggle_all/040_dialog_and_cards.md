@@ -1,7 +1,17 @@
 # WP4 — the dialog, and four more switches
 
-> **Rev 2** after audit round 1. Added: one authoritative state model instead of
-> two competing status sources (audit #11), and the `partial` outcome's surface.
+> **Rev 3** after the replan (`006`). The single state authority and the
+> `partial` surface survive unchanged. This is WP6, the last phase — but the
+> switches arrive incrementally: Claude Code and Grok can ship as soon as WP1,
+> WP2 and WP5 land, with Codex and Desktop following.
+
+## Shipping order
+
+The card reads its switch state from the native payload, which reports only the
+clients that exist yet. A client without an implementation renders exactly as it
+does today — a badge and a settings link, no switch — so this phase does not
+block on all four being ready. Two working toggles beat four that wait for the
+riskiest one.
 
 Direction and copy: `002_consequence_dialog_ux.md`. This doc is the wiring.
 
@@ -36,6 +46,10 @@ Precedence, in one pure function beside `buildOverviewRows`:
 - **Not yet settled** — if the native payload has not arrived, the row is
   `unknown` and the switch is DISABLED. A switch whose state we are guessing is
   worse than one the user cannot touch for a moment.
+- **Not yet implemented** — a client the native payload does not list has no
+  switch at all. Distinct from unsettled: one is "wait a moment", the other is
+  "this cannot be toggled here yet", and rendering a disabled switch for the
+  second would promise a control that is not coming this release.
 
 `OverviewCard` changes to read `row.applied` rather than `row.status`, which
 also removes the file-client-only assumption baked into the card this morning.
@@ -100,9 +114,10 @@ mismatch, not a running service (`001` §The guard I described wrong). It names
 both homes and leaves the resolution to the user.
 
 `partial` is not a refusal and must not be styled as one. It renders as a
-persistent error notice naming every residual path plus a direct link to the
+persistent error notice naming every residual item plus a direct link to the
 Rollback Centre entry for its `opId` — the user's handle on a half-changed
-state.
+state. For Codex the residual is usually the resume-history tag with the file
+state already correct, so the copy says which half succeeded.
 
 ## Verification
 
@@ -127,6 +142,8 @@ A dialog is a render artifact, so C runs the render-grounding loop
 - [ ] Badge and switch never disagree: a test drives every combination of
       settled/unsettled native payload against each detail payload.
 - [ ] An unsettled native payload disables the switch rather than guessing.
+- [ ] A client absent from the native payload renders NO switch, not a disabled
+      one.
 - [ ] `partial` renders residual paths and links its Rollback Centre entry.
 - [ ] Six locales carry every new key.
 - [ ] Dialog is keyboard-reachable, escape-dismissible, focus-trapped.

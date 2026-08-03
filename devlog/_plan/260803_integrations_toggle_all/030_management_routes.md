@@ -1,8 +1,10 @@
 # WP3 — the routes the cards call
 
-> **Rev 3** after audit rounds 1 and 2. Rev 2 introduced the shared coordinator,
-> a reachable `home_mismatch`, and the `partial` response. Rev 3 specifies the
-> coordinator at diff level and narrows its claim (audit r2 #8).
+> **Rev 4** after the replan (`006`). The coordinator, the reachable
+> `home_mismatch` and the `partial` response all survive; what changed is that
+> the routes now drive per-client `NativeClient` implementations (`011`-`014`)
+> rather than one substrate, and undo is a re-apply rather than a file restore.
+> This is WP5: it lands after at least WP1 and WP2 exist.
 
 ## IN
 
@@ -34,6 +36,16 @@ PUT  /api/native-integrations/:client      { enabled: boolean }
 GET  /api/native-integrations/journal      ?client=<id>
 POST /api/native-integrations/restore      { opId, confirmDrift? }
 ```
+
+`restore` re-applies the captured pre-state through `NativeClient.apply` — the
+same method the toggle uses. One code path means an undo cannot drift from the
+operation it reverses, and it is idempotent, which is why a crash mid-toggle
+does not leave restore guessing whether the mutation ran.
+
+`confirmDrift` is answered by `NativeClient.drift`, which reports per FIELD, so
+the confirmation names exactly which fields would be overwritten (audit r3 #5)
+rather than asking about a whole file the user may have touched for unrelated
+reasons.
 
 `GET` composes the four reads the overview already makes separately today
 (`/api/startup-health`, `/api/claude-code`, `/api/claude-desktop/status`,
@@ -127,8 +139,20 @@ another.
 | Operation | Keys |
 |---|---|
 | File client apply/disable/restore | `store:journal`, `store:records`, `client:<id>` |
-| Codex / Grok toggle | `store:journal`, `client:<id>` |
-| Claude Code / Desktop toggle | `store:journal`, `config:ocx`, `client:<id>` |
+| Grok toggle | `store:journal`, `client:grok` |
+| Codex toggle | `store:journal`, `config:ocx`, `client:codex` |
+| Claude Code toggle | `config:ocx`, `client:claude` |
+| Desktop toggle | `store:journal`, `config:ocx`, `client:claudeDesktop` |
+
+Claude Code takes no journal lock: it writes no snapshot, because its pre-state
+is one boolean carried in the operation record itself.
+
+### Duplicates and reentrancy
+
+`withLocks` sorts AND deduplicates (audit r3 #8) — sorting alone does not stop a
+caller passing the same key twice and self-deadlocking on a non-reentrant mutex.
+Nested `withLocks` calls with overlapping sets throw deterministically rather
+than hanging; every operation above is flat, so no legitimate caller nests.
 
 Two different file clients still write their own files in parallel and serialize
 only where they share state. A Desktop disable and a Claude Code disable
@@ -165,8 +189,13 @@ busy 409, now expressed through the coordinator.
       config changes; neither overwrites the other.
 - [ ] `withLocks` sorts its input: a test passes the same keys in two different
       orders and asserts identical acquisition sequences.
+- [ ] `withLocks` deduplicates: a duplicate key does not self-deadlock.
+- [ ] A nested overlapping acquisition throws rather than hanging.
 - [ ] There is no exported single-key acquire.
 - [ ] A corrupt `_meta.json` returns `unsafe`/500, NOT `unowned_profile`/409.
+- [ ] `restore` goes through `NativeClient.apply`, proven by a test that a
+      toggle and an undo produce identical end state.
+- [ ] A drift confirmation names the changed FIELDS, not a file.
 - [ ] `home_mismatch` is produced by a real foreign-home install-state fixture.
 - [ ] `GET` reports `installed: false` for an absent client rather than erroring.
 - [ ] Restore replays a COMPOUND snapshot and every member matches.

@@ -1,8 +1,9 @@
 # The consequence dialog: design read and exact copy
 
-> **Rev 2** after audit round 1. The Desktop and Codex copy in rev 1 promised
-> more than the writers deliver (audit #1, #4, #14); both are rewritten below to
-> match the compound-snapshot contract.
+> **Rev 3** after the replan (`006`). The copy is written against the
+> per-client mechanisms in `011`-`014`, not the retired byte substrate. Rev 2's
+> Codex paragraph promised a catalog restore in the wrong terms and its Desktop
+> paragraph credited a "compound snapshot" that no longer exists.
 
 Design spec. Implementation lives in `040`; this doc owns the direction and the
 strings.
@@ -95,17 +96,19 @@ skims the buttons should still know what they pressed.
 > 해제하면 `codex`가 프록시를 거치지 않고 OpenAI로 직접 붙습니다. opencodex에
 > 연결한 다른 제공자 모델은 Codex에서 사라집니다.
 >
-> 되돌릴 수 있습니다. 설정 파일, 프로필, 모델 카탈로그를 바꾸기 전에 함께
-> 보관하며, 복원 센터에서 되살릴 수 있습니다. 다만 이전 대화 기록의 제공자
-> 표시는 복원 대상이 아닙니다.
+> 되돌릴 수 있습니다. 해제 전 라우팅 상태를 기록해 두고, 복원하면 적용할 때와
+> 같은 경로로 다시 설정합니다. 대화 기록의 제공자 표시도 함께 맞춥니다.
 >
 > 이미 실행 중인 Codex 세션은 바로 바뀌지 않을 수 있습니다. 새로 시작하세요.
 
-The undo paragraph names the three artifacts the compound snapshot actually
-covers and excludes the one it does not (`state_5.sqlite` history tagging,
-`010` §The specs). Rev 1 said "적용 전 원본을 journal에 보관해 두었고" — which
-pointed at a file `restoreNativeCodex` deletes on a complete restore, so the
-promise would have expired exactly when it was needed.
+The undo paragraph describes a STATE being re-established, not files being put
+back, because that is what `013` actually does. Two earlier drafts got this
+wrong in opposite directions: rev 1 pointed at
+`~/.codex/opencodex-journal.json`, a file `restoreNativeCodex` deletes on a
+complete restore, so the promise expired exactly when it was needed; rev 2
+listed three restored artifacts and excluded history, which the audit read as
+leaving threads tagged native beside proxy-routed config. History is now
+re-synced in the matching direction, so the copy can include it.
 
 That last line is load-bearing: `app-server-processes.ts:546` proves a long-lived
 app-server holds state in memory, and nothing proves it re-reads
@@ -122,13 +125,18 @@ app-server holds state in memory, and nothing proves it re-reads
 > 해제하면 Claude Desktop에서 opencodex로 연결한 모델을 더는 쓸 수 없습니다.
 >
 > 되돌릴 수 있습니다. 프로필과 `_meta.json`을 함께 보관하므로, 복원하면
-> Desktop이 쓰던 프로필 선택까지 그대로 돌아옵니다.
+> Desktop이 쓰던 프로필 선택까지 그대로 돌아옵니다. opencodex 쪽 설정은 그
+> 항목만 되돌리므로, 그 사이에 바꾼 다른 설정은 그대로 유지됩니다.
 
-Rev 1's last paragraph — "이전에 어떤 프로필을 쓰고 있었는지는 기록이 없어 알 수
-없습니다" — is DELETED, and it is the clearest sign the audit was right. It was
-true only because rev 1 snapshotted `_meta.json` without the profile. The
-compound snapshot holds both, so restore genuinely returns the previous
-selection, and the copy can now say so honestly.
+Desktop is the one client whose undo has to describe two mechanisms, so the copy
+does (`014` §Two mechanisms, one operation): the library comes back as bytes —
+which is what returns the previous `appliedId` — while opencodex's own settings
+come back field by field. The second sentence exists because a user who changed
+providers after disabling must not fear that undo reverts that too.
+
+Rev 1 said we could not know the previous profile at all. That was true only of
+a design that snapshotted `_meta.json` without the profile beside it, and it is
+the clearest evidence the first audit was right.
 
 The `no_safe_desktop_fallback` case never reaches this dialog: it is refused at
 preflight, before the user is asked to confirm anything.
@@ -174,10 +182,11 @@ specific ones, each stating the state and the one thing that would change it:
   않았습니다. Desktop에서 다른 프로필을 만든 뒤 다시 시도해 주세요."
 - **`unowned_profile`** — "opencodex라는 이름의 Desktop 프로필이 있지만 이
   설치가 만든 것이라고 확인할 수 없어 건드리지 않았습니다."
-- **`partial`** — the one case that is not a refusal: some artifacts changed and
-  could not be put back. It names every residual path and points at the Rollback
+- **`partial`** — the one case that is not a refusal: some state changed and
+  could not be put back. It names every residual item and points at the Rollback
   Centre entry, because a half-changed state with no handle is the worst outcome
-  this unit can produce.
+  this unit can produce. For Codex the residual is usually the history tag, with
+  the file state already correct.
 - **Codex owned by another provider** — "Codex가 opencodex가 아닌 다른 제공자로
   설정돼 있습니다. 그쪽 설정은 건드리지 않았습니다."
 
