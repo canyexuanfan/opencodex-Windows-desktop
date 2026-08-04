@@ -15,6 +15,7 @@ export interface HealthzIdentity {
   service?: unknown;
   status?: unknown;
   version?: unknown;
+  buildRevision?: unknown;
   uptime?: unknown;
   pid?: unknown;
 }

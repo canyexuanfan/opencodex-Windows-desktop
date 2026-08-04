@@ -2,11 +2,13 @@ if (
   process.env.OPENCODEX_DESKTOP !== "1"
   || process.env.OPENCODEX_DESKTOP_MODE !== "1"
   || process.env.OPENCODEX_DESKTOP_VERSION !== "0.1.7"
+  || process.env.OPENCODEX_DESKTOP_BUILD_REVISION !== "0"
 ) {
   console.error(JSON.stringify({
     desktop: process.env.OPENCODEX_DESKTOP,
     mode: process.env.OPENCODEX_DESKTOP_MODE,
     version: process.env.OPENCODEX_DESKTOP_VERSION,
+    buildRevision: process.env.OPENCODEX_DESKTOP_BUILD_REVISION,
   }));
   process.exit(22);
 }

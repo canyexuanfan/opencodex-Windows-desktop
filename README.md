@@ -19,7 +19,7 @@ ocx start        # proxy + dashboard on localhost:10100
 
 ## Windows desktop installer
 
-Download the latest installer from this fork's [GitHub Releases](https://github.com/canyexuanfan/opencodex-Windows-desktop/releases), for example `OpenCodex-Setup-2.8.0-x64.exe`. Run it, then start OpenCodex from the desktop shortcut or Start menu.
+Download the latest installer from this fork's [GitHub Releases](https://github.com/canyexuanfan/opencodex-Windows-desktop/releases), for example `OpenCodex-Setup-2.8.1-x64.exe`. Run it, then start OpenCodex from the desktop shortcut or Start menu.
 
 This Windows edition bundles the desktop host and runtime, uses installer-created shortcuts with the OpenCodex icon, and keeps the local proxy route recoverable across normal desktop restarts and updates. Only the installer build is published; portable builds are left for a future advanced/portable track if users ask for it.
 

@@ -239,6 +239,7 @@ export const ko: Record<TKey, string> = {
   "dash.updateChecking": "업데이트 확인 중…",
   "dash.updateInstalled": "설치됨",
   "dash.updateLatest": "최신",
+  "dash.updateBuild": "(빌드 {revision})",
   "dash.updateAvailable": "업데이트 가능",
   "dash.updateCurrent": "최신 상태",
   "dash.updateCommand": "명령",

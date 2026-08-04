@@ -37,7 +37,7 @@ export async function requireJson<T>(res: Response, fallbackMessage?: string): P
   return data;
 }
 
-export interface HealthData { status: string; version: string; uptime: number }
+export interface HealthData { status: string; version: string; buildRevision?: number; uptime: number }
 export interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
 export interface ModelInfo { id: string; provider: string; owned_by?: string }
 export interface SettingsData {
@@ -90,6 +90,8 @@ export interface ProjectCodexConfigGroup {
 export interface UpdateCheckData {
   currentVersion: string;
   latestVersion: string | null;
+  currentBuildRevision?: number;
+  latestBuildRevision?: number;
   channel: UpdateChannel;
   installer: Installer;
   updateAvailable: boolean;
@@ -106,6 +108,8 @@ export interface UpdateJob {
   status: UpdateJobStatus;
   currentVersion: string;
   latestVersion: string | null;
+  currentBuildRevision?: number;
+  latestBuildRevision?: number;
   channel: UpdateChannel;
   installer: Installer;
   restart: boolean;

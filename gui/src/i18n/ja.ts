@@ -241,6 +241,7 @@ export const ja: Record<TKey, string> = {
   "dash.updateChecking": "更新を確認中…",
   "dash.updateInstalled": "インストール済み",
   "dash.updateLatest": "最新",
+  "dash.updateBuild": "(ビルド {revision})",
   "dash.updateAvailable": "更新があります",
   "dash.updateCurrent": "最新です",
   "dash.updateCommand": "コマンド",

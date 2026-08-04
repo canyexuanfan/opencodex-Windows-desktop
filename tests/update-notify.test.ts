@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   getUpgradeVersionForPopup,
   isNewer,
+  isNewerRelease,
   isSourceBuildVersion,
   readVersionCache,
   writeVersionCache,
@@ -55,6 +56,19 @@ describe("isNewer — preview channel", () => {
   });
   test("higher base preview beats lower base preview", () => {
     expect(isNewer("2.8.0-preview.1", "2.7.0-preview.9", "preview")).toBe(true);
+  });
+});
+
+describe("isNewerRelease same-version build revisions", () => {
+  test("a higher stable build revision is newer without changing product version", () => {
+    expect(isNewerRelease("2.8.1", "2.8.1", 2, 1, "latest")).toBe(true);
+    expect(isNewerRelease("2.8.1", "2.8.1", 1, 2, "latest")).toBe(false);
+    expect(isNewerRelease("2.8.2", "2.8.1", 0, 99, "latest")).toBe(true);
+  });
+
+  test("same preview base also compares build revisions", () => {
+    expect(isNewerRelease("2.8.1-preview.2", "2.8.1-preview.2", 3, 2, "preview")).toBe(true);
+    expect(isNewerRelease("2.8.1-preview.2", "2.8.1-preview.2", 2, 3, "preview")).toBe(false);
   });
 });
 

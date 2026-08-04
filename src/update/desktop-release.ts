@@ -29,14 +29,35 @@ interface GitHubRelease {
 
 export interface DesktopInstallerRelease {
   latestVersion: string;
+  buildRevision: number;
+  releaseTag: string;
   releaseNotesUrl: string;
   downloadUrl: string | null;
   assetName: string | null;
 }
 
+export interface DesktopReleaseIdentity {
+  version: string;
+  buildRevision: number;
+}
+
+const RELEASE_VERSION_PATTERN = /(?:^|[^0-9.])(\d+\.\d+\.\d+(?:-preview\.\d+)?)(?:-build\.(\d+))?(?![0-9.])/;
+const DEFAULT_RELEASE_BUILD_REVISION = 1;
+
+export function desktopReleaseIdentityFromTag(tag: string): DesktopReleaseIdentity | null {
+  const match = RELEASE_VERSION_PATTERN.exec(tag);
+  if (!match) return null;
+  const buildRevision = match[2] === undefined ? DEFAULT_RELEASE_BUILD_REVISION : Number(match[2]);
+  if (!Number.isSafeInteger(buildRevision) || buildRevision < 1) return null;
+  return { version: match[1]!, buildRevision };
+}
+
 export function desktopVersionFromReleaseTag(tag: string): string | null {
-  const match = tag.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/);
-  return match ? match[0] : null;
+  return desktopReleaseIdentityFromTag(tag)?.version ?? null;
+}
+
+export function desktopBuildRevisionFromReleaseTag(tag: string): number {
+  return desktopReleaseIdentityFromTag(tag)?.buildRevision ?? DEFAULT_RELEASE_BUILD_REVISION;
 }
 
 function isReleaseRecord(value: unknown): value is GitHubRelease {
@@ -54,12 +75,12 @@ function setupAsset(release: GitHubRelease, version: string): { name: string; do
   return null;
 }
 
-function releaseVersion(release: GitHubRelease): string | null {
+function releaseIdentity(release: GitHubRelease): DesktopReleaseIdentity | null {
   const tag = typeof release.tag_name === "string" ? release.tag_name : "";
-  const fromTag = desktopVersionFromReleaseTag(tag);
+  const fromTag = desktopReleaseIdentityFromTag(tag);
   if (fromTag) return fromTag;
   const name = typeof release.name === "string" ? release.name : "";
-  return desktopVersionFromReleaseTag(name);
+  return desktopReleaseIdentityFromTag(name);
 }
 
 function releaseUrl(release: GitHubRelease): string {
@@ -92,11 +113,14 @@ export async function fetchDesktopInstallerRelease(
   if (!response.ok) return null;
   const release = selectRelease(await response.json(), channel);
   if (!release) return null;
-  const latestVersion = releaseVersion(release);
-  if (!latestVersion) return null;
-  const asset = setupAsset(release, latestVersion);
+  const identity = releaseIdentity(release);
+  if (!identity) return null;
+  const releaseTag = typeof release.tag_name === "string" ? release.tag_name : "";
+  const asset = setupAsset(release, identity.version);
   return {
-    latestVersion,
+    latestVersion: identity.version,
+    buildRevision: identity.buildRevision,
+    releaseTag,
     releaseNotesUrl: releaseUrl(release),
     downloadUrl: asset?.downloadUrl ?? null,
     assetName: asset?.name ?? null,

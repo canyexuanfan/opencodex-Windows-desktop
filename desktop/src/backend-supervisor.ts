@@ -156,6 +156,7 @@ export interface BackendSupervisorOptions {
   readonly bunExecutable?: string;
   readonly sidecarEntry?: string;
   readonly desktopVersion?: string;
+  readonly desktopBuildRevision?: number;
   readonly findExternalBackend?: () => Promise<ExternalBackend | null>;
   readonly externalProbeIntervalMs?: number;
 }
@@ -264,6 +265,7 @@ export class DesktopBackendSupervisor {
         OPENCODEX_DESKTOP: "1",
         OPENCODEX_DESKTOP_MODE: "1",
         ...(this.options.desktopVersion ? { OPENCODEX_DESKTOP_VERSION: this.options.desktopVersion } : {}),
+        OPENCODEX_DESKTOP_BUILD_REVISION: String(this.options.desktopBuildRevision ?? 0),
       },
     });
     this.child = child;

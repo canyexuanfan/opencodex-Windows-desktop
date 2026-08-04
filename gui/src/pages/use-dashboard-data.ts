@@ -394,6 +394,7 @@ export function useDashboardData(apiBase: string) {
     async (signal) => {
       if (!updateJob?.id || !updateJob.restart) return { reconnecting: false as const };
       const targetVersion = updateJob.latestVersion;
+      const targetBuildRevision = updateJob.latestBuildRevision;
       try {
         const res = await fetch(`${apiBase}/api/update/status?jobId=${encodeURIComponent(updateJob.id)}`, { signal });
         const statusData = await requireJson<{ job?: UpdateJob }>(res);
@@ -403,7 +404,8 @@ export function useDashboardData(apiBase: string) {
             try {
               const healthRes = await fetch(`${apiBase}/healthz`, { cache: "no-store", signal });
               const healthData = await requireJson<HealthData>(healthRes);
-              if (healthData.version === targetVersion) {
+              if (healthData.version === targetVersion
+                && (targetBuildRevision === undefined || healthData.buildRevision === targetBuildRevision)) {
                 return { job: statusData.job, reconnecting: false as const, reload: true as const };
               }
             } catch {

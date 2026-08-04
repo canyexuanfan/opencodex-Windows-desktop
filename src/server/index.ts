@@ -395,7 +395,18 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
 
       if (url.pathname === "/healthz" && req.method === "GET") {
         // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
-        return jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: listenPort }, 200, req, config);
+        const rawBuildRevision = process.env.OPENCODEX_DESKTOP_MODE === "1"
+          ? Number.parseInt(process.env.OPENCODEX_DESKTOP_BUILD_REVISION ?? "", 10)
+          : Number.NaN;
+        return jsonResponse({
+          status: "ok",
+          service: "opencodex",
+          version: VERSION,
+          ...(Number.isSafeInteger(rawBuildRevision) && rawBuildRevision >= 0 ? { buildRevision: rawBuildRevision } : {}),
+          uptime: process.uptime(),
+          pid: process.pid,
+          port: listenPort,
+        }, 200, req, config);
       }
 
       if (url.pathname.startsWith("/api/")) {

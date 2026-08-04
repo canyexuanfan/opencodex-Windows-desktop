@@ -20,6 +20,10 @@ export function DashboardDialogs(d: Dash) {
     shadowCallHelpOpen, setShadowCallHelpOpen, shadowCallHelpDialogRef,
     shadowCall,
   } = d;
+  const updateVersionLabel = (version: string | null, buildRevision?: number): string => {
+    if (!version) return "—";
+    return buildRevision === undefined ? version : `${version} ${t("dash.updateBuild", { revision: buildRevision })}`;
+  };
 
   return (
     <>
@@ -59,11 +63,11 @@ export function DashboardDialogs(d: Dash) {
               <div className="spread">
                 <div>
                   <div className="muted text-label">{t("dash.updateInstalled")}</div>
-                  <div className="mono">{updateCheck.currentVersion}</div>
+                  <div className="mono">{updateVersionLabel(updateCheck.currentVersion, updateCheck.currentBuildRevision)}</div>
                 </div>
                 <div>
                   <div className="muted text-label">{t("dash.updateLatest")}</div>
-                  <div className="mono">{updateCheck.latestVersion ?? "—"}</div>
+                  <div className="mono">{updateVersionLabel(updateCheck.latestVersion, updateCheck.latestBuildRevision)}</div>
                 </div>
                 <span className={`badge ${updateCheck.updateAvailable ? "badge-green" : "badge-muted"}`}>
                   {updateCheck.updateAvailable ? t("dash.updateAvailable") : t("dash.updateCurrent")}
