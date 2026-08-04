@@ -96,9 +96,16 @@ on:
 
 ## Change 2 — MODIFY `tests/ci-workflows.test.ts`
 
-The existing block (around line 89) parses `ci.yml` and pins
-`on.push.branches` and both `paths` lists. It never reads
-`on.pull_request.branches` — which is precisely how the gap survived.
+**Stale check (wp2 P, 2026-08-04).** The unit was drafted against a stale
+checkout. On `origin/dev` the block sits at lines 243-278 (not ~89), and the
+pinned `ciPaths` list has since grown `assets/**`, `README.md`, and `LICENSE`.
+Neither affects this change: `paths:` stays untouched and its assertions are
+left exactly as they are.
+
+The block parses `ci.yml` and pins `on.push.branches` plus both `paths` lists.
+Its type annotation declares `pull_request?: { paths?: string[] }` — it does not
+even model `branches` on the PR trigger, let alone assert it. That is precisely
+how the gap survived.
 
 Extend the parsed shape:
 

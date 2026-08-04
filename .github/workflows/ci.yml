@@ -2,7 +2,23 @@ name: Cross-platform CI
 
 on:
   pull_request:
-    branches: [main, dev]
+    # No base-branch filter on purpose. GitHub matches `branches:` against the
+    # BASE ref, so `[main, dev]` silently excluded stacked child PRs — whose
+    # base is another open PR's head branch, an intentional review workflow per
+    # AGENTS.md that `enforce-target` already exempts from the wrong-base gate.
+    # The #951-#955 stack merged with `enforce-target`, `label`, and
+    # `react-doctor` as its only check-runs: no test job ever queued for 24
+    # changed files under `src/`.
+    #
+    # An allowlist cannot express "base is another PR's head" — stacked bases
+    # carry contributor prefixes (`fix/`, `feat/`, `agent/`) as readily as
+    # `codex/`, and contributor stacks need CI most. `paths:` below is the real
+    # scope gate, same shape as issue-quality-tests.yml. Safe to widen here
+    # because this workflow is `pull_request` (not `pull_request_target`),
+    # declares `contents: read`, and reads no secrets.
+    #
+    # `push:` stays pinned to the integration lines: it gates the release path,
+    # and this trigger already covers review.
     paths:
       - "src/**"
       - "bin/**"
