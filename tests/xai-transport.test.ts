@@ -123,6 +123,21 @@ describe("xAI auth-mode transport selection", () => {
     expect((JSON.parse(otherRequest.body) as { tools: Array<{ function: { parameters: unknown } }> }).tools[0].function.parameters).toEqual({ ...schema, type: "object" });
   });
 
+  test("non-xAI providers preserve nested nullable and annotation schema content", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        path: { anyOf: [{ type: "string" }, { type: "null" }] },
+        opts: { default: { type: "null" }, enum: [{ type: "null" }, "a"] },
+      },
+    };
+    const request = createOpenAIChatAdapter({ ...provider("key"), baseUrl: "https://example.test/v1" }).buildRequest({
+      ...parsed(),
+      context: { messages: [], tools: [{ name: "t", description: "T", parameters: schema }] },
+    });
+    expect((JSON.parse(request.body) as { tools: Array<{ function: { parameters: unknown } }> }).tools[0].function.parameters).toEqual(schema);
+  });
+
   test("omits an xAI tool whose root schema cannot be normalized safely", () => {
     const request = createOpenAIChatAdapter(provider("key")).buildRequest({
       ...parsed(),
