@@ -45,12 +45,37 @@ has no type information either.
 
 **Chosen:** when the title yields no type, fall back to the PR's own commit
 messages. The commits are conventional even when the title is not, and they are
-the most faithful available statement of what the PR contains. Concretely: if
-every commit that yields a type yields the *same* type, apply it; if they
-disagree, skip rather than guess.
+the most faithful available statement of what the PR contains.
 
-That last clause matters. A stack PR mixing `fix:` and `feat:` has no single
-honest type, and inventing one is worse than leaving it unlabeled.
+### The unanimity rule, and why it had to change (wp3 audit)
+
+The first draft required unanimity: apply the type only if every typed commit
+agrees, else skip. The audit ran it against the real stack and it failed the
+very PRs it was written for:
+
+```
+#952 -> { bug: 1 }          unanimous -> "bug"
+#955 -> { bug: 4, chore: 1 } NOT unanimous -> skip
+```
+
+#955 is four `fix(codex):` commits plus one `test(codex):`. It is a bug-fix PR
+by any honest reading, and a rule that abstains there is a rule that abstains on
+most real PRs — almost every substantial change carries a test or chore commit
+alongside its feature or fix.
+
+So `chore` is treated as **supporting**, not competing. `test:`, `ci:`,
+`chore:`, `style:`, `refactor:`, and `build:` all map to `chore`, and none of
+them describes what a PR is *for*; they describe work that accompanies it.
+
+Final rule:
+
+1. Drop `chore` from the tally when any non-`chore` type is present.
+2. If exactly one type remains, apply it.
+3. Otherwise skip — a PR genuinely mixing `fix:` and `feat:` has no single
+   honest type, and inventing one is worse than leaving it unlabeled.
+
+An all-`chore` PR still gets `chore`, since step 1 only fires when something
+else is present.
 
 ## Change 1 — MODIFY `.github/scripts/pr-labeler.cjs`
 
@@ -60,14 +85,19 @@ Add an exported helper next to `detectTypeLabelFromTitle`:
 /**
  * Type from the PR's commits, for titles the title matcher cannot classify.
  *
- * A PR titled `stack 3/5: carry six contributor bug fixes` matches the
- * conventional regex (word + colon) but has no entry in PREFIX_TO_LABEL, so the
- * sync skips and the PR carries no type label while the `label` check stays
- * green. Its commits are conventional (`fix(codex): ...`), so they can answer
- * the question the title cannot.
+ * A PR titled `stack 3/5: carry six contributor bug fixes` reaches the
+ * sentence-case fallback, which extracts `stack`; that has no entry in
+ * PREFIX_TO_LABEL, so the sync skips and the PR carries no type label while the
+ * `label` check stays green. Its commits are conventional (`fix(codex): ...`),
+ * so they can answer the question the title cannot.
  *
- * Unanimity is required: a PR whose commits disagree (`fix:` plus `feat:`) has
- * no single honest type, and guessing one is worse than leaving it unlabeled.
+ * `chore` is supporting, not competing. `test:`/`ci:`/`chore:`/`style:`/
+ * `refactor:`/`build:` all map to it, and none of them says what a PR is FOR —
+ * requiring unanimity would abstain on almost every real PR. #955 is four
+ * `fix(codex):` commits plus one `test(codex):`; it is a bug fix.
+ *
+ * Anything still ambiguous after that (`fix:` plus `feat:`) is left unlabeled
+ * rather than guessed.
  */
 function detectTypeLabelFromCommits(messages) {
   const types = new Set();
@@ -75,6 +105,7 @@ function detectTypeLabelFromCommits(messages) {
     const detected = detectTypeLabelFromTitle(String(message || "").split("\n")[0]);
     if (detected) types.add(detected);
   }
+  if (types.size > 1) types.delete("chore");
   return types.size === 1 ? [...types][0] : null;
 }
 ```
@@ -122,7 +153,9 @@ Add a `detectTypeLabelFromCommits` describe block plus `planTypeLabelSync`
 cases:
 
 - real stack titles + conventional commits → the commits' type is applied;
-- disagreeing commits (`fix:` + `feat:`) → still skipped;
+- the real #955 shape (four `fix:` + one `test:`) → `bug`, not a skip;
+- an all-`chore` PR (`ci:` + `test:`) → `chore`;
+- genuinely disagreeing commits (`fix:` + `feat:`) → still skipped;
 - no commits and no title prefix → still skipped;
 - a recognisable title is NOT overridden by its commits.
 

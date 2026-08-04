@@ -59,9 +59,28 @@ tells you exactly what to change:
   every pull request. Windows runs at the shipping boundary — on promotion to
   `main` or `preview` — so a slow or flaky Windows runner cannot decide when your
   pull request turns green.
+  This runs for **every** pull request, whatever its base branch — including a
+  stacked child whose base is another open PR's head. The `paths:` filter, not
+  the base branch, decides whether the jobs run at all: a PR touching only docs
+  or `devlog/` queues nothing.
+
+- **Type label.** The `label` check derives `bug` / `enhancement` /
+  `documentation` / `chore` from your PR title. A title without a recognisable
+  prefix (`stack 3/5: …`) falls back to the PR's commits, which usually stay
+  conventional; `chore`-family commits (`test:`, `ci:`, `refactor:`) do not
+  outvote a `fix:` or `feat:`. A PR that genuinely mixes types is left
+  unlabeled rather than guessed, and a label a human sets is never overwritten.
 
 CodeRabbit reviews every PR and its findings are advisory. Address what it gets
 right; say why when it is wrong. It does not block a merge.
+
+### When a workflow change takes effect
+
+`enforce-target` and `label` run on `pull_request_target`, which GitHub always
+loads from the repository **default branch**. A change to either takes effect
+only after it is promoted to `main` — merging it to `dev` does not change live
+behavior. The cross-platform CI workflow runs on `pull_request` and takes effect
+as soon as it is on the branch being targeted.
 
 ## Sponsored surfaces
 
