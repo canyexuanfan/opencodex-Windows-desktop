@@ -426,9 +426,9 @@ describe("Codex catalog sync hardening", () => {
             liveModels: false
           }
         },
-        disabledModels: ["gpt-5.4"],
+        disabledModels: ["gpt-5.4", "team/gpt-5.5"],
         codexAccounts: [{ id: "stored-side-account", isMain: false }],
-        codexAccountNamespaces: { team: "stored-side-account" }
+        codexAccountNamespaces: { desktop: "@main", team: "stored-side-account" }
       }).then(res => console.log(JSON.stringify(res)));
     `);
     expect(r.status).toBe(0);
@@ -441,6 +441,10 @@ describe("Codex catalog sync hardening", () => {
     expect(rows.find(row => row.slug === "gpt-5.5")?.visibility).toBe("hide");
     // Generated rows recover from stale bare visibility, but still honor explicit native disables.
     expect(rows.find(row => row.slug === "team/gpt-5.5")).toMatchObject({
+      visibility: "hide",
+      opencodex_catalog_kind: "account-selector-v1",
+    });
+    expect(rows.find(row => row.slug === "desktop/gpt-5.5")).toMatchObject({
       visibility: "list",
       opencodex_catalog_kind: "account-selector-v1",
     });

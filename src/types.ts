@@ -644,10 +644,10 @@ export interface OcxConfig {
    */
   subagentEffortCap?: string;
   /**
-   * Models hidden from Codex. Routed ids are namespaced ("<provider>/<model>") and are excluded
-   * from the catalog + /v1/models entirely. BARE ids (no "/") are native GPT passthrough slugs:
-   * their catalog entries flip to visibility "hide" (entry preserved, picker-hidden) and they
-   * are omitted from the bare /v1/models list.
+   * Models hidden from Codex discovery without blocking direct proxy calls. Routed provider ids
+   * are excluded from the catalog + /v1/models entirely. Account-qualified native ids hide only
+   * their generated selector row and are omitted from raw /v1/models. BARE native GPT ids hide
+   * the bare row plus every generated selector row and omit that model family from raw discovery.
    */
   disabledModels?: string[];
   /** 사용자가 대시보드에서 직접 추가한 커스텀 모델 목록. */

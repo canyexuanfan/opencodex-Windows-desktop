@@ -20,6 +20,12 @@ import {
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { clearAccountNeedsReauth, markAccountNeedsReauth } from "../src/codex/account-runtime-state";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
+import {
+  canAcquireCodexQuotaProbeLease,
+  clearCodexUpstreamHealthForAccount,
+  CODEX_QUOTA_PROBE_INTERVAL_MS,
+  recordCodexUpstreamOutcome,
+} from "../src/codex/routing";
 import type { OcxConfig } from "../src/types";
 
 // beforeEach writes three Codex credentials (NTFS ACL harden on Windows). Under
@@ -104,6 +110,9 @@ afterEach(() => {
   clearAccountNeedsReauth("account-a");
   clearAccountNeedsReauth("account-b");
   clearAccountNeedsReauth("main");
+  clearCodexUpstreamHealthForAccount("pool-a");
+  clearCodexUpstreamHealthForAccount("account-a");
+  clearCodexUpstreamHealthForAccount("account-b");
   rmSync(testDir, { recursive: true, force: true });
 }, { timeout: 30_000 });
 
@@ -189,12 +198,79 @@ describe("subagent model fallback chain", () => {
     });
   });
 
+  test("account selector fallback skips a model-scoped cooldown on its fixed account", () => {
+    const now = 1_800_000_000_000;
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/gpt-5.5", "kimi/k3"],
+    });
+    recordCodexUpstreamOutcome(config, "account-a", 429, {
+      fixedAccount: true,
+      modelId: "gpt-5.5",
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", now + 1)).toEqual({
+      model: "kimi/k3",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol", "team/gpt-5.5"],
+    });
+  });
+
+  test("account selector fallback never uses Pool's account-wide cooldown probe", () => {
+    const now = 1_800_000_000_000;
+    const probeAt = now + CODEX_QUOTA_PROBE_INTERVAL_MS + 1;
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/gpt-5.5", "kimi/k3"],
+    });
+    recordCodexUpstreamOutcome(config, "account-a", 429, {
+      fixedAccount: true,
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(canAcquireCodexQuotaProbeLease("account-a", probeAt)).toBe(true);
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", probeAt)).toEqual({
+      model: "kimi/k3",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol", "team/gpt-5.5"],
+    });
+  });
+
+  test("account selector fallback ignores cooldowns for an unrelated quota scope", () => {
+    const now = 1_800_000_000_000;
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/gpt-5.5", "kimi/k3"],
+    });
+    recordCodexUpstreamOutcome(config, "account-a", 429, {
+      fixedAccount: true,
+      modelId: "gpt-5.3-codex-spark",
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", now + 1)).toEqual({
+      model: "team/gpt-5.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
   test("account selector fallbacks still reject invalid or disabled native models", () => {
     resetSubagentModelFallbackStateForTests();
     updateAccountQuota("pool-a", 95, undefined, 20);
     updateAccountQuota("account-a", 10, undefined, 20);
     const config = cfg({
-      codexAccountNamespaces: { team: "account-a" },
+      codexAccountNamespaces: { team: "account-a", other: "account-b" },
       subagentModelFallback: ["team/claude-opus-4-6", "kimi/k3"],
     });
 
@@ -213,6 +289,16 @@ describe("subagent model fallback chain", () => {
       { ...config, disabledModels: ["openai/gpt-5.5"] },
       "pool-a",
     )).toBe(true);
+    expect(isSubagentModelUnavailable(
+      "team/gpt-5.5",
+      { ...config, disabledModels: ["team/gpt-5.5"] },
+      "pool-a",
+    )).toBe(true);
+    expect(isSubagentModelUnavailable(
+      "other/gpt-5.5",
+      { ...config, disabledModels: ["team/gpt-5.5"] },
+      "pool-a",
+    )).toBe(false);
   });
 
   test("noteSubagentModelFailure treats numeric 429 as quota-like", () => {

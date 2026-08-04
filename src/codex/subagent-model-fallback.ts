@@ -15,7 +15,9 @@ import { CODEX_HOME, getCodexHome } from "./paths";
 import { CODEX_UNKNOWN_USAGE_SCORE, getAccountQuota } from "./quota";
 import {
   canAcquireCodexQuotaProbeLease,
+  codexQuotaScopeForModel,
   computeCodexUsageScore,
+  getCodexQuotaHealthSnapshot,
   getPoolAccountPlan,
   isCodexAccountInCooldown,
 } from "./routing";
@@ -216,7 +218,13 @@ export function isSubagentModelUnavailable(
   if (!resolvedAccountId) return true;
   if (isCodexAccountPaused(config, resolvedAccountId)) return true;
   if (!isCodexAccountUsable(config, resolvedAccountId, accountUsabilityOptions)) return true;
-  if (
+  if (route.codexAccountId !== undefined) {
+    // An account-qualified route is pinned and cannot consume Pool's recovery-probe
+    // escape hatch. Honor both account-wide and model-scoped cooldowns so fallback
+    // advances instead of selecting a candidate that exact auth will reject.
+    const quotaScope = codexQuotaScopeForModel(route.modelId);
+    if (getCodexQuotaHealthSnapshot(resolvedAccountId, quotaScope, now) !== null) return true;
+  } else if (
     isCodexAccountInCooldown(resolvedAccountId, now)
     && !canAcquireCodexQuotaProbeLease(resolvedAccountId, now)
   ) {

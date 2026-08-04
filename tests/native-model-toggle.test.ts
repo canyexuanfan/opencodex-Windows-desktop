@@ -100,6 +100,28 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(entries.every(entry => Number.isInteger(entry.priority))).toBe(true);
   });
 
+  test("exact account disables hide only the matching generated picker row", () => {
+    const entries = buildCatalogEntries(
+      nativeTemplate(),
+      ["gpt-5.5"],
+      [],
+      [],
+      false,
+      "default",
+      new Set(),
+      ["desktop", "team"],
+    );
+    applyNativeVisibility(entries, new Set(["team/gpt-5.5"]), true);
+
+    expect(entries.find(entry => entry.slug === "gpt-5.5")?.visibility).toBe("hide");
+    expect(entries.find(entry => entry.slug === "desktop/gpt-5.5")?.visibility).toBe("list");
+    expect(entries.find(entry => entry.slug === "team/gpt-5.5")?.visibility).toBe("hide");
+
+    const untrusted = [{ slug: "team/gpt-5.5", visibility: "list" }];
+    applyNativeVisibility(untrusted, new Set(["team/gpt-5.5"]), true);
+    expect(untrusted[0]?.visibility).toBe("list");
+  });
+
   test("featured routed rows follow complete account-qualified priority groups", () => {
     const entries = buildCatalogEntries(
       nativeTemplate(),

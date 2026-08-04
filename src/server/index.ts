@@ -575,6 +575,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
         const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
         const nativeSlugs = includeNativeOpenAi ? nativeOpenAiSlugs() : [];
         const disabledNatives = disabledNativeSlugs(config);
+        const disabledModels = new Set(config.disabledModels ?? []);
         const accountSelectors = includeAccountBoundNativeOpenAi
           ? visibleCodexAccountSelectors(config)
           : [];
@@ -631,7 +632,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           return jsonResponse({
             models: applyNativeVisibility(
               entries,
-              disabledNatives,
+              disabledModels,
               accountSelectors.length > 0,
             ),
           }, 200, req, config);
@@ -682,10 +683,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           ? accountSelectors.length > 0 ? selectorNativeSlugs : visibleNativeSlugs(config)
           : [];
         const visibleAccountNatives = accountSelectors.flatMap(selector =>
-          selectorNativeSlugs.map(metadataId => ({
-            id: `${selector}/${metadataId}`,
-            metadataId,
-          }))
+          selectorNativeSlugs.flatMap(metadataId => {
+            const id = `${selector}/${metadataId}`;
+            return disabledModels.has(id) ? [] : [{ id, metadataId }];
+          })
         );
         const data = [
           ...visibleNatives.map(id => nativeModelRow(id)),

@@ -9,8 +9,9 @@
   (`src/codex/data/upstream-models.json` — exact per-slug ladders: luna has no ultra);
 - clones a native template for routed `provider/model` entries;
 - forces strict Codex catalog fields required by the current parser;
-- hides `disabledModels` (routed namespaced ids are excluded; BARE native slugs flip the
-  catalog entry to `visibility: "hide"` and drop from the bare `/v1/models` list);
+- hides `disabledModels` without blocking direct routing (routed provider ids are excluded;
+  account-qualified native ids hide only that selector row; BARE native slugs hide the bare row
+  and all account-selector clones and drop that model family from raw `/v1/models`);
 - applies exact provider/model compatibility exclusions after live discovery and metadata
   augmentation, so upstream-advertised but uncallable rows never enter dashboard or Codex pickers;
 - strips native-only service tier and WebSocket metadata unless explicitly enabled;
@@ -64,6 +65,10 @@ Pool mode routes across main plus added Codex credentials. Key rules:
   which maps to the config-only sentinel `@main`; the sentinel deliberately sits outside the
   pool-account id grammar. Selectors must not collide with provider or combo ids
   (`src/codex/account-namespaces.ts`, `src/codex/account-namespace-match.ts`).
+- **Selector labels carry no account-role semantics.** When at least one selector is advertisable,
+  the Codex catalog clones each supported native row per selector and hides the bare picker rows;
+  bare ids remain routable and stay in raw `/v1/models` unless explicitly disabled. Missing stored
+  account targets are not advertised, and private account ids never become catalog labels.
 - **Rotation is sticky.** A conversation stays on its selected account while that account is
   usable; failure moves it, success does not (`src/codex/pool-rotation.ts`).
 - **The credential store is generation-guarded.** A refresh takes a lock and persists only if the

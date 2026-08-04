@@ -67,7 +67,7 @@ describe("Codex catalog restore", () => {
     const catalogPath = join(codexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
     writeFileSync(join(opencodexHome, "config.json"), JSON.stringify({
-      disabledModels: ["gpt-5.4"],
+      disabledModels: ["gpt-5.4", "desktop/gpt-5.5"],
     }), "utf8");
     writeFileSync(catalogPath, JSON.stringify({
       models: [
@@ -78,6 +78,11 @@ describe("Codex catalog restore", () => {
         {
           slug: "team/gpt-5.5",
           visibility: "list",
+          opencodex_catalog_kind: "account-selector-v1",
+        },
+        {
+          slug: "desktop/gpt-5.5",
+          visibility: "hide",
           opencodex_catalog_kind: "account-selector-v1",
         },
         {
@@ -98,7 +103,7 @@ describe("Codex catalog restore", () => {
 
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout)).toEqual({
-      first: { removed: 3, kept: 4, path: catalogPath },
+      first: { removed: 4, kept: 4, path: catalogPath },
       second: { removed: 0, kept: 4, path: catalogPath },
     });
     const restored = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<Record<string, unknown>>;

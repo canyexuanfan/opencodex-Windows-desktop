@@ -32,7 +32,7 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 
 import { activeCodexModelsCachePath, applyJawcodeCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, catalogModelSlug, ensureCatalogBackup, ensureStrictCatalogFields, findNativeTemplate, isRoutedModelCompatibilityExcluded, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readNativeBaseline } from "./parsing";
 import type { CatalogModel, MultiAgentMode, RawEntry } from "./parsing";
-import { applyNativeVisibility, disabledNativeSlugs, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
+import { applyNativeVisibility, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
 import { loadCatalogForSync, resetBundledCatalogCacheForTests } from "./bundled";
 import { isMultiAgentV2Enabled } from "../features";
 import { applyCatalogModelMetadata, applyReasoningLevels, catalogEntryEfforts, clampCatalogModelsToCodexSupport, ensureGpt56ReasoningLevels, ensureUltraReasoningLevel, isGpt56NativeSlug } from "./effort";
@@ -408,7 +408,7 @@ export function mergeCatalogEntriesForSync(
   wsEnabled: boolean,
   goIds: Set<string> = new Set(),
   template: RawEntry | null = null,
-  disabledNative: Set<string> = new Set(),
+  disabledModels: ReadonlySet<string> = new Set(),
   gatheredProviderNames: Set<string> = new Set(routedEntries.flatMap(entry => {
     const slug = typeof entry.slug === "string" ? entry.slug : "";
     const slash = slug.indexOf("/");
@@ -584,10 +584,11 @@ export function mergeCatalogEntriesForSync(
     }
     return e;
   });
-  // Native enable/disable (single choke point: bare slugs in `disabledModels`). Runs as the
-  // LAST pass so the upstream-upgrade branch above can never clobber a hide flag back to list.
+  // Native enable/disable runs as the LAST pass so the upstream-upgrade branch above can never
+  // clobber a hide flag back to list. Bare ids disable every account clone; qualified ids disable
+  // only their generated account row.
   return applyMultiAgentMode(
-    applyNativeVisibility(mergedEntries, disabledNative, alignedAccountBoundEntries.length > 0),
+    applyNativeVisibility(mergedEntries, disabledModels, alignedAccountBoundEntries.length > 0),
     multiAgentMode,
     isMultiAgentV2Enabled(),
   );
@@ -679,7 +680,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{
     wsEnabled,
     goIds,
     template,
-    disabledNativeSlugs(config),
+    new Set(config.disabledModels ?? []),
     gatheredProviderNames,
     multiAgentMode,
     exactComboSlugs,
@@ -698,12 +699,18 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{
   };
 }
 
-function visibleAccountReplacementNatives(models: readonly RawEntry[]): Map<string, boolean> {
+function visibleAccountReplacementNatives(
+  models: readonly RawEntry[],
+  disabledModels: ReadonlySet<string> | null,
+): Map<string, boolean> {
   const replacements = new Map<string, boolean>();
   for (const entry of models) {
     const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry);
     if (nativeSlug === undefined || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(nativeSlug)) continue;
-    const visible = entry.visibility === "list";
+    const exactSlug = typeof entry.slug === "string" ? entry.slug : "";
+    const visible = entry.visibility === "list"
+      || (disabledModels !== null
+        && (disabledModels.has(nativeSlug) || disabledModels.has(exactSlug)));
     replacements.set(nativeSlug, (replacements.get(nativeSlug) ?? true) && visible);
   }
   return replacements;
@@ -712,7 +719,7 @@ function visibleAccountReplacementNatives(models: readonly RawEntry[]): Map<stri
 function restoreAccountHiddenBareNatives(
   entries: readonly RawEntry[],
   replacementVisibility: ReadonlyMap<string, boolean>,
-  disabledNative: ReadonlySet<string> | null,
+  disabledModels: ReadonlySet<string> | null,
 ): RawEntry[] {
   return entries.map(entry => {
     const slug = typeof entry.slug === "string" ? entry.slug : "";
@@ -720,8 +727,8 @@ function restoreAccountHiddenBareNatives(
       entry.visibility !== "hide"
       || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)
       || replacementVisibility.get(slug) !== true
-      || disabledNative === null
-      || disabledNative.has(slug)
+      || disabledModels === null
+      || disabledModels.has(slug)
     ) {
       return entry;
     }
@@ -729,11 +736,11 @@ function restoreAccountHiddenBareNatives(
   });
 }
 
-function currentDisabledNativeSlugsForRestore(): Set<string> | null {
+function currentDisabledModelsForRestore(): Set<string> | null {
   try {
     const diagnostics = readConfigDiagnostics();
     if (diagnostics.source === "fallback" || diagnostics.error !== null) return null;
-    return disabledNativeSlugs(diagnostics.config);
+    return new Set(diagnostics.config.disabledModels ?? []);
   } catch {
     // An unreadable config cannot safely authorize a visibility change during restore.
     return null;
@@ -744,8 +751,8 @@ export function restoreCodexCatalog(): { removed: number; kept: number; path: st
   const catalogPath = readCodexCatalogPath();
   const catalog = readCatalog(catalogPath);
   if (!catalog || !Array.isArray(catalog.models)) return { removed: 0, kept: 0, path: catalogPath };
-  const replacementVisibility = visibleAccountReplacementNatives(catalog.models);
-  const disabledNative = currentDisabledNativeSlugsForRestore();
+  const disabledModels = currentDisabledModelsForRestore();
+  const replacementVisibility = visibleAccountReplacementNatives(catalog.models, disabledModels);
   const backup = readCatalogBackup(catalogPath);
   if (backup && Array.isArray(backup.models)) {
     const removed = (catalog.models ?? []).filter(m => typeof m.slug === "string" && m.slug.includes("/")).length;
@@ -755,7 +762,7 @@ export function restoreCodexCatalog(): { removed: number; kept: number; path: st
         typeof m.slug === "string" && !m.slug.includes("/") && !backupSlugs.has(m.slug)
       ),
       replacementVisibility,
-      disabledNative,
+      disabledModels,
     );
     const restored = {
       ...backup,
@@ -768,7 +775,7 @@ export function restoreCodexCatalog(): { removed: number; kept: number; path: st
   const native = restoreAccountHiddenBareNatives(
     catalog.models.filter(m => !(typeof m.slug === "string" && m.slug.includes("/"))),
     replacementVisibility,
-    disabledNative,
+    disabledModels,
   );
   const removed = before - native.length;
   if (removed > 0) {

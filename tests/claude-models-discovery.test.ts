@@ -156,7 +156,7 @@ test("OpenAI list shape and Codex catalog shape stay unchanged", async () => {
   }
 });
 
-test("configured account selectors appear in OpenAI and Codex discovery without private ids", async () => {
+test("exact account disables affect only the matching OpenAI and Codex discovery row", async () => {
   const config = configWithStaticModels();
   config.providers.openai = {
     adapter: "openai-responses",
@@ -174,6 +174,7 @@ test("configured account selectors appear in OpenAI and Codex discovery without 
     team: "stored-side-account",
     removed: "missing-account",
   };
+  config.disabledModels = ["team/gpt-5.5"];
   saveConfig(config);
   const server = startServer(0);
   try {
@@ -183,9 +184,9 @@ test("configured account selectors appear in OpenAI and Codex discovery without 
     const plainIds = plain.data.map(model => model.id);
     expect(plainIds).toContain("gpt-5.5");
     expect(plainIds).toContain("desktop/gpt-5.5");
-    expect(plainIds).toContain("team/gpt-5.5");
+    expect(plainIds).not.toContain("team/gpt-5.5");
     expect(plainIds.some(id => id.startsWith("removed/"))).toBe(false);
-    expect(plain.data.find(model => model.id === "team/gpt-5.5")?.reasoning_efforts)
+    expect(plain.data.find(model => model.id === "desktop/gpt-5.5")?.reasoning_efforts)
       .toEqual(plain.data.find(model => model.id === "gpt-5.5")?.reasoning_efforts);
 
     const catalog = await fetch(new URL("/v1/models?client_version=1.0.0", server.url))
@@ -195,7 +196,7 @@ test("configured account selectors appear in OpenAI and Codex discovery without 
     expect(catalog.models.find(model => model.slug === "gpt-5.5")?.visibility).toBe("hide");
     expect(catalog.models.find(model => model.slug === "desktop/gpt-5.5"))
       .toMatchObject({ display_name: "desktop / 5.5", visibility: "list" });
-    expect(catalog.models.find(model => model.slug === "team/gpt-5.5")?.visibility).toBe("list");
+    expect(catalog.models.find(model => model.slug === "team/gpt-5.5")?.visibility).toBe("hide");
     expect(catalog.models.some(model => model.slug.startsWith("removed/"))).toBe(false);
     for (const privateValue of ["stored-side-account", "private@example.test", "Private Display Name"]) {
       expect(JSON.stringify(catalog)).not.toContain(privateValue);
