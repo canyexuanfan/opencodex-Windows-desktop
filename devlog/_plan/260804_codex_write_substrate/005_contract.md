@@ -1026,8 +1026,15 @@ The in-flight owner stores `{ authority, promise }`, not a bare promise. Its pri
 bucket is `authorityId`, but joining additionally requires exact equality of the
 deep-frozen component identities; a mismatch or collision starts a distinct admitted
 flight (or returns typed busy when the admission gate is full). The flight receives
-the captured config/auth/native/source/process snapshots as arguments and may not
-re-resolve them after claiming its slot. `GatherFlightResult` carries the exact
+the captured config/auth/discovery-policy/native/source/process snapshots as
+arguments and may not re-resolve them after claiming its slot. That prohibition binds
+the whole post-await tail, not only the join decision: round 8 found
+`augmentRoutedModelsWithRegistryOpenAiApiRows` re-reading the registry after the
+network await (`src/codex/catalog/provider-fetch.ts:955-961`), so a flight can key and
+carry its authority honestly and still emit bytes derived from a policy that changed
+while it waited. Every downstream augmentation input — including the
+registry-transport match outcome that decides whether trusted OpenAI rows are added —
+is passed in from the captured snapshot. `GatherFlightResult` carries the exact
 authority identity that produced its models and omissions. Before candidate
 construction, every caller compares that result identity with its own expected
 identity. Inequality discards the result and returns retryable `stale` or regathers
