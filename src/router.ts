@@ -30,6 +30,7 @@ import {
 import { getRoutingProfile, resolvePolicyProfileId } from "./routing/profile";
 import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/evaluator";
 import { candidateCapabilityEvidence } from "./routing/capability";
+import { healthEvidenceForCandidate } from "./routing/health";
 
 export class NoEligiblePolicyCandidateError extends Error {
   constructor(readonly profileId: string) {
@@ -448,6 +449,10 @@ function routeModelInternal(
       provider: candidate.provider,
       model: candidate.model,
       capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
+      health: healthEvidenceForCandidate({
+        provider: candidate.provider,
+        model: candidate.model,
+      }),
     }));
     const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence);
     if (evaluation.selectedIndex === null) {

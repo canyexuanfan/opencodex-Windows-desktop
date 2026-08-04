@@ -44,7 +44,7 @@ other; closing one is a maintainer decision and neither is stale.
 | RI-03 | `feat/ri-03-routing-analytics` | `7efb6e842` (RI-02 head) | pending | pending | pending | in progress |
 | RI-04 | `feat/ri-04-policy-profile-core` | `2069e724e` (RI-03 head) | pending | pending | pending | in progress |
 | RI-05 | `feat/ri-05-capability-aware-routing` | `00e1c4ae5` (RI-04 head) | pending | pending | pending | in progress |
-| RI-06 | `feat/ri-06-health-aware-routing` | `feat/ri-05` head | pending | pending | pending | queued |
+| RI-06 | `feat/ri-06-health-aware-routing` | `56f17f45c` (RI-05 head) | pending | pending | pending | in progress |
 | RI-07 | `feat/ri-07-quota-aware-routing` | `feat/ri-06` head | pending | pending | pending | queued |
 | RI-08 | `feat/ri-08-cost-aware-routing` | `feat/ri-07` head | pending | pending | pending | queued |
 | RI-09 | `feat/ri-09-route-explainability-api` | `feat/ri-08` head | pending | pending | pending | queued |
@@ -180,3 +180,38 @@ other; closing one is a maintainer decision and neither is stale.
     e2e + codex-routing)
   - `bun run privacy:scan`: passed
 - Remaining Low findings: none
+
+### RI-06 - feat/ri-06-health-aware-routing
+
+- Base SHA: `56f17f45c4705762c5783365366962bd5e5bd5e9` (RI-05 head)
+- Reviewed commit: same as final (author self-review before push)
+- Findings (self-review): 4 fixed pre-push -
+  1. route-time health evidence needed synchronous index access; the indexer
+     refresh is now a sync core (`openRequestHistoryIndexSync`) with the async
+     single-flight wrapper around it;
+  2. unknown-health "penalize" now folds a deterministic floor (0.3) into the
+     score instead of silently skipping the component;
+  3. trace candidates now carry capability/health/quota/cost evidence;
+  4. score assertions in RI-04/RI-05 tests updated for the new health
+     component (behavioral change by design).
+- Final commit: pending (recorded after commit)
+- PR: pending
+- Verification:
+  - `bun x tsc --noEmit`: PASSED (0 errors)
+  - `bun run test tests/health-scoring.test.ts`: 9/9 pass - historical
+    evidence (success rate, consecutive failures, latency, samples),
+    cancellation/invalid-request neutrality, incomplete streams, low-sample
+    confidence, hard-cooldown authority + exclusion, unknown-health policy,
+    score component + trace evidence, health-driven selection, execution path
+  - Focused regression suites: 196/196 pass across 8 files
+  - `bun run privacy:scan`: passed
+- Remaining Low findings: none
+
+## Baseline note
+
+The full-suite baseline on this Windows machine did not complete within the
+available window (background run, >3h, no summary emitted; the suite is
+~8k tests and this machine is heavily loaded). Focused suites, typecheck and
+privacy:scan pass per PR; the upstream PR #966 verification report records
+~7941 pass / 10 environmental failures on clean dev. A final full-suite
+attempt is scheduled at stack end.

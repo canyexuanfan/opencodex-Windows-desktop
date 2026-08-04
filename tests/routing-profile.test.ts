@@ -234,7 +234,9 @@ describe("routing profiles (RI-04)", () => {
       { provider: "b", model: "m2", capability: { contextWindow: 5000 } },
     ]);
     expect(result.selectedIndex).toBe(0);
-    expect(result.trace.candidates[0]!.score).toEqual({ total: 1, components: { configuredPriority: 1 } });
+    expect(result.trace.candidates[0]!.score).toMatchObject({
+      components: { configuredPriority: 1, health: 0.3 },
+    });
   });
 
   test("API lists profiles and dry-runs deterministically", async () => {

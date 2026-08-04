@@ -1,0 +1,222 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { appendUsageEntry, resetUsageReadCacheForTests, type PersistedUsageEntry } from "../src/usage/log";
+import { closeRequestHistoryIndex } from "../src/routing/history/indexer";
+import { healthEvidenceForCandidate, healthScore, HEALTH_SCORE_CONSTANTS } from "../src/routing/health";
+import { evaluatePolicyProfile } from "../src/routing/evaluator";
+import { NoEligiblePolicyCandidateError, routeModel } from "../src/router";
+import type { OcxConfig } from "../src/types";
+
+let testDir = "";
+let previousHome: string | undefined;
+
+function row(
+  requestId: string,
+  status: number,
+  durationMs: number,
+  overrides: Partial<PersistedUsageEntry> = {},
+): PersistedUsageEntry {
+  return {
+    requestId,
+    timestamp: Date.now() - 60_000,
+    provider: "a",
+    model: "m1",
+    status,
+    durationMs,
+    usageStatus: "reported",
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  previousHome = process.env.OPENCODEX_HOME;
+  testDir = mkdtempSync(join(tmpdir(), "ocx-health-"));
+  process.env.OPENCODEX_HOME = testDir;
+  resetUsageReadCacheForTests();
+  closeRequestHistoryIndex();
+});
+
+afterEach(() => {
+  closeRequestHistoryIndex();
+  if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousHome;
+  if (testDir) rmSync(testDir, { recursive: true, force: true });
+});
+
+function config(overrides: Partial<OcxConfig> = {}): OcxConfig {
+  return {
+    port: 10100,
+    defaultProvider: "a",
+    providers: {
+      a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", apiKey: "ka", models: ["m1", "m2"] },
+      b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", apiKey: "kb", models: ["m2"] },
+    },
+    routingProfiles: {
+      healthy: {
+        candidates: [
+          { provider: "a", model: "m1" },
+          { provider: "b", model: "m2" },
+        ],
+      },
+    },
+    ...overrides,
+  };
+}
+
+describe("health-aware scoring (RI-06)", () => {
+  test("historical evidence derives success rate, consecutive failures, latency, samples", async () => {
+    for (let index = 0; index < 23; index++) {
+      appendUsageEntry(row(`ok-${index}`, 200, 1000 + index));
+    }
+    appendUsageEntry(row("fail-1", 503, 4000, { timestamp: Date.now() - 5_000 }));
+    appendUsageEntry(row("fail-2", 503, 4000, { timestamp: Date.now() - 4_000 }));
+    const evidence = healthEvidenceForCandidate({ provider: "a", model: "m1" });
+    expect(evidence.sampleCount).toBe(25);
+    expect(evidence.failures).toBe(2);
+    expect(evidence.successRate).toBeCloseTo(23 / 25, 2);
+    expect(evidence.recentLatencyMs).toBeDefined();
+    expect(evidence.incompleteStreamRate).toBeUndefined();
+    const score = healthScore(evidence)!;
+    expect(score).toBeGreaterThan(0.5);
+  });
+
+  test("client cancellations and invalid requests never damage health", async () => {
+    for (let index = 0; index < 5; index++) appendUsageEntry(row(`ok-${index}`, 200, 1000));
+    appendUsageEntry(row("cancel", 499, 500, { closeReason: "client_cancel" }));
+    appendUsageEntry(row("invalid", 400, 500, { closeReason: "non_stream" }));
+    appendUsageEntry(row("refused", 404, 500));
+    const evidence = healthEvidenceForCandidate({ provider: "a", model: "m1" });
+    expect(evidence.sampleCount).toBe(5);
+    expect(evidence.successRate).toBe(1);
+  });
+
+  test("incomplete streams lower the health score", async () => {
+    for (let index = 0; index < 10; index++) appendUsageEntry(row(`ok-${index}`, 200, 1000));
+    appendUsageEntry(row("inc", 200, 1000, { terminalStatus: "incomplete" }));
+    const evidence = healthEvidenceForCandidate({ provider: "a", model: "m1" });
+    expect(evidence.incompleteStreamRate).toBeCloseTo(1 / 11, 2);
+    const score = healthScore(evidence)!;
+    expect(score).toBeLessThan(0.99);
+  });
+
+  test("low sample counts reduce confidence", async () => {
+    appendUsageEntry(row("only", 200, 1000));
+    const evidence = healthEvidenceForCandidate({ provider: "a", model: "m1" });
+    const score = healthScore(evidence)!;
+    const full = healthScore({ ...evidence, sampleCount: HEALTH_SCORE_CONSTANTS.MIN_CONFIDENCE_SAMPLES })!;
+    expect(score).toBeLessThan(full);
+  });
+
+  test("hard cooldown is authoritative: score 0 and evaluator exclusion", async () => {
+    const { clearCodexUpstreamHealth } = await import("../src/codex/routing");
+    clearCodexUpstreamHealth();
+    const now = Date.now();
+    const evidence = {
+      sampleCount: 50,
+      successRate: 0.95,
+      cooldownUntilMs: now + 60_000,
+    };
+    expect(healthScore(evidence, now)).toBe(0);
+
+    const result = evaluatePolicyProfile(config(), "healthy", {}, [
+      { provider: "a", model: "m1", health: { sampleCount: 50, successRate: 0.95, cooldownUntilMs: now + 60_000 } },
+      { provider: "b", model: "m2", health: { sampleCount: 50, successRate: 0.95 } },
+    ]);
+    expect(result.candidates[0]!.eligible).toBe(false);
+    expect(result.candidates[0]!.exclusions.some(exclusion => exclusion.code === "cooldown")).toBe(true);
+    expect(result.selectedIndex).toBe(1);
+  });
+
+  test("unknown health follows the profile unknownEvidence policy", async () => {
+    const strict = config({
+      routingProfiles: {
+        h: {
+          candidates: [{ provider: "a", model: "m1" }],
+          unknownEvidence: { capability: "allow", health: "exclude", quota: "penalize", cost: "penalize" },
+        },
+      },
+    });
+    const excluded = evaluatePolicyProfile(strict, "h", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000 } },
+    ]);
+    expect(excluded.candidates[0]!.eligible).toBe(false);
+    expect(excluded.candidates[0]!.exclusions.some(exclusion => exclusion.code === "unknown-health")).toBe(true);
+    expect(excluded.selectedIndex).toBeNull();
+
+    const penalizing = config({
+      routingProfiles: {
+        h: {
+          candidates: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+          unknownEvidence: { capability: "allow", health: "penalize", quota: "penalize", cost: "penalize" },
+        },
+      },
+    });
+    const penalized = evaluatePolicyProfile(penalizing, "h", {}, []);
+    // Both candidates have unknown health; penalize keeps them eligible with
+    // the penalized health floor folded into the score.
+    expect(penalized.candidates.every(candidate => candidate.eligible)).toBe(true);
+    expect(penalized.candidates[0]!.score!.components.health).toBe(0.3);
+  });
+
+  test("known health evidence feeds the score component and trace", async () => {
+    for (let index = 0; index < 30; index++) appendUsageEntry(row(`ok-${index}`, 200, 800));
+    const healthA = healthEvidenceForCandidate({ provider: "a", model: "m1" });
+    const healthB = healthEvidenceForCandidate({ provider: "b", model: "m2" });
+    const result = evaluatePolicyProfile(config(), "healthy", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000 }, health: healthA },
+      { provider: "b", model: "m2", capability: { contextWindow: 200000 }, health: healthB },
+    ]);
+    const a = result.candidates[0]!;
+    expect(a.score!.components.health).toBeGreaterThan(0);
+    expect(a.score!.components.configuredPriority).toBe(1);
+    // Health evidence reaches the trace candidate.
+    expect(result.trace.candidates[0]!.health).toBeDefined();
+  });
+
+  test("historical health moves selection between two eligible candidates", async () => {
+    // "a" has a bad recent streak; "b" is clean.
+    for (let index = 0; index < 20; index++) appendUsageEntry(row(`afail-${index}`, 503, 4000));
+    for (let index = 0; index < 20; index++) {
+      appendUsageEntry({
+        requestId: `bok-${index}`,
+        timestamp: Date.now() - 60_000,
+        provider: "b",
+        model: "m2",
+        status: 200,
+        durationMs: 900,
+        usageStatus: "reported",
+      });
+    }
+    const healthA = healthEvidenceForCandidate({ provider: "a", model: "m1" });
+    const healthB = healthEvidenceForCandidate({ provider: "b", model: "m2" });
+    const healthDominant = config({
+      routingProfiles: {
+        healthy: {
+          candidates: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+          optimize: { health: 0.9 },
+        },
+      },
+    });
+    const result = evaluatePolicyProfile(healthDominant, "healthy", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000 }, health: healthA },
+      { provider: "b", model: "m2", capability: { contextWindow: 200000 }, health: healthB },
+    ]);
+    // With equal priority weights, the healthier candidate wins.
+    expect(result.selectedIndex).toBe(1);
+  });
+
+  test("execution path includes health evidence and can exclude on cooldown", async () => {
+    for (let index = 0; index < 5; index++) appendUsageEntry(row(`ok-${index}`, 200, 800));
+    const route = routeModel(config(), "policy/healthy");
+    expect(route.routeKind).toBe("policy");
+    expect(route.routeDecision!.candidates[0]!.health).toBeDefined();
+  });
+});

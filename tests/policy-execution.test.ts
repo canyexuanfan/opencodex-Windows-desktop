@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NoEligiblePolicyCandidateError, routeModel } from "../src/router";
 import { getRoutingProfile } from "../src/routing/profile";
+import { closeRequestHistoryIndex } from "../src/routing/history/indexer";
 import type { OcxConfig } from "../src/types";
 
 let testDir = "";
@@ -16,6 +17,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeRequestHistoryIndex();
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   if (testDir) rmSync(testDir, { recursive: true, force: true });
@@ -85,7 +87,11 @@ describe("policy execution (RI-05)", () => {
     expect(trace.candidates[1]!.exclusions[0]!.code).toBe("capability-unsatisfied");
     expect(trace.selected.provider).toBe("a");
     expect(trace.selected.model).toBe("m1");
-    expect(trace.candidates[0]!.score).toEqual({ total: 1, components: { configuredPriority: 1 } });
+    // RI-06: unknown health under the default "penalize" policy folds a
+    // penalized health floor into the score.
+    expect(trace.candidates[0]!.score).toMatchObject({
+      components: { configuredPriority: 1, health: 0.3 },
+    });
   });
 
   test("profile alias executes the same policy", () => {

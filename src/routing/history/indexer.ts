@@ -393,7 +393,7 @@ function fullRebuild(dbHandle: Database, reason: string): void {
   setMeta(dbHandle, HISTORY_META_KEYS.builtAtMs, Date.now());
 }
 
-async function refreshLocked(): Promise<RequestHistoryIndexMeta> {
+function refreshLockedSync(): RequestHistoryIndexMeta {
   openIndexDb();
   const state = ensureSchemaAndIdentity(db!);
   const handle = db!;
@@ -420,6 +420,11 @@ async function refreshLocked(): Promise<RequestHistoryIndexMeta> {
   return metaFor(handle);
 }
 
+/** Synchronous refresh for routing-time evidence reads (RI-06+). */
+export function openRequestHistoryIndexSync(): RequestHistoryIndexMeta {
+  return refreshLockedSync();
+}
+
 /**
  * Open (and refresh) the index. Single-flight: concurrent callers share one
  * refresh. Never throws for missing/corrupt index or ledger state; those are
@@ -427,7 +432,7 @@ async function refreshLocked(): Promise<RequestHistoryIndexMeta> {
  */
 export function openRequestHistoryIndex(): Promise<RequestHistoryIndexMeta> {
   if (!openPromise) {
-    openPromise = refreshLocked().finally(() => {
+    openPromise = Promise.resolve(refreshLockedSync()).finally(() => {
       openPromise = null;
     });
   }

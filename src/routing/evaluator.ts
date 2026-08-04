@@ -20,6 +20,10 @@ import {
   type Unknownable,
 } from "./trace";
 import { getRoutingProfile, type NormalizedRoutingProfile } from "./profile";
+import { healthScore } from "./health";
+
+/** Unknown health under "penalize": a low-but-not-zero deterministic floor. */
+export const HEALTH_UNKNOWN_PENALTY_SCORE = 0.3;
 
 export interface PolicyRequestEvidence {
   /** Required context window for this request (tokens). */
@@ -213,12 +217,35 @@ export function evaluatePolicyProfile(
     // or allow. "penalize" currently cannot move the score because RI-04 has
     // no capability component yet - the capability score arrives with RI-05.
     const excludedByUnknown = unknown && profile.unknownEvidence.capability === "exclude";
-    const eligible = !unsatisfied && !excludedByUnknown;
+    let eligible = !unsatisfied && !excludedByUnknown;
+
+    // Health scoring (RI-06): live hard cooldown is authoritative and
+    // excludes; unknown health follows the profile's unknownEvidence policy;
+    // historical health never overrides explicit ineligibility.
+    const health = evidence.health;
+    let healthValue = health ? healthScore(health) : null;
+    if (health?.cooldownUntilMs !== undefined && health.cooldownUntilMs > Date.now()) {
+      exclusions.push({ code: "cooldown" });
+      eligible = false;
+    } else if (healthValue === null && profile.unknownEvidence.health === "exclude") {
+      exclusions.push({ code: "unknown-health" });
+      eligible = false;
+    } else if (healthValue === null && profile.unknownEvidence.health === "penalize") {
+      healthValue = HEALTH_UNKNOWN_PENALTY_SCORE;
+    }
 
     const score: RouteScoreEvidence = {
       total: configuredPriorityScore(index, profile.candidates.length),
       components: { configuredPriority: configuredPriorityScore(index, profile.candidates.length) },
     };
+    const healthWeight = profile.optimize.health;
+    if (healthWeight > 0 && healthValue !== null) {
+      const priority = configuredPriorityScore(index, profile.candidates.length);
+      const total = priority * (1 - healthWeight) + healthValue * healthWeight;
+      score.total = total;
+      score.components.health = healthValue;
+      score.components.configuredPriority = priority;
+    }
     const evaluated: PolicyEvaluationCandidate = {
       provider: evidence.provider,
       model: evidence.model,
@@ -230,6 +257,7 @@ export function evaluatePolicyProfile(
       ...(evidence.health ? { health: evidence.health } : {}),
       ...(evidence.quota ? { quota: evidence.quota } : {}),
       ...(evidence.cost ? { cost: evidence.cost } : {}),
+      ...(evidence.health ? { health: evidence.health } : {}),
       score,
     };
     candidates.push(evaluated);
@@ -252,6 +280,10 @@ export function evaluatePolicyProfile(
       eligible: candidate.eligible,
       exclusions: candidate.exclusions,
       ...(candidate.score ? { score: candidate.score } : {}),
+      ...(candidate.capability ? { capability: candidate.capability } : {}),
+      ...(candidate.health ? { health: candidate.health } : {}),
+      ...(candidate.quota ? { quota: candidate.quota } : {}),
+      ...(candidate.cost ? { cost: candidate.cost } : {}),
     })),
     selected: selectedIndex === null
       ? { provider: candidates[0]?.provider ?? "", model: candidates[0]?.model ?? "", reason: "no-eligible-candidate" }

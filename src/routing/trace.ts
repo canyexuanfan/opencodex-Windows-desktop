@@ -182,6 +182,10 @@ export interface TraceCandidateInput {
   eligible: boolean;
   exclusions: RouteExclusionReason[];
   score?: RouteScoreEvidence;
+  capability?: RouteCapabilityEvidence;
+  health?: RouteHealthEvidence;
+  quota?: RouteQuotaEvidence;
+  cost?: RouteCostEvidence;
 }
 
 export interface TraceBuildInput {
@@ -219,6 +223,10 @@ function buildCandidate(input: TraceCandidateInput, budget: { strings?: true; ex
         : {}),
     })),
     ...(input.score ? { score: input.score } : {}),
+    ...(input.capability ? { capability: input.capability } : {}),
+    ...(input.health ? { health: input.health } : {}),
+    ...(input.quota ? { quota: input.quota } : {}),
+    ...(input.cost ? { cost: input.cost } : {}),
   };
 }
 
