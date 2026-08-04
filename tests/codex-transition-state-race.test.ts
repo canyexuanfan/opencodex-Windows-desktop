@@ -195,7 +195,13 @@ test("two real processes racing first use publish exactly one initial transition
     const results = await Promise.all(children.map(collectProbe));
 
     const firstKinds = results.map(result => result.first?.kind);
-    expect(firstKinds.filter(kind => kind === "updated")).toHaveLength(1);
+    // AT MOST one first-attempt winner, not exactly one. The coordinator uses
+    // `busy_timeout = 0` deliberately, so under load both contenders can lose
+    // their first attempt to SQLITE_BUSY and resolve it on the retry below.
+    // Demanding a first-round winner asserts scheduler luck; the invariant that
+    // actually matters — never two winners — is the filter being <= 1, and the
+    // terminal state is pinned exactly by `finalKinds`.
+    expect(firstKinds.filter(kind => kind === "updated").length).toBeLessThanOrEqual(1);
     for (const result of results) {
       expect(
         result.first?.kind === "updated"
