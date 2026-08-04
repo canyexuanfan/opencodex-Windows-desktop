@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildWinswXml, ensureWinswBinary, parseWinswStatus, probeScmRegistration, sha256Hex, installWinswService, statusWinswRaw, WINSW_SHA256, WINSW_SERVICE_ID } from "../src/lib/winsw";
-import { parseServiceArgs, serviceReinstallArgs } from "../src/service";
+import { parseServiceArgs, serviceInstallArgs, serviceReinstallArgs } from "../src/service";
 import { loadServiceTokenFromFile } from "../src/lib/service-secrets";
 import { getConfigDir } from "../src/config";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
@@ -249,10 +249,17 @@ describe("service backend CLI parsing", () => {
   });
 });
 
-describe("service reinstall args", () => {
-  test("defaults to the scheduler backend on this machine (no native state)", () => {
+describe("service refresh args", () => {
+  // 260804 #970: the post-update refresh must NOT re-register. `repair` reads the
+  // installed backend itself, so it is backend-agnostic AND needs no elevation on
+  // Windows scheduler installs, where `install` always reaches `schtasks /create`.
+  test("the update refresh uses repair, not a backend-specific install", () => {
+    expect(serviceReinstallArgs()).toEqual(["service", "repair"]);
+  });
+
+  test("explicit installs still preserve the recorded backend", () => {
     // On a dev machine without a native install-state the accessor maps to scheduler.
-    expect(serviceReinstallArgs()).toEqual(["service", "install"]);
+    expect(serviceInstallArgs()).toEqual(["service", "install"]);
   });
 });
 

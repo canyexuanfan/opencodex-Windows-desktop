@@ -1099,11 +1099,13 @@ describe("launchctl load verification", () => {
       })).toThrow(/bootout/);
     });
 
-    test("throws with the install hint when no job is loaded", () => {
+    test("throws with the repair hint when no job is loaded", () => {
+      // The plist exists (this is an installed service) — reloading it is `repair`,
+      // not a re-registration.
       expect(() => startLaunchd({
         launchctl: failedLoad,
         matches: () => ({ loaded: false, matchesPlist: false }),
-      })).toThrow(/service install/);
+      })).toThrow(/service repair/);
     });
   });
 });
@@ -1247,7 +1249,8 @@ describe("service serving confirmation", () => {
         matchesPlist: () => ({ loaded: true, matchesPlist: true }),
       });
       expect(out).toContain("no proxy is answering on port 10100");
-      expect(out).toContain("ocx service install");
+      // Registered but not serving: repair refreshes it without demanding elevation.
+      expect(out).toContain("ocx service repair");
       expect(out).toContain("ocx start");
     });
 

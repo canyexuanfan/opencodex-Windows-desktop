@@ -270,29 +270,29 @@ describe("provider registry parity", () => {
       label: "Alibaba Token Plan (Beijing)",
       adapter: "openai-chat",
       baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-      defaultModel: "qwen3.8-max-preview",
+      defaultModel: "qwen3.8-max",
       liveModels: false,
       models: [
-        "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+        "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
         "glm-5.2", "deepseek-v4-pro",
       ],
       modelInputModalities: {
-        "qwen3.8-max-preview": ["text", "image"],
+        "qwen3.8-max": ["text", "image"],
         "qwen3.7-max": ["text", "image"],
       },
       modelReasoningEfforts: {
-        "qwen3.8-max-preview": ["low", "medium", "high", "xhigh", "max"],
+        "qwen3.8-max": ["low", "medium", "high", "xhigh", "max"],
       },
       modelContextWindows: {
-        "qwen3.8-max-preview": 983_616,
+        "qwen3.8-max": 983_616,
         "qwen3.7-max": 1_000_000,
         "deepseek-v4-pro": 1_000_000,
       },
       noVisionModels: ["glm-5.2", "deepseek-v4-pro"],
-      preserveReasoningContentModels: expect.arrayContaining(["qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus"]),
+      preserveReasoningContentModels: expect.arrayContaining(["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus"]),
     });
     expect(KEY_LOGIN_PROVIDERS["alibaba-token-plan"].thinkingBudgetModels)
-      .toContain("qwen3.8-max-preview");
+      .toContain("qwen3.8-max");
   });
 
   test("aggregator defaults and Neuralwatt seeds match the audited live catalogs", () => {

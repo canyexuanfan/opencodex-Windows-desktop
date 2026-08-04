@@ -174,13 +174,28 @@ function readServiceInstallState(): ServiceInstallState | null {
   return null;
 }
 
-/** Single accessor for update/reinstall code — v1/legacy state maps to scheduler. */
+/** Single accessor for backend-sensitive service code — v1/legacy state maps to scheduler. */
 export function readServiceBackend(): ServiceBackend {
   return readServiceInstallState()?.backend === "native" ? "native" : "scheduler";
 }
 
-/** The `ocx` argv that reinstalls the currently-chosen service backend (update paths). */
+/**
+ * The `ocx` argv that refreshes an already-installed service after an update.
+ *
+ * `repair` discovers the installed backend itself and, on Windows scheduler installs,
+ * rewrites the wrapper assets and restarts the existing task WITHOUT `schtasks /create`
+ * (see repairService below). `install` always reaches `/create`, which requires
+ * elevation — so an ordinary non-elevated `ocx update` used to stop a working proxy and
+ * then fail to bring its service back.
+ *
+ * The historical export name is kept for callers outside this module.
+ */
 export function serviceReinstallArgs(): string[] {
+  return ["service", "repair"];
+}
+
+/** The `ocx` argv that registers a service from scratch, preserving the chosen backend. */
+export function serviceInstallArgs(): string[] {
   return readServiceBackend() === "native" ? ["service", "install", "--native"] : ["service", "install"];
 }
 
@@ -498,17 +513,14 @@ async function reportServiceServing(
 }
 
 /**
- * The reinstall command for the CURRENTLY INSTALLED backend.
+ * The command that repairs the CURRENTLY INSTALLED backend without re-registering it.
  *
- * Plain `ocx service install` on a native/WinSW install runs installWindows's
- * transactional backend switch, which tears down WinSW and replaces it with the Task
- * Scheduler backend. Advising it in a repair hint would silently change the user's
- * backend, so the hint has to carry `--native` when that is what is installed.
+ * `ocx service repair` reads the recorded backend itself, so it cannot silently switch a
+ * WinSW install to Task Scheduler the way a plain `ocx service install` would, and on
+ * Windows it needs no elevation because it never calls `schtasks /create`.
  */
 function serviceRepairCommand(): string {
-  return process.platform === "win32" && readServiceBackend() === "native"
-    ? "ocx service install --native"
-    : "ocx service install";
+  return "ocx service repair";
 }
 
 function systemdQuote(value: string): string {
@@ -1660,8 +1672,8 @@ export function startLaunchd(deps: {
   throw new Error(
     `launchctl could not load ${p}: ${loaded.stderr || "load reported failure"}\n`
     + (live.loaded
-      ? `launchd is running an OLDER plist. Fix:\n  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n  ocx service install`
-      : "The job is not loaded. Run 'ocx service install' to re-register it."),
+      ? `launchd is running an OLDER plist. Fix:\n  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n  ocx service repair`
+      : "The job is not loaded. Run 'ocx service repair' to reload it."),
   );
 }
 function stopLaunchd(): void { try { sh(`launchctl unload "${plistPath()}"`); } catch { /* not loaded */ } }
@@ -1924,7 +1936,7 @@ export function bakedServicePathsDiagnostic(): string | null {
   if (!state?.bunPath || !state?.cliPath) return null;
   const missing = [state.bunPath, state.cliPath].filter(path => !existsSync(path));
   if (missing.length === 0) return null;
-  return `STALE baked paths (missing: ${missing.join(", ")}) — run 'ocx service install' to re-bake`;
+  return `STALE baked paths (missing: ${missing.join(", ")}) — run 'ocx service repair' to re-bake`;
 }
 
 function serviceDiagnosticsSummary(): string {
@@ -2341,7 +2353,7 @@ export function deriveWindowsServiceDiagnostic(inputs: WindowsServiceDiagnosticI
   const detail = conflict
     ? "CONFLICT: Task Scheduler and native WinSW are both present — run 'ocx service uninstall' then reinstall one"
     : stale
-      ? "stale or missing service assets — run 'ocx service install' to repair"
+      ? "stale or missing service assets — run 'ocx service repair'"
       : schedulerInstalled
         ? schedulerEnabled ? "Task Scheduler enabled" : "Task Scheduler disabled"
         : nativeInstalled

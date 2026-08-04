@@ -368,7 +368,7 @@ export function winswStatusSummary(): string {
   if (status === "nonexistent") {
     // A stale SCM service can outlive a deleted exe; surface the repair path.
     return existsSync(winswXmlPath()) && !existsSync(winswExePath())
-      ? "native assets present but WinSW binary missing — run 'ocx service install --native' to repair"
+      ? "native assets present but WinSW binary missing — run 'ocx service repair'"
       : "";
   }
   return `native (WinSW ${WINSW_VERSION}): ${status}`;

@@ -31,8 +31,8 @@ test("moves a Beijing entry holding an international endpoint", () => {
   const config = migratableConfig();
   // Beijing catalog fields, as `ocx provider add` would have persisted them.
   Object.assign(config.providers["alibaba-token-plan"]!, {
-    models: ["qwen3.8-max-preview", "qwen3.7-max"],
-    defaultModel: "qwen3.8-max-preview",
+    models: ["qwen3.8-max", "qwen3.7-max"],
+    defaultModel: "qwen3.8-max",
   });
 
   const projection = projectAlibabaRegionMigration(config);

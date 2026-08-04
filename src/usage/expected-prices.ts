@@ -40,7 +40,7 @@ const KIMI_K27_CODE: Cost4 = { input: 0.95, output: 4, cacheRead: 0.19, cacheWri
 const KIMI_K27_CODE_HIGHSPEED: Cost4 = { input: 1.9, output: 8, cacheRead: 0.38, cacheWrite: 1.9 };
 const KIMI_K26: Cost4 = { input: 0.95, output: 4, cacheRead: 0.16, cacheWrite: 0.95 };
 const KIMI_K25: Cost4 = { input: 0.6, output: 3, cacheRead: 0.1, cacheWrite: 0.6 };
-const QWEN38_ROUTEWAY_TEMPORARY: Cost4 = { input: 1.5, output: 5, cacheRead: 0.15, cacheWrite: 0 };
+const QWEN38_MAX: Cost4 = { input: 2, output: 6, cacheRead: 0, cacheWrite: 0 };
 // Anthropic official list prices (USD / 1M tokens). Cache write uses the published 5-minute rate.
 const CLAUDE_SONNET_46: Cost4 = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 const CLAUDE_OPUS_46: Cost4 = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
@@ -58,9 +58,14 @@ const DEEPSEEK_PRICING = "https://api-docs.deepseek.com/quick_start/pricing-deta
 // Kimi official tables publish input/output/cache-hit only; cacheWrite is mapped to the
 // cache-miss input price (Kimi auto-caches with no separate write billing). 2026-07-20 re-verified.
 const KIMI_PRICING = "https://platform.kimi.ai/docs/pricing (official table; cacheWrite derived = input, Kimi auto-cache has no write billing)";
-// TEMPORARY proxy only: Routeway's reseller API rate is not Alibaba Token Plan billing.
-// Replace these overlays when Alibaba publishes an official qwen3.8-max-preview token rate.
-const QWEN38_ROUTEWAY_PRICING = "https://routeway.ai/models/qwen3.8-max-preview (temporary reseller proxy; NOT Alibaba Token Plan billing; cacheWrite unpublished -> 0)";
+// 260804: Qwen3.8-Max shipped as a stable model and Qwen published a per-token rate, which
+// is the exit condition the previous Routeway reseller overlay named. Two caveats are
+// deliberately in the source string rather than dropped: the figure comes from Qwen's own
+// release announcement, NOT from an Alibaba Model Studio billing table (which still lists
+// qwen3.7-max and qwen3-max but has no qwen3.8-max row), and no cache rate is published
+// anywhere. Cache stays 0 rather than inheriting the reseller's 0.15 — a reseller number
+// under a vendor-price label would be a wrong value wearing a verified badge.
+const QWEN38_MAX_PRICING = "https://qwen.ai/blog?id=qwen3.8 (Qwen release announcement; no Model Studio billing row yet; cache rates unpublished -> 0)";
 
 export const EXPECTED_PRICE_OVERLAYS: readonly ExpectedPriceOverlay[] = [
   // claude-opus-5 is exposed by three providers but absent from the jawcode bundle, so
@@ -132,10 +137,10 @@ export const EXPECTED_PRICE_OVERLAYS: readonly ExpectedPriceOverlay[] = [
   { provider: "kimi-code", modelId: "kimi-k2.6", cost4: KIMI_K26, source: KIMI_PRICING, verifiedAt: "2026-07-20", status: "verified-derived" },
   { provider: "kimi-code", modelId: "kimi-k2.5", cost4: KIMI_K25, source: KIMI_PRICING, verifiedAt: "2026-07-20", status: "verified-derived" },
   { provider: "kimi-code", modelId: "kimi-for-coding", cost4: KIMI_K27_CODE, source: `derived: kimi-k2.7-code ${KIMI_PRICING}`, verifiedAt: "2026-07-20", status: "verified-derived" },
-  // Alibaba has not published a per-token Token Plan rate yet. Use Routeway's
-  // independently published reseller rate temporarily and keep estimates derived.
-  { provider: "alibaba-token-plan", modelId: "qwen3.8-max-preview", cost4: QWEN38_ROUTEWAY_TEMPORARY, source: QWEN38_ROUTEWAY_PRICING, verifiedAt: "2026-07-22", status: "verified-derived" },
-  { provider: "alibaba-token-plan-intl", modelId: "qwen3.8-max-preview", cost4: QWEN38_ROUTEWAY_TEMPORARY, source: QWEN38_ROUTEWAY_PRICING, verifiedAt: "2026-07-22", status: "verified-derived" },
+  // Qwen3.8-Max: vendor-published input/output rate (verified). See QWEN38_MAX_PRICING
+  // for what that source does and does not cover.
+  { provider: "alibaba-token-plan", modelId: "qwen3.8-max", cost4: QWEN38_MAX, source: QWEN38_MAX_PRICING, verifiedAt: "2026-08-04", status: "verified" },
+  { provider: "alibaba-token-plan-intl", modelId: "qwen3.8-max", cost4: QWEN38_MAX, source: QWEN38_MAX_PRICING, verifiedAt: "2026-08-04", status: "verified" },
   // Cursor Auto router — Cursor's published fixed token price (verified).
   { provider: "cursor", modelId: "auto", cost4: { input: 1.25, output: 6, cacheRead: 0.25, cacheWrite: 1.25 }, source: "https://docs.cursor.com/account/pricing + https://cursor.com/blog/aug-2025-pricing", verifiedAt: "2026-07-20", status: "verified" },
 ];
