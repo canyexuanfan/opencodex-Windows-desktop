@@ -46,20 +46,25 @@ import { formatErrorResponse, type ResponsesTerminalStatus } from "../bridge";
 import {
   drainAndShutdown,
   getActiveTurnCount,
+  getActiveTurnMetrics,
   isDraining,
   registerTurn,
   setServerRef,
   trackStreamLifetime,
+  tryAdmitTurn,
   unregisterTurn,
 } from "./lifecycle";
 export {
   drainAndShutdown,
   getActiveTurnCount,
+  getActiveTurnMetrics,
   isDraining,
   isRecyclingForExit,
   markRecyclingForExit,
+  MAX_ACTIVE_TURNS,
   registerTurn,
   trackStreamLifetime,
+  tryAdmitTurn,
   unregisterTurn,
 } from "./lifecycle";
 import {
@@ -390,7 +395,18 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
 
       if (url.pathname === "/healthz" && req.method === "GET") {
         // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
-        return jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: listenPort }, 200, req, config);
+        const rawBuildRevision = process.env.OPENCODEX_DESKTOP_MODE === "1"
+          ? Number.parseInt(process.env.OPENCODEX_DESKTOP_BUILD_REVISION ?? "", 10)
+          : Number.NaN;
+        return jsonResponse({
+          status: "ok",
+          service: "opencodex",
+          version: VERSION,
+          ...(Number.isSafeInteger(rawBuildRevision) && rawBuildRevision >= 0 ? { buildRevision: rawBuildRevision } : {}),
+          uptime: process.uptime(),
+          pid: process.pid,
+          port: listenPort,
+        }, 200, req, config);
       }
 
       if (url.pathname.startsWith("/api/")) {
@@ -597,20 +613,39 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
           logged = true;
           addFinalRequestLog(requestId, start, logCtx, status, meta);
         };
-        const response = await handleResponses(req, config, logCtx, {
-          abortSignal: req.signal,
-          onFirstOutput: () => recordFirstOutput(logCtx, start),
-          onNativePassthroughTerminal: status => {
-            finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
-              terminalStatus: status,
-              closeReason: "terminal",
-            });
-          },
-          onNativePassthroughCancel: () => {
-            finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
-          },
-        });
-        return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
+        const turnAdmissionLease = tryAdmitTurn();
+        if (!turnAdmissionLease) {
+          const busy = new Response(JSON.stringify({
+            error: {
+              type: "server_error",
+              code: "server_busy",
+              message: "active turns capacity reached",
+              retryable: true,
+            },
+          }), {
+            status: 503,
+            headers: { "Content-Type": "application/json", "Retry-After": "1" },
+          });
+          return withCors(busy, req, config);
+        }
+        try {
+          const response = await handleResponses(req, config, logCtx, {
+            abortSignal: req.signal,
+            onFirstOutput: () => recordFirstOutput(logCtx, start),
+            onNativePassthroughTerminal: status => {
+              finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
+                terminalStatus: status,
+                closeReason: "terminal",
+              });
+            },
+            onNativePassthroughCancel: () => {
+              finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
+            },
+          });
+          return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
+        } finally {
+          turnAdmissionLease.release();
+        }
       }
 
       // Anthropic Messages inbound (Claude Code). count_tokens FIRST (longer path).
@@ -832,9 +867,21 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
           return;
         }
 
+        const turnAdmissionLease = tryAdmitTurn();
+        if (!turnAdmissionLease) {
+          sendJsonFrame(ws, buildWsErrorFrame(503, {
+            type: "server_error",
+            code: "server_busy",
+            message: "active turns capacity reached",
+            retryable: true,
+          }, new Headers({ "Retry-After": "1" })));
+          if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
+          return;
+        }
+
         const payload: Record<string, unknown> = { ...frame };
         delete payload.type;
-        registerTurn(turnAbort);
+        turnAdmissionLease.bindAbortController(turnAbort);
         void (async () => {
           const start = Date.now();
           const requestId = nextRequestLogId(start);
@@ -901,7 +948,7 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
               /* socket already gone or send dropped */
             }
           } finally {
-            unregisterTurn(turnAbort);
+            turnAdmissionLease.release();
             if (!logged && turnAbort.signal.aborted) finalizeLog(499);
             if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
           }

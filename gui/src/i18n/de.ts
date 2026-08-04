@@ -232,6 +232,7 @@ export const de: Record<TKey, string> = {
   "dash.updateChecking": "Updates werden geprüft…",
   "dash.updateInstalled": "Installiert",
   "dash.updateLatest": "Neueste",
+  "dash.updateBuild": "(Build {revision})",
   "dash.updateAvailable": "Update verfügbar",
   "dash.updateCurrent": "Auf dem neuesten Stand",
   "dash.updateCommand": "Befehl",

@@ -241,6 +241,7 @@ export const ru: Record<TKey, string> = {
   "dash.updateChecking": "Проверка обновлений…",
   "dash.updateInstalled": "Установлена",
   "dash.updateLatest": "Последняя",
+  "dash.updateBuild": "(сборка {revision})",
   "dash.updateAvailable": "Доступно обновление",
   "dash.updateCurrent": "Актуальная версия",
   "dash.updateCommand": "Команда",

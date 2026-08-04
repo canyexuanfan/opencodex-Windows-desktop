@@ -98,8 +98,11 @@ describe("GUI update check", () => {
       },
       isDesktopRuntime: () => true,
       desktopCurrentVersion: () => "2.8.0",
+      desktopCurrentBuildRevision: () => 0,
       fetchDesktopInstallerRelease: async channel => ({
         latestVersion: channel === "latest" ? "2.8.1" : "2.8.1-preview.1",
+        buildRevision: 1,
+        releaseTag: channel === "latest" ? "v2.8.1" : "v2.8.1-preview.1",
         releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.8.1",
         downloadUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/download/v2.8.1/OpenCodex-Setup-2.8.1-x64.exe",
         assetName: "OpenCodex-Setup-2.8.1-x64.exe",
@@ -112,8 +115,8 @@ describe("GUI update check", () => {
     expect(result.currentVersion).toBe("2.8.0");
     expect(result.latestVersion).toBe("2.8.1");
     expect(result.updateAvailable).toBe(true);
-    expect(result.canUpdate).toBe(false);
-    expect(result.reason).toBe("desktop_installer_manual");
+    expect(result.canUpdate).toBe(true);
+    expect(result.reason).toBe("desktop_installer_ready");
     expect(result.downloadUrl).toContain("OpenCodex-Setup-2.8.1-x64.exe");
     expect(result.releaseNotesUrl).toContain("canyexuanfan/opencodex-Windows-desktop");
   });
@@ -125,8 +128,11 @@ describe("GUI update check", () => {
       latestVersion: () => "9.9.9",
       isDesktopRuntime: () => true,
       desktopCurrentVersion: () => "2.8.0",
+      desktopCurrentBuildRevision: () => 0,
       fetchDesktopInstallerRelease: async () => ({
         latestVersion: "2.8.1",
+        buildRevision: 1,
+        releaseTag: "v2.8.1",
         releaseNotesUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.8.1",
         downloadUrl: null,
         assetName: null,
@@ -137,6 +143,32 @@ describe("GUI update check", () => {
     expect(result.canUpdate).toBe(false);
     expect(result.reason).toBe("desktop_asset_missing");
     expect(result.command).toContain("github.com/canyexuanfan/opencodex-Windows-desktop");
+  });
+
+  test("desktop runtime detects a same-version higher build revision", async () => {
+    const result = await checkForUpdateForRuntime("latest", {
+      currentVersion: () => "2.8.1",
+      detectInstall: () => "npm",
+      latestVersion: () => "9.9.9",
+      isDesktopRuntime: () => true,
+      desktopCurrentVersion: () => "2.8.1",
+      desktopCurrentBuildRevision: () => 1,
+      fetchDesktopInstallerRelease: async () => ({
+        latestVersion: "2.8.1",
+        buildRevision: 2,
+        releaseTag: "v2.8.1-build.2",
+        releaseNotesUrl: "https://example.invalid/v2.8.1-build.2",
+        downloadUrl: "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/download/v2.8.1-build.2/OpenCodex-Setup-2.8.1-x64.exe",
+        assetName: "OpenCodex-Setup-2.8.1-x64.exe",
+      }),
+    });
+
+    expect(result.currentVersion).toBe("2.8.1");
+    expect(result.latestVersion).toBe("2.8.1");
+    expect(result.currentBuildRevision).toBe(1);
+    expect(result.latestBuildRevision).toBe(2);
+    expect(result.updateAvailable).toBe(true);
+    expect(result.canUpdate).toBe(true);
   });
 });
 

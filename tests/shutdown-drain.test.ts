@@ -4,7 +4,10 @@ import {
   unregisterTurn,
   isDraining,
   getActiveTurnCount,
+  getActiveTurnMetrics,
+  MAX_ACTIVE_TURNS,
   trackStreamLifetime,
+  tryAdmitTurn,
   isRecyclingForExit,
   markRecyclingForExit,
 } from "../src/server";
@@ -25,6 +28,38 @@ describe("active turn tracking", () => {
 
   test("isDraining() is false by default", () => {
     expect(isDraining()).toBe(false);
+  });
+
+  test("active turn metrics expose only scalar age buckets", () => {
+    const ac = new AbortController();
+    registerTurn(ac);
+    const metrics = getActiveTurnMetrics();
+    expect(metrics.count).toBeGreaterThanOrEqual(1);
+    expect(metrics.oldestAgeMs).toBeGreaterThanOrEqual(0);
+    expect(metrics.ageBuckets.under1s + metrics.ageBuckets.under10s
+      + metrics.ageBuckets.under60s + metrics.ageBuckets.over60s).toBe(metrics.count);
+    unregisterTurn(ac);
+  });
+
+  test("admission lease bounds pending turns and releases the bound controller", () => {
+    const baseline = getActiveTurnCount();
+    const leases: Array<NonNullable<ReturnType<typeof tryAdmitTurn>>> = [];
+    try {
+      for (let i = baseline; i < MAX_ACTIVE_TURNS; i += 1) {
+        const lease = tryAdmitTurn();
+        expect(lease).not.toBeNull();
+        lease!.bindAbortController(new AbortController());
+        leases.push(lease!);
+      }
+      expect(tryAdmitTurn()).toBeNull();
+      expect(getActiveTurnCount()).toBe(MAX_ACTIVE_TURNS);
+    } finally {
+      for (const lease of leases) lease.release();
+    }
+    expect(getActiveTurnCount()).toBe(baseline);
+    const probe = tryAdmitTurn();
+    expect(probe).not.toBeNull();
+    probe?.release();
   });
 });
 

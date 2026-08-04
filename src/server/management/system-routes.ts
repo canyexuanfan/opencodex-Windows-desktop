@@ -20,7 +20,7 @@
  * dashboard drain-and-restart confirm UX — never request bodies or IDs.
  */
 import { decideEagerRelay } from "../../lib/bun-stream-caps";
-import { getActiveTurnCount, isDraining } from "../lifecycle";
+import { getActiveTurnCount, getActiveTurnMetrics, isDraining } from "../lifecycle";
 import { getActiveMemoryWatchdog, observedMemoryCounter } from "../memory-watchdog";
 import { responseStateMetrics } from "../../responses/state";
 import { jsonResponse } from "../auth-cors";
@@ -83,6 +83,7 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
       eagerRelay: process.platform === "win32" ? decideEagerRelay(streamMode) : null,
       watchdog,
       activeTurnCount: getActiveTurnCount(),
+      activeTurns: getActiveTurnMetrics(),
       isDraining: isDraining(),
     });
   }
