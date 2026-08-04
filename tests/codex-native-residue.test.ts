@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 
 import { Database } from "bun:sqlite";
 
-import { buildCatalogEntries } from "../src/codex/catalog";
+import { buildCatalogEntries, syncCatalogModels } from "../src/codex/catalog";
 import { buildProfileFile } from "../src/codex/inject";
 import { classifyNativeRoutedResidue } from "../src/codex/native-residue";
 import { readCodexTransitionState } from "../src/codex/transition-state";
@@ -21,6 +21,7 @@ import {
   resolveCodexCoordinatorDatabasePath,
   resolveEffectiveUserIdentity,
 } from "../src/codex/user-identity";
+import type { OcxConfig } from "../src/types";
 
 let codexHome = "";
 let opencodexHome = "";
@@ -55,6 +56,10 @@ afterEach(() => {
 
 function pathInCodexHome(name: string): string {
   return join(codexHome, name);
+}
+
+function canonicalPathInCodexHome(name: string): string {
+  return join(realpathSync.native(codexHome), name);
 }
 
 function routedCatalog(): string {
@@ -177,6 +182,154 @@ test("an OpenCodex atomic-write artifact is indeterminate", () => {
   expect(classifyNativeRoutedResidue()).toMatchObject({
     kind: "indeterminate",
     surface: "partial-write",
+  });
+});
+
+test("a routed catalog at the configured nested path refuses coordinator initialization", async () => {
+  const catalogPath = canonicalPathInCodexHome("nested/custom-catalog.json");
+  mkdirSync(pathInCodexHome("nested"));
+  writeFileSync(pathInCodexHome("config.toml"), 'model_catalog_json = "nested/custom-catalog.json"\n');
+  writeFileSync(catalogPath, JSON.stringify({ models: [] }));
+  const config: OcxConfig = {
+    port: 10100,
+    defaultProvider: "fixture",
+    providers: {
+      fixture: {
+        adapter: "openai-chat",
+        baseUrl: "https://fixture.invalid/v1",
+        liveModels: false,
+        models: ["fixture-model"],
+      },
+    },
+  };
+
+  const sync = await syncCatalogModels(config);
+
+  expect(sync).toMatchObject({ path: catalogPath, catalogWritten: true });
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "residue",
+    surface: "catalog",
+    path: catalogPath,
+  });
+  expect(readCodexTransitionState()).toEqual({
+    kind: "legacy-ambiguous",
+    message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
+  });
+});
+
+test("an atomic-write artifact beside the configured catalog is indeterminate", () => {
+  const catalogPath = canonicalPathInCodexHome("nested/custom-catalog.json");
+  const artifactPath = `${catalogPath}.ocx.42.7.tmp`;
+  mkdirSync(pathInCodexHome("nested"));
+  writeFileSync(pathInCodexHome("config.toml"), 'model_catalog_json = "nested/custom-catalog.json"\n');
+  writeFileSync(catalogPath, JSON.stringify({ models: [] }));
+  writeFileSync(artifactPath, "partial");
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "indeterminate",
+    surface: "partial-write",
+    path: artifactPath,
+  });
+});
+
+test("a configured catalog target that is not a readable regular file is indeterminate", () => {
+  const catalogPath = canonicalPathInCodexHome("nested/custom-catalog.json");
+  mkdirSync(catalogPath, { recursive: true });
+  writeFileSync(pathInCodexHome("config.toml"), 'model_catalog_json = "nested/custom-catalog.json"\n');
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "indeterminate",
+    surface: "catalog",
+    path: catalogPath,
+  });
+});
+
+test("an absent configured catalog target is indeterminate", () => {
+  const catalogPath = canonicalPathInCodexHome("nested/missing-catalog.json");
+  mkdirSync(pathInCodexHome("nested"));
+  writeFileSync(pathInCodexHome("config.toml"), 'model_catalog_json = "nested/missing-catalog.json"\n');
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "indeterminate",
+    surface: "catalog",
+    path: catalogPath,
+  });
+});
+
+test("the default catalog is still inspected when a custom catalog is configured", () => {
+  const defaultCatalogPath = canonicalPathInCodexHome("opencodex-catalog.json");
+  mkdirSync(pathInCodexHome("nested"));
+  writeFileSync(pathInCodexHome("config.toml"), 'model_catalog_json = "nested/custom-catalog.json"\n');
+  writeFileSync(pathInCodexHome("nested/custom-catalog.json"), JSON.stringify({ models: [] }));
+  writeFileSync(defaultCatalogPath, routedCatalog());
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "residue",
+    surface: "catalog",
+    path: defaultCatalogPath,
+  });
+});
+
+test("a non-string configured catalog path is indeterminate", () => {
+  writeFileSync(pathInCodexHome("config.toml"), "model_catalog_json = 42\n");
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "indeterminate",
+    surface: "config",
+    path: canonicalPathInCodexHome("config.toml"),
+  });
+});
+
+test("duplicate configured catalog paths are indeterminate", () => {
+  writeFileSync(pathInCodexHome("config.toml"), [
+    'model_catalog_json = "first.json"',
+    'model_catalog_json = "second.json"',
+    "",
+  ].join("\n"));
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "indeterminate",
+    surface: "config",
+    path: canonicalPathInCodexHome("config.toml"),
+  });
+});
+
+test("a bare routed combo alias in the default catalog refuses coordinator initialization", () => {
+  const models = buildCatalogEntries(
+    null,
+    [],
+    [{ provider: "combo", id: "quick", alias: "fast-chat", owned_by: "combo" }],
+    undefined,
+    false,
+    "default",
+    new Set(["fast-chat"]),
+  );
+  const combo = models.find(model => model.slug === "fast-chat");
+  expect(combo).toMatchObject({
+    slug: "fast-chat",
+    description: "Routed via opencodex → combo (combo).",
+    owned_by: "combo",
+  });
+  writeFileSync(pathInCodexHome("opencodex-catalog.json"), JSON.stringify({ models: [combo] }));
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "residue",
+    surface: "catalog",
+  });
+  expect(readCodexTransitionState()).toEqual({
+    kind: "legacy-ambiguous",
+    message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
+  });
+});
+
+test("a slash-bearing catalog slug without OpenCodex authorship is indeterminate", () => {
+  writeFileSync(pathInCodexHome("opencodex-catalog.json"), JSON.stringify({
+    models: [{ slug: "user/model", description: "User-authored catalog row" }],
+  }));
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "indeterminate",
+    surface: "catalog",
   });
 });
 

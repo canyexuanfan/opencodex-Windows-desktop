@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { Database } from "bun:sqlite";
 
@@ -46,6 +46,16 @@ type PathResult =
   | { kind: "path"; path: string; stat: Stats }
   | { kind: "indeterminate"; reason: string };
 
+type CatalogTarget = {
+  path: string;
+  configured: boolean;
+};
+
+type ConfigObservation = {
+  classification: NativeRoutedResidueResult;
+  catalogTargets: CatalogTarget[];
+};
+
 const CONFIG_FILE_NAME = basename(CODEX_CONFIG_PATH);
 const PROFILE_FILE_NAME = basename(CODEX_PROFILE_PATH);
 const CATALOG_FILE_NAME = basename(DEFAULT_CATALOG_PATH);
@@ -53,14 +63,6 @@ const MODELS_CACHE_FILE_NAME = basename(CODEX_MODELS_CACHE_PATH);
 const JOURNAL_FILE_NAME = "opencodex-journal.json";
 const HISTORY_DATABASE_FILE_NAME = "state_5.sqlite";
 const ROUTED_CATALOG_DESCRIPTION_PREFIX = "Routed via opencodex → ";
-
-const ATOMIC_WRITE_TARGETS = new Set([
-  CONFIG_FILE_NAME,
-  PROFILE_FILE_NAME,
-  CATALOG_FILE_NAME,
-  MODELS_CACHE_FILE_NAME,
-  JOURNAL_FILE_NAME,
-]);
 
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
@@ -154,16 +156,90 @@ function classifyToml(
   return { kind: "clean" };
 }
 
-function classifyConfig(path: string): NativeRoutedResidueResult {
-  return classifyToml("config", path, content => {
-    if (hasInjectedCodexRouting(content)) return "residue";
-    const hasMarker = content.includes(OCX_SECTION_MARKER);
-    const provider = rootTomlString(content, "model_provider");
-    const providerBaseUrl = providerTableString(content, "opencodex", "base_url");
-    return hasMarker || provider === "opencodex" || providerBaseUrl !== null
-      ? "indeterminate"
-      : "clean";
-  });
+function catalogPathKey(path: string): string {
+  const normalized = resolve(path);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function catalogTargets(
+  codexHome: string,
+  configuredPath?: string,
+): CatalogTarget[] {
+  const targets = new Map<string, CatalogTarget>();
+  const add = (path: string, configured: boolean) => {
+    const key = catalogPathKey(path);
+    const existing = targets.get(key);
+    targets.set(key, { path: resolve(path), configured: configured || existing?.configured === true });
+  };
+  if (configuredPath !== undefined) add(resolve(codexHome, configuredPath), true);
+  add(join(codexHome, CATALOG_FILE_NAME), false);
+  return [...targets.values()];
+}
+
+function inspectConfig(codexHome: string, path: string): ConfigObservation {
+  const read = readRegularFile(path);
+  if (read.kind === "absent") {
+    return { classification: { kind: "clean" }, catalogTargets: catalogTargets(codexHome) };
+  }
+  if (read.kind === "indeterminate") {
+    return {
+      classification: indeterminate("config", path, read.reason),
+      catalogTargets: catalogTargets(codexHome),
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = Bun.TOML.parse(read.content);
+  } catch (error) {
+    return {
+      classification: indeterminate("config", read.path, `malformed TOML: ${errorReason(error)}`),
+      catalogTargets: catalogTargets(codexHome),
+    };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      classification: indeterminate("config", read.path, "TOML root is not a table"),
+      catalogTargets: catalogTargets(codexHome),
+    };
+  }
+
+  const document = parsed as Record<string, unknown>;
+  let targets: CatalogTarget[];
+  if (!Object.hasOwn(document, "model_catalog_json")) {
+    targets = catalogTargets(codexHome);
+  } else if (typeof document.model_catalog_json !== "string" || !document.model_catalog_json.trim()) {
+    return {
+      classification: indeterminate("config", read.path, "model_catalog_json must be one non-empty string"),
+      catalogTargets: catalogTargets(codexHome),
+    };
+  } else {
+    try {
+      targets = catalogTargets(codexHome, document.model_catalog_json);
+    } catch (error) {
+      return {
+        classification: indeterminate("config", read.path, `model_catalog_json cannot be resolved: ${errorReason(error)}`),
+        catalogTargets: catalogTargets(codexHome),
+      };
+    }
+  }
+
+  let classification: NativeRoutedResidueResult = { kind: "clean" };
+  if (hasInjectedCodexRouting(read.content)) {
+    classification = { kind: "residue", surface: "config", path: read.path };
+  } else {
+    const hasMarker = read.content.includes(OCX_SECTION_MARKER);
+    const provider = rootTomlString(read.content, "model_provider");
+    const providerBaseUrl = providerTableString(read.content, "opencodex", "base_url");
+    if (hasMarker || provider === "opencodex" || providerBaseUrl !== null) {
+      classification = indeterminate(
+        "config",
+        read.path,
+        "OpenCodex-shaped TOML does not match a complete routed grammar",
+      );
+    }
+  }
+  return { classification, catalogTargets: targets };
 }
 
 function classifyProfile(path: string): NativeRoutedResidueResult {
@@ -178,18 +254,21 @@ function classifyProfile(path: string): NativeRoutedResidueResult {
 }
 
 function isOcxRoutedCatalogEntry(entry: Record<string, unknown>): boolean {
-  return typeof entry.slug === "string"
-    && entry.slug.includes("/")
-    && typeof entry.description === "string"
+  return typeof entry.description === "string"
     && entry.description.startsWith(ROUTED_CATALOG_DESCRIPTION_PREFIX);
 }
 
 function classifyCatalogLike(
   surface: "catalog" | "models-cache",
   path: string,
+  configured = false,
 ): NativeRoutedResidueResult {
   const read = readRegularFile(path);
-  if (read.kind === "absent") return { kind: "clean" };
+  if (read.kind === "absent") {
+    return configured
+      ? indeterminate(surface, path, "configured catalog target is absent")
+      : { kind: "clean" };
+  }
   if (read.kind === "indeterminate") return indeterminate(surface, path, read.reason);
   const catalog = parseCatalogJson(read.content);
   if (!catalog) return indeterminate(surface, path, "malformed catalog JSON");
@@ -228,17 +307,33 @@ function classifyJournal(path: string): NativeRoutedResidueResult {
     : indeterminate("journal", read.path, "journal JSON has an unknown or partial shape");
 }
 
-function classifyPartialWrites(codexHome: string): NativeRoutedResidueResult {
-  let names: string[];
-  try {
-    names = readdirSync(codexHome);
-  } catch (error) {
-    return indeterminate("partial-write", codexHome, errorReason(error));
+function classifyPartialWrites(targetPaths: string[]): NativeRoutedResidueResult {
+  const targetsByParent = new Map<string, { path: string; names: Set<string> }>();
+  const addTarget = (path: string) => {
+    const parent = dirname(path);
+    const key = catalogPathKey(parent);
+    const observed = targetsByParent.get(key) ?? { path: parent, names: new Set<string>() };
+    observed.names.add(basename(path));
+    targetsByParent.set(key, observed);
+  };
+  for (const path of targetPaths) {
+    addTarget(path);
+    const resolved = resolveRegularFile(path);
+    if (resolved.kind === "path") addTarget(resolved.path);
   }
-  for (const name of names) {
-    const match = /^(.*)\.ocx\.\d+\.\d+\.tmp$/.exec(name);
-    if (match?.[1] && ATOMIC_WRITE_TARGETS.has(match[1])) {
-      return indeterminate("partial-write", join(codexHome, name), "OpenCodex atomic-write artifact is still present");
+
+  for (const target of targetsByParent.values()) {
+    let names: string[];
+    try {
+      names = readdirSync(target.path);
+    } catch (error) {
+      return indeterminate("partial-write", target.path, errorReason(error));
+    }
+    for (const name of names) {
+      const match = /^(.*)\.ocx\.\d+\.\d+\.tmp$/.exec(name);
+      if (match?.[1] && target.names.has(match[1])) {
+        return indeterminate("partial-write", join(target.path, name), "OpenCodex atomic-write artifact is still present");
+      }
     }
   }
   return { kind: "clean" };
@@ -331,13 +426,25 @@ export function classifyNativeRoutedResidue(): NativeRoutedResidueResult {
   }
 
   const stateDatabasePath = join(codexHome, HISTORY_DATABASE_FILE_NAME);
+  const configPath = join(codexHome, CONFIG_FILE_NAME);
+  const profilePath = join(codexHome, PROFILE_FILE_NAME);
+  const modelsCachePath = join(codexHome, MODELS_CACHE_FILE_NAME);
+  const journalPath = join(codexHome, JOURNAL_FILE_NAME);
+  const config = inspectConfig(codexHome, configPath);
+  const atomicWriteTargets = [
+    configPath,
+    profilePath,
+    modelsCachePath,
+    journalPath,
+    ...config.catalogTargets.map(target => target.path),
+  ];
   const classifiers = [
-    () => classifyPartialWrites(codexHome),
-    () => classifyConfig(join(codexHome, CONFIG_FILE_NAME)),
-    () => classifyProfile(join(codexHome, PROFILE_FILE_NAME)),
-    () => classifyCatalogLike("catalog", join(codexHome, CATALOG_FILE_NAME)),
-    () => classifyCatalogLike("models-cache", join(codexHome, MODELS_CACHE_FILE_NAME)),
-    () => classifyJournal(join(codexHome, JOURNAL_FILE_NAME)),
+    () => classifyPartialWrites(atomicWriteTargets),
+    () => config.classification,
+    () => classifyProfile(profilePath),
+    ...config.catalogTargets.map(target => () => classifyCatalogLike("catalog", target.path, target.configured)),
+    () => classifyCatalogLike("models-cache", modelsCachePath),
+    () => classifyJournal(journalPath),
     () => classifyHistoryDatabase(stateDatabasePath),
     () => classifyHistoryBackup(historyBackupPath(stateDatabasePath), stateDatabasePath),
   ];
