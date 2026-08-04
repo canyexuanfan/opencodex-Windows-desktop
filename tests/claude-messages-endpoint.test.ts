@@ -1018,6 +1018,37 @@ test("estimateClaudeRequestTokens strips base64 documents nested in tool_result 
   expect(estimate).toBeLessThan(1000);
 });
 
+test("estimateClaudeRequestTokens does not charge base64 padding as payload bytes", () => {
+  // Exactly 131072 decoded bytes: 174764 base64 chars ending in "=". Counting the padding
+  // would yield 131073 bytes and charge 257 tokens instead of 256.
+  const data = Buffer.from(new Uint8Array(131_072)).toString("base64");
+  const raw = {
+    messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data } }] }],
+  };
+  const stripped = {
+    messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "" } }] }],
+  };
+
+  expect(estimateClaudeRequestTokens(raw, "m")).toBe(
+    Math.max(1, estimateTokens(JSON.stringify(stripped.messages), "m") + 256),
+  );
+});
+
+test("estimateClaudeRequestTokens keeps base64-shaped tool_use input counted as text", () => {
+  // tool_use.input is serialized into function_call arguments and sent upstream, so a
+  // {type:"base64", data} shape inside it is NOT an attachment and must count as text.
+  const raw = {
+    messages: [{
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t1", name: "upload", input: { type: "base64", data: "B".repeat(40_000) } }],
+    }],
+  };
+
+  expect(estimateClaudeRequestTokens(raw, "m")).toBe(
+    Math.max(1, estimateTokens(JSON.stringify(raw.messages), "m")),
+  );
+});
+
 test("estimateClaudeRequestTokens counts text-source documents as ordinary text", () => {
   const text = "plain text document body ".repeat(40);
   const raw = {

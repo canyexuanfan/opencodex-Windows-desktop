@@ -866,7 +866,8 @@ async function handleClaudeMessagesWithBudget(
 function estimateBase64AttachmentTokens(data: string): number {
   const dims = sniffImageDimensions(data);
   if (dims) return Math.max(256, Math.ceil((dims.width * dims.height) / 750));
-  return Math.max(256, Math.ceil((data.length * 3) / 4 / 512));
+  const unpadded = data.endsWith("==") ? data.length - 2 : data.endsWith("=") ? data.length - 1 : data.length;
+  return Math.max(256, Math.ceil(Math.floor((unpadded * 3) / 4) / 512));
 }
 
 /**
@@ -885,11 +886,20 @@ export function estimateClaudeRequestTokens(
   let attachmentTokens = 0;
   const stripAttachments = (value: unknown): string =>
     JSON.stringify(value, (_key, entry: unknown) => {
+      // Match only real attachment blocks. A bare {type:"base64", data} shape can also
+      // appear inside tool_use.input, and those arguments ARE sent to routed providers,
+      // so they must keep counting as text.
       if (entry && typeof entry === "object") {
-        const source = entry as { type?: unknown; data?: unknown };
-        if (source.type === "base64" && typeof source.data === "string") {
-          attachmentTokens += estimateBase64AttachmentTokens(source.data);
-          return { ...(entry as Record<string, unknown>), data: "" };
+        const block = entry as { type?: unknown; source?: unknown };
+        if (block.type === "image" || block.type === "document") {
+          const source = block.source as { type?: unknown; data?: unknown } | undefined;
+          if (source && typeof source === "object" && source.type === "base64" && typeof source.data === "string") {
+            attachmentTokens += estimateBase64AttachmentTokens(source.data);
+            return {
+              ...(entry as Record<string, unknown>),
+              source: { ...(source as Record<string, unknown>), data: "" },
+            };
+          }
         }
       }
       return entry;
