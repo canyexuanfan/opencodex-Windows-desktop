@@ -176,7 +176,7 @@ import { buildToolBridgeMaps, collabSurface, injectDeveloperMessage, multiAgentG
 import { hasUnreadableEncryptedAgentTask, looksLikeBackendCiphertext, sanitizeEncryptedContentInPlace } from "./encrypted-payload";
 import { fetchWithHeaderTimeout, providerFetch, safeHostLabel, safeOriginLabel } from "./fetch-helpers";
 import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
-import { resetUpstreamHostHealth, upstreamHostHealthKey } from "../../codex/upstream-host-health";
+import { recordUpstreamHostFailure, resetUpstreamHostHealth, upstreamHostHealthKey } from "../../codex/upstream-host-health";
 import { guardTerminalEventStream } from "./terminal-guard";
 
 /**
@@ -1750,6 +1750,15 @@ async function handleResponsesInner(
       upstream.abort();
       if (options.abortSignal?.aborted) return clientCancelledResponse();
       const outcome = classifyTransportFailureKind(err);
+      // Host-level evidence stands regardless of pool membership: a direct
+      // forward send has no pool accounting, but the reachability failure is
+      // still host-wide, not account evidence (#914 review).
+      if (outcome === "connect_neutral") {
+        recordUpstreamHostFailure(
+          upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)),
+          { code: transportErrorCode(err) },
+        );
+      }
       if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
@@ -1758,15 +1767,6 @@ async function handleResponsesInner(
           probeLeaseId: codexProbeLeaseId(authCtx),
           probeQuotaScope: codexProbeQuotaScope(authCtx),
           writerGeneration: authCtx.writerGeneration,
-          // Proven pre-connection reachability failures (DNS / TCP refusal) are
-          // host-wide, not account evidence: record them in the (provider, host)
-          // ledger instead of the account's failure streak (#914).
-          ...(outcome === "connect_neutral"
-            ? {
-              hostKey: upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)),
-              lastFailureCode: transportErrorCode(err),
-            }
-            : {}),
         });
       }
       const msg = outcome === "timeout"
@@ -1786,7 +1786,13 @@ async function handleResponsesInner(
             headers: request.headers,
             body: request.body,
           }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider),
-            route.provider.authMode === "forward");
+            route.provider.authMode === "forward")
+            // Every real attempt response — including an intermediate 5xx the
+            // retry wrapper replaces — proves the host was reached (#914 review).
+            .then(res => {
+              resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)));
+              return res;
+            });
         },
         { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
       );
@@ -1844,7 +1850,11 @@ async function handleResponsesInner(
               headers: request.headers,
               body: request.body,
             }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider),
-              route.provider.authMode === "forward");
+              route.provider.authMode === "forward")
+              .then(res => {
+                resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)));
+                return res;
+              });
           },
           { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
         );

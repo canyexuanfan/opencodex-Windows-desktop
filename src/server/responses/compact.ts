@@ -69,7 +69,7 @@ import {
   type UpstreamSendRecovery,
 } from "../../lib/upstream-retry";
 import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
-import { resetUpstreamHostHealth, upstreamHostHealthKey } from "../../codex/upstream-host-health";
+import { recordUpstreamHostFailure, resetUpstreamHostHealth, upstreamHostHealthKey } from "../../codex/upstream-host-health";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider, supportsNativeResponsesCompactEndpoint } from "../../providers/openai-tiers";
@@ -366,8 +366,6 @@ export async function handleResponsesCompact(
         retryAfter?: string | null;
         resetAt?: unknown | unknown[];
         promoteAccountId?: string;
-        hostKey?: string;
-        lastFailureCode?: string;
       } = {},
     ) => {
       if (!usesCodexForwardPoolAuth(ctx, route.provider)) return;
@@ -407,7 +405,12 @@ export async function handleResponsesCompact(
         // Every credential-bearing forward send gets manual redirects, not only
         // pool sends: direct mode carries the caller's credential too (#914).
         sendProvider.authMode === "forward",
-      );
+      ).then(res => {
+        // Every real attempt response — including an intermediate 5xx the retry
+        // wrapper replaces — proves the host was reached (#914 review).
+        resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)));
+        return res;
+      });
       return recovery === "single"
         ? doFetch()
         : fetchWithTransientRetry(doFetch, { abortSignal: req.signal, label: safeHostLabel(compactUrl) });
@@ -429,14 +432,14 @@ export async function handleResponsesCompact(
         return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
       }
       const outcome = classifyTransportFailureKind(err);
-      recordCompactPoolOutcome(outcomeCtx, outcome, {
-        ...(outcome === "connect_neutral"
-          ? {
-            hostKey: upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)),
-            lastFailureCode: transportErrorCode(err),
-          }
-          : {}),
-      });
+      // Host-level evidence stands regardless of pool membership (#914 review).
+      if (outcome === "connect_neutral") {
+        recordUpstreamHostFailure(
+          upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)),
+          { code: transportErrorCode(err) },
+        );
+      }
+      recordCompactPoolOutcome(outcomeCtx, outcome);
       return formatErrorResponse(502, "upstream_error", "Failed to connect to compact upstream");
     }
 
@@ -506,14 +509,14 @@ export async function handleResponsesCompact(
             return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
           }
           const outcome = classifyTransportFailureKind(err);
-          recordCompactPoolOutcome(outcomeCtx, outcome, {
-            ...(outcome === "connect_neutral"
-              ? {
-                hostKey: upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)),
-                lastFailureCode: transportErrorCode(err),
-              }
-              : {}),
-          });
+          // Host-level evidence stands regardless of pool membership (#914 review).
+          if (outcome === "connect_neutral") {
+            recordUpstreamHostFailure(
+              upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)),
+              { code: transportErrorCode(err) },
+            );
+          }
+          recordCompactPoolOutcome(outcomeCtx, outcome);
           return formatErrorResponse(502, "upstream_error", "Failed to connect to compact upstream");
         }
       }
