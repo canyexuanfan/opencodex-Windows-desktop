@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   resolveCodexCoordinatorDatabasePath,
+  resolveCodexCatalogSerializationDatabasePath,
+  resolveCodexHistorySerializationDatabasePath,
   resolveEffectiveUserIdentity,
 } from "../src/codex/user-identity";
 
@@ -165,3 +167,44 @@ test("real processes resolve one identity and coordinator path across every home
     for (const { root } of environmentRoots) rmSync(root, { recursive: true, force: true });
   }
 }, { timeout: 20_000 });
+
+/**
+ * H is keyed by the canonical state database as well as the canonical home.
+ *
+ * N and K key on the home alone, which fully determines the routing and catalog
+ * bytes they guard. History does not work that way: one `CODEX_HOME` can name a
+ * different `state_5.sqlite`, and two operations against different history
+ * databases are not the same exclusion. Hashing only the home would serialize
+ * them together; hashing a raw request path would let two spellings of one
+ * database take different locks.
+ */
+test("H is keyed by state database identity and is never N's or K's path", () => {
+  const identity = resolveEffectiveUserIdentity();
+  const canonicalHome = realpathSync.native(codexHome);
+  const stateDbA = join(canonicalHome, "state_5.sqlite");
+  const stateDbB = join(canonicalHome, "other", "state_5.sqlite");
+
+  const nativePath = resolveCodexCoordinatorDatabasePath(identity, canonicalHome);
+  const catalogPath = resolveCodexCatalogSerializationDatabasePath(identity, canonicalHome);
+  const historyA = resolveCodexHistorySerializationDatabasePath(identity, canonicalHome, stateDbA);
+  const historyB = resolveCodexHistorySerializationDatabasePath(identity, canonicalHome, stateDbB);
+
+  // Three distinct exclusions, never sharing a database.
+  expect(new Set([nativePath, catalogPath, historyA]).size).toBe(3);
+
+  // A second state database under the SAME home is a different H, while N and K
+  // are unchanged — the property that keying H on the home alone would destroy.
+  expect(historyB).not.toBe(historyA);
+  expect(resolveCodexCoordinatorDatabasePath(identity, canonicalHome)).toBe(nativePath);
+  expect(resolveCodexCatalogSerializationDatabasePath(identity, canonicalHome)).toBe(catalogPath);
+
+  // Stable across calls, and living in its own directory rather than N's or K's.
+  expect(resolveCodexHistorySerializationDatabasePath(identity, canonicalHome, stateDbA))
+    .toBe(historyA);
+  expect(parse(historyA).dir).not.toBe(parse(nativePath).dir);
+  expect(parse(historyA).dir).not.toBe(parse(catalogPath).dir);
+
+  // A relative state database is refused rather than silently keyed on its text.
+  expect(() => resolveCodexHistorySerializationDatabasePath(identity, canonicalHome, "state_5.sqlite"))
+    .toThrow();
+});

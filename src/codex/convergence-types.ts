@@ -558,3 +558,22 @@ export type ResolveCodexCatalogSerializationDatabasePath = (
   identity: UserIdentity,
   canonicalCodexHome: string,
 ) => string;
+
+/**
+ * H's FINAL database path. Never N's and never K's.
+ *
+ * History exclusion is keyed by the CANONICAL STATE DB as well as the canonical
+ * home, because one `CODEX_HOME` can name a different `state_5.sqlite` through a
+ * relative or retargeted path, and two operations against different history
+ * databases are not the same exclusion. N and K key on the home alone: they guard
+ * routing and catalog bytes, which the home fully determines.
+ *
+ * `H -> N` is the real order — the Worker reads the coordinator and writes its
+ * terminal row while holding H — so H must be its own database or that read would
+ * self-contend. Consumers append nothing to the returned path.
+ */
+export type ResolveCodexHistorySerializationDatabasePath = (
+  identity: UserIdentity,
+  canonicalCodexHome: string,
+  canonicalStateDbPath: string,
+) => string;

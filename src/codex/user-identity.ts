@@ -20,6 +20,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import type {
   ResolveCodexCoordinatorDatabasePath,
   ResolveCodexCatalogSerializationDatabasePath,
+  ResolveCodexHistorySerializationDatabasePath,
   ResolveEffectiveUserIdentity,
   UserIdentity,
 } from "./convergence-types";
@@ -218,4 +219,48 @@ export const resolveCodexCatalogSerializationDatabasePath:
 
     const homeDigest = createHash("sha256").update(canonicalCodexHome).digest("hex");
     return join(locks, `${homeDigest}.sqlite`);
+  };
+
+/**
+ * H's FINAL database path.
+ *
+ * Keyed by the canonical state DB in addition to the canonical home, unlike N and
+ * K. One `CODEX_HOME` can name a different `state_5.sqlite` — `model_catalog_json`
+ * has the same shape of indirection for catalogs — and two operations against
+ * different history databases are not the same exclusion. Hashing only the home
+ * would serialize them together, and hashing the raw request path would let two
+ * spellings of one database take different locks.
+ */
+export const resolveCodexHistorySerializationDatabasePath:
+  ResolveCodexHistorySerializationDatabasePath = (
+    identity,
+    canonicalCodexHome,
+    canonicalStateDbPath,
+  ) => {
+    if (!isAbsolute(canonicalCodexHome)) {
+      refuse("The canonical CODEX_HOME must be an absolute path.");
+    }
+    if (!isAbsolute(canonicalStateDbPath)) {
+      refuse("The canonical Codex state database must be an absolute path.");
+    }
+    const root = identity.platform === "posix"
+      ? resolvePosixRuntimeRoot(identity.uid)
+      : resolveWindowsRuntimeRoot(identity);
+    const locks = join(root, "history-write-locks");
+    if (identity.platform === "posix") ensurePrivatePosixDirectory(locks, identity.uid);
+    else {
+      try {
+        mkdirSync(locks, { recursive: true });
+      } catch (cause) {
+        refuse("The Windows history serialization directory cannot be created.", cause);
+      }
+    }
+
+    // Both components are length-prefixed so no pair of (home, stateDb) values can
+    // collide by concatenation.
+    const digest = createHash("sha256")
+      .update(`${canonicalCodexHome.length}:${canonicalCodexHome}`)
+      .update(`${canonicalStateDbPath.length}:${canonicalStateDbPath}`)
+      .digest("hex");
+    return join(locks, `${digest}.sqlite`);
   };
