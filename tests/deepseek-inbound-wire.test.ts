@@ -132,6 +132,27 @@ describe("the inbound scope survives the handleResponses replay", () => {
     expect(request.body.stream).toBe(false);
   });
 
+  test("a Codex WebSocket turn keeps plain JSON downstream (no SSE synthesis)", async () => {
+    globalThis.fetch = (async () => Response.json({
+      id: "resp_deepseek",
+      object: "response",
+      status: "completed",
+      output: [],
+    })) as typeof fetch;
+    const config = { providers: { deepseek: deepseekProvider() } } as unknown as OcxConfig;
+    const response = await handleResponses(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: MODEL, input: "ping", stream: true }),
+      }),
+      config,
+      { model: "", provider: "" },
+      { inboundTransport: "websocket" },
+    );
+    expect(response.headers.get("content-type")).not.toContain("text/event-stream");
+  });
+
   test("ordinary HTTP Responses requests also use bounded JSON upstream (#875)", async () => {
     // The reliability policy is transport-neutral: DeepSeek's Responses stream can
     // deliver output without a terminal, so HTTP turns get the same bounded JSON
