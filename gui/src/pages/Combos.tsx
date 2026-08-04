@@ -247,7 +247,9 @@ export default function Combos({ apiBase }: { apiBase: string }) {
           <Notice tone="err">{t("cws.loadFailed")}</Notice>
         </div>
       )}
-      <div className="combos-workspace-shell-body">
+      {/* Revalidation is silent by design: existing combos stay visible, and the
+          shell announces the in-flight refresh to assistive tech only. */}
+      <div className="combos-workspace-shell-body" aria-busy={state.refreshing}>
         <ComboWorkspace
           combos={combos}
           providers={providers}
