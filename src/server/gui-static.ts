@@ -76,6 +76,28 @@ function htmlResponse(path: string, session?: GuiSessionBootstrap): Response {
   });
 }
 
+/**
+ * Minimal session-bootstrap document, independent of any packaged GUI build. The dev
+ * GUI (Vite) proxies /opencodex-session to the backend with the original host so the
+ * backend can mint an origin-bound loopback session even when gui/dist does not exist.
+ */
+export function serveSessionBootstrap(session: GuiSessionBootstrap): Response {
+  const bootstrap = [
+    `<meta name="opencodex-session-token" content="${session.token}">`,
+    `<meta name="opencodex-session-csrf" content="${session.csrfToken}">`,
+    `<meta name="opencodex-session-origin" content="${session.origin}">`,
+  ].join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8">${bootstrap}</head><body></body></html>`;
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html",
+      "Cache-Control": "no-store",
+      Pragma: "no-cache",
+      ...browserSecurityHeaders(),
+    },
+  });
+}
+
 export function serveGuiFile(
   pathname: string,
   guiDist = findGuiDist(),

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
-import { serveGuiFile } from "../src/server/gui-static";
+import { serveGuiFile, serveSessionBootstrap } from "../src/server/gui-static";
 import { isProxyAdmissionSecret } from "../src/server/auth-cors";
 import {
   initializeManagementAuthState,
@@ -381,12 +381,13 @@ describe("management and data-plane credential separation", () => {
     expect(html).toContain(`name="opencodex-session-token" content="${session?.token}"`);
     expect(html).toContain(`name="opencodex-session-csrf" content="${session?.csrfToken}"`);
 
-    // Extensionless paths double as the session-bootstrap document: the dev GUI fetches
-    // /opencodex-session through Vite so the app shell stays Vite-owned while the backend
-    // still mints an origin-bound loopback session.
-    const bootstrapPage = serveGuiFile("/opencodex-session", guiDist, session ?? undefined);
-    const bootstrapHtml = await bootstrapPage?.text();
+    // The dev GUI fetches /opencodex-session through Vite so the app shell stays
+    // Vite-owned. The backend answers that path without requiring gui/dist, so a fresh
+    // source checkout (no packaged build) can still mint an origin-bound session.
+    const bootstrapPage = serveSessionBootstrap(session!);
+    const bootstrapHtml = await bootstrapPage.text();
     expect(bootstrapHtml).toContain(`name="opencodex-session-origin" content="${session?.origin}"`);
+    expect(bootstrapHtml).toContain(`name="opencodex-session-token" content="${session?.token}"`);
 
     const sameOriginRead = new Request("http://localhost:10100/api/config", {
       headers: {

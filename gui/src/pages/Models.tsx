@@ -935,12 +935,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
         )}
       </div>
 
-      {v2Loading && v2 === null ? (
-        <div className="models-v2-detail-row row" aria-hidden="true">
-          <span className="muted text-control">{t("models.v2ThreadsLabel")}</span>
-          <Select value="" options={[]} onChange={() => {}} disabled label={t("models.v2ThreadsLabel")} />
-        </div>
-      ) : v2 && (v2.enabled || v2.agentsMaxThreadsConflict || v2Note) && (
+      {v2 && (v2.enabled || v2.agentsMaxThreadsConflict || v2Note) && (
         <div className="models-v2-detail-row row">
           {v2.enabled && (
             <>

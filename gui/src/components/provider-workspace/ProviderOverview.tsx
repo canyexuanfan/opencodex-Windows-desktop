@@ -12,7 +12,7 @@ import { accountQuotaFromReport, formatQuotaSourceLabel, type ProviderQuotaRepor
 import type { ProviderUsageTotals } from "./types";
 import { authModeLabel } from "./ProviderRail";
 import type { ProviderUpdatePatch } from "./types";
-import QuotaBars from "../QuotaBars";
+import { ProviderCapacityQuota } from "./ProviderCapacityQuota";
 
 type ConnectionTestResult = {
   applicable?: boolean;
@@ -201,10 +201,10 @@ export default function ProviderOverview({
         )}
       </section>
 
-      {quota && (
+      {quotaReport && (
         <section className="pws-section" aria-label={t("pws.rateLimits")}>
           <h3 className="pws-section-title">{t("pws.rateLimits")}</h3>
-          <QuotaBars quota={quota} plan={null} threshold={80} t={t} layout="stacked" />
+          <ProviderCapacityQuota report={quotaReport} pending={false} />
         </section>
       )}
 
