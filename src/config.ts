@@ -10,10 +10,12 @@ import {
   bumpCurrentConfigGeneration,
   initializeConfigGeneration,
   readConfigGenerationAtPath,
+  readConfigGenerationInTransaction,
 } from "./codex/generation";
 import type {
   BumpConfigGeneration,
   ReadConfigGeneration,
+  WithExpectedConfigGenerationSync,
 } from "./codex/convergence-types";
 import {
   CODEX_ACCOUNT_NAMESPACE_COMBO_ALIAS_COLLISION_ERROR,
@@ -1855,6 +1857,45 @@ export const bumpConfigGeneration: BumpConfigGeneration = expected => {
     return bumpConfigGenerationAtPath(configMutationDatabasePath(), expected);
   } catch {
     return { kind: "unavailable", reason: "database" };
+  }
+};
+
+function configGenerationFailureReason(error: unknown): "busy" | "database" {
+  const cause = error instanceof ConfigMutationLockError ? error.cause : error;
+  const code = cause && typeof cause === "object" && "code" in cause
+    ? String((cause as { code?: unknown }).code)
+    : "";
+  const message = cause instanceof Error ? cause.message : "";
+  return code === "SQLITE_BUSY"
+    || code === "SQLITE_LOCKED"
+    || /database (?:is|table is) locked/i.test(message)
+    ? "busy"
+    : "database";
+}
+
+export const withExpectedConfigGenerationSync: WithExpectedConfigGenerationSync = (
+  expected,
+  commit,
+) => {
+  let callbackThrew = false;
+  let callbackError: unknown;
+  try {
+    return withConfigMutationLockSync(() => {
+      const database = configMutationDatabase;
+      if (!database) throw new Error("Config mutation transaction database is unavailable.");
+      const current = readConfigGenerationInTransaction(database);
+      if (current.value !== expected.value) return { kind: "conflict", current };
+      try {
+        return { kind: "matched", generation: current, value: commit() };
+      } catch (error) {
+        callbackThrew = true;
+        callbackError = error;
+        throw error;
+      }
+    });
+  } catch (error) {
+    if (callbackThrew && error === callbackError) throw error;
+    return { kind: "unavailable", reason: configGenerationFailureReason(error) };
   }
 };
 

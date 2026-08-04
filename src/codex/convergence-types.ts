@@ -259,8 +259,17 @@ export type ConfigGenerationBump =
   | { kind: "conflict"; current: ConfigGeneration }
   | { kind: "unavailable"; reason: "busy" | "database" };
 
+export type ExpectedConfigGenerationSyncResult<T> =
+  | { kind: "matched"; generation: ConfigGeneration; value: T }
+  | { kind: "conflict"; current: ConfigGeneration }
+  | { kind: "unavailable"; reason: "busy" | "database" };
+
 export type ReadConfigGeneration = () => ConfigGenerationRead;
 export type BumpConfigGeneration = (expected: ConfigGeneration) => ConfigGenerationBump;
+export type WithExpectedConfigGenerationSync = <T>(
+  expected: ConfigGeneration,
+  commit: () => T,
+) => ExpectedConfigGenerationSyncResult<T>;
 
 export interface CommitExpectation {
   /** Read at admission. */
