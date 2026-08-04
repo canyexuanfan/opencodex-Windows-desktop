@@ -267,6 +267,10 @@ export function parseUpstreamQuotaHeaders(headers: Headers): Omit<StoredAccountQ
     if (primaryPercent !== undefined) {
       quota.monthlyPercent = primaryPercent;
       if (primaryResetAt !== undefined) quota.monthlyResetAt = primaryResetAt;
+      // Same provenance rule as parseUsageQuota(): this monthly value is the governing
+      // primary window, not a supplementary tertiary one. Not on the recovery path today,
+      // but the two parsers must agree on what a bare monthlyPercent means.
+      quota.monthlyIsPrimaryWindow = true;
     }
     if (secondaryPercent !== undefined) {
       quota.weeklyPercent = secondaryPercent;

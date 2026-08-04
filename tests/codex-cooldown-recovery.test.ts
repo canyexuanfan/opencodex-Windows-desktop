@@ -8,7 +8,13 @@ import {
   seedCodexAuthAdmissionForTests,
 } from "../src/codex/auth-api";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
-import { codexQuotaWindowForPlan, isCompleteCodexQuotaRecoverySnapshot } from "../src/codex/quota";
+import {
+  codexQuotaWindowForPlan,
+  getAccountQuota,
+  isCompleteCodexQuotaRecoverySnapshot,
+  parseUsageQuota,
+  setAccountQuotaFromParsed,
+} from "../src/codex/quota";
 import upstreamModels from "../src/codex/data/upstream-models.json";
 import {
   CODEX_QUOTA_PROBE_INTERVAL_MS,
@@ -384,6 +390,20 @@ describe("Codex cooldown recovery worker", () => {
     expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12, monthlyIsPrimaryWindow: true }, "team")).toBe(true);
     // Go/Free are governed by the monthly window either way, so the flag is not required.
     expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12 }, "go")).toBe(true);
+
+    // The flag has to survive the cache, or the guard is decorative: a snapshot that keeps
+    // monthlyPercent while dropping its provenance looks exactly like tertiary-only data.
+    // setAccountQuotaFromParsed() rebuilds the record field by field, so this is a real
+    // drop risk rather than a theoretical one.
+    const parsedMonthly = parseUsageQuota({
+      plan_type: "team",
+      rate_limit: {
+        primary_window: { used_percent: 12, limit_window_seconds: 2_628_000, reset_at: 1_900_000_000 },
+      },
+    } as never);
+    expect(parsedMonthly?.monthlyIsPrimaryWindow).toBe(true);
+    setAccountQuotaFromParsed("provenance-probe", parsedMonthly);
+    expect(getAccountQuota("provenance-probe")?.monthlyIsPrimaryWindow).toBe(true);
     // Missing EVIDENCE still fails closed — that is the guard that matters.
     expect(isCompleteCodexQuotaRecoverySnapshot({}, "plus")).toBe(false);
     expect(isCompleteCodexQuotaRecoverySnapshot(null, "plus")).toBe(false);
