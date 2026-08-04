@@ -848,9 +848,14 @@ switch (command) {
   }
   case "sync-cache": {
     const restartCodex = args.slice(1).includes("--restart-codex");
-    const { invalidateCodexModelsCache } = await import("../codex/catalog");
+    const { withCatalogWriteSerialization } = await import("../codex/catalog-write-serialization");
+    const { invalidateCodexModelsCacheWithPermit } = await import("../codex/catalog/sync");
+    const { getCodexHome } = await import("../codex/paths");
+    const owningCodexHome = getCodexHome();
+    const invalidated = withCatalogWriteSerialization(owningCodexHome, permit =>
+      invalidateCodexModelsCacheWithPermit(permit, owningCodexHome));
     // Only warn/restart when models_cache was actually rewritten from a readable catalog.
-    if (invalidateCodexModelsCache()) {
+    if (invalidated.kind === "completed" && invalidated.value) {
       const { afterCatalogWriteHandleAppServers } = await import("../codex/app-server-processes");
       afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
     }

@@ -1,4 +1,5 @@
-import { chmodSync, linkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 import {
   AtomicWriteResidualTempError,
@@ -138,6 +139,7 @@ function publishCatalogBackup(
 ): CatalogBackupPublication {
   const io = suppliedIo ?? defaultBackupWriteIO(prepared.path);
   const target = io.resolveTarget(prepared.path);
+  if (!suppliedIo) mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
   const tempPath = `${target}.ocx.${process.pid}.backup.${++backupTempSequence}.tmp`;
   let hardened = false;
 

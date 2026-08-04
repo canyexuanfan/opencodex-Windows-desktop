@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { atomicWriteFile, loadConfig, subagentDefaultSyncEffective, websocketsEnabled } from "../config";
 import { markJournalInjectedState, removeJournal, restoreJournalState, writeJournal } from "./journal";
-import { restoreCodexCatalog } from "./catalog";
+import { withCatalogWriteSerialization } from "./catalog-write-serialization";
+import { restoreCodexCatalogWithPermit } from "./catalog/sync";
 import { migrateHistoryToOpenai, syncCodexHistoryProvider } from "./history-provider";
 import {
   OCX_SECTION_MARKER,
@@ -13,7 +14,7 @@ import {
   rootTomlString,
   tomlStringPattern,
 } from "./injected-marker";
-import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH, DEFAULT_CATALOG_PATH, parseTomlString, readRootTomlString, resolveCodexConfigPath, tomlString } from "./paths";
+import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH, DEFAULT_CATALOG_PATH, getCodexHome, parseTomlString, readRootTomlString, resolveCodexConfigPath, tomlString } from "./paths";
 import { resolveEffectiveProjectModelProvider } from "./project-config-warnings";
 import {
   transformManagedSubagentDefaults,
@@ -771,7 +772,12 @@ export function restoreNativeCodex(): { success: boolean; message: string } {
   const cfg = journal.configRestored
     ? { success: true, message: "Codex config restored from opencodex journal." }
     : removeCodexConfig({ preserveProfile: journal.profileRestored || journal.profileChanged });
-  const cat = restoreCodexCatalog();
+  const owningCodexHome = getCodexHome();
+  const restoredCatalog = withCatalogWriteSerialization(owningCodexHome, permit =>
+    restoreCodexCatalogWithPermit(permit, owningCodexHome));
+  const cat = restoredCatalog.kind === "completed"
+    ? restoredCatalog.value
+    : { removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH };
   // Design B (loopback) steady state: threads are already tagged openai, so prove the
   // no-op with a readonly probe instead of write-opening a DB the Codex app may hold
   // (Windows: WAL writer lock -> seconds of stalling + a false warning on every stop).
