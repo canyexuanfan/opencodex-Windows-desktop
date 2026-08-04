@@ -209,6 +209,15 @@ describe("provider registry parity", () => {
     }
   });
 
+  test("providerConfigSeed preserves the registry auth kind, including local", () => {
+    const local = PROVIDER_REGISTRY.find(entry => entry.authKind === "local");
+    expect(local).toBeDefined();
+    expect(providerConfigSeed(local!).authMode).toBe("local");
+    const key = PROVIDER_REGISTRY.find(entry => entry.id === "deepseek");
+    expect(key).toBeDefined();
+    expect(providerConfigSeed(key!).authMode).toBe("key");
+  });
+
   test("CN provider defaults and context windows match the audited registry refresh", () => {
     const deepseek = PROVIDER_REGISTRY.find(entry => entry.id === "deepseek");
     expect(deepseek).toMatchObject({

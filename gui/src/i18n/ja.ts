@@ -1,5 +1,8 @@
 import type { TKey } from "./en";
 
+/**
+ * Japanese i18n catalog; must match the `TKey` set (compile-checked).
+ */
 export const ja: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "ダッシュボード",
@@ -534,6 +537,14 @@ export const ja: Record<TKey, string> = {
   "logs.detail.attempt.reason": "結果 / 理由",
   "logs.detail.attempt.completed": "完了",
   "logs.detail.attempt.e2eNote": "トップレベルの tok/s はエンドツーエンドです; 各試行は自身の所要時間を使います。",
+  "logs.detail.attempt.recovery.transient5xx": "一時的な5xxエラー",
+  "logs.detail.attempt.recovery.connectionReset": "接続がリセットされました",
+  "logs.detail.attempt.recovery.oauth401": "OAuth 再認証",
+  "logs.detail.attempt.recovery.key429": "キーがレート制限 (429)",
+  "logs.detail.attempt.recovery.rateLimit429": "レート制限 (429)",
+  "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth レート制限 (429)",
+  "logs.detail.attempt.recovery.image413": "画像ペイロードが大きすぎます (413)",
+  "logs.detail.attempt.recovery.unknown": "不明なリカバリ理由",
   "logs.detail.reason.usage_missing": "使用量が報告されませんでした。",
   "logs.detail.reason.usage_unsupported": "このプロバイダーは使用量を報告しません。",
   "logs.detail.reason.output_missing": "正の出力トークン数が報告されませんでした。",

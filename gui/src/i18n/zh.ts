@@ -1,5 +1,8 @@
 import type { TKey } from "./en";
 
+/**
+ * Chinese i18n catalog; must match the `TKey` set (compile-checked).
+ */
 export const zh: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "仪表盘",
@@ -561,6 +564,14 @@ export const zh: Record<TKey, string> = {
   "logs.detail.attempt.reason": "结果 / 原因",
   "logs.detail.attempt.completed": "已完成",
   "logs.detail.attempt.e2eNote": "顶层 tok/s 为端到端值；每次尝试使用各自耗时。",
+  "logs.detail.attempt.recovery.transient5xx": "临时 5xx 错误",
+  "logs.detail.attempt.recovery.connectionReset": "连接已重置",
+  "logs.detail.attempt.recovery.oauth401": "OAuth 重新认证",
+  "logs.detail.attempt.recovery.key429": "密钥被限流 (429)",
+  "logs.detail.attempt.recovery.rateLimit429": "被限流 (429)",
+  "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth 被限流 (429)",
+  "logs.detail.attempt.recovery.image413": "图片载荷过大 (413)",
+  "logs.detail.attempt.recovery.unknown": "未知的恢复原因",
   "logs.detail.reason.usage_missing": "未上报 usage。",
   "logs.detail.reason.usage_unsupported": "该提供方不支持上报 usage。",
   "logs.detail.reason.output_missing": "未上报正数输出 token。",

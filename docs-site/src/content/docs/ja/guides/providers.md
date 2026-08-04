@@ -9,7 +9,7 @@ description: opencodex が LLM プロバイダーを認証し通信するすべ�
 ## OpenAI アカウントモード
 
 | プロバイダー ID | 用途 | 認証情報/アカウットルール |
- --- | --- | --- |
+| --- | --- | --- |
 | `openai` | Codex ログイン | Pool(デフォルト)はメイン + 追加アカウントを選び、Direct は現在の caller/メインログインのみを使います。 |
 | `openai-apikey` | OpenAI API | 設定された API キー/キープールのみを使い、Codex アカウントは読みません。 |
 
@@ -49,10 +49,15 @@ Codex login を Pool モードで使うと、Providers の概要には任意の 
 ローカルプリセットを別に分類します。ローカルプリセットでは通常 `authMode` と `apiKey` を両方使いません。
 
 | `authMode` | 認証方式 | 用途 |
- --- | --- | --- |
+| --- | --- | --- |
 | `key` | API キーを送信します(`Authorization: Bearer …`、またはアダプターにより `x-api-key` / `api-key`)。キーはリテラルまたは `${ENV_VAR}` 参照です。 | 大半のプロバイダー。 |
 | `forward` | **受け取った Codex 認証ヘッダーを**プロバイダーにそのまま中継します — キーを保存しません。ChatGPT ログインのパススルーです。 | OpenAI(`openai-responses` アダプター)。 |
 | `oauth` | 保存された OAuth アクセストークンを読み込み bearer キーとして使い、期限切れ前に自動更新します。 | xAI、Anthropic、Kimi、Kiro、Google Antigravity、Cursor。 |
+
+[`retryOn429`](/ja/reference/configuration/)（同一キーでの 429 リトライ）は API キー プロバイダー
+（`authMode: "key"`）のみに適用されます。OAuth・forward・ローカル プリセットは除外されます —
+同じトークンを再送すべきではなく、ローカルランタイムには保存すべきリモートキーがありません。
+オプトインです: オプションが無ければ無効、オブジェクトがあれば `enabled: false` でない限り有効です。
 
 ## 1. ChatGPT ログイン(forward / パススルー)
 
@@ -157,7 +162,7 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 無料試用モデルとして文書化されています。
 
 | プロバイダー | ベース URL |
- --- | --- |
+| --- | --- |
 | **OpenAI (API キー)** | `https://api.openai.com/v1` |
 | **Anthropic (API キー)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
@@ -266,7 +271,7 @@ OAuth、API キープールを確認・切り替えできます。完全なコ�
 Sol/Terra/Luna をフォールバックリストに入れています。
 
 | Codex 経路 | 事前登録されたモデル ID | Codex に表示されるコンテキスト |
- --- | --- | --- |
+| --- | --- | --- |
 | Codex ログイン(Pool または Direct) | `gpt-5.6-*` | 372,000 |
 | OpenAI (API キー) | `openai-apikey/gpt-5.6-*` と `*-pro` | 1,050,000 (max input 922,000) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 1,050,000 |
@@ -287,6 +292,15 @@ Amazon Bedrock ネイティブ API のような、これらの実装のいずれ
 交換し、有効な Copilot サブスクリプションが必要で GitHub ポリシー変更でブロックされる可能性あり)。GitLab Duo は Bearer
 **サブスクリプショントークン**(通常の API キーではない)で認証します。**Cloudflare AI
 Gateway** は URL にアカウント + ゲートウェイ ID を埋める必要があります。
+
+Copilot は混在 wire カタログを提供します。GPT-5 系モデル（`gpt-5.3-codex`、`gpt-5.4`、
+`gpt-5.4-mini`、`gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`）はエージェント
+通信の `/chat/completions` を拒否するため、opencodex はこれらのモデルを組み込みデフォルトで
+Responses API 経由にルーティングし、他の Copilot モデルはすべて chat completions のままです。
+優先順位は次のとおりです: ハード wire ピン → 明示的な
+[`modelAdapters`](/ja/reference/configuration/providers/) エントリ → レジストリのデフォルト →
+プロバイダー全体の adapter。組み込みデフォルトのないモデル（例: `gpt-5.4-nano`）を Responses
+に移すには、`"modelAdapters": { "gpt-5.4-nano": "openai-responses" }` を設定してください。
 
 Cursor は別の実験的アダプターとして追跡します。`adapter: "cursor"` は `ocx init` とダッシュボード Add
 Provider ピッカーに実験的 local config 項目として表示され、Cursor の静的フォールバックモデルカタログ
@@ -321,7 +335,7 @@ Ollama の `:size` タグに寛容なので `gpt-oss` は `gpt-oss:120b` と `gp
 opencodex をローカルの OpenAI 互換サーバーに向けてください — 通常は空キーで使います:
 
 | プロバイダー | ベース URL |
- --- | --- |
+| --- | --- |
 | Ollama (local) | `http://localhost:11434/v1` |
 | vLLM | `http://localhost:8000/v1` |
 | LM Studio | `http://localhost:1234/v1` |
