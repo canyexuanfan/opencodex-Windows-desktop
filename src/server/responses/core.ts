@@ -175,6 +175,8 @@ import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/cat
 import { buildToolBridgeMaps, collabSurface, injectDeveloperMessage, multiAgentGuidanceText } from "./collaboration";
 import { hasUnreadableEncryptedAgentTask, looksLikeBackendCiphertext, sanitizeEncryptedContentInPlace } from "./encrypted-payload";
 import { fetchWithHeaderTimeout, providerFetch, safeHostLabel } from "./fetch-helpers";
+import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
+import { upstreamHostHealthKey } from "../../codex/upstream-host-health";
 import { guardTerminalEventStream } from "./terminal-guard";
 
 /**
@@ -436,6 +438,9 @@ async function retryCodexPoolOnAlternateAccount(
       connectMs,
       stream,
       providerFetch(route.provider),
+      // Credential-bearing forward send: never follow a redirect into a
+      // dead-host rejection after the credential was seen (#914).
+      route.provider.authMode === "forward",
     );
     return {
       kind: "retried",
@@ -1742,7 +1747,7 @@ async function handleResponsesInner(
     const transportFailureResponse = (err: unknown): Response => {
       upstream.abort();
       if (options.abortSignal?.aborted) return clientCancelledResponse();
-      const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
+      const outcome = classifyTransportFailureKind(err);
       if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
@@ -1751,6 +1756,15 @@ async function handleResponsesInner(
           probeLeaseId: codexProbeLeaseId(authCtx),
           probeQuotaScope: codexProbeQuotaScope(authCtx),
           writerGeneration: authCtx.writerGeneration,
+          // Proven pre-connection reachability failures (DNS / TCP refusal) are
+          // host-wide, not account evidence: record them in the (provider, host)
+          // ledger instead of the account's failure streak (#914).
+          ...(outcome === "connect_neutral"
+            ? {
+              hostKey: upstreamHostHealthKey(route.providerName, safeHostLabel(request.url)),
+              lastFailureCode: transportErrorCode(err),
+            }
+            : {}),
         });
       }
       const msg = outcome === "timeout"
@@ -1769,7 +1783,8 @@ async function handleResponsesInner(
             method: request.method,
             headers: request.headers,
             body: request.body,
-          }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+          }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider),
+            route.provider.authMode === "forward");
         },
         { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
       );
@@ -1823,7 +1838,8 @@ async function handleResponsesInner(
               method: request.method,
               headers: request.headers,
               body: request.body,
-            }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+            }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider),
+              route.provider.authMode === "forward");
           },
           { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
         );
@@ -2804,6 +2820,18 @@ async function handleResponsesInner(
         continue recovery;
       }
       break;
+    }
+    // Manual-redirect policy (#914): a 3xx is relayed as-is (Location preserved)
+    // so a redirect to a dead host can never masquerade as a pre-connection
+    // failure after the credential was seen. Neutral class — no account/host
+    // health outcome is recorded for it.
+    if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
+      cleanupUpstreamAbort();
+      return new Response(upstreamResponse.body, {
+        status: upstreamResponse.status,
+        statusText: upstreamResponse.statusText,
+        headers: sanitizePassthroughHeaders(upstreamResponse.headers),
+      });
     }
     if (!upstreamResponse.ok) {
       if (options.comboAttempt) {

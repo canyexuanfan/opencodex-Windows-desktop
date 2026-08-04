@@ -17,6 +17,7 @@ import {
   recordCodexUpstreamOutcome,
 } from "../src/codex/routing";
 import { loadConfig, saveConfig } from "../src/config";
+import { getUpstreamHostHealth, upstreamHostHealthKey } from "../src/codex/upstream-host-health";
 import { deriveProviderPresets } from "../src/providers/derive";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import {
@@ -2678,10 +2679,12 @@ describe("server local API auth", () => {
       });
 
       expect(response.status).toBe(502);
-      expect(getCodexUpstreamHealth("pool-a")).toMatchObject({
-        consecutiveFailures: 1,
-        lastFailureStatus: 0,
-      });
+      // #914: a dead-port refusal is pre-connection — host-wide, not account
+      // evidence. Account health stays untouched; the (provider, host) ledger
+      // records the failure instead.
+      expect(getCodexUpstreamHealth("pool-a")).toBeNull();
+      expect(getUpstreamHostHealth(upstreamHostHealthKey("openai", "chatgpt.com")))
+        .toMatchObject({ consecutiveFailures: 1, lastFailureCode: "ConnectionRefused" });
     } finally {
       await server.stop(true);
     }

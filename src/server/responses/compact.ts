@@ -68,6 +68,8 @@ import {
   applyUpstreamRecoveryInit,
   type UpstreamSendRecovery,
 } from "../../lib/upstream-retry";
+import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
+import { upstreamHostHealthKey } from "../../codex/upstream-host-health";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider, supportsNativeResponsesCompactEndpoint } from "../../providers/openai-tiers";
@@ -191,6 +193,8 @@ const COMPACT_PASSTHROUGH_HEADERS = [
   "x-codex-primary-reset-at",
   "x-codex-secondary-reset-at",
   "x-codex-tertiary-reset-at",
+  // A relayed 3xx keeps its Location so the client can follow it (#914).
+  "location",
 ];
 
 function compactResponseHeaders(upstream: Response): Headers {
@@ -362,6 +366,8 @@ export async function handleResponsesCompact(
         retryAfter?: string | null;
         resetAt?: unknown | unknown[];
         promoteAccountId?: string;
+        hostKey?: string;
+        lastFailureCode?: string;
       } = {},
     ) => {
       if (!usesCodexForwardPoolAuth(ctx, route.provider)) return;
@@ -398,6 +404,9 @@ export async function handleResponsesCompact(
         connectMs,
         false,
         providerFetch(sendProvider),
+        // Every credential-bearing forward send gets manual redirects, not only
+        // pool sends: direct mode carries the caller's credential too (#914).
+        sendProvider.authMode === "forward",
       );
       return recovery === "single"
         ? doFetch()
@@ -417,8 +426,15 @@ export async function handleResponsesCompact(
         recordCompactPoolOutcome(outcomeCtx, 499);
         return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
       }
-      const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
-      recordCompactPoolOutcome(outcomeCtx, outcome);
+      const outcome = classifyTransportFailureKind(err);
+      recordCompactPoolOutcome(outcomeCtx, outcome, {
+        ...(outcome === "connect_neutral"
+          ? {
+            hostKey: upstreamHostHealthKey(route.providerName, safeHostLabel(compactUrl)),
+            lastFailureCode: transportErrorCode(err),
+          }
+          : {}),
+      });
       return formatErrorResponse(502, "upstream_error", "Failed to connect to compact upstream");
     }
 
@@ -485,8 +501,15 @@ export async function handleResponsesCompact(
             recordCompactPoolOutcome(outcomeCtx, 499);
             return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
           }
-          const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
-          recordCompactPoolOutcome(outcomeCtx, outcome);
+          const outcome = classifyTransportFailureKind(err);
+          recordCompactPoolOutcome(outcomeCtx, outcome, {
+            ...(outcome === "connect_neutral"
+              ? {
+                hostKey: upstreamHostHealthKey(route.providerName, safeHostLabel(compactUrl)),
+                lastFailureCode: transportErrorCode(err),
+              }
+              : {}),
+          });
           return formatErrorResponse(502, "upstream_error", "Failed to connect to compact upstream");
         }
       }
