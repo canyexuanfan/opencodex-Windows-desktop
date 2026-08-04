@@ -452,6 +452,29 @@ describe("server combo failover 030 activation matrix", () => {
     }
   });
 
+  test("terminal combo failure keeps the combo trace through child adoption", async () => {
+    const a = serve(() => Response.json({ error: { message: "overloaded" } }, { status: 503 }));
+    const b = serve(() => Response.json({ error: { message: "overloaded" } }, { status: 503 }));
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await postLogged(config);
+    expect(response.status).toBeGreaterThanOrEqual(500);
+    await response.text();
+    const { log, usage } = await latestAttemptReceipts(config);
+    for (const receipt of [log, usage]) {
+      expect(receipt.routeDecision).toBeDefined();
+      expect(receipt.routeDecision.routeKind).toBe("combo");
+      expect(receipt.routeDecision.selected).toMatchObject({
+        provider: "a",
+        model: "m1",
+        reason: "combo-pick",
+      });
+      expect(receipt.attempts).toHaveLength(2);
+    }
+  });
+
   test("preserves distinct failed and winning reasoning wires through restart hydration", async () => {
     const bodies: Array<{ provider: string; effort?: unknown }> = [];
     const a = serve(async request => {

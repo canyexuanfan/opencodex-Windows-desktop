@@ -195,7 +195,7 @@ describe("route decision traces (RI-01)", () => {
   test("normalization marks truncation applied to oversized persisted rows", () => {
     const raw = {
       version: 1,
-      decisionId: "d",
+      decisionId: "abcdef012345",
       createdAt: 1,
       requestedModel: "y".repeat(300),
       routeKind: "combo",
@@ -366,9 +366,9 @@ describe("route decision traces (RI-01)", () => {
   });
 
   test("normalizer bounds hand-edited oversized rows", () => {
-    const raw = {
-      version: 1,
-      decisionId: "abc",
+      const raw = {
+        version: 1,
+        decisionId: "0123456789ab",
       createdAt: 1,
       requestedModel: "y".repeat(400),
       routeKind: "native",

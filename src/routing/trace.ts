@@ -346,17 +346,39 @@ function enforceByteBudget(trace: RouteDecisionTraceV1): RouteDecisionTraceV1 {
     candidates: kept,
     selected: { ...slimmed.selected, candidateIndex: Math.min(selectedIndex, kept.length - 1) },
   };
-  // Last resort: halving candidates still over budget (only reachable with
-  // pathological strings) - drop to 8 exclusions per candidate, deterministically.
-  if (serializedByteLength(result) > MAX_TRACE_BYTES) {
-    result = {
-      ...result,
-      truncated: { ...result.truncated, exclusions: true as const },
-      candidates: result.candidates.map(candidate => ({
-        ...candidate,
-        exclusions: candidate.exclusions.slice(0, 8),
-      })),
-    };
+  // Last resort: keep shrinking deterministically until the byte budget holds.
+  // Each stage reduces a bounded dimension, and a single candidate with no
+  // exclusions is provably below MAX_TRACE_BYTES given the string cap, so the
+  // loop terminates.
+  for (let stage = 0; stage < 4 && serializedByteLength(result) > MAX_TRACE_BYTES; stage++) {
+    if (stage === 0) {
+      result = {
+        ...result,
+        truncated: { ...result.truncated, exclusions: true as const },
+        candidates: result.candidates.map(candidate => ({
+          ...candidate,
+          exclusions: candidate.exclusions.slice(0, 8),
+        })),
+      };
+    } else if (stage === 1) {
+      result = {
+        ...result,
+        truncated: { ...result.truncated, exclusions: true as const },
+        candidates: result.candidates.map(candidate => ({ ...candidate, exclusions: [] })),
+      };
+    } else {
+      const half = Math.max(1, Math.ceil(result.candidates.length / 2));
+      const index = result.selected.candidateIndex;
+      const shrinkKept = index < half
+        ? result.candidates.slice(0, half)
+        : [...result.candidates.slice(0, half - 1), result.candidates[index]!];
+      result = {
+        ...result,
+        truncated: { ...result.truncated, candidates: true as const },
+        candidates: shrinkKept,
+        selected: { ...result.selected, candidateIndex: Math.min(index, shrinkKept.length - 1) },
+      };
+    }
   }
   return result;
 }
@@ -424,8 +446,9 @@ function parseCapability(raw: unknown, caps: ParseCaps): RouteCapabilityEvidence
   const structuredOutput = unknownable(raw.structuredOutput);
   if (structuredOutput !== undefined) out.structuredOutput = structuredOutput;
   if (Array.isArray(raw.reasoningEfforts)
-    && raw.reasoningEfforts.every((value): value is string => typeof value === "string")) {
-    if (raw.reasoningEfforts.some((value: string) => value.length > MAX_TRACE_STRING)) caps.strings = true;
+    && raw.reasoningEfforts.slice(0, 8).every((value): value is string => typeof value === "string")) {
+    if (raw.reasoningEfforts.some((value: unknown) => typeof value === "string"
+      && value.length > MAX_TRACE_STRING)) caps.strings = true;
     out.reasoningEfforts = raw.reasoningEfforts
       .slice(0, 8)
       .map(value => value.slice(0, MAX_TRACE_STRING));
@@ -511,10 +534,12 @@ function parseCandidate(raw: unknown, caps: ParseCaps): RouteCandidateTrace | nu
   if (model.length > MAX_TRACE_STRING) caps.strings = true;
   if (typeof raw.accountRef === "string" && raw.accountRef.length > MAX_TRACE_STRING) caps.strings = true;
   if (typeof raw.eligible !== "boolean") return null;
-  const exclusions = Array.isArray(raw.exclusions)
-    ? raw.exclusions.map(value => parseExclusion(value, caps)).filter((value): value is RouteExclusionReason => value !== null)
-    : [];
   if (Array.isArray(raw.exclusions) && raw.exclusions.length > MAX_EXCLUSIONS_PER_CANDIDATE) caps.exclusions = true;
+  const exclusions = Array.isArray(raw.exclusions)
+    ? raw.exclusions.slice(0, MAX_EXCLUSIONS_PER_CANDIDATE)
+      .map(value => parseExclusion(value, caps))
+      .filter((value): value is RouteExclusionReason => value !== null)
+    : [];
   const capability = parseCapability(raw.capability, caps);
   const health = parseHealth(raw.health);
   const quota = parseQuota(raw.quota, caps);
@@ -550,6 +575,7 @@ export function normalizeRouteDecisionTrace(raw: unknown): RouteDecisionTraceV1 
   const requestedModel = raw.requestedModel;
   const routeKind = raw.routeKind;
   if (typeof decisionId !== "string" || decisionId.length === 0) return null;
+  if (!/^[0-9a-f]{12}$/.test(decisionId)) return null;
   if (decisionId.length > MAX_TRACE_STRING) caps.strings = true;
   if (!finiteNumber(createdAt)) return null;
   if (typeof requestedModel !== "string" || requestedModel.length === 0) return null;
@@ -559,6 +585,7 @@ export function normalizeRouteDecisionTrace(raw: unknown): RouteDecisionTraceV1 
   if (raw.candidates.length > MAX_TRACE_CANDIDATES) caps.candidates = true;
 
   const candidates = raw.candidates
+    .slice(0, MAX_TRACE_CANDIDATES)
     .map(value => parseCandidate(value, caps))
     .filter((value): value is RouteCandidateTrace => value !== null)
     .slice(0, MAX_TRACE_CANDIDATES);
@@ -584,6 +611,7 @@ export function normalizeRouteDecisionTrace(raw: unknown): RouteDecisionTraceV1 
   const rawRequirements = Array.isArray(raw.requirements) ? raw.requirements : [];
   if (rawRequirements.length > MAX_REQUIREMENTS) caps.requirements = true;
   const requirements = rawRequirements
+    .slice(0, MAX_REQUIREMENTS)
     .map(value => parseRequirement(value, caps))
     .filter((value): value is RouteRequirementEvidence => value !== null)
     .slice(0, MAX_REQUIREMENTS);
