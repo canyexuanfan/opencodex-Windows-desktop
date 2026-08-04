@@ -56,6 +56,11 @@ type ConfigObservation = {
   catalogTargets: CatalogTarget[];
 };
 
+type RolloutReference = {
+  id: string;
+  path: string;
+};
+
 const CONFIG_FILE_NAME = basename(CODEX_CONFIG_PATH);
 const PROFILE_FILE_NAME = basename(CODEX_PROFILE_PATH);
 const CATALOG_FILE_NAME = basename(DEFAULT_CATALOG_PATH);
@@ -339,6 +344,67 @@ function classifyPartialWrites(targetPaths: string[]): NativeRoutedResidueResult
   return { kind: "clean" };
 }
 
+function classifyReferencedRollout(
+  surface: "history" | "history-backup",
+  reference: RolloutReference,
+): NativeRoutedResidueResult {
+  const read = readRegularFile(reference.path);
+  if (read.kind === "absent") {
+    return indeterminate(surface, reference.path, "referenced rollout is absent");
+  }
+  if (read.kind === "indeterminate") return indeterminate(surface, reference.path, read.reason);
+
+  let first: Record<string, unknown> | undefined;
+  let latest: Record<string, unknown> | undefined;
+  for (const line of read.content.split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch (error) {
+      return indeterminate(surface, read.path, `malformed rollout JSONL: ${errorReason(error)}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return indeterminate(surface, read.path, "rollout JSONL record is not an object");
+    }
+    const record = parsed as Record<string, unknown>;
+    if (record.type !== "session_meta") continue;
+    if (!record.payload || typeof record.payload !== "object" || Array.isArray(record.payload)) {
+      return indeterminate(surface, read.path, "session_meta payload has an unknown shape");
+    }
+    const payload = record.payload as Record<string, unknown>;
+    first ??= payload;
+    latest = payload;
+  }
+
+  if (!first || !latest) {
+    return indeterminate(surface, read.path, "referenced rollout has no session_meta metadata");
+  }
+  for (const [position, payload] of [["first", first], ["latest", latest]] as const) {
+    if (payload.id !== reference.id) {
+      return indeterminate(surface, read.path, `${position} session_meta does not identify the referenced thread`);
+    }
+    if (typeof payload.model_provider !== "string" || !payload.model_provider) {
+      return indeterminate(surface, read.path, `${position} session_meta has no provider metadata`);
+    }
+    if (payload.model_provider === "opencodex") {
+      return { kind: "residue", surface, path: read.path };
+    }
+  }
+  return { kind: "clean" };
+}
+
+function classifyReferencedRollouts(
+  surface: "history" | "history-backup",
+  references: RolloutReference[],
+): NativeRoutedResidueResult {
+  for (const reference of references) {
+    const result = classifyReferencedRollout(surface, reference);
+    if (result.kind !== "clean") return result;
+  }
+  return { kind: "clean" };
+}
+
 function classifyHistoryDatabase(path: string): NativeRoutedResidueResult {
   const resolved = resolveRegularFile(path);
   if (resolved.kind === "absent") {
@@ -358,17 +424,28 @@ function classifyHistoryDatabase(path: string): NativeRoutedResidueResult {
   try {
     database = new Database(resolved.path, { readonly: true });
     database.exec("PRAGMA busy_timeout = 100");
-    const row = database.query<{ n: number }, []>(`
-      SELECT count(*) AS n
+    const rows = database.query<{ id: string; rollout_path: string; model_provider: string }, []>(`
+      SELECT id, rollout_path, model_provider
       FROM threads
-      WHERE model_provider = 'opencodex'
-        AND trim(coalesce(first_user_message, '')) != ''
-    `).get();
+    `).all();
+    for (const row of rows) {
+      if (typeof row.id !== "string" || !row.id || typeof row.rollout_path !== "string" || !row.rollout_path) {
+        return indeterminate("history", resolved.path, "history row has an unknown rollout reference");
+      }
+      if (typeof row.model_provider !== "string" || !row.model_provider) {
+        return indeterminate("history", resolved.path, "history row has no provider metadata");
+      }
+    }
+    const rollouts = classifyReferencedRollouts(
+      "history",
+      rows.map(row => ({ id: row.id, path: row.rollout_path })),
+    );
+    if (rollouts.kind !== "clean") return rollouts;
     const after = statSync(resolved.path);
     if (!sameStat(resolved.stat, after)) {
       return indeterminate("history", resolved.path, "history database changed while it was being observed");
     }
-    return (row?.n ?? 0) > 0
+    return rows.some(row => row.model_provider === "opencodex")
       ? { kind: "residue", surface: "history", path: resolved.path }
       : { kind: "clean" };
   } catch (error) {
@@ -410,7 +487,22 @@ function classifyHistoryBackup(path: string, stateDatabasePath: string): NativeR
       return indeterminate("history-backup", read.path, "history backup names a different state database");
     }
   }
-  return Object.keys(manifest.entries as Record<string, unknown>).length > 0
+  const entries = Object.values(manifest.entries as Record<string, unknown>);
+  const references: RolloutReference[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return indeterminate("history-backup", read.path, "history backup entry has an unknown shape");
+    }
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate.id !== "string" || !candidate.id
+      || typeof candidate.rolloutPath !== "string" || !candidate.rolloutPath) {
+      return indeterminate("history-backup", read.path, "history backup entry has an unknown rollout reference");
+    }
+    references.push({ id: candidate.id, path: candidate.rolloutPath });
+  }
+  const rollouts = classifyReferencedRollouts("history-backup", references);
+  if (rollouts.kind !== "clean") return rollouts;
+  return entries.length > 0
     ? { kind: "residue", surface: "history-backup", path: read.path }
     : { kind: "clean" };
 }

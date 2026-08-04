@@ -71,7 +71,22 @@ function routedCatalog(): string {
   return JSON.stringify({ models }, null, 2) + "\n";
 }
 
-function createHistoryDatabase(modelProvider: "openai" | "opencodex"): void {
+function sessionMeta(id: string, modelProvider: string): string {
+  return JSON.stringify({
+    timestamp: "2026-08-04T00:00:00.000Z",
+    type: "session_meta",
+    payload: { id, model_provider: modelProvider, source: "cli" },
+  });
+}
+
+function createHistoryDatabase(
+  modelProvider: "openai" | "opencodex",
+  rolloutProviders: string[] = [modelProvider],
+): void {
+  writeFileSync(
+    pathInCodexHome("rollout.jsonl"),
+    rolloutProviders.map(provider => sessionMeta("thread-1", provider)).join("\n") + "\n",
+  );
   const database = new Database(pathInCodexHome("state_5.sqlite"));
   database.exec(`
     CREATE TABLE threads (
@@ -151,19 +166,22 @@ const residueFixtures: Array<{
   {
     name: "history backup entry",
     surface: "history-backup",
-    arrange: () => writeFileSync(historyBackupPath(), JSON.stringify({
-      version: 1,
-      stateDbPath: join(realpathSync.native(codexHome), "state_5.sqlite"),
-      entries: {
-        "thread-1": {
-          id: "thread-1",
-          rolloutPath: pathInCodexHome("rollout.jsonl"),
-          modelProvider: "openai",
-          source: "cli",
-          hasUserEvent: 1,
+    arrange: () => {
+      writeFileSync(pathInCodexHome("rollout.jsonl"), sessionMeta("thread-1", "openai") + "\n");
+      writeFileSync(historyBackupPath(), JSON.stringify({
+        version: 1,
+        stateDbPath: join(realpathSync.native(codexHome), "state_5.sqlite"),
+        entries: {
+          "thread-1": {
+            id: "thread-1",
+            rolloutPath: pathInCodexHome("rollout.jsonl"),
+            modelProvider: "openai",
+            source: "cli",
+            hasUserEvent: 1,
+          },
         },
-      },
-    })),
+      }));
+    },
   },
 ];
 
@@ -330,6 +348,120 @@ test("a slash-bearing catalog slug without OpenCodex authorship is indeterminate
   expect(classifyNativeRoutedResidue()).toMatchObject({
     kind: "indeterminate",
     surface: "catalog",
+  });
+});
+
+test("a native-tagged history row with routed latest rollout metadata refuses coordinator initialization", () => {
+  createHistoryDatabase("openai", ["openai", "opencodex"]);
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "residue",
+    surface: "history",
+    path: pathInCodexHome("rollout.jsonl"),
+  });
+  expect(readCodexTransitionState()).toEqual({
+    kind: "legacy-ambiguous",
+    message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
+  });
+});
+
+test("routed first rollout metadata is residue even when the latest metadata is native", () => {
+  createHistoryDatabase("openai", ["opencodex", "openai"]);
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "residue",
+    surface: "history",
+    path: pathInCodexHome("rollout.jsonl"),
+  });
+});
+
+test("a referenced rollout with native first and latest metadata is clean", () => {
+  createHistoryDatabase("openai", ["openai", "openai"]);
+
+  expect(classifyNativeRoutedResidue()).toEqual({ kind: "clean" });
+});
+
+for (const fixture of [
+  {
+    name: "missing",
+    arrange: () => {
+      createHistoryDatabase("openai");
+      rmSync(pathInCodexHome("rollout.jsonl"));
+    },
+  },
+  {
+    name: "malformed",
+    arrange: () => {
+      createHistoryDatabase("openai");
+      writeFileSync(pathInCodexHome("rollout.jsonl"), "{not-json\n");
+    },
+  },
+  {
+    name: "non-file",
+    arrange: () => {
+      createHistoryDatabase("openai");
+      rmSync(pathInCodexHome("rollout.jsonl"));
+      mkdirSync(pathInCodexHome("rollout.jsonl"));
+    },
+  },
+]) {
+  test(`a ${fixture.name} rollout referenced by a live history row is indeterminate`, () => {
+    fixture.arrange();
+
+    expect(classifyNativeRoutedResidue()).toMatchObject({
+      kind: "indeterminate",
+      surface: "history",
+      path: pathInCodexHome("rollout.jsonl"),
+    });
+    expect(readCodexTransitionState()).toEqual({
+      kind: "legacy-ambiguous",
+      message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
+    });
+  });
+}
+
+test("a manifest-referenced routed rollout is residue", () => {
+  writeFileSync(pathInCodexHome("rollout.jsonl"), sessionMeta("thread-1", "opencodex") + "\n");
+  writeFileSync(historyBackupPath(), JSON.stringify({
+    version: 1,
+    stateDbPath: join(realpathSync.native(codexHome), "state_5.sqlite"),
+    entries: {
+      "thread-1": {
+        id: "thread-1",
+        rolloutPath: pathInCodexHome("rollout.jsonl"),
+        modelProvider: "openai",
+        source: "cli",
+        hasUserEvent: 1,
+      },
+    },
+  }));
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "residue",
+    surface: "history-backup",
+    path: pathInCodexHome("rollout.jsonl"),
+  });
+});
+
+test("a missing manifest-referenced rollout is indeterminate", () => {
+  writeFileSync(historyBackupPath(), JSON.stringify({
+    version: 1,
+    stateDbPath: join(realpathSync.native(codexHome), "state_5.sqlite"),
+    entries: {
+      "thread-1": {
+        id: "thread-1",
+        rolloutPath: pathInCodexHome("missing-rollout.jsonl"),
+        modelProvider: "openai",
+        source: "cli",
+        hasUserEvent: 1,
+      },
+    },
+  }));
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "indeterminate",
+    surface: "history-backup",
+    path: pathInCodexHome("missing-rollout.jsonl"),
   });
 });
 
