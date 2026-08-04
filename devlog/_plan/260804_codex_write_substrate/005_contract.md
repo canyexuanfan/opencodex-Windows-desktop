@@ -12,7 +12,7 @@ four phase docs are rewritten as consumers against the reviewer's section list.
 A contract nobody collected is a fifth opinion.
 
 All current-code citations in this document were rechecked on 2026-08-05 at
-`45f7bb7caf9c836b9d9a398c76ae4cb2f7461860`.
+`b8168510f32ef583f14660067e0783d88df5df0c`.
 
 ## IN / OUT
 
@@ -376,13 +376,27 @@ export type AuthorizeCodexLegacyHistoryRecovery = (
 ) => TransitionStateUpdate;
 
 /**
+ * Positive WP10 authority for the one missing-row exception. This is derived
+ * only by `history-job.ts` from a real retained high-level native callback.
+ */
+export type CodexCompatibilityNativeIntent =
+  | Readonly<{
+      kind: "retained-apply";
+      operation: Exclude<CodexHistoryOperation,
+        "restore-openai" | "recover-legacy-openai">;
+    }>
+  | Readonly<{
+      kind: "retained-restore";
+      operation: "restore-openai";
+    }>;
+
+/**
  * WP10-only bridge for current roots that predate WP12 native admission. The
- * transition-state owner supplies this closure only inside the already-open N
- * transaction that excluded the retained native mutation. It publishes the
- * newer history work without moving the native routing pair.
+ * transition-state owner binds this one-shot closure to both the already-open N
+ * handle and the complete row read from that handle after acquisition. Callers
+ * supply no expected row and cannot make the closure open another N connection.
  */
 export type AuthorizeCodexCompatibilityHistory = (
-  expected: CodexTransitionState,
   next: Readonly<{
     jobId: string;
     operation: Exclude<CodexHistoryOperation, "recover-legacy-openai">;
@@ -399,6 +413,7 @@ type SynchronousCompatibilityHandoff<T> = T extends PromiseLike<unknown> ? never
  * transaction-bound closure, and returns before N is committed and released.
  */
 export type WithCodexCompatibilityNativeHandoff = <T>(
+  intent: CodexCompatibilityNativeIntent,
   mutateNativeAndAuthorize: (
     authorize: AuthorizeCodexCompatibilityHistory,
   ) => SynchronousCompatibilityHandoff<T>,
@@ -415,10 +430,13 @@ WP8b implements and exports `const readIntegrationRecord: ReadIntegrationRecord`
 and `const updateIntegrationRecord: UpdateIntegrationRecord` from
 `src/codex/integration-record.ts`, plus
 `readCodexTransitionState`, `beginCodexTransition`, and
-`authorizeCodexCompatibilityHistory`, `authorizeCodexLegacyHistoryRecovery`, and
 `updateCodexHistoryTransition` from
 `src/codex/transition-state.ts`; these are executable functions in that phase, not
-ambient declarations.
+ambient declarations. WP10 adds `withCodexCompatibilityNativeHandoff` and
+`authorizeCodexLegacyHistoryRecovery` there. There is deliberately no standalone
+runtime `authorizeCodexCompatibilityHistory(expected, next)` export: the only value
+of that type is the one-shot closure supplied by the handoff while its N transaction
+is live.
 
 The coordinator is a **sibling**, not an extension of `config-mutation.sqlite`.
 The existing database path is derived from `getConfigDir()`
@@ -557,15 +575,23 @@ schedule, and leave A free to terminally record the obsolete direction.
 WP10 therefore brings forward exactly one piece of WP11: the N-backed compatibility
 native-handoff exclusion. `history-job.ts` enters
 `withCodexCompatibilityNativeHandoff` **before** invoking a retained synchronous
-native mutation, receives an authorizer closure bound to that already-open N handle,
-and uses it before returning from the callback. The transaction then commits/releases
-N before any Worker spawn or await. Current apply/restore owners still derive one of
+native mutation, receives an authorizer closure bound to that already-open N handle
+and the complete row read from that handle after `BEGIN IMMEDIATE`, and uses it before
+returning from the callback. `authorize(next)` has no `expected` parameter and may be
+called once; a second call, callback return without one call, or attempted use after
+the callback is a transaction error and rolls back. It reads no coordinator state and
+opens no SQLite connection. This bound shape was chosen because passing `expected`
+would let a caller retain a pre-N row, while re-reading through
+`readCodexTransitionState` would open another `BEGIN IMMEDIATE` and contend with its
+own transaction (`src/codex/transition-state.ts:473-489`). The transaction then
+commits/releases N before any Worker spawn or await. Current apply/restore owners still derive one of
 `skip | apply-opencodex | migrate-openai | restore-openai`; they supply the derived
-operation and synchronous native callback to `history-job.ts`, never call the
-transition-state API directly, and never move native generation in WP10.
+operation as the matching `CodexCompatibilityNativeIntent` and supply the synchronous
+native callback to `history-job.ts`; they never call the transition-state API directly
+and never move native generation in WP10.
 
-That transaction-bound `authorizeCodexCompatibilityHistory` replaces the exact row
-observed when N was acquired with a fresh pending job id,
+That transaction-bound `authorize` closure replaces the exact row it captured from
+the already-open transaction with a fresh pending job id,
 `authority.kind:"wp10-compatibility"`, and fresh opaque authority id **regardless of
 whether the older history state is terminal, pending, or running**. N exclusion makes
 that authorization order the retained native-mutation order; replacing non-terminal
@@ -608,20 +634,51 @@ winner's timer, and schedule from the row returned by a fresh read. A zero-row
 guardian update means its timer was stale and is replaced from the current row.
 Database busy/unavailable is typed `busy`/`deferred`; no caller guesses success.
 
-Initialization first verifies the no-legacy/native-clean precondition while the
-native lock excludes another initializer, then uses one `BEGIN IMMEDIATE`
-transaction: create the table, then
-`INSERT OR IGNORE` singleton 1 as `{0,null}` with an `unknown` history observation,
-zero attempts and no job/operation/authority/timer/counts, and sets
-`PRAGMA user_version = 1`. That initialization is legal only when the
-JSON has no legacy `nativeGeneration`, `currentTxId`, `generation`, or durable
-`history` member and native observation finds no unresolved routed residue. When
-the row is absent, any such legacy field or native residue is `legacy-ambiguous`; automatic
-mutation refuses and explicit salvage/native-clean adoption must establish the row.
-An `OPENCODEX_HOME`-local positive pair is never imported because a second home may
-hold a different claimant. Once the row exists, legacy JSON fields have no authority
-and are removed on the next successful non-CAS record update while all unrelated
-unknown keys survive.
+The eleventh absence-as-guarantee review found that this strict initializer was the
+only production behavior available. The current owner refuses routed residue before
+inserting singleton 1 (`src/codex/transition-state.ts:263-303`), and the real routed-
+catalog fixture proves the missing coordinator returns `legacy-ambiguous`
+(`tests/codex-native-residue.test.ts:213-242`). A production-reference audit also
+finds no caller of `readCodexTransitionState`, `beginCodexTransition`, or
+`openCodexCoordinatorTransaction` outside the transition owner; the executable entry
+points at `src/codex/transition-state.ts:348-385,473-518` are reached only by tests
+today. Shipping the owner therefore did not initialize existing routed installations.
+
+The **general initializer remains unchanged and fail-closed**. Read/observe,
+`BeginCodexTransition`, Worker claim/terminal work, guardian retry, explicit legacy
+recovery, and direct transaction opens may create the ordinary unscheduled `{0,null}`
+row only when the JSON record is missing or valid with no legacy transition fields
+and every native surface is clean. Invalid/legacy JSON, routed residue, indeterminate
+native evidence, an existing unversioned/unsupported database, or an existing
+database with no authoritative singleton still refuses. The residue classifier
+checks every routed surface and returns any `indeterminate` result before `residue`
+(`src/codex/native-residue.ts:520-556`), so unreadable or ambiguous bytes cannot enter
+the exception. An `OPENCODEX_HOME`-local positive pair is never imported because a
+second home may hold a different claimant.
+
+WP10 adds one private **compatibility-adoption** mode beneath
+`withCodexCompatibilityNativeHandoff`; it is not an option on the public transaction
+opener. “Positively authorized” means all of the following are true: the sole graph-
+permitted caller is `history-job.ts`; it received a real retained high-level native
+callback; its closed intent is `retained-apply` with exactly
+`skip | apply-opencodex | migrate-openai` or `retained-restore` with exactly
+`restore-openai`; and the callback must consume the transaction-bound authorizer
+exactly once. Residue detection, startup observation, a Worker/guardian retry,
+history-only recovery, or an arbitrary operation value is not positive authority.
+
+When and only when that handoff finds a truly absent coordinator database, a missing
+or valid non-legacy integration record, and positively classified routed residue, it
+acquires `BEGIN IMMEDIATE` and captures **authoritative row absence plus that routed
+observation** without installing `{0,null,unknown}`. The retained native callback then
+runs. Its bound `authorize(next)` requires `next.operation === intent.operation` and,
+on the same already-open handle, creates the schema and inserts singleton 1 directly
+as generation zero, null txId, and the fresh complete
+`pending/wp10-compatibility` schedule; it then sets `user_version = 1`. Callback or
+authorization failure rolls the transaction back and dispatches no Worker. This is a
+compatibility schedule over evidence the current high-level operation just took
+responsibility for, not an empty baseline inferred from residue. Once the row exists,
+legacy JSON fields have no authority and are removed on the next successful non-CAS
+record update while all unrelated unknown keys survive.
 
 A missing JSON file is valid and the first provenance update creates `{version:1}`.
 Unreadable/unparseable JSON is not empty: provenance mutation fails closed. Unknown
@@ -1975,7 +2032,7 @@ these history scheduling edges:
 
 | WP10 transitional root | Permitted transition-state symbols | Required authority |
 |---|---|---|
-| `src/codex/history-job.ts` | `authorizeCodexCompatibilityHistory`, `authorizeCodexLegacyHistoryRecovery` | `wp10-compatibility` or `explicit-legacy-recovery`; never `admission-snapshot` |
+| `src/codex/history-job.ts` | `withCodexCompatibilityNativeHandoff`, `authorizeCodexLegacyHistoryRecovery` | bound `wp10-compatibility` closure or `explicit-legacy-recovery`; never `admission-snapshot` |
 | `src/codex/history-worker.ts` | `readCodexTransitionState`, `updateCodexHistoryTransition` | exact row-copied native pair, job, operation, and authority |
 
 `history-job.ts` receives the convergence-derived operation; it does not derive from
@@ -2054,10 +2111,37 @@ When called through the N-bound handoff after a newer retained native mutation, 
 must replace terminal, pending, and running older schedules with a fresh pending
 identity. The old Worker's terminal CAS must then change zero rows. Its authority id
 must not equal or derive from config/credential bytes and must not reach logs, JSON,
-responses, or exceptions.
-Missing DB/table initializes only from native-clean/no-legacy state;
-legacy JSON pair/schedule, residue beside a missing row, malformed row, busy DB and
-unsafe path all fail closed with the specified typed outcome.
+responses, or exceptions. Give B a deliberately stale complete row read before N,
+let A publish a newer schedule, then enter B's handoff. B's callback retains that
+stale object but has nowhere to pass it: the bound authorizer must use A's complete
+row read from B's already-open N handle and publish B. Instrument coordinator
+connection creation so any second handle throws; the handoff still succeeds with one
+connection. **Broken changes:** restore an `expected` argument, call
+`readCodexTransitionState()` inside the callback, or let the authorizer open another
+coordinator connection; B conflicts after its native mutation or the second-handle
+trap fires.
+The general missing-DB/table path initializes only from native-clean/no-legacy state;
+outside the explicit compatibility-adoption fixture, legacy JSON pair/schedule,
+residue beside a missing row, malformed row, busy DB and unsafe path all fail closed
+with the specified typed outcome.
+
+`tests/codex-native-residue.test.ts`: add two compatibility-adoption fixtures that
+begin with routed config, routed catalog, routed history rows/rollouts/manifest, and
+**no coordinator database** under temporary homes. The apply fixture enters the real
+`injectCodexConfig` high-level path
+(`src/codex/inject.ts:482-654`); the restore fixture enters real
+`restoreNativeCodex` (`src/codex/inject.ts:765-800`). Each must acquire N before its
+retained callback and commit generation zero with the exact pending compatibility
+operation before Worker dispatch; restore remains authorized even though its native
+callback removes the routed config/catalog residue captured at N acquisition. The
+Worker then repairs history and terminally owns the same schedule. Run matching
+negative fixtures for observe/read, guardian/Worker retry, explicit recovery,
+operation/intent mismatch, invalid legacy JSON, indeterminate residue, and an existing
+unversioned or rowless database; none may create a row or invoke the native callback.
+**Broken changes:** route the handoff through the strict clean-only initializer, let
+mere residue detection opt into adoption, insert an unscheduled `{0,null}` row first,
+or authorize restore from a post-callback clean observation; the real apply/restore
+fixture returns `legacy-ambiguous` or the named negative fixture creates authority.
 
 `tests/codex-convergence-contract.test.ts`: every `ConvergeOutcome` variant maps
 to the §5 row, `busy` carries `Retry-After`, and a best-effort management caller
@@ -2249,6 +2333,12 @@ native callback returns**, and **restore the terminal-only compatibility predica
 the attempted inversion publishes B first or the running-schedule case drops B, and
 the final-state/terminal-CAS assertions fail.
 
+The second ordering also carries B's deliberately stale pre-N row and a connection-
+creation trap. B must authorize from the complete row read on its one already-open N
+handle after A releases. Adding a caller-supplied expected row makes B conflict after
+its real native write; opening `readCodexTransitionState` or any second N connection
+self-contends and trips the connection assertion.
+
 Hold H in one process and prove a second service/CLI Worker for the same canonical
 home/state DB cannot enter manifest, rollout, DB, probe, or terminal-CAS work. While
 H is held, execute the real fail-fast claim read and terminal update and observe
@@ -2336,8 +2426,12 @@ writes to it.
   preserved, nullable, and non-converged. WP10 implements that protocol. Also contributes to
   C2/C12 (generation-guarded catalog commit plus the phase-specific catalog/full
   admission and observation sequences). **Broken change:** acquire N only after the
-  retained native mutation, release N before compatibility authorization, restore the
-  terminal-only compatibility predicate, release H between surfaces, classify a
+  retained native mutation, release N before compatibility authorization, restore a
+  caller-supplied expected row or second-connection read, route an existing routed
+  installation through the strict clean-only initializer, let observation/residue
+  alone create a generation-zero row, restore the terminal-only compatibility
+  predicate, release H between surfaces, classify a
   present ready-zero manifest as missing/unsupported, or commit catalog bytes after a
-  generation/evidence conflict; the handoff-order, terminal-CAS, serialization,
-  manifest, or stale-commit fixture fails respectively.
+  generation/evidence conflict; the stale-row/one-handle, routed apply/restore,
+  negative-adoption, handoff-order, terminal-CAS, serialization, manifest, or
+  stale-commit fixture fails respectively.

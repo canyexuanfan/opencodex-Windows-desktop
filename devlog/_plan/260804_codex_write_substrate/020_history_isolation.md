@@ -62,16 +62,16 @@ their distinct history semantics through the Worker. It consumes the already-lan
 path/transaction owner; it does not pre-implement WP11's full native lock.
 
 All current-code citations in this document were rechecked on 2026-08-05 at
-`45f7bb7caf9c836b9d9a398c76ae4cb2f7461860`.
+`b8168510f32ef583f14660067e0783d88df5df0c`.
 
 ## IN / OUT
 
 IN:
 
 - `src/codex/convergence-types.ts` (MODIFY) — materialize the
-  contract-owned `CodexHistoryOperation`, typed manifest-read result, and durable
-  history-operation schedule/result shapes from `005_contract.md`; do not define a
-  WP10-local provider/direction union.
+  contract-owned `CodexHistoryOperation`, closed compatibility-native intent, typed
+  manifest-read result, and durable history-operation schedule/result shapes from
+  `005_contract.md`; do not define a WP10-local provider/direction union.
 - `src/codex/user-identity.ts` (MODIFY) — add
   `resolveCodexHistorySerializationDatabasePath` beside the existing N and K
   resolvers. It keys H by effective user, canonical `CODEX_HOME`, and canonical
@@ -79,10 +79,12 @@ IN:
 - `src/codex/transition-state.ts` (MODIFY) — persist/read the typed history operation
   and its operation identity, expose the history-specific schedule/claim/terminal CAS
   used by current roots, retain the operation for guardian restart, and expose the
-  narrow synchronous N-backed compatibility handoff. The transaction-bound
+  narrow synchronous N-backed compatibility handoff plus its private routed-install
+  adoption mode. The transaction-bound, one-shot
   compatibility authorizer may supersede an older terminal, pending, or running
-  schedule after the newer retained native mutation; this is not a producer of native
-  generations or full authority snapshots.
+  schedule after the newer retained native mutation and receives no caller-supplied
+  expected row; this is not a producer of native generations or full authority
+  snapshots.
 - `src/codex/history-lock.ts` (NEW) — H: one cross-process,
   canonical-`CODEX_HOME`/effective-user keyed SQLite exclusion primitive using the
   contract resolver, finite acquisition, and no stale PID/mtime takeover.
@@ -97,8 +99,9 @@ IN:
   terminal CAS, release H, and close.
 - `src/codex/history-job.ts` (NEW) — resolve explicit paths/options, schedule the
   typed operation durably as the sole root of the WP10 compatibility/explicit-recovery
-  authorizers, enter the N-backed compatibility handoff before invoking a retained
-  synchronous native callback, spawn/watch/join the Worker only after N releases,
+  authorizers, derive the closed retained-apply/retained-restore adoption intent,
+  enter the N-backed compatibility handoff before invoking a retained synchronous
+  native callback, spawn/watch/join the Worker only after N releases,
   classify IPC/death, and expose one async entry point to every current high-level
   root.
 - `src/codex/inject.ts`, `src/codex/sync.ts`,
@@ -118,6 +121,7 @@ IN:
   read-only probe; unavailable evidence remains unknown.
 - `tests/codex-history-provider.test.ts`,
   `tests/codex-transition-state.test.ts`,
+  `tests/codex-native-residue.test.ts`,
   `tests/codex-convergence-contract.test.ts`,
   `tests/history-migration-guardian.test.ts`,
   `tests/codex-sync-api.test.ts`, and `tests/shutdown-drain.test.ts` (MODIFY), plus
@@ -194,10 +198,16 @@ apply/restore function derives the semantic operation from its internal branch a
 passes that type plus its synchronous native mutation callback to `history-job`, not
 a user-controlled provider/direction. `history-job` acquires the transition-state
 owner's N-backed handoff before invoking that callback and authorizes through the
-closure bound to the same open transaction before it returns. Explicit recovery has
-no native callback and retains its separate terminal-only authorizer. CLI, server,
+one-shot `authorize(next)` closure bound to the complete row read from the same open
+transaction after N acquisition. The closure has no `expected` parameter, performs no
+read, and opens no second connection. This shape is mandatory: a pre-N expected row
+can become stale before N is acquired, while `readCodexTransitionState()` opens
+another `BEGIN IMMEDIATE` (`src/codex/transition-state.ts:473-489`) and would
+self-contend against the handoff. Explicit recovery has no native callback and retains
+its separate terminal-only authorizer. CLI, server,
 `inject.ts`, guardian, and other helpers never import either transition-state
-authorizer directly. Compatibility authority ids are fresh opaque nonces, never
+authorizer directly. The handoff rejects zero or multiple authorization calls and
+use after callback return. Compatibility authority ids are fresh opaque nonces, never
 config/credential digests and never logs. WP12 dispatches already-admitted schedules
 through the same job/Worker code and stops using the compatibility-handoff branch.
 
@@ -211,6 +221,41 @@ CAS includes the replaced identity and changes zero rows; B's pending schedule r
 for the guardian. `AuthorizeCodexLegacyHistoryRecovery` stays terminal-only because it
 has no native mutation whose ordering would justify superseding unresolved native
 repair.
+
+The eleventh recurrence of this unit's absence-as-guarantee defect is at installation
+adoption. No production caller currently initializes N: the exported transaction/read/
+begin implementations are at `src/codex/transition-state.ts:348-385,473-518`, while
+the production tree has no external reference to them. The strict initializer refuses
+all routed residue before inserting the singleton
+(`src/codex/transition-state.ts:263-303`), and the real routed-catalog fixture proves
+that a missing coordinator is `legacy-ambiguous`
+(`tests/codex-native-residue.test.ts:213-242`). Existing routed installations would
+therefore fail before apply or restore reached their retained callback.
+
+WP10 preserves that general guard. Ordinary reads, Worker/guardian paths, explicit
+recovery, `BeginCodexTransition`, and direct transaction opens may initialize only a
+native-clean, non-legacy installation. They continue to refuse invalid/legacy JSON,
+routed or indeterminate native evidence, unsupported/unversioned coordinator files,
+and existing databases with no row. The compatibility handoff alone receives a
+private adoption mode. “Positively authorized” means its sole permitted graph root is
+`history-job.ts`, it is paired with the real retained synchronous native callback,
+and its closed intent is exactly `retained-apply` with
+`skip | apply-opencodex | migrate-openai` or `retained-restore` with
+`restore-openai`. Mere residue detection, observation, retry, history-only recovery,
+or an arbitrary operation cannot request adoption.
+
+For a truly absent coordinator, valid/missing non-legacy integration record, and a
+positive routed classification, that mode takes `BEGIN IMMEDIATE`, captures row
+absence plus the routed observation, and does **not** install the ordinary unscheduled
+`{0,null,unknown}` row. The residue classifier evaluates every surface and gives any
+indeterminate result precedence (`src/codex/native-residue.ts:520-556`). After the
+native callback, the same one-shot `authorize(next)` requires the intent/operation to
+match and uses the already-open handle to create schema plus generation-zero/null-txId
+`pending/wp10-compatibility` schedule in one transaction. This remains valid for
+restore after the callback has removed config/catalog residue because the positive
+routed observation was captured under N before mutation. Failure rolls back and
+dispatches no Worker. An existing malformed/unversioned/rowless coordinator is never
+adopted, and no `OPENCODEX_HOME`-local pair is imported.
 
 The Worker claim/terminal CAS matches native pair, job id, operation, and complete
 authority. A compatibility authority can never be relabeled as admission authority.
@@ -296,6 +341,13 @@ coordination. A busy N claim/terminal attempt leaves the durable operation pendi
 releases H, and retries later; it never waits indefinitely while retaining H. No cycle
 appears because the only history edge enters N from H, while every N owner is forbidden
 from acquiring or awaiting H.
+
+“Through the same open N handle” is a connection-counted invariant, not shorthand for
+re-entering the owner. The handoff reads the complete existing row once after
+acquisition and closes over it; the adoption case closes over authoritative absence
+plus the pre-mutation routed observation. The callback can retain any stale pre-N
+observation, but no API accepts it. Any `readCodexTransitionState` call or other
+coordinator connection created inside the callback is a test failure.
 
 The lock-order contract test contains allowed fixtures for `H -> N` claim/terminal
 calls and forbidden fixtures for `N -> H`, `K -> H`, `H -> K`, and
@@ -497,6 +549,33 @@ acquire/release N only after/before the retained native callback. The sentinels
 interleave, B's newer operation disappears, or B publishes first during A's handoff;
 the terminal-CAS/final-state/order assertion fails.
 
+### Transaction-observed authority and compatibility adoption
+
+Before B acquires N, give it a deliberately stale copy of the complete transition
+row. Let A publish a newer pending schedule and release N, then run B's real retained
+native callback through the handoff. B must publish over A using the row read from its
+already-open handle; the stale object is not accepted by any call. Instrument
+coordinator connection creation so a second handle throws. **Broken changes:** add an
+`expected` parameter to `authorize`, call `readCodexTransitionState` in the callback,
+or open another coordinator connection; B conflicts after its native mutation or the
+connection trap fires.
+
+In `tests/codex-native-residue.test.ts`, under temporary homes, seed routed config,
+catalog, history DB rows, rollouts, and a matching manifest but no coordinator
+database. Run one real high-level apply through
+`injectCodexConfig` (`src/codex/inject.ts:482-654`) and one real high-level restore
+through `restoreNativeCodex` (`src/codex/inject.ts:765-800`). Each must commit the
+exact generation-zero pending compatibility schedule before Worker dispatch, and its
+Worker must repair/terminally own that identity. The restore fixture proves adoption
+does not depend on residue still being present after the native callback. Table-drive
+negative observe/read, guardian/Worker retry, explicit recovery, intent/operation
+mismatch, invalid legacy JSON, indeterminate residue, and existing unversioned/rowless
+database cases; they create no row and do not invoke the native callback. **Broken
+changes:** send compatibility roots through the strict clean-only initializer, let
+residue alone authorize adoption, commit `{0,null,unknown}` before the schedule, or
+re-observe only post-restore clean state; the real fixture returns
+`legacy-ambiguous`/loses its schedule or a negative fixture creates authority.
+
 ### H namespace and lock order
 
 Two child processes vary `HOME`, `USERPROFILE`, `TMPDIR`, `XDG_RUNTIME_DIR`, `TEMP`,
@@ -574,7 +653,7 @@ change.
 ```bash
 bun run typecheck
 bun test tests/codex-history-provider.test.ts tests/codex-history-worker.test.ts
-bun test tests/codex-transition-state.test.ts tests/history-migration-guardian.test.ts
+bun test tests/codex-transition-state.test.ts tests/codex-native-residue.test.ts tests/history-migration-guardian.test.ts
 bun test tests/codex-history-process-routing.test.ts tests/codex-convergence-contract.test.ts
 bun test tests/codex-sync-api.test.ts tests/shutdown-drain.test.ts
 bun test tests/codex-history-worker-responsive.test.ts --timeout 30000
@@ -593,6 +672,8 @@ the installed service and live proxy on 10100 remain untouched.
 | **C3 — caller responsiveness** | Table-driven responsiveness covers management, init/setup, graceful shutdown, and explicit recovery while real SQLite contention overlaps health/SSE progress. | Move any listed root's probe or mutation back to the caller thread. That root's latency/progress case fails. |
 | **C4 — durable unresolved work** | Guardian activation/backoff test proves unresolved typed operation survives failure/restart and never becomes zero-looking success. | Remove startup arming, restore the 60-tick stop, or persist zero counts after failed evidence. The activation/backoff/evidence case fails. |
 | **C15 — cross-process all-surface serialization** | Opposite operations serialize manifest, rollout, DB, post-probe, and terminal update under one H; N spans each retained native mutation through compatibility authorization, the newer schedule replaces even running work, and its Worker repairs stale work. | Release H between surfaces, bypass H, release/acquire N inside the native-to-authorization span, or restore terminal-only authorization. The sentinel/order/final-state case fails. |
+| **Transaction-observed authority** | A stale pre-N row cannot be supplied to the one-shot authorizer; B authorizes from the complete row read on its one already-open N handle. | Restore `authorize(expected, next)`, call `readCodexTransitionState` inside the callback, or open a second N connection. The stale-row or connection-count case fails after B's real native mutation. |
+| **Compatibility adoption** | Real apply and restore fixtures start with routed config/catalog/history and no coordinator DB, then commit an exact generation-zero pending compatibility schedule; every non-high-level or ambiguous case remains refused. | Route the handoff through strict clean-only initialization, let residue/observation/retry request adoption, insert an unscheduled row first, or require post-callback residue. The real routed fixture or its named negative row fails. |
 | **Operation authority** | Every operation variant is derived/validated from durable state, including no-op and manifest-independent recovery. | Trust request `targetProvider`/direction. Tamper and manifest-preservation cases fail. |
 | **Real lock order** | Architecture fixtures allow `H -> N -> K -> C`; the compatibility root may execute retained native/K/C work and authorize through already-held N, then must release N before dispatch. Every inverse/cross-domain edge remains rejected. | Await/spawn H while N is held, open N only after native mutation, release N before authorization, or call K from the Worker. Dependency/order fixture fails. |
 | **One H namespace per canonical history DB** | Environment-divergent child processes resolve one H for the same effective user/home/DB, a different H for a second DB, and paths distinct from N/K. | Key by environment/raw alias, omit DB identity, or reuse N/K. Resolver equality/inequality case fails. |
