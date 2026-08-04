@@ -39,6 +39,7 @@ fatal: Unable to create 'F:/workbuddy/opencodex/.git/index.lock': Permission den
 ## 更新记录
 
 - ❌ 2026-08-04：本轮首次执行精确路径 `git add` 时，代码文件和中文排查指南中位于 sparse-checkout 范围外的路径被 Git 拒绝，提示 `outside of your sparse-checkout definition`；未改变索引。按既有经验改用 `git add --sparse -- <明确路径>`，不扩大 sparse-checkout 范围。
+- ❌ 2026-08-04：在 Windows PowerShell 中把 `git add --sparse` 与 `git commit` 用 `&&` 串联，PowerShell 解析器拒绝该语法，索引和提交均未改变；下一步分两条命令执行。
 
 - ❌ 2026-08-01：本阶段尝试暂存桌面路由恢复、托盘重启、能力对齐测试、`todolist.md` 和新排查指南时，`.git/index.lock` 仍无法创建；已确认 `.git/index.lock` 不存在，属于当前执行环境对 Git 元数据目录的写权限限制，尚未修改索引。
 - ❌ 2026-08-01：获得最小 Git 元数据写权限后，普通 `git add` 又被仓库 sparse-checkout 规则拒绝（桌面源码和新问题指南在稀疏范围外）；按既有指南改用 `git add --sparse -- <明确文件>`，不扩大稀疏范围。
