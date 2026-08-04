@@ -55,8 +55,10 @@ other; closing one is a maintainer decision and neither is stale.
 ### RI-01 - feat/ri-01-route-decision-traces
 
 - Base SHA: `e44d234f08e03dd4dbf0c4aa13af43046d86b0a6`
-- Reviewed commit: same as final (single implementation commit; independent
-  review pass performed by the author before push)
+- Reviewed commits:
+  - `b5a8e7c4c` (implementation; author self-review + CodeRabbit review)
+  - `2e0522b2` (privacy-scan fix after CI `gates` failure)
+  - `pending` (CodeRabbit findings round; recorded after commit)
 - Findings (self-review): 3 test failures caught pre-push - (1) missing value
   import for `normalizeRouteDecisionTrace` in request-log hydration,
   (2) selected combo target marked ineligible because `ComboPick.attempted`
@@ -66,7 +68,17 @@ other; closing one is a maintainer decision and neither is stale.
   from `already-attempted`; fixture uses `https://chatgpt.com/backend-api/codex`.
 - Regression tests: all three cases are covered by the final
   `tests/route-decision-trace.test.ts` (14 tests, 75 assertions).
-- Final commit: pending (hash recorded after commit)
+- Findings (CodeRabbit, verified against code): 12 comments - 9 accepted
+  (locale/plan docs, requestedModel bound doc, ledger SHA, combo tieBreak +
+  duplicate getCombo, `truncated.requirements` flag, byte-accurate budget,
+  parse-once evidence, hydration guard drops invalid traces, 2 regression
+  tests, credential-test assertion hardening); 2 design-judgment comments
+  (persist trace on every row - kept: bounded ~200 B single-candidate traces,
+  plan mandates one trace per decision; docstring coverage - docstrings
+  added to trace helpers); the privacy-scan finding was already fixed in
+  `2e0522b2`.
+- Final commit: recorded after commit (round applies CodeRabbit + simplify
+  fixes; new head pushes to #1003)
 - Verification:
   - `bun x tsc --noEmit`: PASSED (0 errors)
   - `bun run test tests/route-decision-trace.test.ts`: 14/14 pass

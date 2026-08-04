@@ -220,6 +220,7 @@ function asCloseReason(value: string | undefined): RequestLogEntry["closeReason"
 export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): RequestLogEntry {
   const terminalStatus = asTerminalStatus(entry.terminalStatus);
   const closeReason = asCloseReason(entry.closeReason);
+  const routeDecision = normalizeRouteDecisionTraceForLog(entry.routeDecision);
   return {
     requestId: entry.requestId,
     timestamp: entry.timestamp,
@@ -252,18 +253,19 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
     ...(entry.usage ? { usage: entry.usage } : {}),
     ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
     ...(entry.attempts?.length ? { attempts: entry.attempts } : {}),
-    ...(entry.routeDecision
-      ? { routeDecision: normalizeRouteDecisionTraceForLog(entry.routeDecision) }
-      : {}),
+    ...(routeDecision ? { routeDecision } : {}),
   };
 }
 
 /**
  * Hydration guard: persisted traces are re-normalized before they enter the
  * in-memory ring buffer so a hand-edited or corrupt row cannot poison the DTO.
+ * A row that fails validation is dropped, never forwarded unvalidated.
  */
-function normalizeRouteDecisionTraceForLog(entry: RouteDecisionTraceV1): RouteDecisionTraceV1 {
-  return normalizeRouteDecisionTrace(entry) ?? entry;
+function normalizeRouteDecisionTraceForLog(
+  entry: RouteDecisionTraceV1 | undefined,
+): RouteDecisionTraceV1 | null {
+  return entry ? normalizeRouteDecisionTrace(entry) : null;
 }
 
 /**

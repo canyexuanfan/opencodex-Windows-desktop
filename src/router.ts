@@ -7,6 +7,7 @@ import {
   tryPickComboModel,
   type ComboPick,
 } from "./combos";
+import type { NormalizedComboConfig } from "./combos/types";
 import { hasOwnProvider, resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { redactSecretString, redactUrlForLog } from "./lib/redact";
@@ -386,22 +387,22 @@ function routeResult(
  * selection-time eligibility and exclusion reasons. Purely observational; the
  * pick already happened and this never re-selects.
  */
-function comboRouteCandidates(config: OcxConfig, route: RouteResult): TraceCandidateInput[] | undefined {
-  const combo = route.combo;
-  if (!combo) return undefined;
-  const normalized = getCombo(config, combo.comboId);
-  if (!normalized) return undefined;
+function comboRouteCandidates(
+  config: OcxConfig,
+  pick: NonNullable<RouteResult["combo"]>,
+  combo: NormalizedComboConfig,
+): TraceCandidateInput[] {
   const now = Date.now();
-  return normalized.targets.map((target, index) => {
+  return combo.targets.map((target, index) => {
     const key = targetKey(target);
     const provider = config.providers[target.provider];
     const configured = provider !== undefined;
     const enabled = configured && provider.disabled !== true;
-    const inCooldown = isComboTargetInCooldown(combo.comboId, target, now);
-    const isSelected = index === combo.targetIndex;
+    const inCooldown = isComboTargetInCooldown(pick.comboId, target, now);
+    const isSelected = index === pick.targetIndex;
     // The pick's `attempted` list includes the winner itself; only non-selected
     // targets can be "already-attempted" (fallback picks exclude earlier tries).
-    const alreadyAttempted = !isSelected && combo.attempted.includes(key);
+    const alreadyAttempted = !isSelected && pick.attempted.includes(key);
     const exclusions: TraceCandidateInput["exclusions"] = [];
     if (!configured) exclusions.push({ code: "unconfigured" });
     if (configured && !enabled) exclusions.push({ code: "disabled" });
@@ -538,6 +539,7 @@ function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: bo
 export function routeModel(config: OcxConfig, modelId: string): RouteResult {
   const route = routeModelInternal(config, modelId, false);
   const accountRef = route.codexAccountNamespace;
+  const combo = route.combo ? getCombo(config, route.combo.comboId) : undefined;
   route.routeDecision = buildRouteDecisionTrace({
     requestedModel: modelId,
     routeKind: route.routeKind,
@@ -547,11 +549,13 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
       ...(accountRef ? { accountRef } : {}),
       reason: route.routeReason,
       ...(route.combo ? { candidateIndex: route.combo.targetIndex } : {}),
-      ...(route.combo
-        ? { tieBreak: getCombo(config, route.combo.comboId)?.strategy === "round-robin" ? "round-robin" : "failover" }
+      ...(combo
+        ? { tieBreak: combo.strategy === "round-robin" ? "round-robin" : "failover" }
         : {}),
     },
-    candidates: route.routeKind === "combo" ? comboRouteCandidates(config, route) : undefined,
+    candidates: route.routeKind === "combo" && route.combo && combo
+      ? comboRouteCandidates(config, route.combo, combo)
+      : undefined,
   });
   return route;
 }

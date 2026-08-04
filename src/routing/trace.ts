@@ -128,6 +128,7 @@ export interface RouteDecisionTraceV1 {
   truncated?: {
     candidates?: true;
     exclusions?: true;
+    requirements?: true;
     strings?: true;
   };
 }
@@ -149,15 +150,11 @@ const ROUTE_KINDS = new Set<RouteDecisionKind>([
 
 const REQUIREMENT_OUTCOMES = new Set(["satisfied", "unsatisfied", "unknown"]);
 
+/** Cap a string at MAX_TRACE_STRING and record the truncation flag. */
 function capString(value: string, budget: { strings?: true }): string {
   if (value.length <= MAX_TRACE_STRING) return value;
   budget.strings = true;
   return value.slice(0, MAX_TRACE_STRING);
-}
-
-function capOptionalString(value: string | undefined, budget: { strings?: true }): string | undefined {
-  if (value === undefined) return undefined;
-  return capString(value, budget);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -201,6 +198,7 @@ export interface TraceBuildInput {
   now?: number;
 }
 
+/** Bounded candidate copy: strings capped, exclusions sliced, score/evidence kept. */
 function buildCandidate(input: TraceCandidateInput, budget: { strings?: true; exclusions?: true }): RouteCandidateTrace {
   const exclusions = input.exclusions.slice(0, MAX_EXCLUSIONS_PER_CANDIDATE);
   if (exclusions.length < input.exclusions.length) budget.exclusions = true;
@@ -220,6 +218,7 @@ function buildCandidate(input: TraceCandidateInput, budget: { strings?: true; ex
   };
 }
 
+/** Bounded requirement copy with capped strings. */
 function buildRequirement(requirement: RouteRequirementEvidence, budget: { strings?: true }): RouteRequirementEvidence {
   return {
     id: capString(requirement.id, budget),
@@ -275,7 +274,7 @@ export function buildRouteDecisionTrace(input: TraceBuildInput): RouteDecisionTr
   let requirements = (input.requirements ?? []).map(requirement => buildRequirement(requirement, budget));
   if (requirements.length > MAX_REQUIREMENTS) {
     requirements = requirements.slice(0, MAX_REQUIREMENTS);
-    truncated.candidates = true;
+    truncated.requirements = true;
   }
 
   if (selectedIndex < 0 || selectedIndex >= candidates.length) selectedIndex = 0;
@@ -318,18 +317,21 @@ export function buildRouteDecisionTrace(input: TraceBuildInput): RouteDecisionTr
   return enforceByteBudget(trace);
 }
 
+/** Serialized UTF-8 length of a value (JSON is measured in bytes, not code units). */
+function serializedByteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
 /** Deterministic byte-budget enforcement: drop details, then shrink candidates. */
 function enforceByteBudget(trace: RouteDecisionTraceV1): RouteDecisionTraceV1 {
-  let serialized = JSON.stringify(trace);
-  if (serialized.length <= MAX_TRACE_BYTES) return trace;
+  if (serializedByteLength(trace) <= MAX_TRACE_BYTES) return trace;
   const truncated = { ...trace.truncated, strings: true as const };
   const candidates = trace.candidates.map(candidate => ({
     ...candidate,
     exclusions: candidate.exclusions.map(exclusion => ({ code: exclusion.code })),
   }));
   const slimmed: RouteDecisionTraceV1 = { ...trace, truncated, candidates };
-  serialized = JSON.stringify(slimmed);
-  if (serialized.length <= MAX_TRACE_BYTES) return slimmed;
+  if (serializedByteLength(slimmed) <= MAX_TRACE_BYTES) return slimmed;
   return {
     ...slimmed,
     truncated: { ...truncated, candidates: true as const },
@@ -339,6 +341,7 @@ function enforceByteBudget(trace: RouteDecisionTraceV1): RouteDecisionTraceV1 {
 
 // ---- defensive parsing of persisted rows --------------------------------------
 
+/** Defensive parse of one persisted exclusion reason. */
 function parseExclusion(raw: unknown): RouteExclusionReason | null {
   if (!isPlainRecord(raw)) return null;
   const code = raw.code;
@@ -351,6 +354,7 @@ function parseExclusion(raw: unknown): RouteExclusionReason | null {
   };
 }
 
+/** Defensive parse of one persisted requirement; rejects unknown outcomes. */
 function parseRequirement(raw: unknown): RouteRequirementEvidence | null {
   if (!isPlainRecord(raw)) return null;
   const id = raw.id;
@@ -373,6 +377,7 @@ function parseRequirement(raw: unknown): RouteRequirementEvidence | null {
   };
 }
 
+/** Whitelisted capability-evidence parse; unknown fields are dropped. */
 function parseCapability(raw: unknown): RouteCapabilityEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   const out: RouteCapabilityEvidence = {};
@@ -400,6 +405,7 @@ function parseCapability(raw: unknown): RouteCapabilityEvidence | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Whitelisted health-evidence parse; non-numeric fields are dropped. */
 function parseHealth(raw: unknown): RouteHealthEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   const out: RouteHealthEvidence = {};
@@ -414,6 +420,7 @@ function parseHealth(raw: unknown): RouteHealthEvidence | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Whitelisted quota-evidence parse; requires a boolean `known`. */
 function parseQuota(raw: unknown): RouteQuotaEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   if (typeof raw.known !== "boolean") return undefined;
@@ -429,6 +436,7 @@ function parseQuota(raw: unknown): RouteQuotaEvidence | undefined {
   return out;
 }
 
+/** Whitelisted cost-evidence parse. */
 function parseCost(raw: unknown): RouteCostEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   const out: RouteCostEvidence = {};
@@ -442,6 +450,7 @@ function parseCost(raw: unknown): RouteCostEvidence | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Whitelisted score parse; requires a finite `total` and bounded components. */
 function parseScore(raw: unknown): RouteScoreEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   if (!finiteNumber(raw.total)) return undefined;
@@ -453,6 +462,7 @@ function parseScore(raw: unknown): RouteScoreEvidence | undefined {
   return { total: raw.total, components: parsedComponents };
 }
 
+/** Defensive parse of one persisted candidate with bounded evidence blocks. */
 function parseCandidate(raw: unknown): RouteCandidateTrace | null {
   if (!isPlainRecord(raw)) return null;
   const provider = raw.provider;
@@ -463,6 +473,11 @@ function parseCandidate(raw: unknown): RouteCandidateTrace | null {
   const exclusions = Array.isArray(raw.exclusions)
     ? raw.exclusions.map(parseExclusion).filter((value): value is RouteExclusionReason => value !== null)
     : [];
+  const capability = parseCapability(raw.capability);
+  const health = parseHealth(raw.health);
+  const quota = parseQuota(raw.quota);
+  const cost = parseCost(raw.cost);
+  const score = parseScore(raw.score);
   return {
     provider: provider.slice(0, MAX_TRACE_STRING),
     model: model.slice(0, MAX_TRACE_STRING),
@@ -471,11 +486,11 @@ function parseCandidate(raw: unknown): RouteCandidateTrace | null {
       : {}),
     eligible: raw.eligible,
     exclusions: exclusions.slice(0, MAX_EXCLUSIONS_PER_CANDIDATE),
-    ...(parseCapability(raw.capability) ? { capability: parseCapability(raw.capability) } : {}),
-    ...(parseHealth(raw.health) ? { health: parseHealth(raw.health) } : {}),
-    ...(parseQuota(raw.quota) ? { quota: parseQuota(raw.quota) } : {}),
-    ...(parseCost(raw.cost) ? { cost: parseCost(raw.cost) } : {}),
-    ...(parseScore(raw.score) ? { score: parseScore(raw.score) } : {}),
+    ...(capability ? { capability } : {}),
+    ...(health ? { health } : {}),
+    ...(quota ? { quota } : {}),
+    ...(cost ? { cost } : {}),
+    ...(score ? { score } : {}),
   };
 }
 
@@ -534,6 +549,7 @@ export function normalizeRouteDecisionTrace(raw: unknown): RouteDecisionTraceV1 
     ? {
       ...(raw.truncated.candidates === true ? { candidates: true as const } : {}),
       ...(raw.truncated.exclusions === true ? { exclusions: true as const } : {}),
+      ...(raw.truncated.requirements === true ? { requirements: true as const } : {}),
       ...(raw.truncated.strings === true ? { strings: true as const } : {}),
     }
     : undefined;
