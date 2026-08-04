@@ -250,6 +250,9 @@ export default function Combos({ apiBase }: { apiBase: string }) {
       {/* Revalidation is silent by design: existing combos stay visible, and the
           shell announces the in-flight refresh to assistive tech only. */}
       <div className="combos-workspace-shell-body" aria-busy={state.refreshing}>
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {state.refreshing ? t("common.loading") : ""}
+        </span>
         <ComboWorkspace
           combos={combos}
           providers={providers}

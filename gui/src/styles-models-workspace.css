@@ -324,7 +324,7 @@
 
 /* Invisible stand-in for the empty Combos card while /api/combos loads. */
 .models-combos-card--pending {
-  min-height: 48px;
+  min-height: var(--space-12);
 }
 
 .models-combos-empty-head {

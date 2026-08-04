@@ -183,6 +183,13 @@ test("Combos announces silent revalidation over cached content via aria-busy", a
   const body = container.querySelector<HTMLElement>(".combos-workspace-shell-body");
   expect(body).not.toBeNull();
   expect(body?.getAttribute("aria-busy")).toBe("true");
+  // The silent layout still announces: an sr-only polite status region carries the
+  // loading text while the refresh is in flight (attribute-only wiring is not enough).
+  const status = body?.querySelector<HTMLElement>('[role="status"]');
+  expect(status).not.toBeNull();
+  expect(status?.classList.contains("sr-only")).toBe(true);
+  expect(status?.getAttribute("aria-live")).toBe("polite");
+  expect(status?.textContent?.trim().length).toBeGreaterThan(0);
 
   await act(async () => {
     release.resolve();
@@ -191,6 +198,7 @@ test("Combos announces silent revalidation over cached content via aria-busy", a
   await act(async () => { await new Promise<void>(r => testWindow.setTimeout(r, 20)); });
 
   expect(container.querySelector<HTMLElement>(".combos-workspace-shell-body")?.getAttribute("aria-busy")).toBe("false");
+  expect(container.querySelector<HTMLElement>(".combos-workspace-shell-body [role='status']")?.textContent?.trim()).toBe("");
 
   await act(async () => { root.unmount(); });
   container.remove();

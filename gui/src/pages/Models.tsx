@@ -1044,7 +1044,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
       {/* Silent height strut: reserves the empty-card slot so a late /api/combos
           cannot insert a row, without a bordered "Combos · Loading…" placeholder. */}
       {combos === null && !combosError && (
-        <div className="models-combos-card models-combos-card--pending" aria-busy="true" />
+        <div className="models-combos-card models-combos-card--pending" aria-busy="true">
+          <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            {t("common.loading")}
+          </span>
+        </div>
       )}
       {combos === null && combosError && (
         <div className="card models-combos-card">

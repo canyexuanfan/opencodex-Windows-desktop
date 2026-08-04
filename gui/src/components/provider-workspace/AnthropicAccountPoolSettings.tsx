@@ -164,7 +164,7 @@ export default function AnthropicAccountPoolSettings({
           className={`toggle ${enabled ? "on" : ""}`}
           disabled={toggleDisabled}
           aria-pressed={enabled}
-          aria-label={enabled ? t("anthropicPool.on") : t("anthropicPool.off")}
+          aria-label={t("anthropicPool.title")}
           title={enabled ? t("anthropicPool.on") : t("anthropicPool.off")}
           onClick={() => {
             void save({

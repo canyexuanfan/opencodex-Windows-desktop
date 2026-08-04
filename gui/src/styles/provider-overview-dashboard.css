@@ -247,8 +247,8 @@
 }
 
 .pws-capacity-incomplete {
-  /* WCAG AA on both themes: >=4.5:1 on white (light) and --bg #212121 (dark). */
-  color: light-dark(#9a5f10, #c07f22);
+  /* Semantic amber: WCAG AA on both themes (6.26:1 light, 9.65:1 dark). */
+  color: var(--amber);
 }
 
 .pws-dashboard-section--rate-limits,

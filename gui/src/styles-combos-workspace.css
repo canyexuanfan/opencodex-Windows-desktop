@@ -29,8 +29,8 @@
   padding: 10px 16px 0;
 }
 
-/* Reserved status strip: the "Loading…" line appears and disappears around a seeded
-   revalidation, so it gets a fixed slot instead of shifting the workspace body. */
+/* Revalidation shell: keeps the workspace body stable while aria-busy and an
+   sr-only status span announce in-flight refreshes to assistive tech. */
 .combos-workspace-shell-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -312,9 +312,9 @@
   color: var(--muted);
 }
 
-/* Keep helper copy wrapping well below the 80-char line-length bar. */
+/* Keep helper copy on the shared prose measure (line-length bar). */
 .cwi-field > p.muted {
-  max-width: 72ch;
+  max-width: var(--prose-measure);
   overflow-wrap: anywhere;
 }
 
