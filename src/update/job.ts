@@ -823,24 +823,17 @@ async function restartAfterUpdate(
         const result = run(job, cmd.bin, cmd.args);
         serviceOk = result.status === 0;
         if (!serviceOk) {
-          // On Windows, `schtasks /create` requires an elevated token. The update worker
-          // inherits the (non-admin) proxy's privileges, so a service-managed install
-          // updated from the GUI or a normal terminal fails here with access denied.
-          // Falling back to a direct proxy start keeps the update from leaving the proxy
-          // stopped; the stale service manager can be refreshed later with an admin
-          // `ocx service install`.
-          //
-          // That advice is Windows-only, and on macOS/Linux it now actively misleads:
-          // `ocx service install` gained a non-zero exit for a service that registers
-          // but does not serve, so this branch fires there for a reason elevation
-          // cannot fix. Point at the command that prints the real reason instead.
+          // The refresh that just failed was `ocx service repair` (serviceReinstallArgs),
+          // which needs no elevation because it never calls `schtasks /create`. Advising
+          // `install` here would send the user to re-registration — a UAC prompt on
+          // Windows and a possible WinSW-to-scheduler backend switch — to fix a service
+          // that is already registered. Point at the same command that failed so its
+          // output explains why, on every platform.
           updateJob(
             job,
             {},
-            `Service reinstall failed (exit ${result.status ?? "?"}); falling back to a direct proxy start.`
-            + (process.platform === "win32"
-              ? " Run 'ocx service install' as administrator to refresh the background service manager."
-              : " Run 'ocx service install' by hand to see the reason, then 'ocx service status'."),
+            `Service refresh failed (exit ${result.status ?? "?"}); falling back to a direct proxy start.`
+            + " Run 'ocx service repair' by hand to see the reason, then 'ocx service status'.",
           );
         }
       } finally {

@@ -529,4 +529,20 @@ describe("service memory section (#314 WP4)", () => {
     expect(hint).toContain("127.0.0.1:12000");
     expect(hint).not.toContain("ocx service install");
   });
+
+  // 260804 #970 follow-up: serviceViable=false conflates "no service" with "registered
+  // but stale/stopped". Only the first wants install; re-registering an existing service
+  // costs a UAC prompt on Windows and can switch a WinSW backend to Task Scheduler.
+  test("an installed but unhealthy service is pointed at repair, not install", () => {
+    const broken = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: true });
+    expect(broken).toContain("ocx service repair");
+    expect(broken).not.toContain("ocx service install");
+
+    const absent = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: false });
+    expect(absent).toContain("ocx service install");
+
+    // A two-manager conflict must be uninstalled first; repairService() refuses it.
+    const conflict = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: true, serviceConflict: true });
+    expect(conflict).toContain("ocx service install");
+  });
 });
