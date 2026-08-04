@@ -14,7 +14,7 @@ const {
   buildFailureSections,
   failureSummary,
   buildStaleNotice
-} = require("./enforce-pr-target-messages.cjs");
+} = require("./pr-quality-messages.cjs");
 
 const PR = {
   base: { ref: "main" },

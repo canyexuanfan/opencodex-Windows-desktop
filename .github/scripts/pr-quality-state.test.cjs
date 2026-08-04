@@ -12,7 +12,7 @@ const {
   defaultReadinessState,
   completionIsStale,
   READINESS_STATE_VERSION
-} = require("./enforce-pr-target-state.cjs");
+} = require("./pr-quality-state.cjs");
 
 describe("enforcer state markers", () => {
   it("parses a valid enforcer state marker", () => {

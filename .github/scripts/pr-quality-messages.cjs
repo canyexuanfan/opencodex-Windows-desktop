@@ -5,7 +5,7 @@ const {
 } = require("./pr-quality.cjs");
 const {
   readinessStateMarker
-} = require("./enforce-pr-target-state.cjs");
+} = require("./pr-quality-state.cjs");
 
 /** Marks the bot's review-readiness checklist message. */
 const READINESS_MARKER = "<!-- pr-quality-readiness -->";

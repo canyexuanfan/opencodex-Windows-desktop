@@ -70,7 +70,7 @@ jobs:
                 process.cwd(),
                 ".github",
                 "scripts",
-                "enforce-pr-target-state.cjs"
+                "pr-quality-state.cjs"
               ),
             );
             const {
@@ -85,7 +85,7 @@ jobs:
                 process.cwd(),
                 ".github",
                 "scripts",
-                "enforce-pr-target-messages.cjs"
+                "pr-quality-messages.cjs"
               ),
             );
             const {
@@ -95,7 +95,7 @@ jobs:
                 process.cwd(),
                 ".github",
                 "scripts",
-                "enforce-pr-target-maintainers.cjs"
+                "pr-maintainers.cjs"
               ),
             );
 

@@ -3368,12 +3368,12 @@ describe("GitHub Actions hardening", () => {
     // The readiness marker and the state serializers live in the shared
     // modules the script loads; the script itself must import and use them.
     const messagesModule = await readText(
-      ".github/scripts/enforce-pr-target-messages.cjs",
+      ".github/scripts/pr-quality-messages.cjs",
     );
     expect(messagesModule).toMatch(
       /READINESS_MARKER = "<!-- pr-quality-readiness -->"/,
     );
-    expect(script).toMatch(/enforce-pr-target-messages\.cjs/);
+    expect(script).toMatch(/pr-quality-messages\.cjs/);
 
     // Pending ownership is written before mutations; convertToDraft runs next;
     // a later upsertComment records autoDraftedByBot only after success (#631).

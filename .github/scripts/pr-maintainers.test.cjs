@@ -4,7 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   parseMaintainerLogins
-} = require("./enforce-pr-target-maintainers.cjs");
+} = require("./pr-maintainers.cjs");
 
 const FIXTURE = [
   "## Current maintainers",
