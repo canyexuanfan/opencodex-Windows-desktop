@@ -9,6 +9,14 @@ export type StoredAccountQuota = {
   weeklyResetAt?: number;
   monthlyResetAt?: number;
   resetCredits?: number;
+  /**
+   * True when `monthlyPercent` came from an explicitly-monthly PRIMARY window —
+   * i.e. it is the account's governing quota reading, not a supplementary
+   * tertiary window. Tertiary-only monthly data lands in the same field but says
+   * nothing about the weekly quota that actually gates a non-Go/Free account,
+   * so recovery must be able to tell the two apart (#967 audit).
+   */
+  monthlyIsPrimaryWindow?: boolean;
   updatedAt: number;
 };
 
@@ -96,7 +104,7 @@ export function codexQuotaWindowForPlan(plan?: string | null): "monthly" | "week
 }
 
 export function isCompleteCodexQuotaRecoverySnapshot(
-  quota: Pick<StoredAccountQuota, "weeklyPercent" | "monthlyPercent"> | null,
+  quota: Pick<StoredAccountQuota, "weeklyPercent" | "monthlyPercent" | "monthlyIsPrimaryWindow"> | null,
   plan?: string | null,
 ): boolean {
   if (!quota || isCodexQuotaExhausted(quota, plan)) return false;
@@ -110,10 +118,21 @@ export function isCompleteCodexQuotaRecoverySnapshot(
   // strand exactly those accounts until their predicted expiry. Accept whichever window(s)
   // the parser actually wrote; Go/Free never carry a weekly value, so monthly-only is
   // required there.
+  //
+  // Audit correction: "the parser wrote monthlyPercent" is NOT by itself evidence for a
+  // weekly-quota plan. A tertiary-only response also writes monthlyPercent, and it says
+  // nothing about the weekly quota that actually gates a Team/Plus account — accepting it
+  // would clear the cooldown on a reading of a different window. Only an explicitly-monthly
+  // PRIMARY window is the governing reading, which is what `monthlyIsPrimaryWindow` records.
   if (codexQuotaWindowForPlan(plan) === "monthly") {
-    return typeof quota.monthlyPercent === "number" && Number.isFinite(quota.monthlyPercent);
+    return finitePercent(quota.monthlyPercent);
   }
-  return hasKnownQuotaValue(quota);
+  if (finitePercent(quota.weeklyPercent)) return true;
+  return quota.monthlyIsPrimaryWindow === true && finitePercent(quota.monthlyPercent);
+}
+
+function finitePercent(value: number | undefined): boolean {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 export function normalizeUsagePercent(value: unknown): number | undefined {
@@ -444,6 +463,10 @@ export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuot
   if (!thirtyDayOnly && monthlyPercent !== undefined) {
     quota.monthlyPercent = monthlyPercent;
     if (monthlyResetAt !== undefined) quota.monthlyResetAt = monthlyResetAt;
+    // Record WHERE this reading came from. Only an explicitly-monthly primary window is the
+    // account's governing quota; a tertiary window lands in the same field but describes a
+    // different period, so recovery must not treat the two as interchangeable.
+    if (primaryIsMonthly && primaryPercent !== undefined) quota.monthlyIsPrimaryWindow = true;
   }
   if (resetCredits !== undefined) quota.resetCredits = resetCredits;
 

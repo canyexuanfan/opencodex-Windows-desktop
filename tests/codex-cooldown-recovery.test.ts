@@ -138,6 +138,29 @@ describe("Codex cooldown recovery worker", () => {
     expect(getCodexQuotaHealthSnapshot("a", "shared", due() + 1)).toBeNull();
   });
 
+  test("does NOT recover a Team account from a tertiary-only monthly snapshot", async () => {
+    // The mirror image of the case above, and the reason accepting "whatever the parser
+    // wrote" is too permissive. A tertiary window also lands in monthlyPercent, but it
+    // describes a different period and says nothing about the WEEKLY quota that actually
+    // gates a Team account — clearing the cooldown on it would restore traffic to an
+    // account whose governing window was never read. Only an explicitly-monthly PRIMARY
+    // window is that reading, which is what monthlyIsPrimaryWindow records.
+    const config = makeConfig(["a"]);
+    saveCredential("a");
+    cool(config, "a");
+    globalThis.fetch = async () => usageResponse(0, {
+      plan_type: "team",
+      rate_limit: {
+        primary_window: null,
+        secondary_window: null,
+        tertiary_window: { used_percent: 7, reset_at: 1_900_000_000 },
+      },
+      rate_limit_reset_credits: { available_count: 0 },
+    });
+    await runCodexCooldownRecoveryProbes(config, due());
+    expect(getCodexQuotaHealthSnapshot("a", "shared", due() + 1)).not.toBeNull();
+  });
+
   test("recovers when the probe's own token refresh advances the credential generation", async () => {
     // A near-expiry access token makes getValidCodexToken() refresh it inside the probe
     // fetch, bumping the credential generation from 1 to 2 before WHAM completes. The fresh
@@ -339,11 +362,13 @@ describe("Codex cooldown recovery worker", () => {
 
     for (const plan of snapshotPlans) {
       const monthly = codexQuotaWindowForPlan(plan) === "monthly";
-      // The parser classifies windows by duration, so a weekly-billed plan can carry a
-      // monthly-only reading (30-day primary, no secondary). Any window the parser actually
-      // wrote is evidence; only Go/Free never carry a weekly value.
+      // The parser classifies windows by duration, so a weekly-billed plan CAN carry a
+      // monthly-only reading (30-day primary, no secondary) — but only when that reading is
+      // the primary window. A bare monthlyPercent could equally be a tertiary window, which
+      // is a different period and no evidence for the weekly quota that gates the account.
       expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, plan)).toBe(!monthly);
-      expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12 }, plan)).toBe(true);
+      expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12 }, plan)).toBe(monthly);
+      expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12, monthlyIsPrimaryWindow: true }, plan)).toBe(true);
     }
 
     // Monthly-billed Go/Free parse to monthlyPercent only; a weekly-only reading is not
@@ -353,6 +378,12 @@ describe("Codex cooldown recovery worker", () => {
 
     // Absent plan follows the parser's weekly default.
     expect(isCompleteCodexQuotaRecoverySnapshot({ weeklyPercent: 12 }, undefined)).toBe(true);
+    // Provenance, not just presence: monthlyPercent alone is evidence for a weekly-quota plan
+    // ONLY when it came from an explicitly-monthly primary window.
+    expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12 }, "team")).toBe(false);
+    expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12, monthlyIsPrimaryWindow: true }, "team")).toBe(true);
+    // Go/Free are governed by the monthly window either way, so the flag is not required.
+    expect(isCompleteCodexQuotaRecoverySnapshot({ monthlyPercent: 12 }, "go")).toBe(true);
     // Missing EVIDENCE still fails closed — that is the guard that matters.
     expect(isCompleteCodexQuotaRecoverySnapshot({}, "plus")).toBe(false);
     expect(isCompleteCodexQuotaRecoverySnapshot(null, "plus")).toBe(false);
