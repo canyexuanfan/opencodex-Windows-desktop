@@ -2014,6 +2014,39 @@ describe("provider management validation", () => {
     expect(liveConfig.providers.agw.headers).toBeUndefined();
     expect(catalogRefreshes).toBeGreaterThan(0);
   });
+
+  test("GET /api/providers exposes hasHeaders but never header names or values (#959)", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const sentinelName = "x-fingerprint-sentinel";
+    const sentinelValue = "sentinel-secret-header-value";
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        hdr: {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:9/v1",
+          allowPrivateNetwork: true,
+          headers: { [sentinelName]: sentinelValue },
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const req = new Request("http://127.0.0.1/api/providers", { method: "GET" });
+    const res = await handleManagementAPI(req, new URL(req.url), liveConfig, {});
+    expect(res?.status).toBe(200);
+    const raw = await res!.text();
+    const rows = JSON.parse(raw) as { name: string; hasHeaders?: boolean }[];
+    expect(rows.find(row => row.name === "hdr")?.hasHeaders).toBe(true);
+    expect(rows.find(row => row.name === "openai")?.hasHeaders).toBe(false);
+    expect(raw).not.toContain(sentinelName);
+    expect(raw).not.toContain(sentinelValue);
+  });
   test("provider PATCH merges headers case-insensitively", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
