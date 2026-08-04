@@ -205,23 +205,39 @@ describe("GitHub Actions hardening", () => {
   });
 
   test("PR checks reach every branch the target gate accepts", async () => {
-    // These two lists have to move together with enforce-pr-target.yml. A PR
-    // that passes the gate but triggers no checks is worse than one that is
-    // blocked: it looks reviewable and has nothing behind it. Pin the
-    // pull_request branch lists to the gate's allow-list plus main.
+    // These lists have to move together with enforce-pr-target.yml. A PR that
+    // passes the gate but triggers no checks is worse than one that is blocked:
+    // it looks reviewable and has nothing behind it (commit 5229717b1).
+    //
+    // The gate accepts more than `ALLOWED_BASES`. It also exempts a STACKED
+    // child — a PR whose base is another open PR's head branch — from the
+    // wrong-base failure. That exemption has no fixed branch list, so a
+    // `branches:` allow-list on the check workflow can never cover it, and
+    // `ci.yml` therefore carries no base filter at all. `service-lifecycle.yml`
+    // keeps its list: it gates the release service path, not review.
     const gate = await readText(".github/workflows/enforce-pr-target.yml");
     const allowed = gate.match(/const ALLOWED_BASES = \[([^\]]*)\];/);
     expect(allowed).not.toBeNull();
     const bases = [...(allowed?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(m => m[1]);
     expect(bases).toEqual(["dev"]);
 
-    for (const path of [".github/workflows/ci.yml", ".github/workflows/service-lifecycle.yml"]) {
+    // The gate itself must stay unfiltered by base, or the stacked exemption it
+    // implements would never be evaluated for the branches it exempts.
+    expect(gate).not.toMatch(/pull_request_target:[\s\S]{0,200}?branches:/);
+
+    for (const [path, expectedKeys] of [
+      // No `branches`: the stacked-base exemption has no enumerable branch list.
+      [".github/workflows/ci.yml", ["paths"]],
+      [".github/workflows/service-lifecycle.yml", ["branches", "paths"]],
+    ] as const) {
       const workflow = Bun.YAML.parse(await readText(path)) as {
         on?: { pull_request?: Record<string, unknown> };
       };
       const trigger = workflow.on?.pull_request ?? {};
-      const branches = (trigger.branches as string[] | undefined) ?? [];
-      expect([...branches].sort()).toEqual(["dev", "main"]);
+      if (expectedKeys.includes("branches")) {
+        const branches = (trigger.branches as string[] | undefined) ?? [];
+        expect([...branches].sort()).toEqual(["dev", "main"]);
+      }
 
       // Narrowing a default is a mutation that deletes nothing. Omitting
       // `types` means opened + synchronize + reopened; writing
@@ -229,7 +245,7 @@ describe("GitHub Actions hardening", () => {
       // running checks on every commit pushed after the PR was opened — the
       // review then reads a green tick that belongs to an older tree. An
       // absent key is only pinned by asserting the key set, so assert it.
-      expect(Object.keys(trigger).sort()).toEqual(["branches", "paths"]);
+      expect(Object.keys(trigger).sort()).toEqual([...expectedKeys].sort());
       if ("types" in trigger) {
         // If a future change genuinely needs `types`, it must still cover the
         // three events the default covers.
@@ -243,10 +259,25 @@ describe("GitHub Actions hardening", () => {
     const ci = Bun.YAML.parse(await readText(".github/workflows/ci.yml")) as {
       on?: {
         push?: { branches?: string[]; paths?: string[] };
-        pull_request?: { paths?: string[] };
+        pull_request?: { branches?: string[]; paths?: string[] };
       };
     };
     expect([...(ci.on?.push?.branches ?? [])].sort()).toEqual(["dev", "main", "preview"]);
+
+    // The PR trigger must carry NO base-branch filter, and the two triggers
+    // differ on purpose. GitHub matches `branches:` against the BASE ref, so
+    // `[main, dev]` silently excluded stacked child PRs — whose base is another
+    // open PR's head branch. The #951-#955 stack merged with `enforce-target`,
+    // `label`, and `react-doctor` as its only check-runs and no test job at
+    // all, for 24 changed files under `src/`; the type annotation above did not
+    // even model `branches` on this trigger, so no assertion could have caught
+    // it.
+    //
+    // Re-adding an allowlist is the regression this pins, and it cannot be
+    // written correctly: stacked bases carry contributor prefixes (`fix/`,
+    // `feat/`, `agent/`) as readily as `codex/`, so any list leaves some stack
+    // silently unverified. `paths:` below is the scope gate.
+    expect(ci.on?.pull_request?.branches).toBeUndefined();
 
     // The path filter decides whether the job runs at all. Deleting one entry
     // deletes nothing visible: the workflow still exists, still lists the right
