@@ -73,6 +73,7 @@ import type { ManagementPrincipal } from "./management-auth";
 export type { ManagementApiDeps } from "./management/context";
 import { fetchAllModels } from "./management/shared";
 import { CatalogGatherBusyError } from "../codex/catalog/provider-fetch";
+import type { CatalogDisposition, ConvergeCodex } from "../codex/convergence-types";
 import { managementBodyTooLargeResponse } from "./management/body";
 
 // installed npm version instead of a stale hardcode.
@@ -83,6 +84,33 @@ export const VERSION = (() => {
     return "0.0.0";
   }
 })();
+
+function isCatalogDisposition(value: unknown): value is CatalogDisposition {
+  if (!value || typeof value !== "object" || !("status" in value)) return false;
+  const disposition = value as Record<string, unknown>;
+  if (disposition.status === "committed") {
+    return typeof disposition.changed === "boolean"
+      && typeof disposition.degraded === "boolean"
+      && Array.isArray(disposition.notices)
+      && disposition.notices.every(notice => notice === "provider-auth" || notice === "provider-network" || notice === "fallback");
+  }
+  if (disposition.status === "skipped") {
+    return ["not-requested", "catalog-unavailable", "busy", "stale", "refused"].includes(String(disposition.reason))
+      && typeof disposition.retryable === "boolean";
+  }
+  if (disposition.status === "failed") {
+    return ["provider-auth", "provider-network", "disk"].includes(String(disposition.reason))
+      && (disposition.phase === "gather" || disposition.phase === "commit")
+      && typeof disposition.retryable === "boolean"
+      && typeof disposition.partialWrite === "boolean";
+  }
+  return false;
+}
+
+const managementConvergenceBindings = new WeakMap<object, Readonly<{
+  factory: (config: Readonly<OcxConfig>) => ConvergeCodex;
+  converge: ConvergeCodex;
+}>>();
 
 export async function handleManagementAPI(
   req: Request,
@@ -102,13 +130,38 @@ export async function handleManagementAPI(
       return jsonResponse({ error: "request body too large" }, 413, req, config);
     }
   }
-  async function refreshCodexCatalogBestEffort(): Promise<void> {
-    if (deps.refreshCodexCatalog) return deps.refreshCodexCatalog();
+  async function convergeCodexCatalog(): Promise<CatalogDisposition> {
+    let convergenceInvoked = false;
+    let managementConvergeCodex: ConvergeCodex | undefined;
     try {
-      const { refreshCodexModelCatalog } = await import("../codex/refresh");
-      await refreshCodexModelCatalog(config);
+      if (!managementConvergeCodex) {
+        const factory = deps.createManagementConvergeCodex
+          ?? (await import("../codex/management-convergence")).createManagementConvergeCodex;
+        if (typeof factory !== "function") throw new TypeError("Catalog convergence factory is unavailable.");
+        let binding = managementConvergenceBindings.get(config);
+        if (!binding || binding.factory !== factory) {
+          const created = factory(config);
+          if (typeof created !== "function") throw new TypeError("Catalog convergence factory returned no function.");
+          binding = { factory, converge: created };
+          managementConvergenceBindings.set(config, binding);
+        }
+        managementConvergeCodex = binding.converge;
+      }
+      const { createCatalogConvergeRequest } = await import("../codex/catalog-admission");
+      convergenceInvoked = true;
+      const outcome = await managementConvergeCodex(createCatalogConvergeRequest({ deadlineMs: 1_000 }));
+      if (!outcome || outcome.kind !== "catalog-only" || !isCatalogDisposition(outcome.catalogRefresh)) {
+        throw new TypeError("Catalog convergence returned an invalid outcome.");
+      }
+      return outcome.catalogRefresh;
     } catch {
-      /* catalog absent */
+      return {
+        status: "failed",
+        reason: "disk",
+        phase: convergenceInvoked ? "commit" : "gather",
+        retryable: false,
+        partialWrite: convergenceInvoked,
+      };
     }
   }
 
@@ -133,7 +186,7 @@ export async function handleManagementAPI(
       }
     } catch { /* best-effort */ }
   }
-  const ctx: ManagementContext = { req, url, config, deps, principal, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort };
+  const ctx: ManagementContext = { req, url, config, deps, principal, convergeCodexCatalog, syncClaudeAgentDefsBestEffort };
   let routed: Response | null;
   try {
     routed = (await handleConfigRoutes(ctx))

@@ -1,12 +1,6 @@
-/**
- * Management-scoped projection before WP9 installs real catalog convergence.
- *
- * The r2 #1 callback swallowed every catalog failure and accepted only the
- * management context's resident config. Keeping that exact object in this
- * factory prevents callers from adding substitute authority to ConvergeRequest.
- * Until WP9 supplies gather/commit, the catalog disposition says no work ran.
- */
 import type { OcxConfig } from "../types";
+import { captureCatalogAdmissionSnapshot } from "./catalog-admission";
+import { convergeCodexCatalog } from "./convergence";
 import type {
   CatalogDisposition,
   CatalogOnlyOutcome,
@@ -55,8 +49,22 @@ function notEvaluatedObserved(history: CodexHistoryState): CodexObservedState {
   };
 }
 
-function catalogNotRequested(): CatalogDisposition {
-  return { status: "skipped", reason: "not-requested", retryable: false };
+function unexpectedCatalogFailure(commitBegan: boolean): CatalogDisposition {
+  return {
+    status: "failed",
+    reason: "disk",
+    phase: commitBegan ? "commit" : "gather",
+    retryable: false,
+    partialWrite: commitBegan,
+  };
+}
+
+function admissionFailure(error: unknown): CatalogDisposition {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("config generation is busy") || message.includes("config generation is database")) {
+    return { status: "skipped", reason: "busy", retryable: true };
+  }
+  return unexpectedCatalogFailure(false);
 }
 
 /** Project catalog work into the shared no-change/not-evaluated outcome shape. */
@@ -83,15 +91,24 @@ export function createManagementConvergeCodex(
 ): ConvergeCodex {
   const retainedConfig = config;
   return async request => {
-    if (request.scope !== "catalog") {
-      throw new Error("Management Codex convergence accepts only catalog-scoped requests.");
+    let commitBegan = false;
+    try {
+      if (request.scope !== "catalog" || request.action !== "converge") {
+        return projectCatalogOnlyOutcome({
+          changed: false,
+          catalogRefresh: unexpectedCatalogFailure(false),
+        });
+      }
+      const snapshot = captureCatalogAdmissionSnapshot(retainedConfig);
+      const result = await convergeCodexCatalog(snapshot, request, {
+        onCommitBegin: () => { commitBegan = true; },
+      });
+      return projectCatalogOnlyOutcome(result);
+    } catch (error) {
+      return projectCatalogOnlyOutcome({
+        changed: false,
+        catalogRefresh: commitBegan ? unexpectedCatalogFailure(true) : admissionFailure(error),
+      });
     }
-
-    // WP9 replaces this no-work projection and consumes this exact reference.
-    void retainedConfig;
-    return projectCatalogOnlyOutcome({
-      changed: false,
-      catalogRefresh: catalogNotRequested(),
-    });
   };
 }

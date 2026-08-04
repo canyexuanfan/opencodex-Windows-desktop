@@ -12,7 +12,7 @@ function config(): OcxConfig {
   return { port: 10100, providers: {}, defaultProvider: "openai" };
 }
 
-test("returns an honest catalog-only no-change projection", async () => {
+test("projects unavailable generation admission as retryable busy", async () => {
   const convergeCodex = createManagementConvergeCodex(config());
 
   const outcome = await convergeCodex(createCatalogConvergeRequest({ deadlineMs: 1_000 }));
@@ -20,7 +20,7 @@ test("returns an honest catalog-only no-change projection", async () => {
   expect(outcome).toEqual({
     kind: "catalog-only",
     changed: false,
-    catalogRefresh: { status: "skipped", reason: "not-requested", retryable: false },
+    catalogRefresh: { status: "skipped", reason: "busy", retryable: true },
     history: {
       status: "not-evaluated",
       attempts: 0,
@@ -64,18 +64,24 @@ test("returns an honest catalog-only no-change projection", async () => {
   });
 });
 
-test("rejects a non-catalog request instead of widening management authority", async () => {
+test("refuses a non-catalog request through the total projection", async () => {
   const convergeCodex = createManagementConvergeCodex(config());
 
-  await expect(convergeCodex({
+  const outcome = await convergeCodex({
     action: "observe",
     scope: "full",
     reason: "cli",
     mode: "explicit",
     deadlineMs: 1_000,
-  })).rejects.toThrow(
-    "Management Codex convergence accepts only catalog-scoped requests.",
-  );
+  });
+  expect(outcome.kind).toBe("catalog-only");
+  expect(outcome.catalogRefresh).toEqual({
+    status: "failed",
+    reason: "disk",
+    phase: "gather",
+    retryable: false,
+    partialWrite: false,
+  });
 });
 
 test("constructs the fixed catalog request and ignores caller attempts to choose direction", () => {
