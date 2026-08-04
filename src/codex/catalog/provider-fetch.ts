@@ -156,6 +156,15 @@ interface GatherInflightEntry {
    * and the same policy, so the second joined the first and published rows the
    * old key had fetched — reproduced against the real routes by rotating a key
    * through `/api/providers/keys` mid-flight.
+   *
+   * Now REDUNDANT with `providerGraphIdentity`, which hashes the whole provider
+   * row and therefore covers `apiKey` too: removing this term alone leaves the
+   * credential regression green. It is kept deliberately, for two reasons. It
+   * covers what the graph cannot — the RESOLVED auth (`observedAuth`) and the
+   * final materialized headers, which are derived rather than stored, so an
+   * OAuth token that changes while the row is byte-identical still separates
+   * admissions. And it states the credential rule where a reader looks for it,
+   * instead of leaving it as an emergent property of hashing everything.
    */
   readonly authIdentity: string;
   /**
