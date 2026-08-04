@@ -40,10 +40,12 @@ direction 2).
    → `"invalid_request_error: …"`; on HTML → `""`; on JSON without error
    fields → `""`; secret-shaped content inside `message` is redacted.
 4. Bridge integration: fake anthropic upstream returning a JSON 400 through
-   the web-search loop → thrown `LoopError` message carries
-   `Provider error 400: invalid_request_error: …` (not the bare status).
-   Follow the existing web-search loop test harness (find the suite covering
-   `loop.ts` error paths and extend it).
+   the web-search loop → the client-facing JSON error response carries
+   `Provider error 400: invalid_request_error: …` (not the bare status; the
+   thrown `LoopError` is converted by `runWithWebSearch`,
+   `src/web-search/loop.ts:657-662`). Follow the existing web-search loop
+   test harness (find the suite covering `loop.ts` error paths and extend
+   it).
 5. Persistence integration: same fake 400 through `/v1/responses` with
    web_search enabled against a routed anthropic model → the usage entry's
    `upstreamError` contains the upstream message (proves the

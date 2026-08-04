@@ -45,9 +45,10 @@ large infrastructure PRs) are out of scope.
 ## Environment baselines
 
 - `origin/dev` HEAD: `e44d234f08e03dd4dbf0c4aa13af43046d86b0a6`.
-- Worktree: `/Users/jun/.codex/worktrees/250c/opencodex`, detached at
-  `9289891a5` (other unit's commits, contained in local `dev`; stack branches
-  fork from `origin/dev`, not from this HEAD).
+- Worktree: `/Users/jun/.codex/worktrees/250c/opencodex`, branch
+  `codex/bug-stack-campaign` (forked from `origin/dev`; the previously
+  detached other-unit HEAD `9289891a5` remains untouched, contained in local
+  `dev`).
 - lidge Linux baseline (`bun run test` on dev HEAD, 2026-08-05): the first
   cold-cache run showed 12 fails with a phantom
   `ROLLUP_COST_SEMANTICS_VERSION` import error (an identifier that exists
@@ -69,9 +70,9 @@ independent and does not inherit merge blockage from earlier items.
 | 0 | this doc + 001/002/003 | triage + research (docs-only) | — |
 | 1 | 010 | PR #988 design review + merge | none (independent GUI slice) |
 | 2 | 020 | anthropic sidecar-bridge error fidelity (`formatErrorBody`) | 003 probes + bridge analysis |
-| 3 | 030 | #914 DNS transport attribution (core.ts 1/3) | 001/002 triage |
-| 4 | 040 | #893 sparse snapshot repair (core.ts 2/3) | 030 |
-| 5 | 050 | #875 DeepSeek Flash stall (core.ts 3/3) | 040 |
+| 3 | 030 | #914 DNS transport attribution | 001/002 triage |
+| 4 | 040 | #893 sparse snapshot repair | none (independent) |
+| 5 | 050 | #875 DeepSeek Flash stall | none (independent) |
 | 6 | 060 | #938 UUID item IDs | 050 (shared JSON→event boundary) |
 | 7 | 070 | #907 jawcode prices (+ external jawcode source write) | none |
 | 8 | 080 | #1007 login URL flush | none |
@@ -81,10 +82,14 @@ independent and does not inherit merge blockage from earlier items.
 | 12 | 120 | #959 provider headers (adopt PR #961) | none |
 | 13 | 130 | dispositions: #806 close (anytime); supersede-closes per landing | respective phases |
 
-Only the `core.ts` cluster (030→040→050→060) chains branches; 070-120 are
-independent lanes branching from `origin/dev` (or from the campaign base
-when doc files ride along). Each phase is one full PABCD cycle whose P
-re-verifies its decade doc against the then-current tree.
+Dependency honesty (audit round 3): 030, 040, 050 are semantically
+independent — none consumes another's artifact. Only 050→060 is a real
+dependency (060 extends 050's bounded-JSON event boundary). To control
+`core.ts` merge conflicts the RECOMMENDED merge order is 030 → 040 → 050 →
+060, then the independent lanes 070-120 in any order, each branching from
+`origin/dev` (or the campaign base when doc files ride along). Each phase is
+one full PABCD cycle whose P re-verifies its decade doc against the
+then-current tree.
 
 ## Triage inputs
 

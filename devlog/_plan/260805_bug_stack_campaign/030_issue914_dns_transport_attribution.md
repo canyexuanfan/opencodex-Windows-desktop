@@ -38,7 +38,11 @@ provider-origin keying.
 
 ADD `src/codex/upstream-host-health.ts` — observational ledger keyed by
 `(provider, canonical origin)`; record/reset/window helpers only, NO circuit
-breaker in this issue.
+breaker in this issue. Retention bound (audit round 3): maximum 128 entries;
+on overflow, prune the stalest entries by last-touch timestamp before
+inserting; entries idle beyond the ledger window are reconciled away on the
+next record. A churn test proves cardinality stays bounded across repeated
+provider/base-URL changes for the process lifetime.
 
 MODIFY `src/lib/upstream-retry.ts` — attach ordered prior-attempt evidence
 (5xx, credential-visible resets) to the terminal rejection via an
@@ -46,7 +50,9 @@ observation callback, so mixed sequences classify correctly.
 
 MODIFY `src/codex/routing.ts` — add a neutral outcome branch: releases only a
 matching account/scoped probe lease and returns before account streak,
-soft-avoid, affinity, or active-account mutation.
+soft-avoid, affinity, or active-account mutation. Add the neutral variant to
+`CodexUpstreamOutcome` and the downstream recorder contracts so the new
+outcome is type-checked end to end (audit round 3 note).
 
 MODIFY `src/server/responses/core.ts` — `transportFailureResponse` classifies
 via the new helper; neutral → account-neutral settlement + host-ledger
