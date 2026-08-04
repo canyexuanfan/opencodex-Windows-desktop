@@ -339,9 +339,14 @@ function resetReviewReadinessSection(body) {
     return body;
   }
   const section = buildReviewReadinessSection();
-  const reset =
-    body.slice(0, start) + section + body.slice(end + REVIEW_READINESS_END.length);
-  return reset.replace(/\n{3,}/g, "\n\n").trimEnd();
+  // Splice only the bounded section: the author's surrounding content —
+  // including deliberate blank lines and trailing markdown — stays byte for
+  // byte identical to what they wrote.
+  return (
+    body.slice(0, start) +
+    section +
+    body.slice(end + REVIEW_READINESS_END.length)
+  );
 }
 
 function collectPrQualityFailures({

@@ -1324,6 +1324,8 @@ describe("GitHub Actions hardening", () => {
       expect(readinessBody).toContain(
         '"completedAtHeadSha":"3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b"',
       );
+      // A migrated v1 state is rewritten at the current version.
+      expect(readinessBody).toContain('"version":2');
       expect(readinessBody).toContain("Completed against head `3f1c0de`");
       // Already pinged before the upgrade: no second notification.
       expect(readinessBody).toContain('"maintainersPinged":true');
@@ -1352,6 +1354,7 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.get",
         "pulls.update",
         "issues.updateComment",
         "graphql",
@@ -1437,6 +1440,7 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsWrongBase([
+        "pulls.get",
         "pulls.update",
         "issues.updateComment",
         "issues.createComment",
@@ -1458,6 +1462,121 @@ describe("GitHub Actions hardening", () => {
       expect(readinessBody).toContain(
         "New commits were pushed after the checklist was completed",
       );
+    });
+
+    test("a completion whose ticks predate the live head is rejected and reset", async () => {
+      // A push raced the `edited` job: the event saw the older head the boxes
+      // were ticked against, but the live head is newer. Binding the
+      // completion to the live head would attest code the author never ticked
+      // against, so the gate rejects the completion, resets the boxes, and
+      // re-drafts instead of sliding the attestation forward.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        eventPayload: {
+          head: { sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      expect(callsTo(result, "graphql").join("")).not.toContain(
+        "markPullRequestReadyForReview",
+      );
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        "The checklist was ticked before the current head `3f1c0de` was pushed.",
+      );
+      expect(readinessBody).toContain("**0/4** boxes ticked");
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(readinessBody).not.toContain("Maintainers notified");
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a completion recorded while quality gates fail still binds the head", async () => {
+      // The mustDraft failure path returns before the completion block, so
+      // without an explicit record the checklist would stay unbound while a
+      // quality gate is red — the author could push un-attested code and have
+      // the newest head bound to the old attestation once the gate clears.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          title: "GUI: fix provider list spacing",
+          body: readinessChecklistBody(4),
+        },
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "issues.createComment",
+        "issues.updateComment",
+        "graphql",
+        "issues.updateComment",
+        "issues.updateComment",
+        "issues.createComment",
+      ]));
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(true);
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        '"completedAtHeadSha":"3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b"',
+      );
+      expect(readinessBody).toContain('"version":2');
+      expect(readinessBody).toContain(
+        "**All four boxes are ticked.** This PR still stays in draft until the issues above are resolved.",
+      );
+    });
+
+    test("a stale recorded head with an already-open checklist still recovers the reset state", async () => {
+      // Partial-reset window: the body update succeeded but the readiness
+      // comment failed, leaving unticked boxes with the old completion head
+      // and ping flag. The stale-record detection must not depend on the
+      // boxes being ticked, or the next completion would be reset one extra
+      // cycle and the ping would silently survive.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(0),
+        },
+        comments: [readinessComment({
+          version: 2,
+          autoDraftedByBot: false,
+          maintainersPinged: true,
+          completedAtHeadSha: "1111111111111111111111111111111111111111",
+        })],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.get",
+        "issues.updateComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      // No body rewrite: the boxes are already unticked from the failed reset.
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(readinessBody).toContain(
+        "New commits were pushed after the checklist was completed on `1111111`",
+      );
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
     });
 
     test("an empty PR cannot be laundered into ready by ticking the injected boxes", async () => {

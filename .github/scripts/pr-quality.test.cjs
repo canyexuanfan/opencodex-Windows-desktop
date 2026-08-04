@@ -433,6 +433,24 @@ describe("review readiness checklist", () => {
     assert.equal(extracted.complete, false);
   });
 
+  it("preserves the surrounding author formatting exactly", () => {
+    const body = [
+      "## Summary",
+      "Author content.",
+      "",
+      "",
+      SECTION.replaceAll("- [ ] ", "- [x] "),
+      "",
+      "",
+      "Trailing note with blank lines above.",
+      "",
+    ].join("\n");
+    const reset = resetReviewReadinessSection(body);
+    // Only the bounded section changed; deliberate blank lines and trailing
+    // markdown survive byte for byte (no `\n{3,}` collapse, no trimEnd).
+    assert.equal(reset, body.replaceAll("- [x] ", "- [ ] "));
+  });
+
   it("is idempotent on an already-unticked section", () => {
     const once = resetReviewReadinessSection(
       SECTION.replaceAll("- [ ] ", "- [x] "),

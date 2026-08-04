@@ -588,44 +588,69 @@ jobs:
             let checklistComplete = readiness.present && readiness.complete;
 
             // A completed checklist is an attestation about a specific head.
-            // If new commits land after completion, that attestation no longer
-            // covers the code under review: reset the boxes and the
-            // notification state, re-draft, and tell the author to re-test and
-            // re-tick against the latest code. State written before this
-            // feature existed has no recorded head, so the binding only starts
-            // at the next completion (the completion path records the SHA).
+            // The attestation is stale when the recorded completion head
+            // differs from the live head (new commits landed after the last
+            // completion) or when the boxes were ticked in an event that saw
+            // an older head than the live one — a push raced the `edited`
+            // job, so no completion head was recorded yet but the ticks
+            // predate the code under review. Either way the gate resets the
+            // boxes and the notification state, re-drafts, and tells the
+            // author to re-test and re-tick against the latest code. State
+            // written before this feature existed has no recorded head, so a
+            // synchronize event whose head matches the live head binds
+            // forward at the next completion instead of retroactively
+            // drafting already-ready PRs.
+            const eventHeadSha =
+              context.payload.pull_request?.head?.sha ?? pr.head.sha;
             const completionHeadSha =
               storedReadinessState?.completedAtHeadSha ?? null;
+            const completionRecordedForLiveHead =
+              completionHeadSha !== null && completionHeadSha === pr.head.sha;
+            const ticksPredateLiveHead =
+              completionHeadSha === null && eventHeadSha !== pr.head.sha;
             const headDrifted =
               checklistRequired &&
-              checklistComplete &&
-              completionHeadSha !== null &&
-              completionHeadSha !== pr.head.sha;
+              readiness.present &&
+              ((completionHeadSha !== null && !completionRecordedForLiveHead) ||
+                ticksPredateLiveHead);
 
             let readinessStateOverride = null;
             let headDriftNotice = [];
             if (headDrifted) {
-              const resetBody = resetReviewReadinessSection(pr.body ?? "");
-              if (resetBody !== pr.body) {
-                await github.rest.pulls.update({
-                  owner,
-                  repo,
-                  pull_number,
-                  body: resetBody
-                });
-              }
-              readiness = extractReviewReadiness(resetBody);
-              checklistComplete = readiness.present && readiness.complete;
-              readinessStateOverride = {
-                version: READINESS_STATE_VERSION,
-                autoDraftedByBot: false,
-                maintainersPinged: false,
-                completedAtHeadSha: null
-              };
+              // Re-fetch the PR so an author edit that landed while this job
+              // was reading cannot be clobbered by the reset.
+              const { data: freshPr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number
+              });
+              const freshReadiness = extractReviewReadiness(
+                freshPr.body ?? ""
+              );
+              readinessStateOverride = defaultReadinessState();
               headDriftNotice = [
-                `New commits were pushed after the checklist was completed on ${inlineCode(String(completionHeadSha).slice(0, 7))}; the current head is ${inlineCode(pr.head.sha.slice(0, 7))}.`,
+                completionHeadSha !== null
+                  ? `New commits were pushed after the checklist was completed on ${inlineCode(String(completionHeadSha).slice(0, 7))}; the current head is ${inlineCode(freshPr.head.sha.slice(0, 7))}.`
+                  : `The checklist was ticked before the current head ${inlineCode(freshPr.head.sha.slice(0, 7))} was pushed.`,
                 "The checklist has been reset: re-test against the latest code and tick all four boxes again."
               ];
+              if (freshReadiness.present && freshReadiness.complete) {
+                const resetBody = resetReviewReadinessSection(
+                  freshPr.body ?? ""
+                );
+                if (resetBody !== freshPr.body) {
+                  await github.rest.pulls.update({
+                    owner,
+                    repo,
+                    pull_number,
+                    body: resetBody
+                  });
+                }
+                readiness = extractReviewReadiness(resetBody);
+              } else {
+                readiness = freshReadiness;
+              }
+              checklistComplete = readiness.present && readiness.complete;
             }
 
             // A contributor PR stays a draft while the checklist is open, even
@@ -640,6 +665,15 @@ jobs:
                 (storedReadinessState
                   ? { ...storedReadinessState }
                   : defaultReadinessState());
+              if (checklistRequired && checklistComplete) {
+                // The attestation covers this head even while another quality
+                // gate keeps the draft: bind it now, because the failure path
+                // below returns before the completion block that records it.
+                // A later push then still resets the checklist instead of
+                // sliding the completion forward onto un-attested code.
+                readinessState.completedAtHeadSha = pr.head.sha;
+                readinessState.version = READINESS_STATE_VERSION;
+              }
               const state = storedState?.active
                 ? { ...storedState }
                 : {
@@ -985,6 +1019,7 @@ jobs:
               // `synchronize` event with a different head resets the checklist
               // and the notification state (see `headDrifted` above).
               readinessState.completedAtHeadSha = pr.head.sha;
+              readinessState.version = READINESS_STATE_VERSION;
 
               await upsertReadinessComment(
                 readinessState,
