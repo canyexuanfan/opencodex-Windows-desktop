@@ -17,31 +17,44 @@ would freeze the proxy for every other client if a lock were held across it; and
 the ownership guard that was supposed to protect a foreign home fails open, after
 the artifacts it guards have already been created.
 
-So this unit builds the substrate. **It ships no switch.** The switches
-(`WP4`/`WP5` Codex, `WP6` Grok, `WP7` Desktop in the prior unit) become small
-once it exists.
+So this unit builds the substrate.
 
-## The four parts, and why they are ordered this way
+**What it ships, stated honestly** (audit #12 caught the earlier claim that this
+unit "ships no switch", which was false): it ships the persisted config field
+`clientIntegrations.codex` and the convergence semantics that obey it. It does
+NOT ship the management setter or any GUI control. A user could set the field by
+hand; nothing in the product offers it yet. The switch surfaces
+(`WP5` Codex UI, `WP6` Grok, `WP7` Desktop in the prior unit) become small once
+this exists.
 
-Dependency order (PHASE-SPLIT-01), not effort. Each phase closes with something
-independently verifiable.
+## The phases
+
+**Re-planned after audit round 1** (`006_audit_synthesis.md`). The first map had
+four parallel authors and no owner for the surfaces they share, so they collided
+on four of them: the `integrations/codex.json` record, the `/api/sync` contract,
+the convergence entry point, and the module name. That is the same defect the
+prior unit had at smaller scale, and I reproduced it.
+
+So a contract phase lands first and owns every shared surface. The rest consume
+it rather than inventing their share.
 
 | Phase | Doc | Delivers | Depends on |
 |---|---|---|---|
-| WP9 | `010_catalog_seam.md` | `gatherCodexCatalogCandidate` / `commitCodexCatalogCandidate` + a typed outcome | — |
-| WP10 | `020_history_isolation.md` | history off the server event loop, fail-fast under convergence | — |
-| WP11 | `030_lock_protocol.md` | the async per-home lock with a hardened namespace | WP9, WP10 |
+| WP8b | `005_contract.md` *(to write)* | The shared surfaces: record schema + owner, `/api/sync` response contract, the single convergence entry point, generation counters, module names, and the config-snapshot admission result | — |
+| WP9 | `010_catalog_seam.md` | gather/commit split + typed outcome, consuming the contract | WP8b |
+| WP10 | `020_history_isolation.md` | history off the event loop, and the cross-process history protocol | WP8b |
+| WP11 | `030_lock_protocol.md` | the async per-home lock, per-USER namespace | WP8b, WP9, WP10 |
 | WP12 | `040_ownership_convergence.md` | tri-state authority, admission order, absence restoration | WP11 |
+| WP13 | `050_composed_acceptance.md` *(to write)* | one acceptance suite against real production entry points | all |
 
-WP9 and WP10 are genuinely independent: one makes catalog work *splittable*, the
-other makes history work *non-blocking*. Neither needs a lock to be useful, and
-both must exist before a lock is worth taking — a lock around an unsplittable
-gather-and-write, or around a ten-second blocking history call, is the failure
-the last unit already proved.
+WP9 and WP10 remain independent of each other and both precede WP11: a lock
+around an unsplittable gather-and-write, or around a ten-second blocking history
+call, is the failure the last unit already proved. WP12 stays last of the four
+because its admission must run before the lock module creates anything.
 
-WP11 then has something bounded to wrap. WP12 sits last because the admission
-order it defines must run *before* the lock module creates anything, so it needs
-the lock's real construction sequence to point at.
+WP13 exists because audit #11 showed the per-phase criteria are provable inside
+their own phase and break at the seams — the "8000 green tests beside a broken
+real file" class this plan already warns about.
 
 ## Research, all written this cycle
 
@@ -99,6 +112,19 @@ remain `FOLLOWUP-FILECLIENT-01` from the prior unit.
   server without a restart.
 - C13 — typecheck, full test, gui lint, privacy scan green; no regression in the
   8000-test suite.
+- C14 — every one of the 16 management catalog callers goes through the single
+  convergence entry point; none can commit catalog bytes bypassing ownership,
+  provenance, intent or the lock (audit #2).
+- C15 — history is serialized ACROSS processes, including the manifest and
+  rollout writes that happen outside its SQLite transaction
+  (`history-provider.ts:606,626`). Proven by two processes converging in
+  opposite directions, not by a same-process flight test (audit #1).
+- C16 — one owner and one schema for `integrations/codex.json`; a record written
+  by any phase is readable by every other (audit #3).
+- C17 — a config or catalog A→B→A cycle between gather and commit is DETECTED.
+  Content equality is not revision equality (audit #6).
+- C18 — two processes for the same OS user with different `HOME`/`USERPROFILE`
+  take the SAME lock (audit #7).
 
 ## Risk register
 
@@ -109,6 +135,8 @@ remain `FOLLOWUP-FILECLIENT-01` from the prior unit.
 | Deadlock against the config mutation lock | One stated ordering, plus a proof that no inverse nesting exists today |
 | Convergence deletes something the user owns | Provenance is a recorded baseline-absence plus post-image hash, never a filename or marker; on conflict, preservation wins and the operation reports rather than deletes |
 | Another round of divergence | One phase, one boundary, one audit. WP2 and WP3 of the prior unit passed clean on exactly that property; WP4 failed twice without it |
+| Parallel authors collide on a shared surface | WP8b owns every shared surface and lands first; the rest consume it. Round 1 proved that dispatching four parallel authors without a contract owner reproduces the prior unit's defect at four times the scale |
+| A criterion provable only inside its own phase | WP13 re-proves the composed system through real production entry points |
 
 ## What this unit does not claim
 
