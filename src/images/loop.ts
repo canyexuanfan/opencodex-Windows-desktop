@@ -159,6 +159,7 @@ function extractIterationThinking(events: AdapterEvent[]): OcxThinkingContent[] 
   const parts: OcxThinkingContent[] = [];
   let thinking = "";
   let signature: string | undefined;
+  let rawReasoning = "";
 
   const flushVisible = () => {
     if (!thinking && !signature) return;
@@ -170,19 +171,33 @@ function extractIterationThinking(events: AdapterEvent[]): OcxThinkingContent[] 
     thinking = "";
     signature = undefined;
   };
+  const flushRaw = () => {
+    if (!rawReasoning) return;
+    parts.push({ type: "thinking", thinking: rawReasoning });
+    rawReasoning = "";
+  };
 
   for (const e of events) {
     if (e.type === "thinking_delta") {
+      flushRaw();
       thinking += e.thinking;
+    } else if (e.type === "reasoning_raw_delta") {
+      // OpenAI-compatible providers emit raw reasoning instead of signed
+      // thinking; DeepSeek thinking mode requires it back alongside replayed
+      // tool_calls (mirrors src/web-search/loop.ts, issue #950).
+      flushVisible();
+      rawReasoning += e.text;
     } else if (e.type === "thinking_signature") {
       signature = e.signature;
       flushVisible();
     } else if (e.type === "redacted_thinking") {
       flushVisible();
+      flushRaw();
       parts.push({ type: "thinking", thinking: "", redacted: [e.data] });
     }
   }
   flushVisible();
+  flushRaw();
   return parts;
 }
 
@@ -813,6 +828,7 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
     }, 2_000,
     {
       translatorBudget,
+      replayCacheScope: parsed._clientThreadId ?? "global",
       ...(deps.forceEmptyResponseId ? { responseId: "" } : {}),
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       stallTimeoutSec: deps.stallTimeoutSec,

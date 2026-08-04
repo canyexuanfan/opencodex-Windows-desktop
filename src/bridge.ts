@@ -2,6 +2,7 @@ import type { AdapterEvent, OcxMessagePhase, OcxProviderContinuationState, OcxUs
 import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
+import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
 import { resolveStallTimeoutSec } from "./stall-timeout";
 import { usageDisplayTotalTokens } from "./usage/totals";
 import {
@@ -181,6 +182,12 @@ export function bridgeToResponsesSSE(
     onUsage?: (usage: OcxUsage | undefined) => void;
     translatorBudget?: TranslatorBudget;
     /**
+     * Conversation identity for the reasoning replay cache (issue #950).
+     * Provider call ids are not globally unique; scoping by thread keeps one
+     * conversation's reasoning out of another's continuations.
+     */
+    replayCacheScope?: string;
+    /**
      * Test seam for the wire/stall beat loop. Production omits this and uses the
      * global timers; injecting here must not change scheduling semantics.
      */
@@ -190,6 +197,7 @@ export function bridgeToResponsesSSE(
     };
   },
 ): ReadableStream<Uint8Array> {
+  const replayCacheScope = options?.replayCacheScope ?? "global";
   const setBeatInterval = options?.timers?.setInterval ?? ((handler: () => void, ms: number) => setInterval(handler, ms));
   const clearBeatInterval = options?.timers?.clearInterval ?? ((id: unknown) => clearInterval(id as ReturnType<typeof setInterval>));
   // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
@@ -426,8 +434,15 @@ export function bridgeToResponsesSSE(
       // encodeReasoningEnvelope: takeReasoningEnvelope's sig/red guard would drop txt-only.
       let hiddenRawReasoningText = "";
       let hiddenRawReasoningBytes = 0;
+      // Raw reasoning text flushed most recently, waiting for the tool call it
+      // preceded. Recorded into the replay cache on tool_call_start so a later
+      // continuation can re-attach it when history lost the reasoning item
+      // (issue #950). Kept until new reasoning/text arrives: parallel tool
+      // calls share the same preceding reasoning block.
+      let rawReasoningForNextToolCall = "";
       const flushHiddenRawReasoning = () => {
         if (!hiddenRawReasoningText) return;
+        rawReasoningForNextToolCall = hiddenRawReasoningText;
         const previousBytes = hiddenRawReasoningBytes;
         const encrypted = encodeReasoningEnvelope({ txt: hiddenRawReasoningText });
         const reservation = budget?.reserveTransient(bytesOf(encrypted), { kind: "reasoning" });
@@ -519,6 +534,7 @@ export function bridgeToResponsesSSE(
 
       const closeCurrentRawReasoning = () => {
         if (!currentRawReasoning) return;
+        rawReasoningForNextToolCall = currentRawReasoning.text;
         const item = {
           type: "reasoning", id: currentRawReasoning.itemId, summary: [],
           content: [{ type: "reasoning_text", text: currentRawReasoning.text }],
@@ -779,6 +795,7 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
+              rawReasoningForNextToolCall = "";
               if (currentToolCall) closeCurrentToolCall();
               flushHiddenReasoningEnvelope();
               break;
@@ -787,6 +804,8 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
+              // Reasoning consumed by a text turn, not a tool call: no cache target.
+              rawReasoningForNextToolCall = "";
               if (currentToolCall) closeCurrentToolCall();
               // Only flush on an explicit phase change. A later delta that omits `phase` must
               // keep appending to the current message rather than wiping the earlier phase.
@@ -821,6 +840,12 @@ export function bridgeToResponsesSSE(
             }
             case "thinking_delta": {
               if (options?.hideThinkingSummary) {
+                // The hidden branch returns early, so flush any raw reasoning
+                // that preceded the thinking block and clear the replay-cache
+                // candidate — otherwise a stale reasoning_raw_delta would be
+                // recorded for a LATER tool call (CodeRabbit on #971).
+                flushHiddenRawReasoning();
+                rawReasoningForNextToolCall = "";
                 ({ value: hiddenThinkingText, bytes: hiddenThinkingBytes } = appendString(
                   hiddenThinkingText,
                   hiddenThinkingBytes,
@@ -832,6 +857,7 @@ export function bridgeToResponsesSSE(
               if (currentMsg) closeCurrentMessage("commentary");
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
+              rawReasoningForNextToolCall = "";
               if (currentToolCall) closeCurrentToolCall();
               if (!currentReasoning) {
                 const itemId = `rs_${uuid()}`;
@@ -905,6 +931,9 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
+              if (rawReasoningForNextToolCall) {
+                rememberReasoningForCall(event.id, rawReasoningForNextToolCall, replayCacheScope);
+              }
               if (currentToolCall) closeCurrentToolCall();
               const mapped = toolNsMap?.get(event.name);
               const realName = mapped?.name ?? event.name;
@@ -1298,9 +1327,12 @@ function buildResponseJSONWithBudget(
     /** Raw adapter-reported usage before wire normalization (see bridgeToResponsesSSE onUsage). */
     onUsage?: (usage: OcxUsage | undefined) => void;
     translatorBudget?: TranslatorBudget;
+    /** Conversation identity for the reasoning replay cache (issue #950). */
+    replayCacheScope?: string;
   },
 ): Record<string, unknown> {
   const responseId = `resp_${uuid()}`;
+  const replayCacheScope = options?.replayCacheScope ?? "global";
   const output: OutputItem[] = [];
   const budget = options?.translatorBudget;
   const encoder = new TextEncoder();
@@ -1356,6 +1388,9 @@ function buildResponseJSONWithBudget(
   let currentSummaryReasoningBytes = 0;
   let currentRawReasoning = "";
   let currentRawReasoningBytes = 0;
+  // Same replay-cache handoff as the streaming path (issue #950): the most
+  // recently flushed raw reasoning waits for the tool call it preceded.
+  let rawReasoningForNextToolCall = "";
   // Anthropic extended-thinking round-trip (batch): see bridgeToResponsesSSE counterpart.
   let batchSignature: string | undefined;
   let batchSignatureBytes = 0;
@@ -1423,6 +1458,7 @@ function buildResponseJSONWithBudget(
   };
   const flushRawReasoning = () => {
     if (!currentRawReasoning) return;
+    rawReasoningForNextToolCall = currentRawReasoning;
     if (options?.hideThinkingSummary === true) {
       // Same contract as the streaming path: no visible reasoning, txt-only envelope round-trip.
       pushOutput({
@@ -1480,6 +1516,7 @@ function buildResponseJSONWithBudget(
         flushText("commentary");
         flushSummaryReasoning();
         flushRawReasoning();
+        rawReasoningForNextToolCall = "";
         flushToolCall();
         break;
       case "text_delta":
@@ -1488,6 +1525,7 @@ function buildResponseJSONWithBudget(
         if (currentText && e.phase !== undefined && currentTextPhase !== e.phase) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
+        rawReasoningForNextToolCall = "";
         if (currentToolCallId) flushToolCall();
         // Compaction turns keep the summary out of normal message output (replay dedup — see
         // bridgeToResponsesSSE); it ships only inside the synthetic compaction item below.
@@ -1506,6 +1544,7 @@ function buildResponseJSONWithBudget(
       case "thinking_delta":
         if (currentText) flushText("commentary");
         if (currentRawReasoning) flushRawReasoning();
+        rawReasoningForNextToolCall = "";
         if (currentToolCallId) flushToolCall();
         {
           ({ value: currentSummaryReasoning, bytes: currentSummaryReasoningBytes } = appendBatchString(
@@ -1542,6 +1581,9 @@ function buildResponseJSONWithBudget(
         if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
+        if (rawReasoningForNextToolCall) {
+          rememberReasoningForCall(e.id, rawReasoningForNextToolCall, replayCacheScope);
+        }
         flushToolCall();
         currentToolCallId = e.id;
         budget?.openCall(e.id);

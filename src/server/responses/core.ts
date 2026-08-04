@@ -2325,6 +2325,7 @@ async function handleResponsesInner(
         }, 2_000,
         {
           translatorBudget,
+          replayCacheScope: parsed._clientThreadId ?? "global",
           ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
           stallTimeoutSec: config.stallTimeoutSec,
           hideThinkingSummary: parsed.options.hideThinkingSummary,
@@ -2371,6 +2372,7 @@ async function handleResponsesInner(
     let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed.modelId, {
       translatorBudget,
+      replayCacheScope: parsed._clientThreadId ?? "global",
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       freeformToolNames,
@@ -2808,6 +2810,7 @@ async function handleResponsesInner(
       () => upstream.abort(), 2_000,
       {
         translatorBudget,
+        replayCacheScope: parsed._clientThreadId ?? "global",
         ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
         stallTimeoutSec: config.stallTimeoutSec,
         hideThinkingSummary: parsed.options.hideThinkingSummary,
@@ -2865,6 +2868,7 @@ async function handleResponsesInner(
     let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed.modelId, {
       translatorBudget,
+      replayCacheScope: parsed._clientThreadId ?? "global",
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       freeformToolNames,
