@@ -92,8 +92,8 @@ function pollIntervalMs(config: OcxConfig): number {
   return configured;
 }
 
-function fallbackChainKey(model: string, config: OcxConfig): string {
-  const selector = codexAccountNamespaceForModel(config.codexAccountNamespaces, model);
+function fallbackChainKey(model: string, namespaces: unknown): string {
+  const selector = codexAccountNamespaceForModel(namespaces, model);
   if (!selector) return JSON.stringify(["model", model.toLowerCase()]);
   const slash = model.indexOf("/");
   // Selector keys are exact-case account boundaries. Keep that segment distinct while
@@ -107,7 +107,7 @@ function normalizedChain(primary: string, config: OcxConfig, extra: readonly str
   const push = (model: string | undefined) => {
     if (!model || model.trim() === "") return;
     const trimmed = model.trim();
-    const key = fallbackChainKey(trimmed, config);
+    const key = fallbackChainKey(trimmed, config.codexAccountNamespaces);
     if (seen.has(key)) return;
     seen.add(key);
     chain.push(trimmed);
@@ -371,13 +371,16 @@ export function readCodexAgentModel(role: string, codexHome = CODEX_HOME): strin
 export function resolveAgentModelFallbackForPrimary(
   primary: string,
   codexHome = CODEX_HOME,
+  namespaces?: unknown,
 ): string[] {
   const merged: string[] = [];
   const seen = new Set<string>();
   const push = (model: string | null | undefined) => {
     if (!model || model.trim() === "") return;
     const trimmed = model.trim();
-    const key = trimmed.toLowerCase();
+    // Match global-chain de-dupe: keep account-selector prefixes case-sensitive when
+    // those selectors are configured, while ordinary provider/model ids stay case-insensitive.
+    const key = fallbackChainKey(trimmed, namespaces);
     if (seen.has(key)) return;
     seen.add(key);
     merged.push(trimmed);
@@ -446,7 +449,11 @@ export function applySubagentModelFallback(
   accountUsabilityOptions?: CodexAccountUsabilityOptions,
 ): { from?: string; to?: string; skipped?: string[] } | null {
   if (!isThreadSpawnRequest(headers)) return null;
-  const roleFallback = resolveAgentModelFallbackForPrimary(parsed.modelId, getCodexHome());
+  const roleFallback = resolveAgentModelFallbackForPrimary(
+    parsed.modelId,
+    getCodexHome(),
+    config.codexAccountNamespaces,
+  );
   const globalFallback = config.subagentModelFallback ?? [];
   if (globalFallback.length === 0 && roleFallback.length === 0) return null;
   const selection = selectAvailableSubagentModel(

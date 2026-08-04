@@ -864,6 +864,33 @@ describe("subagent model fallback chain", () => {
     expect(parsed.modelId).toBe("gpt-5.6-sol");
   });
 
+  test("role model_fallback preserves case-distinct account selectors", () => {
+    const dir = codexHomeFixture();
+    writeFileSync(join(dir, "agents", "executor.toml"), [
+      "name = \"executor\"",
+      "model = \"gpt-5.6-sol\"",
+      "model_fallback = [",
+      "  \"work/gpt-5.5\",",
+      "  \"Work/gpt-5.5\",",
+      "  \"work/GPT-5.5\",",
+      "  \"kimi/k3\",",
+      "]",
+      "",
+    ].join("\n"), "utf8");
+    const namespaces = { work: "account-a", Work: "account-b" };
+    expect(resolveAgentModelFallbackForPrimary("gpt-5.6-sol", dir, namespaces)).toEqual([
+      "work/gpt-5.5",
+      "Work/gpt-5.5",
+      "kimi/k3",
+    ]);
+    // Without configured namespaces the slash prefix is treated like a provider id and
+    // remains case-insensitive, matching ordinary provider/model de-duplication.
+    expect(resolveAgentModelFallbackForPrimary("gpt-5.6-sol", dir)).toEqual([
+      "work/gpt-5.5",
+      "kimi/k3",
+    ]);
+  });
+
   test("applySubagentModelFallback can use per-agent model_fallback without global config", () => {
     const dir = codexHomeFixture();
     writeFileSync(join(dir, "agents", "executor.toml"), [
