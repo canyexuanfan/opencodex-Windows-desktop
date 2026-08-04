@@ -19,6 +19,7 @@ import { isAbsolute, join, resolve } from "node:path";
 
 import type {
   ResolveCodexCoordinatorDatabasePath,
+  ResolveCodexCatalogSerializationDatabasePath,
   ResolveEffectiveUserIdentity,
   UserIdentity,
 } from "./convergence-types";
@@ -184,3 +185,37 @@ export const resolveCodexCoordinatorDatabasePath: ResolveCodexCoordinatorDatabas
   const homeDigest = createHash("sha256").update(canonicalCodexHome).digest("hex");
   return join(locks, `${homeDigest}.sqlite`);
 };
+
+/**
+ * K's FINAL database path. Never the native coordinator path.
+ *
+ * Catalog serialization is a different ownership surface from the native
+ * coordinator N: `K -> C` is a legal order and `N -> K` nests, so sharing one
+ * database would make the required nesting self-contend. The two live in
+ * sibling directories under the same per-user runtime root — same identity
+ * namespace, same environment-independent parent, distinct exclusion.
+ *
+ * Consumers use the returned path verbatim and append nothing
+ * (`005_contract.md:1256-1330`).
+ */
+export const resolveCodexCatalogSerializationDatabasePath:
+  ResolveCodexCatalogSerializationDatabasePath = (identity, canonicalCodexHome) => {
+    if (!isAbsolute(canonicalCodexHome)) {
+      refuse("The canonical CODEX_HOME must be an absolute path.");
+    }
+    const root = identity.platform === "posix"
+      ? resolvePosixRuntimeRoot(identity.uid)
+      : resolveWindowsRuntimeRoot(identity);
+    const locks = join(root, "catalog-write-locks");
+    if (identity.platform === "posix") ensurePrivatePosixDirectory(locks, identity.uid);
+    else {
+      try {
+        mkdirSync(locks, { recursive: true });
+      } catch (cause) {
+        refuse("The Windows catalog serialization directory cannot be created.", cause);
+      }
+    }
+
+    const homeDigest = createHash("sha256").update(canonicalCodexHome).digest("hex");
+    return join(locks, `${homeDigest}.sqlite`);
+  };

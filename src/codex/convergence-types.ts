@@ -469,3 +469,15 @@ export type ResolveCodexCoordinatorDatabasePath = (
   identity: UserIdentity,
   canonicalCodexHome: string,
 ) => string;
+
+/**
+ * Return K's FINAL database path; this is never the native coordinator path.
+ *
+ * Catalog serialization is a separate ownership surface from N. `K -> C` is a
+ * legal order and `N -> K` nests, so one shared database would self-contend.
+ * Consumers append no uid/SID, version, directory or filename.
+ */
+export type ResolveCodexCatalogSerializationDatabasePath = (
+  identity: UserIdentity,
+  canonicalCodexHome: string,
+) => string;
