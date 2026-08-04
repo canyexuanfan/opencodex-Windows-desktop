@@ -332,10 +332,19 @@ function enforceByteBudget(trace: RouteDecisionTraceV1): RouteDecisionTraceV1 {
   }));
   const slimmed: RouteDecisionTraceV1 = { ...trace, truncated, candidates };
   if (serializedByteLength(slimmed) <= MAX_TRACE_BYTES) return slimmed;
+  // Second stage: shrink candidates. The selected candidate must survive and
+  // `selected.candidateIndex` must keep pointing at it (same invariant as the
+  // candidate-cap branch above).
+  const half = Math.max(1, Math.floor(MAX_TRACE_CANDIDATES / 2));
+  const selectedIndex = trace.selected.candidateIndex;
+  const kept = selectedIndex < half
+    ? slimmed.candidates.slice(0, half)
+    : [...slimmed.candidates.slice(0, half - 1), slimmed.candidates[selectedIndex]!];
   return {
     ...slimmed,
     truncated: { ...truncated, candidates: true as const },
-    candidates: slimmed.candidates.slice(0, Math.max(1, Math.floor(MAX_TRACE_CANDIDATES / 2))),
+    candidates: kept,
+    selected: { ...slimmed.selected, candidateIndex: Math.min(selectedIndex, kept.length - 1) },
   };
 }
 

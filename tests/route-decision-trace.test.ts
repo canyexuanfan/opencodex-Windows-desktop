@@ -14,6 +14,7 @@ import {
 import {
   MAX_EXCLUSIONS_PER_CANDIDATE,
   MAX_TRACE_CANDIDATES,
+  MAX_TRACE_BYTES,
   MAX_TRACE_STRING,
   buildRouteDecisionTrace,
   normalizeRouteDecisionTrace,
@@ -155,6 +156,30 @@ describe("route decision traces (RI-01)", () => {
     expect(trace.truncated?.candidates).toBe(true);
     expect(trace.selected.candidateIndex).toBe(MAX_TRACE_CANDIDATES - 1);
     expect(trace.candidates[trace.selected.candidateIndex]).toMatchObject({ model: "m11" });
+  });
+
+  test("the byte-budget fallback keeps the selected candidate and re-points the index", () => {
+    // 8 candidates x 16 exclusions with 128-char codes exceed 16 KiB even after
+    // detail-drop, forcing the second-stage candidate shrink; the winner sits
+    // at index 7 and must survive at the last kept slot.
+    const longCode = "x".repeat(MAX_TRACE_STRING);
+    const candidates = Array.from({ length: 8 }, (_, index) => ({
+      provider: "p".repeat(MAX_TRACE_STRING),
+      model: `m${index}`.padEnd(MAX_TRACE_STRING, "y"),
+      eligible: index === 7,
+      exclusions: Array.from({ length: 16 }, () => ({ code: longCode, detail: "z".repeat(MAX_TRACE_STRING) })),
+    }));
+    const trace = buildRouteDecisionTrace({
+      requestedModel: "combo/big",
+      routeKind: "combo",
+      selected: { provider: candidates[7]!.provider, model: candidates[7]!.model, reason: "combo-pick", candidateIndex: 7 },
+      candidates,
+    });
+    expect(trace.truncated?.candidates).toBe(true);
+    expect(trace.selected.candidateIndex).toBe(MAX_TRACE_CANDIDATES / 2 - 1);
+    expect(trace.candidates[trace.selected.candidateIndex]?.model).toBe(candidates[7]!.model);
+    // The serialized trace respects the byte budget.
+    expect(Buffer.byteLength(JSON.stringify(trace), "utf8")).toBeLessThanOrEqual(MAX_TRACE_BYTES);
   });
 
   test("oversized candidate exclusions are capped with a truncation flag", () => {
