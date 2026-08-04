@@ -87,12 +87,15 @@ must still be entitled to use that model.
 
 ## Native and routed model toggles
 
-The dashboard Models page uses `disabledModels` for both model families:
+The dashboard Models page exposes `disabledModels` toggles for bare native ids and routed
+`provider/model` ids. Account-qualified `<selector>/<native-openai-model>` ids are also supported by
+`disabledModels`, but the dashboard does not list or toggle those exact selector rows; add them to
+the configuration manually:
 
 - Routed ids are namespaced (`provider/model`). Disabling one excludes it from the synced catalog
   and `/v1/models`.
-- Account-qualified native ids use `<selector>/<native-openai-model>`. Disabling one hides only that
-  selector row.
+- Account-qualified native ids use `<selector>/<native-openai-model>`. Adding one to
+  `disabledModels` hides only that selector row.
 - Native GPT ids are bare slugs. Disabling one keeps its catalog entry but changes `visibility` to
   `hide`, preserving the exact entry for a later re-enable; it hides the bare row and every
   selector-qualified clone for that model from discovery.
@@ -140,11 +143,12 @@ never advertised where it cannot be honored, and custom gateways can opt in expl
 ## Subagent selection
 
 Codex sorts picker-visible catalog entries by ascending `priority` and advertises the first five as
-`spawn_agent` model overrides. Pick up to five bare native ids, account-qualified
-`<selector>/<native-openai-model>` ids, or routed `provider/model` ids through `subagentModels` or
-the dashboard Subagents page. opencodex assigns low catalog priorities in the selected order; when
-account selectors are active, bare native selections expand into selector-qualified groups. Other
-models remain callable by exact id.
+`spawn_agent` model overrides. The dashboard Subagents page can select and save up to five bare
+native ids or routed `provider/model` ids. Manually configured `subagentModels` also accepts
+account-qualified `<selector>/<native-openai-model>` ids, but the dashboard does not offer those
+exact ids; saving the page replaces the list with dashboard-visible choices. opencodex assigns low
+catalog priorities in the selected order; when account selectors are active, bare native selections
+expand into selector-qualified groups. Other models remain callable by exact id.
 
 The featured-model list is separate from the Dashboard's **Sub-agent delegation** selection. It
 controls which overrides Codex offers first; it does not select a model or trigger delegation by

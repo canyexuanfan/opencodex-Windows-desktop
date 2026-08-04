@@ -130,9 +130,16 @@ the request, and they never raise it.
 
 ## Subagents
 
-Codex `spawn_agent` advertises only the highest-priority first five catalog models. `subagentModels`
-is capped at five ids and may contain routed `provider/model` slugs or native model slugs. Startup
-seeds native GPT defaults only when the field is unset; an explicit empty list persists.
+Codex `spawn_agent` advertises only the highest-priority first five picker-visible catalog rows.
+Use at most five configured `subagentModels` ids; they may contain bare catalog ids, routed
+`provider/model` ids, or exact account-qualified `<selector>/<native-openai-model>` ids. The
+dashboard offers bare native and routed choices; exact account-qualified choices are configured
+through `ocx agent subagents set` or the opencodex configuration.
+
+When account selectors are active, one featured bare native id expands into a complete selector row
+group. Catalog priorities use the selector count as a stride so each group stays together without
+widening Codex's five-row advertisement window. Startup seeds bare native GPT defaults only when
+`subagentModels` is unset; an explicit empty list persists.
 
 Quota-aware fallback walks a configured chain when the featured model is exhausted, probing
 availability on a bounded interval (default 60 s, `src/codex/subagent-model-fallback.ts`). It rewrites

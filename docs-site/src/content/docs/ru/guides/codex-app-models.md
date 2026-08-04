@@ -91,12 +91,15 @@ delegation и на backend он уходит как `max`. Наличие зап
 
 ## Переключатели нативных и маршрутизируемых моделей
 
-Страница Models в дашборде использует `disabledModels` для обоих семейств моделей:
+Страница Models в дашборде предоставляет переключатели `disabledModels` для bare native-id и
+routed provider-id `provider/model`. Account-qualified id `<selector>/<native-openai-model>` тоже
+поддерживаются в `disabledModels`, но дашборд не перечисляет и не переключает точные строки
+селекторов; добавляйте их в конфигурацию вручную:
 
 - Routed provider-id имеют namespace (`provider/model`). Отключение исключает такую модель из
   синхронизируемого каталога и `/v1/models`.
-- Account-qualified native-id имеют вид `<selector>/<native-openai-model>`. Отключение скрывает
-  только строку этого селектора.
+- Account-qualified native-id имеют вид `<selector>/<native-openai-model>`. Если добавить такой id
+  в `disabledModels`, скрывается только строка этого селектора.
 - Bare native GPT-id — это голые slug. Отключение скрывает bare-строку и все account-selector-клоны
   этой модели, сохраняя записи каталога для последующего включения.
 - Нативные строки берутся из поддерживаемого статического набора, поэтому отключённая нативная
@@ -143,11 +146,13 @@ capability-гейтом — `service_tier` удаляется только ко�
 ## Выбор подагентов
 
 Codex сортирует видимые в picker'е записи каталога по возрастанию `priority` и рекламирует первые
-пять как model-override для `spawn_agent`. Выберите до пяти bare native-id, account-qualified id
-`<selector>/<native-openai-model>` или routed provider-id `provider/model` через `subagentModels`
-либо страницу Subagents дашборда. opencodex назначает им низкие приоритеты каталога в выбранном
-порядке; при активных селекторах аккаунтов bare native-выбор разворачивается в группы
-selector-qualified строк. Остальные модели всё равно можно вызывать по точному id.
+пять как model-override для `spawn_agent`. Страница Subagents в дашборде позволяет выбрать и
+сохранить до пяти bare native-id или routed provider-id `provider/model`. Настроенный вручную
+`subagentModels` также принимает account-qualified id `<selector>/<native-openai-model>`, но
+дашборд не предлагает эти точные id; сохранение страницы заменяет список вариантами, доступными в
+дашборде. opencodex назначает им низкие приоритеты каталога в выбранном порядке; при активных
+селекторах аккаунтов bare native-выбор разворачивается в группы selector-qualified строк. Остальные
+модели всё равно можно вызывать по точному id.
 
 Список featured-моделей отделён от выбора **Sub-agent delegation** в дашборде. Он только
 определяет, какие override Codex показывает первыми; он не выбирает модель и не инициирует

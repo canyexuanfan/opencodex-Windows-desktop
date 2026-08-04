@@ -12,7 +12,7 @@ description: Записи провайдеров, аутентификация, 
 | --- | --- | --- | --- |
 | `providers` | `Record<string, OcxProviderConfig>` | — | Map вида provider name → provider config. |
 | `openaiProviderTierVersion?` | `2` | set by migration | Отмечает, что единая projection OpenAI с учётом режима уже завершена. |
-| `disabledModels?` | `string[]` | — | Модели, скрытые из каталога Codex и `/v1/models`, но не заблокированные для прямых вызовов прокси. Routed-id удаляются из списков. Account-qualified native-id скрывает только строку этого селектора; bare native GPT-id скрывает bare-строку и строки всех селекторов аккаунтов для этой модели. |
+| `disabledModels?` | `string[]` | — | Модели, скрытые из каталога Codex и `/v1/models`, но не заблокированные для прямых вызовов прокси. Routed-id удаляются из списков. Account-qualified native-id скрывает только строку этого селектора; bare native GPT-id скрывает bare-строку и строки всех селекторов аккаунтов для этой модели. Страница Models показывает только bare native- и routed-строки; чтобы скрыть одну selector-qualified строку, задайте это поле конфигурации напрямую. |
 | `providerContextCaps?` | `Record<string, number>` | `{}` | Context cap'ы, видимые Codex, по каждому провайдеру. Cap может только понижать известное context window. |
 | `contextCapValue?` | `number` | `350000` | Значение, используемое элементами управления context-cap в дашборде; его изменение обновляет все включённые записи `providerContextCaps`. |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | Метаданные аккаунтов пула ChatGPT/Codex, которыми управляет Codex Auth. Секреты живут отдельно в `codex-accounts.json`. |

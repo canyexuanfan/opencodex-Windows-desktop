@@ -57,12 +57,14 @@ visibility = "list"
 
 ## 原生与路由模型开关
 
-仪表盘 Models 页面对两类模型都使用 `disabledModels`：
+仪表盘 Models 页面为裸原生 id 和路由 `provider/model` id 提供 `disabledModels` 开关。
+`disabledModels` 也支持账户限定的 `<selector>/<native-openai-model>` id，但仪表盘不会列出或切换这些
+精确 selector 行；请把它们直接添加到配置中：
 
 - 路由 provider id 使用命名空间形式（`provider/model`）。禁用后会从同步目录和
   `/v1/models` 中移除。
-- 账户限定的原生 id 使用 `<selector>/<native-openai-model>` 形式。禁用后只隐藏对应的
-  selector 行。
+- 账户限定的原生 id 使用 `<selector>/<native-openai-model>` 形式。把该 id 写入
+  `disabledModels` 只会隐藏对应的 selector 行。
 - 裸原生 GPT id 是裸 slug。禁用后会隐藏裸行以及该模型的所有 account-selector 克隆行，
   同时保留目录条目以便之后重新启用。
 - 原生行来自受支持的静态集合，因此被禁用的原生模型仍会在仪表盘中可见，并且可以重新打开。
@@ -94,7 +96,7 @@ fast_mode = true
 
 ## 子代理选择
 
-Codex 会按 `priority` 升序对选择器可见的目录条目排序，并把前五个作为 `spawn_agent` 模型 override 暴露出来。你可以通过 `subagentModels` 或仪表盘的 Subagents 页面，选择最多五个裸原生 id、账户限定的 `<selector>/<native-openai-model>` id，或路由 `provider/model` id。opencodex 会按所选顺序分配较低的目录 priority；启用账户 selector 时，裸原生选择会展开为 selector-qualified 分组。其他模型仍然可以通过精确 id 调用。
+Codex 会按 `priority` 升序对选择器可见的目录条目排序，并把前五个作为 `spawn_agent` 模型 override 暴露出来。仪表盘 Subagents 页面最多可以选择并保存五个裸原生 id 或路由 `provider/model` id。手动设置的 `subagentModels` 也支持账户限定的 `<selector>/<native-openai-model>` id，但仪表盘不会提供这些精确 id；保存该页面会用仪表盘中可见的选项替换整个列表。opencodex 会按所选顺序分配较低的目录 priority；启用账户 selector 时，裸原生选择会展开为 selector-qualified 分组。其他模型仍然可以通过精确 id 调用。
 
 精选模型列表与 Dashboard 的 **Sub-agent delegation** 选择彼此独立。它只决定 Codex 先提供哪些 override；它不会自己选择模型，也不会触发委派。
 

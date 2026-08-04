@@ -85,12 +85,15 @@ Luna는 `max`에서 멈춥니다. Sol의 기본값은 `low`이고, Terra와 Luna
 
 ## 네이티브 및 라우팅 모델 토글
 
-대시보드 Models 페이지는 두 모델 계열 모두 `disabledModels`를 사용합니다.
+대시보드 Models 페이지는 bare native id와 routed `provider/model` id에 대한 `disabledModels` 토글을
+제공합니다. Account-qualified `<selector>/<native-openai-model>` id도 `disabledModels`에서
+지원하지만 대시보드는 exact selector 행을 표시하거나 토글하지 않습니다. 이 id는 구성에 직접
+추가해야 합니다.
 
 - Routed provider id는 네임스페이스 형식(`provider/model`)입니다. 비활성화하면 동기화된 카탈로그와
   `/v1/models`에서 제외됩니다.
-- Account-qualified native id는 `<selector>/<native-openai-model>` 형식입니다. 비활성화하면 해당
-  selector 행만 숨깁니다.
+- Account-qualified native id는 `<selector>/<native-openai-model>` 형식입니다. 이 id를
+  `disabledModels`에 추가하면 해당 selector 행만 숨깁니다.
 - Bare native GPT id는 bare slug입니다. 비활성화하면 나중에 다시 켤 수 있도록 카탈로그 항목은
   유지하면서 bare 행과 해당 모델의 모든 account-selector 복제 행을 숨깁니다.
 - 네이티브 행은 지원되는 정적 집합에서 오므로, 비활성화한 네이티브 모델은 대시보드에 계속 보이고 다시
@@ -135,12 +138,14 @@ fast_mode = true
 
 ## 서브에이전트 선택
 
-Codex는 선택기에 보이는 카탈로그 항목을 `priority` 오름차순으로 정렬한 뒤 처음 다섯 개를 `spawn_agent`
-model override로 노출합니다. `subagentModels`나 대시보드 Subagents 페이지에서 bare native id,
-account-qualified `<selector>/<native-openai-model>` id, 또는 routed `provider/model` id를 최대 다섯 개
-선택하세요. opencodex는 선택한 순서대로 낮은 카탈로그 priority를 부여합니다. account selector가 활성화되어
-있으면 bare native 선택은 selector-qualified 그룹으로 확장됩니다. 다른 모델도 정확한 id로 직접 호출할 수
-있습니다.
+Codex는 선택기에 보이는 카탈로그 항목을 `priority` 오름차순으로 정렬한 뒤 처음 다섯 개를
+`spawn_agent` model override로 노출합니다. 대시보드 Subagents 페이지에서는 bare native id 또는
+routed `provider/model` id를 최대 다섯 개 선택하고 저장할 수 있습니다. 수동으로 설정한
+`subagentModels`는 account-qualified `<selector>/<native-openai-model>` id도 지원하지만,
+대시보드는 이러한 exact id를 제공하지 않으며 페이지를 저장하면 목록이 대시보드에 표시되는 선택 항목으로
+교체됩니다. opencodex는 선택한 순서대로 낮은 카탈로그 priority를 부여합니다. account selector가
+활성화되어 있으면 bare native 선택은 selector-qualified 그룹으로 확장됩니다. 다른 모델도 정확한 id로
+직접 호출할 수 있습니다.
 
 featured-model 목록은 Dashboard의 **Sub-agent delegation** 선택과 별개입니다. Codex가 먼저 보여 줄
 override를 정할 뿐, 모델을 고르거나 delegation을 시작하지는 않습니다.
