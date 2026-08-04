@@ -31,17 +31,29 @@ Anthropic's current extended-thinking contract matches probe 1: adaptive
 thinking does not require a thinking preface on replayed tool-use turns.
 The history shape is exonerated. (A-gate audit round 1, blocker 1.)
 
-What remains consistent with every observation: the logged `upstreamError` is
-bare `Provider error 400` — on the direct (non-combo) path the client-facing
-message embeds the upstream body (`src/server/responses/core.ts:2807-2828`),
-so a bare message means the 400 carried an **empty body**. Anthropic
-validation 400s always carry a JSON error body (cf. the 2026-08-01
-`prompt is too long` rows in the same ledger). An empty-body 400 in a
-393-420ms window, clustered at 00:21:58-00:23:16 across two conversations and
-self-healing by 00:26, is an **edge-layer rejection** (fronting/WAF/rate
-shape), not schema validation. The user's GUI showed the generic
-"프록시가 요청을 이해할 수 없습니다" because the proxy received no
-upstream detail to forward.
+Transport-branch analysis (audit round 2, verified in code): the bare
+`Provider error 400` does NOT come from the direct path — that path appends
+`: <body>` even when the body is empty (`src/server/responses/core.ts:2822`,
+trailing colon preserved). The exact bare shape is produced by the
+**web-search bridge** (`src/web-search/loop.ts:460-484`): a body-read failure
+returns status-only, and the formatted suffix requires
+`prepared.responseAdapter.formatErrorBody`, **which the anthropic adapter
+does not implement** — so on this path even a well-formed Anthropic JSON
+error envelope is discarded and the client + ledger see only
+`Provider error 400`. The images bridge has analogous status-only behavior.
+Thread-spawn requests from the Codex app carry the `web_search` tool, and
+routed (non-OpenAI) models dispatch through `runWithWebSearch`
+(`src/server/responses/core.ts:2295-2310`), which returns before the normal
+recovery loop.
+
+Conclusion: the failing requests almost certainly went through the web-search
+bridge, and the 400's own cause (validation vs edge) is **unknowable from
+surviving evidence because the bridge discarded the upstream body**. The
+diagnosability defect is precisely located; the underlying 400 is reproduced
+only if it recurs after the observability fix. Anthropic's error contract
+(every API error carries a JSON envelope) makes "proxy discarded the body"
+the more probable reading than "empty-body edge rejection", though both
+remain possible.
 
 ## Original research record (kept for provenance)
 
@@ -94,12 +106,14 @@ Responses chain — the proxy must not clear state on thread-spawn headers
 
 Revised after the probes (see `020_phase2_anthropic_400_fix.md`):
 
-1. Observability: persisted `upstreamError` must distinguish an empty-body
-   400 from a body-carrying one, so the next occurrence is diagnosable from
-   `usage.jsonl` alone. Persistence capture lives in
-   `src/server/request-log.ts:614-669` (`captureUpstreamError*`).
-2. Resilience: a single bounded retry on empty-body 400 (anthropic adapter
-   scope), treating it as the transient edge condition it evidences; JSON-body
-   400s stay fail-fast.
+1. Observability (phase 2): implement `formatErrorBody` on the anthropic
+   adapter so the web-search/images bridges surface the upstream error
+   message instead of discarding it; persisted `upstreamError` then flows
+   through the existing capture (`src/server/relay.ts:429` →
+   `src/server/request-log.ts:648`) with no production change there.
+2. Resilience (deferred): any 400 retry decision waits until the observability
+   fix distinguishes empty-body edge rejections from discarded JSON bodies in
+   the wild. Premature retry design was audit-blocked twice and is dropped
+   from phase 2.
 3. NO history flattening (refuted hypothesis); no signature fabrication; no
    state clearing on thread spawn.

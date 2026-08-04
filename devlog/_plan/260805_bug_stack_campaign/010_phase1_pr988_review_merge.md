@@ -12,6 +12,32 @@ This document is the review protocol; the concrete file-by-file verdicts and
 any correction diff are appended here at this phase's own cycle P after the
 actual PR diff is read, making 010 the complete record before its B starts.
 
+## PR head under review
+
+Head `3fc1eb52e25982606189219a3c0a6ced4352b1f3`, 24 files:
+
+- Session bootstrap: `gui/src/api.ts`, `gui/vite.config.ts`,
+  `src/server/gui-static.ts`, `src/server/index.ts`,
+  `gui/tests/api-auth-memory.test.ts`, `tests/server-management-auth.test.ts`
+- Provider auth surfaces: `gui/src/components/provider-workspace/*`
+  (`ProviderAuthPanel`, `ProviderOverview`, `ProviderOverviewDashboard`,
+  `ProviderDetails`, `ProviderCapacityQuota`,
+  `AnthropicAccountPoolSettings`), `gui/src/components/CodexAccountPool.tsx`,
+  `tests/provider-workspace-auth.test.ts`,
+  `gui/tests/codex-account-pool-controller.test.ts`
+- Loading/layout: `gui/src/pages/Combos.tsx`, `gui/src/pages/Models.tsx`,
+  `gui/tests/page-loading-contract.test.tsx`
+- Presentation: `gui/src/components/combo-workspace-add-modal.tsx`,
+  `gui/src/components/combo-workspace-detail-panel.tsx`,
+  `gui/src/styles-combos-workspace.css`,
+  `gui/src/styles-dashboard-workspace.css`,
+  `gui/src/styles-models-workspace.css`,
+  `gui/src/styles/provider-overview-dashboard.css`
+
+Server-side files (`gui-static.ts`, `index.ts`) get the same security read as
+the GUI: the `/opencodex-session` bootstrap must keep origin-bound session
+minting and must not weaken packaged-build auth.
+
 1. Fetch the PR head into a local branch (`codex/review-pr988`) from
    `origin/dev` — never commit on top of the detached other-unit HEAD.
 2. Read the full diff (`gh pr diff 988`).
