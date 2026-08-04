@@ -206,6 +206,7 @@ export function setAccountQuotaFromParsed(
     if (existing?.weeklyResetAt !== undefined) next.weeklyResetAt = existing.weeklyResetAt;
     if (existing?.monthlyPercent !== undefined) next.monthlyPercent = existing.monthlyPercent;
     if (existing?.monthlyResetAt !== undefined) next.monthlyResetAt = existing.monthlyResetAt;
+    if (existing?.monthlyIsPrimaryWindow === true) next.monthlyIsPrimaryWindow = true;
     next.resetCredits = quota.resetCredits;
     accountQuota.set(accountId, next);
     schedulePersistAccountQuotas();
@@ -225,9 +226,15 @@ export function setAccountQuotaFromParsed(
   if (snapshotHasMonthly(quota)) {
     if (quota.monthlyPercent !== undefined) next.monthlyPercent = quota.monthlyPercent;
     if (quota.monthlyResetAt !== undefined) next.monthlyResetAt = quota.monthlyResetAt;
+    // Carry the provenance with the value it describes. Recovery reads `freshQuota` directly,
+    // so this is not on its path today — but a cached snapshot that kept `monthlyPercent`
+    // while silently dropping `monthlyIsPrimaryWindow` would look like tertiary-only data to
+    // any future reader, and that failure would be invisible.
+    if (quota.monthlyIsPrimaryWindow === true) next.monthlyIsPrimaryWindow = true;
   } else if (snapshotHasWeekly(quota) && existing?.monthlyPercent !== undefined) {
     next.monthlyPercent = existing.monthlyPercent;
     if (existing.monthlyResetAt !== undefined) next.monthlyResetAt = existing.monthlyResetAt;
+    if (existing.monthlyIsPrimaryWindow === true) next.monthlyIsPrimaryWindow = true;
   }
 
   if (quota.resetCredits !== undefined) next.resetCredits = quota.resetCredits;
