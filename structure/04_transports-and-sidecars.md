@@ -38,19 +38,19 @@ to GUI static serving.
 Native passthrough SSE has TWO shapes, selected per request in
 `src/server/responses/core.ts`:
 
-- **Default: tee + background inspection.** `upstreamResponse.body.tee()` sends
-  branch[0] to the client (pure native relay on win32 without any client-facing
-  rewrite — the Bun#32111 crash workaround; a JS relay elsewhere) while branch[1] is
+- **Default outside Windows: tee + background inspection.** `upstreamResponse.body.tee()` sends
+  branch[0] through a terminal-aware client relay while branch[1] is
   drained eagerly by `consumeForInspection`/`consumeForResponseLogMetadata`
   for terminal-outcome recording, quota, the passthrough continuation cache,
   and request logs. This remains the default shape on bundled Bun 1.3.14.
-- **Gated: eager bounded relay** (`src/server/relay-eager.ts`). win32 and darwin
-  no-client-rewrite traffic only (neither image-gen aliases nor item-id repair),
-  selected by `selectEagerPath` in `src/lib/bun-stream-caps.ts`. Windows `auto`
-  becomes eager only on runtimes proven to carry the Bun#32111 fix
-  (`MIN_FIXED_BUN_VERSION`, null until a bundle bump), while explicit
-  `streamMode: "eager-relay"` opts in today. Darwin is explicit-only: `auto`
-  stays tee even after a future threshold bump. One eager reader + byte-bounded
+- **Terminal-aware eager bounded relay** (`src/server/relay-eager.ts`). Windows
+  uses this single-reader shape for rewrite traffic and for no-rewrite traffic
+  selected by `selectEagerPath` in `src/lib/bun-stream-caps.ts`; the latter keeps
+  `legacy-tee` and known-bad-runtime `auto` on tee as documented. When selected,
+  `response.completed` closes the client stream even if upstream keeps HTTP/SSE
+  alive. Darwin uses it for no-client-rewrite traffic only (neither image-gen
+  aliases nor item-id repair) and is explicit-only: `auto` stays tee even after
+  a future threshold bump. One eager reader + byte-bounded
   client queue + post-cancel bounded discard-drain replaces the tee and goes
   directly to the response without a JS rewrite wrapper, preserving the full
   inspection side-effect set (shared `createSseInspector` factory in `relay.ts`)
@@ -398,6 +398,45 @@ Grounded in the open-sourced official client (xai-org/grok-build); unit + eviden
   compatibility profile const for the Grok client version (`src/providers/xai-transport.ts`);
   `fetchWithHeaderTimeout` takes an executor so provider fetch wrappers stay inside the
   timeout race.
+
+## Kiro reasoning round-trip (`redactedContent`)
+
+Kiro never returns plaintext reasoning for its **GPT-5.6 family** (`gpt-5.6-sol`, `-terra`,
+`-luna`): `reasoningContentEvent` carries a KMS-encrypted `redactedContent` blob, never `text`.
+Their `additionalModelRequestFieldsSchema` (`ListAvailableModels`) accepts only `reasoning.effort`
+with `additionalProperties: false` — there is no display/summary opt-in, so this is the only
+reasoning these models can return. Kiro's own CLI replays the blob on the matching
+`assistantResponseMessage.reasoningContent` to preserve model reasoning across turns; dropping it
+makes every turn restart without the previous turn's reasoning. Verified on kiro-cli 2.14.1 and
+2.16.0, all three models.
+
+The Claude 4.6+/5 entries advertise a different, richer contract (`thinking.type` adaptive/disabled,
+`thinking.display` summarized/omitted, `output_config.effort`, `max_tokens`) and are not covered by
+that measurement; older Claude, deepseek, minimax, glm, and qwen entries advertise no additional
+fields at all. The handling below keys off the wire field, not the model id, so any model that
+sends `redactedContent` round-trips.
+
+- The blob rides the existing `ocxr1:` envelope as `krc` (`src/responses/reasoning-envelope.ts`) on
+  an envelope-only reasoning item — `summary: []`, no text deltas — so it stays invisible in the
+  Codex app while round-tripping, exactly like the hidden-thinking path.
+- **Pairing is backwards.** Kiro emits `reasoningContentEvent` at the END of an assistant turn,
+  after content AND tool calls. A `krc`-only item therefore belongs to the turn that already
+  closed, so the parser attaches it to the PRECEDING assistant message rather than folding it into
+  the following turn like ordinary reasoning (`src/responses/parser.ts`). With no assistant turn to
+  own it, the blob is dropped rather than mis-paired.
+- The blob lives on `OcxAssistantMessage.kiroRedactedReasoning`, not on a thinking content part, so
+  no other adapter replays provider-private state if the conversation switches providers.
+
+Kiro reports context pressure in its own `contextUsageEvent`, which is the authoritative source. On
+every capture taken (2.14.1 and 2.16.0) `metadataEvent` carried only `stopReason` — which is why
+reading the percentage from `metadataEvent` alone never saw a value — but the parser still accepts a
+finite `contextUsagePercentage` (and a `tokenUsage` block) there as a fallback, so a value parsed
+from `metadataEvent` is legitimate rather than impossible. Both feed the same field, and any
+positive value overwrites an earlier one.
+
+Spend arrives in `meteringEvent` as **credits, not tokens**. No captured response carried
+`tokenUsage` on any event, which is why Kiro usage stays estimated; `meteringEvent` is currently
+ignored because a credit is not a token count.
 
 ## Parallel tool calls (default-on for chat providers)
 
