@@ -48,6 +48,16 @@ describe("parseMaintainerLogins", () => {
     assert.deepEqual(parseMaintainerLogins(prose), []);
   });
 
+  it("accepts a valid CRLF heading with trailing whitespace and a following H2", () => {
+    const crlf = [
+      "## Current maintainers \t",
+      "| [@crlf](https://github.com/crlf) | x |",
+      "## Changelog",
+      "| [@retired](https://github.com/retired) | y |",
+    ].join("\r\n");
+    assert.deepEqual(parseMaintainerLogins(crlf), ["crlf"]);
+  });
+
 
   it("handles empty and duplicate-free output", () => {
     assert.deepEqual(parseMaintainerLogins(""), []);
