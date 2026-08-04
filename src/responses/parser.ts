@@ -263,6 +263,34 @@ function findToolById(messages: OcxMessage[], callId: string): { name: string; n
   return { name: "" };
 }
 
+/**
+ * Attach pending reasoning to the assistant turn that owns the given call id.
+ * Reconstructed histories (resume/retry/synthetic) can order a `reasoning`
+ * item AFTER the `function_call` it belongs to; without this, the pending
+ * buffer is cleared at the tool output and the turn serializes without
+ * `reasoning_content`, which DeepSeek thinking mode rejects with HTTP 400
+ * (issue #950).
+ */
+function attachPendingReasoningToCallOwner(
+  messages: OcxMessage[],
+  callId: string,
+  pendingReasoning: Array<{ part: OcxThinkingContent; envelopeSigned: boolean }>,
+): void {
+  if (pendingReasoning.length === 0 || !callId) return;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant") continue;
+    for (const part of m.content) {
+      if (part.type === "toolCall" && part.id === callId) {
+        // Prepend so thinking still precedes tool_use for adapters that require
+        // that ordering (Anthropic-style replay).
+        m.content = [...pendingReasoning.map(entry => entry.part), ...m.content];
+        return;
+      }
+    }
+  }
+}
+
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 export function parseRequest(body: unknown): OcxParsedRequest {
@@ -557,8 +585,9 @@ export function parseRequest(body: unknown): OcxParsedRequest {
       }
 
       if (effectiveType === "function_call_output") {
-        pendingReasoning.length = 0;
         const output = item as { call_id: string; output?: string | unknown[] };
+        attachPendingReasoningToCallOwner(messages, output.call_id, pendingReasoning);
+        pendingReasoning.length = 0;
         const toolInfo = findToolById(messages, output.call_id);
         messages.push({
           role: "toolResult", toolCallId: output.call_id,
@@ -570,8 +599,9 @@ export function parseRequest(body: unknown): OcxParsedRequest {
       }
 
       if (effectiveType === "custom_tool_call_output") {
-        pendingReasoning.length = 0;
         const output = item as { call_id: string; output: string | unknown[] };
+        attachPendingReasoningToCallOwner(messages, output.call_id, pendingReasoning);
+        pendingReasoning.length = 0;
         const toolInfo = findToolById(messages, output.call_id);
         messages.push({
           role: "toolResult", toolCallId: output.call_id,

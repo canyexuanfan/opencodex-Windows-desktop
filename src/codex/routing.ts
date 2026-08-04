@@ -3,7 +3,7 @@ import { saveConfigPreservingClaudeCode } from "../config";
 import { isCodexAccountGenerationLive, readCodexAccountRecord } from "./account-store";
 import { codexAccountLogLabel } from "./account-label";
 import { isCodexAccountPaused } from "./account-pause";
-import { isCodexAccountUsable } from "./account-usability";
+import { isCodexAccountUsable, type CodexAccountUsabilityOptions } from "./account-usability";
 import { isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
 import {
   POOL_KEY_CODEX,
@@ -213,8 +213,14 @@ export type CodexUpstreamOutcomeMeta = {
   writerGeneration?: number;
 };
 
-function hasConfiguredPoolAccount(config: OcxConfig, accountId: string): boolean {
-  if (accountId === MAIN_CODEX_ACCOUNT_ID) return isCodexAccountUsable(config, accountId);
+function hasConfiguredPoolAccount(
+  config: OcxConfig,
+  accountId: string,
+  selectionOptions?: CodexAccountUsabilityOptions,
+): boolean {
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) {
+    return isCodexAccountUsable(config, accountId, selectionOptions);
+  }
   return (config.codexAccounts ?? [])
     .some(account => isSelectableCodexPoolAccount(account) && account.id === accountId);
 }
@@ -755,11 +761,12 @@ function isCodexAccountSelectable(
   accountId: string,
   now: number,
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): boolean {
   return !isCodexAccountPaused(config, accountId)
     && getCodexQuotaHealthSnapshot(accountId, quotaScope, now) === null
     && !isCodexAccountSoftAvoided(accountId, now)
-    && isCodexAccountUsable(config, accountId);
+    && isCodexAccountUsable(config, accountId, selectionOptions);
 }
 
 function threadAffinityScope(quotaScope?: CodexQuotaScope): ThreadAffinityScope {
@@ -867,6 +874,7 @@ function getEligiblePoolAccounts(
   excludeId?: string,
   now = Date.now(),
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string[] {
   const ids = (config.codexAccounts ?? [])
     .filter(account => isSelectableCodexPoolAccount(account)
@@ -875,7 +883,7 @@ function getEligiblePoolAccounts(
       && !isAccountNeedsReauth(account.id))
     .filter(account => getCodexQuotaHealthSnapshot(account.id, quotaScope, now) === null)
     .filter(account => !isCodexAccountSoftAvoided(account.id, now))
-    .filter(account => isCodexAccountUsable(config, account.id))
+    .filter(account => isCodexAccountUsable(config, account.id, selectionOptions))
     .map(account => account.id);
   // The main Codex account is not stored in config.codexAccounts; include it as a
   // first-class rotation candidate when its read-only token is usable (Option A).
@@ -885,7 +893,7 @@ function getEligiblePoolAccounts(
     && !isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)
     && getCodexQuotaHealthSnapshot(MAIN_CODEX_ACCOUNT_ID, quotaScope, now) === null
     && !isCodexAccountSoftAvoided(MAIN_CODEX_ACCOUNT_ID, now)
-    && isCodexAccountUsable(config, MAIN_CODEX_ACCOUNT_ID)
+    && isCodexAccountUsable(config, MAIN_CODEX_ACCOUNT_ID, selectionOptions)
   ) {
     ids.unshift(MAIN_CODEX_ACCOUNT_ID);
   }
@@ -896,8 +904,9 @@ function listEligibleCodexAccountIds(
   config: OcxConfig,
   now: number,
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string[] {
-  return getEligiblePoolAccounts(config, undefined, now, quotaScope);
+  return getEligiblePoolAccounts(config, undefined, now, quotaScope, selectionOptions);
 }
 
 function stickyLimitForConfig(config: OcxConfig): number {
@@ -921,8 +930,9 @@ function pickFillFirstCodexAccount(
   config: OcxConfig,
   now: number,
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
-  const eligible = listEligibleCodexAccountIds(config, now, quotaScope);
+  const eligible = listEligibleCodexAccountIds(config, now, quotaScope, selectionOptions);
   if (eligible.length === 0) return null;
 
   const active = getEffectiveActiveCodexAccountId(config);
@@ -930,7 +940,7 @@ function pickFillFirstCodexAccount(
     return active;
   }
 
-  return pickNextFillFirstCodexAccount(config, active ?? null, eligible, now);
+  return pickNextFillFirstCodexAccount(config, active ?? null, eligible, now, selectionOptions);
 }
 
 /** Next eligible account in stable order after `afterId` (wrapping). */
@@ -939,6 +949,7 @@ function pickNextFillFirstCodexAccount(
   afterId: string | null,
   eligible = listEligibleCodexAccountIds(config, Date.now()),
   _now = Date.now(),
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
   if (eligible.length === 0) return null;
   const ordered = [...eligible].sort((a, b) => a.localeCompare(b));
@@ -951,7 +962,7 @@ function pickNextFillFirstCodexAccount(
   }
 
   const allConfigured = [
-    ...(isCodexAccountUsable(config, MAIN_CODEX_ACCOUNT_ID) || afterId === MAIN_CODEX_ACCOUNT_ID
+    ...(isCodexAccountUsable(config, MAIN_CODEX_ACCOUNT_ID, selectionOptions) || afterId === MAIN_CODEX_ACCOUNT_ID
       ? [MAIN_CODEX_ACCOUNT_ID]
       : []),
     ...(config.codexAccounts ?? []).filter(account => !account.isMain).map(account => account.id),
@@ -997,6 +1008,7 @@ function pickUnboundStrategyAccount(
   now: number,
   commit: boolean,
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
   const strategy = normalizeAccountPoolStrategy(config.accountPoolStrategy);
   if (strategy === "quota") return null;
@@ -1004,7 +1016,7 @@ function pickUnboundStrategyAccount(
 
   let picked: string | null = null;
   if (strategy === "round-robin") {
-    const eligible = listEligibleCodexAccountIds(config, now, quotaScope);
+    const eligible = listEligibleCodexAccountIds(config, now, quotaScope, selectionOptions);
     const limit = stickyLimitForConfig(config);
     if (!commit) {
       return peekRoundRobinAccount(poolKey, eligible, limit);
@@ -1018,7 +1030,7 @@ function pickUnboundStrategyAccount(
   }
 
   if (strategy === "fill-first") {
-    picked = pickFillFirstCodexAccount(config, now, quotaScope);
+    picked = pickFillFirstCodexAccount(config, now, quotaScope, selectionOptions);
     if (!picked) return null;
     if (commit) {
       if (!isIndependentCodexQuotaScope(quotaScope)) rememberActiveCodexAccount(config, picked);
@@ -1042,10 +1054,11 @@ function pickLowerUsageAccount(
   activeUsage: number,
   now: number,
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string {
   let best = active;
   let bestUsage = activeUsage;
-  for (const id of getEligiblePoolAccounts(config, active, now, quotaScope)) {
+  for (const id of getEligiblePoolAccounts(config, active, now, quotaScope, selectionOptions)) {
     const usage = computeCodexUsageScore(getAccountQuota(id), getPoolAccountPlan(config, id));
     if (usage < bestUsage) {
       best = id;
@@ -1060,10 +1073,11 @@ export function pickLowestUsageCodexAccount(
   excludeId?: string,
   now = Date.now(),
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
   let best: string | null = null;
   let bestUsage = Number.POSITIVE_INFINITY;
-  for (const id of getEligiblePoolAccounts(config, excludeId, now, quotaScope)) {
+  for (const id of getEligiblePoolAccounts(config, excludeId, now, quotaScope, selectionOptions)) {
     const usage = computeCodexUsageScore(getAccountQuota(id), getPoolAccountPlan(config, id));
     if (usage < bestUsage) {
       best = id;
@@ -1083,17 +1097,18 @@ export function pickAlternateCodexAccount(
   excludeId: string,
   now = Date.now(),
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
   const strategy = normalizeAccountPoolStrategy(config.accountPoolStrategy);
   if (strategy === "round-robin") {
-    const eligible = listEligibleCodexAccountIds(config, now, quotaScope).filter(id => id !== excludeId);
+    const eligible = listEligibleCodexAccountIds(config, now, quotaScope, selectionOptions).filter(id => id !== excludeId);
     return pickRoundRobinAccount(codexPoolKeyForScope(quotaScope), eligible, stickyLimitForConfig(config));
   }
   if (strategy === "fill-first") {
-    const eligible = listEligibleCodexAccountIds(config, now, quotaScope).filter(id => id !== excludeId);
-    return pickNextFillFirstCodexAccount(config, excludeId, eligible, now);
+    const eligible = listEligibleCodexAccountIds(config, now, quotaScope, selectionOptions).filter(id => id !== excludeId);
+    return pickNextFillFirstCodexAccount(config, excludeId, eligible, now, selectionOptions);
   }
-  return pickLowestUsageCodexAccount(config, excludeId, now, quotaScope);
+  return pickLowestUsageCodexAccount(config, excludeId, now, quotaScope, selectionOptions);
 }
 
 /** Effective active: automatic runtime cursor, else operator/persisted selection. */
@@ -1158,6 +1173,7 @@ function applyQuotaAutoSwitch(
   active: string,
   now: number,
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string {
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold <= 0) return active;
@@ -1167,7 +1183,7 @@ function applyQuotaAutoSwitch(
   // threshold. Wait for quota priming instead of rotating among guesses.
   if (isUnknownUsage(activeUsage)) return active;
   if (activeUsage < threshold) return active;
-  const best = pickLowerUsageAccount(config, active, activeUsage, now, quotaScope);
+  const best = pickLowerUsageAccount(config, active, activeUsage, now, quotaScope, selectionOptions);
   if (best !== active) {
     if (!isIndependentCodexQuotaScope(quotaScope)) setActiveCodexAccount(config, best);
     return best;
@@ -1184,9 +1200,14 @@ function shouldFailover(config: OcxConfig, accountId: string, now: number): bool
   return !!health && health.consecutiveFailures >= threshold;
 }
 
-function applyFailureFailover(config: OcxConfig, active: string, now: number): string {
+function applyFailureFailover(
+  config: OcxConfig,
+  active: string,
+  now: number,
+  selectionOptions?: CodexAccountUsabilityOptions,
+): string {
   if (!shouldFailover(config, active, now)) return active;
-  const best = pickAlternateCodexAccount(config, active, now);
+  const best = pickAlternateCodexAccount(config, active, now, undefined, selectionOptions);
   if (best) {
     promoteActiveCodexAccount(config, best);
     return best;
@@ -1217,13 +1238,14 @@ export function previewCodexAccountForRequest(
   config: OcxConfig,
   now = Date.now(),
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
   const entry = threadId ? getThreadAffinity(threadId, quotaScope) : undefined;
   if (threadId && entry) {
     if (
       !isThreadAffinityExpired(entry, now)
       && isThreadAffinityGenerationLive(entry)
-      && isCodexAccountSelectable(config, entry.accountId, now, quotaScope)
+      && isCodexAccountSelectable(config, entry.accountId, now, quotaScope, selectionOptions)
       && !shouldFailover(config, entry.accountId, now)
     ) {
       // Quota strategy only: non-quota strategies keep affinity for ongoing threads
@@ -1237,7 +1259,14 @@ export function previewCodexAccountForRequest(
             getPoolAccountPlan(config, entry.accountId),
           );
           if (!isUnknownUsage(usage) && usage >= threshold) {
-            const best = pickLowerUsageAccount(config, entry.accountId, usage, now, quotaScope);
+            const best = pickLowerUsageAccount(
+              config,
+              entry.accountId,
+              usage,
+              now,
+              quotaScope,
+              selectionOptions,
+            );
             if (best !== entry.accountId) return best;
           }
         }
@@ -1247,17 +1276,27 @@ export function previewCodexAccountForRequest(
     // Stale/unusable affinity is ignored for preview (no map mutation).
   }
 
-  const strategyPick = pickUnboundStrategyAccount(config, threadId, now, false, quotaScope);
+  const strategyPick = pickUnboundStrategyAccount(
+    config,
+    threadId,
+    now,
+    false,
+    quotaScope,
+    selectionOptions,
+  );
   if (strategyPick) return strategyPick;
 
   let active = getEffectiveActiveCodexAccountId(config) ?? null;
   if (!active) {
-    return pickLowestUsageCodexAccount(config, undefined, now, quotaScope);
+    return pickLowestUsageCodexAccount(config, undefined, now, quotaScope, selectionOptions);
   }
-  if (!isCodexAccountSelectable(config, active, now, quotaScope)) {
-    const fallback = pickLowestUsageCodexAccount(config, active, now, quotaScope);
+  if (!isCodexAccountSelectable(config, active, now, quotaScope, selectionOptions)) {
+    const fallback = pickLowestUsageCodexAccount(config, active, now, quotaScope, selectionOptions);
     if (fallback) active = fallback;
-    else if (hasConfiguredPoolAccount(config, active) && !isCodexAccountPaused(config, active)) return active;
+    else if (
+      hasConfiguredPoolAccount(config, active, selectionOptions)
+      && !isCodexAccountPaused(config, active)
+    ) return active;
     else return null;
   }
 
@@ -1265,19 +1304,19 @@ export function previewCodexAccountForRequest(
   if (threshold > 0) {
     const usage = computeCodexUsageScore(getAccountQuota(active), getPoolAccountPlan(config, active));
     if (!isUnknownUsage(usage) && usage >= threshold) {
-      active = pickLowerUsageAccount(config, active, usage, now, quotaScope);
+      active = pickLowerUsageAccount(config, active, usage, now, quotaScope, selectionOptions);
     }
   }
   if (shouldFailover(config, active, now)) {
-    const best = pickLowestUsageCodexAccount(config, active, now, quotaScope);
+    const best = pickLowestUsageCodexAccount(config, active, now, quotaScope, selectionOptions);
     if (best) active = best;
   }
-  if (!isCodexAccountUsable(config, active)) {
-    return hasConfiguredPoolAccount(config, active) ? active : null;
+  if (!isCodexAccountUsable(config, active, selectionOptions)) {
+    return hasConfiguredPoolAccount(config, active, selectionOptions) ? active : null;
   }
   if (isCodexAccountPaused(config, active)) return null;
   if (getCodexQuotaHealthSnapshot(active, quotaScope, now)) {
-    return hasConfiguredPoolAccount(config, active) ? active : null;
+    return hasConfiguredPoolAccount(config, active, selectionOptions) ? active : null;
   }
   return active;
 }
@@ -1287,6 +1326,7 @@ export function resolveCodexAccountForThreadDetailed(
   config: OcxConfig,
   now = Date.now(),
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): CodexThreadResolution {
   const entry = threadId ? getThreadAffinity(threadId, quotaScope) : undefined;
   if (threadId && entry) {
@@ -1296,7 +1336,7 @@ export function resolveCodexAccountForThreadDetailed(
     }
     if (
       isThreadAffinityGenerationLive(entry)
-      && isCodexAccountSelectable(config, entry.accountId, now, quotaScope)
+      && isCodexAccountSelectable(config, entry.accountId, now, quotaScope, selectionOptions)
       // Affined threads must leave a failing account once the streak trips failover
       // (soft-avoid covers the first-hit case; this catches post-avoid residual streaks).
       && !shouldFailover(config, entry.accountId, now)
@@ -1323,7 +1363,7 @@ export function resolveCodexAccountForThreadDetailed(
         if (overThreshold || now - entry.lastReevalAt >= CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS) {
           entry.lastReevalAt = now;
           if (overThreshold) {
-            const best = pickLowerUsageAccount(config, entry.accountId, usage, now, quotaScope);
+            const best = pickLowerUsageAccount(config, entry.accountId, usage, now, quotaScope, selectionOptions);
             if (best !== entry.accountId) {
               if (!isIndependentCodexQuotaScope(quotaScope)) setActiveCodexAccount(config, best);
               bindThreadAffinity(threadId, best, now, quotaScope); // rebinds + resets clocks
@@ -1337,35 +1377,42 @@ export function resolveCodexAccountForThreadDetailed(
     deleteThreadAffinity(threadId, quotaScope);
   }
 
-  const strategyPick = pickUnboundStrategyAccount(config, threadId, now, true, quotaScope);
+  const strategyPick = pickUnboundStrategyAccount(config, threadId, now, true, quotaScope, selectionOptions);
   if (strategyPick) return { status: "selected", accountId: strategyPick };
 
   let active = getEffectiveActiveCodexAccountId(config);
   if (!active) {
-    const selected = pickLowestUsageCodexAccount(config, undefined, now, quotaScope);
+    const selected = pickLowestUsageCodexAccount(config, undefined, now, quotaScope, selectionOptions);
     if (!selected) return { status: "none" };
     if (!isIndependentCodexQuotaScope(quotaScope)) setActiveCodexAccount(config, selected);
     active = selected;
   }
-  if (!isCodexAccountSelectable(config, active, now, quotaScope)) {
-    const fallback = pickLowestUsageCodexAccount(config, active, now, quotaScope);
+  if (!isCodexAccountSelectable(config, active, now, quotaScope, selectionOptions)) {
+    const fallback = pickLowestUsageCodexAccount(config, active, now, quotaScope, selectionOptions);
     if (fallback) {
       if (!isIndependentCodexQuotaScope(quotaScope)) setActiveCodexAccount(config, fallback);
       active = fallback;
-    } else if (hasConfiguredPoolAccount(config, active) && !isCodexAccountPaused(config, active)) {
+    } else if (
+      hasConfiguredPoolAccount(config, active, selectionOptions)
+      && !isCodexAccountPaused(config, active)
+    ) {
       return { status: "selected", accountId: active };
     } else {
       return { status: "none" };
     }
   }
-  active = applyQuotaAutoSwitch(config, active, now, quotaScope);
-  active = applyFailureFailover(config, active, now);
-  if (!isCodexAccountUsable(config, active)) {
-    return hasConfiguredPoolAccount(config, active) ? { status: "selected", accountId: active } : { status: "none" };
+  active = applyQuotaAutoSwitch(config, active, now, quotaScope, selectionOptions);
+  active = applyFailureFailover(config, active, now, selectionOptions);
+  if (!isCodexAccountUsable(config, active, selectionOptions)) {
+    return hasConfiguredPoolAccount(config, active, selectionOptions)
+      ? { status: "selected", accountId: active }
+      : { status: "none" };
   }
   if (isCodexAccountPaused(config, active)) return { status: "none" };
   if (getCodexQuotaHealthSnapshot(active, quotaScope, now)) {
-    return hasConfiguredPoolAccount(config, active) ? { status: "selected", accountId: active } : { status: "none" };
+    return hasConfiguredPoolAccount(config, active, selectionOptions)
+      ? { status: "selected", accountId: active }
+      : { status: "none" };
   }
   if (threadId) bindThreadAffinity(threadId, active, now, quotaScope);
   return { status: "selected", accountId: active };

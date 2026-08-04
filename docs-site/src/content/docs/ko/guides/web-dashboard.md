@@ -83,6 +83,8 @@ Dashboard의 **Sub-agent delegation** 선택기는 `injectionModel`과 선택적
 선택한 강도가 전역 단계에 있는지 검사하고, Codex는 다시 대상 카탈로그 항목이 그 강도를 지원하는지
 검사합니다.
 
+<a id="codex-auth-and-account-pools"></a>
+
 ## Codex Auth와 계정 풀
 
 **Codex Auth** 페이지는 네이티브 ChatGPT/Codex 라우트를 관리합니다.
@@ -98,6 +100,10 @@ Dashboard의 **Sub-agent delegation** 선택기는 `injectionModel`과 선택적
   30일 창으로 분류합니다. 기간이 없는 기존 응답은 이전과 동일하게 주간 창으로 해석합니다.
 - **Refresh quotas**는 계정 사용량을 즉시 다시 읽어 라우팅과 화면의 계정 카드가 같은 값을 보게 합니다.
 - 풀 요청 로그에는 이메일 대신 `p3fa91c` 같은 불투명한 라벨을 사용합니다.
+
+Providers 개요는 Pool 모드 사용량을 표시 전용 가중 용량 추정치로 별도 요약하고, 현재 유효 계정의
+원본 quota와 다음 용량 회복도 함께 표시합니다. 표시 필드, 불완전한 범위의 의미, 라우팅 경계는
+[프로바이더 개요의 풀 용량](/ko/guides/providers/#프로바이더-개요의-풀-용량)을 참고하세요.
 
 ## 스타는 에이전트가 아니라 사용자가 결정합니다
 

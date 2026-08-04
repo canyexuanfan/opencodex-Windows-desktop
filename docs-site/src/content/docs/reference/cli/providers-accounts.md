@@ -210,6 +210,57 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 Inspect Codex reset credits for an account. Consuming a credit is destructive and requires both
 `--consume` and `--yes`.
 
+### `ocx account main <subcommand>`
+
+Manage named native Codex main-login profiles without changing OpenCodex account-pool routing:
+
+```text
+ocx account main doctor [--json]
+ocx account main list [--json]
+ocx account main register <label> [--json]
+ocx account main add <label>
+ocx account main switch <profile-id-or-label> --yes [--json]
+ocx account main recover [--rollback --yes] [--json]
+```
+
+Each mutating command reports the canonical effective `CODEX_HOME` returned by the running proxy.
+This path can differ from the caller's `CODEX_HOME`; commands that support JSON expose the same
+value as `effectiveCodexHome`.
+
+Version 1 supports file-based Codex authentication, encrypts stored profiles with AES-256-GCM, and
+keeps the encryption key in the operating-system credential store. `add` stages the official Codex
+login flow before importing the resulting credential. Close Codex before switching profiles; a
+successful switch preserves local tasks and history, then requires Codex to be restarted. Use
+`doctor` to inspect profile state and `recover` to finish or roll back an interrupted transition.
+`switch` accepts either the profile ID or its label.
+
+The v1 recovery matrix covers an OpenCodex process exiting after a transaction file has been
+published by rename. It does not claim durability across an OS or kernel crash or sudden power
+loss: `atomicWriteFileAsync()` does not `fsync` either the file or its parent directory.
+
+The encrypted vault, switch journal, recovery marker, and journal quarantine live in the canonical
+`<real CODEX_HOME>/.opencodex-native-main-profiles` directory, so every OpenCodex instance sharing
+that Codex home observes one owner and one recovery state. Plaintext login staging remains isolated
+under each `<OPENCODEX_HOME>/native-main-profile-staging` directory.
+
+Before native-main traffic or journal recovery is admitted, the lifetime owner takes the exclusive
+credential claim and removes only exact `auth.json.ocx.<pid>.<sequence>.tmp` crash residues. Each
+candidate must remain a single-linked regular file under the unchanged canonical `CODEX_HOME`; it is
+truncated, flushed, and then unlinked. Link/reparse substitutions, identity changes, and other
+ambiguity keep native-main traffic closed, while near-miss names are never removed automatically.
+This protects against cooperative OpenCodex crashes, not a malicious process already running as the
+same OS user. That user and the filesystem containing `CODEX_HOME` remain trusted, and truncation
+does not promise physical erasure from copy-on-write storage, snapshots, or SSD remanence.
+
+Preview builds used `<OPENCODEX_HOME>/native-main-profiles`. That layout is never imported silently.
+If `doctor` reports legacy profile state, stop every OpenCodex proxy sharing the same `CODEX_HOME`.
+Then either back up and move the matching `*.vault.json`, `*.journal.json`, recovery marker, and any
+referenced journal-quarantine file together into the canonical directory while preserving owner-only
+permissions, or remove the old preview set and run `ocx account main register` again. Do not choose
+between multiple old roots or run both layouts while any sharing proxy is active.
+On Windows, preview state keyed by the former case-folded home identity must be reset rather than
+moved because its encrypted AAD and operating-system keyring identity are intentionally not reused.
+
 ## Models
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`

@@ -5,6 +5,7 @@ import {
   hasCallerCodexBearer,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
+  type CodexAccountSelectionAdmission,
   type CodexAuthContext,
 } from "../codex/auth-context";
 import { recordCodexUpstreamOutcome, type CodexUpstreamOutcome } from "../codex/routing";
@@ -89,8 +90,12 @@ export async function resolveFirstUsableOpenAiSidecar(
   candidates: readonly OpenAiForwardSidecarCandidate[],
   incomingHeaders: Headers,
   config: OcxConfig,
-  exactAccount?: ExactOpenAiSidecarAccount,
+  options: {
+    exactAccount?: ExactOpenAiSidecarAccount;
+    beginCodexAccountSelection?: () => CodexAccountSelectionAdmission | undefined;
+  } = {},
 ): Promise<ResolvedOpenAiForwardSidecar | undefined> {
+  const { exactAccount } = options;
   let callerBearerMayBeForwarded = true;
   try {
     validateForwardAdmissionCredential(incomingHeaders, config);
@@ -106,6 +111,7 @@ export async function resolveFirstUsableOpenAiSidecar(
       const authContext = await resolveCodexAuthContext(incomingHeaders, config, "pool", {
         accountId: exactAccount.accountId,
         modelId: exactAccount.modelId,
+        beginCodexAccountSelection: options.beginCodexAccountSelection,
       });
       if ((authContext.kind !== "pool" && authContext.kind !== "main-pool")
         || !isCodexAuthContextUsable(authContext, config)) {
@@ -141,7 +147,9 @@ export async function resolveFirstUsableOpenAiSidecar(
         headers,
       };
     }
-    const authContext = await resolveCodexAuthContext(incomingHeaders, config, candidate.accountMode);
+    const authContext = await resolveCodexAuthContext(incomingHeaders, config, candidate.accountMode, {
+      beginCodexAccountSelection: options.beginCodexAccountSelection,
+    });
     if (!isCodexAuthContextUsable(authContext, config)) continue;
     return {
       ...candidate,

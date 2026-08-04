@@ -42,9 +42,11 @@ import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
+  codexMainProfileDrainingResponse,
   cooldownErrorResponse,
   CodexAuthContextError,
   CodexDirectAuthenticationError,
+  CodexMainProfileDrainingError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
@@ -78,7 +80,8 @@ import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../../provider
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { resolveProviderTransport } from "../../providers/xai-transport";
 import type { WsData } from "../ws-bridge";
-import { registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
+import { codexAccountSelectionForTurn, registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
+import type { AdmissionLease } from "../../lib/admission";
 import { redactSecretString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import { supportedLadderFor } from "../effort-policy";
@@ -138,13 +141,15 @@ async function resolveAlternateCompactContext(args: {
   route: { provider: OcxProviderConfig; codexAccountMode?: CodexAccountMode };
   selectedModelId: string | undefined;
   excludeAccountId: string | null;
+  turnAdmissionLease?: AdmissionLease;
 }): Promise<{ authCtx: CodexAuthContext; provider: OcxProviderConfig; headers: Headers } | null> {
-  const { req, config, route, selectedModelId, excludeAccountId } = args;
+  const { req, config, route, selectedModelId, excludeAccountId, turnAdmissionLease } = args;
   if (!route.codexAccountMode || !excludeAccountId) return null;
   try {
     const authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
       ...(selectedModelId ? { modelId: selectedModelId } : {}),
       excludeAccountId,
+      beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
     });
     if (!authCtx.accountId || authCtx.accountId === excludeAccountId) return null;
     const provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
@@ -161,7 +166,13 @@ async function resolveAlternateCompactContext(args: {
     }
     if (provider.apiKey) headers.set("authorization", `Bearer ${resolveEnvValue(provider.apiKey)}`);
     return { authCtx, provider, headers };
-  } catch {
+  } catch (err) {
+    if (err instanceof CodexMainProfileDrainingError) {
+      // The native-main fence can start after account A has already rejected the
+      // request. Treat the now-fenced main profile as no alternate and preserve A's
+      // real rejection instead of replacing it with a synthetic drain response.
+      return null;
+    }
     // No eligible alternate (all cooled, affinity expired, reauth needed) — the caller
     // returns the first account's rejection unchanged, which is today's behavior.
     return null;
@@ -236,6 +247,7 @@ export async function handleResponsesCompact(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
+  turnAdmissionLease?: AdmissionLease,
 ): Promise<Response> {
   let body: unknown;
   try {
@@ -297,6 +309,7 @@ export async function handleResponsesCompact(
         authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
           accountId: route.codexAccountId,
           modelId: selectedModelId,
+          beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
         });
         const selected = headersForCodexAuthContext(req.headers, authCtx);
         compactProvider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
@@ -314,6 +327,7 @@ export async function handleResponsesCompact(
       if (err instanceof CodexAccountCooldownError) {
         return cooldownErrorResponse(err, Date.now(), route.codexAccountNamespace);
       }
+      if (err instanceof CodexMainProfileDrainingError) return codexMainProfileDrainingResponse();
       if (err instanceof CodexThreadAffinityExpiredError) {
         return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
       }
@@ -432,6 +446,7 @@ export async function handleResponsesCompact(
         route,
         selectedModelId,
         excludeAccountId: authCtx.accountId,
+        turnAdmissionLease,
       });
       // Resolution can await a credential refresh, so the client may have gone away
       // while we were choosing B. Re-check before spending anything: recording A,
@@ -516,7 +531,7 @@ export async function handleResponsesCompact(
     headers: internalHeaders,
     body: JSON.stringify(internalBody),
   });
-  const response = await handleResponses(internalReq, config, logCtx, { abortSignal: req.signal });
+  const response = await handleResponses(internalReq, config, logCtx, { abortSignal: req.signal, turnAdmissionLease });
   if (!response.ok) return response;
   let json: { output?: unknown[]; status?: unknown; error?: unknown };
   try {

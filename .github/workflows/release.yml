@@ -60,7 +60,7 @@ jobs:
             exit 1
           fi
 
-      # opencodex is bun-native (the prepublishOnly GUI build + typecheck run under bun).
+      # opencodex is bun-native (the prepublishOnly audit, GUI build, and typecheck run under bun).
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -92,6 +92,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Dependency audit (high severity)
+        run: bun run audit:high
+
       - name: Verify version matches package.json
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -103,6 +106,8 @@ jobs:
             exit 1;
           }
 
+      # The exact-SHA CI gate includes the hosted Linux, Windows, and macOS
+      # keyring smoke matrix. Do not duplicate its Linux bootstrap here.
       - name: Require successful Cross-platform CI for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -138,17 +143,15 @@ jobs:
           fi
 
           ci_url="$(
-            # shellcheck disable=SC2016
-            # `$branch` is a jq variable bound by --arg, not a shell variable, so
-            # the filter must stay single-quoted.
             gh run list \
               --workflow ci.yml \
+              --branch "${GITHUB_REF#refs/heads/}" \
               --commit "$GITHUB_SHA" \
+              --event push \
               --status success \
               --limit 10 \
-              --json conclusion,headSha,url,workflowName,event,headBranch \
-              --jq --arg branch "${GITHUB_REF#refs/heads/}" \
-                'map(select(.event == "push" and .headBranch == $branch)) | .[0].url // ""'
+              --json url \
+              --jq '.[0].url // ""'
           )"
 
           if [ -z "$ci_url" ]; then
@@ -327,10 +330,8 @@ jobs:
           notes_file="$(mktemp)"
           carried_file="$(mktemp)"
           delta_file="$(mktemp)"
-          commits_file="$(mktemp)"
           : > "$carried_file"
           : > "$delta_file"
-          : > "$commits_file"
 
           # Stable releases after matching previews: aggregate every matching preview
           # changelog (oldest→newest; each preview body is incremental), then only
@@ -407,7 +408,7 @@ jobs:
           else
             # First release on this channel: never call generate-notes without previous_tag_name.
             # GitHub would baseline the newest repo tag, which may belong to the other channel.
-            echo "::notice::No previous channel tag; skipping generate-notes (commits-only notes)"
+            echo "::notice::No previous channel tag; skipping generate-notes (minimal notes)"
           fi
 
           # Rewrite takeover credits on both carried preview notes and the since-preview
@@ -426,36 +427,22 @@ jobs:
               --out "$delta_file"
           fi
 
-          if [ -n "$notes_range_start" ]; then
-            commit_range="${notes_range_start}..${GITHUB_SHA}"
-            git log --pretty=format:'- %s (%h)' "$commit_range" > "$commits_file"
-          else
-            # First release on a channel has no previous tag; cap history so the notes
-            # body stays within GitHub release size limits.
-            git log --pretty=format:'- %s (%h)' --max-count=100 "$GITHUB_SHA" > "$commits_file"
-          fi
-          # `--pretty=format:` omits the trailing newline; normalize for downstream readers.
-          if [ -s "$commits_file" ]; then
-            printf '\n' >> "$commits_file"
-          fi
-
-          assemble_args=(
-            bun scripts/release-notes.ts assemble
+          render_args=(
+            bun scripts/release-notes.ts render
             --npm-metadata "$npm_metadata"
             --carried "$carried_file"
             --delta "$delta_file"
-            --commits "$commits_file"
             --out "$notes_file"
             --compare-to "$release_tag"
             --repository "$GITHUB_REPOSITORY"
           )
           # Prefer the stable-channel previous tag for the compare link when present.
           if [ -n "$previous_tag" ]; then
-            assemble_args+=(--compare-from "$previous_tag")
+            render_args+=(--compare-from "$previous_tag")
           elif [ -n "$notes_range_start" ]; then
-            assemble_args+=(--compare-from "$notes_range_start")
+            render_args+=(--compare-from "$notes_range_start")
           fi
-          "${assemble_args[@]}"
+          "${render_args[@]}"
 
           if [ -z "$existing_tag_sha" ]; then
             git tag "$release_tag" "$GITHUB_SHA"

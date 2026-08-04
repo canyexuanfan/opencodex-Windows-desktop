@@ -653,6 +653,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     }, undefined,
     {
       translatorBudget,
+      replayCacheScope: parsed._clientThreadId ?? "global",
       ...(deps.forceEmptyResponseId ? { responseId: "" } : {}),
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       ...(deps.stallTimeoutSec !== undefined ? { stallTimeoutSec: deps.stallTimeoutSec } : {}),

@@ -239,6 +239,11 @@ export interface AtomicWriteAsyncIO {
   unlink: (path: string) => void | Promise<void>;
 }
 
+/** Test-only crash seam. Production callers leave this undefined. */
+export interface AtomicWriteAsyncTestSeam {
+  afterTempWrite?: (tempPath: string) => void | Promise<void>;
+}
+
 async function renameAtomicFileAsync(source: string, destination: string): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -263,6 +268,7 @@ export async function atomicWriteFileAsync(
   path: string,
   content: string,
   io?: AtomicWriteAsyncIO,
+  testSeam?: AtomicWriteAsyncTestSeam,
 ): Promise<void> {
   const effective: AtomicWriteAsyncIO = io ?? {
     write: (target, value) => writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 }),
@@ -282,6 +288,7 @@ export async function atomicWriteFileAsync(
   let hardened = false;
   try {
     await effective.write(tmp, content);
+    await testSeam?.afterTempWrite?.(tmp);
     await effective.harden(tmp);
     hardened = true;
     await effective.rename(tmp, target);

@@ -19,6 +19,22 @@ bare `gpt-5.6-sol` 遵循 Providers 页面中的 Pool/Direct 选项，
 
 若内置 `openai` 提供商缺失或已禁用，可在仪表盘 Accounts 选择器或 Codex Auth 页面恢复：缺失行会从规范预设创建，已禁用的规范行会在不替换已保存模式/模型设置的情况下重新启用，非规范的 `openai` 行不会提供该恢复路径。
 
+### 提供商概览中的账户池容量
+
+Codex 登录使用 Pool 模式时，Providers 概览显示整个账户池的已用容量估算，而不是任意一个
+账户的数值。同一行还会显示当前有效账户的原始配额使用率，便于区分账户池估算与下一次请求
+将使用的账户状态。
+
+如果有重置信息，概览会显示下一次重置时间以及届时恢复的账户池容量。**覆盖不完整**表示某些
+账户无法安全计入估算，例如套餐或配额未知、读数过旧、账户已暂停或需要重新认证。
+
+**部分窗口覆盖不完整**表示某些已计入账户只报告了部分显示的配额窗口。概览会保持各窗口相互
+独立，逐一标记受影响的窗口，并且不会把缺失值当作该窗口的使用量。
+
+此估算仅用于显示，不会改变账户选择、会话关联、自动切换、cooldown 或任何其他路由决策。
+各账户状态和路由控制请参阅
+[Codex Auth 账户池](/zh-cn/guides/web-dashboard/#codex-auth-and-account-pools)。
+
 shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保留一次到
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak`；恢复命令：
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`。
@@ -196,6 +212,14 @@ bearer 密钥；API 访问需要 Provider 套餐，Go/Pro 订阅用户的 CLI �
 > **Call Model APIs** 权限的团队密钥。
 > 专用 Truss `predict` 端点使用不同的主机和请求 schema，不由此预设路由。
 > 该预设的实时发现上限为 1 MiB 响应和 256 条原始模型记录。
+
+### A6API 信用额度
+
+使用 `openai-chat`、`authMode: "key"` 以及规范地址 `https://api.a6api.com` 或
+`https://api.a6api.com/v1` 的自定义提供商，会在仪表板和 `ocx account refresh <provider>`
+中显示 A6API 信用使用情况；提供商名称可以自定义。系统依据账户的 hard credit limit 将令牌单位换算为 USD，并显示已用百分比和剩余额度。
+令牌到期不代表额度补充，因此不会显示为配额重置。只有当前活动密钥会发送到规范主机，重定向会被拒绝；负数
+或内部不一致的计费总数不会生成报告。
 
 > **腾讯云 Coding Plan 使用限制：**腾讯将此订阅限定为交互式编程工具使用。禁止通用 API
 > 自动化、自定义应用后端和非交互式批量调用；违规使用可能导致套餐密钥被停用。
