@@ -84,6 +84,20 @@ without defining them, so `020` and `040` kept their own. Both live in
 `convergence-types.ts` and both phases import them:
 
 ```ts
+/** The exact history mutation authorized by the durable coordinator row. */
+export type CodexHistoryOperation =
+  | "skip"
+  | "apply-opencodex"
+  | "migrate-openai"
+  | "restore-openai"
+  | "recover-legacy-openai";
+
+/** Why this exact history job is authorized; the kind is persisted with its id. */
+export type CodexHistoryAuthority =
+  | { readonly kind: "admission-snapshot"; readonly id: string }
+  | { readonly kind: "wp10-compatibility"; readonly id: string }
+  | { readonly kind: "explicit-legacy-recovery"; readonly id: string };
+
 export interface CodexHistoryState {
   status: "converged" | "pending" | "running" | "blocked" | "unknown" | "not-evaluated";
   /**
@@ -99,12 +113,15 @@ export interface CodexHistoryState {
     | "shutdown-cancelled"
     | "worker-died"
     | "overtaken"
+    | "foreign-state-db"
     | "record-write-failed";
   attempts: number;
   /** null means "no timer armed"; see 020 — it must never mean "never again". */
   nextRetryAt: string | null;
-  /** The transition this state belongs to, so an overtaken job is detectable. */
+  /** The durable history job this state belongs to, so an overtaken job is detectable. */
   txId: string | null;
+  /** null only for the generation-zero unscheduled row or ephemeral not-evaluated projection. */
+  operation: CodexHistoryOperation | null;
   /** null means the final probe could not produce a trustworthy row count. */
   pendingRows: number | null;
   /** null means the final probe could not produce a trustworthy manifest count. */
@@ -112,6 +129,24 @@ export interface CodexHistoryState {
   /** Unknown keys from a newer writer, preserved verbatim. */
   readonly [extra: string]: unknown;
 }
+
+/**
+ * A manifest read is evidence, not an optional convenience. Only `missing`
+ * certifies zero entries. Every failed read keeps its failure class and a null
+ * count so absence can never be manufactured from unreadable bytes.
+ */
+export type PositiveHistoryManifestEntryCount = number & {
+  readonly __positiveHistoryManifestEntryCount: "validated-positive-integer";
+};
+
+export type CodexHistoryManifestRead<T> =
+  | { readonly kind: "missing"; readonly manifest: null; readonly backupEntries: 0 }
+  | { readonly kind: "ready"; readonly manifest: T;
+      readonly backupEntries: PositiveHistoryManifestEntryCount }
+  | { readonly kind: "unreadable"; readonly manifest: null; readonly backupEntries: null }
+  | { readonly kind: "malformed"; readonly manifest: null; readonly backupEntries: null }
+  | { readonly kind: "unsupported"; readonly manifest: null; readonly backupEntries: null }
+  | { readonly kind: "foreign-state-db"; readonly manifest: null; readonly backupEntries: null };
 
 /**
  * Every mutable Codex artifact for which the provenance ledger can authorize a
@@ -219,16 +254,23 @@ already derived from the real config/profile/catalog/cache/journal/history surfa
 (`devlog/_plan/260804_codex_write_substrate/004_ownership_and_convergence.md:235-273`);
 its nested observations keep the
 one-artifact partial cases testable instead of hiding them behind that aggregate.
-For a clean history convergence, `reason` is absent and both probe counts are zero.
+For a clean non-`skip` history convergence, `reason` is absent and both probe counts
+are zero. `skip` is the sole converged exception: it deliberately performs no probe
+and stores null counts rather than manufacturing zero evidence.
 An unreadable DB/manifest uses `unreadable`; a readable but unsupported table or
 manifest shape uses `schema`; a watchdog uses `timeout`; graceful drain uses
 `shutdown-cancelled`; and failure of the terminal CAS uses
 `record-write-failed` in the returned observation while leaving the previously
 persisted `pending` schedule intact. Any failed/unavailable final probe stores null,
 never a zero-looking count.
-`not-evaluated` is an ephemeral projection used only by WP9's catalog-scoped
-compatibility outcome; it is never persisted as durable history and never answers
-`isApplied` or `converged` with a false-looking boolean.
+An otherwise valid manifest naming another canonical state DB uses
+`foreign-state-db`; it is preserved and blocks convergence rather than becoming an
+empty manifest for this DB.
+`not-evaluated` is an ephemeral artifact projection used by WP9's catalog-scoped
+compatibility outcome and, for the three nested history artifacts only, by an
+authorized `skip`. Catalog scope persists no history state; `skip` instead persists
+`CodexHistoryState { status:"converged", operation:"skip" }` and makes no artifact
+claim. Neither case answers an unobserved artifact with a false-looking boolean.
 
 ### Durable state: the JSON CAS was wrong
 
@@ -257,9 +299,17 @@ export interface CodexTransitionState extends CodexTransitionVersion {
   /** Durable schedule and latest terminal observation for this exact pair. */
   readonly history: CodexHistoryState;
   readonly historySchedule: null | Readonly<{
-    direction: "apply" | "remove";
-    authoritySnapshotId: string;
+    jobId: string;
+    operation: CodexHistoryOperation;
+    authority: CodexHistoryAuthority;
   }>;
+}
+
+/** Both the native pair and exact durable history authorization are CAS input. */
+export interface CodexHistoryScheduleExpectation extends CodexTransitionVersion {
+  readonly historyJobId: string;
+  readonly operation: CodexHistoryOperation;
+  readonly authority: CodexHistoryAuthority;
 }
 
 export type IntegrationRecordRead =
@@ -299,14 +349,42 @@ export type BeginCodexTransition = (
   next: Readonly<{
     txId: string;
     direction: "apply" | "remove";
+    operation: Exclude<CodexHistoryOperation, "recover-legacy-openai">;
     authoritySnapshotId: string;
     nextRetryAt: string;
   }>,
 ) => TransitionStateUpdate;
 
-/** Change only history columns when the exact native pair still owns the row. */
+/**
+ * Authorize the explicit legacy recovery without inventing a native routing
+ * generation. The expected state must be terminal; unresolved native work wins.
+ */
+export type AuthorizeCodexLegacyHistoryRecovery = (
+  expected: CodexTransitionState,
+  next: Readonly<{
+    jobId: string;
+    authorityId: string;
+    nextRetryAt: string;
+  }>,
+) => TransitionStateUpdate;
+
+/**
+ * WP10-only bridge for current roots that predate WP12 native admission. It
+ * publishes history work without moving the native routing pair.
+ */
+export type AuthorizeCodexCompatibilityHistory = (
+  expected: CodexTransitionState,
+  next: Readonly<{
+    jobId: string;
+    operation: Exclude<CodexHistoryOperation, "recover-legacy-openai">;
+    authorityId: string;
+    nextRetryAt: string;
+  }>,
+) => TransitionStateUpdate;
+
+/** Change only history columns when the exact pair, job and operation still own the row. */
 export type UpdateCodexHistoryTransition = (
-  expected: CodexTransitionVersion,
+  expected: CodexHistoryScheduleExpectation,
   history: CodexHistoryState,
 ) => TransitionStateUpdate;
 ```
@@ -315,6 +393,7 @@ WP8b implements and exports `const readIntegrationRecord: ReadIntegrationRecord`
 and `const updateIntegrationRecord: UpdateIntegrationRecord` from
 `src/codex/integration-record.ts`, plus
 `readCodexTransitionState`, `beginCodexTransition`, and
+`authorizeCodexCompatibilityHistory`, `authorizeCodexLegacyHistoryRecovery`, and
 `updateCodexHistoryTransition` from
 `src/codex/transition-state.ts`; these are executable functions in that phase, not
 ambient declarations.
@@ -341,8 +420,12 @@ CREATE TABLE codex_transition_state (
   history_attempts INTEGER NOT NULL CHECK (history_attempts >= 0),
   history_next_retry_at TEXT,
   history_tx_id TEXT,
-  history_direction TEXT CHECK (history_direction IN ('apply', 'remove')),
-  history_authority_snapshot_id TEXT,
+  history_operation TEXT CHECK (history_operation IN
+    ('skip', 'apply-opencodex', 'migrate-openai', 'restore-openai',
+     'recover-legacy-openai')),
+  history_authority_kind TEXT CHECK (history_authority_kind IN
+    ('admission-snapshot', 'wp10-compatibility', 'explicit-legacy-recovery')),
+  history_authority_id TEXT,
   history_pending_rows INTEGER,
   history_backup_entries INTEGER,
   updated_at TEXT NOT NULL,
@@ -350,19 +433,32 @@ CREATE TABLE codex_transition_state (
     ('converged', 'pending', 'running', 'blocked', 'unknown')),
   CHECK (history_reason IS NULL OR history_reason IN
     ('db-busy', 'permission', 'unreadable', 'schema', 'timeout',
-     'shutdown-cancelled', 'worker-died', 'overtaken', 'record-write-failed')),
+     'shutdown-cancelled', 'worker-died', 'overtaken', 'foreign-state-db',
+     'record-write-failed')),
   CHECK (history_pending_rows IS NULL OR history_pending_rows >= 0),
   CHECK (history_backup_entries IS NULL OR history_backup_entries >= 0),
   CHECK ((native_generation = 0 AND current_tx_id IS NULL)
       OR (native_generation > 0 AND length(trim(current_tx_id)) > 0)),
-  CHECK ((native_generation = 0
-          AND history_tx_id IS NULL
-          AND history_direction IS NULL
-          AND history_authority_snapshot_id IS NULL)
-      OR (native_generation > 0
-          AND history_tx_id = current_tx_id
-          AND length(trim(history_authority_snapshot_id)) > 0)),
-  CHECK (native_generation > 0 OR
+  CHECK ((history_tx_id IS NULL
+          AND history_operation IS NULL
+          AND history_authority_kind IS NULL
+          AND history_authority_id IS NULL)
+      OR (length(trim(history_tx_id)) > 0
+          AND history_operation IS NOT NULL
+          AND history_authority_kind IS NOT NULL
+          AND length(trim(history_authority_id)) > 0)),
+  CHECK (history_operation IS NULL
+      OR (history_operation = 'recover-legacy-openai'
+          AND history_authority_kind = 'explicit-legacy-recovery')
+      OR (history_operation != 'recover-legacy-openai'
+          AND history_authority_kind IN ('admission-snapshot', 'wp10-compatibility'))),
+  CHECK (history_authority_kind IS NULL
+      OR history_authority_kind IN ('wp10-compatibility', 'explicit-legacy-recovery')
+      OR (history_authority_kind = 'admission-snapshot'
+          AND native_generation > 0
+          AND history_tx_id = current_tx_id)),
+  CHECK (native_generation = 0 OR history_operation IS NOT NULL),
+  CHECK (history_operation IS NOT NULL OR
     (history_status = 'unknown'
      AND history_reason IS NULL
      AND history_attempts = 0
@@ -372,8 +468,8 @@ CREATE TABLE codex_transition_state (
 );
 ```
 
-The observation columns project to `CodexHistoryState`; direction and authority
-snapshot are schedule metadata required to restart the exact Worker after process
+The observation columns project to `CodexHistoryState`; job id, operation and typed
+authority kind/id are schedule metadata required to restart the exact Worker after process
 death. `not-evaluated` remains ephemeral and is rejected by the table. A native
 transition publishes its winner and schedule atomically with this null-safe conditional update
 (SQLite `IS` is required for the initial null txId):
@@ -383,7 +479,8 @@ UPDATE codex_transition_state
    SET native_generation = ?, current_tx_id = ?,
        history_status = 'pending', history_reason = NULL,
        history_attempts = 0, history_next_retry_at = ?, history_tx_id = ?,
-       history_direction = ?, history_authority_snapshot_id = ?,
+       history_operation = ?, history_authority_kind = 'admission-snapshot',
+       history_authority_id = ?,
        history_pending_rows = NULL, history_backup_entries = NULL,
        updated_at = ?
  WHERE singleton = 1
@@ -394,8 +491,63 @@ UPDATE codex_transition_state
 The first two bound values are `{nativeAfter,newTxId}`; the last two are the
 expected `{nativeBefore,currentTxId}`. Worker claim/retry/terminal updates use the
 same `WHERE native_generation = ? AND current_tx_id IS ?` predicate and additionally
-require `history_tx_id IS ?`; they change only `history_*`, never the native pair.
+require `history_tx_id IS ? AND history_operation IS ? AND
+history_authority_kind IS ? AND history_authority_id IS ?`; they change only
+`history_*`, never the native pair. The operation is therefore CAS authority, not a
+hint carried only in Worker IPC.
 The row count, not a later JSON read, is the CAS result.
+
+The operation set is intentionally semantic rather than a provider direction:
+
+- `skip` is derived when admitted apply intent has `syncResumeHistory:false`; it
+  performs no manifest, rollout, or history-DB read/write and may terminally record
+  `converged` with both counts null because it makes no zero/zero claim.
+- `apply-opencodex` is legacy-mode apply: retain originals in the manifest, patch
+  rollouts, and tag eligible rows `opencodex`.
+- `migrate-openai` is loopback-mode apply: consume a valid matching manifest through
+  restore and then eject remaining legacy `opencodex` rows to `openai`.
+- `restore-openai` is native removal: consume the matching manifest through generic
+  restore and then eject remaining routed rows. It remains distinct from migration
+  even though both currently share restore mechanics because their authorization and
+  retry cause differ.
+- `recover-legacy-openai` is the explicit `recover-history --legacy-openai` salvage:
+  eject eligible legacy rows and patch their rollouts without reading, consuming,
+  deleting, or replacing the manifest. This is not generic restore.
+
+`BeginCodexTransition` receives the native direction and the operation derived by
+convergence and rejects an impossible pair (`remove` with anything except
+`restore-openai`, or `apply` with `restore-openai`/`recover-legacy-openai`). External
+callers still provide only `action`, scope, reason and mode. The Worker request
+carries the durable job id and operation copied from the row; it has no
+`targetProvider` or caller-chosen direction. It re-reads the row under H and rejects
+IPC whose job/operation differs before any probe or mutation.
+
+WP10 must land before WP12, and the current apply/restore roots have neither a WP12
+`AdmissionSnapshot` nor a native routing pair published by convergence. Inventing a
+snapshot id or bumping `nativeGeneration` would violate the settled phase boundary.
+`authorizeCodexCompatibilityHistory` is the explicit bridge: after the existing
+native root returns its semantic receipt, the convergence owner derives one of
+`skip | apply-opencodex | migrate-openai | restore-openai`, opens N, and conditionally
+replaces only a terminal history schedule with a fresh job id,
+`authority.kind:"wp10-compatibility"`, and a fresh opaque authority id. The id is a
+job authorization nonce, not a digest of config or credentials and is never logged.
+The CAS leaves the native pair unchanged and matches the prior pair, job, operation,
+authority kind/id, and terminal status. It refuses pending/running work. No CLI,
+server, `inject.ts`, or low-level history writer calls this API directly. The WP10
+convergence adapter derives the operation and delegates the mechanical CAS to
+`history-job.ts`; §8's middle inventory permits only that scheduling edge. WP12-final
+graph reachability removes it once admission-snapshot scheduling owns native
+convergence.
+
+Explicit legacy recovery cannot honestly advance `nativeGeneration`: §3 defines it
+as a routing transition, while this command changes history only. Under N,
+`authorizeCodexLegacyHistoryRecovery` conditionally replaces only a terminal history
+schedule with a fresh job id and `recover-legacy-openai`, leaving the native pair
+unchanged and persisting `authority.kind:"explicit-legacy-recovery"`. Its `WHERE`
+includes the expected native pair, prior history job id, prior operation, and prior
+authority kind/id. A pending/running schedule refuses as busy rather than discarding
+native repair. This separate history job identity is why ordinary native schedules
+reuse `currentTxId` but the explicit recovery job need not.
 
 A zero-row native result means another transition won despite this caller's
 admission: do not write JSON or spawn its Worker; any native bytes already committed
@@ -410,7 +562,7 @@ Initialization first verifies the no-legacy/native-clean precondition while the
 native lock excludes another initializer, then uses one `BEGIN IMMEDIATE`
 transaction: create the table, then
 `INSERT OR IGNORE` singleton 1 as `{0,null}` with an `unknown` history observation,
-zero attempts and no txId/direction/authority/timer/counts, and sets
+zero attempts and no job/operation/authority/timer/counts, and sets
 `PRAGMA user_version = 1`. That initialization is legal only when the
 JSON has no legacy `nativeGeneration`, `currentTxId`, `generation`, or durable
 `history` member and native observation finds no unresolved routed residue. When
@@ -466,7 +618,13 @@ export interface ConvergeRequest {
    */
   scope: "catalog" | "full";
   /** Why, for the record and for log attribution. */
-  reason: "startup" | "ensure" | "api-sync" | "cli" | "management-mutation";
+  reason:
+    | "startup"
+    | "ensure"
+    | "api-sync"
+    | "cli"
+    | "cli-recover-history"
+    | "management-mutation";
   /** Automatic callers fail fast and defer; explicit ones may wait. See §5. */
   mode: "automatic" | "explicit";
   deadlineMs: number;
@@ -481,6 +639,9 @@ export type ConvergeOutcome =
   | { kind: "catalog-only"; changed: boolean;
       observed: CodexObservedState; catalogRefresh: CatalogDisposition;
       history: CodexHistoryState }
+  | { kind: "history-recovered"; changed: boolean;
+      observed: CodexObservedState; nativeGeneration: number;
+      currentTxId: string | null; history: CodexHistoryState }
   | { kind: "converged"; direction: "applied" | "removed"; changed: boolean;
       observed: CodexObservedState; nativeGeneration: number;
       currentTxId: string;
@@ -516,6 +677,13 @@ produced TS2391 in audit round 3. WP8b exports the type and lands no runtime
 placeholder. WP9 supplies the first `convergeCodex` implementation and assigns it
 to `ConvergeCodex` in the same commit that rewires catalog callers.
 
+`ConvergeRequest`'s `cli-recover-history` reason identifies the explicit command
+boundary, not a provider/direction supplied to the Worker. It is accepted only with
+`action:"converge"`, `scope:"full"`, `mode:"explicit"`; convergence maps that
+command to the one fixed `recover-legacy-openai` authorization. The history-only
+outcome is `history-recovered`, not `converged {direction:"removed"}`, because the
+native pair and routing bytes did not move.
+
 WP9's `scope:"catalog"` implementation is **catalog-only**: it gathers,
 commits, and reports catalog/cache/backup disposition while preserving each route's
 primary 2xx/201. It does not inject config/profile, recover journals, or dispatch
@@ -523,7 +691,7 @@ history before WP10-WP12 land those mechanisms. WP12 strengthens that same funne
 to full observed-state convergence; there is no second entry point.
 Its `catalog-only` outcome sets non-catalog observations to `not-evaluated` and uses
 an ephemeral history value with `status:"not-evaluated"`, zero attempts, null txId,
-timer, and probe counts. It does not claim either full direction.
+operation, timer, and probe counts. It does not claim either full direction.
 
 An unresolved surface also names its scheduler. `config` schedules a fresh
 pre-gather admission; `native`, `catalog`, `cache`, `journal`, and `provenance`
@@ -585,16 +753,22 @@ Round 2 #6: the previous version said "two counters, both in the record" and
 then defined one. They are distinct because they answer different questions —
 did the user's configuration move, versus did somebody else write Codex's files.
 
-The WP9 seam audit forced a narrower definition of that second question. The
-implemented transition row requires every positive `native_generation` to carry
-the same `history_tx_id` as `current_tx_id`, a non-null `history_direction`, and
-a non-empty `history_authority_snapshot_id`
-(`src/codex/transition-state.ts:74-83`). `beginCodexTransition` therefore always
+The WP9 seam audit forced a narrower definition of that second question. At native
+publication, the implemented transition row requires every positive
+`native_generation` to carry an ordinary native schedule whose `history_tx_id`
+equals `current_tx_id`, a non-null typed `history_operation`, and a non-empty
+admission-snapshot history authority id
+(`src/codex/transition-state.ts:74-83`, to be amended by this contract).
+`beginCodexTransition` therefore always
 publishes a pending HISTORY SCHEDULE with the pair
 (`src/codex/transition-state.ts:314-344`), and `assertPublished` rejects a caller
 that did not publish one (`src/codex/transition-state.ts:420-428`). Advancing the
 pair for catalog bytes alone would invent history work that does not exist and
 cross WP10/WP12's boundary.
+After that ordinary schedule reaches a terminal state, §1's explicit history-only
+compatibility/recovery CAS may publish a different job while preserving the positive
+native pair; that does not retroactively turn the history-only job into a routing
+generation.
 
 So the native generation identifies a **NATIVE ROUTING transition**: `config.toml`,
 the generated profile, and the injection journal, exactly the artifacts whose
@@ -756,10 +930,18 @@ native/coordinator transaction N, when present
 
 Thus catalog-only work takes `K -> C`; a retained writer that is already under N
 takes `N -> K`; and full convergence takes `N -> K -> C`. There is no `C -> K`, no
-`K -> N`, and no catalog path acquires history H. Using the already-open N capability
+`K -> N`, and no catalog path acquires history H. A history Worker separately takes
+`H -> N` for its fail-fast claim read and terminal CAS; both N acquisitions have
+`busy_timeout=0` and finish before H is released. There is no `N -> H`, `K -> H`, or
+`C -> H`, and the history Worker never enters K or C. The combined graph is therefore
+the DAG `H -> N -> K -> C`; adding H does not invalidate WP9's settled
+`N -> K -> C` proof because it adds only a new source edge and no edge back to H.
+Using the already-open N capability
 to publish/commit its row while K is held is not a new acquisition edge. Config-owned
 callbacks remain forbidden from calling either N or K. A graph test protects those
-negative edges. This extends, rather than reverses, the settled N -> C discipline.
+negative edges, including inverse-edge fixtures for `N -> H`, `K -> H`, and
+`C -> H`, plus cross-domain Worker fixtures for `H -> K` and `H -> C`. This extends,
+rather than reverses, the settled N -> C discipline.
 
 ### The expected transition
 
@@ -1368,6 +1550,7 @@ and both payload fields.
 | `ConvergeOutcome` | Status | Body |
 |---|---|---|
 | `catalog-only` | 200 | `{ ok: true, changed, observed, catalogRefresh, history }` |
+| `history-recovered` | 200 | `{ ok: true, changed, observed, nativeGeneration, currentTxId, history }` |
 | `converged` | 200 | `{ ok: true, changed, observed, catalogRefresh, history }` |
 | `skipped` (`already-converged`) | 200 | `{ ok: true, changed: false, observed, catalogRefresh, history }` |
 | `refused` | 409 | `{ ok: false, authority, message, observed }` |
@@ -1401,8 +1584,23 @@ steps, so two processes corrupt each other through the files it never sees.
 
 **One cross-process history lock**, acquired inside the Worker, held across the
 entire unit — manifest, rollouts and the DB transaction together, including the
-final post-probe. It is a sibling of the native lock, not nested, because the
-native section must stay synchronous.
+final post-probe. H is a distinct SQLite database, not an unnamed lock and not N's
+database reused under another label. `resolveCodexHistorySerializationDatabasePath`
+in §7 owns its final path from effective user identity, canonical `CODEX_HOME`, and
+canonical state-DB identity. Every process consumes that path verbatim. Reusing N
+would make the Worker's required coordinator reads self-contend; allowing callers to
+invent H's path would split exclusion so two processes could each believe they own
+the same history unit.
+
+H and N are sibling databases but the lock order is **H -> N**, not “never held
+simultaneously.” The live APIs prove the edge: the Worker calls
+`readCodexTransitionState`, whose initialization path acquires `BEGIN IMMEDIATE`
+(`src/codex/transition-state.ts:473-482`), for fail-fast admission and later calls
+`updateCodexHistoryTransition`, which acquires another `BEGIN IMMEDIATE`
+(`src/codex/transition-state.ts:521-533`), for terminal CAS while H remains held.
+Both are fail-fast N acquisitions. The inverse edges `N -> H`, `K -> H`, and
+`C -> H` are forbidden; §3 records why the resulting `H -> N -> K -> C` graph is
+acyclic and keeps WP9's order valid.
 
 Two things round 2 caught:
 
@@ -1410,6 +1608,41 @@ Two things round 2 caught:
 (`src/cli/index.ts:528,591,756,768,829`), outside any future history lock. Every
 history caller takes this lock — server, CLI, startup, retry. A lock one caller can
 skip is not a lock.
+
+**Direction is not operation.** The coordinator row persists the §1
+`CodexHistoryOperation` and its history job id, and every claim/retry/terminal CAS
+matches both. Current behavior has five materially different authorizations:
+`syncResumeHistory:false` means touch nothing (`src/codex/inject.ts:602-604`);
+legacy apply backs up and tags `opencodex`; loopback apply migrates legacy rows to
+`openai`; removal consumes the manifest and restores native state; and
+`recover-history --legacy-openai` invokes only the unbacked legacy eject path
+(`src/cli/index.ts:711-717`, `src/codex/history-provider.ts:701-710`). The Worker
+derives its writer from the durable operation. A compatibility IPC field such as
+`targetProvider` or direction, if temporarily retained during migration, is
+validated against that operation and disagreement refuses before probe or write;
+it never overrides the row.
+
+**Unreadable is not absent — the ninth recurrence of this unit's defect.** The
+current `readBackup` turns malformed JSON, unsupported shape, and a manifest for a
+different state DB into `{entries:{}}` (`src/codex/history-provider.ts:204-216`),
+and the pending probe starts from zero and swallows the failure
+(`src/codex/history-provider.ts:749-754`). That lets a zero/zero post-probe certify
+convergence from evidence it never read: once again, absence was treated as a
+guarantee.
+
+The sole manifest reader returns `CodexHistoryManifestRead<T>`. Only a genuinely
+missing path returns `kind:"missing"` and `backupEntries:0`. A present valid v1
+manifest for the canonical state DB returns `ready`; because empty manifests are
+deleted by the writer, a present ready manifest must contain at least one validated
+entry. Only the manifest validator constructs
+`PositiveHistoryManifestEntryCount`, after proving an integer greater than zero;
+`ready` with literal zero does not typecheck. Read/permission failure returns
+`malformed`, readable unsupported version/shape returns `unsupported`, and a valid
+manifest naming another canonical state DB returns `foreign-state-db`. Every failure
+preserves the file byte-for-byte, carries `backupEntries:null`, prevents all history
+mutation, and blocks convergence. `unreadable` maps to `unknown/unreadable`,
+`malformed`/`unsupported` to `unknown/schema`, and a foreign manifest to
+`blocked/foreign-state-db`; no path deletes, replaces, or consumes failed evidence.
 
 **Sibling locks permit overtaking.** A releases the native lock after committing
 ON; B commits native OFF while A traverses history. Checking once after A acquires
@@ -1423,14 +1656,18 @@ the complete history unit. The guarantee is eventual convergence to the latest
 durable native transition:
 
 1. The native coordinator CAS writes `{nativeAfter, txId}` and the complete
-   `history_status='pending'` schedule in the **same SQLite row update** before any
+   `history_status='pending'` schedule, including job id and operation, in the
+   **same SQLite row update** before any
    Worker spawn. If spawn never occurs or the Worker dies, the guardian/startup
    reader still has durable work to schedule.
-2. A Worker checks that the coordinator row contains its `{nativeAfter, txId}`
-   immediately after acquiring the history lock. A mismatch returns
+2. A Worker checks that the coordinator row contains its `{nativeAfter, txId}` plus
+   exact history job id, operation, and authority kind/id immediately after
+   acquiring H through the fail-fast `H -> N` read. A mismatch returns
    `pending/overtaken` without mutation and schedules observation of the current row.
-3. Because a newer native transition can commit during traversal, the Worker uses
-   the §1 conditional SQLite update for its terminal history state. A zero-row CAS
+3. Because a newer native transition or history-only recovery authorization can
+   commit during traversal, the Worker uses the §1 conditional SQLite update for its
+   terminal history state. Its `WHERE` matches native pair, history job id, and
+   operation. A zero-row CAS
    means its result is stale; it does not touch JSON, overwrite the newer pending
    schedule, or clear the winner's timer, and returns `overtaken`.
 4. If an old Worker mutated history before detecting that final conflict, the newest
@@ -1445,11 +1682,13 @@ spawn failure, Worker death, or process restart.
 
 Ordering, so absence of deadlock is checkable: the native callback performs its
 transition-row UPDATE in the native coordinator transaction, then releases it before
-history dispatch. A Worker holds the history lock while traversing and attempts only
-a fail-fast short coordinator CAS at claim/terminal boundaries; it never invokes the
-native callback or waits on config coordination. `SQLITE_BUSY` leaves the current
-pending row intact and retries after the history lock is released. Native and history
-domain callbacks are never nested.
+history dispatch and never calls H. A Worker holds H while traversing and attempts
+only fail-fast short N transactions at claim/terminal boundaries; it never invokes
+the native callback, K, or C. `SQLITE_BUSY` at N leaves the current pending row intact,
+releases H, and retries from durable state. The graph tests require the real `H -> N`
+edges and reject inverse `N -> H`, `K -> H`, and `C -> H` reachability through direct
+imports, wrappers, aliases, re-exports, and dynamic imports; they also reject the
+unneeded Worker edges `H -> K` and `H -> C`.
 
 ## 7. The lock namespace has one environment-independent root per effective user
 
@@ -1513,15 +1752,35 @@ export type ResolveCodexCatalogSerializationDatabasePath = (
   identity: UserIdentity,
   canonicalCodexHome: string,
 ) => string;
+
+/**
+ * Return H's FINAL database path for one canonical state database identity.
+ * Consumers append nothing and may not substitute N or K's path.
+ */
+export type ResolveCodexHistorySerializationDatabasePath = (
+  identity: UserIdentity,
+  canonicalCodexHome: string,
+  canonicalStateDbPath: string,
+) => string;
 ```
 
 WP8b implements and exports constants of the identity and coordinator function types
 from `src/codex/user-identity.ts`; it does not ship declarations without bodies. WP9
-adds the catalog-serialization resolver there with K. These are the only two exported
+adds the catalog-serialization resolver there with K, and WP10 adds the history
+serialization resolver there with H. These are the only three exported
 final-path resolvers; the private secure-root resolver is shared but is never exported
 for consumer path composition. WP11, transition state, history, tests, cleanup, and K
 consume their returned database path verbatim. No consumer appends `opencodex`, a
 lock-directory name, `v1`, uid/SID, the home digest, or `.sqlite` a second time.
+
+The canonical state-DB identity is path identity, not current inode identity. If the
+DB exists, resolve it with `realpathSync.native`; if it is missing, resolve its
+existing canonical parent and append the single basename without following a missing
+leaf. Normalize Windows drive/UNC case exactly once. Reject a relative path,
+non-directory/unsafe parent, symlink/reparse ambiguity, or a canonicalization failure.
+Do not key H by dev/inode: SQLite replacement or recovery may change the inode while
+the logical database still requires the same exclusion. Do not key it by the raw
+request path: aliases would split the lock.
 
 Exact platform algorithm:
 
@@ -1550,6 +1809,14 @@ The final path returned by `resolveCodexCoordinatorDatabasePath` is
 the final path returned by `resolveCodexCatalogSerializationDatabasePath` is the
 distinct sibling
 `<resolved-per-user-root>/catalog-write-locks/<sha256-of-canonical-CODEX_HOME>.sqlite`.
+The final path returned by `resolveCodexHistorySerializationDatabasePath` is the
+third sibling
+`<resolved-per-user-root>/history-write-locks/<sha256-of-length-prefixed-(canonical-CODEX_HOME,canonical-state-DB-path)>.sqlite`.
+Length-prefixing is mandatory; string concatenation with a separator is not a tuple
+encoding. Thus the same user/home/DB resolves one H across service and CLI processes,
+while two state DBs under one home do not serialize each other and H can never equal N
+or K. H uses `busy_timeout=0` and `BEGIN IMMEDIATE`; bounded waiting belongs to the
+Worker's outer acquisition loop, not SQLite.
 POSIX directories are `0700` and files `0600`; Windows applies the required ACL to
 the root, databases, and rollback journals. Every existing component is checked
 before use and again through stable descriptors around SQLite open/transaction
@@ -1559,10 +1826,11 @@ substituted path is a refusal, never something the resolver repairs in place.
 The test that matters, and the one my first version could not have failed: two
 child processes with different `HOME`, `USERPROFILE`, `TMPDIR`, `XDG_RUNTIME_DIR`,
 `TEMP`, `TMP`, and `LOCALAPPDATA` values but the same effective uid/SID and canonical
-`CODEX_HOME` must resolve the same **two final database paths**, take the same N and K
-locks respectively, and read/update the same singleton transition row. The two paths
-must differ so nested `N -> K` cannot self-contend on SQLite's database-wide writer
-slot.
+`CODEX_HOME` and canonical state DB must resolve the same **three final database
+paths**, take the same N, K, and H locks respectively, and read/update the same
+singleton transition row. A second canonical state DB must retain the same N/K paths
+but resolve a different H. All three paths must differ so nested `N -> K` and `H -> N`
+cannot self-contend on SQLite's database-wide writer slot.
 
 ## 8. Names
 
@@ -1572,6 +1840,7 @@ Audit #13. Fixed here so no phase invents a variant:
 |---|---|
 | the native write lock | `src/codex/codex-write-lock.ts` |
 | the catalog serialization primitive K | `src/codex/catalog-write-serialization.ts` |
+| the history serialization primitive H | `src/codex/history-lock.ts` |
 | the record | `src/codex/integration-record.ts` |
 | the entry point | `src/codex/convergence.ts` |
 | generations | `src/codex/generation.ts` |
@@ -1592,8 +1861,9 @@ already migrated lifecycle and explicit callers:
 | native config/profile | `src/codex/internal/native-writer.ts` | `src/codex/convergence.ts` only |
 | injection journal create/mark/restore/remove | `src/codex/internal/journal-writer.ts` | `src/codex/convergence.ts` only |
 | catalog, hashed/legacy backups, models cache | `src/codex/internal/catalog-writer.ts`, each mutation requiring K's runtime-validated live permit | `src/codex/convergence.ts` only |
+| history serialization transaction H | `src/codex/history-lock.ts` | `src/codex/history-worker.ts` only |
 | history DB rows, manifest, rollout files | history write exports in `src/codex/internal/history-writer.ts` | `src/codex/history-worker.ts` only |
-| transition pair and history schedule/terminal row | `src/codex/transition-state.ts` | `src/codex/convergence.ts` and `src/codex/history-worker.ts` only |
+| transition pair and typed history schedule/terminal row | `src/codex/transition-state.ts` | `src/codex/convergence.ts` and `src/codex/history-worker.ts` only |
 | JSON provenance ledger | `updateIntegrationRecord` in `src/codex/integration-record.ts` | `src/codex/convergence.ts` only |
 | persisted OpenCodex config bytes and config generation | private writers in `src/config.ts` | exported `saveConfig`, `mutatePersistedConfig`, `saveConfigPreservingClaudeCode`, and the generation API in that same module only |
 
@@ -1623,9 +1893,22 @@ after K acquisition; the other three synchronous retained chains acquire K befor
 their authoritative filesystem read and keep it through deterministic derivation and
 write. Each path supplies a runtime-live, same-home permit, after N if a later phase
 has already placed that root under N. A contract test cannot enforce both versions at
-once, so the graph
-fixture carries an explicit `"wp9-transitional" | "wp12-final"` inventory version:
-WP9 expects exactly four legacy chains, and WP12 changes that expectation to zero.
+once, and WP10 adds a real intermediate producer. The graph fixture therefore carries
+an explicit
+`"wp9-transitional" | "wp10-history-isolation" | "wp12-final"` inventory version:
+WP9 expects exactly four catalog legacy chains; WP10 retains those four and adds only
+these history scheduling edges:
+
+| WP10 transitional root | Permitted transition-state symbols | Required authority |
+|---|---|---|
+| `src/codex/history-job.ts` | `authorizeCodexCompatibilityHistory`, `authorizeCodexLegacyHistoryRecovery` | `wp10-compatibility` or `explicit-legacy-recovery`; never `admission-snapshot` |
+| `src/codex/history-worker.ts` | `readCodexTransitionState`, `updateCodexHistoryTransition` | exact row-copied native pair, job, operation, and authority |
+
+`history-job.ts` receives the convergence-derived operation; it does not derive from
+or accept a Worker `targetProvider`/direction. It may schedule and supervise but may
+not import a manifest/rollout/history-DB writer. WP12 changes the four catalog roots
+and `history-job.ts` authorizer root to zero; `history-worker.ts` remains the sole H
+and history-writer root and retains only claim/terminal coordinator access.
 
 At the WP12-final transition, `inject.ts` is split: observation/parsing and pure
 config/profile transforms stay readable there; every export that calls
@@ -1645,11 +1928,14 @@ mutator of a Codex-owned artifact must appear in the inventory. In the WP12-fina
 version, `history-job.ts`, management routes, CLI modules, `sync.ts`, `refresh.ts`,
 `inject.ts`, and `journal.ts` are not permitted roots; they call convergence,
 dispatch a Worker, or read only. That final prohibition must not be applied to the
-four explicit WP9 transitional rows before WP12 owns their migration.
-At both inventory versions, every catalog/backup/cache mutator must be reachable only
+four explicit WP9 transitional rows and the narrow WP10 scheduling rows before WP12
+owns their migration.
+At every inventory version, every catalog/backup/cache mutator must be reachable only
 with K's permit and must call K's runtime liveness/transaction/home assertion before
 its first filesystem mutation. Inverse-order graph fixtures reject `C -> K` and
-`K -> N` even through wrappers, aliases, or re-exports.
+`K -> N` even through wrappers, aliases, or re-exports. They also require the two
+real Worker coordinator calls to establish `H -> N` and reject `N -> H`, `K -> H`,
+`C -> H`, `H -> K`, and `H -> C` through the same indirections.
 
 ## 9. Baseline classes
 
@@ -1682,13 +1968,23 @@ path, and observe one singleton row. Two native updates expecting `{0,null}` rac
 exactly one conditional UPDATE changes one row and the loser returns `conflict`.
 Pause an old Worker, publish a newer pair plus pending schedule, then finish the old
 Worker: its terminal UPDATE changes zero rows and cannot alter JSON or the winner's
-schedule. Missing DB/table initializes only from native-clean/no-legacy state;
+schedule. Change only the durable operation under the same native pair/job fixture
+and require the stale terminal CAS to change zero rows. Table-drive every native
+direction/operation pair and reject impossible combinations. Authorize explicit
+`recover-legacy-openai` against a terminal row without advancing the native pair;
+the same CAS must refuse a pending/running row and a stale prior job/operation.
+Exercise the WP10 compatibility authorizer for each non-recovery operation against
+generation zero and a positive unchanged native pair; it persists
+`wp10-compatibility`, never advances the pair, and refuses stale prior authority or
+non-terminal work. Its authority id must not equal or derive from config/credential
+bytes and must not reach logs, JSON, responses, or exceptions.
+Missing DB/table initializes only from native-clean/no-legacy state;
 legacy JSON pair/schedule, residue beside a missing row, malformed row, busy DB and
 unsafe path all fail closed with the specified typed outcome.
 
 `tests/codex-convergence-contract.test.ts`: every `ConvergeOutcome` variant maps
 to the §5 row, `busy` carries `Retry-After`, and a best-effort management caller
-still returns 2xx while reporting a non-converged disposition. Concatenate all ten
+still returns 2xx while reporting a non-converged disposition. Concatenate all
 TypeScript fences in document order, prepend the §1 `OcxConfig` import, and compile
 with the repository TypeScript compiler so WP8b cannot regress to TS2304 or a
 bodyless TS2391 declaration. Table-drive each artifact observation and require
@@ -1700,6 +1996,15 @@ process cannot commit N+1, and the callback's catalog bytes finish before the lo
 is released; conflict never invokes the callback. Instrument connection creation so
 the guard cannot regress to `readConfigGenerationAtPath` and self-contend through a
 second SQLite handle.
+
+Table-drive history-operation derivation through the real full-admission inputs:
+apply plus `syncResumeHistory:false` -> `skip`; legacy apply ->
+`apply-opencodex`; loopback apply -> `migrate-openai`; remove ->
+`restore-openai`; and the explicit recovery command ->
+`recover-legacy-openai` through its history-only authorization CAS. No route or CLI
+passes `targetProvider` or direction to the Worker. A migration-compatibility
+fixture that injects either field with a disagreeing value must refuse before the
+manifest probe or any writer call.
 
 Add the distinct round-3 two-process catalog barrier. Process A gathers catalog X,
 acquires K then C, completes generation/home/source/epoch/target validation, and
@@ -1832,12 +2137,17 @@ no-clobber publication wins; the loser receives `EEXIST`, validates and preserve
 the winner, and neither ordinary rename nor `atomicWriteFile` is called. Repeat with
 malformed, unreadable, routed, symlinked, and identity-ambiguous winners and require
 refusal without changing winner bytes. The graph inventory fixture runs as
-`wp9-transitional` with exactly four legacy chains, then as `wp12-final` with zero;
-a fifth WP9 root or a retained WP12 root fails.
+`wp9-transitional` with exactly four catalog legacy chains, as
+`wp10-history-isolation` with those four plus only the two typed history scheduling
+rows, then as `wp12-final` with no legacy/compatibility authorizer root; a fifth WP9
+catalog root, an overbroad WP10 `history-job.ts` edge, or a retained WP12 root fails.
 
 `tests/codex-user-identity.test.ts`: real child processes vary every environment
-home/runtime variable named in §7 and resolve the same two final database paths for
-one effective uid or SID, with coordinator and catalog paths distinct. POSIX
+home/runtime variable named in §7 and resolve the same three final database paths for
+one effective uid or SID, canonical `CODEX_HOME`, and canonical state DB, with N, K,
+and H paths pairwise distinct. A second state DB changes only H. Raw aliases that
+canonicalize to the same state DB resolve the same H, and inode replacement at that
+canonical path does not change H. POSIX
 activates wrong owner/mode/symlink and non-sticky `/tmp` refusal through a
 resolver seam; Windows CI activates token/SID failure, known-folder failure, reparse,
 owner, and broad-ACL refusal. No case falls back to an environment directory.
@@ -1849,6 +2159,23 @@ Worker death, timeout, shutdown cancellation, unreadable/schema probes, and term
 record-write failure; every failed probe count is null and the latest transition
 remains durably schedulable.
 
+Hold H in one process and prove a second service/CLI Worker for the same canonical
+home/state DB cannot enter manifest, rollout, DB, probe, or terminal-CAS work. While
+H is held, execute the real fail-fast claim read and terminal update and observe
+`H -> N` without self-contention, proving H did not reuse N's path. The symbol graph
+must retain those two required edges and fail independently for injected `N -> H`,
+`K -> H`, `C -> H`, `H -> K`, and `H -> C` edges.
+
+For the ninth absence-as-guarantee regression, probe a genuinely missing manifest
+and require `backupEntries:0`. Then seed, one case at a time, unreadable bytes,
+malformed JSON, a readable unsupported version/shape, and a valid manifest naming a
+different canonical state DB. Every present failure keeps its exact bytes, reports
+`backupEntries:null`, performs no rollout/DB/manifest mutation, and cannot produce a
+zero/zero converged state. A valid matching non-empty manifest remains readable and
+consumable. A compile fixture assigning zero to a `ready` result must fail while the
+`missing` zero shape compiles. Run the same matrix through no-op admission, final post-probe, guardian,
+and doctor projection so no wrapper reintroduces zero.
+
 **The funnel must be provable, not grepped** (round 2 #2). A grep guard misses a
 wrapper, re-export, alias or dynamic import. The writer-inventory test above is the
 enforcement surface; it permits the history Worker without opening native/catalog
@@ -1858,7 +2185,9 @@ writes to it.
 
 - C14 — all 16 management callers funnel through `convergeCodex`, enforced by the
   symbol graph; its WP9 inventory permits exactly the four transitional chains and
-  its WP12-final inventory permits none. At both versions every first-party
+  its WP10 inventory adds only the typed `history-job.ts` compatibility/recovery
+  authorizers plus the Worker's claim/terminal access; its WP12-final inventory
+  permits no legacy or compatibility authorizer root. At every version every first-party
   catalog/backup/cache write requires a fresh permit from the same permanent K owner,
   and every low-level mutator rejects leaked, reused, forged, revoked, or wrong-home
   permits at runtime before filesystem mutation.
@@ -1891,9 +2220,13 @@ writes to it.
   publication. An arbitrary filesystem, selector, or content A→B→A that completes
   wholly between two checks, and a non-cooperating write after the final comparison,
   are explicitly not claimed.
-- Contributes to C15 with detect-and-repair: the latest native pair is durably
-  pending before spawn, a stale Worker cannot replace its transition row or the
-  winner's schedule, and the guardian
-  eventually repairs history. WP10 implements that protocol. Also contributes to
+- Contributes to C15 with detect-and-repair: the latest native pair, history job id,
+  typed operation, and authority kind/id are durably pending before spawn; a stale
+  Worker cannot replace its transition row or the winner's schedule, and the guardian
+  eventually repairs history. H has one contract-owned final path per effective
+  user/canonical home/canonical state DB and takes only fail-fast `H -> N`; inverse
+  `N/K/C -> H` edges are forbidden. Only a missing manifest proves zero entries;
+  unreadable, malformed, unsupported, and foreign-state-DB manifests remain
+  preserved, nullable, and non-converged. WP10 implements that protocol. Also contributes to
   C2/C12 (generation-guarded catalog commit plus the phase-specific catalog/full
   admission and observation sequences).

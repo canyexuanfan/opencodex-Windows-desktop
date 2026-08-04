@@ -2,71 +2,104 @@
 
 Research: `002_history_off_the_loop.md`. Shared contract: `005_contract.md`.
 
-Today, native apply/restore performs synchronous SQLite, manifest, rollout, and
-fsync work on the caller thread (`src/codex/inject.ts:602,764-794`,
-`src/codex/history-provider.ts:565-699`). The manifest and rollout writes are
-outside the provider's SQLite transaction: apply writes manifest and rollouts
-before the DB transaction (`src/codex/history-provider.ts:606-648`); restore writes
-rollouts, then DB, then manifest, then performs a second ejection
-(`src/codex/history-provider.ts:656-695`). A SQLite busy timeout therefore explains
-only one stall and serializes only one part of the state transition.
+Today every history mutation is synchronous on its caller. Apply opens
+`state_5.sqlite`, writes the manifest and rollouts, then commits the DB transaction
+(`src/codex/history-provider.ts:585-653`). Restore reads the manifest, writes
+rollouts, commits the DB, removes the manifest, and then performs the residual
+ejection (`src/codex/history-provider.ts:656-698`). SQLite serializes only the DB
+portion; it does not serialize the manifest and rollout files around it.
 
-The previous WP10 moved server work to a Worker but left explicit CLI work inline,
-claimed there was no cross-process history lock, and owned a second
-`integrations/codex.json` schema. Round 2 showed all three are one failure: an
-opposite-direction process can overtake the Worker through the unguarded files, and
-the CLI can skip the only exclusion path. Round 4 found the remaining failure: a
-Worker can read pair N, a native transition can write N+1, and the Worker can then
-replace JSON with stale N. Separate-file read/compare/replace is not a CAS when the
-writers hold different locks. This rewrite consumes the contract's sibling history
-lock and canonical-`CODEX_HOME` SQLite coordinator row (`005_contract.md` §§3, 6).
+The path is also not one operation. `injectCodexConfig` deliberately does nothing
+when `syncResumeHistory === false`, forward-tags history to `opencodex` only in
+legacy mode, and otherwise migrates history back to `openai`
+(`src/codex/inject.ts:602-604`). Native restore invokes the manifest-consuming
+`openai` restore/eject path (`src/codex/inject.ts:765-800`), while
+`ocx recover-history --legacy-openai` invokes the manifest-independent legacy ejection
+(`src/cli/index.ts:711-724`). A Worker request containing only a caller-selected
+provider cannot preserve those distinctions.
 
-WP10 is independently landable. WP8b already supplies the coordinator-row API,
-shared types, generations, and user-identity resolver; WP9 supplies the working
-`convergeCodex`. WP10 adds the real history lock and Worker implementation in the
-same commit that routes every history caller through it. It does not wait for the
-WP11 native lock or WP12 provenance implementation to typecheck or preserve
-behavior.
+This plan was previously based on a false landing premise. WP9 did **not** supply a
+working full `convergeCodex`: the executable export is catalog-only
+(`src/codex/convergence.ts:421-440`), management rejects every non-catalog request
+(`src/codex/management-convergence.ts:89-106`), and full admission remains only the
+`AdmissionSnapshot` type (`src/codex/convergence-types.ts:495-520`). Native apply and
+restore still execute directly (`src/codex/inject.ts:482-654,765-800`). WP10 therefore
+cannot consume a full authority snapshot, native receipt, or `CommitExpectation`
+without implementing WP11/WP12 work.
 
-All current-code citations and diff context below were rechecked on 2026-08-04 at
-`2d5e080dea3e7000bf2111b381c7c1a3c4f5fb11`.
+## Phase boundary — history isolation now, full convergence in WP12
+
+WP10 takes the reviewer's second option.
+
+Every **current high-level history operation** enters `history-job` and H in this
+phase. Existing apply, restore, explicit recovery, startup retry, CLI, service, and
+management roots keep their current native/catalog orchestration, but none may call a
+history DB/manifest/rollout writer inline. WP10 persists the contract-owned typed
+`CodexHistoryOperation`, dispatches its identity to the Worker, and records its result.
+
+The desired-state-driven `convergeCodex({ scope: "full" })` caller rewire is deferred
+to WP12. WP12 changes the producer of the durable history operation after full
+admission and native coordination exist; it reuses the same `history-job`, Worker, H,
+typed operation, writer split, and terminal-state protocol delivered here. WP10 does
+not add a temporary convergence implementation, fake admission snapshot, synthetic
+native receipt, or placeholder that a later phase replaces.
+
+This boundary is independently landable: WP10 typechecks while full convergence still
+rejects non-catalog requests, and current user-visible high-level operations preserve
+their distinct history semantics through the Worker.
+
+All current-code citations in this document were rechecked on 2026-08-05 at
+`57c273922bdbd63e1b140811e8a07968928849ba`.
 
 ## IN / OUT
 
 IN:
 
-- `src/codex/history-provider.ts` (MODIFY/SPLIT) — retain only read/probe behavior;
-  move every manifest, rollout, and history-DB writer into the Worker-only internal
-  writer module so graph reachability can distinguish a reader from a writer.
-- `src/codex/internal/history-writer.ts` (NEW) — invocation-local retry policy,
-  classified internal failures, shared state-DB identity/path resolver, and the
-  exact manifest/rollout/DB mutation unit reachable only from `history-worker.ts`.
-- `src/codex/history-worker.ts` (NEW) — Worker entry point; applies captured homes,
-  acquires the sibling cross-process history lock, rejects overtaken work, performs
-  the entire history unit, probes, records, and releases.
-- `src/codex/history-job.ts` (NEW) — request validation, Worker IPC/watchdog/join,
-  history-lock target construction, capped retry scheduling, fresh coordinator-row
-  reads after conflict, and conversion of job facts to the contract's
-  `CodexHistoryState`.
-- `src/codex/convergence.ts` (MODIFY) — add history execution behind the existing
-  `convergeCodex`; callers still use only the contract request/result.
-- `src/codex/transition-state.ts` (MODIFY only through its public API) — WP10 calls
-  `readCodexTransitionState` and `updateCodexHistoryTransition`; the latter conditionally
-  updates the pending history schedule where the native pair and `history_tx_id` still
-  match. It never stores that pair or schedule in `integrations/codex.json`.
-- `src/codex/inject.ts`, `src/codex/sync.ts` (MODIFY) — remove direct history
-  execution paths and return their current non-history receipts to convergence.
-- `src/codex/history-migration-guardian.ts` (MODIFY) — schedule convergence from
-  durable state; never probe or mutate history on the listener thread.
+- `src/codex/convergence-types.ts` (MODIFY) — materialize the
+  contract-owned `CodexHistoryOperation`, typed manifest-read result, and durable
+  history-operation schedule/result shapes from `005_contract.md`; do not define a
+  WP10-local provider/direction union.
+- `src/codex/user-identity.ts` (MODIFY) — add
+  `resolveCodexHistorySerializationDatabasePath` beside the existing N and K
+  resolvers. It keys H by effective user, canonical `CODEX_HOME`, and canonical
+  state-DB path; consumers append no path segment.
+- `src/codex/transition-state.ts` (MODIFY) — persist/read the typed history operation
+  and its operation identity, expose the history-specific schedule/claim/terminal CAS
+  used by current roots, and retain the operation for guardian restart. This is not a
+  producer of native generations or full authority snapshots.
+- `src/codex/history-lock.ts` (NEW) — H: one cross-process,
+  canonical-`CODEX_HOME`/effective-user keyed SQLite exclusion primitive using the
+  contract resolver, finite acquisition, and no stale PID/mtime takeover.
+- `src/codex/history-provider.ts` (MODIFY/SPLIT) — retain read/probe behavior and the
+  typed manifest parser; remove all DB/manifest/rollout writers and module-global
+  execution policy.
+- `src/codex/internal/history-writer.ts` (NEW) — the exhaustive implementation of
+  every `CodexHistoryOperation`, including manifest-consuming restore and manifest-independent
+  legacy ejection. Only `history-worker.ts` may reach it.
+- `src/codex/history-worker.ts` (NEW) — acquire H, resolve and validate the durable
+  operation through N, mutate all three surfaces, run the typed post-probe, publish the
+  terminal CAS, release H, and close.
+- `src/codex/history-job.ts` (NEW) — resolve explicit paths/options, schedule the
+  typed operation durably as the sole root of the WP10 compatibility/explicit-recovery
+  authorizers, spawn/watch/join the Worker, classify IPC/death, and expose one async
+  entry point to every current high-level root.
+- `src/codex/inject.ts`, `src/codex/sync.ts`,
+  `src/codex/history-migration-guardian.ts` (MODIFY) — preserve current native/catalog
+  behavior but replace inline history calls with `history-job`; the guardian reads and
+  retries the durable operation instead of calling the provider.
+- `src/cli/init.ts` (MODIFY) — `ocx init` and its `setup` alias retain the history
+  migration currently inherited from `injectCodexConfig`
+  (`src/cli/init.ts:194-198`; `src/cli/index.ts:727-732`).
 - `src/cli/index.ts`, `src/cli/models.ts`, `src/cli/provider.ts`, `src/cli/v2.ts`,
-  `src/service.ts` (MODIFY where they currently trigger Codex native/history work)
-  — startup, explicit CLI, stop/uninstall, retry, and ensure use `convergeCodex`.
+  `src/service.ts` (MODIFY where async propagation is required) — await the existing
+  high-level operation through `history-job`; no command imports a history writer.
 - `src/server/management-api.ts`, `src/server/management/config-routes.ts`,
-  `src/server/lifecycle.ts` (MODIFY) — server work uses the same funnel and awaits
-  Worker termination during drain.
-- `src/cli/doctor.ts` (MODIFY) — combine a live read-only probe with the contract
-  history section.
+  `src/server/lifecycle.ts` (MODIFY) — await the same high-level operation and join
+  live history Workers during drain.
+- `src/cli/doctor.ts` (MODIFY) — combine durable history state with a typed live
+  read-only probe; unavailable evidence remains unknown.
 - `tests/codex-history-provider.test.ts`,
+  `tests/codex-transition-state.test.ts`,
   `tests/codex-convergence-contract.test.ts`,
   `tests/history-migration-guardian.test.ts`,
   `tests/codex-sync-api.test.ts`, and `tests/shutdown-drain.test.ts` (MODIFY), plus
@@ -76,558 +109,419 @@ IN:
 
 OUT:
 
-- Any `integrations/codex.json` path, version, parser, merge algorithm, generation,
-  transaction id, or pending-history schedule. Those transition facts live in the
-  canonical-`CODEX_HOME` coordinator row owned by `005_contract.md`; the former
-  `history-convergence.ts` schema owner is deleted from this plan.
-- The claim that no cross-process history lock exists. WP10 owns its implementation
-  now because the history unit is not safe without it.
-- The native lock and its namespace mechanics — WP11. The history lock is a sibling,
-  never a nested substitute (`005_contract.md` §6).
-- `/api/sync` status, body, or header mapping — `toSyncResponse` owns that contract
-  (`005_contract.md` §5).
-- Ownership/provenance/desired-state policy — WP12. A Worker receives an authority
-  snapshot identity; it does not invent authority.
-- Traversal chunking, GUI, release/deploy operations, and the live proxy on 10100.
+- A full `convergeCodex`, `AdmissionSnapshot` capture, desired-state observer,
+  provenance authorization, or the WP12 caller rewire.
+- Native write exclusion, a native receipt, or a native `CommitExpectation` — WP11.
+- Any claim that WP9 handed WP10 a working full funnel. It did not.
+- Replacing current native/catalog orchestration. In particular,
+  `src/codex/inject.ts:775-780` is WP9's K-serialized catalog restore; it remains a
+  catalog operation and is not copied into the history Worker.
+- `/api/sync` response-contract redesign; WP10 only preserves the current route while
+  moving its inherited history operation off-thread.
+- GUI, traversal chunking, release/deploy work, or touching the live proxy on 10100.
 
-## Worker boundary
+## Durable operation, not caller-selected provider
 
-The Worker contains the whole mutable history unit:
+The shared contract's `CodexHistoryOperation` is the only executable direction. It
+must distinguish at least these existing semantics without flattening them:
 
-1. acquire the sibling cross-process history lock;
-2. read the canonical-`CODEX_HOME` coordinator row and validate its pair against
-   `CommitExpectation` plus the authority snapshot identity;
-3. optional no-op probe;
-4. SQLite open, query, transaction, and close;
-5. manifest read/write;
-6. every rollout read, line-one patch, append, and fsync;
-7. final post-probe;
-8. conditionally update the coordinator row while still serialized, using both
-   generation fields in the `WHERE` clause;
-9. release the history lock.
+| Durable `CodexHistoryOperation` | Existing evidence | Worker behavior |
+|---|---|---|
+| `skip` | `syncResumeHistory === false` at `src/codex/inject.ts:602-604` | Enter the job/H validation path, perform no manifest/rollout/history-DB read or write, and record `converged` with null counts because no zero/zero claim is made. |
+| `apply-opencodex` | legacy branch at `src/codex/inject.ts:602-604` | Manifest-backed forward-tag to `opencodex`. |
+| `migrate-openai` | non-legacy branch at `src/codex/inject.ts:602-604` | Manifest-consuming restore followed by residual ejection to `openai`. |
+| `restore-openai` | `src/codex/inject.ts:781-800` | Generic native removal: consume the matching manifest and eject residual routed rows, with the current no-op-probe policy retained. It stays distinct from migration because authorization/retry cause differs. |
+| `recover-legacy-openai` | `src/cli/index.ts:711-724` | manifest-independent legacy ejection; it must not read, consume, delete, or replace the backup manifest. |
 
-Moving only `Database` calls is insufficient because the current manifest and
-rollout mutations surround the DB transaction (`src/codex/history-provider.ts:606-648,656-695`).
-Moving only automatic/server callers is insufficient because the explicit CLI path
-currently reaches `restoreNativeCodex()` and `syncModelsToCodex()` directly
-(`src/cli/index.ts:528,591,756,768,829`). A lock one caller can skip is not a lock.
-
-The server remains responsive because all synchronous/unbounded history work is in
-the Worker. Explicit CLI also uses the Worker; its larger wait budget may block its
-own terminal, but never the proxy listener and never bypasses cross-process
-serialization.
-
-## Writer reachability has two permitted roots
-
-The failure is structural before it is behavioral: the contract's former rule that
-only `convergence.ts` may reach low-level writers is impossible for an isolated
-Worker. `history-worker.ts` must invoke the history mutation after the parent has
-returned to the event loop. History is therefore its own permitted production root,
-not an exception hidden behind an alias.
-
-The contract's graph/symbol guard permits exactly these history-root edges:
-
-```text
-history-worker.ts -> internal/history-writer.ts
-history-worker.ts -> transition-state.ts (pair read + history schedule/terminal CAS only)
-internal/history-writer.ts -> writeBackup
-                           -> updateSessionMeta (line-one patch + append + fsync)
-                           -> syncCodexHistoryProviderUnsafe
-                           -> restoreCodexHistoryProvider
-                           -> ejectRemainingOpencodexHistory
-```
-
-No CLI, server, guardian, `inject.ts`, `sync.ts`, or compatibility wrapper may reach
-those history writers. Tests may import the Worker entry/funnel, not the low-level
-module. Today `history-provider.ts` is mixed: it exports read-only
-`readLatestSessionMeta`, `readThreadFieldsFromRollout`, and
-`countPendingOpencodexHistory` beside the mutating `syncCodexHistoryProvider`,
-`migrateHistoryToOpenai`, and `restoreLegacyOpenaiHistory`
-(`src/codex/history-provider.ts:263,348,565,701,719,749`). A module-dependency graph
-cannot tell that an importer selected only a reader. This phase must split the module:
-the public provider becomes read/probe-only, while the mutating entry points and their
-private manifest/rollout/DB helpers move to `internal/history-writer.ts`. Only then can
-the reachability test prove the history root and the separate `convergence.ts` roots
-from the contract inventory without allowing every reader import to write.
-
-## Serializable request and response
-
-The request carries the identity of every authority the Worker must revalidate. It
-does not carry a mutable config object or a caller-chosen desired direction.
-
-```ts
-import type {
-  CodexHistoryState,
-  CommitExpectation,
-  UserIdentity,
-} from "./convergence-types";
-
-export interface HistoryWorkerRequest {
-  type: "run";
-  requestId: string;
-  targetProvider: "openai" | "opencodex";
-  stateDbPath: string;
-  backupPath: string;
-  lockIdentity: {
-    userIdentity: UserIdentity;
-    stateDbId: string;
-  };
-  expectation: CommitExpectation;
-  /** Digest/id of the AdmissionSnapshot that authorized this transition. */
-  authoritySnapshotId: string;
-  busyTimeoutMs: number;
-  attempts: number;
-  delayMs: number;
-  skipWhenProvablyNoop: boolean;
-  /** Test supervisor only: pause after the named real mutation, then await resume. */
-  pauseAfter?: HistoryMutationCheckpoint;
-  env: { CODEX_HOME?: string; OPENCODEX_HOME?: string };
-}
-
-export type HistoryMutationCheckpoint =
-  | "manifest-write"
-  | "first-rollout-write"
-  | "database-write";
-
-export interface HistoryWorkerResume {
-  type: "resume";
-  requestId: string;
-  after: HistoryMutationCheckpoint;
-}
-
-export type HistoryWorkerMessage = HistoryWorkerRequest | HistoryWorkerResume;
-
-export type HistoryWorkerFailureReason = NonNullable<CodexHistoryState["reason"]>;
-
-export interface HistoryProbeCounts {
-  pendingRows: number | null;
-  backupEntries: number | null;
-}
-
-export type HistoryWorkerResponse =
-  | {
-      type: "checkpoint";
-      requestId: string;
-      after: HistoryMutationCheckpoint;
-    }
-  | {
-      type: "done";
-      requestId: string;
-      state: CodexHistoryState;
-      postProbe: HistoryProbeCounts;
-      expectation: CommitExpectation;
-      authoritySnapshotId: string;
-    }
-  | {
-      type: "error";
-      requestId: string;
-      reason: HistoryWorkerFailureReason;
-      postProbe: HistoryProbeCounts;
-    };
-```
-
-Every crossing value is plain structured-clone data. The parent resolves absolute
-paths and lock identity before spawn. The Worker applies captured homes before the
-dynamic import because `history-provider.ts:16-22` currently binds path-derived
-state at module load. The request guard rejects non-finite/negative numeric fields,
-non-absolute paths, malformed identities, invalid expectations, and blank snapshot
-ids.
-
-`requestId` rejects stray messages. `authoritySnapshotId` rejects a job admitted
-for different service/external/journal/provenance/intent evidence. The
-`CommitExpectation` rejects a transition overtaken after native commit. These are
-not optional diagnostics; missing fields make the message invalid and no mutation
-starts. `pauseAfter` and `resume` are accepted only from the injected test supervisor;
-they are not exposed through CLI, HTTP, config, or environment input. A checkpoint is
-non-terminal, so the parent keeps the watchdog and join active until `done`/`error`.
-
-## One sibling history lock
-
-`src/codex/history-job.ts` constructs the history lock from the contract-owned
-effective-user identity plus normalized state-DB identity. It uses a private,
-persistent SQLite transaction with finite async acquisition and no PID/mtime stale
-takeover. The Worker acquires it **inside the Worker** and holds it over manifest,
-rollouts, DB, final probe, and terminal coordinator update.
-
-The native and history locks are siblings:
-
-```text
-native transition: acquire native -> synchronous native commit -> release native
-history transition: acquire history -> validate pair -> mutate/probe/conditional update -> release history
-```
-
-They are never held simultaneously. The history Worker never acquires the native
-lock, and the native synchronous callback never spawns/awaits the Worker. This is
-the checkable deadlock rule from `005_contract.md` §6.
-
-### Overtaking prevention
-
-Sibling locks alone allow this sequence: A commits native ON, B commits native OFF,
-B removes history, then A applies history. The request therefore carries A's
+The operation is DERIVED by the caller-facing convergence path from what it already
+admitted, never chosen at the Worker boundary. `history-job` does not decide it: the
+module mechanically persists the derived operation through the contract-owned history
+scheduling API and receives an opaque durable job identity. A serialized Worker
+message accordingly contains no `targetProvider`, no caller-chosen `direction`, and no
 `CommitExpectation`.
+The Worker request carries the job id, operation, and `CodexHistoryAuthority` copied
+from the row, plus structured-clone-safe explicit paths and invocation-local execution
+options.
 
-Immediately after taking the history lock and before any probe or mutation, the
-Worker reads the coordinator row keyed by canonical `CODEX_HOME`. The job is legal
-only when both row fields equal the request's `{nativeGeneration,currentTxId}`. If
-another native transition has advanced either field, the Worker returns
-`CodexHistoryState { status:"pending", reason:"overtaken", ... }`, performs no
-history write, and does **not** retry itself. The winning/newer transition owns the
-next convergence.
+After acquiring H, the Worker reads N and obtains the durable schedule. It executes
+only when native pair, job id, operation, and authority are current and well-formed.
+The durable value is authoritative: the Worker validates the IPC copy against it and still
+dispatches from the durable value. A missing,
+superseded, malformed, or mismatched operation produces the typed non-success outcome
+and performs no history write. A caller can therefore neither turn generic restore
+into manifest-independent recovery nor bypass `syncResumeHistory: false` by choosing a provider.
 
-That first read is admission, not exclusion. B may commit a newer pair after A has
-already changed the manifest, a rollout, or the DB. After the final under-lock probe,
-A executes one SQLite conditional update of its result and schedule:
+WP12 later schedules the same type from admitted desired state. That is a caller-root
+change, not a history-mechanism replacement.
 
-```sql
-UPDATE codex_transition_state
-   SET history_status = ?, history_reason = ?, history_attempts = ?,
-       history_next_retry_at = ?, history_tx_id = ?,
-       history_pending_rows = ?, history_backup_entries = ?, updated_at = ?
- WHERE singleton = 1
-   AND native_generation = ?
-   AND current_tx_id IS ?
-   AND history_tx_id IS ?;
+### Contract bridge for the chosen WP10 boundary
+
+WP10 consumes `AuthorizeCodexCompatibilityHistory` for current `skip`,
+`apply-opencodex`, `migrate-openai`, and `restore-openai` roots. It conditionally
+publishes job id + typed operation +
+`CodexHistoryAuthority { kind: "wp10-compatibility", id }` without advancing or
+inventing a native routing generation and without pretending to possess WP12's
+`AdmissionSnapshot`. `recover-legacy-openai` uses
+`AuthorizeCodexLegacyHistoryRecovery` and
+`{ kind: "explicit-legacy-recovery", id }`. WP12 alone uses
+`BeginCodexTransition` with `{ kind: "admission-snapshot", id }`.
+
+`history-job.ts` is the sole WP10 compatibility adapter. The existing owning
+apply/restore/recovery function derives the semantic operation from its internal
+branch after its current native/catalog work; it passes that type to `history-job`,
+not a user-controlled provider/direction. CLI, server, `inject.ts`, guardian, and
+other helpers never import either transition-state authorizer directly. Compatibility
+authority ids are fresh opaque nonces, never config/credential digests and never logs.
+WP12 dispatches already-admitted schedules through the same job/Worker code and stops
+using only the compatibility-authorization branch.
+
+The Worker claim/terminal CAS matches native pair, job id, operation, and complete
+authority. A compatibility authority can never be relabeled as admission authority.
+This is one contract row and one terminal protocol, not a WP10-private store.
+
+The graph guard consumes the contract's `wp10-history-isolation` inventory version:
+`history-job.ts` may reach only the compatibility and explicit-recovery authorizers,
+while `history-worker.ts` may reach only the transition reader/terminal updater plus H
+and the history writer. The WP12-final version removes the job authorizer root when
+full convergence becomes the producer; it retains the Worker root.
+
+## Worker boundary and explicit process state
+
+The Worker owns the whole mutable unit:
+
+1. apply captured `CODEX_HOME`/`OPENCODEX_HOME` before dynamically importing any
+   history module;
+2. acquire H from the final path returned by the H resolver;
+3. read N and resolve/validate the current durable `CodexHistoryOperation`;
+4. perform the typed manifest read only for operations that consume/update the
+   manifest; `skip` and `recover-legacy-openai` do not read it;
+5. open, query, transact, and close `state_5.sqlite` within the invocation;
+6. perform every manifest write/delete and rollout line-one patch/append/fsync;
+7. run the final typed DB + manifest post-probe while H remains held;
+8. publish the operation-identity-conditioned terminal update through N;
+9. release H and close the Worker in `finally`.
+
+Moving only `Database` calls is insufficient: apply writes manifest and rollouts before
+its DB transaction (`src/codex/history-provider.ts:606-648`), and restore writes
+rollouts, DB, manifest deletion, and residual ejection in sequence
+(`src/codex/history-provider.ts:656-695`). Moving only server callers is also
+insufficient because CLI/service/management paths currently share the same inline
+helpers.
+
+The Worker is a separate process context. The current module binds
+`STATE_DB_PATH`/`HISTORY_BACKUP_PATH` at module load
+(`src/codex/history-provider.ts:16-22`) and stores busy timeout in mutable module state
+(`src/codex/history-provider.ts:31-49`). WP10 replaces both with absolute request paths
+resolved before spawn and invocation-local options applied to each DB open. This is
+feasible without connection transfer: apply, restore, legacy recovery, and the probe
+open and close their DB handles per invocation
+(`src/codex/history-provider.ts:585-653,656-698,701-710,757-770`).
+
+The request parser rejects blank operation ids, non-absolute paths, path/identity
+mismatch, non-finite or negative numeric options, unknown message variants, and test
+checkpoints outside the injected test supervisor. `requestId` rejects stray IPC.
+Every crossing value is structured-clone data; no `Database`, function, config object,
+or lock capability crosses the boundary.
+
+## H database and the real lock order
+
+H is a sibling database, not N or K. `resolveCodexHistorySerializationDatabasePath`
+returns the final database path for effective user plus canonical `CODEX_HOME` plus
+canonical state-DB identity; callers append nothing. H uses
+`busy_timeout=0` and `BEGIN IMMEDIATE` with bounded async outer acquisition. There is
+no PID/mtime stale takeover; process/connection death releases SQLite exclusion.
+
+The previous plan's statement that H and N are never held simultaneously was false.
+`readCodexTransitionState` opens a `BEGIN IMMEDIATE` initialization transaction
+(`src/codex/transition-state.ts:473-489`), and
+`updateCodexHistoryTransition` opens another `BEGIN IMMEDIATE` terminal transaction
+(`src/codex/transition-state.ts:521-565`). The Worker invokes both while H protects the
+history surfaces. The actual edge is therefore:
+
+```text
+current high-level root: N(schedule typed operation) -> release N -> spawn Worker
+history Worker:          H -> short N(read/claim) -> release N
+                        H -> mutate/probe
+                        H -> short N(terminal CAS) -> release N -> release H
 ```
 
-The coordinator database path already encodes effective user plus canonical
-`CODEX_HOME`; the row is deliberately a singleton, not one row per
-`OPENCODEX_HOME`. `updateCodexHistoryTransition(expected, state)` executes the statement
-above. Its `kind:"updated"` result means exactly one changed row published A's
-result; the implementation maps zero changed rows to `kind:"conflict"`. Conflict
-means A was overtaken: it MUST NOT write JSON, MUST NOT overwrite or clear the newer
-row's pending schedule, returns `pending/overtaken`, releases the history lock, and joins.
-The parent then asks the guardian to read the current coordinator row and immediately
-arm/retain the winner's schedule; it never retries A's losing transaction.
+The checkable order is **H → N**. `N → H` is forbidden: scheduling commits and releases
+N before spawn/await. H never enters K or the config-generation lock, and K/config
+paths never enter H. The future WP11 native callback never spawns or awaits a Worker
+while holding N; WP12 dispatches only after releasing native coordination. A busy N
+claim/terminal attempt leaves the durable operation pending, releases H, and retries
+later; it never waits indefinitely while retaining H.
 
-The final post-probe and conditional row update happen before release. A clean mutation
-followed by an unlocked probe is not evidence: another process could change rows or
-the manifest in between. For target `openai`, `converged` requires a non-failed
-probe with `pendingRows === 0` and `backupEntries === 0`; manifest absence or a
-zero-row mutation alone is insufficient (`src/codex/history-provider.ts:749-775`).
+The lock-order contract test contains allowed fixtures for `H -> N` claim/terminal
+calls and forbidden fixtures for `N -> H`, `K -> H`, `H -> K`, and
+config-lock-to-H edges. Reversing the schedule/spawn order to await the Worker while N
+is live must turn that test red.
 
-## Failure, timeout, and death
+## Typed manifest evidence — absence is not success
 
-The parent owns one process-local Worker flight only to avoid duplicate threads;
-cross-process exclusion comes from the sibling lock, not this map. Same-transition
-callers may join. Opposite transitions do not overwrite each other: each reaches
-the lock and the older one is rejected by its expectation.
+The current `readBackup` collapses a missing file, malformed JSON, unsupported shape,
+and a manifest for another state DB into an empty manifest
+(`src/codex/history-provider.ts:204-217`). The pending probe then initializes
+`backupEntries = 0` and suppresses manifest failures
+(`src/codex/history-provider.ts:749-755`). Combined with a missing DB returning
+`pendingRows = 0` (`src/codex/history-provider.ts:756`), unread evidence can certify a
+false zero/zero convergence.
 
-Outcome order:
+WP10 consumes the contract-owned typed manifest read. The reader must preserve these
+distinct states through mutation and post-probe:
 
-- valid `done` + clean under-lock post-probe + one-row conditional update -> contract
-  `converged` state;
-- SQLite/history-lock busy -> `pending/db-busy` with next retry;
+| Evidence | Classification | May certify zero entries? |
+|---|---|---|
+| manifest absent and DB readable | `missing`, `backupEntries: 0` | Yes, only after the DB probe also succeeds. |
+| valid present v1 manifest for the requested DB | `ready` with at least one validated entry | Yes. |
+| malformed JSON | `malformed`, null count | No. |
+| readable unsupported version/shape | `unsupported`, null count | No. |
+| unreadable/permission failure | unreadable | No. |
+| manifest identifies another state DB | `foreign-state-db`, null count | No. |
+| DB missing while a valid backup has entries | pending/blocked restore work | No. |
+
+Only a successful typed DB probe and successful typed manifest read may produce
+numeric counts. `unreadable` maps to `unknown/unreadable`, malformed/unsupported maps
+to `unknown/schema`, and a foreign manifest maps to
+`blocked/foreign-state-db`, all with null manifest count. Generic restore never treats
+a foreign-DB manifest as empty and never deletes it; manifest-independent legacy recovery does not
+consume the manifest at all.
+
+Fixtures cover malformed JSON, unreadable file, unsupported shape, wrong DB identity,
+and missing DB with a nonempty backup. Reintroducing `catch { return emptyManifest }`
+or `catch { backupEntries = 0 }` must turn each named fixture red.
+
+## Writer reachability: one permitted production root
+
+`history-provider.ts` currently mixes read exports with mutators: read-only
+`readLatestSessionMeta`, `readThreadFieldsFromRollout`, and
+`countPendingOpencodexHistory` coexist with `syncCodexHistoryProvider`,
+`restoreLegacyOpenaiHistory`, and `migrateHistoryToOpenai`
+(`src/codex/history-provider.ts:263-274,348-422,565-579,701-731,749-775`). Split it so
+the production graph has one writer root:
+
+```text
+history-worker.ts -> history-lock.ts (H)
+history-worker.ts -> transition-state.ts (durable operation claim/terminal CAS)
+history-worker.ts -> internal/history-writer.ts
+internal/history-writer.ts -> manifest writes/deletes
+                           -> rollout line-one patch + append + fsync
+                           -> history DB transactions
+```
+
+No CLI, server, guardian, `inject.ts`, `sync.ts`, compatibility wrapper, barrel,
+re-export, or dynamic import may reach `internal/history-writer.ts` or its mutating
+symbols. Tests invoke the public job/Worker boundary; focused writer unit fixtures may
+import the internal module only from the test allowlist.
+
+The guard is symbol-level, not regex counting. Build a TypeScript `Program` and
+`TypeChecker`, resolve import aliases, re-exports, namespace access, and string-literal
+dynamic imports, then compute reachability from every production entry symbol to the
+writer symbols. The current route-count test merely counts the literal text
+`await convergeCodexCatalog()` (`tests/codex-convergence-contract.test.ts:232-250`);
+that approach cannot prove this boundary.
+
+The graph fixture includes negative variants that must fail:
+
+- wrapper calls writer, caller imports wrapper;
+- barrel re-exports writer under another name;
+- aliased named import calls writer;
+- namespace import calls writer;
+- string-literal dynamic import calls writer;
+- new production module reaches writer without appearing in the caller table.
+
+## Current production caller inventory
+
+WP10 rewires the existing high-level operations, not a nonexistent full funnel. The
+symbol-level test owns this table as data and proves each listed command/route reaches
+`runCodexHistoryJob` when its current semantics request history, never a writer.
+
+| Production command/route | Current history-bearing chain | WP10 terminal edge | Named broken change that must fail |
+|---|---|---|---|
+| `ocx init`, `ocx setup` | command dispatch -> `runInit` -> `injectCodexConfig` (`src/cli/index.ts:727-732`; `src/cli/init.ts:194-198`) | typed apply operation -> job | Restore direct `injectCodexConfig` history mutation or remove the job await from init. |
+| `ocx start` | `handleStart` -> `syncModelsToCodex`; starts guardian (`src/cli/index.ts:318-321`) | apply job + durable guardian retry | Startup stops arming the guardian, or inject runs inline. |
+| `ocx ensure` | existing/live and spawned paths call `syncModelsToCodex` (`src/cli/index.ts:358-412`) | apply job | Either ensure branch bypasses/does not await the job. |
+| `ocx sync` | command -> `syncModelsToCodex` (`src/cli/index.ts:827-842`) | apply job | Sync calls provider writer directly. |
+| `ocx restore back`, `ocx eject back` | command -> `syncModelsToCodex` (`src/cli/index.ts:745-764`) | apply job | Back-switch returns before job dispatch. |
+| `ocx restore`, `ocx eject` | command -> `restoreNativeCodex` (`src/cli/index.ts:765-790`) | generic restore job | Restore keeps the current inline `syncCodexHistoryProvider("openai")`. |
+| `ocx stop` | `handleStop` -> `restoreNativeCodex` (`src/cli/index.ts:456-551`) | generic restore job | Stop reports completion without awaiting Worker join. |
+| `ocx uninstall`, `ocx remove` | `handleUninstall` -> `restoreNativeCodex` (`src/cli/index.ts:554-593,795-798`) | generic restore job | Uninstall invokes synchronous restore wrapper. |
+| `ocx restart` | `handleStop` then `handleEnsure` (`src/cli/index.ts:968-973`) | restore job then apply job | Restart overlaps the two jobs or skips either await. |
+| hidden `__tray-start`, `__tray-restart` | tray start launches the ordinary start process; restart awaits `handleStop` then tray start (`src/cli/index.ts:415-453,944-954`) | startup apply job; restart restore then apply | Tray restart starts before restore joins, or direct start bypasses ordinary startup. |
+| `ocx recover-history --legacy-openai` | `handleRecoverHistory` -> `restoreLegacyOpenaiHistory` (`src/cli/index.ts:711-724,792-794`) | manifest-independent legacy-eject job | Recovery maps to generic restore and consumes manifest. |
+| `ocx provider ... --sync` | provider mutation -> `syncModelsToCodex` (`src/cli/provider.ts:232-238`) | apply job | Provider sync imports writer or drops job await. |
+| `ocx models/model ...` live sync | model mutation -> `syncModelsToCodex` (`src/cli/models.ts:102-108`) | apply job | Model sync returns after catalog only. |
+| `ocx v2 mode/on/off` | dynamic import of `syncModelsToCodex` (`src/cli/v2.ts:143-170,177-196`) | apply job | Dynamic-import alias bypasses the job; this exercises alias/dynamic reachability. |
+| `POST /api/sync` | route -> `syncModelsToCodex` (`src/server/management/config-routes.ts:261-268`) | automatic apply job | Route responds while history remains inline or untracked. |
+| `POST /api/stop` | route -> `restoreNativeCodex` (`src/server/management-api.ts:220-247`) | automatic generic restore job + drain join | Route schedules process exit before Worker join. |
+| `ocx service stop` | service command -> `restoreNativeCodex` (`src/service.ts:2564-2595`) | explicit generic restore job | Service stop calls sync restore. |
+| `ocx service start` | service command starts the installed daemon (`src/service.ts:2560-2564`) | daemon's ordinary startup apply job | Service-specific startup bypasses the ordinary startup/guardian root. |
+| `ocx service uninstall/remove` | service command -> `restoreNativeCodex` (`src/service.ts:2610-2635`) | explicit generic restore job | Service uninstall drops/does not await job. |
+| graceful SIGINT/SIGTERM/SIGHUP shutdown | drain then cleanup (`src/cli/index.ts:277-310`) | cancel/join active job, then await generic restore when policy requires it | Shutdown leaves history inline in `syncCleanup` or exits before join. |
+| `process.on("exit")` / forced exit | synchronous callback at `src/cli/index.ts:310` | no history mutation; any existing durable pending operation remains for next startup | Exit hook imports writer or tries to spawn/await a Worker. |
+| history guardian retry | timer currently calls provider directly (`src/codex/history-migration-guardian.ts:43-95`) | reread durable operation -> automatic job | Fake-clock test still passes after guardian startup dispatch is removed. |
+
+The table is exhaustive for production references to the current history-bearing
+helpers, derived from `injectCodexConfig`, `restoreNativeCodex`,
+`syncModelsToCodex`, `restoreLegacyOpenaiHistory`, and
+`startHistoryMigrationGuardian`. Adding a new command/route that reaches one of those
+symbols without an inventory row fails the inventory test. Adding a direct writer
+bypass anywhere fails the graph test even if route counts are unchanged.
+
+## Failure, timeout, retry, and drain
+
+The parent owns one process-local flight per durable operation identity only to avoid
+duplicate Worker threads; H provides cross-process exclusion. Same-operation callers
+may join. A newer durable operation supersedes an older one: the old Worker either
+rejects it at the under-H claim or loses the terminal CAS, releases H, and leaves the
+newer operation pending for repair.
+
+Outcome classification remains evidence-bearing:
+
+- H or history DB busy -> `pending/db-busy` with a next retry;
 - permission/refusal -> `blocked/permission`;
-- unreadable data -> `unknown/unreadable` with both probe counts null;
-- readable unsupported shape -> `unknown/schema` with both probe counts null;
-- watchdog -> `unknown/timeout`, not `worker-died`;
-- shutdown cancellation -> `unknown/shutdown-cancelled`, join, then drain;
-- `worker.onerror`, malformed terminal message, or early close -> reread the
-  coordinator row before attempting `unknown/worker-died`;
-- initial pair/snapshot mismatch or zero-row terminal update ->
-  `pending/overtaken`, no self-retry;
-- coordinator update failure -> returned `unknown/record-write-failed`; the existing
-  pending row is left intact for guardian repair.
+- unreadable DB/manifest -> `unknown/unreadable`, nullable counts;
+- supported read but unsupported schema/shape -> `unknown/schema`, nullable counts;
+- watchdog -> `unknown/timeout`;
+- graceful cancellation -> `unknown/shutdown-cancelled`, then join;
+- Worker error, malformed terminal IPC, or early close -> reread durable state before
+  conditionally publishing `unknown/worker-died`;
+- superseded identity/terminal CAS conflict -> typed overtaken/superseded result, no
+  self-retry of the loser;
+- terminal N update failure -> `unknown/record-write-failed`, preserving pending work.
 
-The Worker closes in `finally`; the parent still waits for `close`/join using the
-repository's existing discipline (`src/storage/worker-lifecycle.ts:150-209`). A
-watchdog is containment, not convergence. It may interrupt legitimate large
-history, so timeout can never be recorded as success.
+The Worker closes in `finally`; parent cancellation and shutdown await actual thread
+exit using the existing join discipline (`src/storage/worker-lifecycle.ts:150-209`).
+A watchdog contains one attempt; it never certifies convergence.
 
-The reread on `worker.onerror`, malformed terminal IPC, or early close is mandatory
-because the Worker may have committed its terminal SQLite update and died before
-`postMessage`. The parent first calls `readCodexTransitionState`. If the row still
-matches the job's native pair and `history_tx_id` and already contains a terminal
-history state, that durable state is the result and the parent writes nothing. If a
-newer pair owns the row, the parent returns `pending/overtaken` and arms the winner's
-schedule. Only when the exact job still owns a `pending` or `running` row may the
-parent conditionally call
-`updateCodexHistoryTransition(expected, workerDiedState)`; a zero-row result follows
-the same overtaken rule. If the reread is unavailable, the parent leaves the row
-intact, returns `unknown/record-write-failed`, and lets the guardian retry from
-durable state. A missing terminal message is therefore never permission to
-overwrite a committed success with synthetic `worker-died`.
+Make execution policy invocation-local:
 
-## Fail-fast automatic mode and explicit mode
-
-The provider currently uses a mutable global 5,000 ms busy timeout and two retries
-with a synchronous 500 ms sleep (`src/codex/history-provider.ts:25-49,526-548`).
-Make the policy invocation-local:
-
-| Caller mode | Worker lock / SQLite wait | Attempts / delay | Reason |
+| Caller mode | H / SQLite wait | Attempts / delay | Result |
 |---|---:|---:|---|
-| automatic (startup, management, guardian, stop) | 100 ms | 1 / 0 ms | Defer quickly; listener availability is the requirement. |
-| explicit CLI | 5,000 ms | 2 / 500 ms | Preserve today's operator wait budget, but inside the Worker and under the same lock. |
+| automatic (startup, management, guardian, graceful stop) | 100 ms | 1 / 0 ms | Defer durably and keep listener/drain bounded. |
+| explicit CLI | 5,000 ms | 2 / 500 ms | Preserve the current operator wait budget inside the Worker. |
 
-Automatic mode never calls `sleepSync` on the parent. Explicit delay may use
-`sleepSync` inside the Worker because it cannot starve the proxy or bypass the
-history lock.
+The current defaults are a module-global 5,000 ms busy timeout and two attempts with a
+500 ms synchronous delay (`src/codex/history-provider.ts:31-49,526-548`). Automatic
+mode never calls `sleepSync` on the parent. Explicit delay may occur inside the Worker
+while H remains held so another process cannot overtake between attempts.
 
-```diff
- export interface HistoryExecutionOptions {
-   skipWhenProvablyNoop?: boolean;
-+  busyTimeoutMs?: number;
-+  attempts?: number;
-+  delayMs?: number;
-+  sleepFn?: (ms: number) => void;
- }
-```
+The guardian uses capped exponential backoff with deterministic injected jitter,
+keeps at most one timer/Worker for the current durable operation, and has no finite
+lifetime attempt cap. Startup immediately re-arms unresolved durable work. This
+replaces the current sixty-tick terminal stop
+(`src/codex/history-migration-guardian.ts:34-35,47-48,87-95`).
 
-Apply `busyTimeoutMs` to both apply and restore database opens. Keep hard errors
-throwing inside the Worker so its boundary can classify them once; do not turn
-programming/data corruption into `db-busy`.
+## Deterministic tests
 
-## Durable state consumes the coordinator row
+### Cross-process all-surface serialization
 
-Delete the former “Location and exact shape” JSON and the planned
-`src/codex/history-convergence.ts`. The transition pair and pending history schedule
-belong to the SQLite coordinator row keyed by canonical `CODEX_HOME`, not to an
-`OPENCODEX_HOME` record.
+Seed a production-shaped DB, valid manifest, and rollouts under temporary homes.
+Process A schedules one real operation and pauses after the first real rollout write
+while retaining H. Process B schedules the opposite operation and reaches H. Resume A;
+assert its terminal update cannot replace B's newer durable operation, H is released,
+and B repairs manifest, rollouts, and DB. Reverse direction/order and repeat. No test
+stub mutates a surface; both processes enter production `history-job`/Worker/H.
 
-Both `history-worker.ts` and `history-job.ts` consume the contract-owned coordinator
-API from `src/codex/transition-state.ts`; neither owns SQL or a second row shape. The
-Worker calls `readCodexTransitionState` before traversal and
-`updateCodexHistoryTransition(expected, state)` after its post-probe. The parent/guardian
-uses the same reader to arm the current schedule after conflict.
+Broken change: release H after the DB transaction but before manifest/rollout/probe, or
+dispatch the writer without H. The sentinels interleave and the test fails.
 
-They never parse, write, or atomically replace `integrations/codex.json`. A terminal
-history transition is one row update conditioned on canonical home plus the exact
-pair. `txId` links the state to the native transition and `nextRetryAt:null` means
-only “no timer armed now,” never “never again.”
+### H namespace and lock order
 
-The durable contract has no per-state-DB schema invented here. If multiple state
-DBs need internal scheduling metadata, it remains an in-memory/job-private map;
-the shared `CodexHistoryState` is the current convergence fact exposed to every
-consumer.
+Two child processes vary `HOME`, `USERPROFILE`, `TMPDIR`, `XDG_RUNTIME_DIR`, `TEMP`,
+`TMP`, and `LOCALAPPDATA` while retaining the same effective uid/SID, canonical
+`CODEX_HOME`, and canonical state DB. They must resolve the same H final path. A second
+canonical state DB under that home must resolve a different H while N/K remain the
+same, and H must equal neither N nor K. Run the allowed `H -> N` and forbidden
+`N/K/C -> H` symbol fixtures.
 
-## Retry ownership — no permanent dormancy
+Broken changes: hash the raw request path/environment home, omit state-DB identity,
+reuse N/K's database, or introduce an inverse edge. Path-equality/inequality or graph
+fixture fails.
 
-Delete “every 60 seconds, at most 60 ticks per process” and the interpretation of
-`nextRetryAt:null` as next-startup-only. That creates permanent dormancy in a
-long-lived process (carried finding #9).
+### Operation binding
 
-**INFERRED scheduling choice:** the guardian uses capped exponential backoff with
-deterministic testable jitter:
+For every `CodexHistoryOperation` variant, schedule it durably, tamper any diagnostic
+request copy to a different operation, and assert the Worker either derives the
+durable value or rejects before mutation. The manifest-independent recovery fixture keeps the
+manifest byte-identical; the generic restore fixture consumes it only after successful
+restore.
 
-```text
-delay(attempt) = min(MAX_HISTORY_RETRY_MS,
-                     BASE_HISTORY_RETRY_MS * 2^min(attempt, BACKOFF_EXPONENT_CAP))
-```
+Broken change: dispatch from request `targetProvider`/direction instead of the durable
+operation. The variant and tamper cases fail.
 
-It schedules at most one timer and one Worker per current coordinator-row `txId`. It may back off
-to the cap but never exhausts into a permanent state. Startup re-arms any unresolved
-coordinator row whose timer was lost. A successful convergence clears the timer. An
-`overtaken` job does not retry the losing transition; it schedules one observation
-of the current generation so the winner owns work.
+### Manifest truth
 
-This loop has a finite delay per attempt and no finite lifetime attempt count.
-Shutdown cancels the current timer/Worker and leaves durable unresolved state for
-the next process.
+Run the malformed, unreadable, unsupported-shape, wrong-DB, and missing-DB-with-backup
+fixtures through both the preflight and under-H post-probe. None may return numeric
+zero/zero convergence.
 
-## Process-aware callers use `convergeCodex`
+Broken change: map any manifest read failure to an empty manifest or initialize an
+unknown count to zero. Its named fixture fails.
 
-Delete `runCodexHistoryInline`, `HistoryExecution = "automatic" | "explicit"` as a
-public alternate entry point, and every caller selection that bypasses convergence.
-Mode is already in `ConvergeRequest`.
+### Retry, death, and guardian activation
 
-```diff
--const history = syncCodexHistoryProvider("openai", ...);
-+const outcome = await convergeCodex({
-+  action: "converge",
-+  scope: "full",
-+  reason: "cli",
-+  mode: "explicit",
-+  deadlineMs: EXPLICIT_CODEX_CONVERGENCE_DEADLINE_MS,
-+});
-```
+Advance a fake monotonic clock through exponential growth and the cap. Assert startup
+arms the guardian from durable unresolved state, every fired attempt goes through
+`history-job`, and a later timer remains after retryable failure. Cover Worker error,
+malformed terminal IPC, early close, watchdog, cancellation, and terminal-N failure;
+assert join exactly once and preserve distinct reasons.
 
-Server startup/management/guardian uses `mode:"automatic"`; explicit CLI sync,
-restore, eject, recover-history, ensure, and service cleanup uses
-`mode:"explicit"`. Both modes reach the **same Worker and same history lock**.
-`src/codex/inject.ts:602,783` loses direct provider calls; it exposes only bounded
-native apply/restore receipts to convergence.
+Broken changes: remove the startup guardian call, let guardian call a writer directly,
+or stop after a fixed tick count. The activation/reachability/backoff cases fail.
 
-`src/codex/convergence.ts` sequence at this phase is:
+### Responsiveness for every root class
 
-```text
-admit current snapshot -> gather if ON -> native commit -> release native section
--> dispatch history Worker(expectation, authoritySnapshotId) -> observe -> outcome
-```
+Hold a real `BEGIN IMMEDIATE` on the history DB and overlap health/data-plane traffic
+with each root class: `POST /api/sync`, `ocx init/setup` command handler,
+graceful shutdown, and explicit legacy recovery. Bind server port `0` and use temporary
+homes. Health responses remain 200, the stream completes, command/shutdown deadlines
+remain bounded, durable state records non-success, and every Worker joins. Release the
+holder and prove a later serialized job succeeds.
 
-Automatic calls may return `deferred` with unresolved `history`; explicit calls
-wait only through their request deadline. Neither reports `converged` while history
-is outstanding.
+Broken changes: run one root's probe/mutation on its caller thread or fail to await its
+Worker during drain. The corresponding table row's responsiveness/drain case fails;
+one responsive route cannot hide another inline caller.
 
-The synchronous `process.on("exit")` hook cannot await a Worker. It performs no
-history mutation and leaves/records unresolved state; graceful signal and command
-paths call convergence before exit. This preserves process shutdown without
-inventing an inline escape hatch.
+### Symbol graph and inventory mutation checks
 
-## Durable read surface
+Run every wrapper/alias/re-export/dynamic-import negative graph fixture and every
+production command/route inventory row. For each inventory row, mutate its terminal
+edge to a direct writer or no history dispatch and prove the test fails before
+restoring the fixture.
 
-`GET /api/codex/history` may expose the coordinator row's `history` projection
-through an authenticated read-only route. It calls `readCodexTransitionState`; it
-does not define a second state type or consult the non-CAS integration JSON.
-
-`POST /api/sync` is not redefined here. It already calls `convergeCodex` and
-`toSyncResponse` after WP9 (`005_contract.md` §5). WP10 only ensures the resulting
-`ConvergeOutcome` contains the contract `history` state. `ocx doctor` retains its
-live read-only probe because durable state can be stale, but failed probes are
-unknown rather than zero-looking success.
-
-## Key diffs
-
-### Worker owns lock, mutation, post-probe, and conditional row update
-
-```diff
-+self.onmessage = async (event: MessageEvent<unknown>) => {
-+  const message = parseHistoryWorkerMessage(event.data);
-+  if (message.type === "resume") return resumeHistoryCheckpoint(message);
-+  const request = message;
-+  applyCapturedHomes(request.env);
-+  const lock = await acquireHistoryLock(request.lockIdentity, requestDeadline(request));
-+  if (lock.status !== "acquired") return postHistoryBusy(request, lock);
-+  try {
-+    const expected = {
-+      nativeGeneration: request.expectation.nativeAfter,
-+      currentTxId: request.expectation.txId,
-+    };
-+    const admitted = readCodexTransitionState();
-+    if (!expectationStillCurrent(admitted, expected, request.authoritySnapshotId)) {
-+      return postOvertaken(request);
-+    }
-+    const result = syncCodexHistoryProvider(request.targetProvider, request.stateDbPath, request.backupPath, policy(request));
-+    const postProbe = countPendingOpencodexHistory(request.stateDbPath, request.backupPath);
-+    const state = classifyHistoryState(result, postProbe, request.expectation.txId);
-+    const update = updateCodexHistoryTransition(expected, state);
-+    if (update.kind === "conflict") return postOvertaken(request, postProbe);
-+    if (update.kind === "unavailable") return postRecordWriteFailed(request, postProbe);
-+    self.postMessage({ type: "done", requestId: request.requestId, state, postProbe, expectation: request.expectation, authoritySnapshotId: request.authoritySnapshotId });
-+  } finally {
-+    lock.release();
-+    closeWorker();
-+  }
-+};
-```
-
-`release()` above is private to Worker implementation; unlike the native public
-API, no caller can retain it across unrelated work.
-
-The parent terminal handler does not map missing IPC directly to `worker-died`.
-Its error/close branch performs the reread rule above after join: adopt a matching
-terminal row, arm a newer winner, or conditionally publish `worker-died` only while
-the exact job still owns `pending`/`running`. This branch is tested at the seam
-between the Worker's successful SQLite commit and `postMessage`.
-
-### Convergence dispatch, no inline branch
-
-```diff
--historyExecution === "explicit"
--  ? runCodexHistoryInline(input)
--  : runCodexHistoryJob(input)
-+await runCodexHistoryJob({
-+  ...input,
-+  mode: request.mode,
-+  expectation,
-+  authoritySnapshotId: admittedSnapshotId(admission),
-+})
-```
-
-## Test plan
-
-### Opposite-direction cross-process serialization
-
-1. Seed production-shaped DB, manifest, and rollouts in isolated homes.
-2. Process A enters production `convergeCodex({scope:"full"})`; its real Worker
-   requests `pauseAfter:"first-rollout-write"`. The Worker performs the manifest and
-   first rollout mutations, posts `checkpoint {requestId, after}`, and waits for a
-   matching `resume` IPC message while still holding the history lock.
-3. Process B converges OFF and commits the newer coordinator pair while A is paused.
-   B's history Worker waits on the history lock; native pair advancement does not.
-4. Resume A. Its remaining traversal and post-probe complete, but its terminal
-   conditional row update affects zero rows. Assert A returns `pending/overtaken`,
-   never touches the newer pending schedule, releases/joins, and causes the guardian
-   to arm B from the current row.
-5. Let B acquire history and repair every manifest, rollout, and DB sentinel. Reverse
-   direction/order and repeat. Final history must match the highest native generation,
-   not Worker scheduling order.
-
-The checkpoint is deterministic because it is acknowledged only after the real
-writer reports a completed surface mutation, and resume is keyed by `requestId`.
-There is no alternate provider stub or direct test-only mutation path: both processes
-enter the production convergence/job/Worker protocol. A same-process flight, a pause
-before traversal, or two connections without manifest/rollout/DB sentinels does not
-satisfy C15.
-
-### CLI contention
-
-- Hold the production history lock in a child. Invoke an explicit CLI convergence
-  through its function-level command handler with `mode:"explicit"`; assert it
-  waits/returns the typed contract outcome and performs no inline provider call.
-- In parallel trigger automatic server convergence; assert listener health/data
-  plane progress while both processes contend.
-- Release, join both Workers, and prove one serialized winner. The test inspects the
-  transition row through `readCodexTransitionState`, not a WP10 parser.
-
-### Post-probe under lock
-
-- Inject a competing child that attempts to change a history row and manifest at
-  the probe seam. Assert it cannot proceed until after terminal state is recorded
-  and lock released.
-- A failed probe, nonzero pending rows, or nonempty backup entries remains
-  non-converged. Only clean zero/zero becomes `converged`.
-
-### Retry and death
-
-- Advance a fake monotonic clock through exponential growth and the cap; prove a
-  later timer always exists for unresolved current work and no 60-tick terminal
-  state exists.
-- Restart/module reload re-arms unresolved state.
-- Worker error, malformed response, early close, watchdog, cancellation, and final
-  coordinator-row write failure retain their distinct contract reasons, carry nullable
-  probe counts, remain non-converged, and join exactly once. For
-  error/malformed/close, the parent rereads first: an already-terminal matching row
-  wins; only a matching `pending`/`running` row may be conditionally changed to
-  `worker-died`.
-- An overtaken transition does not retry itself.
-
-### Measured responsiveness — C3
-
-Keep the real `BEGIN IMMEDIATE` holder and overlapping `/healthz` plus eight-chunk
-SSE test from the prior plan, but route the request through production
-`convergeCodex`. Bind port `0`; use temporary homes. Require the management/history
-request to overlap contention, every health response to be 200, the stream to
-complete, and the durable state to report `db-busy` before succeeding after release.
+Broken change: add a seventh route, wrapper, alias, or new command that reaches a
+writer outside the inventory. Symbol reachability fails even if regex counts do not
+change.
 
 ## Verification
 
 ```bash
 bun run typecheck
 bun test tests/codex-history-provider.test.ts tests/codex-history-worker.test.ts
-bun test tests/history-migration-guardian.test.ts tests/codex-history-process-routing.test.ts
+bun test tests/codex-transition-state.test.ts tests/history-migration-guardian.test.ts
+bun test tests/codex-history-process-routing.test.ts tests/codex-convergence-contract.test.ts
 bun test tests/codex-sync-api.test.ts tests/shutdown-drain.test.ts
 bun test tests/codex-history-worker-responsive.test.ts --timeout 30000
 bun run privacy:scan
 bun run test
 ```
 
-The responsiveness test prints lock-ready time, overlapping health latencies,
-stream chunk count, history elapsed time/state, child exit, and live Worker count.
-No verification command invokes `ocx start`, `ocx stop`, `ocx sync`, `ocx restore`,
-or `ocx ensure`; port 10100 remains untouched.
+All process tests use `mktemp -d`/temporary homes and port `0`. No command invokes
+`ocx start`, `ocx stop`, `ocx sync`, `ocx restore`, `ocx ensure`, or `ocx service *`;
+the installed service and live proxy on 10100 remain untouched.
 
-## Accept criteria
+## Accept criteria — each criterion has a red test
 
-- **C3** — all synchronous/unbounded history work is in the Worker; real contention
-  overlaps responsive `/healthz` and data-plane traffic.
-- **C4** — unresolved work is durably represented by the contract
-  `CodexHistoryState`, retried with capped non-permanent backoff, and never collapsed
-  into success. Clean post-probe occurs under the history lock.
-- **C15** — opposite-direction processes serialize manifest, rollouts, DB, probe,
-  and terminal coordinator update; the pair-conditioned row update detects an
-  overtake even after the stale Worker has mutated a history surface, preserves the
-  winner's pending schedule, and drives repair.
-- Explicit CLI and automatic server/startup/retry callers all enter through
-  `convergeCodex` and the same sibling history lock. No inline escape hatch remains.
-- **N2** — WP10 imports the WP8b coordinator/types and extends WP9's working funnel. Its
-  commit typechecks and preserves behavior without any WP11/WP12 placeholder.
+| Criterion | Passing evidence | Concrete broken change that turns it red |
+|---|---|---|
+| **C3 — caller responsiveness** | Table-driven responsiveness covers management, init/setup, graceful shutdown, and explicit recovery while real SQLite contention overlaps health/SSE progress. | Move any listed root's probe or mutation back to the caller thread. That root's latency/progress case fails. |
+| **C4 — durable unresolved work** | Guardian activation/backoff test proves unresolved typed operation survives failure/restart and never becomes zero-looking success. | Remove startup arming, restore the 60-tick stop, or persist zero counts after failed evidence. The activation/backoff/evidence case fails. |
+| **C15 — cross-process all-surface serialization** | Opposite operations serialize manifest, rollout, DB, post-probe, and terminal update under one H; newer durable operation repairs stale work. | Release H between surfaces or bypass H in one process. The sentinel/final-state case fails. |
+| **Operation authority** | Every operation variant is derived/validated from durable state, including no-op and manifest-independent recovery. | Trust request `targetProvider`/direction. Tamper and manifest-preservation cases fail. |
+| **Real lock order** | Architecture fixtures allow `H -> N` and reject every inverse/cross-domain edge. | Await/spawn H while N is held, or call K from the Worker. Dependency fixture fails. |
+| **One H namespace per canonical history DB** | Environment-divergent child processes resolve one H for the same effective user/home/DB, a different H for a second DB, and paths distinct from N/K. | Key by environment/raw alias, omit DB identity, or reuse N/K. Resolver equality/inequality case fails. |
+| **Manifest evidence** | Malformed, unreadable, unsupported, wrong-DB, and missing-DB-with-backup fixtures remain non-converged with nullable unknown counts. | Convert any failed manifest read to empty/zero. Its fixture fails. |
+| **No writer bypass** | TypeScript symbol reachability permits only `history-worker.ts` as a production writer root and catches wrappers, aliases, re-exports, namespace and dynamic imports. | Add any direct/indirect production writer path. Graph test fails. |
+| **Complete current caller routing** | Inventory covers every production command/route and each history-bearing row reaches `runCodexHistoryJob`; named disconnect mutations are red. | Remove init, guardian, shutdown, service, or any other row's job edge, or add an unlisted caller. Inventory test fails. |
+| **N2 — independently landable** | WP10 typechecks and focused/full suites pass while executable convergence remains catalog-only; current operation semantics are preserved through H. | Import/call full `convergeCodex`, require WP11 native lock/receipt, or leave a temporary inline path. Typecheck/routing behavior test fails at the WP10 commit. |
