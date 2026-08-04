@@ -62,6 +62,12 @@ description: Все способы, которыми opencodex аутентиф�
 | `forward` | Передаёт провайдеру **входящие заголовки аутентификации Codex** без изменений — ключ не хранится. Это сквозной режим (passthrough) входа через ChatGPT. | OpenAI (адаптер `openai-responses`). |
 | `oauth` | Берёт сохранённый OAuth-токен доступа (автоматически обновляется до истечения срока) и использует его как bearer-ключ. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor, GitHub Copilot. |
 
+Повтор при 429 на том же ключе ([`retryOn429`](/ru/reference/configuration/)) применим только к
+провайдерам с API-ключом (`authMode: "key"`). Пресеты OAuth, forward и local исключены — их
+учётные данные нельзя повторно отправлять по тому же токену, а у локальных сред выполнения нет
+удалённого ключа. Это opt-in: при отсутствии опции функция выключена; наличие объекта включает
+её, если только `enabled: false`.
+
 ## 1. Вход через ChatGPT (forward / passthrough)
 
 Провайдеру `openai` **не нужен API-ключ**. Direct пересылает учётные данные вашего существующего
@@ -302,6 +308,15 @@ Assist), `azure` / `azure-openai`, `kiro` и `cursor`. Проприетарны�
 через device flow GitHub на короткоживущий API-токен Copilot, а не принимает вставленный API-ключ.
 **GitLab Duo** остаётся шлюзом с ключом/токеном подписки на своей OpenAI-совместимой конечной
 точке. **Cloudflare AI Gateway** требует подставить в URL id аккаунта и шлюза.
+
+Copilot предоставляет каталог со смешанными проводами: его семейство GPT-5 (`gpt-5.3-codex`,
+`gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`)
+отклоняет `/chat/completions` для агентного трафика, поэтому opencodex по умолчанию
+маршрутизирует эти модели через Responses API, а все остальные модели Copilot остаются на
+chat completions. Приоритет: жёсткий wire-пин → явная запись
+[`modelAdapters`](/ru/reference/configuration/providers/) → дефолт реестра → adapter всего
+провайдера. Чтобы перевести модель без встроенного дефолта (например, `gpt-5.4-nano`) на
+Responses, задайте `"modelAdapters": { "gpt-5.4-nano": "openai-responses" }`.
 
 Cursor отслеживается отдельно как экспериментальный адаптер. `adapter: "cursor"` появляется в
 `ocx init` и в селекторе Add Provider дашборда как экспериментальная запись локальной конфигурации

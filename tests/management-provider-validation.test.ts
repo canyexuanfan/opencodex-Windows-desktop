@@ -192,6 +192,50 @@ describe("provider management validation", () => {
     })).toContain("not supported on forward-auth");
   });
 
+  test("provider management validates retryOn429 bounds and unknown keys", () => {
+    const base = { adapter: "openai-chat", baseUrl: "https://api.openai.com/v1" };
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { enabled: true, attempts: 3, intervalMs: 1_000, maxIntervalMs: 5_000, respectRetryAfter: false },
+    })).toBeNull();
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempts: 0 },
+    })).toContain("retryOn429.attempts is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempts: 21 },
+    })).toContain("retryOn429.attempts is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { intervalMs: "fast" },
+    })).toContain("retryOn429.intervalMs is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempt: 3 },
+    })).toContain("retryOn429 has unrecognized field");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: "enabled",
+    })).toContain("retryOn429 is invalid");
+    // A secret-shaped unknown field name must be redacted in the error, never echoed.
+    const secretError = providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { "sk-super-secret-9876": true },
+    })!;
+    expect(secretError).toContain("retryOn429 has unrecognized field");
+    expect(secretError).not.toContain("sk-super-secret-9876");
+    expect(secretError).toContain("[REDACTED]");
+    // A secret-shaped PROVIDER name must not be echoed by the retryOn429 error path either.
+    const secretNameError = providerManagementConfigError("sk-super-secret-9876", {
+      ...base,
+      retryOn429: { attempts: 0 },
+    })!;
+    expect(secretNameError).toContain("retryOn429.attempts is invalid");
+    expect(secretNameError).not.toContain("sk-super-secret-9876");
+    expect(secretNameError).toContain("[REDACTED]");
+  });
+
   test("provider discovery status is additive and omitted before an attempt", async () => {
     markProviderDiscoveryFailed("auth-broken", { reason: "http", httpStatus: 401 });
     try {

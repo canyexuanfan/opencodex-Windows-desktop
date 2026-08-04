@@ -23,6 +23,7 @@ import {
 import { recordOwnedConfigPath } from "./lib/config-ownership";
 import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
 import { providerDestinationConfigError } from "./lib/destination-policy";
+import { redactSecretString } from "./lib/redact";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
 import {
   isWirePinnedModel,
@@ -557,6 +558,27 @@ export function reconcileConfigWarningMemos(generation: number): number {
   return removed;
 }
 
+/**
+ * Bounds for the opt-in same-target 429 wait-and-retry policy. Single source of truth
+ * shared by the config schema, the load-time sanitizer, and the management write
+ * boundary. Strict, so an unknown key is rejected at every validation boundary instead
+ * of being silently ignored (the load-time sanitizer still degrades unknown keys with a
+ * warning before schema validation, so hand-edited configs keep loading).
+ */
+const retryOn429PolicySchema = z.object({
+  enabled: z.boolean().optional(),
+  attempts: z.number().int().min(1).max(20).optional(),
+  intervalMs: z.number().int().min(100).max(600_000).optional(),
+  // The effective cap for a single wait is MAX_COOLDOWN_MS (10 min) in key-failover.ts;
+  // larger configured values would be dead config.
+  maxIntervalMs: z.number().int().min(100).max(600_000).optional(),
+  respectRetryAfter: z.boolean().optional(),
+}).strict();
+
+/**
+ * Zod schema for one provider entry: known fields are validated strictly while unknown
+ * fields pass through (preserved for runtime extensions).
+ */
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
@@ -569,6 +591,7 @@ const providerConfigSchema = z.object({
   supportsServiceTier: z.boolean().optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
+  retryOn429: retryOn429PolicySchema.optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   responsesItemIdRepair: z.object({
     message: z.array(z.string().min(1)).optional(),
@@ -1302,6 +1325,96 @@ function warnDegradedStreamMode(rawParsed: unknown, validated: OcxConfig): void 
 }
 
 /**
+ * Load-time degradation for `retryOn429` (loadConfig only): one hand-edited invalid optional
+ * field (e.g. `attempts: 0` or a string) must not trip the whole provider schema and hide every
+ * provider/key behind a default config. Invalid fields are dropped with a warning; the management
+ * write boundary still rejects invalid policies explicitly.
+ */
+function sanitizeRetryOn429ForLoad(parsed: unknown): void {
+  if (!parsed || typeof parsed !== "object") return;
+  const root = parsed as Record<string, unknown>;
+  const providers = root.providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return;
+  for (const [name, provider] of Object.entries(providers as Record<string, unknown>)) {
+    // This sanitizer runs BEFORE schema validation, so the provider name is untrusted: redact
+    // secret-shaped names and JSON-escape control characters before it reaches any warning.
+    const safeProviderName = JSON.stringify(redactSecretString(name));
+    if (!provider || typeof provider !== "object" || Array.isArray(provider)) continue;
+    const p = provider as Record<string, unknown>;
+    const policy = p.retryOn429;
+    if (policy === undefined) continue;
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+      delete p.retryOn429;
+      // Never serialize the value: an accidental `retryOn429: "sk-..."` would leak the secret.
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429 (${typeof policy}) is invalid — ignoring the policy`);
+      continue;
+    }
+    const policyRecord = policy as Record<string, unknown>;
+    // An explicitly present but invalid master switch must not silently default to ENABLED:
+    // drop the whole policy so a hand-edit that tried to disable retries stays disabled.
+    if ("enabled" in policyRecord && typeof policyRecord.enabled !== "boolean") {
+      delete p.retryOn429;
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.enabled (${typeof policyRecord.enabled}) is invalid — ignoring the whole policy`);
+      continue;
+    }
+    // Field checks derive from the shared policy schema so the bounds cannot drift
+    // between the load-time sanitizer, the config schema, and the write boundary.
+    const policyShape = retryOn429PolicySchema.shape;
+    const hadPolicyEntries = Object.keys(policyRecord).length > 0;
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, fieldSchema] of Object.entries(policyShape)) {
+      const value = policyRecord[key];
+      if (value === undefined) continue;
+      if (fieldSchema.safeParse(value).success) cleaned[key] = value;
+      // Log only the received type, never the value (provider config can hold secrets).
+      else console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.${key} (${typeof value}) is invalid — ignoring the field`);
+    }
+    const knownKeys = new Set(Object.keys(policyShape));
+    for (const key of Object.keys(policyRecord)) {
+      if (!knownKeys.has(key)) {
+        // Redact the field NAME before logging: a malformed hand-edit can place a secret in a
+        // property name (`retryOn429: { "sk-...": true }`). Ordinary typos (e.g. `attempt`)
+        // stay readable, secret-shaped names become [REDACTED]. JSON-escape afterwards so a
+        // control-character property name (newline/ANSI) can never forge a log line.
+        console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.${JSON.stringify(redactSecretString(key))} is not a recognized field — ignoring it`);
+      }
+    }
+    if (hadPolicyEntries && Object.keys(cleaned).length === 0) {
+      // Every supplied field was invalid: drop the whole policy. Persisting `{}` here would
+      // opt IN to retries with defaults, which is the opposite of what a malformed
+      // disable-oriented edit (`retryOn429: { enabled: "false" }`, `attempts: 0`) asked for.
+      delete p.retryOn429;
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429 has no valid fields left — removing the policy (an empty policy would enable retries with defaults)`);
+    } else {
+      // Preserve an intentionally empty `retryOn429: {}` (presence = opt-in with defaults).
+      p.retryOn429 = cleaned;
+    }
+  }
+}
+
+/**
+ * Management write-boundary validation for `retryOn429` (fail closed). Unlike the
+ * lenient load-time sanitizer, invalid values and unknown keys are rejected outright so
+ * a POST/PATCH cannot persist a policy the proxy would then silently degrade. Reuses the
+ * shared policy schema. Never echoes values, and secret-shaped unknown field names are
+ * redacted (a malformed write can place a secret in a property name).
+ */
+export function retryOn429PolicyConfigError(policy: unknown): string | null {
+  if (policy === undefined) return null;
+  const result = retryOn429PolicySchema.safeParse(policy);
+  if (result.success) return null;
+  const first = result.error.issues[0];
+  if (!first) return "retryOn429 is invalid";
+  if (first.code === "unrecognized_keys") {
+    const names = first.keys.map(key => JSON.stringify(redactSecretString(key))).join(", ");
+    return `retryOn429 has unrecognized field${first.keys.length > 1 ? "s" : ""}: ${names}`;
+  }
+  if (first.path.length === 0) return `retryOn429 is invalid (${first.message})`;
+  const field = String(first.path[first.path.length - 1]);
+  return `retryOn429.${field} is invalid (${first.message})`;
+}
+
+/**
  * Companion to {@link warnDegradedStreamMode} for a blank persisted `hostname`. The bind
  * falls back to loopback, which is the safe direction but not what the file asked for —
  * say so once instead of silently ignoring the field.
@@ -1512,6 +1625,7 @@ export function loadConfig(): OcxConfig {
   try {
     const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw);
+    sanitizeRetryOn429ForLoad(parsed);
     const result = configSchema.safeParse(parsed);
     if (result.success) {
       const config = normalizeApiKeyIds(result.data as OcxConfig);
@@ -1679,6 +1793,10 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
 function configDiagnosticsFromRaw(raw: string): ConfigDiagnostics {
   try {
     const parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
+    // Same degradation as loadConfig: a hand-edited invalid retryOn429 must not trip the
+    // schema and send the caller a default-config fallback (the config command could then
+    // persist that fallback over the user's providers/keys).
+    sanitizeRetryOn429ForLoad(parsed);
     const result = configSchema.safeParse(parsed);
     if (result.success) {
       return validFileConfigDiagnostics(normalizeApiKeyIds(result.data as OcxConfig), parsed);

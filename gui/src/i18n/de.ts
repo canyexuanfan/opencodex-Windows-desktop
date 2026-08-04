@@ -1,6 +1,9 @@
 // German — generated from en.ts. Must match TKey set (compile-checked).
 import type { TKey } from "./en";
 
+/**
+ * German i18n catalog, generated from en.ts. Must match the `TKey` set (compile-checked).
+ */
 export const de: Record<TKey, string> = {
   "nav.dashboard": "Übersicht",
   "nav.startup": "Startsicherheit",
@@ -549,6 +552,14 @@ export const de: Record<TKey, string> = {
   "logs.detail.attempt.reason": "Ergebnis / Grund",
   "logs.detail.attempt.completed": "Abgeschlossen",
   "logs.detail.attempt.e2eNote": "Tok/s auf oberster Ebene ist Ende-zu-Ende; jeder Versuch nutzt seine eigene Dauer.",
+  "logs.detail.attempt.recovery.transient5xx": "Vorübergehender 5xx-Fehler",
+  "logs.detail.attempt.recovery.connectionReset": "Verbindung zurückgesetzt",
+  "logs.detail.attempt.recovery.oauth401": "OAuth-Neuanmeldung",
+  "logs.detail.attempt.recovery.key429": "Schlüssel ratenbegrenzt (429)",
+  "logs.detail.attempt.recovery.rateLimit429": "Ratenbegrenzt (429)",
+  "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth ratenbegrenzt (429)",
+  "logs.detail.attempt.recovery.image413": "Bildnutzlast zu groß (413)",
+  "logs.detail.attempt.recovery.unknown": "Unbekannter Wiederherstellungsgrund",
   "logs.detail.reason.usage_missing": "Nutzung wurde nicht gemeldet.",
   "logs.detail.reason.usage_unsupported": "Dieser Anbieter meldet keine Nutzung.",
   "logs.detail.reason.output_missing": "Es wurden keine positiven Ausgabe-Tokens gemeldet.",

@@ -57,6 +57,11 @@ interface ProviderAdapter {
 запроса и стримит ответ обратно **без преобразования**.
 **Аутентификация:** `forward` (ретрансляция заголовков вызывающей стороны) или `key`.
 
+При `key`-аутентификации [`retryOn429`](/ru/reference/configuration/) действует и здесь: 429 до
+начала потока ждёт и, до любой другой обработки или фейловера, повторяет идентичный запрос на
+том же ключе, как и в переводимом пути `openai-chat`/Anthropic. Пользовательские транспорты
+`runTurn` в цикл HTTP-повторов не входят.
+
 - URL для `forward` → `{baseUrl}/responses`. Провайдер с `key` по умолчанию сохраняет прежнее построение `{baseUrl}/v1/responses`.
 - Провайдер с `key` может задать проверенный относительный `responsesPath`: адаптер удаляет один завершающий `/` из `baseUrl` и отправляет запрос на `{trimmedBaseUrl}{responsesPath}`. Для Ark Agent Plan используйте `baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3"` и `responsesPath: "/responses"`.
 - В режиме `forward` ретранслируется только безопасный allowlist заголовков (`FORWARD_HEADERS`):
