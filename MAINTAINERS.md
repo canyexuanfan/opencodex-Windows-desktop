@@ -25,6 +25,12 @@ see [The retired `dev2-go` line](#the-retired-dev2-go-line).
   ancestry sits on the **`main`** tip while far behind **`dev`**, and rejects
   empty, thin, or malformed descriptions; PRs whose title or description
   mentions `gui` must include a screenshot of the UI change in the description.
+  Contributor PRs (authors without repository push permission) open in draft
+  and stay there until a four-box review-readiness checklist in the
+  description is complete: local CI green, branch on the latest `dev` commit,
+  all correct Codex and CodeRabbit findings fixed, and the ready-for-review
+  confirmation. When all four boxes are ticked the gate marks the PR ready and
+  notifies the maintainers listed in `MAINTAINERS.md` (excluding the author).
   Authors with repository push permission skip the ancestry heuristic only. As
   with the approval requirement above, this is enforced by convention until
   branch protection is configured (see the note under the change log).

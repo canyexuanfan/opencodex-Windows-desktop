@@ -40,6 +40,15 @@ tells you exactly what to change:
   plan** (or equivalent substance). When the title or description mentions
   `gui`, the description must include a screenshot of the UI change; the check
   keeps the PR a draft and comments until the screenshot is present.
+  Contributor PRs (authors without repository push permission) open in draft
+  and stay there until a four-box review-readiness checklist in the
+  description is complete: local CI green, the branch on the latest `dev`
+  commit, all correct Codex and CodeRabbit findings fixed, and the
+  ready-for-review confirmation. Once every box is ticked the check marks the
+  PR ready for review and notifies the maintainers listed in `MAINTAINERS.md`
+  (excluding the author). A retarget to `dev` clears the wrong-branch message
+  automatically and is remembered by the gate; the draft stays until the
+  checklist is complete.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a
