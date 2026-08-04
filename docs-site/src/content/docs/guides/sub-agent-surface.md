@@ -60,7 +60,7 @@ Custom `injectionPrompt` text can use all four placeholders:
 
 | Placeholder | Replaced with |
 | --- | --- |
-| `{{model}}` | The configured `injectionModel`, or an empty string |
+| `{{model}}` | The effective preferred model for this request. A bare native `injectionModel` is account-qualified when possible; if no preferred model resolves, the configured `injectionModel` is used, or an empty string when it is unset |
 | `{{effort}}` | The configured `injectionEffort`, or an empty string |
 | `{{roster}}` | The resolved picker-visible, surface-compatible roster |
 | `{{fallback}}` | The configured global fallback guidance |

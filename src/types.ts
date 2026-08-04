@@ -619,9 +619,11 @@ export interface OcxConfig {
    * Custom override for the injected multi-agent guidance body (the text inside the
    * <multi_agent_mode> tags). When set, it replaces the built-in prompt on whichever
    * collab surface would have fired; firing gates are unchanged. Placeholders:
-   * `{{model}}` -> injectionModel, `{{effort}}` -> injectionEffort, `{{roster}}` ->
-   * the resolved sub-agent roster block ("" when nothing resolves), `{{fallback}}` ->
-   * the configured subagent model fallback guidance block ("" when unset).
+   * `{{model}}` -> the effective preferred model for the request (a bare native
+   * model is account-qualified when possible; otherwise injectionModel or ""),
+   * `{{effort}}` -> injectionEffort, `{{roster}}` -> the resolved sub-agent roster
+   * block ("" when nothing resolves), `{{fallback}}` -> the configured subagent
+   * model fallback guidance block ("" when unset).
    */
   injectionPrompt?: string;
   /**

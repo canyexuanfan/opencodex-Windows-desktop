@@ -49,7 +49,7 @@ Dashboard 上的 **Sub-agent delegation** 控件管理三个相关设置：
 
 | 占位符 | 替换为 |
 | --- | --- |
-| `{{model}}` | 配置的 `injectionModel`，或空字符串 |
+| `{{model}}` | 当前请求中生效的首选模型。未带选择器的原生 `injectionModel` 会在可能时加上账户选择器；如果无法解析出首选模型，则使用已配置的 `injectionModel`，未配置时为空字符串 |
 | `{{effort}}` | 配置的 `injectionEffort`，或空字符串 |
 | `{{roster}}` | 解析后的、对 picker 可见且与界面兼容的 roster |
 | `{{fallback}}` | 配置的全局 fallback 指引 |
