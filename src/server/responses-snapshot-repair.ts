@@ -163,6 +163,8 @@ type OpenItem = {
   itemId: string;
   outputIndex: number;
   type: string;
+  /** Message/reasoning items get lifecycle injections; other types never do. */
+  injectable: boolean;
   /** The gateway opened a content part explicitly (or we injected one). */
   contentPartOpen: boolean;
   /** The gateway sent output_text.done for this item. */
@@ -253,7 +255,7 @@ export function createResponsesSnapshotBlockRewrite(
     return repairOutputItem({ ...open.item, status: "completed" }, "completed");
   };
 
-  return (block: string): readonly string[] => {
+  const rewrite: SseBlockRewrite = (block: string): readonly string[] => {
     const payload = sseDataPayload(block);
     if (payload === null) return [block];
     let event: unknown;
@@ -275,14 +277,19 @@ export function createResponsesSnapshotBlockRewrite(
     if (type === "response.output_item.added" && isPlainObject(event.item)) {
       const itemType = typeof event.item.type === "string" ? event.item.type : "";
       const id = typeof event.item.id === "string" ? event.item.id : undefined;
-      if (outputIndex === undefined || !id || (itemType !== "message" && itemType !== "reasoning")) {
+      if (outputIndex === undefined || !id) {
         tainted = true;
       } else {
         if (openItems.has(outputIndex)) tainted = true; // contradictory reuse of an open index
+        // Unsupported types (function_call, …) reserve their index but are
+        // never injected — a sparse gateway that leaves one open blocks only
+        // the terminal reconstruction, not message repair (#893 review).
+        const injectable = itemType === "message" || itemType === "reasoning";
         openItems.set(outputIndex, {
           itemId: id,
           outputIndex,
           type: itemType,
+          injectable,
           contentPartOpen: false,
           textDone: false,
           partDone: false,
@@ -319,7 +326,9 @@ export function createResponsesSnapshotBlockRewrite(
       && isPlainObject(event.part)) {
       if (outputIndex !== undefined) {
         const open = openItems.get(outputIndex);
-        if (open) {
+        // Correlate by item_id when present: a mismatched event must not
+        // mutate (or suppress injections for) the tracked item (#893 review).
+        if (open && (itemId === undefined || itemId === open.itemId)) {
           if (type === "response.content_part.added") open.contentPartOpen = true;
           else open.partDone = true;
         }
@@ -347,12 +356,19 @@ export function createResponsesSnapshotBlockRewrite(
     }
     if (type === "response.output_text.delta" && typeof event.delta === "string" && outputIndex !== undefined) {
       const open = openItems.get(outputIndex);
-      if (open) open.text += event.delta;
+      if (open && (itemId === undefined || itemId === open.itemId)) {
+        open.text += event.delta;
+        // Unbounded text accumulation is a retention hole (#893 review):
+        // overshoot the per-item byte cap and the stream goes fail-closed.
+        if (Buffer.byteLength(open.text, "utf8") > MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES) {
+          tainted = true;
+        }
+      }
     }
     if (type === "response.output_text.done") {
       if (outputIndex !== undefined) {
         const open = openItems.get(outputIndex);
-        if (open) {
+        if (open && (itemId === undefined || itemId === open.itemId)) {
           open.textDone = true;
           if (typeof event.text === "string") open.text = event.text;
         }
@@ -382,6 +398,9 @@ export function createResponsesSnapshotBlockRewrite(
     }
 
     // --- lifecycle completion injection ------------------------------------
+    // Only response.completed justifies synthesized closing events: a failed
+    // or incomplete terminal must never fabricate completed output (#893 review).
+    const isCompletedTerminal = type === "response.completed";
     const out: string[] = [];
     if (!tainted) {
       // A text delta for an item whose content part was never opened needs the
@@ -400,10 +419,10 @@ export function createResponsesSnapshotBlockRewrite(
         }
       }
 
-      if (isTerminal && openItems.size > 0) {
+      if (isCompletedTerminal && openItems.size > 0) {
         const closing = [...openItems.values()].sort((a, b) => a.outputIndex - b.outputIndex);
         for (const open of closing) {
-          if (open.type === "message") {
+          if (open.injectable && open.type === "message") {
             if (!open.contentPartOpen) {
               out.push(jsonBlock({
                 type: "response.content_part.added",
@@ -436,6 +455,7 @@ export function createResponsesSnapshotBlockRewrite(
               open.partDone = true;
             }
           }
+          if (!open.injectable) continue; // never fabricate completions for other types
           const snapshot = completedItemSnapshot(open);
           out.push(jsonBlock({
             type: "response.output_item.done",
@@ -448,22 +468,34 @@ export function createResponsesSnapshotBlockRewrite(
       }
     }
 
-    // Terminal output reconstruction: only when the gateway omitted `output`
-    // entirely; an explicit `output: []` is authoritative.
-    if (isTerminal && !tainted && isPlainObject(nextEvent.response)) {
+    // Terminal output reconstruction/canonical backfill: an explicit
+    // `output: []` is authoritative; absent or malformed output on a
+    // completed terminal becomes the retained items or the canonical empty
+    // list (#893 review). Leftover non-injectable open items block
+    // reconstruction only, not the message closing above.
+    if (isCompletedTerminal && !tainted && isPlainObject(nextEvent.response)) {
       const response = nextEvent.response;
-      if (!Object.hasOwn(response, "output") && completedItems.size > 0 && openItems.size === 0) {
-        const ordered = [...completedItems.entries()].sort(([left], [right]) => left - right);
-        if (ordered.every(([index], position) => index === position)) {
-          nextEvent = {
-            ...nextEvent,
-            response: { ...response, output: ordered.map(([, retained]) => retained.item) },
-          };
+      const outputValue = (response as Record<string, unknown>).output;
+      const outputExplicitArray = Array.isArray(outputValue);
+      if (!outputExplicitArray) {
+        const injectableOpen = [...openItems.values()].filter(open => open.injectable);
+        const nonInjectableOpen = [...openItems.values()].filter(open => !open.injectable);
+        if (completedItems.size > 0 && injectableOpen.length === 0 && nonInjectableOpen.length === 0) {
+          const ordered = [...completedItems.entries()].sort(([left], [right]) => left - right);
+          if (ordered.every(([index], position) => index === position)) {
+            nextEvent = {
+              ...nextEvent,
+              response: { ...response, output: ordered.map(([, retained]) => retained.item) },
+            };
+            changed = true;
+          } else {
+            // A gap means at least one completed item is missing. Never compact
+            // later indexes into a shorter array that only appears complete.
+            tainted = true;
+          }
+        } else if (completedItems.size === 0 && openItems.size === 0) {
+          nextEvent = { ...nextEvent, response: { ...response, output: [] } };
           changed = true;
-        } else {
-          // A gap means at least one completed item is missing. Never compact
-          // later indexes into a shorter array that only appears complete.
-          tainted = true;
         }
       }
     }
@@ -472,6 +504,10 @@ export function createResponsesSnapshotBlockRewrite(
     if (isTerminal) releaseRetained();
     return out;
   };
+  // Relays call this on every teardown path (terminal, EOF, cancel, error):
+  // retained collectors and open-item state never outlive the stream.
+  rewrite.dispose = releaseRetained;
+  return rewrite;
 }
 
 /** Repair a non-streaming Responses JSON object without changing raw inspection state. */

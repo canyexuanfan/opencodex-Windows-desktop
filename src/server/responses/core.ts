@@ -2033,12 +2033,16 @@ async function handleResponsesInner(
           : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       // #893: sparse-snapshot gateways get field backfills AND lifecycle event
-      // injection at the block level, after payload rewrites.
-      const snapshotDefaultsRequest = {
-        tools: parsed.context.tools ?? [],
-        tool_choice: parsed.options.toolChoice,
-        parallel_tool_calls: parsed.options.parallelToolCalls,
-      };
+      // injection at the block level, after payload rewrites. Defaults come
+      // from the finalized OUTBOUND body — the normalized internal tool shapes
+      // are not the Responses wire shapes the snapshot must mirror.
+      const snapshotDefaultsRequest = (() => {
+        try {
+          return JSON.parse(request.body) as unknown;
+        } catch {
+          return undefined;
+        }
+      })();
       const clientBlockRewrite = snapshotRepairEnabled
         ? composeSseBlockRewrites(
           payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites)),
@@ -2186,7 +2190,7 @@ async function handleResponsesInner(
       // Windows was handled by the eager terminal-aware branch above. Remaining
       // tee traffic can use the JS relay to close on a protocol terminal and to
       // convert a mid-stream reset into a clean response.failed event.
-      const rewrittenBody = payloadRewrites.length > 0
+      const rewrittenBody = clientBlockRewrite !== undefined || payloadRewrites.length > 0
         ? relaySseWithBlockRewrite(nativeBody, clientBlockRewrite ?? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites)), translatorBudget)
         : nativeBody;
       const clientBody = relaySseWithFailedTail(rewrittenBody, upstream, reason => clientGone.abort(reason));
@@ -2220,13 +2224,17 @@ async function handleResponsesInner(
           rememberPassthroughResponse(JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown });
         } catch { /* non-JSON despite content-type; recording is best-effort */ }
       }
-      const clientJson = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)
-        ? repairResponsesSnapshotJson(restoreImageGenCallsInJson(text, imageGenCallAliases), {
-          tools: parsed.context.tools ?? [],
-          tool_choice: parsed.options.toolChoice,
-          parallel_tool_calls: parsed.options.parallelToolCalls,
-        })
-        : restoreImageGenCallsInJson(text, imageGenCallAliases);
+      const clientJson = (() => {
+        const restored = restoreImageGenCallsInJson(text, imageGenCallAliases);
+        if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
+        let outbound: unknown;
+        try {
+          outbound = JSON.parse(request.body);
+        } catch {
+          outbound = undefined;
+        }
+        return repairResponsesSnapshotJson(restored, outbound);
+      })();
       return new Response(clientJson, {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,

@@ -14,8 +14,14 @@ export type SsePayloadRewrite = (payload: string) => string;
  * blank-line delimiter) to zero or more replacement blocks. This is the
  * contract lifecycle repair needs: injecting missing canonical events
  * (#893) is impossible in the one-payload-in/one-payload-out model.
+ *
+ * `dispose` releases any retained state (budget-charged collectors) when the
+ * relay tears down — terminal, EOF, cancel, or error. Relays call it exactly
+ * once per teardown path.
  */
-export type SseBlockRewrite = (block: string) => readonly string[];
+export type SseBlockRewrite = ((block: string) => readonly string[]) & {
+  dispose?: () => void;
+};
 
 /** Adapt a payload rewrite to the block contract (replace only on change). */
 export function payloadRewriteAsBlockRewrite(rewrite: SsePayloadRewrite): SseBlockRewrite {
@@ -182,8 +188,12 @@ export function relaySseWithBlockRewrite(
       }
     }
     if (flushFinal && buffer.length > 0) {
-      for (const outBlock of rewrite(buffer)) {
-        enqueueText(controller, outBlock);
+      const tailBlocks = rewrite(buffer);
+      // A trailing fragment has no delimiter of its own; multiple emitted
+      // blocks must still be framed as separate events (#893 review).
+      const tailDelimiter = buffer.includes("\r\n") ? "\r\n\r\n" : "\n\n";
+      for (let i = 0; i < tailBlocks.length; i++) {
+        enqueueText(controller, tailBlocks[i]! + (i < tailBlocks.length - 1 ? tailDelimiter : ""));
       }
       releaseBuffer();
     }
@@ -197,6 +207,7 @@ export function relaySseWithBlockRewrite(
           appendBuffer(decoder.decode());
           emitProcessedBlocks(controller, true);
           releaseBuffer();
+          rewrite.dispose?.();
           controller.close();
           return;
         }
@@ -204,12 +215,14 @@ export function relaySseWithBlockRewrite(
         emitProcessedBlocks(controller);
       } catch (error) {
         releaseBuffer();
+        rewrite.dispose?.();
         try { await reader.cancel(error); } catch { /* already closed */ }
         controller.error(error);
       }
     },
     cancel(reason) {
       releaseBuffer();
+      rewrite.dispose?.();
       reader.cancel(reason).catch(() => {});
     },
   });

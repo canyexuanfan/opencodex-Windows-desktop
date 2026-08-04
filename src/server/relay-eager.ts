@@ -151,7 +151,9 @@ export function relaySseEagerBounded(
     // Decoder-flushed bytes logically follow everything already decoded.
     let tail = frameBuffer + rewriteDecoder!.decode();
     const rewritten = activeRewrite(tail);
-    tail = rewritten.join("");
+    // Multiple emitted blocks must stay separately framed (#893 review);
+    // join places the delimiter only between blocks, never after the last.
+    tail = rewritten.join(tail.includes("\r\n") ? "\r\n\r\n" : "\n\n");
     frameBuffer = "";
     if (rewriteBudget && frameBufferBytes > 0) {
       rewriteBudget.releaseRetained(frameBufferBytes, { kind: "live_transient" });
@@ -312,6 +314,7 @@ export function relaySseEagerBounded(
         try { controllerRef?.close(); } catch { /* already closed/errored */ }
       }
       try { hooks.disposeInspection?.(); } catch { /* inspection teardown must not block lifecycle cleanup */ }
+      try { activeRewrite?.dispose?.(); } catch { /* rewrite teardown must not block lifecycle cleanup */ }
       fireDone();
     }
   };

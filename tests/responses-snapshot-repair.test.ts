@@ -11,6 +11,7 @@ import {
 } from "../src/server/sse-payload-rewrite";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
 
+
 function dataBlock(payload: unknown): string {
   return `data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}`;
 }
@@ -164,6 +165,94 @@ describe("createResponsesSnapshotBlockRewrite", () => {
     expect(response.parallel_tool_calls).toBe(false);
     expect(response.tool_choice).toEqual({ type: "function", name: "search" });
     expect(response.tools).toEqual([{ type: "function", name: "search" }]);
+  });
+
+  test("failed and incomplete terminals never fabricate completed output", () => {
+    for (const terminalType of ["response.failed", "response.incomplete"]) {
+      const rewrite = createResponsesSnapshotBlockRewrite();
+      rewrite(dataBlock(ISSUE_FIXTURE.itemAdded));
+      rewrite(dataBlock(ISSUE_FIXTURE.delta));
+      const out = rewrite(dataBlock({ type: terminalType, response: { id: "r" } }));
+      expect(typesOf(out)).toEqual([terminalType]);
+      const response = eventsOf(out)[0]!.response as Record<string, unknown>;
+      expect(Object.hasOwn(response, "output")).toBe(false);
+      expect(JSON.stringify(out)).not.toContain("output_item.done");
+    }
+  });
+
+  test("dispose releases retained collectors on EOF without a terminal", () => {
+    const budget = createTestTranslatorBudget();
+    const rewrite = createResponsesSnapshotBlockRewrite(undefined, budget);
+    rewrite(dataBlock(ISSUE_FIXTURE.itemAdded));
+    rewrite(dataBlock({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: { type: "message", id: "msg_1", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] },
+    }));
+    expect(budget.snapshot().currentBytes).toBeGreaterThan(0);
+    rewrite.dispose?.();
+    expect(budget.snapshot().currentBytes).toBe(0);
+  });
+
+  test("function_call items do not taint later sparse messages", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    rewrite(dataBlock({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: "fc_1", call_id: "c1", name: "search" } }));
+    rewrite(dataBlock({ ...ISSUE_FIXTURE.itemAdded, output_index: 1 }));
+    const fromDelta = rewrite(dataBlock({ ...ISSUE_FIXTURE.delta, output_index: 1, item_id: "msg_1" }));
+    const out = [...fromDelta, ...rewrite(dataBlock(ISSUE_FIXTURE.completed))];
+    // Message lifecycle completed; the open function_call blocks only reconstruction.
+    expect(typesOf(out)).toContain("response.content_part.added");
+    expect(typesOf(out)).toContain("response.output_item.done");
+    const terminal = eventsOf(out).find(event => event.type === "response.completed")!;
+    expect(Object.hasOwn(terminal.response as Record<string, unknown>, "output")).toBe(false);
+  });
+
+  test("a mismatched item_id does not mutate or suppress the tracked item's injections", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    rewrite(dataBlock(ISSUE_FIXTURE.itemAdded));
+    // A foreign item's done event on the same index must not close our item.
+    rewrite(dataBlock({ type: "response.output_text.done", item_id: "msg_OTHER", output_index: 0, text: "foreign" }));
+    rewrite(dataBlock(ISSUE_FIXTURE.delta));
+    const out = rewrite(dataBlock(ISSUE_FIXTURE.completed));
+    expect(typesOf(out)).toContain("response.output_text.done");
+    const injectedText = eventsOf(out).filter(event => event.type === "response.output_text.done");
+    expect(injectedText.some(event => event.text === "hello")).toBe(true);
+  });
+
+  test("a completed terminal with absent output and zero items gets the canonical empty list", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    const out = rewrite(dataBlock({ type: "response.completed", response: { id: "r" } }));
+    const terminal = eventsOf(out)[0]!.response as Record<string, unknown>;
+    expect(terminal.output).toEqual([]);
+  });
+
+  test("a completed terminal with malformed output is replaced canonically", () => {
+    for (const malformed of [null, { bogus: true }, "not-an-array"]) {
+      const rewrite = createResponsesSnapshotBlockRewrite();
+      const out = rewrite(dataBlock({ type: "response.completed", response: { id: "r", output: malformed } }));
+      const terminal = eventsOf(out)[0]!.response as Record<string, unknown>;
+      expect(terminal.output).toEqual([]);
+    }
+  });
+
+  test("an unterminated final block with injections stays separately framed", async () => {
+    // EOF immediately after a complete-but-undelimited block: the injected
+    // closing events must not fuse into one invalid data record.
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(encoder.encode(`${dataBlock(ISSUE_FIXTURE.itemAdded)}\n\n${dataBlock(ISSUE_FIXTURE.delta)}`));
+        controller.close();
+      },
+    });
+    const rewrite = createResponsesSnapshotBlockRewrite(undefined, createTestTranslatorBudget());
+    const body = relaySseWithBlockRewrite(upstream, rewrite, createTestTranslatorBudget());
+    const text = await new Response(body).text();
+    const frames = text.split(/\r?\n\r?\n/).filter(frame => frame.trim().length > 0);
+    for (const frame of frames) {
+      expect(frame.startsWith("data:")).toBe(true);
+      expect(frame.indexOf("\ndata:")).toBe(-1);
+    }
   });
 });
 
