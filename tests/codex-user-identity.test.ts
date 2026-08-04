@@ -117,27 +117,45 @@ test("real processes resolve one identity and coordinator path across every home
   });
 
   try {
-    const probes = await Promise.all(environmentRoots.map(({ paths }) => runIdentityProbe({
-      HOME: paths.home,
-      USERPROFILE: paths.userProfile,
-      HOMEDRIVE: paths.homeDrive,
-      HOMEPATH: paths.homePath,
-      XDG_RUNTIME_DIR: paths.xdgRuntime,
-      TMPDIR: paths.temp,
-      TEMP: paths.temp,
-      TMP: paths.temp,
-      LOCALAPPDATA: paths.temp,
-      CODEX_HOME: paths.codexHome,
-      OPENCODEX_HOME: paths.opencodexHome,
-      OCX_TEST_CANONICAL_CODEX_HOME: canonicalHome,
-    })));
+    const probes = await Promise.all(environmentRoots.map(({ paths }, index) => {
+      const accountEnvironment = process.platform === "win32"
+        ? {
+            USERNAME: `fake-username-${index}`,
+            USERDOMAIN: `fake-domain-${index}`,
+            USERDOMAIN_ROAMINGPROFILE: `fake-roaming-domain-${index}`,
+            USERDNSDOMAIN: `fake-dns-domain-${index}`,
+          }
+        : {
+            UID: String(900_000 + index),
+            EUID: String(910_000 + index),
+            USER: `fake-user-${index}`,
+            LOGNAME: `fake-logname-${index}`,
+          };
+      return runIdentityProbe({
+        HOME: paths.home,
+        USERPROFILE: paths.userProfile,
+        HOMEDRIVE: paths.homeDrive,
+        HOMEPATH: paths.homePath,
+        XDG_RUNTIME_DIR: paths.xdgRuntime,
+        TMPDIR: paths.temp,
+        TEMP: paths.temp,
+        TMP: paths.temp,
+        LOCALAPPDATA: paths.temp,
+        CODEX_HOME: paths.codexHome,
+        OPENCODEX_HOME: paths.opencodexHome,
+        OCX_TEST_CANONICAL_CODEX_HOME: canonicalHome,
+        ...accountEnvironment,
+      });
+    }));
 
+    const osIdentity = resolveEffectiveUserIdentity();
+    const osDatabasePath = resolveCodexCoordinatorDatabasePath(osIdentity, canonicalHome);
+    for (const probe of probes) {
+      expect(probe.identity).toEqual(osIdentity);
+      expect(probe.databasePath).toBe(osDatabasePath);
+    }
     expect(probes[1]?.identity).toEqual(probes[0]?.identity);
     expect(probes[1]?.databasePath).toBe(probes[0]?.databasePath);
-    expect(probes[0]?.databasePath).toBe(resolveCodexCoordinatorDatabasePath(
-      resolveEffectiveUserIdentity(),
-      canonicalHome,
-    ));
   } finally {
     for (const { root } of environmentRoots) rmSync(root, { recursive: true, force: true });
   }
