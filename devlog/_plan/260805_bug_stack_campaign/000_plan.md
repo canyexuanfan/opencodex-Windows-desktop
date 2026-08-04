@@ -59,20 +59,27 @@ large infrastructure PRs) are out of scope.
   All campaign deltas are measured against this baseline (pre-existing,
   environment-suspect storage/keyring suites).
 
-## Work-phase map (dependency-ordered)
+## Work-phase map
+
+Honest dependency structure (amended after audit round 1): only three real
+dependencies exist — phase 2 builds on the 003 probes, phase 3's core.ts
+cluster (stack 02/03/05) must be internally ordered, and each phase-4
+disposition waits for its corresponding landing. Everything else is
+independent and does not inherit merge blockage from earlier items.
 
 | Phase | Doc | Content | Depends on |
 |-------|-----|---------|------------|
 | 0 | this doc + 001/002/003 | triage + research (docs-only) | — |
 | 1 | 010 | PR #988 design review + merge | none (independent GUI slice) |
-| 2 | 020 | anthropic 400 root cause + fix + regression test | 003 research |
-| 3 | 030 | stack: confirmed unresolved bugs, ordered by coupling | 001/002 triage |
-| 4 | 040 | dispositions: close already-fixed with evidence (#806 et al.) | 001/002 |
+| 2 | 020 | anthropic empty-body-400 observability + bounded retry | 003 probes |
+| 3 | 030 | stack: confirmed unresolved bugs (core.ts cluster ordered; rest parallel-lane) | 001/002 triage |
+| 4 | 040 | dispositions: #806 close (immediate, triage-only); supersede-closes per landing | 001/002 + phase 3 landings |
 
-Phase 3 slices itself by subsystem ownership, not effort; each stack PR is one
-logical change with its own focused test. Stacked ordering and branch names
-are recorded in `030_stack_roadmap.md` after the phase-2 root cause is known
-(the 400 fix may touch shared error paths other fixes depend on).
+Phase 3 slices by subsystem ownership, not effort; each stack PR is one
+logical change with its own focused test. Only the `core.ts` cluster chains
+branches; the independent items get their own branches from `origin/dev` and
+their diff-level sub-doc (`031_*`…) written at their own cycle's P
+(LOOP-UNIT-CHAIN-01), which is when each becomes an executable plan.
 
 ## Triage inputs
 

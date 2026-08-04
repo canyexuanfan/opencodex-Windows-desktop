@@ -1,76 +1,73 @@
-# 020 — Phase 2: anthropic 400 on foreign tool-history replay (fix + regression tests)
+# 020 — Phase 2: anthropic empty-body 400 — observability + bounded retry
 
-Root cause and evidence: `003_anthropic_400_research.md`. One sentence: with
-thinking enabled (adaptive on Opus 5), the adapter emits assistant `tool_use`
-turns that have no signed thinking preface when the tool history came from a
-different provider, and Anthropic 400s the request.
+Evidence basis: `003_anthropic_400_research.md` (two live probes refute the
+history-shape hypothesis; bare `Provider error 400` = empty upstream body =
+edge-layer rejection). The original payload is gone and the state index
+evicted the failing window, so the fix targets the two things that are true
+regardless of which edge condition fired: the incident was undiagnosable from
+the ledger, and the proxy treated a transient edge 400 as a hard client error.
 
 ## Diff-level plan
 
-### MODIFY `src/adapters/anthropic.ts`
+### Commit 1 — observability: persist the real error shape
 
-1. Hoist the thinking-mode decision above the message conversion. Today
-   `buildRequest` calls `messagesToAnthropicFormat(parsed, toolNames)`
-   (~line 786) before the thinking block (~lines 820-856). Compute the
-   thinking mode first (`disabled` | `adaptive` | `budget` | `off`), using the
-   existing gates (`modelUsesAdaptiveThinking`, effort parsing), then pass it
-   down. No behavior change for the body fields themselves — same conditions,
-   same values, only ordered earlier.
-2. Extend `messagesToAnthropicFormat` with an options parameter
-   `{ flattenUnsignedToolUseTurns: boolean }` (true when the mode is
-   `adaptive` or `budget`). In the `assistant` branch:
-   - Track whether any thinking/redacted preface block was actually pushed
-     (a real `isLikelyRealAnthropicThinkingSignature` pass or a redacted
-     block).
-   - If flattening is on, the turn contains tool calls, and no signed
-     thinking preface exists, do NOT emit `tool_use` blocks. Instead append
-     one text block per call via a new helper `foreignToolCallText(tc)`
-     (mirrors `orphanToolResultText` at ~line 545):
-     `[assistant called tool "name" (id) with arguments: <json, truncated>]`.
-   - Leave `toolUseIds` empty for that turn so the pairing loop is skipped;
-     the following `toolResult` messages then flow through the existing
-     orphan-text path unchanged.
-3. Never flatten turns that carry a real signed thinking block; byte-preserved
-   replay of genuine Anthropic history is unchanged. Never fabricate
-   signatures.
+MODIFY `src/server/responses/core.ts` (error path ~2807-2828):
+- When `errorText` is empty/whitespace, build the client-facing message as
+  `Provider error <status> (empty upstream body)` instead of a bare
+  `Provider error <status>: ` — the marker makes edge rejections
+  distinguishable from validation 400s everywhere the message propagates.
 
-### Observability (same PR, second commit)
+MODIFY `src/server/request-log.ts` (`captureUpstreamError*`, 614-669):
+- Verify the non-streaming error response body actually reaches
+  `captureUpstreamError` on this path (the failing rows show it did not, or
+  the message itself was bare). Add the `(empty upstream body)` marker to the
+  persisted `upstreamError` so `usage.jsonl` always records WHICH 400 class
+  fired. Never persist more than the existing 500-char redacted bound.
 
-4. Trace why `usage.jsonl`'s `upstreamError` stayed `Provider error 400`
-   without the body for responses-inbound failures. The redacted 500-char
-   message is built at `src/server/responses/core.ts:2549`; find the hand-off
-   to the persisted usage entry (`src/server/request-log.ts`,
-   `src/usage/log.ts`) and carry the bounded redacted message (never the raw
-   body) into the persisted field. Add a focused test that a 400 from a fake
-   upstream lands in `usage.jsonl` with its `error.message` text.
+TEST (new, e.g. `tests/anthropic-empty-body-400.test.ts`):
+- Fake upstream returns 400 with empty body → client sees
+  `Provider error 400 (empty upstream body)`; persisted usage entry's
+  `upstreamError` contains the marker.
+- Fake upstream returns 400 with an Anthropic JSON error body → message and
+  persisted field contain the redacted upstream `error.message` (today's
+  behavior, pinned).
 
-### Tests — `tests/` (new file or extend the anthropic adapter suite)
+### Commit 2 — resilience: single retry on empty-body 400
 
-5. Foreign `custom_tool_call` + `custom_tool_call_output` history converted
-   for `claude-opus-5` high: no structured `tool_use` without a thinking
-   preface; flattening text is present; `thinking: adaptive` and
-   `output_config.effort: high` preserved.
-6. Same history with a valid `ocxr1`-format signature: thinking block,
-   signature, tool IDs replayed byte-preserved; no flattening.
-7. `reasoning: none` and a non-adaptive family model: existing structured
-   replay unchanged (flattening off).
-8. Integration: `/v1/responses` with `previous_response_id` expansion over a
-   foreign tool turn into Opus 5 against a fake Anthropic upstream → 200.
-9. Same `session_id` without `previous_response_id` does not replay state
-   (guard against "thread spawn clears state" regressions).
+MODIFY `src/server/responses/core.ts` recovery loop (same region as the
+existing 429-rebuild and 413-image-tier recoveries):
+- New recovery kind `empty-body-400`, gated to the anthropic adapter, status
+  400, and a truly empty/whitespace upstream body (read bounded, once — the
+  body is consumed by the check and the message path reuses the captured
+  text; do not double-consume the stream).
+- At most ONE retry per request (spiral guard like `imageRetryAttempted`),
+  same rebuilt request. A second empty-body 400 returns the error with the
+  marker from commit 1.
+- JSON-body 400s never enter this path (validation errors stay fail-fast).
 
-## Scope boundary
+TEST (same file):
+- Fake upstream: first response 400 empty, second 200 → client gets 200;
+  exactly two upstream calls observed.
+- First 400 empty, second 400 empty → client gets 400 with marker; two calls.
+- 400 with JSON error body → no retry, one call, error surfaced.
+- Non-anthropic adapter 400 empty → no retry (gate pinned).
 
-- IN: `src/adapters/anthropic.ts`, the error-persistence hand-off files named
-  in step 4, new/extended tests.
-- OUT: parser changes (`src/responses/parser.ts`), state expansion policy,
-  other providers, combo error classification, any prompt-level workaround.
+## Deliberately not in this fix
+
+- No history flattening (refuted by probes 1-2).
+- No retry on body-carrying 400s, no blanket 400 retry.
+- No changes to thread-spawn state handling.
+- Manual-mode thinking + forced `tool_choice` is a separate documented 400
+  class; it produces a JSON body, so it stays fail-fast and diagnosable via
+  commit 1's pinned behavior.
 
 ## Accept criteria (activation scenarios)
 
-- Test 5 proves the exact failing shape (foreign tool history + adaptive
-  thinking) now produces a body Anthropic accepts — asserted structurally on
-  the built request, and end-to-end in test 8 with the fake upstream.
+- The retry path is proven by the fake-upstream test matrix above — the
+  empty-body gate, the spiral guard, and the adapter scoping each have a
+  dedicated test.
 - `bun run typecheck` 0 errors; focused suites green; full `bun run test` on
-  `ssh lidge` no worse than the recorded baseline; `bun run privacy:scan`
-  passes (flattened text must pass through `redactSecretString`).
+  `ssh lidge` no worse than baseline; `bun run privacy:scan` passes.
+- PR body states the evidence chain (probes, bare-message analysis) and the
+  residual uncertainty (original upstream condition unprovable after state
+  eviction) honestly.

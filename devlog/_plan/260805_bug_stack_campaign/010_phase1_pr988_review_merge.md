@@ -8,6 +8,10 @@ against the repo's GUI design system. Fix only small deviations; no redesign.
 
 ## Review protocol (B of this phase)
 
+This document is the review protocol; the concrete file-by-file verdicts and
+any correction diff are appended here at this phase's own cycle P after the
+actual PR diff is read, making 010 the complete record before its B starts.
+
 1. Fetch the PR head into a local branch (`codex/review-pr988`) from
    `origin/dev` — never commit on top of the detached other-unit HEAD.
 2. Read the full diff (`gh pr diff 988`).

@@ -22,11 +22,16 @@ ambiguous cases go back to the user first.
 
 ## Contributor PRs superseded by stack PRs
 
-Disposition happens only after the corresponding stack PR lands on `dev`:
+Disposition happens only after the corresponding stack PR lands on `dev`,
+and only after a semantic-equivalence comparison (audit round 1, blocker 5):
+the landed behavior and tests are compared against the contributor PR's full
+scope, useful authorship is preserved where the contributor's approach was
+adopted, and any contributor behavior intentionally not matched is recorded
+with the reason. "The linked issue is fixed" alone is never sufficient.
 
 | PR | Stack successor | Disposition when landed |
 |---:|-----------------|-------------------------|
-| #966, #922 | stack-02 (#914) | close with a pointer to the landed fix (user confirm at that point) |
+| #966, #922 | stack-02 (#914) | close with a pointer to the landed fix, after the equivalence comparison (user confirm at that point) |
 | #928 | stack-03 (#893) | same |
 | #940 | stack-04 (#938) | same |
 | #1006 | stack-05 (#875) | adopt or close-with-pointer, decided at that cycle's P |
