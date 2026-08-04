@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join, parse } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 
 import {
   resolveCodexCoordinatorDatabasePath,
@@ -10,6 +11,50 @@ import {
 
 let codexHome = "";
 let previousHome: string | undefined;
+
+const CHILD_TIMEOUT_MS = 10_000;
+const userIdentityModuleUrl = pathToFileURL(
+  join(import.meta.dir, "..", "src", "codex", "user-identity.ts"),
+).href;
+const identityProbe = `
+  import {
+    resolveCodexCoordinatorDatabasePath,
+    resolveEffectiveUserIdentity,
+  } from ${JSON.stringify(userIdentityModuleUrl)};
+  import { realpathSync } from "node:fs";
+
+  const canonicalCodexHome = realpathSync.native(process.env.OCX_TEST_CANONICAL_CODEX_HOME);
+  const identity = resolveEffectiveUserIdentity();
+  const databasePath = resolveCodexCoordinatorDatabasePath(identity, canonicalCodexHome);
+  process.stdout.write(JSON.stringify({ identity, databasePath }));
+`;
+
+interface IdentityProbeResult {
+  identity: ReturnType<typeof resolveEffectiveUserIdentity>;
+  databasePath: string;
+}
+
+async function runIdentityProbe(env: Record<string, string>): Promise<IdentityProbeResult> {
+  const child = Bun.spawn([process.execPath, "--eval", identityProbe], {
+    env: { ...process.env, ...env },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const timeout = setTimeout(() => child.kill(), CHILD_TIMEOUT_MS);
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout.trim().split("\n"), stderr).toHaveLength(1);
+    return JSON.parse(stdout) as IdentityProbeResult;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 beforeEach(() => {
   previousHome = process.env.HOME;
@@ -52,3 +97,48 @@ test("the coordinator resolver returns the final database path", () => {
     canonicalHome,
   ));
 });
+
+test("real processes resolve one identity and coordinator path across every home/runtime environment", async () => {
+  const canonicalHome = realpathSync.native(codexHome);
+  const environmentRoots = ["a", "b"].map(label => {
+    const root = mkdtempSync(join(tmpdir(), `ocx-user-identity-env-${label}-`));
+    const paths = {
+      home: join(root, "home"),
+      userProfile: join(root, "profile"),
+      homeDrive: join(root, "drive"),
+      homePath: join(root, "path"),
+      xdgRuntime: join(root, "runtime"),
+      temp: join(root, "temp"),
+      codexHome: join(root, "ambient-codex"),
+      opencodexHome: join(root, "ambient-opencodex"),
+    };
+    for (const path of Object.values(paths)) mkdirSync(path, { recursive: true });
+    return { root, paths };
+  });
+
+  try {
+    const probes = await Promise.all(environmentRoots.map(({ paths }) => runIdentityProbe({
+      HOME: paths.home,
+      USERPROFILE: paths.userProfile,
+      HOMEDRIVE: paths.homeDrive,
+      HOMEPATH: paths.homePath,
+      XDG_RUNTIME_DIR: paths.xdgRuntime,
+      TMPDIR: paths.temp,
+      TEMP: paths.temp,
+      TMP: paths.temp,
+      LOCALAPPDATA: paths.temp,
+      CODEX_HOME: paths.codexHome,
+      OPENCODEX_HOME: paths.opencodexHome,
+      OCX_TEST_CANONICAL_CODEX_HOME: canonicalHome,
+    })));
+
+    expect(probes[1]?.identity).toEqual(probes[0]?.identity);
+    expect(probes[1]?.databasePath).toBe(probes[0]?.databasePath);
+    expect(probes[0]?.databasePath).toBe(resolveCodexCoordinatorDatabasePath(
+      resolveEffectiveUserIdentity(),
+      canonicalHome,
+    ));
+  } finally {
+    for (const { root } of environmentRoots) rmSync(root, { recursive: true, force: true });
+  }
+}, { timeout: 20_000 });

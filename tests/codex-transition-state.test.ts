@@ -159,6 +159,60 @@ test("a zero-row conditional update reports conflict and preserves the winner", 
   });
 });
 
+/**
+ * The C-phase review found the conflict tests PARTIAL: every stale caller they
+ * exercised disagreed on BOTH halves of the expected pair, so dropping either
+ * `native_generation = ?` or `current_tx_id IS ?` from the CAS predicate left
+ * them green. A CAS on a two-part version has to be proven one part at a time.
+ */
+test("a native CAS with a matching generation but the wrong txId still conflicts", () => {
+  expect(beginCodexTransition(
+    { nativeGeneration: 0, currentTxId: null },
+    transition("tx-a"),
+  ).kind).toBe("updated");
+  expect(beginCodexTransition(
+    { nativeGeneration: 1, currentTxId: "tx-a" },
+    transition("tx-b"),
+  ).kind).toBe("updated");
+
+  // Generation 2 is current, so only the txId half disagrees. Removing the
+  // `current_tx_id IS ?` predicate makes this succeed.
+  const wrongTxId = beginCodexTransition(
+    { nativeGeneration: 2, currentTxId: "tx-a" },
+    transition("tx-forged"),
+  );
+  expect(wrongTxId.kind).toBe("conflict");
+
+  expect(readCodexTransitionState()).toMatchObject({
+    kind: "ready",
+    state: { nativeGeneration: 2, currentTxId: "tx-b" },
+  });
+});
+
+test("a native CAS with a matching txId but the wrong generation still conflicts", () => {
+  expect(beginCodexTransition(
+    { nativeGeneration: 0, currentTxId: null },
+    transition("tx-a"),
+  ).kind).toBe("updated");
+  expect(beginCodexTransition(
+    { nativeGeneration: 1, currentTxId: "tx-a" },
+    transition("tx-b"),
+  ).kind).toBe("updated");
+
+  // `tx-b` really is the current txId, so only the generation half disagrees.
+  // Removing the `native_generation = ?` predicate makes this succeed.
+  const wrongGeneration = beginCodexTransition(
+    { nativeGeneration: 1, currentTxId: "tx-b" },
+    transition("tx-forged"),
+  );
+  expect(wrongGeneration.kind).toBe("conflict");
+
+  expect(readCodexTransitionState()).toMatchObject({
+    kind: "ready",
+    state: { nativeGeneration: 2, currentTxId: "tx-b" },
+  });
+});
+
 test("a positive generation cannot carry a null direction", () => {
   expect(beginCodexTransition(
     { nativeGeneration: 0, currentTxId: null },
@@ -179,6 +233,58 @@ test("a positive generation cannot carry a null direction", () => {
 });
 
 /**
+ * The test above proves the SQL CHECK constraint and nothing else. The row
+ * validator in `rowToState` is a SECOND, independent gate that exists because a
+ * database written by another build, an older schema, or a hand-edit can hold a
+ * row the current CHECKs would have rejected at write time. Dropping the
+ * validator left the suite green, so it is proven here directly: the row is
+ * corrupted with the constraints switched off, and the reader must still refuse.
+ */
+test("the row validator refuses a malformed row the CHECK constraints never saw", () => {
+  expect(beginCodexTransition(
+    { nativeGeneration: 0, currentTxId: null },
+    transition("tx-validator"),
+  ).kind).toBe("updated");
+
+  const database = new Database(coordinatorPath);
+  try {
+    // `ignore_check_constraints` lets a write land that the schema forbids,
+    // which is exactly the state a foreign writer can leave behind.
+    database.exec("PRAGMA ignore_check_constraints = ON");
+    database.run(
+      "UPDATE codex_transition_state SET history_direction = NULL WHERE singleton = 1",
+    );
+    expect(database.query<{ history_direction: string | null }, []>(
+      "SELECT history_direction FROM codex_transition_state WHERE singleton = 1",
+    ).get()?.history_direction).toBeNull();
+  } finally {
+    database.close();
+  }
+
+  // The CHECK did not stop it; the validator must.
+  expect(readCodexTransitionState()).toEqual({ kind: "unavailable", reason: "database" });
+});
+
+test("the row validator refuses a positive generation with a blank txId", () => {
+  expect(beginCodexTransition(
+    { nativeGeneration: 0, currentTxId: null },
+    transition("tx-blank"),
+  ).kind).toBe("updated");
+
+  const database = new Database(coordinatorPath);
+  try {
+    database.exec("PRAGMA ignore_check_constraints = ON");
+    database.run(
+      "UPDATE codex_transition_state SET current_tx_id = '   ', history_tx_id = '   ' WHERE singleton = 1",
+    );
+  } finally {
+    database.close();
+  }
+
+  expect(readCodexTransitionState()).toEqual({ kind: "unavailable", reason: "database" });
+});
+
+/**
  * A capability backed by a nominal transaction is not opaque if its caller can
  * simply open another connection. The C-phase review found the old test only
  * checked a boolean in one object and never exercised SQLite exclusion.
@@ -191,6 +297,40 @@ test("the opaque coordinator capability cannot reach a second connection", () =>
       const second = openCodexCoordinatorTransaction(coordinatorPath);
       second.close();
     }).toThrow();
+  } finally {
+    controller.close();
+  }
+});
+
+/**
+ * SQLite exclusion is only half of "opaque". The other half is that the
+ * capability object itself must not hand its caller a usable handle on the open
+ * connection: a caller who can reach the `Database` can write the native pair
+ * behind the CAS, on the very transaction that is supposed to serialize it.
+ * The previous test passed while the connection was reachable.
+ */
+test("the opaque capability never exposes a reachable database handle", () => {
+  expect(readCodexTransitionState().kind).toBe("ready");
+  const controller = openCodexCoordinatorTransaction(coordinatorPath);
+  try {
+    const reachable = new Set<unknown>();
+    const walk = (value: unknown, depth: number): void => {
+      if (depth > 4 || value === null || reachable.has(value)) return;
+      const kind = typeof value;
+      if (kind !== "object" && kind !== "function") return;
+      reachable.add(value);
+      for (const key of Reflect.ownKeys(value as object)) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(value as object, key);
+        // Only follow plain values: invoking a getter is not "exposure".
+        if (descriptor && "value" in descriptor) walk(descriptor.value, depth + 1);
+      }
+      walk(Reflect.getPrototypeOf(value as object), depth + 1);
+    };
+    walk(controller.capability, 0);
+
+    for (const value of reachable) {
+      expect(value).not.toBeInstanceOf(Database);
+    }
   } finally {
     controller.close();
   }
