@@ -840,10 +840,11 @@ describe("GitHub Actions hardening", () => {
       "sparse-checkout",
     ]);
     expect(checkout.with).toEqual({
-      // The base branch, not the repository default: pull_request_target runs
-      // this workflow from the base revision, and the scripts must match it —
-      // a merged gate would otherwise run against pre-promotion `main` scripts.
-      ref: "${{ github.event.pull_request.base.ref }}",
+      // The event's base commit, not the repository default: pull_request_target
+      // runs this workflow from the base revision, and the scripts must match
+      // it — a merged gate would otherwise run against pre-promotion `main`
+      // scripts. The immutable SHA pins the checkout to the event's base commit.
+      ref: "${{ github.event.pull_request.base.sha }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
       // maintainer list from the same trusted base revision as the scripts.

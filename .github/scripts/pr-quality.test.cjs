@@ -352,8 +352,14 @@ describe("review readiness checklist", () => {
     assert.equal(appendReviewReadinessSection(orphanEnd), orphanEnd);
 
     const duplicate = SECTION + SECTION;
-    assert.equal(extractReviewReadiness(duplicate).present, true);
+    const duplicated = extractReviewReadiness(duplicate);
+    assert.equal(duplicated.present, true);
+    // A second marker pair is malformed, never complete — even when the first
+    // section's boxes would parse as checked (CodeRabbit round 3).
+    assert.equal(duplicated.complete, false);
+    assert.equal(duplicated.total, 0);
     assert.equal(appendReviewReadinessSection(duplicate), duplicate);
+    assert.equal(stripReviewReadinessSection(duplicate), duplicate);
   });
 
   it("appends once and is idempotent", () => {

@@ -249,10 +249,19 @@ function extractReviewReadiness(body) {
   }
   const start = body.indexOf(REVIEW_READINESS_START);
   const end = body.indexOf(REVIEW_READINESS_END);
+  const startCount = body.split(REVIEW_READINESS_START).length - 1;
+  const endCount = body.split(REVIEW_READINESS_END).length - 1;
   // Any marker presence counts as present: an author-edited section that is
   // inverted or partial must never trigger another append, or every `edited`
-  // event would stack a second checklist (and a second body write).
-  if (start === -1 || end === -1 || end <= start) {
+  // event would stack a second checklist (and a second body write). Exactly
+  // one marker pair is required: duplicates are malformed, not complete.
+  if (
+    start === -1 ||
+    end === -1 ||
+    end <= start ||
+    startCount !== 1 ||
+    endCount !== 1
+  ) {
     return {
       present: start !== -1 || end !== -1,
       complete: false,
@@ -298,6 +307,14 @@ function stripReviewReadinessSection(body) {
   const start = body.indexOf(REVIEW_READINESS_START);
   const end = body.indexOf(REVIEW_READINESS_END);
   if (start === -1 || end === -1 || end <= start) return body;
+  // Malformed marker sets (duplicates, extra pairs) stay untouched: removing
+  // only one section would leave the body half-cleaned and still marked.
+  if (
+    body.split(REVIEW_READINESS_START).length - 1 !== 1 ||
+    body.split(REVIEW_READINESS_END).length - 1 !== 1
+  ) {
+    return body;
+  }
   const stripped =
     body.slice(0, start) + body.slice(end + REVIEW_READINESS_END.length);
   return stripped.replace(/\n{3,}/g, "\n\n").trimEnd();

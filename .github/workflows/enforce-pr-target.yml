@@ -29,11 +29,12 @@ jobs:
       - name: Checkout trusted PR-quality scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # The PR's base branch, not the repository default: pull_request_target
+          # The event's base commit, not the repository default: pull_request_target
           # runs this workflow from the base revision, and the scripts must come
           # from the same revision or a merged gate would run against the
-          # pre-promotion scripts on `main`.
-          ref: ${{ github.event.pull_request.base.ref }}
+          # pre-promotion scripts on `main`. The immutable SHA pins the checkout
+          # to the exact base commit the event was built against.
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
