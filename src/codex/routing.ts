@@ -1453,6 +1453,13 @@ export function recordCodexUpstreamOutcome(
   outcome: CodexUpstreamOutcome,
   meta: CodexUpstreamOutcomeMeta = {},
 ): void {
+  // Host-level evidence is account-independent (#914): a pre-connection
+  // reachability failure is recorded in the (provider, host) ledger even when
+  // there is no account to attribute, or the account's writer generation is
+  // stale — the early returns below must not gate it.
+  if (outcome === "connect_neutral" && meta.hostKey) {
+    recordUpstreamHostFailure(meta.hostKey, { code: meta.lastFailureCode, now: meta.now ?? Date.now() });
+  }
   if (!accountId) return;
   const writerGeneration = meta.writerGeneration ?? captureConfigGeneration();
   if (writerGeneration < lastReconciledGeneration && !liveHealthAccountIds.has(accountId)) return;
@@ -1532,9 +1539,6 @@ export function recordCodexUpstreamOutcome(
     }
     if (ownsProbeLease(current, meta)) {
       upstreamHealth.set(accountId, withProbeLeaseReleased(current!, now));
-    }
-    if (outcome === "connect_neutral" && meta.hostKey) {
-      recordUpstreamHostFailure(meta.hostKey, { code: meta.lastFailureCode, now });
     }
     return;
   }

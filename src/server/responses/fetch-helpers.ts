@@ -118,6 +118,16 @@ export function safeHostLabel(url: string): string {
   }
 }
 
+/** Canonical origin (scheme + host) for failure-attribution keys: http and
+ * https for the same host must not share one ledger entry (#914 review). */
+export function safeOriginLabel(url: string): string {
+  try {
+    return new URL(url).origin.toLowerCase();
+  } catch {
+    return "upstream";
+  }
+}
+
 
 
 export function providerFetch(provider: OcxProviderConfig): typeof globalThis.fetch {

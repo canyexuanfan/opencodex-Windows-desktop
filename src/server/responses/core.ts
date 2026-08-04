@@ -174,9 +174,9 @@ import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/cat
 
 import { buildToolBridgeMaps, collabSurface, injectDeveloperMessage, multiAgentGuidanceText } from "./collaboration";
 import { hasUnreadableEncryptedAgentTask, looksLikeBackendCiphertext, sanitizeEncryptedContentInPlace } from "./encrypted-payload";
-import { fetchWithHeaderTimeout, providerFetch, safeHostLabel } from "./fetch-helpers";
+import { fetchWithHeaderTimeout, providerFetch, safeHostLabel, safeOriginLabel } from "./fetch-helpers";
 import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
-import { upstreamHostHealthKey } from "../../codex/upstream-host-health";
+import { resetUpstreamHostHealth, upstreamHostHealthKey } from "../../codex/upstream-host-health";
 import { guardTerminalEventStream } from "./terminal-guard";
 
 /**
@@ -442,6 +442,8 @@ async function retryCodexPoolOnAlternateAccount(
       // dead-host rejection after the credential was seen (#914).
       route.provider.authMode === "forward",
     );
+    // A real HTTP response proves the host was reached (#914).
+    resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)));
     return {
       kind: "retried",
       authCtx: retryAuthCtx,
@@ -1761,7 +1763,7 @@ async function handleResponsesInner(
           // ledger instead of the account's failure streak (#914).
           ...(outcome === "connect_neutral"
             ? {
-              hostKey: upstreamHostHealthKey(route.providerName, safeHostLabel(request.url)),
+              hostKey: upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)),
               lastFailureCode: transportErrorCode(err),
             }
             : {}),
@@ -1793,6 +1795,9 @@ async function handleResponsesInner(
     } finally {
       request.releaseBodyObservation?.();
     }
+    // A real HTTP response proves the host was reached: clear any pre-connection
+    // reachability streak recorded for it (#914).
+    resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)));
 
     // Same-target 429 wait-and-retry (opt-in `retryOn429`) for key-auth providers on the
     // passthrough wire. This branch returns before the recovery loop below, so Responses-shaped
@@ -1964,6 +1969,17 @@ async function handleResponsesInner(
     // Codex renders that as the opaque "Unknown error" (#452). Combo attempts
     // keep their typed failure envelope. Non-empty bodies are relayed verbatim
     // (headers included) so pool-retry Activation B/D and client diagnostics stay intact.
+    // Manual-redirect policy (#914): a 3xx is relayed as-is (Location preserved
+    // through sanitizePassthroughHeaders) so a redirect to a dead host can never
+    // masquerade as a pre-connection failure after the credential was seen.
+    // The numeric outcome above already classified it neutral — no streak.
+    if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
+      return new Response(upstreamResponse.body, {
+        status: upstreamResponse.status,
+        statusText: upstreamResponse.statusText,
+        headers: sanitizePassthroughHeaders(upstreamResponse.headers),
+      });
+    }
     if (!upstreamResponse.ok) {
       if (options.comboAttempt) {
         const failure = await consumeComboFailure(upstreamResponse, options.abortSignal);
@@ -2820,18 +2836,6 @@ async function handleResponsesInner(
         continue recovery;
       }
       break;
-    }
-    // Manual-redirect policy (#914): a 3xx is relayed as-is (Location preserved)
-    // so a redirect to a dead host can never masquerade as a pre-connection
-    // failure after the credential was seen. Neutral class — no account/host
-    // health outcome is recorded for it.
-    if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
-      cleanupUpstreamAbort();
-      return new Response(upstreamResponse.body, {
-        status: upstreamResponse.status,
-        statusText: upstreamResponse.statusText,
-        headers: sanitizePassthroughHeaders(upstreamResponse.headers),
-      });
     }
     if (!upstreamResponse.ok) {
       if (options.comboAttempt) {

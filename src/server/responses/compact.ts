@@ -69,7 +69,7 @@ import {
   type UpstreamSendRecovery,
 } from "../../lib/upstream-retry";
 import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
-import { upstreamHostHealthKey } from "../../codex/upstream-host-health";
+import { resetUpstreamHostHealth, upstreamHostHealthKey } from "../../codex/upstream-host-health";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider, supportsNativeResponsesCompactEndpoint } from "../../providers/openai-tiers";
@@ -112,7 +112,7 @@ import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 
 import { decodeRequestErrorResponse, handleResponses, usesCodexForwardPoolAuth } from "./core";
-import { fetchWithHeaderTimeout, providerFetch, safeHostLabel } from "./fetch-helpers";
+import { fetchWithHeaderTimeout, providerFetch, safeHostLabel, safeOriginLabel } from "./fetch-helpers";
 
 export const COMPACT_RESPONSE_MAX_BYTES = 32 * 1024 * 1024;
 
@@ -421,6 +421,8 @@ export async function handleResponsesCompact(
       // Same connect timeout + keep-alive reset + transient-5xx recovery as /v1/responses —
       // compact hits the same ChatGPT host and must soft-avoid / clear affinity (#186).
       upstream = await sendCompactAttempt(compactProvider, headers, "normal");
+      // A real HTTP response proves the host was reached (#914).
+      resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)));
     } catch (err) {
       if (req.signal.aborted) {
         recordCompactPoolOutcome(outcomeCtx, 499);
@@ -430,7 +432,7 @@ export async function handleResponsesCompact(
       recordCompactPoolOutcome(outcomeCtx, outcome, {
         ...(outcome === "connect_neutral"
           ? {
-            hostKey: upstreamHostHealthKey(route.providerName, safeHostLabel(compactUrl)),
+            hostKey: upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)),
             lastFailureCode: transportErrorCode(err),
           }
           : {}),
@@ -496,6 +498,8 @@ export async function handleResponsesCompact(
         outcomeCtx = alternate.authCtx;
         try {
           upstream = await sendCompactAttempt(alternate.provider, alternate.headers, "single");
+          // A real HTTP response proves the host was reached (#914).
+          resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)));
         } catch (err) {
           if (req.signal.aborted) {
             recordCompactPoolOutcome(outcomeCtx, 499);
@@ -505,7 +509,7 @@ export async function handleResponsesCompact(
           recordCompactPoolOutcome(outcomeCtx, outcome, {
             ...(outcome === "connect_neutral"
               ? {
-                hostKey: upstreamHostHealthKey(route.providerName, safeHostLabel(compactUrl)),
+                hostKey: upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)),
                 lastFailureCode: transportErrorCode(err),
               }
               : {}),

@@ -27,7 +27,7 @@ export function upstreamHostHealthKey(provider: string, host: string): string {
   return `${provider}|${host.toLowerCase()}`;
 }
 
-function pruneForInsert(now: number): void {
+function pruneForInsert(): void {
   if (hostHealth.size < UPSTREAM_HOST_HEALTH_MAX_ENTRIES) return;
   const entries = [...hostHealth.entries()].sort((a, b) => a[1].lastTouch - b[1].lastTouch);
   for (const [key] of entries) {
@@ -41,8 +41,10 @@ export function recordUpstreamHostFailure(
   opts: { code?: string; now?: number } = {},
 ): void {
   const now = opts.now ?? Date.now();
-  pruneForInsert(now);
   const prior = hostHealth.get(key);
+  // Prune only for a genuinely new key: updating an existing entry must never
+  // evict an unrelated one.
+  if (prior === undefined) pruneForInsert();
   const stale = prior !== undefined && now - prior.lastFailureAt > UPSTREAM_HOST_FAILURE_WINDOW_MS;
   const code = typeof opts.code === "string" && opts.code !== "" ? opts.code : prior?.lastFailureCode;
   hostHealth.set(key, {
