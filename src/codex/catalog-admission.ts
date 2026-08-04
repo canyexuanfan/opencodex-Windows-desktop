@@ -12,7 +12,11 @@ import { dirname, resolve } from "node:path";
 
 import { readConfigGeneration } from "../config";
 import type { OcxConfig } from "../types";
-import type { CatalogAdmissionSnapshot } from "./convergence-types";
+import type {
+  CatalogAdmissionSnapshot,
+  CatalogConvergeRequestInput,
+  ConvergeRequest,
+} from "./convergence-types";
 import {
   activeCodexModelsCachePath,
   catalogBackupPathFor,
@@ -20,6 +24,26 @@ import {
   legacyCatalogBackupPath,
   readCodexCatalogPath,
 } from "./catalog/parsing";
+
+/**
+ * Construct the one request shape permitted for management catalog refreshes.
+ * Callers choose the deadline only; they cannot widen scope or choose direction.
+ */
+export function createCatalogConvergeRequest({
+  deadlineMs,
+}: CatalogConvergeRequestInput): ConvergeRequest {
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0) {
+    throw new TypeError("Catalog convergence deadlineMs must be a positive safe integer.");
+  }
+
+  return {
+    action: "converge",
+    scope: "catalog",
+    reason: "management-mutation",
+    mode: "automatic",
+    deadlineMs,
+  };
+}
 
 function optionalFileIdentity(path: string): Readonly<{ device: string; inode: string }> | null {
   try {

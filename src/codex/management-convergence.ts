@@ -9,9 +9,11 @@
 import type { OcxConfig } from "../types";
 import type {
   CatalogDisposition,
+  CatalogOnlyOutcome,
   CodexHistoryState,
   CodexObservedState,
   ConvergeCodex,
+  ProjectCatalogOnlyOutcomeInput,
 } from "./convergence-types";
 
 function notEvaluatedHistory(): CodexHistoryState {
@@ -57,6 +59,21 @@ function catalogNotRequested(): CatalogDisposition {
   return { status: "skipped", reason: "not-requested", retryable: false };
 }
 
+/** Project catalog work into the shared no-change/not-evaluated outcome shape. */
+export function projectCatalogOnlyOutcome({
+  changed,
+  catalogRefresh,
+}: ProjectCatalogOnlyOutcomeInput): CatalogOnlyOutcome {
+  const history = notEvaluatedHistory();
+  return {
+    kind: "catalog-only",
+    changed,
+    observed: notEvaluatedObserved(history),
+    catalogRefresh,
+    history,
+  };
+}
+
 /**
  * Bind the management callback's exact config authority to a catalog-only
  * funnel. This module is intentionally not re-exported by a public Codex facade.
@@ -72,14 +89,9 @@ export function createManagementConvergeCodex(
 
     // WP9 replaces this no-work projection and consumes this exact reference.
     void retainedConfig;
-    const history = notEvaluatedHistory();
-    const observed = notEvaluatedObserved(history);
-    return {
-      kind: "catalog-only",
+    return projectCatalogOnlyOutcome({
       changed: false,
-      observed,
       catalogRefresh: catalogNotRequested(),
-      history,
-    };
+    });
   };
 }

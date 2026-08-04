@@ -199,6 +199,11 @@ export interface ConvergeRequest {
   deadlineMs: number;
 }
 
+/** Caller-controlled input for the fixed management catalog request shape. */
+export interface CatalogConvergeRequestInput {
+  deadlineMs: number;
+}
+
 export type ConvergeOutcome =
   | { kind: "catalog-only"; changed: boolean;
       observed: CodexObservedState; catalogRefresh: CatalogDisposition;
@@ -217,6 +222,13 @@ export type ConvergeOutcome =
       nativeGeneration: number; currentTxId: string;
       observed: CodexObservedState; catalogRefresh: CatalogDisposition; history: CodexHistoryState }
   | { kind: "failed"; surface: string; message: string };
+
+export type CatalogOnlyOutcome = Extract<ConvergeOutcome, { kind: "catalog-only" }>;
+
+export interface ProjectCatalogOnlyOutcomeInput {
+  changed: boolean;
+  catalogRefresh: CatalogDisposition;
+}
 
 /**
  * Note what is NOT here: `desired-off`. Desired OFF is not a skip — it is a
