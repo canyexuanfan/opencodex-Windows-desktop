@@ -17,6 +17,19 @@ import {
 export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
 
+/**
+ * Wire protocol a client spoke when it reached the proxy. Chat and Anthropic surfaces
+ * translate into a Responses-shaped body and replay through `handleResponses`, so the
+ * original inbound has to travel with the request or the replay looks native.
+ */
+export type InboundWire = "responses" | "chat" | "anthropic";
+
+/**
+ * A per-model wire default: a bare string applies to every inbound, while the object
+ * form applies only to the listed inbound protocols.
+ */
+export type ModelWireDefault = string | { wire: string; inbound: readonly InboundWire[] };
+
 export type ProviderModelDiscoveryScalar = string | number | boolean;
 
 export type ProviderModelDiscoveryPredicate =
@@ -123,6 +136,30 @@ export interface ProviderRegistryEntry {
   defaultModel?: string;
   models?: string[];
   liveModels?: boolean;
+  /**
+   * Registry-only per-model wire defaults for mixed OpenAI-compatible gateways.
+   * These are intentionally not seeded into saved config: an explicit `modelAdapters`
+   * entry must remain distinguishable and must always win over a default.
+   *
+   * A bare string applies to every inbound protocol. The object form scopes the
+   * default to the inbound surfaces named in `inbound`, which is how a model that is
+   * native on two wires can serve each client on the wire it already speaks instead
+   * of paying a translation hop.
+   */
+  modelWireDefaults?: Record<string, ModelWireDefault>;
+  /**
+   * Responses-API resource path for providers whose route is not `/v1/responses`.
+   * Unlike `modelWireDefaults` above, this IS seeded into saved config: it describes
+   * the provider's fixed endpoint rather than a default a user might want to override
+   * per model. DeepSeek documents `POST /responses` with no `/v1` segment.
+   */
+  responsesPath?: string;
+  /**
+   * Responses upstream that stores nothing server-side. Stateful request parameters
+   * are dropped and `store` is pinned false, and orphaned tool results left by a
+   * replay miss are repaired rather than forwarded.
+   */
+  statelessResponses?: boolean;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -162,7 +199,7 @@ export interface ProviderRegistryEntry {
 
 export type ProviderConfigSeed = Pick<
   OcxProviderConfig,
-  "adapter" | "baseUrl" | "apiKeyTransport" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
+  "adapter" | "baseUrl" | "apiKeyTransport" | "responsesPath" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
@@ -815,6 +852,25 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: [...DEEPSEEK_THINKING_MODELS],
     defaultModel: "deepseek-v4-flash",
     modelContextWindows: { "deepseek-v4-flash": 1_000_000, "deepseek-v4-pro": 1_000_000 },
+    // DeepSeek documents V4-Flash as a native Responses API model adapted for Codex. The
+    // API id is `deepseek-v4-flash`; `DeepSeek-V4-Flash-0731` is a release/version label.
+    modelWireDefaults: {
+      // Codex speaks Responses natively and DeepSeek ships a Codex-compatible
+      // apply_patch tool on that wire, so a Responses inbound goes straight out with
+      // no translation. Claude Code and OpenAI-compatible clients keep the
+      // provider-wide Chat wire: DeepSeek serves Chat Completions natively too, so
+      // translating them into Responses would add a hop onto our newest upstream path
+      // for no gain.
+      "deepseek-v4-flash": { wire: "openai-responses", inbound: ["responses"] },
+    },
+    // DeepSeek's Responses route is `POST /responses` with no `/v1` segment. Without
+    // this the passthrough adapter falls back to its legacy `/v1/responses`
+    // construction and the wire above can never route.
+    // Evidence: https://api-docs.deepseek.com/api/create-response/
+    responsesPath: "/responses",
+    // "The API is stateless: responses and conversations are not stored on the
+    // server." https://api-docs.deepseek.com/api/create-response/
+    statelessResponses: true,
     /* [Decision Log]
     - 목적: DeepSeek V4 thinking mode multi-turn/tool-call requests must replay prior assistant reasoning_content.
     - 대안 분석: Globally preserve reasoning_content for all OpenAI-compatible models; preserve it for legacy deepseek-reasoner too; mark only V4 thinking models in registry metadata.
@@ -1246,6 +1302,56 @@ export function providerMatchesRegistryTransport(
   if (provider.adapter !== entry.adapter) return false;
   if (provider.authMode !== undefined && provider.authMode !== "key") return false;
   return normalizedProviderEndpoint(provider.baseUrl) === normalizedProviderEndpoint(entry.baseUrl);
+}
+
+/**
+ * Resolve the registry entry a configured provider actually points at, by TRANSPORT
+ * rather than by name.
+ *
+ * `providerMatchesRegistryTransport` answers "does the row named X still point at X's
+ * documented destination", which is the right question for routing but the wrong one
+ * for user-facing metadata: the GUI lets a preset be saved under any name, and a
+ * renamed row would silently lose a usage restriction it still needs to display.
+ *
+ * Only fixed key destinations are matched. Entries with an overridable or templated
+ * base URL are skipped, because their configured URL cannot identify one vendor route.
+ */
+export function registryEntryForProviderDestination(
+  provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
+): ProviderRegistryEntry | undefined {
+  if (typeof provider.baseUrl !== "string" || !provider.baseUrl) return undefined;
+  if (provider.authMode !== undefined && provider.authMode !== "key") return undefined;
+  const endpoint = normalizedProviderEndpoint(provider.baseUrl);
+  return PROVIDER_REGISTRY.find(entry =>
+    entry.authKind === "key"
+    && !entry.allowBaseUrlOverride
+    && !/\{[^}]*\}/.test(entry.baseUrl)
+    && entry.adapter === provider.adapter
+    && normalizedProviderEndpoint(entry.baseUrl) === endpoint);
+}
+
+/**
+ * Resolve a registry-only default for a mixed-wire provider. Defaults only move a provider
+ * between the two OpenAI-shaped adapters and never override a provider configured on another
+ * wire. The resolver receives the allow-list so this helper cannot accidentally widen the
+ * adapter-selection boundary when a new registry entry is added.
+ */
+export function providerModelWireDefault(
+  id: string,
+  provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
+  modelId: string,
+  allowedWires: ReadonlySet<string>,
+  inbound: InboundWire,
+): string | undefined {
+  if (!allowedWires.has(provider.adapter)) return undefined;
+  const entry = getProviderRegistryEntry(id);
+  if (!entry?.modelWireDefaults || !providerMatchesRegistryTransport(id, provider)) return undefined;
+  const declared = entry.modelWireDefaults[modelId.trim().toLowerCase()];
+  if (declared === undefined) return undefined;
+  // A bare string applies to every inbound; the object form only to the listed ones.
+  if (typeof declared !== "string" && !declared.inbound.includes(inbound)) return undefined;
+  const wire = typeof declared === "string" ? declared : declared.wire;
+  return wire !== undefined && allowedWires.has(wire) ? wire : undefined;
 }
 
 /**

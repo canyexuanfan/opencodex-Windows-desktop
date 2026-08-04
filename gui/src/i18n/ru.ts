@@ -1,7 +1,7 @@
 import type { TKey } from "./en";
 
 export const ru: Record<TKey, string> = {
-  // sidebar / nav / common
+
   "nav.dashboard": "Дашборд",
   "nav.startup": "Безопасность запуска",
   "nav.providers": "Провайдеры",
@@ -38,8 +38,6 @@ export const ru: Record<TKey, string> = {
   "errorBoundary.message": "При отображении этого раздела произошла ошибка. Перезагрузите его, чтобы повторить попытку.",
   "errorBoundary.details": "Ошибка",
   "errorBoundary.reload": "Перезагрузить",
-
-  // startup health
   "startup.title": "Безопасность запуска",
   "startup.subtitle": "Проверьте, сможет ли Codex подключиться к opencodex после перезагрузки, прежде чем локальный прокси вызовет бесконечное переподключение.",
   "startup.refresh": "Обновить",
@@ -121,8 +119,6 @@ export const ru: Record<TKey, string> = {
   "startup.codexRuntime.clampHidden": "Некоторые уровни рассуждений скрыты, потому что OpenCodex использует Codex {version}.",
   "startup.codexRuntime.clampHiddenWithEfforts": "Некоторые уровни рассуждений скрыты, потому что OpenCodex использует Codex {version} (удалены: {efforts}).",
   "startup.codexRuntime.olderBinary": "OpenCodex использует более старый бинарник Codex ({version}). Доступна более новая установка.",
-
-  // dashboard
   "dash.subtitle": "Актуальное состояние локального прокси opencodex, его провайдеров и моделей, маршрутизируемых в Codex.",
   "dash.workspace.overview": "Обзор",
   "dash.workspace.sections": "Разделы",
@@ -270,8 +266,6 @@ export const ru: Record<TKey, string> = {
   "dash.updateStatus.restarting": "Обновление установлено. Перезапуск прокси.",
   "dash.updateStatus.succeeded": "Обновление завершено.",
   "dash.updateStatus.failed": "Обновление не удалось.",
-
-  // providers
   "prov.subtitle": "Настройте вышестоящих провайдеров, которых opencodex маршрутизирует в Codex. Войдите в аккаунт, добавьте провайдера или отредактируйте конфигурацию вручную.",
   "prov.add": "Добавить провайдера",
   "prov.editJson": "Редактировать JSON",
@@ -379,8 +373,6 @@ export const ru: Record<TKey, string> = {
   "prov.manageCodexAccounts": "Управление аккаунтами Codex",
   "prov.openaiApiMissing": "Требуется API-ключ",
   "prov.openaiApiSetup": "Настроить API-ключ",
-
-  // models
   "models.subtitle": "Управляйте тем, какие модели видит Codex — нативные GPT (сквозной проброс) и модели маршрутизируемых провайдеров, сгруппированные по провайдеру (нажмите на заголовок, чтобы свернуть группу). Скрытые модели исчезают из каталога и селектора, но остаются вызываемыми по точному id. Изменения применяются на следующем ходе Codex — opencodex сбрасывает 5-минутный кэш моделей Codex, поэтому перезапуск не требуется.",
   "models.nativeGroupLabel": "Нативные OpenAI",
   "models.nativeHint": "Модели сквозного проброса используют режим аккаунта (пул или прямое подключение), выбранный на странице «Провайдеры». Отключение модели скрывает её из селектора Codex (запись в каталоге сохраняется, поэтому при повторном включении она восстанавливается в точности).",
@@ -476,8 +468,6 @@ export const ru: Record<TKey, string> = {
   "models.allowlistLabel": "Только выбранные",
   "models.allowlistHint": "В каталог попадают только отмеченные модели (пусто = все). Полезно для провайдеров, предоставляющих тысячи моделей.",
   "models.selectedCount": "Выбрано: {n}",
-
-  // subagents
   "sub.subtitle": "{cmd} в Codex объявляет как переопределения только первые 5 моделей (по приоритету). Выберите здесь до 5 моделей — нативные gpt или маршрутизируемые — и opencodex задаст им приоритет в каталоге так, чтобы именно они шли первыми. Любую другую модель по-прежнему можно вызвать по её точному имени; эта настройка управляет только тем, что отображается.",
   "sub.featured": "Избранные",
   "sub.orderHint": "Показанный здесь порядок задаёт позиции 1–5 в верхней части селектора моделей Codex и кандидатов в модели по умолчанию для {cmd}.",
@@ -503,8 +493,6 @@ export const ru: Record<TKey, string> = {
   "sub.workspace.selectModel": "Выберите модель",
   "sub.workspace.selectModelDesc": "Выберите модель из списка, чтобы увидеть детали и добавить её в избранные для spawn_agent.",
   "sub.workspace.selector": "Публичный селектор",
-
-  // logs
   "logs.title": "Журнал запросов",
   "logs.tabLogs": "Логи",
   "logs.tabDebug": "Отладка",
@@ -594,8 +582,6 @@ export const ru: Record<TKey, string> = {
   "logs.details": "Детали",
   "logs.detailTitle": "Детали запроса",
   "logs.detailRaw": "Сырая запись лога",
-
-  // debug page
   "debug.title": "Отладка",
   "debug.subtitle": "Включаемая по желанию диагностика транспорта провайдеров и извлечения данных использования. Ошибки запросов и 502 остаются на вкладке «Логи».",
   "debug.debug": "Отладка провайдера",
@@ -623,8 +609,6 @@ export const ru: Record<TKey, string> = {
   "debug.noLines.provider": "Отладка провайдера включена, но записываются только аномалии транспорта (потерянные или повреждённые фреймы, а также события подключения и повторов Cursor). Успешный запрос через провайдера вроде Anthropic может не дать ни одной строки.",
   "debug.noLines.usage": "Извлечение данных использования включено, но пока ничего не зафиксировано. Отправьте чат или запрос через Codex — и записи появятся здесь.",
   "debug.noLines.injection": "Лог инъекций включён, но пока ничего не зафиксировано. Он записывает инъекции мультиагентных инструкций и решения об ограничении уровня рассуждений на ходах совместной работы (collab) и подагентов.",
-
-  // usage page
   "usage.title": "Использование",
   "usage.subtitle": "Локальный учёт токенов вашего прокси. Отсутствующие данные никогда не показываются как ноль.",
   "usage.loading": "Загрузка данных об использовании…",
@@ -666,7 +650,6 @@ export const ru: Record<TKey, string> = {
   "usage.dayFri": "Пт",
   "usage.heatmap.tooltipTokens": "{tokens} токенов",
   "usage.heatmap.tooltipRequests": "{requests} запросов",
-
   "nav.storage": "Хранилище",
   "storage.title": "Хранилище",
   "storage.subtitle": "Смотрите, что занимает CODEX_HOME. Очистка не затрагивает активные сессии.",
@@ -733,7 +716,6 @@ export const ru: Record<TKey, string> = {
   "storage.cleanup.err.fs_failed_trash": "Ошибка файловой очистки. Часть изменений могла уже примениться — проверьте {trashDir} и manifest.json на восстанавливаемые файлы.",
   "storage.cleanup.err.db_reconcile_failed": "Не удалось обновить базу состояния Codex.",
   "storage.cleanup.err.cleanup_failed": "Не удалось выполнить очистку.",
-
   "storage.trash.title": "Карантин",
   "storage.trash.help": "Архивные сессии в CODEX_HOME/.trash. Восстановление возвращает JSONL и строки потоков.",
   "storage.trash.empty": "Нет записей в карантине.",
@@ -807,8 +789,6 @@ export const ru: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "Нет архивных кандидатов под цель.",
   "storage.policy.doneQuarantine": "Политика отправила в карантин {count} файл(ов) ({size}).",
   "storage.policy.donePermanent": "Политика навсегда удалила {count} файл(ов) ({size}).",
-
-  // add-provider modal
   "modal.addNamed": "Добавить: {label}",
   "modal.add": "Добавить провайдера",
   "modal.search": "Поиск провайдеров…",
@@ -1178,7 +1158,6 @@ export const ru: Record<TKey, string> = {
   "anthropicPool.saveFailed": "Не удалось сохранить настройки пула Claude.",
   "anthropicPool.on": "Вкл",
   "anthropicPool.off": "Выкл",
-
   "accountPool.strategy": "Стратегия ротации",
   "accountPool.strategyDesc": "Как новые сессии выбирают аккаунт из пула.",
   "accountPool.strategyQuota": "Квота",
@@ -1227,7 +1206,6 @@ export const ru: Record<TKey, string> = {
   "codexAuth.tokenExpired": "Токен истёк — переавторизуйте этот аккаунт",
   "codexAuth.mainTokenExpired": "Токен истёк — повторите вход через приложение Codex",
   "codexAuth.emailCollision": "Этот аккаунт совпадает с вашим основным входом Codex. Используйте другой аккаунт.",
-
   "codexAuth.resetCreditsTitle": "Кредиты сброса",
   "codexAuth.resetCreditsAvailable": "У вас доступно кредитов сброса: {count}.",
   "codexAuth.resetCreditsDesc": "Каждый кредит мгновенно сбрасывает ваши текущие часовые и недельные лимиты использования.",
@@ -1253,8 +1231,6 @@ export const ru: Record<TKey, string> = {
   "codexAuth.creditNextBadge": "СЛЕД.",
   "codexAuth.creditGranted": "Начислен {date}",
   "codexAuth.creditExpires": "Истекает {date} (осталось {days} дн.)",
-
-  // api access page
   "api.title": "Доступ по API",
   "api.subtitle": "Используйте сгенерированные API-ключи для доступа к прокси opencodex из внешних приложений. Ключи аутентифицируются через заголовок {authHeader} или {altHeader}.",
   "api.endpointNote": "Используйте базовый URL с OpenAI-совместимыми клиентами. Responses и Chat Completions доступны под /v1.",
@@ -1329,7 +1305,6 @@ export const ru: Record<TKey, string> = {
   "api.keysLoadFailed": "Не удалось загрузить API-ключи.",
   "api.createFailed": "Не удалось создать API-ключ.",
   "api.deleteFailed": "Не удалось удалить API-ключ.",
-  // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Используйте GPT, Gemini и другие модели внутри Claude Code.",
   "claude.pageTitle": "Claude Code",
@@ -1487,8 +1462,6 @@ export const ru: Record<TKey, string> = {
   "claudeDesktop.health.stats": "{count} запр. / {errors} ошиб.",
   "claudeDesktop.effort.supported": "effort",
   "claudeDesktop.effort.displayOnly": "effort (только отображение)",
-
-  // Combos workspace
   "cws.loading": "Загрузка комбо…",
   "cws.loadFailed": "Не удалось загрузить комбо.",
   "cws.saveFailed": "Не удалось сохранить комбо.",
@@ -1585,8 +1558,6 @@ export const ru: Record<TKey, string> = {
   "cws.err.invalidStickyLimit": "Число успешных запросов до ротации должно быть целым от 1 до 100.",
   "cws.err.invalidWeight": "Каждый вес round-robin должен быть целым числом от 1 до 10000.",
   "cws.err.noEnabledTarget": "Хотя бы одна цель должна использовать включённого провайдера.",
-
-
   "dash.injectionManage": "Открыть настройки",
   "sub.settings": "Настройки",
   "sub.sections": "Разделы подагентов",
@@ -1594,4 +1565,90 @@ export const ru: Record<TKey, string> = {
   "sub.delegation.modelHint": "Модель, к которой Codex обращается первой, когда передаёт работу. Список выше — кого он вообще может вызвать, а здесь выбирается первый в очереди.",
   "dash.syncModelsHint": "Перезаписывает каталог моделей Codex по подключённым провайдерам.",
   "dash.syncRun": "Синхронизировать",
+  "provider.name.volcengine": "Volcengine Ark",
+  "provider.name.volcengineCodingPlan": "Volcengine Ark — тариф Coding",
+  "provider.name.volcengineAgentPlan": "Volcengine Ark — тариф Agent",
+  "prov.removedDefault": "Провайдер \"{name}\" удалён. Провайдером по умолчанию теперь является \"{defaultProvider}\".",
+  "prov.removeLastProvider": "Нельзя удалить этого провайдера, если ни один другой включённый провайдер не может стать провайдером по умолчанию.",
+  "prov.removeHasDependentCombos": "Сначала удалите или обновите зависимые комбо: {combos}.",
+  "prov.setDefault": "Сделать основным",
+  "prov.setDefaultSuccess": "\"{name}\" теперь провайдер по умолчанию.",
+  "prov.setDefaultFail": "Не удалось сделать \"{name}\" провайдером по умолчанию.",
+  "prov.defaultDisabled": "Сначала включите этого провайдера, затем сделайте его основным.",
+  "prov.updateFail": "Не удалось обновить этого провайдера.",
+  "prov.networkError": "Ошибка сети. Проверьте, что прокси запущен, и повторите попытку.",
+  "usage.range.available": "Доступная история",
+  "usage.historyTruncated": "Итоги охватывают только доступную историю, поскольку старые данные не загружены.",
+  "pws.removeDefaultConfirmBody": "Удалить провайдера по умолчанию \"{name}\"? \"{defaultProvider}\" станет провайдером по умолчанию. Это действие нельзя отменить.",
+  "pws.connectionNotApplicable": "Не применимо — этот провайдер использует статический каталог моделей.",
+  "codexAuth.autoSwitchQuotaDesc": "Квота: при использовании {threshold}% или выше следующий запрос может перейти на подходящий аккаунт с меньшим использованием, включая уже привязанную задачу; Go/Free используют только 30 дней.",
+  "codexAuth.autoSwitchQuotaOffDesc": "Проактивное переключение по использованию выключено. Назначение новых/непривязанных задач и восстановление после сбоев остаются активными.",
+  "codexAuth.autoSwitchRoundRobinDesc": "Round-robin не использует этот порог и продолжает ротировать новые/непривязанные задачи.",
+  "codexAuth.autoSwitchFillFirstDesc": "Fill-first: {threshold}% — порог исчерпания для новых/непривязанных задач; здоровые привязанные задачи сохраняют аккаунт.",
+  "codexAuth.autoSwitchFillFirstOffDesc": "У fill-first нет порога использования для новых/непривязанных задач; cooldown, повторная аутентификация и восстановление после сбоев всё ещё могут менять маршрутизацию.",
+  "codexAuth.failureRecoveryNote": "Восстановление после сбоев выполняется отдельно: отказ 429/402 до вывода, cooldown, повторная аутентификация, исключение или настроенный failover могут выбрать другой подходящий аккаунт.",
+  "accountPool.strategyHintQuota": "Quota может перепривязать существующую задачу при следующем запросе после превышения порога использования.",
+  "accountPool.strategyHintRoundRobin": "Round-robin ротирует только задачи без действующей привязки; порог использования не меняет обычную ротацию.",
+  "accountPool.strategyHintFillFirst": "Fill-first использует порог как точку исчерпания для непривязанных задач; здоровые привязанные задачи сохраняют affinity.",
+  "accountPool.unboundDefinition": "Новая/непривязанная задача — запрос без текущей привязки к аккаунту; видимая существующая задача может стать непривязанной после сброса прокси или affinity.",
+  "api.modelsNoMatch": "Нет моделей, соответствующих «{query}».",
+  "api.workspace.sections": "Разделы API",
+  "api.section.keys": "Ключи",
+  "api.section.connect": "Подключение",
+  "api.section.endpoints": "Эндпоинты",
+  "api.section.models": "Модели",
+  "api.section.examples": "Примеры",
+  "api.clientConfig.title": "Конфигурация клиента",
+  "api.clientConfig.rowsLabel": "Подключение клиента",
+  "api.clientConfig.details": "Подробнее",
+  "api.clientConfig.detailsAria": "Подробности конфигурации {client}",
+  "api.clientConfig.copyAria": "Скопировать JSON конфигурации {client}",
+  "api.clientConfig.downloadAria": "Скачать конфигурацию {client}",
+  "api.clientConfig.rowMeta": "{destination} · моделей: {count}",
+  "api.clientConfig.rowError": "Не удалось собрать конфигурацию {client}.",
+  "api.clientConfig.copiedAnnounceClient": "JSON конфигурации {client} скопирован в буфер обмена.",
+  "api.clientConfig.clientOpencode": "OpenCode",
+  "api.clientConfig.clientPi": "Pi",
+  "api.clientConfig.copy": "Копировать JSON",
+  "api.clientConfig.download": "Скачать",
+  "api.clientConfig.loading": "Формируется конфигурация клиента…",
+  "api.clientConfig.jsonLabel": "JSON конфигурации {client}",
+  "api.clientConfig.destination": "Целевой файл",
+  "api.clientConfig.envHint": "Задайте ключ перед запуском",
+  "api.clientConfig.mergeWarning": "Объедините это с целевым файлом. Замена удалит ваши другие провайдеры и настройки MCP.",
+  "api.clientConfig.modelCount": "Экспортировано моделей: {count}",
+  "api.clientConfig.missingLimits": "У {count} из {total} моделей нет лимита контекста; клиент применит свои значения по умолчанию.",
+  "api.clientConfig.noKeyYet": "Для {env} пока нет ключа. Создайте ключ выше, прежде чем использовать конфигурацию вне loopback.",
+  "api.clientConfig.loadFailed": "Не удалось прочитать список моделей, поэтому конфигурация клиента не создана.",
+  "api.clientConfig.copiedAnnounce": "JSON конфигурации клиента скопирован в буфер обмена.",
+  "api.clientConfig.copyFailed": "Не удалось скопировать JSON конфигурации клиента.",
+  "api.clientConfig.downloadedAnnounce": "Файл {filename} скачан. Пока ничего не изменилось — объедините его с {destination} самостоятельно.",
+  "api.clientConfig.whereDisclosure": "Куда положить этот файл",
+  "api.clientConfig.whereBody": "Путь выше — глобальное расположение. Файл конфигурации проекта в рабочем каталоге имеет приоритет, а ключ читается из переменной окружения, указанной в конфигурации, и никогда не хранится в этом файле.",
+  "api.auth.endpoint": "Эндпоинт",
+  "api.auth.required": "Обязателен",
+  "api.auth.accepted": "Принимается",
+  "api.auth.rejected": "Не принимается",
+  "api.auth.testProtocol": "Проверить {protocol}",
+  "api.auth.testNeedsFreshKey": "Чтобы выполнить проверку с аутентификацией, создайте ключ и оставьте его одноразовое значение на экране.",
+  "api.key.name": "Имя ключа",
+  "api.key.rename": "Переименовать",
+  "api.key.saveName": "Сохранить имя",
+  "api.key.renaming": "Сохранение…",
+  "api.key.renameFailed": "Не удалось переименовать ключ. Введённое имя сохранено.",
+  "api.key.deleting": "Удаление…",
+  "api.key.copyFailed": "Не удалось скопировать ключ. Выделите и скопируйте его вручную, прежде чем закрыть панель.",
+  "api.attribution.title": "Использование по ключам",
+  "api.attribution.requests7d": "Запросы за 7 дней",
+  "api.attribution.totalRequests": "Всего учтённых запросов",
+  "api.attribution.totalRequestsAvailable": "Запросы в доступной истории",
+  "api.attribution.sinceAvailable": "Доступная атрибуция с",
+  "api.attribution.lastUsed": "Последнее использование",
+  "api.attribution.since": "Учёт ведётся с",
+  "api.attribution.neverUsed": "Не использовался с начала учёта",
+  "api.attribution.unavailable": "Нет данных",
+  "api.attribution.unavailableDetail": "Использование ещё не учтено. Запросы до начала учёта нельзя отнести к ключам задним числом.",
+  "api.attribution.ambiguous": "Два ключа используют один и тот же ID, поэтому нельзя определить, чьё это использование. Задайте каждому ключу уникальный ID в файле конфигурации.",
+  "api.attribution.railAmbiguous": "дубль ID",
+
 };

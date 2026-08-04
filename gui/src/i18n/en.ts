@@ -1,7 +1,7 @@
 // English — source of truth. Its keys define the TKey type; ko/zh/ja must match (compile-checked).
 // Strings with {cmd} render a <code> chip via <Trans>; {var} are plain interpolations.
 export const en = {
-  // sidebar / nav / common
+
   "nav.dashboard": "Dashboard",
   "nav.startup": "Startup",
   "nav.providers": "Providers",
@@ -38,8 +38,6 @@ export const en = {
   "errorBoundary.message": "This section hit a rendering error. Reload it to try again.",
   "errorBoundary.details": "Error",
   "errorBoundary.reload": "Reload",
-
-  // startup health
   "startup.title": "Startup safety",
   "startup.subtitle": "Verify that Codex can reach opencodex after a restart, before local proxy routing becomes a reconnect loop.",
   "startup.refresh": "Refresh",
@@ -121,8 +119,6 @@ export const en = {
   "startup.codexRuntime.clampHidden": "Some reasoning effort options were hidden because OpenCodex used Codex {version}.",
   "startup.codexRuntime.clampHiddenWithEfforts": "Some reasoning effort options were hidden because OpenCodex used Codex {version} (removed: {efforts}).",
   "startup.codexRuntime.olderBinary": "OpenCodex is using an older Codex binary ({version}). A newer installation is available.",
-
-  // dashboard
   "dash.subtitle": "Live status of the local opencodex proxy, its providers, and the models routed into Codex.",
   "dash.workspace.overview": "Overview",
   "dash.workspace.sections": "Sections",
@@ -134,7 +130,6 @@ export const en = {
   "dash.providers": "Providers",
   "dash.tokens30d": "Tokens (30d)",
   "dash.coverage": "{pct} coverage",
-  // memory observability card (read-only /api/system/memory)
   "dash.mem.title": "Memory observability",
   "dash.mem.hint": "Read-only runtime diagnostics. Observed memory is max(RSS, external, ArrayBuffers) so Windows working-set trimming does not hide committed retention.",
   "dash.mem.rss": "Resident set (RSS)",
@@ -274,8 +269,6 @@ export const en = {
   "dash.updateStatus.restarting": "Update installed. Restarting proxy.",
   "dash.updateStatus.succeeded": "Update finished.",
   "dash.updateStatus.failed": "Update failed.",
-
-  // providers
   "prov.subtitle": "Configure the upstream providers opencodex routes into Codex. Log in with an account, add a provider, or edit the raw config.",
   "prov.add": "Add Provider",
   "prov.editJson": "Edit JSON",
@@ -383,8 +376,6 @@ export const en = {
   "prov.manageCodexAccounts": "Manage Codex accounts",
   "prov.openaiApiMissing": "API key required",
   "prov.openaiApiSetup": "Set up API key",
-
-  // models
   "models.subtitle": "Toggle which models Codex sees — native GPT passthrough and routed providers, grouped by provider (click a header to collapse). Hidden models stay off the catalog + model picker but remain directly callable by exact id. Changes apply on the next Codex turn — opencodex invalidates Codex's 5-min model cache so no restart is needed.",
   "models.nativeGroupLabel": "OpenAI native",
   "models.nativeHint": "Passthrough models use the Pool or Direct account option selected on Providers. Toggling one off hides it from the Codex picker (the catalog entry is kept, so re-enabling restores it exactly).",
@@ -480,8 +471,6 @@ export const en = {
   "models.allowlistLabel": "Only selected",
   "models.allowlistHint": "Only checked models ship to the catalog (empty = all). Useful for providers exposing thousands of models.",
   "models.selectedCount": "{n} selected",
-
-  // subagents
   "sub.subtitle": "Codex's {cmd} advertises only the first 5 models (by priority) as overrides. Pick up to 5 here — native gpt or routed — and opencodex sets their catalog priority so exactly these lead. Any other model is still callable by its exact name; this only controls what's shown.",
   "sub.featured": "Featured",
   "sub.orderHint": "The order shown here sets positions 1–5 at the top of the Codex model picker and the default model candidates for {cmd}.",
@@ -511,8 +500,6 @@ export const en = {
   "sub.workspace.selectModel": "Select a model",
   "sub.workspace.selectModelDesc": "Pick a model from the list to see details and feature it for spawn_agent.",
   "sub.workspace.selector": "Public selector",
-
-  // logs
   "logs.title": "Request Logs",
   "logs.tabLogs": "Logs",
   "logs.tabDebug": "Debug",
@@ -602,8 +589,6 @@ export const en = {
   "logs.details": "Details",
   "logs.detailTitle": "Request details",
   "logs.detailRaw": "Raw log entry",
-
-  // debug page
   "debug.title": "Debug",
   "debug.subtitle": "Opt-in provider transport and usage-extraction diagnostics. Request errors and 502s stay on the Logs tab.",
   "debug.debug": "Provider debug",
@@ -631,8 +616,6 @@ export const en = {
   "debug.noLines.provider": "Provider debug is on, but it only records transport anomalies (dropped or malformed frames, and Cursor dial/retry events). A clean request through a provider like Anthropic can produce no lines.",
   "debug.noLines.usage": "Usage extraction is on but nothing has been captured yet. Send a chat/request through Codex and it appears here.",
   "debug.noLines.injection": "Injection log is on but nothing has been captured yet. It records multi-agent guidance injection and effort-cap decisions on collab and sub-agent turns.",
-
-  // usage page
   "usage.title": "Usage",
   "usage.subtitle": "Local token accounting from your proxy. Missing usage is never shown as zero.",
   "usage.loading": "Loading usage data…",
@@ -674,7 +657,6 @@ export const en = {
   "usage.dayFri": "Fri",
   "usage.heatmap.tooltipTokens": "{tokens} tokens",
   "usage.heatmap.tooltipRequests": "{requests} requests",
-
   "nav.storage": "Storage",
   "storage.title": "Storage",
   "storage.subtitle": "See what’s using CODEX_HOME. Cleanup never touches active sessions.",
@@ -741,7 +723,6 @@ export const en = {
   "storage.cleanup.err.fs_failed_trash": "Filesystem cleanup failed. Some changes may already be applied — check {trashDir} and manifest.json for recoverable files.",
   "storage.cleanup.err.db_reconcile_failed": "Could not update Codex state database.",
   "storage.cleanup.err.cleanup_failed": "Cleanup failed.",
-
   "storage.trash.title": "Quarantine",
   "storage.trash.help": "Archived sessions moved to CODEX_HOME/.trash. Restore puts JSONL files and thread rows back.",
   "storage.trash.empty": "No quarantined entries.",
@@ -815,8 +796,6 @@ export const en = {
   "storage.policy.skippedEmpty": "No archived candidates matched the target.",
   "storage.policy.doneQuarantine": "Policy quarantined {count} file(s) ({size}).",
   "storage.policy.donePermanent": "Policy permanently deleted {count} file(s) ({size}).",
-
-  // add-provider modal
   "modal.addNamed": "Add: {label}",
   "modal.add": "Add provider",
   "modal.search": "Search providers…",
@@ -981,7 +960,7 @@ export const en = {
   "pws.modelsTruncated": "Showing first {shown} of {total} models. Filter to narrow the list.",
   "pws.retry": "Retry",
   "pws.noModels": "No models discovered for this provider.",
- "pws.noModelMatch": "No models match the filter.",
+  "pws.noModelMatch": "No models match the filter.",
   "pws.adapterBaseRequired": "Adapter and base URL are required.",
   "pws.addAccount": "Add account",
   "pws.addKey": "Add API key",
@@ -1097,7 +1076,7 @@ export const en = {
   "modal.apiKeyTransportBearer": "Authorization: Bearer",
   "modal.apiKeyPlaceholder": "sk-… (or $ENV_VAR)",
   "modal.defaultModelPlaceholder": "e.g. gpt-5.5",
- "modal.baseUrlPlaceholder": "https://...",
+  "modal.baseUrlPlaceholder": "https://...",
   "modal.baseUrlPlaceholderError": "Base URL contains an unresolved {placeholder}. Replace it with your actual value.",
   "modal.baseUrlPlaceholderHint": "Replace the {placeholder} in the Base URL with your actual Account ID before adding.",
   "modal.adding": "Adding…",
@@ -1173,7 +1152,6 @@ export const en = {
   "codexAuth.autoSwitchThresholdInvalid": "Enter a whole number from 1 to 100",
   "codexAuth.autoSwitchUpdated": "Automatic account switching updated",
   "codexAuth.autoSwitchUpdateFailed": "The update could not be confirmed. The last confirmed value is shown.",
-
   "anthropicPool.title": "Claude account pool (experimental)",
   "anthropicPool.enabledDesc": "On 429, cools the account and fails over. New sessions prefer usage under {threshold}% (5-hour bar).",
   "anthropicPool.disabledDesc": "Uses only the active Claude account. Enable only if you accept experimental routing.",
@@ -1187,7 +1165,6 @@ export const en = {
   "anthropicPool.saveFailed": "Claude pool settings could not be saved.",
   "anthropicPool.on": "On",
   "anthropicPool.off": "Off",
-
   "accountPool.strategy": "Rotation strategy",
   "accountPool.strategyDesc": "How new sessions pick an account from the pool.",
   "accountPool.strategyQuota": "Quota",
@@ -1202,7 +1179,6 @@ export const en = {
   "accountPool.stickyLimitInvalid": "Enter a whole number from 1 to 100",
   "accountPool.strategyLoadFailed": "Rotation strategy could not be loaded.",
   "accountPool.strategyUpdateFailed": "Rotation strategy could not be saved.",
-
   "codexAuth.switched": "{email} is selected for the next request",
   "codexAuth.loadFailed": "Codex account settings could not be loaded.",
   "codexAuth.switchFailed": "The account could not be switched. Your previous selection is unchanged.",
@@ -1237,7 +1213,6 @@ export const en = {
   "codexAuth.tokenExpired": "Token expired — re-authenticate this account",
   "codexAuth.mainTokenExpired": "Token expired — sign in again via Codex App login",
   "codexAuth.emailCollision": "This account matches your main Codex login. Use a different account.",
-
   "codexAuth.resetCreditsTitle": "Reset Credits",
   "codexAuth.resetCreditsAvailable": "You have {count} reset credit(s) available.",
   "codexAuth.resetCreditsDesc": "Each credit resets your current hourly and weekly usage limits instantly.",
@@ -1263,8 +1238,6 @@ export const en = {
   "codexAuth.creditNextBadge": "NEXT",
   "codexAuth.creditGranted": "Granted {date}",
   "codexAuth.creditExpires": "Expires {date} ({days}d left)",
-
-  // api access page
   "api.title": "API Access",
   "api.subtitle": "Use generated API keys to access the opencodex proxy from external apps. Keys authenticate via the {authHeader} or {altHeader} header.",
   "api.baseUrl": "Base URL",
@@ -1339,7 +1312,6 @@ export const en = {
   "api.keysLoadFailed": "Could not load API keys.",
   "api.createFailed": "Could not create API key.",
   "api.deleteFailed": "Could not delete API key.",
-  // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Use GPT, Gemini, and other models inside Claude Code.",
   "claude.pageTitle": "Claude Code",
@@ -1411,8 +1383,6 @@ export const en = {
   "claude.networkError": "Network error — is the proxy running?",
   "claude.toggleAria": "Toggle Claude connection",
   "claude.none": "None",
-
-  // Combos workspace
   "cws.loading": "Loading combos…",
   "cws.loadFailed": "Could not load combos.",
   "cws.saveFailed": "Could not save combo.",
@@ -1595,6 +1565,91 @@ export const en = {
   "claudeDesktop.health.stats": "{count} req / {errors} err",
   "claudeDesktop.effort.supported": "effort",
   "claudeDesktop.effort.displayOnly": "effort (display only)",
+  "provider.name.volcengine": "Volcengine Ark",
+  "provider.name.volcengineCodingPlan": "Volcengine Ark Coding Plan",
+  "provider.name.volcengineAgentPlan": "Volcengine Ark Agent Plan",
+  "prov.removedDefault": "Removed \"{name}\". Default provider is now \"{defaultProvider}\".",
+  "prov.removeLastProvider": "You can't remove this provider when no other enabled provider can become the default.",
+  "prov.removeHasDependentCombos": "Remove or update these dependent combos first: {combos}.",
+  "prov.setDefault": "Set as default",
+  "prov.setDefaultSuccess": "\"{name}\" is now the default provider.",
+  "prov.setDefaultFail": "Couldn't set \"{name}\" as the default provider.",
+  "prov.defaultDisabled": "Enable this provider before making it the default.",
+  "prov.updateFail": "Couldn't update this provider.",
+  "prov.networkError": "Network error. Check that the proxy is running and try again.",
+  "usage.range.available": "Available history",
+  "usage.historyTruncated": "Totals cover available history only because older usage was not loaded.",
+  "pws.removeDefaultConfirmBody": "Remove default provider \"{name}\"? \"{defaultProvider}\" will become the default provider. This cannot be undone.",
+  "pws.connectionNotApplicable": "Not applicable — this provider uses a static model catalog.",
+  "codexAuth.autoSwitchQuotaDesc": "Quota: at {threshold}% usage or above, the next request may move to a lower-usage eligible account, including an already-bound task; Go/Free use 30d only.",
+  "codexAuth.autoSwitchQuotaOffDesc": "Usage-based proactive switching is off. New/unbound assignment and failure recovery still apply.",
+  "codexAuth.autoSwitchRoundRobinDesc": "Round-robin assignment does not use this threshold; it continues to rotate new/unbound tasks.",
+  "codexAuth.autoSwitchFillFirstDesc": "Fill-first: {threshold}% is the drain point for new/unbound tasks; healthy bound tasks keep their account.",
+  "codexAuth.autoSwitchFillFirstOffDesc": "Fill-first has no usage drain point for new/unbound tasks; cooldown, reauthentication, and failure recovery can still move routing.",
+  "codexAuth.failureRecoveryNote": "Failure recovery is separate: a request rejected before output with 429/402, cooldown, reauthentication, exclusion, or configured transient failover may select another eligible account.",
+  "accountPool.strategyHintQuota": "Quota can also rebind an existing task on its next request after the usage threshold is crossed.",
+  "accountPool.strategyHintRoundRobin": "Round-robin rotates only tasks without a live binding; the usage threshold does not change normal rotation.",
+  "accountPool.strategyHintFillFirst": "Fill-first uses the threshold as a drain point for unbound tasks; healthy bound tasks keep affinity.",
+  "accountPool.unboundDefinition": "New/unbound task means a request with no current account binding; an existing visible task can become unbound after a proxy or affinity reset.",
+  "api.workspace.sections": "API sections",
+  "api.section.keys": "Keys",
+  "api.section.connect": "Connect",
+  "api.section.endpoints": "Endpoints",
+  "api.section.models": "Models",
+  "api.section.examples": "Examples",
+  "api.modelsNoMatch": "No models match “{query}”.",
+  "api.clientConfig.title": "Client config",
+  "api.clientConfig.rowsLabel": "Connect a client",
+  "api.clientConfig.details": "Details",
+  "api.clientConfig.detailsAria": "{client} config details",
+  "api.clientConfig.copyAria": "Copy {client} config JSON",
+  "api.clientConfig.downloadAria": "Download {client} config",
+  "api.clientConfig.rowMeta": "{destination} · {count} model(s)",
+  "api.clientConfig.rowError": "Could not build the {client} config.",
+  "api.clientConfig.copiedAnnounceClient": "{client} config JSON copied to the clipboard.",
+  "api.clientConfig.clientOpencode": "OpenCode",
+  "api.clientConfig.clientPi": "Pi",
+  "api.clientConfig.copy": "Copy JSON",
+  "api.clientConfig.download": "Download",
+  "api.clientConfig.loading": "Building client config…",
+  "api.clientConfig.jsonLabel": "{client} config JSON",
+  "api.clientConfig.destination": "Destination file",
+  "api.clientConfig.envHint": "Set the key before launching",
+  "api.clientConfig.mergeWarning": "Merge this into the destination file. Replacing it would drop your other providers and MCP settings.",
+  "api.clientConfig.modelCount": "{count} model(s) exported",
+  "api.clientConfig.missingLimits": "{count} of {total} model(s) ship without a context limit; the client applies its own defaults.",
+  "api.clientConfig.noKeyYet": "{env} has no key behind it yet. Generate a key above before using this config off loopback.",
+  "api.clientConfig.loadFailed": "Could not read the model list, so no client config was produced.",
+  "api.clientConfig.copiedAnnounce": "Client config JSON copied to the clipboard.",
+  "api.clientConfig.copyFailed": "Could not copy the client config JSON.",
+  "api.clientConfig.downloadedAnnounce": "Downloaded {filename}. Nothing changed yet — merge it into {destination} yourself.",
+  "api.clientConfig.whereDisclosure": "Where this file goes",
+  "api.clientConfig.whereBody": "The destination above is the global path. A project-local config file in the working directory takes precedence over it, and the client reads the key from the environment variable named in the config — never from this file.",
+  "api.auth.endpoint": "Endpoint",
+  "api.auth.required": "Required",
+  "api.auth.accepted": "Accepted",
+  "api.auth.rejected": "Not accepted",
+  "api.auth.testProtocol": "Test {protocol}",
+  "api.auth.testNeedsFreshKey": "Generate a key and keep its one-time value on screen to run an authenticated test.",
+  "api.key.name": "Key name",
+  "api.key.rename": "Rename",
+  "api.key.saveName": "Save name",
+  "api.key.renaming": "Saving…",
+  "api.key.renameFailed": "Could not rename the key. Your draft was kept.",
+  "api.key.deleting": "Deleting…",
+  "api.key.copyFailed": "Could not copy the key. Select it and copy it manually before dismissing this panel.",
+  "api.attribution.title": "Attributed usage",
+  "api.attribution.requests7d": "Requests, last 7 days",
+  "api.attribution.totalRequests": "Total attributed requests",
+  "api.attribution.totalRequestsAvailable": "Requests in available history",
+  "api.attribution.sinceAvailable": "Available attribution since",
+  "api.attribution.lastUsed": "Last used",
+  "api.attribution.since": "Attribution available since",
+  "api.attribution.neverUsed": "Not used since attribution began",
+  "api.attribution.unavailable": "Usage unavailable",
+  "api.attribution.unavailableDetail": "No usage has been attributed yet. Requests recorded before attribution began cannot be assigned retroactively.",
+  "api.attribution.ambiguous": "Two keys share this ID, so usage cannot be attributed to one of them. Give each key a unique ID in the config file.",
+  "api.attribution.railAmbiguous": "duplicate ID",
 
 } as const;
 

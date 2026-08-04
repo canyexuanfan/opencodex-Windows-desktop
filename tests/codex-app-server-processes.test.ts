@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   afterCatalogWriteHandleAppServers,
   attachStaleAppServerHint,
+  collectCodexAppServerCatalogState,
   formatStaleCodexAppServerWarning,
   isCodexAppServerCommandLine,
   isWindowsCodexCandidateCommandLine,
@@ -14,6 +15,95 @@ import {
   STALE_CODEX_APP_SERVER_HINT,
   WINDOWS_CODEX_BASENAME_CANDIDATE_RE,
 } from "../src/codex/app-server-processes";
+
+describe("collectCodexAppServerCatalogState (#857)", () => {
+  const APP_SERVER_CMD = "/usr/local/bin/codex app-server";
+
+  test("not_running when no app-server process exists", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [],
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("not_running");
+    expect(status.processes).toEqual([]);
+  });
+
+  test("fresh when every app-server started after the catalog changed", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+      readStartMs: () => 2_000,
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("fresh");
+  });
+
+  test("stale when any app-server predates the catalog mtime", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [
+        { pid: 42, commandLine: APP_SERVER_CMD },
+        { pid: 43, commandLine: APP_SERVER_CMD },
+      ],
+      readStartMs: pid => (pid === 42 ? 500 : 3_000),
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("stale");
+    expect(status.processes).toEqual([
+      { pid: 42, startedAtMs: 500 },
+      { pid: 43, startedAtMs: 3_000 },
+    ]);
+  });
+
+  test("unknown when a start time is unreadable, and when the catalog is unreadable", () => {
+    const noStart = collectCodexAppServerCatalogState({
+      listSnapshots: () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+      readStartMs: () => null,
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(noStart.state).toBe("unknown");
+
+    const noCatalog = collectCodexAppServerCatalogState({
+      listSnapshots: () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+      readStartMs: () => 500,
+      catalogMtimeMs: () => null,
+    });
+    expect(noCatalog.state).toBe("unknown");
+  });
+
+  test("unrelated processes never enter the comparison", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [
+        { pid: 7, commandLine: "node worker.js codex app-server" },
+        { pid: 8, commandLine: "/usr/bin/hermes-codex-bridge-mcp" },
+      ],
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("not_running");
+  });
+
+  test("enumeration failure reports unknown, never not_running", () => {
+    // On macOS the win32 enumeration path has no powershell.exe → it throws,
+    // which must surface as unknown rather than "nothing is running".
+    const status = collectCodexAppServerCatalogState({
+      platform: process.platform === "win32" ? "linux" : "win32",
+      catalogMtimeMs: () => 1_000,
+    });
+    if (process.platform === "win32") {
+      // linux /proc is absent on Windows → same unknown outcome
+      expect(status.state).toBe("unknown");
+    } else {
+      expect(status.state).toBe("unknown");
+    }
+  });
+
+  test("equal start time and catalog mtime is conservatively stale", () => {
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+      readStartMs: () => 1_000,
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("stale");
+  });
+});
 
 describe("Codex app-server process matching (#476)", () => {
   test("matches Codex app-server and code-mode-host command lines", () => {
@@ -359,16 +449,23 @@ describe("Windows Win32_Process owner enumeration (#476)", () => {
         [
           "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
           "-Command",
-          "Start-Sleep -Seconds 25 # codex app-server integration-probe",
+          "Start-Sleep -Seconds 45 # codex app-server integration-probe",
         ],
         { stdio: "ignore", windowsHide: true },
       );
       try {
         expect(child.pid).toBeGreaterThan(1);
-        // Brief settle so Win32_Process can observe the child.
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
-        const snapshots = listWindowsSnapshots();
-        const match = snapshots.find(snapshot => snapshot.pid === child.pid);
+        // Brief settle so Win32_Process can observe the child. A loaded Windows
+        // runner can also exhaust one CIM enumeration deadline, so tolerate one
+        // transient empty result while keeping the production timeout unchanged.
+        Bun.sleepSync(250);
+        let snapshots = listWindowsSnapshots();
+        let match = snapshots.find(snapshot => snapshot.pid === child.pid);
+        if (!match) {
+          Bun.sleepSync(250);
+          snapshots = listWindowsSnapshots();
+          match = snapshots.find(snapshot => snapshot.pid === child.pid);
+        }
         expect(match).toBeDefined();
         expect(match!.owner).toMatch(/\\/);
         expect(match!.commandLine.toLowerCase()).toContain("codex app-server");
@@ -381,6 +478,6 @@ describe("Windows Win32_Process owner enumeration (#476)", () => {
         }
       }
     },
-    { timeout: 30_000 },
+    { timeout: 35_000 },
   );
 });

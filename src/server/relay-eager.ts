@@ -24,11 +24,29 @@
  * up to the drain window.
  */
 
+import { buildFailedTailPayload } from "./relay";
+import {
+  nextSseBlock,
+  replaceSseDataPayload,
+  sseDataPayload,
+  type SsePayloadRewrite,
+} from "./sse-payload-rewrite";
+import type { TranslatorBudget } from "../lib/translator-budget";
+
 export type EagerRelayHooks = {
   /** Feed one upstream chunk through SSE inspection (createSseInspector.feed). */
   inspectChunk: (chunk: Uint8Array) => void;
+  /**
+   * Optional inline client-facing payload rewrite, framed to complete SSE
+   * blocks inside the single reader. This is what lets win32 rewrite traffic
+   * (image_gen restore, item-id repair) use this relay instead of the
+   * Bun#32111-unsafe tee()+JS-pull chain (#864).
+   */
+  rewritePayload?: SsePayloadRewrite;
   /** Flush inspection at upstream end (createSseInspector.finish). */
   finishInspection: () => void;
+  /** Drop inspector-owned frame/item state during producer teardown. */
+  disposeInspection?: () => void;
   /** True once inspection has reported a protocol terminal (inspector.reported). */
   sawTerminal: () => boolean;
   /** Record a synthetic terminal (caller decides incomplete vs failed-502). */
@@ -42,6 +60,8 @@ export type EagerRelayHooks = {
 export type EagerRelayOptions = {
   /** Bounded client queue in bytes; producer pauses above it. Default 8 MiB. */
   maxQueueBytes?: number;
+  /** Transient-budget owner for the inline-rewrite frame buffer. */
+  rewriteBudget?: TranslatorBudget;
   /** Post-cancel discard-drain wall-clock bound. Default 15 000 ms. */
   postCancelDrainMs?: number;
   /** Post-cancel discard-drain byte bound. Default 32 MiB. */
@@ -72,6 +92,72 @@ export function relaySseEagerBounded(
   const now = opts?.now ?? Date.now;
 
   const reader = body.getReader();
+  const rewrite = hooks.rewritePayload;
+  const rewriteDecoder = rewrite ? new TextDecoder() : null;
+  const rewriteEncoder = rewrite ? new TextEncoder() : null;
+  const rewriteBudget = opts?.rewriteBudget;
+  let frameBuffer = "";
+  let frameBufferBytes = 0;
+  /** Frame complete SSE blocks and rewrite each block's data payload in place. */
+  const rewriteOutbound = (value: Uint8Array): Uint8Array => {
+    let out = "";
+    const fragment = rewriteDecoder!.decode(value, { stream: true });
+    if (rewriteBudget) {
+      const nextBytes = frameBufferBytes + rewriteEncoder!.encode(fragment).byteLength;
+      const reservation = rewriteBudget.reserveTransient(nextBytes, { kind: "live_transient" });
+      try {
+        frameBuffer += fragment;
+        reservation.commitRetained();
+        rewriteBudget.releaseRetained(frameBufferBytes, { kind: "live_transient" });
+        frameBufferBytes = nextBytes;
+      } catch (error) {
+        reservation.release();
+        throw error;
+      }
+    } else {
+      frameBuffer += fragment;
+      frameBufferBytes += value.byteLength;
+    }
+    for (;;) {
+      const next = nextSseBlock(frameBuffer);
+      if (!next) break;
+      const payload = sseDataPayload(next.block);
+      const rewrittenPayload = payload === null ? null : rewrite!(payload);
+      // Replace only on an actual change: replaceSseDataPayload collapses
+      // multi-data-line events and normalizes newline style even when the
+      // payload is identical, which corrupts valid streams.
+      const block = payload !== null && rewrittenPayload !== payload
+        ? replaceSseDataPayload(next.block, rewrittenPayload!)
+        : next.block;
+      out += block + next.delimiter;
+      frameBuffer = next.rest;
+    }
+    if (rewriteBudget) {
+      const remaining = rewriteEncoder!.encode(frameBuffer).byteLength;
+      rewriteBudget.releaseRetained(frameBufferBytes - remaining, { kind: "live_transient" });
+      frameBufferBytes = remaining;
+    } else {
+      frameBufferBytes = rewriteEncoder!.encode(frameBuffer).byteLength;
+    }
+    return rewriteEncoder!.encode(out);
+  };
+  /** Flush any trailing partial block at upstream end (rewrite applied, matching the pull relay). */
+  const flushRewriteTail = (): Uint8Array => {
+    if (!rewrite) return new Uint8Array(0);
+    // Decoder-flushed bytes logically follow everything already decoded.
+    let tail = frameBuffer + rewriteDecoder!.decode();
+    const payload = sseDataPayload(tail);
+    if (payload !== null) {
+      const rewrittenPayload = rewrite(payload);
+      if (rewrittenPayload !== payload) tail = replaceSseDataPayload(tail, rewrittenPayload);
+    }
+    frameBuffer = "";
+    if (rewriteBudget && frameBufferBytes > 0) {
+      rewriteBudget.releaseRetained(frameBufferBytes, { kind: "live_transient" });
+    }
+    frameBufferBytes = 0;
+    return rewriteEncoder!.encode(tail);
+  };
   let queuedBytes = 0;
   let cancelled = false;
   let done = false;
@@ -122,6 +208,13 @@ export function relaySseEagerBounded(
         const { done: upstreamDone, value } = result;
         if (upstreamDone) {
           hooks.finishInspection();
+          if (rewrite) {
+            const tail = flushRewriteTail();
+            if (tail.byteLength > 0 && !cancelled) {
+              queuedBytes += tail.byteLength;
+              try { controllerRef?.enqueue(tail); } catch { /* client already gone */ }
+            }
+          }
           if (!hooks.sawTerminal() && !cancelled && !upstream.signal.aborted) {
             syntheticKind = "incomplete";
           }
@@ -137,9 +230,11 @@ export function relaySseEagerBounded(
           }
           continue;
         }
-        queuedBytes += value.byteLength;
+        const outbound = rewrite ? rewriteOutbound(value) : value;
+        if (outbound.byteLength === 0) continue;
+        queuedBytes += outbound.byteLength;
         try {
-          controllerRef?.enqueue(value);
+          controllerRef?.enqueue(outbound);
         } catch {
           // Controller already torn down (client went away without cancel()).
           cancelled = true;
@@ -151,25 +246,44 @@ export function relaySseEagerBounded(
           await paused();
         }
       }
-    } catch {
+    } catch (err) {
       // Upstream read failure. Distinguish genuine mid-stream reset from
       // abort-driven teardown (shutdown/cancel-expiry) — audit M3.
       if (!hooks.sawTerminal() && !cancelled && !upstream.signal.aborted) {
-        syntheticKind = "failed";
-        try { controllerRef?.error(new Error("upstream stream failed")); } catch { /* torn down */ }
+        // Serializing `err` can run user-defined accessors (Error.message
+        // getters, toString) that re-entrantly cancel the client or abort the
+        // upstream. Build the tail FIRST, then re-check eligibility before
+        // committing to the synthetic terminal (adversarial review blocker).
+        const tail = new TextEncoder().encode(
+          `\n\nevent: response.failed\ndata: ${buildFailedTailPayload(err)}\n\ndata: [DONE]\n\n`,
+        );
+        if (!hooks.sawTerminal() && !cancelled && !upstream.signal.aborted) {
+          syntheticKind = "failed";
+          queuedBytes += tail.byteLength;
+          try { controllerRef?.enqueue(tail); } catch { /* client already torn down */ }
+          try { controllerRef?.close(); } catch { /* client already torn down */ }
+        }
       }
     } finally {
+      // Release any retained rewrite-buffer bytes on every teardown path
+      // (error, cancel, upstream abort) — consumption/EOF release alone
+      // leaves them charged.
+      if (rewriteBudget && frameBufferBytes > 0) {
+        try { rewriteBudget.releaseRetained(frameBufferBytes, { kind: "live_transient" }); } catch { /* teardown must not throw */ }
+        frameBufferBytes = 0;
+      }
       if (syntheticKind) hooks.onSynthetic(syntheticKind);
       if (cancelled && !hooks.sawTerminal()) {
         hooks.onClientCancel();
       }
-      if (cancelled || upstream.signal.aborted) {
+      if (cancelled || upstream.signal.aborted || syntheticKind === "failed") {
         upstream.abort();
         reader.cancel().catch(() => {});
       }
       if (!cancelled) {
         try { controllerRef?.close(); } catch { /* already closed/errored */ }
       }
+      try { hooks.disposeInspection?.(); } catch { /* inspection teardown must not block lifecycle cleanup */ }
       fireDone();
     }
   };

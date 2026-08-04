@@ -3,7 +3,8 @@ import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import type { CodexAuthContext } from "../codex/auth-context";
 import { headersForCodexAuthContext } from "../codex/auth-context";
 import type { ResponsesTerminalStatus } from "../bridge";
-import { MAX_SSE_BUFFER_BYTES } from "./relay";
+import type { DataPlaneAdmission } from "./auth-cors";
+import type { AdmissionReservation } from "../lib/admission";
 
 const OPEN = 1;
 type ResponsesTerminalReporter = (status: ResponsesTerminalStatus) => void;
@@ -20,6 +21,14 @@ const SAFE_RESPONSE_HEADER_EXACT = new Set([
 
 export interface WsData {
   headers?: Headers; // base inbound forward headers only; per-turn auth refresh injects current pool tokens
+  /**
+   * Resolved once at the handshake. Auth is handshake-time only on this path, so
+   * the per-frame log contexts have no request headers left to re-resolve from.
+   * Optional like every other member here: a socket object can exist before the
+   * handshake fills it, and an unattributed frame is preferable to a fabricated
+   * attribution.
+   */
+  admission?: DataPlaneAdmission;
   authContext?: CodexAuthContext; // last resolved account decision for observability/registry cleanup
   cancel?: () => void; // cancels the in-flight stream reader/fetch
   turnId?: number; // monotonically increasing per socket; prevents stale frames after replacement turns
@@ -30,6 +39,21 @@ export interface WsData {
   liveUpstreamHeaders?: Record<string, string>;
   livePending?: Array<string | Buffer>;
   liveOpened?: boolean;
+  admissionLease?: AdmissionReservation<ServerWebSocket<WsData>>;
+}
+
+/**
+ * Build the Responses WebSocket upgrade payload.
+ *
+ * Extracted so the handshake's contract is testable: `server.upgrade` hands its
+ * `data` straight to the socket, and a client has no way to read `ws.data` back.
+ * A test that only asserts "the socket opened" would still pass if the admission
+ * were dropped from the payload, so the payload itself is what gets asserted.
+ */
+export function buildResponsesWsData(headers: Headers, admission: DataPlaneAdmission, admissionLease?: AdmissionReservation<ServerWebSocket<WsData>>): WsData {
+  // Auth is handshake-time only on this path: the per-frame contexts have no
+  // request headers left to re-resolve from, so the decision rides along here.
+  return { headers, admission, ...(admissionLease ? { admissionLease } : {}) };
 }
 
 export class WsSendDroppedError extends Error {
@@ -193,17 +217,10 @@ export async function pumpResponsesSseToWebSocket(
     terminalReported = true;
     options.onTerminal?.(status);
   };
-  const cancel = (() => {
-    const upstreamCancel = ws.data.cancel;
-    let cancelCalled = false;
-    return () => {
-      if (cancelCalled) return;
-      cancelCalled = true;
-      clientCancelled = true;
-      try { upstreamCancel?.(); } catch { /* cancellation must continue */ }
-      void reader.cancel().catch(() => {});
-    };
-  })();
+  const cancel = () => {
+    clientCancelled = true;
+    void reader.cancel().catch(() => {});
+  };
   ws.data.cancel = cancel;
 
   const decoder = new TextDecoder();
@@ -242,15 +259,7 @@ export async function pumpResponsesSseToWebSocket(
     while (!terminalSeen) {
       const { done, value } = await reader.read();
       if (done) break;
-      const decoded = decoder.decode(value, { stream: true });
-      if (buffer.length + decoded.length > MAX_SSE_BUFFER_BYTES) {
-        reportTerminal("incomplete");
-        sendProtocolError(ws, 502, "Upstream SSE frame exceeds the proxy buffer limit");
-        terminalSeen = true;
-        void reader.cancel().catch(() => {});
-        break;
-      }
-      buffer += decoded;
+      buffer += decoder.decode(value, { stream: true });
       let next: { block: string; rest: string } | null;
       while ((next = nextSseBlock(buffer))) {
         buffer = next.rest;

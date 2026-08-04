@@ -179,7 +179,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     fetchConfig, fetchOauth, fetchAccountSets, fetchProviderQuotas, bumpModelsRefresh,
   });
 
-  const { removeProvider, confirmRemoveProvider, setProviderDisabled, updateProvider } = useProvidersCrud({
+  const { removeProvider, confirmRemoveProvider, setProviderDisabled, setDefaultProvider, updateProvider } = useProvidersCrud({
     apiBase, t, removeBusyRef, workspaceSelected, setWorkspaceSelected, setRemoveConfirmName,
     notify, fetchConfig, fetchOauth, fetchProviderQuotas,
   });
@@ -213,7 +213,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     );
   }
 
-  const addModalAccountRows = buildAddModalAccountRows(config, oauthProviders);
+  const addModalAccountRows = buildAddModalAccountRows(config, oauthProviders, t);
   const accountLoginStatus = buildAccountLoginStatus(config, oauthStatusWithCodex);
   const isForwardProvider = (name: string) => config.providers[name]?.authMode === "forward";
 
@@ -328,6 +328,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             isDefault={item.name === config.defaultProvider}
             onRemoveProvider={removeProvider}
             onSetDisabled={setProviderDisabled}
+            onSetDefault={name => { void setDefaultProvider(name); }}
             onUpdateProvider={updateProvider}
             codexController={codexPool}
           />
@@ -343,6 +344,9 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         addModalAccountRows={addModalAccountRows}
         accountLoginStatus={accountLoginStatus}
         removeConfirmName={removeConfirmName}
+        removeDefaultProvider={removeConfirmName === config.defaultProvider
+          ? Object.entries(config.providers).find(([name, provider]) => name !== removeConfirmName && provider.disabled !== true)?.[0] ?? null
+          : null}
         codexLoginOpen={codexLoginOpen}
         jsonLeaveOpen={jsonLeaveOpen}
         jsonSaving={jsonSaving}
@@ -368,7 +372,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         onCloseCodexLogin={() => setCodexLoginOpen(false)}
         onCodexAdded={() => {
           setCodexLoginOpen(false);
-          notify(t("prov.loginOk", { provider: formatProviderDisplayName("openai"), cmd: "ocx sync" }), true);
+          notify(t("prov.loginOk", { provider: formatProviderDisplayName("openai", t), cmd: "ocx sync" }), true);
           void fetchConfig();
           void fetchOauth();
           void fetchProviderQuotas(true);

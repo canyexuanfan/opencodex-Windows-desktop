@@ -149,6 +149,18 @@ export async function collectOAuthDoctorChecks(
       message:
         "Codex account health unavailable (proxy not running). Action: start the proxy and re-run `ocx doctor` to inspect live cooldown/reauth",
     });
+  } else if (report.codexHealthSource === "management-auth-failed") {
+    checks.push({
+      level: "WARN",
+      message:
+        "Codex account health unavailable (proxy running; management authentication failed). Action: verify the admin token configuration, restart the proxy, and re-run `ocx doctor`",
+    });
+  } else if (report.codexHealthSource === "management-api-unavailable") {
+    checks.push({
+      level: "WARN",
+      message:
+        "Codex account health unavailable (proxy running; management API response failed). Action: inspect the proxy service log, restart the proxy if needed, and re-run `ocx doctor`",
+    });
   }
   for (const entry of report.entries) {
     if (entry.health.status === "healthy") continue;
@@ -859,6 +871,18 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   console.log("\nOAuth reliability");
   for (const check of await collectOAuthDoctorChecks()) {
     console.log(`  [${check.level}] ${check.message}`);
+  }
+
+  // #857: a running Codex app-server can keep an older in-memory catalog than
+  // the one on disk — surface it outside sync time.
+  const { collectCodexAppServerCatalogState } = await import("../codex/app-server-processes");
+  const catalogState = collectCodexAppServerCatalogState();
+  if (catalogState.state === "stale") {
+    console.log(`  [WARN] Codex app-server (PID(s): ${catalogState.processes.map(p => p.pid).join(", ")}) started before the on-disk catalog changed; its in-memory model list disagrees with ocx. Action: restart Codex (or run \`ocx sync --restart-codex\`)`);
+  } else if (catalogState.state === "unknown") {
+    console.log("  [WARN] Could not verify whether the running Codex app-server's model catalog is current (start time or catalog unreadable). Action: if the model list looks stale, restart Codex");
+  } else if (catalogState.state === "fresh") {
+    console.log("  [OK] Codex app-server model catalog is current with the on-disk catalog.");
   }
 
   // Hints, not fixes.
