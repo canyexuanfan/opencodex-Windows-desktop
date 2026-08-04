@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -8,6 +16,7 @@ import { Database } from "bun:sqlite";
 import {
   bumpConfigGeneration,
   mutatePersistedConfig,
+  observeConfigGeneration,
   readConfigGeneration,
   saveConfig,
   saveConfigPreservingClaudeCode,
@@ -42,6 +51,7 @@ const generationGuardRaceScript = `
 `;
 
 let testRoot = "";
+let previousCodexHome: string | undefined;
 let previousOpencodexHome: string | undefined;
 
 function config(port = 10100): OcxConfig {
@@ -74,15 +84,81 @@ async function collectGuardRaceChild(
 }
 
 beforeEach(() => {
+  previousCodexHome = process.env.CODEX_HOME;
   previousOpencodexHome = process.env.OPENCODEX_HOME;
   testRoot = mkdtempSync(join(import.meta.dir, ".tmp-codex-config-generation-"));
+  process.env.CODEX_HOME = testRoot;
   process.env.OPENCODEX_HOME = testRoot;
 });
 
 afterEach(() => {
+  if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = previousCodexHome;
   if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
   rmSync(testRoot, { recursive: true, force: true });
+});
+
+test("observe-only generation reports a missing database without creating or chmodding paths", () => {
+  const absentParent = join(testRoot, "missing-parent");
+  const absentHome = join(absentParent, "opencodex-home");
+  const rootBefore = statSync(testRoot, { bigint: true });
+  process.env.CODEX_HOME = absentHome;
+  process.env.OPENCODEX_HOME = absentHome;
+
+  const absentObservation = observeConfigGeneration();
+  expect(existsSync(join(absentHome, "config-mutation.sqlite"))).toBeFalse();
+  expect(existsSync(absentHome)).toBeFalse();
+  expect(existsSync(absentParent)).toBeFalse();
+  // Missing storage reports the ordinary typed unavailable rather than a
+  // distinct `absent`: a caller that may only observe must not be handed
+  // something it could mistake for a known-good baseline of zero.
+  expect(absentObservation).toEqual({ kind: "unavailable", reason: "database" });
+  const rootAfter = statSync(testRoot, { bigint: true });
+  expect(rootAfter.mode).toBe(rootBefore.mode);
+
+  const existingHome = join(testRoot, "existing-home");
+  mkdirSync(existingHome, { mode: 0o751 });
+  chmodSync(existingHome, 0o751);
+  const existingMode = statSync(existingHome).mode & 0o777;
+  process.env.CODEX_HOME = existingHome;
+  process.env.OPENCODEX_HOME = existingHome;
+
+  const existingObservation = observeConfigGeneration();
+  expect(existsSync(join(existingHome, "config-mutation.sqlite"))).toBeFalse();
+  expect(statSync(existingHome).mode & 0o777).toBe(existingMode);
+  expect(existingObservation).toEqual({ kind: "unavailable", reason: "database" });
+});
+
+test("observe-only generation reads an existing value without modifying its database", () => {
+  saveConfig(config());
+  saveConfig(config(20200));
+  const databasePath = join(testRoot, "config-mutation.sqlite");
+  const before = statSync(databasePath, { bigint: true });
+
+  expect(observeConfigGeneration()).toEqual({
+    kind: "ready",
+    generation: { value: 2 },
+  });
+
+  const after = statSync(databasePath, { bigint: true });
+  expect({ inode: after.ino, mtime: after.mtimeNs, size: after.size }).toEqual({
+    inode: before.ino,
+    mtime: before.mtimeNs,
+    size: before.size,
+  });
+});
+
+test("observe-only generation returns typed outcomes for malformed and unreadable databases", () => {
+  const databasePath = join(testRoot, "config-mutation.sqlite");
+  writeFileSync(databasePath, "not sqlite", "utf8");
+
+  expect(observeConfigGeneration()).toEqual({ kind: "unavailable", reason: "database" });
+  expect(observeConfigGeneration()).not.toEqual({ kind: "ready", generation: { value: 0 } });
+
+  rmSync(databasePath);
+  mkdirSync(databasePath);
+  expect(observeConfigGeneration()).toEqual({ kind: "unavailable", reason: "database" });
 });
 
 test("an initial read creates the singleton generation at zero", () => {

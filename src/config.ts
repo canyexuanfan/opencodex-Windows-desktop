@@ -9,8 +9,10 @@ import {
   bumpConfigGenerationAtPath,
   bumpCurrentConfigGeneration,
   initializeConfigGeneration,
+  observeConfigGenerationAtPath,
   readConfigGenerationAtPath,
   readConfigGenerationInTransaction,
+  type ConfigGenerationObservation,
 } from "./codex/generation";
 import type {
   BumpConfigGeneration,
@@ -1851,6 +1853,10 @@ export const readConfigGeneration: ReadConfigGeneration = () => {
     return { kind: "unavailable", reason: "database" };
   }
 };
+
+export function observeConfigGeneration(): ConfigGenerationObservation {
+  return observeConfigGenerationAtPath(join(getConfigDir(), CONFIG_MUTATION_DB_FILENAME));
+}
 
 export const bumpConfigGeneration: BumpConfigGeneration = expected => {
   try {

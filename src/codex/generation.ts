@@ -11,7 +11,7 @@
  * counter. The convergence contract detects that case with its post-commit file
  * observation instead of pretending SQLite can coordinate an external editor.
  */
-import { chmodSync } from "node:fs";
+import { chmodSync, statSync } from "node:fs";
 
 import { Database } from "bun:sqlite";
 
@@ -38,6 +38,23 @@ const BUMP_CONFIG_GENERATION = `
 interface ConfigGenerationRow {
   value: unknown;
 }
+
+interface SchemaVersionRow {
+  schema_version: unknown;
+}
+
+/**
+ * Observation reuses `ConfigGenerationRead` exactly; there is deliberately no
+ * extra `absent` variant.
+ *
+ * A missing database and an unreadable one mean the same thing to a caller that
+ * is only allowed to LOOK: no generation is available to admit against. Adding
+ * `absent` would tempt a caller to treat "no file" as a known-good baseline —
+ * which is the same absence-as-guarantee mistake that produced five wrong-clean
+ * verdicts in the residue classifier. Only cooperating config writes may create
+ * and initialize the singleton (`010_catalog_seam.md:273-276`).
+ */
+export type ConfigGenerationObservation = ConfigGenerationRead;
 
 function errorCode(error: unknown): string {
   return error && typeof error === "object" && "code" in error
@@ -121,6 +138,38 @@ export function readConfigGenerationAtPath(databasePath: string): ConfigGenerati
     };
   } catch (error) {
     return unavailable(error);
+  }
+}
+
+/**
+ * Observe generation state without preparing the mutation database in any way.
+ * Missing storage is a first-class state: only cooperating config writes have
+ * authority to create and initialize the generation singleton.
+ */
+export function observeConfigGenerationAtPath(
+  databasePath: string,
+): ConfigGenerationObservation {
+  try {
+    statSync(databasePath);
+  } catch (error) {
+    return unavailable(error);
+  }
+
+  let database: Database | undefined;
+  try {
+    database = new Database(databasePath, { readonly: true });
+    const schema = database.query<SchemaVersionRow, []>("PRAGMA schema_version").get();
+    if (!schema || !Number.isSafeInteger(schema.schema_version)) {
+      throw new Error("The config generation schema version is invalid.");
+    }
+    return {
+      kind: "ready",
+      generation: readConfigGenerationInTransaction(database),
+    };
+  } catch (error) {
+    return unavailable(error);
+  } finally {
+    try { database?.close(); } catch { /* observation already completed */ }
   }
 }
 
