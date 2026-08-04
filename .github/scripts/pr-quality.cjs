@@ -125,13 +125,14 @@ function stripPrTemplateBoilerplate(text) {
 }
 
 function assessPrDescription(body) {
-  if (typeof body !== "string" || !body.trim()) {
+  const withoutReadiness = stripReviewReadinessSection(body);
+  if (typeof withoutReadiness !== "string" || !withoutReadiness.trim()) {
     return { ok: false, reason: "empty" };
   }
-  if (hasEscapedNewlines(body)) {
+  if (hasEscapedNewlines(withoutReadiness)) {
     return { ok: false, reason: "escaped_newlines" };
   }
-  const withoutTemplate = stripPrTemplateBoilerplate(body);
+  const withoutTemplate = stripPrTemplateBoilerplate(withoutReadiness);
   const cleaned = clean(withoutTemplate);
   if (!cleaned) {
     const strippedComments = withoutTemplate.replace(/<!--[\s\S]*?-->/g, "").trim();
@@ -287,6 +288,21 @@ function appendReviewReadinessSection(body) {
   return `${body.trimEnd()}\n\n${section}\n`;
 }
 
+/**
+ * Remove the bot-managed readiness section from a body. Used so the bot's own
+ * checklist never counts as author-written description substance, and so a
+ * confirmed maintainer's body can retire the injected section.
+ */
+function stripReviewReadinessSection(body) {
+  if (typeof body !== "string") return body;
+  const start = body.indexOf(REVIEW_READINESS_START);
+  const end = body.indexOf(REVIEW_READINESS_END);
+  if (start === -1 || end === -1 || end <= start) return body;
+  const stripped =
+    body.slice(0, start) + body.slice(end + REVIEW_READINESS_END.length);
+  return stripped.replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
 function collectPrQualityFailures({
   baseRef,
   allowedBases,
@@ -355,6 +371,7 @@ module.exports = {
   buildReviewReadinessSection,
   extractReviewReadiness,
   appendReviewReadinessSection,
+  stripReviewReadinessSection,
   collectPrQualityFailures,
   hasEscapedNewlines,
   stripPrTemplateBoilerplate,

@@ -13,6 +13,7 @@ const {
   buildReviewReadinessSection,
   extractReviewReadiness,
   appendReviewReadinessSection,
+  stripReviewReadinessSection,
   collectPrQualityFailures,
 } = require("./pr-quality.cjs");
 
@@ -368,6 +369,55 @@ describe("review readiness checklist", () => {
     const body = appendReviewReadinessSection("");
     assert.equal(extractReviewReadiness(body).present, true);
     assert.ok(body.startsWith("<!-- pr-quality-readiness-checklist:start -->"));
+  });
+
+  it("strips the marker-bounded section and leaves the rest intact", () => {
+    const body = [
+      "## Summary",
+      "Author content.",
+      "",
+      SECTION,
+      "",
+      "## Test plan",
+      "- Ran the suite.",
+    ].join("\n");
+    const stripped = stripReviewReadinessSection(body);
+    assert.equal(extractReviewReadiness(stripped).present, false);
+    assert.ok(stripped.includes("Author content."));
+    assert.ok(stripped.includes("## Test plan"));
+    assert.ok(!stripped.includes("Review readiness checklist"));
+  });
+
+  it("strips a section-only body to empty and leaves markerless bodies alone", () => {
+    assert.equal(stripReviewReadinessSection(SECTION), "");
+    assert.equal(stripReviewReadinessSection("plain body"), "plain body");
+    assert.equal(stripReviewReadinessSection(null), null);
+  });
+});
+
+describe("assessPrDescription with the readiness section", () => {
+  const SUBSTANTIAL = [
+    "## Summary",
+    "",
+    "This change adds enough substantive detail for reviewers to understand the motivation and approach taken.",
+    "",
+    "## Test plan",
+    "",
+    "- Ran bun test tests/ci-workflows.test.ts",
+  ].join("\n");
+
+  it("never counts the injected checklist as description substance", () => {
+    // The bot's own injected section must not clear the description gate for
+    // an author who wrote nothing (Codex review round 2).
+    assert.equal(assessPrDescription(buildReviewReadinessSection()).ok, false);
+    assert.equal(
+      assessPrDescription("fix stuff\n\n" + buildReviewReadinessSection()).reason,
+      "thin",
+    );
+    assert.equal(
+      assessPrDescription(SUBSTANTIAL + "\n\n" + buildReviewReadinessSection()).ok,
+      true,
+    );
   });
 });
 

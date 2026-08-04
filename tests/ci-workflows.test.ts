@@ -840,10 +840,13 @@ describe("GitHub Actions hardening", () => {
       "sparse-checkout",
     ]);
     expect(checkout.with).toEqual({
-      ref: "${{ github.event.repository.default_branch }}",
+      // The base branch, not the repository default: pull_request_target runs
+      // this workflow from the base revision, and the scripts must match it —
+      // a merged gate would otherwise run against pre-promotion `main` scripts.
+      ref: "${{ github.event.pull_request.base.ref }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
-      // maintainer list from the trusted default branch.
+      // maintainer list from the same trusted base revision as the scripts.
       "sparse-checkout": ".github/scripts\nMAINTAINERS.md\n",
     });
 
@@ -972,11 +975,12 @@ describe("GitHub Actions hardening", () => {
       return found;
     }
 
-    // Four `pulls.update` sites: the checklist injection (body only), the
-    // prefix add, the stale-prefix strip, and the restore-half strip. `base`
-    // and `state` are accepted by this endpoint and none of them belong
-    // anywhere here.
+    // Five `pulls.update` sites: the maintainer checklist retirement and the
+    // checklist injection (body only), plus the prefix add, the stale-prefix
+    // strip, and the restore-half strip. `base` and `state` are accepted by
+    // this endpoint and none of them belong anywhere here.
     expect(callArgs("github.rest.pulls.update")).toEqual([
+      ["body", "owner", "pull_number", "repo"],
       ["body", "owner", "pull_number", "repo"],
       ["owner", "pull_number", "repo", "title"],
       ["owner", "pull_number", "repo", "title"],
@@ -1216,6 +1220,12 @@ describe("GitHub Actions hardening", () => {
         "graphql",
         "issues.updateComment",
       ]));
+      // Ownership is checkpointed before the mutation (pending claim), then
+      // cleared when the conversion fails, so a later permission recovery
+      // cannot leave the bot-created draft in place forever.
+      const [pending] = callsTo(result, "issues.createComment") as [{ body: string }];
+      expect(pending.body).toContain('"autoDraftedByBot":true');
+      expect(lastReadinessCommentBody(result)).toContain('"autoDraftedByBot":false');
       expect(lastReadinessCommentBody(result)).toContain(
         "Automatic draft conversion failed",
       );
@@ -1272,7 +1282,7 @@ describe("GitHub Actions hardening", () => {
       expect(lastReadinessCommentBody(duringFailure)).toContain('"autoDraftedByBot":true');
 
       const recovered = await runEnforcePrTarget(script, {
-        pr: { base: { ref: "dev" }, draft: true },
+        pr: { base: { ref: "dev" }, draft: true, body: readinessChecklistBody(0) },
         authorPermission: "write",
         maintainersFile: MAINTAINERS_FIXTURE,
         comments: [readinessComment({
@@ -1282,16 +1292,53 @@ describe("GitHub Actions hardening", () => {
         })],
       });
       expect(methodsOf(recovered)).toEqual(readsAllowedBase([
+        "pulls.update",
         "graphql",
         "issues.updateComment",
       ]));
+      // The injected checklist is retired from the maintainer's body.
+      const [stripped] = callsTo(recovered, "pulls.update") as [{ body: string }];
+      expect(stripped.body).not.toContain(CHECKLIST_START);
       const [ready] = callsTo(recovered, "graphql") as [{ query: string }];
       expect(ready.query).toContain("markPullRequestReadyForReview");
-      expect(lastReadinessCommentBody(recovered)).toContain(
-        "not required for this author",
-      );
-      expect(lastReadinessCommentBody(recovered)).toContain('"autoDraftedByBot":false');
+      const readinessBody = lastReadinessCommentBody(recovered);
+      expect(readinessBody).toContain("not required for this author");
+      expect(readinessBody).not.toContain("kept in **draft**");
+      expect(readinessBody).not.toContain("⬜");
+      expect(readinessBody).toContain('"autoDraftedByBot":false');
       expect(recovered.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("permission recovery keeps draft ownership when ready conversion fails", async () => {
+      // If markReadyForReview fails transiently during recovery, the readiness
+      // state must keep autoDraftedByBot so a later run retries — otherwise
+      // the maintainer's PR stays a draft forever with a comment claiming it
+      // is ready.
+      const { script } = await readEnforcePrTarget();
+      const result = await runEnforcePrTarget(script, {
+        pr: { base: { ref: "dev" }, draft: true, body: readinessChecklistBody(0) },
+        authorPermission: "write",
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [readinessComment({
+          version: 1,
+          autoDraftedByBot: true,
+          maintainersPinged: false,
+        })],
+        failOn: ["graphql"],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.update",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      expect(result.warnings.some(w =>
+        w.includes("Could not mark pull request ready for review"),
+      )).toBe(true);
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain('"autoDraftedByBot":true');
+      expect(readinessBody).toContain("will be retried on the next run");
+      expect(readinessBody).not.toContain("✅ This PR is ready for review.");
     });
 
     test("a contributor completing the checklist with a corrupted enforcer comment still completes", async () => {
