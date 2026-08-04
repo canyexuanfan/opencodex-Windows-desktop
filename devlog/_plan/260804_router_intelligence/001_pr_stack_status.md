@@ -10,7 +10,8 @@ head SHA, PR number/URL, verification result, and review state.
 - Bun: `1.3.14`; package version: `2.10.0`
 - Worktree: `D:\codex-worktrees\ocx-router-intelligence`
 - Push remote: `origin` (Wibias/opencodex); PR target: `lidge-jun/opencodex:dev`
-- Programme stack: #1003 (RI-01) and #1004 (RI-02) merged to `dev`; #1005 (RI-03) open.
+- Programme stack: #1003 (RI-01), #1004 (RI-02), and #1005 (RI-03) merged to
+  `dev`; #1011 (RI-04) open.
 
 ## Related in-flight PRs (not superseded by this stack)
 
@@ -41,8 +42,8 @@ other; closing one is a maintainer decision and neither is stale.
 |---|---|---|---|---|---|---|
 | RI-01 | `feat/ri-01-route-decision-traces` | `e44d234f0` | `b5a8e7c4c` | #1003 | https://github.com/lidge-jun/opencodex/pull/1003 | MERGED |
 | RI-02 | `feat/ri-02-request-history-index` | `dev` (post-#1003 merge) | `2a72aa4a9` | #1004 | https://github.com/lidge-jun/opencodex/pull/1004 | MERGED |
-| RI-03 | `feat/ri-03-routing-analytics` | `dev` (post-#1004 merge) | pending | #1005 | https://github.com/lidge-jun/opencodex/pull/1005 | OPEN (resync) |
-| RI-04 | `feat/ri-04-policy-profile-core` | `feat/ri-03` head | pending | pending | pending | queued |
+| RI-03 | `feat/ri-03-routing-analytics` | `dev` (post-#1004 merge) | `a594938c5` | #1005 | https://github.com/lidge-jun/opencodex/pull/1005 | MERGED |
+| RI-04 | `feat/ri-04-policy-profile-core` | `dev` (post-#1005 merge) | `31c9f0b28` | #1011 | https://github.com/lidge-jun/opencodex/pull/1011 | OPEN (resync) |
 | RI-05 | `feat/ri-05-capability-aware-routing` | `feat/ri-04` head | pending | pending | pending | queued |
 | RI-06 | `feat/ri-06-health-aware-routing` | `feat/ri-05` head | pending | pending | pending | queued |
 | RI-07 | `feat/ri-07-quota-aware-routing` | `feat/ri-06` head | pending | pending | pending | queued |
@@ -142,4 +143,29 @@ other; closing one is a maintainer decision and neither is stale.
     cooldown on failure+attempts, API validation (`invalid_from`/`invalid_to`/`invalid_range`)
   - Focused regression suites: 144/144 pass across 6 files
   - `bun run privacy:scan`: passed
+- Remaining Low findings: none
+
+### RI-04 - feat/ri-04-policy-profile-core
+
+- Base SHA: `2069e724ec27e176644a11ff55bef307f5ebe3bf` (RI-03 head)
+- Reviewed commit: same as final (author self-review before push)
+- Findings (self-review): 4 fixed pre-push - (1) `serviceTier` evidence type
+  was `Unknownable` (number|boolean) but service tiers are strings - trace
+  type narrowed to `string | "unknown"`; (2) alias validation missed the
+  reserved `combo/` namespace prefix; (3) trace candidates did not carry
+  `score` - added `score` to `TraceCandidateInput`/`buildCandidate`;
+  (4) test expectation for weight normalization used wrong math (unspecified
+  weights keep defaults; sum 4.35 not 4).
+- Final commit: pending (recorded after commit)
+- PR: pending
+- Verification:
+  - `bun x tsc --noEmit`: PASSED (0 errors)
+  - `bun run test tests/routing-profile.test.ts`: 12/12 pass (validation,
+    normalization, revision digest, collisions, config load, id/alias
+    resolution, dry-run eligibility/unknown/tie-break, API list+dry-run,
+    API error codes)
+  - Focused regression suites: 176/176 pass across 8 files
+  - `bun run privacy:scan`: passed
+  - `tests/config.test.ts`: 109/115 pass; the 6 symlink failures reproduce
+    identically on the pristine base (Windows symlink EPERM, environmental)
 - Remaining Low findings: none
