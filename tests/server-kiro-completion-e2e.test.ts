@@ -168,7 +168,7 @@ describe("Kiro completion through public server endpoints", () => {
       expect(upstream.requests[1].conversationState.history.at(-1).assistantResponseMessage.content)
         .toBe("Checking the workspace.");
     } finally {
-      proxy.stop(true);
+      await proxy.stop(true);
       upstream.server.stop(true);
     }
   });
@@ -212,7 +212,7 @@ describe("Kiro completion through public server endpoints", () => {
       expect(kiroToolNames(upstream.requests[0])).toEqual(["bash", KIRO_COMPLETION_TOOL_NAME]);
       expect(kiroToolNames(upstream.requests[1])).toEqual(["bash", KIRO_COMPLETION_TOOL_NAME]);
     } finally {
-      proxy.stop(true);
+      await proxy.stop(true);
       upstream.server.stop(true);
     }
   });

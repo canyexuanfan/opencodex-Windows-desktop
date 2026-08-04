@@ -4,7 +4,7 @@ import type { CodexAuthContext } from "../codex/auth-context";
 import { headersForCodexAuthContext } from "../codex/auth-context";
 import type { ResponsesTerminalStatus } from "../bridge";
 import type { DataPlaneAdmission } from "./auth-cors";
-import type { AdmissionReservation } from "../lib/admission";
+import type { AdmissionLease, AdmissionReservation } from "../lib/admission";
 
 const OPEN = 1;
 type ResponsesTerminalReporter = (status: ResponsesTerminalStatus) => void;
@@ -39,6 +39,12 @@ export interface WsData {
   liveUpstreamHeaders?: Record<string, string>;
   livePending?: Array<string | Buffer>;
   liveOpened?: boolean;
+  /** Once teardown starts, ignore new client frames until the upstream closes. */
+  liveClosing?: boolean;
+  /** Schedules one bounded close retry without surrendering native-main ownership. */
+  liveCloseFallback?: ReturnType<typeof setTimeout>;
+  /** Turn/account ownership retained for the complete sideband socket lifetime. */
+  liveTurnAdmissionLease?: AdmissionLease;
   admissionLease?: AdmissionReservation<ServerWebSocket<WsData>>;
 }
 

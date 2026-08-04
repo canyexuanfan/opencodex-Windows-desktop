@@ -77,6 +77,8 @@ Dashboard 的 **Sub-agent delegation** 选择器会保存 `injectionModel`，以
 选择器会列出已启用的原生与路由模型，以及全局 Codex reasoning 阶梯。API 会先验证所选强度是否
 属于全局阶梯；Codex 仍会根据目标目录条目再次校验该 spawn 强度。
 
+<a id="codex-auth-and-account-pools"></a>
+
 ## Codex Auth 与账号池
 
 **Codex Auth** 页面用于管理原生 ChatGPT/Codex 路由：
@@ -90,6 +92,10 @@ Dashboard 的 **Sub-agent delegation** 选择器会保存 `injectionModel`，以
   评分；Go/Free 计划只使用 30d 窗口。
 - **Refresh quotas** 会立即重新读取账号 usage，使路由逻辑与页面上的账号卡片使用同一份数据。
 - 池账号的请求日志使用 `p3fa91c` 这类不透明标签，不会记录账号邮箱。
+
+Providers 概览会单独汇总 Pool 模式的显示专用加权容量估算，并同时显示当前有效账户的原始配额和
+下一次容量恢复。可见字段、覆盖不完整的含义以及路由边界，请参阅
+[提供商概览中的账户池容量](/zh-cn/guides/providers/#提供商概览中的账户池容量)。
 
 ## 仪表盘如何与代理通信
 

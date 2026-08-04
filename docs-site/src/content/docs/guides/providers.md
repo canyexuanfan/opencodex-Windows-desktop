@@ -24,6 +24,26 @@ Auth page can restore it: absent rows are created from the canonical preset, dis
 rows are re-enabled without replacing saved mode or model settings, and noncanonical `openai`
 rows are not offered that recovery path.
 
+### Providers overview pool capacity
+
+For Codex login in Pool mode, the Providers overview shows a configured-weight estimate of the
+pool's used capacity rather than presenting one arbitrary account as the provider total. The same
+row also shows the current effective account's raw quota percentage, so you can distinguish the
+pool estimate from the account that a new request would use.
+
+When reset information is available, the overview shows the next reset time and the capacity that
+reset is expected to recover as `+N% pool capacity`. **Incomplete coverage** means one or more pool
+accounts could not safely contribute to the estimate, for example because their plan or quota is
+unknown, their reading is stale, or the account is paused or needs reauthentication.
+
+A **partial window coverage** warning means some included accounts reported one quota window but
+not another. The overview keeps those windows separate and marks each affected window incomplete
+instead of treating the missing reading as usage for that window.
+
+This estimate is display-only. It does not change account selection, session affinity, automatic
+switching, cooldowns, or any other routing decision. Use the [Codex Auth account pool](/guides/web-dashboard/#codex-auth-and-account-pools)
+for the individual account state and routing controls.
+
 Shipped v1 configs migrate automatically to marker 2 and one option-aware row. The original config
 is retained once at `~/.opencodex/config.json.pre-openai-tiers-v2.bak`; restore it with
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`.
@@ -287,6 +307,31 @@ Provider plan, and CLI auth bridging for Go/Pro subscriptions is not yet availab
 > with **Call Model APIs** access for shared/production use. Dedicated Truss `predict` endpoints use different
 > hosts and schemas and are not routed by this preset.
 > Live discovery for this preset is capped at a 1 MiB response and 256 raw model rows.
+
+### A6API credit quota
+
+A custom `openai-chat` provider using `authMode: "key"` and the canonical
+`https://api.a6api.com` or `https://api.a6api.com/v1` base URL receives an A6API credit meter in
+the dashboard and from `ocx account refresh <provider>`. The provider name is arbitrary; detection
+uses the canonical HTTPS endpoint. The meter converts A6API token units into USD using the account's
+hard credit limit and displays the percentage consumed plus remaining credit. Token expiration is
+not shown as a quota reset because expiration does not imply that credit replenishes.
+
+```json
+{
+  "providers": {
+    "my-a6": {
+      "adapter": "openai-chat",
+      "authMode": "key",
+      "baseUrl": "https://api.a6api.com/v1",
+      "apiKey": "${A6API_API_KEY}"
+    }
+  }
+}
+```
+
+Quota probes send only the active key to the canonical A6API host and reject redirects. Malformed,
+negative, or internally inconsistent billing totals produce no report rather than a misleading bar.
 
 > **Tencent Cloud Coding Plan usage restriction:** Tencent documents this subscription for
 > interactive coding tools only. General API automation, custom application backends, and
