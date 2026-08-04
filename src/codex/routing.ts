@@ -133,6 +133,18 @@ export type CodexCooldownSource = "retry-after" | "reset-derived" | "default";
  */
 export type CodexQuotaScope = "shared" | "spark";
 
+export type CodexQuotaRecoveryProbeClaim = {
+  accountId: string;
+  scope?: CodexQuotaScope;
+  leaseId: string;
+  cooldownGeneration: number;
+  credentialGeneration: number;
+};
+
+export type CodexQuotaRecoveryProbeProof = {
+  credentialGeneration?: number;
+};
+
 /**
  * Requests without a resolved native model retain the historic one-account-per-
  * thread behavior. Requests with a known quota scope get an independent
@@ -415,6 +427,119 @@ function canAcquireQuotaProbeLease(health: CodexUpstreamHealth | undefined, now:
   if (health.probeLeaseId !== undefined) return false;
   const origin = health.lastProbeAt ?? health.cooldownSince ?? cooldownUntil;
   return now - origin >= CODEX_QUOTA_PROBE_INTERVAL_MS;
+}
+
+/**
+ * Claim due reset-derived cooldown probes without consulting account selection.
+ * Pool credentials only: the main account has no quota-refresh single-flight.
+ */
+export function claimDueCodexQuotaRecoveryProbes(
+  config: OcxConfig,
+  limit: number,
+  now = Date.now(),
+): CodexQuotaRecoveryProbeClaim[] {
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (boundedLimit === 0) return [];
+  const candidates: Array<{
+    accountId: string;
+    scope?: CodexQuotaScope;
+    health: CodexUpstreamHealth;
+    credentialGeneration: number;
+    order: number;
+  }> = [];
+  for (const [order, account] of (config.codexAccounts ?? []).entries()) {
+    if (!isSelectableCodexPoolAccount(account)
+      || isCodexAccountPaused(config, account.id)
+      || isAccountNeedsReauth(account.id)) continue;
+    const record = readCodexAccountRecord(account.id);
+    if (!record?.credential || record.deletedAt != null) continue;
+    const due = [
+      { scope: undefined, health: upstreamHealth.get(account.id) },
+      ...[...(quotaScopedHealth.get(account.id) ?? [])].map(([scope, health]) => ({ scope, health })),
+    ].filter((entry): entry is { scope?: CodexQuotaScope; health: CodexUpstreamHealth } =>
+      // `spark` is deliberately never claimed. `GET /backend-api/wham/usage` takes no scope
+      // parameter and returns generic weekly/monthly windows, so its result can never prove a
+      // spark recovery — a claim here would spend an upstream call to settle `false` every
+      // time, and (with one claim per account per pass) delay the shared scope that CAN recover.
+      entry.scope !== "spark"
+      && entry.health?.cooldownSource === "reset-derived"
+      && canAcquireQuotaProbeLease(entry.health, now))
+      .sort((a, b) =>
+        (a.health.lastProbeAt ?? a.health.cooldownSince ?? 0)
+        - (b.health.lastProbeAt ?? b.health.cooldownSince ?? 0));
+    const candidate = due[0];
+    if (candidate) candidates.push({
+      accountId: account.id,
+      ...(candidate.scope ? { scope: candidate.scope } : {}),
+      health: candidate.health,
+      credentialGeneration: record.generation,
+      order,
+    });
+  }
+  candidates.sort((a, b) => {
+    const age = (a.health.lastProbeAt ?? a.health.cooldownSince ?? 0)
+      - (b.health.lastProbeAt ?? b.health.cooldownSince ?? 0);
+    return age || a.order - b.order;
+  });
+  return candidates.slice(0, boundedLimit).map(candidate => {
+    const leaseId = randomUUID();
+    const next = {
+      ...candidate.health,
+      probeLeaseId: leaseId,
+      probeLeaseGeneration: candidate.health.cooldownGeneration ?? 0,
+      lastProbeAt: now,
+    };
+    if (candidate.scope) setScopedHealth(candidate.accountId, candidate.scope, next);
+    else upstreamHealth.set(candidate.accountId, next);
+    return {
+      accountId: candidate.accountId,
+      ...(candidate.scope ? { scope: candidate.scope } : {}),
+      leaseId,
+      cooldownGeneration: candidate.health.cooldownGeneration ?? 0,
+      credentialGeneration: candidate.credentialGeneration,
+    };
+  });
+}
+
+/** Settle one background recovery claim without mutating account-wide outcome state. */
+export function settleCodexQuotaRecoveryProbe(
+  claim: CodexQuotaRecoveryProbeClaim,
+  recovered: boolean,
+  proof: CodexQuotaRecoveryProbeProof,
+  now = Date.now(),
+): boolean {
+  const health = claim.scope
+    ? scopedHealthFor(claim.accountId, claim.scope)
+    : upstreamHealth.get(claim.accountId);
+  if (!health || health.probeLeaseId !== claim.leaseId) return false;
+  const fenced = (health.cooldownGeneration ?? 0) === claim.cooldownGeneration
+    && (health.probeLeaseGeneration ?? 0) === claim.cooldownGeneration
+    && claim.credentialGeneration === proof.credentialGeneration
+    && isCodexAccountGenerationLive(claim.accountId, claim.credentialGeneration);
+  if (!recovered || !fenced) {
+    const released = withProbeLeaseReleased(health, now);
+    if (claim.scope) setScopedHealth(claim.accountId, claim.scope, released);
+    else upstreamHealth.set(claim.accountId, released);
+    return false;
+  }
+  if (claim.scope) {
+    deleteScopedHealth(claim.accountId, claim.scope);
+  } else {
+    const {
+      cooldownUntil: _until,
+      cooldownSince: _since,
+      cooldownSource: _source,
+      probeLeaseId: _leaseId,
+      probeLeaseGeneration: _leaseGeneration,
+      ...rest
+    } = health;
+    upstreamHealth.set(claim.accountId, {
+      ...rest,
+      cooldownGeneration: claim.cooldownGeneration + 1,
+      lastProbeAt: now,
+    });
+  }
+  return true;
 }
 
 /** Acquire the recovery probe for one confirmed model-specific quota group. */
