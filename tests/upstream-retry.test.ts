@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
   fetchWithResetRetry,
   isConnectionResetError,
+  prepareSameTarget429Wait,
   releaseResponseBodyBestEffort,
   retryBackoffDelayMs,
   sleepWithHeartbeats,
@@ -259,5 +260,46 @@ describe("retryBackoffDelayMs", () => {
     } finally {
       randomSpy.mockRestore();
     }
+  });
+});
+
+
+describe("prepareSameTarget429Wait", () => {
+  test("releases the body then waits without heartbeats when no interval is set", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const events: string[] = [];
+    const started = Date.now();
+    for await (const event of prepareSameTarget429Wait({
+      body,
+      delayMs: 40,
+    })) {
+      events.push(event.type);
+    }
+    expect(cancelled).toBe(true);
+    expect(events).toEqual([]);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(30);
+  });
+
+  test("yields heartbeats when a heartbeat interval is provided", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        return;
+      },
+    });
+    const events: string[] = [];
+    for await (const event of prepareSameTarget429Wait({
+      body,
+      delayMs: 30,
+      heartbeatIntervalMs: 10,
+    })) {
+      events.push(event.type);
+    }
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    expect(events.every(type => type === "heartbeat")).toBe(true);
   });
 });

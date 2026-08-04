@@ -145,6 +145,33 @@ export async function* sleepWithHeartbeats(
   }
 }
 
+export interface SameTarget429WaitOptions {
+  body: ReadableStream<Uint8Array> | null;
+  signal?: AbortSignal;
+  delayMs: number;
+  /**
+   * When set, the wait yields adapter heartbeats so bridge stall watchdogs stay fed.
+   * Omit for pre-stream recovery paths that have no stall watchdog.
+   */
+  heartbeatIntervalMs?: number;
+}
+
+/**
+ * Shared pre-replay prep for opt-in same-target 429 waits:
+ * release the unread 429 body, then sleep (optionally with heartbeats).
+ * Callers still own attempt budgeting, abort re-checks, and the replay itself.
+ */
+export async function* prepareSameTarget429Wait(
+  options: SameTarget429WaitOptions,
+): AsyncGenerator<{ type: "heartbeat" }> {
+  await releaseResponseBodyBestEffort(options.body, options.signal);
+  if (options.heartbeatIntervalMs === undefined) {
+    await sleepWithAbort(options.delayMs, options.signal);
+    return;
+  }
+  yield* sleepWithHeartbeats(options.delayMs, options.signal, options.heartbeatIntervalMs);
+}
+
 export function isConnectionResetError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   // Aborts and timeouts are caller decisions / honest failures — never retryable.

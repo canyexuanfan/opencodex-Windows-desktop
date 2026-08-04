@@ -89,9 +89,7 @@ import {
   applyUpstreamRecoveryInit,
   fetchWithResetRetry,
   fetchWithTransientRetry,
-  releaseResponseBodyBestEffort,
-  sleepWithHeartbeats,
-  sleepWithAbort,
+  prepareSameTarget429Wait,
 } from "../../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
@@ -1747,16 +1745,16 @@ async function handleResponsesInner(
       && rateLimitRetries < rateLimitPolicy.attempts
     ) {
       rateLimitRetries += 1;
-      // Release the unread 429 body before the backoff (only the header is needed for the wait).
+      // Release unread body + deliberate wait via the shared same-target helper.
       const retryAfterHeader = upstreamResponse.headers.get("retry-after");
-      // Release the body without letting a never-settling cancel() block the abort-aware
-      // backoff (bounded by the abort signal and a short timeout).
-      await releaseResponseBodyBestEffort(upstreamResponse.body, options.abortSignal);
       try {
-        await sleepWithAbort(
-          rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
-          options.abortSignal,
-        );
+        for await (const _ of prepareSameTarget429Wait({
+          body: upstreamResponse.body,
+          signal: options.abortSignal,
+          delayMs: rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
+        })) {
+          // pre-stream: no stall watchdog to feed
+        }
       } catch {
         upstream.abort();
         return clientCancelledResponse();
@@ -2649,18 +2647,16 @@ async function handleResponsesInner(
         && rateLimitRetries < rateLimitPolicy.attempts
       ) {
         rateLimitRetries += 1;
-        // Release the unread 429 body BEFORE the backoff: only the header matters for the
-        // wait, and under a 429 storm the sockets would otherwise accumulate for the whole
-        // configured interval (same pattern as the key-failover branch below).
+        // Release unread body + deliberate wait via the shared same-target helper.
         const retryAfterHeader = upstreamResponse.headers.get("retry-after");
-        // Release the body without letting a never-settling cancel() block the abort-aware
-        // backoff (bounded by the abort signal and a short timeout).
-        await releaseResponseBodyBestEffort(upstreamResponse.body, options.abortSignal);
         try {
-          await sleepWithAbort(
-            rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
-            options.abortSignal,
-          );
+          for await (const _ of prepareSameTarget429Wait({
+            body: upstreamResponse.body,
+            signal: options.abortSignal,
+            delayMs: rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
+          })) {
+            // pre-stream: no stall watchdog to feed
+          }
         } catch {
           cleanupUpstreamAbort();
           upstream.abort();
@@ -2805,12 +2801,15 @@ async function handleResponsesInner(
    */
   const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
     let response: Response | undefined;
+    // One-shot recovery label for the next top-of-loop continuation send after a failover rotation.
+    let nextContinuationRecoveryKind: AttemptRecoveryKind | undefined;
     /**
-     * Build and fetch one terminal-guard continuation. `replay` marks a same-target 429
-     * replay so its send records the `rate-limit-429` recovery kind; the adapter rebuild is
-     * deterministic for the same parsed request (tests assert byte-identical replays).
+     * Build and fetch one terminal-guard continuation. `recoveryKind` tags same-target and
+     * failover sends (`rate-limit-429`, `key-429`, `anthropic-oauth-429`, `image-413`); the
+     * adapter rebuild is deterministic for the same parsed request (tests assert byte-identical
+     * replays).
      */
-    const fetchContinuation = async (replay = false): Promise<Response> => {
+    const fetchContinuation = async (recoveryKind?: AttemptRecoveryKind): Promise<Response> => {
       let continuationRequest: AdapterRequest | undefined;
       if (sameTargetRequest !== undefined && sameTargetParsed === nextParsed && sameTargetToken === transportToken) {
         // Same target (key/adapter/parsed/tier unchanged): replay the exact cached request.
@@ -2842,8 +2841,8 @@ async function handleResponsesInner(
         ? builtContinuationRequest.usageLog.inputTokens
         : undefined;
       if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
-      // One label rule for continuation replays, shared by both send paths below.
-      const replayKind: AttemptRecoveryKind | undefined = replay ? "rate-limit-429" : undefined;
+      // Optional recovery label for same-target / failover continuation sends.
+      const replayKind: AttemptRecoveryKind | undefined = recoveryKind;
       try {
         if (activeAdapter.fetchResponse) {
           noteAttemptSend(logCtx.activeAttempt, continuationEstimate, replayKind);
@@ -2877,12 +2876,14 @@ async function handleResponsesInner(
     };
     while (true) {
       try {
-        response = await fetchContinuation();
+        const recoveryKind = nextContinuationRecoveryKind;
+        nextContinuationRecoveryKind = undefined;
+        response = await fetchContinuation(recoveryKind);
       } catch (error) {
         if (options.abortSignal?.aborted || upstream.signal.aborted) {
           yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
         } else {
-          yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };
+          yield { type: "error", message: `Provider continuation failed: ${redactSecretString(error instanceof Error ? error.message : String(error))}` };
         }
         return;
       }
@@ -2896,20 +2897,18 @@ async function handleResponsesInner(
         && rateLimitRetries < rateLimitPolicy.attempts
       ) {
         rateLimitRetries += 1;
-        // Release the unread 429 body before the backoff (only the header is needed for the wait).
+        // Release unread body + heartbeat-fed wait via the shared same-target helper.
         const retryAfterHeader = response.headers.get("retry-after");
-        // Release the body without letting a never-settling cancel() block the abort-aware
-        // backoff (bounded by the upstream signal and a short timeout).
-        await releaseResponseBodyBestEffort(response.body, upstream.signal);
         try {
-          yield* sleepWithHeartbeats(
-            rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
+          yield* prepareSameTarget429Wait({
+            body: response.body,
             // Listen on the upstream signal: once the SSE body is being streamed, a client
             // cancel aborts `upstream` through the bridge, and upstream is also linked from
             // options.abortSignal — so this covers both cancellation paths.
-            upstream.signal,
-            Math.min(10_000, Math.max(250, stallTimeoutMs / 2)),
-          );
+            signal: upstream.signal,
+            delayMs: rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
+            heartbeatIntervalMs: Math.min(10_000, Math.max(250, stallTimeoutMs / 2)),
+          });
         } catch {
           if (options.abortSignal?.aborted || upstream.signal.aborted) {
             yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
@@ -2925,12 +2924,12 @@ async function handleResponsesInner(
           return;
         }
         try {
-          response = await fetchContinuation(true);
+          response = await fetchContinuation("rate-limit-429");
         } catch (error) {
           if (options.abortSignal?.aborted || upstream.signal.aborted) {
             yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
           } else {
-            yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };
+            yield { type: "error", message: `Provider continuation failed: ${redactSecretString(error instanceof Error ? error.message : String(error))}` };
           }
           return;
         }
@@ -2951,6 +2950,7 @@ async function handleResponsesInner(
             resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
             config.cacheRetention,
           );
+          nextContinuationRecoveryKind = "key-429";
           continue;
         }
       }
@@ -2981,6 +2981,7 @@ async function handleResponsesInner(
               config.cacheRetention,
             );
             sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
+            nextContinuationRecoveryKind = "anthropic-oauth-429";
             continue;
           } catch {
             // fall through to emit continuation error below
@@ -2996,6 +2997,7 @@ async function handleResponsesInner(
         imageTierBias = 1;
         invalidateSameTargetRequest();
         try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        nextContinuationRecoveryKind = "image-413";
         continue;
       }
       break;

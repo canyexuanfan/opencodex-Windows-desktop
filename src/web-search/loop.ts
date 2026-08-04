@@ -8,7 +8,7 @@ import { runAnthropicWebSearch } from "./anthropic-executor";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { fetchWithResetRetry, releaseResponseBodyBestEffort, sleepWithHeartbeats } from "../lib/upstream-retry";
+import { fetchWithResetRetry, prepareSameTarget429Wait } from "../lib/upstream-retry";
 import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   isTranslatorBudgetExceededError,
@@ -416,20 +416,18 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         && rateLimitRetries < rateLimitRetryPolicy.attempts
       ) {
         rateLimitRetries += 1;
-        // Release the unread 429 body before the backoff (only the header is needed for the wait).
+        // Release unread body + heartbeat-fed wait via the shared same-target helper.
         const retryAfterHeader = prepared.response.headers.get("retry-after");
-        // Release the body without letting a never-settling cancel() block the abort-aware
-        // backoff (bounded by the signal and a short timeout).
-        await releaseResponseBodyBestEffort(prepared.response.body, signal);
         // The old header deadline must not stay armed across the deliberate wait: clear it
         // before sleeping so a stale expiry can never race the client-cancel path.
         headerDeadline.clear();
         try {
-          yield* sleepWithHeartbeats(
-            rateLimitRetryDelayMs(rateLimitRetryPolicy, retryAfterHeader, Date.now()),
+          yield* prepareSameTarget429Wait({
+            body: prepared.response.body,
             signal,
-            Math.min(10_000, Math.max(250, stallTimeoutMs / 2)),
-          );
+            delayMs: rateLimitRetryDelayMs(rateLimitRetryPolicy, retryAfterHeader, Date.now()),
+            heartbeatIntervalMs: Math.min(10_000, Math.max(250, stallTimeoutMs / 2)),
+          });
         } catch {
           throw new LoopError(499, "client closed request during web-search");
         }
