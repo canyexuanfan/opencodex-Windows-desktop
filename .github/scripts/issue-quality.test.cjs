@@ -469,6 +469,12 @@ describe("validateIssue - feature", () => {
     assert.equal(hasActionableReproductionDetail("1. ocx start --port 10100\n2. Send a request"), true);
     assert.equal(hasActionableReproductionDetail("Run ocx start and send any streaming request."), true);
     assert.equal(hasActionableReproductionDetail("ocx start on Raspberry Pi 4, send any streaming request."), true);
+    assert.equal(hasActionableReproductionDetail("send a request"), false);
+    assert.equal(hasActionableReproductionDetail("make a call"), false);
+    assert.equal(hasActionableReproductionDetail("post a command"), false);
+    assert.equal(hasActionableReproductionDetail("make an API call"), true);
+    assert.equal(hasActionableReproductionDetail("send an HTTP request"), true);
+    assert.equal(hasActionableReproductionDetail("send a request to /v1/responses"), true);
     assert.equal(hasActionableReproductionDetail("The proxy returns HTTP 502 after the first streaming chunk."), true);
     assert.equal(hasActionableReproductionDetail("Paste ~/.codex/config.toml, then restart the proxy."), true);
     assert.equal(hasActionableReproductionDetail("```\n\n```"), false);

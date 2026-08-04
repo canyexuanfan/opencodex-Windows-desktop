@@ -468,7 +468,9 @@ function isTooTerseFeatureSection(text) {
 const REPRO_COMMAND_RE = new RegExp([
     "\\b(?:run|start|stop|restart|install|launch|execute|reproduce|trigger|invoke)\\s+(?:(?:the|an|a)\\s+)?(?:ocx|bun|npm|pnpm|yarn|curl|node|codex|proxy|server|dashboard|plugin)\\b",
     "\\b(?:ocx|bun|npm|pnpm|yarn|curl|node|codex)\\s+(?:start|run|stop|restart|install|config|--[a-z-]+)\\b",
-    "\\b(?:send|issue|make|post)\\s+(?:a|an|any)\\s+(?:(?:[\\w.-]+\\s+)?request|command|prompt|query|call|api|curl|endpoint|url)\\b",
+    "\\b(?:send|issue|make|post)\\s+(?:a|an|any)\\s+(?:streaming|api|http|json|completion|chat|config|auth|embedding|post|graphql|grpc)\\s+(?:request|call|command|prompt|query)\\b",
+    "\\b(?:send|issue|make|post)\\s+(?:a|an|any)\\s+(?:api|curl|endpoint|url)\\b",
+    "\\b(?:send|issue|make|post)\\s+(?:a|an|any)\\s+[\\w.-]+\\s+request\\s+to\\s+(?:the\\s+)?(?:endpoint|url|api|server|proxy|\\S+/\\S+)\\b",
     "\\b(?:pip|npm|bun)\\s+install\\b",
     "\\b(?:curl|wget)\\s+[^\\s]+",
 ].join("|"), "i");
