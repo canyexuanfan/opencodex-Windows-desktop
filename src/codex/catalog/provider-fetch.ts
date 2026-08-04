@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { atomicWriteFile, expandUserPath, getConfigDir, websocketsEnabled } from "../../config";
+import { atomicWriteFile, expandUserPath, getConfigDir, resolveEnvValue, websocketsEnabled } from "../../config";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "../paths";
 import {
   clearModelCache,
@@ -18,7 +18,12 @@ import {
   setCached,
   type ProviderModelDiscoveryFailure,
 } from "../model-cache";
-import { buildModelsRequest, resolveModelsAuthToken } from "../../oauth";
+import {
+  buildModelsRequest,
+  observeActiveOAuthAccessToken,
+  resolveModelsAuthToken,
+  type OAuthActiveTokenObservation,
+} from "../../oauth";
 import type { OcxConfig, OcxProviderConfig } from "../../types";
 import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
@@ -64,10 +69,43 @@ import type { ComboCatalogOmission } from "./aggregation";
 
 /** Concurrent gatherRoutedModels callers with the same catalog identity share one live discovery.
  *  Keyed by gatherFlightKey so a different config cannot join or evict the wrong flight. */
+export interface CatalogGatherProviderAuthEvidence {
+  /** Exact auth-store bytes already read and recorded by the filesystem-evidence owner. */
+  readonly authStoreBuffer: Uint8Array | null;
+}
+
+export interface CatalogGatherProviderAuthOutcome {
+  readonly provider: string;
+  readonly state: OAuthActiveTokenObservation["kind"];
+}
+
+export interface GatherRoutedModelsOptions {
+  comboOmissions?: ComboCatalogOmission[];
+  providerAuthOutcomes?: CatalogGatherProviderAuthOutcome[];
+}
+
 interface GatherFlightResult {
   models: CatalogModel[];
   comboOmissions: ComboCatalogOmission[];
+  providerAuthOutcomes: CatalogGatherProviderAuthOutcome[];
 }
+
+interface ModelsAuthResolution {
+  readonly apiKey: string | undefined;
+  readonly observed: boolean;
+  readonly oauthApiBaseUrl?: string;
+}
+
+type ModelsAuthResolver =
+  | { readonly kind: "refreshing" }
+  | {
+      readonly kind: "observed";
+      readonly resolve: (name: string, provider: OcxProviderConfig) => ModelsAuthResolution;
+    };
+
+type ModelsAuthResolverFactory = (
+  outcomes: CatalogGatherProviderAuthOutcome[],
+) => ModelsAuthResolver;
 
 const gatherInflight = new Map<string, Promise<GatherFlightResult>>();
 const MAX_CONCURRENT_CATALOG_GATHERS = 8;
@@ -407,7 +445,39 @@ function boundedOwnedBy(value: unknown): string | undefined {
   return value;
 }
 
-export async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs: number, contextCap?: number): Promise<CatalogModel[]> {
+const refreshingModelsAuthResolver: ModelsAuthResolver = { kind: "refreshing" };
+
+function observedModelsAuthResolver(
+  authStoreBuffer: Uint8Array | null,
+  outcomes: CatalogGatherProviderAuthOutcome[],
+): ModelsAuthResolver {
+  return {
+    kind: "observed",
+    resolve(name, provider) {
+      if (provider.authMode === "forward") return { apiKey: undefined, observed: true };
+      if (provider.authMode !== "oauth") {
+        return { apiKey: resolveEnvValue(provider.apiKey), observed: true };
+      }
+
+      const observation = observeActiveOAuthAccessToken(name, authStoreBuffer);
+      outcomes.push({ provider: name, state: observation.kind });
+      if (observation.kind !== "available") return { apiKey: undefined, observed: true };
+      return {
+        apiKey: observation.snapshot.accessToken,
+        observed: true,
+        ...(observation.snapshot.apiBaseUrl ? { oauthApiBaseUrl: observation.snapshot.apiBaseUrl } : {}),
+      };
+    },
+  };
+}
+
+async function fetchProviderModelsWithAuth(
+  name: string,
+  prov: OcxProviderConfig,
+  ttlMs: number,
+  contextCap: number | undefined,
+  resolveAuth: ModelsAuthResolver,
+): Promise<CatalogModel[]> {
   if (prov.authMode === "forward") return []; // ChatGPT backend has no /models
   const seedVertexDefault = prov.adapter === "google"
     && prov.googleMode === "vertex"
@@ -425,7 +495,10 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
     clearProviderDiscoveryStatus(name);
     return configured;
   }
-  const apiKey = await resolveModelsAuthToken(name, prov);
+  const auth: ModelsAuthResolution = resolveAuth.kind === "refreshing"
+    ? { apiKey: await resolveModelsAuthToken(name, prov), observed: false }
+    : resolveAuth.resolve(name, prov);
+  const apiKey = auth.apiKey;
   // A configured default is a real callable selector and must remain discoverable when a
   // compatible provider's live /models request fails (issue #308). Keep this separate from the
   // explicit static list: `liveModels: false` + empty `models[]` intentionally publishes zero
@@ -487,7 +560,12 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
     return stale ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap)) : failedDiscoveryConfigured;
   }
   const discovery = resolveProviderModelDiscovery(name, prov);
-  const { url, headers } = buildModelsRequest(prov, apiKey, name);
+  const { url, headers } = buildModelsRequest(
+    prov,
+    apiKey,
+    name,
+    auth.observed ? { oauthApiBaseUrl: auth.oauthApiBaseUrl } : undefined,
+  );
   const urlClass = new URL(url).hostname.endsWith("aiplatform.googleapis.com")
     ? "vertex-aiplatform"
     : "provider-models";
@@ -633,6 +711,15 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
   }
 }
 
+export async function fetchProviderModels(
+  name: string,
+  prov: OcxProviderConfig,
+  ttlMs: number,
+  contextCap?: number,
+): Promise<CatalogModel[]> {
+  return fetchProviderModelsWithAuth(name, prov, ttlMs, contextCap, refreshingModelsAuthResolver);
+}
+
 export function shouldExposeProviderModel(providerName: string, modelId: string): boolean {
   if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
   return true;
@@ -669,35 +756,78 @@ export function filterCatalogVisibleModels(
 
 export async function gatherRoutedModels(
   config: OcxConfig,
-  options?: { comboOmissions?: ComboCatalogOmission[] },
+  options?: GatherRoutedModelsOptions,
 ): Promise<CatalogModel[]> {
-  const key = gatherFlightKey(config);
+  return gatherRoutedModelsWithAuth(
+    config,
+    `refreshing:${gatherFlightKey(config)}`,
+    () => refreshingModelsAuthResolver,
+    options,
+  );
+}
+
+/**
+ * Catalog-gather model discovery using only auth-store bytes already captured by the
+ * filesystem-evidence owner. This entry point never reaches the refreshing resolver.
+ */
+export async function gatherRoutedModelsForCatalogGather(
+  config: OcxConfig,
+  evidence: CatalogGatherProviderAuthEvidence,
+  options?: GatherRoutedModelsOptions,
+): Promise<CatalogModel[]> {
+  const authStoreBuffer = evidence.authStoreBuffer === null
+    ? null
+    : Uint8Array.from(evidence.authStoreBuffer);
+  const authIdentity = authStoreBuffer === null
+    ? "absent"
+    : createHash("sha256").update(authStoreBuffer).digest("hex");
+  return gatherRoutedModelsWithAuth(
+    config,
+    `observed:${authIdentity}:${gatherFlightKey(config)}`,
+    outcomes => observedModelsAuthResolver(authStoreBuffer, outcomes),
+    options,
+  );
+}
+
+async function gatherRoutedModelsWithAuth(
+  config: OcxConfig,
+  key: string,
+  createAuthResolver: ModelsAuthResolverFactory,
+  options?: GatherRoutedModelsOptions,
+): Promise<CatalogModel[]> {
   let promise = gatherInflight.get(key);
   if (!promise) {
     const lease = gatherGate.tryAcquire();
     if (!lease) throw new CatalogGatherBusyError();
     // Claim the slot synchronously before any await so same-key callers join this flight.
     // Distinct keys keep their own entries — a second config must not evict the first.
-    const flight = gatherRoutedModelsUncached(config).finally(() => {
+    const flight = gatherRoutedModelsUncached(config, createAuthResolver).finally(() => {
       if (gatherInflight.get(key) === flight) gatherInflight.delete(key);
       lease.release();
     });
     gatherInflight.set(key, flight);
     promise = flight;
   }
-  const { models, comboOmissions } = await promise;
+  const { models, comboOmissions, providerAuthOutcomes } = await promise;
   if (options?.comboOmissions) {
     options.comboOmissions.length = 0;
     options.comboOmissions.push(...comboOmissions);
+  }
+  if (options?.providerAuthOutcomes) {
+    options.providerAuthOutcomes.length = 0;
+    options.providerAuthOutcomes.push(...providerAuthOutcomes);
   }
   return models;
 }
 
 async function gatherRoutedModelsUncached(
   config: OcxConfig,
+  createAuthResolver: ModelsAuthResolverFactory,
 ): Promise<GatherFlightResult> {
   // Flight-local list: joiners copy from the resolved promise, not a process-global last write.
   const localOmissions: ComboCatalogOmission[] = [];
+  const localProviderAuthOutcomes: CatalogGatherProviderAuthOutcome[] = [];
+  const resolveAuth = createAuthResolver(localProviderAuthOutcomes);
   const ttlMs = config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS;
   // Persisted provider entries can predate newer registry fields (noVisionModels,
   // modelInputModalities, ...). The ROUTER merges registry seeds at request time
@@ -713,7 +843,13 @@ async function gatherRoutedModelsUncached(
       return [name, enriched];
     });
   const lists = await Promise.all(
-    activeProviders.map(([name, prov]) => fetchProviderModels(name, prov, ttlMs, providerContextCap(config, name))),
+    activeProviders.map(([name, prov]) => fetchProviderModelsWithAuth(
+      name,
+      prov,
+      ttlMs,
+      providerContextCap(config, name),
+      resolveAuth,
+    )),
   );
   const apiAugmented = augmentRoutedModelsWithRegistryOpenAiApiRows(lists.flat(), config);
   const all = augmentRoutedModelsWithJawcodeMetadata(apiAugmented, activeProviders.map(([name]) => name), config.providers, config)
@@ -811,7 +947,11 @@ async function gatherRoutedModelsUncached(
   // Custom rows override discovered rows that encode to the same Codex-facing slug.
   const customKeys = new Set(customModels.map(c => routedSlug(c.provider, c.id)));
   const deduped = all.filter(m => !customKeys.has(routedSlug(m.provider, m.id)));
-  return { models: [...deduped, ...customModels], comboOmissions: localOmissions };
+  return {
+    models: [...deduped, ...customModels],
+    comboOmissions: localOmissions,
+    providerAuthOutcomes: localProviderAuthOutcomes,
+  };
 }
 
 export function augmentRoutedModelsWithRegistryOpenAiApiRows(
