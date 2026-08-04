@@ -1,4 +1,5 @@
 import type { OcxConfig } from "../../types";
+import type { NativeProfileApiDeps } from "../../codex/native-profile-api";
 import type { StartupInstallAction } from "../startup-action-control";
 import type { ManagementPrincipal } from "../management-auth";
 import type { CatalogModel } from "../../codex/catalog";
@@ -42,6 +43,11 @@ export interface ManagementApiDeps {
     action: StartupInstallAction,
     options?: { repair?: boolean },
   ) => Promise<{ message: string }>;
+  /**
+   * Native-main profile persistence seam for server-boundary tests. Production
+   * leaves this unset, so the route creates its normal NativeProfileManager.
+   */
+  nativeProfileApi?: NativeProfileApiDeps;
 }
 
 

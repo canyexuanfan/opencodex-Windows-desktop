@@ -156,7 +156,7 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
       expect(upstreamBody).not.toContain("aGVsbG8taW1hZ2UtYnl0ZXM=");
       expect(upstreamBody).not.toContain("image_url");
     } finally {
-      server.stop(true);
+      await server.stop(true);
     }
   });
 
@@ -192,7 +192,7 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
       expect(upstreamBody).toContain("aGVsbG8taW1hZ2UtYnl0ZXM=");
       expect(upstreamBody).not.toContain(CAPTION);
     } finally {
-      server.stop(true);
+      await server.stop(true);
     }
   });
 });

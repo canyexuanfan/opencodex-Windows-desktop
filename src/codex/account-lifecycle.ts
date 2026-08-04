@@ -5,7 +5,7 @@ import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { clearAccountQuota } from "./quota";
 import { clearCodexUpstreamHealthForAccount, clearThreadAccountMapForAccount } from "./routing";
 import { invalidateCodexWebSocketsForAccount } from "./websocket-registry";
-import { clearMainAccountInfoCache } from "./main-account-cache";
+import { clearMainAccountCredentialPresence, clearMainAccountInfoCache } from "./main-account-cache";
 import { forgetCodexAccountPause } from "./account-pause";
 import type { OcxConfig } from "../types";
 
@@ -16,7 +16,16 @@ export function purgeCodexAccountRuntimeState(accountId: string): void {
   clearAccountQuota(accountId);
   clearThreadAccountMapForAccount(accountId);
   clearCodexUpstreamHealthForAccount(accountId);
-  if (accountId === MAIN_CODEX_ACCOUNT_ID) clearMainAccountInfoCache();
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) {
+    clearMainAccountInfoCache();
+    clearMainAccountCredentialPresence();
+  }
+}
+
+function purgeMainCodexAccountRuntimeState(): void {
+  purgeCodexAccountRuntimeState(MAIN_CODEX_ACCOUNT_ID);
+  setMainAccountPlan(null);
+  invalidateCodexWebSocketsForAccount(MAIN_CODEX_ACCOUNT_ID);
 }
 
 /**
@@ -34,14 +43,30 @@ export function reconcileMainCodexAccountRuntimeState(): boolean {
   observedMainChatgptAccountId = currentAccountId;
   if (previousAccountId === undefined || previousAccountId === currentAccountId) return false;
 
-  purgeCodexAccountRuntimeState(MAIN_CODEX_ACCOUNT_ID);
-  setMainAccountPlan(null);
-  invalidateCodexWebSocketsForAccount(MAIN_CODEX_ACCOUNT_ID);
+  purgeMainCodexAccountRuntimeState();
+  return true;
+}
+
+/**
+ * Apply a transaction-confirmed physical native-login change without waiting for
+ * a later auth.json observation. The caller owns credential commit/rollback.
+ */
+export function applyConfirmedMainCodexAccountTransition(
+  fromAccountId: string,
+  toAccountId: string,
+): boolean {
+  if (!fromAccountId || !toAccountId || fromAccountId === toAccountId) {
+    if (toAccountId) observedMainChatgptAccountId = toAccountId;
+    return false;
+  }
+  observedMainChatgptAccountId = toAccountId;
+  purgeMainCodexAccountRuntimeState();
   return true;
 }
 
 export function resetMainCodexAccountIdentityTrackingForTests(): void {
   observedMainChatgptAccountId = undefined;
+  clearMainAccountCredentialPresence();
 }
 
 export function deleteCodexAccount(runtimeConfig: OcxConfig, accountId: string): void {

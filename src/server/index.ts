@@ -154,24 +154,95 @@ import { handleChatCompletions } from "./chat-completions";
 import { anthropicErrorResponse } from "../claude/outbound";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
+import {
+  bindNativeMainStartupLifecycle,
+  releaseNativeMainStartupLifecycle,
+  startNativeMainStartupLifecycle,
+  type NativeMainStartupGateDeps,
+} from "../codex/native-profile-startup";
 import { handleImages } from "./images";
 import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
 import { handleSearch } from "./search";
-import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
-import { initializeManagementAuthState, issueGuiSession, managementPrincipal, requireManagementAuth } from "./management-auth";
+import { fetchAllModels, handleManagementAPI, VERSION, type ManagementApiDeps } from "./management-api";
+import {
+  initializeManagementAuthState,
+  issueGuiSession,
+  managementPrincipal,
+  requireManagementAuth,
+  type ManagementAuthState,
+} from "./management-auth";
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 const LIVE_SIDEBAND_PENDING_MAX = 32;
+const LIVE_SIDEBAND_CLOSE_FALLBACK_MS = 1_000;
 
-function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""): void {
-  try {
-    ws.data.liveUpstream?.close(code, reason);
-  } catch {
-    /* upstream already gone */
+type LiveSidebandWebSocketFactory = (
+  url: string,
+  headers: Record<string, string>,
+) => WebSocket;
+
+function releaseLiveSidebandAdmission(ws: ServerWebSocket<WsData>): void {
+  ws.data.liveTurnAdmissionLease?.release();
+  ws.data.liveTurnAdmissionLease = undefined;
+}
+
+function finalizeLiveSideband(ws: ServerWebSocket<WsData>, upstream?: WebSocket): void {
+  if (upstream && ws.data.liveUpstream !== upstream) return;
+  if (ws.data.liveCloseFallback !== undefined) {
+    clearTimeout(ws.data.liveCloseFallback);
+    ws.data.liveCloseFallback = undefined;
   }
   ws.data.liveUpstream = undefined;
   ws.data.livePending = undefined;
+  ws.data.cancel = undefined;
+  releaseLiveSidebandAdmission(ws);
+}
+
+function armLiveSidebandCloseFallback(ws: ServerWebSocket<WsData>, upstream: WebSocket): void {
+  if (ws.data.liveCloseFallback !== undefined) return;
+  ws.data.liveCloseFallback = setTimeout(() => {
+    ws.data.liveCloseFallback = undefined;
+    if (ws.data.liveUpstream !== upstream) return;
+    if (upstream.readyState === WebSocket.CLOSED) {
+      finalizeLiveSideband(ws, upstream);
+      return;
+    }
+    // A close frame was already sent below. Retry once, but never surrender
+    // native-main ownership while the authenticated transport remains live.
+    try {
+      upstream.close(1000, "upstream close timeout");
+    } catch {
+      /* upstream is already unusable */
+    }
+    // Some implementations transition synchronously without delivering the
+    // close event. That is still an observed CLOSED transport and is safe to
+    // finalize. CONNECTING/CLOSING peers keep the lease so profile switching
+    // fails at its own bounded drain deadline instead of racing live traffic.
+    if (upstream.readyState === WebSocket.CLOSED) finalizeLiveSideband(ws, upstream);
+  }, LIVE_SIDEBAND_CLOSE_FALLBACK_MS);
+}
+
+function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""): void {
+  if (ws.data.liveClosing) return;
+  ws.data.liveClosing = true;
+  ws.data.livePending = undefined;
+  ws.data.cancel = undefined;
+  const upstream = ws.data.liveUpstream;
+  if (!upstream || upstream.readyState === WebSocket.CLOSED) {
+    finalizeLiveSideband(ws, upstream);
+  } else {
+    // The sideband holds a native-main admission lease. Do not release it just
+    // because the downstream left: its authenticated upstream remains live
+    // until the close event arrives or the transport is observed CLOSED. The
+    // bounded fallback only retries close; it does not release ownership.
+    armLiveSidebandCloseFallback(ws, upstream);
+    try {
+      upstream.close(code, reason);
+    } catch {
+      /* the fallback retries close without releasing ownership */
+    }
+  }
   try {
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
       ws.close(code, reason);
@@ -181,7 +252,12 @@ function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""
   }
 }
 
-function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
+function attachLiveSidebandUpstream(
+  ws: ServerWebSocket<WsData>,
+  createWebSocket: LiveSidebandWebSocketFactory = (url, headers) => (
+    new WebSocket(url, { headers } as unknown as string[])
+  ),
+): void {
   const url = ws.data.liveUpstreamUrl;
   if (!url) {
     closeLiveSideband(ws, 1011, "missing upstream");
@@ -190,21 +266,17 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
   let upstream: WebSocket;
   try {
     // Bun accepts per-handshake headers; the DOM lib types only list protocol arrays.
-    upstream = new WebSocket(url, { headers: ws.data.liveUpstreamHeaders ?? {} } as unknown as string[]);
+    upstream = createWebSocket(url, ws.data.liveUpstreamHeaders ?? {});
   } catch {
     closeLiveSideband(ws, 1011, "upstream connect failed");
     return;
   }
   ws.data.liveUpstream = upstream;
-  ws.data.cancel = () => {
-    try {
-      upstream.close(1000, "client closed");
-    } catch {
-      /* ignore */
-    }
-  };
+  ws.data.liveClosing = false;
+  ws.data.cancel = () => closeLiveSideband(ws, 1000, "client closed");
 
   upstream.addEventListener("open", () => {
+    if (ws.data.liveUpstream !== upstream || ws.data.liveClosing) return;
     ws.data.liveOpened = true;
     const pending = ws.data.livePending ?? [];
     ws.data.livePending = undefined;
@@ -218,6 +290,7 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
     }
   });
   upstream.addEventListener("message", (event) => {
+    if (ws.data.liveUpstream !== upstream || ws.data.liveClosing) return;
     try {
       logLiveSidebandFrame("u2c", event.data);
       if (typeof event.data === "string") ws.send(event.data);
@@ -230,14 +303,17 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
     }
   });
   upstream.addEventListener("close", (event) => {
+    if (ws.data.liveUpstream !== upstream) return;
+    ws.data.liveClosing = true;
+    finalizeLiveSideband(ws, upstream);
     try {
       ws.close(event.code || 1000, event.reason || "");
     } catch {
       /* ignore */
     }
-    ws.data.liveUpstream = undefined;
   });
   upstream.addEventListener("error", () => {
+    if (ws.data.liveUpstream !== upstream) return;
     closeLiveSideband(ws, 1011, "upstream error");
   });
 }
@@ -269,12 +345,25 @@ function attachLiveSidebandUpstream(ws: ServerWebSocket<WsData>): void {
 // trackSseForRequestLog(
 // export function relaySseWithHeartbeat
 
-export function startServer(port?: number) {
+export interface StartServerDeps {
+  /** Test-only seam; production always initializes its own management credential state. */
+  managementAuthState?: ManagementAuthState;
+  /** Test-only route dependencies, forwarded only after management admission succeeds. */
+  managementApi?: ManagementApiDeps;
+  /** Test-only native-main recovery dependencies; production constructs the normal manager. */
+  nativeMainStartup?: NativeMainStartupGateDeps;
+  /** Test-only seam for an upstream that cannot complete its WebSocket close handshake. */
+  liveSidebandWebSocketFactory?: LiveSidebandWebSocketFactory;
+}
+
+export function startServer(port?: number, deps: StartServerDeps = {}) {
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   setLiveStateStoreConfig(config);
   applyProxyEnv(config);
   assertServerAuthConfig(config);
-  const managementAuth = initializeManagementAuthState(config);
+  const managementAuth = deps.managementAuthState ?? initializeManagementAuthState(config);
+  // Arm synchronously before listen. A pending journal therefore makes __main__ unusable
+  // before any request can resolve its physical credential, while health/management/Pool stay live.
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
@@ -386,7 +475,10 @@ export function startServer(port?: number) {
     return response;
   }
 
-  const server: Server<WsData> = Bun.serve<WsData>({
+  const nativeMainLifecycle = startNativeMainStartupLifecycle(deps.nativeMainStartup);
+  let server: Server<WsData>;
+  try {
+    server = Bun.serve<WsData>({
     port: listenPort,
     hostname: bindHost,
     idleTimeout: 255,
@@ -450,7 +542,7 @@ export function startServer(port?: number) {
         // gate used. Consent-bearing routes need this: request headers are forgeable
         // by anything holding the admin token, the credential is not.
         const principal = managementPrincipal(req, managementAuth, config) ?? undefined;
-        const mgmtResponse = await handleManagementAPI(req, url, config, {}, principal);
+        const mgmtResponse = await handleManagementAPI(req, url, config, deps.managementApi, principal);
         if (mgmtResponse) return withManagementCors(mgmtResponse, req, config);
         return withManagementCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
       }
@@ -589,10 +681,10 @@ export function startServer(port?: number) {
           ...admissionFields(admission),
           inboundProtocol: "responses",
         };
-        return runAdmittedHttpTurn(req, async () => {
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
           let response: Response;
           try {
-            response = await handleResponsesCompact(req, config, logCtx);
+            response = await handleResponsesCompact(req, config, logCtx, turnAdmissionLease);
           } catch {
             response = formatErrorResponse(500, "server_error", "Unexpected compact request failure");
           }
@@ -623,8 +715,8 @@ export function startServer(port?: number) {
           ...admissionFields(admission),
         };
         const endpoint = url.pathname.endsWith("/edits") ? "edits" as const : "generations" as const;
-        return runAdmittedHttpTurn(req, async () => {
-          const response = await handleImages(req, config, endpoint, logCtx);
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+          const response = await handleImages(req, config, endpoint, logCtx, turnAdmissionLease);
           addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
           return withCors(response, req, config);
         });
@@ -677,8 +769,8 @@ export function startServer(port?: number) {
           provider: "unknown",
           ...admissionFields(admission),
         };
-        return runAdmittedHttpTurn(req, async () => {
-          const response = await handleSearch(req, config, logCtx);
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+          const response = await handleSearch(req, config, logCtx, turnAdmissionLease);
           addFinalRequestLog(requestId, start, logCtx, response.status,
             response.status === 499 ? { closeReason: "client_cancel" } : undefined);
           return withCors(response, req, config);
@@ -827,8 +919,8 @@ export function startServer(port?: number) {
           provider: "unknown",
           ...admissionFields(admission),
         };
-        return runAdmittedHttpTurn(req, async () => {
-          const response = await handleLive(req, config, logCtx);
+        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+          const response = await handleLive(req, config, logCtx, turnAdmissionLease);
           addFinalRequestLog(
             requestId,
             start,
@@ -861,8 +953,17 @@ export function startServer(port?: number) {
           provider: "unknown",
           ...admissionFields(admission),
         };
-        const resolved = await resolveLiveSidebandUpgrade(req, config, logCtx, liveSidebandTarget);
+        const turnAdmissionLease = tryAdmitTurn();
+        if (!turnAdmissionLease) return serverBusyResponse(req, "active turns");
+        let resolved;
+        try {
+          resolved = await resolveLiveSidebandUpgrade(req, config, logCtx, liveSidebandTarget, turnAdmissionLease);
+        } catch (error) {
+          turnAdmissionLease.release();
+          throw error;
+        }
         if (resolved instanceof Response) {
+          turnAdmissionLease.release();
           addFinalRequestLog(requestId, start, logCtx, resolved.status);
           return withCors(resolved, req, config);
         }
@@ -874,8 +975,10 @@ export function startServer(port?: number) {
             liveUpstreamHeaders: resolved.headers,
             livePending: [],
             liveOpened: false,
+            liveTurnAdmissionLease: turnAdmissionLease,
           } satisfies WsData,
         })) return undefined as unknown as Response;
+        turnAdmissionLease.release();
         return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, config);
       }
 
@@ -906,7 +1009,11 @@ export function startServer(port?: number) {
       // Live sideband sockets (kind=live-sideband) are a transparent bidirectional relay instead.
       open(ws: ServerWebSocket<WsData>) {
         if (ws.data.kind === "live-sideband") {
-          attachLiveSidebandUpstream(ws);
+          if (!ws.data.liveTurnAdmissionLease) {
+            closeLiveSideband(ws, 1013, "server busy");
+            return;
+          }
+          attachLiveSidebandUpstream(ws, deps.liveSidebandWebSocketFactory);
           return;
         }
         if (!ws.data.admissionLease) {
@@ -918,6 +1025,7 @@ export function startServer(port?: number) {
       },
       message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
         if (ws.data.kind === "live-sideband") {
+          if (ws.data.liveClosing) return;
           logLiveSidebandFrame("c2u", raw);
           const upstream = ws.data.liveUpstream;
           if (!upstream || upstream.readyState === WebSocket.CONNECTING || !ws.data.liveOpened) {
@@ -1086,8 +1194,7 @@ export function startServer(port?: number) {
       },
       close(ws: ServerWebSocket<WsData>) {
         if (ws.data.kind === "live-sideband") {
-          ws.data.cancel?.();
-          ws.data.liveUpstream = undefined;
+          closeLiveSideband(ws);
           return;
         }
         unregisterCodexWebSocket(ws);
@@ -1096,8 +1203,24 @@ export function startServer(port?: number) {
         ws.data.cancel?.(); // RC2: abort the upstream when the client disconnects
       },
     },
-  });
+    });
+  } catch (error) {
+    void nativeMainLifecycle.release();
+    throw error;
+  }
 
+  bindNativeMainStartupLifecycle(server, nativeMainLifecycle);
+  const nativeStop = server.stop.bind(server);
+  Object.defineProperty(server, "stop", {
+    configurable: true,
+    value: async (closeActiveConnections?: boolean): Promise<void> => {
+      try {
+        await nativeStop(closeActiveConnections);
+      } finally {
+        await releaseNativeMainStartupLifecycle(server);
+      }
+    },
+  });
   setServerRef(server);
   const actualPort = server.port ?? listenPort;
   setCorsOrigin(actualPort);
