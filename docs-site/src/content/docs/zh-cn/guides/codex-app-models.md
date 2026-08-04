@@ -5,12 +5,14 @@ description: opencodex 中的模型如何通过共享 Codex 目录出现在 Code
 
 opencodex 不会修改 Codex App。它会写入 Codex CLI/TUI 已经使用的同一套 Codex 配置和模型目录。因为 Codex App 读取的是这份共享状态，路由模型可以像普通 Codex 目录条目一样出现在 App 的模型选择器中。
 
-OpenAI 条目有两种稳定身份：一个是不带命名空间的原生 `openai` 组，由 `codexAccountMode` 控制使用 Pool（默认）还是 Direct 的账户选择；另一个是命名空间化的 `openai-apikey/<model>` API key 通道。切换账户模式不会改变选择器 id。API GPT-5.6 条目使用 1,050,000 context / 922,000 max input，而 `*-pro` 选择器 id 会解析到基础线协议模型，并在日志、用量和选择器状态中保留虚拟 id，同时带上 `reasoning.mode: "pro"`。API 目录固定为恰好八个 id：`gpt-5.5`、`gpt-5.6`、Sol/Terra/Luna，以及它们三个 Pro 虚拟 id；不存在通用的 `gpt-5.6-pro` 别名。Compact 请求会保留所选 tier，但发送基础模型且不带 reasoning 对象。
+OpenAI 条目有两种凭据通道：原生 Codex 登录，以及命名空间化的 `openai-apikey/<model>` API key 通道。仅在 Pool 与 Direct 之间切换 `codexAccountMode` 不会改变选择器 id。但当 `codexAccountNamespaces` 中有目标账户存在的 selector 时，opencodex 会为映射账户添加独立的 `<selector>/<native-openai-model>` 行，并在选择器中隐藏裸原生行。Selector 名称是用户自定义的公开标签，没有内置的账户角色含义。选择带 `selector` 的行只会使用映射账户，不会更改当前 Pool 账户；目标不可用时，请求会直接失败，不会切换到其他账户。详情请参阅[精确 Codex 账户选择器](/reference/configuration/routing/#exact-codex-account-selectors)。API GPT-5.6 条目使用 1,050,000 context / 922,000 max input，而 `*-pro` 选择器 id 会解析到基础线协议模型，并在日志、用量和选择器状态中保留虚拟 id，同时带上 `reasoning.mode: "pro"`。API 目录固定为恰好八个 id：`gpt-5.5`、`gpt-5.6`、Sol/Terra/Luna，以及它们三个 Pro 虚拟 id；不存在通用的 `gpt-5.6-pro` 别名。Compact 请求会保留所选 tier，但发送基础模型且不带 reasoning 对象。
 
-请显式选择凭据路径；在 Providers 页面切换 Pool/Direct：
+请通过选择器 id 显式选择凭据路径。在 Providers 页面切换 Pool/Direct；下面的 `<selector>` 是
+用户自定义、通过 `codexAccountNamespaces` 映射的公开标签：
 
 ```text
-gpt-5.6-sol                         # openai (Pool or Direct option)
+gpt-5.6-sol                         # 通过 Pool 或 Direct 使用 bare Codex 登录路由
+<selector>/gpt-5.6-sol              # 映射到该 selector 的已保存 Codex 账户
 openai-apikey/gpt-5.6-sol           # API key
 ```
 
@@ -44,7 +46,8 @@ visibility = "list"
 
 | 路由 | 选择器 id 与目录元数据 |
 | --- | --- |
-| Codex 登录（Pool 或 Direct） | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（372,000-token 目录窗口） |
+| Codex 登录（没有有效账户 selector） | 显示 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 等裸原生 id，并按 `codexAccountMode` 使用 Pool 或 Direct。GPT-5.6 行使用 372,000-token 目录窗口。 |
+| Codex 登录（有有效账户 selector） | 为每个有效 selector 与受支持原生模型的组合显示 `<selector>/<native-openai-model>` 行。每行只使用映射账户，裸原生行会从选择器中隐藏。原生 metadata 与 context window 会保留。 |
 | OpenAI（API key） | 恰好八个命名空间行：`gpt-5.5`、`gpt-5.6`、Sol/Terra/Luna，以及三个 `*-pro` 虚拟 id（八个条目均为 1,050,000 context / 922,000 max input） |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna`（1,050,000） |
 | Cursor | 静态回退包含 `cursor/gpt-5.6-sol`、`cursor/gpt-5.6-terra`、`cursor/gpt-5.6-luna`（1,000,000），以及 `cursor/grok-4.5` 和 `cursor/grok-4.5-fast`（500,000）；实时账户发现会决定最终哪些条目仍然可见。 |
@@ -56,8 +59,12 @@ visibility = "list"
 
 仪表盘 Models 页面对两类模型都使用 `disabledModels`：
 
-- 路由 id 使用命名空间形式（`provider/model`）。禁用其中一个会把它从同步目录和 `/v1/models` 中移除。
-- 原生 GPT id 是裸 slug。禁用其中一个会保留它的目录条目，但把 `visibility` 改成 `hide`，以便之后重新启用时精确保留该条目；禁用期间，裸 OpenAI 列表形态会把它省略。
+- 路由 provider id 使用命名空间形式（`provider/model`）。禁用后会从同步目录和
+  `/v1/models` 中移除。
+- 账户限定的原生 id 使用 `<selector>/<native-openai-model>` 形式。禁用后只隐藏对应的
+  selector 行。
+- 裸原生 GPT id 是裸 slug。禁用后会隐藏裸行以及该模型的所有 account-selector 克隆行，
+  同时保留目录条目以便之后重新启用。
 - 原生行来自受支持的静态集合，因此被禁用的原生模型仍会在仪表盘中可见，并且可以重新打开。
 
 可见性处理会在快照升级之后运行；每次切换后，管理 API 都会刷新目录，并强制让 Codex 的模型缓存失效。
@@ -87,7 +94,7 @@ fast_mode = true
 
 ## 子代理选择
 
-Codex 会按 `priority` 升序对选择器可见的目录条目排序，并把前五个作为 `spawn_agent` 模型 override 暴露出来。你可以通过 `subagentModels` 或仪表盘的 Subagents 页面，选择最多五个裸原生 id 或命名空间化的 `provider/model` id；opencodex 会按所选顺序给这些条目分配 0-4 的 priority。其他模型仍然可以通过精确 id 调用。
+Codex 会按 `priority` 升序对选择器可见的目录条目排序，并把前五个作为 `spawn_agent` 模型 override 暴露出来。你可以通过 `subagentModels` 或仪表盘的 Subagents 页面，选择最多五个裸原生 id、账户限定的 `<selector>/<native-openai-model>` id，或路由 `provider/model` id。opencodex 会按所选顺序分配较低的目录 priority；启用账户 selector 时，裸原生选择会展开为 selector-qualified 分组。其他模型仍然可以通过精确 id 调用。
 
 精选模型列表与 Dashboard 的 **Sub-agent delegation** 选择彼此独立。它只决定 Codex 先提供哪些 override；它不会自己选择模型，也不会触发委派。
 
