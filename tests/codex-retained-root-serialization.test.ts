@@ -425,6 +425,19 @@ test("two processes at the post-approval management seam serialize instead of in
 
   const routeScript = (marker: string) => `
     import { existsSync, writeFileSync } from "node:fs";
+    // The stub lives on globalThis, NOT on the provider row. Catalog admission
+    // encodes the config to derive its identity and refuses a function member, so
+    // a per-provider \`fetch\` makes the seam throw before it can converge — which
+    // looked exactly like a production defect until the encoder said so.
+    globalThis.fetch = async () => {
+      writeFileSync(${JSON.stringify(barrier)} + "-" + ${JSON.stringify(marker)}, "here");
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        if (existsSync(${JSON.stringify(barrier)} + "-a") && existsSync(${JSON.stringify(barrier)} + "-b")) break;
+        await Bun.sleep(5);
+      }
+      return Response.json({ data: [{ id: "seam-model-" + ${JSON.stringify(marker)} }] });
+    };
     const config = {
       port: 10100,
       defaultProvider: "together",
@@ -434,17 +447,6 @@ test("two processes at the post-approval management seam serialize instead of in
           baseUrl: "https://api.together.xyz/v1",
           apiKey: "seam-key",
           models: ["fallback-model"],
-          fetch: async () => {
-            // Announce arrival, then wait for the sibling so both processes are
-            // past approval and inside the seam at the same time.
-            writeFileSync(${JSON.stringify(barrier)} + "-" + ${JSON.stringify(marker)}, "here");
-            const deadline = Date.now() + 8000;
-            while (Date.now() < deadline) {
-              if (existsSync(${JSON.stringify(barrier)} + "-a") && existsSync(${JSON.stringify(barrier)} + "-b")) break;
-              await Bun.sleep(5);
-            }
-            return Response.json({ data: [{ id: "seam-model-" + ${JSON.stringify(marker)} }] });
-          },
         },
       },
     };
@@ -503,24 +505,16 @@ test("two processes at the post-approval management seam serialize instead of in
   // be vacuous — two config-lock losers prove nothing about catalog serialization.
   expect(results.some(r => r.exitCode === 0)).toBe(true);
 
-  // KNOWN DEFECT, asserted so it cannot be forgotten: no process commits here.
-  //
-  // Called directly, the bound factory returns `skipped/busy`. Called after
-  // `saveConfigPreservingClaudeCode` — which is exactly what every one of the
-  // sixteen routes does before approving the refresh — it returns
-  // `failed/disk/gather` instead, so the seam never reaches a commit on the real
-  // production path. Reproduced single-process, so it is not contention.
-  //
-  // This assertion is deliberately the CURRENT behaviour rather than the intended
-  // one: it documents the defect at the seam it lives in, and it will fail the
-  // moment the seam starts committing, which is when it must be rewritten to
-  // require `committed` and a moved catalog. Tracked for WP9 closure; the fix is
-  // not in this test's scope.
+  // At least one process must reach a real commit, or the race proves nothing:
+  // the adapter is total, so a seam that only ever failed would still answer 2xx
+  // with a typed disposition and satisfy every assertion above.
   const dispositions = results
     .filter(r => r.exitCode === 0)
     .map(r => (JSON.parse(r.stdout.trim()) as { catalogRefresh: { status: string } }).catalogRefresh.status);
-  expect(dispositions.every(status => status !== "committed")).toBe(true);
-  expect(readFileSync(catalogPath, "utf8")).toBe(seeded);
+  expect(dispositions).toContain("committed");
+
+  // A commit means the catalog really moved.
+  expect(readFileSync(catalogPath, "utf8")).not.toBe(seeded);
 
   // The surviving catalog is one process's complete output, never a blend of both.
   const finalBytes = readFileSync(catalogPath, "utf8");
