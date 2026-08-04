@@ -520,6 +520,72 @@ const NVIDIA_NIM_KIMI_MODELS = [
   ...NVIDIA_NIM_KIMI_THINKING_MODELS,
   "moonshotai/kimi-k2-instruct", "moonshotai/kimi-k2-instruct-0905",
 ];
+/**
+ * 260804 issue #956: NIM publishes no input-modality metadata on `/v1/models`, so the
+ * registry is the only source of truth for which models can see images.
+ *
+ * Two lists, both verified per-model against NVIDIA documentation on 2026-08-04
+ * (build.nvidia.com model pages and docs.api.nvidia.com/nim/reference/*). Evidence and
+ * the per-id audit: devlog/_plan/260804_stack7_service_vision/011_nim_id_audit.md.
+ *
+ * Read `noVisionModels` carefully — it lists models that CANNOT see images, which is
+ * what routes them through the proxy's vision sidecar (src/vision/index.ts) and makes the
+ * catalog advertise image input for them. Membership is wrong in BOTH directions:
+ *   - a text-only model missing from it keeps issue #956 (images blocked or rejected);
+ *   - a vision model wrongly IN it gets its image silently replaced by another model's
+ *     text description — no error, worse answers, extra cost.
+ *
+ * A new NIM id must be classified DELIBERATELY against its NVIDIA page, never assumed
+ * from its name: `google/gemma-4-31b-it` carries no vision marker yet accepts images,
+ * `-vl` also appears on embedding/reranking models, and `google/codegemma-7b` is
+ * text-only while `google/codegemma-1.1-7b` has no current page at all. An unclassified
+ * id is intentionally left alone rather than defaulted, because NIM serves non-chat
+ * endpoints (embeddings, rerankers, guards, OCR) that reach the same code path.
+ */
+const NVIDIA_NIM_VISION_MODELS = [
+  "meta/llama-3.2-11b-vision-instruct", "meta/llama-3.2-90b-vision-instruct",
+  "nvidia/llama-3.1-nemotron-nano-vl-8b-v1", "nvidia/nemotron-nano-12b-v2-vl",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "nvidia/cosmos3-nano-reasoner",
+  "nvidia/ising-calibration-1.5-31b", "nvidia/ising-calibration-1-35b-a3b",
+  "google/gemma-4-31b-it", "google/diffusiongemma-26b-a4b-it",
+  "minimaxai/minimax-m3", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.5",
+  "stepfun-ai/step-3.7-flash", "thinkingmachines/inkling",
+  "mistralai/mistral-medium-3.5-128b",
+];
+/**
+ * The catalog advertises image input only for `noVisionModels` members, so a natively
+ * vision-capable model would otherwise be published as text-only and the Codex app would
+ * block attachments before the native path ever runs.
+ */
+const NVIDIA_NIM_VISION_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntries(
+  NVIDIA_NIM_VISION_MODELS.map(id => [id, ["text", "image"]]),
+);
+/**
+ * Text-only NIM chat models — 26 ids, each carrying an explicit `Input Modalities: Text`
+ * (or equivalent) on its NVIDIA page. PR #964 proposed ~64; six of those are natively
+ * image-capable and live in NVIDIA_NIM_VISION_MODELS above, and 32 more had no current
+ * NVIDIA page and were dropped rather than assumed.
+ *
+ * kimi-k2-thinking and kimi-k2-instruct are text-only while k2.5/k2.6 are not — vision
+ * and reasoning are independent axes, so all four stay in NVIDIA_NIM_KIMI_MODELS for
+ * reasoning suppression regardless of which list they appear in here.
+ */
+const NVIDIA_NIM_NO_VISION_MODELS = [
+  "deepseek-ai/deepseek-v4-flash", "deepseek-ai/deepseek-v4-pro",
+  "google/codegemma-7b",
+  "meta/llama-3.1-70b-instruct", "meta/llama-3.1-8b-instruct",
+  "meta/llama-3.2-1b-instruct", "meta/llama-3.2-3b-instruct",
+  "meta/llama-3.3-70b-instruct", "meta/llama2-70b",
+  "mistralai/mistral-7b-instruct-v0.3", "mistralai/mistral-nemotron",
+  "moonshotai/kimi-k2-thinking", "moonshotai/kimi-k2-instruct",
+  "nvidia/llama-3.1-nemotron-nano-8b-v1", "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+  "nvidia/llama-3.3-nemotron-super-49b-v1", "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+  "nvidia/nemotron-3-nano-30b-a3b", "nvidia/nemotron-3-super-120b-a12b",
+  "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-mini-4b-instruct",
+  "nvidia/nvidia-nemotron-nano-9b-v2",
+  "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+  "poolside/laguna-xs-2.1", "z-ai/glm-5.2",
+];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   KIMI_CODING_MODELS.map(id => [id, id === "k3[1m]" ? KIMI_K3_1M_CONTEXT_WINDOW : KIMI_K3_STANDARD_CONTEXT_WINDOW]),
 );
@@ -1235,6 +1301,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Free pricing, but an API key is still required (free key from build.nvidia.com).
     freeTier: true,
     parallelToolCalls: false,
+    // 260804 issue #956: NIM exposes no input modalities, so vision capability is
+    // classified here. Both lists are verified per-model; unlisted ids stay unclassified
+    // by design (see the comment on NVIDIA_NIM_VISION_MODELS).
+    noVisionModels: NVIDIA_NIM_NO_VISION_MODELS,
+    modelInputModalities: NVIDIA_NIM_VISION_INPUT_MODALITIES,
     noReasoningModels: NVIDIA_NIM_KIMI_MODELS,
     modelReasoningEfforts: Object.fromEntries(NVIDIA_NIM_KIMI_MODELS.map(id => [id, []])),
     preserveReasoningContentModels: NVIDIA_NIM_KIMI_THINKING_MODELS,
