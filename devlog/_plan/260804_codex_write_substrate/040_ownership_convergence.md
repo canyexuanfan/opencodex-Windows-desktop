@@ -57,7 +57,7 @@ IN:
 | `src/codex/convergence-types.ts` | IMPORT ONLY | Consume `AdmissionSnapshot`, `CodexObservedState`, `ConvergeOutcome`, `CodexProvenanceLedger`, and section types; no WP12 union. |
 | `src/codex/integration-record.ts` | USE/MODIFY THROUGH OWNER API | Read/update provenance and extension keys through the contract owner; no transition pair, history state/schedule, path/schema/parser, or parallel merge here. |
 | `src/codex/transition-state.ts` | CONSUME | Use `readCodexTransitionState`, `beginCodexTransition`, and `updateCodexHistoryTransition` for the canonical-CODEX_HOME pair and history state/schedule. |
-| `src/codex/codex-write-lock.ts` | CONSUME | Correct WP11 module name; no lock redesign. |
+| `src/codex/codex-write-lock.ts` | **NEW / IMPLEMENT** | This phase CREATES the module; `030_lock_protocol.md` is its design specification. It was WP11's until round 7 merged the phases. |
 | `src/codex/journal.ts` | MODIFY | Read-only typed inspection; authorized recovery only inside convergence. |
 | `src/codex/inject.ts` | MODIFY | Receipt-gated internal apply/restore mechanics; remove filename-based deletion authority. |
 | `src/codex/sync.ts` | MODIFY | Remove the remaining alternate native orchestration; delegate to `convergeCodex`. |

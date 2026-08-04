@@ -43,11 +43,11 @@ it rather than inventing their share.
 | WP8b | `005_contract.md` | The shared surfaces: record schema + owner, `/api/sync` response contract, the single convergence entry point, generation counters, module names, and the config-snapshot admission result | — |
 | WP9 | `010_catalog_seam.md` | gather/commit split + typed outcome, consuming the contract | WP8b |
 | WP10 | `020_history_isolation.md` | history off the event loop, and the cross-process history protocol | WP8b |
-| WP11 | `030_lock_protocol.md` | the async per-home lock, per-USER namespace | WP8b, WP9, WP10 |
-| WP12 | `040_ownership_convergence.md` | tri-state authority, admission order, absence restoration | WP11 |
+| ~~WP11~~ | `030_lock_protocol.md` | **merged into WP12** — the lock has exactly one consumer, and the `AdmissionSnapshot` producer plus the `inject.ts` split that its API needs both live there | — |
+| WP12 | `040_ownership_convergence.md` + `030_lock_protocol.md` | the async per-home lock and per-USER namespace **with its first production caller**, plus tri-state authority, admission order, absence restoration | WP8b, WP9, WP10 |
 | WP13 | `050_composed_acceptance.md` | one acceptance suite against real production entry points | all |
 
-WP9 and WP10 remain independent of each other and both precede WP11: a lock
+WP9 and WP10 remain independent of each other and both precede the lock: a lock
 around an unsplittable gather-and-write, or around a ten-second blocking history
 call, is the failure the last unit already proved. WP12 stays last of the four
 because its admission must run before the lock module creates anything.

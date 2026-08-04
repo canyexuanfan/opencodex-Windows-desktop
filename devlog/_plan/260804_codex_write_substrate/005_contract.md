@@ -30,8 +30,9 @@ SQLite transition row),
 `tests/codex-user-identity.test.ts` (NEW).
 
 OUT: catalog mechanics (WP9), history mechanics (WP10), the full native-lock
-namespace/acquisition API and broad caller adoption (WP11), ownership mechanics
-(WP12). WP10 is the one narrow exception to the former native-lock boundary: it
+namespace/acquisition API, broad caller adoption, and ownership mechanics — all
+**WP12**, which absorbed the former WP11. WP10 is the one narrow exception to that
+native-lock boundary: it
 uses the already-owned N transaction as a compatibility native-handoff exclusion
 from each retained native mutation through its history authorization. The final
 coordinator path, transition table/CAS, config-generation API, shapes and funnel

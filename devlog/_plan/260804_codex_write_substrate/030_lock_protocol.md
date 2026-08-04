@@ -17,11 +17,13 @@ contract's exact `AdmissionSnapshot`; and the pinned Bun 1.3.14 probe showed bot
 Effective-user identity — uid on POSIX, SID on Windows — is the namespace authority
 (`005_contract.md` §§4, 7).
 
-WP11 is independently landable. It consumes WP8b's identity/transition-state/types,
-WP9's synchronous candidate commit, and WP10's separate history protocol. The WP11
-commit typechecks and preserves the working WP9/WP10 funnel. WP12 later supplies
-stronger ownership/provenance decisions through the same `AdmissionSnapshot`; it is
-not required to replace a placeholder before this phase works.
+**This document is WP12's lock section.** It was written as a standalone WP11 and
+opened by asserting that WP11 was independently landable; round 7 established the
+opposite and merged the two phases (see the Round 6 resolution below). The lock
+consumes WP8b's identity/transition-state/types, WP9's synchronous candidate commit,
+and WP10's separate history protocol — and it is delivered together with the
+`AdmissionSnapshot` producer and the first production caller, because without those
+its API cannot be exercised by anything but a fabricated snapshot.
 
 All current-code citations and diff context below were rechecked on 2026-08-04 at
 `7bde9e0c977721fc0b9d8617c85ff17de7c07658`.
@@ -140,9 +142,12 @@ So the merge is not a concession, it is the reading that makes three documents a
 - The goalplan work-phase is restructured accordingly: `wp11` is closed as *merged*,
   and `wp12` carries the mechanism, the admission producer, the `inject.ts`
   apply/restore split, and the first call edge as required tasks.
-- **F4 is the exception and lands alone.** The ACL pathname-cache defect is a live
-  bug in shipped code (`src/lib/windows-secret-acl.ts`), independent of the lock, and
-  it has its own falsifiable test. It does not wait for WP12.
+- **F4 is a separate COMMIT within WP12, not a separate merge.** The ACL
+  pathname-cache defect is a live bug in shipped code
+  (`src/lib/windows-secret-acl.ts`) and does not depend on the lock, so it is written
+  and verified first rather than queued behind the admission producer. It is still
+  audited under WP12's gate: "lands alone" would have meant a shipped repair with no
+  active phase reviewing it, which is the gap the merge exists to close.
 
 Everything below this line is therefore **WP12's lock section**, rewritten to the
 decisions above. Where the historical text conflicts with them, the decisions win —
@@ -698,10 +703,29 @@ Canonicalizing **both** sides is required, not tidiness. With no `CODEX_HOME` se
 (`src/codex/paths.ts:23`), so on a machine where `~/.codex` is a symlink an
 uncanonicalized ambient value refuses the very home it names.
 
-The real fix is to parameterize `classifyNativeRoutedResidue()` with the canonical
-target and remove ambient authority from the guard entirely. The adjacency rule above
-is the bounded version that survives until that lands, and the merged WP12 phase
-carries the parameterization as a task.
+**Adjacency is not sufficient, and calling it "the bounded version until the real fix
+lands" was wrong.** It closes JavaScript task interleaving — nothing can run between
+two synchronous calls in one isolate — and closes nothing else. Another **process**
+needs no interleaving at all, because the two `realpath` calls are two separate
+filesystem observations of a selector that a third party owns:
+
+```text
+CODEX_HOME=<base>/current, where current -> clean-A
+check saw:  clean-A                  # the fresh adjacent read accepts A
+<another process atomically retargets current -> routed-B>
+guard saw:  routed-B                 # the coordinator's own read resolves B
+SAME SYNCHRONOUS STACK, DIFFERENT DIRECTORY: true
+```
+
+That is executed output, not a hypothetical. The lock would hold coordinator A while
+the safety guard cleared B.
+
+So parameterizing `classifyNativeRoutedResidue()` with the canonical target is
+**required for correctness in this phase**, not deferred hardening: the guard must
+receive the resolved directory rather than resolve one for itself. The adjacent read
+stays as defense-in-depth against the in-isolate case, and it is explicitly not the
+mechanism. The acceptance criterion is mutation-named accordingly: restore ambient
+resolution inside the guard and a real second-process symlink-retarget test must fail.
 
 ```diff
 +const transaction = openCodexCoordinatorTransaction(finalDatabasePath);
@@ -904,20 +928,27 @@ and the ones that did were rewritten rather than kept.
   children must stop sharing one lock.
 - Config generation, authoritative admission re-read, native/provenance writes,
   and the conditional transition-row update share N->C; C releases before N commits.
-  *Red when:* the apply/restore → N call edge is removed — the production-path test
-  must fail. This criterion is unmeetable without the WP12 caller, which is exactly
-  why the phases are merged.
+  This is **four independent claims**, so it takes four mutations. One that only
+  deletes the whole call edge still passes while any single seam escapes N->C.
+  *Red when (each separately):* (a) the apply/restore → N call edge is removed;
+  (b) the config-generation read/update moves outside N->C; (c) the
+  provenance/integration-record update moves outside it; (d) the native writes move
+  outside it. Each must fail its own test.
+  Unmeetable without the WP12 caller, which is exactly why the phases are merged.
 - **F1** — a routed CODEX_HOME returns a typed refusal carrying the coordinator's
   legacy-ambiguous reason rather than throwing, **and** the existing catalog commit
-  still succeeds on that same routed home.
-  *Red when:* the catalog commit is moved under N — the routed-home catalog test
-  must fail. That is the regression this finding exists to prevent.
-- **F2** — the successful matched-home path reaches `BEGIN IMMEDIATE`, and a home
-  changed **during acquisition retry** is caught.
-  *Red when:* the fresh adjacent ambient read is replaced by the value captured
-  before the retry sleeps — the environment-change-during-retry test must fail. A
-  test that only exercises mismatched-home refusal is insufficient: it passes even
-  if the matched path never acquires anything.
+  still succeeds on that same routed home. Two claims, two mutations.
+  *Red when:* (a) the catalog commit is moved under N — the routed-home catalog test
+  must fail; (b) the typed refusal is replaced by a thrown exception — the refusal
+  test must fail. (a) alone would let a throwing implementation pass.
+- **F2** — the successful matched-home path reaches `BEGIN IMMEDIATE`; a home changed
+  **during acquisition retry** is caught; and a home changed by **another process**
+  retargeting the selector symlink is caught.
+  *Red when:* (a) the fresh adjacent ambient read is replaced by the value captured
+  before the retry sleeps — the environment-change-during-retry test must fail;
+  (b) `classifyNativeRoutedResidue` is restored to resolving the home itself — the
+  second-process symlink-retarget test must fail. (a) alone is satisfied by the
+  adjacent-read-only implementation that the executed probe above defeats.
 - **F3** — same-process reentrancy returns `refused/reentrant`, distinguishable from
   the `busy` SQLite alone produces.
   *Red when:* ALS is removed — the reason must degrade to `busy`. Asserting only
@@ -933,11 +964,21 @@ and the ones that did were rewritten rather than kept.
   classification test must fail.
 - `transition-state.ts` alone owns native generation/txId/history scheduling; JSON
   owns none of them, and the lock never opens a second coordinator connection in C.
+  *Red when:* (a) a second coordinator connection is opened inside C — it must
+  self-contend and fail, not silently succeed; (b) `nativeGeneration` or `currentTxId`
+  is written into `integrations/codex.json` — the JSON-ownership test must fail.
 - Lock edges are N->C and short fail-fast H->N only; stale history jobs are rejected
   by generation/transaction identity without any C->N, C->H, or held N->H edge.
+  *Red when:* (a) each inverse edge is added in turn (C->N, C->H, held N->H) — the
+  dependency-graph test must fail for each; (b) the generation/txId stale-job
+  rejection is removed — a stale job must be observed overwriting the winner.
 - **Phase honesty** — the goalplan records the merge: `wp11` closed as *merged*, and
   `wp12` carrying the mechanism, the admission producer, the `inject.ts` split, and
   the first call edge as required tasks. If the caller does not land, the PR body
   says the lock is unused, in those words.
-  *Red when:* the WP12 admission producer is removed — the production-entry test or
-  the compile must fail.
+  *Red when:* (a) the WP12 admission producer is removed — the production-entry test
+  or the compile must fail; (b) the goalplan merge state is reverted so a standalone
+  WP11 could be declared done; (c) the PR body claims a live substrate while the
+  caller is absent. (b) and (c) are checked by reading them, not by a test — and
+  saying so is the point, because a criterion that pretends to be automated when it
+  is not is worse than one that admits it.
