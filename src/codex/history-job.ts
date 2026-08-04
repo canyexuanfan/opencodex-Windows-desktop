@@ -17,11 +17,43 @@
  * Design record: devlog/_plan/260804_codex_write_substrate/020_history_isolation.md.
  */
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 
 import type {
   CodexHistoryWorkerOperation,
   HistoryWorkerResult,
 } from "./history-worker";
+import { historyBackupPathFor } from "./history-provider";
+import { getCodexHome } from "./paths";
+
+/** Where Codex keeps its resume history, and the manifest that shadows it. */
+const STATE_DB_FILE = "state_5.sqlite";
+
+/**
+ * Resolve the paths a history job needs, at CALL time.
+ *
+ * `history-provider.ts` resolves its equivalents at module load (`:16`, `:22`),
+ * which is fine in one process and wrong for a Worker: the Worker does not
+ * inherit them, so anything derived from those constants would address a
+ * different home than the caller intended. Resolving here also means a test that
+ * moves `CODEX_HOME` is honoured rather than ignored.
+ */
+export function resolveCodexHistoryJobTarget(): {
+  readonly canonicalCodexHome: string;
+  readonly canonicalStateDbPath: string;
+  readonly canonicalBackupPath: string;
+} {
+  const home = getCodexHome();
+  const stateDb = join(home, STATE_DB_FILE);
+  return {
+    canonicalCodexHome: home,
+    canonicalStateDbPath: stateDb,
+    // Derived by the provider's own rule rather than guessed: the manifest lives
+    // in the config directory under a hash of the state database, so a
+    // hand-built path would address a different file entirely.
+    canonicalBackupPath: historyBackupPathFor(stateDb),
+  };
+}
 
 /** How long a history unit may run before the parent stops waiting on it. */
 const WORKER_TIMEOUT_MS = 30_000;

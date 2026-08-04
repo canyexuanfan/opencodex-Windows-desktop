@@ -3,7 +3,12 @@ import { atomicWriteFile, loadConfig, subagentDefaultSyncEffective, websocketsEn
 import { markJournalInjectedState, removeJournal, restoreJournalState, writeJournal } from "./journal";
 import { withCatalogWriteSerialization } from "./catalog-write-serialization";
 import { restoreCodexCatalogWithPermit } from "./catalog/sync";
-import { migrateHistoryToOpenai, syncCodexHistoryProvider } from "./history-provider";
+import { syncCodexHistoryProvider } from "./history-provider";
+import {
+  deriveCodexHistoryOperation,
+  resolveCodexHistoryJobTarget,
+  runCodexHistoryJob,
+} from "./history-job";
 import {
   OCX_SECTION_MARKER,
   hasInjectedCodexRouting,
@@ -599,14 +604,35 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
   // Legacy mode still forward-tags history so re-tagged threads stay listable. Design B needs
   // the opposite: a one-time migration of previously re-tagged threads BACK to openai (restore
   // machinery; cheap no-op when there is nothing to migrate).
-  const history = config?.syncResumeHistory !== false
-    ? (legacyMode ? syncCodexHistoryProvider("opencodex") : migrateHistoryToOpenai())
-    : { rows: 0, files: 0 };
+  // History runs in a Worker under H, not on this thread.
+  //
+  // The three surfaces it touches — the SQLite rows, the backup manifest, and the
+  // rollout files — do not share a transaction, so a busy timeout only ever
+  // serialized one of them and an opposite-direction process could overtake
+  // through the other two. The operation is derived from admitted intent here and
+  // handed down fixed; the Worker never takes a direction from its caller.
+  const historyOutcome = await runCodexHistoryJob({
+    ...resolveCodexHistoryJobTarget(),
+    operation: deriveCodexHistoryOperation({
+      direction: "apply",
+      resumeHistory: config?.syncResumeHistory !== false,
+      legacyMode,
+    }),
+  });
+  // A blocked or failed unit is reported, not silently counted as zero work:
+  // `failed` is what makes the caller's message say so.
+  const history: { rows: number; files: number; failed?: true } =
+    historyOutcome.kind === "converged"
+      ? { rows: historyOutcome.rows, files: historyOutcome.files }
+      : historyOutcome.kind === "skipped"
+        ? { rows: 0, files: 0 }
+        : { rows: 0, files: 0, failed: true };
 
   const catalogMessage = catalogPath
     ? `  Codex model catalog: ${catalogPath}\n`
     : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
-  const migratedRows = (history.rows ?? 0) + ("ejectedRows" in history ? history.ejectedRows ?? 0 : 0);
+  const ejected = (history as { ejectedRows?: number }).ejectedRows ?? 0;
+  const migratedRows = (history.rows ?? 0) + ejected;
   const historyMessage = config?.syncResumeHistory === false
     ? `  Codex resume history: left unchanged (syncResumeHistory=false).\n`
     : history.failed
