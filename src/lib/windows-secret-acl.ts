@@ -44,40 +44,78 @@ const timedOutPaths = new Set<string>();
  * "unchanged" — it is recorded as unverifiable so the next harden re-runs
  * instead of inheriting a previous file's credit.
  */
-type HardenedIdentity = string | null;
+type HardenedIdentity = string;
 
 /**
- * Portable file identity for the ACL success memo.
+ * What a stat can tell us about WHICH OBJECT is at a path.
  *
- * `dev:ino` alone is NOT identity, and believing it was is what a Linux CI run
- * caught: ext4 reuses the inode of an unlinked file immediately, so 100 of 100
- * unlink/recreate cycles produced the SAME `ino` — while macOS reused none in
- * 200 cycles and happily reported the fix working. A same-name replacement would
- * therefore have kept inheriting the previous file's ACLs on the platform most
- * of CI runs on.
+ * Two fields, deliberately separated, because conflating them shipped a bug:
  *
- * `ctimeNs` is what actually distinguishes them: it differed in 100 of 100 of
- * those same cycles. It also moves on any metadata change, so a file whose
- * permissions were altered underneath us re-hardens rather than being trusted —
- * conservative in the safe direction, since hardening is idempotent.
+ * - `object` — `dev:ino`. Answers "is this the same file". Survives an ACL or
+ *   permission change, which is exactly what we need across an icacls call.
+ * - `freshness` — `ctimeNs`. Answers "has this file's metadata moved since". It
+ *   distinguishes an unlink/recreate that ext4 gave the same inode back for, and
+ *   it MOVES when permissions change.
+ *
+ * The first version used `dev:ino:ctimeNs` for both jobs. Since chmod bumps ctime
+ * — probed, `{ctimeChangedByChmod: true}` — and icacls is a permission change, the
+ * before/after comparison would have rejected its own successful harden and failed
+ * closed on every first harden on Windows. Requiring the identity to be unchanged
+ * across an operation whose entire purpose is to change it is not a strict check;
+ * it is a broken one.
+ */
+interface PathObservation {
+  readonly object: string;
+  readonly freshness: string;
+}
+
+/**
+ * Observe which object is at a path, and how fresh it is.
+ *
+ * `dev:ino` alone is not enough to detect a replacement, which a Linux CI run
+ * proved: ext4 reuses the inode of an unlinked file immediately — 100 of 100
+ * unlink/recreate cycles produced the SAME `ino`, while macOS reused none in 200
+ * and happily reported the earlier fix working. That is why `freshness` exists;
+ * `ctimeNs` differed in 100 of 100 of those same cycles.
  *
  * `bigint: true` is used because `ctimeNs` exists only in that variant.
  *
- * UNVERIFIED: it is widely reported that the plain `ino` is 0 on NTFS while the
- * bigint form carries the file index, and the zero-ino guard below exists for
- * that case. Neither this machine (Darwin) nor Linux CI can confirm it, and a
- * pinned-Bun Windows probe has not been run. Treat the guard as defensive rather
- * than as a demonstrated platform fact — the ext4 inode-reuse finding above is
- * exactly what asserting an unprobed filesystem property costs.
+ * Test seam: `setStatForTests` replaces this reader so a test can vary `dev`,
+ * `ino`, and `ctimeNs` independently. Mirroring the implementation's string
+ * format in test setup proves nothing about which components production uses —
+ * an audit removed `dev` and all forty tests still passed.
+ *
+ * UNVERIFIED: the plain `ino` is reported to be 0 on NTFS while the bigint form
+ * carries the file index, and the zero-ino guard exists for that case. Neither
+ * Darwin nor Linux CI can confirm it and no pinned-Bun Windows probe has run.
+ * It is defensive code, not a demonstrated platform fact.
  */
-function fileIdentity(targetPath: string): HardenedIdentity {
+type StatReader = (path: string) => { dev: bigint; ino: bigint; ctimeNs: bigint };
+
+const defaultStatReader: StatReader = path => {
+  const s = statSync(path, { bigint: true });
+  return { dev: s.dev, ino: s.ino, ctimeNs: s.ctimeNs };
+};
+
+let statReader: StatReader = defaultStatReader;
+
+/** Test seam: drive dev / ino / ctime independently. */
+export function setStatForTests(reader: StatReader | null): void {
+  statReader = reader ?? defaultStatReader;
+}
+
+function observe(targetPath: string): PathObservation | null {
   try {
-    const stats = statSync(targetPath, { bigint: true });
-    if (stats.ino === 0n) return null;
-    return `${stats.dev}:${stats.ino}:${stats.ctimeNs}`;
+    const s = statReader(targetPath);
+    if (s.ino === 0n) return null;
+    return { object: `${s.dev}:${s.ino}`, freshness: `${s.ctimeNs}` };
   } catch {
     return null;
   }
+}
+
+function memoValue(seen: PathObservation): HardenedIdentity {
+  return `${seen.object}:${seen.freshness}`;
 }
 
 /**
@@ -91,14 +129,13 @@ function fileIdentity(targetPath: string): HardenedIdentity {
  * gone; nothing does that for a stable path.
  */
 function memoSatisfied(cache: Map<string, HardenedIdentity>, targetPath: string): boolean {
-  if (!cache.has(targetPath)) return false;
   const remembered = cache.get(targetPath);
-  // Unverifiable at harden time stays unverifiable now: re-harden rather than
-  // treat an unknown identity as proof of an unchanged file.
-  if (remembered === null) return false;
-  const current = fileIdentity(targetPath);
+  if (remembered === undefined) return false;
+  const current = observe(targetPath);
+  // Unreadable now is not "unchanged": re-harden rather than trust a value we
+  // cannot confirm still describes what is there.
   if (current === null) return false;
-  return current === remembered;
+  return memoValue(current) === remembered;
 }
 
 /**
@@ -113,26 +150,36 @@ function memoSatisfied(cache: Map<string, HardenedIdentity>, targetPath: string)
  *   {identityChangedDuringHarden: true, callsForOriginal: 3, totalCalls: 3,
  *    replacementWasHardened: false}
  *
- * So identity is captured before the sequence and compared after it. A mismatch,
- * or an unreadable identity at either end, means we cannot say what was hardened:
- * the memo is cleared rather than written, and required callers fail closed. An
- * optional caller soft-fails, matching how it treats every other unproven ACL.
+ * So the OBJECT is captured before the sequence and compared after it. Only the
+ * object — `dev:ino` — because icacls changes permissions, and `ctimeNs` moves
+ * when permissions change (probed: `{ctimeChangedByChmod: true}`). Comparing the
+ * full identity across the call would have rejected every successful harden and
+ * failed closed on the first harden on Windows: the check would have been
+ * demanding that an operation not do the thing it exists to do.
+ *
+ * The memo then stores the object plus the freshness read AFTER hardening, which
+ * is the state a later lookup should match.
+ *
+ * A changed object, or an unreadable observation at either end, means we cannot
+ * say what was hardened: the memo is cleared rather than written, and required
+ * callers fail closed. An optional caller soft-fails, as it does for every other
+ * unproven ACL.
  *
  * Returns true when the harden may be reported successful.
  */
 function recordHarden(
   cache: Map<string, HardenedIdentity>,
   targetPath: string,
-  before: HardenedIdentity,
+  before: PathObservation | null,
 ): boolean {
-  const after = fileIdentity(targetPath);
-  if (before === null || after === null || before !== after) {
+  const after = observe(targetPath);
+  if (before === null || after === null || before.object !== after.object) {
     // Never leave a memo behind for a file we cannot vouch for, including one
     // written by an earlier successful harden of a now-replaced file.
     cache.delete(targetPath);
     return false;
   }
-  cache.set(targetPath, after);
+  cache.set(targetPath, memoValue(after));
   return true;
 }
 
@@ -533,7 +580,7 @@ function hardenEntry(
     if (attempt > 0 && deadline - nowFn() <= 0) break; // retry only while budget remains
     try {
       // Captured BEFORE the sequence: this is the file we are about to harden.
-      const before = fileIdentity(targetPath);
+      const before = observe(targetPath);
       runIcacls(targetPath, directory, deadline);
       if (!recordHarden(cache, targetPath, before)) {
         if (opts.required) throw new Error(SUBSTITUTED_DIAGNOSTIC);
@@ -583,7 +630,7 @@ async function hardenEntryAsync(
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0 && deadline - nowFn() <= 0) break;
     try {
-      const before = fileIdentity(targetPath);
+      const before = observe(targetPath);
       await runIcaclsAsync(targetPath, directory, deadline);
       if (!recordHarden(cache, targetPath, before)) {
         if (opts.required) throw new Error(SUBSTITUTED_DIAGNOSTIC);

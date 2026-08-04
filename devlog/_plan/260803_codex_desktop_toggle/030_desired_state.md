@@ -247,6 +247,31 @@ real migration after OFF and ON mutations and asserts: no `claudeCode` block,
 
 ## One per-home linearization lock — a check is not a lock
 
+> **SUPERSEDED (2026-08-05): do not build this lock. Consume WP12's N instead.**
+>
+> This section was written on 2026-08-04, before the write-substrate unit landed
+> `src/codex/user-identity.ts` (`554b3919e`, 2026-08-05). Its diagnosis is right and
+> its remedy is now a duplicate — a second, weaker per-home lock beside the one the
+> other unit already owns:
+>
+> | This section proposes | What already exists |
+> |---|---|
+> | `withCodexHomeLinearizationLockSync` in a NEW `desired-state.ts` | the N coordinator transaction, `src/codex/transition-state.ts:348` |
+> | `join(tmpdir(), "opencodex-native-locks", sha256(home) + ".sqlite")` | `resolveCodexCoordinatorDatabasePath`, `src/codex/user-identity.ts:165`, which keys on the effective **uid/SID** as well as the canonical home |
+> | `inspectNativeCodexOwnership()` here | `AdmissionSnapshot.ownership`, owned by WP12's admission producer |
+>
+> Hashing the home ALONE is the specific defect `005_contract.md` §7 exists to
+> prevent: a service and a CLI running as different OS users would share one lock
+> file for one home, and `os.homedir()` is environment-controlled under Bun 1.3.14
+> either way. Building this would ship that bug knowingly.
+>
+> **Consequence for sequencing:** WP4 depends on WP12's lock, so it runs after it,
+> not beside it. WP4 keeps everything below that is genuinely its own — the
+> persisted flag, the gate at `src/cli/index.ts:319`, OFF reconciliation, and the
+> startup ownership order — and takes its linearization from N. The analysis below
+> is retained because it is *why* a lock is required at all; only the "NEW
+> `src/codex/desired-state.ts` owns one linearization boundary" answer is withdrawn.
+
 The previous design's bare re-read was insufficient. `syncModelsToCodex` can pause
 in provider model gathering (`src/codex/sync.ts:83-108`), and even a re-read after
 that pause leaves a check/write gap: another process can commit OFF through the
