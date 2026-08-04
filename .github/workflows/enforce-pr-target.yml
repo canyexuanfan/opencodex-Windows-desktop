@@ -607,7 +607,9 @@ jobs:
             const completionRecordedForLiveHead =
               completionHeadSha !== null && completionHeadSha === pr.head.sha;
             const ticksPredateLiveHead =
-              completionHeadSha === null && eventHeadSha !== pr.head.sha;
+              completionHeadSha === null &&
+              checklistComplete &&
+              eventHeadSha !== pr.head.sha;
             const headDrifted =
               checklistRequired &&
               readiness.present &&

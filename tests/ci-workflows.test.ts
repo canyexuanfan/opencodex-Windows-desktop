@@ -1369,9 +1369,7 @@ describe("GitHub Actions hardening", () => {
       const drafts = callsTo(result, "graphql") as [{ query: string }];
       expect(drafts).toHaveLength(1);
       expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
-      expect(callsTo(result, "graphql").join("")).not.toContain(
-        "markPullRequestReadyForReview",
-      );
+      expect(drafts[0]!.query).not.toContain("markPullRequestReadyForReview");
 
       const readinessBody = lastReadinessCommentBody(result);
       expect(readinessBody).toContain("**0/4** boxes ticked");
@@ -1492,9 +1490,7 @@ describe("GitHub Actions hardening", () => {
       const drafts = callsTo(result, "graphql") as [{ query: string }];
       expect(drafts).toHaveLength(1);
       expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
-      expect(callsTo(result, "graphql").join("")).not.toContain(
-        "markPullRequestReadyForReview",
-      );
+      expect(drafts[0]!.query).not.toContain("markPullRequestReadyForReview");
       const readinessBody = lastReadinessCommentBody(result);
       expect(readinessBody).toContain(
         "The checklist was ticked before the current head `3f1c0de` was pushed.",
@@ -1577,6 +1573,40 @@ describe("GitHub Actions hardening", () => {
         "New commits were pushed after the checklist was completed on `1111111`",
       );
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a stale event on a never-completed checklist does not wipe bot state or post a reset notice", async () => {
+      // `ticksPredateLiveHead` must only fire for an actual completion. A
+      // stale event on an open checklist has nothing to reset: posting the
+      // notice would be noise, and replacing the stored state would drop the
+      // bot's draft-ownership record (`autoDraftedByBot`).
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(1),
+        },
+        eventPayload: {
+          head: { sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        },
+        comments: [readinessComment({
+          version: 2,
+          autoDraftedByBot: true,
+          maintainersPinged: false,
+        })],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "issues.updateComment",
+      ]));
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      expect(callsTo(result, "graphql")).toEqual([]);
+      const readinessBody = lastReadinessCommentBody(result);
+      // Ownership is preserved and no reset was performed or announced.
+      expect(readinessBody).toContain('"autoDraftedByBot":true');
+      expect(readinessBody).not.toContain('"completedAtHeadSha"');
+      expect(readinessBody).not.toContain("ticked before the current head");
+      expect(readinessBody).not.toContain("has been reset");
     });
 
     test("an empty PR cannot be laundered into ready by ticking the injected boxes", async () => {
