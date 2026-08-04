@@ -694,7 +694,14 @@ describe("GitHub Actions hardening", () => {
     return { workflow, jobs, steps: steps!, allSteps, script };
   }
 
-  const SCRIPT_LOAD = ["require", "require", "require"] as const;
+  const SCRIPT_LOAD = [
+    "require",
+    "require",
+    "require",
+    "require",
+    "require",
+    "require",
+  ] as const;
 
   /** Reads every allowed-base PR performs before any enforcement writes. */
   function readsAllowedBase(tail: string[] = []): string[] {
@@ -3355,9 +3362,18 @@ describe("GitHub Actions hardening", () => {
     expect(script).toMatch(/checklistComplete = readiness\.present && readiness\.complete/);
     expect(script).toMatch(/Maintainers notified:/);
     expect(script).toMatch(/maintainersPinged\s*=\s*true/);
-    expect(script).toMatch(/READINESS_MARKER = "<!-- pr-quality-readiness -->"/);
     expect(script).toMatch(/readMaintainerLogins\(\)/);
     expect(script).toMatch(/fs\.readFileSync/);
+
+    // The readiness marker and the state serializers live in the shared
+    // modules the script loads; the script itself must import and use them.
+    const messagesModule = await readText(
+      ".github/scripts/enforce-pr-target-messages.cjs",
+    );
+    expect(messagesModule).toMatch(
+      /READINESS_MARKER = "<!-- pr-quality-readiness -->"/,
+    );
+    expect(script).toMatch(/enforce-pr-target-messages\.cjs/);
 
     // Pending ownership is written before mutations; convertToDraft runs next;
     // a later upsertComment records autoDraftedByBot only after success (#631).

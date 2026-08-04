@@ -52,10 +52,51 @@ jobs:
               extractReviewReadiness,
               appendReviewReadinessSection,
               stripReviewReadinessSection,
-              resetReviewReadinessSection,
-              REVIEW_READINESS_ITEMS
+              resetReviewReadinessSection
             } = require(
               path.join(process.cwd(), ".github", "scripts", "pr-quality.cjs"),
+            );
+            const {
+              parseState,
+              stateMarker,
+              parseReadinessState,
+              clearedEnforcerState,
+              defaultEnforcerState,
+              defaultReadinessState,
+              completionIsStale,
+              READINESS_STATE_VERSION
+            } = require(
+              path.join(
+                process.cwd(),
+                ".github",
+                "scripts",
+                "enforce-pr-target-state.cjs"
+              ),
+            );
+            const {
+              READINESS_MARKER,
+              inlineCode,
+              buildReadinessCommentBody,
+              buildFailureSections,
+              failureSummary,
+              buildStaleNotice
+            } = require(
+              path.join(
+                process.cwd(),
+                ".github",
+                "scripts",
+                "enforce-pr-target-messages.cjs"
+              ),
+            );
+            const {
+              parseMaintainerLogins
+            } = require(
+              path.join(
+                process.cwd(),
+                ".github",
+                "scripts",
+                "enforce-pr-target-maintainers.cjs"
+              ),
             );
 
             const ALLOWED_BASES = ["dev"];
@@ -63,15 +104,6 @@ jobs:
             const TITLE_PREFIX = "[WRONG BRANCH] ";
             const COMMENT_MARKER = "<!-- pr-quality-enforcer -->";
             const LEGACY_COMMENT_MARKER = "<!-- wrong-branch-enforcer -->";
-            const STATE_PATTERN =
-              /<!-- (?:wrong-branch-enforcer|pr-quality-enforcer)-state:([\s\S]*?) -->/;
-            const READINESS_MARKER = "<!-- pr-quality-readiness -->";
-            const READINESS_STATE_PATTERN =
-              /<!-- pr-quality-readiness-state:([\s\S]*?) -->/;
-            // v2 adds `completedAtHeadSha` so a completed checklist is bound
-            // to the exact head it attested. v1 states (no field) are read the
-            // same way: the binding only starts on the next completion.
-            const READINESS_STATE_VERSION = 2;
             const MAINTAINERS_FILE = "MAINTAINERS.md";
 
             const { owner, repo } = context.repo;
@@ -108,83 +140,9 @@ jobs:
             );
             let readinessCommentId = readinessComment?.id ?? null;
             const storedReadinessState = parseReadinessState(
-              readinessComment?.body
+              readinessComment?.body,
+              message => core.warning(message)
             );
-
-            function parseState(body) {
-              const match = body?.match(STATE_PATTERN);
-
-              if (!match) {
-                return null;
-              }
-
-              try {
-                return JSON.parse(match[1]);
-              } catch (error) {
-                core.warning(
-                  `Could not parse stored workflow state: ${error.message}`
-                );
-
-                return null;
-              }
-            }
-
-            function stateMarker(state) {
-              return (
-                "<!-- pr-quality-enforcer-state:" +
-                JSON.stringify(state) +
-                " -->"
-              );
-            }
-
-            function parseReadinessState(body) {
-              const match = body?.match(READINESS_STATE_PATTERN);
-
-              if (!match) {
-                return null;
-              }
-
-              try {
-                return JSON.parse(match[1]);
-              } catch (error) {
-                core.warning(
-                  `Could not parse stored readiness state: ${error.message}`
-                );
-
-                return null;
-              }
-            }
-
-            function readinessStateMarker(state) {
-              return (
-                "<!-- pr-quality-readiness-state:" +
-                JSON.stringify(state) +
-                " -->"
-              );
-            }
-
-            /** The enforcer comment state after every quality gate clears. */
-            function clearedEnforcerState() {
-              return {
-                version: 1,
-                active: false,
-                autoDraftedByBot: false,
-                titlePrefixedByBot: false,
-                ancestryFailed: false,
-                descriptionFailed: false,
-                screenshotFailed: false
-              };
-            }
-
-            /** Fresh checklist-message state for a contributor PR. */
-            function defaultReadinessState() {
-              return {
-                version: READINESS_STATE_VERSION,
-                autoDraftedByBot: false,
-                maintainersPinged: false,
-                completedAtHeadSha: null
-              };
-            }
 
             /**
              * Maintainers from `MAINTAINERS.md` on the trusted default branch
@@ -197,27 +155,7 @@ jobs:
                   path.join(process.cwd(), MAINTAINERS_FILE),
                   "utf8"
                 );
-                // Only the current-maintainers table is authoritative; the
-                // change log below it can mention retired accounts.
-                const sectionStart = text.indexOf("## Current maintainers");
-                const nextHeading = text.indexOf(
-                  "\n## ",
-                  sectionStart + "## Current maintainers".length
-                );
-                const section =
-                  sectionStart === -1
-                    ? text
-                    : text.slice(
-                        sectionStart,
-                        nextHeading === -1 ? text.length : nextHeading
-                      );
-                const logins = [
-                  ...section.matchAll(
-                    /\[\@([A-Za-z0-9_-]+)\]\(https:\/\/github\.com\/[^)]*\)/g
-                  )
-                ].map(match => match[1]);
-
-                return [...new Set(logins)];
+                return parseMaintainerLogins(text);
               } catch (error) {
                 core.warning(
                   `Could not read ${MAINTAINERS_FILE}: ${error.message}`
@@ -227,35 +165,8 @@ jobs:
               }
             }
 
-            function readinessChecklistLines(readiness) {
-              return REVIEW_READINESS_ITEMS.map(
-                (item, index) =>
-                  `- ${readiness.items?.[index]?.checked ? "✅" : "⬜"} ${item}`
-              );
-            }
-
             async function upsertReadinessComment(state, readiness, extra) {
-              const complete = readiness.present && readiness.complete;
-              const lines = [
-                READINESS_MARKER,
-                readinessStateMarker(state),
-                "",
-                "## Review readiness checklist",
-                "",
-                readiness.present
-                  ? "This PR is kept in **draft** until every requirement below is fulfilled. The tickable checklist has been added to your PR description — tick all four boxes there."
-                  : "This PR is ready for review; the review readiness checklist is not required for this author.",
-                "",
-                ...(readiness.present ? readinessChecklistLines(readiness) : []),
-                "",
-                readiness.present
-                  ? complete
-                    ? "✅ **4/4** boxes ticked."
-                    : `**${readiness.checked}/${readiness.total}** boxes ticked.`
-                  : "",
-                "",
-                ...extra
-              ];
+              const lines = buildReadinessCommentBody(state, readiness, extra);
 
               if (readinessCommentId) {
                 await github.rest.issues.updateComment({
@@ -275,10 +186,6 @@ jobs:
                 body: lines.join("\n")
               });
               readinessCommentId = created.data.id;
-            }
-
-            function inlineCode(value) {
-              return `\`${String(value).replaceAll("`", "\\`")}\``;
             }
 
             async function upsertComment(body) {
@@ -346,108 +253,10 @@ jobs:
               );
             }
 
-            function descriptionFailureLines(reason) {
-              switch (reason) {
-                case "empty":
-                  return [
-                    "The pull request body is empty after stripping HTML comments.",
-                    "",
-                    "Include a real description: a **Summary** of what changed and why, plus a **Test plan** (or equivalent substance)."
-                  ];
-                case "placeholder":
-                  return [
-                    "The pull request body contains only placeholder text (for example `N/A`, `TODO`, or `No response`).",
-                    "",
-                    "Replace placeholders with a **Summary** and **Test plan**, or another description with at least two substantive sections or paragraphs."
-                  ];
-                case "escaped_newlines":
-                  return [
-                    "The pull request body uses literal `\\n` escape sequences instead of real line breaks.",
-                    "",
-                    "Fix the formatting so the body uses normal markdown line breaks, then add a **Summary** and **Test plan**."
-                  ];
-                case "thin":
-                default:
-                  return [
-                    "The pull request description is too thin to review.",
-                    "",
-                    "Add a **Summary** and **Test plan** (two sections with at least 40 characters each), or an unstructured body of at least 120 characters with two paragraphs or bullet groups."
-                  ];
-              }
-            }
-
-            function buildFailureSections(failures) {
-              const sections = [];
-
-              if (failures.some(failure => failure.code === "wrong_base")) {
-                sections.push(
-                  "⚠️ **Wrong target branch**",
-                  "",
-                  `This pull request currently targets ${inlineCode(pr.base.ref)}, but pull requests must target one of ${ALLOWED_BASES.map(inlineCode).join(" or ")}.`,
-                  "",
-                  `@${pr.user.login} Please retarget this PR to ${inlineCode(DEFAULT_BASE)}. All contributions go to ${inlineCode(DEFAULT_BASE)}; \`main\` receives only release promotions. See our [Contributing guide](https://lidge-jun.github.io/opencodex/contributing/) for details. Thanks! 🙏`
-                );
-              }
-
-              if (failures.some(failure => failure.code === "wrong_ancestry")) {
-                sections.push(
-                  "⚠️ **Wrong branch ancestry**",
-                  "",
-                  `This pull request targets ${inlineCode(pr.base.ref)}, but its head appears to sit on the current ${inlineCode("main")} tip while being far behind ${inlineCode(pr.base.ref)}.`,
-                  "",
-                  `@${pr.user.login} Rebase onto the current ${inlineCode(pr.base.ref)} branch instead of opening from ${inlineCode("main")}. That keeps already-released commits out of the integration branch.`
-                );
-              }
-
-              const badDescription = failures.find(
-                failure => failure.code === "bad_description"
-              );
-              if (badDescription) {
-                sections.push(
-                  "⚠️ **Pull request description**",
-                  "",
-                  ...descriptionFailureLines(badDescription.reason)
-                );
-              }
-
-              if (
-                failures.some(
-                  failure => failure.code === "missing_ui_screenshot"
-                )
-              ) {
-                sections.push(
-                  "⚠️ **UI screenshot required**",
-                  "",
-                  `This pull request mentions ${inlineCode("gui")} in its title or description, so it is treated as a GUI change.`,
-                  "",
-                  `@${pr.user.login} Please add a screenshot of the UI change to the description — drag and drop the image into the description editor, or paste a markdown image such as ${inlineCode("![Screenshot](https://example.com/after.png)")}. The check re-runs automatically once the description is edited.`
-                );
-              }
-
-              return sections;
-            }
-
-            function failureSummary(failures) {
-              return failures
-                .map(failure => {
-                  if (failure.code === "wrong_base") {
-                    return `wrong base (${pr.base.ref})`;
-                  }
-                  if (failure.code === "wrong_ancestry") {
-                    return "wrong ancestry";
-                  }
-                  if (failure.code === "bad_description") {
-                    return `bad description (${failure.reason})`;
-                  }
-                  if (failure.code === "missing_ui_screenshot") {
-                    return "missing UI screenshot";
-                  }
-                  return failure.code;
-                })
-                .join("; ");
-            }
-
-            const storedState = parseState(botComment?.body);
+            const storedState = parseState(
+              botComment?.body,
+              message => core.warning(message)
+            );
 
             let authorPermission = null;
             let permissionLookupFailed = false;
@@ -587,34 +396,22 @@ jobs:
             }
             let checklistComplete = readiness.present && readiness.complete;
 
-            // A completed checklist is an attestation about a specific head.
-            // The attestation is stale when the recorded completion head
-            // differs from the live head (new commits landed after the last
-            // completion) or when the boxes were ticked in an event that saw
-            // an older head than the live one — a push raced the `edited`
-            // job, so no completion head was recorded yet but the ticks
-            // predate the code under review. Either way the gate resets the
+            // A completed checklist is an attestation about a specific head
+            // (see `completionIsStale`). When it is stale the gate resets the
             // boxes and the notification state, re-drafts, and tells the
-            // author to re-test and re-tick against the latest code. State
-            // written before this feature existed has no recorded head, so a
-            // synchronize event whose head matches the live head binds
-            // forward at the next completion instead of retroactively
-            // drafting already-ready PRs.
+            // author to re-test and re-tick against the latest code.
             const eventHeadSha =
               context.payload.pull_request?.head?.sha ?? pr.head.sha;
             const completionHeadSha =
               storedReadinessState?.completedAtHeadSha ?? null;
-            const completionRecordedForLiveHead =
-              completionHeadSha !== null && completionHeadSha === pr.head.sha;
-            const ticksPredateLiveHead =
-              completionHeadSha === null &&
-              checklistComplete &&
-              eventHeadSha !== pr.head.sha;
-            const headDrifted =
-              checklistRequired &&
-              readiness.present &&
-              ((completionHeadSha !== null && !completionRecordedForLiveHead) ||
-                ticksPredateLiveHead);
+            const headDrifted = completionIsStale({
+              checklistRequired,
+              checklistComplete,
+              readinessPresent: readiness.present,
+              completionHeadSha,
+              eventHeadSha,
+              liveHeadSha: pr.head.sha
+            });
 
             let readinessStateOverride = null;
             let headDriftNotice = [];
@@ -630,12 +427,10 @@ jobs:
                 freshPr.body ?? ""
               );
               readinessStateOverride = defaultReadinessState();
-              headDriftNotice = [
-                completionHeadSha !== null
-                  ? `New commits were pushed after the checklist was completed on ${inlineCode(String(completionHeadSha).slice(0, 7))}; the current head is ${inlineCode(freshPr.head.sha.slice(0, 7))}.`
-                  : `The checklist was ticked before the current head ${inlineCode(freshPr.head.sha.slice(0, 7))} was pushed.`,
-                "The checklist has been reset: re-test against the latest code and tick all four boxes again."
-              ];
+              headDriftNotice = buildStaleNotice({
+                completionHeadSha,
+                liveHeadSha: freshPr.head.sha
+              });
               if (freshReadiness.present && freshReadiness.complete) {
                 const resetBody = resetReviewReadinessSection(
                   freshPr.body ?? ""
@@ -678,15 +473,7 @@ jobs:
               }
               const state = storedState?.active
                 ? { ...storedState }
-                : {
-                    version: 1,
-                    active: true,
-                    autoDraftedByBot: false,
-                    titlePrefixedByBot: false,
-                    ancestryFailed: false,
-                    descriptionFailed: false,
-                    screenshotFailed: false
-                  };
+                : defaultEnforcerState();
               const hasWrongBase = failures.some(
                 failure => failure.code === "wrong_base"
               );
@@ -742,7 +529,11 @@ jobs:
                 );
   
                 let draftConversionFailed = false;
-                const failureSections = buildFailureSections(failures);
+                const failureSections = buildFailureSections(failures, {
+                  pr,
+                  allowedBases: ALLOWED_BASES,
+                  defaultBase: DEFAULT_BASE
+                });
   
                 if (checklistRequired && !checklistComplete) {
                   failureSections.push(
@@ -853,7 +644,9 @@ jobs:
                   );
                 }
   
-                core.setFailed(`PR quality gate failed: ${failureSummary(failures)}`);
+                core.setFailed(
+                  `PR quality gate failed: ${failureSummary(failures, { pr })}`
+                );
                 return;
               }
 
