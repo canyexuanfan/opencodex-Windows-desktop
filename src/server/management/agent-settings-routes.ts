@@ -7,6 +7,7 @@ import {
   codexAutoStartEnabled,
   hasOwnProvider,
   isValidProviderName,
+  loadConfig,
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
@@ -59,15 +60,66 @@ import { applySystemEnvToggle } from "../system-env";
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels, fetchGrokCandidateModels, buildClaudeDesktopState } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 
-let grokApplyChain: Promise<unknown> = Promise.resolve();
-/**
- * Serializes Grok applies: injectGrokConfig is read-modify-write over a single file,
- * so two concurrent clicks must not interleave two cycles.
- */
-function queueGrokApply<T>(run: () => Promise<T>): Promise<T> {
-  const next = grokApplyChain.then(run, run);
-  grokApplyChain = next.catch(() => {});
-  return next;
+const GROK_APPLY_JOIN_MS = 120_000;
+export const GROK_APPLY_TERMINAL_MS = 10 * 60_000;
+const grokApplyEncoder = new TextEncoder();
+let grokApplyFlight: { startedAt: number; promise: Promise<unknown>; bytes: number } | null = null;
+let grokApplyHighWaterBytes = 0;
+let grokApplyTestHooks: { now?: () => number; run?: () => Promise<unknown> } | null = null;
+
+class GrokApplyBusyError extends Error {}
+
+export function grokApplyFlightSnapshot(): { currentBytes: number; highWaterBytes: number; active: number } {
+  return {
+    currentBytes: grokApplyFlight?.bytes ?? 0,
+    highWaterBytes: grokApplyHighWaterBytes,
+    active: grokApplyFlight ? 1 : 0,
+  };
+}
+
+function runGrokApplyFlight(): Promise<unknown> {
+  const at = grokApplyTestHooks?.now?.() ?? Date.now();
+  const current = grokApplyFlight;
+  if (current) {
+    const age = at - current.startedAt;
+    if (age < GROK_APPLY_JOIN_MS) return current.promise;
+    if (age <= GROK_APPLY_TERMINAL_MS) return Promise.reject(new GrokApplyBusyError("grok_apply_busy"));
+    // A permanently hung operation must not monopolize the singleton forever. Its
+    // eventual finally is identity-checked, so it cannot clear a replacement flight.
+    if (grokApplyFlight === current) grokApplyFlight = null;
+  }
+
+  const flight = { startedAt: at, promise: Promise.resolve() as Promise<unknown>, bytes: 0 };
+  flight.promise = (grokApplyTestHooks?.run ?? (async () => {
+    const [{ syncGrokConfig }, { readRuntimePort }] = await Promise.all([
+      import("../../grok/sync"),
+      import("../../config"),
+    ]);
+    const currentConfig = loadConfig();
+    const runtime = readRuntimePort(process.pid);
+    const port = runtime?.port ?? currentConfig.port;
+    const hostname = runtime?.hostname ?? currentConfig.hostname;
+    flight.bytes = grokApplyEncoder.encode(JSON.stringify(currentConfig)).byteLength
+      + grokApplyEncoder.encode(hostname ?? "").byteLength;
+    grokApplyHighWaterBytes = Math.max(grokApplyHighWaterBytes, flight.bytes);
+    return syncGrokConfig(port, currentConfig, hostname !== undefined ? { hostname } : {});
+  }))().finally(() => {
+    if (grokApplyFlight === flight) grokApplyFlight = null;
+  });
+  grokApplyFlight = flight;
+  return flight.promise;
+}
+
+export function runGrokApplyFlightForTests(): Promise<unknown> {
+  return runGrokApplyFlight();
+}
+
+export function setGrokApplyFlightTestHooks(
+  hooks: { now?: () => number; run?: () => Promise<unknown> } | null,
+): void {
+  grokApplyTestHooks = hooks;
+  grokApplyFlight = null;
+  grokApplyHighWaterBytes = 0;
 }
 import type { ManagementContext } from "./context";
 
@@ -537,20 +589,11 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
   // duplicated here. Accepts no body: every input comes from persisted state.
   if (url.pathname === "/api/grok/apply" && req.method === "POST") {
     try {
-      const { syncGrokConfig } = await import("../../grok/sync");
-      const { readRuntimePort } = await import("../../config");
       // The host/port the proxy ACTUALLY bound — not the request authority (caller-
       // influenced) and not config.hostname, which sync.ts warns may have drifted.
       // `ocx ensure` passes live.hostname for the same reason; the runtime-port record
       // is the in-process equivalent, written at startup.
-      const runtime = readRuntimePort(process.pid);
-      const port = runtime?.port ?? config.port;
-      const hostname = runtime?.hostname ?? config.hostname;
-      const result = await queueGrokApply(() => syncGrokConfig(
-        port,
-        config,
-        hostname !== undefined ? { hostname } : {},
-      ));
+      const result = await runGrokApplyFlight() as Awaited<ReturnType<typeof import("../../grok/sync")["syncGrokConfig"]>>;
       // A policy skip (non-loopback, no ~/.grok) is not a server error: report it as a
       // result the page can explain rather than a 500 the user cannot act on.
       return jsonResponse({
@@ -560,6 +603,9 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         ...(result.skippedReason ? { skippedReason: result.skippedReason } : {}),
       }, result.ok ? 200 : 500);
     } catch (error) {
+      if (error instanceof GrokApplyBusyError) {
+        return jsonResponse({ error: error.message }, 409);
+      }
       return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   }

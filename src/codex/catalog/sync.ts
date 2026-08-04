@@ -334,6 +334,21 @@ export function orderForSubagents(goModels: CatalogModel[], featured?: string[])
   });
 }
 
+/**
+ * True when an existing catalog row was authored by OpenCodex routing (#855).
+ * Every generated routed row — current full-slug form, the June–July 2026
+ * provider-name form, and legacy combo aliases — carries the stable
+ * description prefix `Routed via opencodex → `; foreign rows from Cursor or
+ * user tooling do not. `owned_by` cannot serve as the signal (upstream
+ * ownership), and `comp_hash` defaults to "opencodex" for every normalized
+ * row.
+ */
+function isOcxAuthoredRoutedEntry(entry: RawEntry): boolean {
+  const desc = typeof entry.description === "string" ? entry.description : "";
+  const slug = typeof entry.slug === "string" ? entry.slug : "";
+  return slug.includes("/") && desc.startsWith("Routed via opencodex → ");
+}
+
 export function mergeCatalogEntriesForSync(
   catalogModels: RawEntry[],
   routedEntries: RawEntry[],
@@ -418,12 +433,22 @@ export function mergeCatalogEntriesForSync(
   const preservingExistingRouted = routedEntries.length === 0
     && catalogModels.some(m => typeof m.slug === "string" && (m.slug as string).includes("/"));
   if (preservingExistingRouted) {
-    finalRoutedEntries = catalogModels.filter(m => typeof m.slug === "string" && (m.slug as string).includes("/"));
+    // #855: transient-fetch protection keeps existing rows, but rows OpenCodex
+    // itself authored for a provider that is no longer configured are ghosts,
+    // not protected foreign entries.
+    finalRoutedEntries = catalogModels.filter(m => {
+      if (typeof m.slug !== "string" || !(m.slug as string).includes("/")) return false;
+      const provider = (m.slug as string).slice(0, (m.slug as string).indexOf("/"));
+      return !(isOcxAuthoredRoutedEntry(m) && !gatheredProviderNames.has(provider));
+    });
   } else {
     const preservedForeignRouted = catalogModels.filter(m => {
       if (typeof m.slug !== "string" || !m.slug.includes("/")) return false;
       const provider = m.slug.slice(0, m.slug.indexOf("/"));
-      return !gatheredProviderNames.has(provider) && !freshSlugs.has(m.slug);
+      if (gatheredProviderNames.has(provider) || freshSlugs.has(m.slug)) return false;
+      // #855: an OpenCodex-authored row whose provider was deleted is a ghost;
+      // only genuinely foreign rows (Cursor, user tooling) are preserved.
+      return !isOcxAuthoredRoutedEntry(m);
     });
     finalRoutedEntries = [...routedEntries, ...preservedForeignRouted];
   }
@@ -492,6 +517,12 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{
   const catalog = loadCatalogForSync(catalogPath);
   if (!catalog) return { added: 0, path: catalogPath, catalogWritten: false, comboOmissions: [] };
 
+  // The bundled catalog is a reliable native template on the default path, but it is not the
+  // merge source. Preservation must inspect the file that this sync is about to overwrite;
+  // otherwise an empty/partial provider gather cannot see routed or user-native rows on disk.
+  const onDiskCatalog = readCatalog(catalogPath);
+  const catalogModelsForMerge = onDiskCatalog?.models ?? catalog.models ?? [];
+
   const template = findNativeTemplate(catalog);
 
   const comboOmissions: ComboCatalogOmission[] = [];
@@ -534,7 +565,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{
   // bare gpt-* rows that hard-404 via NoEnabledOpenAiProviderError. Keep natives when no
   // providers are configured yet (fresh install / catalog bootstrap tests).
   const includeNativeOpenAi = enabledProviders.length === 0 || hasCanonicalOpenai;
-  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames, multiAgentMode, exactComboSlugs, hasPhysicalComboProvider, includeNativeOpenAi);
+  catalog.models = mergeCatalogEntriesForSync(catalogModelsForMerge, goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames, multiAgentMode, exactComboSlugs, hasPhysicalComboProvider, includeNativeOpenAi);
   clampCatalogModelsToCodexSupport(catalog.models);
 
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");

@@ -8,7 +8,7 @@ import { IconX } from "../icons";
 import { modelLabel } from "../model-display";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
-import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 import { EmptyState, Notice } from "../ui";
 import Debug from "./Debug";
 
@@ -133,6 +133,25 @@ export interface LogEntry {
   firstOutputMs?: number;
   attempts?: LogAttempt[];
   displayMetrics?: LogDisplayMetrics;
+}
+
+/** Session-cache entries are arbitrary JSON — reject shapes that would crash the table. */
+function validCachedLogs(cached: LogEntry[] | null): LogEntry[] | null {
+  if (!Array.isArray(cached)) return null;
+  for (const entry of cached) {
+    if (
+      !entry
+      || typeof entry !== "object"
+      || typeof entry.timestamp !== "number"
+      || typeof entry.model !== "string"
+      || typeof entry.provider !== "string"
+      || typeof entry.status !== "number"
+      || typeof entry.durationMs !== "number"
+    ) {
+      return null;
+    }
+  }
+  return cached;
 }
 
 function isCursorUsageProvider(provider: string): boolean {
@@ -285,12 +304,26 @@ function statusColor(status: number): string {
   return "var(--amber)";
 }
 
-function formatLogTimestamp(ts: number, localeTag?: string): string {
-  return new Date(ts).toLocaleTimeString(localeTag);
+/** Date and time as separate locale strings (no joining comma) for stacked table cells. */
+function formatLogDateParts(ts: number, localeTag?: string, timeZone?: string): { date: string; time: string } {
+  const zone = timeZone ? { timeZone } : undefined;
+  try {
+    return {
+      date: new Date(ts).toLocaleDateString(localeTag, zone),
+      time: new Date(ts).toLocaleTimeString(localeTag, zone),
+    };
+  } catch {
+    // An IANA zone the browser's ICU build does not know throws RangeError.
+    return {
+      date: new Date(ts).toLocaleDateString(localeTag),
+      time: new Date(ts).toLocaleTimeString(localeTag),
+    };
+  }
 }
 
-function formatLogDateTime(ts: number, localeTag?: string): string {
-  return new Date(ts).toLocaleString(localeTag);
+function formatLogDateTime(ts: number, localeTag?: string, timeZone?: string): string {
+  const { date, time } = formatLogDateParts(ts, localeTag, timeZone);
+  return `${date} ${time}`;
 }
 
 function modelTitle(log: LogEntry): string {
@@ -336,7 +369,8 @@ function summarizeFilteredLogs(entries: LogEntry[]): {
 
 export default function Logs({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
-  const cachedLogs = readSessionListCache<LogEntry[]>(logsCacheKey(apiBase));
+  const resourceKey = logsCacheKey(apiBase);
+  const cachedLogs = validCachedLogs(readSessionListCache<LogEntry[]>(resourceKey));
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [detail, setDetail] = useState<LogEntry | null>(null);
   const [surfaceFilter, setSurfaceFilter] = useState<LogSurfaceFilter>("all");
@@ -344,6 +378,33 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const [conversationQueryHash, setConversationQueryHash] = useState<string | undefined>();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
+  // The proxy's own zone, so timestamps read the same as the server's logs rather than being
+  // silently shifted into the viewer's zone (#725). Fetched once: it cannot change while the
+  // page is open, so it must not join the 2s log poll. Undefined until it arrives, which
+  // formats browser-local exactly as before.
+  const [serverTimeZone, setServerTimeZone] = useState<string | undefined>();
+  useEffect(() => {
+    const controller = new AbortController();
+    // Abort already rejects the in-flight fetch, but the flag keeps the guarantee
+    // local: the setter is visibly gated without having to reason about whether
+    // the abort propagates through the body read.
+    let cancelled = false;
+    fetch(`${apiBase}/api/settings`, { signal: controller.signal })
+      .then(res => (res.ok ? res.json() as Promise<{ timeZone?: unknown }> : null))
+      .then(body => {
+        if (cancelled || !body) return;
+        if (typeof body.timeZone === "string" && body.timeZone.trim()) {
+          setServerTimeZone(body.timeZone.trim());
+        }
+      })
+      .catch(() => {
+        // Offline or an older proxy without the field: keep browser-local formatting.
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [apiBase]);
   // The hash is the source of truth for the active tab (#logs vs #logs/debug),
   // so refresh/bookmark/back-forward keep the tab choice.
   const [tab, setTab] = useState<LogsTab>(readTabFromHash);
@@ -364,24 +425,26 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const selectTab = selectLogsTab;
 
   const loadLogs = useCallback(async (signal: AbortSignal): Promise<LogEntry[]> => {
-    const res = await fetch(`${apiBase}/api/logs`, { signal });
+    const res = await fetch(`${apiBase}/api/logs?limit=2000`, { signal });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
-    const next = await res.json() as LogEntry[];
-    writeSessionListCache(logsCacheKey(apiBase), next);
+    const body = await res.json() as LogEntry[] | { logs?: LogEntry[] };
+    const next = Array.isArray(body) ? body : (body.logs ?? []);
+    writeSessionListCache(resourceKey, next);
     return next;
-  }, [apiBase]);
+  }, [apiBase, resourceKey]);
 
   // The resource layer owns the request and the 2s poll. It keeps held rows through a quiet
   // poll on its own, which is what the old silent/non-silent split was hand-rolling — and an
   // empty successful response is now a real empty result rather than a cold load.
   const logsResource = useDataSurface<LogEntry[]>(
-    logsCacheKey(apiBase),
+    resourceKey,
     [apiBase],
     loadLogs,
     {
       isEmpty: rows => rows.length === 0,
       enabled: tab === "logs",
       pollMs: autoRefresh ? 2000 : undefined,
+      initialData: cachedLogs ?? undefined,
     },
   );
   const logsState = logsResource.state;
@@ -405,7 +468,10 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   } else if (settledFailure && failureStreak.error !== logsState.error) {
     setFailureStreak(previous => ({ error: logsState.error, count: previous.count + 1 }));
   }
-  const pollFailing = failureStreak.count >= STALE_POLL_FAILURE_LIMIT;
+  // Auto-refresh off: one settled failure is enough — there is no next poll to recover quietly.
+  const pollFailing =
+    failureStreak.count >= STALE_POLL_FAILURE_LIMIT
+    || (!autoRefresh && settledFailure);
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
   const conversationQuery = conversationFilter.trim();
@@ -443,7 +509,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     : 0;
 
   return (
-    <>
+    <div className="logs-page">
       <div className="page-head">
         <h2>{t("nav.logs")}</h2>
         {tab === "logs" && (
@@ -572,14 +638,8 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           </button>
         </Notice>
       )}
-      {/* Progress is reported only for a forced read: a two-second heartbeat that announced
-          itself would talk over the table continuously. */}
-      {logsResource.loading && logs.length > 0 && (
-        <DataSurfaceStatus live={false}>{t("common.loading")}</DataSurfaceStatus>
-      )}
-
-      {/* A run of failed polls is no longer transient: say the rows below are stale rather than
-          letting them read as current. Cleared by the first successful poll. */}
+      {/* Stale rows after a sustained poll outage, or any settled failure while auto-refresh is
+          off (no next tick will recover). Cleared by the first successful fetch. */}
       {pollFailing && logs.length > 0 && (
         <Notice tone="err">
           {t("logs.loadError")}{" "}
@@ -610,7 +670,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                <th>{t("logs.col.provider")}</th>
                <th>{t("logs.col.status")}</th>
                 <th>{t("logs.col.request")}</th>
-               <th className="num">{t("logs.col.duration")}</th>
+               <th className="num log-col-duration">{t("logs.col.duration")}</th>
              </tr>
             </thead>
             <tbody>
@@ -622,13 +682,19 @@ export default function Logs({ apiBase }: { apiBase: string }) {
               {virtualRows.map(virtualRow => {
                 const log = filteredLogs[filteredLogs.length - 1 - virtualRow.index];
                 const reasoningWire = reasoningWireLabel(log);
+                const when = formatLogDateParts(log.timestamp, localeTag, serverTimeZone);
                 return (
                <tr
                  key={log.requestId ?? `${log.timestamp}-${virtualRow.index}`}
                  data-index={virtualRow.index}
                  ref={rowVirtualizer.measureElement}
                >
-                 <td className="muted mono">{formatLogTimestamp(log.timestamp, localeTag)}</td>
+                 <td className="muted mono log-col-time">
+                   <span className="logs-stack-start">
+                     <span>{when.date}</span>
+                     <span>{when.time}</span>
+                   </span>
+                 </td>
                   <td className="num mono log-col-tokens" title={tokensTitle(log, t)}>
                     {(() => {
                       const tokenTotal = displayContextTokenTotal(log);
@@ -694,7 +760,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                     </span>
                  </td>
                   <td className="muted mono"><span className="log-reqid" title={log.requestId}>{log.requestId ?? "-"}</span></td>
-                 <td className="num">{log.durationMs}ms</td>
+                 <td className="num log-col-duration">{log.durationMs}ms</td>
                 </tr>
                 );
               })}
@@ -715,6 +781,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           detailInfo={detailInfo}
           localeCode={locale}
           localeTag={localeTag}
+          serverTimeZone={serverTimeZone}
           t={t}
           onClose={() => setDetail(null)}
           onFilterConversation={id => {
@@ -724,7 +791,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
         />
       )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -740,12 +807,13 @@ function useModalDialog(open: boolean) {
 }
 
 function LogDetailDialog({
-  detail, detailInfo, localeCode, localeTag, t, onClose, onFilterConversation,
+  detail, detailInfo, localeCode, localeTag, serverTimeZone, t, onClose, onFilterConversation,
 }: {
   detail: LogEntry;
   detailInfo: ReturnType<typeof statusCodeInfo> | null;
   localeCode: string;
   localeTag?: string;
+  serverTimeZone?: string;
   t: TFn;
   onClose: () => void;
   onFilterConversation?: (conversationId: string) => void;
@@ -787,7 +855,7 @@ function LogDetailDialog({
         <section className="log-detail-section" aria-labelledby="log-detail-basic">
           <h4 id="log-detail-basic" className="log-detail-section-title">{t("logs.detail.section.basic")}</h4>
           <div className="log-detail-grid">
-            <span className="muted">{t("logs.col.time")}</span><span className="mono">{formatLogDateTime(detail.timestamp, localeTag)}</span>
+            <span className="muted">{t("logs.col.time")}</span><span className="mono">{formatLogDateTime(detail.timestamp, localeTag, serverTimeZone)}</span>
             <span className="muted">{t("logs.col.request")}</span>
             <span className="log-detail-request-row">
               <span className="mono log-detail-break">{detail.requestId ?? "\u2014"}</span>

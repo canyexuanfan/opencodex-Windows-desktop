@@ -1,7 +1,7 @@
 import type { TKey } from "./en";
 
 export const ja: Record<TKey, string> = {
-  // sidebar / nav / common
+
   "nav.dashboard": "ダッシュボード",
   "nav.startup": "起動安全性",
   "nav.providers": "プロバイダー",
@@ -38,8 +38,6 @@ export const ja: Record<TKey, string> = {
   "errorBoundary.message": "このセクションの表示中にエラーが発生しました。再読み込みしてもう一度お試しください。",
   "errorBoundary.details": "エラー",
   "errorBoundary.reload": "再読み込み",
-
-  // startup health
   "startup.title": "起動安全性",
   "startup.subtitle": "再起動後にローカルプロキシへの接続が再接続ループになる前に、Codex が opencodex へ到達できるか確認します。",
   "startup.refresh": "更新",
@@ -121,8 +119,6 @@ export const ja: Record<TKey, string> = {
   "startup.codexRuntime.clampHidden": "OpenCodex が Codex {version} を使用したため、一部の reasoning effort オプションが非表示になりました。",
   "startup.codexRuntime.clampHiddenWithEfforts": "OpenCodex が Codex {version} を使用したため、一部の reasoning effort オプションが非表示になりました（削除: {efforts}）。",
   "startup.codexRuntime.olderBinary": "OpenCodex は古い Codex バイナリ（{version}）を使用しています。より新しいインストールが利用可能です。",
-
-  // dashboard
   "dash.subtitle": "ローカル opencodex プロキシ、そのプロバイダー、Codex にルーティングされるモデルのライブ状態です。",
   "dash.workspace.overview": "概要",
   "dash.workspace.sections": "セクション",
@@ -270,8 +266,6 @@ export const ja: Record<TKey, string> = {
   "dash.updateStatus.restarting": "更新をインストールしました。プロキシを再起動中。",
   "dash.updateStatus.succeeded": "更新が完了しました。",
   "dash.updateStatus.failed": "更新に失敗しました。",
-
-  // providers
   "prov.subtitle": "opencodex が Codex にルーティングする上流プロバイダーを設定します。アカウントでログインするか、プロバイダーを追加、または生の設定を編集します。",
   "prov.add": "プロバイダーを追加",
   "prov.editJson": "JSON を編集",
@@ -374,8 +368,6 @@ export const ja: Record<TKey, string> = {
   "prov.manageCodexAccounts": "Codex アカウントを管理",
   "prov.openaiApiMissing": "API キーが必要です",
   "prov.openaiApiSetup": "API キーを設定",
-
-  // models
   "models.subtitle": "Codex に表示するモデルを切り替えます — ネイティブ GPT パススルーとルーティングプロバイダー、プロバイダー別(ヘッダーをクリックで折りたたみ)。非表示モデルはカタログとピッカーから外れますが、正確な id での直接呼び出しは可能です。変更は次回の Codex ターンで適用 — opencodex は Codex の 5 分間モデルキャッシュを無効化するので再起動は不要です。",
   "models.nativeGroupLabel": "OpenAI ネイティブ",
   "models.nativeHint": "パススルーモデルはプロバイダーで選択したプールまたはダイレクトアカウントオプションを使用します。一つオフにすると Codex ピッカーから隠します(カタログエントリは保持されるので、再有効化で正確に復元されます)。",
@@ -444,8 +436,6 @@ export const ja: Record<TKey, string> = {
   "models.allowlistLabel": "選択のみ",
   "models.allowlistHint": "チェックしたモデルのみカタログに送信します(空 = すべて)。数千のモデルを公開するプロバイダーで有用です。",
   "models.selectedCount": "{n} 件選択",
-
-  // subagents
   "sub.subtitle": "Codex の {cmd} は最初の 5 モデル(優先度順)のみをオーバーライドとして通知します。ここで最大 5 つを選んでください — ネイティブ gpt またはルーティング — opencodex がカタログ優先度を設定し、これらが先頭に来るようにします。他のモデルも正確な名前で呼び出し可能です; これは表示のみを制御します。",
   "sub.featured": "おすすめ",
   "sub.orderHint": "ここでの表示順が Codex モデルピッカーの上位 1〜5 番目の位置と {cmd} のデフォルトモデル候補を決定します。",
@@ -471,8 +461,6 @@ export const ja: Record<TKey, string> = {
   "sub.workspace.selectModel": "モデルを選択",
   "sub.workspace.selectModelDesc": "一覧からモデルを選んで詳細を確認し、spawn_agent のおすすめに設定します。",
   "sub.workspace.selector": "公開セレクター",
-
-  // logs
   "logs.title": "リクエストログ",
   "logs.tabLogs": "ログ",
   "logs.tabDebug": "デバッグ",
@@ -562,8 +550,6 @@ export const ja: Record<TKey, string> = {
   "logs.details": "詳細",
   "logs.detailTitle": "リクエストの詳細",
   "logs.detailRaw": "生のログエントリ",
-
-  // debug page
   "debug.title": "デバッグ",
   "debug.subtitle": "オプトインのプロバイダートランスポートおよび使用量抽出診断です。リクエストエラーと 502 はログタブに残ります。",
   "debug.debug": "プロバイダーデバッグ",
@@ -591,8 +577,6 @@ export const ja: Record<TKey, string> = {
   "debug.noLines.provider": "プロバイダーデバッグはオンですが、トランスポートの異常(欠落または不正なフレーム、Cursor のダイヤル/再試行イベント)のみを記録します。Anthropic のようなプロバイダーでの正常なリクエストは行を生成しないことがあります。",
   "debug.noLines.usage": "使用量抽出はオンですが、まだ何もキャプチャされていません。Codex 経由でチャット/リクエストを送信するとここに表示されます。",
   "debug.noLines.injection": "インジェクションログはオンですが、まだ何もキャプチャされていません。コラボおよびサブエージェントのターンでのマルチエージェントガイダンスインジェクションと負荷上限の決定を記録します。",
-
-  // usage page
   "usage.title": "使用量",
   "usage.subtitle": "プロキシからのローカルトークン会計です。欠損した使用量はゼロとして表示されることはありません。",
   "usage.loading": "使用量データを読み込み中…",
@@ -634,7 +618,6 @@ export const ja: Record<TKey, string> = {
   "usage.dayFri": "金",
   "usage.heatmap.tooltipTokens": "{tokens} トークン",
   "usage.heatmap.tooltipRequests": "{requests} リクエスト",
-
   "nav.storage": "ストレージ",
   "storage.title": "ストレージ",
   "storage.subtitle": "CODEX_HOME の使用状況を確認。クリーンアップはアクティブセッションに触れません。",
@@ -701,7 +684,6 @@ export const ja: Record<TKey, string> = {
   "storage.cleanup.err.fs_failed_trash": "ファイルシステムのクリーンアップに失敗しました。一部の変更は既に適用されている可能性があります — {trashDir} と manifest.json で復旧可能なファイルを確認してください。",
   "storage.cleanup.err.db_reconcile_failed": "Codex の状態データベースを更新できませんでした。",
   "storage.cleanup.err.cleanup_failed": "クリーンアップに失敗しました。",
-
   "storage.trash.title": "隔離",
   "storage.trash.help": "CODEX_HOME/.trash へ移したアーカイブセッションです。復元すると JSONL とスレッド行が戻ります。",
   "storage.trash.empty": "隔離エントリはありません。",
@@ -775,8 +757,6 @@ export const ja: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "目標に合うアーカイブ候補がありません。",
   "storage.policy.doneQuarantine": "方針が {count} 件を隔離しました（{size}）。",
   "storage.policy.donePermanent": "方針が {count} 件を完全削除しました（{size}）。",
-
-  // add-provider modal
   "modal.addNamed": "追加: {label}",
   "modal.add": "プロバイダーを追加",
   "modal.search": "プロバイダーを検索…",
@@ -1136,7 +1116,6 @@ export const ja: Record<TKey, string> = {
   "anthropicPool.saveFailed": "Claude プール設定を保存できませんでした。",
   "anthropicPool.on": "オン",
   "anthropicPool.off": "オフ",
-
   "accountPool.strategy": "ローテーション戦略",
   "accountPool.strategyDesc": "新規セッションがプールからアカウントを選ぶ方法です。",
   "accountPool.strategyQuota": "クォータ",
@@ -1185,7 +1164,6 @@ export const ja: Record<TKey, string> = {
   "codexAuth.tokenExpired": "トークンが期限切れ — このアカウントを再認証してください",
   "codexAuth.mainTokenExpired": "トークンが期限切れ — Codex アプリログインから再度サインインしてください",
   "codexAuth.emailCollision": "このアカウントはメインの Codex ログインと一致します。別のアカウントを使用してください。",
-
   "codexAuth.resetCreditsTitle": "リセットクレジット",
   "codexAuth.resetCreditsAvailable": "{count} 個のリセットクレジットが利用可能です。",
   "codexAuth.resetCreditsDesc": "各クレジットは現在の時間別・週間使用量上限を即座にリセットします。",
@@ -1211,8 +1189,6 @@ export const ja: Record<TKey, string> = {
   "codexAuth.creditNextBadge": "次",
   "codexAuth.creditGranted": "付与 {date}",
   "codexAuth.creditExpires": "失効 {date} (残り {days}日)",
-
-  // api access page
   "api.title": "API アクセス",
   "api.subtitle": "生成した API キーで外部アプリから opencodex プロキシにアクセスします。キーは {authHeader} または {altHeader} ヘッダーで認証します。",
   "api.endpointNote": "ベース URL を OpenAI 互換クライアントで使ってください。Responses と Chat Completions は /v1 配下で公開されます。",
@@ -1287,7 +1263,6 @@ export const ja: Record<TKey, string> = {
   "api.keysLoadFailed": "APIキーを読み込めませんでした。",
   "api.createFailed": "APIキーを作成できませんでした。",
   "api.deleteFailed": "APIキーを削除できませんでした。",
-  // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Claude Code 内で GPT、Gemini などのモデルを使用します。",
   "claude.pageTitle": "Claude Code",
@@ -1445,8 +1420,6 @@ export const ja: Record<TKey, string> = {
   "claudeDesktop.health.stats": "{count} リクエスト / {errors} エラー",
   "claudeDesktop.effort.supported": "effort",
   "claudeDesktop.effort.displayOnly": "effort (表示のみ)",
-
-  // Combos workspace
   "cws.loading": "コンボを読み込み中…",
   "cws.loadFailed": "コンボを読み込めませんでした。",
   "cws.saveFailed": "コンボを保存できませんでした。",
@@ -1592,4 +1565,90 @@ export const ja: Record<TKey, string> = {
   "sub.delegation.modelHint": "Codex が作業を任せるとき、最初に呼ぶモデルです。上のおすすめが呼べる候補で、ここで選んだものがその中の第一候補になります。",
   "dash.syncModelsHint": "接続済みのプロバイダーをもとに Codex のモデルカタログを書き直します。",
   "dash.syncRun": "今すぐ同期",
+  "provider.name.volcengine": "Volcengine Ark",
+  "provider.name.volcengineCodingPlan": "Volcengine Ark コーディングプラン",
+  "provider.name.volcengineAgentPlan": "Volcengine Ark エージェントプラン",
+  "prov.removedDefault": "\"{name}\" を削除しました。既定のプロバイダーは \"{defaultProvider}\" になりました。",
+  "prov.removeLastProvider": "このプロバイダーは、他に有効なプロバイダーを既定にできない場合は削除できません。",
+  "prov.removeHasDependentCombos": "先に依存するコンボを削除または更新してください: {combos}。",
+  "prov.setDefault": "既定に設定",
+  "prov.setDefaultSuccess": "\"{name}\" を既定のプロバイダーに設定しました。",
+  "prov.setDefaultFail": "\"{name}\" を既定のプロバイダーに設定できませんでした。",
+  "prov.defaultDisabled": "既定に設定する前に、このプロバイダーを有効にしてください。",
+  "prov.updateFail": "このプロバイダーを更新できませんでした。",
+  "prov.networkError": "ネットワークエラーです。プロキシが実行中であることを確認して、もう一度試してください。",
+  "usage.range.available": "利用可能な履歴",
+  "usage.historyTruncated": "古い利用履歴が読み込まれていないため、合計は利用可能な履歴のみを対象とします。",
+  "pws.removeDefaultConfirmBody": "既定のプロバイダー \"{name}\" を削除しますか? \"{defaultProvider}\" が既定のプロバイダーになります。この操作は元に戻せません。",
+  "pws.connectionNotApplicable": "対象外 — このプロバイダーは静的モデルカタログを使用します。",
+  "codexAuth.autoSwitchQuotaDesc": "クォータ: 使用率が {threshold}% 以上になると、既に紐付いたタスクを含む次のリクエストが、使用率の低い適格アカウントへ移る場合があります。Go/Free は 30 日枠のみを使用します。",
+  "codexAuth.autoSwitchQuotaOffDesc": "使用量ベースのプロアクティブ切り替えはオフです。新規/未紐付けタスクの割り当てと障害回復は引き続き適用されます。",
+  "codexAuth.autoSwitchRoundRobinDesc": "ラウンドロビン割り当てはこのしきい値を使用せず、新規/未紐付けタスクを引き続きローテーションします。",
+  "codexAuth.autoSwitchFillFirstDesc": "フィルファースト: {threshold}% は新規/未紐付けタスクの使い切り基準です。正常な紐付け済みタスクはアカウントを維持します。",
+  "codexAuth.autoSwitchFillFirstOffDesc": "フィルファーストには新規/未紐付けタスクの使用量基準がありません。クールダウン、再認証、障害回復では引き続きルーティングが変わる場合があります。",
+  "codexAuth.failureRecoveryNote": "障害回復は別です。出力前の 429/402 拒否、クールダウン、再認証、除外、または設定済みの一時障害フェイルオーバーにより、別の適格アカウントが選ばれる場合があります。",
+  "accountPool.strategyHintQuota": "クォータ戦略は使用量しきい値を超えると、既存タスクの次のリクエストも別アカウントへ再紐付けできます。",
+  "accountPool.strategyHintRoundRobin": "ラウンドロビンは有効な紐付けがないタスクだけをローテーションし、使用量しきい値は通常のローテーションを変えません。",
+  "accountPool.strategyHintFillFirst": "フィルファーストはしきい値を未紐付けタスクの使い切り基準として使用し、正常な紐付け済みタスクは親和性を維持します。",
+  "accountPool.unboundDefinition": "新規/未紐付けタスクとは、現在のアカウント紐付けがないリクエストです。既存の表示中タスクも、プロキシまたは親和性のリセット後は未紐付けになる場合があります。",
+  "api.modelsNoMatch": "「{query}」に一致するモデルはありません。",
+  "api.workspace.sections": "API セクション",
+  "api.section.keys": "キー",
+  "api.section.connect": "接続",
+  "api.section.endpoints": "エンドポイント",
+  "api.section.models": "モデル",
+  "api.section.examples": "例",
+  "api.clientConfig.title": "クライアント設定",
+  "api.clientConfig.rowsLabel": "クライアントを接続",
+  "api.clientConfig.details": "詳細",
+  "api.clientConfig.detailsAria": "{client} 設定の詳細",
+  "api.clientConfig.copyAria": "{client} 設定 JSON をコピー",
+  "api.clientConfig.downloadAria": "{client} 設定をダウンロード",
+  "api.clientConfig.rowMeta": "{destination} · モデル {count} 件",
+  "api.clientConfig.rowError": "{client} の設定を生成できませんでした。",
+  "api.clientConfig.copiedAnnounceClient": "{client} の設定 JSON をクリップボードにコピーしました。",
+  "api.clientConfig.clientOpencode": "OpenCode",
+  "api.clientConfig.clientPi": "Pi",
+  "api.clientConfig.copy": "JSON をコピー",
+  "api.clientConfig.download": "ダウンロード",
+  "api.clientConfig.loading": "クライアント設定を生成中…",
+  "api.clientConfig.jsonLabel": "{client} 設定 JSON",
+  "api.clientConfig.destination": "配置先ファイル",
+  "api.clientConfig.envHint": "起動前にキーを設定",
+  "api.clientConfig.mergeWarning": "配置先ファイルにマージしてください。置き換えると既存のプロバイダーや MCP 設定が失われます。",
+  "api.clientConfig.modelCount": "{count} 件のモデルを書き出しました",
+  "api.clientConfig.missingLimits": "{total} 件中 {count} 件のモデルにコンテキスト上限がないため、クライアント側の既定値が使われます。",
+  "api.clientConfig.noKeyYet": "{env} に対応するキーがまだありません。ループバック外で使う前に上でキーを発行してください。",
+  "api.clientConfig.loadFailed": "モデル一覧を読み取れなかったため、クライアント設定を生成できませんでした。",
+  "api.clientConfig.copiedAnnounce": "クライアント設定 JSON をクリップボードにコピーしました。",
+  "api.clientConfig.copyFailed": "クライアント設定 JSON をコピーできませんでした。",
+  "api.clientConfig.downloadedAnnounce": "{filename} をダウンロードしました。まだ何も変わっていません。{destination} に自分でマージしてください。",
+  "api.clientConfig.whereDisclosure": "このファイルの置き場所",
+  "api.clientConfig.whereBody": "上のパスはグローバル設定の場所です。作業ディレクトリのプロジェクト設定ファイルが優先され、キーは設定に書かれた環境変数から読み込まれ、このファイルには保存されません。",
+  "api.auth.endpoint": "エンドポイント",
+  "api.auth.required": "必須",
+  "api.auth.accepted": "利用可",
+  "api.auth.rejected": "不可",
+  "api.auth.testProtocol": "{protocol} をテスト",
+  "api.auth.testNeedsFreshKey": "認証付きテストを実行するには、キーを新しく作成し、一度だけ表示される値を画面に残したままにしてください。",
+  "api.key.name": "キー名",
+  "api.key.rename": "名前を変更",
+  "api.key.saveName": "名前を保存",
+  "api.key.renaming": "保存中…",
+  "api.key.renameFailed": "名前を変更できませんでした。入力内容はそのまま残しています。",
+  "api.key.deleting": "削除中…",
+  "api.key.copyFailed": "キーをコピーできませんでした。このパネルを閉じる前に手動で選択してコピーしてください。",
+  "api.attribution.title": "キー別の使用状況",
+  "api.attribution.requests7d": "直近 7 日のリクエスト",
+  "api.attribution.totalRequests": "集計済みリクエスト総数",
+  "api.attribution.totalRequestsAvailable": "利用可能な履歴のリクエスト",
+  "api.attribution.sinceAvailable": "利用可能な集計開始日",
+  "api.attribution.lastUsed": "最終使用",
+  "api.attribution.since": "集計開始",
+  "api.attribution.neverUsed": "集計開始以降は未使用",
+  "api.attribution.unavailable": "使用状況なし",
+  "api.attribution.unavailableDetail": "まだ集計された使用状況がありません。集計開始前のリクエストは遡って割り当てられません。",
+  "api.attribution.ambiguous": "2 つのキーが同じ ID を共有しているため、どちらの使用状況か判別できません。設定ファイルでキーごとに一意の ID を指定してください。",
+  "api.attribution.railAmbiguous": "ID 重複",
+
 };

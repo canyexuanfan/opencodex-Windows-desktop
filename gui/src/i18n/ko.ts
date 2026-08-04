@@ -1,7 +1,7 @@
 import type { TKey } from "./en";
 
 export const ko: Record<TKey, string> = {
-  // sidebar / nav / common
+
   "nav.dashboard": "대시보드",
   "nav.startup": "시작 안전성",
   "nav.providers": "프로바이더",
@@ -33,8 +33,6 @@ export const ko: Record<TKey, string> = {
   "errorBoundary.message": "이 섹션을 렌더링하는 중 오류가 발생했습니다. 다시 불러와 재시도하세요.",
   "errorBoundary.details": "오류",
   "errorBoundary.reload": "다시 불러오기",
-
-  // startup health
   "startup.title": "시작 안전성",
   "startup.subtitle": "재부팅 후 로컬 프록시 라우팅이 재연결 반복으로 이어지기 전에 Codex가 opencodex에 연결될 수 있는지 확인합니다.",
   "startup.refresh": "새로고침",
@@ -116,8 +114,6 @@ export const ko: Record<TKey, string> = {
   "startup.codexRuntime.clampHidden": "OpenCodex가 Codex {version}을(를) 사용해 일부 reasoning effort 옵션이 숨겨졌습니다.",
   "startup.codexRuntime.clampHiddenWithEfforts": "OpenCodex가 Codex {version}을(를) 사용해 일부 reasoning effort 옵션이 숨겨졌습니다(제거됨: {efforts}).",
   "startup.codexRuntime.olderBinary": "OpenCodex가 더 오래된 Codex 바이너리({version})를 사용 중입니다. 더 새 설치를 사용할 수 있습니다.",
-
-  // dashboard
   "dash.subtitle": "로컬 opencodex 프록시와 프로바이더, 그리고 Codex로 라우팅되는 모델의 실시간 상태입니다.",
   "dash.workspace.overview": "개요",
   "dash.workspace.sections": "섹션",
@@ -221,7 +217,7 @@ export const ko: Record<TKey, string> = {
   "dash.subagentEffortCapLabel": "V2 서브에이전트 추론 강도 제한",
   "dash.effortCapHelp": "V2 ultra 모드 턴의 추론 강도를 제한합니다. 설정하면 ultra 모드에서 들어오는 max 요청이 선택한 수준으로 내려갑니다. 서브에이전트 제한은 스폰된 자식 에이전트에만 적용됩니다. 강도를 낮추기만 하고 올리지는 않습니다. 모델이 해당 수준을 지원하지 않으면 가장 가까운 지원 수준으로 내려갑니다.",
   "dash.effortCapNone": "상한 없음",
-    "dash.maintenance": "유지보수",
+  "dash.maintenance": "유지보수",
   "dash.maintenanceHint": "Codex 모델 카탈로그를 새로고침하거나 최신 opencodex 릴리스를 설치합니다.",
   "dash.syncModels": "모델 동기화",
   "dash.syncModelsHint": "연결해둔 프로바이더를 기준으로 Codex 모델 카탈로그를 다시 씁니다.",
@@ -268,8 +264,6 @@ export const ko: Record<TKey, string> = {
   "dash.updateStatus.restarting": "업데이트 설치 완료. 프록시를 재시작하는 중입니다.",
   "dash.updateStatus.succeeded": "업데이트가 완료됐습니다.",
   "dash.updateStatus.failed": "업데이트에 실패했습니다.",
-
-  // providers
   "prov.subtitle": "opencodex가 Codex로 라우팅하는 업스트림 프로바이더를 설정합니다. 계정으로 로그인하거나, 프로바이더를 추가하거나, 원본 설정을 편집하세요.",
   "prov.add": "프로바이더 추가",
   "prov.editJson": "JSON 편집",
@@ -377,8 +371,6 @@ export const ko: Record<TKey, string> = {
   "prov.manageCodexAccounts": "Codex 계정 관리",
   "prov.openaiApiMissing": "API 키 필요",
   "prov.openaiApiSetup": "API 키 설정",
-
-  // models
   "models.subtitle": "Codex가 보는 모델을 켜고 끕니다 — 네이티브 GPT passthrough와 라우팅된 모델을 프로바이더별로 묶어 보여줍니다(헤더를 클릭하면 접힘). 숨긴 모델은 카탈로그와 선택기에서 빠지지만 정확한 id로 직접 호출할 수 있습니다. 변경 사항은 다음 Codex 턴에 적용됩니다 — opencodex가 Codex의 5분 모델 캐시를 무효화하므로 재시작이 필요 없습니다.",
   "models.nativeGroupLabel": "OpenAI 네이티브",
   "models.nativeHint": "프로바이더에서 선택한 풀 또는 직접 계정 옵션으로 서빙되는 passthrough 모델입니다. 끄면 Codex 선택기에서 숨겨지고, 카탈로그 항목은 유지되므로 다시 켜면 그대로 복원됩니다.",
@@ -474,8 +466,6 @@ export const ko: Record<TKey, string> = {
   "models.allowlistLabel": "선택만 노출",
   "models.allowlistHint": "체크한 모델만 카탈로그에 노출돼요 (비우면 전체). 수천 개 모델을 노출하는 프로바이더에 유용해요.",
   "models.selectedCount": "{n}개 선택",
-
-  // subagents
   "sub.subtitle": "Codex의 {cmd} 는 우선순위 상위 5개 모델만 오버라이드로 노출합니다. 여기서 최대 5개를 선택하면 — 네이티브 gpt 또는 라우팅된 모델 — opencodex가 카탈로그 우선순위를 설정해 정확히 이들이 앞에 옵니다. 다른 모델도 정확한 이름으로 호출할 수 있으며, 이 설정은 표시 항목만 제어합니다.",
   "sub.featured": "추천",
   "sub.orderHint": "여기서 선택해 표시된 순서가 Codex 모델 피커 최상단 1~5위와 {cmd}의 기본 모델 후보를 결정합니다.",
@@ -505,8 +495,6 @@ export const ko: Record<TKey, string> = {
   "sub.workspace.selectModel": "모델 선택",
   "sub.workspace.selectModelDesc": "목록에서 모델을 선택하여 세부 정보를 확인하고 spawn_agent에 추천하세요.",
   "sub.workspace.selector": "공개 셀렉터",
-
-  // logs
   "logs.title": "요청 로그",
   "logs.tabLogs": "로그",
   "logs.tabDebug": "디버그",
@@ -596,7 +584,6 @@ export const ko: Record<TKey, string> = {
   "logs.details": "상세보기",
   "logs.detailTitle": "요청 상세",
   "logs.detailRaw": "원본 로그",
-
   "debug.title": "디버그",
   "debug.subtitle": "선택적 provider transport 및 usage 추출 진단. 요청 오류와 502는 로그 탭에 표시됩니다.",
   "debug.debug": "Provider debug",
@@ -624,8 +611,6 @@ export const ko: Record<TKey, string> = {
   "debug.noLines.provider": "공급자 디버그는 켜져 있지만 전송 이상(드롭되거나 잘못된 프레임, Cursor dial/retry 이벤트)만 기록합니다. Anthropic 같은 공급자로의 정상 요청은 라인을 생성하지 않을 수 있습니다.",
   "debug.noLines.usage": "사용량 추출은 켜져 있지만 아직 캡처된 항목이 없습니다. Codex로 요청을 보내면 여기에 표시됩니다.",
   "debug.noLines.injection": "주입 로그는 켜져 있지만 아직 캡처된 항목이 없습니다. Collab 및 서브 에이전트 턴의 멀티 에이전트 가이던스 주입과 effort-cap 결정을 기록합니다.",
-
-  // usage page
   "usage.title": "사용량",
   "usage.subtitle": "프록시의 로컬 토큰 집계입니다. 누락된 사용량은 0으로 표시하지 않습니다.",
   "usage.loading": "사용량 데이터를 불러오는 중…",
@@ -662,8 +647,6 @@ export const ko: Record<TKey, string> = {
   "usage.col.share": "비율",
   "usage.heatmap.less": "적음",
   "usage.heatmap.more": "많음",
-
-  // add-provider modal
   "modal.addNamed": "추가: {label}",
   "modal.add": "프로바이더 추가",
   "modal.search": "프로바이더 검색…",
@@ -770,7 +753,6 @@ export const ko: Record<TKey, string> = {
   "anthropicPool.saveFailed": "Claude 풀 설정을 저장하지 못했습니다.",
   "anthropicPool.on": "켜짐",
   "anthropicPool.off": "꺼짐",
-
   "accountPool.strategy": "로테이션 전략",
   "accountPool.strategyDesc": "새 세션이 풀에서 계정을 고르는 방식입니다.",
   "accountPool.strategyQuota": "할당량",
@@ -817,7 +799,6 @@ export const ko: Record<TKey, string> = {
   "codexAuth.tokenExpired": "토큰 만료 — 이 계정을 다시 인증하세요",
   "codexAuth.mainTokenExpired": "토큰 만료 — Codex 앱 로그인으로 다시 로그인하세요",
   "codexAuth.emailCollision": "이 계정은 메인 Codex 로그인과 동일합니다. 다른 계정을 사용하세요.",
-
   "codexAuth.resetCreditsTitle": "리셋 크레딧",
   "codexAuth.resetCreditsAvailable": "사용 가능한 리셋 크레딧이 {count}개 있습니다.",
   "codexAuth.resetCreditsDesc": "크레딧 1개로 현재 시간/주간 사용량 제한을 즉시 초기화합니다.",
@@ -843,8 +824,6 @@ export const ko: Record<TKey, string> = {
   "codexAuth.creditNextBadge": "NEXT",
   "codexAuth.creditGranted": "획득 {date}",
   "codexAuth.creditExpires": "만료 {date} ({days}일 남음)",
-
-  // api access page
   "api.title": "API 액세스",
   "api.subtitle": "생성한 API 키로 외부 앱에서 opencodex 프록시에 접근합니다. {authHeader} 또는 {altHeader} 헤더로 인증합니다.",
   "api.endpointNote": "기본 URL을 OpenAI 호환 클라이언트에 사용하세요. Responses와 Chat Completions는 /v1 아래에 제공됩니다.",
@@ -919,7 +898,6 @@ export const ko: Record<TKey, string> = {
   "api.keysLoadFailed": "API 키를 불러오지 못했습니다.",
   "api.createFailed": "API 키를 만들지 못했습니다.",
   "api.deleteFailed": "API 키를 삭제하지 못했습니다.",
-  // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Claude Code에서 GPT, Gemini 등 다른 모델도 쓸 수 있게 해줍니다.",
   "claude.enabledLabel": "Claude 연결",
@@ -999,7 +977,6 @@ export const ko: Record<TKey, string> = {
   "usage.dayFri": "금",
   "usage.heatmap.tooltipTokens": "{tokens} 토큰",
   "usage.heatmap.tooltipRequests": "{requests} 요청",
-
   "nav.storage": "저장소",
   "storage.title": "저장소",
   "storage.subtitle": "CODEX_HOME 사용량을 확인합니다. 정리는 활성 세션을 건드리지 않습니다.",
@@ -1066,7 +1043,6 @@ export const ko: Record<TKey, string> = {
   "storage.cleanup.err.fs_failed_trash": "파일 시스템 정리에 실패했습니다. 일부 변경이 이미 적용되었을 수 있습니다 — {trashDir}와 manifest.json에서 복구 가능한 파일을 확인하세요.",
   "storage.cleanup.err.db_reconcile_failed": "Codex 상태 데이터베이스를 업데이트할 수 없습니다.",
   "storage.cleanup.err.cleanup_failed": "정리에 실패했습니다.",
-
   "storage.trash.title": "격리",
   "storage.trash.help": "CODEX_HOME/.trash로 옮긴 보관 세션입니다. 복원하면 JSONL과 스레드 행이 돌아갑니다.",
   "storage.trash.empty": "격리된 항목이 없습니다.",
@@ -1282,7 +1258,7 @@ export const ko: Record<TKey, string> = {
   "pws.modelsTruncated": "{total}개 모델 중 처음 {shown}개를 표시합니다. 필터로 목록을 좁히세요.",
   "pws.retry": "다시 시도",
   "pws.noModels": "이 프로바이더에서 발견된 모델이 없습니다.",
- "pws.noModelMatch": "필터와 일치하는 모델이 없습니다.",
+  "pws.noModelMatch": "필터와 일치하는 모델이 없습니다.",
   "pws.adapterBaseRequired": "어댑터와 기본 URL은 필수입니다.",
   "pws.addAccount": "계정 추가",
   "pws.addKey": "API 키 추가",
@@ -1398,7 +1374,7 @@ export const ko: Record<TKey, string> = {
   "modal.apiKeyTransportBearer": "Authorization: Bearer",
   "modal.apiKeyPlaceholder": "sk-… (또는 $ENV_VAR)",
   "modal.defaultModelPlaceholder": "예: gpt-5.5",
- "modal.baseUrlPlaceholder": "https://...",
+  "modal.baseUrlPlaceholder": "https://...",
   "modal.baseUrlPlaceholderError": "Base URL에 해결되지 않은 {placeholder}가 있습니다. 실제 값으로 교체하세요.",
   "modal.baseUrlPlaceholderHint": "추가하기 전에 Base URL의 {placeholder}를 실제 Account ID로 교체하세요.",
   "modal.adding": "추가 중…",
@@ -1407,8 +1383,6 @@ export const ko: Record<TKey, string> = {
   "codexAuth.resetCreditsAria": "리셋 크레딧 {count}개",
   "claude.pageTitle": "Claude Code",
   "claude.workspace.settings": "설정",
-
-  // Combos workspace
   "cws.loading": "콤보 불러오는 중…",
   "cws.loadFailed": "콤보를 불러오지 못했습니다.",
   "cws.saveFailed": "콤보를 저장하지 못했습니다.",
@@ -1591,5 +1565,90 @@ export const ko: Record<TKey, string> = {
   "claudeDesktop.health.stats": "{count} 요청 / {errors} 에러",
   "claudeDesktop.effort.supported": "effort",
   "claudeDesktop.effort.displayOnly": "effort (표시만)",
+  "provider.name.volcengine": "Volcengine Ark",
+  "provider.name.volcengineCodingPlan": "Volcengine Ark 코딩 플랜",
+  "provider.name.volcengineAgentPlan": "Volcengine Ark 에이전트 플랜",
+  "prov.removedDefault": "\"{name}\"을(를) 삭제했습니다. 이제 기본 프로바이더는 \"{defaultProvider}\"입니다.",
+  "prov.removeLastProvider": "활성화된 다른 프로바이더가 기본이 될 수 없으면 이 프로바이더를 삭제할 수 없습니다.",
+  "prov.removeHasDependentCombos": "먼저 이 프로바이더를 사용하는 콤보를 삭제하거나 수정하세요: {combos}.",
+  "prov.setDefault": "기본으로 설정",
+  "prov.setDefaultSuccess": "\"{name}\"이(가) 기본 프로바이더로 설정되었습니다.",
+  "prov.setDefaultFail": "\"{name}\"을(를) 기본 프로바이더로 설정하지 못했습니다.",
+  "prov.defaultDisabled": "기본으로 설정하려면 먼저 이 프로바이더를 활성화하세요.",
+  "prov.updateFail": "이 프로바이더를 업데이트하지 못했습니다.",
+  "prov.networkError": "네트워크 오류입니다. 프록시가 실행 중인지 확인한 후 다시 시도하세요.",
+  "usage.range.available": "사용 가능한 기록",
+  "usage.historyTruncated": "이전 사용 기록을 불러오지 않아 합계는 사용 가능한 기록만 포함합니다.",
+  "codexAuth.autoSwitchQuotaDesc": "할당량: 사용량이 {threshold}% 이상이면 이미 바인딩된 작업을 포함해 다음 요청이 사용량이 더 낮은 적격 계정으로 이동할 수 있습니다. Go/Free는 30일만 봅니다.",
+  "codexAuth.autoSwitchQuotaOffDesc": "사용량 기반 선제 전환이 꺼져 있습니다. 새 작업/바인딩 없는 작업 배정과 실패 복구는 계속 적용됩니다.",
+  "codexAuth.autoSwitchRoundRobinDesc": "라운드로빈 배정은 이 임계값을 사용하지 않으며, 바인딩 없는 새 작업을 계속 순환합니다.",
+  "codexAuth.autoSwitchFillFirstDesc": "필 퍼스트: {threshold}%는 새 작업/바인딩 없는 작업의 소진 기준이며, 정상적인 바인딩 작업은 계정을 유지합니다.",
+  "codexAuth.autoSwitchFillFirstOffDesc": "필 퍼스트에는 새 작업/바인딩 없는 작업의 사용량 소진 기준이 없습니다. 쿨다운, 재인증, 실패 복구는 여전히 라우팅을 바꿀 수 있습니다.",
+  "codexAuth.failureRecoveryNote": "실패 복구는 별도입니다. 출력 전 429/402 거절, 쿨다운, 재인증, 제외 또는 설정된 일시적 장애 조치로 다른 적격 계정이 선택될 수 있습니다.",
+  "accountPool.strategyHintQuota": "할당량 전략은 사용량 임계값을 넘으면 기존 작업의 다음 요청도 다른 계정에 다시 바인딩할 수 있습니다.",
+  "accountPool.strategyHintRoundRobin": "라운드로빈은 현재 바인딩이 없는 작업만 순환하며, 사용량 임계값은 기본 순환에 영향을 주지 않습니다.",
+  "accountPool.strategyHintFillFirst": "필 퍼스트는 임계값을 바인딩 없는 작업의 소진 기준으로 사용하며, 정상적인 바인딩 작업은 어피니티를 유지합니다.",
+  "accountPool.unboundDefinition": "새 작업/바인딩 없는 작업은 현재 계정 바인딩이 없는 요청입니다. 기존에 보이던 작업도 프록시나 어피니티 상태가 초기화되면 바인딩이 없어질 수 있습니다.",
+  "api.modelsNoMatch": "“{query}”와 일치하는 모델이 없습니다.",
+  "api.workspace.sections": "API 섹션",
+  "api.section.keys": "키",
+  "api.section.connect": "연결",
+  "api.section.endpoints": "엔드포인트",
+  "api.section.models": "모델",
+  "api.section.examples": "예제",
+  "api.clientConfig.title": "클라이언트 설정",
+  "api.clientConfig.rowsLabel": "클라이언트 연결",
+  "api.clientConfig.details": "자세히",
+  "api.clientConfig.detailsAria": "{client} 설정 자세히 보기",
+  "api.clientConfig.copyAria": "{client} 설정 JSON 복사",
+  "api.clientConfig.downloadAria": "{client} 설정 다운로드",
+  "api.clientConfig.rowMeta": "{destination} · 모델 {count}개",
+  "api.clientConfig.rowError": "{client} 설정을 만들지 못했습니다.",
+  "api.clientConfig.copiedAnnounceClient": "{client} 설정 JSON을 클립보드에 복사했습니다.",
+  "api.clientConfig.clientOpencode": "OpenCode",
+  "api.clientConfig.clientPi": "Pi",
+  "api.clientConfig.copy": "JSON 복사",
+  "api.clientConfig.download": "다운로드",
+  "api.clientConfig.loading": "클라이언트 설정 생성 중…",
+  "api.clientConfig.jsonLabel": "{client} 설정 JSON",
+  "api.clientConfig.destination": "대상 파일",
+  "api.clientConfig.envHint": "실행 전 키 설정",
+  "api.clientConfig.mergeWarning": "대상 파일에 병합하세요. 덮어쓰면 기존 프로바이더와 MCP 설정이 사라집니다.",
+  "api.clientConfig.modelCount": "모델 {count}개 내보냄",
+  "api.clientConfig.missingLimits": "{total}개 중 {count}개 모델에 컨텍스트 한도가 없어 클라이언트 기본값이 적용됩니다.",
+  "api.clientConfig.noKeyYet": "{env}에 연결된 키가 아직 없습니다. 루프백 밖에서 쓰려면 위에서 키를 발급하세요.",
+  "api.clientConfig.loadFailed": "모델 목록을 읽지 못해 클라이언트 설정을 만들지 못했습니다.",
+  "api.clientConfig.copiedAnnounce": "클라이언트 설정 JSON을 클립보드에 복사했습니다.",
+  "api.clientConfig.copyFailed": "클라이언트 설정 JSON을 복사하지 못했습니다.",
+  "api.clientConfig.downloadedAnnounce": "{filename} 파일을 다운로드했습니다. 아직 아무것도 바뀌지 않았으니 {destination}에 직접 병합하세요.",
+  "api.clientConfig.whereDisclosure": "이 파일이 들어갈 위치",
+  "api.clientConfig.whereBody": "위 경로는 전역 설정 경로입니다. 작업 디렉터리의 프로젝트 설정 파일이 우선하며, 키는 설정에 적힌 환경 변수에서 읽고 이 파일에는 저장되지 않습니다.",
+  "api.auth.endpoint": "엔드포인트",
+  "api.auth.required": "필수",
+  "api.auth.accepted": "가능",
+  "api.auth.rejected": "안 됨",
+  "api.auth.testProtocol": "{protocol} 테스트",
+  "api.auth.testNeedsFreshKey": "인증 테스트를 하려면 키를 새로 만들고 한 번만 보이는 값을 화면에 둔 채로 실행하세요.",
+  "api.key.name": "키 이름",
+  "api.key.rename": "이름 변경",
+  "api.key.saveName": "이름 저장",
+  "api.key.renaming": "저장 중…",
+  "api.key.renameFailed": "이름을 바꾸지 못했습니다. 입력한 내용은 그대로 뒀습니다.",
+  "api.key.deleting": "삭제 중…",
+  "api.key.copyFailed": "키를 복사하지 못했습니다. 이 패널을 닫기 전에 직접 선택해서 복사하세요.",
+  "api.attribution.title": "키별 사용량",
+  "api.attribution.requests7d": "최근 7일 요청",
+  "api.attribution.totalRequests": "집계된 전체 요청",
+  "api.attribution.totalRequestsAvailable": "사용 가능한 기록의 요청",
+  "api.attribution.sinceAvailable": "사용 가능한 집계 시작일",
+  "api.attribution.lastUsed": "마지막 사용",
+  "api.attribution.since": "집계 시작",
+  "api.attribution.neverUsed": "집계 이후 사용 없음",
+  "api.attribution.unavailable": "사용량 없음",
+  "api.attribution.unavailableDetail": "아직 집계된 사용량이 없습니다. 집계가 시작되기 전 요청은 소급해서 배정할 수 없습니다.",
+  "api.attribution.ambiguous": "두 키가 같은 ID를 쓰고 있어 어느 쪽 사용량인지 가릴 수 없습니다. 설정 파일에서 키마다 다른 ID를 주세요.",
+  "api.attribution.railAmbiguous": "ID 중복",
+  "pws.removeDefaultConfirmBody": "기본 프로바이더 \"{name}\"을(를) 제거하시겠습니까? \"{defaultProvider}\"이(가) 기본 프로바이더가 됩니다. 이 작업은 되돌릴 수 없습니다.",
+  "pws.connectionNotApplicable": "해당 없음 — 이 프로바이더는 정적 모델 카탈로그를 사용합니다.",
 
 };

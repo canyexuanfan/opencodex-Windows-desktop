@@ -1,7 +1,7 @@
 import type { TKey } from "./en";
 
 export const zh: Record<TKey, string> = {
-  // sidebar / nav / common
+
   "nav.dashboard": "仪表盘",
   "nav.startup": "启动安全",
   "nav.providers": "提供方",
@@ -33,8 +33,6 @@ export const zh: Record<TKey, string> = {
   "errorBoundary.message": "此部分在渲染时发生错误。请重新加载后再试。",
   "errorBoundary.details": "错误",
   "errorBoundary.reload": "重新加载",
-
-  // startup health
   "startup.title": "启动安全",
   "startup.subtitle": "检查重启后 Codex 是否仍能连接 opencodex，避免本地代理路由陷入重复重连。",
   "startup.refresh": "刷新",
@@ -116,8 +114,6 @@ export const zh: Record<TKey, string> = {
   "startup.codexRuntime.clampHidden": "部分推理强度选项已隐藏，因为 OpenCodex 正在使用 Codex {version}。",
   "startup.codexRuntime.clampHiddenWithEfforts": "部分推理强度选项已隐藏，因为 OpenCodex 正在使用 Codex {version}（已移除：{efforts}）。",
   "startup.codexRuntime.olderBinary": "OpenCodex 正在使用较旧的 Codex 二进制文件（{version}）。检测到可用的较新安装。",
-
-  // dashboard
   "dash.subtitle": "本地 opencodex 代理、其提供方以及路由到 Codex 的模型的实时状态。",
   "dash.workspace.overview": "概览",
   "dash.workspace.sections": "板块",
@@ -220,7 +216,7 @@ export const zh: Record<TKey, string> = {
   "dash.subagentEffortCapLabel": "V2 子代理推理强度限制",
   "dash.effortCapHelp": "限制 V2 ultra 模式轮次的推理强度。设置后，来自 ultra 模式的 max 请求将被限制到所选级别。子代理限制仅适用于衍生的子代理。只会降低强度，不会提高。如果模型不支持所选级别，将自动降至最近的支持级别。",
   "dash.effortCapNone": "无上限",
-    "dash.maintenance": "维护",
+  "dash.maintenance": "维护",
   "dash.maintenanceHint": "刷新 Codex 模型目录，或安装新的 opencodex 版本。",
   "dash.syncModels": "同步模型",
   "dash.syncing": "同步中…",
@@ -265,8 +261,6 @@ export const zh: Record<TKey, string> = {
   "dash.updateStatus.restarting": "更新已安装。正在重启代理。",
   "dash.updateStatus.succeeded": "更新完成。",
   "dash.updateStatus.failed": "更新失败。",
-
-  // providers
   "prov.subtitle": "配置 opencodex 路由到 Codex 的上游提供方。使用账户登录、添加提供方，或编辑原始配置。",
   "prov.add": "添加提供方",
   "prov.editJson": "编辑 JSON",
@@ -374,8 +368,6 @@ export const zh: Record<TKey, string> = {
   "prov.manageCodexAccounts": "管理 Codex 账户",
   "prov.openaiApiMissing": "需要 API 密钥",
   "prov.openaiApiSetup": "设置 API 密钥",
-
-  // models
   "models.subtitle": "开关 Codex 可见的模型 — 原生 GPT passthrough 与已路由模型按提供方分组（点击标题可折叠）。隐藏的模型不会出现在目录和模型选择器中，但仍可按精确 id 直接调用。更改在下一个 Codex 回合生效 — opencodex 会使 Codex 的 5 分钟模型缓存失效，因此无需重启。",
   "models.nativeGroupLabel": "OpenAI 原生",
   "models.nativeHint": "Passthrough 模型使用在提供方页面选择的账户池或直连选项。关闭后会从 Codex 选择器中隐藏（目录条目保留，重新开启即可完整恢复）。",
@@ -471,8 +463,6 @@ export const zh: Record<TKey, string> = {
   "models.allowlistLabel": "仅所选",
   "models.allowlistHint": "仅勾选的模型进入目录（留空 = 全部）。适用于暴露成千上万模型的提供商。",
   "models.selectedCount": "已选 {n} 个",
-
-  // subagents
   "sub.subtitle": "Codex 的 {cmd} 仅将优先级最高的前 5 个模型作为覆盖项公开。在此最多选择 5 个 — 原生 gpt 或已路由模型 — opencodex 会设置它们的目录优先级，使其正好排在前面。其他模型仍可按确切名称调用；此设置仅控制显示项。",
   "sub.featured": "精选",
   "sub.orderHint": "此处所选并显示的顺序决定 Codex 模型选择器顶部第 1–5 位，以及 {cmd} 的默认模型候选。",
@@ -498,8 +488,6 @@ export const zh: Record<TKey, string> = {
   "sub.workspace.selectModel": "选择模型",
   "sub.workspace.selectModelDesc": "从列表中选择一个模型以查看详情，并将其设为 spawn_agent 的精选模型。",
   "sub.workspace.selector": "公开选择器",
-
-  // logs
   "logs.title": "请求日志",
   "logs.tabLogs": "日志",
   "logs.tabDebug": "调试",
@@ -589,7 +577,6 @@ export const zh: Record<TKey, string> = {
   "logs.details": "查看详情",
   "logs.detailTitle": "请求详情",
   "logs.detailRaw": "原始日志",
-
   "debug.title": "调试",
   "debug.subtitle": "可选的 provider transport 与 usage 提取诊断。请求错误和 502 在“日志”标签页显示。",
   "debug.debug": "Provider debug",
@@ -617,8 +604,6 @@ export const zh: Record<TKey, string> = {
   "debug.noLines.provider": "提供商调试已开启，但仅记录传输异常（丢弃或格式错误的帧，以及 Cursor dial/retry 事件）。通过 Anthropic 等提供商的正常请求可能不会产生任何行。",
   "debug.noLines.usage": "用量提取已开启但尚未捕获任何内容。请通过 Codex 发送请求，随后会显示在此处。",
   "debug.noLines.injection": "注入日志已开启但尚未捕获任何内容。它记录协作和子代理回合中的多代理指导注入与 effort-cap 决策。",
-
-  // usage page
   "usage.title": "用量",
   "usage.subtitle": "代理本地的 Token 用量统计。缺失的用量不会显示为零。",
   "usage.loading": "正在加载用量数据…",
@@ -655,8 +640,6 @@ export const zh: Record<TKey, string> = {
   "usage.col.share": "占比",
   "usage.heatmap.less": "少",
   "usage.heatmap.more": "多",
-
-  // add-provider modal
   "modal.addNamed": "添加：{label}",
   "modal.add": "添加提供方",
   "modal.search": "搜索提供方…",
@@ -763,7 +746,6 @@ export const zh: Record<TKey, string> = {
   "anthropicPool.saveFailed": "无法保存 Claude 账户池设置。",
   "anthropicPool.on": "开",
   "anthropicPool.off": "关",
-
   "accountPool.strategy": "轮换策略",
   "accountPool.strategyDesc": "新会话如何从账号池中选择账号。",
   "accountPool.strategyQuota": "配额",
@@ -810,7 +792,6 @@ export const zh: Record<TKey, string> = {
   "codexAuth.tokenExpired": "令牌已过期 — 请重新认证此账号",
   "codexAuth.mainTokenExpired": "令牌已过期 — 请通过 Codex 应用登录重新登录",
   "codexAuth.emailCollision": "此账号与您的主 Codex 登录相同。请使用其他账号。",
-
   "codexAuth.resetCreditsTitle": "重置额度",
   "codexAuth.resetCreditsAvailable": "您有 {count} 个可用重置额度。",
   "codexAuth.resetCreditsDesc": "每个额度可立即重置您当前的小时和每周使用限制。",
@@ -836,8 +817,6 @@ export const zh: Record<TKey, string> = {
   "codexAuth.creditNextBadge": "NEXT",
   "codexAuth.creditGranted": "获得 {date}",
   "codexAuth.creditExpires": "过期 {date}（剩余 {days} 天）",
-
-  // api access page
   "api.title": "API 访问",
   "api.subtitle": "使用生成的 API 密钥从外部应用访问 opencodex 代理。通过 {authHeader} 或 {altHeader} 请求头进行认证。",
   "api.endpointNote": "请将基础 URL 用于 OpenAI 兼容客户端。Responses 与 Chat Completions 在 /v1 下提供。",
@@ -912,7 +891,6 @@ export const zh: Record<TKey, string> = {
   "api.keysLoadFailed": "无法加载 API 密钥。",
   "api.createFailed": "无法创建 API 密钥。",
   "api.deleteFailed": "无法删除 API 密钥。",
-  // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "在 Claude Code 中使用 GPT、Gemini 等其他模型。",
   "claude.enabledLabel": "Claude 连接",
@@ -992,7 +970,6 @@ export const zh: Record<TKey, string> = {
   "usage.dayFri": "五",
   "usage.heatmap.tooltipTokens": "{tokens} 令牌",
   "usage.heatmap.tooltipRequests": "{requests} 请求",
-
   "nav.storage": "存储",
   "storage.title": "存储",
   "storage.subtitle": "查看 CODEX_HOME 占用。清理不会动到活动会话。",
@@ -1059,7 +1036,6 @@ export const zh: Record<TKey, string> = {
   "storage.cleanup.err.fs_failed_trash": "文件系统清理失败。部分更改可能已生效 — 请在 {trashDir} 和 manifest.json 中查找可恢复文件。",
   "storage.cleanup.err.db_reconcile_failed": "无法更新 Codex 状态数据库。",
   "storage.cleanup.err.cleanup_failed": "清理失败。",
-
   "storage.trash.title": "隔离区",
   "storage.trash.help": "已移至 CODEX_HOME/.trash 的归档会话。恢复会把 JSONL 与线程行写回。",
   "storage.trash.empty": "没有隔离条目。",
@@ -1275,7 +1251,7 @@ export const zh: Record<TKey, string> = {
   "pws.modelsTruncated": "显示 {total} 个模型中的前 {shown} 个。使用筛选以缩小列表。",
   "pws.retry": "重试",
   "pws.noModels": "未发现此提供商的模型。",
- "pws.noModelMatch": "没有匹配筛选的模型。",
+  "pws.noModelMatch": "没有匹配筛选的模型。",
   "pws.adapterBaseRequired": "适配器和基本 URL 为必填项。",
   "pws.addAccount": "添加账户",
   "pws.addKey": "添加 API 密钥",
@@ -1391,7 +1367,7 @@ export const zh: Record<TKey, string> = {
   "modal.apiKeyTransportBearer": "Authorization: Bearer",
   "modal.apiKeyPlaceholder": "sk-…（或 $ENV_VAR）",
   "modal.defaultModelPlaceholder": "例如 gpt-5.5",
- "modal.baseUrlPlaceholder": "https://...",
+  "modal.baseUrlPlaceholder": "https://...",
   "modal.baseUrlPlaceholderError": "Base URL 包含未解析的 {占位符}，请替换为实际值。",
   "modal.baseUrlPlaceholderHint": "请在添加前将 Base URL 中的 {占位符} 替换为你的实际 Account ID。",
   "modal.adding": "正在添加…",
@@ -1400,8 +1376,6 @@ export const zh: Record<TKey, string> = {
   "codexAuth.resetCreditsAria": "{count} 个重置额度",
   "claude.pageTitle": "Claude Code",
   "claude.workspace.settings": "设置",
-
-  // Combos workspace
   "cws.loading": "正在加载组合…",
   "cws.loadFailed": "无法加载组合。",
   "cws.saveFailed": "无法保存组合。",
@@ -1584,7 +1558,6 @@ export const zh: Record<TKey, string> = {
   "claudeDesktop.health.stats": "{count} 请求 / {errors} 错误",
   "claudeDesktop.effort.supported": "effort",
   "claudeDesktop.effort.displayOnly": "effort (仅显示)",
-
   "dash.injectionManage": "打开设置",
   "sub.settings": "设置",
   "sub.sections": "子代理分区",
@@ -1592,4 +1565,90 @@ export const zh: Record<TKey, string> = {
   "sub.delegation.modelHint": "Codex 分派工作时最先调用的模型。上面的推荐是可调用的名单，这里选的是其中第一顺位。",
   "dash.syncModelsHint": "按已连接的提供商重写 Codex 的模型目录。",
   "dash.syncRun": "立即同步",
+  "provider.name.volcengine": "火山方舟",
+  "provider.name.volcengineCodingPlan": "火山方舟编程套餐",
+  "provider.name.volcengineAgentPlan": "火山方舟智能体套餐",
+  "prov.removedDefault": "已移除 \"{name}\"。默认提供方现为 \"{defaultProvider}\"。",
+  "prov.removeLastProvider": "如果没有其他已启用的提供方可以成为默认，则无法移除此提供方。",
+  "prov.removeHasDependentCombos": "请先移除或更新依赖它的组合：{combos}。",
+  "prov.setDefault": "设为默认",
+  "prov.setDefaultSuccess": "\"{name}\" 已设为默认提供方。",
+  "prov.setDefaultFail": "无法将 \"{name}\" 设为默认提供方。",
+  "prov.defaultDisabled": "请先启用此提供方，再将其设为默认。",
+  "prov.updateFail": "无法更新此提供方。",
+  "prov.networkError": "网络错误。请确认代理正在运行后重试。",
+  "usage.range.available": "可用历史",
+  "usage.historyTruncated": "由于未加载较早的使用记录，合计仅涵盖可用历史。",
+  "codexAuth.autoSwitchQuotaDesc": "配额：使用率达到或超过 {threshold}% 时，包括已绑定任务在内的下一次请求可能转到用量更低的合格账号；Go/Free 仅使用 30 天窗口。",
+  "codexAuth.autoSwitchQuotaOffDesc": "基于用量的主动切换已关闭。新建/未绑定任务分配和故障恢复仍然生效。",
+  "codexAuth.autoSwitchRoundRobinDesc": "轮询分配不使用此阈值，并会继续轮换新建/未绑定任务。",
+  "codexAuth.autoSwitchFillFirstDesc": "填满优先：{threshold}% 是新建/未绑定任务的耗尽点；健康的已绑定任务继续使用原账号。",
+  "codexAuth.autoSwitchFillFirstOffDesc": "填满优先没有新建/未绑定任务的用量耗尽点；冷却、重新认证和故障恢复仍可能改变路由。",
+  "codexAuth.failureRecoveryNote": "故障恢复是独立机制：输出前的 429/402 拒绝、冷却、重新认证、排除或已配置的瞬时故障转移可能选择另一个合格账号。",
+  "accountPool.strategyHintQuota": "配额策略在超过用量阈值后，也可以在现有任务的下一次请求中重新绑定账号。",
+  "accountPool.strategyHintRoundRobin": "轮询只轮换没有有效绑定的任务；用量阈值不会改变正常轮换。",
+  "accountPool.strategyHintFillFirst": "填满优先把阈值用作未绑定任务的耗尽点；健康的已绑定任务保持亲和性。",
+  "accountPool.unboundDefinition": "新建/未绑定任务是当前没有账号绑定的请求；已有的可见任务在代理或亲和性重置后也可能变为未绑定。",
+  "api.modelsNoMatch": "没有与“{query}”匹配的模型。",
+  "api.workspace.sections": "API 分区",
+  "api.section.keys": "密钥",
+  "api.section.connect": "连接",
+  "api.section.endpoints": "端点",
+  "api.section.models": "模型",
+  "api.section.examples": "示例",
+  "api.clientConfig.title": "客户端配置",
+  "api.clientConfig.rowsLabel": "连接客户端",
+  "api.clientConfig.details": "详情",
+  "api.clientConfig.detailsAria": "{client} 配置详情",
+  "api.clientConfig.copyAria": "复制 {client} 配置 JSON",
+  "api.clientConfig.downloadAria": "下载 {client} 配置",
+  "api.clientConfig.rowMeta": "{destination} · {count} 个模型",
+  "api.clientConfig.rowError": "无法生成 {client} 配置。",
+  "api.clientConfig.copiedAnnounceClient": "已将 {client} 配置 JSON 复制到剪贴板。",
+  "api.clientConfig.clientOpencode": "OpenCode",
+  "api.clientConfig.clientPi": "Pi",
+  "api.clientConfig.copy": "复制 JSON",
+  "api.clientConfig.download": "下载",
+  "api.clientConfig.loading": "正在生成客户端配置…",
+  "api.clientConfig.jsonLabel": "{client} 配置 JSON",
+  "api.clientConfig.destination": "目标文件",
+  "api.clientConfig.envHint": "启动前设置密钥",
+  "api.clientConfig.mergeWarning": "请合并到目标文件中。直接替换会丢失你已有的其他提供商和 MCP 配置。",
+  "api.clientConfig.modelCount": "已导出 {count} 个模型",
+  "api.clientConfig.missingLimits": "{total} 个模型中有 {count} 个没有上下文上限，客户端将使用自己的默认值。",
+  "api.clientConfig.noKeyYet": "{env} 目前还没有对应的密钥。离开回环地址使用前，请先在上方生成密钥。",
+  "api.clientConfig.loadFailed": "无法读取模型列表，因此没有生成客户端配置。",
+  "api.clientConfig.copiedAnnounce": "客户端配置 JSON 已复制到剪贴板。",
+  "api.clientConfig.copyFailed": "无法复制客户端配置 JSON。",
+  "api.clientConfig.downloadedAnnounce": "已下载 {filename}。目前还没有任何改动，请自行将其合并到 {destination}。",
+  "api.clientConfig.whereDisclosure": "该文件应放在哪里",
+  "api.clientConfig.whereBody": "上面的路径是全局配置位置。工作目录中的项目级配置文件优先级更高；密钥由配置中指定的环境变量读取，不会写入该文件。",
+  "api.auth.endpoint": "端点",
+  "api.auth.required": "必需",
+  "api.auth.accepted": "可用",
+  "api.auth.rejected": "不接受",
+  "api.auth.testProtocol": "测试 {protocol}",
+  "api.auth.testNeedsFreshKey": "要运行带认证的测试，请先生成密钥，并让一次性显示的值保留在屏幕上。",
+  "api.key.name": "密钥名称",
+  "api.key.rename": "重命名",
+  "api.key.saveName": "保存名称",
+  "api.key.renaming": "保存中…",
+  "api.key.renameFailed": "无法重命名密钥，已保留你输入的内容。",
+  "api.key.deleting": "删除中…",
+  "api.key.copyFailed": "无法复制密钥。关闭此面板前请手动选中并复制。",
+  "api.attribution.title": "按密钥统计的用量",
+  "api.attribution.requests7d": "最近 7 天请求数",
+  "api.attribution.totalRequests": "已归属请求总数",
+  "api.attribution.totalRequestsAvailable": "可用历史中的请求",
+  "api.attribution.sinceAvailable": "可用归属记录起始时间",
+  "api.attribution.lastUsed": "最近使用",
+  "api.attribution.since": "统计起始",
+  "api.attribution.neverUsed": "统计开始后未使用",
+  "api.attribution.unavailable": "暂无用量",
+  "api.attribution.unavailableDetail": "尚未归属任何用量。统计开始之前的请求无法追溯归属。",
+  "api.attribution.ambiguous": "两个密钥共用同一个 ID，无法判断用量属于哪一个。请在配置文件中为每个密钥设置唯一 ID。",
+  "api.attribution.railAmbiguous": "ID 重复",
+  "pws.removeDefaultConfirmBody": "移除默认提供方「{name}」？「{defaultProvider}」将成为默认提供方。此操作无法撤消。",
+  "pws.connectionNotApplicable": "不适用 — 此提供方使用静态模型目录。",
+
 };
