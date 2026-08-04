@@ -23,6 +23,7 @@ import { decideEagerRelay } from "../../lib/bun-stream-caps";
 import { getActiveTurnCount, getActiveTurnMetrics, isDraining } from "../lifecycle";
 import { getActiveMemoryWatchdog, observedMemoryCounter } from "../memory-watchdog";
 import { responseStateMetrics } from "../../responses/state";
+import { appOwnedBytesSnapshot } from "../../lib/app-owned-memory";
 import { jsonResponse } from "../auth-cors";
 import type { ManagementContext } from "./context";
 import { acceptSystemRestart } from "./system-restart";
@@ -77,8 +78,9 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
 	      arrayBuffers: usage.arrayBuffers,
 	      observedBytes: observed.observedBytes,
 	      observedMetric: observed.observedMetric,
-	      jscHeap,
+      jscHeap,
       responseState: responseStateMetrics(),
+      appOwnedBytes: appOwnedBytesSnapshot(),
       streamMode,
       eagerRelay: process.platform === "win32" ? decideEagerRelay(streamMode) : null,
       watchdog,
