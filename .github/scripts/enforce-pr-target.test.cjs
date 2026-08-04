@@ -49,11 +49,16 @@ describe("enforce-pr-target workflow", () => {
   });
 
   it("checks out trusted base-branch scripts only (never PR head)", () => {
-    assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
-    assert.match(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}/);
+    // Scope the assertions to the checkout step itself, so a stray `ref:` on
+    // another step cannot satisfy the pin while the checkout stays mutable.
+    const checkoutStep = workflow
+      .split("- name: Checkout trusted PR-quality scripts")[1]
+      .split(/\n {6}- name:/)[0];
+    assert.match(checkoutStep, /actions\/checkout@[0-9a-f]{40}/);
+    assert.match(checkoutStep, /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}/);
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
-    assert.match(workflow, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
-    assert.match(workflow, /persist-credentials:\s*false/);
+    assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
+    assert.match(checkoutStep, /persist-credentials:\s*false/);
     assert.doesNotMatch(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.head/);
   });
 
