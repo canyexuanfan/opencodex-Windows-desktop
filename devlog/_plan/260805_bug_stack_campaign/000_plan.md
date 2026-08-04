@@ -68,15 +68,23 @@ independent and does not inherit merge blockage from earlier items.
 |-------|-----|---------|------------|
 | 0 | this doc + 001/002/003 | triage + research (docs-only) | — |
 | 1 | 010 | PR #988 design review + merge | none (independent GUI slice) |
-| 2 | 020 | anthropic empty-body-400 observability + bounded retry | 003 probes |
-| 3 | 030 | stack: confirmed unresolved bugs (core.ts cluster ordered; rest parallel-lane) | 001/002 triage |
-| 4 | 040 | dispositions: #806 close (immediate, triage-only); supersede-closes per landing | 001/002 + phase 3 landings |
+| 2 | 020 | anthropic sidecar-bridge error fidelity (`formatErrorBody`) | 003 probes + bridge analysis |
+| 3 | 030 | #914 DNS transport attribution (core.ts 1/3) | 001/002 triage |
+| 4 | 040 | #893 sparse snapshot repair (core.ts 2/3) | 030 |
+| 5 | 050 | #875 DeepSeek Flash stall (core.ts 3/3) | 040 |
+| 6 | 060 | #938 UUID item IDs | 050 (shared JSON→event boundary) |
+| 7 | 070 | #907 jawcode prices (+ external jawcode source write) | none |
+| 8 | 080 | #1007 login URL flush | none |
+| 9 | 090 | #1001 forced-answer validation | none |
+| 10 | 100 | #992 routed context_window | none |
+| 11 | 110 | #993 Kiro profileArn | none |
+| 12 | 120 | #959 provider headers (adopt PR #961) | none |
+| 13 | 130 | dispositions: #806 close (anytime); supersede-closes per landing | respective phases |
 
-Phase 3 slices by subsystem ownership, not effort; each stack PR is one
-logical change with its own focused test. Only the `core.ts` cluster chains
-branches; the independent items get their own branches from `origin/dev` and
-their diff-level sub-doc (`031_*`…) written at their own cycle's P
-(LOOP-UNIT-CHAIN-01), which is when each becomes an executable plan.
+Only the `core.ts` cluster (030→040→050→060) chains branches; 070-120 are
+independent lanes branching from `origin/dev` (or from the campaign base
+when doc files ride along). Each phase is one full PABCD cycle whose P
+re-verifies its decade doc against the then-current tree.
 
 ## Triage inputs
 

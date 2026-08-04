@@ -1,4 +1,4 @@
-# 040 — Phase 4: dispositions (closes and verdicts with evidence)
+# 130 — Dispositions (closes and verdicts with evidence)
 
 User authorization on record: close issues/PRs that are already resolved on
 `dev`. Anything beyond that (closing contributor PRs as superseded, asking
@@ -9,7 +9,7 @@ ambiguous cases go back to the user first.
 
 | Item | Action | Evidence to cite in the close comment |
 |------|--------|----------------------------------------|
-| #806 | close | `d52b387db` is an ancestor of `origin/dev`; GUI/CLI/docs wording split shipped (`gui/src/i18n/en.ts:1296-1315`) |
+| #806 | close | `d52b387db` is an ancestor of `origin/dev` (verified `git merge-base --is-ancestor`); GUI/CLI/docs wording split shipped (`gui/src/i18n/en.ts:1296-1315`) |
 
 ## Verification-needed issues — campaign verdicts
 
@@ -29,12 +29,13 @@ scope, useful authorship is preserved where the contributor's approach was
 adopted, and any contributor behavior intentionally not matched is recorded
 with the reason. "The linked issue is fixed" alone is never sufficient.
 
-| PR | Stack successor | Disposition when landed |
-|---:|-----------------|-------------------------|
-| #966, #922 | stack-02 (#914) | close with a pointer to the landed fix, after the equivalence comparison (user confirm at that point) |
-| #928 | stack-03 (#893) | same |
-| #940 | stack-04 (#938) | same |
-| #1006 | stack-05 (#875) | adopt or close-with-pointer, decided at that cycle's P |
+| PR | Successor | Equivalence basis (from the decade docs) | Disposition when landed |
+|---:|-----------|------------------------------------------|-------------------------|
+| #966, #922 | 030 (#914) | #966 closest semantic source (classifier/retry extracted, sidecar blast radius excluded); #922 not equivalent (policy expansions rejected) | close with pointer, user confirm |
+| #928 | 040 (#893) | field-only normalization ≠ commitment; event-synthesis design recorded | close with pointer, user confirm |
+| #940 | 060 (#938) | ID-prefix idea equivalent; 750-line bundle's extra mechanisms deliberately excluded, named in the close comment | close with pointer, user confirm |
+| #1006 | 050 (#875) | core policy adopted (bounded upstream JSON), diff superseded with attribution | adopt-or-close at that cycle's P |
+| #961 | 120 (#959) | ADOPTED, not superseded — authorship preserved, hardening slice added | review forward, not close |
 
 ## Stale/broken PRs outside the stack
 
