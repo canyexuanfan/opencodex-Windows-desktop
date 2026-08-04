@@ -41,7 +41,7 @@ other; closing one is a maintainer decision and neither is stale.
 |---|---|---|---|---|---|---|
 | RI-01 | `feat/ri-01-route-decision-traces` | `e44d234f0` | `b5a8e7c4c` | #1003 | https://github.com/lidge-jun/opencodex/pull/1003 | DRAFT OPEN |
 | RI-02 | `feat/ri-02-request-history-index` | `b5a8e7c4c` (RI-01 head) | pending | pending | pending | in progress |
-| RI-03 | `feat/ri-03-routing-analytics` | `feat/ri-02` head | pending | pending | pending | queued |
+| RI-03 | `feat/ri-03-routing-analytics` | `7efb6e842` (RI-02 head) | pending | pending | pending | in progress |
 | RI-04 | `feat/ri-04-policy-profile-core` | `feat/ri-03` head | pending | pending | pending | queued |
 | RI-05 | `feat/ri-05-capability-aware-routing` | `feat/ri-04` head | pending | pending | pending | queued |
 | RI-06 | `feat/ri-06-health-aware-routing` | `feat/ri-05` head | pending | pending | pending | queued |
@@ -110,5 +110,26 @@ other; closing one is a maintainer decision and neither is stale.
   - Focused regression suites: 269/269 pass across 8 files (incl. RI-01
     tests, request-log, usage-log, combos, combo-management-api,
     codex-routing, codex-account-namespaces)
+  - `bun run privacy:scan`: passed
+- Remaining Low findings: none
+
+### RI-03 - feat/ri-03-routing-analytics
+
+- Base SHA: `7efb6e84284c070c155c2e5254f1400917df31a1` (RI-02 head)
+- Reviewed commit: same as final (author self-review before push)
+- Findings (self-review): 3 fixed pre-push - (1) `requestHistoryDb` accessor
+  missing from the indexer (analytics needs the handle after open);
+  (2) SQL column names are snake_case - analytics SELECT now aliases to
+  camelCase; (3) cost field is `estimate.cost.total` (CostBreakdown), not
+  `costUsd`; plus the row-cap is injectable for truncation tests.
+- Final commit: pending (recorded after commit)
+- PR: pending
+- Verification:
+  - `bun x tsc --noEmit`: PASSED (0 errors)
+  - `bun run test tests/routing-analytics.test.ts`: 8/8 pass (32 assertions):
+    classification (success/failure/cancel/incomplete), percentiles +
+    coverage, fallback rate, provider/model/account + profile breakdown,
+    unknown-price honesty, filters, truncation flag, API payload
+  - Focused regression suites: 144/144 pass across 6 files
   - `bun run privacy:scan`: passed
 - Remaining Low findings: none
