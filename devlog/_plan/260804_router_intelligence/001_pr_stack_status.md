@@ -43,7 +43,7 @@ other; closing one is a maintainer decision and neither is stale.
 | RI-02 | `feat/ri-02-request-history-index` | `b5a8e7c4c` (RI-01 head) | pending | pending | pending | in progress |
 | RI-03 | `feat/ri-03-routing-analytics` | `7efb6e842` (RI-02 head) | pending | pending | pending | in progress |
 | RI-04 | `feat/ri-04-policy-profile-core` | `2069e724e` (RI-03 head) | pending | pending | pending | in progress |
-| RI-05 | `feat/ri-05-capability-aware-routing` | `feat/ri-04` head | pending | pending | pending | queued |
+| RI-05 | `feat/ri-05-capability-aware-routing` | `00e1c4ae5` (RI-04 head) | pending | pending | pending | in progress |
 | RI-06 | `feat/ri-06-health-aware-routing` | `feat/ri-05` head | pending | pending | pending | queued |
 | RI-07 | `feat/ri-07-quota-aware-routing` | `feat/ri-06` head | pending | pending | pending | queued |
 | RI-08 | `feat/ri-08-cost-aware-routing` | `feat/ri-07` head | pending | pending | pending | queued |
@@ -157,4 +157,26 @@ other; closing one is a maintainer decision and neither is stale.
   - `bun run privacy:scan`: passed
   - `tests/config.test.ts`: 109/115 pass; the 6 symlink failures reproduce
     identically on the pristine base (Windows symlink EPERM, environmental)
+- Remaining Low findings: none
+
+### RI-05 - feat/ri-05-capability-aware-routing
+
+- Base SHA: `00e1c4ae5df32cdf6d72957c1a36b334fe4dc0a6` (RI-04 head)
+- Reviewed commit: same as final (author self-review before push)
+- Findings (self-review): 2 fixed pre-push - (1) request evidence was wired
+  but unused by the evaluator - request requirements (`request-tools`,
+  `request-image-input`) now constrain candidates when the body provably
+  needs them; (2) trace-score plumbing verified end-to-end (score was added
+  to trace candidates in RI-04).
+- Final commit: pending (recorded after commit)
+- PR: pending
+- Verification:
+  - `bun x tsc --noEmit`: PASSED (0 errors)
+  - `bun run test tests/policy-execution.test.ts`: 8/8 pass - explicit
+    policy/<id> + alias execution, precedence unchanged (explicit/combo/
+    native/default), all-excluded error, unknown-capability per profile,
+    request evidence (image/tools) constraints, determinism
+  - Focused regression suites: 231/231 pass across 8 files (incl. combo
+    e2e + codex-routing)
+  - `bun run privacy:scan`: passed
 - Remaining Low findings: none

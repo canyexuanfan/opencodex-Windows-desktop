@@ -144,6 +144,27 @@ function requirementFor(
   return requirements;
 }
 
+/**
+ * Request-side capability constraints (RI-05): a request that provably needs
+ * tools or image input imposes the same requirement on candidates as the
+ * profile's hard requirements. Undefined request evidence adds nothing.
+ */
+function requestRequirements(
+  requestEvidence: PolicyRequestEvidence,
+  capability: RouteCapabilityEvidence | undefined,
+): RouteRequirementEvidence[] {
+  const requirements: RouteRequirementEvidence[] = [];
+  if (requestEvidence.toolsRequired === true) {
+    const tools = booleanRequirement("request-tools", true, capability?.tools);
+    if (tools) requirements.push(tools);
+  }
+  if (requestEvidence.imageInputRequired === true) {
+    const image = booleanRequirement("request-image-input", true, capability?.image);
+    if (image) requirements.push(image);
+  }
+  return requirements;
+}
+
 function unsatisfiedOrUnknown(requirements: RouteRequirementEvidence[]): RouteRequirementEvidence[] {
   return requirements.filter(requirement => requirement.outcome !== "satisfied");
 }
@@ -173,7 +194,10 @@ export function evaluatePolicyProfile(
     const evidence = candidateEvidence.find(
       candidate => candidate.provider === declared.provider && candidate.model === declared.model,
     ) ?? { provider: declared.provider, model: declared.model };
-    const requirements = requirementFor(profile.require, evidence.capability);
+    const requirements = [
+      ...requirementFor(profile.require, evidence.capability),
+      ...requestRequirements(requestEvidence, evidence.capability),
+    ];
     const exclusions: RouteExclusionReason[] = [];
     const bad = unsatisfiedOrUnknown(requirements);
     for (const requirement of bad) {

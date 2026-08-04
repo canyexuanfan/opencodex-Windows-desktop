@@ -17,6 +17,7 @@ import {
   rememberResponseState,
 } from "../../responses/state";
 import { routeModel, type RouteResult } from "../../router";
+import { evidenceFromBody } from "../../routing/request-evidence";
 import {
   advanceComboAfterFailure,
   comboDefaultEffort,
@@ -1372,7 +1373,7 @@ async function handleResponsesInner(
 
   let route: RouteResult;
   try {
-    route = routeModel(config, parsed.modelId);
+    route = routeModel(config, parsed.modelId, evidenceFromBody(parsed._rawBody));
   } catch (err) {
     if (err instanceof NoAvailableComboTargetsError) {
       return comboUnavailableResponse(err.message);
@@ -1444,7 +1445,7 @@ async function handleResponsesInner(
 
     if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
       try {
-        route = routeModel(config, fallback.to);
+        route = routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody));
         logCtx.routeDecision = route.routeDecision;
       } catch (err) {
         if (err instanceof NoAvailableComboTargetsError) {

@@ -27,6 +27,16 @@ import {
   type RouteDecisionTraceV1,
   type TraceCandidateInput,
 } from "./routing/trace";
+import { getRoutingProfile, resolvePolicyProfileId } from "./routing/profile";
+import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/evaluator";
+import { candidateCapabilityEvidence } from "./routing/capability";
+
+export class NoEligiblePolicyCandidateError extends Error {
+  constructor(readonly profileId: string) {
+    super(`No eligible candidates for policy profile: ${profileId}`);
+    this.name = "NoEligiblePolicyCandidateError";
+  }
+}
 
 export interface RouteResult {
   providerName: string;
@@ -420,8 +430,39 @@ function comboRouteCandidates(config: OcxConfig, route: RouteResult): TraceCandi
   });
 }
 
-function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: boolean): RouteResult {
+function routeModelInternal(
+  config: OcxConfig,
+  modelId: string,
+  bypassCombos: boolean,
+  policyEvidence?: PolicyRequestEvidence,
+): RouteResult {
   const slash = modelId.indexOf("/");
+  // Policy namespace is system-reserved: an explicit `policy/<id>` or a
+  // configured profile alias executes the policy evaluator and routes the
+  // selected candidate. Only explicit requests reach this branch.
+  const policyId = resolvePolicyProfileId(config, modelId);
+  if (policyId) {
+    const profile = getRoutingProfile(config, policyId);
+    if (!profile) throw new Error(`Unknown routing profile: ${policyId}`);
+    const candidateEvidence = profile.candidates.map(candidate => ({
+      provider: candidate.provider,
+      model: candidate.model,
+      capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
+    }));
+    const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence);
+    if (evaluation.selectedIndex === null) {
+      throw new NoEligiblePolicyCandidateError(policyId);
+    }
+    const selected = evaluation.candidates[evaluation.selectedIndex]!;
+    const concrete = `${selected.provider}/${selected.model}`;
+    const routed = routeModelInternal(config, concrete, true, undefined);
+    return {
+      ...routed,
+      routeKind: "policy" as const,
+      routeReason: "policy-selected",
+      routeDecision: evaluation.trace,
+    };
+  }
   if (slash > 0) {
     const namespace = modelId.slice(0, slash);
     const binding = codexAccountNamespaceEntries(config)
@@ -460,7 +501,7 @@ function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: bo
       const concrete = `${combo.target.provider}/${combo.target.model}`;
       // The selected target is already a concrete provider/model reference. Resolve it without
       // consulting combo aliases again, otherwise an alias that shadows the target can recurse.
-      const routed = routeModelInternal(config, concrete, true);
+      const routed = routeModelInternal(config, concrete, true, undefined);
       return { ...routed, combo, routeKind: "combo" as const, routeReason: "combo-pick" };
     }
   }
@@ -535,8 +576,14 @@ function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: bo
   throw new Error(`No provider configured for model: ${modelId}`);
 }
 
-export function routeModel(config: OcxConfig, modelId: string): RouteResult {
-  const route = routeModelInternal(config, modelId, false);
+export function routeModel(
+  config: OcxConfig,
+  modelId: string,
+  policyEvidence?: PolicyRequestEvidence,
+): RouteResult {
+  const route = routeModelInternal(config, modelId, false, policyEvidence);
+  // Policy routes carry a full evaluation trace already; never rebuild it.
+  if (route.routeDecision) return route;
   const accountRef = route.codexAccountNamespace;
   route.routeDecision = buildRouteDecisionTrace({
     requestedModel: modelId,
