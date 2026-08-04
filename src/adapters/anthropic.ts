@@ -408,16 +408,68 @@ const ADAPTIVE_THINKING_FAMILY_MINIMUMS: Record<string, readonly [major: number,
   fable: [0, 0],
 };
 
-function usesAdaptiveThinking(modelId: string): boolean {
-  // Minor is 1-2 digits with a non-digit lookahead so date-pinned ids ("claude-opus-4-20250514")
-  // parse as minor 0 instead of minor 20250514; suffixed ids ("claude-opus-4-8[1m]") still match.
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
-  if (!match) return false;
-  const minimum = ADAPTIVE_THINKING_FAMILY_MINIMUMS[match[1]];
+/**
+ * Family/version parse for a Claude model id, tolerant of a routing prefix.
+ *
+ * `parsed.modelId` is not always bare, and the slash can fall on either side.
+ * A `modelMap` entry may point at a routed destination such as
+ * `anthropic/claude-sonnet-5` (prefix), while a custom provider may expose a
+ * native id such as `claude-sonnet-5/variant` (suffix); both survive routing's
+ * known-id decoding. So this matches the segment that actually begins with
+ * `claude-` rather than assuming it is the first or the last one. A capability
+ * predicate that quietly returns false is worse than one that throws — the
+ * request just goes out wrong.
+ *
+ * Minor is 1-2 digits with a non-digit lookahead so date-pinned ids
+ * ("claude-opus-4-20250514") parse as minor 0 instead of minor 20250514;
+ * suffixed ids ("claude-opus-4-8[1m]") still match.
+ */
+function claudeFamilyVersion(modelId: string): { family: string; major: number; minor: number } | undefined {
+  // Find the segment that actually starts with `claude-`, rather than assuming it is either
+  // the first (breaks `anthropic/claude-sonnet-5`) or the last (breaks `claude-sonnet-5/variant`,
+  // where the slash carries a vendor suffix rather than a routing prefix).
+  const match = /(?:^|\/)claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
+  if (!match) return undefined;
+  return {
+    family: match[1]!,
+    major: Number(match[2]),
+    minor: match[3] === undefined ? 0 : Number(match[3]),
+  };
+}
+
+function meetsFamilyMinimum(
+  modelId: string,
+  minimums: Record<string, readonly [major: number, minor: number]>,
+): boolean {
+  const parsed = claudeFamilyVersion(modelId);
+  if (!parsed) return false;
+  const minimum = minimums[parsed.family];
   if (!minimum) return false;
-  const major = Number(match[2]);
-  const minor = match[3] === undefined ? 0 : Number(match[3]);
-  return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
+  return parsed.major > minimum[0] || (parsed.major === minimum[0] && parsed.minor >= minimum[1]);
+}
+
+function usesAdaptiveThinking(modelId: string): boolean {
+  return meetsFamilyMinimum(modelId, ADAPTIVE_THINKING_FAMILY_MINIMUMS);
+}
+
+/**
+ * Claude families that (a) think by DEFAULT when the request omits `thinking`,
+ * and (b) accept an explicit `thinking: {type: "disabled"}` to turn it off.
+ *
+ * Deliberately NOT `usesAdaptiveThinking()`, which answers a different question
+ * (which wire shape a family accepts). The two sets differ in both directions:
+ * Fable always thinks and REJECTS an explicit disable, while Opus 4.7/4.8 use
+ * the adaptive wire but leave thinking off when the field is omitted, so they
+ * need no disable at all. Seeded with the family where the defect reproduces
+ * (#545); widen only with vendor evidence, since a wrong entry here turns a
+ * silent truncation into a 400.
+ */
+const EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS: Record<string, readonly [major: number, minor: number]> = {
+  sonnet: [5, 0],
+};
+
+function supportsExplicitThinkingDisable(modelId: string): boolean {
+  return meetsFamilyMinimum(modelId, EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS);
 }
 
 /** `output_config.effort` accepts low|medium|high|xhigh|max — "minimal" is rejected with a 400. */
@@ -766,7 +818,14 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       // `reasoning` is a Codex effort string; "none" is the disable sentinel (see parser.ts
       // REASONING_EFFORTS). A bare truthy check would treat "none" as truthy and wrongly enable
       // extended thinking (and strip temperature/top_p), so gate on a real, non-disable effort.
-      if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
+      //
+      // "none" is not the same as absent. Omitting `thinking` lets a default-on model think
+      // anyway, and thinking shares the caller's `max_tokens` — which truncates a small-budget
+      // request before it can emit its stop sequence (#545). Say "disabled" out loud where the
+      // model both defaults to thinking and accepts being told not to.
+      if (parsed.options.reasoning === "none" && supportsExplicitThinkingDisable(parsed.modelId)) {
+        body.thinking = { type: "disabled" };
+      } else if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
         if (usesAdaptiveThinking(parsed.modelId)) {
           // Adaptive-thinking models replace the token budget with an effort knob and reject
           // `thinking.type: "enabled"` outright. `max_tokens` still caps thinking plus visible
